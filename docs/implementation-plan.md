@@ -66,8 +66,9 @@ VM, interchangeable physics backends or a full UI framework.
 Decisions made while doing this:
 
 - Retail space is Y-up and left-handed. Bevy space mirrors Z, reverses
-  triangle winding and uses 600 retail units per metre, which puts the eye
-  1000 units (1.67 m) above the feet. The resulting orientation was checked
+  triangle winding and uses retail's own scale of 500 units per metre
+  (authored values are metres × 500), which puts the eye 1000 units (2 m)
+  above the feet. The resulting orientation was checked
   against the retail game.
 - Retail velocities are per 0.1 s tick; converted constants cite their source.
 
