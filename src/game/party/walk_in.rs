@@ -8,16 +8,16 @@ use super::body::{EYE_ABOVE_CENTRE, PartyBody};
 use crate::content::level::{Arrival, LevelGeometry};
 use crate::game::world::level::{Level, Travel, TravelQuestion};
 use crate::game::world::props::pose;
-use crate::game::world::triggers::{LevelTriggers, PartyMove};
+use crate::game::world::triggers::{DeviceOperations, PartyMove};
 
 pub fn run_walk_in_triggers(
     time: Res<Time>,
     party: Query<&Position, With<PartyBody>>,
-    mut triggers: LevelTriggers,
+    mut triggers: DeviceOperations,
 ) {
     let Ok(position) = party.single() else { return };
     let eye = PartyBody::eye(position);
-    triggers.with(|triggers| triggers.walk(eye, time.delta()));
+    triggers.walk(eye, time.delta());
 }
 
 /// The party's eye flying along a camera path; input and physics wait
@@ -36,7 +36,7 @@ pub fn move_party(
     levels: Query<&Level>,
     geometry: Res<Assets<LevelGeometry>>,
     mut travel: MessageWriter<Travel>,
-    mut triggers: LevelTriggers,
+    mut triggers: DeviceOperations,
 ) {
     let Some(party_move) = triggers.take_party_move() else { return };
     let Ok((entity, mut body, mut position, mut transform, flying)) = party.single_mut() else {
@@ -49,7 +49,7 @@ pub fn move_party(
             transform.translation = position.0;
             body.yaw = yaw;
             info!("teleport to {eye:.2}");
-            triggers.with(|triggers| triggers.arrive(eye));
+            triggers.arrive(eye);
         }
         PartyMove::Teleport(Arrival::Entrance { entrance, ask: false }) => {
             travel.write(Travel { entrance });
