@@ -178,6 +178,17 @@ an off-party NPC is not another sleeping party member.
 At the schedule boundary, credit the elapsed interval under its previous policy,
 then establish the newly requested policy for the next interval. Explicit round
 increments use the same clock operation. Deliver due work in the stated order.
+**Do not infer the interval's policy from the activity present when a later
+system happens to observe the new clock.** In particular, completing the final
+combat round must settle its 120-second increment as *combat* before removing
+`Battle`; otherwise a later recovery system may interpret it as exploration.
+
+The clock and aging operation must account for the interval once, including
+any retained fractional remainder or deferred debt. The debt carries its
+original advancement policy if it can cross a mode change. A system-local
+`last_timestamp` used only to detect elapsed time must not be the sole
+authority for delivered gameplay effects. A plain function called by the
+owning transition is preferable to another event/observer pipeline.
 Individual rules borrow only the profiles and data they need. A huge `Game`
 argument, a generic event chain, or a universal timer service would obscure this
 order.
