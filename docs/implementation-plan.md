@@ -198,7 +198,12 @@ randomness is one seeded, saveable PCG32 (`game::rng`); and
 12 equipment slots, 8-slot backpacks, the 500-row pool and the held item,
 with retail's slot and pairing rules, stack merging, uses, placement order
 (merge, backpack, front of the pool), pick-up and split, swap with the hand,
-merge and pool deposit, and curses holding worn items (unit tests). Not yet:
+merge and pool deposit, and curses holding worn items (unit tests). Loot
+tables decode (114) and roll as retail's do; containers roll their contents
+on first opening, keep them in the level's state, and give the party their
+gold ("The party receives N gold.") and items ("Party takes …"); retail
+hands a single item over and opens a picker for several, but without an
+inventory screen everything goes to the pool for now. Not yet:
 characters, so usability is passed in; the Gadgeteer and gun ammunition
 pairs; identification; weight and load; screens; saves.
 

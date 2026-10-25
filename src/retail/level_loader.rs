@@ -282,6 +282,8 @@ fn trigger_definition(
             .placement
             .filter(|_| item.flags & flag::ITEM == 0)
             .map(|placement| retail_position(placement.position)),
+        loot_table: (item.initial_action == trigger_action::TOGGLE && !item.action_data.is_empty())
+            .then(|| item.action_data.clone()),
         arrival: matches!(
             item.initial_action,
             trigger_action::TELEPORT | trigger_action::RANDOM_TELEPORT

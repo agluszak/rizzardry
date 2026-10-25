@@ -23,6 +23,7 @@ impl Plugin for PresentationPlugin {
             .add_message::<dialog::TravelAnswer>()
             .init_resource::<crate::game::automap::MapNotes>()
             .init_resource::<effects::CameraShake>()
+            .init_resource::<notices::NoticeQueue>()
             .add_input_context::<automap::Screens>()
             .add_systems(
                 Startup,
@@ -60,7 +61,7 @@ impl Plugin for PresentationPlugin {
                     sky::shade_clouds,
                     billboards::face_camera.after(crate::game::party::body::aim_camera),
                     effects::play_trigger_effects,
-                    (notices::show_notices, notices::fade_notices).chain(),
+                    (notices::queue_notices, notices::show_notices, notices::fade_notices).chain(),
                     (
                         dialog::show_travel_question,
                         dialog::answer_with_keys,

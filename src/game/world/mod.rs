@@ -26,6 +26,10 @@ impl Plugin for WorldPlugin {
             .add_message::<level::LevelReady>()
             .add_message::<level::Travel>()
             .init_resource::<level::LevelMemory>()
+            .init_resource::<crate::game::rng::GameRng>()
+            .init_resource::<crate::game::inventory::ItemIds>()
+            .init_resource::<crate::game::inventory::PartyInventory>()
+            .add_systems(Startup, crate::game::data::load_game_data)
             .add_message::<triggers::TriggerEffect>()
             // The level is swapped before anything builds on it this frame.
             .add_systems(PreUpdate, level::travel)

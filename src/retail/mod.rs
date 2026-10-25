@@ -74,6 +74,8 @@ impl Plugin for RetailPlugin {
             .init_asset_loader::<sti_loader::StiLoader>()
             .init_asset::<crate::content::items::ItemCatalog>()
             .init_asset_loader::<item_loader::ItemCatalogLoader>()
+            .init_asset::<crate::content::items::LootTables>()
+            .init_asset_loader::<item_loader::LootTablesLoader>()
             .init_asset::<crate::content::ui::TextTable>()
             .init_asset_loader::<text_loader::TextLoader>()
             .init_asset::<texture_loader::RetailTexture>()

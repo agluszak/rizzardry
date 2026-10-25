@@ -244,6 +244,8 @@ pub struct TriggerDefinition {
     pub place: Option<Vec3>,
     /// Where a teleport takes the party.
     pub arrival: Option<Arrival>,
+    /// The loot table a container draws its contents from.
+    pub loot_table: Option<String>,
 }
 
 #[derive(Clone, Debug, Reflect)]

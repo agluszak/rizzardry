@@ -199,3 +199,82 @@ mod tests {
         assert!(items.iter().filter(|item| !item.name.is_empty()).count() > 500);
     }
 }
+
+/// One loot table (`data/databases/itemtables.dbs`, Whizzardry
+/// `W8ItemTableRecord`): weighted item entries and how many to draw.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ItemTableRecord {
+    pub name: String,
+    pub category: u32,
+    /// Item number and weight; weight 0 always drops.
+    pub entries: Vec<(u16, u8)>,
+    /// Entries are filtered by the party's level and the item's value.
+    pub level_scaled: bool,
+    pub item_count: Dice,
+    pub gold: Dice,
+}
+
+const TABLE_RECORD: usize = 256 + 4 + 40 * 5 + 1 + 4 + 4 + 4 + 0x18;
+
+/// The loot tables, after their category names.
+pub fn read_item_tables(data: &[u8]) -> Result<Vec<ItemTableRecord>, PvlError> {
+    let mut bytes = Bytes::new(data);
+    let categories = bytes.u32()? as usize;
+    bytes.take(categories * 256)?;
+    let count = bytes.u32()? as usize;
+    (0..count)
+        .map(|_| {
+            let record = bytes.take(TABLE_RECORD)?;
+            let mut fields = Bytes::new(&record[256..]);
+            let category = fields.u32()?;
+            let mut entries = Vec::new();
+            for _ in 0..40 {
+                let selector = fields.u16()?;
+                let (item, weight) = (fields.u16()?, fields.u8()?);
+                if selector != 0 {
+                    entries.push((item, weight));
+                }
+            }
+            let level_scaled = fields.u8()? != 0;
+            let item_count = dice(&mut fields)?;
+            fields.take(4)?;
+            let gold = dice(&mut fields)?;
+            Ok(ItemTableRecord {
+                name: ascii(&record[..256]),
+                category,
+                entries,
+                level_scaled,
+                item_count,
+                gold,
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod table_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires a retail installation"]
+    fn retail_item_tables_decode() {
+        let root =
+            std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL to run this test");
+        let files = crate::retail::files::RetailFiles::open(root).unwrap();
+        let tables =
+            read_item_tables(&files.read("data/databases/itemtables.dbs").unwrap().unwrap())
+                .unwrap();
+        let items = read_items(&files.read("data/databases/items.dbs").unwrap().unwrap()).unwrap();
+        for table in tables.iter().take(4) {
+            println!("{table:?}");
+        }
+        println!("{} tables", tables.len());
+        assert!(tables.len() > 50);
+        assert!(
+            tables
+                .iter()
+                .flat_map(|t| &t.entries)
+                .all(|&(item, _)| usize::from(item) < items.len())
+        );
+    }
+}

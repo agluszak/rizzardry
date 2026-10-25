@@ -33,16 +33,23 @@ impl GameRng {
         shifted.rotate_right((old >> 59) as u32)
     }
 
-    /// A number in `1..=sides`, without modulo bias.
-    pub fn die(&mut self, sides: u8) -> u32 {
-        let sides = u32::from(sides.max(1));
-        let zone = u32::MAX - u32::MAX % sides;
+    /// A number in `0..n`, without modulo bias; 0 when `n` is 0.
+    pub fn below(&mut self, n: u32) -> u32 {
+        if n == 0 {
+            return 0;
+        }
+        let zone = u32::MAX - u32::MAX % n;
         loop {
             let draw = self.next_u32();
             if draw < zone {
-                return draw % sides + 1;
+                return draw % n;
             }
         }
+    }
+
+    /// A number in `1..=sides`, without modulo bias.
+    pub fn die(&mut self, sides: u8) -> u32 {
+        self.below(u32::from(sides.max(1))) + 1
     }
 
     /// `count` d `sides` + `base`, never below 0.

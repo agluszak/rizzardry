@@ -4,10 +4,11 @@ use bevy::asset::{AssetLoader, LoadContext, io::Reader};
 use bevy::reflect::TypePath;
 use thiserror::Error;
 
-use super::items::{ItemRecord, item_flag, read_items};
+use super::items::{ItemRecord, item_flag, read_item_tables, read_items};
 use super::pvl::PvlError;
 use crate::content::items::{
-    Dice, EquipClass, ItemCatalog, ItemDefinition, ItemId, QuantityKind, Requirement,
+    Dice, EquipClass, ItemCatalog, ItemDefinition, ItemId, LootTable, LootTables, QuantityKind,
+    Requirement,
 };
 
 #[derive(Default, TypePath)]
@@ -123,5 +124,41 @@ mod tests {
                 .filter(|i| i.quantity == QuantityKind::Stack)
                 .all(|i| i.maximum_quantity > 0)
         );
+    }
+}
+
+#[derive(Default, TypePath)]
+pub struct LootTablesLoader;
+
+impl AssetLoader for LootTablesLoader {
+    type Asset = LootTables;
+    type Settings = ();
+    type Error = ItemLoadError;
+
+    async fn load(
+        &self,
+        reader: &mut dyn Reader,
+        _: &(),
+        _: &mut LoadContext<'_>,
+    ) -> Result<LootTables, ItemLoadError> {
+        let mut data = Vec::new();
+        reader.read_to_end(&mut data).await?;
+        let dice = |d: super::items::Dice| Dice { count: d.count, sides: d.sides, base: d.base };
+        Ok(LootTables(
+            read_item_tables(&data)?
+                .into_iter()
+                .map(|table| LootTable {
+                    name: table.name,
+                    entries: table.entries.into_iter().map(|(item, w)| (ItemId(item), w)).collect(),
+                    level_scaled: table.level_scaled,
+                    item_count: dice(table.item_count),
+                    gold: dice(table.gold),
+                })
+                .collect(),
+        ))
+    }
+
+    fn extensions(&self) -> &[&str] {
+        &["dbs"]
     }
 }

@@ -17,7 +17,12 @@ use bevy::ecs::system::SystemParam;
 use super::level::{Level, PropPart};
 use super::props::{Prop, PropMotion};
 use super::scripts::LevelScript;
+use crate::content::items::{ItemCatalog, LootTables};
 use crate::content::level::{Arrival, LevelGeometry, StateChange, TriggerDefinition};
+use crate::game::data::GameData;
+use crate::game::inventory::{ItemIds, ItemInstance, PartyInventory, make_item};
+use crate::game::loot::roll_loot;
+use crate::game::rng::GameRng;
 
 /// Retail trigger action codes performed so far.
 pub mod action {
@@ -64,6 +69,15 @@ pub struct TriggerState {
     pub position: usize,
     /// The party's eye is within its range (positioned triggers).
     inside: bool,
+    /// A container's contents, rolled when it is first opened.
+    pub contents: Option<Contents>,
+}
+
+/// What a container holds.
+#[derive(Clone, Debug, Default)]
+pub struct Contents {
+    pub items: Vec<ItemInstance>,
+    pub gold: u32,
 }
 
 impl LevelState {
@@ -77,6 +91,7 @@ impl LevelState {
                     awaits_animation: false,
                     position: 0,
                     inside: false,
+                    contents: None,
                 };
                 geometry.triggers.len()
             ],
@@ -202,6 +217,9 @@ pub enum TriggerEffect {
     Message(i32),
     /// The party used something and nothing came of it.
     NothingHappened,
+    /// An item went to the party ("Party takes %s").
+    PartyTakes(String),
+    Gold(u32),
     Locked,
 }
 
@@ -212,8 +230,21 @@ pub struct Triggers<'a> {
     /// Props by the index of the trigger they carry.
     pub props: HashMap<usize, TriggerProp<'a>>,
     pub effects: Vec<TriggerEffect>,
+    /// Items, randomness and the party's possessions, for containers; none
+    /// while the databases load.
+    pub items: Option<PartyItems<'a>>,
     /// Where a teleport or camera path sends the party.
     pub party_moves: Option<PartyMove>,
+}
+
+/// What containers need: item definitions, loot tables, randomness and the
+/// party's possessions.
+pub struct PartyItems<'a> {
+    pub catalog: &'a ItemCatalog,
+    pub loot: &'a LootTables,
+    pub rng: &'a mut GameRng,
+    pub ids: &'a mut ItemIds,
+    pub party: &'a mut PartyInventory,
 }
 
 /// Moving the party somewhere, which the party module carries out.
@@ -307,6 +338,9 @@ impl Triggers<'_> {
                 state.awaits_animation = true;
             }
             action::TOGGLE | action::START | action::STOP => {
+                if definition.loot_table.is_some() {
+                    self.open_container(index);
+                }
                 let Some(prop) = self.props.get_mut(&index) else { return false };
                 match action {
                     action::TOGGLE => prop.toggle(),
@@ -368,6 +402,44 @@ impl Triggers<'_> {
         }
         self.commit(index, use_index, changes_state, depth);
         true
+    }
+
+    /// Open a container: roll its contents the first time (retail
+    /// `GenerateItemGroup`), then give the party its gold and as many items
+    /// as the pool takes. Retail puts a single item in the hand and opens a
+    /// picker for several; with no inventory screen yet, all go to the pool.
+    fn open_container(&mut self, index: usize) {
+        let definitions = self.definitions;
+        let Some(table_name) = &definitions[index].loot_table else { return };
+        let Some(items) = &mut self.items else { return };
+        let contents = self.state.triggers[index].contents.get_or_insert_with(|| {
+            let Some(table) = items.loot.find(table_name) else {
+                warn!("no loot table {table_name}");
+                return Contents::default();
+            };
+            // The party's level once characters exist.
+            let (found, gold) = roll_loot(table, items.catalog, 1, items.rng);
+            let made = found
+                .into_iter()
+                .filter_map(|id| items.catalog.get(id))
+                .map(|definition| make_item(definition, items.ids, items.rng, false, false))
+                .collect();
+            Contents { items: made, gold }
+        });
+        if contents.gold > 0 {
+            items.party.gold += contents.gold;
+            self.effects.push(TriggerEffect::Gold(contents.gold));
+            contents.gold = 0;
+        }
+        let mut kept = Vec::new();
+        for item in contents.items.drain(..) {
+            let name = items.catalog.get(item.item).map(|d| d.name.clone()).unwrap_or_default();
+            match items.party.place_in_pool(item, items.catalog) {
+                Ok(()) => self.effects.push(TriggerEffect::PartyTakes(name)),
+                Err(item) => kept.push(item),
+            }
+        }
+        contents.items = kept;
     }
 
     /// Retail `SelectAction`: the action this run performs, and which of
@@ -439,6 +511,12 @@ pub struct LevelTriggers<'w, 's> {
     parts: Query<'w, 's, &'static GlobalTransform, With<PropPart>>,
     effects: MessageWriter<'w, TriggerEffect>,
     party_move: ResMut<'w, PendingPartyMove>,
+    data: Option<Res<'w, GameData>>,
+    catalogs: Res<'w, Assets<ItemCatalog>>,
+    loot: Res<'w, Assets<LootTables>>,
+    rng: ResMut<'w, GameRng>,
+    ids: ResMut<'w, ItemIds>,
+    party: ResMut<'w, PartyInventory>,
 }
 
 /// A trigger has sent the party somewhere; the party module moves it.
@@ -480,11 +558,21 @@ impl LevelTriggers<'_, '_> {
                 },
             );
         }
+        let items = self.data.as_ref().and_then(|data| {
+            Some(PartyItems {
+                catalog: self.catalogs.get(&data.items)?,
+                loot: self.loot.get(&data.loot)?,
+                rng: self.rng.as_mut(),
+                ids: self.ids.as_mut(),
+                party: self.party.as_mut(),
+            })
+        });
         let mut triggers = Triggers {
             definitions: &geometry.triggers,
             state,
             props,
             effects: Vec::new(),
+            items,
             party_moves: None,
         };
         let result = run(&mut triggers);
@@ -522,6 +610,7 @@ mod tests {
             door: None,
             place: None,
             arrival: None,
+            loot_table: None,
         }
     }
 
@@ -584,6 +673,7 @@ mod tests {
                 state: &mut self.state,
                 props,
                 effects: vec![],
+                items: None,
                 party_moves: None,
             };
             let committed = triggers.run(name);
@@ -777,6 +867,7 @@ mod tests {
                 state: &mut state,
                 props: HashMap::new(),
                 effects: vec![],
+                items: None,
                 party_moves: None,
             };
             triggers.walk(eye);

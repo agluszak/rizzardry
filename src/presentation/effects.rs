@@ -51,8 +51,18 @@ pub fn play_trigger_effects(
                     noise: shake.noise,
                 };
             }
+            TriggerEffect::Gold(_) => {
+                commands.spawn((
+                    Name::new("Sound gold"),
+                    AudioPlayer::new(assets.load("retail://data/sound/misc/chaching.wav")),
+                    PlaybackSettings::DESPAWN,
+                ));
+            }
             // Shown as notices.
-            TriggerEffect::Message(_) | TriggerEffect::NothingHappened | TriggerEffect::Locked => {}
+            TriggerEffect::Message(_)
+            | TriggerEffect::NothingHappened
+            | TriggerEffect::Locked
+            | TriggerEffect::PartyTakes(_) => {}
         }
     }
 }

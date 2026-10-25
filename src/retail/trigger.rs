@@ -23,6 +23,8 @@ pub mod action {
     pub const CAMERA_PATH: u32 = 0x09;
     /// Fire the recipients.
     pub const RELAY: u32 = 0x0f;
+    /// Toggle a prop's animation; with a loot table, a container.
+    pub const TOGGLE: u32 = 0x03;
 }
 
 /// A position in retail units with a rotation of `angle` radians about

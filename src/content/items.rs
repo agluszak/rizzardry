@@ -166,3 +166,25 @@ impl ItemCatalog {
         self.0.get(usize::from(id.0))
     }
 }
+
+/// A loot table: weighted items and how many to draw.
+#[derive(Clone, Debug, Reflect)]
+pub struct LootTable {
+    pub name: String,
+    /// Items and weights; weight 0 always drops.
+    pub entries: Vec<(ItemId, u8)>,
+    /// Draw only items fit for the party's level.
+    pub level_scaled: bool,
+    pub item_count: Dice,
+    pub gold: Dice,
+}
+
+#[derive(Asset, TypePath, Debug, Default)]
+pub struct LootTables(pub Vec<LootTable>);
+
+impl LootTables {
+    /// A table by name, ignoring case as retail does.
+    pub fn find(&self, name: &str) -> Option<&LootTable> {
+        self.0.iter().find(|table| table.name.eq_ignore_ascii_case(name))
+    }
+}
