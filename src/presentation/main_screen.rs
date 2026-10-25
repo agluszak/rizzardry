@@ -525,24 +525,44 @@ pub struct RadarRim;
 #[derive(Component)]
 pub struct RadarBlips;
 
-/// Retail `g_radar_blip_colors`, by class: dim, level and bright, for
-/// things more than 3 m below, within 3 m of, and above the party. Retail
+/// One class of radar blip's colours (retail `g_radar_blip_colors`); retail
 /// has three more classes (friendly, unseen, missile) not drawn yet.
-const NEUTRAL_BLIPS: [Color; 3] =
-    [Color::srgb(0.5, 0.5, 0.0), Color::srgb(0.7, 0.7, 0.0), Color::srgb(1.0, 1.0, 0.0)];
-const HOSTILE_BLIPS: [Color; 3] =
-    [Color::srgb(0.5, 0.0, 0.0), Color::srgb(0.7, 0.0, 0.0), Color::srgb(1.0, 0.0, 0.0)];
-const ITEM_BLIPS: [Color; 3] =
-    [Color::srgb(0.5, 0.5, 0.5), Color::srgb(0.7, 0.7, 0.7), Color::srgb(1.0, 1.0, 1.0)];
+#[derive(Clone, Copy)]
+struct BlipColours {
+    /// More than 3 m below the party.
+    below: Color,
+    /// Within 3 m of the party's height.
+    level: Color,
+    /// More than 3 m above the party.
+    above: Color,
+}
 
-/// Which of a class's colours a blip `height` metres above the party takes.
-fn blip_shade(class: [Color; 3], height: f32) -> Color {
-    match height {
-        h if h.abs() < 3.0 => class[1],
-        h if h > 0.0 => class[2],
-        _ => class[0],
+impl BlipColours {
+    /// The colour for a blip `height` metres above the party.
+    fn at(self, height: f32) -> Color {
+        match height {
+            h if h.abs() < 3.0 => self.level,
+            h if h > 0.0 => self.above,
+            _ => self.below,
+        }
     }
 }
+
+const NEUTRAL_BLIPS: BlipColours = BlipColours {
+    below: Color::srgb(0.5, 0.5, 0.0),
+    level: Color::srgb(0.7, 0.7, 0.0),
+    above: Color::srgb(1.0, 1.0, 0.0),
+};
+const HOSTILE_BLIPS: BlipColours = BlipColours {
+    below: Color::srgb(0.5, 0.0, 0.0),
+    level: Color::srgb(0.7, 0.0, 0.0),
+    above: Color::srgb(1.0, 0.0, 0.0),
+};
+const ITEM_BLIPS: BlipColours = BlipColours {
+    below: Color::srgb(0.5, 0.5, 0.5),
+    level: Color::srgb(0.7, 0.7, 0.7),
+    above: Color::srgb(1.0, 1.0, 1.0),
+};
 
 /// Where a blip `delta` away from the party goes on the radar, for a party
 /// facing `yaw` (retail `PlaceRadarBlip`, zoomed out: 2 pixels at the
@@ -621,7 +641,7 @@ pub fn update_radar(
         let class = if hostile { HOSTILE_BLIPS } else { NEUTRAL_BLIPS };
         commands.spawn((
             absolute(blip_position(delta, body.yaw, false) - Vec2::ONE, Vec2::splat(2.0)),
-            BackgroundColor(blip_shade(class, delta.y)),
+            BackgroundColor(class.at(delta.y)),
             Pickable::IGNORE,
             ChildOf(layer),
         ));
@@ -656,12 +676,12 @@ pub fn update_radar(
             }
             known.seen.insert(entity);
         }
-        // Retail makes a find's blip glow between the class's dim and
-        // bright colours; here it shows the bright one.
+        // Retail makes a find's blip glow between `below` and `above`;
+        // here it shows `above`.
         let colour = if known.lit.contains_key(&entity) {
-            ITEM_BLIPS[2]
+            ITEM_BLIPS.above
         } else {
-            blip_shade(ITEM_BLIPS, delta.y)
+            ITEM_BLIPS.at(delta.y)
         };
         commands.spawn((
             absolute(blip_position(delta, body.yaw, true) - Vec2::ONE, Vec2::splat(2.0)),
