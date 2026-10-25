@@ -46,7 +46,7 @@ pub fn draw_formation(
     mut boards: Query<(Entity, &mut FormationBoard)>,
 ) {
     let Ok((node, mut board)) = boards.single_mut() else { return };
-    let places: Vec<_> = (0..roster.0.len()).map(|slot| formation.place_of(slot)).collect();
+    let places: Vec<_> = roster.0.iter().map(|&member| formation.place_of(member)).collect();
     if board.drawn.as_ref() == Some(&places) {
         return;
     }

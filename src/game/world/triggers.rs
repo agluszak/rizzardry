@@ -336,6 +336,7 @@ pub struct DeviceOperations<'w, 's> {
     party: ResMut<'w, PartyInventory>,
     members: Query<'w, 's, &'static mut Character>,
     roster: Res<'w, PartyRoster>,
+    formation: ResMut<'w, crate::game::party::formation::Formation>,
     clock: Res<'w, GameClock>,
 }
 
@@ -677,7 +678,12 @@ impl<'w, 's> DeviceOperations<'w, 's> {
                 continue;
             }
             let mut member = self.members.get_mut(*entity).unwrap();
-            let amount = member.damage(self.rng.roll(dice));
+            let amount = crate::game::party::damage_member(
+                *entity,
+                &mut member,
+                &mut self.formation,
+                self.rng.roll(dice),
+            );
             self.effects.write(TriggerEffect::Hurt { member: member.name.clone(), amount });
         }
     }
@@ -851,6 +857,7 @@ mod tests {
             world.init_resource::<PartyInventory>();
             world.init_resource::<ItemIds>();
             world.init_resource::<PartyRoster>();
+            world.init_resource::<crate::game::party::formation::Formation>();
             world.insert_resource(GameClock::at(0));
             world.insert_resource(GameRng::seeded(5));
             let items = world.resource_mut::<Assets<ItemCatalog>>().add(ItemCatalog::default());
@@ -941,6 +948,7 @@ mod tests {
                 .spawn(Character::new(name, Race::Human, Gender::Male, Profession::Fighter))
                 .id();
             self.world.resource_mut::<PartyRoster>().0.insert(member);
+            self.world.resource_mut::<crate::game::party::formation::Formation>().seat(member);
             self.members.push(member);
             member
         }
@@ -1504,5 +1512,37 @@ mod tests {
         assert!(level.operations.get_mut(&mut level.world).unwrap().take_party_move().is_none());
         assert!(level.run("PORTAL").0);
         assert!(level.operations.get_mut(&mut level.world).unwrap().take_party_move().is_some());
+    }
+    #[test]
+    fn lethal_trigger_damage_removes_formation_seats_synchronously() {
+        use crate::game::party::formation::Formation;
+        let mut level = Scenario::new(
+            vec![trigger(
+                "TRAP",
+                TriggerAction::HurtParty(Dice { count: 0, sides: 0, base: 1000 }),
+            )],
+            &[],
+            LevelScript::None,
+        );
+        let member = level.members[0];
+        assert!(level.world.resource::<Formation>().row_of(member).is_some());
+        assert!(level.run("TRAP").0);
+        assert!(level.world.get::<Character>(member).unwrap().is_dead());
+        assert!(level.world.resource::<Formation>().row_of(member).is_none());
+    }
+    #[test]
+    fn nonlethal_trigger_damage_does_not_mark_formation_changed() {
+        use crate::game::party::formation::Formation;
+        let mut level = Scenario::new(
+            vec![trigger("TRAP", TriggerAction::HurtParty(Dice { count: 0, sides: 0, base: 1 }))],
+            &[],
+            LevelScript::None,
+        );
+        let member = level.members[0];
+        let place = level.world.resource::<Formation>().place_of(member);
+        level.world.clear_trackers();
+        assert!(level.run("TRAP").0);
+        assert_eq!(level.world.resource::<Formation>().place_of(member), place);
+        assert!(!level.world.get_resource_ref::<Formation>().unwrap().is_changed());
     }
 }

@@ -66,6 +66,7 @@ pub fn slots(closed: bool) -> impl SceneList {
 /// What one party slot shows of its member.
 #[derive(Clone, Debug, PartialEq)]
 struct SlotView {
+    member: Entity,
     portrait: String,
     race: Race,
     dead: bool,
@@ -84,6 +85,7 @@ struct SlotView {
 
 impl SlotView {
     fn of(
+        member: Entity,
         character: &Character,
         carried: Option<&Carried>,
         catalog: Option<&ItemCatalog>,
@@ -99,6 +101,7 @@ impl SlotView {
             _ => 0,
         };
         SlotView {
+            member,
             portrait: character.portrait.clone(),
             race: character.race,
             dead: character.is_dead(),
@@ -202,11 +205,11 @@ pub fn draw_party(
     );
     for (overlay, mut party_slot) in &mut slots {
         let slot = party_slot.slot;
-        let view = roster
-            .0
-            .get_index(slot)
-            .and_then(|&m| members.get(m).ok())
-            .map(|(c, carried)| SlotView::of(c, carried, catalog, slot == selected.0));
+        let view = roster.0.get_index(slot).and_then(|&member| {
+            members.get(member).ok().map(|(c, carried)| {
+                SlotView::of(member, c, carried, catalog, selected.member(&roster) == Some(member))
+            })
+        });
         if party_slot.drawn.as_ref() == Some(&view) {
             continue;
         }
@@ -344,7 +347,7 @@ pub fn draw_party(
                 (Vec2::new(if left { 0.0 } else { 617.0 }, y), Vec2::new(22.0, 85.0))
             };
             let node = absolute(at, size);
-            parts.push(Box::new(bsn! { node SlotButton({slot}) on(press) }));
+            parts.push(Box::new(bsn! { node SlotButton({view.member}) on(press) }));
         }
         commands
             .entity(overlay)
@@ -361,15 +364,15 @@ pub fn draw_party(
     }
 }
 
-#[derive(Component, Clone, Copy, Default)]
-struct SlotButton(usize);
+#[derive(Component, Clone, Copy, FromTemplate)]
+struct SlotButton(Entity);
 
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 /// The last click on a slot and when, for double clicks; the buttons are
 /// drawn again as a click selects.
 #[derive(Resource, Default)]
-pub struct LastSlotClick(Option<(usize, Duration)>);
+pub struct LastSlotClick(Option<(Entity, Duration)>);
 
 /// With an item in hand, a click gives it to the member; otherwise it
 /// selects them, and a double click opens their review screen.
@@ -391,12 +394,13 @@ fn press(
     ),
     mut screen: ResMut<crate::game::screen::Screen>,
 ) {
-    let Ok(&SlotButton(slot)) = buttons.get(click.entity) else { return };
+    let Ok(&SlotButton(member)) = buttons.get(click.entity) else { return };
+    if !roster.0.contains(&member) {
+        return;
+    }
     if party.held.is_some() {
         let Some(catalog) = data.and_then(|d| catalogs.get(&d.items)) else { return };
-        let Some(Ok((character, mut carried))) =
-            roster.0.get_index(slot).map(|&m| members.get_mut(m))
-        else {
+        let Ok((character, mut carried)) = members.get_mut(member) else {
             return;
         };
         let item = party
@@ -420,14 +424,12 @@ fn press(
         }
         return;
     }
-    selected.0 = slot;
+    selected.0 = Some(member);
     let now = time.elapsed();
-    if last_click.0.is_some_and(|(s, at)| s == slot && now - at < DOUBLE_CLICK)
-        && let Some(&member) = roster.0.get_index(slot)
-    {
+    if last_click.0.is_some_and(|(s, at)| s == member && now - at < DOUBLE_CLICK) {
         crate::presentation::inventory::open(&mut commands, &mut screen, member);
     }
-    last_click.0 = Some((slot, now));
+    last_click.0 = Some((member, now));
 }
 
 /// A splat playing over a member's portrait.

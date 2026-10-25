@@ -61,7 +61,15 @@ impl Plugin for MainScreenPlugin {
 
 /// The member the buttons and keys act for (retail's selected character).
 #[derive(Resource, Debug, Default, Clone, Copy, PartialEq)]
-pub struct SelectedMember(pub usize);
+pub struct SelectedMember(pub Option<Entity>);
+
+impl SelectedMember {
+    /// An explicit selection follows its actor through roster reordering.
+    /// With no current selection, display the first remaining member.
+    pub fn member(&self, roster: &crate::game::party::roster::PartyRoster) -> Option<Entity> {
+        self.0.filter(|m| roster.0.contains(m)).or_else(|| roster.0.first().copied())
+    }
+}
 
 #[derive(Resource)]
 pub struct MainScreenArt {

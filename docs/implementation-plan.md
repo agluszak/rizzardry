@@ -275,6 +275,11 @@ Work:
   engagement separately from the party Battle.
 - Implement accepted choices, initiative and one executing action; AI produces
   choices through the same rule boundary as player input.
+  *Weapon-attack slice implemented:* orders belong to actor components; round
+  work stores actor and weapon identities, initiative and attack count. Execution
+  revalidates membership, ability, weapon presence and reach. Edits apply to the
+  next round, including defending and its recovery. Formation membership changes
+  settle at recruitment/removal/death; no continuous repair is scheduled.
 - Implement targeting, cast validation, accepted consumption, projectile/effect
   delivery, resistance/damage/conditions and immediate death consequences.
 - Include the area-bomb walkthrough, fizzle/backfire consumption and a target

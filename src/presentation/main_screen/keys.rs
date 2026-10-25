@@ -9,7 +9,8 @@ use bevy::prelude::*;
 use bevy_enhanced_input::prelude::*;
 
 use super::{ScreenLayout, SelectedMember};
-use crate::game::combat::{Battle, CombatSettings, Order, PartyOrders, StartRound};
+use crate::game::combat::{Battle, CombatSettings, StartRound};
+use crate::game::party::Order;
 use crate::game::party::roster::PartyRoster;
 use crate::game::screen::Screen;
 use crate::presentation::notices::{TextLog, VISIBLE_LINES};
@@ -158,7 +159,7 @@ fn select_member(
     if let Ok(MemberKey(slot)) = slots.get(key.action)
         && *slot < roster.0.len()
     {
-        selected.0 = *slot;
+        selected.0 = roster.0.get_index(*slot).copied();
     }
 }
 
@@ -167,10 +168,15 @@ fn set_order(
     orders_by_key: Query<&OrderKey>,
     battle: Option<Res<Battle>>,
     selected: Res<SelectedMember>,
-    mut orders: ResMut<PartyOrders>,
+    mut orders: Query<&mut Order>,
+    roster: Res<PartyRoster>,
 ) {
     if let (Ok(OrderKey(order)), Some(_)) = (orders_by_key.get(key.action), battle) {
-        orders.set(selected.0, *order);
+        if let Some(member) = selected.member(&roster)
+            && let Ok(mut current) = orders.get_mut(member)
+        {
+            current.set_if_neq(*order);
+        }
     }
 }
 
@@ -238,14 +244,28 @@ mod tests {
     fn number_keys_select_members_only_while_no_other_screen_is_up() {
         let mut app = app();
         let members: Vec<Entity> = (0..3).map(|_| app.world_mut().spawn_empty().id()).collect();
-        app.world_mut().resource_mut::<PartyRoster>().0.extend(members);
+        app.world_mut().resource_mut::<PartyRoster>().0.extend(members.iter().copied());
         tap(&mut app, &[KeyCode::Digit3]);
-        assert_eq!(app.world().resource::<SelectedMember>().0, 2);
+        assert_eq!(app.world().resource::<SelectedMember>().0, Some(members[2]));
+        app.world_mut().resource_mut::<PartyRoster>().0 = members.iter().rev().copied().collect();
+        assert_eq!(
+            app.world().resource::<SelectedMember>().member(app.world().resource::<PartyRoster>()),
+            Some(members[2]),
+            "selection follows the actor after reordering"
+        );
         tap(&mut app, &[KeyCode::Digit6]);
-        assert_eq!(app.world().resource::<SelectedMember>().0, 2, "nobody in slot 6");
+        assert_eq!(
+            app.world().resource::<SelectedMember>().0,
+            Some(members[2]),
+            "nobody in slot 6"
+        );
         *app.world_mut().resource_mut::<Screen>() = Screen::Inventory;
         app.update();
         tap(&mut app, &[KeyCode::Digit1]);
-        assert_eq!(app.world().resource::<SelectedMember>().0, 2, "the inventory is up");
+        assert_eq!(
+            app.world().resource::<SelectedMember>().0,
+            Some(members[2]),
+            "the inventory is up"
+        );
     }
 }

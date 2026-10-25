@@ -145,7 +145,7 @@ fn open_with_key(
     roster: Res<PartyRoster>,
     selected: Res<super::main_screen::SelectedMember>,
 ) {
-    if let Some(&member) = roster.0.get_index(selected.0).or(roster.0.first()) {
+    if let Some(member) = selected.member(&roster) {
         open(&mut commands, &mut screen, member);
     }
 }
@@ -609,7 +609,9 @@ fn click_cell(
             }
         }
         Cell::Member(slot) => {
-            let Some(index) = roster.0.get_index_of(&screen.member) else { return };
+            if !roster.0.contains(&screen.member) {
+                return;
+            }
             let Ok((character, mut carried)) = members.get_mut(screen.member) else { return };
             let target = match slot {
                 Slot::Equipment(equip) => carried.worn(equip).cloned(),
@@ -619,13 +621,13 @@ fn click_cell(
                 (Some(held), Some(target))
                     if held.item == target.item && matches!(held.quantity, Quantity::Stack(_)) =>
                 {
-                    let location = ItemLocation::Member(index, slot);
+                    let location = ItemLocation::Member(screen.member, slot);
                     match party.merge_held(Some(&mut carried), location, catalog) {
                         0 => Err(Refusal::DoesNotFit),
                         _ => Ok(()),
                     }
                 }
-                _ => party.swap_with_hand(character, &mut carried, index, slot, catalog),
+                _ => party.swap_with_hand(character, &mut carried, screen.member, slot, catalog),
             }
         }
     };

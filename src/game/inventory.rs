@@ -223,10 +223,10 @@ pub enum Slot {
     Backpack(usize),
 }
 
-/// Where an item is: on a member (by party position) or in the pool.
+/// Where an item is: on a member (by entity) or in the pool.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ItemLocation {
-    Member(usize, Slot),
+    Member(Entity, Slot),
     Pool(usize),
 }
 
@@ -644,7 +644,7 @@ impl PartyInventory {
         &mut self,
         character: &Character,
         carried: &mut Carried,
-        member: usize,
+        member: Entity,
         slot: Slot,
         catalog: &ItemCatalog,
     ) -> Result<(), Refusal> {
@@ -974,25 +974,28 @@ mod tests {
             held: Some(Held { item: item(&mut ids, 4, Quantity::One), origin: None }),
             ..default()
         };
-        party.swap_with_hand(&wearer, &mut carried, 0, head, &catalog).unwrap();
+        party.swap_with_hand(&wearer, &mut carried, Entity::PLACEHOLDER, head, &catalog).unwrap();
         assert!(party.held.is_none());
         assert_eq!(
-            party.swap_with_hand(&wearer, &mut carried, 0, head, &catalog),
+            party.swap_with_hand(&wearer, &mut carried, Entity::PLACEHOLDER, head, &catalog),
             Err(Refusal::Cursed)
         );
         carried.equipment[EquipSlot::Head].as_mut().unwrap().curse_released = true;
-        party.swap_with_hand(&wearer, &mut carried, 0, head, &catalog).unwrap();
+        party.swap_with_hand(&wearer, &mut carried, Entity::PLACEHOLDER, head, &catalog).unwrap();
         assert!(!party.held.as_ref().unwrap().item.curse_released, "moving loses the release");
         // Something that does not belong there is refused.
         let feet = Slot::Equipment(EquipSlot::Feet);
         assert_eq!(
-            party.swap_with_hand(&wearer, &mut carried, 0, feet, &catalog),
+            party.swap_with_hand(&wearer, &mut carried, Entity::PLACEHOLDER, feet, &catalog),
             Err(Refusal::DoesNotFit)
         );
         // Put it back on: the curse holds again, but not on the dead.
-        party.swap_with_hand(&wearer, &mut carried, 0, head, &catalog).unwrap();
+        party.swap_with_hand(&wearer, &mut carried, Entity::PLACEHOLDER, head, &catalog).unwrap();
         wearer.hp = 0;
-        assert_eq!(party.swap_with_hand(&wearer, &mut carried, 0, head, &catalog), Ok(()));
+        assert_eq!(
+            party.swap_with_hand(&wearer, &mut carried, Entity::PLACEHOLDER, head, &catalog),
+            Ok(())
+        );
     }
 
     #[test]
@@ -1035,5 +1038,38 @@ mod tests {
         party.put_away_held(&mut carried, &catalog);
         assert!(party.held.is_none());
         assert_eq!(carried.backpack[0].as_ref().map(|i| i.id), Some(first));
+    }
+    #[test]
+    fn held_item_provenance_follows_its_actor_when_roster_positions_change() {
+        use crate::game::party::{formation::Formation, roster::PartyRoster};
+        let mut world = World::new();
+        let first = world.spawn_empty().id();
+        let second = world.spawn_empty().id();
+        let replacement = world.spawn_empty().id();
+        let mut roster = PartyRoster([first, second].into_iter().collect());
+        let mut formation = Formation::default();
+        formation.seat(first);
+        formation.seat(second);
+        let (catalog, mut ids) = (catalog(), ItemIds::default());
+        let character = Character::new(
+            "First",
+            crate::game::characters::Race::Human,
+            crate::game::characters::Gender::Male,
+            crate::game::characters::Profession::Fighter,
+        );
+        let mut carried = Carried::default();
+        carried.backpack[0] = Some(item(&mut ids, 1, Quantity::One));
+        let mut inventory = PartyInventory::default();
+        let location = Slot::Backpack(0);
+        inventory.swap_with_hand(&character, &mut carried, first, location, &catalog).unwrap();
+        roster.0 = [second, first].into_iter().collect();
+        assert!(roster.remove(first, &mut formation));
+        roster.0.insert(replacement);
+        assert_eq!(
+            inventory.held.as_ref().unwrap().origin,
+            Some(ItemLocation::Member(first, location))
+        );
+        assert_eq!(roster.0.get_index(1), Some(&replacement));
+        assert!(carried.backpack[0].is_none());
     }
 }

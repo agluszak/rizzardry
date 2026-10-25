@@ -19,8 +19,11 @@ use crate::content::items::{Dice, ItemCatalog, ItemId, LootTables};
 use crate::content::species::{MonsterCatalog, Reach};
 use crate::game::characters::{Character, Condition};
 use crate::game::data::GameData;
-use crate::game::inventory::{Carried, ItemIds, PartyInventory, make_item};
+use crate::game::inventory::{
+    Carried, EquipSlot, ItemIds, ItemInstanceId, PartyInventory, make_item,
+};
 use crate::game::loot;
+use crate::game::party::Order;
 use crate::game::party::body::PartyBody;
 use crate::game::party::formation::{self, Formation, Row};
 use crate::game::party::recovery;
@@ -40,7 +43,6 @@ impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<CombatNews>()
             .add_message::<StartRound>()
-            .init_resource::<PartyOrders>()
             .init_resource::<CombatSettings>()
             .add_systems(
                 Update,
@@ -70,34 +72,6 @@ const ROUND_MS: u64 = 120_000;
 /// Rounds in which nobody could attack before the fight peters out.
 const PASSIVE_ROUNDS: u32 = 2;
 
-/// What a member does in a round (retail's slot action; `ResetPartySlotRow`
-/// starts everyone on Attack).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Order {
-    #[default]
-    Attack,
-    /// No attack; +2 armour, and stamina back at the round's end.
-    Defend,
-}
-
-/// Each member's order by party slot; a slot without one attacks. Orders
-/// outlast the fight, as retail remembers them.
-#[derive(Resource, Debug, Default, Clone, PartialEq)]
-pub struct PartyOrders(pub Vec<Order>);
-
-impl PartyOrders {
-    pub fn of(&self, slot: usize) -> Order {
-        self.0.get(slot).copied().unwrap_or_default()
-    }
-
-    pub fn set(&mut self, slot: usize, order: Order) {
-        if self.0.len() <= slot {
-            self.0.resize(slot + 1, Order::Attack);
-        }
-        self.0[slot] = order;
-    }
-}
-
 /// Retail's combat settings (`ResetGameplaySettings`): phased by default,
 /// each round started by the player.
 #[derive(Resource, Debug, Default)]
@@ -117,8 +91,25 @@ struct Turn {
     attacks_left: u32,
 }
 
+/// Accepted round work identifies the actor and weapon, never a roster slot.
+/// Order, weapon identity, initiative and attack count are locked at acceptance.
+/// Execution revalidates membership, ability, weapon presence and current reach;
+/// damage profiles and fatigue use the actor's live stats and accepted weapon.
+#[derive(Clone, Copy, Debug)]
+enum AcceptedAction {
+    Attack { weapon: Option<ItemInstanceId> },
+    Defend,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PartyTurn {
+    actor: Entity,
+    action: AcceptedAction,
+    turn: Turn,
+}
+
 /// The party's fight. Exists only while there is one.
-#[derive(Resource, Debug)]
+#[derive(Resource, Debug, Default)]
 pub struct Battle {
     pub round: u32,
     /// A round is being played out; between rounds a phased fight waits for
@@ -126,7 +117,7 @@ pub struct Battle {
     pub executing: bool,
     /// The phase being played, 1..=100; 0 between rounds.
     step: u8,
-    party: Vec<Turn>,
+    party: Vec<PartyTurn>,
     /// The monsters in the fight, in a stable order (by location id).
     monsters: Vec<(Entity, Turn)>,
     /// Experience from kills, shared at the end.
@@ -141,6 +132,10 @@ pub struct Battle {
 }
 
 impl Battle {
+    fn defends(&self, actor: Entity) -> bool {
+        self.party.iter().any(|p| p.actor == actor && matches!(p.action, AcceptedAction::Defend))
+    }
+
     /// Whether a monster is in the fight.
     pub fn fights(&self, monster: Entity) -> bool {
         self.monsters.iter().any(|&(m, _)| m == monster)
@@ -198,6 +193,10 @@ fn able(member: &Character) -> bool {
     !member.is_dead() && member.worst_condition().is_none_or(|c| c < Condition::Asleep)
 }
 
+fn monster_can_attack(monster: &Monster) -> bool {
+    !monster.is_dead() && !monster.conditions.iter().any(|&(c, _)| c > Condition::Webbed)
+}
+
 /// How far a monster is from the party (retail `GetPointDistanceToPlayer`):
 /// from its feet to the point 1000 world units (2 m) under the party's eye,
 /// less both bodies' alternate radii (its fight radius, the party's 1 m),
@@ -231,20 +230,22 @@ pub fn sight_threshold(
 }
 
 /// Where the party stands and faces, and its formation, as reach needs them.
-struct PartyView<'a> {
+struct PartyView {
     eye: Vec3,
     yaw: f32,
-    formation: &'a Formation,
-    orders: &'a PartyOrders,
 }
 
-impl PartyView<'_> {
-    /// Whether the member in `slot` reaches, or is reached by, a monster at
-    /// `at` with `reach` across `distance`: the formation rows between them
-    /// shorten close reach (retail `CloseFormationGap`).
-    fn reaches(&self, slot: usize, at: Vec3, reach: Reach, distance: f32) -> bool {
+impl PartyView {
+    fn reaches(
+        &self,
+        formation: &Formation,
+        member: Entity,
+        at: Vec3,
+        reach: Reach,
+        distance: f32,
+    ) -> bool {
         let side = formation::quadrant(self.eye, self.yaw, at);
-        self.formation.reach(slot, side, reach).is_some_and(|r| distance <= r.metres())
+        formation.reach(member, side, reach).is_some_and(|r| distance <= r.metres())
     }
 }
 
@@ -304,10 +305,7 @@ pub fn start_battle(
         .iter()
         .filter(|(_, monster, at, walker)| {
             let Some(kind) = catalog.0.get(monster.species as usize) else { return false };
-            if kind.npc || monster.is_dead() {
-                return false;
-            }
-            if monster.conditions.iter().any(|&(c, _)| c > Condition::Webbed) {
+            if kind.npc || !monster_can_attack(monster) {
                 return false;
             }
             let feet = feet(at.translation(), *walker);
@@ -347,17 +345,8 @@ pub fn start_battle(
         body.face(nearest - party_eye);
     }
     commands.insert_resource(Battle {
-        round: 0,
-        executing: false,
-        step: 0,
-        party: vec![Turn::default(); roster.0.len()],
         monsters: joined.into_iter().map(|(_, e)| (e, Turn::default())).collect(),
-        experience: 0,
-        kills: 0,
-        passive_rounds: 0,
-        attacked_this_round: false,
-        approaching: false,
-        wait: Timer::default(),
+        ..default()
     });
     news.write(CombatNews::Began);
     detect.write(crate::game::world::identify::DetectGroups);
@@ -374,7 +363,7 @@ pub fn run_battle(
     mut members: Query<(&mut Character, &Carried)>,
     mut monsters: Query<(&mut Monster, &GlobalTransform, Option<&Walker>)>,
     party_body: Query<(&Position, &PartyBody)>,
-    formation: Res<Formation>,
+    mut formation: ResMut<Formation>,
     mut purse: ResMut<PartyInventory>,
     data: Option<Res<GameData>>,
     (items, species, tables, mut ids): (
@@ -387,7 +376,7 @@ pub fn run_battle(
     (mut starts, settings, orders, groups, mut detect, levels): (
         MessageReader<StartRound>,
         Res<CombatSettings>,
-        Res<PartyOrders>,
+        Query<&Order>,
         Query<&MonsterGroups>,
         MessageWriter<DetectGroups>,
         Query<Entity, With<crate::game::world::level::Level>>,
@@ -404,12 +393,7 @@ pub fn run_battle(
         return;
     };
     let Ok((position, body)) = party_body.single() else { return };
-    let party = PartyView {
-        eye: PartyBody::eye(position),
-        yaw: body.yaw,
-        formation: &formation,
-        orders: &orders,
-    };
+    let party = PartyView { eye: PartyBody::eye(position), yaw: body.yaw };
     if !battle.wait.tick(time.delta()).is_finished() {
         return;
     }
@@ -427,9 +411,16 @@ pub fn run_battle(
         // A new round: the party's phases, then the monsters'.
         battle.round += 1;
         battle.attacked_this_round = false;
-        for (slot, &member) in roster.0.iter().enumerate() {
+        battle.party.clear();
+        for &member in &roster.0 {
             let Ok((character, carried)) = members.get(member) else { continue };
-            battle.party[slot] = if orders.of(slot) == Order::Attack && able(character) {
+            let action = match orders.get(member).copied().unwrap_or_default() {
+                Order::Attack => AcceptedAction::Attack {
+                    weapon: carried.worn(EquipSlot::Primary).map(|i| i.id),
+                },
+                Order::Defend => AcceptedAction::Defend,
+            };
+            let turn = if matches!(action, AcceptedAction::Attack { .. }) && able(character) {
                 let hand = primary_hand(character, carried, items);
                 Turn {
                     phase: phase(&mut rng, character_initiative(character, &hand)),
@@ -438,6 +429,7 @@ pub fn run_battle(
             } else {
                 Turn::default()
             };
+            battle.party.push(PartyTurn { actor: member, action, turn });
         }
         for index in 0..battle.monsters.len() {
             let entity = battle.monsters[index].0;
@@ -455,7 +447,7 @@ pub fn run_battle(
         battle.step = 1;
     }
 
-    // The next actor due: party slots first, then monsters in order.
+    // The next actor due: accepted party order first, then monsters in order.
     loop {
         let step = battle.step;
         if step > 100 {
@@ -464,7 +456,6 @@ pub fn run_battle(
                 &mut battle,
                 &mut clock,
                 &mut rng,
-                &orders,
                 &roster,
                 &mut members,
                 &monsters,
@@ -473,11 +464,14 @@ pub fn run_battle(
             );
             return;
         }
-        if let Some(slot) = battle.party.iter().position(|t| t.phase == step) {
-            let member = roster.0[slot];
-            let able_now = members.get(member).is_ok_and(|(c, _)| able(c));
+        if let Some(index) = battle.party.iter().position(|p| p.turn.phase == step) {
+            let work = battle.party[index];
+            let member = work.actor;
+            let able_now = roster.0.contains(&member) && members.get(member).is_ok_and(|(c, carried)| {
+                able(c) && matches!(work.action, AcceptedAction::Attack { weapon } if weapon == carried.worn(EquipSlot::Primary).map(|i| i.id))
+            });
             if !able_now {
-                battle.party[slot] = Turn::default();
+                battle.party[index].turn = Turn::default();
                 continue;
             }
             // Retail `GetAveragePartyLevel`: what loot tables scale by.
@@ -486,12 +480,13 @@ pub fn run_battle(
             let party_level = levels_sum / roster.0.len().max(1) as u32;
             let loot = member_acts(
                 &mut battle,
-                slot,
+                index,
                 member,
                 &mut rng,
                 &mut members,
                 &mut monsters,
                 &party,
+                &formation,
                 items,
                 species,
                 groups,
@@ -512,7 +507,7 @@ pub fn run_battle(
         }
         if let Some(index) = battle.monsters.iter().position(|(_, t)| t.phase == step) {
             let entity = battle.monsters[index].0;
-            if monsters.get(entity).is_ok_and(|(m, ..)| m.is_dead()) {
+            if !monsters.get(entity).is_ok_and(|(m, ..)| monster_can_attack(m)) {
                 battle.monsters[index].1 = Turn::default();
                 continue;
             }
@@ -524,6 +519,7 @@ pub fn run_battle(
                 &mut members,
                 &monsters,
                 &party,
+                &mut formation,
                 items,
                 species,
                 groups,
@@ -552,12 +548,13 @@ fn next_phase(step: u8, attacks_left: u32) -> u8 {
 
 fn member_acts(
     battle: &mut Battle,
-    slot: usize,
+    index: usize,
     member: Entity,
     rng: &mut GameRng,
     members: &mut Query<(&mut Character, &Carried)>,
     monsters: &mut Query<(&mut Monster, &GlobalTransform, Option<&Walker>)>,
     party: &PartyView,
+    formation: &Formation,
     items: &ItemCatalog,
     species: &MonsterCatalog,
     groups: &MonsterGroups,
@@ -575,7 +572,9 @@ fn member_acts(
         .filter_map(|&(entity, _)| {
             let (monster, at, walker) = monsters.get(entity).ok()?;
             let distance = distance_to_party(party.eye, monster, feet(at.translation(), walker));
-            if monster.is_dead() || !party.reaches(slot, at.translation(), hand.reach, distance) {
+            if monster.is_dead()
+                || !party.reaches(formation, member, at.translation(), hand.reach, distance)
+            {
                 return None;
             }
             let worst = monster.conditions.iter().map(|&(c, _)| c).max();
@@ -584,14 +583,14 @@ fn member_acts(
             let side = formation::quadrant(party.eye, party.yaw, at.translation());
             let in_reach = has_attack
                 && (side == Row::Rear
-                    || (!party.formation.occupied(side) && party.formation.occupied(Row::Center)));
+                    || (!formation.occupied(side) && formation.occupied(Row::Center)));
             Some(((worst, !in_reach, distance), entity))
         })
         .min_by(|a, b| a.0.0.cmp(&b.0.0).then(a.0.1.cmp(&b.0.1)).then(a.0.2.total_cmp(&b.0.2)))
         .map(|(_, entity)| entity);
-    let turn = &mut battle.party[slot];
+    let turn = &mut battle.party[index].turn;
     let Some(target) = target else {
-        // Nobody in reach: defend for the rest of the round.
+        // No target in reach: discard the remaining attacks this round.
         *turn = Turn::default();
         return None;
     };
@@ -670,6 +669,7 @@ fn monster_acts(
     members: &mut Query<(&mut Character, &Carried)>,
     monsters: &Query<(&mut Monster, &GlobalTransform, Option<&Walker>)>,
     party: &PartyView,
+    formation: &mut ResMut<Formation>,
     items: &ItemCatalog,
     species: &MonsterCatalog,
     groups: &MonsterGroups,
@@ -683,11 +683,13 @@ fn monster_acts(
     // Every (attack, mode, member) that reaches is equally likely.
     let mut candidates = vec![];
     for (a, attack) in kind.attacks.iter().enumerate() {
-        for (slot, &member) in roster.0.iter().enumerate() {
+        for &member in &roster.0 {
             let Ok((character, _)) = members.get(member) else { continue };
-            if able(character) && party.reaches(slot, at.translation(), attack.reach, distance) {
+            if able(character)
+                && party.reaches(formation, member, at.translation(), attack.reach, distance)
+            {
                 for mode in attack.modes {
-                    candidates.push((a, mode, slot, member));
+                    candidates.push((a, mode, member));
                 }
             }
         }
@@ -698,14 +700,14 @@ fn monster_acts(
         return;
     }
     battle.attacked_this_round = true;
-    let (a, mode, slot, member) = candidates[rng.below(candidates.len() as u32) as usize];
+    let (a, mode, member) = candidates[rng.below(candidates.len() as u32) as usize];
     let attack = &kind.attacks[a];
     // Retail draws for the mode again, from just the one chosen.
     let mode = attack::choose_mode(rng, EnumSet::only(mode));
     let Ok((mut character, carried)) = members.get_mut(member) else { return };
     let mut armour = armour(&character, carried, items);
     // Defending is worth 2 (`characters.md` §4.8, component 10).
-    if party.orders.of(slot) == Order::Defend {
+    if battle.defends(member) {
         armour.total += 2;
         armour.by_location.values_mut().for_each(|a| *a += 2);
     }
@@ -721,7 +723,8 @@ fn monster_acts(
         match monster_swing(rng, kind, attack, mode, &character, &armour) {
             Swing::Hit(damage) => {
                 hits += 1;
-                dealt += character.damage(damage);
+                dealt +=
+                    crate::game::party::damage_member(member, &mut character, formation, damage);
                 if character.is_dead() {
                     break;
                 }
@@ -745,7 +748,6 @@ fn end_round(
     battle: &mut Battle,
     clock: &mut GameClock,
     rng: &mut GameRng,
-    orders: &PartyOrders,
     roster: &PartyRoster,
     members: &mut Query<(&mut Character, &Carried)>,
     monsters: &Query<(&mut Monster, &GlobalTransform, Option<&Walker>)>,
@@ -768,8 +770,10 @@ fn end_round(
     // Defenders get their breath back: 2d(max(1, max stamina / 20 - 1))
     // (retail `AdvanceCombatRound`); the Fighter trait's scaling is not
     // modelled.
-    for (slot, &member) in roster.0.iter().enumerate() {
-        if orders.of(slot) == Order::Defend
+    for work in &battle.party {
+        let member = work.actor;
+        if matches!(work.action, AcceptedAction::Defend)
+            && roster.0.contains(&member)
             && let Ok((mut character, _)) = members.get_mut(member)
             && !character.is_dead()
         {
@@ -828,5 +832,228 @@ mod tests {
         assert_eq!(next_phase(10, 1), 55);
         assert_eq!(next_phase(55, 1), 77);
         assert_eq!(next_phase(100, 1), 100, "again at the same step");
+    }
+    /// Real round execution without perception, movement, rendering or UI.
+    fn round_app(defending: bool) -> (App, [Entity; 2]) {
+        use crate::content::characters::Skill;
+        use crate::content::items::{ItemDefinition, QuantityKind};
+        use crate::content::species::Species;
+        use crate::game::characters::{Gender, Profession, Race};
+        use crate::game::world::population::ScaledBody;
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::from_secs(1),
+            ))
+            .init_resource::<Assets<ItemCatalog>>()
+            .init_resource::<Assets<MonsterCatalog>>()
+            .init_resource::<Assets<LootTables>>()
+            .init_resource::<PartyRoster>()
+            .init_resource::<Formation>()
+            .init_resource::<PartyInventory>()
+            .init_resource::<ItemIds>()
+            .init_resource::<GameClock>()
+            .insert_resource(GameRng::seeded(5))
+            .init_resource::<CombatSettings>()
+            .add_message::<CombatNews>()
+            .add_message::<StartRound>()
+            .add_message::<DetectGroups>()
+            .add_systems(Update, run_battle);
+        app.world_mut()
+            .resource_mut::<Time<Virtual>>()
+            .set_max_delta(std::time::Duration::from_secs(2));
+        let weapons: Vec<_> = [100, 0]
+            .into_iter()
+            .enumerate()
+            .map(|(i, initiative)| ItemDefinition {
+                id: ItemId(i as u16),
+                name: format!("sword {i}"),
+                weapon_skill: Some(Skill::Sword),
+                reach: Reach::Touch,
+                damage: Dice { count: 0, sides: 0, base: 1 },
+                damage_bonus: initiative,
+                attack_modes: EnumSet::only(AttackMode::Swing),
+                quantity: QuantityKind::None,
+                ..default()
+            })
+            .collect();
+        let mut ids = ItemIds::default();
+        let mut equipment_rng = GameRng::seeded(0);
+        let mut members = Vec::new();
+        for (name, weapon) in ["A", "B"].into_iter().zip(&weapons) {
+            let character = Character::new(name, Race::Human, Gender::Male, Profession::Fighter);
+            let mut carried = Carried::default();
+            carried.equipment[EquipSlot::Primary] =
+                Some(make_item(weapon, &mut ids, &mut equipment_rng, false, true));
+            let order = if name == "B" && defending { Order::Defend } else { Order::Attack };
+            let entity = app.world_mut().spawn((character, carried, order)).id();
+            app.world_mut().resource_mut::<PartyRoster>().0.insert(entity);
+            app.world_mut().resource_mut::<Formation>().seat(entity);
+            members.push(entity);
+        }
+        let items = app.world_mut().resource_mut::<Assets<ItemCatalog>>().add(ItemCatalog(weapons));
+        let species =
+            app.world_mut().resource_mut::<Assets<MonsterCatalog>>().add(MonsterCatalog(vec![
+                Species { name: "Target".into(), generic_name: "Target".into(), ..default() },
+            ]));
+        let loot = app.world_mut().resource_mut::<Assets<LootTables>>().add(LootTables::default());
+        app.insert_resource(GameData { items, species, loot });
+        app.world_mut().spawn((PartyBody::default(), Position::default()));
+        let monster = app
+            .world_mut()
+            .spawn((
+                Monster {
+                    location: 0,
+                    group: 0,
+                    species: 0,
+                    hp: 10000,
+                    max_hp: 10000,
+                    stamina: 0,
+                    max_stamina: 0,
+                    conditions: vec![],
+                    model: default(),
+                    body: ScaledBody { scale: 1.0, radius: 1.0, eye_height: 1.0, speed: 0.0 },
+                },
+                GlobalTransform::from_translation(Vec3::NEG_Z),
+            ))
+            .id();
+        app.insert_resource(Battle { monsters: vec![(monster, Turn::default())], ..default() });
+        app.finish();
+        app.cleanup();
+        app.world_mut().write_message(StartRound);
+        (app, [members[0], members[1]])
+    }
+
+    fn attacks(app: &mut App) -> Vec<String> {
+        app.world_mut()
+            .resource_mut::<Messages<CombatNews>>()
+            .drain()
+            .filter_map(|n| match n {
+                CombatNews::Attack { attacker, .. } => Some(attacker),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn accepted_attacks_follow_actors_through_roster_reordering_and_order_edits() {
+        let (mut app, [a, b]) = round_app(false);
+        app.update();
+        assert_eq!(attacks(&mut app), ["A"]);
+        let a_place = app.world().resource::<Formation>().place_of(a);
+        let b_place = app.world().resource::<Formation>().place_of(b);
+        app.world_mut().resource_mut::<PartyRoster>().0 = [b, a].into_iter().collect();
+        app.world_mut().entity_mut(b).insert(Order::Defend);
+        app.update();
+        assert_eq!(
+            attacks(&mut app),
+            ["B"],
+            "editing the next order cannot retarget or replace accepted work"
+        );
+        assert_eq!(app.world().resource::<Formation>().place_of(a), a_place);
+        assert_eq!(app.world().resource::<Formation>().place_of(b), b_place);
+    }
+
+    #[test]
+    fn a_replacement_member_cannot_inherit_departed_actors_accepted_work() {
+        use crate::game::characters::{Gender, Profession, Race};
+        let (mut app, [a, b]) = round_app(false);
+        app.update();
+        assert_eq!(attacks(&mut app), ["A"]);
+        let replacement = app
+            .world_mut()
+            .spawn((
+                Character::new("Replacement", Race::Human, Gender::Male, Profession::Fighter),
+                Carried::default(),
+                Order::Attack,
+            ))
+            .id();
+        let mut params =
+            bevy::ecs::system::SystemState::<(ResMut<PartyRoster>, ResMut<Formation>)>::new(
+                app.world_mut(),
+            );
+        let (mut roster, mut formation) = params.get_mut(app.world_mut()).unwrap();
+        assert!(roster.remove(b, &mut formation));
+        roster.0.insert(replacement);
+        formation.seat(replacement);
+        assert_eq!(roster.0.get_index(0), Some(&a));
+        assert_eq!(roster.0.get_index(1), Some(&replacement));
+        app.update();
+        assert!(attacks(&mut app).is_empty());
+        assert!(
+            app.world().get::<Character>(b).is_some(),
+            "a retained profile is no longer a member"
+        );
+        assert!(app.world().resource::<Formation>().place_of(b).is_none());
+    }
+
+    #[test]
+    fn changing_the_accepted_weapon_cancels_the_attack_instead_of_substituting() {
+        let (mut app, [_, b]) = round_app(false);
+        app.update();
+        assert_eq!(attacks(&mut app), ["A"]);
+        let before = app.world().get::<Character>(b).unwrap().stamina;
+        app.world_mut().get_mut::<Carried>(b).unwrap().equipment[EquipSlot::Primary]
+            .as_mut()
+            .unwrap()
+            .id = ItemInstanceId(9000);
+        app.update();
+        assert!(attacks(&mut app).is_empty());
+        assert_eq!(app.world().get::<Character>(b).unwrap().stamina, before);
+    }
+
+    #[test]
+    fn accepted_defense_recovers_stamina_and_an_edit_only_changes_the_next_round() {
+        let (mut app, [_, b]) = round_app(true);
+        app.world_mut().get_mut::<Character>(b).unwrap().stamina -= 10;
+        let before = app.world().get::<Character>(b).unwrap().stamina;
+        app.update();
+        assert_eq!(attacks(&mut app), ["A"]);
+        app.world_mut().entity_mut(b).insert(Order::Attack);
+        app.update();
+        assert!(attacks(&mut app).is_empty());
+        for _ in 0..4 {
+            if !app.world().resource::<Battle>().executing {
+                break;
+            }
+            app.update();
+        }
+        assert!(attacks(&mut app).is_empty());
+        assert!(app.world().get::<Character>(b).unwrap().stamina > before);
+        assert!(!app.world().resource::<Battle>().executing);
+        app.world_mut().write_message(StartRound);
+        app.update();
+        assert_eq!(attacks(&mut app), ["A"]);
+        app.update();
+        assert_eq!(attacks(&mut app), ["B"]);
+    }
+    #[test]
+    fn a_despawned_monster_cannot_leave_the_battle_stuck_on_its_turn() {
+        let (mut app, _) = round_app(false);
+        app.update();
+        assert_eq!(attacks(&mut app), ["A"]);
+        let entity =
+            app.world_mut().query_filtered::<Entity, With<Monster>>().single(app.world()).unwrap();
+        app.world_mut().despawn(entity);
+        for _ in 0..4 {
+            app.update();
+            if !app.world().contains_resource::<Battle>() {
+                return;
+            }
+        }
+        panic!("the removed actor's turn prevented battle completion");
+    }
+
+    #[test]
+    fn an_actor_incapacitated_after_acceptance_cannot_execute_its_attack() {
+        let (mut app, [_, b]) = round_app(false);
+        app.update();
+        assert_eq!(attacks(&mut app), ["A"]);
+        app.world_mut()
+            .get_mut::<Character>(b)
+            .unwrap()
+            .inflict(Condition::Asleep, crate::game::characters::Lasting::Rounds(2));
+        app.update();
+        assert!(attacks(&mut app).is_empty());
     }
 }

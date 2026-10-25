@@ -16,6 +16,18 @@ use crate::game::rng::GameRng;
 #[derive(Resource, Debug, Default)]
 pub struct PartyRoster(pub EntityIndexSet);
 
+impl PartyRoster {
+    /// Remove membership without transferring its formation seat to whoever
+    /// follows in roster order. The character entity may remain as an NPC.
+    pub fn remove(&mut self, member: Entity, formation: &mut super::formation::Formation) -> bool {
+        let removed = self.0.shift_remove(&member);
+        if removed {
+            formation.unseat(member);
+        }
+        removed
+    }
+}
+
 /// Someone joining a new party, as party creation (or a party file) makes
 /// them.
 #[derive(Clone, Debug, Deserialize)]
@@ -30,12 +42,20 @@ pub struct Recruit {
 
 /// Add a new member at the end of the party; they receive their starting
 /// equipment once the items have loaded.
-pub fn recruit(commands: &mut Commands, roster: &mut PartyRoster, recruit: &Recruit) -> Entity {
+pub fn recruit(
+    commands: &mut Commands,
+    roster: &mut PartyRoster,
+    formation: &mut super::formation::Formation,
+    recruit: &Recruit,
+) -> Entity {
     let mut character =
         Character::new(&recruit.name, recruit.race, recruit.gender, recruit.profession);
     character.portrait = recruit.portrait.clone();
-    let member = commands.spawn((Name::new(recruit.name.clone()), character, NeedsEquipment)).id();
+    let member = commands
+        .spawn((Name::new(recruit.name.clone()), character, super::Order::Attack, NeedsEquipment))
+        .id();
     roster.0.insert(member);
+    formation.seat(member);
     member
 }
 
@@ -151,5 +171,56 @@ mod tests {
             }
             assert!(carried.worn(EquipSlot::Primary).is_some(), "{profession:?} holds a weapon");
         }
+    }
+    #[test]
+    fn recruitment_and_removal_settle_formation_without_inheriting_anothers_order() {
+        use crate::game::party::{Order, formation::Formation};
+        use bevy::ecs::system::SystemState;
+        let mut world = World::new();
+        world.init_resource::<PartyRoster>();
+        world.init_resource::<Formation>();
+        let definition = Recruit {
+            name: "First".into(),
+            race: Race::Human,
+            gender: Gender::Male,
+            profession: Profession::Fighter,
+            portrait: String::new(),
+        };
+        let mut operations =
+            SystemState::<(Commands, ResMut<PartyRoster>, ResMut<Formation>)>::new(&mut world);
+        let (mut commands, mut roster, mut formation) = operations.get_mut(&mut world).unwrap();
+        let first = recruit(&mut commands, &mut roster, &mut formation, &definition);
+        let second = recruit(
+            &mut commands,
+            &mut roster,
+            &mut formation,
+            &Recruit { name: "Second".into(), ..definition.clone() },
+        );
+        operations.apply(&mut world);
+        let place = world.resource::<Formation>().place_of(second);
+        world.entity_mut(first).insert(Order::Defend);
+        let (mut commands, mut roster, mut formation) = operations.get_mut(&mut world).unwrap();
+        assert!(roster.remove(first, &mut formation));
+        let replacement = recruit(
+            &mut commands,
+            &mut roster,
+            &mut formation,
+            &Recruit { name: "Replacement".into(), ..definition },
+        );
+        operations.apply(&mut world);
+        assert_eq!(
+            world.resource::<PartyRoster>().0.iter().copied().collect::<Vec<_>>(),
+            [second, replacement]
+        );
+        assert!(world.resource::<Formation>().place_of(first).is_none());
+        assert_eq!(world.resource::<Formation>().place_of(second), place);
+        assert!(world.resource::<Formation>().place_of(replacement).is_some());
+        assert_eq!(world.get::<Order>(replacement), Some(&Order::Attack));
+        assert_eq!(
+            world.get::<Order>(first),
+            Some(&Order::Defend),
+            "the retained actor owns its preference"
+        );
+        assert!(world.get::<Character>(first).is_some());
     }
 }

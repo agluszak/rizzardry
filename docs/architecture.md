@@ -98,6 +98,20 @@ every targeting rule to use per-character positions either: the recovered radius
 spell path tests the shared party body before including eligible members. See
 [combat items](systems/combat-items-and-magic.md).
 
+The live formation grid holds member entities. Recruitment seats the new actor;
+removal and lethal party damage clear its seat within that operation, without a
+continuous repair system. Roster order remains the order for UI positions,
+initial placement, round acceptance and deterministic tie breaking. Standing
+`Order` components, held-item provenance and explicit UI selection refer to
+actors, so roster edits cannot transfer those facts to another occupant.
+
+The weapon-attack slice accepts an ordered entity-keyed queue at round start.
+It locks the order, weapon identity, initiative and attack count. Execution
+revalidates membership, current ability to act, that weapon's presence and
+reach; combat profiles, fatigue and target defenses remain live. Editing orders
+while a round executes affects the next round, including defense bonuses and
+stamina recovery. A removed actor's work is cancelled, never reassigned.
+
 Party movement during combat is one scheduled party action. Individual action
 budgets after it remain combat rules, not eight copies of a movement controller.
 

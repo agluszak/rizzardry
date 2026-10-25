@@ -262,11 +262,16 @@ pub fn build(options: &Options) -> Result<App, String> {
             .add_systems(PostUpdate, overhead_view.before(TransformSystems::Propagate));
     }
     // A new game: the party, entering the chosen level.
-    app.add_systems(Startup, move |mut commands: Commands, mut roster: ResMut<PartyRoster>| {
-        for member in &party {
-            recruit(&mut commands, &mut roster, member);
-        }
-    });
+    app.add_systems(
+        Startup,
+        move |mut commands: Commands,
+              mut roster: ResMut<PartyRoster>,
+              mut formation: ResMut<crate::game::party::formation::Formation>| {
+            for member in &party {
+                recruit(&mut commands, &mut roster, &mut formation, member);
+            }
+        },
+    );
     app.add_systems(Startup, move |mut commands: Commands, assets: Res<AssetServer>| {
         let first = Destination::new(Level::load(&level, &assets));
         commands.spawn((Name::new(level.clone()), first));

@@ -17,6 +17,16 @@ use crate::game::screen::party_free;
 use crate::game::world::level::level_active;
 use crate::game::world::triggers::PendingPartyMove;
 
+/// A member's standing choice for the next round. Recruitment starts on
+/// Attack (retail `ResetPartySlotRow`).
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Order {
+    #[default]
+    Attack,
+    /// No attack; +2 armour, and stamina back at the round's end.
+    Defend,
+}
+
 pub struct PartyPlugin;
 
 impl Plugin for PartyPlugin {
@@ -38,7 +48,6 @@ impl Plugin for PartyPlugin {
             Update,
             (
                 roster::give_starting_equipment,
-                formation::seat_party,
                 (
                     (body::look_around, crate::game::world::interaction::act_on_click)
                         .run_if(party_free),
@@ -72,4 +81,20 @@ impl Plugin for PartyPlugin {
                 .run_if(level_active),
         );
     }
+}
+
+/// Apply party damage and settle the target's death invariants before another
+/// operation can use its formation seat. Retain resource change tracking until
+/// death actually changes a seat.
+pub fn damage_member(
+    member: Entity,
+    character: &mut crate::game::characters::Character,
+    formation: &mut ResMut<formation::Formation>,
+    amount: u32,
+) -> u32 {
+    let lost = character.damage(amount);
+    if character.is_dead() && formation.row_of(member).is_some() {
+        formation.unseat(member);
+    }
+    lost
 }

@@ -11,9 +11,10 @@ use crate::content::items::ItemCatalog;
 use crate::content::ui::SpriteSheet;
 use crate::game::camp::CampRequest;
 use crate::game::characters::Character;
-use crate::game::combat::{Battle, CombatSettings, Order, PartyOrders, StartRound};
+use crate::game::combat::{Battle, CombatSettings, StartRound};
 use crate::game::data::GameData;
 use crate::game::inventory::{Carried, EquipSlot};
+use crate::game::party::Order;
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::search::{Search, ToggleSearch};
 use crate::presentation::screen_art::{hover_art, sprite, text};
@@ -72,7 +73,8 @@ pub fn row(art: &MainScreenArt, sheets: &Assets<SpriteSheet>) -> impl SceneList 
                          mut selected: ResMut<SelectedMember>| {
                     let members = roster.0.len() as i32;
                     if members > 0 {
-                        selected.0 = (selected.0 as i32 + step).rem_euclid(members) as usize;
+                        let current = selected.member(&roster).and_then(|m| roster.0.get_index_of(&m)).unwrap_or(0);
+                        selected.0 = roster.0.get_index((current as i32 + step).rem_euclid(members) as usize).copied();
                     }
                 })
             }
@@ -125,9 +127,10 @@ pub fn draw_bank(
     sheets: Res<Assets<SpriteSheet>>,
     layout: Res<ScreenLayout>,
     selected: Res<SelectedMember>,
+    roster: Res<PartyRoster>,
     (battle, orders, settings, search): (
         Option<Res<Battle>>,
-        Res<PartyOrders>,
+        Query<&Order>,
         Res<CombatSettings>,
         Res<Search>,
     ),
@@ -144,7 +147,14 @@ pub fn draw_bank(
                 (true, true) => RoundButton::GoPhased,
                 (true, false) => RoundButton::StartContinuous,
             };
-            (orders.of(selected.0), round)
+            (
+                selected
+                    .member(&roster)
+                    .and_then(|m| orders.get(m).ok())
+                    .copied()
+                    .unwrap_or_default(),
+                round,
+            )
         }),
     };
     if bank.drawn.as_ref() == Some(&view) {
@@ -251,14 +261,21 @@ fn press(
     mut camp: MessageWriter<CampRequest>,
     mut search: MessageWriter<ToggleSearch>,
     mut layout: ResMut<ScreenLayout>,
-    mut orders: ResMut<PartyOrders>,
+    mut orders: Query<&mut Order>,
+    roster: Res<PartyRoster>,
     selected: Res<SelectedMember>,
     mut round: MessageWriter<StartRound>,
     mut settings: ResMut<CombatSettings>,
     battle: Option<Res<Battle>>,
 ) {
     match buttons.get(click.entity) {
-        Ok(Bank::Order(order)) => orders.set(selected.0, *order),
+        Ok(Bank::Order(order)) => {
+            if let Some(member) = selected.member(&roster)
+                && let Ok(mut current) = orders.get_mut(member)
+            {
+                current.set_if_neq(*order);
+            }
+        }
         Ok(Bank::Round) => {
             if battle.is_some_and(|b| b.executing) {
                 settings.continuous = !settings.continuous;
@@ -313,18 +330,23 @@ pub fn draw_caption(
         Option<Res<GameData>>,
         Res<Assets<ItemCatalog>>,
         Option<Res<Battle>>,
-        Res<PartyOrders>,
+        Query<&Order>,
     ),
     mut captions: Query<(Entity, &mut Caption)>,
 ) {
     let Ok((node, mut caption)) = captions.single_mut() else { return };
     let catalog = data.and_then(|d| catalogs.get(&d.items));
-    let lines = match roster.0.get_index(selected.0).and_then(|&m| members.get(m).ok()) {
+    let lines = match selected.member(&roster).and_then(|m| members.get(m).ok()) {
         None => vec![],
         Some((character, carried)) => {
             let first = format!("{} - {:?}", character.name, character.profession);
             let second = if battle.is_some() {
-                match orders.of(selected.0) {
+                match selected
+                    .member(&roster)
+                    .and_then(|m| orders.get(m).ok())
+                    .copied()
+                    .unwrap_or_default()
+                {
                     Order::Defend => Some("Defend".to_owned()),
                     Order::Attack => {
                         let weapon = carried
@@ -340,6 +362,13 @@ pub fn draw_caption(
                     c
                 })
             };
+            let second = second.map(|line| {
+                if battle.as_ref().is_some_and(|b| b.executing) {
+                    format!("Next: {line}")
+                } else {
+                    line
+                }
+            });
             std::iter::once(first).chain(second).collect()
         }
     };
