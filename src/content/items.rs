@@ -3,7 +3,7 @@
 use bevy::prelude::*;
 
 /// An item definition's stable number (retail's item number).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Reflect)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Reflect)]
 pub struct ItemId(pub u16);
 
 /// `count` d `sides` + `base`.
@@ -16,7 +16,7 @@ pub struct Dice {
 
 /// Where an item can be worn or wielded, and what it is (retail equipment
 /// class; labels 1087..1119 in the string table).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Reflect)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Reflect)]
 pub enum EquipClass {
     ShortWeapon,
     ExtendedWeapon,
@@ -43,6 +43,7 @@ pub enum EquipClass {
     Drink,
     Key,
     Writing,
+    #[default]
     Other,
     Dagger,
     LongSword,
@@ -95,8 +96,9 @@ impl EquipClass {
 
 /// How an item counts: a stack of identical things, or charges, uses or
 /// shots left in one thing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Reflect)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Reflect)]
 pub enum QuantityKind {
+    #[default]
     None,
     Stack,
     Charges,
@@ -113,16 +115,20 @@ pub struct Requirement {
     pub minimum: u8,
 }
 
-#[derive(Clone, Debug, Reflect)]
+#[derive(Clone, Debug, Default, Reflect)]
 pub struct ItemDefinition {
     pub id: ItemId,
     pub name: String,
     /// The generic kind (retail's unidentified-name index): what it looks
     /// like before identification, and which ammunition fits which weapon.
     pub kind: u16,
+    /// Retail's own name for it, as scripts know it.
+    pub internal_name: String,
     /// The item's picture, a retail path such as `data/items/dagger.sti`.
     pub image: String,
     pub class: EquipClass,
+    /// Retail's item category byte; its meaning is not established.
+    pub category: u8,
     /// Identified as soon as the party has it.
     pub auto_identify: bool,
     /// A quest item the party may not throw away.
@@ -142,6 +148,9 @@ pub struct ItemDefinition {
     pub damage_bonus: i8,
     pub hit_bonus: i8,
     pub armor_class_bonus: i8,
+    /// The spell it casts when used (0 for none), and at what power.
+    pub spell: u8,
+    pub spell_power: u8,
     pub quantity: QuantityKind,
     /// Rolled when the item is created.
     pub initial_quantity: Dice,
@@ -152,6 +161,8 @@ pub struct ItemDefinition {
     pub gender_mask: u8,
     pub attribute_requirements: Vec<Requirement>,
     pub skill_requirements: Vec<Requirement>,
+    /// How hard it is to identify.
+    pub identify_difficulty: u8,
     pub value: u32,
     /// Tenths of a pound.
     pub weight: u16,

@@ -35,10 +35,7 @@ fn hold_exploration(
     inventory: Option<Res<inventory::InventoryScreen>>,
     controls: Query<(Entity, Option<&ContextActivity<Exploration>>), With<Exploration>>,
 ) {
-    let active = automap.is_none()
-        && question.is_none()
-        && camp.is_none()
-        && inventory.is_none();
+    let active = automap.is_none() && question.is_none() && camp.is_none() && inventory.is_none();
     for (entity, activity) in &controls {
         if activity.is_none_or(|a| **a != active) {
             commands.entity(entity).insert(ContextActivity::<Exploration>::new(active));

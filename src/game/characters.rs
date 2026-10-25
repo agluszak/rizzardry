@@ -630,7 +630,7 @@ impl Character {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::content::items::{Dice, EquipClass, ItemId, QuantityKind, Requirement};
+    use crate::content::items::{EquipClass, Requirement};
 
     #[test]
     fn a_human_fighter_has_the_worked_example_numbers() {
@@ -667,37 +667,16 @@ mod tests {
     fn items_check_profession_race_gender_and_minimums() {
         let fighter = Character::new("Ragnar", Race::Human, Gender::Male, Profession::Fighter);
         let mut bow = ItemDefinition {
-            id: ItemId(0),
             name: "Strong Bow".into(),
-            kind: 0,
-            image: String::new(),
             class: EquipClass::RangedWeapon,
-            auto_identify: false,
-            crucial: false,
-            two_handed: false,
-            off_hand: false,
-            merchants_refuse: false,
-            container: false,
-            equip_to_use: false,
-            never_depletes: false,
             weapon_skill: Some(8),
-            range: 0,
-            damage: Dice::default(),
-            damage_bonus: 0,
-            hit_bonus: 0,
-            armor_class_bonus: 0,
-            quantity: QuantityKind::None,
-            initial_quantity: Dice::default(),
-            maximum_quantity: 0,
             profession_mask: 0x7fff,
             race_mask: 0xffff,
             gender_mask: 3,
             attribute_requirements: vec![Requirement { id: 0, minimum: 85 }],
-            skill_requirements: vec![],
-            value: 0,
-            weight: 0,
-            cursed: false,
+            ..default()
         };
+
         assert!(!fighter.can_use(&bow), "too weak");
         bow.attribute_requirements.clear();
         assert!(fighter.can_use(&bow));

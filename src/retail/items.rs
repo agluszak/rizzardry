@@ -1,75 +1,35 @@
-//! The retail item database (`data/databases/items.dbs`).
-//!
-//! After Whizzardry `ItemDatabaseRecord` (`include/wiz8/retail_records.h`,
-//! `include/wiz8/data/item_payloads.h`): a count, then 269-byte records.
+//! The retail item databases: definitions (`data/databases/items.dbs`, a
+//! count, then 269-byte records after Whizzardry `ItemDatabaseRecord`) and
+//! loot tables (`itemtables.dbs`), decoded straight into the content types.
 
-use super::bytes::Bytes;
+use bevy::asset::{AssetLoader, LoadContext, io::Reader};
+use bevy::reflect::TypePath;
+use thiserror::Error;
+
+use super::bytes::{Bytes, Truncated};
 use super::pvl::{PvlError, invalid};
+use crate::content::items::{
+    Dice, EquipClass, ItemCatalog, ItemDefinition, ItemId, LootTable, LootTables, QuantityKind,
+    Requirement,
+};
 
 const RECORD: usize = 0x10d;
+const TABLE_RECORD: usize = 256 + 4 + 40 * 5 + 1 + 4 + 4 + 4 + 0x18;
 
-/// `count` d `sides` + `base`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Dice {
-    pub count: u8,
-    pub sides: u8,
-    pub base: i16,
-}
-
-/// A stat or skill an item asks a minimum of.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Requirement {
-    pub id: u8,
-    pub minimum: u8,
-}
-
-/// One item definition as retail stores it.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ItemRecord {
-    pub name: String,
-    /// The string table entry shown before the item is identified.
-    pub unidentified_name: u16,
-    pub equip_class: u8,
-    /// Flag bits (`item_flag`).
-    pub flags: u8,
-    pub category: u8,
-    /// The weapon skill it trains; none for non-weapons.
-    pub weapon_skill: Option<u8>,
-    pub range_category: u8,
-    pub damage_bonus: i8,
-    pub hit_bonus: i8,
-    pub damage: Dice,
-    pub armor_class_bonus: i8,
-    pub spell: u8,
-    pub spell_power: u8,
-    pub quantity_kind: u8,
-    pub initial_quantity: Dice,
-    pub maximum_quantity: u8,
-    pub profession_mask: u16,
-    pub race_mask: u32,
-    pub gender_mask: u8,
-    pub attribute_requirements: Vec<Requirement>,
-    pub skill_requirements: Vec<Requirement>,
-    pub identify_difficulty: u8,
-    pub value: u32,
-    /// Tenths of a pound.
-    pub weight: u16,
-    pub binds_on_equip: bool,
-    pub internal_name: String,
-    /// The item's picture under `data/items`, or empty to use its kind's.
-    pub image: String,
-}
-
-impl ItemRecord {
-    /// The item's picture: `data/items/<name>.sti` (retail `ItemSprites`).
-    pub fn image_path(&self) -> Option<String> {
-        let name = match self.image.as_str() {
-            "" => (*KIND_IMAGES.get(usize::from(self.unidentified_name))?).to_owned(),
-            own => own.to_lowercase(),
-        };
-        let name = name.strip_suffix(".sti").unwrap_or(&name);
-        Some(format!("data/items/{name}.sti"))
-    }
+#[derive(Debug, Error)]
+pub enum ItemLoadError {
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Data(#[from] PvlError),
+    #[error(transparent)]
+    Truncated(#[from] Truncated),
+    #[error("item {0}: unknown equipment class {1}")]
+    EquipClass(usize, u8),
+    #[error("item {0}: unknown quantity kind {1}")]
+    QuantityKind(usize, u8),
+    #[error("item {0}: kind {1} has no image")]
+    Image(usize, u16),
 }
 
 /// Images for items without their own, by kind (unidentified name), from
@@ -223,7 +183,7 @@ const KIND_IMAGES: [&str; 145] = [
 ];
 
 /// Item flag bits (Whizzardry `W8ItemFlag`).
-pub mod item_flag {
+mod flag {
     pub const AUTO_IDENTIFY: u8 = 0x01;
     pub const NO_DISCARD: u8 = 0x02;
     pub const TWO_HANDED: u8 = 0x04;
@@ -256,28 +216,36 @@ fn ascii(raw: &[u8]) -> String {
     String::from_utf8_lossy(&raw[..end]).into_owned()
 }
 
-fn read_item(record: &[u8]) -> Result<ItemRecord, PvlError> {
+/// The item's picture: its own (`video_object_name`), else its kind's
+/// (retail `ItemSprites`).
+fn image_path(own: &str, kind: u16) -> Option<String> {
+    let name = match own {
+        "" => (*KIND_IMAGES.get(usize::from(kind))?).to_owned(),
+        own => own.to_lowercase(),
+    };
+    let name = name.strip_suffix(".sti").unwrap_or(&name);
+    Some(format!("data/items/{name}.sti"))
+}
+
+fn read_item(index: usize, record: &[u8]) -> Result<ItemDefinition, ItemLoadError> {
     let units: Vec<u16> =
         record[..60].as_chunks::<2>().0.iter().map(|&pair| u16::from_le_bytes(pair)).collect();
     let name_end = units.iter().position(|&u| u == 0).unwrap_or(units.len());
-    let name = String::from_utf16_lossy(&units[..name_end]);
     let mut bytes = Bytes::new(&record[0x3c..]);
     bytes.u16()?; // Wizardry 7 item number
     let equip_class = bytes.u8()?;
-    let unidentified_name = bytes.u16()?;
+    let kind = bytes.u16()?;
     let flags = bytes.u8()?;
+    let has = |bit| flags & bit != 0;
     let category = bytes.u8()?;
     bytes.take(3)?;
-    let weapon_skill = match bytes.i8()? {
-        skill if skill < 0 => None,
-        skill => Some(skill as u8),
-    };
-    let range_category = bytes.u8()?;
+    let weapon_skill = u8::try_from(bytes.i8()?).ok();
+    let range = bytes.u8()?;
     let damage_bonus = bytes.i8()?;
     let hit_bonus = bytes.i8()?;
     let damage = dice(&mut bytes)?;
     bytes.u16()?; // attack flags
-    bytes.take(16 + 1 + 1)?; // missile modifiers, magnitude, slays
+    bytes.take(16 + 1 + 1)?; // effect chances, magnitude, slays
     let armor_class_bonus = bytes.i8()?;
     let spell = bytes.u8()?;
     let spell_power = bytes.u8()?;
@@ -294,22 +262,42 @@ fn read_item(record: &[u8]) -> Result<ItemRecord, PvlError> {
     let identify_difficulty = bytes.u8()?;
     let value = bytes.u32()?;
     let weight = bytes.u16()?;
-    let binds_on_equip = bytes.u8()? != 0;
-    Ok(ItemRecord {
-        name,
-        unidentified_name,
-        equip_class,
-        flags,
+    let cursed = bytes.u8()? != 0;
+    let own_image = ascii(&record[0xcd..0xcd + 0x18]);
+    Ok(ItemDefinition {
+        id: ItemId(index as u16),
+        name: String::from_utf16_lossy(&units[..name_end]),
+        internal_name: ascii(&record[0x8d..0x8d + 0x20]),
+        kind,
+        image: image_path(&own_image, kind).ok_or(ItemLoadError::Image(index, kind))?,
+        class: EquipClass::from_retail(equip_class)
+            .ok_or(ItemLoadError::EquipClass(index, equip_class))?,
         category,
+        auto_identify: has(flag::AUTO_IDENTIFY),
+        crucial: has(flag::NO_DISCARD),
+        two_handed: has(flag::TWO_HANDED),
+        off_hand: has(flag::OFF_HAND_ALLOWED),
+        merchants_refuse: has(flag::MERCHANT_CANNOT_SELL),
+        container: has(flag::CONTAINER),
+        equip_to_use: has(flag::MUST_EQUIP_TO_USE),
+        never_depletes: has(flag::NEVER_DEPLETES),
         weapon_skill,
-        range_category,
+        range,
+        damage,
         damage_bonus,
         hit_bonus,
-        damage,
         armor_class_bonus,
         spell,
         spell_power,
-        quantity_kind,
+        quantity: match quantity_kind {
+            0 => QuantityKind::None,
+            1 => QuantityKind::Stack,
+            2 => QuantityKind::Charges,
+            3 => QuantityKind::Uses,
+            4 => QuantityKind::Shots,
+            5 => QuantityKind::Unlabelled,
+            other => return Err(ItemLoadError::QuantityKind(index, other)),
+        },
         initial_quantity,
         maximum_quantity,
         profession_mask,
@@ -320,127 +308,143 @@ fn read_item(record: &[u8]) -> Result<ItemRecord, PvlError> {
         identify_difficulty,
         value,
         weight,
-        binds_on_equip,
-        internal_name: ascii(&record[0x8d..0x8d + 0x20]),
-        image: ascii(&record[0xcd..0xcd + 0x18]),
+        cursed,
     })
 }
 
 /// Every item definition, indexed by item number.
-pub fn read_items(data: &[u8]) -> Result<Vec<ItemRecord>, PvlError> {
+pub fn read_item_catalog(data: &[u8]) -> Result<ItemCatalog, ItemLoadError> {
     let mut bytes = Bytes::new(data);
     let count = bytes.u32()? as usize;
     if data.len() - 4 < count * RECORD {
-        return Err(invalid("item database shorter than its count", &bytes));
+        return Err(invalid("item database shorter than its count", &bytes).into());
     }
-    data[4..4 + count * RECORD]
-        .as_chunks::<RECORD>()
-        .0
-        .iter()
-        .map(|record| read_item(record))
-        .collect()
+    let records = data[4..4 + count * RECORD].as_chunks::<RECORD>().0;
+    Ok(ItemCatalog(
+        records.iter().enumerate().map(|(i, r)| read_item(i, r)).collect::<Result<_, _>>()?,
+    ))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    #[ignore = "requires a retail installation"]
-    fn retail_items_decode() {
-        let root =
-            std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL to run this test");
-        let files = crate::retail::files::RetailFiles::open(root).unwrap();
-        let items = read_items(&files.read("data/databases/items.dbs").unwrap().unwrap()).unwrap();
-        for (i, item) in items.iter().enumerate().take(8) {
-            println!("{i}: {item:?}");
-        }
-        println!("{} items", items.len());
-        assert!(items.len() > 500);
-        assert!(items.iter().all(|item| item.equip_class <= 31), "equip classes in range");
-        assert!(items.iter().filter(|item| !item.name.is_empty()).count() > 500);
-        for item in &items {
-            let path = item.image_path().unwrap_or_else(|| panic!("{}: no image", item.name));
-            assert!(files.contains(&path), "{}: {path}", item.name);
-        }
-    }
-}
-
-/// One loot table (`data/databases/itemtables.dbs`, Whizzardry
-/// `W8ItemTableRecord`): weighted item entries and how many to draw.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ItemTableRecord {
-    pub name: String,
-    pub category: u32,
-    /// Item number and weight; weight 0 always drops.
-    pub entries: Vec<(u16, u8)>,
-    /// Entries are filtered by the party's level and the item's value.
-    pub level_scaled: bool,
-    pub item_count: Dice,
-    pub gold: Dice,
-}
-
-const TABLE_RECORD: usize = 256 + 4 + 40 * 5 + 1 + 4 + 4 + 4 + 0x18;
-
-/// The loot tables, after their category names.
-pub fn read_item_tables(data: &[u8]) -> Result<Vec<ItemTableRecord>, PvlError> {
+/// The loot tables (Whizzardry `W8ItemTableRecord`), after their category
+/// names.
+pub fn read_loot_tables(data: &[u8]) -> Result<LootTables, PvlError> {
     let mut bytes = Bytes::new(data);
     let categories = bytes.u32()? as usize;
     bytes.take(categories * 256)?;
     let count = bytes.u32()? as usize;
-    (0..count)
+    let tables = (0..count)
         .map(|_| {
             let record = bytes.take(TABLE_RECORD)?;
             let mut fields = Bytes::new(&record[256..]);
-            let category = fields.u32()?;
+            fields.u32()?; // category
             let mut entries = Vec::new();
             for _ in 0..40 {
                 let selector = fields.u16()?;
                 let (item, weight) = (fields.u16()?, fields.u8()?);
                 if selector != 0 {
-                    entries.push((item, weight));
+                    entries.push((ItemId(item), weight));
                 }
             }
             let level_scaled = fields.u8()? != 0;
             let item_count = dice(&mut fields)?;
             fields.take(4)?;
             let gold = dice(&mut fields)?;
-            Ok(ItemTableRecord {
-                name: ascii(&record[..256]),
-                category,
-                entries,
-                level_scaled,
-                item_count,
-                gold,
-            })
+            Ok(LootTable { name: ascii(&record[..256]), entries, level_scaled, item_count, gold })
         })
-        .collect()
+        .collect::<Result<_, PvlError>>()?;
+    Ok(LootTables(tables))
+}
+
+#[derive(Default, TypePath)]
+pub struct ItemCatalogLoader;
+
+impl AssetLoader for ItemCatalogLoader {
+    type Asset = ItemCatalog;
+    type Settings = ();
+    type Error = ItemLoadError;
+
+    async fn load(
+        &self,
+        reader: &mut dyn Reader,
+        _: &(),
+        _: &mut LoadContext<'_>,
+    ) -> Result<ItemCatalog, ItemLoadError> {
+        let mut data = Vec::new();
+        reader.read_to_end(&mut data).await?;
+        read_item_catalog(&data)
+    }
+
+    fn extensions(&self) -> &[&str] {
+        &["dbs"]
+    }
+}
+
+#[derive(Default, TypePath)]
+pub struct LootTablesLoader;
+
+impl AssetLoader for LootTablesLoader {
+    type Asset = LootTables;
+    type Settings = ();
+    type Error = ItemLoadError;
+
+    async fn load(
+        &self,
+        reader: &mut dyn Reader,
+        _: &(),
+        _: &mut LoadContext<'_>,
+    ) -> Result<LootTables, ItemLoadError> {
+        let mut data = Vec::new();
+        reader.read_to_end(&mut data).await?;
+        Ok(read_loot_tables(&data)?)
+    }
+
+    fn extensions(&self) -> &[&str] {
+        &["dbs"]
+    }
 }
 
 #[cfg(test)]
-mod table_tests {
+mod tests {
     use super::*;
+
+    fn files() -> crate::retail::files::RetailFiles {
+        let root =
+            std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL to run this test");
+        crate::retail::files::RetailFiles::open(root).unwrap()
+    }
 
     #[test]
     #[ignore = "requires a retail installation"]
-    fn retail_item_tables_decode() {
-        let root =
-            std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL to run this test");
-        let files = crate::retail::files::RetailFiles::open(root).unwrap();
-        let tables =
-            read_item_tables(&files.read("data/databases/itemtables.dbs").unwrap().unwrap())
-                .unwrap();
-        let items = read_items(&files.read("data/databases/items.dbs").unwrap().unwrap()).unwrap();
-        for table in tables.iter().take(4) {
-            println!("{table:?}");
+    fn retail_items_decode() {
+        let files = files();
+        let catalog =
+            read_item_catalog(&files.read("data/databases/items.dbs").unwrap().unwrap()).unwrap();
+        assert_eq!(catalog.0.len(), 819);
+        let dagger = catalog.get(ItemId(0)).unwrap();
+        assert_eq!((dagger.name.as_str(), dagger.class), ("Dagger", EquipClass::ShortWeapon));
+        assert!(dagger.off_hand && !dagger.two_handed);
+        assert!(catalog.0.iter().filter(|i| !i.name.is_empty()).count() > 500);
+        assert!(catalog.0.iter().any(|i| i.spell != 0), "some items cast spells");
+        let stacks: Vec<_> =
+            catalog.0.iter().filter(|i| i.quantity == QuantityKind::Stack).collect();
+        assert!(stacks.len() > 10 && stacks.iter().all(|i| i.maximum_quantity > 0));
+        for item in &catalog.0 {
+            assert!(files.contains(&item.image), "{}: {}", item.name, item.image);
         }
-        println!("{} tables", tables.len());
-        assert!(tables.len() > 50);
+    }
+
+    #[test]
+    #[ignore = "requires a retail installation"]
+    fn retail_loot_tables_decode() {
+        let files = files();
+        let tables =
+            read_loot_tables(&files.read("data/databases/itemtables.dbs").unwrap().unwrap())
+                .unwrap();
+        let catalog =
+            read_item_catalog(&files.read("data/databases/items.dbs").unwrap().unwrap()).unwrap();
+        assert!(tables.0.len() > 50);
         assert!(
-            tables
-                .iter()
-                .flat_map(|t| &t.entries)
-                .all(|&(item, _)| usize::from(item) < items.len())
+            tables.0.iter().flat_map(|t| &t.entries).all(|&(item, _)| catalog.get(item).is_some())
         );
     }
 }

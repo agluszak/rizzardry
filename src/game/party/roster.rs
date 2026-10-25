@@ -118,7 +118,7 @@ mod tests {
         let root =
             std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL to run this test");
         let files = crate::retail::files::RetailFiles::open(root).unwrap();
-        let catalog = crate::retail::item_loader::item_catalog(
+        let catalog = crate::retail::items::read_item_catalog(
             &files.read("data/databases/items.dbs").unwrap().unwrap(),
         )
         .unwrap();
