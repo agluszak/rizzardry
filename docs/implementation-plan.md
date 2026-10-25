@@ -137,6 +137,10 @@ Known gaps, in rough order:
   zones (`0x23`, 1d6+2 every half second while the party stays) hurt the
   party; unconsciousness and death are not modelled, so health stops at 0.
   Plane-shaped triggers (falls) are not decoded as places yet.
+- Stamina and healing fountains (`0x25`, `0x26`) restore every member by
+  `data[2]`, with `data[0]` uses (−1 endless) refilled `data[1]` × 720 game
+  seconds after use. Spell-point and spell-casting fountains (`0x27`–`0x2b`)
+  wait for spells.
 - Most trigger actions are not performed yet (lights, missiles, fountains,
   timed actions, required items). A level's trigger state,
   variables and prop positions are kept when the party leaves and restored on

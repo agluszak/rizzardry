@@ -24,6 +24,7 @@ use crate::game::data::GameData;
 use crate::game::inventory::{ItemIds, ItemInstance, PartyInventory, make_item};
 use crate::game::loot::roll_loot;
 use crate::game::rng::GameRng;
+use crate::game::time::GameClock;
 
 /// Retail trigger action codes performed so far.
 pub mod action {
@@ -43,6 +44,9 @@ pub mod action {
     pub const PARTY_HEALTH: u32 = 0x24;
     /// Hurt everyone in the party every half second while it stays.
     pub const DAMAGE_ZONE: u32 = 0x23;
+    /// Fountains restoring each member's stamina or health by `data[2]`.
+    pub const STAMINA_FOUNTAIN: u32 = 0x25;
+    pub const HEALING_FOUNTAIN: u32 = 0x26;
     pub const DIAL: u32 = 0x40;
 }
 
@@ -81,6 +85,8 @@ pub struct TriggerState {
     pub contents: Option<Contents>,
     /// A damage zone the party stands in: seconds since it last hurt.
     zone: Option<f32>,
+    /// A fountain's uses left, and when (game milliseconds) it refills.
+    fountain: Option<(i32, Option<u64>)>,
 }
 
 /// What a container holds.
@@ -103,6 +109,7 @@ impl LevelState {
                     inside: false,
                     contents: None,
                     zone: None,
+                    fountain: None,
                 };
                 geometry.triggers.len()
             ],
@@ -257,6 +264,8 @@ pub struct Triggers<'a> {
 /// randomness, the party's possessions and its members.
 pub struct PartyContext<'a> {
     pub members: Vec<&'a mut Character>,
+    /// Game time, for things that refill.
+    pub now_ms: u64,
     pub catalog: &'a ItemCatalog,
     pub loot: &'a LootTables,
     pub rng: &'a mut GameRng,
@@ -413,6 +422,11 @@ impl Triggers<'_> {
                     base: or(base, 2) as i16,
                 });
             }
+            action::STAMINA_FOUNTAIN | action::HEALING_FOUNTAIN => {
+                if !self.use_fountain(index, action) {
+                    return false;
+                }
+            }
             action::DAMAGE_ZONE => {
                 self.state.triggers[index].zone = Some(0.0);
             }
@@ -445,6 +459,45 @@ impl Triggers<'_> {
             }
         }
         self.commit(index, use_index, changes_state, depth);
+        true
+    }
+
+    /// Drink from a fountain (retail actions 0x25-0x2b): `data[0]` uses
+    /// (-1 for endless), refilled `data[1]` × 720 game seconds after use,
+    /// each restoring `data[2]` to every member. False when it is dry.
+    fn use_fountain(&mut self, index: usize, action: u32) -> bool {
+        let [uses, recharge, amount] = self.definitions[index].data;
+        let Some(party) = &mut self.party else { return false };
+        let now = party.now_ms;
+        let state = &mut self.state.triggers[index];
+        let (left, refill) = state.fountain.get_or_insert((uses, None));
+        if refill.is_some_and(|at| at <= now) {
+            *left = uses;
+            *refill = None;
+        }
+        if uses != -1 && *left <= 0 {
+            return false;
+        }
+        if uses != -1 {
+            *left -= 1;
+            if recharge > 0 && refill.is_none() {
+                *refill = Some(now + recharge as u64 * 720 * 1000);
+            }
+        }
+        let amount = amount.max(0) as u32;
+        for member in party.members.iter_mut() {
+            if action == action::HEALING_FOUNTAIN {
+                member.hp = (member.hp + amount).min(member.max_hp());
+            } else {
+                member.stamina = (member.stamina + amount).min(member.max_stamina());
+            }
+        }
+        let at = self.props.get(&index).map(|prop| prop.position);
+        self.effects.push(TriggerEffect::Sound {
+            path: "data/sound/misc/fountain_magic.wav".into(),
+            volume: 1.0,
+            at,
+        });
         true
     }
 
@@ -574,6 +627,7 @@ pub struct LevelTriggers<'w, 's> {
     ids: ResMut<'w, ItemIds>,
     party: ResMut<'w, PartyInventory>,
     members: Query<'w, 's, &'static mut Character>,
+    clock: Res<'w, GameClock>,
 }
 
 /// A trigger has sent the party somewhere; the party module moves it.
@@ -619,6 +673,7 @@ impl LevelTriggers<'_, '_> {
         let party = self.data.as_ref().and_then(|data| {
             Some(PartyContext {
                 members,
+                now_ms: self.clock.ms,
                 catalog: self.catalogs.get(&data.items)?,
                 loot: self.loot.get(&data.loot)?,
                 rng: self.rng.as_mut(),
@@ -969,6 +1024,7 @@ mod tests {
             effects: vec![],
             party: Some(PartyContext {
                 members: vec![&mut a, &mut b],
+                now_ms: 0,
                 catalog: &catalog,
                 loot: &loot,
                 rng: &mut rng,
@@ -1005,5 +1061,43 @@ mod tests {
         assert!(triggers.effects.is_empty());
         drop(triggers);
         assert!(a.hp < full && b.hp < full);
+    }
+
+    #[test]
+    fn fountains_restore_until_dry_and_refill_with_game_time() {
+        use crate::game::characters::{Gender, Profession, Race};
+        let mut fountain = trigger("WELL", action::HEALING_FOUNTAIN);
+        fountain.data = [1, 2, 5];
+        let geometry = LevelGeometry { triggers: vec![fountain], ..default() };
+        let mut state = LevelState::new(&geometry, LevelScript::None);
+        let (catalog, loot) = (ItemCatalog::default(), LootTables::default());
+        let (mut rng, mut ids, mut inventory) =
+            (GameRng::seeded(5), ItemIds::default(), PartyInventory::default());
+        let mut a = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
+        let full = a.hp;
+        a.hp = 1;
+        let mut triggers = Triggers {
+            definitions: &geometry.triggers,
+            state: &mut state,
+            props: HashMap::new(),
+            effects: vec![],
+            party: Some(PartyContext {
+                members: vec![&mut a],
+                now_ms: 0,
+                catalog: &catalog,
+                loot: &loot,
+                rng: &mut rng,
+                ids: &mut ids,
+                party: &mut inventory,
+            }),
+            party_moves: None,
+        };
+        assert!(triggers.run("WELL"));
+        assert!(!triggers.run("WELL"), "dry after its one use");
+        // Two × 720 game seconds later it has refilled.
+        triggers.party.as_mut().unwrap().now_ms = 2 * 720 * 1000;
+        assert!(triggers.run("WELL"));
+        drop(triggers);
+        assert_eq!(a.hp, 11.min(full));
     }
 }
