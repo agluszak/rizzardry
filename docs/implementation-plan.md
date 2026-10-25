@@ -140,6 +140,11 @@ Known gaps, in rough order:
   death (derived from health, not stored as a condition), which clears
   other conditions but infatuation. The HUD dims the unconscious and shows
   the dead as their race's skull.
+- The party recovers as game time passes (`game::party::recovery`):
+  stamina every 1.4 game seconds at `(0.9·max + 20)/240`, health every
+  120-second aging tick at `(0.4·max + 20)/240`, both halved while standing
+  still; moving recovers a tenth of the stamina and no health. Camping and
+  combat rates wait for those systems.
   Plane-shaped triggers (falls) are not decoded as places yet.
 - Stamina and healing fountains (`0x25`, `0x26`) restore every member by
   `data[2]`, with `data[0]` uses (−1 endless) refilled `data[1]` × 720 game

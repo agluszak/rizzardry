@@ -292,6 +292,9 @@ pub struct Character {
     pub hp: u32,
     pub stamina: u32,
     pub conditions: Vec<(Condition, Lasting)>,
+    /// Recovery not yet whole points; retail keeps these between ticks.
+    pub hp_fraction: f32,
+    pub stamina_fraction: f32,
     /// The portrait's file stem (e.g. `hummf` for `data/portraits/small/shummf.sti`).
     pub portrait: String,
 }
@@ -321,6 +324,8 @@ impl Character {
             hp: 0,
             stamina: 0,
             conditions: Vec::new(),
+            hp_fraction: 0.0,
+            stamina_fraction: 0.0,
             portrait: String::new(),
         };
         let share = 60 / (1 + row.skills.len() as u32);
@@ -495,6 +500,41 @@ impl Character {
         }
     }
 
+    /// Passive stamina recovery over `ticks` 1.4-second stamina ticks, at
+    /// `(0.9·max + 20)/240` per tick times `scale` (retail
+    /// `RegenCharacterStamina`).
+    pub fn recover_stamina(&mut self, ticks: u32, scale: f32) {
+        let max = self.max_stamina();
+        if self.is_dead() || scale <= 0.0 || self.stamina >= max {
+            self.stamina_fraction = 0.0;
+            return;
+        }
+        self.stamina_fraction += ticks as f32 * (0.9 * max as f32 + 20.0) / 240.0 * scale;
+        let whole = self.stamina_fraction.trunc();
+        self.stamina_fraction -= whole;
+        self.restore_stamina(whole as u32);
+        if self.stamina >= max {
+            self.stamina_fraction = 0.0;
+        }
+    }
+
+    /// Passive healing over `ticks` 120-second aging ticks, at
+    /// `(0.4·max + 20)/240` per tick times `scale` (retail aging).
+    pub fn recover_health(&mut self, ticks: u32, scale: f32) {
+        let max = self.max_hp();
+        if self.is_dead() || scale <= 0.0 || self.hp >= max {
+            self.hp_fraction = 0.0;
+            return;
+        }
+        self.hp_fraction += ticks as f32 * (0.4 * max as f32 + 20.0) / 240.0 * scale;
+        let whole = self.hp_fraction.trunc();
+        self.hp_fraction -= whole;
+        self.heal(whole as u32);
+        if self.hp >= max {
+            self.hp_fraction = 0.0;
+        }
+    }
+
     /// Whether the character may use an item (retail `CanCharacterUseItem`):
     /// profession, race and gender, and every attribute and skill minimum.
     /// Spellbooks and casting items' extra tests need spells, not modelled.
@@ -608,5 +648,26 @@ mod tests {
         assert_eq!(fighter.damage(5), 0);
         fighter.heal(10);
         assert!(fighter.is_dead(), "healing does not raise the dead");
+    }
+
+    #[test]
+    fn rest_recovers_stamina_quickly_and_health_slowly() {
+        let mut fighter = Character::new("Ragnar", Race::Human, Gender::Male, Profession::Fighter);
+        fighter.hp = 1;
+        fighter.stamina = 0;
+        fighter.inflict(Condition::Unconscious, Lasting::Indefinite);
+        // (0.9 × 105 + 20) / 240 × 0.5 ≈ 0.24 a tick: 10 above 9 after 42.
+        fighter.recover_stamina(41, 0.5);
+        assert!(fighter.has(Condition::Unconscious));
+        fighter.recover_stamina(1, 0.5);
+        assert_eq!(fighter.stamina, 10);
+        assert!(!fighter.has(Condition::Unconscious));
+        // (0.4 × 18 + 20) / 240 × 0.5 ≈ 0.057 a tick.
+        fighter.recover_health(17, 0.5);
+        assert_eq!(fighter.hp, 1);
+        fighter.recover_health(1, 0.5);
+        assert_eq!(fighter.hp, 2);
+        fighter.recover_health(1, 0.0);
+        assert_eq!(fighter.hp_fraction, 0.0, "no recovery clears the fraction");
     }
 }

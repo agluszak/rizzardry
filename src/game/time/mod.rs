@@ -38,7 +38,7 @@ impl Plugin for TimePlugin {
     }
 }
 
-fn advance_clock(time: Res<Time>, mut clock: ResMut<GameClock>) {
+pub fn advance_clock(time: Res<Time>, mut clock: ResMut<GameClock>) {
     clock.ms += time.delta().as_millis() as u64 * EXPLORATION_RATE;
 }
 

@@ -438,6 +438,7 @@ pub fn run_ui_script(
     mut pointer: MessageWriter<PointerInput>,
     automap: Option<Res<crate::presentation::automap::Automap>>,
     notes: Res<crate::game::automap::MapNotes>,
+    mut members: Query<&mut crate::game::characters::Character>,
 ) {
     let (Ok((window_entity, window, cursor)), false) = (window.single(), party.is_empty()) else {
         return;
@@ -552,6 +553,25 @@ pub fn run_ui_script(
         }
         "use" => {
             commands.insert_resource(ScriptedUse(rest.to_owned()));
+        }
+        "hurt" => {
+            let amount: u32 = rest.parse().expect("hurt expects an amount");
+            for mut member in &mut members {
+                member.damage(amount);
+            }
+        }
+        "log-party" => {
+            for member in &members {
+                info!(
+                    "party: {} hp {}/{} stamina {}/{} {:?}",
+                    member.name,
+                    member.hp,
+                    member.max_hp(),
+                    member.stamina,
+                    member.max_stamina(),
+                    member.conditions
+                );
+            }
         }
         "face" => {
             commands.insert_resource(FacePropOnEntry::new(rest.to_owned()));

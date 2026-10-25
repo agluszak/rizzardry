@@ -1,6 +1,7 @@
 //! The party's roster, formation and spatial body.
 
 pub mod body;
+pub mod recovery;
 pub mod roster;
 pub mod walk_in;
 
@@ -38,7 +39,10 @@ impl Plugin for PartyPlugin {
         .init_resource::<PendingPartyMove>()
         .add_systems(
             FixedUpdate,
-            (body::drive_party.in_set(TnuaUserControlsSystems), walk_in::fly_party).chain(),
+            (
+                (body::drive_party.in_set(TnuaUserControlsSystems), walk_in::fly_party).chain(),
+                recovery::recover.after(crate::game::time::advance_clock),
+            ),
         )
         .add_systems(
             FixedPostUpdate,
