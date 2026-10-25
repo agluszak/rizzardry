@@ -55,58 +55,79 @@ Mod scripting is a later capability, not a prerequisite for data mods.
 
 ## Rendering
 
-Bevy owns graphics resources and the render graph. World gameplay entities carry
-or reference their render representation. Native children are appropriate for
-owned mesh parts, effects and attachment points; they are not a second gameplay
-scene graph.
+Bevy owns graphics resources and the render graph. World gameplay entities
+carry or reference their native render representation. Child entities are
+appropriate for mesh parts and attachment points, not a parallel scene graph.
 
-Preserve material alpha behavior, texture sampling, billboards, fog, sky,
-lighting and animation timing through representative comparisons. A modern PBR
-default does not automatically preserve the old art. Start with the simplest
-materials that reproduce it, then add a shader only for a demonstrated effect.
-The retained scene/culling machinery should come from the engine, while game
-visibility/detection rules remain separate from render culling.
+The implementation branch already uses `StandardMaterial`, built-in
+`DistanceFog`, `RenderLayers` for a sky camera, and retail environment tables
+for time-of-day clear color and vertex lighting. These are the right primitives.
+Preserve retail alpha rules, UV sampling, vertex illumination and view distance
+instead of blindly replacing them with physically based defaults.
 
-The minimap and full map are views of the same level exploration/annotation
-data. A render-to-texture camera is an option for world imagery, not the authority
-for map discovery or marker coordinates.
+The current vertex relighting updates `Mesh::ATTRIBUTE_COLOR` when the time
+phase changes. Keep it until a measured or correctness-driven need warrants a
+`MaterialExtension` with a small WESL shader. Such a shader could calculate
+time-dependent sunlight with per-vertex attributes on the GPU, but it can also
+add custom pipeline complexity. Don't add one merely to be modern.
+`StandardMaterial::uv_transform` is sufficient for simple scrolling clouds.
+
+The minimap and full map remain projections of exploration/annotation data;
+camera images are not the source of map discovery. See the specific
+[Bevy 0.20 rendering decisions](bevy-features.md#rendering-the-retail-world)
+and [UI viewport plan](bevy-features.md#the-wizardry-hud-a-real-ui-viewport).
 
 ## Animation: do not assume skeletal glTF
 
 Whizzardry's [AnimationMesh](https://github.com/agluszak/whizzardry-8/blob/9c433ec9725877a963cb43bb1df13d5d084ed873/include/wiz8/entities/animation_mesh.h)
 and [reader/player](https://github.com/agluszak/whizzardry-8/blob/9c433ec9725877a963cb43bb1df13d5d084ed873/src/entities/animation_mesh.cpp)
-handle both vertex frames in one mesh and separate meshes per frame. The
-broader [animation loader](https://github.com/agluszak/whizzardry-8/blob/9c433ec9725877a963cb43bb1df13d5d084ed873/src/entities/animation.cpp)
-also contains positioned parts and paths. A conversion to ordinary skeletal
-animation is not established by this evidence.
+handle vertex frames and separate meshes per frame. The
+[animation loader](https://github.com/agluszak/whizzardry-8/blob/9c433ec9725877a963cb43bb1df13d5d084ed873/src/entities/animation.cpp)
+also uses rigid positioned parts and keyframe paths. There is no evidence that
+all retail animation can be converted to skeletons.
 
-First prove one real monster's idle, movement, attack and death cycles and one
-animated prop. A small retail-frame playback component can select/interpolate
-decoded frame geometry. If profiling warrants it, move vertex-frame interpolation
-to a shader. Shared frame assets remain immutable; instances own clip/time state.
+Choose native Bevy representations **per actual format**:
 
-Use semantic clip requests and identified completion waits. Where gameplay
-requires a cycle milestone, the timeline reports it to the originating action.
-Death is already authoritative before its visual retirement; the monastery
-handoff explicitly waits for departure animation. These are different contracts.
+- Rigid transform paths: `AnimationClip` with transform curves and
+  `AnimationPlayer` for visuals; `AnimationGraph` only when blending is needed.
+- Fixed-topology vertex frames: evaluate Bevy `MorphWeights` on a real monster,
+  considering memory and GPU limits. Do not assume compressed retail frames
+  are automatically usable as morph targets.
+- Whole-mesh frame changes: switch among shared `Handle<Mesh>` values.
+- Collision-relevant doors and lifts: retain one authoritative fixed-step
+  `PropMotion`/pose shared by the visible parts and Avian colliders. Bevy's
+  standard animation plugin runs in `PostUpdate`, not the physics fixed step;
+  migrating the pose directly to an `AnimationPlayer` can desynchronize it.
+
+First compare a real monster's idle/walk/attack/death and one moving prop. Use
+animation events for presentation milestones only with playback identity; game
+operations remain authoritative for committed effects and outstanding waits.
+Details and Bevy references: [animation integration](bevy-features.md#animation-distinguish-visual-and-physical-timelines).
 
 ## UI and input
 
-Use native Bevy UI composition and stock interaction/focus behavior. Preserve
-retail art with decoded image/font assets and appropriate sizing, while making
-layout usable at modern resolutions. The initial game UI is not an egui editor.
+Use Rust `bsn!`, native Bevy UI layout, headless widgets, focus and picking.
+Preserve retail art and decoded fonts rather than adopt editor-styled Feathers
+as the game's appearance. External hot-reloadable `.bsn` assets are not a
+Bevy 0.20 dependency; prefer native Rust composition.
 
-A screen owns its view entities and drafts. Inventory slots display references
-to item values; buttons invoke semantic operations. Refresh the affected view
-from authoritative state, with direct retained entity handles where useful.
-Do not construct an intermediate widget catalog, UI interpreter or general
-binding framework just to update text and images.
+For the original **framed 3D game viewport**, evaluate Bevy 0.20
+`ViewportNode`. It sizes an offscreen render target from its UI node and
+forwards pointer input to the 3D camera. A bare `Camera.viewport` is simpler
+when the camera merely occupies a fixed rectangle; render-to-texture is useful
+for UI previews and portraits, not obligatory for the main world.
 
-Input contexts distinguish exploration, targeting, map editing, text entry,
-dialogue and modal confirmation. Opening a modal blocks underlying pointer
-picking and relevant global shortcuts, including edge movement. Keyboard focus,
-controller navigation and accessibility labels belong to the actual UI nodes.
-A map click must not also fire a combat action.
+Use the existing Avian center-ray for physical world interactions unless
+Bevy's 3D pointer picking replaces it cleanly. Avoid competing world
+selection models. UI overlays and modals must block underlying pointer
+events and global shortcuts as appropriate.
+
+Screen roots own their view entities and drafts. Values such as items,
+conditions, journal facts and map annotations stay in game state. Native
+`States` and `DespawnOnExit` can scope screens where useful, without a
+catch-all `UiState` or widget interpreter. Input contexts distinguish
+exploration, targeting, dialogue, map editing and text entry. See
+[Bevy UI and picking](bevy-features.md#one-selection-model-for-world-and-ui).
 
 ## Audio and cinematics
 
@@ -118,14 +139,21 @@ and [completion hold](https://github.com/agluszak/wizardry-8-decomp/blob/075cbd0
 are behavior to model, not a reason to reproduce the old speech queue globally.
 
 Use separate gameplay and presentation randomness for barks/visual variation.
-Make music state, spatial sound placement and pause behavior explicit. Evaluate
-FFmpeg only at the video boundary if the shipped cinematic formats require it.
+Make music state, spatial sound placement and pause behavior explicit. Enable
+the `wav` feature on Bevy for retail WAV playback (the default `audio`
+collection includes Vorbis, not WAV). Start with `AudioPlayer`,
+`AudioSink` and `SpatialAudioSink`, and characterize actual completion and
+hold behavior before adding a separate audio library. Evaluate FFmpeg only at
+the video boundary if the shipped cinematic formats require it.
 
 ## First proof and unresolved content
 
-The first imported room must exercise actual geometry, collision, a door/trigger,
-one monster's frame animation, one texture with alpha, a UI image/font and voice.
-That is the useful test of whether the proposed adapters remove the old engine.
+The first imported room must exercise geometry, collision, an authored
+door/trigger, a real actor's animation, one alpha texture, a UI viewport and
+one voice. The `first-slice` branch already demonstrates world/prop meshes,
+collisions, door/lever motion, links, teleports, fog, sky and animated textures;
+it does not yet demonstrate the full actor/voice/UI loop. Prefer completing
+that loop using Bevy's facilities over adding new engine code.
 
 Retail `.NSF`/`.MSF` dialogue and level/database payloads are absent from the
 research trees. This prevents proving the monastery's precise entry/quote gates,

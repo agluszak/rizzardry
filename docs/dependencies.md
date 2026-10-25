@@ -1,13 +1,12 @@
 # Dependencies
 
-Research snapshot: 24 October 2026. These are proposed choices, not a tested
-`Cargo.lock`. The first implementation spike must compile the selected set on
-the native target platforms before the versions become project commitments.
-
-**Compiled and running (25 October 2026)** on Linux (Wayland, Vulkan/Mesa),
-with `Cargo.lock` committed. macOS and Windows are untested. `serde`/`ron`,
-`binrw` and the inspector are not used yet: the irregular retail records so far
-read cleanly with a small bounds-checked cursor.
+Implementation status: 25 October 2026. Bevy 0.20, Avian 0.8,
+Tnua, Landmass and the vendored Rerecast core are compiled and exercised on
+Linux (Wayland, Vulkan/Mesa). The [`first-slice` branch](https://github.com/agluszak/rizzardry/tree/first-slice)
+is ahead of `main` and additionally contains retail `.oct` collision,
+animated props, doors/links, teleports, fog, lighting and skies. Those code
+changes are not merged by this documentation update. macOS and Windows are
+not verified; `serde` is present but native saves/definitions are not built.
 
 ## Chosen set
 
@@ -21,7 +20,7 @@ read cleanly with a small bounds-checked cursor.
 | Pathfinding, steering, avoidance | `bevy_landmass`, PR #195 branch pinned by git rev | Party is a `Character3d`, walkers are `Agent3d` |
 | Command line | `clap` 4 | Game and examples |
 | Definition/save serialization | `serde` + `ron` | Not yet needed |
-| Retail binary parsing | `binrw` | Not yet needed |
+| Retail binary parsing | Small bounds-checked cursor; optional `binrw` | Existing cursor is working; no library needed without a reduction in code |
 | Developer inspection | Optional `bevy-inspector-egui` 0.38 | Not yet needed |
 
 Primary references:
@@ -69,11 +68,12 @@ Integration choices:
   collider, which are already in hand. `landmass_rerecast` is not ported to
   Bevy 0.20; its 65-line mesh conversion is adapted in
   `game::world::navigation`.
-- `rerecast` is vendored in `third_party/` with one fix: when contour
-  triangulation finds no diagonal, upstream fails the whole navmesh, while
-  recastnavigation keeps the partial triangulation and warns. Without the fix,
-  18 of 34 retail levels fail to bake. Report it upstream and drop the copy
-  once fixed.
+- `rerecast` is vendored in `third_party/` with two fixes restoring
+  recastnavigation behaviour: region holes are merged into their outlines
+  (upstream omits Recast's `mergeRegionHoles`, so obstacles inside a region
+  were either a failed bake or covered by walkable polygons), and a failed
+  contour triangulation keeps its partial result instead of failing the
+  bake. See `third_party/README.md`.
 - Navmeshes go through Bevy's asset processor (`AssetMode::Processed`,
   `asset_processor` feature). A virtual `navmesh://` source exposes every
   retail `<level>.pvl` as `<level>.navmesh`. `LoadTransformAndSave` reads its
@@ -83,12 +83,15 @@ Integration choices:
   re-bakes automatically. The first launch bakes all 34 levels in parallel
   (0.1 to 2 s each); later launches only load. The retail source has a
   processed reader but no writer, so it is never processed or copied.
-- The conversion repairs Recast precision artifacts that Landmass rejects:
-  duplicate or spike vertices are removed, polygons that stay concave are
-  dropped, and flipped detail triangles are rewound
-  (`navigation::bake::repair`). All 34 levels validate. Most need no repair;
-  the worst, `trynnie2`, drops 49 of about 1600 polygons at the old 0.35 m
-  step height and none at 0.5 m.
+- The bake input is the level's `.oct` collision mesh (the same one the
+  Avian collider uses), compacted to referenced vertices. Walkable area comes
+  from the surfaces' designer-marked pathfinding flag, not a slope test.
+- The conversion fixes only numerical artifacts Landmass rejects:
+  duplicate or spike vertices are removed, polygons with no area in the
+  walking plane are dropped, flipped detail triangles are rewound
+  (`navigation::bake::repair`). A concave polygon with area fails the bake.
+  All 34 levels validate; the only repairs are 6 zero-area slivers along
+  ramps (1 in `mtgigastop`, 5 in `trynnie2`).
 - Moving actors never trigger a rebake.
 
 `cargo run --example navmesh_bake` bakes outside the game and reports
@@ -108,18 +111,17 @@ settings.
 - **Crowds.** 30 walkers on the upper monastery ran at about 110 fps (dev
   build, debug gizmos on), all in `Moving`, and closed to a median of 2.2 m
   around the party, queueing around each other instead of overlapping.
-- **Remaining splits are structural.** Several levels still have large
-  separate pieces (e.g. the monastery beach and monastery, 26,600 and 14,300
-  m², 2.2 m apart across a 1.3 m drop). Looser climb and height limits do
-  not merge them. They need retail data we do not decode yet: doors,
-  teleporters, elevators and ladders as Landmass links, and the `.oct`
-  collision surfaces with walkable flags. Those surfaces also matter because
-  translucent water is currently not solid, so riverbeds under water are
-  walkable navmesh.
-- **Party on stairs.** The party's wide, flat-bottomed cylinder (0.83 m
-  radius, 0.5 m clearance) can catch on stairs that rise inside its radius;
-  at entrance `MO202` it did not move under scripted input. Retail moves a
-  sphere. Not resolved.
+- **Retail collision surfaces.** Baking from the `.oct` collision instead of
+  opaque render polygons joined most splits: the lower monastery's largest
+  component went from 58% to 85% of the walkable area, the upper monastery's
+  to 99.6%, `marten1`'s from 38% to 94%. It also makes riverbeds under
+  translucent water walkable, as in retail, and adds the invisible walls.
+  Remaining splits are mostly doors, drops and links (teleporters,
+  elevators, ladders) still to be modelled.
+- **Party on stairs.** A wide, flat-bottomed cylinder (0.83 m radius, 0.5 m
+  clearance) caught on stairs rising inside its radius and never left the
+  `MO202` entrance. The party now uses retail's sphere (slightly smaller so
+  it clears the ground), which climbs those stairs.
 - **Not tested.** Doors (no props yet), per-size navmeshes, and flying
   monsters. Landmass avoidance is horizontal, so flying monsters need separate
   handling rather than pretending a surface navmesh is 3D navigation.
@@ -130,21 +132,30 @@ combat movement budget. The [navigation design](systems/combat-ai-and-navigation
 separates those decisions. No library choice is justified solely by a flat-floor
 pathfinding demo.
 
-## Use native Bevy features first
+## Use Bevy 0.20 facilities before adding libraries
 
-- Native UI layout, picking, focus, accessibility and headless widgets. The game
-  supplies its art and behavior binding. Feathers can help development tools,
-  but its editor styling does not define the game's visual identity.
-- Rust `bsn!` composition where it simplifies UI/scene construction. The 0.20
-  release notes still put the external `.bsn` asset format under "What's Next?";
-  do not require hot-reloadable `.bsn` files for the initial UI. The release post
-  includes a future-looking file example, so the prose feature status matters.
-- Standard asset loading, meshes, materials, textures, cameras, render layers
-  and render-to-texture. No replacement C++-shaped scene graph.
-- Built-in audio initially, with the codecs needed by actual assets enabled.
-  Verify voice completion, pause/resume, spatial attenuation and music behavior
-  before adding another audio plugin.
-- Native diagnostics and tracing rather than a second logging system.
+The detailed decisions are in [Bevy 0.20 integration](bevy-features.md).
+Use the engine's existing features selectively; do not rewrite working code
+just to fit a fashionable API.
+
+| Feature | Intended use and gate |
+| --- | --- |
+| `AnimationClip`, `AnimationPlayer`, events | Visual rigid-part animation and identified milestones; **do not desynchronize fixed-step colliders** |
+| `MorphWeights` | Test on one retail vertex-frame monster with stable topology and acceptable GPU memory |
+| `DistanceFog`, `RenderLayers`, `StandardMaterial` | Already used on the implementation branch for retail environment and sky |
+| `ExtendedMaterial`, WESL | Add only for verified visual fidelity or less code than CPU mesh relighting |
+| Picking + Avian `SpatialQuery` | Keep one authoritative target per world interaction; native UI picking/focus for widgets |
+| Rust `bsn!`, headless UI widgets | Native inventory/dialogue UI; external `.bsn` files are not required in 0.20 |
+| `ViewportNode` | Candidate for the game HUD's framed 3D view: resizable UI surface with 3D pointer forwarding |
+| `Camera.viewport`, render-to-texture | Use the simpler direct camera viewport when adequate; offscreen view for UI-integrated viewport/previews |
+| Image asset processing and `CompressedImageSaver` | After shared retail images replace level-local labeled subassets; then consider deleting CPU mipmap code |
+| `AudioPlayer`, `SpatialAudioSink` | Begin with built-in audio and explicitly enable Bevy `wav`; validate playback completion |
+| `States`, `DespawnOnExit` | Scope UI screens or modes, not persisted character or campaign state |
+
+Bevy's default `audio` feature enables Vorbis but not WAV. When integrating
+retail voice/sound, add `wav` to the project's Bevy features. External
+`bevy_rerecast`, `avian_rerecast`, `landmass_rerecast`, a new animation
+framework or an audio mixer are not needed merely because they exist.
 
 ## Add only for a demonstrated gap
 

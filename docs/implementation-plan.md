@@ -15,82 +15,71 @@ and remaining decisions.
 No time estimate is useful until the first real-map and asset experiments
 establish what Bevy handles directly.
 
-## 1. Establish the engine and content boundary
+## 1. Complete the real-world engine slice
 
-**Playable result:** load a representative room, walk the party through it,
-interact with one prop, play one original-style animated actor and one voice
-line.
+**Playable result:** enter a representative retail room, traverse stairs,
+open a door, use a scripted prop, observe one real animated actor, hear one
+original voice line, and interact through a small native UI.
 
-Work:
+The [`first-slice` implementation branch](https://github.com/agluszak/rizzardry/tree/first-slice)
+is ahead of `main`. **Observed/reporting status as of 25 October 2026:**
+on Linux it has Bevy 0.20 + Avian 0.8 + Tnua + Landmass + Rerecast working
+together; it reads retail SLF/PVL/OCT assets, renders level and prop meshes,
+loads material textures and animation lists, uses the original 500-units-per-
+metre scale, and bakes navigation from authored `.oct` collision surfaces.
+The branch further implements a single level root, fixed-step movement, a
+collision sphere for the party, door/lever/lid paths, navigation links and
+same-level teleports, an advancing game clock, time-of-day sky lighting and
+fog, and a background sky view. This is **not** a claim that `main` has
+merged the branch or that every retail behavior has been verified.
 
-- Compile one coherent engine/input/physics/UI dependency set on the intended
-  native platforms and commit its lockfile.
-- Decode enough retail content to obtain real geometry, collision, textures,
-  anchors, an actor's animation and audio. Keep proprietary assets external.
-- Test stairs, slopes, narrow doors, an elevator/platform and line-of-sight
-  queries with the party's actual dimensions.
-- Test navigation through doors, links and multiple levels. Resolve the
-  Bevy 0.20 versus navigation-plugin compatibility decision before spreading
-  plugin-specific types through gameplay.
-- Prove vertex/frame animation and identified playback completion; do not
-  assume every original animation becomes a skeletal glTF clip.
-- Build a small native UI with keyboard/gamepad focus, text entry and input
-  capture. Use it to prove map-note editing rather than building all screens.
+Outstanding work should follow the [Bevy-native feature decisions](bevy-features.md)
+instead of creating another engine layer.
 
-**Exit evidence:** checked-in minimal code and a documented asset invocation;
-observed behavior on the representative geometry; chosen versions and known
-gaps recorded in [dependencies](dependencies.md). A flat test plane alone does
-not settle the controller/navigation choice.
+### Next concrete implementation work
 
-**Do not build yet:** a universal asset converter, an editor suite, a scripting
-VM, interchangeable physics backends or a full UI framework.
+1. **Validate one complete authored prop interaction.** Use a monastery
+   mechanism such as the Monastery 2 `bell_button`/`dial1` combination:
+   source-backed pick/range gating, persistent trigger effect, prop frame
+   changes, the correct sound and final disabled state. The branch already
+   has the prop and door basics, so extend them instead of replacing them.
+2. **Prove an actual animated actor.** Convert one real monster's
+   idle/walk/attack/death. Compare Bevy `MorphWeights` for fixed-topology
+   vertex frames with immutable per-frame mesh handles. Use
+   `AnimationClip`/`AnimationPlayer` for ordinary visual transform
+   tracks where beneficial. Preserve a fixed-step pose for collision-driven
+   doors and lifts; Bevy's default animation system runs in `PostUpdate`.
+3. **Implement original WAV playback and completion.** Enable Bevy's
+   `wav` feature. Use `AudioPlayer`/`AudioSink` or
+   `SpatialAudioSink`; test voice completion and holds with a real clip.
+   Keep the identifying playback request separate from game consequences.
+4. **Prove the first UI screen.** Rust `bsn!`, native focus/widgets,
+   a framed 3D `ViewportNode` if it simplifies the Wizardry HUD, and
+   correctly routed UI/world pointer events; exercise keyboard/gamepad
+   focus and modal capture. Prefer `Camera.viewport` if a simple direct
+   rectangle is enough. Do not build a UI framework or require external
+   `.bsn` files.
+5. **Check the new world features against retail:** authored door
+   geometry/navigation while closing, two-level loading without spawning
+   a second party, original entrance ground placement, fog/sky/light
+   appearance and animation/contact ordering. The ability to bake all
+   34 levels doesn't prove each location's traversal.
 
-**Status (25 October 2026):** in progress. Done:
+### Exit evidence
 
-- `retail::files` indexes an unmodified installation: base SLF libraries (more
-  specific prefixes win), `patches/patch.NNN`, then loose files. It is exposed
-  to Bevy as the `retail://` asset source.
-- `retail::pvl` decodes the compiled level meshes and material table at the
-  start of every retail `.pvl` (all 34 load). `retail::level_loader` turns them
-  into Bevy meshes per octree mesh and material, repeat-sampled TGA textures
-  and collision triangles.
-- `retail::trigger` decodes type 4 trigger records. A new game enters the
-  monastery at `MO100`, the retail new-game entrance.
-- The party is one Avian body moved by Tnua, using the retail eye height,
-  500-unit reach, walk/run/turn speeds, pitch limit and gravity. Its collider
-  is raised 0.35 m (provisional) so steps meet Tnua's floating spring.
-  Controls use an `Exploration` input context.
-- A Rerecast navmesh is baked per level by Bevy's asset processor, cached,
-  and used by Landmass. Stand-in walkers chase the party across both
-  monastery levels. See [dependencies](dependencies.md#navigation).
+- An interaction completes from the *same* decoded trigger and moving prop
+  that the player sees; closing/opening changes usable collision and pathing.
+- A monster's actual retail animation plays without per-frame CPU mesh
+  reuploads unless that is the simplest proven representation.
+- A real voice plays and its specific completion is observable by its owner.
+- The 3D viewport and native UI don't send the same click to two targets.
+- Travel leaves one surviving party and no orphaned prior-level entities.
+- The render result is compared against a known retail location, not only a
+  flat demo map.
 
-Decisions made while doing this:
-
-- Retail space is Y-up and left-handed. Bevy space mirrors Z, reverses
-  triangle winding and uses 600 retail units per metre, which puts the eye
-  1000 units (1.67 m) above the feet.
-- Retail velocities are per 0.1 s tick; converted constants cite their source.
-
-Known gaps, in rough order:
-
-- The `.pvl` sections between the meshes and the triggers are not decoded:
-  lights, monster paths, items, props, bitmaps, cameras and environment. Until
-  they are, `find_item_trigger` locates an entrance by validating a type 4
-  record found by its name. Replace it with a sequential section reader.
-- Lighting is unlit vertex colour: static light, plus sun exposure at a
-  provisional 0.75 until the environment's sun colour is decoded. There is no
-  sky, fog or dynamic lighting. Animated `.ifl` textures show their first
-  frame, and textures have no mipmaps.
-- Collision and navigation use every fully opaque level polygon. Retail
-  collision uses `.oct` surfaces with walkable flags and contact margins, and
-  props collide too. Ground probing at entry is replaced by settling under
-  gravity. Retail caps falls at 3000 units per tick; that cap is not applied.
-- Navigation needs doors, teleporters and elevators as links, and retail
-  collision surfaces; the party collider can catch on stairs. See the
-  experiment results in [dependencies](dependencies.md#experiment-results-25-october-2026).
-- The handedness conversion has only been checked visually. Compare it against
-  a retail screenshot, e.g. readable text or a known landmark layout.
-- No props, doors, actors, animation, UI, audio or navigation yet.
+**Do not build yet:** a universal asset converter, interchangeable physics
+backends, a scripting VM, a generic animation-action workflow engine, a
+separate scene graph or an editor suite.
 
 ## 2. Make party and inventory state useful
 
