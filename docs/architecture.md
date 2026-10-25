@@ -187,7 +187,11 @@ semantics are in [persistence and travel](systems/persistence-and-travel.md).
 An operation restores its own invariants before returning. Examples are
 `move_item`, `consume_use`, `apply_damage`, `commit_level_up`, `sell_item` and
 `dismiss_rpc`. A cross-domain operation is a readable sequence of ordinary calls.
-Return actual outcomes, including partial transfer and an unplaced remainder.
+Resolve stable authored links (for example trigger-to-prop names) once when
+loading the map, rather than reconstructing mutable lookup tables by scanning
+every entity on each interaction. Such indexes are derived references, never
+another mutable copy of the world. Return actual outcomes, including partial
+transfer and an unplaced remainder.
 Do not impose rollback/all-or-nothing semantics on every interaction.
 
 UI handlers can edit drafts directly. Gameplay requests are consumed by their
