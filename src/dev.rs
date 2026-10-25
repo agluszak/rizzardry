@@ -295,7 +295,7 @@ pub fn face_prop_on_entry(
         return; // not computed yet
     }
     request.done = true;
-    let (min, max) = (Vec3::from(aabb.min), Vec3::from(aabb.max));
+    let (min, max) = (aabb.min, aabb.max);
     let centre = (min + max) / 2.0;
     let size = max - min;
     // Stand off the prop across its thinner horizontal axis.
