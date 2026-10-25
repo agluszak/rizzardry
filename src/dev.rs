@@ -13,7 +13,7 @@ use bevy_tnua::builtins::TnuaBuiltinWalkConfig;
 use bevy_tnua::prelude::*;
 use bevy_tnua_avian3d::prelude::*;
 
-use crate::game::party::body::{PartyBody, Walk};
+use crate::game::party::body::{Interact, PartyBody, Walk};
 use crate::game::world::navigation::{LevelNavigation, Walker, WalkerMotion, WalkerMotionConfig};
 
 /// Capture the window `after` seconds once the party is in the world, then
@@ -237,4 +237,74 @@ pub fn overhead_view(
         camera.translation = Vec3::Y * view.height;
         camera.rotation = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
     }
+}
+
+/// Press "interact" once, this many seconds after the party appears.
+#[derive(Resource, Debug, Clone)]
+pub struct ScriptedInteract {
+    pub after: f32,
+    pub elapsed: f32,
+    pub done: bool,
+}
+
+pub fn scripted_interact(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut script: ResMut<ScriptedInteract>,
+    interact: Single<Entity, With<Action<Interact>>>,
+    party: Query<(), With<PartyBody>>,
+) {
+    if script.done || party.is_empty() {
+        return;
+    }
+    script.elapsed += time.delta_secs();
+    if script.elapsed >= script.after {
+        script.done = true;
+        commands.entity(*interact).insert(ActionMock::once(TriggerState::Fired, true));
+    }
+}
+
+/// Put the party 2 m in front of a named prop, facing it, once its collider
+/// exists. Used to test props without walking to them.
+#[derive(Resource, Debug, Clone)]
+pub struct FacePropOnEntry {
+    pub name: String,
+    pub done: bool,
+}
+
+pub fn face_prop_on_entry(
+    mut request: ResMut<FacePropOnEntry>,
+    props: Query<(&Name, &Children), With<crate::game::world::props::Prop>>,
+    bounds: Query<&ColliderAabb>,
+    mut party: Query<
+        (&mut PartyBody, &mut Position, &mut Transform),
+        Without<crate::game::world::props::Prop>,
+    >,
+) {
+    if request.done {
+        return;
+    }
+    let Ok((mut body, mut position, mut transform)) = party.single_mut() else { return };
+    let Some((_, children)) =
+        props.iter().find(|(n, _)| n.as_str().eq_ignore_ascii_case(&request.name))
+    else {
+        return;
+    };
+    let Some(aabb) = children.iter().find_map(|c| bounds.get(c).ok()) else { return };
+    if aabb.min.x > aabb.max.x {
+        return; // not computed yet
+    }
+    request.done = true;
+    let (min, max) = (Vec3::from(aabb.min), Vec3::from(aabb.max));
+    let centre = (min + max) / 2.0;
+    let size = max - min;
+    // Stand off the prop across its thinner horizontal axis.
+    let across = if size.x < size.z { Vec3::X } else { Vec3::Z };
+    let eye = (centre + across * 2.0).with_y(min.y + crate::game::party::body::EYE_HEIGHT);
+    // Teleport: Avian takes a changed Transform as the new position.
+    position.0 = eye - Vec3::Y * crate::game::party::body::EYE_ABOVE_CENTRE;
+    transform.translation = position.0;
+    let forward = -across;
+    body.yaw = (-forward.x).atan2(-forward.z);
+    info!("placed the party at {eye:.2} facing prop {} ({min:.2}..{max:.2})", request.name);
 }

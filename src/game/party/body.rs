@@ -12,6 +12,7 @@ use bevy_tnua::prelude::*;
 use bevy_tnua_avian3d::prelude::*;
 
 use crate::game::world::level::LevelReady;
+use crate::game::world::props::{Prop, PropMotion, prop_under_ray, use_prop};
 use crate::retail::space::UNITS_PER_METRE as U;
 
 // Retail motion values (Whizzardry `party_camera.cpp`, `collision.cpp`,
@@ -27,7 +28,9 @@ use crate::retail::space::UNITS_PER_METRE as U;
 // never left the upper monastery's MO202 entrance).
 const RADIUS: f32 = 500.0 / U;
 pub const FLOAT_HEIGHT: f32 = 500.0 / U;
-const EYE_ABOVE_CENTRE: f32 = 500.0 / U;
+pub const EYE_ABOVE_CENTRE: f32 = 500.0 / U;
+/// The eye above the feet.
+pub const EYE_HEIGHT: f32 = 1000.0 / U;
 const WALK_SPEED: f32 = 3750.0 / U;
 const RUN_SPEED: f32 = 7500.0 / U;
 /// Maximum yaw speed, 0.349 rad per tick.
@@ -82,6 +85,11 @@ pub struct FreeLook;
 #[action_output(bool)]
 pub struct Run;
 
+/// Use the prop or object in front of the party.
+#[derive(InputAction)]
+#[action_output(bool)]
+pub struct Interact;
+
 pub fn spawn_exploration_controls(mut commands: Commands) {
     commands.spawn_scene(bsn! {
         Exploration
@@ -125,6 +133,13 @@ pub fn spawn_exploration_controls(mut commands: Commands) {
                 Binding(KeyCode::ShiftLeft)
                 --
                 Binding(KeyCode::ShiftRight)
+            ]
+            --
+            Action::<Interact>::new()
+            Bindings [
+                Binding(KeyCode::Space)
+                --
+                Binding(MouseButton::Left)
             ]
         ]
     });
@@ -232,5 +247,29 @@ pub fn drive_party(
 pub fn aim_camera(party: Query<&PartyBody>, mut camera: Query<&mut Transform, With<PartyCamera>>) {
     if let (Ok(body), Ok(mut camera)) = (party.single(), camera.single_mut()) {
         camera.rotation = Quat::from_rotation_y(body.yaw) * Quat::from_rotation_x(body.pitch);
+    }
+}
+
+/// Use the prop at the centre of the view, within reach.
+pub fn interact(
+    interact: Single<&ActionEvents, With<Action<Interact>>>,
+    party: Query<Entity, With<PartyBody>>,
+    camera: Query<&GlobalTransform, With<PartyCamera>>,
+    spatial: SpatialQuery,
+    prop_entities: Query<(), With<Prop>>,
+    parents: Query<&ChildOf>,
+    mut props: Query<(&Name, &mut Prop, &mut PropMotion)>,
+) {
+    if !interact.contains(ActionEvents::START) {
+        return;
+    }
+    let (Ok(party), Ok(camera)) = (party.single(), camera.single()) else { return };
+    let ray = Ray3d::new(camera.translation(), camera.forward());
+    let Some(target) = prop_under_ray(ray, party, &spatial, &prop_entities, &parents) else {
+        return;
+    };
+    if let Ok((name, mut prop, mut motion)) = props.get_mut(target) {
+        let outcome = use_prop(&mut prop, &mut motion);
+        info!("used {name}: {outcome:?}");
     }
 }

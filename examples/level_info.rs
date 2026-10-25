@@ -3,6 +3,10 @@
 //! cargo run --example level_info -- --retail <dir> [levels/monastery/monastery1.pvl]
 
 use clap::Parser;
+use rizzardry::retail::bytes::Bytes;
+use rizzardry::retail::prop_loader::part_transforms;
+use rizzardry::retail::sections::read_sections;
+use rizzardry::retail::trigger::TriggerKind;
 use rizzardry::retail::{files::RetailFiles, pvl::read_level_geometry};
 
 #[derive(clap::Parser)]
@@ -13,6 +17,9 @@ struct Args {
     retail: std::path::PathBuf,
     /// One level to inspect; all levels by default.
     level: Option<String>,
+    /// List props with their triggers and paths.
+    #[arg(long)]
+    props: bool,
 }
 
 fn main() {
@@ -25,6 +32,40 @@ fn main() {
     for name in names {
         let data = files.read(&name).expect("level exists").unwrap();
         let level = read_level_geometry(&data).unwrap();
+        if args.props {
+            let sections = read_sections(&mut Bytes::new(&data[level.end..])).unwrap();
+            for prop in sections.props.iter().chain(&sections.bitmaps) {
+                let keys: Vec<usize> = prop
+                    .detailed_parts()
+                    .iter()
+                    .map(|p| p.path.as_ref().or(prop.path.as_ref()).map_or(0, Vec::len))
+                    .collect();
+                let trigger = prop.trigger.as_ref().map(|t| match &t.kind {
+                    TriggerKind::Item(item) => format!(
+                        "{} actions {:#x}/{:#x}/{:#x} recipients {:?} data {:?} door {:?}",
+                        t.name,
+                        item.initial_action,
+                        item.alternate_action,
+                        item.fallback_action,
+                        item.recipients,
+                        item.data,
+                        item.door.as_ref().map(|d| (d.open, d.locked, d.item))
+                    ),
+                    other => format!("{} {other:?}", t.name),
+                });
+                let rest: Vec<String> = part_transforms(prop)
+                    .iter()
+                    .map(|(t, _)| format!("{:.1}", t.translation))
+                    .collect();
+                println!(
+                    "  {:?} at {rest:?} flags {:#x} fps {} parts {} keys {keys:?} trigger {trigger:?}",
+                    prop.name,
+                    prop.flags,
+                    prop.frames_per_second,
+                    prop.detailed_parts().len()
+                );
+            }
+        }
         let (mut min, mut max) = ([f32::MAX; 3], [f32::MIN; 3]);
         let (mut uv_min, mut uv_max) = ([f32::MAX; 2], [f32::MIN; 2]);
         let mut polygons = 0;

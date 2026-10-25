@@ -8,6 +8,7 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy_landmass::NavMesh3d;
 
+use super::props::{Prop, PropMotion};
 use crate::content::level::LevelGeometry;
 
 /// The root of the level the party is in.
@@ -67,9 +68,13 @@ pub fn build_level_geometry(
                 parent.spawn((Mesh3d(part.mesh.clone()), MeshMaterial3d(part.material.clone())));
             }
             for prop in &geometry.props {
+                let last_frame =
+                    prop.parts.iter().map(|p| p.keys.len().saturating_sub(1)).max().unwrap_or(0);
                 parent
                     .spawn((
                         Name::new(prop.name.clone()),
+                        Prop::new(prop.interaction.clone(), prop.frames_per_second, last_frame),
+                        PropMotion::default(),
                         Transform::default(),
                         Visibility::default(),
                     ))
@@ -80,24 +85,26 @@ pub fn build_level_geometry(
                                 part.transform,
                                 Visibility::default(),
                             ));
-                            if prop.collidable {
-                                match Collider::try_trimesh_with_config(
-                                    part.collision.vertices.clone(),
-                                    part.collision.triangles.clone(),
-                                    TrimeshFlags::MERGE_DUPLICATE_VERTICES
-                                        | TrimeshFlags::DELETE_DEGENERATE_TRIANGLES,
-                                ) {
+                            match Collider::try_trimesh_with_config(
+                                part.collision.vertices.clone(),
+                                part.collision.triangles.clone(),
+                                TrimeshFlags::MERGE_DUPLICATE_VERTICES
+                                    | TrimeshFlags::DELETE_DEGENERATE_TRIANGLES,
+                            ) {
+                                Ok(collider) => {
                                     // Parts with a path can move (doors, lifts).
-                                    Ok(collider) => {
-                                        let body = if part.keys.is_empty() {
-                                            RigidBody::Static
-                                        } else {
-                                            RigidBody::Kinematic
-                                        };
-                                        part_entity.insert((body, collider));
+                                    let body = if part.keys.is_empty() {
+                                        RigidBody::Static
+                                    } else {
+                                        RigidBody::Kinematic
+                                    };
+                                    part_entity.insert((body, collider));
+                                    // Props the party walks through can still be used.
+                                    if !prop.collidable {
+                                        part_entity.insert(Sensor);
                                     }
-                                    Err(error) => warn!("prop {} collider: {error:?}", prop.name),
                                 }
+                                Err(error) => warn!("prop {} collider: {error:?}", prop.name),
                             }
                             part_entity.with_children(|meshes| {
                                 for mesh in &part.meshes {

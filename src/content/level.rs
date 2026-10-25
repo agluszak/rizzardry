@@ -26,7 +26,30 @@ pub struct PropModel {
     pub name: String,
     /// Retail `COLLIDABLE`: the party and monsters collide with its parts.
     pub collidable: bool,
+    /// Path keys advanced per second when the prop animates.
+    pub frames_per_second: f32,
     pub parts: Vec<PropModelPart>,
+    /// What using the prop does, from its attached trigger.
+    pub interaction: Option<PropInteraction>,
+}
+
+/// The attached trigger of a usable prop.
+#[derive(Clone, Debug, Reflect)]
+pub struct PropInteraction {
+    pub trigger: String,
+    /// Retail action codes: the first use runs `initial_action`, later uses
+    /// `alternate_action` when it is set.
+    pub initial_action: u32,
+    pub alternate_action: u32,
+    pub door: Option<DoorLock>,
+}
+
+/// A door's lock state.
+#[derive(Clone, Copy, Debug, Reflect)]
+pub struct DoorLock {
+    pub locked: bool,
+    /// The key item that unlocks it.
+    pub key: Option<u16>,
 }
 
 /// One rigid part of a prop, in its rest pose.

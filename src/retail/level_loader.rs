@@ -18,8 +18,10 @@ use super::prop_loader::{PropLighting, part_transforms, record_collision, record
 use super::pvl::{CompiledMesh, MaterialRecord, PvlError, read_level_geometry};
 use super::sections::read_sections;
 use super::space::{retail_direction, retail_position};
+use super::trigger::TriggerKind;
 use crate::content::level::{
-    LevelGeometry, LevelPart, Playback, PropModel, PropModelPart, TextureAnimation,
+    DoorLock, LevelGeometry, LevelPart, Playback, PropInteraction, PropModel, PropModelPart,
+    TextureAnimation,
 };
 use crate::presentation::mipmaps::generate_mipmaps;
 
@@ -372,10 +374,24 @@ impl AssetLoader for PvlLoader {
                     collision: record_collision(record),
                 });
             }
+            let interaction = prop.trigger.as_ref().and_then(|trigger| match &trigger.kind {
+                TriggerKind::Item(item) if item.initial_action != 0 => Some(PropInteraction {
+                    trigger: trigger.name.clone(),
+                    initial_action: item.initial_action,
+                    alternate_action: item.alternate_action,
+                    door: item.door.as_ref().map(|door| DoorLock {
+                        locked: door.locked,
+                        key: (door.item != u16::MAX && door.item != 0).then_some(door.item),
+                    }),
+                }),
+                _ => None,
+            });
             props.push(PropModel {
                 name: prop.name.clone(),
                 collidable: prop.flags & PROP_COLLIDABLE != 0,
+                frames_per_second: prop.frames_per_second,
                 parts,
+                interaction,
             });
         }
         Ok(LevelGeometry { parts, collision, props, animated_textures })

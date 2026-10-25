@@ -26,6 +26,7 @@ impl Plugin for PartyPlugin {
             (
                 body::spawn_party_on_ready.after(build_level_geometry),
                 (body::look_around, body::aim_camera).chain(),
+                body::interact,
             ),
         )
         // Tnua and Avian step on the fixed timestep; movement input feeds
