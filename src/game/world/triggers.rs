@@ -40,6 +40,10 @@ pub struct Device {
     pub recipients: Vec<Entity>,
 }
 
+/// Authored traversal order, resolved once per visit; not an owner of device state.
+#[derive(Component, Debug, Default)]
+struct PositionedDevices(Vec<Entity>);
+
 /// Only level-wide variables and visit state live on the level.
 #[derive(Component, Debug, Default)]
 pub struct LevelState {
@@ -108,7 +112,7 @@ pub struct DeviceProximity {
 }
 
 /// Dormant records use authored indices, never runtime entity references.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct TriggerMemory {
     devices: HashMap<usize, KeptDevice>,
     variables: HashMap<String, bool>,
@@ -181,7 +185,7 @@ pub fn spawn_devices(
     props: &[Entity],
     script: LevelScript,
     tables: &LootTables,
-    memory: Option<&TriggerMemory>,
+    mut memory: Option<TriggerMemory>,
 ) -> Vec<Entity> {
     let mut attached = vec![None; geometry.triggers.len()];
     for (index, prop) in geometry.props.iter().enumerate() {
@@ -197,8 +201,9 @@ pub fn spawn_devices(
         .map(|prop| prop.unwrap_or_else(|| commands.spawn(ChildOf(level)).id()))
         .collect();
     let mut state = LevelState::default();
+    let mut positioned = PositionedDevices::default();
     for (index, definition) in geometry.triggers.iter().enumerate() {
-        let kept = memory.and_then(|m| m.devices.get(&index));
+        let mut kept = memory.as_mut().and_then(|m| m.devices.remove(&index));
         let mut entity = commands.entity(devices[index]);
         entity.insert((
             Device {
@@ -207,9 +212,9 @@ pub fn spawn_devices(
                 recipients: definition.recipients.iter().map(|&i| devices[i]).collect(),
             },
             TriggerState {
-                on: kept.is_none_or(|k| k.on),
-                fired: kept.is_some_and(|k| k.fired),
-                use_alternate: kept.is_some_and(|k| k.use_alternate),
+                on: kept.as_ref().is_none_or(|k| k.on),
+                fired: kept.as_ref().is_some_and(|k| k.fired),
+                use_alternate: kept.as_ref().is_some_and(|k| k.use_alternate),
                 awaits_animation: false,
             },
         ));
@@ -221,26 +226,30 @@ pub fn spawn_devices(
                 .clone()
                 .any(|b| matches!(b.action, TriggerAction::OpenDoor | TriggerAction::ToggleDoor))
         {
-            entity.insert(kept.and_then(|k| k.door.clone()).unwrap_or(DoorState {
+            entity.insert(kept.as_mut().and_then(|k| k.door.take()).unwrap_or(DoorState {
                 open: false,
                 locked: definition.door.is_some_and(|d| d.locked),
             }));
         }
         if actions.clone().any(|b| matches!(b.action, TriggerAction::Dial)) {
-            entity.insert(kept.and_then(|k| k.dial.clone()).unwrap_or_default());
+            entity.insert(kept.as_mut().and_then(|k| k.dial.take()).unwrap_or_default());
         }
         if actions.clone().any(|b| matches!(b.action, TriggerAction::Fountain(_))) {
-            entity.insert(kept.and_then(|k| k.fountain.clone()).unwrap_or_default());
+            entity.insert(kept.as_mut().and_then(|k| k.fountain.take()).unwrap_or_default());
         }
         if let Some(name) = &definition.loot_table {
             let table = tables.0.iter().position(|t| t.name.eq_ignore_ascii_case(name));
             if table.is_none() {
                 warn!("trigger {}: no loot table {name}; it holds nothing", definition.name);
             }
-            entity.insert(Container { table, contents: kept.and_then(|k| k.contents.clone()) });
+            entity.insert(Container {
+                table,
+                contents: kept.as_mut().and_then(|k| k.contents.take()),
+            });
         }
         if definition.place.is_some() {
             entity.insert(DeviceProximity::default());
+            positioned.0.push(devices[index]);
         }
         if let (Some((name, _)), Some(value)) = (&definition.state_change, definition.initial_state)
         {
@@ -261,9 +270,9 @@ pub fn spawn_devices(
         }
     }
     if let Some(memory) = memory {
-        state.variables = memory.variables.clone();
+        state.variables = memory.variables;
     }
-    commands.entity(level).insert(state);
+    commands.entity(level).insert((state, positioned));
     script.bind(commands, geometry, &devices);
     devices
 }
@@ -316,6 +325,7 @@ pub struct PendingPartyMove(pub Option<(Entity, PartyMove)>);
 pub struct DeviceOperations<'w, 's> {
     levels: Query<'w, 's, (&'static Level, &'static mut LevelState), Without<Departing>>,
     geometry: Res<'w, Assets<LevelGeometry>>,
+    positioned: Query<'w, 's, (Entity, &'static PositionedDevices), Without<Departing>>,
     devices: Query<'w, 's, (Entity, &'static Device)>,
     states: Query<'w, 's, &'static mut TriggerState>,
     doors: Query<'w, 's, &'static mut DoorState>,
@@ -389,22 +399,14 @@ impl<'w, 's> DeviceOperations<'w, 's> {
         if !self.ready() {
             return;
         }
-        let Ok((_, mut state)) = self.levels.single_mut() else { return };
+        let Ok((level, positioned)) = self.positioned.single_inner() else { return };
+        let Ok((_, mut state)) = self.levels.get_mut(level) else { return };
         let first = !state.entered;
         if first {
             state.entered = true;
         }
-        // Authored order determines relay side effects and gameplay RNG use.
-        let mut positioned: Vec<_> = self
-            .devices
-            .iter()
-            .filter(|(entity, device)| {
-                self.proximity.contains(*entity) && self.levels.get(device.level).is_ok()
-            })
-            .map(|(entity, device)| (device.definition, entity))
-            .collect();
-        positioned.sort_by_key(|&(index, _)| index);
-        for (_, entity) in positioned {
+        // The level's activation resolved the order that side effects and RNG follow.
+        for &entity in &positioned.0 {
             let definition = self.definition(entity).unwrap();
             let inside = (definition.range.0..definition.range.1)
                 .contains(&eye.distance(definition.place.unwrap()));
@@ -433,9 +435,10 @@ impl<'w, 's> DeviceOperations<'w, 's> {
     }
 
     pub fn arrive(&mut self, eye: Vec3) {
-        for (entity, _) in &self.devices {
+        let Ok((_, positioned)) = self.positioned.single_inner() else { return };
+        for &entity in &positioned.0 {
             let Some(definition) = self.definition(entity) else { continue };
-            let Some(place) = definition.place else { continue };
+            let place = definition.place.unwrap();
             let inside = (definition.range.0..definition.range.1).contains(&eye.distance(place));
             if let Ok(mut proximity) = self.proximity.get_mut(entity)
                 && proximity.inside != inside
@@ -868,7 +871,7 @@ mod tests {
             scenario
         }
 
-        fn visit(&mut self, memory: Option<&TriggerMemory>) {
+        fn visit(&mut self, memory: Option<TriggerMemory>) {
             self.world.despawn(self.root);
             let handle =
                 self.world.resource_mut::<Assets<LevelGeometry>>().add(self.geometry.clone());
@@ -1023,7 +1026,7 @@ mod tests {
         // Unlocked for good: kept while the party is away.
         let memory = level.remember();
         let old = level.device("DOOR");
-        level.visit(Some(&memory));
+        level.visit(Some(memory));
         assert_ne!(old, level.device("DOOR"));
         assert!(!level.world.get::<DoorState>(level.device("DOOR")).unwrap().locked);
     }
@@ -1063,7 +1066,7 @@ mod tests {
         );
         assert_eq!(level.world.resource::<PartyInventory>().gold, 5);
         let memory = level.remember();
-        level.visit(Some(&memory));
+        level.visit(Some(memory));
         assert!(level.run("CHEST").1.is_empty(), "returning never rolls the gold again");
         level.visit(None);
         let chest = level.device("CHEST");
@@ -1306,7 +1309,7 @@ mod tests {
         assert!(level.run("WELL").0);
         assert!(!level.run("WELL").0, "dry after its one use");
         let memory = level.remember();
-        level.visit(Some(&memory));
+        level.visit(Some(memory));
         assert!(!level.run("WELL").0, "still dry after returning");
         level.world.resource_mut::<GameClock>().ms = 2 * 720 * 1000;
         assert!(level.run("WELL").0);
@@ -1483,7 +1486,7 @@ mod tests {
         );
         assert_eq!(level.world.get::<PropMotion>(second).unwrap().target, 20.0);
         let memory = level.remember();
-        level.visit(Some(&memory));
+        level.visit(Some(memory));
         for old in [first, second] {
             assert!(level.world.get_entity(old).is_err());
         }

@@ -311,7 +311,7 @@ fn build_world(
     collider: Collider,
     script: super::scripts::LevelScript,
     tables: &LootTables,
-    remembered: Option<&LevelRecord>,
+    mut remembered: Option<&mut LevelRecord>,
 ) {
     let props: Vec<_> = geometry.props.iter().map(|_| commands.spawn(ChildOf(root)).id()).collect();
     spawn_devices(
@@ -321,15 +321,16 @@ fn build_world(
         &props,
         script,
         tables,
-        remembered.map(|r| &r.triggers),
+        remembered.as_deref_mut().map(|r| std::mem::take(&mut r.triggers)),
     );
     commands.entity(root).insert((
         RigidBody::Static,
         collider,
-        remembered.map_or_else(MapNotes::default, |r| r.notes.clone()),
+        remembered.as_deref_mut().map_or_else(MapNotes::default, |r| std::mem::take(&mut r.notes)),
     ));
     for (index, prop) in geometry.props.iter().enumerate() {
-        let frame = remembered.and_then(|r| r.prop_frames.get(&index)).copied().unwrap_or(0.0);
+        let frame =
+            remembered.as_ref().and_then(|r| r.prop_frames.get(&index)).copied().unwrap_or(0.0);
         let last_frame =
             prop.parts.iter().map(|p| p.keys.len().saturating_sub(1)).max().unwrap_or(0);
         let door = prop.trigger.is_some_and(|index| geometry.triggers[index].door.is_some());
@@ -486,7 +487,7 @@ pub fn activate_level(
                 continue;
             }
         };
-        let remembered = memory.0.remove(&level.path);
+        let mut remembered = memory.0.remove(&level.path);
         build_world(
             &mut commands,
             root,
@@ -494,7 +495,7 @@ pub fn activate_level(
             collider,
             level.script,
             loot,
-            remembered.as_ref(),
+            remembered.as_mut(),
         );
         navigation::install(&mut commands, root, level, geometry, &assets);
         population::populate(
