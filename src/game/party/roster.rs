@@ -1,5 +1,6 @@
 //! Who is in the party, in order.
 
+use bevy::ecs::entity::EntityIndexSet;
 use bevy::prelude::*;
 use serde::Deserialize;
 
@@ -13,7 +14,7 @@ use crate::game::rng::GameRng;
 /// The party's members in slot order. Each is an entity with a
 /// [`Character`] and what it [`Carried`].
 #[derive(Resource, Debug, Default)]
-pub struct PartyRoster(pub Vec<Entity>);
+pub struct PartyRoster(pub EntityIndexSet);
 
 /// Someone joining a new party, as party creation (or a party file) makes
 /// them.
@@ -34,7 +35,7 @@ pub fn recruit(commands: &mut Commands, roster: &mut PartyRoster, recruit: &Recr
         Character::new(&recruit.name, recruit.race, recruit.gender, recruit.profession);
     character.portrait = recruit.portrait.clone();
     let member = commands.spawn((Name::new(recruit.name.clone()), character, NeedsEquipment)).id();
-    roster.0.push(member);
+    roster.0.insert(member);
     member
 }
 

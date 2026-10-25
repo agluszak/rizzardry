@@ -140,7 +140,7 @@ mod roster_tests {
         let member = app.world_mut().spawn(hurt()).id();
         // An adventurer the party has not recruited.
         let stranger = app.world_mut().spawn(hurt()).id();
-        app.world_mut().resource_mut::<PartyRoster>().0.push(member);
+        app.world_mut().resource_mut::<PartyRoster>().0.insert(member);
         // A long real step: at 12x, many aging ticks of standing still.
         let step = std::time::Duration::from_millis(AGING_TICK_MS * 30 / EXPLORATION_RATE);
         app.insert_resource(TimeUpdateStrategy::ManualDuration(step));
