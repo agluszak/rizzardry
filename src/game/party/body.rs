@@ -100,10 +100,15 @@ pub fn spawn_exploration_controls(mut commands: Commands) {
     commands.spawn_scene(bsn! {
         Exploration
         Actions<Exploration> [
+            // Retail's keys (data/strings/mgskeyboard.ini): the arrows walk
+            // and turn, Num0 and Num. strafe; letters are commands.
             Action::<Walk>::new()
             DeadZone
             Bindings [
-                {preset::cardinal::wasd_keys()}
+                Binding(KeyCode::NumpadDecimal)
+                --
+                Binding(KeyCode::Numpad0)
+                ~Negate::all()
                 --
                 Binding(KeyCode::ArrowUp)
                 ~SwizzleAxis::YXZ
@@ -118,8 +123,6 @@ pub fn spawn_exploration_controls(mut commands: Commands) {
             Action::<Turn>::new()
             Bindings [
                 {preset::bidirectional::new(KeyCode::ArrowRight, KeyCode::ArrowLeft)}
-                --
-                {preset::bidirectional::new(KeyCode::KeyE, KeyCode::KeyQ)}
                 --
                 Binding(GamepadAxis::RightStickX)
             ]

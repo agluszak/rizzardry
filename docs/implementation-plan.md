@@ -173,7 +173,10 @@ Known gaps, in rough order:
   (experience pool, gold, out of the turn order) and the dead play their
   death cycle. A round is 120 game seconds and the clock is otherwise held;
   the fight ends when no hostile is left or after two rounds without an
-  attack, sharing experience among the living. Not yet: party movement and
+  attack, sharing experience among the living. Fights are phased by default as in
+  retail: the party's orders (Attack or Defend; A and D) stand, and each
+  round waits for Enter or the round button; backslash switches to
+  continuous. Defending gives +2 armour and stamina back at the round's end. Not yet: party movement and
   orders, spells, fumbles, criticals, effects, the off hand, monster
   movement and fleeing, factions, item drops, levelling.
 - The main game screen (`presentation::main_screen`, layout in

@@ -16,6 +16,7 @@ use crate::content::items::ItemCatalog;
 use crate::content::ui::SpriteSheet;
 use crate::game::characters::{Character, Race};
 use crate::game::combat::attack::{Armour, armour};
+use crate::game::combat::{CombatSettings, Order, PartyOrders, StartRound};
 use crate::game::data::GameData;
 use crate::game::inventory::{Carried, EquipSlot};
 use crate::game::party::body::PartyCamera;
@@ -151,6 +152,11 @@ pub struct MainScreenArt {
     radar_rim: Handle<SpriteSheet>,
     view_cone: Handle<SpriteSheet>,
     combat_toggle: Handle<SpriteSheet>,
+    attack_confirm: Handle<SpriteSheet>,
+    cont_toggle: Handle<SpriteSheet>,
+    combat_stop: Handle<SpriteSheet>,
+    cont_start: Handle<SpriteSheet>,
+    progress: Handle<SpriteSheet>,
     column_info: Handle<SpriteSheet>,
     font: Handle<SpriteSheet>,
     small_font: Handle<SpriteSheet>,
@@ -182,6 +188,11 @@ pub fn load_main_screen_art(mut commands: Commands, assets: Res<AssetServer>) {
         radar_rim: assets.load("retail://data/radar compass/compass_rim.sti"),
         view_cone: assets.load("retail://data/party formation/small_formation_cone.sti"),
         combat_toggle: load("icon_combat_toggle"),
+        attack_confirm: load("attack_confirm"),
+        cont_toggle: load("cont_toggle"),
+        combat_stop: load("combat_stop"),
+        cont_start: load("cont_start"),
+        progress: load("progressbar"),
         column_info: load("main_column_info_normal"),
         font: assets.load("retail://data/fonts/wiz_text_font.sti"),
         small_font: assets.load("retail://data/fonts/smfnt.sti"),
@@ -292,6 +303,34 @@ fn press(
 }
 
 const DOUBLE_CLICK: f32 = 0.4;
+
+/// Combat keys from retail's `mgskeyboard.ini`: Enter starts the round,
+/// backslash switches continuous combat, A and D set the selected member to
+/// attack or defend.
+pub fn combat_keys(
+    keys: Res<ButtonInput<KeyCode>>,
+    battle: Option<Res<crate::game::combat::Battle>>,
+    selected: Res<SelectedMember>,
+    mut orders: ResMut<PartyOrders>,
+    mut settings: ResMut<CombatSettings>,
+    mut round: MessageWriter<StartRound>,
+) {
+    if keys.just_pressed(KeyCode::Backslash) {
+        settings.continuous = !settings.continuous;
+    }
+    if battle.is_none() {
+        return;
+    }
+    if keys.just_pressed(KeyCode::Enter) {
+        round.write(StartRound);
+    }
+    if keys.just_pressed(KeyCode::KeyA) {
+        orders.set(selected.0, Order::Attack);
+    }
+    if keys.just_pressed(KeyCode::KeyD) {
+        orders.set(selected.0, Order::Defend);
+    }
+}
 
 /// Keys 1-6 select a member; retail binds them to PC 1-6.
 pub fn select_with_keys(
@@ -528,6 +567,10 @@ pub fn update_radar(
 enum Bank {
     Camp,
     Formation,
+    Order(Order),
+    /// The combat round button: left click starts a round, or switches
+    /// stance while one plays.
+    Round,
 }
 
 fn press_bank(
@@ -535,8 +578,21 @@ fn press_bank(
     buttons: Query<&Bank>,
     mut camp: MessageWriter<crate::game::camp::CampRequest>,
     mut layout: ResMut<ScreenLayout>,
+    mut orders: ResMut<PartyOrders>,
+    selected: Res<SelectedMember>,
+    mut round: MessageWriter<StartRound>,
+    mut settings: ResMut<CombatSettings>,
+    battle: Option<Res<crate::game::combat::Battle>>,
 ) {
     match buttons.get(click.entity) {
+        Ok(Bank::Order(order)) => orders.set(selected.0, *order),
+        Ok(Bank::Round) => {
+            if battle.is_some_and(|b| b.executing) {
+                settings.continuous = !settings.continuous;
+            } else {
+                round.write(StartRound);
+            }
+        }
         Ok(Bank::Camp) => {
             camp.write(crate::game::camp::CampRequest);
         }
@@ -582,6 +638,8 @@ pub struct SlotView {
     stamina_fill: u32,
     name: String,
     armour: i32,
+    /// The main hand's weapon, by name.
+    weapon: Option<String>,
     /// The worst condition's icon (`data/icons/conditions`), if any.
     condition: Option<String>,
     /// The main and off hand's item pictures, or the race's empty hand.
@@ -599,6 +657,10 @@ pub struct Shown {
     /// The text box's channel and the lines it shows.
     text: (usize, Vec<String>),
     fighting: bool,
+    orders: Vec<Order>,
+    continuous: bool,
+    /// The round's progress while one plays.
+    progress: Option<f32>,
 }
 
 /// A bar's fill, 0 to 45 pixels, at least 1 while any is left (retail
@@ -658,10 +720,12 @@ pub fn draw_main_screen(
     data: Option<Res<GameData>>,
     catalogs: Res<Assets<ItemCatalog>>,
     screens: Query<Entity, With<MainScreen>>,
-    (log, battle, formation): (
+    (log, battle, formation, orders, settings): (
         Res<TextLog>,
         Option<Res<crate::game::combat::Battle>>,
         Res<Formation>,
+        Res<PartyOrders>,
+        Res<CombatSettings>,
     ),
     mut drawn: Local<Option<Shown>>,
     mut loading: Local<HashMap<String, Handle<SpriteSheet>>>,
@@ -689,6 +753,10 @@ pub fn draw_main_screen(
                 hp_fill: fill(character.hp, character.max_hp()),
                 stamina_fill: fill(character.stamina, character.max_stamina()),
                 name: character.name.clone(),
+                weapon: carried
+                    .and_then(|c| c.worn(EquipSlot::Primary))
+                    .and_then(|i| catalog?.get(i.item))
+                    .map(|d| d.name.clone()),
                 armour,
                 condition: if character.is_dead() {
                     Some("dead".into())
@@ -706,6 +774,9 @@ pub fn draw_main_screen(
         selected: selected.0,
         text: (log.selected, log.visible().to_vec()),
         fighting: battle.is_some(),
+        orders: (0..8).map(|slot| orders.of(slot)).collect(),
+        continuous: settings.continuous,
+        progress: battle.as_ref().and_then(|b| b.progress()),
         formation: formation.clone(),
     };
     if drawn.as_ref() == Some(&shown) && !screens.is_empty() {
@@ -1139,14 +1210,13 @@ pub fn draw_main_screen(
     // ..., on). Camp and the formation panel work; the journal, search,
     // items, spells and options are grayed until they exist.
     let fighting = shown.fighting;
-    let bank: [(&SpriteSheet, f32, f32, usize, usize, Option<Bank>); 8] = [
+    let mut bank: Vec<(&SpriteSheet, f32, f32, usize, usize, Option<Bank>)> = vec![
         (options, 0.0, 450.0, 3, 0, None),
         (icons, 40.0, 452.0, 0x2b, 0x28, None),
         (icons, 70.0, 452.0, 3, 0, Some(Bank::Camp)),
         (icons, 100.0, 452.0, 8, 5, None),
         (icons, 130.0, 452.0, 0x17, 0x14, None),
         (icons, 160.0, 452.0, 0x1c, 0x19, None),
-        (combat_toggle, 199.0, 452.0, 3, 0, None),
         (
             icons,
             571.0,
@@ -1156,6 +1226,43 @@ pub fn draw_main_screen(
             Some(Bank::Formation),
         ),
     ];
+    if fighting {
+        // End Combat (ending a fight by choice is not modelled), Defend and
+        // Attack set the selected member's order.
+        let order = shown.orders.get(shown.selected).copied().unwrap_or_default();
+        let (defend, attack) = match order {
+            Order::Defend => (0x11, 0xa),
+            Order::Attack => (0xf, 0xc),
+        };
+        bank.push((combat_toggle, 200.0, 452.0, 7, 4, None));
+        bank.push((icons, 232.0, 452.0, 0x12, defend, Some(Bank::Order(Order::Defend))));
+        bank.push((icons, 262.0, 452.0, 0xd, attack, Some(Bank::Order(Order::Attack))));
+        // The round button (retail `UpdateCombatStanceButtons`): Start
+        // Round while a phased fight waits, Go Continuous while its round
+        // plays; Go Phased while a continuous one plays, Start Round between.
+        let file = match (shown.continuous, shown.progress.is_some()) {
+            (false, false) => &art.attack_confirm,
+            (false, true) => &art.cont_toggle,
+            (true, true) => &art.combat_stop,
+            (true, false) => &art.cont_start,
+        };
+        if let Some((node_image, node, _)) =
+            sheets.get(file).and_then(|s| sprite(s, 0, Vec2::new(610.0, 450.0)))
+        {
+            commands.spawn((node_image, node, Bank::Round, ChildOf(frame))).observe(press_bank);
+        }
+        // The round's progress along the roof.
+        if let Some(progress) = shown.progress
+            && let Some((node_image, mut node, pick)) =
+                sheets.get(&art.progress).and_then(|s| sprite(s, 0, Vec2::new(177.0, 2.0)))
+        {
+            node.width = Val::Px(286.0 * progress);
+            node.overflow = Overflow::clip();
+            commands.spawn((node_image, node, pick, ChildOf(frame)));
+        }
+    } else {
+        bank.push((combat_toggle, 199.0, 452.0, 3, 0, None));
+    }
     for (sheet, x, y, grayed, normal, action) in bank {
         // The journal, camp and the combat toggle are grayed in a fight.
         let usable = action.is_some() && !(fighting && action == Some(Bank::Camp));
@@ -1183,6 +1290,28 @@ pub fn draw_main_screen(
             &mut commands,
             Some(text(small_font, &mut images, &caption, Vec2::new(343.0, 454.0), 185.0)),
         );
+        // The second line: the order in a fight ("Attack - weapon", with
+        // "Unarmed" for an empty hand), else the worst condition.
+        let second = if shown.fighting {
+            match shown.orders[shown.selected] {
+                Order::Defend => Some("Defend".to_owned()),
+                Order::Attack => {
+                    Some(format!("Attack - {}", view.weapon.as_deref().unwrap_or("Unarmed")))
+                }
+            }
+        } else {
+            view.condition.as_ref().map(|c| {
+                let mut c = c.clone();
+                c[..1].make_ascii_uppercase();
+                c
+            })
+        };
+        if let Some(second) = second {
+            put(
+                &mut commands,
+                Some(text(small_font, &mut images, &second, Vec2::new(343.0, 465.0), 185.0)),
+            );
+        }
     }
     *drawn = complete.then_some(shown);
 }

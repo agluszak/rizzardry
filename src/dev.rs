@@ -425,6 +425,8 @@ fn scripted_key(name: &str) -> Option<(KeyCode, Key)> {
                 "q" => KeyCode::KeyQ,
                 "r" => KeyCode::KeyR,
                 "c" => KeyCode::KeyC,
+                "a" => KeyCode::KeyA,
+                "d" => KeyCode::KeyD,
                 "i" => KeyCode::KeyI,
                 _ => KeyCode::Unidentified(NativeKeyCode::Unidentified),
             };

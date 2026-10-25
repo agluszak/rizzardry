@@ -9,7 +9,7 @@ pub mod attack;
 use avian3d::prelude::{Position, RigidBody, SpatialQuery, SpatialQueryFilter};
 use bevy::prelude::*;
 
-use crate::content::items::ItemCatalog;
+use crate::content::items::{Dice, ItemCatalog};
 use crate::content::monster::MonsterModel;
 use crate::content::species::{MonsterCatalog, Reach};
 use crate::game::characters::{Character, Condition};
@@ -30,10 +30,14 @@ pub struct CombatPlugin;
 
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<CombatNews>().add_systems(
-            Update,
-            (start_battle, run_battle, approach::embody_fighters, approach::close_in).chain(),
-        );
+        app.add_message::<CombatNews>()
+            .add_message::<StartRound>()
+            .init_resource::<PartyOrders>()
+            .init_resource::<CombatSettings>()
+            .add_systems(
+                Update,
+                (start_battle, run_battle, approach::embody_fighters, approach::close_in).chain(),
+            );
     }
 }
 
@@ -56,6 +60,45 @@ const ROUND_MS: u64 = 120_000;
 /// Rounds in which nobody could attack before the fight peters out.
 const PASSIVE_ROUNDS: u32 = 2;
 
+/// What a member does in a round (retail's slot action; `ResetPartySlotRow`
+/// starts everyone on Attack).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Order {
+    #[default]
+    Attack,
+    /// No attack; +2 armour, and stamina back at the round's end.
+    Defend,
+}
+
+/// Each member's order by party slot; a slot without one attacks. Orders
+/// outlast the fight, as retail remembers them.
+#[derive(Resource, Debug, Default, Clone, PartialEq)]
+pub struct PartyOrders(pub Vec<Order>);
+
+impl PartyOrders {
+    pub fn of(&self, slot: usize) -> Order {
+        self.0.get(slot).copied().unwrap_or_default()
+    }
+
+    pub fn set(&mut self, slot: usize, order: Order) {
+        if self.0.len() <= slot {
+            self.0.resize(slot + 1, Order::Attack);
+        }
+        self.0[slot] = order;
+    }
+}
+
+/// Retail's combat settings (`ResetGameplaySettings`): phased by default,
+/// each round started by the player.
+#[derive(Resource, Debug, Default)]
+pub struct CombatSettings {
+    pub continuous: bool,
+}
+
+/// Start the next round (Enter, or the round button).
+#[derive(Message, Debug, Clone, Copy)]
+pub struct StartRound;
+
 /// When an actor acts this round, and how many attacks it has left.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Turn {
@@ -68,6 +111,9 @@ struct Turn {
 #[derive(Resource, Debug)]
 pub struct Battle {
     pub round: u32,
+    /// A round is being played out; between rounds a phased fight waits for
+    /// the player (retail `execution_active`).
+    pub executing: bool,
     /// The phase being played, 1..=100; 0 between rounds.
     step: u8,
     party: Vec<Turn>,
@@ -82,6 +128,14 @@ pub struct Battle {
     approaching: bool,
     /// Seconds until the next action.
     wait: f32,
+}
+
+impl Battle {
+    /// How far through the round its play is, 0 to 1, while a round is
+    /// being played.
+    pub fn progress(&self) -> Option<f32> {
+        self.executing.then_some(f32::from(self.step.min(100)) / 100.0)
+    }
 }
 
 /// What the fight tells the player.
@@ -158,6 +212,7 @@ struct PartyView<'a> {
     eye: Vec3,
     yaw: f32,
     formation: &'a Formation,
+    orders: &'a PartyOrders,
 }
 
 impl PartyView<'_> {
@@ -273,6 +328,7 @@ pub fn start_battle(
     }
     commands.insert_resource(Battle {
         round: 0,
+        executing: false,
         step: 0,
         party: vec![Turn::default(); roster.0.len()],
         monsters: joined.into_iter().map(|(_, e)| (e, Turn::default())).collect(),
@@ -304,6 +360,11 @@ pub fn run_battle(
     items: Res<Assets<ItemCatalog>>,
     species: Res<Assets<MonsterCatalog>>,
     mut news: MessageWriter<CombatNews>,
+    (mut starts, settings, orders): (
+        MessageReader<StartRound>,
+        Res<CombatSettings>,
+        Res<PartyOrders>,
+    ),
 ) {
     let Some(mut battle) = battle else { return };
     let (Some(items), Some(species)) = (
@@ -317,19 +378,29 @@ pub fn run_battle(
         eye: position.0 + Vec3::Y * EYE_ABOVE_CENTRE,
         yaw: body.yaw,
         formation: &formation,
+        orders: &orders,
     };
     battle.wait -= time.delta_secs();
     if battle.wait > 0.0 {
         return;
     }
 
+    // Between rounds a phased fight waits for the player; a continuous one
+    // goes on (retail `UpdateCombat`, `BeginCombatExecution`).
+    let start = starts.read().count() > 0;
+    if !battle.executing {
+        if !(settings.continuous || start) {
+            return;
+        }
+        battle.executing = true;
+    }
     if battle.step == 0 {
         // A new round: the party's phases, then the monsters'.
         battle.round += 1;
         battle.attacked_this_round = false;
         for (slot, &member) in roster.0.iter().enumerate() {
             let Ok((character, carried)) = members.get(member) else { continue };
-            battle.party[slot] = if able(character) {
+            battle.party[slot] = if orders.of(slot) == Order::Attack && able(character) {
                 let hand = primary_hand(character, carried, items);
                 Turn {
                     phase: phase(&mut rng, character_initiative(character, &hand)),
@@ -363,6 +434,8 @@ pub fn run_battle(
                 &mut commands,
                 &mut battle,
                 &mut clock,
+                &mut rng,
+                &orders,
                 &roster,
                 &mut members,
                 &monsters,
@@ -553,7 +626,7 @@ fn monster_acts(
             let Ok((character, _)) = members.get(member) else { continue };
             if able(character) && party.reaches(slot, at.translation(), attack.reach, distance) {
                 for bit in (0..9).filter(|b| attack.modes & (1 << b) != 0) {
-                    candidates.push((a, bit, member));
+                    candidates.push((a, bit, slot, member));
                 }
             }
         }
@@ -564,11 +637,16 @@ fn monster_acts(
         return;
     }
     battle.attacked_this_round = true;
-    let (a, bit, member) = candidates[rng.below(candidates.len() as u32) as usize];
+    let (a, bit, slot, member) = candidates[rng.below(candidates.len() as u32) as usize];
     let attack = &kind.attacks[a];
     let mode = attack::Mode::choose(rng, 1 << bit);
     let Ok((mut character, carried)) = members.get_mut(member) else { return };
-    let armour = armour(&character, carried, items);
+    let mut armour = armour(&character, carried, items);
+    // Defending is worth 2 (`characters.md` §4.8, component 10).
+    if party.orders.of(slot) == Order::Defend {
+        armour.total += 2;
+        armour.by_location.iter_mut().for_each(|a| *a += 2);
+    }
     let swings = rng.below(u32::from(kind.swings_per_round.max(1))) + 1;
     for _ in 0..swings {
         match monster_swing(rng, kind, attack, mode, &character, &armour) {
@@ -602,6 +680,8 @@ fn end_round(
     commands: &mut Commands,
     battle: &mut Battle,
     clock: &mut GameClock,
+    rng: &mut GameRng,
+    orders: &PartyOrders,
     roster: &PartyRoster,
     members: &mut Query<(&mut Character, &Carried)>,
     monsters: &Query<(&mut Monster, &GlobalTransform, &MonsterAppearance)>,
@@ -609,6 +689,20 @@ fn end_round(
 ) {
     clock.ms += ROUND_MS;
     battle.step = 0;
+    battle.executing = false;
+    // Defenders get their breath back: 2d(max(1, max stamina / 20 - 1))
+    // (retail `AdvanceCombatRound`); the Fighter trait's scaling is not
+    // modelled.
+    for (slot, &member) in roster.0.iter().enumerate() {
+        if orders.of(slot) == Order::Defend
+            && let Ok((mut character, _)) = members.get_mut(member)
+            && !character.is_dead()
+        {
+            let sides = (character.max_stamina() / 20).saturating_sub(1).max(1);
+            let gained = rng.roll(Dice { count: 2, sides: sides.min(255) as u8, base: 0 });
+            character.restore_stamina(gained);
+        }
+    }
     battle.wait = ROUND_SECONDS;
     let active = battle.attacked_this_round || battle.approaching;
     battle.passive_rounds = if active { 0 } else { battle.passive_rounds + 1 };
