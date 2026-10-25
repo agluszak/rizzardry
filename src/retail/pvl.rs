@@ -268,8 +268,10 @@ mod tests {
 
     /// Runs against a real installation when `RIZZARDRY_RETAIL` names one.
     #[test]
+    #[ignore = "requires a retail installation"]
     fn decodes_retail_level_geometry() {
-        let Ok(root) = std::env::var("RIZZARDRY_RETAIL") else { return };
+        let root = std::env::var("RIZZARDRY_RETAIL")
+            .expect("set RIZZARDRY_RETAIL to run this test");
         let files = crate::retail::files::RetailFiles::open(root).unwrap();
         let levels: Vec<String> =
             files.names().filter(|name| name.ends_with(".pvl")).map(str::to_owned).collect();
