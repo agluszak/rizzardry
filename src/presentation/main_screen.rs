@@ -1442,11 +1442,16 @@ mod tests {
     #[test]
     fn blips_sit_ahead_and_beyond_on_the_rim() {
         // Ahead of a party facing -Z, 10 m off: straight up from the centre.
-        let ahead = blip_position(Vec3::new(0.0, 0.0, -10.0), 0.0);
+        let ahead = blip_position(Vec3::new(0.0, 0.0, -10.0), 0.0, false);
         assert_eq!(ahead.x, 75.0);
         assert!(ahead.y < 404.0 && ahead.y > 404.0 - 38.0);
         // Far beyond extreme range: on the 38-pixel rim, to the right.
-        assert_eq!(blip_position(Vec3::new(200.0, 0.0, 0.0), 0.0), Vec2::new(113.0, 404.0));
+        assert_eq!(blip_position(Vec3::new(200.0, 0.0, 0.0), 0.0, false), Vec2::new(113.0, 404.0));
+        // Within the party's radius a monster sits on its edge, an item
+        // where it is.
+        let near = Vec3::new(0.5, 0.0, 0.0);
+        assert_eq!(blip_position(near, 0.0, false), Vec2::new(77.0, 404.0));
+        assert_eq!(blip_position(near, 0.0, true), Vec2::new(76.0, 404.0));
     }
 
     #[test]
