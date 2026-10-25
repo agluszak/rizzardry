@@ -18,12 +18,12 @@ use super::prop_loader::{
 use super::pvl::{CompiledMesh, MaterialRecord, PvlError, read_level_geometry};
 use super::sections::LevelSections;
 use super::sections::{Environment, read_sections};
-use super::space::UNITS_PER_METRE;
 use super::space::{retail_direction, retail_position, retail_yaw};
 use super::texture_loader::file_has_alpha;
 use super::trigger::{
     AmbientSound, ItemTrigger, StateMode, TriggerKind, action as trigger_action, flag,
 };
+use crate::content::UNITS_PER_METRE;
 use crate::content::items::ItemId;
 use crate::content::level::{
     AmbientSoundModel, CameraPathModel, DoorLock, ItemPlacement, LevelEnvironment, LevelGeometry,

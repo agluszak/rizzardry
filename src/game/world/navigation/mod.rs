@@ -200,9 +200,7 @@ fn track_party_character(
                 Transform::default(),
                 Character3dBundle {
                     character: default(),
-                    settings: CharacterSettings {
-                        radius: 500.0 / crate::retail::space::UNITS_PER_METRE,
-                    },
+                    settings: CharacterSettings { radius: 500.0 / crate::content::UNITS_PER_METRE },
                     archipelago_ref: ArchipelagoRef3d::new(archipelago),
                 },
                 Velocity3d { velocity: velocity.0 },

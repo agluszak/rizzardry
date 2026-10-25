@@ -3,7 +3,7 @@
 //! index, not by its bracketed label. Filter heights are authored metres.
 
 use super::sections::ClipPlane;
-use super::space::UNITS_PER_METRE;
+use crate::content::UNITS_PER_METRE;
 
 pub fn layer_heights(
     planes: &[ClipPlane],
