@@ -79,6 +79,10 @@ shown on retail content; the gaps below remain. Done:
   1088 retail cycles). Each actor animates its own mesh copies, blending
   between frames without wrapping last-to-first as retail does; play-once
   cycles report completion. Walkers play WALK or IDLE.
+- **Ambience.** Levels' ambient sounds (2339 retail records) play while
+  the party is in range: looping ones continuously, one-shot ones now and
+  then, full within 40% of their radius and fading to its edge; their
+  regions and stereo position are not used yet.
 - **Music.** Each level plays its retail `.mpl` playlist (else
   `adventure.mpl`): weighted songs faded in over five seconds, with the
   authored chance of a silence between songs; travel switches playlists.

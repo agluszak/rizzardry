@@ -115,6 +115,8 @@ pub struct LevelGeometry {
     pub triggers: Vec<TriggerDefinition>,
     /// Paths the party's eye can fly along (ladders, climbs, cutscenes).
     pub camera_paths: Vec<CameraPathModel>,
+    /// Sounds places make: water, wind, birds.
+    pub ambient_sounds: Vec<AmbientSoundModel>,
     pub props: Vec<PropModel>,
     /// Navigation links between places the navmesh does not join.
     pub links: Vec<LevelLink>,
@@ -150,6 +152,21 @@ pub struct LevelLink {
     pub kind: LinkKind,
     pub from: Vec3,
     pub to: Vec3,
+}
+
+/// A sound a place makes (retail ambient sound).
+#[derive(Clone, Debug, Reflect)]
+pub struct AmbientSoundModel {
+    /// Retail path under `data/sound`.
+    pub path: String,
+    pub position: Vec3,
+    /// Metres; heard fully within 40% of it, fading to nothing at its edge.
+    pub radius: f32,
+    pub looping: bool,
+    /// Loudness range, 0 to 1.
+    pub volume: (f32, f32),
+    /// Seconds between plays of a one-shot sound.
+    pub interval: (f32, f32),
 }
 
 /// A path the party's eye flies along: eye position and view per key.

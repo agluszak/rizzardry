@@ -67,7 +67,7 @@ pub enum TriggerKind {
     /// Type 2: a positioned prop trigger.
     Prop { placement: TriggerPlacement, action: u32, recipients: String },
     /// Type 3: an ambient sound emitter.
-    AmbientSound { wave: String, position: [f32; 3], radius: f32, looping: bool },
+    AmbientSound(AmbientSound),
     /// Type 4: the general trigger used by retail levels.
     Item(ItemTrigger),
 }
@@ -234,10 +234,26 @@ fn read_prop_trigger(bytes: &mut Bytes) -> Result<Trigger, PvlError> {
     Ok(Trigger { name, kind: TriggerKind::Prop { placement, action, recipients } })
 }
 
+/// A sound a place makes (type 3 record): looping, or now and then.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AmbientSound {
+    pub wave: String,
+    /// Retail units.
+    pub position: [f32; 3],
+    pub radius: f32,
+    pub looping: bool,
+    pub volume: [i32; 2],
+    pub speed: [i32; 2],
+    /// Milliseconds between plays of a one-shot sound; -1 when unset.
+    pub interval: [i32; 2],
+}
+
 fn read_ambient_sound(bytes: &mut Bytes) -> Result<Trigger, PvlError> {
     let version = bytes.u8()?;
-    // Volume, speed and time ranges, unbounded.
-    bytes.take(7 * 4)?;
+    let volume = bytes.i32s::<2>()?;
+    let speed = bytes.i32s::<2>()?;
+    let interval = bytes.i32s::<2>()?;
+    bytes.i32()?; // unbounded
     let radius = bytes.f32()? * RECORD_SCALE;
     let position = bytes.f32s::<3>()?.map(|v| v * RECORD_SCALE);
     // Region u and v.
@@ -256,7 +272,18 @@ fn read_ambient_sound(bytes: &mut Bytes) -> Result<Trigger, PvlError> {
     if version > 4 {
         bytes.u8()?;
     }
-    Ok(Trigger { name, kind: TriggerKind::AmbientSound { wave, position, radius, looping } })
+    Ok(Trigger {
+        name,
+        kind: TriggerKind::AmbientSound(AmbientSound {
+            wave,
+            position,
+            radius,
+            looping,
+            volume,
+            speed,
+            interval,
+        }),
+    })
 }
 
 fn read_item_trigger(bytes: &mut Bytes) -> Result<Trigger, PvlError> {

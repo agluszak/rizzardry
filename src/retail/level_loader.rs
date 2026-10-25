@@ -20,10 +20,13 @@ use super::sections::{Environment, read_sections};
 use super::space::UNITS_PER_METRE;
 use super::space::{retail_direction, retail_position};
 use super::texture_loader::file_has_alpha;
-use super::trigger::{ItemTrigger, StateMode, TriggerKind, action as trigger_action, flag};
+use super::trigger::{
+    AmbientSound, ItemTrigger, StateMode, TriggerKind, action as trigger_action, flag,
+};
 use crate::content::level::{
-    CameraPathModel, DoorLock, LevelEnvironment, LevelGeometry, LevelPart, Playback, PropModel,
-    PropModelPart, StateChange, TextureAnimation, TriggerDefinition, TriggerSound, VertexLighting,
+    AmbientSoundModel, CameraPathModel, DoorLock, LevelEnvironment, LevelGeometry, LevelPart,
+    Playback, PropModel, PropModelPart, StateChange, TextureAnimation, TriggerDefinition,
+    TriggerSound, VertexLighting,
 };
 
 /// Time-of-day phase used for baked lighting until the game clock exists:
@@ -220,6 +223,22 @@ pub(super) async fn load_material(
         emission: record.emission,
         ambient: Vec3::from(record.ambient),
         animation,
+    }
+}
+
+/// A level's ambient sound, with Whizzardry `AddAmbientSound`'s defaults:
+/// unset volumes are full (127 of 127), unset times 5 to 20 seconds.
+fn ambient_sound(sound: &AmbientSound) -> AmbientSoundModel {
+    let or = |value: i32, default: i32| if value == -1 { default } else { value };
+    let volume = |v: i32| or(v, 127).clamp(0, 127) as f32 / 127.0;
+    let seconds = |ms: i32| ms.max(0) as f32 / 1000.0;
+    AmbientSoundModel {
+        path: format!("data/sound/{}", sound.wave.replace('\\', "/")).to_lowercase(),
+        position: retail_position(sound.position),
+        radius: sound.radius / UNITS_PER_METRE,
+        looping: sound.looping,
+        volume: (volume(sound.volume[0]), volume(sound.volume[1])),
+        interval: (seconds(or(sound.interval[0], 5000)), seconds(or(sound.interval[1], 20000))),
     }
 }
 
@@ -492,6 +511,13 @@ impl AssetLoader for PvlLoader {
             lighting: level_lighting,
             entrances: level_entrances(&sections),
             triggers: level_triggers(&sections),
+            ambient_sounds: sections
+                .all_triggers()
+                .filter_map(|trigger| match &trigger.kind {
+                    TriggerKind::AmbientSound(sound) => Some(ambient_sound(sound)),
+                    _ => None,
+                })
+                .collect(),
             camera_paths: sections
                 .cameras
                 .iter()

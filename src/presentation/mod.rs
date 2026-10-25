@@ -1,5 +1,6 @@
 //! Rendering, animation and audio presentation of game state.
 
+pub mod ambience;
 pub mod automap;
 pub mod billboards;
 pub mod dialog;
@@ -26,6 +27,7 @@ impl Plugin for PresentationPlugin {
             .init_resource::<effects::CameraShake>()
             .init_resource::<notices::NoticeQueue>()
             .init_resource::<music::Music>()
+            .init_resource::<ambience::AmbienceNoise>()
             .add_input_context::<automap::Screens>()
             .add_systems(
                 Startup,
@@ -64,6 +66,7 @@ impl Plugin for PresentationPlugin {
                     billboards::face_camera.after(crate::game::party::body::aim_camera),
                     effects::play_trigger_effects,
                     music::play_music,
+                    (ambience::place_ambient_sounds, ambience::play_ambient_sounds).chain(),
                     (notices::queue_notices, notices::show_notices, notices::fade_notices).chain(),
                     (
                         dialog::show_travel_question,

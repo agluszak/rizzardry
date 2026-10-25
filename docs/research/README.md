@@ -19,5 +19,7 @@ is not kept; the Rust decoders and their retail tests
 | [ui-assets](ui-assets.md) | STCI images, fonts, automap art | `src/retail/stci.rs`, `src/presentation/automap.rs` |
 | [monster-anim](monster-anim.md) | `.mls` species and `.mon` vertex-frame cycles, playback | `src/retail/monster.rs`, `src/presentation/monsters.rs` |
 | [monsters-db](monsters-db.md) | `monsters.dbs` records | not yet |
+| [level-population](level-population.md) | Which monsters and NPCs stand where on arrival: `.sts` `MONS`/`MONG` layouts, encounter tables, level-entry rules, Monastery 1 example | not yet |
 | [inventory](inventory.md) | Party item storage, equipment slots and usability, stacks and charges, core item moves, curses' move rule, load | not yet |
+| [characters](characters.md) | Character record, race/profession/gender/attribute/skill ids and item-requirement id spaces, race and profession tables, XP and levels, derived stats (HP, stamina, SP, resistances, initiative, attacks, AC), a minimal valid character | not yet |
 | [trigger-actions](trigger-actions.md) | Trigger actions, recipients, gates, the Monastery 2 bells | `src/game/world/triggers.rs`, `scripts.rs` |
