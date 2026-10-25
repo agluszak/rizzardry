@@ -26,6 +26,10 @@ Judge complexity by how much a reader must understand, not merely by line count.
 **Every new abstraction must justify its existence.**
 
 Being idiomatic Rust or following a design pattern is not sufficient justification.
+Evaluate libraries against the actual code they replace: compare the complete
+implementation, intermediate types, errors, and remaining custom parsing. Do not
+adopt a dependency for a few shorter helper calls or keep two parsing mechanisms
+without a concrete benefit.
 
 ## 2. Design the right system, not the smallest patch
 
@@ -114,6 +118,17 @@ Use stable domain identifiers where references must survive saving and loading. 
 
 Keep components reasonably cohesive. Do not split every field into its own component unless independent querying or behavior benefits from doing so.
 
+- A level being decoded or its geometry being spawned does not mean it is
+  playable. One activation boundary establishes readiness for gameplay;
+  missing mandatory content is a load failure, never a silent no-op action.
+- Map-owned state (killed/wounded local monsters, opened containers, trigger
+  state, notes) survives departure in that map's dormant record. On revisit,
+  restore it instead of respawning authored defaults. Do not persist runtime
+  caches and temporary interaction state merely because they share a struct.
+- `PartyRoster` is the authority for membership and order. A query over every
+  `Character` is not a party query; a retained NPC character profile is not
+  automatically a party member. Gameplay RNG consumers use a defined order.
+
 ## 6. Gameplay operations must be coherent
 
 Gameplay rules should be ordinary, understandable Rust code.
@@ -125,6 +140,14 @@ Operations such as `apply_damage`, `move_item`, `consume_item`, `buy_item`, `rec
 For example, dealing lethal damage must perform the relevant death bookkeeping before another combat action can act on that character. A UI notification about the death can happen afterward.
 
 Use events and observers for notifications, interactions, and presentation when appropriate. Do not turn the entire game into a generic event bus.
+
+The operation that changes gameplay state checks its own prerequisites and
+permissions using the actual authoritative state. UI previews may reuse pure
+eligibility functions, but an input-context gate or a caller-supplied
+`can_use` boolean must not be the only validation. Fail explicitly if the
+operation cannot run; do not partially commit because a catalog, actor, or
+level is not ready. Keep required consequences and the state transition in
+one ordered operation.
 
 For operations spanning multiple frames, represent the pending work explicitly. Examples include executing combat actions, projectiles, cutscenes, conversations, and rest.
 
@@ -146,6 +169,11 @@ However, presentation timing sometimes affects gameplay. A spell may resolve at 
 Model those dependencies explicitly. Avoid assuming that all animation is cosmetic or that gameplay must always be driven by animation callbacks.
 
 Use the appropriate time domain for each operation. Combat rounds, game time, animation playback, and UI time are not interchangeable.
+Record *why* an interval advances before changing activity (for example,
+finishing combat), and settle its mandatory recovery/condition effects under
+that policy. Do not advance the clock in one schedule and infer the old mode
+from a resource that may already be gone in another. Preserve sub-tick
+remainders; `Local` caches must not own gameplay history.
 
 Gameplay randomness must be controlled and reproducible. UI previews and cosmetic effects must not consume gameplay random numbers.
 
@@ -164,6 +192,14 @@ Avoid circular dependencies. Prefer moving genuinely shared data types into a sm
 Do not create a giant `Game` object or `GameState` that duplicates the ECS and becomes a dependency of every function.
 
 Dependencies should be visible. Functions should receive the data they need rather than retrieving arbitrary global state.
+
+Keep dependency direction simple: `retail` decodes into `content`;
+`game` consumes content and owns gameplay; `presentation` reads gameplay
+and owns views; `app` composes them. `content` must not import `retail`,
+and game rules must not depend on UI, meshes or playback. Place genuinely
+shared types below both users instead of introducing mirrored DTOs or
+reversing dependencies. Gameplay readiness and legality do not belong to
+the presentation layer.
 
 ## 9. Use Rust idiomatically, but pragmatically
 
