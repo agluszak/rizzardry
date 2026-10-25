@@ -153,10 +153,11 @@ pub fn spawn_exploration_controls(mut commands: Commands) {
 pub fn spawn_party_on_ready(
     mut commands: Commands,
     mut ready: MessageReader<LevelReady>,
+    party: Query<(), With<PartyBody>>,
     start: Option<Res<PartyStart>>,
     mut motion_configs: ResMut<Assets<PartyMotionConfig>>,
 ) {
-    if ready.read().last().is_none() {
+    if ready.read().last().is_none() || !party.is_empty() {
         return;
     }
     let start = start.map(|s| *s).unwrap_or_default();

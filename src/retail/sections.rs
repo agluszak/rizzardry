@@ -285,8 +285,10 @@ mod tests {
 
     /// Runs against a real installation when `RIZZARDRY_RETAIL` names one.
     #[test]
+    #[ignore = "requires a retail installation"]
     fn every_retail_level_parses_to_its_trailer() {
-        let Ok(root) = std::env::var("RIZZARDRY_RETAIL") else { return };
+        let root =
+            std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL to run this test");
         let files = crate::retail::files::RetailFiles::open(root).unwrap();
         let levels: Vec<String> =
             files.names().filter(|n| n.ends_with(".pvl")).map(str::to_owned).collect();
@@ -302,8 +304,10 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires a retail installation"]
     fn the_default_sky_parses() {
-        let Ok(root) = std::env::var("RIZZARDRY_RETAIL") else { return };
+        let root =
+            std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL to run this test");
         let files = crate::retail::files::RetailFiles::open(root).unwrap();
         let data = files.read("levels/test/defaultsky.lvl").unwrap().unwrap();
         let mut bytes = Bytes::new(&data);
@@ -315,8 +319,10 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires a retail installation"]
     fn the_new_game_entrance_is_a_positioned_trigger() {
-        let Ok(root) = std::env::var("RIZZARDRY_RETAIL") else { return };
+        let root =
+            std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL to run this test");
         let files = crate::retail::files::RetailFiles::open(root).unwrap();
         let data = files.read("levels/monastery/monastery1.pvl").unwrap().unwrap();
         let start = read_level_geometry(&data).unwrap().end;

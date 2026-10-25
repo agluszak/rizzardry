@@ -92,8 +92,10 @@ mod tests {
 
     /// Runs against a real installation when `RIZZARDRY_RETAIL` names one.
     #[test]
+    #[ignore = "requires a retail installation"]
     fn retail_levels_have_teleports_and_climbs() {
-        let Ok(root) = std::env::var("RIZZARDRY_RETAIL") else { return };
+        let root =
+            std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL to run this test");
         let files = crate::retail::files::RetailFiles::open(root).unwrap();
         let (mut teleports, mut climbs) = (0, 0);
         for level in files.names().filter(|n| n.ends_with(".pvl")) {

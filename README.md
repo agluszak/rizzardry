@@ -57,8 +57,14 @@ the prop in front of you, M to open the automap (Escape or M closes it).
 `cargo run --example level_info -- [level.pvl] [--props] [--links]`
 summarises decoded level geometry, props and links; `cargo run --example
 navmesh_bake -- [level.pvl]` bakes navmeshes and reports repairs and
-connectivity. Both read `RIZZARDRY_RETAIL`. Tests that need retail data run
-when `RIZZARDRY_RETAIL` is set and skip otherwise.
+connectivity. Both read `RIZZARDRY_RETAIL`. Retail-dependent tests are ignored
+by default; run them explicitly against your installation:
+
+```sh
+RIZZARDRY_RETAIL=/path/to/wizardry8 cargo test --locked -- --ignored
+```
+
+See [testing](docs/testing.md) for the lightweight Bevy testing approach.
 
 Behavioral research compares
 [Wizardry 8 Decomp](https://github.com/agluszak/wizardry-8-decomp) and

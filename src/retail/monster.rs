@@ -158,10 +158,11 @@ mod tests {
         assert_eq!((species.scale, species.walk_radius), (1.25, 0.675));
     }
 
-    /// Runs against a real installation when `RIZZARDRY_RETAIL` names one.
     #[test]
+    #[ignore = "requires a retail installation"]
     fn every_retail_cycle_decodes() {
-        let Ok(root) = std::env::var("RIZZARDRY_RETAIL") else { return };
+        let root =
+            std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL to run this test");
         let files = crate::retail::files::RetailFiles::open(root).unwrap();
         let mut decoded = 0;
         for name in files.names().filter(|n| n.ends_with(".mon")) {
