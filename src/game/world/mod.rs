@@ -47,7 +47,6 @@ impl Plugin for WorldPlugin {
                 Update,
                 (
                     level::activate_level,
-                    level::build_sky,
                     (
                         population::measure_monsters,
                         (

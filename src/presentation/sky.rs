@@ -7,9 +7,11 @@ use bevy::camera::visibility::RenderLayers;
 use bevy::math::Affine2;
 use bevy::prelude::*;
 
+use crate::content::level::LevelGeometry;
 use crate::game::party::body::PartyCamera;
 use crate::game::time::GameClock;
-use crate::game::world::level::SKY_LAYER;
+use crate::game::world::level::Level;
+use crate::presentation::billboards::FaceCamera;
 
 #[derive(Component, Debug)]
 pub struct SkyCamera;
@@ -105,5 +107,99 @@ pub fn orbit_sun_and_moon(clock: Res<GameClock>, mut bodies: Query<(&Celestial, 
     let orbit = centre + Quat::from_rotation_z((degrees - 40.0).to_radians()) * Vec3::Y * radius;
     for (body, mut transform) in &mut bodies {
         transform.translation = if body.sun == day { orbit } else { centre };
+    }
+}
+
+/// The level's sky has been built (or it has none).
+#[derive(Component, Debug)]
+pub struct SkyBuilt;
+
+/// The render layer sky worlds are drawn on, by their own camera.
+pub const SKY_LAYER: usize = 1;
+
+/// Build the level's sky world under its root, on the sky's render layer,
+/// once it has loaded. Cosmetic: the level is played without waiting.
+pub fn build_sky(
+    mut commands: Commands,
+    levels: Query<(Entity, &Level), Without<SkyBuilt>>,
+    geometry: Res<Assets<LevelGeometry>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    for (root, level) in &levels {
+        let Some(sky) = &level.sky else {
+            commands.entity(root).insert(SkyBuilt);
+            continue;
+        };
+        let Some(sky) = geometry.get(sky) else { continue };
+        commands.entity(root).insert(SkyBuilt);
+        info!(
+            "sky ready: {} parts, {} props, {} animated textures",
+            sky.parts.len(),
+            sky.props.len(),
+            sky.animated_textures.len()
+        );
+        let layer = RenderLayers::layer(SKY_LAYER);
+        let sky_root = commands
+            .spawn((Name::new("Sky"), Transform::default(), Visibility::default(), ChildOf(root)))
+            .id();
+        for part in &sky.parts {
+            commands.spawn((
+                Mesh3d(part.mesh.clone()),
+                MeshMaterial3d(part.material.clone()),
+                layer.clone(),
+                ChildOf(sky_root),
+            ));
+        }
+        for prop in &sky.props {
+            let cloud = prop.name.to_lowercase().starts_with("clouds");
+            let celestial = match prop.name.to_lowercase().as_str() {
+                "sun" => Some(true),
+                "moon" => Some(false),
+                _ => None,
+            };
+            for part in &prop.parts {
+                let part_entity = commands
+                    .spawn((
+                        Name::new(prop.name.clone()),
+                        part.transform,
+                        Visibility::default(),
+                        ChildOf(sky_root),
+                    ))
+                    .id();
+                if prop.face_camera {
+                    commands.entity(part_entity).insert(FaceCamera);
+                }
+                if let Some(sun) = celestial {
+                    commands
+                        .entity(part_entity)
+                        .insert(Celestial { sun, authored: part.transform.translation });
+                }
+                for mesh in &part.meshes {
+                    let mut entity = commands.spawn((
+                        Mesh3d(mesh.mesh.clone()),
+                        layer.clone(),
+                        ChildOf(part_entity),
+                    ));
+                    if cloud {
+                        // Clouds share retail's animated cloud material; keep
+                        // each one's texture.
+                        let texture = materials
+                            .get(&mesh.material)
+                            .and_then(|m| m.base_color_texture.clone());
+                        let material = materials.add(StandardMaterial {
+                            base_color_texture: texture,
+                            unlit: true,
+                            double_sided: true,
+                            cull_mode: None,
+                            alpha_mode: AlphaMode::Blend,
+                            ..default()
+                        });
+                        entity.insert((MeshMaterial3d(material), Cloud));
+                    } else {
+                        entity.insert(MeshMaterial3d(mesh.material.clone()));
+                    }
+                }
+            }
+        }
     }
 }

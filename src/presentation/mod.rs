@@ -116,6 +116,8 @@ impl Plugin for PresentationPlugin {
                     environment::apply_environment,
                     sky::follow_with_sky_camera.after(crate::game::party::body::aim_camera),
                     sky::shade_clouds,
+                    sky::build_sky,
+                    environment::attach_level_visuals,
                     billboards::face_camera.after(crate::game::party::body::aim_camera),
                     effects::play_trigger_effects,
                     music::play_music,

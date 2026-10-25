@@ -6,7 +6,9 @@ use bevy::prelude::*;
 use crate::content::level::LevelGeometry;
 use crate::game::party::body::PartyCamera;
 use crate::game::time::GameClock;
-use crate::game::world::level::Level;
+use crate::game::world::level::{Level, LevelPhase, PropPart};
+use crate::game::world::props::Prop;
+use crate::presentation::billboards::FaceCamera;
 
 /// The level and phase the presentation was last updated for.
 #[derive(Default)]
@@ -60,6 +62,54 @@ pub fn apply_environment(
     for part in parts {
         if let Some(mut mesh) = meshes.get_mut(&part.mesh) {
             mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, part.lighting.colours(sky));
+        }
+    }
+}
+
+/// The level's meshes have been attached.
+#[derive(Component, Debug)]
+pub struct LevelVisuals;
+
+/// Give an active level its looks: the static geometry under its root, each
+/// prop part's meshes under the part, and sprites turning to the view.
+pub fn attach_level_visuals(
+    mut commands: Commands,
+    levels: Query<(Entity, &Level, &LevelPhase, Option<&Children>), Without<LevelVisuals>>,
+    geometry: Res<Assets<LevelGeometry>>,
+    props: Query<(&Prop, &Children)>,
+    parts: Query<&PropPart>,
+) {
+    for (root, level, phase, children) in &levels {
+        let (LevelPhase::Active, Some(geometry)) = (phase, geometry.get(&level.geometry)) else {
+            continue;
+        };
+        commands.entity(root).insert(LevelVisuals);
+        for part in &geometry.parts {
+            commands.spawn((
+                Mesh3d(part.mesh.clone()),
+                MeshMaterial3d(part.material.clone()),
+                ChildOf(root),
+            ));
+        }
+        for &child in children.into_iter().flatten() {
+            let Ok((prop, prop_parts)) = props.get(child) else { continue };
+            let Some(model) = geometry.props.get(prop.definition) else { continue };
+            for &entity in prop_parts {
+                let Some(part) = parts.get(entity).ok().and_then(|p| model.parts.get(p.part))
+                else {
+                    continue;
+                };
+                if model.face_camera {
+                    commands.entity(entity).insert(FaceCamera);
+                }
+                for mesh in &part.meshes {
+                    commands.spawn((
+                        Mesh3d(mesh.mesh.clone()),
+                        MeshMaterial3d(mesh.material.clone()),
+                        ChildOf(entity),
+                    ));
+                }
+            }
         }
     }
 }
