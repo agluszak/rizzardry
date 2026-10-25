@@ -15,6 +15,7 @@ pub mod bake;
 use avian3d::prelude::*;
 use bake::NavmeshBakeSettings;
 use bevy::asset::AssetApp;
+use bevy::asset::processor::LoadTransformAndSave;
 use bevy::prelude::*;
 use bevy_landmass::prelude::*;
 use bevy_landmass::{NavMeshHandle, PointSampleDistance3d};
@@ -34,11 +35,16 @@ impl Plugin for NavigationPlugin {
             .init_asset::<asset::BakedNavmesh>()
             .register_asset_loader(asset::LevelCollisionLoader)
             .register_asset_loader(asset::NavmeshLoader)
-            .register_asset_processor(asset::NavmeshProcess::new(
+            .register_asset_processor(LoadTransformAndSave::<
+                asset::LevelCollisionLoader,
                 asset::BakeNavmesh,
                 asset::NavmeshSaver,
-            ))
-            .set_default_asset_processor::<asset::NavmeshProcess>(NAVMESH_EXTENSION);
+            >::new(asset::BakeNavmesh, asset::NavmeshSaver))
+            .set_default_asset_processor::<LoadTransformAndSave<
+                asset::LevelCollisionLoader,
+                asset::BakeNavmesh,
+                asset::NavmeshSaver,
+            >>(NAVMESH_EXTENSION);
     }
 
     fn build(&self, app: &mut App) {

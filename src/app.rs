@@ -16,6 +16,7 @@ use crate::game::party::body::PartyStart;
 use crate::game::world::WorldPlugin;
 use crate::game::world::level::ActiveLevel;
 use crate::game::world::navigation::asset::navmesh_path;
+use crate::presentation::PresentationPlugin;
 use crate::retail::RetailPlugin;
 use crate::retail::files::RetailFiles;
 use crate::retail::space::{retail_position, retail_yaw};
@@ -115,7 +116,13 @@ pub fn run(options: Options) -> AppExit {
                 // Navmeshes are baked once by the asset processor and cached.
                 .set(AssetPlugin { mode: AssetMode::Processed, ..default() }),
         )
-        .add_plugins((EnhancedInputPlugin, PhysicsPlugins::default(), WorldPlugin, PartyPlugin))
+        .add_plugins((
+            EnhancedInputPlugin,
+            PhysicsPlugins::default(),
+            WorldPlugin,
+            PartyPlugin,
+            PresentationPlugin,
+        ))
         .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.07)));
     app.insert_resource(start);
     if let Some(path) = options.screenshot.clone() {

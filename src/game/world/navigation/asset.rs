@@ -2,14 +2,13 @@
 //!
 //! Each retail level has a `navmesh://<level>.navmesh` input (its `.pvl`
 //! bytes, see [`crate::retail::source`]). The processor bakes it once with
-//! [`NavmeshProcess`] and caches the result under `imported_assets/navmesh`,
+//! `LoadTransformAndSave<LevelCollisionLoader, BakeNavmesh, NavmeshSaver>` and caches the result under `imported_assets/navmesh`,
 //! re-baking only when the level or the [`NavmeshBakeSettings`] in its meta
 //! change. The game loads the processed file as a Landmass [`NavMesh3d`].
 
 use std::sync::Arc;
 
 use bevy::asset::io::{Reader, Writer};
-use bevy::asset::processor::LoadTransformAndSave;
 use bevy::asset::saver::{AssetSaver, SavedAsset};
 use bevy::asset::transformer::{AssetTransformer, TransformedAsset};
 use bevy::asset::{AssetLoader, AssetPath, LoadContext};
@@ -23,9 +22,6 @@ use crate::retail::bytes::{Bytes, Truncated};
 use crate::retail::level_loader::collision_triangles;
 use crate::retail::pvl::{PvlError, read_level_geometry};
 use crate::retail::source::{NAVMESH_EXTENSION, NAVMESH_SOURCE};
-
-/// The import-time processor for `.navmesh` inputs.
-pub type NavmeshProcess = LoadTransformAndSave<LevelCollisionLoader, BakeNavmesh, NavmeshSaver>;
 
 /// The navmesh path for a retail level path, e.g. `levels/x/y.pvl`.
 pub fn navmesh_path(level: &str) -> AssetPath<'static> {
