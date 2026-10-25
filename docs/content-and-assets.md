@@ -35,6 +35,16 @@ Do not load an unknown enum or script operation as a silent no-op. Report the
 source asset and record. Unknown bytes can remain in an import record until
 understood, without contaminating the live component layout.
 
+Importing should move in one direction: `retail` decodes and normalizes into
+`content`; gameplay uses those content values and must not parse retail
+bytes. Decode directly into a native definition when there is no meaningful
+intermediate representation. Keep a separate raw record only for a genuine
+format/native distinction (versioned disk fields, validation, unit conversion
+or unresolved references), not to duplicate the same fields and copy them
+one by one. `content` and shared presentation types must not depend on
+`retail`; move a genuinely reusable type or font operation below both users
+rather than adding another mirror representation.
+
 ## Stable content identity and overrides
 
 Authored content uses stable namespaced keys. The retail adapter maps numbered
