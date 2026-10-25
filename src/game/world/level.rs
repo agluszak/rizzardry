@@ -26,6 +26,14 @@ pub struct AwaitingGeometry;
 #[derive(Component, Debug, Default)]
 pub struct AwaitingNavmesh;
 
+/// One rigid part of a placed prop, with its animation poses.
+#[derive(Component, Debug)]
+pub struct PropPart {
+    /// Poses along the part's path, starting with the rest pose; empty if
+    /// the part does not move.
+    pub keys: Vec<Transform>,
+}
+
 /// Sent once a level's geometry and collider exist.
 #[derive(Message, Debug, Clone, Copy)]
 pub struct LevelReady;
@@ -58,10 +66,55 @@ pub fn build_level_geometry(
             for part in &geometry.parts {
                 parent.spawn((Mesh3d(part.mesh.clone()), MeshMaterial3d(part.material.clone())));
             }
+            for prop in &geometry.props {
+                parent
+                    .spawn((
+                        Name::new(prop.name.clone()),
+                        Transform::default(),
+                        Visibility::default(),
+                    ))
+                    .with_children(|prop_entity| {
+                        for part in &prop.parts {
+                            let mut part_entity = prop_entity.spawn((
+                                PropPart { keys: part.keys.clone() },
+                                part.transform,
+                                Visibility::default(),
+                            ));
+                            if prop.collidable {
+                                match Collider::try_trimesh_with_config(
+                                    part.collision.vertices.clone(),
+                                    part.collision.triangles.clone(),
+                                    TrimeshFlags::MERGE_DUPLICATE_VERTICES
+                                        | TrimeshFlags::DELETE_DEGENERATE_TRIANGLES,
+                                ) {
+                                    // Parts with a path can move (doors, lifts).
+                                    Ok(collider) => {
+                                        let body = if part.keys.is_empty() {
+                                            RigidBody::Static
+                                        } else {
+                                            RigidBody::Kinematic
+                                        };
+                                        part_entity.insert((body, collider));
+                                    }
+                                    Err(error) => warn!("prop {} collider: {error:?}", prop.name),
+                                }
+                            }
+                            part_entity.with_children(|meshes| {
+                                for mesh in &part.meshes {
+                                    meshes.spawn((
+                                        Mesh3d(mesh.mesh.clone()),
+                                        MeshMaterial3d(mesh.material.clone()),
+                                    ));
+                                }
+                            });
+                        }
+                    });
+            }
         });
         info!(
-            "level ready: {} parts, {} collision triangles",
+            "level ready: {} parts, {} props, {} collision triangles",
             geometry.parts.len(),
+            geometry.props.len(),
             geometry.collision.triangles.len()
         );
         ready.write(LevelReady);

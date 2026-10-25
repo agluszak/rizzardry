@@ -15,8 +15,30 @@ pub struct LevelPart {
 pub struct LevelGeometry {
     pub parts: Vec<LevelPart>,
     pub collision: CollisionMesh,
+    pub props: Vec<PropModel>,
     /// Materials whose texture is an animated frame list (`.ifl`).
     pub animated_textures: Vec<TextureAnimation>,
+}
+
+/// A placed prop: scenery, a door, a lever, a lift or a billboard.
+#[derive(Clone, Debug, Reflect)]
+pub struct PropModel {
+    pub name: String,
+    /// Retail `COLLIDABLE`: the party and monsters collide with its parts.
+    pub collidable: bool,
+    pub parts: Vec<PropModelPart>,
+}
+
+/// One rigid part of a prop, in its rest pose.
+#[derive(Clone, Debug, Reflect)]
+pub struct PropModelPart {
+    pub transform: Transform,
+    /// The part's poses along its animation path, starting with the rest
+    /// pose; empty for parts that do not move.
+    pub keys: Vec<Transform>,
+    pub meshes: Vec<LevelPart>,
+    /// Part-local collision triangles.
+    pub collision: CollisionMesh,
 }
 
 /// A level's solid collision triangles in world space (metres), with outward

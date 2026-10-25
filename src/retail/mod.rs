@@ -11,6 +11,7 @@ pub mod mesh_record;
 pub mod oct;
 pub mod path;
 pub mod prop;
+pub mod prop_loader;
 pub mod pvl;
 pub mod sections;
 pub mod slf;

@@ -108,8 +108,13 @@ pub fn run(options: Options) -> AppExit {
     let mut start = PartyStart { eye: options.start, yaw: options.yaw.to_radians() };
     if let (None, Some(entrance)) = (options.start, options.entrance(&level)) {
         match entrance_placement(&files, &level, entrance) {
-            Some(placement) => start = placement,
-            None => warn!("entrance {entrance} not found; using the retail fallback position"),
+            Some(placement) => {
+                info!("entering {level} at {entrance}: {placement:?}");
+                start = placement
+            }
+            None => warn!(
+                "entrance {entrance} is missing or not positioned; using the retail fallback position"
+            ),
         }
     }
 

@@ -7,6 +7,9 @@ use super::mesh_record::{MeshRecord, MeshVertices, RECORD_SCALE, read_mesh_recor
 use super::pvl::{PvlError, invalid, text};
 use super::trigger::{Trigger, read_trigger};
 
+/// Prop flag: the party and monsters collide with the prop.
+pub const PROP_COLLIDABLE: u32 = 1;
+
 /// A mesh with optional frame alternatives: either one record whose
 /// vertices animate, or one record per frame.
 #[derive(Clone, Debug, PartialEq)]

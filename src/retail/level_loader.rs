@@ -11,15 +11,21 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::reflect::TypePath;
 
+use super::bytes::Bytes;
 use super::oct::read_collision;
+use super::prop::PROP_COLLIDABLE;
+use super::prop_loader::{PropLighting, part_transforms, record_collision, record_meshes};
 use super::pvl::{CompiledMesh, MaterialRecord, PvlError, read_level_geometry};
+use super::sections::read_sections;
 use super::space::{retail_direction, retail_position};
-use crate::content::level::{LevelGeometry, LevelPart, Playback, TextureAnimation};
+use crate::content::level::{
+    LevelGeometry, LevelPart, Playback, PropModel, PropModelPart, TextureAnimation,
+};
 use crate::presentation::mipmaps::generate_mipmaps;
 
-/// Light contributed by full sun exposure until the level environment's sun
-/// colour is decoded.
-const PROVISIONAL_SUN: f32 = 0.75;
+/// Time-of-day phase used for baked lighting until the game clock exists:
+/// noon, when a new game starts.
+const NOON: usize = 128;
 
 #[derive(Default, TypePath)]
 pub struct PvlLoader;
@@ -46,6 +52,8 @@ enum Blend {
 struct LoadedMaterial {
     handle: Handle<StandardMaterial>,
     emission: f32,
+    /// The material's ambient reflectance, which scales sun and sky light.
+    ambient: Vec3,
     animation: Option<TextureAnimation>,
 }
 
@@ -156,6 +164,7 @@ async fn load_frames(
 
 async fn load_material(
     context: &mut LoadContext<'_>,
+    label: String,
     directory: &str,
     textures: &mut LoadedTextures,
     index: usize,
@@ -201,7 +210,7 @@ async fn load_material(
         },
         ..default()
     };
-    let handle = context.add_labeled_asset(format!("material/{index}"), material);
+    let handle = context.add_labeled_asset(label, material);
     let animation = (frames.len() > 1).then(|| TextureAnimation {
         material: handle.clone(),
         frames: frames.into_iter().map(|(frame, _)| frame).collect(),
@@ -214,11 +223,26 @@ async fn load_material(
         frames_per_second: record.animation_rate,
         start_frame: record.animation_frame.max(0) as usize,
     });
-    LoadedMaterial { handle, emission: record.emission, animation }
+    LoadedMaterial {
+        handle,
+        emission: record.emission,
+        ambient: Vec3::from(record.ambient),
+        animation,
+    }
 }
 
 /// Unweld one material's polygons from a compiled mesh into a Bevy mesh.
-fn build_part(source: &CompiledMesh, material: u32, emission: f32) -> Option<Mesh> {
+///
+/// Vertex colour is retail's baked light: `sky * sun_weight + static light +
+/// offset`, plus the material's emission, where `sky` is the ambient colour
+/// times the material's ambient reflectance.
+fn build_part(
+    source: &CompiledMesh,
+    material: u32,
+    emission: f32,
+    sky: Vec3,
+    offset: Vec3,
+) -> Option<Mesh> {
     let mut corners: HashMap<(u32, u32), u32> = HashMap::new();
     let (mut positions, mut normals, mut uvs, mut colors) = (vec![], vec![], vec![], vec![]);
     let mut indices = vec![];
@@ -232,10 +256,10 @@ fn build_part(source: &CompiledMesh, material: u32, emission: f32) -> Option<Mes
                 positions.push(retail_position(source.positions[v]).to_array());
                 normals.push(retail_direction(source.normals[v]).to_array());
                 uvs.push(source.uvs[uv as usize]);
-                let sun = source.sunlight.as_ref().map_or(0.0, |sun| sun[v]) * PROVISIONAL_SUN;
-                let light =
-                    source.vertex_light[v].map(|channel| (channel + sun + emission).min(1.0));
-                colors.push([light[0], light[1], light[2], 1.0]);
+                let sun = source.sunlight.as_ref().map_or(1.0, |sun| sun[v]);
+                let light = sky * sun + Vec3::from(source.vertex_light[v]) + offset + emission;
+                let light = light.min(Vec3::ONE);
+                colors.push([light.x, light.y, light.z, 1.0]);
                 positions.len() as u32 - 1
             });
             indices.push(index);
@@ -267,12 +291,27 @@ impl AssetLoader for PvlLoader {
         let mut data = Vec::new();
         reader.read_to_end(&mut data).await?;
         let geometry = read_level_geometry(&data)?;
+        let sections = read_sections(&mut Bytes::new(&data[geometry.end..]))?;
         let directory = "bitmaps";
+        let ambient = sections
+            .environment
+            .as_ref()
+            .and_then(|e| {
+                Some(
+                    Vec3::from(e.ambient_colours.as_ref()?[NOON].map(f32::from)) / 255.0
+                        * e.intensity,
+                )
+            })
+            .unwrap_or(Vec3::ZERO)
+            .min(Vec3::ONE);
+        let offset = Vec3::from(sections.environment_offset);
 
         let mut textures = LoadedTextures::default();
         let mut materials = Vec::with_capacity(geometry.materials.len());
         for (index, record) in geometry.materials.iter().enumerate() {
-            materials.push(load_material(context, directory, &mut textures, index, record).await);
+            let label = format!("material/{index}");
+            materials
+                .push(load_material(context, label, directory, &mut textures, index, record).await);
         }
 
         let mut parts = Vec::new();
@@ -282,7 +321,8 @@ impl AssetLoader for PvlLoader {
             used.dedup();
             for material in used {
                 let loaded = &materials[material as usize];
-                if let Some(part) = build_part(mesh, material, loaded.emission) {
+                let sky = ambient * loaded.ambient;
+                if let Some(part) = build_part(mesh, material, loaded.emission, sky, offset) {
                     let handle =
                         context.add_labeled_asset(format!("mesh/{mesh_index}/{material}"), part);
                     parts.push(LevelPart { mesh: handle, material: loaded.handle.clone() });
@@ -294,8 +334,51 @@ impl AssetLoader for PvlLoader {
         let octree = sibling(context, ".", &format!("{stem}.oct")).ok_or(PvlLoadError::Path)?;
         let octree = context.read_asset_bytes(octree).await?;
         let collision = read_collision(&octree)?.solid_mesh();
-        let animated_textures = materials.into_iter().filter_map(|m| m.animation).collect();
-        Ok(LevelGeometry { parts, collision, animated_textures })
+
+        let lighting = PropLighting { ambient, offset, lights: &sections.lights };
+        let mut props = Vec::new();
+        let mut animated_textures: Vec<TextureAnimation> =
+            materials.into_iter().filter_map(|m| m.animation).collect();
+        for (prop_index, prop) in sections.props.iter().chain(&sections.bitmaps).enumerate() {
+            let mut parts = Vec::new();
+            for (part_index, (part, (transform, keys))) in
+                prop.detailed_parts().iter().zip(part_transforms(prop)).enumerate()
+            {
+                let record = &part.mesh.frames[part.mesh.first_frame];
+                let mut part_materials = Vec::with_capacity(record.materials.len());
+                for (index, material) in record.materials.iter().enumerate() {
+                    let label = format!("prop/{prop_index}/{part_index}/material/{index}");
+                    part_materials.push(
+                        load_material(context, label, directory, &mut textures, index, material)
+                            .await,
+                    );
+                }
+                let mut meshes = Vec::new();
+                for (material, mesh) in
+                    record_meshes(record, &transform, &lighting, |m| part_materials[m].emission)
+                {
+                    let label = format!("prop/{prop_index}/{part_index}/mesh/{material}");
+                    let mesh = context.add_labeled_asset(label, mesh);
+                    meshes.push(LevelPart {
+                        mesh,
+                        material: part_materials[material].handle.clone(),
+                    });
+                }
+                animated_textures.extend(part_materials.into_iter().filter_map(|m| m.animation));
+                parts.push(PropModelPart {
+                    transform,
+                    keys,
+                    meshes,
+                    collision: record_collision(record),
+                });
+            }
+            props.push(PropModel {
+                name: prop.name.clone(),
+                collidable: prop.flags & PROP_COLLIDABLE != 0,
+                parts,
+            });
+        }
+        Ok(LevelGeometry { parts, collision, props, animated_textures })
     }
 
     fn extensions(&self) -> &[&str] {
