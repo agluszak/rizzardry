@@ -3,6 +3,7 @@
 pub mod ambience;
 pub mod automap;
 pub mod billboards;
+pub mod camp;
 pub mod dialog;
 pub mod effects;
 pub mod environment;
@@ -18,7 +19,26 @@ pub mod voice;
 use bevy::prelude::*;
 use bevy_enhanced_input::prelude::*;
 
+use crate::game::party::body::Exploration;
+
 pub struct PresentationPlugin;
+
+/// Exploring takes input only while nothing else holds it: the automap,
+/// a question, or camping.
+fn hold_exploration(
+    mut commands: Commands,
+    automap: Option<Res<automap::Automap>>,
+    question: Option<Res<crate::game::world::level::TravelQuestion>>,
+    camp: Option<Res<crate::game::camp::Camp>>,
+    controls: Query<(Entity, Option<&ContextActivity<Exploration>>), With<Exploration>>,
+) {
+    let active = automap.is_none() && question.is_none() && camp.is_none();
+    for (entity, activity) in &controls {
+        if activity.is_none_or(|a| **a != active) {
+            commands.entity(entity).insert(ContextActivity::<Exploration>::new(active));
+        }
+    }
+}
 
 impl Plugin for PresentationPlugin {
     fn build(&self, app: &mut App) {
@@ -37,12 +57,15 @@ impl Plugin for PresentationPlugin {
                     automap::load_automap_art,
                     notices::load_notice_art,
                     dialog::load_dialog_art,
+                    camp::load_camp_art,
                 ),
             )
             .add_systems(
                 Update,
                 (
                     automap::scale_ui,
+                    hold_exploration,
+                    camp::show_camp,
                     (
                         automap::toggle_automap,
                         automap::type_note,

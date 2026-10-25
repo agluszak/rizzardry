@@ -147,6 +147,12 @@ pub fn spawn_exploration_controls(mut commands: Commands) {
                 --
                 Binding(MouseButton::Left)
             ]
+            --
+            // Retail's default camp key is not in its data; R is assumed.
+            Action::<crate::game::camp::Rest>::new()
+            Bindings [
+                Binding(KeyCode::KeyR)
+            ]
         ]
     });
 }

@@ -6,6 +6,7 @@ use std::collections::VecDeque;
 use bevy::prelude::*;
 
 use crate::content::ui::{SpriteSheet, TextTable};
+use crate::game::camp::CampNews;
 use crate::game::world::level::Level;
 use crate::game::world::triggers::TriggerEffect;
 
@@ -43,9 +44,19 @@ const PARTY_TAKES: usize = 0x1e9;
 const GOLD_BEFORE: usize = 0x15f;
 const GOLD_AFTER: usize = 0x160;
 
-/// Turn trigger effects into notice texts.
+/// Camping's notices.
+const CAMPING_FOR: usize = 0x790;
+const CAMP_DONE: usize = 0x791;
+const CAMP_INTERRUPTED: usize = 0x792;
+const CAMP_CANCELLED: usize = 0x793;
+const FORCED_TO_CAMP: usize = 0x794;
+const RECOVERED: usize = 0x795;
+const MOVING: usize = 0x796;
+
+/// Turn trigger effects and camping news into notice texts.
 pub fn queue_notices(
     mut effects: MessageReader<TriggerEffect>,
+    mut camp: MessageReader<CampNews>,
     art: Res<NoticeArt>,
     tables: Res<Assets<TextTable>>,
     levels: Query<&Level>,
@@ -74,6 +85,19 @@ pub fn queue_notices(
             info!("notice: {}", text.trim());
             queue.0.push_back(text.trim().to_owned());
         }
+    }
+    for news in camp.read() {
+        let text = match news {
+            CampNews::Started { forced: false } => string(CAMPING_FOR).replace("%d", "8"),
+            CampNews::Started { forced: true } => string(FORCED_TO_CAMP),
+            CampNews::Moving => string(MOVING),
+            CampNews::Done => string(CAMP_DONE),
+            CampNews::Interrupted => string(CAMP_INTERRUPTED),
+            CampNews::Cancelled => string(CAMP_CANCELLED),
+            CampNews::Recovered => string(RECOVERED),
+        };
+        info!("notice: {text}");
+        queue.0.push_back(text);
     }
 }
 

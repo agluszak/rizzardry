@@ -3,11 +3,9 @@
 
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
-use bevy_enhanced_input::prelude::*;
 
 use crate::content::levels::LevelInfo;
 use crate::content::ui::{SpriteSheet, TextTable};
-use crate::game::party::body::Exploration;
 use crate::game::world::level::{Travel, TravelQuestion};
 
 /// "Proceed to" in the game string table.
@@ -51,7 +49,6 @@ pub fn show_travel_question(
     sheets: Res<Assets<SpriteSheet>>,
     tables: Res<Assets<TextTable>>,
     mut images: ResMut<Assets<Image>>,
-    exploration: Query<Entity, With<Exploration>>,
 ) {
     let Some(question) = question else { return };
     if !shown.is_empty() {
@@ -72,9 +69,6 @@ pub fn show_travel_question(
     let text = format!("{} {}?", strings.get(PROCEED_TO).unwrap_or("Proceed to"), level.trim());
     let label = font.text_image(&text);
     let label_size = label.size_f32();
-    for controls in &exploration {
-        commands.entity(controls).insert(ContextActivity::<Exploration>::INACTIVE);
-    }
     let screen = commands
         .spawn((
             QuestionDialog,
@@ -168,7 +162,6 @@ pub fn settle_travel_question(
     mut answers: MessageReader<TravelAnswer>,
     question: Option<Res<TravelQuestion>>,
     dialogs: Query<Entity, With<QuestionDialog>>,
-    exploration: Query<Entity, With<Exploration>>,
     mut travel: MessageWriter<Travel>,
 ) {
     let (Some(answer), Some(question)) = (answers.read().last(), question) else { return };
@@ -178,9 +171,6 @@ pub fn settle_travel_question(
     commands.remove_resource::<TravelQuestion>();
     for dialog in &dialogs {
         commands.entity(dialog).despawn();
-    }
-    for controls in &exploration {
-        commands.entity(controls).insert(ContextActivity::<Exploration>::ACTIVE);
     }
 }
 

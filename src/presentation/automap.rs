@@ -16,7 +16,7 @@ use bevy_enhanced_input::prelude::*;
 use crate::content::level::{CollisionMesh, LevelGeometry};
 use crate::content::ui::{SpriteSheet, ui_image};
 use crate::game::automap::MapNotes;
-use crate::game::party::body::{Exploration, FLOAT_HEIGHT, PartyBody};
+use crate::game::party::body::{FLOAT_HEIGHT, PartyBody};
 use crate::game::world::level::Level;
 
 const SCREEN: Vec2 = Vec2::new(640.0, 480.0);
@@ -259,7 +259,6 @@ pub fn toggle_automap(
     level: Query<&Level>,
     geometry: Res<Assets<LevelGeometry>>,
     screens: Query<Entity, With<AutomapScreen>>,
-    exploration: Query<Entity, With<Exploration>>,
 ) {
     let toggled = toggle.contains(ActionEvents::START);
     let backed = back.contains(ActionEvents::START);
@@ -270,9 +269,6 @@ pub fn toggle_automap(
                 commands.entity(screen).despawn();
             }
             commands.remove_resource::<Automap>();
-            for controls in &exploration {
-                commands.entity(controls).insert(ContextActivity::<Exploration>::ACTIVE);
-            }
         }
         return;
     }
@@ -456,9 +452,6 @@ pub fn toggle_automap(
         commands.spawn((button, ChildOf(frame))).observe(press_button);
     }
     commands.insert_resource(automap);
-    for controls in &exploration {
-        commands.entity(controls).insert(ContextActivity::<Exploration>::INACTIVE);
-    }
 }
 
 /// Topmost walkable surfaces below the selected authored ceiling, north up.

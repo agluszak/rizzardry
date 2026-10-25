@@ -417,6 +417,7 @@ fn scripted_key(name: &str) -> Option<(KeyCode, Key)> {
                 "m" => KeyCode::KeyM,
                 "e" => KeyCode::KeyE,
                 "q" => KeyCode::KeyQ,
+                "r" => KeyCode::KeyR,
                 _ => KeyCode::Unidentified(NativeKeyCode::Unidentified),
             };
             (code, Key::Character(letter.into()))
@@ -558,6 +559,12 @@ pub fn run_ui_script(
             let amount: u32 = rest.parse().expect("hurt expects an amount");
             for mut member in &mut members {
                 member.damage(amount);
+            }
+        }
+        "tire" => {
+            let amount: u32 = rest.parse().expect("tire expects an amount");
+            for mut member in &mut members {
+                member.spend_stamina(amount);
             }
         }
         "log-party" => {

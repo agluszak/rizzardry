@@ -143,8 +143,16 @@ Known gaps, in rough order:
 - The party recovers as game time passes (`game::party::recovery`):
   stamina every 1.4 game seconds at `(0.9·max + 20)/240`, health every
   120-second aging tick at `(0.4·max + 20)/240`, both halved while standing
-  still; moving recovers a tenth of the stamina and no health. Camping and
-  combat rates wait for those systems.
+  still; moving recovers a tenth of the stamina and no health, and camping
+  recovers both at full rate. Combat rates wait for combat.
+- Camping (`game::camp`, R; retail's default key is not in its data): only
+  while still; a second's fade into retail's camping screen, eight game
+  hours at 2880× (ten real seconds), a second's fade back; Escape cuts it
+  short. When every living member is incapacitated the party is forced to
+  camp until someone can act. Notices use retail's strings. Ambushes, the
+  waking Senses roll and camping music wait for combat and music work.
+  Exploration input is held, in one system, while the automap, a travel
+  question or a camp exists.
   Plane-shaped triggers (falls) are not decoded as places yet.
 - Stamina and healing fountains (`0x25`, `0x26`) restore every member by
   `data[2]`, with `data[0]` uses (−1 endless) refilled `data[1]` × 720 game

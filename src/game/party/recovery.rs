@@ -1,11 +1,12 @@
 //! The party's passive recovery as game time passes. Retail ticks stamina
 //! every 1.4 game seconds outside combat and heals on its 120-second aging
-//! tick; both depend on whether the party stands still. Camping (full rate,
-//! and automatic when nobody can act) and combat are not modelled yet.
+//! tick; both depend on whether the party stands still, and run at full
+//! rate while camping. Combat is not modelled yet.
 
 use avian3d::prelude::LinearVelocity;
 use bevy::prelude::*;
 
+use crate::game::camp::Camp;
 use crate::game::characters::Character;
 use crate::game::party::body::PartyBody;
 use crate::game::time::GameClock;
@@ -24,6 +25,7 @@ pub fn recover(
     clock: Res<GameClock>,
     mut last: Local<Option<u64>>,
     party: Query<&LinearVelocity, With<PartyBody>>,
+    camp: Option<Res<Camp>>,
     mut members: Query<&mut Character>,
 ) {
     let previous = last.replace(clock.ms).unwrap_or(clock.ms);
@@ -33,7 +35,11 @@ pub fn recover(
         return;
     }
     let resting = party.single().is_ok_and(|v| v.length() < RESTING_BELOW);
-    let (stamina_scale, health_scale) = if resting { (0.5, 0.5) } else { (0.1, 0.0) };
+    let (stamina_scale, health_scale) = match (camp.is_some(), resting) {
+        (true, _) => (1.0, 1.0),
+        (false, true) => (0.5, 0.5),
+        (false, false) => (0.1, 0.0),
+    };
     for mut member in &mut members {
         if stamina_ticks > 0 {
             member.recover_stamina(stamina_ticks, stamina_scale);

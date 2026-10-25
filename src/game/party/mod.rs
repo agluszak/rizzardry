@@ -11,6 +11,7 @@ use bevy_enhanced_input::prelude::*;
 use bevy_tnua::prelude::*;
 use bevy_tnua_avian3d::prelude::*;
 
+use crate::game::camp;
 use crate::game::world::level::build_level_geometry;
 use crate::game::world::triggers::PendingPartyMove;
 
@@ -25,6 +26,7 @@ impl Plugin for PartyPlugin {
         .insert_resource(Gravity(Vec3::NEG_Y * body::GRAVITY))
         .add_input_context::<body::Exploration>()
         .init_resource::<roster::PartyRoster>()
+        .add_message::<camp::CampNews>()
         .add_systems(Startup, (body::spawn_exploration_controls, roster::spawn_test_party))
         .add_systems(
             Update,
@@ -32,6 +34,8 @@ impl Plugin for PartyPlugin {
                 body::place_party_on_ready.after(build_level_geometry),
                 (body::look_around, body::aim_camera).chain(),
                 body::interact,
+                (camp::request_camp, camp::force_camp, camp::cancel_camp, camp::advance_camp)
+                    .chain(),
             ),
         )
         // Tnua and Avian step on the fixed timestep; movement input feeds
