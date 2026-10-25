@@ -19,6 +19,7 @@ use crate::game::combat::attack::{Armour, armour};
 use crate::game::data::GameData;
 use crate::game::inventory::{Carried, EquipSlot};
 use crate::game::party::body::PartyCamera;
+use crate::game::party::formation::Formation;
 use crate::game::party::roster::PartyRoster;
 
 const SCREEN: Vec2 = Vec2::new(640.0, 480.0);
@@ -144,6 +145,9 @@ pub struct MainScreenArt {
     icons: Handle<SpriteSheet>,
     options: Handle<SpriteSheet>,
     radar_disc: Handle<SpriteSheet>,
+    formation_cage: Handle<SpriteSheet>,
+    formation_symbols: Handle<SpriteSheet>,
+    formation_jewels: Handle<SpriteSheet>,
     radar_rim: Handle<SpriteSheet>,
     view_cone: Handle<SpriteSheet>,
     combat_toggle: Handle<SpriteSheet>,
@@ -168,6 +172,9 @@ pub fn load_main_screen_art(mut commands: Commands, assets: Res<AssetServer>) {
         icons: load("icons_standard"),
         options: load("options_disk"),
         radar_disc: assets.load("retail://data/radar compass/formation_dot_small.sti"),
+        formation_cage: assets.load("retail://data/party formation/small_formation_cage.sti"),
+        formation_symbols: assets.load("retail://data/party formation/small_formation_symbol.sti"),
+        formation_jewels: assets.load("retail://data/party formation/small_formation_jewels.sti"),
         radar_rim: assets.load("retail://data/radar compass/compass_rim.sti"),
         view_cone: assets.load("retail://data/party formation/small_formation_cone.sti"),
         combat_toggle: load("icon_combat_toggle"),
@@ -298,6 +305,26 @@ pub fn select_with_keys(
         selected.0 = slot;
     }
 }
+
+/// Each formation cell's marker on the board, by row (front, right, rear,
+/// left, center) and seat (retail `g_formation_marker_offsets`).
+const FORMATION_CELLS: [(f32, f32); 15] = [
+    (38.0, 9.0),
+    (25.0, 13.0),
+    (51.0, 13.0),
+    (67.0, 38.0),
+    (63.0, 25.0),
+    (63.0, 51.0),
+    (38.0, 67.0),
+    (51.0, 63.0),
+    (25.0, 63.0),
+    (9.0, 38.0),
+    (13.0, 51.0),
+    (13.0, 25.0),
+    (38.0, 30.0),
+    (30.0, 42.0),
+    (46.0, 42.0),
+];
 
 /// The radar's compass rim, turned with the party.
 #[derive(Component)]
@@ -468,6 +495,7 @@ pub struct Shown {
     layout: ScreenLayout,
     slots: Vec<Option<SlotView>>,
     selected: usize,
+    formation: Formation,
     /// The text box's channel and the lines it shows.
     text: (usize, Vec<String>),
     fighting: bool,
@@ -530,8 +558,11 @@ pub fn draw_main_screen(
     data: Option<Res<GameData>>,
     catalogs: Res<Assets<ItemCatalog>>,
     screens: Query<Entity, With<MainScreen>>,
-    log: Res<TextLog>,
-    battle: Option<Res<crate::game::combat::Battle>>,
+    (log, battle, formation): (
+        Res<TextLog>,
+        Option<Res<crate::game::combat::Battle>>,
+        Res<Formation>,
+    ),
     mut drawn: Local<Option<Shown>>,
     mut loading: Local<HashMap<String, Handle<SpriteSheet>>>,
 ) {
@@ -569,6 +600,7 @@ pub fn draw_main_screen(
         selected: selected.0,
         text: (log.selected, log.visible().to_vec()),
         fighting: battle.is_some(),
+        formation: formation.clone(),
     };
     if drawn.as_ref() == Some(&shown) && !screens.is_empty() {
         return;
@@ -589,6 +621,9 @@ pub fn draw_main_screen(
         Some(icons),
         Some(options),
         Some(radar_disc),
+        Some(cage),
+        Some(symbols),
+        Some(jewels),
         Some(radar_rim),
         Some(view_cone),
         Some(combat_toggle),
@@ -609,6 +644,9 @@ pub fn draw_main_screen(
         get(&art.icons),
         get(&art.options),
         get(&art.radar_disc),
+        get(&art.formation_cage),
+        get(&art.formation_symbols),
+        get(&art.formation_jewels),
         get(&art.radar_rim),
         get(&art.view_cone),
         get(&art.combat_toggle),
@@ -906,6 +944,21 @@ pub fn draw_main_screen(
         ));
         if let Some(rim) = sprite(radar_rim, 0, at) {
             commands.spawn((rim, RadarRim, UiTransform::default(), ChildOf(frame)));
+        }
+    }
+    // The formation board: the cage, the view cone and each member's facing
+    // arrow and marching-order chip in their cell (retail
+    // `DrawFormationSlotMarkers`).
+    if layout.shows(Panel::Formation) {
+        let board = Vec2::new(519.0, 359.0);
+        put(&mut commands, sprite(cage, 0, board));
+        put(&mut commands, sprite(view_cone, 0, board));
+        for slot in 0..shown.slots.len() {
+            let Some((row, seat)) = shown.formation.place_of(slot) else { continue };
+            let (x, y) = FORMATION_CELLS[Formation::index_of(row) * 3 + seat];
+            let at = board + Vec2::new(x, y);
+            put(&mut commands, sprite(symbols, Formation::facing(row) * 3, at));
+            put(&mut commands, sprite(jewels, slot * 3, at));
         }
     }
     // The button bank (retail `pc.cpp` positions and frames: grayed, off,

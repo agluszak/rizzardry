@@ -42,17 +42,51 @@ impl Formation {
         self.seats[row.index()].iter().any(Option::is_some)
     }
 
+    /// A row's number in retail's order: front, right, rear, left, center.
+    pub fn index_of(row: Row) -> usize {
+        row.index()
+    }
+
+    /// Where a slot sits: its row and seat (0-2).
+    pub fn place_of(&self, slot: usize) -> Option<(Row, usize)> {
+        self.seats.iter().enumerate().find_map(|(r, row)| {
+            row.iter().position(|&s| s == Some(slot)).map(|seat| (ROWS[r], seat))
+        })
+    }
+
+    /// The direction a slot faces: its row's side, ahead for the center
+    /// (retail `SetFormationPosition`), as 0 front, 1 right, 2 rear, 3 left.
+    pub fn facing(row: Row) -> usize {
+        match row {
+            Row::Center => 0,
+            row => row.index(),
+        }
+    }
+
     /// Seat a slot without a place in the first row with room, front, then
-    /// center, then rear (retail `UpdateFormationSlotState`).
+    /// center, then rear (retail `PlaceCharacterInFormation`). Within a row
+    /// (`MakeRoomInFormationRow`): the first takes the lead seat; a second
+    /// moves the leader to the middle and takes the far seat; a third takes
+    /// the lead seat again.
     pub fn seat(&mut self, slot: usize) {
         if self.row_of(slot).is_some() {
             return;
         }
         for row in [Row::Front, Row::Center, Row::Rear] {
-            if let Some(seat) = self.seats[row.index()].iter_mut().find(|s| s.is_none()) {
-                *seat = Some(slot);
-                return;
+            let seats = &mut self.seats[row.index()];
+            match seats.iter().flatten().count() {
+                0 => seats[0] = Some(slot),
+                1 if seats[0].is_some() => {
+                    seats[1] = seats[0].take();
+                    seats[2] = Some(slot);
+                }
+                3 => continue,
+                _ => match seats.iter_mut().find(|s| s.is_none()) {
+                    Some(free) => *free = Some(slot),
+                    None => continue,
+                },
             }
+            return;
         }
     }
 
@@ -145,6 +179,10 @@ mod tests {
     #[test]
     fn six_members_fill_the_front_then_the_center() {
         let formation = six();
+        // The first moved aside for the second and the third took the lead.
+        assert_eq!(formation.place_of(0), Some((Row::Front, 1)));
+        assert_eq!(formation.place_of(1), Some((Row::Front, 2)));
+        assert_eq!(formation.place_of(2), Some((Row::Front, 0)));
         assert_eq!(formation.row_of(0), Some(Row::Front));
         assert_eq!(formation.row_of(2), Some(Row::Front));
         assert_eq!(formation.row_of(3), Some(Row::Center));
