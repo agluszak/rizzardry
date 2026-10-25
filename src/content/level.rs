@@ -14,12 +14,19 @@ pub struct LevelPart {
 #[derive(Asset, Clone, Debug, Reflect)]
 pub struct LevelGeometry {
     pub parts: Vec<LevelPart>,
-    /// Solid triangles in world space (metres), for building the collider.
-    pub collision_vertices: Vec<Vec3>,
-    pub collision_triangles: Vec<[u32; 3]>,
-    pub bounds: (Vec3, Vec3),
+    pub collision: CollisionMesh,
     /// Materials whose texture is an animated frame list (`.ifl`).
     pub animated_textures: Vec<TextureAnimation>,
+}
+
+/// A level's solid collision triangles in world space (metres), with outward
+/// winding. Only vertices some triangle uses are kept.
+#[derive(Clone, Debug, Default, Reflect)]
+pub struct CollisionMesh {
+    pub vertices: Vec<Vec3>,
+    pub triangles: Vec<[u32; 3]>,
+    /// Per triangle: whether walking monsters may path across it.
+    pub walkable: Vec<bool>,
 }
 
 /// How an animated texture advances (retail `W8TextureAnimationMode`).

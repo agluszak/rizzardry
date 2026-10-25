@@ -19,9 +19,7 @@ pub struct LevelRoot;
 
 /// Sent once the active level's geometry and collider exist.
 #[derive(Message, Debug, Clone, Copy)]
-pub struct LevelReady {
-    pub bounds: (Vec3, Vec3),
-}
+pub struct LevelReady;
 
 pub fn spawn_active_level(
     mut commands: Commands,
@@ -36,8 +34,8 @@ pub fn spawn_active_level(
     active.spawned = true;
 
     let collider = Collider::try_trimesh_with_config(
-        level.collision_vertices.clone(),
-        level.collision_triangles.clone(),
+        level.collision.vertices.clone(),
+        level.collision.triangles.clone(),
         TrimeshFlags::MERGE_DUPLICATE_VERTICES
             | TrimeshFlags::DELETE_DEGENERATE_TRIANGLES
             | TrimeshFlags::FIX_INTERNAL_EDGES,
@@ -62,7 +60,7 @@ pub fn spawn_active_level(
     info!(
         "level ready: {} parts, {} collision triangles",
         level.parts.len(),
-        level.collision_triangles.len()
+        level.collision.triangles.len()
     );
-    ready.write(LevelReady { bounds: level.bounds });
+    ready.write(LevelReady);
 }

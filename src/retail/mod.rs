@@ -8,6 +8,7 @@ pub mod files;
 pub mod keyframes;
 pub mod level_loader;
 pub mod mesh_record;
+pub mod oct;
 pub mod path;
 pub mod prop;
 pub mod pvl;

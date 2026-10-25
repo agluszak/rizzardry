@@ -12,8 +12,7 @@ use clap::Parser;
 
 use rizzardry::game::world::navigation::bake::{NavmeshBakeSettings, bake};
 use rizzardry::retail::files::RetailFiles;
-use rizzardry::retail::level_loader::collision_triangles;
-use rizzardry::retail::pvl::read_level_geometry;
+use rizzardry::retail::oct::read_collision;
 
 #[derive(clap::Parser)]
 #[command(about = "Bake retail levels' navmeshes outside the game and report the results.")]
@@ -113,11 +112,10 @@ fn main() {
     settings.agent_radius = args.radius.unwrap_or(settings.agent_radius);
     settings.agent_height = args.height.unwrap_or(settings.agent_height);
     for name in names {
-        let data = files.read(&name).expect("level exists").unwrap();
-        let geometry = read_level_geometry(&data).unwrap();
-        let (vertices, triangles) = collision_triangles(&geometry);
+        let octree = files.read(&name.replace(".pvl", ".oct")).expect("octree exists").unwrap();
+        let collision = read_collision(&octree).unwrap().solid_mesh();
         let start = Instant::now();
-        let (mesh, repair) = match bake(&vertices, &triangles, &settings) {
+        let (mesh, repair) = match bake(&collision, &settings) {
             Ok(result) => result,
             Err(error) => {
                 println!("{name}: FAILED after {:.1?}: {error}", start.elapsed());

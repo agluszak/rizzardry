@@ -62,12 +62,13 @@ pub fn retail_source(files: Arc<RetailFiles>) -> AssetSourceBuilder {
 pub const NAVMESH_SOURCE: &str = "navmesh";
 pub const NAVMESH_EXTENSION: &str = "navmesh";
 
-/// Every retail level `<path>.pvl` as `<path>.navmesh`, with the level's
-/// bytes. The asset processor turns these into baked navmeshes.
+/// Every retail level `<path>.pvl` as `<path>.navmesh`, with the bytes of
+/// its collision file `<path>.oct`. The asset processor turns these into
+/// baked navmeshes.
 struct NavmeshInputReader(Arc<RetailFiles>);
 
 fn level_for(path: &Path) -> Option<String> {
-    name(path).strip_suffix(&format!(".{NAVMESH_EXTENSION}")).map(|stem| format!("{stem}.pvl"))
+    name(path).strip_suffix(&format!(".{NAVMESH_EXTENSION}")).map(|stem| format!("{stem}.oct"))
 }
 
 impl AssetReader for NavmeshInputReader {

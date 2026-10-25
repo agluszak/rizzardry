@@ -11,7 +11,8 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::reflect::TypePath;
 
-use super::pvl::{self, CompiledMesh, MaterialRecord, PvlError, read_level_geometry};
+use super::oct::read_collision;
+use super::pvl::{CompiledMesh, MaterialRecord, PvlError, read_level_geometry};
 use super::space::{retail_direction, retail_position};
 use crate::content::level::{LevelGeometry, LevelPart, Playback, TextureAnimation};
 use crate::presentation::mipmaps::generate_mipmaps;
@@ -29,6 +30,10 @@ pub enum PvlLoadError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Pvl(#[from] PvlError),
+    #[error(transparent)]
+    Read(#[from] bevy::asset::ReadAssetBytesError),
+    #[error("cannot name the level's octree file")]
+    Path,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -212,30 +217,6 @@ async fn load_material(
     LoadedMaterial { handle, emission: record.emission, animation }
 }
 
-/// Solid level triangles in Bevy space: every polygon whose material is not
-/// the default and is fully opaque (alpha-tested foliage included; water and
-/// other translucent surfaces excluded). Winding is reversed like the render
-/// meshes, so normals face out.
-pub fn collision_triangles(geometry: &pvl::LevelGeometry) -> (Vec<Vec3>, Vec<[u32; 3]>) {
-    let solid: Vec<bool> = geometry
-        .materials
-        .iter()
-        .enumerate()
-        .map(|(index, material)| index != 0 && material.opacity >= 1.0)
-        .collect();
-    let mut vertices = Vec::new();
-    let mut triangles = Vec::new();
-    for mesh in &geometry.meshes {
-        let base = vertices.len() as u32;
-        vertices.extend(mesh.positions.iter().map(|&p| retail_position(p)));
-        for polygon in mesh.polygons.iter().filter(|p| solid[p.material as usize]) {
-            let [a, b, c] = polygon.vertices.map(|v| base + v);
-            triangles.push([a, c, b]);
-        }
-    }
-    (vertices, triangles)
-}
-
 /// Unweld one material's polygons from a compiled mesh into a Bevy mesh.
 fn build_part(source: &CompiledMesh, material: u32, emission: f32) -> Option<Mesh> {
     let mut corners: HashMap<(u32, u32), u32> = HashMap::new();
@@ -308,18 +289,13 @@ impl AssetLoader for PvlLoader {
                 }
             }
         }
-        let (collision_vertices, collision_triangles) = collision_triangles(&geometry);
-        let (min, max) = collision_vertices
-            .iter()
-            .fold((Vec3::MAX, Vec3::MIN), |(min, max), &p| (min.min(p), max.max(p)));
+        // Collision comes from the level's octree file, not render polygons.
+        let stem = context.path().path().file_stem().unwrap_or_default().to_string_lossy();
+        let octree = sibling(context, ".", &format!("{stem}.oct")).ok_or(PvlLoadError::Path)?;
+        let octree = context.read_asset_bytes(octree).await?;
+        let collision = read_collision(&octree)?.solid_mesh();
         let animated_textures = materials.into_iter().filter_map(|m| m.animation).collect();
-        Ok(LevelGeometry {
-            parts,
-            collision_vertices,
-            collision_triangles,
-            bounds: (min, max),
-            animated_textures,
-        })
+        Ok(LevelGeometry { parts, collision, animated_textures })
     }
 
     fn extensions(&self) -> &[&str] {

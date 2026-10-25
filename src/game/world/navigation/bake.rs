@@ -7,6 +7,8 @@
 use bevy::math::{Vec2, Vec3, Vec3A};
 use bevy::prelude::UVec3;
 use bevy_landmass::{HeightNavigationMesh3d, HeightPolygon, NavigationMesh3d};
+
+use crate::content::level::CollisionMesh;
 use rerecast::{
     AreaType, ConfigBuilder, DetailNavmesh, HeightfieldBuilder, PolygonNavmesh, TriMesh,
 };
@@ -22,6 +24,7 @@ pub struct NavmeshBakeSettings {
     pub agent_height: f32,
     /// Highest step a walker climbs.
     pub walkable_climb: f32,
+    /// Recast's slope limit; walkable area itself comes from surface flags.
     pub walkable_slope_degrees: f32,
     /// Horizontal cells are `agent_radius / cell_size_fraction` wide.
     pub cell_size_fraction: f32,
@@ -48,16 +51,25 @@ pub struct RepairReport {
     pub flipped_triangles: usize,
 }
 
-/// Bake the navmesh for a triangle soup in Bevy space.
+/// Bake the navmesh for a level's collision. Walkable area comes from the
+/// collision surfaces' flags, not from slope; every solid triangle is an
+/// obstacle.
 pub fn bake(
-    vertices: &[Vec3],
-    triangles: &[[u32; 3]],
+    collision: &CollisionMesh,
     settings: &NavmeshBakeSettings,
 ) -> Result<(NavigationMesh3d, RepairReport), String> {
-    let mut trimesh = TriMesh {
-        vertices: vertices.iter().map(|&v| Vec3A::from(v)).collect(),
-        indices: triangles.iter().map(|&t| UVec3::from_array(t)).collect(),
-        area_types: vec![AreaType::NOT_WALKABLE; triangles.len()],
+    let trimesh = TriMesh {
+        vertices: collision.vertices.iter().map(|&v| Vec3A::from(v)).collect(),
+        indices: collision.triangles.iter().map(|&t| UVec3::from_array(t)).collect(),
+        area_types: collision
+            .walkable
+            .iter()
+            .map(
+                |&walkable| {
+                    if walkable { AreaType::DEFAULT_WALKABLE } else { AreaType::NOT_WALKABLE }
+                },
+            )
+            .collect(),
     };
     let mut builder = ConfigBuilder {
         agent_radius: settings.agent_radius,
@@ -72,7 +84,6 @@ pub fn bake(
 
     // The pipeline of `bevy_rerecast_core`'s generator.
     let error = |e: &dyn std::fmt::Display| e.to_string();
-    trimesh.mark_walkable_triangles(config.walkable_slope_angle);
     let mut heightfield = HeightfieldBuilder {
         aabb: config.aabb,
         cell_size: config.cell_size,
