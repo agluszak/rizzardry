@@ -164,9 +164,8 @@ pub struct MonsterPlacement {
     pub location: i32,
     /// The group it belongs to, by the level's group id.
     pub group: i32,
+    /// Its species, by `monsters.dbs` record; the species gives its model.
     pub species: u32,
-    /// The species' model, `data/monsters/<model>.mls`.
-    pub model: String,
     /// Feet.
     pub position: Vec3,
     pub yaw: f32,

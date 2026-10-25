@@ -20,7 +20,6 @@ use super::sections::LevelSections;
 use super::sections::{Environment, read_sections};
 use super::space::UNITS_PER_METRE;
 use super::space::{retail_direction, retail_position, retail_yaw};
-use super::species::read_species;
 use super::texture_loader::file_has_alpha;
 use super::trigger::{
     AmbientSound, ItemTrigger, StateMode, TriggerKind, action as trigger_action, flag,
@@ -247,20 +246,16 @@ fn ambient_sound(sound: &AmbientSound) -> AmbientSoundModel {
 
 /// Placed monsters with their models, in Bevy space. Unborn ones wait for a
 /// script that is not implemented yet, so they are left out.
-fn monster_placements(placements: &[Placement], models: &[String]) -> Vec<MonsterPlacement> {
+fn monster_placements(placements: &[Placement]) -> Vec<MonsterPlacement> {
     placements
         .iter()
         .filter(|placement| !placement.unborn)
-        .filter_map(|placement| {
-            let model = models.get(placement.species as usize)?.clone();
-            Some(MonsterPlacement {
-                location: placement.location,
-                group: placement.group,
-                species: placement.species,
-                model,
-                position: retail_position(placement.position),
-                yaw: retail_yaw(placement.yaw, [0.0, 1.0, 0.0]),
-            })
+        .map(|placement| MonsterPlacement {
+            location: placement.location,
+            group: placement.group,
+            species: placement.species,
+            position: retail_position(placement.position),
+            yaw: retail_yaw(placement.yaw, [0.0, 1.0, 0.0]),
         })
         .collect()
 }
@@ -529,11 +524,8 @@ impl AssetLoader for PvlLoader {
         let (monsters, items) = match sibling(context, ".", &format!("{stem}.sts")) {
             Some(path) => match context.read_asset_bytes(path).await {
                 Ok(state) => {
-                    let species = AssetPath::from("retail://data/databases/monsters.dbs");
-                    let species = read_species(&context.read_asset_bytes(species).await?)?;
-                    let models: Vec<String> = species.into_iter().map(|s| s.model).collect();
                     let items = read_world_items(&state)?.iter().map(item_placement).collect();
-                    (monster_placements(&read_placements(&state)?, &models), items)
+                    (monster_placements(&read_placements(&state)?), items)
                 }
                 Err(_) => (vec![], vec![]),
             },

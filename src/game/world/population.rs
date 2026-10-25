@@ -108,15 +108,12 @@ pub fn populate(
     };
     for kept in &monsters {
         let monster = &kept.monster;
-        let Some(placed) = geometry.monsters.iter().find(|p| p.location == monster.location) else {
-            continue;
-        };
-        let name = species.0.get(monster.species as usize).map_or("", |k| k.name.as_str());
+        let Some(kind) = species.0.get(monster.species as usize) else { continue };
         commands.spawn((
-            Name::new(format!("{name} #{}", monster.location)),
+            Name::new(format!("{} #{}", kind.name, monster.location)),
             monster.clone(),
             MonsterAppearance {
-                model: assets.load(format!("retail://data/monsters/{}.mls", placed.model)),
+                model: assets.load(format!("retail://data/monsters/{}.mls", kind.model)),
                 float_height: 0.0,
                 // Retail starts each idle at a random frame; vary it by
                 // location instead.

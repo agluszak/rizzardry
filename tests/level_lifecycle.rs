@@ -48,20 +48,14 @@ fn with_data(app: &mut App) {
     let world = app.world_mut();
     let items = world.resource_mut::<Assets<ItemCatalog>>().add(ItemCatalog::default());
     let loot = world.resource_mut::<Assets<LootTables>>().add(LootTables::default());
-    let crab = Species { name: "Crab".into(), ..default() };
+    let crab = Species { name: "Crab".into(), model: "crab".into(), ..default() };
     let species = world.resource_mut::<Assets<MonsterCatalog>>().add(MonsterCatalog(vec![crab]));
     world.insert_resource(GameData { items, loot, species });
 }
 
 fn spawn_level(app: &mut App, collision: CollisionMesh) -> Entity {
-    let crab = MonsterPlacement {
-        location: 7,
-        group: 1,
-        species: 0,
-        model: "crab".into(),
-        position: Vec3::ZERO,
-        yaw: 0.0,
-    };
+    let crab =
+        MonsterPlacement { location: 7, group: 1, species: 0, position: Vec3::ZERO, yaw: 0.0 };
     let geometry = app.world_mut().resource_mut::<Assets<LevelGeometry>>().add(LevelGeometry {
         collision,
         monsters: vec![crab],
