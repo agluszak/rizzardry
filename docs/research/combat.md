@@ -720,7 +720,7 @@ The other end-of-round work (`fight.cpp:1273-1395`), in order:
 - **Death bookkeeping is immediate**: XP pool, re-aiming at a new target and
   removal from the turn order. Loot spawning is tied to the die animation in
   retail. A rewrite can spawn it at death, as an explicit deviation.
-- **RNG.** rizzardry's `GameRng` is PCG32, not retail's MSVC LCG
+- **RNG.** rizzardry's `GameRng` is ChaCha8 (`rand_chacha`), not retail's MSVC LCG
   (`include/wiz8/rules/random.h:9-60`), so retail streams cannot be matched.
   Only the order matters, for rizzardry's own reproducibility. Retail draws
   **voice and notice chances from the gameplay stream**: the miss voice, the

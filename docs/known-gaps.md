@@ -5,11 +5,10 @@ departs from retail, in rough order of the
 [implementation plan](implementation-plan.md)'s first slice. Keep an entry
 next to its feature when that feature changes.
 
-- Still open from the architecture review (the rest is done): the
-  inventory screen's redraw snapshot does not cover all it draws
-  (usability) and the held item's picture is not screen-owned; several
-  screens read Escape themselves. The navmesh cache keeps its small
-  hand-written codec, which a standard codec would not make simpler.
+- The architecture reviews are addressed. The navmesh cache keeps its
+  small hand-written codec, which a standard codec would not make
+  simpler. A headless run without rendering logs Bevy's harmless
+  "Sub app did not exist" error for `ClearColor`'s extraction.
 - Doors: a locked door with a key opens for that key in hand (unlocking
   it for good, kept with the level) and otherwise runs its fallback, as
   retail's `SelectAction` does; a door locked without a key stays shut,
