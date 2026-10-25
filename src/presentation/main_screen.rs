@@ -141,6 +141,9 @@ pub struct MainScreenArt {
     roof_buttons: Handle<SpriteSheet>,
     layout_arrows: Handle<SpriteSheet>,
     scroll_arrows: Handle<SpriteSheet>,
+    icons: Handle<SpriteSheet>,
+    options: Handle<SpriteSheet>,
+    combat_toggle: Handle<SpriteSheet>,
     column_info: Handle<SpriteSheet>,
     font: Handle<SpriteSheet>,
     small_font: Handle<SpriteSheet>,
@@ -159,6 +162,9 @@ pub fn load_main_screen_art(mut commands: Commands, assets: Res<AssetServer>) {
         roof_buttons: load("main_roof_buttons"),
         layout_arrows: load("main_layout_arrows"),
         scroll_arrows: load("main_scroll_arrows"),
+        icons: load("icons_standard"),
+        options: load("options_disk"),
+        combat_toggle: load("icon_combat_toggle"),
         column_info: load("main_column_info_normal"),
         font: assets.load("retail://data/fonts/wiz_text_font.sti"),
         small_font: assets.load("retail://data/fonts/smfnt.sti"),
@@ -287,6 +293,29 @@ pub fn select_with_keys(
     }
 }
 
+/// A working bank button.
+#[derive(Component, Clone, Copy, PartialEq, Eq)]
+enum Bank {
+    Camp,
+    Formation,
+}
+
+fn press_bank(
+    click: On<PointerClick>,
+    buttons: Query<&Bank>,
+    mut camp: MessageWriter<crate::game::camp::CampRequest>,
+    mut layout: ResMut<ScreenLayout>,
+) {
+    match buttons.get(click.entity) {
+        Ok(Bank::Camp) => {
+            camp.write(crate::game::camp::CampRequest);
+        }
+        // The Party Formation button opens and closes the formation panel.
+        Ok(Bank::Formation) => layout.toggle(Panel::Formation),
+        Err(_) => {}
+    }
+}
+
 /// A text box channel tab.
 #[derive(Component, Clone, Copy)]
 struct Channel(usize);
@@ -335,6 +364,7 @@ pub struct Shown {
     selected: usize,
     /// The text box's channel and the lines it shows.
     text: (usize, Vec<String>),
+    fighting: bool,
 }
 
 /// A bar's fill, 0 to 45 pixels, at least 1 while any is left (retail
@@ -395,6 +425,7 @@ pub fn draw_main_screen(
     catalogs: Res<Assets<ItemCatalog>>,
     screens: Query<Entity, With<MainScreen>>,
     log: Res<TextLog>,
+    battle: Option<Res<crate::game::combat::Battle>>,
     mut drawn: Local<Option<Shown>>,
     mut loading: Local<HashMap<String, Handle<SpriteSheet>>>,
 ) {
@@ -431,6 +462,7 @@ pub fn draw_main_screen(
         slots,
         selected: selected.0,
         text: (log.selected, log.visible().to_vec()),
+        fighting: battle.is_some(),
     };
     if drawn.as_ref() == Some(&shown) && !screens.is_empty() {
         return;
@@ -448,6 +480,9 @@ pub fn draw_main_screen(
         Some(roof_buttons),
         Some(arrows),
         Some(scroll_arrows),
+        Some(icons),
+        Some(options),
+        Some(combat_toggle),
         Some(font),
         Some(small_font),
     ) = (
@@ -462,6 +497,9 @@ pub fn draw_main_screen(
         get(&art.roof_buttons),
         get(&art.layout_arrows),
         get(&art.scroll_arrows),
+        get(&art.icons),
+        get(&art.options),
+        get(&art.combat_toggle),
         get(&art.font),
         get(&art.small_font),
     )
@@ -740,6 +778,38 @@ pub fn draw_main_screen(
                     ChildOf(frame),
                 ))
                 .observe(select_channel);
+        }
+    }
+    // The button bank (retail `pc.cpp` positions and frames: grayed, off,
+    // ..., on). Camp and the formation panel work; the journal, search,
+    // items, spells and options are grayed until they exist.
+    let fighting = shown.fighting;
+    let bank: [(&SpriteSheet, f32, f32, usize, usize, Option<Bank>); 8] = [
+        (options, 0.0, 450.0, 3, 0, None),
+        (icons, 40.0, 452.0, 0x2b, 0x28, None),
+        (icons, 70.0, 452.0, 3, 0, Some(Bank::Camp)),
+        (icons, 100.0, 452.0, 8, 5, None),
+        (icons, 130.0, 452.0, 0x17, 0x14, None),
+        (icons, 160.0, 452.0, 0x1c, 0x19, None),
+        (combat_toggle, 199.0, 452.0, 3, 0, None),
+        (
+            icons,
+            571.0,
+            452.0,
+            0x26,
+            if layout.shows(Panel::Formation) { 0x25 } else { 0x23 },
+            Some(Bank::Formation),
+        ),
+    ];
+    for (sheet, x, y, grayed, normal, action) in bank {
+        // The journal, camp and the combat toggle are grayed in a fight.
+        let usable = action.is_some() && !(fighting && action == Some(Bank::Camp));
+        let image = if usable { normal } else { grayed };
+        if let Some((node_image, node, _)) = sprite(sheet, image, Vec2::new(x, y)) {
+            let mut button = commands.spawn((node_image, node, ChildOf(frame)));
+            if let (true, Some(action)) = (usable, action) {
+                button.insert(action).observe(press_bank);
+            }
         }
     }
     // Previous and next character (retail `main_scroll_arrows`).

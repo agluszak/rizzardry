@@ -71,15 +71,21 @@ pub fn can_act(member: &Character) -> bool {
     !member.is_dead() && member.worst_condition().is_none_or(|c| c < Condition::Turncoat)
 }
 
+/// The Camp button (retail `RequestCamp`, as the key does).
+#[derive(Message, Debug, Clone, Copy)]
+pub struct CampRequest;
+
 pub fn request_camp(
     mut commands: Commands,
     rest: Single<&ActionEvents, With<Action<Rest>>>,
+    mut button: MessageReader<CampRequest>,
     camp: Option<Res<Camp>>,
     battle: Option<Res<crate::game::combat::Battle>>,
     party: Query<&LinearVelocity, With<PartyBody>>,
     mut news: MessageWriter<CampNews>,
 ) {
-    if !rest.contains(ActionEvents::START) || camp.is_some() {
+    let asked = button.read().count() > 0;
+    if !(rest.contains(ActionEvents::START) || asked) || camp.is_some() {
         return;
     }
     if battle.is_some() {
