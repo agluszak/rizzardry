@@ -11,6 +11,7 @@
 
 pub mod asset;
 pub mod bake;
+pub mod links;
 
 use avian3d::prelude::*;
 use bake::NavmeshBakeSettings;
@@ -50,11 +51,24 @@ impl Plugin for NavigationPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(Landmass3dPlugin::default())
             .add_plugins(TnuaControllerPlugin::<WalkerMotion>::new(FixedUpdate))
-            .add_systems(Update, install_navmesh)
+            .add_systems(
+                Update,
+                (
+                    install_navmesh,
+                    links::spawn_level_links,
+                    links::find_door_links,
+                    links::sync_door_links,
+                ),
+            )
             // Each fixed step: Landmass plans (FixedPreUpdate), walkers feed
             // Tnua (FixedUpdate), Avian moves them (FixedPostUpdate), and
             // the resulting velocities go back to Landmass.
-            .add_systems(FixedUpdate, steer_walkers.in_set(TnuaUserControlsSystems))
+            .add_systems(
+                FixedUpdate,
+                (links::use_reached_links, links::finish_crossings, steer_walkers)
+                    .chain()
+                    .in_set(TnuaUserControlsSystems),
+            )
             .add_systems(
                 FixedPostUpdate,
                 (track_party_character, sync_walker_velocity).after(PhysicsSystems::Writeback),
@@ -79,6 +93,8 @@ pub struct LevelNavigation {
 #[derive(Component, Debug)]
 pub struct Walker {
     pub speed: f32,
+    /// How far the body's origin floats above its feet.
+    pub float_height: f32,
 }
 
 /// Install a level's navmesh under its root once it has loaded. The navmesh
@@ -163,11 +179,26 @@ fn sync_walker_velocity(mut walkers: Query<(&LinearVelocity, &mut Velocity3d), W
 }
 
 /// Turn Landmass's desired velocity into Tnua walk input.
+/// Feed Landmass's desired velocity to Tnua; while crossing a doorway link,
+/// head straight for its far side instead.
 fn steer_walkers(
-    mut walkers: Query<(&Walker, &AgentDesiredVelocity3d, &mut TnuaController<WalkerMotion>)>,
+    mut walkers: Query<(
+        &Walker,
+        &AgentDesiredVelocity3d,
+        Option<&links::Crossing>,
+        &Transform,
+        &mut TnuaController<WalkerMotion>,
+    )>,
 ) {
-    for (walker, desired, mut controller) in &mut walkers {
-        let velocity = desired.velocity().with_y(0.0);
+    for (walker, desired, crossing, transform, mut controller) in &mut walkers {
+        let velocity = match crossing {
+            Some(crossing) => {
+                (crossing.to - transform.translation).with_y(0.0).normalize_or_zero()
+                    * walker.speed
+                    * 0.8
+            }
+            None => desired.velocity().with_y(0.0),
+        };
         controller.initiate_action_feeding();
         controller.basis = TnuaBuiltinWalk {
             desired_motion: velocity / walker.speed,

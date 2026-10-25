@@ -1,7 +1,7 @@
 //! Navmeshes through Bevy's asset processor.
 //!
 //! Each retail level has a `navmesh://<level>.navmesh` input (its `.oct`
-//! collision bytes, see [`crate::retail::source`]). The processor bakes it once with
+//! collision and `.pvl` placement bytes, see [`crate::retail::source`]). The processor bakes it once with
 //! `LoadTransformAndSave<LevelCollisionLoader, BakeNavmesh, NavmeshSaver>` and caches the result under `imported_assets/navmesh`,
 //! re-baking only when the level or the [`NavmeshBakeSettings`] in its meta
 //! change. The game loads the processed file as a Landmass [`NavMesh3d`].
@@ -21,7 +21,11 @@ use super::bake::{NavmeshBakeSettings, bake};
 use crate::content::level::CollisionMesh;
 use crate::retail::bytes::{Bytes, Truncated};
 use crate::retail::oct::read_collision;
-use crate::retail::pvl::PvlError;
+use crate::retail::prop::PROP_COLLIDABLE;
+use crate::retail::prop_loader::{part_transforms, record_collision};
+use crate::retail::pvl::{PvlError, read_level_geometry};
+use crate::retail::sections::read_sections;
+use crate::retail::source::navmesh_input;
 use crate::retail::source::{NAVMESH_EXTENSION, NAVMESH_SOURCE};
 
 /// The navmesh path for a retail level path, e.g. `levels/x/y.pvl`.
@@ -54,7 +58,7 @@ pub enum NavmeshAssetError {
     Invalid(String),
 }
 
-/// Reads a level's collision from its `.oct` bytes.
+/// Reads a level's collision from its navmesh input (`.oct` and `.pvl`).
 #[derive(Default, TypePath)]
 pub struct LevelCollisionLoader;
 
@@ -71,8 +75,25 @@ impl AssetLoader for LevelCollisionLoader {
     ) -> Result<LevelCollision, NavmeshAssetError> {
         let mut data = Vec::new();
         reader.read_to_end(&mut data).await?;
-        Ok(LevelCollision(read_collision(&data)?.solid_mesh()))
+        let (octree, level) = navmesh_input(&data).ok_or(NavmeshAssetError::Format)?;
+        Ok(LevelCollision(level_collision(octree, level)?))
     }
+}
+
+/// The navmesh bake's input: the level's solid collision surfaces, plus its
+/// collidable props in their rest pose as obstacles. Doorways closed by doors
+/// become gaps, joined by links while the doors are open.
+pub fn level_collision(octree: &[u8], level: &[u8]) -> Result<CollisionMesh, PvlError> {
+    let mut collision = read_collision(octree)?.solid_mesh();
+    let geometry = read_level_geometry(level)?;
+    let sections = read_sections(&mut Bytes::new(&level[geometry.end..]))?;
+    for prop in sections.props.iter().filter(|p| p.flags & PROP_COLLIDABLE != 0) {
+        for (part, (transform, _)) in prop.detailed_parts().iter().zip(part_transforms(prop)) {
+            let record = &part.mesh.frames[part.mesh.first_frame];
+            collision.append(&record_collision(record), &transform, false);
+        }
+    }
+    Ok(collision)
 }
 
 #[derive(Default, TypePath)]

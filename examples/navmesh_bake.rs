@@ -10,9 +10,9 @@ use bevy::math::{Vec2, Vec3};
 use bevy_landmass::NavigationMesh3d;
 use clap::Parser;
 
+use rizzardry::game::world::navigation::asset::level_collision;
 use rizzardry::game::world::navigation::bake::{NavmeshBakeSettings, bake};
 use rizzardry::retail::files::RetailFiles;
-use rizzardry::retail::oct::read_collision;
 
 #[derive(clap::Parser)]
 #[command(about = "Bake retail levels' navmeshes outside the game and report the results.")]
@@ -113,7 +113,8 @@ fn main() {
     settings.agent_height = args.height.unwrap_or(settings.agent_height);
     for name in names {
         let octree = files.read(&name.replace(".pvl", ".oct")).expect("octree exists").unwrap();
-        let collision = read_collision(&octree).unwrap().solid_mesh();
+        let level = files.read(&name).expect("level exists").unwrap();
+        let collision = level_collision(&octree, &level).unwrap();
         let start = Instant::now();
         let (mesh, repair) = match bake(&collision, &settings) {
             Ok(result) => result,

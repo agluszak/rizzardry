@@ -13,7 +13,7 @@ use crate::content::level::LevelGeometry;
 
 /// The root of the level the party is in.
 #[derive(Component, Debug)]
-#[require(Transform, Visibility, AwaitingGeometry, AwaitingNavmesh)]
+#[require(Transform, Visibility, AwaitingGeometry, AwaitingNavmesh, AwaitingLinks)]
 pub struct Level {
     pub geometry: Handle<LevelGeometry>,
     pub navmesh: Handle<NavMesh3d>,
@@ -34,6 +34,10 @@ pub struct PropPart {
     /// the part does not move.
     pub keys: Vec<Transform>,
 }
+
+/// The level's navigation links have not been spawned yet.
+#[derive(Component, Debug, Default)]
+pub struct AwaitingLinks;
 
 /// Sent once a level's geometry and collider exist.
 #[derive(Message, Debug, Clone, Copy)]

@@ -4,6 +4,7 @@
 
 use clap::Parser;
 use rizzardry::retail::bytes::Bytes;
+use rizzardry::retail::links::level_links;
 use rizzardry::retail::prop_loader::part_transforms;
 use rizzardry::retail::sections::read_sections;
 use rizzardry::retail::trigger::TriggerKind;
@@ -20,6 +21,9 @@ struct Args {
     /// List props with their triggers and paths.
     #[arg(long)]
     props: bool,
+    /// List navigation links and party teleports.
+    #[arg(long)]
+    links: bool,
 }
 
 fn main() {
@@ -32,6 +36,19 @@ fn main() {
     for name in names {
         let data = files.read(&name).expect("level exists").unwrap();
         let level = read_level_geometry(&data).unwrap();
+        if args.links {
+            let sections = read_sections(&mut Bytes::new(&data[level.end..])).unwrap();
+            let (links, teleports) = level_links(&sections);
+            for link in &links {
+                println!("  {:?} {:.1} -> {:.1}", link.kind, link.from, link.to);
+            }
+            for t in &teleports {
+                println!(
+                    "  teleport {} at {:.1} range {:?} -> {:.1}",
+                    t.name, t.centre, t.range, t.destination
+                );
+            }
+        }
         if args.props {
             let sections = read_sections(&mut Bytes::new(&data[level.end..])).unwrap();
             for prop in sections.props.iter().chain(&sections.bitmaps) {

@@ -12,6 +12,7 @@ use bevy::prelude::*;
 use bevy::reflect::TypePath;
 
 use super::bytes::Bytes;
+use super::links::level_links;
 use super::oct::read_collision;
 use super::prop::PROP_COLLIDABLE;
 use super::prop_loader::{PropLighting, part_transforms, record_collision, record_meshes};
@@ -394,7 +395,8 @@ impl AssetLoader for PvlLoader {
                 interaction,
             });
         }
-        Ok(LevelGeometry { parts, collision, props, animated_textures })
+        let (links, teleports) = level_links(&sections);
+        Ok(LevelGeometry { parts, collision, props, links, teleports, animated_textures })
     }
 
     fn extensions(&self) -> &[&str] {

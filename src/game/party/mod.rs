@@ -1,8 +1,9 @@
 //! The party's roster, formation and spatial body.
 
 pub mod body;
+pub mod teleports;
 
-use avian3d::prelude::Gravity;
+use avian3d::prelude::{Gravity, PhysicsSystems};
 use bevy::prelude::*;
 use bevy_enhanced_input::prelude::*;
 use bevy_tnua::prelude::*;
@@ -31,6 +32,11 @@ impl Plugin for PartyPlugin {
         )
         // Tnua and Avian step on the fixed timestep; movement input feeds
         // them on the same step.
-        .add_systems(FixedUpdate, body::drive_party.in_set(TnuaUserControlsSystems));
+        .init_resource::<teleports::InsideTriggers>()
+        .add_systems(FixedUpdate, body::drive_party.in_set(TnuaUserControlsSystems))
+        .add_systems(
+            FixedPostUpdate,
+            teleports::run_teleport_triggers.after(PhysicsSystems::Writeback),
+        );
     }
 }

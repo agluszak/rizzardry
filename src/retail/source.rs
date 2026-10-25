@@ -62,23 +62,41 @@ pub fn retail_source(files: Arc<RetailFiles>) -> AssetSourceBuilder {
 pub const NAVMESH_SOURCE: &str = "navmesh";
 pub const NAVMESH_EXTENSION: &str = "navmesh";
 
-/// Every retail level `<path>.pvl` as `<path>.navmesh`, with the bytes of
-/// its collision file `<path>.oct`. The asset processor turns these into
-/// baked navmeshes.
+/// Every retail level `<path>.pvl` as `<path>.navmesh`, whose bytes are the
+/// level's collision (`.oct`) and placement (`.pvl`) files together; see
+/// [`navmesh_input`]. The asset processor turns these into baked navmeshes,
+/// re-baking when either file changes.
 struct NavmeshInputReader(Arc<RetailFiles>);
 
-fn level_for(path: &Path) -> Option<String> {
-    name(path).strip_suffix(&format!(".{NAVMESH_EXTENSION}")).map(|stem| format!("{stem}.oct"))
+fn level_stem(path: &Path) -> Option<String> {
+    name(path).strip_suffix(&format!(".{NAVMESH_EXTENSION}")).map(str::to_owned)
+}
+
+const NAVMESH_INPUT_MAGIC: &[u8; 4] = b"RZNI";
+
+/// Split a navmesh input into its `.oct` and `.pvl` bytes.
+pub fn navmesh_input(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
+    let rest = bytes.strip_prefix(NAVMESH_INPUT_MAGIC)?;
+    let (length, rest) = rest.split_first_chunk::<4>()?;
+    let length = u32::from_le_bytes(*length) as usize;
+    (length <= rest.len()).then(|| rest.split_at(length))
 }
 
 impl AssetReader for NavmeshInputReader {
     async fn read<'a>(&'a self, path: &'a Path) -> Result<impl Reader + 'a, AssetReaderError> {
         let not_found = || AssetReaderError::NotFound(path.to_owned());
-        match self.0.read(&level_for(path).ok_or_else(not_found)?) {
-            Some(Ok(bytes)) => Ok(VecReader::new(bytes)),
+        let stem = level_stem(path).ok_or_else(not_found)?;
+        let read = |extension: &str| match self.0.read(&format!("{stem}.{extension}")) {
+            Some(Ok(bytes)) => Ok(bytes),
             Some(Err(error)) => Err(AssetReaderError::Io(Arc::new(error))),
             None => Err(not_found()),
-        }
+        };
+        let (octree, level) = (read("oct")?, read("pvl")?);
+        let mut bytes = NAVMESH_INPUT_MAGIC.to_vec();
+        bytes.extend((octree.len() as u32).to_le_bytes());
+        bytes.extend(octree);
+        bytes.extend(level);
+        Ok(VecReader::new(bytes))
     }
 
     async fn read_meta<'a>(&'a self, path: &'a Path) -> Result<impl Reader + 'a, AssetReaderError> {

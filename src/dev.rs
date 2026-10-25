@@ -173,7 +173,7 @@ pub fn spawn_test_agents(
             TnuaController::<WalkerMotion>::default(),
             TnuaConfig::<WalkerMotion>(config.clone()),
             TnuaAvian3dSensorShape(Collider::cylinder(TEST_AGENT_RADIUS * 0.9, 0.0)),
-            Walker { speed: TEST_AGENT_SPEED },
+            Walker { speed: TEST_AGENT_SPEED, float_height: TEST_AGENT_FLOAT },
             Agent3dBundle {
                 agent: default(),
                 settings: AgentSettings {

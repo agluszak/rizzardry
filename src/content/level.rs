@@ -16,8 +16,55 @@ pub struct LevelGeometry {
     pub parts: Vec<LevelPart>,
     pub collision: CollisionMesh,
     pub props: Vec<PropModel>,
+    /// Navigation links between places the navmesh does not join.
+    pub links: Vec<LevelLink>,
+    /// Positioned triggers that move the party elsewhere in the level.
+    pub teleports: Vec<TeleportTrigger>,
     /// Materials whose texture is an animated frame list (`.ifl`).
     pub animated_textures: Vec<TextureAnimation>,
+}
+
+/// How a walker gets from one end of a link to the other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Reflect)]
+pub enum LinkKind {
+    /// A teleport pad or portal: arrive at once.
+    Teleport,
+    /// A ladder or rope: retail flies the party along a camera path.
+    Climb,
+    /// Walk through an open door.
+    Door,
+}
+
+impl LinkKind {
+    /// Landmass link kind numbers.
+    pub fn index(self) -> usize {
+        self as usize
+    }
+
+    pub fn from_index(index: usize) -> Option<Self> {
+        [LinkKind::Teleport, LinkKind::Climb, LinkKind::Door].get(index).copied()
+    }
+}
+
+/// A one-way link between two ground positions.
+#[derive(Clone, Copy, Debug, Reflect)]
+pub struct LevelLink {
+    pub kind: LinkKind,
+    pub from: Vec3,
+    pub to: Vec3,
+}
+
+/// A trigger that teleports the party within the level when it comes within
+/// range (retail action 0x34 naming a trigger in the same level).
+#[derive(Clone, Debug, Reflect)]
+pub struct TeleportTrigger {
+    pub name: String,
+    pub centre: Vec3,
+    /// Fires at distances in `[range.0, range.1)` metres.
+    pub range: (f32, f32),
+    /// Where the party's eye arrives, and its facing.
+    pub destination: Vec3,
+    pub yaw: f32,
 }
 
 /// A placed prop: scenery, a door, a lever, a lift or a billboard.
@@ -72,6 +119,16 @@ pub struct CollisionMesh {
     pub triangles: Vec<[u32; 3]>,
     /// Per triangle: whether walking monsters may path across it.
     pub walkable: Vec<bool>,
+}
+
+impl CollisionMesh {
+    /// Append another mesh's triangles, placed by `transform`.
+    pub fn append(&mut self, other: &CollisionMesh, transform: &Transform, walkable: bool) {
+        let base = self.vertices.len() as u32;
+        self.vertices.extend(other.vertices.iter().map(|&v| transform.transform_point(v)));
+        self.triangles.extend(other.triangles.iter().map(|t| t.map(|v| base + v)));
+        self.walkable.extend(std::iter::repeat_n(walkable, other.triangles.len()));
+    }
 }
 
 /// How an animated texture advances (retail `W8TextureAnimationMode`).

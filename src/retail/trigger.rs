@@ -79,6 +79,9 @@ pub struct ItemTrigger {
     pub recipients: String,
     pub data: [i32; 3],
     pub action_data: String,
+    /// The distance band, in retail units, in which a positioned trigger
+    /// fires when the party is inside it.
+    pub range: [f32; 2],
     /// Positioned triggers (representation kind 1), e.g. level entrances.
     pub placement: Option<TriggerPlacement>,
     pub door: Option<DoorData>,
@@ -239,7 +242,8 @@ fn read_item_trigger(bytes: &mut Bytes) -> Result<Trigger, PvlError> {
     bytes.take(3)?; // state count, animate states, cycle bounce
     text(bytes, LONG_TEXT)?; // required states
     text(bytes, LONG_TEXT)?; // state to modify
-    bytes.take(1 + 8)?; // modification mode, range minimum and maximum
+    bytes.u8()?; // modification mode
+    let range = [bytes.f32()? * RECORD_SCALE, bytes.f32()? * RECORD_SCALE];
     let action_data = lenient_string(bytes.take(LONG_TEXT)?).to_uppercase();
     bytes.i32()?;
     if version > 2 {
@@ -278,6 +282,7 @@ fn read_item_trigger(bytes: &mut Bytes) -> Result<Trigger, PvlError> {
             recipients,
             data,
             action_data,
+            range,
             placement: placement_record,
             door,
         }),
