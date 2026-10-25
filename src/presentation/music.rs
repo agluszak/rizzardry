@@ -1,6 +1,7 @@
 //! Level music from retail playlists (Whizzardry `music_playlist.cpp`): a
 //! weighted song, faded in over five seconds; after each, sometimes a
-//! silence; another level's playlist when the party travels.
+//! silence; another level's playlist when the party travels, and the
+//! camping playlist while it camps.
 
 use bevy::asset::LoadState;
 use bevy::audio::{AudioSink, AudioSinkPlayback, PlaybackSettings, Volume};
@@ -8,17 +9,20 @@ use bevy::prelude::*;
 
 use crate::content::levels::LevelInfo;
 use crate::content::music::Playlist;
+use crate::game::camp::Camp;
 use crate::game::world::level::Level;
 
 const VOLUME: f32 = 0.6;
 const FADE_IN_SECONDS: f32 = 5.0;
 /// Levels without a playlist of their own play this one.
 const FALLBACK: &str = "retail://data/music/adventure.mpl";
+const CAMPING: &str = "retail://data/music/camping.mpl";
 
 #[derive(Resource, Debug, Default)]
 pub struct Music {
-    /// The level the music is for, and its playlist.
-    level: Option<String>,
+    /// The playlist wanted (the level's or camping's), and the one loaded
+    /// for it, which is the fallback when a level has none.
+    wanted: Option<String>,
     playlist: Option<Handle<Playlist>>,
     /// No new song before this time.
     quiet_until: f32,
@@ -51,19 +55,23 @@ pub fn play_music(
     time: Res<Time>,
     assets: Res<AssetServer>,
     levels: Query<&Level>,
+    camp: Option<Res<Camp>>,
     playlists: Res<Assets<Playlist>>,
     mut music: ResMut<Music>,
     mut songs: Query<(Entity, &Song, Option<&mut AudioSink>)>,
 ) {
     let now = time.elapsed_secs();
     let Ok(level) = levels.single() else { return };
-    if music.level.as_deref() != Some(level.path.as_str()) {
-        let file = LevelInfo::for_path(&level.path).map(|info| info.file.to_lowercase());
-        music.playlist = Some(match file {
-            Some(file) => assets.load(format!("retail://data/music/{file}.mpl")),
-            None => assets.load(FALLBACK),
-        });
-        music.level = Some(level.path.clone());
+    let wanted = if camp.is_some() {
+        CAMPING.to_owned()
+    } else {
+        LevelInfo::for_path(&level.path).map_or(FALLBACK.to_owned(), |info| {
+            format!("retail://data/music/{}.mpl", info.file.to_lowercase())
+        })
+    };
+    if music.wanted.as_ref() != Some(&wanted) {
+        music.playlist = Some(assets.load(&wanted));
+        music.wanted = Some(wanted);
         for (song, _, _) in &songs {
             commands.entity(song).despawn();
         }
