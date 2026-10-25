@@ -137,20 +137,22 @@ pub fn build_level_geometry(
 ) {
     for (root, level) in &levels {
         let Some(geometry) = geometry.get(&level.geometry) else { continue };
-        let mut root = commands.entity(root);
-        root.remove::<AwaitingGeometry>();
-        match Collider::try_trimesh_with_config(
+        let collider = match Collider::try_trimesh_with_config(
             geometry.collision.vertices.clone(),
             geometry.collision.triangles.clone(),
             TrimeshFlags::MERGE_DUPLICATE_VERTICES
                 | TrimeshFlags::DELETE_DEGENERATE_TRIANGLES
                 | TrimeshFlags::FIX_INTERNAL_EDGES,
         ) {
-            Ok(collider) => {
-                root.insert((RigidBody::Static, collider));
+            Ok(collider) => collider,
+            Err(error) => {
+                error!("level collider: {error:?}");
+                commands.entity(root).remove::<AwaitingGeometry>();
+                continue;
             }
-            Err(error) => error!("level collider: {error:?}"),
-        }
+        };
+        let mut root = commands.entity(root);
+        root.remove::<AwaitingGeometry>().insert((RigidBody::Static, collider));
         root.with_children(|parent| {
             for part in &geometry.parts {
                 parent.spawn((Mesh3d(part.mesh.clone()), MeshMaterial3d(part.material.clone())));
