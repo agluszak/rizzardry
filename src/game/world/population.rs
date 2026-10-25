@@ -2,13 +2,12 @@
 
 use bevy::prelude::*;
 
-use super::level::{Level, LevelMemory};
+use super::level::LevelRecord;
 use crate::content::items::ItemCatalog;
 use crate::content::level::LevelGeometry;
 use crate::content::monster::MonsterModel;
 use crate::content::species::MonsterCatalog;
 use crate::game::characters::{Condition, Lasting};
-use crate::game::data::GameData;
 use crate::game::inventory::ItemIds;
 use crate::game::rng::GameRng;
 use crate::game::world::items::{WorldItem, placed_item};
@@ -57,85 +56,73 @@ pub fn measure_monsters(
     }
 }
 
-/// The level's monsters have been placed.
-#[derive(Component, Debug)]
-pub struct Populated;
-
 /// Spawn every placed monster under the level root, idling, at its feet and
 /// facing its heading (retail places them all at once on arrival), with
-/// health and stamina rolled from its species, in placement order. They do
-/// not move yet. A revisited level rolls them afresh: monsters are not
-/// remembered yet.
-pub fn populate_level(
-    mut commands: Commands,
-    levels: Query<(Entity, &Level), Without<Populated>>,
-    geometry: Res<Assets<LevelGeometry>>,
-    assets: Res<AssetServer>,
-    data: Option<Res<GameData>>,
-    catalogs: Res<Assets<MonsterCatalog>>,
-    items: Res<Assets<ItemCatalog>>,
-    memory: Res<LevelMemory>,
-    mut ids: ResMut<ItemIds>,
-    mut rng: ResMut<GameRng>,
+/// health and stamina rolled from its species, in placement order; and the
+/// items lying about, as the party left them or as authored. Part of a
+/// level's activation. A revisited level rolls its monsters afresh:
+/// monsters are not remembered yet.
+#[allow(clippy::too_many_arguments)]
+pub fn populate(
+    commands: &mut Commands,
+    root: Entity,
+    geometry: &LevelGeometry,
+    remembered: Option<&LevelRecord>,
+    (species, items): (&MonsterCatalog, &ItemCatalog),
+    assets: &AssetServer,
+    ids: &mut ItemIds,
+    rng: &mut GameRng,
 ) {
-    let Some(data) = data else { return };
-    let (Some(catalog), Some(items)) = (catalogs.get(&data.species), items.get(&data.items)) else {
-        return;
-    };
-    for (root, level) in &levels {
-        let Some(geometry) = geometry.get(&level.geometry) else { continue };
-        for monster in &geometry.monsters {
-            let Some(species) = catalog.0.get(monster.species as usize) else { continue };
-            let max_hp = rng.roll(species.hit_points).max(1);
-            let max_stamina = rng.roll(species.stamina);
-            // Retail draws Random(1000) for the size; its left-handed mirror
-            // draw, presentation only, is not taken from gameplay's stream.
-            let size_roll = rng.below(1000);
-            commands.spawn((
-                Name::new(format!("{} #{}", species.name, monster.location)),
-                Monster {
-                    location: monster.location,
-                    group: monster.group,
-                    species: monster.species,
-                    hp: max_hp,
-                    max_hp,
-                    stamina: max_stamina,
-                    max_stamina,
-                    conditions: Vec::new(),
-                    radius: 0.0,
-                    eye_height: 0.0,
-                },
-                MonsterAppearance {
-                    model: assets.load(format!("retail://data/monsters/{}.mls", monster.model)),
-                    float_height: 0.0,
-                    // Retail starts each idle at a random frame; vary it by
-                    // location instead.
-                    phase: (monster.location.unsigned_abs() % 97) as f32 * 0.37,
-                    size_roll: Some(size_roll),
-                },
-                Transform::from_translation(monster.position)
-                    .with_rotation(Quat::from_rotation_y(monster.yaw)),
-                ChildOf(root),
-            ));
-        }
-        // Items lie as the party left them, or as authored on a first visit.
-        let lying: Vec<(WorldItem, Vec3)> = match memory.0.get(&level.path) {
-            Some(record) => record.items.clone(),
-            None => geometry
-                .items
-                .iter()
-                .filter_map(|placement| {
-                    let definition = items.get(placement.item)?;
-                    let item = placed_item(placement, definition, &mut ids);
-                    Some((WorldItem { item, hidden: placement.hidden }, placement.position))
-                })
-                .collect(),
-        };
-        info!("placed {} monsters and {} items", geometry.monsters.len(), lying.len());
-        for (item, at) in lying {
-            let name = items.get(item.item.item).map_or_else(String::new, |d| d.name.clone());
-            commands.spawn((Name::new(name), item, Transform::from_translation(at), ChildOf(root)));
-        }
-        commands.entity(root).insert((Populated, super::identify::MonsterGroups::default()));
+    for monster in &geometry.monsters {
+        let Some(kind) = species.0.get(monster.species as usize) else { continue };
+        let max_hp = rng.roll(kind.hit_points).max(1);
+        let max_stamina = rng.roll(kind.stamina);
+        // Retail draws Random(1000) for the size; its left-handed mirror
+        // draw, presentation only, is not taken from gameplay's stream.
+        let size_roll = rng.below(1000);
+        commands.spawn((
+            Name::new(format!("{} #{}", kind.name, monster.location)),
+            Monster {
+                location: monster.location,
+                group: monster.group,
+                species: monster.species,
+                hp: max_hp,
+                max_hp,
+                stamina: max_stamina,
+                max_stamina,
+                conditions: Vec::new(),
+                radius: 0.0,
+                eye_height: 0.0,
+            },
+            MonsterAppearance {
+                model: assets.load(format!("retail://data/monsters/{}.mls", monster.model)),
+                float_height: 0.0,
+                // Retail starts each idle at a random frame; vary it by
+                // location instead.
+                phase: (monster.location.unsigned_abs() % 97) as f32 * 0.37,
+                size_roll: Some(size_roll),
+            },
+            Transform::from_translation(monster.position)
+                .with_rotation(Quat::from_rotation_y(monster.yaw)),
+            ChildOf(root),
+        ));
     }
+    let lying: Vec<(WorldItem, Vec3)> = match remembered {
+        Some(record) => record.items.clone(),
+        None => geometry
+            .items
+            .iter()
+            .filter_map(|placement| {
+                let definition = items.get(placement.item)?;
+                let item = placed_item(placement, definition, ids);
+                Some((WorldItem { item, hidden: placement.hidden }, placement.position))
+            })
+            .collect(),
+    };
+    info!("placed {} monsters and {} items", geometry.monsters.len(), lying.len());
+    for (item, at) in lying {
+        let name = items.get(item.item.item).map_or_else(String::new, |d| d.name.clone());
+        commands.spawn((Name::new(name), item, Transform::from_translation(at), ChildOf(root)));
+    }
+    commands.entity(root).insert(super::identify::MonsterGroups::default());
 }

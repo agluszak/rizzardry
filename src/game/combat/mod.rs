@@ -38,7 +38,9 @@ impl Plugin for CombatPlugin {
             .init_resource::<CombatSettings>()
             .add_systems(
                 Update,
-                (start_battle, run_battle, approach::embody_fighters, approach::close_in).chain(),
+                (start_battle, run_battle, approach::embody_fighters, approach::close_in)
+                    .chain()
+                    .run_if(crate::game::world::level::level_active),
             );
     }
 }

@@ -8,7 +8,7 @@ use bevy_landmass::prelude::*;
 use super::LevelNavigation;
 use super::bake::SIZE_CLASSES;
 use crate::content::level::{LevelGeometry, LevelLink, LinkKind};
-use crate::game::world::level::{AwaitingLinks, Level};
+
 use crate::game::world::props::{Prop, PropMotion};
 
 /// A short edge across `at`, perpendicular to `direction`: Landmass links
@@ -32,26 +32,23 @@ fn link_bundle(link: &LevelLink, archipelago: Entity, half_width: f32) -> Animat
     }
 }
 
-/// Spawn a level's teleport and climb links once it has navigation.
+/// Spawn a level's teleport and climb links in each of its archipelagos.
 pub fn spawn_level_links(
-    mut commands: Commands,
-    levels: Query<(Entity, &Level, &LevelNavigation), With<AwaitingLinks>>,
-    geometry: Res<Assets<LevelGeometry>>,
+    commands: &mut Commands,
+    root: Entity,
+    geometry: &LevelGeometry,
+    archipelagos: &[Entity],
 ) {
-    for (root, level, navigation) in &levels {
-        let Some(geometry) = geometry.get(&level.geometry) else { continue };
-        commands.entity(root).remove::<AwaitingLinks>();
-        for link in &geometry.links {
-            for (class, &archipelago) in navigation.archipelagos.iter().enumerate() {
-                commands.spawn((
-                    Name::new(format!("{:?} link", link.kind)),
-                    link_bundle(link, archipelago, SIZE_CLASSES[class]),
-                    ChildOf(root),
-                ));
-            }
+    for link in &geometry.links {
+        for (class, &archipelago) in archipelagos.iter().enumerate() {
+            commands.spawn((
+                Name::new(format!("{:?} link", link.kind)),
+                link_bundle(link, archipelago, SIZE_CLASSES[class]),
+                ChildOf(root),
+            ));
         }
-        info!("{} navigation links", geometry.links.len());
     }
+    info!("{} navigation links", geometry.links.len());
 }
 
 /// The links through a door's doorway, one per size class, present only

@@ -22,7 +22,8 @@ use bevy_landmass::{NavMeshHandle, PointSampleDistance3d};
 use bevy_tnua::builtins::TnuaBuiltinWalk;
 use bevy_tnua::prelude::*;
 
-use super::level::{AwaitingNavmesh, Level};
+use super::level::Level;
+use crate::content::level::LevelGeometry;
 use crate::game::party::body::{FLOAT_HEIGHT, PartyBody};
 use crate::retail::source::NAVMESH_EXTENSION;
 
@@ -50,15 +51,7 @@ impl Plugin for NavigationPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(Landmass3dPlugin::default())
             .add_plugins(TnuaControllerPlugin::<WalkerMotion>::new(FixedUpdate))
-            .add_systems(
-                Update,
-                (
-                    install_navmesh,
-                    links::spawn_level_links,
-                    links::find_door_links,
-                    links::sync_door_links,
-                ),
-            )
+            .add_systems(Update, (links::find_door_links, links::sync_door_links))
             // Each fixed step: Landmass plans (FixedPreUpdate), walkers feed
             // Tnua (FixedUpdate), Avian moves them (FixedPostUpdate), and
             // the resulting velocities go back to Landmass.
@@ -104,61 +97,68 @@ pub struct Walker {
     pub float_height: f32,
 }
 
-/// Install a level's navmeshes under its root once they have loaded: one
-/// archipelago and island per size class. The navmeshes come from the asset
-/// processor's cache (baked on first use).
-fn install_navmesh(
-    mut commands: Commands,
-    levels: Query<(Entity, &Level), With<AwaitingNavmesh>>,
-    assets: Res<AssetServer>,
+/// Whether a level's navmeshes have settled: all loaded, or one failed.
+/// They come from the asset processor's cache (baked on first use).
+pub fn navmeshes_settled(level: &Level, assets: &AssetServer) -> bool {
+    level.navmeshes.iter().all(|navmesh| {
+        matches!(assets.get_load_state(navmesh), Some(LoadState::Loaded | LoadState::Failed(_)))
+    })
+}
+
+/// Install a level's navigation under its root, as part of its activation:
+/// one archipelago and island per size class, and the level's links. A
+/// navmesh that failed to load leaves the level without navigation; nothing
+/// will path.
+pub fn install(
+    commands: &mut Commands,
+    root: Entity,
+    level: &Level,
+    geometry: &LevelGeometry,
+    assets: &AssetServer,
 ) {
-    for (root, level) in &levels {
-        let states: Vec<_> = level.navmeshes.iter().map(|h| assets.get_load_state(h)).collect();
-        if let Some(Some(LoadState::Failed(error))) =
-            states.iter().find(|s| matches!(s, Some(LoadState::Failed(_))))
-        {
-            // The level stays without navigation; nothing will path.
-            error!("navmesh unavailable: {error}");
-            commands.entity(root).remove::<AwaitingNavmesh>();
-            continue;
-        }
-        if !states.iter().all(|s| matches!(s, Some(LoadState::Loaded))) {
-            continue;
-        }
-        let mut archipelagos = Vec::new();
-        for (class, navmesh) in level.navmeshes.iter().enumerate() {
-            let radius = bake::SIZE_CLASSES[class];
-            let mut options = ArchipelagoOptions::from_agent_radius(radius);
-            // Actor origins float above the ground; sample the navmesh beneath.
-            options.point_sample_distance = PointSampleDistance3d {
-                horizontal_distance: 1.0,
-                distance_above: 0.5,
-                distance_below: FLOAT_HEIGHT + 2.0,
-                vertical_preference_ratio: 2.0,
-                animation_link_max_vertical_distance: 1.0,
-            };
-            let archipelago = commands
-                .spawn((
-                    Name::new(format!("Archipelago for {radius} m walkers")),
-                    Archipelago3d::new(options),
-                    ChildOf(root),
-                ))
-                .id();
-            commands.spawn((
-                Name::new(format!("Navmesh for {radius} m walkers")),
-                Transform::default(),
-                Island3dBundle {
-                    island: Island,
-                    archipelago_ref: ArchipelagoRef3d::new(archipelago),
-                    nav_mesh: NavMeshHandle(navmesh.clone()),
-                },
-                ChildOf(root),
-            ));
-            archipelagos.push(archipelago);
-        }
-        commands.entity(root).remove::<AwaitingNavmesh>().insert(LevelNavigation { archipelagos });
-        info!("navmeshes installed for {} size classes", level.navmeshes.len());
+    if let Some(Some(LoadState::Failed(error))) = level
+        .navmeshes
+        .iter()
+        .map(|h| assets.get_load_state(h))
+        .find(|s| matches!(s, Some(LoadState::Failed(_))))
+    {
+        error!("navmesh unavailable: {error}");
+        return;
     }
+    let mut archipelagos = Vec::new();
+    for (class, navmesh) in level.navmeshes.iter().enumerate() {
+        let radius = bake::SIZE_CLASSES[class];
+        let mut options = ArchipelagoOptions::from_agent_radius(radius);
+        // Actor origins float above the ground; sample the navmesh beneath.
+        options.point_sample_distance = PointSampleDistance3d {
+            horizontal_distance: 1.0,
+            distance_above: 0.5,
+            distance_below: FLOAT_HEIGHT + 2.0,
+            vertical_preference_ratio: 2.0,
+            animation_link_max_vertical_distance: 1.0,
+        };
+        let archipelago = commands
+            .spawn((
+                Name::new(format!("Archipelago for {radius} m walkers")),
+                Archipelago3d::new(options),
+                ChildOf(root),
+            ))
+            .id();
+        commands.spawn((
+            Name::new(format!("Navmesh for {radius} m walkers")),
+            Transform::default(),
+            Island3dBundle {
+                island: Island,
+                archipelago_ref: ArchipelagoRef3d::new(archipelago),
+                nav_mesh: NavMeshHandle(navmesh.clone()),
+            },
+            ChildOf(root),
+        ));
+        archipelagos.push(archipelago);
+    }
+    links::spawn_level_links(commands, root, geometry, &archipelagos);
+    commands.entity(root).insert(LevelNavigation { archipelagos });
+    info!("navmeshes installed for {} size classes", level.navmeshes.len());
 }
 
 /// The party as a Landmass character in one archipelago: a child of the

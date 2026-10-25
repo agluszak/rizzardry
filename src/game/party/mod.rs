@@ -13,7 +13,7 @@ use bevy_tnua::prelude::*;
 use bevy_tnua_avian3d::prelude::*;
 
 use crate::game::camp;
-use crate::game::world::level::build_level_geometry;
+use crate::game::world::level::level_active;
 use crate::game::world::triggers::PendingPartyMove;
 
 pub struct PartyPlugin;
@@ -34,14 +34,16 @@ impl Plugin for PartyPlugin {
         .add_systems(
             Update,
             (
-                body::place_party_on_ready.after(build_level_geometry),
-                (body::look_around, body::aim_camera).chain(),
-                body::interact,
-                crate::game::world::items::click_items_in_view,
                 roster::give_starting_equipment,
                 formation::seat_party,
-                (camp::request_camp, camp::force_camp, camp::cancel_camp, camp::advance_camp)
-                    .chain(),
+                (
+                    (body::look_around, body::aim_camera).chain(),
+                    body::interact,
+                    crate::game::world::items::click_items_in_view,
+                    (camp::request_camp, camp::force_camp, camp::cancel_camp, camp::advance_camp)
+                        .chain(),
+                )
+                    .run_if(level_active),
             ),
         )
         // Tnua and Avian step on the fixed timestep; movement input feeds
@@ -52,13 +54,15 @@ impl Plugin for PartyPlugin {
             (
                 (body::drive_party.in_set(TnuaUserControlsSystems), walk_in::fly_party).chain(),
                 recovery::pass_time,
-            ),
+            )
+                .run_if(level_active),
         )
         .add_systems(
             FixedPostUpdate,
             (walk_in::run_walk_in_triggers, walk_in::move_party)
                 .chain()
-                .after(PhysicsSystems::Writeback),
+                .after(PhysicsSystems::Writeback)
+                .run_if(level_active),
         );
     }
 }

@@ -4,7 +4,6 @@
 //! built under it as their assets load. Despawning the root unloads the
 //! level. The party is not level-owned and survives travel.
 
-use super::items::WorldItem;
 use std::collections::HashMap;
 
 use avian3d::prelude::*;
@@ -12,20 +11,31 @@ use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
 use bevy_landmass::NavMesh3d;
 
+use bevy::asset::{LoadState, UntypedAssetId};
+use bevy::ecs::system::SystemParam;
+
+use super::items::WorldItem;
 use super::navigation::asset::navmesh_path;
 use super::navigation::bake::SIZE_CLASSES;
 use super::props::{Prop, PropMotion, pose};
 use super::scripts::LevelScript;
 use super::triggers::LevelState;
+use super::{navigation, population};
+use crate::content::items::{ItemCatalog, LootTables};
 use crate::content::level::LevelGeometry;
 use crate::content::levels::LevelInfo;
+use crate::content::species::MonsterCatalog;
 use crate::content::ui::TextTable;
+use crate::game::data::GameData;
+use crate::game::inventory::ItemIds;
+use crate::game::party::body::PartyPlacement;
+use crate::game::rng::GameRng;
 use crate::presentation::billboards::FaceCamera;
 use crate::presentation::sky::{Celestial, Cloud};
 
 /// The root of the level the party is in.
 #[derive(Component, Debug)]
-#[require(Transform, Visibility, AwaitingGeometry, AwaitingNavmesh, AwaitingLinks, AwaitingSky)]
+#[require(Transform, Visibility, LevelPhase, AwaitingSky)]
 pub struct Level {
     /// The retail path of its `.pvl`, which identifies it.
     pub path: String,
@@ -73,34 +83,48 @@ pub struct Travel {
     pub entrance: String,
 }
 
-/// Replace the level root with the entrance's level. The party stays and is
-/// placed at the entrance once the new level is ready (retail
-/// `TravelToLevel`). Retail first asks "Enter <level>?" when the trigger
-/// says so; that question is not asked yet.
+/// Leave for another level's entrance (retail `TravelToLevel`): what the
+/// level holds is remembered, it is despawned, and the destination loads
+/// while the party's body waits, suspended, to be placed at the entrance on
+/// activation. Work that cannot cross levels ends: a camera-path flight and
+/// any pending party move. A fight cannot be left this way; travel asked
+/// for during one is refused (retail's rule here is not established).
+/// Retail first asks "Enter <level>?" when the trigger says so.
+#[allow(clippy::too_many_arguments)]
 pub fn travel(
     mut commands: Commands,
     mut requests: MessageReader<Travel>,
-    levels: Query<(Entity, &Level, Option<&LevelState>, &Children)>,
+    levels: Query<(Entity, &Level, &LevelPhase, Option<&LevelState>, Option<&Children>)>,
     props: Query<&PropMotion>,
     items: Query<(&WorldItem, &Transform)>,
     mut memory: ResMut<LevelMemory>,
     assets: Res<AssetServer>,
-    mut start: ResMut<crate::game::party::body::PartyStart>,
+    (battle, mut start, mut pending, party): (
+        Option<Res<crate::game::combat::Battle>>,
+        ResMut<crate::game::party::body::PartyStart>,
+        ResMut<super::triggers::PendingPartyMove>,
+        Query<Entity, With<crate::game::party::body::PartyBody>>,
+    ),
 ) {
     let Some(request) = requests.read().last() else { return };
+    if battle.is_some() {
+        warn!("travel to {} refused: the party is fighting", request.entrance);
+        return;
+    }
     let Some(info) = LevelInfo::for_entrance(&request.entrance) else {
         warn!("no level has entrance {}", request.entrance);
         return;
     };
-    for (entity, level, state, children) in &levels {
+    for (entity, level, phase, state, children) in &levels {
         // Remember the level as the party leaves it; moving props are kept
         // where they were heading.
-        if let Some(state) = state {
+        if let (LevelPhase::Active, Some(state)) = (phase, state) {
+            let children: Vec<Entity> = children.map_or_else(Vec::new, |c| c.to_vec());
             let prop_frames =
-                children.iter().filter_map(|c| props.get(c).ok()).map(|m| m.target).collect();
+                children.iter().filter_map(|c| props.get(*c).ok()).map(|m| m.target).collect();
             let items = children
                 .iter()
-                .filter_map(|c| items.get(c).ok())
+                .filter_map(|c| items.get(*c).ok())
                 .map(|(item, at)| (item.clone(), at.translation))
                 .collect();
             memory.0.insert(
@@ -109,6 +133,13 @@ pub fn travel(
             );
         }
         commands.entity(entity).despawn();
+    }
+    pending.0 = None;
+    for body in &party {
+        commands
+            .entity(body)
+            .remove::<crate::game::party::walk_in::PathFlight>()
+            .insert(RigidBodyDisabled);
     }
     let path = info.path();
     info!("travelling to {path} at {}", request.entrance);
@@ -226,13 +257,24 @@ pub fn build_sky(
     }
 }
 
-/// The level's geometry and collider have not been built yet.
-#[derive(Component, Debug, Default)]
-pub struct AwaitingGeometry;
+/// Where a level is in its life. It loads until its gameplay prerequisites
+/// exist (geometry and collision, the shared databases, its navmeshes
+/// loaded or failed), then [`activate_level`] builds its world, places the
+/// party and makes it active; only an active level is played. Its sky and
+/// other visuals load on their own.
+#[derive(Component, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum LevelPhase {
+    #[default]
+    Loading,
+    Active,
+    /// It cannot be played: an asset failed or its collision is unusable.
+    Failed,
+}
 
-/// The level's navigation has not been installed yet.
-#[derive(Component, Debug, Default)]
-pub struct AwaitingNavmesh;
+/// Run condition: a level is being played.
+pub fn level_active(levels: Query<&LevelPhase>) -> bool {
+    levels.iter().any(|phase| *phase == LevelPhase::Active)
+}
 
 /// One rigid part of a placed prop, with its animation poses.
 #[derive(Component, Debug)]
@@ -242,47 +284,41 @@ pub struct PropPart {
     pub keys: Vec<Transform>,
 }
 
-/// The level's navigation links have not been spawned yet.
-#[derive(Component, Debug, Default)]
-pub struct AwaitingLinks;
-
-/// Sent once a level's geometry and collider exist.
+/// A level has become active, with the party in it.
 #[derive(Message, Debug, Clone, Copy)]
-pub struct LevelReady;
+pub struct LevelReady {
+    pub level: Entity,
+}
 
-/// Build the static geometry and collider under the level root once the
-/// geometry has loaded.
-pub fn build_level_geometry(
-    mut commands: Commands,
-    levels: Query<(Entity, &Level), With<AwaitingGeometry>>,
-    geometry: Res<Assets<LevelGeometry>>,
-    memory: Res<LevelMemory>,
-    mut ready: MessageWriter<LevelReady>,
+/// The level's collider, or why it has none.
+fn level_collider(geometry: &LevelGeometry) -> Result<Collider, String> {
+    Collider::try_trimesh_with_config(
+        geometry.collision.vertices.clone(),
+        geometry.collision.triangles.clone(),
+        TrimeshFlags::MERGE_DUPLICATE_VERTICES
+            | TrimeshFlags::DELETE_DEGENERATE_TRIANGLES
+            | TrimeshFlags::FIX_INTERNAL_EDGES,
+    )
+    .map_err(|error| format!("level collider: {error:?}"))
+}
+
+/// Build the level's playable world under its root: its static geometry and
+/// collider, its props where it left them, and its trigger state.
+fn build_world(
+    commands: &mut Commands,
+    root: Entity,
+    level: &Level,
+    geometry: &LevelGeometry,
+    collider: Collider,
+    remembered: Option<&LevelRecord>,
 ) {
-    for (root, level) in &levels {
-        let Some(geometry) = geometry.get(&level.geometry) else { continue };
-        let collider = match Collider::try_trimesh_with_config(
-            geometry.collision.vertices.clone(),
-            geometry.collision.triangles.clone(),
-            TrimeshFlags::MERGE_DUPLICATE_VERTICES
-                | TrimeshFlags::DELETE_DEGENERATE_TRIANGLES
-                | TrimeshFlags::FIX_INTERNAL_EDGES,
-        ) {
-            Ok(collider) => collider,
-            Err(error) => {
-                error!("level collider: {error:?}");
-                commands.entity(root).remove::<AwaitingGeometry>();
-                continue;
-            }
-        };
-        let remembered = memory.0.get(&level.path);
-        let mut root = commands.entity(root);
-        root.remove::<AwaitingGeometry>().insert((
-            RigidBody::Static,
-            collider,
-            remembered
-                .map_or_else(|| LevelState::new(geometry, level.script), |r| r.state.revisited()),
-        ));
+    let mut root = commands.entity(root);
+    root.insert((
+        RigidBody::Static,
+        collider,
+        remembered.map_or_else(|| LevelState::new(geometry, level.script), |r| r.state.revisited()),
+    ));
+    {
         root.with_children(|parent| {
             for part in &geometry.parts {
                 parent.spawn((Mesh3d(part.mesh.clone()), MeshMaterial3d(part.material.clone())));
@@ -363,11 +399,91 @@ pub fn build_level_geometry(
             }
         });
         info!(
-            "level ready: {} parts, {} props, {} collision triangles",
+            "level built: {} parts, {} props, {} collision triangles",
             geometry.parts.len(),
             geometry.props.len(),
             geometry.collision.triangles.len()
         );
-        ready.write(LevelReady);
+    }
+}
+
+/// The databases every level's gameplay needs.
+#[derive(SystemParam)]
+pub struct SharedData<'w> {
+    data: Option<Res<'w, GameData>>,
+    items: Res<'w, Assets<ItemCatalog>>,
+    loot: Res<'w, Assets<LootTables>>,
+    species: Res<'w, Assets<MonsterCatalog>>,
+}
+
+/// Make a loading level playable once its gameplay prerequisites exist, in
+/// one step: build its world, navigation and population (consuming what was
+/// remembered of it), place the party and resume its body, and announce it.
+/// A level whose geometry, databases or collision fail is marked failed.
+#[allow(clippy::too_many_arguments)]
+pub fn activate_level(
+    mut commands: Commands,
+    mut levels: Query<(Entity, &Level, &mut LevelPhase)>,
+    geometry: Res<Assets<LevelGeometry>>,
+    assets: Res<AssetServer>,
+    shared: SharedData,
+    mut memory: ResMut<LevelMemory>,
+    (mut ids, mut rng): (ResMut<ItemIds>, ResMut<GameRng>),
+    mut party: PartyPlacement,
+    mut ready: MessageWriter<LevelReady>,
+) {
+    for (root, level, mut phase) in &mut levels {
+        if *phase != LevelPhase::Loading {
+            continue;
+        }
+        let failed = |handle: UntypedAssetId| {
+            matches!(assets.get_load_state(handle), Some(LoadState::Failed(_)))
+        };
+        let Some(data) = shared.data.as_ref() else { continue };
+        if failed(level.geometry.id().untyped())
+            || failed(data.items.id().untyped())
+            || failed(data.loot.id().untyped())
+            || failed(data.species.id().untyped())
+        {
+            error!("{}: an asset it needs failed to load", level.path);
+            *phase = LevelPhase::Failed;
+            continue;
+        }
+        let (Some(geometry), Some(items), Some(_), Some(species)) = (
+            geometry.get(&level.geometry),
+            shared.items.get(&data.items),
+            shared.loot.get(&data.loot),
+            shared.species.get(&data.species),
+        ) else {
+            continue;
+        };
+        if !navigation::navmeshes_settled(level, &assets) {
+            continue;
+        }
+        let collider = match level_collider(geometry) {
+            Ok(collider) => collider,
+            Err(error) => {
+                error!("{}: {error}", level.path);
+                *phase = LevelPhase::Failed;
+                continue;
+            }
+        };
+        let remembered = memory.0.remove(&level.path);
+        build_world(&mut commands, root, level, geometry, collider, remembered.as_ref());
+        navigation::install(&mut commands, root, level, geometry, &assets);
+        population::populate(
+            &mut commands,
+            root,
+            geometry,
+            remembered.as_ref(),
+            (species, items),
+            &assets,
+            &mut ids,
+            &mut rng,
+        );
+        party.place(&mut commands, geometry);
+        *phase = LevelPhase::Active;
+        info!("{} is active", level.path);
+        ready.write(LevelReady { level: root });
     }
 }

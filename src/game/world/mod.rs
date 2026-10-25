@@ -46,14 +46,17 @@ impl Plugin for WorldPlugin {
             .add_systems(
                 Update,
                 (
-                    level::build_level_geometry,
+                    level::activate_level,
                     level::build_sky,
-                    population::populate_level,
-                    population::measure_monsters,
-                    (search::search_key, search::toggle_search, search::search_pulse).chain(),
-                    identify::detect_monster_groups,
+                    (
+                        population::measure_monsters,
+                        (search::search_key, search::toggle_search, search::search_pulse).chain(),
+                        identify::detect_monster_groups,
+                    )
+                        .run_if(level::level_active)
+                        .after(level::activate_level),
                 ),
             )
-            .add_systems(FixedUpdate, props::animate_props);
+            .add_systems(FixedUpdate, props::animate_props.run_if(level::level_active));
     }
 }

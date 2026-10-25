@@ -36,7 +36,14 @@ outstanding scripted consequences are not determined by animation events, UI
 widgets or Bevy's automatic world serialization.
 
 One level root owns its local entities and presentation children. An existing
-party entity survives travel. Bevy parent/child relations and screen-scoped
+party entity survives travel. The root has one phase — loading, active or
+failed — and one operation (`activate_level`) makes it playable once its
+gameplay prerequisites exist: it builds the world, navigation and
+population, consumes what was remembered of the level, places and resumes
+the party, and only then announces `LevelReady`. Gameplay systems run only
+while a level is active; travel captures the level it leaves, ends work that
+cannot cross levels and suspends the party's body until the destination is
+active. Cosmetic loading (the sky) proceeds on its own. Bevy parent/child relations and screen-scoped
 cleanup should eliminate manual ownership tables, not introduce a new global
 world manager.
 

@@ -637,7 +637,8 @@ pub struct LevelTriggers<'w, 's> {
     rng: ResMut<'w, GameRng>,
     ids: ResMut<'w, ItemIds>,
     party: ResMut<'w, PartyInventory>,
-    members: Query<'w, 's, &'static mut Character>,
+    members: Query<'w, 's, (Entity, &'static mut Character)>,
+    roster: Res<'w, crate::game::party::roster::PartyRoster>,
     clock: Res<'w, GameClock>,
 }
 
@@ -652,10 +653,13 @@ impl LevelTriggers<'_, '_> {
     }
 
     /// Run triggers with `run`, then send their effects to presentation.
-    /// Nothing runs while no level is built.
+    /// Nothing runs without an active level and the shared databases, which
+    /// its activation guarantees: a trigger never runs half its action.
     pub fn with<R>(&mut self, run: impl FnOnce(&mut Triggers) -> R) -> Option<R> {
         let Ok((level, state)) = self.levels.single_mut() else { return None };
         let geometry = self.geometry.get(&level.geometry)?;
+        let data = self.data.as_ref()?;
+        let (catalog, loot) = (self.catalogs.get(&data.items)?, self.loot.get(&data.loot)?);
         let state = state.into_inner();
         let mut props = HashMap::new();
         for (prop, motion, children) in &mut self.props {
@@ -680,17 +684,23 @@ impl LevelTriggers<'_, '_> {
                 },
             );
         }
-        let members = self.members.iter_mut().map(|m| m.into_inner()).collect();
-        let party = self.data.as_ref().and_then(|data| {
-            Some(PartyContext {
-                members,
-                now_ms: self.clock.ms,
-                catalog: self.catalogs.get(&data.items)?,
-                loot: self.loot.get(&data.loot)?,
-                rng: self.rng.as_mut(),
-                ids: self.ids.as_mut(),
-                party: self.party.as_mut(),
-            })
+        // The party's members, in its order: order-sensitive rolls (each
+        // member's trap damage) follow it.
+        let roster = &self.roster.0;
+        let mut members: Vec<(usize, &mut Character)> = self
+            .members
+            .iter_mut()
+            .filter_map(|(e, c)| Some((roster.iter().position(|&m| m == e)?, c.into_inner())))
+            .collect();
+        members.sort_by_key(|(slot, _)| *slot);
+        let party = Some(PartyContext {
+            members: members.into_iter().map(|(_, c)| c).collect(),
+            now_ms: self.clock.ms,
+            catalog,
+            loot,
+            rng: self.rng.as_mut(),
+            ids: self.ids.as_mut(),
+            party: self.party.as_mut(),
         });
         let mut triggers = Triggers {
             definitions: &geometry.triggers,

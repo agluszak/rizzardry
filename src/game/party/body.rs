@@ -15,7 +15,8 @@ use bevy_tnua::prelude::*;
 use bevy_tnua_avian3d::prelude::*;
 
 use crate::content::level::LevelGeometry;
-use crate::game::world::level::{Level, LevelReady};
+use bevy::ecs::system::SystemParam;
+
 use crate::game::world::props::{Prop, drawn_under_ray, owner, ray_under_pointer};
 use crate::game::world::triggers::{LevelTriggers, TriggerEffect};
 use crate::retail::space::UNITS_PER_METRE as U;
@@ -165,43 +166,63 @@ pub fn spawn_exploration_controls(mut commands: Commands) {
     });
 }
 
-/// Place the party when a level is ready: spawn it on the first, move it on
-/// arrival at the next.
-///
-/// Retail enters a level at an entrance trigger (e.g. `MO100`) and falls
-/// back to an eye position of (0, 1000, 0) when there is none. Entrance
-/// triggers the party arrives inside do not fire until it leaves them.
-pub fn place_party_on_ready(
-    mut commands: Commands,
-    mut ready: MessageReader<LevelReady>,
-    levels: Query<&Level>,
-    geometry: Res<Assets<LevelGeometry>>,
-    mut party: Query<(&mut PartyBody, &mut Position, &mut Transform, &mut LinearVelocity)>,
-    start: Option<Res<PartyStart>>,
-    mut motion_configs: ResMut<Assets<PartyMotionConfig>>,
-) {
-    if ready.read().last().is_none() {
-        return;
-    }
-    let start = start.map(|s| s.clone()).unwrap_or_default();
-    let level = levels.iter().find_map(|level| geometry.get(&level.geometry));
-    let entrance = start.entrance.as_deref().and_then(|name| {
-        let found = level?.entrances.iter().find(|e| e.name.eq_ignore_ascii_case(name));
-        if found.is_none() {
-            warn!("entrance {name} is missing; using the retail fallback position");
+/// What placing the party needs (part of a level's activation).
+#[derive(SystemParam)]
+pub struct PartyPlacement<'w, 's> {
+    party: Query<
+        'w,
+        's,
+        (
+            Entity,
+            &'static mut PartyBody,
+            &'static mut Position,
+            &'static mut Transform,
+            &'static mut LinearVelocity,
+        ),
+    >,
+    start: Option<Res<'w, PartyStart>>,
+    motion_configs: ResMut<'w, Assets<PartyMotionConfig>>,
+}
+
+impl PartyPlacement<'_, '_> {
+    /// Put the party in a level being activated: spawn it in the first,
+    /// move it into the next and resume its body, suspended for the trip.
+    ///
+    /// Retail enters a level at an entrance trigger (e.g. `MO100`) and falls
+    /// back to an eye position of (0, 1000, 0) when there is none. Entrance
+    /// triggers the party arrives inside do not fire until it leaves them.
+    pub fn place(&mut self, commands: &mut Commands, level: &LevelGeometry) {
+        let start = self.start.as_ref().map(|s| (**s).clone()).unwrap_or_default();
+        let entrance = start.entrance.as_deref().and_then(|name| {
+            let found = level.entrances.iter().find(|e| e.name.eq_ignore_ascii_case(name));
+            if found.is_none() {
+                warn!("entrance {name} is missing; using the retail fallback position");
+            }
+            found
+        });
+        let eye = start.eye.or(entrance.map(|e| e.eye)).unwrap_or(Vec3::new(0.0, 1000.0 / U, 0.0));
+        let yaw = start.yaw.or(entrance.map(|e| e.yaw)).unwrap_or_default();
+        let position = eye - Vec3::Y * EYE_ABOVE_CENTRE;
+        if let Ok((entity, mut body, mut at, mut transform, mut velocity)) = self.party.single_mut()
+        {
+            body.yaw = yaw;
+            at.0 = position;
+            transform.translation = position;
+            velocity.0 = Vec3::ZERO;
+            commands.entity(entity).remove::<RigidBodyDisabled>();
+            return;
         }
-        found
-    });
-    let eye = start.eye.or(entrance.map(|e| e.eye)).unwrap_or(Vec3::new(0.0, 1000.0 / U, 0.0));
-    let yaw = start.yaw.or(entrance.map(|e| e.yaw)).unwrap_or_default();
-    let position = eye - Vec3::Y * EYE_ABOVE_CENTRE;
-    if let Ok((mut body, mut at, mut transform, mut velocity)) = party.single_mut() {
-        body.yaw = yaw;
-        at.0 = position;
-        transform.translation = position;
-        velocity.0 = Vec3::ZERO;
-        return;
+        spawn_party(commands, &start, yaw, position, &mut self.motion_configs);
     }
+}
+
+fn spawn_party(
+    commands: &mut Commands,
+    start: &PartyStart,
+    yaw: f32,
+    position: Vec3,
+    motion_configs: &mut Assets<PartyMotionConfig>,
+) {
     commands
         .spawn((
             Name::new("Party"),
