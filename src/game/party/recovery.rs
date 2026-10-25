@@ -116,3 +116,39 @@ mod tests {
         assert!(fighter.hp > hp && fighter.stamina > stamina);
     }
 }
+
+#[cfg(test)]
+mod roster_tests {
+    use super::*;
+    use crate::game::characters::{Gender, Profession, Race};
+    use crate::game::time::AGING_TICK_MS;
+    use bevy::time::TimeUpdateStrategy;
+
+    #[test]
+    fn passing_time_heals_the_party_not_every_character() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<GameClock>()
+            .init_resource::<PartyRoster>()
+            .add_message::<DetectGroups>()
+            .add_systems(Update, pass_time);
+        let hurt = || {
+            let mut c = Character::new("Hurt", Race::Human, Gender::Male, Profession::Fighter);
+            c.hp = 1;
+            c
+        };
+        let member = app.world_mut().spawn(hurt()).id();
+        // An adventurer the party has not recruited.
+        let stranger = app.world_mut().spawn(hurt()).id();
+        app.world_mut().resource_mut::<PartyRoster>().0.push(member);
+        // A long real step: at 12x, many aging ticks of standing still.
+        let step = std::time::Duration::from_millis(AGING_TICK_MS * 30 / EXPLORATION_RATE);
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(step));
+        app.world_mut().resource_mut::<Time<Virtual>>().set_max_delta(step);
+        for _ in 0..3 {
+            app.update();
+        }
+        assert!(app.world().get::<Character>(member).unwrap().hp > 1);
+        assert_eq!(app.world().get::<Character>(stranger).unwrap().hp, 1);
+    }
+}

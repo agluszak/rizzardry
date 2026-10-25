@@ -64,7 +64,8 @@ and representative retail checks, not a new harness. *Covered:* headless
 tests for failed collision, waiting for databases, one party across levels,
 a suspended party on a failed destination, a killed monster staying dead;
 rule tests for a combat round's recovery. Failed travel keeping the source is
-tested. *Not yet:* a test for a non-roster `Character`.
+tested, and passing time healing the roster but not a non-roster
+`Character`.
 
 ## 1. Complete the real-world engine slice
 
