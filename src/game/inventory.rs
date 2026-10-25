@@ -302,13 +302,16 @@ pub fn allowed_slots(
     definition: &ItemDefinition,
     carried: &Carried,
     catalog: &ItemCatalog,
+    vacating: Option<EquipSlot>,
 ) -> Vec<EquipSlot> {
     use EquipClass::*;
-    let empty = |slot: EquipSlot| carried.worn(slot).is_none();
+    // What is worn, but for the slot being emptied for this item.
+    let worn = |slot: EquipSlot| carried.worn(slot).filter(|_| vacating != Some(slot));
+    let empty = |slot: EquipSlot| worn(slot).is_none();
     // A main hand also counts as free for the off hand when its weapon is
     // one-handed.
     let main_free = |slot: EquipSlot| {
-        carried.worn(slot).is_none_or(|i| catalog.get(i.item).is_none_or(|d| !d.two_handed))
+        worn(slot).is_none_or(|i| catalog.get(i.item).is_none_or(|d| !d.two_handed))
     };
     match definition.class {
         ShortWeapon | ExtendedWeapon | ThrownWeapon | RangedWeapon
@@ -434,7 +437,7 @@ pub fn place_at_creation(
     let mut item = item.moved();
     if let Some(definition) = catalog.get(item.item).filter(|d| member.can_use(d))
         && let Some(slot) = creation_slot(definition, carried, catalog, member)
-        && allowed_slots(definition, carried, catalog).contains(&slot)
+        && allowed_slots(definition, carried, catalog, None).contains(&slot)
     {
         match &mut carried.equipment[slot.index()] {
             empty @ None => {
@@ -584,13 +587,14 @@ impl PartyInventory {
     /// part taken is a new item unless the whole stack is.
     pub fn pick_up(
         &mut self,
-        member: Option<&mut Carried>,
+        member: Option<(&Character, &mut Carried)>,
         location: ItemLocation,
         amount: u8,
         ids: &mut ItemIds,
         catalog: &ItemCatalog,
     ) -> Result<(), Refusal> {
         let held = self.held.as_ref().map(|h| (h.item.item, h.item.units()));
+        let dead = member.as_ref().is_some_and(|(character, _)| character.is_dead());
         // Split `amount` off `source`; true when that is all of it.
         let mut split = |source: &mut ItemInstance| -> Result<(bool, ItemInstance), Refusal> {
             let definition = catalog.get(source.item).ok_or(Refusal::Nothing)?;
@@ -609,7 +613,7 @@ impl PartyInventory {
             }
             if let ItemLocation::Member(_, Slot::Equipment(slot)) = location
                 && amount == count
-                && !can_take_off(slot, source, definition, false)
+                && !can_take_off(slot, source, definition, dead)
             {
                 return Err(Refusal::Cursed);
             }
@@ -630,7 +634,8 @@ impl PartyInventory {
                 taken
             }
             ItemLocation::Member(_, slot) => {
-                let place = member.and_then(|m| m.slot_mut(slot)).ok_or(Refusal::Nothing)?;
+                let place =
+                    member.and_then(|(_, m)| m.slot_mut(slot)).ok_or(Refusal::Nothing)?;
                 let (whole, taken) = split(place.as_mut().ok_or(Refusal::Nothing)?)?;
                 if whole {
                     *place = None;
@@ -650,14 +655,15 @@ impl PartyInventory {
     }
 
     /// Exchange what is at a member's slot with the hand (retail
-    /// `swapWithHand`): picks up, puts down or swaps. `can_use` says whether
-    /// the member can use the held item, for equipment slots.
+    /// `swapWithHand`): picks up, puts down or swaps. Into equipment only
+    /// what the member can use and the slot takes; out of it only what a
+    /// curse lets go (the dead keep nothing).
     pub fn swap_with_hand(
         &mut self,
+        character: &Character,
         carried: &mut Carried,
         member: usize,
         slot: Slot,
-        can_use: bool,
         catalog: &ItemCatalog,
     ) -> Result<(), Refusal> {
         let current = carried.slot_mut(slot).ok_or(Refusal::Nothing)?.clone();
@@ -667,16 +673,16 @@ impl PartyInventory {
         if let Slot::Equipment(equip) = slot {
             if let Some(item) = &current
                 && let Some(definition) = catalog.get(item.item)
-                && !can_take_off(equip, item, definition, false)
+                && !can_take_off(equip, item, definition, character.is_dead())
             {
                 return Err(Refusal::Cursed);
             }
             if let Some(held) = &self.held {
                 let definition = catalog.get(held.item.item).ok_or(Refusal::DoesNotFit)?;
-                // Judge the slot with this one empty.
-                let mut without = carried.clone();
-                without.equipment[equip.index()] = None;
-                if !can_use || !allowed_slots(definition, &without, catalog).contains(&equip) {
+                // Judged with this slot emptied for it.
+                if !character.can_use(definition)
+                    || !allowed_slots(definition, carried, catalog, Some(equip)).contains(&equip)
+                {
                     return Err(Refusal::DoesNotFit);
                 }
             }
@@ -934,12 +940,12 @@ mod tests {
         let (sword, axe, shield, arrows) =
             (&catalog.0[1], &catalog.0[2], &catalog.0[3], &catalog.0[0]);
         let mut carried = Carried::default();
-        assert!(allowed_slots(axe, &carried, &catalog).contains(&EquipSlot::Primary));
+        assert!(allowed_slots(axe, &carried, &catalog, None).contains(&EquipSlot::Primary));
         carried.equipment[EquipSlot::Secondary.index()] = Some(item(&mut ids, 3, Quantity::One));
         // A shield in the off hand bars a two-handed weapon from that set.
-        assert_eq!(allowed_slots(axe, &carried, &catalog), [EquipSlot::AlternatePrimary]);
+        assert_eq!(allowed_slots(axe, &carried, &catalog, None), [EquipSlot::AlternatePrimary]);
         carried.equipment[EquipSlot::Primary.index()] = Some(item(&mut ids, 2, Quantity::One));
-        assert!(!allowed_slots(shield, &carried, &catalog).contains(&EquipSlot::Secondary));
+        assert!(!allowed_slots(shield, &carried, &catalog, None).contains(&EquipSlot::Secondary));
         assert!(!can_hold_together(axe, shield));
         assert!(can_hold_together(sword, shield));
         // Ammunition only pairs with its weapon kind.
@@ -974,29 +980,37 @@ mod tests {
     #[test]
     fn a_worn_curse_holds_until_released_and_moving_loses_the_release() {
         let (catalog, mut ids) = (catalog(), ItemIds::default());
+        let mut wearer = Character::new(
+            "Wearer",
+            crate::game::characters::Race::Human,
+            crate::game::characters::Gender::Male,
+            crate::game::characters::Profession::Fighter,
+        );
+        let head = Slot::Equipment(EquipSlot::Head);
         let mut carried = Carried::default();
         let mut party = PartyInventory {
             held: Some(Held { item: item(&mut ids, 4, Quantity::One), origin: None }),
             ..default()
         };
-        party
-            .swap_with_hand(&mut carried, 0, Slot::Equipment(EquipSlot::Head), true, &catalog)
-            .unwrap();
+        party.swap_with_hand(&wearer, &mut carried, 0, head, &catalog).unwrap();
         assert!(party.held.is_none());
         assert_eq!(
-            party.swap_with_hand(&mut carried, 0, Slot::Equipment(EquipSlot::Head), true, &catalog),
+            party.swap_with_hand(&wearer, &mut carried, 0, head, &catalog),
             Err(Refusal::Cursed)
         );
         carried.equipment[EquipSlot::Head.index()].as_mut().unwrap().curse_released = true;
-        party
-            .swap_with_hand(&mut carried, 0, Slot::Equipment(EquipSlot::Head), true, &catalog)
-            .unwrap();
+        party.swap_with_hand(&wearer, &mut carried, 0, head, &catalog).unwrap();
         assert!(!party.held.as_ref().unwrap().item.curse_released, "moving loses the release");
         // Something that does not belong there is refused.
+        let feet = Slot::Equipment(EquipSlot::Feet);
         assert_eq!(
-            party.swap_with_hand(&mut carried, 0, Slot::Equipment(EquipSlot::Feet), true, &catalog),
+            party.swap_with_hand(&wearer, &mut carried, 0, feet, &catalog),
             Err(Refusal::DoesNotFit)
         );
+        // Put it back on: the curse holds again, but not on the dead.
+        party.swap_with_hand(&wearer, &mut carried, 0, head, &catalog).unwrap();
+        wearer.hp = 0;
+        assert_eq!(party.swap_with_hand(&wearer, &mut carried, 0, head, &catalog), Ok(()));
     }
 
     #[test]

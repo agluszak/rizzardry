@@ -237,13 +237,7 @@ fn click_cell(
                         _ => Ok(()),
                     }
                 }
-                _ => {
-                    let can_use = held
-                        .as_ref()
-                        .and_then(|h| catalog.get(h.item))
-                        .is_none_or(|d| character.can_use(d));
-                    party.swap_with_hand(&mut carried, index, slot, can_use, catalog)
-                }
+                _ => party.swap_with_hand(character, &mut carried, index, slot, catalog),
             }
         }
     };
