@@ -47,9 +47,10 @@ pub fn spawn_screen_controls(mut commands: Commands) {
     commands.spawn_scene(bsn! {
         Screens
         Actions<Screens> [
+            // Tab, as retail's mgskeyboard.ini binds it.
             Action::<ToggleMap>::new()
             Bindings [
-                Binding(KeyCode::KeyM)
+                Binding(KeyCode::Tab)
             ]
             --
             Action::<Back>::new()

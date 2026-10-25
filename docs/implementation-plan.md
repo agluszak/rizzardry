@@ -145,7 +145,7 @@ Known gaps, in rough order:
   120-second aging tick at `(0.4·max + 20)/240`, both halved while standing
   still; moving recovers a tenth of the stamina and no health, and camping
   recovers both at full rate. Combat rates wait for combat.
-- Camping (`game::camp`, R; retail's default key is not in its data): only
+- Camping (`game::camp`, C as in retail's `mgskeyboard.ini`): only
   while still; a second's fade into retail's camping screen, eight game
   hours at 2880× (ten real seconds), a second's fade back; Escape cuts it
   short. When every living member is incapacitated the party is forced to

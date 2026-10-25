@@ -70,7 +70,7 @@ pub struct Options {
     #[arg(long, value_name = "HOUR")]
     pub hour: Option<f32>,
     /// Developer: drive the UI with scripted input, e.g.
-    /// `"key m; click 300 200; type Hello; key Enter"`.
+    /// `"key Tab; click 300 200; type Hello; key Enter"`.
     #[arg(long, value_name = "STEPS")]
     pub ui_script: Option<String>,
     /// Developer: speak this retail voice line on entry, e.g.

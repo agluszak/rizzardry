@@ -379,7 +379,7 @@ pub fn say_line(
 
 /// A scripted UI session: keys, clicks and typing fed through the same
 /// input messages a player's devices produce. Steps are separated by `;`:
-/// `key m`, `click X Y` (in the 640×480 screen layout), `type TEXT`,
+/// `key Tab`, `click X Y` (in the 640×480 screen layout), `type TEXT`,
 /// `wait SECONDS`. One step runs every [`UI_STEP`] seconds once the party
 /// is in the world.
 #[derive(Resource, Debug, Clone)]
@@ -417,12 +417,14 @@ fn scripted_key(name: &str) -> Option<(KeyCode, Key)> {
         "Escape" => (KeyCode::Escape, Key::Escape),
         "Backspace" => (KeyCode::Backspace, Key::Backspace),
         "space" => (KeyCode::Space, Key::Space),
+        "Tab" => (KeyCode::Tab, Key::Tab),
         letter if letter.len() == 1 && letter.chars().all(|c| c.is_ascii_lowercase()) => {
             let code = match letter {
                 "m" => KeyCode::KeyM,
                 "e" => KeyCode::KeyE,
                 "q" => KeyCode::KeyQ,
                 "r" => KeyCode::KeyR,
+                "c" => KeyCode::KeyC,
                 "i" => KeyCode::KeyI,
                 _ => KeyCode::Unidentified(NativeKeyCode::Unidentified),
             };
