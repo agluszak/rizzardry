@@ -6,6 +6,7 @@
 pub mod automap;
 pub mod bytes;
 pub mod files;
+pub mod items;
 pub mod keyframes;
 pub mod level_loader;
 pub mod links;
