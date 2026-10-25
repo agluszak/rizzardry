@@ -165,7 +165,7 @@ pub fn spawn_party_on_ready(
     commands
         .spawn((
             Name::new("Party"),
-            PartyBody { yaw: start.yaw, ..default() },
+            PartyBody { yaw: start.yaw, pitch: start.pitch.clamp(-MAX_PITCH, MAX_PITCH) },
             Transform::from_translation(position),
             Visibility::default(),
             RigidBody::Dynamic,
@@ -208,6 +208,7 @@ pub fn spawn_party_on_ready(
 pub struct PartyStart {
     pub eye: Option<Vec3>,
     pub yaw: f32,
+    pub pitch: f32,
 }
 
 /// Mouse look: a per-frame input delta, applied every frame.

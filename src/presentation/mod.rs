@@ -1,6 +1,7 @@
 //! Rendering, animation and audio presentation of game state.
 
 pub mod automap;
+pub mod billboards;
 pub mod environment;
 pub mod mipmaps;
 pub mod monsters;
@@ -40,6 +41,7 @@ impl Plugin for PresentationPlugin {
                     environment::apply_environment,
                     sky::follow_with_sky_camera.after(crate::game::party::body::aim_camera),
                     sky::shade_clouds,
+                    billboards::face_camera.after(crate::game::party::body::aim_camera),
                     sky::orbit_sun_and_moon,
                     voice::finish_speech,
                     (

@@ -123,6 +123,8 @@ pub struct PropModel {
     pub name: String,
     /// Retail `COLLIDABLE`: the party and monsters collide with its parts.
     pub collidable: bool,
+    /// Drawn turned toward the viewer, like a sprite.
+    pub face_camera: bool,
     /// Path keys advanced per second when the prop animates.
     pub frames_per_second: f32,
     pub parts: Vec<PropModelPart>,

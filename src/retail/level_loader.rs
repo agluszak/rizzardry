@@ -66,8 +66,8 @@ pub enum PvlLoadError {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Blend {
     Opaque,
-    Mask,
     Translucent,
+    Additive,
 }
 
 pub(super) struct LoadedMaterial {
@@ -206,20 +206,21 @@ pub(super) async fn load_material(
         frames = load_frames(context, directory, name, textures).await;
         alpha |= frames.iter().any(|(_, frame_alpha)| *frame_alpha);
     }
+    // Retail's packed shaders: slots 0-1 blend by alpha, slots 2-3 add
+    // colour times alpha (glows, flares, sparks, beams; black adds nothing).
     let blend = if record.opacity < 1.0 || alpha {
-        // Slots 0-1 blend; slots 2-3 select the alpha-tested shader.
-        if slot <= 1 { Blend::Translucent } else { Blend::Mask }
+        if slot <= 1 { Blend::Translucent } else { Blend::Additive }
     } else {
         Blend::Opaque
     };
-    let opacity = if index == 0 { 1.0 } else { record.opacity.clamp(0.0, 1.0) };
+    // Retail takes an opacity of 0 as 0.7.
+    let opacity = match record.opacity {
+        _ if index == 0 => 1.0,
+        0.0 => 0.7,
+        opacity => opacity.clamp(0.0, 1.0),
+    };
     let material = StandardMaterial {
-        base_color: Color::srgba(
-            1.0,
-            1.0,
-            1.0,
-            if blend == Blend::Translucent { opacity.max(0.05) } else { 1.0 },
-        ),
+        base_color: Color::srgba(1.0, 1.0, 1.0, if blend == Blend::Opaque { 1.0 } else { opacity }),
         base_color_texture: frames.first().map(|(handle, _)| handle.clone()),
         unlit: true,
         double_sided: record.two_sided(),
@@ -230,8 +231,8 @@ pub(super) async fn load_material(
         },
         alpha_mode: match blend {
             Blend::Opaque => AlphaMode::Opaque,
-            Blend::Mask => AlphaMode::Mask(0.5),
             Blend::Translucent => AlphaMode::Blend,
+            Blend::Additive => AlphaMode::Add,
         },
         ..default()
     };
@@ -361,6 +362,7 @@ pub(super) async fn build_props(
         props.push(PropModel {
             name: prop.name.clone(),
             collidable: prop.flags & PROP_COLLIDABLE != 0,
+            face_camera: prop.face_camera,
             frames_per_second: prop.frames_per_second,
             parts,
             interaction,

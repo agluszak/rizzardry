@@ -51,9 +51,12 @@ pub struct Options {
     /// An explicit eye position in metres, overriding the entrance.
     #[arg(long, value_name = "X,Y,Z", value_parser = parse_vec3)]
     pub start: Option<Vec3>,
-    /// Initial yaw in degrees, with --start.
-    #[arg(long, default_value_t = 0.0)]
-    pub yaw: f32,
+    /// Initial yaw in degrees, overriding the entrance's.
+    #[arg(long, allow_negative_numbers = true)]
+    pub yaw: Option<f32>,
+    /// Initial pitch in degrees, up positive; retail allows ±45.
+    #[arg(long, default_value_t = 0.0, allow_negative_numbers = true)]
+    pub pitch: f32,
     /// Developer: capture the view shortly after entering, then exit.
     #[arg(long, value_name = "FILE.png")]
     pub screenshot: Option<PathBuf>,
@@ -141,12 +144,15 @@ pub fn run(options: Options) -> AppExit {
         .and_then(LevelInfo::sky_path)
         .map(|sky| if files.contains(&sky) { sky } else { DEFAULT_SKY.to_owned() });
 
-    let mut start = PartyStart { eye: options.start, yaw: options.yaw.to_radians() };
+    let pitch = options.pitch.to_radians();
+    let yaw = options.yaw.unwrap_or_default().to_radians();
+    let mut start = PartyStart { eye: options.start, yaw, pitch };
     if let (None, Some(entrance)) = (options.start, options.entrance(&level)) {
         match entrance_placement(&files, &level, entrance) {
             Some(placement) => {
                 info!("entering {level} at {entrance}: {placement:?}");
-                start = placement
+                let yaw = options.yaw.map_or(placement.yaw, f32::to_radians);
+                start = PartyStart { yaw, pitch, ..placement }
             }
             None => warn!(
                 "entrance {entrance} is missing or not positioned; using the retail fallback position"
@@ -252,5 +258,6 @@ fn entrance_placement(files: &RetailFiles, level: &str, entrance: &str) -> Optio
     Some(PartyStart {
         eye: Some(retail_position([x, y + 1000.0, z])),
         yaw: retail_yaw(placement.angle, placement.axis),
+        pitch: 0.0,
     })
 }

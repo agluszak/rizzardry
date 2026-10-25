@@ -11,6 +11,7 @@ use bevy_landmass::NavMesh3d;
 
 use super::props::{Prop, PropMotion};
 use crate::content::level::LevelGeometry;
+use crate::presentation::billboards::FaceCamera;
 use crate::presentation::sky::{Celestial, Cloud};
 
 /// The root of the level the party is in.
@@ -79,6 +80,9 @@ pub fn build_sky(
                         ChildOf(sky_root),
                     ))
                     .id();
+                if prop.face_camera {
+                    commands.entity(part_entity).insert(FaceCamera);
+                }
                 if let Some(sun) = celestial {
                     commands
                         .entity(part_entity)
@@ -184,26 +188,31 @@ pub fn build_level_geometry(
                                 part.transform,
                                 Visibility::default(),
                             ));
-                            match Collider::try_trimesh_with_config(
-                                part.collision.vertices.clone(),
-                                part.collision.triangles.clone(),
-                                TrimeshFlags::MERGE_DUPLICATE_VERTICES
-                                    | TrimeshFlags::DELETE_DEGENERATE_TRIANGLES,
-                            ) {
-                                Ok(collider) => {
-                                    // Parts with a path can move (doors, lifts).
-                                    let body = if part.keys.is_empty() {
-                                        RigidBody::Static
-                                    } else {
-                                        RigidBody::Kinematic
-                                    };
-                                    part_entity.insert((body, collider));
-                                    // Props the party walks through can still be used.
-                                    if !prop.collidable {
-                                        part_entity.insert(Sensor);
+                            if prop.face_camera {
+                                // Sprites turn with the view and do not collide.
+                                part_entity.insert(FaceCamera);
+                            } else {
+                                match Collider::try_trimesh_with_config(
+                                    part.collision.vertices.clone(),
+                                    part.collision.triangles.clone(),
+                                    TrimeshFlags::MERGE_DUPLICATE_VERTICES
+                                        | TrimeshFlags::DELETE_DEGENERATE_TRIANGLES,
+                                ) {
+                                    Ok(collider) => {
+                                        // Parts with a path can move (doors, lifts).
+                                        let body = if part.keys.is_empty() {
+                                            RigidBody::Static
+                                        } else {
+                                            RigidBody::Kinematic
+                                        };
+                                        part_entity.insert((body, collider));
+                                        // Props the party walks through can still be used.
+                                        if !prop.collidable {
+                                            part_entity.insert(Sensor);
+                                        }
                                     }
+                                    Err(error) => warn!("prop {} collider: {error:?}", prop.name),
                                 }
-                                Err(error) => warn!("prop {} collider: {error:?}", prop.name),
                             }
                             part_entity.with_children(|meshes| {
                                 for mesh in &part.meshes {

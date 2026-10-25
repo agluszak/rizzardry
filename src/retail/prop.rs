@@ -31,6 +31,8 @@ pub struct Prop {
     pub name: String,
     /// `W8_PROP_*` flags.
     pub flags: u32,
+    /// Drawn turned toward the viewer (billboards: the Sun, the Moon).
+    pub face_camera: bool,
     /// Retail units; the origin of props without positioned parts.
     pub location: [f32; 3],
     pub frames_per_second: f32,
@@ -167,6 +169,7 @@ pub fn read_prop(bytes: &mut Bytes) -> Result<Prop, PvlError> {
     let mut prop = Prop {
         name: String::new(),
         flags: 0,
+        face_camera: false,
         location: [0.0; 3],
         frames_per_second: 15.0,
         channels: Default::default(),
@@ -182,7 +185,7 @@ pub fn read_prop(bytes: &mut Bytes) -> Result<Prop, PvlError> {
     } else {
         bytes.u8()?; // frame count
         if version > 4 {
-            bytes.u8()?; // face camera
+            prop.face_camera = bytes.u8()? != 0;
             prop.location = bytes.f32s::<3>()?.map(|v| v * RECORD_SCALE);
         }
         if version > 5 {
