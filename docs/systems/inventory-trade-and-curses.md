@@ -40,6 +40,21 @@ operations while removing record-pointer repair, view-owned mutations and a
 catch-all game dependency. A full selected item does not have to become an entity
 to survive sorting.
 
+### Validation belongs to the operation
+
+UI, AI and scripts may all request the same equipment or transfer operation.
+The operation checks the authoritative source item, wearer state, equipment
+slot, curses, capacity and destination when it executes. Never rely solely on
+a disabled UI control or a caller-provided `can_use` boolean; a caller must
+not be able to bypass the rule by supplying a favorable answer. Preview and
+execution can share a pure eligibility predicate, but execution rechecks it
+against the current state. Do not hard-code assumed wearer state (for example
+`dead = false`) to satisfy a helper signature.
+
+Reject invalid operations without consuming or duplicating items, and return
+the actual partial transfer and held remainder for legal operations. Ordinary
+direct calls are sufficient; no generic transaction engine is needed.
+
 ## Cursor transfer
 
 1. Resolve the source and check removal permission, including curses.
