@@ -6,7 +6,10 @@
 //! smooth animation on.
 
 use bevy::platform::collections::HashMap;
+use std::time::Duration;
+
 use bevy::prelude::*;
+use bevy::time::Stopwatch;
 
 use avian3d::prelude::{SpatialQuery, SpatialQueryFilter};
 
@@ -57,21 +60,11 @@ pub struct MonsterInstance {
     model_root: Entity,
     /// Per cycle: its root entity and this instance's mesh copies.
     cycles: HashMap<String, (Entity, Vec<Handle<Mesh>>)>,
-    playing: Option<(CycleRequest, f32)>,
+    /// The cycle shown, and how long it has played.
+    playing: Option<(CycleRequest, Stopwatch)>,
     /// How much sky light reaches the actor: retail fades it between 0.75
     /// in sight of the level's `SUN` light and 0 out of it.
     sky_scale: f32,
-}
-
-impl MonsterInstance {
-    /// Whether a play-once cycle has reached its last frame (retail
-    /// `CYCLE_COMPLETE`).
-    pub fn is_complete(&self, model: &MonsterModel, now: f32) -> bool {
-        let Some((request, started)) = &self.playing else { return false };
-        let Some(cycle) = model.cycle(&request.cycle) else { return true };
-        request.once
-            && (now - started) * cycle.frames_per_second >= (cycle.frame_count() - 1) as f32
-    }
 }
 
 pub fn build_monster_instances(
@@ -160,7 +153,6 @@ pub fn animate_monsters(
     mut meshes: ResMut<Assets<Mesh>>,
     mut visibility: Query<&mut Visibility>,
 ) {
-    let now = time.elapsed_secs();
     for (appearance, mut instance, request) in &mut actors {
         let Some(model) = models.get(&appearance.model) else { continue };
         let request = request.cloned().unwrap_or_else(|| CycleRequest::looping("IDLE"));
@@ -174,12 +166,15 @@ pub fn animate_monsters(
                 }
             }
             // The first cycle starts part-way in.
-            let started = if instance.playing.is_none() { now - appearance.phase } else { now };
-            instance.playing = Some((request.clone(), started));
+            let mut played = Stopwatch::new();
+            if instance.playing.is_none() {
+                played.set_elapsed(Duration::from_secs_f32(appearance.phase));
+            }
+            instance.playing = Some((request.clone(), played));
         }
-        let started = instance.playing.as_ref().map_or(now, |(_, started)| *started);
+        let Some((_, played)) = &mut instance.playing else { continue };
         let frames = cycle.frame_count() as f32;
-        let elapsed = (now - started) * cycle.frames_per_second;
+        let elapsed = played.tick(time.delta()).elapsed_secs() * cycle.frames_per_second;
         let frame = if request.once { elapsed.min(frames - 1.0) } else { elapsed % frames };
         let positions = cycle.positions_at(frame);
         let Some((_, copies)) = instance.cycles.get(name) else { continue };

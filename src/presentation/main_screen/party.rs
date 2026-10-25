@@ -4,6 +4,8 @@
 //! splats over the portraits. Clicking a slot selects the member, gives
 //! them the held item, or (double click) opens their review screen.
 
+use std::time::Duration;
+
 use bevy::prelude::*;
 use rand::Rng;
 
@@ -365,7 +367,7 @@ pub fn draw_party(
 #[derive(Component, Clone, Copy)]
 struct SlotButton(usize);
 
-const DOUBLE_CLICK: f32 = 0.4;
+const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 /// With an item in hand, a click gives it to the member; otherwise it
 /// selects them, and a double click opens their review screen.
@@ -376,7 +378,7 @@ fn press(
     mut commands: Commands,
     roster: Res<PartyRoster>,
     time: Res<Time>,
-    mut last_click: Local<Option<(usize, f32)>>,
+    mut last_click: Local<Option<(usize, Duration)>>,
     (mut party, mut members, data, catalogs, battle, mut news): (
         ResMut<PartyInventory>,
         Query<(&Character, &mut Carried)>,
@@ -416,7 +418,7 @@ fn press(
         return;
     }
     selected.0 = slot;
-    let now = time.elapsed_secs();
+    let now = time.elapsed();
     if last_click.is_some_and(|(s, at)| s == slot && now - at < DOUBLE_CLICK)
         && let Some(&member) = roster.0.get(slot)
     {
