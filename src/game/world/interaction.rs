@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use super::items::{WorldItem, drop_held, take_item};
 use super::level::Level;
 use super::props::Prop;
-use super::triggers::{LevelTriggers, TriggerEffect};
+use super::triggers::DeviceOperations;
 use crate::content::items::ItemCatalog;
 use crate::game::data::GameData;
 use crate::game::inventory::{ItemNews, PartyInventory};
@@ -26,7 +26,7 @@ pub fn act_on_click(
     mut clicks: MessageReader<WorldClick>,
     props: Query<(&Name, &Prop)>,
     // Triggers give the party things too: one or the other at a time.
-    mut acting: ParamSet<(LevelTriggers, ResMut<PartyInventory>)>,
+    mut acting: ParamSet<(DeviceOperations, ResMut<PartyInventory>)>,
     mut items: Query<&mut WorldItem>,
     (levels, bodies, spatial): (Query<Entity, With<Level>>, Query<&RigidBody>, SpatialQuery),
     (data, catalogs, mut news): (
@@ -64,23 +64,12 @@ pub fn act_on_click(
 /// Use a prop clicked `distance` away, if its trigger can be used from
 /// there. Retail measures from the middle of the prop; the hit point is
 /// close.
-fn use_prop(name: &Name, prop: &Prop, distance: f32, triggers: &mut LevelTriggers) {
-    let Some(index) = prop.trigger else {
+fn use_prop(name: &Name, prop: &Prop, distance: f32, triggers: &mut DeviceOperations) {
+    let Some(device) = prop.trigger else {
         debug!("{name} does nothing");
         return;
     };
-    triggers.with(|triggers| {
-        let definition = &triggers.definitions[index];
-        let (trigger, (near, far)) = (&definition.name, definition.range);
-        if !triggers.usable(index) {
-            debug!("{name} ({trigger}) cannot be used");
-        } else if !(near..=far).contains(&distance) {
-            debug!("{name} ({trigger}) is out of reach: {distance:.1} m, not {near:.1}..{far:.1}");
-        } else if triggers.run_index(index, 0) {
-            info!("used {name} ({trigger})");
-        } else {
-            info!("used {name} ({trigger}): nothing happened");
-            triggers.effects.push(TriggerEffect::NothingHappened);
-        }
-    });
+    if triggers.use_device(device, distance) {
+        info!("used {name}");
+    }
 }

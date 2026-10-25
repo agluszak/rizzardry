@@ -21,7 +21,7 @@ use super::navigation::links::DoorLink;
 use super::population::{Monster, MonsterBodies};
 use super::props::{Prop, PropMotion, pose};
 use super::scripts::LevelScript;
-use super::triggers::{LevelState, TriggerMemory};
+use super::triggers::{DeviceRecords, LevelState, TriggerMemory, spawn_devices};
 use super::{navigation, population};
 use crate::content::items::{ItemCatalog, LootTables};
 use crate::content::level::LevelGeometry;
@@ -190,6 +190,7 @@ pub struct KeptMonster {
 /// What travel reads to remember the level it leaves.
 #[derive(SystemParam)]
 pub struct LevelContents<'w, 's> {
+    devices: DeviceRecords<'w, 's>,
     props: Query<'w, 's, (&'static Prop, &'static PropMotion)>,
     monsters: Query<'w, 's, (&'static Monster, &'static Transform, Option<&'static Walker>)>,
     items: Query<'w, 's, (&'static WorldItem, &'static Transform)>,
@@ -200,7 +201,7 @@ impl LevelContents<'_, '_> {
     fn remember(&self, root: Entity, state: &LevelState, children: &[Entity]) -> LevelRecord {
         let (groups, notes) = self.knowledge.get(root).unwrap_or_default();
         LevelRecord {
-            triggers: state.remember(),
+            triggers: self.devices.remember(root, state),
             prop_frames: children
                 .iter()
                 .filter_map(|&c| self.props.get(c).ok())
@@ -308,103 +309,104 @@ fn build_world(
     root: Entity,
     geometry: &LevelGeometry,
     collider: Collider,
-    triggers: LevelState,
+    script: super::scripts::LevelScript,
+    tables: &LootTables,
     remembered: Option<&LevelRecord>,
 ) {
-    let mut root = commands.entity(root);
-    root.insert((
+    let props: Vec<_> = geometry.props.iter().map(|_| commands.spawn(ChildOf(root)).id()).collect();
+    let devices = spawn_devices(
+        commands,
+        root,
+        geometry,
+        &props,
+        script,
+        tables,
+        remembered.map(|r| &r.triggers),
+    );
+    commands.entity(root).insert((
         RigidBody::Static,
         collider,
-        triggers,
         remembered.map_or_else(MapNotes::default, |r| r.notes.clone()),
     ));
-    {
-        root.with_children(|parent| {
-            for (index, prop) in geometry.props.iter().enumerate() {
-                let frame =
-                    remembered.and_then(|r| r.prop_frames.get(&index)).copied().unwrap_or(0.0);
-                let last_frame =
-                    prop.parts.iter().map(|p| p.keys.len().saturating_sub(1)).max().unwrap_or(0);
-                let door =
-                    prop.trigger.is_some_and(|index| geometry.triggers[index].door.is_some());
-                let centre = prop.parts.iter().map(|part| part.transform.translation).sum::<Vec3>()
-                    / prop.parts.len().max(1) as f32;
-                // A door's doorway, from its closed shape (each part at its
-                // first pose), for walkers' links while it is open.
-                let doorway = door
-                    .then(|| {
-                        DoorLink::around(prop.parts.iter().flat_map(|part| {
-                            let closed = part.keys.first().copied().unwrap_or(part.transform);
-                            part.collision.vertices.iter().map(move |&v| closed.transform_point(v))
-                        }))
-                    })
-                    .flatten();
-                let mut prop_entity = parent.spawn((
-                    Name::new(prop.name.clone()),
-                    Prop {
-                        definition: index,
-                        trigger: prop.trigger,
-                        centre,
-                        door,
-                        frames_per_second: prop.frames_per_second,
-                        last_frame,
-                        wraps: prop.wraps,
-                        slots: prop.slots.clone(),
-                    },
-                    PropMotion { frame, target: frame },
-                    Transform::default(),
+    for (index, prop) in geometry.props.iter().enumerate() {
+        let frame = remembered.and_then(|r| r.prop_frames.get(&index)).copied().unwrap_or(0.0);
+        let last_frame =
+            prop.parts.iter().map(|p| p.keys.len().saturating_sub(1)).max().unwrap_or(0);
+        let door = prop.trigger.is_some_and(|index| geometry.triggers[index].door.is_some());
+        let centre = prop.parts.iter().map(|part| part.transform.translation).sum::<Vec3>()
+            / prop.parts.len().max(1) as f32;
+        // A door's doorway, from its closed shape (each part at its
+        // first pose), for walkers' links while it is open.
+        let doorway = door
+            .then(|| {
+                DoorLink::around(prop.parts.iter().flat_map(|part| {
+                    let closed = part.keys.first().copied().unwrap_or(part.transform);
+                    part.collision.vertices.iter().map(move |&v| closed.transform_point(v))
+                }))
+            })
+            .flatten();
+        let mut prop_entity = commands.entity(props[index]);
+        prop_entity.insert((
+            Name::new(prop.name.clone()),
+            Prop {
+                definition: index,
+                trigger: prop.trigger.map(|i| devices[i]),
+                centre,
+                door,
+                frames_per_second: prop.frames_per_second,
+                last_frame,
+                wraps: prop.wraps,
+                slots: prop.slots.clone(),
+            },
+            PropMotion { frame, target: frame },
+            Transform::default(),
+            Visibility::default(),
+        ));
+        if let Some(doorway) = doorway {
+            prop_entity.insert(doorway);
+        }
+        prop_entity.with_children(|prop_entity| {
+            for (part_index, part) in prop.parts.iter().enumerate() {
+                let at =
+                    if part.keys.is_empty() { part.transform } else { pose(&part.keys, frame) };
+                let mut part_entity = prop_entity.spawn((
+                    PropPart { part: part_index, keys: part.keys.clone() },
+                    at,
                     Visibility::default(),
                 ));
-                if let Some(doorway) = doorway {
-                    prop_entity.insert(doorway);
-                }
-                prop_entity.with_children(|prop_entity| {
-                    for (part_index, part) in prop.parts.iter().enumerate() {
-                        let at = if part.keys.is_empty() {
-                            part.transform
-                        } else {
-                            pose(&part.keys, frame)
-                        };
-                        let mut part_entity = prop_entity.spawn((
-                            PropPart { part: part_index, keys: part.keys.clone() },
-                            at,
-                            Visibility::default(),
-                        ));
-                        // Sprites turn with the view and do not collide.
-                        if !prop.face_camera {
-                            match Collider::try_trimesh_with_config(
-                                part.collision.vertices.clone(),
-                                part.collision.triangles.clone(),
-                                TrimeshFlags::MERGE_DUPLICATE_VERTICES
-                                    | TrimeshFlags::DELETE_DEGENERATE_TRIANGLES,
-                            ) {
-                                Ok(collider) => {
-                                    // Parts with a path can move (doors, lifts).
-                                    let body = if part.keys.is_empty() {
-                                        RigidBody::Static
-                                    } else {
-                                        RigidBody::Kinematic
-                                    };
-                                    part_entity.insert((body, collider));
-                                    // Props the party walks through can still be used.
-                                    if !prop.collidable {
-                                        part_entity.insert(Sensor);
-                                    }
-                                }
-                                Err(error) => warn!("prop {} collider: {error:?}", prop.name),
+                // Sprites turn with the view and do not collide.
+                if !prop.face_camera {
+                    match Collider::try_trimesh_with_config(
+                        part.collision.vertices.clone(),
+                        part.collision.triangles.clone(),
+                        TrimeshFlags::MERGE_DUPLICATE_VERTICES
+                            | TrimeshFlags::DELETE_DEGENERATE_TRIANGLES,
+                    ) {
+                        Ok(collider) => {
+                            // Parts with a path can move (doors, lifts).
+                            let body = if part.keys.is_empty() {
+                                RigidBody::Static
+                            } else {
+                                RigidBody::Kinematic
+                            };
+                            part_entity.insert((body, collider));
+                            // Props the party walks through can still be used.
+                            if !prop.collidable {
+                                part_entity.insert(Sensor);
                             }
                         }
+                        Err(error) => warn!("prop {} collider: {error:?}", prop.name),
                     }
-                });
+                }
             }
         });
-        info!(
-            "level built: {} parts, {} props, {} collision triangles",
-            geometry.parts.len(),
-            geometry.props.len(),
-            geometry.collision.triangles.len()
-        );
     }
+    info!(
+        "level built: {} parts, {} props, {} collision triangles",
+        geometry.parts.len(),
+        geometry.props.len(),
+        geometry.collision.triangles.len()
+    );
 }
 
 /// The databases every level's gameplay needs.
@@ -486,11 +488,15 @@ pub fn activate_level(
             }
         };
         let remembered = memory.0.remove(&level.path);
-        let triggers = match &remembered {
-            None => LevelState::new(geometry, level.script, loot),
-            Some(record) => LevelState::returning(geometry, level.script, loot, &record.triggers),
-        };
-        build_world(&mut commands, root, geometry, collider, triggers, remembered.as_ref());
+        build_world(
+            &mut commands,
+            root,
+            geometry,
+            collider,
+            level.script,
+            loot,
+            remembered.as_ref(),
+        );
         navigation::install(&mut commands, root, level, geometry, &assets);
         population::populate(
             &mut commands,

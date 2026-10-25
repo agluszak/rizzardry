@@ -357,3 +357,89 @@ fn a_level_waits_for_body_metadata_and_sizes_monsters_without_render_assets() {
     let crab = world.query::<&Monster>().single(world).unwrap();
     assert_eq!((crab.body.scale, crab.body.radius), (2.0, 1.0), "its body at its size");
 }
+
+#[test]
+fn device_state_and_prop_animation_survive_revisit_with_new_runtime_identities() {
+    use rizzardry::content::level::{
+        DoorLock, PropModel, TriggerAction, TriggerDefinition, TriggerUse,
+    };
+    use rizzardry::game::world::props::{Prop, PropMotion};
+    use rizzardry::game::world::triggers::{Device, DoorState, TriggerState};
+
+    let mut app = app();
+    with_data(&mut app);
+    let level = test_level(&mut app, floor());
+    {
+        let mut geometries = app.world_mut().resource_mut::<Assets<LevelGeometry>>();
+        let mut geometry = geometries.get_mut(&level.geometry).unwrap();
+        geometry.triggers.push(TriggerDefinition {
+            name: "DOOR".into(),
+            usable: true,
+            once: false,
+            fire_linked: false,
+            initial: TriggerUse { action: TriggerAction::OpenDoor, message: None },
+            alternate: None,
+            fallback: None,
+            alternate_toggles: false,
+            recipients: vec![],
+            sound: None,
+            sound_on_commit: false,
+            required_states: vec![],
+            state_change: None,
+            initial_state: None,
+            range: (0.0, 10.0),
+            door: Some(DoorLock { locked: true, key: None }),
+            place: None,
+            loot_table: None,
+        });
+        geometry.props.push(PropModel {
+            name: "door".into(),
+            collidable: false,
+            face_camera: false,
+            frames_per_second: 10.0,
+            parts: vec![],
+            wraps: false,
+            slots: vec![],
+            trigger: Some(0),
+        });
+    }
+    let first = app.world_mut().spawn(Destination::new(level.clone())).id();
+    app.update();
+    let old = app.world_mut().query_filtered::<Entity, With<Device>>().single(app.world()).unwrap();
+    assert_eq!(app.world().get::<Prop>(old).unwrap().trigger, Some(old));
+    {
+        let world = app.world_mut();
+        let mut door = world.get_mut::<DoorState>(old).unwrap();
+        door.open = true;
+        door.locked = false;
+        let mut execution = world.get_mut::<TriggerState>(old).unwrap();
+        execution.on = false;
+        execution.fired = true;
+        let mut motion = world.get_mut::<PropMotion>(old).unwrap();
+        motion.frame = 1.0;
+        motion.target = 3.0;
+    }
+    app.world_mut().write_message(Travel { entrance: "MO204".into() });
+    app.world_mut().run_schedule(PreUpdate);
+    let away: Vec<_> =
+        app.world_mut().query_filtered::<Entity, With<Destination>>().iter(app.world()).collect();
+    for entity in away {
+        app.world_mut().despawn(entity);
+    }
+    let back = app.world_mut().spawn(Destination::new(level)).id();
+    app.update();
+
+    assert!(is_played(&app, back));
+    assert!(app.world().get_entity(first).is_err());
+    assert!(app.world().get_entity(old).is_err());
+    let new = app.world_mut().query_filtered::<Entity, With<Device>>().single(app.world()).unwrap();
+    assert_ne!(old, new);
+    assert_eq!(app.world().get::<Device>(new).unwrap().level, back);
+    assert_eq!(app.world().get::<Prop>(new).unwrap().trigger, Some(new));
+    let door = app.world().get::<DoorState>(new).unwrap();
+    assert!(door.open && !door.locked);
+    let execution = app.world().get::<TriggerState>(new).unwrap();
+    assert!(!execution.on && execution.fired);
+    let motion = app.world().get::<PropMotion>(new).unwrap();
+    assert_eq!((motion.frame, motion.target), (3.0, 3.0));
+}

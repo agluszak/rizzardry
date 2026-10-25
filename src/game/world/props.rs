@@ -11,8 +11,8 @@ pub struct Prop {
     /// Its place among the level's props (`LevelGeometry::props`), which
     /// identifies it within the level.
     pub definition: usize,
-    /// The trigger using the prop runs, by index in the level's triggers.
-    pub trigger: Option<usize>,
+    /// The resolved device activated by using this prop.
+    pub trigger: Option<Entity>,
     /// The middle of its parts at rest, where its sounds play.
     pub centre: Vec3,
     /// Its trigger guards a doorway (navigation links follow it).

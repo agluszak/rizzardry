@@ -109,8 +109,14 @@ shown on retail content; the gaps below remain. Done:
   initial, alternate or fallback action by use and required location
   variables; door, toggle, start/stop, relay, camera shake and dial actions;
   recipients run synchronously on commit, including retail's relay double
-  fire; sounds play at their prop; location variables and `once`/`on` state
-  live on the level root. Level scripts hook in before an action; Monastery
+  fire; sounds play at their prop. Device entities own execution, door,
+  dial, container and fountain state; only location variables and visit
+  state live on the level root. Activation resolves ordered recipients and
+  prop links to entities, and binds Monastery 2's bell button to its dial.
+  Operations borrow affected components directly, without reconstructing
+  a borrowed prop/party object graph. Dormant records use authored device
+  indices and activation rebinds them to new entities. Pending party moves
+  carry their originating level and cannot be applied to a later visit. Monastery
   2's bells work end to end (each dial position rings its bell; the third
   breaks the windows, shakes the camera and ends the puzzle). Trigger
   messages from the level's `.msg` file and "Nothing happens." from the
