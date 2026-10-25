@@ -7,12 +7,13 @@ pub mod camp;
 pub mod dialog;
 pub mod effects;
 pub mod environment;
-pub mod hud;
 pub mod inventory;
+pub mod main_screen;
 pub mod mipmaps;
 pub mod monsters;
 pub mod music;
 pub mod notices;
+pub mod screen_art;
 pub mod sky;
 pub mod textures;
 pub mod voice;
@@ -50,6 +51,8 @@ impl Plugin for PresentationPlugin {
             .init_resource::<crate::game::automap::MapNotes>()
             .init_resource::<effects::CameraShake>()
             .init_resource::<notices::NoticeQueue>()
+            .init_resource::<main_screen::ScreenLayout>()
+            .init_resource::<main_screen::SelectedMember>()
             .init_resource::<music::Music>()
             .init_resource::<ambience::AmbienceNoise>()
             .add_input_context::<automap::Screens>()
@@ -62,6 +65,8 @@ impl Plugin for PresentationPlugin {
                     dialog::load_dialog_art,
                     camp::load_camp_art,
                     inventory::load_inventory_art,
+                    main_screen::load_main_screen_art,
+                    main_screen::spawn_screen_cameras,
                 ),
             )
             .add_systems(
@@ -69,6 +74,14 @@ impl Plugin for PresentationPlugin {
                 (
                     automap::scale_ui,
                     hold_exploration,
+                    (
+                        main_screen::cycle_layout,
+                        main_screen::select_with_keys,
+                        main_screen::fit_viewport,
+                        main_screen::draw_main_screen,
+                    )
+                        .chain()
+                        .after(automap::scale_ui),
                     camp::show_camp,
                     (
                         inventory::toggle_inventory,
@@ -101,7 +114,6 @@ impl Plugin for PresentationPlugin {
                     billboards::face_camera.after(crate::game::party::body::aim_camera),
                     effects::play_trigger_effects,
                     music::play_music,
-                    (hud::spawn_party_bar, hud::update_portraits, hud::update_pool_bars).chain(),
                     (ambience::place_ambient_sounds, ambience::play_ambient_sounds).chain(),
                     (notices::queue_notices, notices::show_notices, notices::fade_notices).chain(),
                     (

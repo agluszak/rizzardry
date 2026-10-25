@@ -1,6 +1,6 @@
 //! The character review screen's item page (`docs/research/review-items.md`):
 //! a member's equipment on their race's statue, their backpack, and the
-//! party's pool. Opened with I for the first member; the header's portraits
+//! party's pool. Opened with I for the selected member; the header's portraits
 //! switch member, Esc or the Exit button closes it. Retail fills empty cells
 //! with a PCX texture; a flat colour stands in for it.
 
@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use bevy::picking::pointer::{PointerId, PointerLocation};
 use bevy::prelude::*;
 
+use super::screen_art::{absolute, sprite, text};
 use crate::content::items::{ItemCatalog, QuantityKind};
 use crate::content::ui::SpriteSheet;
 use crate::game::characters::{Character, Gender, Race};
@@ -50,6 +51,12 @@ pub struct InventoryScreen {
     /// What the cells last showed, to draw them again when it changes;
     /// none until every picture they need has loaded.
     drawn: Option<Shown>,
+}
+
+impl InventoryScreen {
+    pub fn new(member: Entity) -> Self {
+        InventoryScreen { member, pool_scroll: 0, drawn: None }
+    }
 }
 
 /// What the cells show.
@@ -124,46 +131,13 @@ fn statue(race: Race, gender: Gender) -> String {
     format!("statue_{race}_{gender}")
 }
 
-fn absolute(at: Vec2, size: Vec2) -> Node {
-    Node {
-        position_type: PositionType::Absolute,
-        left: Val::Px(at.x),
-        top: Val::Px(at.y),
-        width: Val::Px(size.x),
-        height: Val::Px(size.y),
-        ..default()
-    }
-}
-
-/// A sheet's frame drawn with its top-left at `at`, shifted by the frame's
-/// own offset as retail's sprite drawing does.
-fn sprite(sheet: &SpriteSheet, frame: usize, at: Vec2) -> Option<(ImageNode, Node, Pickable)> {
-    let (image, info) = (sheet.images.get(frame)?, sheet.frames.get(frame)?);
-    let offset = Vec2::new(f32::from(info.offset[0]), f32::from(info.offset[1]));
-    let size = Vec2::new(info.width as f32, info.height as f32);
-    Some((ImageNode::new(image.clone()), absolute(at + offset, size), Pickable::IGNORE))
-}
-
-/// A line of text, centred in a box `width` wide (or left-aligned when 0).
-fn text(
-    font: &SpriteSheet,
-    images: &mut Assets<Image>,
-    line: &str,
-    at: Vec2,
-    width: f32,
-) -> (ImageNode, Node, Pickable) {
-    let image = font.text_image(line);
-    let size = image.size_f32();
-    let x = if width > 0.0 { at.x + ((width - size.x) / 2.0).floor() } else { at.x };
-    (ImageNode::new(images.add(image)), absolute(Vec2::new(x, at.y), size), Pickable::IGNORE)
-}
-
 pub fn toggle_inventory(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     screen: Option<Res<InventoryScreen>>,
     automap: Option<Res<super::automap::Automap>>,
     roster: Res<PartyRoster>,
+    selected: Res<super::main_screen::SelectedMember>,
     roots: Query<Entity, With<InventoryRoot>>,
 ) {
     match screen {
@@ -171,8 +145,9 @@ pub fn toggle_inventory(
             close(&mut commands, &roots);
         }
         None if keys.just_pressed(KeyCode::KeyI) && automap.is_none() => {
-            if let Some(&member) = roster.0.first() {
-                commands.insert_resource(InventoryScreen { member, pool_scroll: 0, drawn: None });
+            // Retail opens the selected character.
+            if let Some(&member) = roster.0.get(selected.0).or(roster.0.first()) {
+                commands.insert_resource(InventoryScreen::new(member));
             }
         }
         _ => {}

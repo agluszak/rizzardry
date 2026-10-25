@@ -176,6 +176,16 @@ Known gaps, in rough order:
   attack, sharing experience among the living. Not yet: party movement and
   orders, spells, fumbles, criticals, effects, the off hand, monster
   movement and fleeing, factions, item drops, levelling.
+- The main game screen (`presentation::main_screen`, layout in
+  [main game screen](research/main-game-screen.md)): retail's roof, party
+  columns, bottom panels and button-row sockets around a 3D view that
+  renders into the layout's viewport; the Closed, Wide and Full modes
+  (roof buttons, Backspace) and the panel arrows with retail's rules;
+  members' medium portraits (skulls for the dead, dragons for empty
+  slots), hands, average armour, names and HP/stamina bars drained from
+  the top; selection by click, previous/next and keys 1-6, a double click
+  opening the inventory. The radar, formation board, text box contents and
+  the bank's buttons are still to come.
 - The inventory screen (`presentation::inventory`, I; layout in
   [review items](research/review-items.md)) shows a member's equipment on
   their race's statue with retail item pictures and counts, the backpack
