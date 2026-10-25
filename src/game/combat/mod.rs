@@ -5,21 +5,24 @@
 //! to one: a stand-in for retail's sight and pursuit. Slots 0-2 are the
 //! front row and 3-5 the rear until formations exist.
 
+pub mod approach;
 pub mod attack;
 
-use avian3d::prelude::Position;
+use avian3d::prelude::{Position, RigidBody, SpatialQuery, SpatialQueryFilter};
 use bevy::prelude::*;
 
 use crate::content::items::ItemCatalog;
+use crate::content::monster::MonsterModel;
 use crate::content::species::{MonsterCatalog, Reach};
 use crate::game::characters::{Character, Condition};
 use crate::game::data::GameData;
 use crate::game::inventory::{Carried, PartyInventory};
-use crate::game::party::body::PartyBody;
+use crate::game::party::body::{EYE_ABOVE_CENTRE, PartyBody, PartyCamera};
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::time::GameClock;
 use crate::game::world::population::Monster;
+use crate::presentation::monsters::MonsterAppearance;
 use attack::{
     Swing, armour, character_initiative, character_swing, monster_swing, phase, primary_hand,
 };
@@ -28,16 +31,27 @@ pub struct CombatPlugin;
 
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<CombatNews>().add_systems(Update, (start_battle, run_battle).chain());
+        app.add_message::<CombatNews>().add_systems(
+            Update,
+            (start_battle, run_battle, approach::embody_fighters, approach::close_in).chain(),
+        );
     }
 }
 
-/// A hostile monster this close starts a fight, in metres.
-const ENGAGE_WITHIN: f32 = 3.0;
-/// Hostile monsters this close join it.
-const JOIN_WITHIN: f32 = 12.0;
+/// The party's reach point is this far under its eye (retail
+/// `g_default_world_height`, 1000 world units).
+const CAMERA_ABOVE_PARTY_POINT: f32 = 2.0;
+/// The party navigator's alternate radius (retail's default, 500 units).
+const PARTY_ALTERNATE_RADIUS: f32 = 1.0;
+/// A monster facing within this of the party sees it as far as anyone can
+/// (retail `g_monster_facing_tolerance`, 45 degrees).
+const FACING_TOLERANCE: f32 = std::f32::consts::FRAC_PI_4;
+
 /// Seconds between actions, so they can be followed.
 const ACTION_SECONDS: f32 = 0.5;
+/// Real seconds between rounds, so that a round in which nobody can strike
+/// still lets monsters close in.
+const ROUND_SECONDS: f32 = 1.0;
 /// Game time one round takes.
 const ROUND_MS: u64 = 120_000;
 /// Members in the front row; the rest cannot strike or be struck in melee.
@@ -67,6 +81,8 @@ pub struct Battle {
     kills: u32,
     passive_rounds: u32,
     attacked_this_round: bool,
+    /// Monsters are walking up to the party: the round is not passive.
+    approaching: bool,
     /// Seconds until the next action.
     wait: f32,
 }
@@ -102,8 +118,42 @@ fn able(member: &Character) -> bool {
     !member.is_dead() && member.worst_condition().is_none_or(|c| c < Condition::Asleep)
 }
 
-fn horizontal_distance(a: Vec3, b: Vec3) -> f32 {
-    Vec2::new(a.x - b.x, a.z - b.z).length()
+/// How far a monster is from the party (retail `GetPointDistanceToPlayer`):
+/// from its feet to the point 1000 world units (2 m) under the party's eye,
+/// less both bodies' alternate radii (its fight radius, the party's 1 m),
+/// never below 0. Reach and sight compare against this.
+fn distance_to_party(
+    party_eye: Vec3,
+    monster: &Monster,
+    at: &GlobalTransform,
+    look: &MonsterAppearance,
+) -> f32 {
+    let feet = at.translation() - Vec3::Y * look.float_height;
+    let party_point = party_eye - Vec3::Y * CAMERA_ABOVE_PARTY_POINT;
+    ((feet - party_point).length() - monster.radius - PARTY_ALTERNATE_RADIUS).max(0.0)
+}
+
+/// Retail `ComputeSightThreshold`: how far an observer facing away by
+/// `angle` (radians) sees, given its senses, a ranged bonus percent and the
+/// penalty source (the party's lowest level, doubled); within 45 degrees, or
+/// at no distance, the whole `far` clip.
+pub fn sight_threshold(
+    angle: f32,
+    senses: i32,
+    bonus: u32,
+    penalty: i32,
+    far: f32,
+    distance: f32,
+) -> f32 {
+    let mut percent = if angle < FACING_TOLERANCE || distance == 0.0 {
+        100
+    } else {
+        ((senses - penalty * 2) as f32 * ((far - distance) / distance)) as i32
+    };
+    if bonus != 0 {
+        percent = (bonus as i32 + 100) * percent / 100;
+    }
+    percent.clamp(2, 100) as f32 * far * 0.01
 }
 
 /// Whether a member in `slot` reaches, or is reached by, something `reach`
@@ -113,13 +163,24 @@ fn reaches(slot: usize, reach: Reach, distance: f32) -> bool {
     reach.is_some_and(|r| distance <= r.metres())
 }
 
-/// Start a fight when a hostile monster is close enough.
+/// Start a fight when hostile monsters that see the party can act on it
+/// (after retail `UpdateMonsterSight` and `MonsterGroupCanEngage`): the
+/// monster is within the far clip, has a line of sight from its eyes to the
+/// party's, and its sight threshold covers the distance; and one of its
+/// attacks reaches, or its best attack is close (touch or short) and it can
+/// walk up. Retail's combat move range and path checks, groups, factions and
+/// the party's own surprise rolls are not modelled yet.
 pub fn start_battle(
     mut commands: Commands,
     battle: Option<Res<Battle>>,
     camp: Option<Res<crate::game::camp::Camp>>,
-    party: Query<&Position, With<PartyBody>>,
-    monsters: Query<(Entity, &Monster, &GlobalTransform)>,
+    mut party: Query<(&Position, &mut PartyBody)>,
+    camera: Query<&Projection, With<PartyCamera>>,
+    members: Query<&Character>,
+    monsters: Query<(Entity, &Monster, &GlobalTransform, &MonsterAppearance)>,
+    models: Res<Assets<MonsterModel>>,
+    spatial: SpatialQuery,
+    bodies: Query<&RigidBody>,
     data: Option<Res<GameData>>,
     species: Res<Assets<MonsterCatalog>>,
     roster: Res<PartyRoster>,
@@ -128,23 +189,81 @@ pub fn start_battle(
     if battle.is_some() || camp.is_some() {
         return;
     }
-    let (Ok(party), Some(catalog)) = (party.single(), data.and_then(|d| species.get(&d.species)))
+    let (Ok((party_at, mut body)), Some(catalog)) =
+        (party.single_mut(), data.and_then(|d| species.get(&d.species)))
     else {
         return;
     };
-    let hostile =
-        |m: &Monster| !m.is_dead() && catalog.0.get(m.species as usize).is_some_and(|s| !s.npc);
-    let distance = |at: &GlobalTransform| horizontal_distance(party.0, at.translation());
-    if !monsters.iter().any(|(_, m, at)| hostile(m) && distance(at) <= ENGAGE_WITHIN) {
-        return;
-    }
+    let far = match camera.single() {
+        Ok(Projection::Perspective(perspective)) => perspective.far,
+        _ => return,
+    };
+    let party_eye = party_at.0 + Vec3::Y * EYE_ABOVE_CENTRE;
+    // The party's lowest level among those who can act weakens sight
+    // from behind.
+    let lowest_level = roster
+        .0
+        .iter()
+        .filter_map(|&m| members.get(m).ok())
+        .filter(|c| !c.is_dead() && c.worst_condition().is_none_or(|w| w < Condition::Asleep))
+        .map(|c| i32::from(c.level))
+        .min()
+        .unwrap_or(0);
+    // Only the level's static geometry blocks sight.
+    let level = |entity| bodies.get(entity).is_ok_and(RigidBody::is_static);
+    let clear = |from: Vec3, to: Vec3| {
+        let Ok(direction) = Dir3::new(to - from) else { return true };
+        let filter = SpatialQueryFilter::default();
+        spatial
+            .cast_ray_predicate(from, direction, from.distance(to), true, &filter, &level)
+            .is_none()
+    };
     let mut joined: Vec<(i32, Entity)> = monsters
         .iter()
-        .filter(|(_, m, at)| hostile(m) && distance(at) <= JOIN_WITHIN)
-        .map(|(entity, m, _)| (m.location, entity))
+        .filter(|(_, monster, at, look)| {
+            let Some(kind) = catalog.0.get(monster.species as usize) else { return false };
+            if kind.npc || monster.is_dead() || monster.radius == 0.0 {
+                return false;
+            }
+            if monster.conditions.iter().any(|&(c, _)| c > Condition::Webbed) {
+                return false;
+            }
+            let distance = distance_to_party(party_eye, monster, at, look);
+            let eye = at.translation() - Vec3::Y * look.float_height + Vec3::Y * monster.eye_height;
+            if distance > far || !clear(eye, party_eye) {
+                return false;
+            }
+            let forward = at.forward().with_y(0.0);
+            let to_party = (party_eye - eye).with_y(0.0);
+            let angle = forward.angle_between(to_party);
+            let senses = i32::from(kind.attributes[4]);
+            let bonus = if kind.kind == 4 { (u32::from(kind.level) * 5).min(125) } else { 0 };
+            if sight_threshold(angle, senses, bonus, lowest_level, far, distance) < distance {
+                return false;
+            }
+            let reaches = kind.attacks.iter().any(|a| distance <= a.reach.metres());
+            let close =
+                kind.attacks.iter().map(|a| a.reach).max().is_some_and(|r| r <= Reach::Short);
+            let walks = models.get(&look.model).is_some_and(|m| m.body.movement_rate > 0.0);
+            reaches || (close && walks)
+        })
+        .map(|(entity, m, ..)| (m.location, entity))
         .collect();
+    if joined.is_empty() {
+        return;
+    }
     joined.sort();
     info!("combat: {} monsters", joined.len());
+    // The view turns to the nearest of them (retail `beginCombat`).
+    let nearest = joined
+        .iter()
+        .filter_map(|&(_, e)| monsters.get(e).ok())
+        .map(|(_, _, at, _)| at.translation())
+        .min_by(|a, b| a.distance(party_eye).total_cmp(&b.distance(party_eye)));
+    if let Some(nearest) = nearest {
+        let to = nearest - party_eye;
+        body.yaw = (-to.x).atan2(-to.z);
+    }
     commands.insert_resource(Battle {
         round: 0,
         step: 0,
@@ -154,6 +273,7 @@ pub fn start_battle(
         kills: 0,
         passive_rounds: 0,
         attacked_this_round: false,
+        approaching: false,
         wait: 0.0,
     });
     news.write(CombatNews::Began);
@@ -169,7 +289,7 @@ pub fn run_battle(
     mut clock: ResMut<GameClock>,
     roster: Res<PartyRoster>,
     mut members: Query<(&mut Character, &Carried)>,
-    mut monsters: Query<(&mut Monster, &GlobalTransform)>,
+    mut monsters: Query<(&mut Monster, &GlobalTransform, &MonsterAppearance)>,
     party_body: Query<&Position, With<PartyBody>>,
     mut purse: ResMut<PartyInventory>,
     data: Option<Res<GameData>>,
@@ -184,7 +304,9 @@ pub fn run_battle(
     ) else {
         return;
     };
-    let Ok(party_at) = party_body.single().map(|p| p.0) else { return };
+    let Ok(party_at) = party_body.single().map(|p| p.0 + Vec3::Y * EYE_ABOVE_CENTRE) else {
+        return;
+    };
     battle.wait -= time.delta_secs();
     if battle.wait > 0.0 {
         return;
@@ -306,7 +428,7 @@ fn member_acts(
     member: Entity,
     rng: &mut GameRng,
     members: &mut Query<(&mut Character, &Carried)>,
-    monsters: &mut Query<(&mut Monster, &GlobalTransform)>,
+    monsters: &mut Query<(&mut Monster, &GlobalTransform, &MonsterAppearance)>,
     party_at: Vec3,
     items: &ItemCatalog,
     species: &MonsterCatalog,
@@ -321,8 +443,8 @@ fn member_acts(
         .monsters
         .iter()
         .filter_map(|&(entity, _)| {
-            let (monster, at) = monsters.get(entity).ok()?;
-            let distance = horizontal_distance(party_at, at.translation());
+            let (monster, at, look) = monsters.get(entity).ok()?;
+            let distance = distance_to_party(party_at, monster, at, look);
             (!monster.is_dead() && reaches(slot, hand.reach, distance))
                 .then_some((entity, distance))
         })
@@ -337,7 +459,7 @@ fn member_acts(
     turn.attacks_left -= 1;
     turn.phase = next_phase(turn.phase, turn.attacks_left);
     battle.attacked_this_round = true;
-    let Ok((mut monster, _)) = monsters.get_mut(target) else { return };
+    let Ok((mut monster, ..)) = monsters.get_mut(target) else { return };
     let Some(kind) = species.0.get(monster.species as usize) else { return };
     let swings = rng.below(hand.swings) + 1;
     for _ in 0..swings {
@@ -388,16 +510,16 @@ fn monster_acts(
     rng: &mut GameRng,
     roster: &PartyRoster,
     members: &mut Query<(&mut Character, &Carried)>,
-    monsters: &Query<(&mut Monster, &GlobalTransform)>,
+    monsters: &Query<(&mut Monster, &GlobalTransform, &MonsterAppearance)>,
     party_at: Vec3,
     items: &ItemCatalog,
     species: &MonsterCatalog,
     news: &mut MessageWriter<CombatNews>,
 ) {
     let (entity, turn) = battle.monsters[index];
-    let Ok((monster, at)) = monsters.get(entity) else { return };
+    let Ok((monster, at, look)) = monsters.get(entity) else { return };
     let Some(kind) = species.0.get(monster.species as usize) else { return };
-    let distance = horizontal_distance(party_at, at.translation());
+    let distance = distance_to_party(party_at, monster, at, look);
     // Every (attack, mode, member) that reaches is equally likely.
     let mut candidates = vec![];
     for (a, attack) in kind.attacks.iter().enumerate() {
@@ -459,12 +581,14 @@ fn end_round(
     clock: &mut GameClock,
     roster: &PartyRoster,
     members: &mut Query<(&mut Character, &Carried)>,
-    monsters: &Query<(&mut Monster, &GlobalTransform)>,
+    monsters: &Query<(&mut Monster, &GlobalTransform, &MonsterAppearance)>,
     news: &mut MessageWriter<CombatNews>,
 ) {
     clock.ms += ROUND_MS;
     battle.step = 0;
-    battle.passive_rounds = if battle.attacked_this_round { 0 } else { battle.passive_rounds + 1 };
+    battle.wait = ROUND_SECONDS;
+    let active = battle.attacked_this_round || battle.approaching;
+    battle.passive_rounds = if active { 0 } else { battle.passive_rounds + 1 };
     let hostiles_left =
         battle.monsters.iter().any(|&(e, _)| monsters.get(e).is_ok_and(|(m, ..)| !m.is_dead()));
     if hostiles_left && battle.passive_rounds < PASSIVE_ROUNDS {
@@ -493,6 +617,18 @@ fn end_round(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sight_reaches_the_far_clip_ahead_and_less_from_behind() {
+        // Facing the party: the whole far clip.
+        assert_eq!(sight_threshold(0.3, 40, 0, 1, 60.0, 30.0), 60.0);
+        // Behind it: (senses - 2 × lowest level) × (far - d) / d percent.
+        let behind = sight_threshold(3.0, 40, 0, 1, 60.0, 30.0);
+        assert!((behind - 0.38 * 60.0).abs() < 1e-3);
+        // Never under 2%, and a ranged bonus scales the percent.
+        assert!((sight_threshold(3.0, 0, 0, 10, 60.0, 50.0) - 1.2).abs() < 1e-3);
+        assert!((sight_threshold(3.0, 40, 50, 1, 60.0, 30.0) - 0.57 * 60.0).abs() < 1e-3);
+    }
 
     #[test]
     fn remaining_attacks_spread_over_the_round() {

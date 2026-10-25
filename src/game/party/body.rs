@@ -30,7 +30,7 @@ use crate::retail::space::UNITS_PER_METRE as U;
 // ground. A sphere's curved front rides over step edges; a flat-bottomed
 // cylinder of the same reach caught on stairs rising inside its radius (it
 // never left the upper monastery's MO202 entrance).
-const RADIUS: f32 = 500.0 / U;
+pub const RADIUS: f32 = 500.0 / U;
 pub const FLOAT_HEIGHT: f32 = 500.0 / U;
 pub const EYE_ABOVE_CENTRE: f32 = 500.0 / U;
 /// The eye above the feet.

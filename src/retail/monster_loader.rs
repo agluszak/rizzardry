@@ -119,12 +119,7 @@ impl AssetLoader for MlsLoader {
         if !cycles.contains_key("IDLE") {
             warn!("{}: no IDLE cycle", context.path());
         }
-        Ok(MonsterModel {
-            scale: species.scale,
-            walk_radius: species.walk_radius,
-            movement_rate: species.movement_rate,
-            cycles,
-        })
+        Ok(MonsterModel { body: species.body, cycles })
     }
 
     fn extensions(&self) -> &[&str] {

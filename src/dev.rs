@@ -201,7 +201,12 @@ pub fn spawn_test_agents(
         ));
         match &model {
             Some(model) => {
-                agent.insert(MonsterAppearance { model: model.clone(), float_height, phase: 0.0 });
+                agent.insert(MonsterAppearance {
+                    model: model.clone(),
+                    float_height,
+                    phase: 0.0,
+                    size_roll: None,
+                });
             }
             None => {
                 agent.insert((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone())));

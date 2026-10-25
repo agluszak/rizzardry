@@ -24,6 +24,15 @@ pub struct MonsterAppearance {
     pub float_height: f32,
     /// Seconds into its first cycle it starts at.
     pub phase: f32,
+    /// Its roll below 1000 within its species' scale range, if rolled.
+    pub size_roll: Option<u32>,
+}
+
+impl MonsterAppearance {
+    /// This actor's scale.
+    pub fn scale(&self, model: &MonsterModel) -> f32 {
+        self.size_roll.map_or(model.body.scale, |roll| model.body.scale_for(roll))
+    }
 }
 
 /// The cycle an actor should play. Gameplay sets it; a changed request
@@ -44,6 +53,8 @@ impl CycleRequest {
 /// The built model of one actor.
 #[derive(Component, Debug)]
 pub struct MonsterInstance {
+    /// Holds the model, lowered by the actor's float height.
+    model_root: Entity,
     /// Per cycle: its root entity and this instance's mesh copies.
     cycles: HashMap<String, (Entity, Vec<Handle<Mesh>>)>,
     playing: Option<(CycleRequest, f32)>,
@@ -78,7 +89,7 @@ pub fn build_monster_instances(
                 Transform {
                     translation: Vec3::NEG_Y * appearance.float_height,
                     rotation: Quat::from_rotation_y(std::f32::consts::PI),
-                    scale: Vec3::splat(model.scale),
+                    scale: Vec3::splat(appearance.scale(model)),
                 },
                 Visibility::default(),
                 ChildOf(actor),
@@ -107,7 +118,25 @@ pub fn build_monster_instances(
             }
             cycles.insert(name.clone(), (cycle_root, copies));
         }
-        commands.entity(actor).insert(MonsterInstance { cycles, playing: None, sky_scale: SUNLIT });
+        commands.entity(actor).insert(MonsterInstance {
+            model_root,
+            cycles,
+            playing: None,
+            sky_scale: SUNLIT,
+        });
+    }
+}
+
+/// Keep the model's feet on the ground when the actor's float height
+/// changes (a placed monster gaining a walking body).
+pub fn follow_float_height(
+    actors: Query<(&MonsterAppearance, &MonsterInstance), Changed<MonsterAppearance>>,
+    mut transforms: Query<&mut Transform>,
+) {
+    for (appearance, instance) in &actors {
+        if let Ok(mut transform) = transforms.get_mut(instance.model_root) {
+            transform.translation = Vec3::NEG_Y * appearance.float_height;
+        }
     }
 }
 
@@ -241,6 +270,10 @@ pub fn choose_walker_cycles(
     >,
 ) {
     for (entity, velocity, current) in &walkers {
+        // A death or another play-once cycle is not interrupted.
+        if current.is_some_and(|c| c.once) {
+            continue;
+        }
         let cycle = if velocity.0.with_y(0.0).length() > 0.3 { "WALK" } else { "IDLE" };
         if current.is_none_or(|c| c.cycle != cycle) {
             commands.entity(entity).insert(CycleRequest::looping(cycle));

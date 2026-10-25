@@ -36,7 +36,12 @@ impl Plugin for WorldPlugin {
             .add_systems(PreUpdate, level::travel)
             .add_systems(
                 Update,
-                (level::build_level_geometry, level::build_sky, population::populate_level),
+                (
+                    level::build_level_geometry,
+                    level::build_sky,
+                    population::populate_level,
+                    population::measure_monsters,
+                ),
             )
             .add_systems(FixedUpdate, props::animate_props);
     }

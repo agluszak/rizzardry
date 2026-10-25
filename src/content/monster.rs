@@ -6,13 +6,53 @@ use bevy::prelude::*;
 /// A monster species' look and body (retail `.mls` and its `.mon` cycles).
 #[derive(Asset, TypePath, Debug)]
 pub struct MonsterModel {
-    pub scale: f32,
-    /// Collision radius in metres, before `scale`.
-    pub walk_radius: f32,
-    /// Metres per second, before `scale`.
-    pub movement_rate: f32,
+    pub body: MonsterBody,
     /// Cycles by retail name (`IDLE`, `WALK`, `DIE`, ...).
     pub cycles: HashMap<String, MonsterCycleModel>,
+}
+
+/// A species' body measurements (`.mls` keywords). Lengths are metres and
+/// speeds metres per second before the monster's scale, as retail's
+/// navigator scales them (`Navigator::SetScale`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MonsterBody {
+    /// The scale without a range, or the middle of the range.
+    pub scale: f32,
+    /// Each monster's scale is rolled within this (retail
+    /// `RandomizeAppearanceAndMotion`).
+    pub scale_range: Option<(f32, f32)>,
+    /// The body's radius outside combat (`walkradius`).
+    pub walk_radius: f32,
+    /// The body's radius in combat, and what reach is measured from
+    /// (`fightradius`, retail's alternate radius).
+    pub fight_radius: f32,
+    /// Its eyes and where it is aimed at, above its feet (`targetheight`).
+    pub target_height: f32,
+    pub movement_rate: f32,
+}
+
+impl Default for MonsterBody {
+    /// Retail's navigator defaults: 500 world units, one metre.
+    fn default() -> Self {
+        MonsterBody {
+            scale: 1.0,
+            scale_range: None,
+            walk_radius: 1.0,
+            fight_radius: 1.0,
+            target_height: 1.0,
+            movement_rate: 3.0,
+        }
+    }
+}
+
+impl MonsterBody {
+    /// One monster's scale from its roll below 1000.
+    pub fn scale_for(&self, roll: u32) -> f32 {
+        match self.scale_range {
+            Some((low, high)) => (high - low) * roll as f32 / 1000.0 + low,
+            None => self.scale,
+        }
+    }
 }
 
 impl MonsterModel {

@@ -155,10 +155,16 @@ Known gaps, in rough order:
   question or a camp exists.
 - Combat, first slice (`game::combat`, rules in
   [combat](research/combat.md)): monster species from `monsters.dbs`;
-  placed monsters roll health; a non-NPC monster within 3 m starts a fight
-  that the hostile monsters within 12 m join (a stand-in for sight and
-  pursuit while monsters cannot move); the party may walk away, as in
-  retail's continuous mode, and cannot camp. Rounds follow retail's initiative
+  placed monsters roll health and their size within their model's scale
+  range. Non-NPC monsters engage by retail's sight rule (far clip, line of
+  sight eye to eye, `ComputeSightThreshold`) when an attack reaches or their
+  best attack is close and they can walk; the view turns to the nearest. In
+  the fight they get walking bodies (fight radius, scaled speed) and close
+  in through the navmesh continuously, where retail schedules advance and
+  charge actions within the round (not yet). Reach is retail's
+  `GetDistanceToPlayer`: feet to the party point 2 m under the eye, less
+  both alternate radii. The party may walk away, as in retail's continuous
+  mode, and cannot camp. Rounds follow retail's initiative
   phases (party first on ties, then slot, then monster order), every member
   attacks the nearest monster in reach (slots 0-2 front, 3-5 rear), and
   monsters pick uniformly among the (attack, mode, member) choices that

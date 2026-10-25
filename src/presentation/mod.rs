@@ -117,6 +117,7 @@ impl Plugin for PresentationPlugin {
                     (
                         monsters::choose_walker_cycles,
                         monsters::show_deaths,
+                        monsters::follow_float_height,
                         monsters::build_monster_instances,
                         monsters::animate_monsters,
                         monsters::light_monsters,
