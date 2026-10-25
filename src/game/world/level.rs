@@ -59,6 +59,13 @@ impl Level {
     }
 }
 
+/// The party is being asked whether to leave for another level's entrance;
+/// it waits until the player answers (retail `RequestLevelTransition`).
+#[derive(Resource, Debug, Clone)]
+pub struct TravelQuestion {
+    pub entrance: String,
+}
+
 /// Leave the level for one of another level's entrances, e.g. `MO201`.
 #[derive(Message, Debug, Clone)]
 pub struct Travel {

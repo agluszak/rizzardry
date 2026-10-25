@@ -167,7 +167,11 @@ pub enum Arrival {
     Here { eye: Vec3, yaw: f32 },
     /// An entrance trigger of another level, named by its location code and
     /// number, e.g. `MO201`.
-    Entrance(String),
+    Entrance {
+        entrance: String,
+        /// Ask "Proceed to <level>?" first.
+        ask: bool,
+    },
 }
 
 /// A positioned trigger the party can enter the level at.

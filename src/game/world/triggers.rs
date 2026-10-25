@@ -759,7 +759,7 @@ mod tests {
             trigger.usable = usable;
             trigger.place = Some(Vec3::new(x, 0.0, 0.0));
             trigger.range = (0.0, 2.0);
-            trigger.arrival = Some(Arrival::Entrance(format!("{name}00")));
+            trigger.arrival = Some(Arrival::Entrance { entrance: format!("{name}00"), ask: false });
             trigger
         };
         let geometry = LevelGeometry {
@@ -787,7 +787,7 @@ mod tests {
         assert!(walk(Vec3::new(5.0, 0.0, 0.0)).is_none());
         assert!(matches!(
             walk(Vec3::new(10.5, 0.0, 0.0)),
-            Some(PartyMove::Teleport(Arrival::Entrance(e))) if e == "EXIT00"
+            Some(PartyMove::Teleport(Arrival::Entrance { entrance, .. })) if entrance == "EXIT00"
         ));
         // Staying inside does not fire it again; a trigger the party may not
         // use never fires.

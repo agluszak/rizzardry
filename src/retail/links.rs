@@ -54,7 +54,11 @@ pub fn teleport_arrival(sections: &LevelSections, item: &ItemTrigger) -> Option<
             eye: retail_position(destination.position),
             yaw: retail_yaw(destination.angle, destination.axis),
         }),
-        None if name.len() >= 5 => Some(Arrival::Entrance(name.to_uppercase())),
+        None if name.len() >= 5 => Some(Arrival::Entrance {
+            entrance: name.to_uppercase(),
+            // Retail confirms the level change when the first datum is set.
+            ask: item.data[0] > 0,
+        }),
         None => None,
     }
 }
@@ -137,7 +141,8 @@ mod tests {
                 let TriggerKind::Item(item) = &trigger.kind else { continue };
                 if item.enabled
                     && item.initial_action == action::TELEPORT
-                    && let Some(Arrival::Entrance(name)) = teleport_arrival(&sections, item)
+                    && let Some(Arrival::Entrance { entrance: name, .. }) =
+                        teleport_arrival(&sections, item)
                 {
                     travel.push((level.to_owned(), name));
                 }

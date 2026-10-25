@@ -2,6 +2,7 @@
 
 pub mod automap;
 pub mod billboards;
+pub mod dialog;
 pub mod effects;
 pub mod environment;
 pub mod mipmaps;
@@ -19,6 +20,7 @@ pub struct PresentationPlugin;
 impl Plugin for PresentationPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<voice::SpeechFinished>()
+            .add_message::<dialog::TravelAnswer>()
             .init_resource::<crate::game::automap::MapNotes>()
             .init_resource::<effects::CameraShake>()
             .add_input_context::<automap::Screens>()
@@ -28,6 +30,7 @@ impl Plugin for PresentationPlugin {
                     automap::spawn_screen_controls,
                     automap::load_automap_art,
                     notices::load_notice_art,
+                    dialog::load_dialog_art,
                 ),
             )
             .add_systems(
@@ -58,6 +61,13 @@ impl Plugin for PresentationPlugin {
                     billboards::face_camera.after(crate::game::party::body::aim_camera),
                     effects::play_trigger_effects,
                     (notices::show_notices, notices::fade_notices).chain(),
+                    (
+                        dialog::show_travel_question,
+                        dialog::answer_with_keys,
+                        dialog::settle_travel_question,
+                        dialog::paint_dialog_buttons,
+                    )
+                        .chain(),
                     effects::shake_camera.after(crate::game::party::body::aim_camera),
                     sky::orbit_sun_and_moon,
                     voice::finish_speech,

@@ -44,7 +44,9 @@ shown on retail content; the gaps below remain. Done:
   plays its path, honours its lock data and opens or closes its navigation
   link. Teleport triggers move the party within the level or, naming
   another level's entrance (`MO102` → `MO204`), swap the level root and place
-  the party at that entrance once the new level is ready.
+  the party at that entrance once the new level is ready. Exits that retail
+  confirms ask "Proceed to <level>?" first (retail message box buttons; Enter
+  and Escape answer too); declining leaves the party where it stands.
 - **Triggers.** Positioned triggers the party may use run when its eye
   enters their range; teleports are ordinary trigger actions whose move the
   party module applies (within the level, or travel). Camera-path triggers
@@ -118,8 +120,7 @@ Known gaps, in rough order:
   use only the nearest detail level and ignore particles, sounds and skins.
 - Elevators/lifts and random teleports are not implemented; camera paths
   fly the party but retail's level-specific reactions when some finish
-  (Monastery 1's cameras, Arnika's) are not. Travel does not yet ask retail's "Enter <level>?" question,
-  and arriving does not probe for the ground (the party settles).
+  (Monastery 1's cameras, Arnika's) are not. Arriving does not probe for the ground (the party settles).
 - Most trigger actions are not performed yet (lights, missiles, fountains,
   timed actions, required items). A level's trigger state,
   variables and prop positions are kept when the party leaves and restored on

@@ -82,6 +82,14 @@ pub const SKIES: [&str; 11] = [
     "CircleSky",
 ];
 
+/// Each level's name in the game string table, by [`LEVELS`] index.
+const LEVEL_NAMES: [u16; 40] = [
+    0x6f7, 0x6f8, 0x6f9, 0x6fa, 0x6fb, 0x6fd, 0x6fc, 0x6fe, 0x6ff, 0x700, 0x701, 0x719, 0x702,
+    0x703, 0x704, 0x705, 0x706, 0x707, 0x708, 0x709, 0x70a, 0x70b, 0x70c, 0x719, 0x70d, 0x70e,
+    0x70f, 0x710, 0x719, 0x711, 0x719, 0x712, 0x713, 0x714, 0x719, 0x715, 0x716, 0x717, 0x706,
+    0x718,
+];
+
 pub const DEFAULT_SKY: &str = "levels/test/defaultsky.lvl";
 const CIRCLE_SKY: &str = "levels/circle/circlesky.lvl";
 
@@ -97,6 +105,13 @@ impl LevelInfo {
     pub fn sky_path(&self) -> Option<String> {
         let own = format!("levels/{}/{}.lvl", self.folder, SKIES[self.sky?]).to_lowercase();
         Some(if own == CIRCLE_SKY { own } else { DEFAULT_SKY.to_owned() })
+    }
+
+    /// The game string table entry naming the level (Whizzardry
+    /// `g_level_name_indices`).
+    pub fn name_string(&self) -> Option<usize> {
+        let index = LEVELS.iter().position(|level| level == self)?;
+        LEVEL_NAMES.get(index).map(|&string| usize::from(string))
     }
 
     /// The level an entrance name such as `MO201` leads to.
