@@ -67,6 +67,8 @@ pub const AXE: usize = 1;
 pub const MACE_AND_FLAIL: usize = 3;
 pub const STAFF_AND_WAND: usize = 5;
 pub const DUAL_WEAPONS: usize = 18;
+pub const SCOUTING: usize = 15;
+pub const MYTHOLOGY: usize = 21;
 /// Stamina above which an exhausted member comes round.
 const COMES_ROUND_ABOVE: u32 = 9;
 
@@ -330,6 +332,9 @@ pub struct Character {
     pub stamina_fraction: f32,
     /// The portrait's file stem (e.g. `hummf` for `data/portraits/small/shummf.sti`).
     pub portrait: String,
+    /// How many of each species (by retail record) they have seen, at most
+    /// 255 (retail `monster_awareness`).
+    pub monster_awareness: std::collections::HashMap<u32, u8>,
 }
 
 impl Character {
@@ -360,6 +365,7 @@ impl Character {
             hp_fraction: 0.0,
             stamina_fraction: 0.0,
             portrait: String::new(),
+            monster_awareness: default(),
         };
         let share = 60 / (1 + row.skills.len() as u32);
         for &skill in row.skills.iter().chain(std::iter::once(&row.bonus_skill)) {

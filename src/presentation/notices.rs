@@ -12,6 +12,7 @@ use crate::game::camp::CampNews;
 use crate::game::combat::attack::Mode;
 use crate::game::combat::{Announcement, CombatNews};
 use crate::game::inventory::ItemNews;
+use crate::game::world::identify::Identified;
 use crate::game::world::level::Level;
 use crate::game::world::search::SearchNews;
 use crate::game::world::triggers::TriggerEffect;
@@ -179,6 +180,10 @@ const SEARCH_ON: usize = 0x78e;
 const SEARCH_OFF: usize = 0x78f;
 const NOT_IN_COMBAT_SEARCH: usize = 0x774;
 const SPOTS_HIDDEN: usize = 0x772;
+const IDENTIFIES: usize = 0x1ca;
+const ITS_A: usize = 0x1cb;
+const ITS_AN: usize = 0x1cc;
+const THEYRE: usize = 0x1cd;
 const GOLD_BEFORE: usize = 0x15f;
 const GOLD_AFTER: usize = 0x160;
 
@@ -248,6 +253,7 @@ pub fn queue_notices(
     mut combat: MessageReader<CombatNews>,
     mut items: MessageReader<ItemNews>,
     mut search: MessageReader<SearchNews>,
+    mut identified: MessageReader<Identified>,
     art: Res<NoticeArt>,
     tables: Res<Assets<TextTable>>,
     levels: Query<&Level>,
@@ -279,6 +285,21 @@ pub fn queue_notices(
         if let Some(text) = text.filter(|t| !t.trim().is_empty()) {
             log.push(channel, text.trim(), font);
         }
+    }
+    // Retail `DetectMonsterGroups`: "Ragnar identifies the Crocodiles:",
+    // then "They're Ironskin Crocodiles!" ("It's a" / "It's an" for one).
+    for news in identified.read() {
+        let line =
+            format!("{} {}", news.member, string(IDENTIFIES).replace("%s", &news.looks_like));
+        log.push(channel, &line, font);
+        let vowel =
+            news.is.chars().next().is_some_and(|c| "AEIOU".contains(c.to_ascii_uppercase()));
+        let article = match (news.count, vowel) {
+            (1, false) => string(ITS_A),
+            (1, true) => string(ITS_AN),
+            _ => string(THEYRE),
+        };
+        log.push(channel, &format!("{article} {}!", news.is), font);
     }
     for news in search.read() {
         let text = match news {

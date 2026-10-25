@@ -1,5 +1,6 @@
 //! The active level and its local objects.
 
+pub mod identify;
 pub mod items;
 pub mod level;
 pub mod navigation;
@@ -30,6 +31,8 @@ impl Plugin for WorldPlugin {
             .add_message::<level::Travel>()
             .add_message::<crate::game::inventory::ItemNews>()
             .add_message::<search::ToggleSearch>()
+            .add_message::<identify::DetectGroups>()
+            .add_message::<identify::Identified>()
             .add_message::<search::SearchNews>()
             .init_resource::<search::Search>()
             .init_resource::<level::LevelMemory>()
@@ -48,6 +51,7 @@ impl Plugin for WorldPlugin {
                     population::populate_level,
                     population::measure_monsters,
                     (search::search_key, search::toggle_search, search::search_pulse).chain(),
+                    identify::detect_monster_groups,
                 ),
             )
             .add_systems(FixedUpdate, props::animate_props);

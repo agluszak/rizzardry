@@ -9,15 +9,13 @@ use bevy_enhanced_input::prelude::*;
 
 use crate::content::items::ItemCatalog;
 use crate::game::camp::can_act;
-use crate::game::characters::{Character, Profession, SENSES};
+use crate::game::characters::{Character, Profession, SCOUTING, SENSES};
 use crate::game::combat::Battle;
 use crate::game::data::GameData;
 use crate::game::party::body::{PartyCamera, Run};
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::items::WorldItem;
 
-/// Retail's Scouting skill.
-const SCOUTING: usize = 15;
 /// Searchables farther than this from the eye are not considered (10000
 /// units).
 const SEARCH_RADIUS: f32 = 20.0;

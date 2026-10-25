@@ -20,6 +20,7 @@ use crate::game::party::formation::{self, Formation, Row};
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::time::GameClock;
+use crate::game::world::identify::MonsterGroups;
 use crate::game::world::population::Monster;
 use crate::presentation::monsters::MonsterAppearance;
 use attack::{
@@ -131,6 +132,11 @@ pub struct Battle {
 }
 
 impl Battle {
+    /// Whether a monster is in the fight.
+    pub fn fights(&self, monster: Entity) -> bool {
+        self.monsters.iter().any(|&(m, _)| m == monster)
+    }
+
     /// How far through the round its play is, 0 to 1, while a round is
     /// being played.
     pub fn progress(&self) -> Option<f32> {
@@ -261,6 +267,7 @@ pub fn start_battle(
     species: Res<Assets<MonsterCatalog>>,
     roster: Res<PartyRoster>,
     mut news: MessageWriter<CombatNews>,
+    mut detect: MessageWriter<crate::game::world::identify::DetectGroups>,
 ) {
     if battle.is_some() || camp.is_some() {
         return;
@@ -354,6 +361,7 @@ pub fn start_battle(
         wait: 0.0,
     });
     news.write(CombatNews::Began);
+    detect.write(crate::game::world::identify::DetectGroups);
 }
 
 /// Advance the fight by one action when its pause is over.
@@ -374,13 +382,16 @@ pub fn run_battle(
     items: Res<Assets<ItemCatalog>>,
     species: Res<Assets<MonsterCatalog>>,
     mut news: MessageWriter<CombatNews>,
-    (mut starts, settings, orders): (
+    (mut starts, settings, orders, groups): (
         MessageReader<StartRound>,
         Res<CombatSettings>,
         Res<PartyOrders>,
+        Query<&MonsterGroups>,
     ),
 ) {
     let Some(mut battle) = battle else { return };
+    let unknown = MonsterGroups::default();
+    let groups = groups.single().unwrap_or(&unknown);
     let (Some(items), Some(species)) = (
         data.as_ref().and_then(|d| items.get(&d.items)),
         data.as_ref().and_then(|d| species.get(&d.species)),
@@ -474,6 +485,7 @@ pub fn run_battle(
                 &party,
                 items,
                 species,
+                groups,
                 &mut purse,
                 &mut news,
             );
@@ -496,6 +508,7 @@ pub fn run_battle(
                 &party,
                 items,
                 species,
+                groups,
                 &mut news,
             );
             battle.wait = ACTION_SECONDS;
@@ -530,6 +543,7 @@ fn member_acts(
     party: &PartyView,
     items: &ItemCatalog,
     species: &MonsterCatalog,
+    groups: &MonsterGroups,
     purse: &mut PartyInventory,
     news: &mut MessageWriter<CombatNews>,
 ) {
@@ -569,12 +583,13 @@ fn member_acts(
     battle.attacked_this_round = true;
     let Ok((mut monster, ..)) = monsters.get_mut(target) else { return };
     let Some(kind) = species.0.get(monster.species as usize) else { return };
+    let name = kind.shown_name(groups.identified(monster.group), 1).to_owned();
     // Retail draws the attack's mode, then its swings.
     let mode = attack::Mode::choose(rng, hand.modes);
     let swings = rng.below(hand.swings) + 1;
     news.write(CombatNews::Attack {
         attacker: character.name.clone(),
-        target: kind.name.clone(),
+        target: name.clone(),
         how: Announcement::Mode(mode),
         swings,
     });
@@ -606,7 +621,7 @@ fn member_acts(
     // The summary, then the casualty (retail `ReportCharacterAttackResult`).
     news.write(CombatNews::Result { attacker: character.name.clone(), hits, damage: dealt });
     if killed {
-        news.write(CombatNews::Killed { name: kind.name.clone() });
+        news.write(CombatNews::Killed { name });
     }
     // Swinging tires: weight/40 + 1 = b, then b + 1 + below(b).
     let weight = carried
@@ -629,11 +644,13 @@ fn monster_acts(
     party: &PartyView,
     items: &ItemCatalog,
     species: &MonsterCatalog,
+    groups: &MonsterGroups,
     news: &mut MessageWriter<CombatNews>,
 ) {
     let (entity, turn) = battle.monsters[index];
     let Ok((monster, at, look)) = monsters.get(entity) else { return };
     let Some(kind) = species.0.get(monster.species as usize) else { return };
+    let name = kind.shown_name(groups.identified(monster.group), 1).to_owned();
     let distance = distance_to_party(party.eye, monster, at, look);
     // Every (attack, mode, member) that reaches is equally likely.
     let mut candidates = vec![];
@@ -668,7 +685,7 @@ fn monster_acts(
     }
     let swings = rng.below(u32::from(kind.swings_per_round.max(1))) + 1;
     news.write(CombatNews::Attack {
-        attacker: kind.name.clone(),
+        attacker: name.clone(),
         target: character.name.clone(),
         how: Announcement::Monster {
             weapon_type: attack.weapon_type,
@@ -691,7 +708,7 @@ fn monster_acts(
             Swing::Missed => {}
         };
     }
-    news.write(CombatNews::Result { attacker: kind.name.clone(), hits, damage: dealt });
+    news.write(CombatNews::Result { attacker: name, hits, damage: dealt });
     if character.is_dead() {
         news.write(CombatNews::Killed { name: character.name.clone() });
     }

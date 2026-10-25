@@ -30,6 +30,7 @@ pub fn recover(
     camp: Option<Res<Camp>>,
     battle: Option<Res<crate::game::combat::Battle>>,
     mut members: Query<&mut Character>,
+    mut detect: MessageWriter<crate::game::world::identify::DetectGroups>,
 ) {
     let previous = last.replace(clock.ms).unwrap_or(clock.ms);
     let (stamina_ticks, aging_ticks) =
@@ -52,6 +53,10 @@ pub fn recover(
     } else {
         (0.0, 0.0)
     };
+    // Retail looks the monsters over at the end of each aging pass.
+    if aging_ticks > 0 {
+        detect.write(crate::game::world::identify::DetectGroups);
+    }
     for mut member in &mut members {
         if stamina_ticks > 0 {
             member.recover_stamina(stamina_ticks, stamina_scale);

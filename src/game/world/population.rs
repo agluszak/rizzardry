@@ -19,6 +19,8 @@ use crate::presentation::monsters::MonsterAppearance;
 #[derive(Component, Debug)]
 pub struct Monster {
     pub location: i32,
+    /// Its group, by the level's group id.
+    pub group: i32,
     pub species: u32,
     pub hp: u32,
     pub max_hp: u32,
@@ -93,6 +95,7 @@ pub fn populate_level(
                 Name::new(format!("{} #{}", species.name, monster.location)),
                 Monster {
                     location: monster.location,
+                    group: monster.group,
                     species: monster.species,
                     hp: max_hp,
                     max_hp,
@@ -133,6 +136,6 @@ pub fn populate_level(
             let name = items.get(item.item.item).map_or_else(String::new, |d| d.name.clone());
             commands.spawn((Name::new(name), item, Transform::from_translation(at), ChildOf(root)));
         }
-        commands.entity(root).insert(Populated);
+        commands.entity(root).insert((Populated, super::identify::MonsterGroups::default()));
     }
 }

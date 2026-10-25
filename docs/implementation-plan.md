@@ -203,6 +203,15 @@ Known gaps, in rough order:
   splitting, ammunition pouring, stowing a weapon's partner, the info
   panel, buttons, scrolling and the PCX cell texture are still to come.
   Plane-shaped triggers (falls) are not decoded as places yet.
+- Monsters go by their look ("Crustacean") until the party identifies
+  their group (`game::world::identify`, retail `DetectMonsterGroups`): on
+  each aging tick and when a fight starts, every group with a member in
+  view rolls each member's recognition (three per kind seen beyond its
+  level, a tenth of Intelligence, Mythology), and the best margin names it
+  ("Ragnar identifies the Crocodiles:", "They're Ironskin Crocodiles!").
+  Each group seen adds its members to everyone's count of its kind once.
+  Retail asks whether a member is drawn; here it is within the far clip
+  and retail's 85° view. Mythology practice is not modelled.
 - Items lie about each level as retail's level state (`.sts` `ITEM`) places
   them (`game::world::items`): one entity owns each, shown with its
   `data/items3d` model (its own or its kind's, else the question mark),

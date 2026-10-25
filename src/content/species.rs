@@ -53,7 +53,12 @@ pub struct MonsterAttack {
 
 #[derive(Clone, Debug, PartialEq, Reflect)]
 pub struct Species {
+    /// What it is ("Ironskin Crocodile"), once the party knows.
     pub name: String,
+    pub name_plural: String,
+    /// What it looks like until then ("Crocodile").
+    pub generic_name: String,
+    pub generic_plural: String,
     /// `data/monsters/<model>.mls`.
     pub model: String,
     pub kind: u8,
@@ -84,6 +89,20 @@ pub struct Species {
     pub level: u8,
     pub gold: Dice,
     pub prefers_ranged: bool,
+}
+
+impl Species {
+    /// What the party calls one of these, or a group of `count` (retail
+    /// `GetMonsterName`, `GetMonsterGroupName`): its own name once its
+    /// group is identified, its look before.
+    pub fn shown_name(&self, identified: bool, count: usize) -> &str {
+        match (identified, count == 1) {
+            (true, true) => &self.name,
+            (true, false) => &self.name_plural,
+            (false, true) => &self.generic_name,
+            (false, false) => &self.generic_plural,
+        }
+    }
 }
 
 /// Every species, by retail record number.

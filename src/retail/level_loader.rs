@@ -255,6 +255,7 @@ fn monster_placements(placements: &[Placement], models: &[String]) -> Vec<Monste
             let model = models.get(placement.species as usize)?.clone();
             Some(MonsterPlacement {
                 location: placement.location,
+                group: placement.group,
                 species: placement.species,
                 model,
                 position: retail_position(placement.position),

@@ -162,6 +162,8 @@ pub struct LevelLink {
 pub struct MonsterPlacement {
     /// Unique within the level.
     pub location: i32,
+    /// The group it belongs to, by the level's group id.
+    pub group: i32,
     pub species: u32,
     /// The species' model, `data/monsters/<model>.mls`.
     pub model: String,

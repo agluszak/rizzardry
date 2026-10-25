@@ -62,6 +62,9 @@ fn species(record: &[u8]) -> Species {
     };
     Species {
         name: name(bytes(0, 48)),
+        name_plural: name(bytes(0x30, 48)),
+        generic_name: name(bytes(0x60, 48)),
+        generic_plural: name(bytes(0x90, 48)),
         model: String::from_utf8_lossy(&model[..model_end]).to_lowercase(),
         kind: record[0xcb],
         npc: record[0xd0] & 1 != 0,
@@ -146,6 +149,8 @@ mod tests {
         assert_eq!(slime.evasion, 7);
         let crocodile = &species[62];
         assert_eq!(crocodile.name, "Ironskin Crocodile");
+        assert_eq!(crocodile.shown_name(true, 2), "Ironskin Crocodiles");
+        assert_eq!(crocodile.shown_name(false, 1), "Crocodile");
         assert_eq!(crocodile.attacks[0].damage, Dice { base: 2, count: 3, sides: 9 });
         assert!(species.iter().all(|s| s.attacks.len() <= 3));
     }
