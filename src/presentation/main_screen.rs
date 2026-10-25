@@ -139,6 +139,7 @@ pub struct MainScreenArt {
     radar_back: Handle<SpriteSheet>,
     textbox_back: Handle<SpriteSheet>,
     textbox_tabs: Handle<SpriteSheet>,
+    text_scroll: Handle<SpriteSheet>,
     formation_back: Handle<SpriteSheet>,
     roof_buttons: Handle<SpriteSheet>,
     layout_arrows: Handle<SpriteSheet>,
@@ -175,6 +176,7 @@ pub fn load_main_screen_art(mut commands: Commands, assets: Res<AssetServer>) {
         radar_back: load("main_radar_back"),
         textbox_back: load("main_textbox_back"),
         textbox_tabs: load("main_textbox_tabs"),
+        text_scroll: load("main_scroll"),
         formation_back: load("small_formation_back"),
         roof_buttons: load("main_roof_buttons"),
         layout_arrows: load("main_layout_arrows"),
@@ -719,13 +721,45 @@ fn press_bank(
     }
 }
 
+/// A text box scroll arrow: lines to move by.
+#[derive(Component, Clone, Copy)]
+struct TextScroll(i32);
+
+fn scroll_text(click: On<PointerClick>, arrows: Query<&TextScroll>, mut log: ResMut<TextLog>) {
+    match arrows.get(click.entity) {
+        Ok(TextScroll(lines)) if *lines < 0 => log.scroll_up(lines.unsigned_abs() as usize),
+        Ok(TextScroll(lines)) => log.scroll_down(*lines as usize),
+        Err(_) => {}
+    }
+}
+
+/// PgUp, PgDn, Home, End and Del (`mgskeyboard.ini` 500-504): scroll the
+/// text box a page, to its top or its end, or empty it.
+pub fn text_box_keys(keys: Res<ButtonInput<KeyCode>>, mut log: ResMut<TextLog>) {
+    if keys.just_pressed(KeyCode::PageUp) {
+        log.scroll_up(super::notices::VISIBLE_LINES);
+    }
+    if keys.just_pressed(KeyCode::PageDown) {
+        log.scroll_down(super::notices::VISIBLE_LINES);
+    }
+    if keys.just_pressed(KeyCode::Home) {
+        log.scroll_to(0);
+    }
+    if keys.just_pressed(KeyCode::End) {
+        log.scroll_to_end();
+    }
+    if keys.just_pressed(KeyCode::Delete) {
+        log.clear();
+    }
+}
+
 /// A text box channel tab.
 #[derive(Component, Clone, Copy)]
 struct Channel(usize);
 
 fn select_channel(click: On<PointerClick>, tabs: Query<&Channel>, mut log: ResMut<TextLog>) {
     if let Ok(tab) = tabs.get(click.entity) {
-        log.selected = tab.0;
+        log.select(tab.0);
     }
 }
 
@@ -773,6 +807,8 @@ pub struct Shown {
     formation: Formation,
     /// The text box's channel and the lines it shows.
     text: (usize, Vec<String>),
+    /// Whether it scrolls up and down, and where its thumb sits.
+    text_scroll: ((bool, bool), Option<f32>),
     fighting: bool,
     /// Search mode, which keeps the search button pressed.
     searching: bool,
@@ -892,7 +928,8 @@ pub fn draw_main_screen(
         layout: layout.clone(),
         slots,
         selected: selected.0,
-        text: (log.selected, log.visible().to_vec()),
+        text: (log.selected(), log.visible().to_vec()),
+        text_scroll: (log.can_scroll(), log.thumb()),
         fighting: battle.is_some(),
         searching: search.on,
         orders: (0..8).map(|slot| orders.of(slot)).collect(),
@@ -1270,6 +1307,26 @@ pub fn draw_main_screen(
         for (i, line) in shown.text.1.iter().enumerate() {
             let at = Vec2::new(166.0, 362.0 + 11.0 * i as f32);
             put(&mut commands, Some(text(font, &mut images, line, at, 290.0)));
+        }
+        // Its scroll arrows and thumb (retail `RedrawTextBoxScrollChrome`):
+        // grayed where it cannot scroll; the thumb when the text overflows.
+        if let Some(scroll) = sheets.get(&art.text_scroll) {
+            let ((up, down), thumb) = shown.text_scroll;
+            for (enabled, normal, grayed, y, lines) in
+                [(up, 0, 3, 363.0, -1), (down, 8, 11, 429.0, 1)]
+            {
+                let image = if enabled { normal } else { grayed };
+                if let Some((node_image, node, _)) = sprite(scroll, image, Vec2::new(461.0, y)) {
+                    let mut arrow = commands.spawn((node_image, node, ChildOf(frame)));
+                    if enabled {
+                        arrow.insert(TextScroll(lines)).observe(scroll_text);
+                    }
+                }
+            }
+            if let Some(thumb) = thumb {
+                let at = Vec2::new(461.0, 379.0 + (thumb * 40.0).floor());
+                put(&mut commands, sprite(scroll, 4, at));
+            }
         }
         for (channel, y) in [(0, 362.0), (1, 383.0), (2, 404.0)] {
             commands

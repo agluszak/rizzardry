@@ -22,6 +22,11 @@ const NOTHING_HAPPENS: usize = 0x964;
 const MAX_LINES: usize = 350;
 /// Lines the box shows.
 pub const VISIBLE_LINES: usize = 7;
+/// How many lines retail counts as visible when scrolling
+/// (`GetTextBoxVisibleLineCount`): one outside dialogue, spells, items and
+/// camp, none of which exist yet, so the box scrolls on until only its last
+/// line is left at the top. Flagged as uncertain in the research.
+const SCROLL_WINDOW: usize = 1;
 /// The body is 166..456 wide; messages wrap 10 pixels short of it.
 const WRAP_WIDTH: u32 = 456 - 166 - 10;
 
@@ -38,29 +43,111 @@ pub fn load_notice_art(mut commands: Commands, assets: Res<AssetServer>) {
     });
 }
 
-/// The text box's channels and which one it shows.
+/// The text box's channels, the first line each shows, and which one it
+/// shows (retail `g_message_storage`, `text_lines`, `text_line_cursor`).
 #[derive(Resource, Debug, Default)]
 pub struct TextLog {
     channels: [Vec<String>; 3],
-    pub selected: usize,
+    scroll: [usize; 3],
+    selected: usize,
 }
 
+/// The Dialog channel.
+const DIALOG: usize = 2;
+
 impl TextLog {
-    /// The last lines of the shown channel.
+    pub fn selected(&self) -> usize {
+        self.selected
+    }
+
+    /// Show a channel; the Dialog channel shows its last lines (retail
+    /// `TextBoxChannelTabRegionEvent`).
+    pub fn select(&mut self, channel: usize) {
+        self.selected = channel;
+        if channel == DIALOG {
+            self.scroll_to(self.channels[channel].len().saturating_sub(VISIBLE_LINES));
+        }
+    }
+
+    /// The shown channel's lines from its first shown one.
     pub fn visible(&self) -> &[String] {
         let lines = &self.channels[self.selected];
-        &lines[lines.len().saturating_sub(VISIBLE_LINES)..]
+        let first = self.scroll[self.selected].min(lines.len());
+        &lines[first..(first + VISIBLE_LINES).min(lines.len())]
+    }
+
+    /// Whether the shown channel can scroll up, and down.
+    pub fn can_scroll(&self) -> (bool, bool) {
+        let count = self.channels[self.selected].len();
+        let first = self.scroll[self.selected];
+        (first > 0, first + SCROLL_WINDOW < count)
+    }
+
+    /// Where the scroll thumb sits, 0 at the top to 1 at the end, when the
+    /// text overflows (retail: `scroll × 40 / (lines − visible)`).
+    pub fn thumb(&self) -> Option<f32> {
+        let count = self.channels[self.selected].len();
+        (count > SCROLL_WINDOW)
+            .then(|| self.scroll[self.selected] as f32 / (count - SCROLL_WINDOW) as f32)
+    }
+
+    /// Retail `ScrollTextBoxUp`.
+    pub fn scroll_up(&mut self, lines: usize) {
+        let first = &mut self.scroll[self.selected];
+        *first = first.saturating_sub(lines);
+    }
+
+    /// Retail `ScrollTextBoxDown`: no further than the scroll window from
+    /// the end.
+    pub fn scroll_down(&mut self, lines: usize) {
+        let count = self.channels[self.selected].len();
+        let first = &mut self.scroll[self.selected];
+        if *first + SCROLL_WINDOW < count {
+            *first = (*first + lines).min(count - SCROLL_WINDOW);
+        }
+    }
+
+    /// Retail `ScrollTextBoxTo`, which leaves a box that fits alone.
+    pub fn scroll_to(&mut self, line: usize) {
+        let count = self.channels[self.selected].len();
+        if count > SCROLL_WINDOW {
+            self.scroll[self.selected] = line.min(count - SCROLL_WINDOW);
+        }
+    }
+
+    /// End: the last line, less the scroll window (retail
+    /// `ScrollDialogueTextBoxToLine`).
+    pub fn scroll_to_end(&mut self) {
+        self.scroll_to(self.channels[self.selected].len().saturating_sub(SCROLL_WINDOW));
+    }
+
+    /// Del empties the shown channel (retail `ResetEditorStatusLine`).
+    pub fn clear(&mut self) {
+        self.channels[self.selected].clear();
+        self.scroll[self.selected] = 0;
     }
 
     fn push(&mut self, channel: usize, text: &str, font: Option<&SpriteSheet>) {
         info!("notice: {text}");
-        let lines = &mut self.channels[channel];
-        match font {
-            Some(font) => lines.extend(wrap(text, WRAP_WIDTH, |t| font.text_width(t))),
-            None => lines.push(text.to_owned()),
+        let wrapped = match font {
+            Some(font) => wrap(text, WRAP_WIDTH, |t| font.text_width(t)),
+            None => vec![text.to_owned()],
+        };
+        for line in wrapped {
+            let lines = &mut self.channels[channel];
+            let first = &mut self.scroll[channel];
+            if lines.len() == MAX_LINES {
+                lines.remove(0);
+                *first = first.saturating_sub(1);
+            }
+            lines.push(line);
+            // Each new line brings the last seven into view, unless the box
+            // is scrolled further down (retail `AdvanceNoticeLine`).
+            let shown = lines.len();
+            if shown > VISIBLE_LINES && shown - VISIBLE_LINES > *first {
+                *first = shown - VISIBLE_LINES;
+            }
         }
-        let excess = lines.len().saturating_sub(MAX_LINES);
-        lines.drain(..excess);
     }
 }
 
@@ -275,6 +362,29 @@ pub fn queue_notices(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_box_follows_new_lines_and_scrolls_to_its_last() {
+        let mut log = TextLog::default();
+        for n in 0..10 {
+            log.push(0, &n.to_string(), None);
+        }
+        // The last seven show.
+        assert_eq!(log.visible().first().map(String::as_str), Some("3"));
+        assert_eq!(log.can_scroll(), (true, true));
+        log.scroll_up(7);
+        assert_eq!(log.visible()[0], "0");
+        assert_eq!(log.can_scroll(), (false, true));
+        // A new line brings the newest back into view.
+        log.push(0, "10", None);
+        assert_eq!(log.visible()[0], "4");
+        // Down stops with the last line alone at the top.
+        log.scroll_down(100);
+        assert_eq!(log.visible(), ["10"]);
+        assert_eq!(log.can_scroll(), (true, false));
+        log.clear();
+        assert!(log.visible().is_empty());
+    }
 
     #[test]
     fn messages_wrap_at_spaces_and_keep_a_word_per_line() {
