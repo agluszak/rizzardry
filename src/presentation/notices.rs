@@ -9,7 +9,8 @@ use bevy::prelude::*;
 
 use crate::content::ui::{SpriteSheet, TextTable};
 use crate::game::camp::CampNews;
-use crate::game::combat::attack::Mode;
+use crate::content::items::AttackMode;
+use crate::content::species::AttackWord;
 use crate::game::combat::{Announcement, CombatNews};
 use crate::game::inventory::ItemNews;
 use crate::game::world::identify::Identified;
@@ -224,19 +225,19 @@ fn announce(
     swings: u32,
 ) -> String {
     // Retail `g_attack_flag_name_ids`: each mode's noun, then its verb.
-    let verb = |mode: Mode| string(0x51f + 2 * mode as usize + 1);
-    let preposition = |mode: Mode| match mode {
-        Mode::Swing | Mode::Thrust | Mode::Throw => string(AT),
-        Mode::Berserk => string(UPON),
+    let verb = |mode: AttackMode| string(0x51f + 2 * mode as usize + 1);
+    let preposition = |mode: AttackMode| match mode {
+        AttackMode::Swing | AttackMode::Thrust | AttackMode::Throw => string(AT),
+        AttackMode::Berserk => string(UPON),
         _ => String::new(),
     };
     let (word, preposition) = match how {
         Announcement::Mode(mode) => (verb(mode), preposition(mode)),
-        Announcement::Monster { weapon_type: 1, mode, named } => {
-            (verb(mode), if named { preposition(mode) } else { String::new() })
-        }
-        Announcement::Monster { weapon_type, mode, named } => (
-            string(0x619 + 2 * usize::from(weapon_type)),
+        Announcement::Monster { word, mode, named } => (
+            match word {
+                AttackWord::Verb => verb(mode),
+                AttackWord::Word(word) => string(0x619 + 2 * usize::from(word)),
+            },
             if named { preposition(mode) } else { String::new() },
         ),
     };

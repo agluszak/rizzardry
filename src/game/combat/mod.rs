@@ -8,6 +8,10 @@ pub mod attack;
 
 use avian3d::prelude::{Position, RigidBody, SpatialQuery, SpatialQueryFilter};
 use bevy::prelude::*;
+use enumset::EnumSet;
+
+use crate::content::items::AttackMode;
+use crate::content::species::AttackWord;
 
 use crate::content::items::{Dice, ItemCatalog, ItemId, LootTables};
 use crate::content::monster::MonsterModel;
@@ -154,8 +158,8 @@ impl Battle {
 /// deciding whether "at" follows.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Announcement {
-    Mode(attack::Mode),
-    Monster { weapon_type: u8, mode: attack::Mode, named: bool },
+    Mode(AttackMode),
+    Monster { word: AttackWord, mode: AttackMode, named: bool },
 }
 
 /// What the fight tells the player.
@@ -324,8 +328,8 @@ pub fn start_battle(
             let forward = at.forward().with_y(0.0);
             let to_party = (party_eye - eye).with_y(0.0);
             let angle = forward.angle_between(to_party);
-            let senses = i32::from(kind.attributes[4]);
-            let bonus = if kind.kind == 4 { (u32::from(kind.level) * 5).min(125) } else { 0 };
+            let senses = i32::from(kind.attributes.senses);
+            let bonus = if kind.level_sight { (u32::from(kind.level) * 5).min(125) } else { 0 };
             if sight_threshold(angle, senses, bonus, lowest_level, far, distance) < distance {
                 return false;
             }
@@ -610,7 +614,7 @@ fn member_acts(
     let kind = species.0.get(monster.species as usize)?;
     let name = kind.shown_name(groups.identified(monster.group), 1).to_owned();
     // Retail draws the attack's mode, then its swings.
-    let mode = attack::Mode::choose(rng, hand.modes);
+    let mode = attack::choose_mode(rng, hand.modes);
     let swings = rng.below(hand.swings) + 1;
     news.write(CombatNews::Attack {
         attacker: character.name.clone(),
@@ -621,7 +625,7 @@ fn member_acts(
     let (mut hits, mut dealt, mut loot) = (0, 0, None);
     for _ in 0..swings {
         match character_swing(rng, &character, &hand, mode, kind) {
-            Swing::Hit { damage, .. } => {
+            Swing::Hit(damage) => {
                 hits += 1;
                 dealt += damage.min(monster.hp);
                 monster.hp = monster.hp.saturating_sub(damage);
@@ -690,14 +694,11 @@ fn monster_acts(
     // Every (attack, mode, member) that reaches is equally likely.
     let mut candidates = vec![];
     for (a, attack) in kind.attacks.iter().enumerate() {
-        if attack.modes & 0x1ff == 0 {
-            continue;
-        }
         for (slot, &member) in roster.0.iter().enumerate() {
             let Ok((character, _)) = members.get(member) else { continue };
             if able(character) && party.reaches(slot, at.translation(), attack.reach, distance) {
-                for bit in (0..9).filter(|b| attack.modes & (1 << b) != 0) {
-                    candidates.push((a, bit, slot, member));
+                for mode in attack.modes {
+                    candidates.push((a, mode, slot, member));
                 }
             }
         }
@@ -708,31 +709,28 @@ fn monster_acts(
         return;
     }
     battle.attacked_this_round = true;
-    let (a, bit, slot, member) = candidates[rng.below(candidates.len() as u32) as usize];
+    let (a, mode, slot, member) = candidates[rng.below(candidates.len() as u32) as usize];
     let attack = &kind.attacks[a];
-    let mode = attack::Mode::choose(rng, 1 << bit);
+    // Retail draws for the mode again, from just the one chosen.
+    let mode = attack::choose_mode(rng, EnumSet::only(mode));
     let Ok((mut character, carried)) = members.get_mut(member) else { return };
     let mut armour = armour(&character, carried, items);
     // Defending is worth 2 (`characters.md` §4.8, component 10).
     if party.orders.of(slot) == Order::Defend {
         armour.total += 2;
-        armour.by_location.iter_mut().for_each(|a| *a += 2);
+        armour.by_location.values_mut().for_each(|a| *a += 2);
     }
     let swings = rng.below(u32::from(kind.swings_per_round.max(1))) + 1;
     news.write(CombatNews::Attack {
         attacker: name.clone(),
         target: character.name.clone(),
-        how: Announcement::Monster {
-            weapon_type: attack.weapon_type,
-            mode,
-            named: attack.weapon_name != 0,
-        },
+        how: Announcement::Monster { word: attack.word, mode, named: attack.named },
         swings,
     });
     let (mut hits, mut dealt) = (0, 0);
     for _ in 0..swings {
         match monster_swing(rng, kind, attack, mode, &character, &armour) {
-            Swing::Hit { damage, .. } => {
+            Swing::Hit(damage) => {
                 hits += 1;
                 dealt += character.damage(damage);
                 if character.is_dead() {

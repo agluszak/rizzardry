@@ -8,9 +8,13 @@ use thiserror::Error;
 
 use super::bytes::{Bytes, Truncated};
 use super::pvl::{PvlError, invalid};
+use enumset::EnumSet;
+
+use crate::content::characters::Skill;
+use crate::content::species::Reach;
 use crate::content::items::{
+    Ammunition,
     Dice, EquipClass, ItemCatalog, ItemDefinition, ItemId, LootTable, LootTables, QuantityKind,
-    Requirement,
 };
 
 const RECORD: usize = 0x10d;
@@ -357,10 +361,7 @@ mod flag {
     pub const NO_DISCARD: u8 = 0x02;
     pub const TWO_HANDED: u8 = 0x04;
     pub const OFF_HAND_ALLOWED: u8 = 0x08;
-    pub const MERCHANT_CANNOT_SELL: u8 = 0x10;
     pub const CONTAINER: u8 = 0x20;
-    pub const MUST_EQUIP_TO_USE: u8 = 0x40;
-    pub const NEVER_DEPLETES: u8 = 0x80;
 }
 
 fn dice(bytes: &mut Bytes) -> Result<Dice, PvlError> {
@@ -368,16 +369,35 @@ fn dice(bytes: &mut Bytes) -> Result<Dice, PvlError> {
     Ok(Dice { base, count: bytes.u8()?, sides: bytes.u8()? })
 }
 
-fn requirements(bytes: &mut Bytes) -> Result<Vec<Requirement>, PvlError> {
-    let mut found = Vec::new();
+/// Two (id, minimum) pairs as minimums by attribute or skill. Retail
+/// ignores an id it has no attribute or skill for (0xff marks none).
+fn minimums<K: enum_map::Enum + TryFrom<u8>>(
+    bytes: &mut Bytes,
+) -> Result<enum_map::EnumMap<K, u8>, PvlError> {
+    let mut minimums = enum_map::EnumMap::default();
     for _ in 0..2 {
         let (id, minimum) = (bytes.u8()?, bytes.u8()?);
-        // Retail stops at an id of 0xff.
-        if id != 0xff {
-            found.push(Requirement { id, minimum });
+        if let Ok(of) = K::try_from(id) {
+            minimums[of] = minimum;
         }
     }
-    Ok(found)
+    Ok(minimums)
+}
+
+/// What a launcher of this kind shoots, or what ammunition of this kind
+/// is: retail's plain pairs in `CompatiblePartnerItems` (longbow and
+/// greatbow with arrows, crossbow with quarrels, sling with sling stones).
+/// Its guns and the Gadgeteer's omnigun tiers are not ported yet.
+fn launcher_and_ammunition(kind: u16) -> (Option<Ammunition>, Option<Ammunition>) {
+    match kind {
+        0x0b | 0x25 => (Some(Ammunition::Arrow), None),
+        0x0c => (Some(Ammunition::Quarrel), None),
+        0x0d => (Some(Ammunition::SlingStone), None),
+        0x16 => (None, Some(Ammunition::Arrow)),
+        0x53 => (None, Some(Ammunition::Quarrel)),
+        0x17 => (None, Some(Ammunition::SlingStone)),
+        _ => (None, None),
+    }
 }
 
 fn ascii(raw: &[u8]) -> String {
@@ -423,63 +443,55 @@ fn read_item(
     let kind = bytes.u16()?;
     let flags = bytes.u8()?;
     let has = |bit| flags & bit != 0;
-    let category = bytes.u8()?;
-    bytes.take(3)?;
-    let weapon_skill = u8::try_from(bytes.i8()?).ok();
-    let range = bytes.u8()?;
+    bytes.take(1 + 3)?; // category, whose meaning is not established
+    let weapon_skill = u8::try_from(bytes.i8()?).ok().and_then(|s| Skill::try_from(s).ok());
+    let reach = Reach::from_retail(bytes.u8()?);
     let damage_bonus = bytes.i8()?;
     let hit_bonus = bytes.i8()?;
     let damage = dice(&mut bytes)?;
-    let attack_modes = bytes.u16()?;
+    let attack_modes = EnumSet::from_repr_truncated(bytes.u16()?);
     bytes.take(16 + 1 + 1)?; // effect chances, magnitude, slays
     let armor_class_bonus = bytes.i8()?;
-    let spell = bytes.u8()?;
-    let spell_power = bytes.u8()?;
-    bytes.u8()?;
+    bytes.take(3)?; // spell, its power, and one more
     let quantity_kind = bytes.u8()?;
     let initial_quantity = dice(&mut bytes)?;
     let maximum_quantity = bytes.u8()?;
     bytes.take(3 + 6 + 1)?; // regeneration, resistances, property
-    let profession_mask = bytes.u16()?;
-    let race_mask = bytes.u32()?;
-    let gender_mask = bytes.u8()?;
-    let attribute_requirements = requirements(&mut bytes)?;
-    let skill_requirements = requirements(&mut bytes)?;
-    let identify_difficulty = bytes.u8()?;
+    let professions = EnumSet::from_repr_truncated(bytes.u16()?);
+    let races = EnumSet::from_repr_truncated(bytes.u32()?);
+    let genders = EnumSet::from_repr_truncated(bytes.u8()?);
+    let attribute_minimums = minimums(&mut bytes)?;
+    let skill_minimums = minimums(&mut bytes)?;
+    bytes.u8()?; // identify difficulty
     let value = bytes.u32()?;
     let weight = bytes.u16()?;
     let cursed = bytes.u8()? != 0;
     let own_image = ascii(&record[0xcd..0xcd + 0x18]);
     let string = |index: usize| strings.get(index).map_or("", |s| s.as_str());
+    let (shoots, ammunition) = launcher_and_ammunition(kind);
     let kind_name = KIND_NAMES.get(usize::from(kind)).map_or("", |&k| string(k));
     Ok(ItemDefinition {
         unidentified_name: string(UNIDENTIFIED).replace("%s", kind_name),
         id: ItemId(index as u16),
         name: String::from_utf16_lossy(&units[..name_end]),
-        internal_name: ascii(&record[0x8d..0x8d + 0x20]),
-        kind,
         image: image_path(&own_image, kind).ok_or(ItemLoadError::Image(index, kind))?,
         model: model_path(&ascii(&record[0x8d..0x8d + 0x20]), kind),
         class: EquipClass::try_from(equip_class)
             .map_err(|_| ItemLoadError::EquipClass(index, equip_class))?,
-        category,
         auto_identify: has(flag::AUTO_IDENTIFY),
         crucial: has(flag::NO_DISCARD),
         two_handed: has(flag::TWO_HANDED),
         off_hand: has(flag::OFF_HAND_ALLOWED),
-        merchants_refuse: has(flag::MERCHANT_CANNOT_SELL),
         container: has(flag::CONTAINER),
-        equip_to_use: has(flag::MUST_EQUIP_TO_USE),
-        never_depletes: has(flag::NEVER_DEPLETES),
         weapon_skill,
-        range,
+        reach,
+        shoots,
+        ammunition,
         damage,
         attack_modes,
         damage_bonus,
         hit_bonus,
         armor_class_bonus,
-        spell,
-        spell_power,
         quantity: match quantity_kind {
             0 => QuantityKind::None,
             1 => QuantityKind::Stack,
@@ -491,12 +503,11 @@ fn read_item(
         },
         initial_quantity,
         maximum_quantity,
-        profession_mask,
-        race_mask,
-        gender_mask,
-        attribute_requirements,
-        skill_requirements,
-        identify_difficulty,
+        professions,
+        races,
+        genders,
+        attribute_minimums,
+        skill_minimums,
         value,
         weight,
         cursed,
@@ -633,7 +644,9 @@ mod tests {
         assert_eq!(dagger.unidentified_name, "Dagger (Unidentified)");
         assert!(dagger.off_hand && !dagger.two_handed);
         assert!(catalog.0.iter().filter(|i| !i.name.is_empty()).count() > 500);
-        assert!(catalog.0.iter().any(|i| i.spell != 0), "some items cast spells");
+        let bows = catalog.0.iter().filter(|i| i.shoots == Some(Ammunition::Arrow)).count();
+        let arrows = catalog.0.iter().filter(|i| i.ammunition == Some(Ammunition::Arrow)).count();
+        assert!(bows > 0 && arrows > 0, "bows and the arrows they shoot");
         let stacks: Vec<_> =
             catalog.0.iter().filter(|i| i.quantity == QuantityKind::Stack).collect();
         assert!(stacks.len() > 10 && stacks.iter().all(|i| i.maximum_quantity > 0));

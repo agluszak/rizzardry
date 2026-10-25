@@ -1,5 +1,6 @@
 //! Immutable content shared by every campaign session.
 
+pub mod characters;
 pub mod items;
 pub mod level;
 pub mod levels;

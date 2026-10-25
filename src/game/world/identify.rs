@@ -10,7 +10,8 @@ use bevy::prelude::*;
 
 use super::population::Monster;
 use crate::content::species::MonsterCatalog;
-use crate::game::characters::{Character, Condition, INTELLIGENCE, MYTHOLOGY};
+use crate::content::characters::{Attribute, Skill};
+use crate::game::characters::{Character, Condition};
 use crate::game::combat::Battle;
 use crate::game::data::GameData;
 use crate::game::party::body::PartyCamera;
@@ -64,8 +65,8 @@ fn can_look(member: &Character) -> bool {
 pub fn recognition(member: &Character, species: u32, level: u8) -> i32 {
     let seen = member.monster_awareness.get(&species).copied().unwrap_or(0);
     (i32::from(seen) - i32::from(level)) * 3
-        + member.attribute(INTELLIGENCE) as i32 / 10
-        + member.skill(MYTHOLOGY) as i32
+        + member.attribute(Attribute::Intelligence) as i32 / 10
+        + member.skill(Skill::Mythology) as i32
 }
 
 /// What the party can tell of a monster's health (retail
@@ -76,7 +77,7 @@ pub fn health_known(party: &[&Character], hp: u32, max_hp: u32, display_level: u
     let mythology = party
         .iter()
         .filter(|m| crate::game::camp::can_act(m))
-        .map(|m| m.skill(MYTHOLOGY))
+        .map(|m| m.skill(Skill::Mythology))
         .max()
         .unwrap_or(0);
     let average = party.iter().map(|m| f32::from(m.level)).sum::<f32>() / party.len().max(1) as f32;
@@ -187,16 +188,16 @@ mod tests {
     #[test]
     fn mythology_tells_a_monsters_health() {
         let mut sage = Character::new("Sage", Race::Human, Gender::Male, Profession::Bishop);
-        sage.skill_points[MYTHOLOGY] = 0;
+        sage.skill_points[Skill::Mythology] = 0;
         assert_eq!(health_known(&[&sage], 7, 20, 1), "?/?");
-        sage.skill_points[MYTHOLOGY] = 6;
-        let known = sage.skill(MYTHOLOGY);
+        sage.skill_points[Skill::Mythology] = 6;
+        let known = sage.skill(Skill::Mythology);
         assert!(known > 4 && known < 10, "{known}");
         assert_eq!(health_known(&[&sage], 7, 20, 1), "?/20");
-        sage.skill_points[MYTHOLOGY] = 12;
+        sage.skill_points[Skill::Mythology] = 12;
         assert_eq!(health_known(&[&sage], 7, 20, 1), "7/20");
         // Three levels above the party's average cost nine points.
-        let left = sage.skill(MYTHOLOGY) - 9;
+        let left = sage.skill(Skill::Mythology) - 9;
         let expected = if left >= 10 {
             "7/20"
         } else if left > 4 {
@@ -210,9 +211,9 @@ mod tests {
     #[test]
     fn seeing_more_of_a_kind_makes_it_easier_to_recognise() {
         let mut bishop = Character::new("Sage", Race::Human, Gender::Male, Profession::Bishop);
-        bishop.attributes[INTELLIGENCE] = 60;
-        bishop.skill_points[MYTHOLOGY] = 10;
-        let mythology = bishop.skill(MYTHOLOGY) as i32;
+        bishop.attributes[Attribute::Intelligence] = 60;
+        bishop.skill_points[Skill::Mythology] = 10;
+        let mythology = bishop.skill(Skill::Mythology) as i32;
         // A level 8 kind never seen: 24 below, and 6 from Intelligence.
         assert_eq!(recognition(&bishop, 62, 8), mythology + 6 - 24);
         bishop.monster_awareness.insert(62, 10);

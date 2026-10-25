@@ -24,6 +24,8 @@ serde = { version = "1.0.229", features = ["derive"] }
 num_enum = "0.7.6"
 rand = { version = "0.9", features = ["small_rng", "os_rng"] }
 rand_chacha = "0.9"
+enum-map = "3.1.0"
+enumset = "1.1.15"
 
 # Dependencies compile with optimisations so the game stays playable in debug.
 [profile.dev.package."*"]

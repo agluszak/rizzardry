@@ -4,74 +4,72 @@
 //! effects are not modelled yet; missiles hit by the same roll as melee
 //! (a deliberate approximation of retail's scattered aim point).
 
-use crate::content::items::{Dice, EquipClass, ItemCatalog, ItemDefinition};
+use enum_map::EnumMap;
+use enumset::EnumSet;
+
+use crate::content::characters::{Attribute, BodyPart, Skill};
+use crate::content::items::{AttackMode, Dice, EquipClass, ItemCatalog, ItemDefinition};
 use crate::content::species::{MonsterAttack, Reach, Species};
-use crate::game::characters::{
-    Character, DEXTERITY, INTELLIGENCE, Load, Race, SENSES, SPEED, STRENGTH,
-};
+use crate::game::characters::{Character, Load, Race};
 use crate::game::inventory::{Carried, EquipSlot};
 use crate::game::rng::GameRng;
-use num_enum::{IntoPrimitive, TryFromPrimitive};
 
-/// How a blow is struck, in retail's mode-bit order: its number is its bit.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, IntoPrimitive, TryFromPrimitive)]
-#[repr(usize)]
-pub enum Mode {
-    Swing,
-    Thrust,
-    Bash,
-    Berserk,
-    Throw,
-    Punch,
-    Kick,
-    Lash,
-    Shoot,
-}
-
-/// To-hit and penetration terms by mode.
-const TO_HIT: [i32; 9] = [0, -10, 0, -30, -5, 5, -10, 10, 0];
-const PENETRATION: [i32; 9] = [0, 10, -5, -30, 5, -5, 0, -10, 10];
-
-impl Mode {
-    /// Pick one of the set mode bits (retail `ChooseAttackMode`): draw
-    /// `w` below 9, then walk the bits round from the first, taking the
-    /// (w+1)-th set one. Not uniform when the count does not divide 9.
-    pub fn choose(rng: &mut GameRng, modes: u16) -> Mode {
-        let modes = modes & 0x1ff;
-        if modes == 0 {
-            return Mode::Swing;
-        }
-        let mut wanted = rng.below(9) + 1;
-        let mut bit = 0;
-        loop {
-            if modes & (1 << bit) != 0 {
-                wanted -= 1;
-                if wanted == 0 {
-                    return Mode::try_from(bit).expect("modes are masked to 9 bits");
-                }
-            }
-            bit = (bit + 1) % 9;
-        }
+/// The to-hit term of a mode.
+fn mode_to_hit(mode: AttackMode) -> i32 {
+    use AttackMode::*;
+    match mode {
+        Swing | Bash | Shoot => 0,
+        Thrust | Kick => -10,
+        Berserk => -30,
+        Throw => -5,
+        Punch => 5,
+        Lash => 10,
     }
 }
 
-/// Character hit locations: head, body, leg, hand, foot, with the
-/// equipment slot whose armour covers each.
-const LOCATION_SLOTS: [EquipSlot; 5] =
-    [EquipSlot::Head, EquipSlot::Torso, EquipSlot::Legs, EquipSlot::Hands, EquipSlot::Feet];
-const BODY: usize = 1;
+/// The penetration term of a mode.
+fn mode_penetration(mode: AttackMode) -> i32 {
+    use AttackMode::*;
+    match mode {
+        Swing | Kick => 0,
+        Thrust | Shoot => 10,
+        Bash | Throw | Punch => -5,
+        Berserk => -30,
+        Lash => -10,
+    }
+}
+
+/// Pick one of the modes (retail `ChooseAttackMode`): draw `w` below 9,
+/// then walk the mode bits round from the first, taking the (w+1)-th set
+/// one. Not uniform when the count does not divide 9.
+pub fn choose_mode(rng: &mut GameRng, modes: EnumSet<AttackMode>) -> AttackMode {
+    let wanted = rng.below(9) as usize;
+    modes.iter().cycle().nth(wanted).unwrap_or(AttackMode::Swing)
+}
+
+/// The equipment slot whose armour covers a character's hit location.
+fn armour_slot(part: BodyPart) -> EquipSlot {
+    match part {
+        BodyPart::Head => EquipSlot::Head,
+        BodyPart::Body => EquipSlot::Torso,
+        BodyPart::Leg => EquipSlot::Legs,
+        BodyPart::Hand => EquipSlot::Hands,
+        BodyPart::Foot => EquipSlot::Feet,
+    }
+}
+
 /// A monster's body, its fallback location.
 const MONSTER_BODY: usize = 3;
 
 /// Where a blow lands, by cumulative percentages against one `below(100)`
 /// draw; anything past them hits `fallback`.
-fn location(rng: &mut GameRng, chances: &[u8], fallback: usize) -> usize {
+fn location<L: Copy>(rng: &mut GameRng, chances: impl IntoIterator<Item = (L, u8)>, fallback: L) -> L {
     let roll = rng.below(100);
     let mut total = 0;
-    for (i, &chance) in chances.iter().enumerate() {
+    for (location, chance) in chances {
         total += u32::from(chance);
         if roll < total {
-            return i;
+            return location;
         }
     }
     fallback
@@ -80,18 +78,24 @@ fn location(rng: &mut GameRng, chances: &[u8], fallback: usize) -> usize {
 /// Senses + speed + dexterity + intelligence, which the attribute term
 /// compares.
 fn character_ssdi(c: &Character) -> i32 {
-    [SENSES, SPEED, DEXTERITY, INTELLIGENCE].iter().map(|&a| c.attribute(a) as i32).sum()
+    use Attribute::*;
+    [Senses, Speed, Dexterity, Intelligence].map(|a| c.attribute(a) as i32).iter().sum()
 }
 
-/// A species' attributes are strength, intelligence, dexterity, speed,
-/// senses.
 fn species_ssdi(s: &Species) -> i32 {
-    s.attributes[1..].iter().map(|&a| i32::from(a)).sum()
+    let a = s.attributes;
+    [a.senses, a.speed, a.dexterity, a.intelligence].map(i32::from).iter().sum()
 }
 
-/// To-hit penalty by fatigue band.
+/// To-hit penalty by the share of stamina spent.
 fn fatigue_penalty(c: &Character) -> i32 {
-    [0, 5, 10, 20, 40][c.fatigue_band()]
+    match c.stamina_spent() {
+        0..50 => 0,
+        50..70 => 5,
+        70..85 => 10,
+        85..=94 => 20,
+        _ => 40,
+    }
 }
 
 /// A member's main hand, as the character sheet works it out.
@@ -99,8 +103,8 @@ fn fatigue_penalty(c: &Character) -> i32 {
 pub struct Hand {
     pub reach: Reach,
     pub dice: Dice,
-    /// The ways it strikes, a bit per mode; one is chosen per attack.
-    pub modes: u16,
+    /// The ways it strikes; one is chosen per attack.
+    pub modes: EnumSet<AttackMode>,
     pub attacks: u32,
     pub swings: u32,
     pub attack_rating: i32,
@@ -141,23 +145,15 @@ pub fn primary_hand(c: &Character, carried: &Carried, catalog: &ItemCatalog) -> 
         .and_then(|i| catalog.get(i.item))
         .filter(|d| d.weapon_skill.is_some());
     // Martial Arts for an empty hand.
-    let weapon_skill = weapon.and_then(|d| d.weapon_skill).map_or(14, usize::from);
-    let ranged = (7..=9).contains(&weapon_skill);
-    let combat = c.skill(if ranged { 17 } else { 16 }) as i32;
+    let weapon_skill = weapon.and_then(|d| d.weapon_skill).unwrap_or(Skill::MartialArts);
+    let ranged = matches!(weapon_skill, Skill::ModernWeapon | Skill::Bow | Skill::ThrowingAndSling);
+    let combat = c.skill(if ranged { Skill::RangedCombat } else { Skill::CloseCombat }) as i32;
     let skill = c.skill(weapon_skill) as i32;
-    let physical: i32 = c
-        .profession_levels
-        .iter()
-        .enumerate()
-        .map(|(p, &l)| i32::from(l) * [4, 4, 4, 4, 4, 4, 4, 3, 3, 3, 2, 2, 2, 2, 2][p])
-        .sum();
+    let physical = c.physical_levels();
     let combined = (2 * (combat + 2 * skill) / 3) * 10 / 20;
-    let (str, dex, spd, sen) = (
-        c.attribute(STRENGTH) as i32,
-        c.attribute(DEXTERITY) as i32,
-        c.attribute(SPEED) as i32,
-        c.attribute(SENSES) as i32,
-    );
+    let [str, dex, spd, sen] =
+        [Attribute::Strength, Attribute::Dexterity, Attribute::Speed, Attribute::Senses]
+            .map(|a| c.attribute(a) as i32);
     let attack_rating = (dex / 2 + 2 * combined + physical) / 3 + 60;
     let s = ((spd + dex) / 2 + physical + combined) / 3;
     let attacks = 1 + u32::from(s > 49) + u32::from(s > 99);
@@ -175,11 +171,18 @@ pub fn primary_hand(c: &Character, carried: &Carried, catalog: &ItemCatalog) -> 
     };
     let to_hit = weapon.map_or(0, |d| i32::from(d.hit_bonus)) + str_hit + (dex - 50) / 10 + sen_hit;
     Hand {
-        reach: weapon.map_or(Reach::Touch, |d| Reach::from_retail(d.range)),
-        dice: weapon.map_or_else(|| unarmed_dice(c.skill(14)), |d| d.damage),
+        reach: weapon.map_or(Reach::Touch, |d| d.reach),
+        dice: weapon.map_or_else(|| unarmed_dice(c.skill(Skill::MartialArts)), |d| d.damage),
         // An empty hand punches, and kicks too past Martial Arts 4
         // (retail GameplayCode.cpp:696-699).
-        modes: weapon.map_or(if c.skill(14) > 4 { 0x60 } else { 0x20 }, |d| d.attack_modes),
+        modes: weapon.map_or(
+            if c.skill(Skill::MartialArts) > 4 {
+                AttackMode::Punch | AttackMode::Kick
+            } else {
+                EnumSet::only(AttackMode::Punch)
+            },
+            |d| d.attack_modes,
+        ),
         attacks,
         swings,
         attack_rating,
@@ -195,12 +198,12 @@ pub fn primary_hand(c: &Character, carried: &Carried, catalog: &ItemCatalog) -> 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Armour {
     pub total: i32,
-    pub by_location: [i32; 5],
+    pub by_location: EnumMap<BodyPart, i32>,
 }
 
 pub fn armour(c: &Character, carried: &Carried, catalog: &ItemCatalog) -> Armour {
     let definition = |slot| carried.worn(slot).and_then(|i| catalog.get(i.item));
-    let speed = c.attribute(SPEED);
+    let speed = c.attribute(Attribute::Speed);
     let mut total =
         i32::from(c.race == Race::Faerie) * 2 + i32::from(speed > 79) + i32::from(speed > 89)
             - i32::from(speed < 20)
@@ -216,12 +219,13 @@ pub fn armour(c: &Character, carried: &Carried, catalog: &ItemCatalog) -> Armour
         if let Some(d) = definition(slot) {
             total += i32::from(d.armor_class_bonus);
             if d.class == EquipClass::Shield {
-                total += (c.skill(6) as i32 / 25).min(i32::from(d.armor_class_bonus));
+                total += (c.skill(Skill::Shield) as i32 / 25).min(i32::from(d.armor_class_bonus));
             }
         }
     }
-    let by_location = LOCATION_SLOTS.map(|slot| {
-        total + definition(slot).map_or(0, |d: &ItemDefinition| i32::from(d.armor_class_bonus))
+    let by_location = EnumMap::from_fn(|part| {
+        let worn = definition(armour_slot(part));
+        total + worn.map_or(0, |d: &ItemDefinition| i32::from(d.armor_class_bonus))
     });
     Armour { total, by_location }
 }
@@ -231,11 +235,7 @@ pub fn armour(c: &Character, carried: &Carried, catalog: &ItemCatalog) -> Armour
 pub enum Swing {
     Missed,
     NoPenetration,
-    /// Damage dealt, where.
-    Hit {
-        damage: u32,
-        location: usize,
-    },
+    Hit(u32),
 }
 
 /// One roll decides hit and penetration: 5 or under always hits and
@@ -259,19 +259,18 @@ pub fn character_swing(
     rng: &mut GameRng,
     attacker: &Character,
     hand: &Hand,
-    mode: Mode,
+    mode: AttackMode,
     species: &Species,
 ) -> Swing {
-    let mode = usize::from(mode);
     let attributes = (character_ssdi(attacker) - species_ssdi(species)) / 10;
     let base = hand.attack_rating + 5 * hand.to_hit - fatigue_penalty(attacker) + attributes;
-    let to_hit = base + TO_HIT[mode] - 5 * (10 - i32::from(species.evasion));
+    let to_hit = base + mode_to_hit(mode) - 5 * (10 - i32::from(species.evasion));
     let roll = rng.below(100) + 1;
-    let location = location(rng, &species.hit_locations, MONSTER_BODY);
+    let location = location(rng, species.hit_locations.into_iter().enumerate(), MONSTER_BODY);
     let armour_at = 10
         - i32::from(species.armour_by_mode[mode])
         - i32::from(species.armour_by_location[location]);
-    let penetration = base + PENETRATION[mode] - 5 * armour_at;
+    let penetration = base + mode_penetration(mode) - 5 * armour_at;
     match resolve(roll, to_hit, penetration) {
         None => Swing::Missed,
         Some(false) => Swing::NoPenetration,
@@ -280,7 +279,7 @@ pub fn character_swing(
             let damage = (((100 + hand.damage_percent) * rolled + 50) / 100).max(1);
             let reduction = i32::from(species.damage_reduction);
             let damage = (((100 - reduction) * damage + 50) / 100).max(0) as u32;
-            Swing::Hit { damage, location }
+            Swing::Hit(damage)
         }
     }
 }
@@ -290,21 +289,20 @@ pub fn monster_swing(
     rng: &mut GameRng,
     species: &Species,
     attack: &MonsterAttack,
-    mode: Mode,
+    mode: AttackMode,
     target: &Character,
     armour: &Armour,
 ) -> Swing {
-    let mode = usize::from(mode);
     let attributes = (species_ssdi(species) - character_ssdi(target)) / 10;
     let base = i32::from(attack.score) + attributes;
-    let to_hit = base + TO_HIT[mode] - 5 * armour.total;
+    let to_hit = base + mode_to_hit(mode) - 5 * armour.total;
     let roll = rng.below(100) + 1;
-    let location = location(rng, &species.hits_on_party, BODY);
-    let penetration = base + PENETRATION[mode] - 5 * armour.by_location[location];
+    let location = location(rng, species.hits_on_party, BodyPart::Body);
+    let penetration = base + mode_penetration(mode) - 5 * armour.by_location[location];
     match resolve(roll, to_hit, penetration) {
         None => Swing::Missed,
         Some(false) => Swing::NoPenetration,
-        Some(true) => Swing::Hit { damage: rng.roll(attack.damage).max(1), location },
+        Some(true) => Swing::Hit(rng.roll(attack.damage).max(1)),
     }
 }
 
@@ -328,8 +326,9 @@ mod tests {
     fn modes_are_chosen_from_the_set_bits_round_robin() {
         let mut rng = GameRng::seeded(3);
         for _ in 0..50 {
-            assert_eq!(Mode::choose(&mut rng, 1 << 7), Mode::Lash);
-            assert!(matches!(Mode::choose(&mut rng, 0b11), Mode::Swing | Mode::Thrust));
+            assert_eq!(choose_mode(&mut rng, EnumSet::only(AttackMode::Lash)), AttackMode::Lash);
+            let either = choose_mode(&mut rng, AttackMode::Swing | AttackMode::Thrust);
+            assert!(matches!(either, AttackMode::Swing | AttackMode::Thrust));
         }
     }
 
@@ -387,7 +386,7 @@ mod retail_tests {
             let hits: Vec<u32> = swings
                 .iter()
                 .filter_map(|s| match s {
-                    Swing::Hit { damage, .. } => Some(*damage),
+                    Swing::Hit(damage) => Some(*damage),
                     _ => None,
                 })
                 .collect();
@@ -395,14 +394,14 @@ mod retail_tests {
         };
         let ours = tally(
             (0..1000)
-                .map(|_| character_swing(&mut rng, &fighter, &hand, Mode::Swing, crab))
+                .map(|_| character_swing(&mut rng, &fighter, &hand, AttackMode::Swing, crab))
                 .collect(),
         );
         let attack = &crab.attacks[0];
         let theirs = tally(
             (0..1000)
                 .map(|_| {
-                    let mode = Mode::choose(&mut rng, attack.modes);
+                    let mode = choose_mode(&mut rng, attack.modes);
                     monster_swing(&mut rng, crab, attack, mode, &fighter, &armour)
                 })
                 .collect(),

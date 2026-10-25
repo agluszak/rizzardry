@@ -9,7 +9,8 @@ use bevy_enhanced_input::prelude::*;
 
 use crate::content::items::ItemCatalog;
 use crate::game::camp::can_act;
-use crate::game::characters::{Character, Profession, SCOUTING, SENSES};
+use crate::content::characters::{Attribute, Skill};
+use crate::game::characters::{Character, Profession};
 use crate::game::combat::Battle;
 use crate::game::data::GameData;
 use crate::game::party::body::{PartyCamera, Run};
@@ -104,12 +105,12 @@ pub fn search_score(member: &Character, search_mode: bool, running: bool) -> u32
     if member.profession != Profession::Ranger && !search_mode {
         return 0;
     }
-    let level = member.skill(SCOUTING);
+    let level = member.skill(Skill::Scouting);
     let base = if running { level / 4 } else { level / 2 };
     if base == 0 && !(search_mode && !running) {
         return 0;
     }
-    let senses = member.attribute(SENSES);
+    let senses = member.attribute(Attribute::Senses);
     let score = match senses {
         0..=50 => base + senses / 5,
         51..=80 => base + 10 + (senses - 50) / 3,
@@ -194,11 +195,11 @@ mod tests {
     fn rangers_search_on_their_own_and_others_only_in_search_mode() {
         let mut ranger = Character::new("Scout", Race::Elf, Gender::Female, Profession::Ranger);
         let fighter = Character::new("Brute", Race::Human, Gender::Male, Profession::Fighter);
-        ranger.skill_points[SCOUTING] = 20;
-        ranger.attributes[SENSES] = 60;
+        ranger.skill_points[Skill::Scouting] = 20;
+        ranger.attributes[Attribute::Senses] = 60;
         // Half of Scouting 20 (plus the ranger's bonus, if Scouting is it)
         // and Senses 60's bonus of 10 + 10 / 3.
-        let base = ranger.skill(SCOUTING) / 2;
+        let base = ranger.skill(Skill::Scouting) / 2;
         assert_eq!(search_score(&ranger, false, false), base + 13);
         assert_eq!(search_score(&fighter, false, false), 0);
         // In search mode anyone searches by Senses alone, but not running.

@@ -7,8 +7,13 @@ use thiserror::Error;
 
 use super::bytes::Bytes;
 use super::pvl::PvlError;
+use enum_map::EnumMap;
+use enumset::EnumSet;
+
 use crate::content::items::{Dice, ItemId};
-use crate::content::species::{Drop, MonsterAttack, MonsterCatalog, Reach, Species, Treasure};
+use crate::content::species::{
+    AttackWord, Drop, MonsterAttack, MonsterAttributes, MonsterCatalog, Reach, Species, Treasure,
+};
 
 const RECORD: usize = 0x297;
 const ATTACKS_AT: usize = 0xe7;
@@ -48,11 +53,14 @@ fn species(record: &[u8]) -> Species {
         .map(|i| &record[ATTACKS_AT + ATTACK * i..ATTACKS_AT + ATTACK * (i + 1)])
         .filter(|attack| attack[0] != 0)
         .map(|attack| MonsterAttack {
-            weapon_name: attack[1],
-            weapon_type: attack[2],
+            named: attack[1] != 0,
+            word: match attack[2] {
+                1 => AttackWord::Verb,
+                word => AttackWord::Word(word),
+            },
             reach: Reach::from_retail(attack[3]),
             score: attack[4],
-            modes: u16::from_le_bytes([attack[0x15], attack[0x16]]),
+            modes: EnumSet::from_repr_truncated(u16::from_le_bytes([attack[0x15], attack[0x16]])),
             damage: dice(attack, 0x17),
         })
         .collect();
@@ -66,22 +74,27 @@ fn species(record: &[u8]) -> Species {
         generic_name: name(bytes(0x60, 48)),
         generic_plural: name(bytes(0x90, 48)),
         model: String::from_utf8_lossy(&model[..model_end]).to_lowercase(),
-        kind: record[0xcb],
+        level_sight: record[0xcb] == 4,
         npc: record[0xd0] & 1 != 0,
         damage_reduction: record[0xcf],
-        attributes: bytes(0xd1, 5).try_into().unwrap(),
+        attributes: MonsterAttributes {
+            strength: record[0xd1],
+            intelligence: record[0xd2],
+            dexterity: record[0xd3],
+            speed: record[0xd4],
+            senses: record[0xd5],
+        },
         hit_points: dice(record, 0xd6),
         stamina: dice(record, 0xda),
-        flee_chance: record[0xe2],
         initiative: record[0xe4],
         attacks_per_round: record[0xe5],
         swings_per_round: record[0xe6],
         attacks,
-        hits_on_party: bytes(0x157, 5).try_into().unwrap(),
+        hits_on_party: EnumMap::from_array(bytes(0x157, 5).try_into().unwrap()),
         evasion: signed(0x15d),
         hit_locations: bytes(0x15f, 7).try_into().unwrap(),
         armour_by_location: std::array::from_fn(|i| signed(0x166 + i)),
-        armour_by_mode: std::array::from_fn(|i| signed(0x16d + i)),
+        armour_by_mode: EnumMap::from_array(std::array::from_fn(|i| signed(0x16d + i))),
         experience,
         level: record[0x24f],
         display_level: record[0x251],
@@ -103,7 +116,6 @@ fn species(record: &[u8]) -> Species {
                 }
             })
             .collect(),
-        prefers_ranged: record[0x1b9] != 0,
     }
 }
 
