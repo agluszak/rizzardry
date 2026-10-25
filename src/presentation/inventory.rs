@@ -12,7 +12,7 @@ use enumset::EnumSet;
 
 use crate::game::screen::Screen;
 
-use super::screen_art::{absolute, sprite, text};
+use super::screen_art::{absolute, sprite_bundle, text_bundle};
 use crate::content::items::{ItemCatalog, QuantityKind};
 use crate::content::ui::SpriteSheet;
 use crate::game::characters::{Character, Gender, Race};
@@ -399,24 +399,26 @@ pub fn spawn_inventory_screen(
         ))
         .id();
     let layers = [
-        sprite(corner, 0, Vec2::ZERO),
-        sprite(page, 0, Vec2::new(310.0, 0.0)),
-        sprite(page, 1, Vec2::new(0.0, 165.0)),
-        sprite(page, 2, Vec2::new(113.0, 165.0)),
-        sprite(page, 3, Vec2::new(478.0, 165.0)),
-        sprite(gold, 0, Vec2::new(514.0, 422.0)),
-        sprite(bar, 0, Vec2::new(0.0, 450.0)),
+        sprite_bundle(corner, 0, Vec2::ZERO),
+        sprite_bundle(page, 0, Vec2::new(310.0, 0.0)),
+        sprite_bundle(page, 1, Vec2::new(0.0, 165.0)),
+        sprite_bundle(page, 2, Vec2::new(113.0, 165.0)),
+        sprite_bundle(page, 3, Vec2::new(478.0, 165.0)),
+        sprite_bundle(gold, 0, Vec2::new(514.0, 422.0)),
+        sprite_bundle(bar, 0, Vec2::new(0.0, 450.0)),
     ];
     for layer in layers.into_iter().flatten() {
         commands.spawn((layer, ChildOf(frame)));
     }
-    commands
-        .spawn((text(bold, &mut images, "Carried", Vec2::new(12.0, 174.0), 93.0), ChildOf(frame)));
     commands.spawn((
-        text(bold, &mut images, "Party Items", Vec2::new(486.0, 174.0), 141.0),
+        text_bundle(bold, &mut images, "Carried", Vec2::new(12.0, 174.0), 93.0),
         ChildOf(frame),
     ));
-    if let Some((image, node, _)) = sprite(exit_button, 16, Vec2::new(596.0, 450.0)) {
+    commands.spawn((
+        text_bundle(bold, &mut images, "Party Items", Vec2::new(486.0, 174.0), 141.0),
+        ChildOf(frame),
+    ));
+    if let Some((image, node, _)) = sprite_bundle(exit_button, 16, Vec2::new(596.0, 450.0)) {
         commands.spawn((image, node, ChildOf(frame))).observe(exit);
     }
     commands.spawn((
@@ -492,7 +494,7 @@ pub fn draw_inventory_cells(
         let Ok((other, _)) = members.get(member) else { continue };
         let at = Vec2::new(6.0 + (slot % 2) as f32 * 48.0, 5.0 + (slot / 2) as f32 * 39.0);
         let path = format!("data/portraits/small/s{}.sti", other.portrait);
-        if let Some(portrait) = sheet(path).and_then(|s| sprite(s, 0, at)) {
+        if let Some(portrait) = sheet(path).and_then(|s| sprite_bundle(s, 0, at)) {
             commands
                 .spawn((portrait.0, portrait.1, ReviewMember(member), ChildOf(layer)))
                 .observe(review_member);
@@ -500,32 +502,38 @@ pub fn draw_inventory_cells(
     }
     for slot in roster.0.len()..8 {
         let at = Vec2::new(5.0 + (slot % 2) as f32 * 48.0, 4.0 + (slot / 2) as f32 * 39.0);
-        if let Some(empty) = sprite(corner, slot + 1, at) {
+        if let Some(empty) = sprite_bundle(corner, slot + 1, at) {
             put(&mut commands, layer, empty);
         }
     }
     if let Some(portrait) = sheet(format!("data/portraits/medium/m{}.sti", character.portrait))
-        .and_then(|s| sprite(s, 0, Vec2::new(164.0, 12.0)))
+        .and_then(|s| sprite_bundle(s, 0, Vec2::new(164.0, 12.0)))
     {
         put(&mut commands, layer, portrait);
     }
-    if let Some(overlay) = sprite(corner, 9, Vec2::new(164.0, 12.0)) {
+    if let Some(overlay) = sprite_bundle(corner, 9, Vec2::new(164.0, 12.0)) {
         put(&mut commands, layer, overlay);
     }
     put(
         &mut commands,
         layer,
-        text(bold, &mut images, &character.name, Vec2::new(116.0, 96.0), 186.0),
+        text_bundle(bold, &mut images, &character.name, Vec2::new(116.0, 96.0), 186.0),
     );
     put(
         &mut commands,
         layer,
-        text(font, &mut images, &format!("{:?}", character.race), Vec2::new(116.0, 111.0), 186.0),
+        text_bundle(
+            font,
+            &mut images,
+            &format!("{:?}", character.race),
+            Vec2::new(116.0, 111.0),
+            186.0,
+        ),
     );
     put(
         &mut commands,
         layer,
-        text(
+        text_bundle(
             font,
             &mut images,
             &format!("{:?}", character.profession),
@@ -534,13 +542,15 @@ pub fn draw_inventory_cells(
         ),
     );
     let statue_path = format!("data/review/{}.sti", statue(character.race, character.gender));
-    if let Some(statue) = sheet(statue_path).and_then(|s| sprite(s, 0, Vec2::new(194.0, 165.0))) {
+    if let Some(statue) =
+        sheet(statue_path).and_then(|s| sprite_bundle(s, 0, Vec2::new(194.0, 165.0)))
+    {
         put(&mut commands, layer, statue);
     }
     put(
         &mut commands,
         layer,
-        text(font, &mut images, &format_gold(party.gold), Vec2::new(553.0, 425.0), 48.0),
+        text_bundle(font, &mut images, &format_gold(party.gold), Vec2::new(553.0, 425.0), 48.0),
     );
 
     // Equipment on the statue.
@@ -550,7 +560,8 @@ pub fn draw_inventory_cells(
         // The doll's own wells show through empty cells.
         let Some(item) = carried.worn(slot) else { continue };
         let Some(definition) = catalog.get(item.item) else { continue };
-        if let Some(picture) = sheet(definition.image.clone()).and_then(|s| sprite(s, 1, at)) {
+        if let Some(picture) = sheet(definition.image.clone()).and_then(|s| sprite_bundle(s, 1, at))
+        {
             put(&mut commands, layer, picture);
         }
         quantity(
@@ -564,11 +575,12 @@ pub fn draw_inventory_cells(
             cell.width() - 4.0,
         );
         if !item.identified
-            && let Some(overlay) = sprite(unidentified, 0, at)
+            && let Some(overlay) = sprite_bundle(unidentified, 0, at)
         {
             put(&mut commands, layer, overlay);
         }
-        if let Some(rim) = sprite(highlights, equipment_rim(slot) + 3, at - Vec2::splat(2.0)) {
+        if let Some(rim) = sprite_bundle(highlights, equipment_rim(slot) + 3, at - Vec2::splat(2.0))
+        {
             put(&mut commands, layer, rim);
         }
     }
@@ -595,7 +607,7 @@ pub fn draw_inventory_cells(
         let definition = item.and_then(|i| catalog.get(i.item));
         match definition {
             Some(definition) if !character.can_use(definition) => {
-                if let Some(background) = sprite(unusable, 0, at) {
+                if let Some(background) = sprite_bundle(unusable, 0, at) {
                     put(&mut commands, layer, background);
                 }
             }
@@ -610,7 +622,7 @@ pub fn draw_inventory_cells(
         }
         let (Some(item), Some(definition)) = (item, definition) else { continue };
         if let Some(picture) =
-            sheet(definition.image.clone()).and_then(|s| sprite(s, 0, at + Vec2::ONE))
+            sheet(definition.image.clone()).and_then(|s| sprite_bundle(s, 0, at + Vec2::ONE))
         {
             put(&mut commands, layer, picture);
         }
@@ -625,7 +637,7 @@ pub fn draw_inventory_cells(
             44.0,
         );
         if !item.identified
-            && let Some(overlay) = sprite(unidentified, 0, at)
+            && let Some(overlay) = sprite_bundle(unidentified, 0, at)
         {
             put(&mut commands, layer, overlay);
         }

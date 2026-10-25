@@ -15,14 +15,11 @@ mod party;
 mod radar;
 mod text_box;
 
-use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 
-use super::screen_art::{absolute, sprite};
+use super::screen_art::{SCREEN, absolute, centred, screen, sprite};
 use crate::content::ui::SpriteSheet;
 pub use layout::{LayoutMode, Panel, ScreenLayout};
-
-const SCREEN: Vec2 = Vec2::new(640.0, 480.0);
 
 pub struct MainScreenPlugin;
 
@@ -30,6 +27,7 @@ impl Plugin for MainScreenPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ScreenLayout>()
             .init_resource::<SelectedMember>()
+            .init_resource::<party::LastSlotClick>()
             .add_systems(Startup, (load_main_screen_art, layout::spawn_screen_cameras))
             .add_systems(
                 Update,
@@ -38,7 +36,6 @@ impl Plugin for MainScreenPlugin {
                     party::select_with_keys,
                     bank::combat_keys,
                     text_box::text_box_keys,
-                    paint_hover_art,
                     layout::fit_viewport,
                     build_frame,
                     (
@@ -153,22 +150,22 @@ fn loaded<'a>(sheets: &'a Assets<SpriteSheet>, handle: &Handle<SpriteSheet>) -> 
     sheets.get(handle).expect("the main screen's art loads before its frame is built")
 }
 
-/// Spawn a sheet's frame under `parent`, if the sheet has that frame.
-fn put<'a>(
-    commands: &'a mut Commands,
-    parent: Entity,
-    part: Option<(ImageNode, Node, Pickable)>,
-) -> Option<EntityCommands<'a>> {
-    part.map(|part| commands.spawn((part, ChildOf(parent))))
+/// An empty node whose children are placed in screen pixels: a part's
+/// node in the frame.
+fn layer() -> impl Scene {
+    bsn! {
+        Node { position_type: PositionType::Absolute, width: px(0), height: px(0) }
+        Pickable::IGNORE
+    }
 }
 
-/// An empty node under `parent` whose children are placed in screen pixels.
-fn layer(commands: &mut Commands, parent: Entity, part: impl Bundle) -> Entity {
-    commands.spawn((part, absolute(Vec2::ZERO, Vec2::ZERO), Pickable::IGNORE, ChildOf(parent))).id()
+/// A sheet's frame that is a button: it catches the pointer.
+fn button(sheet: &SpriteSheet, frame: usize, at: Vec2) -> impl Scene + use<> {
+    bsn! { @{sprite(sheet, frame, at)} Pickable { should_block_lower: true, is_hoverable: true } }
 }
 
 /// The screen's root, with the layout its frame was built for.
-#[derive(Component)]
+#[derive(Component, Clone, Default)]
 pub struct MainScreen(ScreenLayout);
 
 /// Build the frame for the layout, once the art has loaded: black around
@@ -190,51 +187,25 @@ fn build_frame(
         commands.entity(screen).despawn();
     }
     let sheet = |handle| loaded(&sheets, handle);
-    let root = commands
-        .spawn((
-            MainScreen(layout.clone()),
-            Node {
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                ..default()
-            },
-            GlobalZIndex(-5),
-            Pickable::IGNORE,
-        ))
-        .id();
-    let frame = commands
-        .spawn((
-            Node { width: Val::Px(SCREEN.x), height: Val::Px(SCREEN.y), ..default() },
-            Pickable::IGNORE,
-            ChildOf(root),
-        ))
-        .id();
     // Black wherever the 3D view is not: outside the screen (the sky
     // camera's clear covers the whole window) and behind the art.
     let view = layout.viewport();
     const FAR: f32 = 10_000.0;
-    for (at, size) in [
+    let masks: Vec<_> = [
         (Vec2::new(-FAR, -FAR), Vec2::new(FAR, SCREEN.y + 2.0 * FAR)),
         (Vec2::new(SCREEN.x, -FAR), Vec2::new(FAR, SCREEN.y + 2.0 * FAR)),
         (Vec2::new(0.0, -FAR), Vec2::new(SCREEN.x, FAR + view.min.y)),
         (Vec2::new(0.0, view.max.y), Vec2::new(SCREEN.x, FAR)),
         (Vec2::new(0.0, view.min.y), Vec2::new(view.min.x, view.height())),
         (Vec2::new(view.max.x, view.min.y), Vec2::new(SCREEN.x - view.max.x, view.height())),
-    ] {
-        commands.spawn((
-            absolute(at, size),
-            BackgroundColor(Color::BLACK),
-            Pickable::IGNORE,
-            ChildOf(frame),
-        ));
-    }
+    ]
+    .into_iter()
+    .map(|(at, size)| {
+        let node = absolute(at, size);
+        bsn! { node BackgroundColor(Color::BLACK) Pickable::IGNORE }
+    })
+    .collect();
     let closed = layout.mode == LayoutMode::Closed;
-    // Portraits sit under the column art, which frames them.
-    if closed {
-        party::spawn_portraits(&mut commands, frame);
-    }
     let (columns, bar) = (sheet(&art.columns), sheet(&art.bottom_bar));
     let mut parts = vec![sprite(sheet(&art.roof), 0, Vec2::ZERO)];
     // Party columns: four rows of 85 pixels from y 18.
@@ -254,14 +225,14 @@ fn build_frame(
     // The bottom posts and panels.
     parts.push(sprite(bar, 0, Vec2::new(0.0, 358.0)));
     parts.push(sprite(bar, 1, Vec2::new(617.0, 358.0)));
-    if layout.shows(Panel::Radar) {
-        parts.push(sprite(sheet(&art.radar_back), 0, Vec2::new(23.0, 358.0)));
-    }
-    if layout.shows(Panel::TextBox) {
-        parts.push(sprite(sheet(&art.textbox_back), 0, Vec2::new(128.0, 358.0)));
-    }
-    if layout.shows(Panel::Formation) {
-        parts.push(sprite(sheet(&art.formation_back), 0, Vec2::new(512.0, 358.0)));
+    for (panel, back, x) in [
+        (Panel::Radar, &art.radar_back, 23.0),
+        (Panel::TextBox, &art.textbox_back, 128.0),
+        (Panel::Formation, &art.formation_back, 512.0),
+    ] {
+        if layout.shows(panel) {
+            parts.push(sprite(sheet(back), 0, Vec2::new(x, 358.0)));
+        }
     }
     // The button row's sockets.
     for (frame, x) in
@@ -269,39 +240,27 @@ fn build_frame(
     {
         parts.push(sprite(bar, frame, Vec2::new(x, 450.0)));
     }
-    for part in parts {
-        put(&mut commands, frame, part);
-    }
-    party::spawn_slots(&mut commands, frame, closed);
-    layout::spawn_buttons(&mut commands, frame, &layout, &art, &sheets);
-    if layout.shows(Panel::TextBox) {
-        text_box::spawn(&mut commands, frame);
-    }
-    if layout.shows(Panel::Radar) {
-        radar::spawn(&mut commands, frame, &art, &sheets);
-    }
-    if layout.shows(Panel::Formation) {
-        formation::spawn(&mut commands, frame, &art, &sheets);
-    }
-    bank::spawn(&mut commands, frame, &art, &sheets);
-}
-
-/// A button's look while hovered (retail's buttons have a frame for it).
-#[derive(Component, Clone)]
-#[require(Hovered)]
-pub struct HoverArt {
-    normal: Handle<Image>,
-    hovered: Handle<Image>,
-}
-
-fn hover_art(sheet: &SpriteSheet, normal: usize, hovered: usize) -> HoverArt {
-    let image = |frame: usize| sheet.images.get(frame).cloned().unwrap_or_default();
-    HoverArt { normal: image(normal), hovered: image(hovered) }
-}
-
-/// Show each button's hover frame while the pointer is over it.
-fn paint_hover_art(mut buttons: Query<(&Hovered, &HoverArt, &mut ImageNode), Changed<Hovered>>) {
-    for (hovered, art, mut image) in &mut buttons {
-        image.image = if hovered.get() { art.hovered.clone() } else { art.normal.clone() };
-    }
+    let shown = |panel| layout.shows(panel).then_some(());
+    commands.spawn_scene(bsn! {
+        @centred()
+        MainScreen({layout.clone()})
+        GlobalZIndex(-5)
+        Pickable::IGNORE
+        Children [
+            @screen()
+            Pickable::IGNORE
+            Children [
+                {masks}
+                // Portraits sit under the column art, which frames them.
+                -- {closed.then(party::portraits)}
+                -- {parts}
+                -- {party::slots(closed)}
+                -- {layout::buttons(&layout, &art, &sheets)}
+                -- {shown(Panel::TextBox).map(|()| text_box::panel())}
+                -- {shown(Panel::Radar).map(|()| radar::panel(&art, &sheets))}
+                -- {shown(Panel::Formation).map(|()| formation::panel(&art, &sheets))}
+                -- {bank::row(&art, &sheets)}
+            ]
+        ]
+    });
 }

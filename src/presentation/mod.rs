@@ -84,6 +84,7 @@ impl Plugin for PresentationPlugin {
                 (
                     automap::scale_ui,
                     hold_exploration,
+                    screen_art::paint_hover_art,
                     (party_view::attach_camera, party_view::aim_camera).chain(),
                     party_view::click_in_view
                         .run_if(crate::game::screen::party_free)

@@ -5,10 +5,10 @@ use bevy::camera::Viewport;
 use bevy::prelude::*;
 use bevy::ui::IsDefaultUiCamera;
 
-use super::{MainScreenArt, SCREEN, loaded, put};
+use super::{MainScreenArt, button, loaded};
 use crate::content::ui::SpriteSheet;
 use crate::presentation::party_view::PartyCamera;
-use crate::presentation::screen_art::sprite;
+use crate::presentation::screen_art::{SCREEN, sprite};
 use crate::presentation::sky::SkyCamera;
 
 /// Retail's layout modes (`g_settings.main_ui_mode`; the roof tooltips call
@@ -183,62 +183,50 @@ pub fn cycle_layout(
     }
 }
 
-#[derive(Component, Clone, Copy)]
-enum LayoutButton {
-    Mode(LayoutMode),
-    Arrow(Panel),
-}
-
-fn press(click: On<PointerClick>, buttons: Query<&LayoutButton>, mut layout: ResMut<ScreenLayout>) {
-    match buttons.get(click.entity) {
-        Ok(LayoutButton::Mode(mode)) => layout.mode = *mode,
-        Ok(LayoutButton::Arrow(panel)) => layout.toggle(*panel),
-        Err(_) => {}
-    }
-}
-
 /// The roof's mode buttons, the current mode pressed, and the left post's
 /// arrows: hide a panel while shown, show it while hidden; Closed keeps the
 /// radar and formation (grayed).
-pub fn spawn_buttons(
-    commands: &mut Commands,
-    frame: Entity,
+pub fn buttons(
     layout: &ScreenLayout,
     art: &MainScreenArt,
     sheets: &Assets<SpriteSheet>,
-) {
+) -> impl SceneList {
     let roof_buttons = loaded(sheets, &art.roof_buttons);
-    for (i, (mode, x)) in
+    let modes: Vec<_> =
         [(LayoutMode::Closed, 10.0), (LayoutMode::Wide, 39.0), (LayoutMode::Full, 68.0)]
             .into_iter()
             .enumerate()
-    {
-        let image = if mode == layout.mode { 3 + i } else { i };
-        if let Some(mut button) =
-            put(commands, frame, sprite(roof_buttons, image, Vec2::new(x, 1.0)))
-        {
-            button.insert((LayoutButton::Mode(mode), Pickable::default())).observe(press);
-        }
-    }
+            .map(|(i, (mode, x))| {
+                let image = if mode == layout.mode { 3 + i } else { i };
+                bsn! {
+                    @button(roof_buttons, image, Vec2::new(x, 1.0))
+                    on(move |_: On<PointerClick>, mut layout: ResMut<ScreenLayout>| {
+                        layout.mode = mode;
+                    })
+                }
+            })
+            .collect();
     let closed = layout.mode == LayoutMode::Closed;
     let arrows = loaded(sheets, &art.layout_arrows);
-    for (panel, y, hide, show, grayed) in [
+    // In order: neighbouring arrows overlap.
+    let mut panels: Vec<Box<dyn Scene>> = vec![];
+    for (panel, y, hide, show, gray) in [
         (Panel::Radar, 371.0, 0, 3, 6),
         (Panel::TextBox, 394.0, 8, 11, 14),
         (Panel::Formation, 417.0, 16, 19, 22),
     ] {
-        let locked = closed && panel != Panel::TextBox;
-        let image = match (locked, layout.shows(panel)) {
-            (true, _) => grayed,
-            (false, true) => hide,
-            (false, false) => show,
-        };
-        if let Some(mut arrow) = put(commands, frame, sprite(arrows, image, Vec2::new(0.0, y)))
-            && !locked
-        {
-            arrow.insert((LayoutButton::Arrow(panel), Pickable::default())).observe(press);
+        let at = Vec2::new(0.0, y);
+        if closed && panel != Panel::TextBox {
+            panels.push(Box::new(sprite(arrows, gray, at)));
+            continue;
         }
+        let image = if layout.shows(panel) { hide } else { show };
+        panels.push(Box::new(bsn! {
+            @button(arrows, image, at)
+            on(move |_: On<PointerClick>, mut layout: ResMut<ScreenLayout>| layout.toggle(panel))
+        }));
     }
+    (modes, panels)
 }
 
 #[cfg(test)]

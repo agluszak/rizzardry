@@ -9,7 +9,7 @@ use std::time::Duration;
 use bevy::prelude::*;
 use rand::Rng;
 
-use super::{LayoutMode, MainScreenArt, ScreenLayout, SelectedMember, layer, loaded, put};
+use super::{LayoutMode, MainScreenArt, ScreenLayout, SelectedMember, layer, loaded};
 use crate::content::characters::BodyPart;
 use crate::content::items::ItemCatalog;
 use crate::content::ui::SpriteSheet;
@@ -19,7 +19,7 @@ use crate::game::data::GameData;
 use crate::game::inventory::{Carried, EquipSlot, Given, ItemNews, PartyInventory};
 use crate::game::party::roster::PartyRoster;
 use crate::presentation::PresentationRng;
-use crate::presentation::screen_art::{absolute, sprite, text};
+use crate::presentation::screen_art::{absolute, rect, sprite, text};
 
 /// Where a slot's row starts: four rows of 85 pixels from y 18.
 fn row_y(slot: usize) -> f32 {
@@ -32,35 +32,35 @@ fn menu_x(slot: usize) -> f32 {
 }
 
 /// A slot's portrait, under the column art (Closed only).
-#[derive(Component)]
+#[derive(Component, Clone, Default)]
 pub struct SlotPortrait(usize);
 
-/// A slot's overlay on the column art, with what it last drew and the
-/// sheets loaded for that, kept while they are shown.
-#[derive(Component)]
+/// A slot's overlay on the column art, with what it last drew.
+#[derive(Component, Clone, Default)]
 pub struct PartySlot {
     slot: usize,
     drawn: Option<Option<SlotView>>,
-    sheets: Vec<Handle<SpriteSheet>>,
+}
+
+/// The sheets a slot shows: holding their handles keeps them loaded while
+/// they are shown.
+#[derive(Component)]
+pub struct HeldSheets {
+    _kept: Vec<Handle<SpriteSheet>>,
 }
 
 /// Holds the portraits' damage splats.
-#[derive(Component)]
+#[derive(Component, Clone, Default)]
 pub struct Splats;
 
-pub fn spawn_portraits(commands: &mut Commands, frame: Entity) {
-    for slot in 0..8 {
-        layer(commands, frame, SlotPortrait(slot));
-    }
+pub fn portraits() -> impl SceneList {
+    (0..8_usize).map(|slot| bsn! { @layer() SlotPortrait({slot}) }).collect::<Vec<_>>()
 }
 
-pub fn spawn_slots(commands: &mut Commands, frame: Entity, closed: bool) {
-    for slot in 0..8 {
-        layer(commands, frame, PartySlot { slot, drawn: None, sheets: vec![] });
-    }
-    if closed {
-        layer(commands, frame, Splats);
-    }
+pub fn slots(closed: bool) -> impl SceneList {
+    let slots: Vec<_> =
+        (0..8_usize).map(|slot| bsn! { @layer() PartySlot { slot: {slot} } }).collect();
+    (slots, closed.then(|| bsn! { @layer() Splats }))
 }
 
 /// What one party slot shows of its member.
@@ -210,11 +210,9 @@ pub fn draw_party(
         if party_slot.drawn.as_ref() == Some(&view) {
             continue;
         }
-        commands.entity(overlay).despawn_related::<Children>();
         let portrait = portraits.iter().find(|(_, p)| p.0 == slot).map(|(e, _)| e);
-        if let Some(portrait) = portrait {
-            commands.entity(portrait).despawn_related::<Children>();
-        }
+        let mut pictures: Vec<Box<dyn Scene>> = vec![];
+        let mut parts: Vec<Box<dyn Scene>> = vec![];
         let mut held = vec![];
         let mut complete = true;
         let mut sheet = |path: String| {
@@ -225,32 +223,25 @@ pub fn draw_party(
             sheet
         };
         let (y, left) = (row_y(slot), slot % 2 == 0);
-        if let Some(portrait) = portrait {
+        if portrait.is_some() {
             let at = Vec2::new(menu_x(slot) + 20.0, y);
             match &view {
                 None => {
                     let back = sheet("data/main interface/pback.sti".into());
-                    put(&mut commands, portrait, back.and_then(|s| sprite(s, 0, at)));
+                    pictures.push(Box::new(back.and_then(|s| sprite(s, 0, at))));
                     let dragons = sheet("data/main interface/dragons.sti".into());
-                    put(
-                        &mut commands,
-                        portrait,
-                        dragons.and_then(|s| sprite(s, 0, at + Vec2::X * 3.0)),
-                    );
+                    let at = at + Vec2::X * 3.0;
+                    pictures.push(Box::new(dragons.and_then(|s| sprite(s, 0, at))));
                 }
                 Some(view) if view.dead => {
                     let path = format!("data/portraits/medium/{}.sti", skull(view.race));
-                    if let Some((mut image, node, pick)) =
-                        sheet(path).and_then(|s| sprite(s, 0, at))
-                    {
-                        // Mirrored on the right.
-                        image.flip_x = !left;
-                        commands.spawn(((image, node, pick), ChildOf(portrait)));
-                    }
+                    let skull = sheet(path).and_then(|s| sprite(s, 0, at));
+                    // Mirrored on the right.
+                    pictures.push(Box::new(bsn! { @{skull} ImageNode { flip_x: {!left} } }));
                 }
                 Some(view) => {
                     let path = format!("data/portraits/medium/m{}.sti", view.portrait);
-                    put(&mut commands, portrait, sheet(path).and_then(|s| sprite(s, 0, at)));
+                    pictures.push(Box::new(sheet(path).and_then(|s| sprite(s, 0, at))));
                 }
             }
         }
@@ -265,7 +256,7 @@ pub fn draw_party(
             if closed {
                 let hands_x = if left { 2.0 } else { 619.0 };
                 let frame = if view.two_handed { 2 } else { 0 };
-                put(&mut commands, overlay, sprite(info, frame, Vec2::new(hands_x, y)));
+                parts.push(Box::new(sprite(info, frame, Vec2::new(hands_x, y))));
                 if !view.dead {
                     let [upper, lower] = empty_hands(view.race);
                     for (hand, (dy, empty)) in view.hands.iter().zip([(23.0, upper), (47.0, lower)])
@@ -279,21 +270,18 @@ pub fn draw_party(
                             None => sheet(format!("data/main interface/{empty}.sti"))
                                 .and_then(|s| sprite(s, 0, Vec2::new(hands_x + 4.0, y + dy))),
                         };
-                        put(&mut commands, overlay, part);
+                        parts.push(Box::new(part));
                     }
                     let armour = view.armour.to_string();
                     let at = Vec2::new(hands_x + 3.0, y + 3.0);
-                    commands.spawn((
-                        text(small_font, &mut images, &armour, at, 13.0),
-                        ChildOf(overlay),
-                    ));
+                    parts.push(Box::new(text(small_font, &mut images, &armour, at, 13.0)));
                 }
                 let at = Vec2::new(menu_x(slot) + 21.0, y + 73.0);
-                commands.spawn((text(font, &mut images, &view.name, at, 84.0), ChildOf(overlay)));
+                parts.push(Box::new(text(font, &mut images, &view.name, at, 84.0)));
             }
             // Retail's default shows hit points as a number, with wide bars
             // (`g_settings.numeric_hit_points`, on in `ResetGameplaySettings`).
-            put(&mut commands, overlay, sprite(info, 3, Vec2::new(bars_x, y)));
+            parts.push(Box::new(sprite(info, 3, Vec2::new(bars_x, y))));
             if !view.dead {
                 // The full bar, then its empty part blacked out from the top.
                 for (file, dx, fill) in [
@@ -302,23 +290,14 @@ pub fn draw_party(
                 ] {
                     let at = Vec2::new(bars_x + dx, y + 17.0);
                     let bar = sheet(format!("data/main interface/{file}.sti"));
-                    put(&mut commands, overlay, bar.and_then(|s| sprite(s, 0, at)));
-                    commands.spawn((
-                        absolute(at, Vec2::new(5.0, (45 - fill) as f32)),
-                        BackgroundColor(Color::srgb_u8(1, 1, 1)),
-                        Pickable::IGNORE,
-                        ChildOf(overlay),
-                    ));
+                    parts.push(Box::new(bar.and_then(|s| sprite(s, 0, at))));
+                    let empty = Vec2::new(5.0, (45 - fill) as f32);
+                    parts.push(Box::new(rect(at, empty, Color::srgb_u8(1, 1, 1))));
                 }
                 let at = Vec2::new(bars_x + 2.0, y + 62.0);
-                commands.spawn((
-                    absolute(at, Vec2::new(19.0, 9.0)),
-                    BackgroundColor(Color::BLACK),
-                    Pickable::IGNORE,
-                    ChildOf(overlay),
-                ));
+                parts.push(Box::new(rect(at, Vec2::new(19.0, 9.0), Color::BLACK)));
                 let hp = view.hp.to_string();
-                commands.spawn((text(small_font, &mut images, &hp, at, 19.0), ChildOf(overlay)));
+                parts.push(Box::new(text(small_font, &mut images, &hp, at, 19.0)));
             }
             // The condition and enchantment sockets (retail
             // `RedrawPartyPortraitOverlay` step 7): the condition on the
@@ -336,15 +315,15 @@ pub fn draw_party(
                     None => sheet(format!("data/main interface/{}.sti", plug(condition_x))),
                 };
                 let at = Vec2::new(condition_x, y + 3.0);
-                put(&mut commands, overlay, condition.and_then(|s| sprite(s, 0, at)));
+                parts.push(Box::new(condition.and_then(|s| sprite(s, 0, at))));
                 let enchantment = sheet(format!("data/main interface/{}.sti", plug(enchantment_x)));
                 let at = Vec2::new(enchantment_x, y + 3.0);
-                put(&mut commands, overlay, enchantment.and_then(|s| sprite(s, 0, at)));
+                parts.push(Box::new(enchantment.and_then(|s| sprite(s, 0, at))));
                 if view.condition.is_some() {
                     for x in [condition_x, enchantment_x] {
                         let rim = sheet("data/main interface/condition_highlight.sti".into());
                         let at = Vec2::new(x - 1.0, y + 2.0);
-                        put(&mut commands, overlay, rim.and_then(|s| sprite(s, 0, at)));
+                        parts.push(Box::new(rim.and_then(|s| sprite(s, 0, at))));
                     }
                 }
             }
@@ -356,7 +335,7 @@ pub fn draw_party(
                     sheet("data/main interface/edgeselect.sti".into())
                         .and_then(|s| sprite(s, 0, Vec2::new(bars_x + 1.0, y + 2.0)))
                 };
-                put(&mut commands, overlay, rim);
+                parts.push(Box::new(rim));
             }
             // The portrait (or strip) is the slot's button.
             let (at, size) = if closed {
@@ -364,17 +343,33 @@ pub fn draw_party(
             } else {
                 (Vec2::new(if left { 0.0 } else { 617.0 }, y), Vec2::new(22.0, 85.0))
             };
-            commands.spawn((absolute(at, size), SlotButton(slot), ChildOf(overlay))).observe(press);
+            let node = absolute(at, size);
+            parts.push(Box::new(bsn! { node SlotButton({slot}) on(press) }));
         }
-        party_slot.sheets = held;
+        commands
+            .entity(overlay)
+            .despawn_related::<Children>()
+            .queue_spawn_related_scenes::<Children>(parts);
+        if let Some(portrait) = portrait {
+            commands
+                .entity(portrait)
+                .despawn_related::<Children>()
+                .queue_spawn_related_scenes::<Children>(pictures);
+        }
+        commands.entity(overlay).insert(HeldSheets { _kept: held });
         party_slot.drawn = complete.then_some(view);
     }
 }
 
-#[derive(Component, Clone, Copy)]
+#[derive(Component, Clone, Copy, Default)]
 struct SlotButton(usize);
 
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+
+/// The last click on a slot and when, for double clicks; the buttons are
+/// drawn again as a click selects.
+#[derive(Resource, Default)]
+pub struct LastSlotClick(Option<(usize, Duration)>);
 
 /// With an item in hand, a click gives it to the member; otherwise it
 /// selects them, and a double click opens their review screen.
@@ -385,7 +380,7 @@ fn press(
     mut commands: Commands,
     roster: Res<PartyRoster>,
     time: Res<Time>,
-    mut last_click: Local<Option<(usize, Duration)>>,
+    mut last_click: ResMut<LastSlotClick>,
     (mut party, mut members, data, catalogs, battle, mut news): (
         ResMut<PartyInventory>,
         Query<(&Character, &mut Carried)>,
@@ -427,12 +422,12 @@ fn press(
     }
     selected.0 = slot;
     let now = time.elapsed();
-    if last_click.is_some_and(|(s, at)| s == slot && now - at < DOUBLE_CLICK)
+    if last_click.0.is_some_and(|(s, at)| s == slot && now - at < DOUBLE_CLICK)
         && let Some(&member) = roster.0.get_index(slot)
     {
         crate::presentation::inventory::open(&mut commands, &mut screen, member);
     }
-    *last_click = Some((slot, now));
+    last_click.0 = Some((slot, now));
 }
 
 /// Keys 1-6 select a member; retail binds them to PC 1-6.
@@ -518,7 +513,7 @@ pub fn play_splats(
     }
     state.playing.retain(|s| !s.timer.is_finished());
     let Ok(layer) = layers.single() else { return };
-    commands.entity(layer).despawn_related::<Children>();
+    let mut parts: Vec<Box<dyn Scene>> = vec![];
     for splat in &state.playing {
         let frame = (splat.timer.elapsed_secs() / SPLAT_FRAME) as usize;
         let handle = match (splat.death, splat.second) {
@@ -528,17 +523,15 @@ pub fn play_splats(
         };
         let x = if splat.slot.is_multiple_of(2) { 22.0 } else { 533.0 };
         let at = Vec2::new(x, row_y(splat.slot));
-        put(&mut commands, layer, sprite(loaded(&sheets, handle), frame, at));
+        parts.push(Box::new(sprite(loaded(&sheets, handle), frame, at)));
         if frame < 6 {
+            let font = loaded(&sheets, &art.bold_font);
             let damage = splat.damage.to_string();
-            let line = text(
-                loaded(&sheets, &art.bold_font),
-                &mut images,
-                &damage,
-                at + Vec2::new(0.0, 4.0),
-                82.0,
-            );
-            commands.spawn((line, ChildOf(layer)));
+            parts.push(Box::new(text(font, &mut images, &damage, at + Vec2::new(0.0, 4.0), 82.0)));
         }
     }
+    commands
+        .entity(layer)
+        .despawn_related::<Children>()
+        .queue_spawn_related_scenes::<Children>(parts);
 }
