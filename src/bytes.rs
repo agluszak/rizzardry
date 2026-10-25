@@ -1,4 +1,5 @@
-//! A bounds-checked little-endian cursor for irregular retail records.
+//! A bounds-checked little-endian cursor: for retail records, and the
+//! game's own navmesh cache.
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 #[error("record ends early: needed {needed} bytes at offset {offset}, {available} available")]

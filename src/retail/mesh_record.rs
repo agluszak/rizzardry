@@ -1,8 +1,8 @@
 //! Single mesh records (Whizzardry `ReadSingleLevelMeshRecord`): the meshes of
 //! props, animated props, items and uncompiled levels.
 
-use super::bytes::Bytes;
 use super::pvl::{MaterialRecord, PvlError, invalid, read_materials};
+use crate::bytes::Bytes;
 
 /// Retail stores most record lengths divided by 500.
 pub const RECORD_SCALE: f32 = 500.0;

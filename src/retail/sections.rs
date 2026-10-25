@@ -4,12 +4,12 @@
 //! the camera sway flag and the environment offset. Retail files end with 72
 //! unread zero bytes.
 
-use super::bytes::{Bytes, lenient_string};
 use super::keyframes::{PathKey, read_path};
 use super::mesh_record::RECORD_SCALE;
 use super::prop::{Prop, read_prop};
 use super::pvl::{PvlError, invalid, text};
 use super::trigger::{Trigger, read_trigger};
+use crate::bytes::{Bytes, lenient_string};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Light {

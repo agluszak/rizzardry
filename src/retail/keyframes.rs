@@ -1,9 +1,9 @@
 //! Keyframe paths (Whizzardry `LoadPathAI`): camera moves, animated prop
 //! parts, animated lights.
 
-use super::bytes::Bytes;
 use super::mesh_record::RECORD_SCALE;
 use super::pvl::{PvlError, invalid};
+use crate::bytes::Bytes;
 
 /// One key: a position in retail units and a rotation of `angle` radians
 /// about `axis`.

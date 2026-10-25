@@ -14,7 +14,6 @@ pub mod bake;
 pub mod links;
 
 use avian3d::prelude::*;
-use bevy::asset::processor::LoadTransformAndSave;
 use bevy::asset::{AssetApp, LoadState};
 use bevy::prelude::*;
 use bevy_landmass::prelude::*;
@@ -25,27 +24,13 @@ use bevy_tnua::prelude::*;
 use super::level::Level;
 use crate::content::level::LevelGeometry;
 use crate::game::party::body::{FLOAT_HEIGHT, PartyBody};
-use crate::retail::source::NAVMESH_EXTENSION;
 
 pub struct NavigationPlugin;
 
 impl Plugin for NavigationPlugin {
     fn finish(&self, app: &mut App) {
         // After Landmass registers `NavMesh3d`.
-        app.init_asset::<asset::LevelCollision>()
-            .init_asset::<asset::BakedNavmesh>()
-            .register_asset_loader(asset::LevelCollisionLoader)
-            .register_asset_loader(asset::NavmeshLoader)
-            .register_asset_processor(LoadTransformAndSave::<
-                asset::LevelCollisionLoader,
-                asset::BakeNavmesh,
-                asset::NavmeshSaver,
-            >::new(asset::BakeNavmesh, asset::NavmeshSaver))
-            .set_default_asset_processor::<LoadTransformAndSave<
-                asset::LevelCollisionLoader,
-                asset::BakeNavmesh,
-                asset::NavmeshSaver,
-            >>(NAVMESH_EXTENSION);
+        app.init_asset::<asset::BakedNavmesh>().register_asset_loader(asset::NavmeshLoader);
     }
 
     fn build(&self, app: &mut App) {

@@ -4,8 +4,8 @@
 //! After Whizzardry `ReadStringTable` and `GetStringFromStringDatabase`.
 //! Text is UTF-16LE, each unit stored as `!unit + 0x9697`.
 
-use super::bytes::Bytes;
 use super::pvl::{PvlError, invalid};
+use crate::bytes::Bytes;
 
 fn decode(units: &[u8], encoded: bool) -> String {
     let units: Vec<u16> = units

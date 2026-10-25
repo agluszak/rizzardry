@@ -10,9 +10,9 @@ use bevy::math::{Vec2, Vec3};
 use bevy_landmass::NavigationMesh3d;
 use clap::Parser;
 
-use rizzardry::game::world::navigation::asset::level_collision;
 use rizzardry::game::world::navigation::bake::{NavmeshBakeSettings, SIZE_CLASSES, bake};
 use rizzardry::retail::files::RetailFiles;
+use rizzardry::retail::navmesh::level_collision;
 
 #[derive(clap::Parser)]
 #[command(about = "Bake retail levels' navmeshes outside the game and report the results.")]

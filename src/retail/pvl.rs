@@ -5,7 +5,7 @@
 //! one compiled mesh per octree mesh, `-1`. Later sections (lights, monsters,
 //! props, triggers, named points, automap) are not decoded yet.
 
-use super::bytes::{Bytes, Truncated, c_string};
+use crate::bytes::{Bytes, Truncated, c_string};
 
 const MATERIAL_RECORD: usize = 0x11a;
 const TERMINATOR: i32 = -1;

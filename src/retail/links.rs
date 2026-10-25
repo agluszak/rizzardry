@@ -113,7 +113,7 @@ pub fn level_links(sections: &LevelSections) -> Vec<LevelLink> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::retail::bytes::Bytes;
+    use crate::bytes::Bytes;
     use crate::retail::pvl::read_level_geometry;
     use crate::retail::sections::read_sections;
 

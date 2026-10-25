@@ -55,8 +55,9 @@ mod tests {
     #[test]
     #[ignore = "requires a retail installation"]
     fn retail_layers_and_cursor_hotspots_match_authored_data() {
+        use crate::bytes::Bytes;
         use crate::retail::{
-            bytes::Bytes, files::RetailFiles, pvl::read_level_geometry, sections::read_sections,
+            files::RetailFiles, pvl::read_level_geometry, sections::read_sections,
         };
         let files = RetailFiles::open(std::env::var("RIZZARDRY_RETAIL").expect("RIZZARDRY_RETAIL"))
             .unwrap();

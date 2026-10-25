@@ -7,7 +7,6 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::reflect::TypePath;
 
-use super::bytes::Bytes;
 use super::links::{level_entrances, level_links, teleport_arrival};
 use super::oct::read_collision;
 use super::population::{Placement, WorldItemRecord, read_placements, read_world_items};
@@ -23,6 +22,7 @@ use super::texture_loader::file_has_alpha;
 use super::trigger::{
     AmbientSound, ItemTrigger, StateMode, TriggerKind, action as trigger_action, flag,
 };
+use crate::bytes::Bytes;
 use crate::content::UNITS_PER_METRE;
 use crate::content::items::ItemId;
 use crate::content::level::{
