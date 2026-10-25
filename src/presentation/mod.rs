@@ -81,6 +81,7 @@ impl Plugin for PresentationPlugin {
                         main_screen::fit_viewport,
                         main_screen::draw_main_screen,
                         main_screen::update_radar,
+                        main_screen::play_splats,
                     )
                         .chain()
                         .after(automap::scale_ui),

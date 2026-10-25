@@ -154,6 +154,10 @@ pub struct MainScreenArt {
     column_info: Handle<SpriteSheet>,
     font: Handle<SpriteSheet>,
     small_font: Handle<SpriteSheet>,
+    bold_font: Handle<SpriteSheet>,
+    damage_splat: Handle<SpriteSheet>,
+    damage_splat2: Handle<SpriteSheet>,
+    death_splat: Handle<SpriteSheet>,
 }
 
 pub fn load_main_screen_art(mut commands: Commands, assets: Res<AssetServer>) {
@@ -181,6 +185,10 @@ pub fn load_main_screen_art(mut commands: Commands, assets: Res<AssetServer>) {
         column_info: load("main_column_info_normal"),
         font: assets.load("retail://data/fonts/wiz_text_font.sti"),
         small_font: assets.load("retail://data/fonts/smfnt.sti"),
+        bold_font: assets.load("retail://data/fonts/wiz_text_font_bold.sti"),
+        damage_splat: load("damage_splat_anim"),
+        damage_splat2: load("damage_splat_anim2"),
+        death_splat: load("death_splat_anim"),
     });
 }
 
@@ -325,6 +333,95 @@ const FORMATION_CELLS: [(f32, f32); 15] = [
     (30.0, 42.0),
     (46.0, 42.0),
 ];
+
+/// Holds the portraits' damage splats.
+#[derive(Component)]
+pub struct Splats;
+
+/// A splat playing over a member's portrait.
+#[derive(Debug, Clone)]
+struct Splat {
+    slot: usize,
+    started: f32,
+    damage: u32,
+    death: bool,
+    /// Which of retail's two damage splats (`damage_splat_anim` or `_anim2`).
+    second: bool,
+}
+
+/// Splats being played, and each member's health last seen.
+#[derive(Default)]
+pub struct SplatState {
+    playing: Vec<Splat>,
+    health: Vec<u32>,
+    noise: u32,
+}
+
+/// Each frame of a splat lasts this long (retail: 100 ms).
+const SPLAT_FRAME: f32 = 0.1;
+
+/// Play a splat over a member's portrait when their health drops (retail
+/// `RecordCharacterDamage`): one of two damage splats for 8 frames with the
+/// damage for the first 6, or the 30-frame death splat when the blow kills.
+/// Retail picks between the two splats with its gameplay randomness; here
+/// presentation's own does.
+pub fn play_splats(
+    mut commands: Commands,
+    time: Res<Time>,
+    art: Res<MainScreenArt>,
+    sheets: Res<Assets<SpriteSheet>>,
+    mut images: ResMut<Assets<Image>>,
+    roster: Res<PartyRoster>,
+    members: Query<&Character>,
+    layers: Query<Entity, With<Splats>>,
+    mut state: Local<SplatState>,
+) {
+    let now = time.elapsed_secs();
+    let health: Vec<u32> = roster.0.iter().map(|&m| members.get(m).map_or(0, |c| c.hp)).collect();
+    if state.health.len() == health.len() {
+        for (slot, (&before, &after)) in state.health.clone().iter().zip(&health).enumerate() {
+            if after < before {
+                state.noise = state.noise.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                let second = state.noise & 0x10000 != 0;
+                state.playing.retain(|s| s.slot != slot);
+                state.playing.push(Splat {
+                    slot,
+                    started: now,
+                    damage: before - after,
+                    death: after == 0,
+                    second,
+                });
+            }
+        }
+    }
+    state.health = health;
+    state.playing.retain(|s| (now - s.started) / SPLAT_FRAME < if s.death { 30.0 } else { 8.0 });
+    let Ok(layer) = layers.single() else { return };
+    commands.entity(layer).despawn_related::<Children>();
+    let sheet = |h: &Handle<SpriteSheet>| sheets.get(h);
+    for splat in &state.playing {
+        let frame = ((now - splat.started) / SPLAT_FRAME) as usize;
+        let handle = match (splat.death, splat.second) {
+            (true, _) => &art.death_splat,
+            (false, false) => &art.damage_splat,
+            (false, true) => &art.damage_splat2,
+        };
+        let at = Vec2::new(
+            if splat.slot % 2 == 0 { 22.0 } else { 533.0 },
+            18.0 + 85.0 * (splat.slot / 2) as f32,
+        );
+        if let Some(part) = sheet(handle).and_then(|s| sprite(s, frame, at)) {
+            commands.spawn((part, ChildOf(layer)));
+        }
+        if frame < 6
+            && let Some(font) = sheet(&art.bold_font)
+        {
+            let line =
+                text(font, &mut images, &splat.damage.to_string(), at + Vec2::new(0.0, 4.0), 82.0);
+            commands.spawn((line, ChildOf(layer)));
+        }
+    }
+}
 
 /// The radar's compass rim, turned with the party.
 #[derive(Component)]
@@ -917,6 +1014,15 @@ pub fn draw_main_screen(
         commands
             .spawn((absolute(at, size), ScreenButton::Portrait(slot), ChildOf(frame)))
             .observe(press);
+    }
+    // Damage splats play over the portraits.
+    if closed {
+        commands.spawn((
+            Splats,
+            absolute(Vec2::ZERO, Vec2::ZERO),
+            Pickable::IGNORE,
+            ChildOf(frame),
+        ));
     }
     // Roof buttons: the current mode is pressed.
     for (i, (mode, x)) in
