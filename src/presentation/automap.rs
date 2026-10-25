@@ -11,6 +11,8 @@ use bevy::input::ButtonState;
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
+
+use crate::game::screen::Screen;
 use bevy_enhanced_input::prelude::*;
 
 use crate::content::level::{CollisionMesh, LevelGeometry};
@@ -265,6 +267,7 @@ pub fn toggle_automap(
     level: Query<&Level>,
     geometry: Res<Assets<LevelGeometry>>,
     screens: Query<Entity, With<AutomapScreen>>,
+    mut screen: ResMut<Screen>,
 ) {
     let opened = open.read().count() > 0;
     let toggled = toggle.contains(ActionEvents::START);
@@ -276,10 +279,11 @@ pub fn toggle_automap(
                 commands.entity(screen).despawn();
             }
             commands.remove_resource::<Automap>();
+            screen.close(Screen::Automap);
         }
         return;
     }
-    if !(toggled || opened) {
+    if !(toggled || opened) || *screen != Screen::World {
         return;
     }
     let (Some(art), Ok(party)) = (art, party.single()) else { return };
@@ -305,6 +309,7 @@ pub fn toggle_automap(
     let feet = party.translation - Vec3::Y * FLOAT_HEIGHT;
     let collision = level.single().ok().and_then(|level| geometry.get(&level.geometry));
     let layers = collision.map_or(&[][..], |level| level.map_layers.as_slice());
+    screen.open(Screen::Automap);
     let automap = Automap::new(collision.map(|level| &level.collision), layers, feet);
     let plan = collision
         .map(|level| images.add(floor_plan(&level.collision, &level.map_layers, &automap)));

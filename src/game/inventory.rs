@@ -634,8 +634,7 @@ impl PartyInventory {
                 taken
             }
             ItemLocation::Member(_, slot) => {
-                let place =
-                    member.and_then(|(_, m)| m.slot_mut(slot)).ok_or(Refusal::Nothing)?;
+                let place = member.and_then(|(_, m)| m.slot_mut(slot)).ok_or(Refusal::Nothing)?;
                 let (whole, taken) = split(place.as_mut().ok_or(Refusal::Nothing)?)?;
                 if whole {
                     *place = None;

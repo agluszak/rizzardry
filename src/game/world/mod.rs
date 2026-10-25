@@ -50,7 +50,12 @@ impl Plugin for WorldPlugin {
                     level::build_sky,
                     (
                         population::measure_monsters,
-                        (search::search_key, search::toggle_search, search::search_pulse).chain(),
+                        (
+                            search::search_key.run_if(crate::game::screen::party_free),
+                            search::toggle_search,
+                            search::search_pulse,
+                        )
+                            .chain(),
                         identify::detect_monster_groups,
                     )
                         .run_if(level::level_active)

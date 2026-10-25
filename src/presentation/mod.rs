@@ -27,18 +27,15 @@ use crate::game::party::body::Exploration;
 
 pub struct PresentationPlugin;
 
-/// Exploring takes input only while nothing else holds it: the automap,
-/// a question, camping or the inventory. The party may move in a fight, as
-/// in retail's continuous mode.
+/// Exploring takes input only while gameplay says the party is free
+/// (`game::screen`); presentation routes input by that rule, it does not
+/// make it.
 fn hold_exploration(
     mut commands: Commands,
-    automap: Option<Res<automap::Automap>>,
-    question: Option<Res<crate::game::world::level::TravelQuestion>>,
-    camp: Option<Res<crate::game::camp::Camp>>,
-    inventory: Option<Res<inventory::InventoryScreen>>,
+    freedom: crate::game::screen::Freedom,
     controls: Query<(Entity, Option<&ContextActivity<Exploration>>), With<Exploration>>,
 ) {
-    let active = automap.is_none() && question.is_none() && camp.is_none() && inventory.is_none();
+    let active = freedom.free();
     for (entity, activity) in &controls {
         if activity.is_none_or(|a| **a != active) {
             commands.entity(entity).insert(ContextActivity::<Exploration>::new(active));

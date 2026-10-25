@@ -9,6 +9,8 @@ use std::collections::HashMap;
 use bevy::picking::pointer::{PointerId, PointerLocation};
 use bevy::prelude::*;
 
+use crate::game::screen::Screen;
+
 use super::screen_art::{absolute, sprite, text};
 use crate::content::items::{ItemCatalog, QuantityKind};
 use crate::content::ui::SpriteSheet;
@@ -134,35 +136,48 @@ fn statue(race: Race, gender: Gender) -> String {
 pub fn toggle_inventory(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
-    screen: Option<Res<InventoryScreen>>,
-    automap: Option<Res<super::automap::Automap>>,
+    inventory: Option<Res<InventoryScreen>>,
+    mut screen: ResMut<Screen>,
     roster: Res<PartyRoster>,
     selected: Res<super::main_screen::SelectedMember>,
     roots: Query<Entity, With<InventoryRoot>>,
 ) {
-    match screen {
+    match inventory {
         Some(_) if keys.just_pressed(KeyCode::Escape) || keys.just_pressed(KeyCode::KeyI) => {
-            close(&mut commands, &roots);
+            close(&mut commands, &mut screen, &roots);
         }
-        None if keys.just_pressed(KeyCode::KeyI) && automap.is_none() => {
-            // Retail opens the selected character.
+        // Retail opens the selected character.
+        None if keys.just_pressed(KeyCode::KeyI) => {
             if let Some(&member) = roster.0.get(selected.0).or(roster.0.first()) {
-                commands.insert_resource(InventoryScreen::new(member));
+                open(&mut commands, &mut screen, member);
             }
         }
         _ => {}
     }
 }
 
+/// Bring up a member's inventory, unless another screen is up.
+pub fn open(commands: &mut Commands, screen: &mut Screen, member: Entity) {
+    if screen.open(Screen::Inventory) {
+        commands.insert_resource(InventoryScreen::new(member));
+    }
+}
+
 /// Close the screen (the Exit button).
-fn exit(_: On<PointerClick>, mut commands: Commands, roots: Query<Entity, With<InventoryRoot>>) {
-    close(&mut commands, &roots);
+fn exit(
+    _: On<PointerClick>,
+    mut commands: Commands,
+    mut screen: ResMut<Screen>,
+    roots: Query<Entity, With<InventoryRoot>>,
+) {
+    close(&mut commands, &mut screen, &roots);
 }
 
 /// Close the screen, first putting away whatever is in hand.
-fn close(commands: &mut Commands, roots: &Query<Entity, With<InventoryRoot>>) {
+fn close(commands: &mut Commands, screen: &mut Screen, roots: &Query<Entity, With<InventoryRoot>>) {
     commands.run_system_cached(put_away_held);
     commands.remove_resource::<InventoryScreen>();
+    screen.close(Screen::Inventory);
     for root in roots {
         commands.entity(root).despawn();
     }

@@ -295,11 +295,16 @@ pub fn drive_party(
     turn: Single<&Action<Turn>>,
     run: Single<&Action<Run>>,
     mut party: Query<(&mut PartyBody, &mut TnuaController<PartyMotion>)>,
+    freedom: crate::game::screen::Freedom,
 ) {
     let Ok((mut body, mut controller)) = party.single_mut() else { return };
-    body.yaw -= ***turn * TURN_SPEED * time.delta_secs();
+    // A party held by a screen, a camp or a question stands still.
+    let free = freedom.free();
+    if free {
+        body.yaw -= ***turn * TURN_SPEED * time.delta_secs();
+    }
     // The walk config's speed is the run speed; walking scales the input.
-    let input = walk.clamp_length_max(1.0);
+    let input = if free { walk.clamp_length_max(1.0) } else { Vec2::ZERO };
     let fraction = if ***run { 1.0 } else { WALK_SPEED / RUN_SPEED };
     controller.initiate_action_feeding();
     controller.basis = TnuaBuiltinWalk {

@@ -8,9 +8,9 @@ use avian3d::prelude::LinearVelocity;
 use bevy::prelude::*;
 use bevy_enhanced_input::prelude::*;
 
-use crate::game::party::roster::PartyRoster;
 use crate::game::characters::{Character, Condition};
 use crate::game::party::body::PartyBody;
+use crate::game::party::roster::PartyRoster;
 use crate::game::time::GameClock;
 
 /// How long a requested rest lasts, in game milliseconds.

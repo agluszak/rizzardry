@@ -9,5 +9,6 @@ pub mod inventory;
 pub mod loot;
 pub mod party;
 pub mod rng;
+pub mod screen;
 pub mod time;
 pub mod world;

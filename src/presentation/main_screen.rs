@@ -295,6 +295,7 @@ fn press(
         Option<Res<crate::game::combat::Battle>>,
         MessageWriter<ItemNews>,
     ),
+    mut screen: ResMut<crate::game::screen::Screen>,
 ) {
     match buttons.get(click.entity) {
         Ok(ScreenButton::Mode(mode)) => layout.mode = *mode,
@@ -334,7 +335,7 @@ fn press(
             if last_click.is_some_and(|(s, at)| s == *slot && now - at < DOUBLE_CLICK)
                 && let Some(&member) = roster.0.get(*slot)
             {
-                commands.insert_resource(super::inventory::InventoryScreen::new(member));
+                super::inventory::open(&mut commands, &mut screen, member);
             }
             *last_click = Some((*slot, now));
         }

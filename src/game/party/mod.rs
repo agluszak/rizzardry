@@ -13,6 +13,7 @@ use bevy_tnua::prelude::*;
 use bevy_tnua_avian3d::prelude::*;
 
 use crate::game::camp;
+use crate::game::screen::party_free;
 use crate::game::world::level::level_active;
 use crate::game::world::triggers::PendingPartyMove;
 
@@ -27,6 +28,7 @@ impl Plugin for PartyPlugin {
         .insert_resource(Gravity(Vec3::NEG_Y * body::GRAVITY))
         .add_input_context::<body::Exploration>()
         .init_resource::<roster::PartyRoster>()
+        .init_resource::<crate::game::screen::Screen>()
         .init_resource::<formation::Formation>()
         .add_message::<camp::CampNews>()
         .add_message::<camp::CampRequest>()
@@ -37,10 +39,18 @@ impl Plugin for PartyPlugin {
                 roster::give_starting_equipment,
                 formation::seat_party,
                 (
-                    (body::look_around, body::aim_camera).chain(),
-                    body::interact,
-                    crate::game::world::items::click_items_in_view,
-                    (camp::request_camp, camp::force_camp, camp::cancel_camp, camp::advance_camp)
+                    (
+                        (body::look_around, body::aim_camera).chain(),
+                        body::interact,
+                        crate::game::world::items::click_items_in_view,
+                    )
+                        .run_if(party_free),
+                    (
+                        camp::request_camp.run_if(party_free),
+                        camp::force_camp,
+                        camp::cancel_camp,
+                        camp::advance_camp,
+                    )
                         .chain(),
                 )
                     .run_if(level_active),
