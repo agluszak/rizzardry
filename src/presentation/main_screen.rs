@@ -4,6 +4,7 @@
 //! The 3D view renders into the viewport the layout leaves open.
 
 use bevy::camera::Viewport;
+use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::ui::IsDefaultUiCamera;
 
@@ -721,6 +722,28 @@ fn press_bank(
     }
 }
 
+/// A button's look while hovered (retail's buttons have a frame for it).
+#[derive(Component, Clone)]
+#[require(Hovered)]
+pub struct HoverArt {
+    normal: Handle<Image>,
+    hovered: Handle<Image>,
+}
+
+fn hover_art(sheet: &SpriteSheet, normal: usize, hovered: usize) -> HoverArt {
+    let image = |frame: usize| sheet.images.get(frame).cloned().unwrap_or_default();
+    HoverArt { normal: image(normal), hovered: image(hovered) }
+}
+
+/// Show each button's hover frame while the pointer is over it.
+pub fn paint_hover_art(
+    mut buttons: Query<(&Hovered, &HoverArt, &mut ImageNode), Changed<Hovered>>,
+) {
+    for (hovered, art, mut image) in &mut buttons {
+        image.image = if hovered.get() { art.hovered.clone() } else { art.normal.clone() };
+    }
+}
+
 /// A text box scroll arrow: lines to move by.
 #[derive(Component, Clone, Copy)]
 struct TextScroll(i32);
@@ -1319,7 +1342,8 @@ pub fn draw_main_screen(
                 if let Some((node_image, node, _)) = sprite(scroll, image, Vec2::new(461.0, y)) {
                     let mut arrow = commands.spawn((node_image, node, ChildOf(frame)));
                     if enabled {
-                        arrow.insert(TextScroll(lines)).observe(scroll_text);
+                        arrow.insert((TextScroll(lines), hover_art(scroll, image, image + 1)));
+                        arrow.observe(scroll_text);
                     }
                 }
             }
@@ -1388,19 +1412,20 @@ pub fn draw_main_screen(
     // ..., on). Camp, search and the formation panel work; the journal,
     // items, spells and options are grayed until they exist.
     let fighting = shown.fighting;
-    let mut bank: Vec<(&SpriteSheet, f32, f32, usize, usize, Option<Bank>)> = vec![
-        (options, 0.0, 450.0, 3, 0, None),
-        (icons, 40.0, 452.0, 0x2b, 0x28, None),
-        (icons, 70.0, 452.0, 3, 0, Some(Bank::Camp)),
-        (icons, 100.0, 452.0, 8, if shown.searching { 7 } else { 5 }, Some(Bank::Search)),
-        (icons, 130.0, 452.0, 0x17, 0x14, None),
-        (icons, 160.0, 452.0, 0x1c, 0x19, None),
+    // Each button's frames: grayed, off, hovered, on, on and hovered.
+    let mut bank: Vec<(&SpriteSheet, f32, f32, [usize; 5], bool, Option<Bank>)> = vec![
+        (options, 0.0, 450.0, [3, 0, 1, 2, 2], false, None),
+        (icons, 40.0, 452.0, [0x2b, 0x28, 0x29, 0x2a, 0x2c], false, None),
+        (icons, 70.0, 452.0, [3, 0, 1, 2, 4], false, Some(Bank::Camp)),
+        (icons, 100.0, 452.0, [8, 5, 6, 7, 9], shown.searching, Some(Bank::Search)),
+        (icons, 130.0, 452.0, [0x17, 0x14, 0x15, 0x16, 0x18], false, None),
+        (icons, 160.0, 452.0, [0x1c, 0x19, 0x1a, 0x1b, 0x1d], false, None),
         (
             icons,
             571.0,
             452.0,
-            0x26,
-            if layout.shows(Panel::Formation) { 0x25 } else { 0x23 },
+            [0x26, 0x23, 0x24, 0x25, 0x27],
+            layout.shows(Panel::Formation),
             Some(Bank::Formation),
         ),
     ];
@@ -1408,13 +1433,23 @@ pub fn draw_main_screen(
         // End Combat (ending a fight by choice is not modelled), Defend and
         // Attack set the selected member's order.
         let order = shown.orders.get(shown.selected).copied().unwrap_or_default();
-        let (defend, attack) = match order {
-            Order::Defend => (0x11, 0xa),
-            Order::Attack => (0xf, 0xc),
-        };
-        bank.push((combat_toggle, 200.0, 452.0, 7, 4, None));
-        bank.push((icons, 232.0, 452.0, 0x12, defend, Some(Bank::Order(Order::Defend))));
-        bank.push((icons, 262.0, 452.0, 0xd, attack, Some(Bank::Order(Order::Attack))));
+        bank.push((combat_toggle, 200.0, 452.0, [7, 4, 5, 6, 6], false, None));
+        bank.push((
+            icons,
+            232.0,
+            452.0,
+            [0x12, 0xf, 0x10, 0x11, 0x13],
+            order == Order::Defend,
+            Some(Bank::Order(Order::Defend)),
+        ));
+        bank.push((
+            icons,
+            262.0,
+            452.0,
+            [0xd, 0xa, 0xb, 0xc, 0xe],
+            order == Order::Attack,
+            Some(Bank::Order(Order::Attack)),
+        ));
         // The round button (retail `UpdateCombatStanceButtons`): Start
         // Round while a phased fight waits, Go Continuous while its round
         // plays; Go Phased while a continuous one plays, Start Round between.
@@ -1439,24 +1474,37 @@ pub fn draw_main_screen(
             commands.spawn((node_image, node, pick, ChildOf(frame)));
         }
     } else {
-        bank.push((combat_toggle, 199.0, 452.0, 3, 0, None));
+        bank.push((combat_toggle, 199.0, 452.0, [3, 0, 1, 2, 2], false, None));
     }
-    for (sheet, x, y, grayed, normal, action) in bank {
+    for (sheet, x, y, [grayed, off, hover, on, on_hover], pressed, action) in bank {
         // The journal, camp and the combat toggle are grayed in a fight.
         let usable =
             action.is_some() && !(fighting && matches!(action, Some(Bank::Camp | Bank::Search)));
-        let image = if usable { normal } else { grayed };
+        let (image, hover) = match (usable, pressed) {
+            (false, _) => (grayed, grayed),
+            (true, false) => (off, hover),
+            (true, true) => (on, on_hover),
+        };
         if let Some((node_image, node, _)) = sprite(sheet, image, Vec2::new(x, y)) {
             let mut button = commands.spawn((node_image, node, ChildOf(frame)));
             if let (true, Some(action)) = (usable, action) {
                 button.insert(action).observe(press_bank);
+                button.insert(hover_art(sheet, image, hover));
             }
         }
     }
     // Previous and next character (retail `main_scroll_arrows`).
     for (image, x, step) in [(0, 300.0, -1), (4, 323.0, 1)] {
         if let Some((node_image, node, _)) = sprite(scroll_arrows, image, Vec2::new(x, 456.0)) {
-            commands.spawn((node_image, node, Step(step), ChildOf(frame))).observe(step_selection);
+            commands
+                .spawn((
+                    node_image,
+                    node,
+                    Step(step),
+                    hover_art(scroll_arrows, image, image + 1),
+                    ChildOf(frame),
+                ))
+                .observe(step_selection);
         }
     }
     // The selected member's caption: "Name - Profession" (retail
