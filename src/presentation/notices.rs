@@ -116,7 +116,13 @@ const UPON: usize = 0x218;
 /// `AnnounceMonsterAttack` without verbose messages): the attacker, the
 /// verb, "at" or "upon" where the mode takes it, the target, and the swings
 /// when more than one ("Ragnar Swings at Crab", "Crab Claws Pippa 2x").
-fn announce(string: &impl Fn(usize) -> String, attacker: &str, target: &str, how: Announcement, swings: u32) -> String {
+fn announce(
+    string: &impl Fn(usize) -> String,
+    attacker: &str,
+    target: &str,
+    how: Announcement,
+    swings: u32,
+) -> String {
     // Retail `g_attack_flag_name_ids`: each mode's noun, then its verb.
     let verb = |mode: Mode| string(0x51f + 2 * mode as usize + 1);
     let preposition = |mode: Mode| match mode {
@@ -205,10 +211,16 @@ pub fn queue_notices(
             CombatNews::Result { attacker, hits, damage } => vec![match (hits, damage) {
                 (0, _) => string(MISSED),
                 (_, 0) => string(NO_DAMAGE),
-                (1, damage) => format!("{attacker} {}", string(HITS).replace("%ld", &damage.to_string())),
+                (1, damage) => {
+                    format!("{attacker} {}", string(HITS).replace("%ld", &damage.to_string()))
+                }
                 (hits, damage) => format!(
                     "{attacker} {}",
-                    string(HITS_TIMES).replacen("%ld", &hits.to_string(), 1).replacen("%ld", &damage.to_string(), 1)
+                    string(HITS_TIMES).replacen("%ld", &hits.to_string(), 1).replacen(
+                        "%ld",
+                        &damage.to_string(),
+                        1
+                    )
                 ),
             }],
             CombatNews::Killed { name } => vec![format!("{name} {}", string(DIES))],

@@ -1,5 +1,6 @@
 //! The active level and its local objects.
 
+pub mod items;
 pub mod level;
 pub mod navigation;
 pub mod population;

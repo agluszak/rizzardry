@@ -119,6 +119,7 @@ pub struct LevelGeometry {
     pub ambient_sounds: Vec<AmbientSoundModel>,
     /// Monsters and NPCs standing in the level at a new game.
     pub monsters: Vec<MonsterPlacement>,
+    pub items: Vec<ItemPlacement>,
     pub props: Vec<PropModel>,
     /// Navigation links between places the navmesh does not join.
     pub links: Vec<LevelLink>,
@@ -167,6 +168,20 @@ pub struct MonsterPlacement {
     /// Feet.
     pub position: Vec3,
     pub yaw: f32,
+}
+
+/// An item lying in the level as authored (retail `.sts` `ITEM`).
+#[derive(Clone, Debug, Reflect)]
+pub struct ItemPlacement {
+    pub item: crate::content::items::ItemId,
+    /// A stack's count, or charges or uses, by the item's quantity kind.
+    pub stack: u8,
+    pub uses: u8,
+    pub identified: bool,
+    /// The item's origin, about a quarter metre above the ground.
+    pub position: Vec3,
+    /// Unseen until found by searching.
+    pub hidden: bool,
 }
 
 /// A sound a place makes (retail ambient sound).

@@ -153,9 +153,18 @@ pub enum CombatNews {
     Began,
     /// An attack begins (retail `StartCharacterAttack`,
     /// `AnnounceMonsterAttack`).
-    Attack { attacker: String, target: String, how: Announcement, swings: u32 },
+    Attack {
+        attacker: String,
+        target: String,
+        how: Announcement,
+        swings: u32,
+    },
     /// What it did: hits (that landed, damage or not) and damage dealt.
-    Result { attacker: String, hits: u32, damage: u32 },
+    Result {
+        attacker: String,
+        hits: u32,
+        damage: u32,
+    },
     Killed {
         name: String,
     },

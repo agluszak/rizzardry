@@ -223,20 +223,7 @@ pub fn light_monsters(
     for (transform, appearance, mut instance) in &mut actors {
         let Some(model) = models.get(&appearance.model) else { continue };
         let centre = transform.translation();
-        let sunlit = level.lighting.sun.is_some_and(|sun| {
-            let Ok(direction) = Dir3::new(sun - centre) else { return true };
-            spatial
-                .cast_ray_predicate(
-                    centre,
-                    direction,
-                    centre.distance(sun),
-                    true,
-                    &SpatialQueryFilter::default(),
-                    &|hit| hit == level_entity,
-                )
-                .is_none()
-        });
-        let target = if sunlit { SUNLIT } else { 0.0 };
+        let target = if sunlit(&spatial, level_entity, level, centre) { SUNLIT } else { 0.0 };
         let step = SKY_SCALE_PER_SECOND * time.delta_secs();
         instance.sky_scale += (target - instance.sky_scale).clamp(-step, step);
         let fixed = level.lighting.at(centre, None);
@@ -259,6 +246,29 @@ pub fn light_monsters(
             mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![colour; count]);
         }
     }
+}
+
+/// Whether the level's `SUN` light is in sight from `at`, past the level's
+/// own geometry. A level without one has no sunlight.
+pub fn sunlit(
+    spatial: &SpatialQuery,
+    level_entity: Entity,
+    level: &LevelGeometry,
+    at: Vec3,
+) -> bool {
+    level.lighting.sun.is_some_and(|sun| {
+        let Ok(direction) = Dir3::new(sun - at) else { return true };
+        spatial
+            .cast_ray_predicate(
+                at,
+                direction,
+                at.distance(sun),
+                true,
+                &SpatialQueryFilter::default(),
+                &|hit| hit == level_entity,
+            )
+            .is_none()
+    })
 }
 
 /// Walkers play WALK while moving and IDLE when still.

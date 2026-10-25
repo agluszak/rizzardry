@@ -17,6 +17,7 @@ pub mod screen_art;
 pub mod sky;
 pub mod textures;
 pub mod voice;
+pub mod world_items;
 
 use bevy::prelude::*;
 use bevy_enhanced_input::prelude::*;
@@ -137,6 +138,13 @@ impl Plugin for PresentationPlugin {
                         monsters::build_monster_instances,
                         monsters::animate_monsters,
                         monsters::light_monsters,
+                    )
+                        .chain(),
+                    (
+                        world_items::show_world_items,
+                        world_items::build_world_items,
+                        world_items::turn_world_items,
+                        world_items::light_world_items,
                     )
                         .chain(),
                 ),

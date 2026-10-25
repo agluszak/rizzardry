@@ -6,6 +6,7 @@
 pub mod automap;
 pub mod bytes;
 pub mod files;
+pub mod item_model_loader;
 pub mod items;
 pub mod keyframes;
 pub mod level_loader;
@@ -76,6 +77,8 @@ impl Plugin for RetailPlugin {
             .init_asset_loader::<sti_loader::StiLoader>()
             .init_asset::<crate::content::items::ItemCatalog>()
             .init_asset_loader::<items::ItemCatalogLoader>()
+            .init_asset::<crate::content::items::ItemModel>()
+            .init_asset_loader::<item_model_loader::ItmLoader>()
             .init_asset::<crate::content::items::LootTables>()
             .init_asset_loader::<items::LootTablesLoader>()
             .init_asset::<crate::content::species::MonsterCatalog>()

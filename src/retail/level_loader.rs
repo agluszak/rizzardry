@@ -10,7 +10,7 @@ use bevy::reflect::TypePath;
 use super::bytes::Bytes;
 use super::links::{level_entrances, level_links, teleport_arrival};
 use super::oct::read_collision;
-use super::population::{Placement, read_placements};
+use super::population::{Placement, WorldItemRecord, read_placements, read_world_items};
 use super::prop::{PROP_COLLIDABLE, Prop};
 use super::prop_loader::{
     PropLighting, key_transform, level_lighting, part_transforms, record_collision, record_meshes,
@@ -25,9 +25,10 @@ use super::texture_loader::file_has_alpha;
 use super::trigger::{
     AmbientSound, ItemTrigger, StateMode, TriggerKind, action as trigger_action, flag,
 };
+use crate::content::items::ItemId;
 use crate::content::level::{
-    AmbientSoundModel, CameraPathModel, DoorLock, LevelEnvironment, LevelGeometry, LevelPart,
-    MonsterPlacement, Playback, PropModel, PropModelPart, StateChange, TextureAnimation,
+    AmbientSoundModel, CameraPathModel, DoorLock, ItemPlacement, LevelEnvironment, LevelGeometry,
+    LevelPart, MonsterPlacement, Playback, PropModel, PropModelPart, StateChange, TextureAnimation,
     TriggerDefinition, TriggerSound, VertexLighting,
 };
 
@@ -261,6 +262,17 @@ fn monster_placements(placements: &[Placement], models: &[String]) -> Vec<Monste
             })
         })
         .collect()
+}
+
+fn item_placement(record: &WorldItemRecord) -> ItemPlacement {
+    ItemPlacement {
+        item: ItemId(record.item as u16),
+        stack: record.stack,
+        uses: record.uses,
+        identified: record.identified,
+        position: retail_position(record.position),
+        hidden: record.hidden,
+    }
 }
 
 /// Every type 4 trigger of the level, attached to a prop or not.
@@ -511,18 +523,20 @@ impl AssetLoader for PvlLoader {
         let octree = context.read_asset_bytes(octree).await?;
         let collision = read_collision(&octree)?.solid_mesh();
 
-        // Who stands where; levels without a state file are empty.
-        let monsters = match sibling(context, ".", &format!("{stem}.sts")) {
+        // Who stands where and what lies about; levels without a state file
+        // are empty.
+        let (monsters, items) = match sibling(context, ".", &format!("{stem}.sts")) {
             Some(path) => match context.read_asset_bytes(path).await {
                 Ok(state) => {
                     let species = AssetPath::from("retail://data/databases/monsters.dbs");
                     let species = read_species(&context.read_asset_bytes(species).await?)?;
                     let models: Vec<String> = species.into_iter().map(|s| s.model).collect();
-                    monster_placements(&read_placements(&state)?, &models)
+                    let items = read_world_items(&state)?.iter().map(item_placement).collect();
+                    (monster_placements(&read_placements(&state)?, &models), items)
                 }
-                Err(_) => vec![],
+                Err(_) => (vec![], vec![]),
             },
-            None => vec![],
+            None => (vec![], vec![]),
         };
 
         let level_lighting = level_lighting(&sections.lights, sections.environment_offset);
@@ -549,6 +563,7 @@ impl AssetLoader for PvlLoader {
             entrances: level_entrances(&sections),
             triggers: level_triggers(&sections),
             monsters,
+            items,
             ambient_sounds: sections
                 .all_triggers()
                 .filter_map(|trigger| match &trigger.kind {

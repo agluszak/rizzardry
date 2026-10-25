@@ -126,6 +126,8 @@ pub struct ItemDefinition {
     pub internal_name: String,
     /// The item's picture, a retail path such as `data/items/dagger.sti`.
     pub image: String,
+    /// Its model lying in the world, such as `data/items3d/dagger.itm`.
+    pub model: String,
     pub class: EquipClass,
     /// Retail's item category byte; its meaning is not established.
     pub category: u8,
@@ -203,4 +205,21 @@ impl LootTables {
     pub fn find(&self, name: &str) -> Option<&LootTable> {
         self.0.iter().find(|table| table.name.eq_ignore_ascii_case(name))
     }
+}
+
+/// What an item looks like lying in the world (retail `.itm`).
+#[derive(Asset, TypePath, Debug)]
+pub struct ItemModel {
+    pub parts: Vec<ItemModelPart>,
+}
+
+/// One material's faces of an item model.
+#[derive(Debug)]
+pub struct ItemModelPart {
+    pub mesh: Handle<Mesh>,
+    pub material: Handle<StandardMaterial>,
+    /// The material's ambient reflectance, which scales sky light.
+    pub ambient: Vec3,
+    /// Light the material gives off itself.
+    pub emission: f32,
 }

@@ -182,6 +182,156 @@ const KIND_IMAGES: [&str; 145] = [
     "rocketlauncher",
 ];
 
+/// World models for items without their own, by kind, as retail names
+/// them (`g_item_model_fallback_names`); file names are not case-sensitive.
+const KIND_MODELS: [&str; 145] = [
+    "dagger",
+    "long sword",
+    "bipennis",
+    "battle axe",
+    "flail",
+    "mace",
+    "hammer",
+    "staff",
+    "halberd",
+    "spear",
+    "bo stick",
+    "bow",
+    "crossbow",
+    "sling",
+    "great sword",
+    "rapier",
+    "katana",
+    "long staff",
+    "wand",
+    "magic stave",
+    "spellbook",
+    "shuriken",
+    "arrows",
+    "bullets",
+    "kite shield",
+    "basnet",
+    "plate torso",
+    "plate leggings",
+    "gauntlets",
+    "sollerets",
+    "amulet",
+    "ring",
+    "blue potion",
+    "scroll",
+    "powder",
+    "key",
+    "locket",
+    "great bow",
+    "round shield",
+    "wizard cone",
+    "leather helm",
+    "cuirass",
+    "leather top",
+    "greaves",
+    "leather leggings",
+    "gloves",
+    "sandals",
+    "buskins",
+    "boots",
+    "book",
+    "ankh",
+    "ninjato",
+    "war hammer",
+    "flamberge",
+    "bullwhip",
+    "sai",
+    "nunchuka",
+    "glaive",
+    "black sword",
+    "fire sword",
+    "upper robes",
+    "lower robes",
+    "halter",
+    "skirt",
+    "skullcap",
+    "feathered cap",
+    "mitre",
+    "breast plate",
+    "kabuto",
+    "upper toseido",
+    "lower toseido",
+    "burgonet",
+    "fur leggings",
+    "cloak",
+    "mantis gloves",
+    "mantis boots",
+    "garland",
+    "cat 'o nine tails",
+    "silver cross",
+    "ruby talisman",
+    "purple amulet",
+    "bracelet",
+    "necklace",
+    "quarrels",
+    "jade figure",
+    "chain coif",
+    "upper chain",
+    "lower chain",
+    "mail mittens",
+    "chain hosen",
+    "lance",
+    "armet",
+    "ninja cowl",
+    "upper ninja garb",
+    "lower ninja garb",
+    "tabi boots",
+    "heaume",
+    "box helm",
+    "diamond ring",
+    "bag",
+    "red potion",
+    "green potion",
+    "purple potion",
+    "yellow potion",
+    "power glove",
+    "t'rang staff",
+    "bronze gauntlets",
+    "comm link",
+    "light sword",
+    "magic bag",
+    "phaser",
+    "id card",
+    "darts",
+    "powder shot",
+    "musket",
+    "coin",
+    "stone",
+    "stick",
+    "short sword",
+    "undefined",
+    "bagpipes",
+    "lyre",
+    "lute",
+    "horn",
+    "map",
+    "bracelet",
+    "shuriken",
+    "undefined",
+    "wand",
+    "yellow potion",
+    "medium shield",
+    "undefined",
+    "undefined",
+    "undefined",
+    "undefined",
+    "undefined",
+    "saxophone",
+    "violin",
+    "drum",
+    "bullroarer",
+    "bomb",
+    "emptybottle",
+    "stix",
+    "rocket",
+    "rocketlauncher",
+];
+
 /// Item flag bits (Whizzardry `W8ItemFlag`).
 mod flag {
     pub const AUTO_IDENTIFY: u8 = 0x01;
@@ -227,6 +377,19 @@ fn image_path(own: &str, kind: u16) -> Option<String> {
     Some(format!("data/items/{name}.sti"))
 }
 
+/// The item's model lying in the world: its own (`internal_name`), else its
+/// kind's (retail `ActivateItem`). Retail shows `questionmark` for a model
+/// that is missing (four items, and kinds named "UNDEFINED").
+fn model_path(own: &str, kind: u16) -> String {
+    let name = match own {
+        "" => KIND_MODELS.get(usize::from(kind)).copied().unwrap_or("questionmark"),
+        own => own,
+    };
+    let name = name.to_lowercase();
+    let name = name.strip_suffix(".itm").unwrap_or(&name);
+    format!("data/items3d/{name}.itm")
+}
+
 fn read_item(index: usize, record: &[u8]) -> Result<ItemDefinition, ItemLoadError> {
     let units: Vec<u16> =
         record[..60].as_chunks::<2>().0.iter().map(|&pair| u16::from_le_bytes(pair)).collect();
@@ -270,6 +433,7 @@ fn read_item(index: usize, record: &[u8]) -> Result<ItemDefinition, ItemLoadErro
         internal_name: ascii(&record[0x8d..0x8d + 0x20]),
         kind,
         image: image_path(&own_image, kind).ok_or(ItemLoadError::Image(index, kind))?,
+        model: model_path(&ascii(&record[0x8d..0x8d + 0x20]), kind),
         class: EquipClass::from_retail(equip_class)
             .ok_or(ItemLoadError::EquipClass(index, equip_class))?,
         category,
@@ -432,6 +596,17 @@ mod tests {
         for item in &catalog.0 {
             assert!(files.contains(&item.image), "{}: {}", item.name, item.image);
         }
+        // These show retail's question mark.
+        let without_model: Vec<&str> = catalog
+            .0
+            .iter()
+            .filter(|i| !i.name.is_empty() && !files.contains(&i.model))
+            .map(|i| i.name.as_str())
+            .collect();
+        assert_eq!(
+            without_model,
+            ["Thermal Pineapple", "Fuel Tank", "Ivory Blade", "Beastslayer", "Jack in the Box"]
+        );
     }
 
     #[test]

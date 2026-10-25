@@ -3,6 +3,7 @@
 
 use bevy::camera::visibility::RenderLayers;
 use bevy::picking::mesh_picking::ray_cast::{MeshRayCast, MeshRayCastSettings};
+use bevy::picking::pointer::{PointerId, PointerLocation};
 use bevy::prelude::*;
 
 use super::level::PropPart;
@@ -73,34 +74,51 @@ pub fn animate_props(
     }
 }
 
-/// The prop an entity belongs to: itself or an ancestor.
-pub fn owning_prop(
+/// What an entity belongs to: itself or the nearest ancestor that
+/// `is_owner`.
+pub fn owner(
     mut entity: Entity,
-    props: &Query<(), With<Prop>>,
+    is_owner: impl Fn(Entity) -> bool,
     parents: &Query<&ChildOf>,
 ) -> Option<Entity> {
     loop {
-        if props.contains(entity) {
+        if is_owner(entity) {
             return Some(entity);
         }
         entity = parents.get(entity).ok()?.parent();
     }
 }
 
-/// The prop drawn first along a ray, and how far along the ray it is. Like
+/// The ray through the mouse pointer, when it is over the view (retail
+/// picks props and items under the cursor). Both the pointer and the
+/// camera's viewport rectangle are in logical pixels of the window, which
+/// is what `viewport_to_world` takes.
+pub fn ray_under_pointer(
+    pointers: &Query<(&PointerId, &PointerLocation)>,
+    camera: &Camera,
+    transform: &GlobalTransform,
+) -> Option<Ray3d> {
+    let (_, location) = pointers.iter().find(|(id, _)| id.is_mouse())?;
+    let position = location.location()?.position;
+    let view = camera.logical_viewport_rect()?;
+    if !view.contains(position) {
+        return None;
+    }
+    camera.viewport_to_world(transform, position).ok()
+}
+
+/// The mesh drawn first along a ray, and how far along the ray it is. Like
 /// retail, this picks what is drawn, not what collides: a pressed pedal
 /// below the floor's collider is still there to click. Each trigger's own
 /// range decides whether it can be used from that far.
-pub fn prop_under_ray(
+pub fn drawn_under_ray(
     ray: Ray3d,
     meshes: &mut MeshRayCast,
     sky: &Query<(), With<RenderLayers>>,
-    props: &Query<(), With<Prop>>,
-    parents: &Query<&ChildOf>,
 ) -> Option<(Entity, f32)> {
     // The sky world is drawn by its own camera, around the world origin.
     let not_sky = |entity| !sky.contains(entity);
     let settings = MeshRayCastSettings::default().with_filter(&not_sky);
     let &(entity, ref hit) = meshes.cast_ray(ray, &settings).first()?;
-    Some((owning_prop(entity, props, parents)?, hit.distance))
+    Some((entity, hit.distance))
 }

@@ -202,6 +202,15 @@ Known gaps, in rough order:
   splitting, ammunition pouring, stowing a weapon's partner, the info
   panel, buttons, scrolling and the PCX cell texture are still to come.
   Plane-shaped triggers (falls) are not decoded as places yet.
+- Items lie about each level as retail's level state (`.sts` `ITEM`) places
+  them (`game::world::items`): one entity owns each, shown with its
+  `data/items3d` model (its own or its kind's, else the question mark),
+  turning a sixteenth of a turn per 50 ms and lit like monsters. Clicking
+  one within 10 m with an empty hand takes it into the hand. Clicking in the
+  world goes through the pointer, as in retail, and only inside the view.
+  Hidden items (searching), dropping the held item, the green hover
+  highlight and name tooltip, containers' item picker, and remembering
+  taken items when the level is left are still to come.
 - Stamina and healing fountains (`0x25`, `0x26`) restore every member by
   `data[2]`, with `data[0]` uses (−1 endless) refilled `data[1]` × 720 game
   seconds after use. Spell-point and spell-casting fountains (`0x27`–`0x2b`)

@@ -407,6 +407,18 @@ impl UiScript {
     }
 }
 
+fn mouse_button(
+    button: PointerButton,
+    state: ButtonState,
+    window: Entity,
+) -> bevy::input::mouse::MouseButtonInput {
+    let button = match button {
+        PointerButton::Secondary => MouseButton::Right,
+        _ => MouseButton::Left,
+    };
+    bevy::input::mouse::MouseButtonInput { button, state, window }
+}
+
 fn scripted_key(name: &str) -> Option<(KeyCode, Key)> {
     Some(match name {
         "ArrowUp" => (KeyCode::ArrowUp, Key::ArrowUp),
@@ -447,6 +459,7 @@ pub fn run_ui_script(
     >,
     mut keys: MessageWriter<KeyboardInput>,
     mut pointer: MessageWriter<PointerInput>,
+    mut buttons: MessageWriter<bevy::input::mouse::MouseButtonInput>,
     automap: Option<Res<crate::presentation::automap::Automap>>,
     notes: Res<crate::game::automap::MapNotes>,
     mut members: Query<&mut crate::game::characters::Character>,
@@ -466,6 +479,9 @@ pub fn run_ui_script(
     // A click registers on release, so the release gets a tick of its own
     // and the next step sees the click's effect.
     if let Some(release) = script.release_pointer.take() {
+        if let PointerAction::Release(button) = release.action {
+            buttons.write(mouse_button(button, ButtonState::Released, window_entity));
+        }
         pointer.write(release);
         return;
     }
@@ -529,7 +545,10 @@ pub fn run_ui_script(
             } else {
                 PointerButton::Primary
             };
+            // A real click is both a pointer event (UI picking) and a mouse
+            // button (clicking in the world).
             pointer.write(input(PointerAction::Press(button)));
+            buttons.write(mouse_button(button, ButtonState::Pressed, window_entity));
             script.release_pointer = Some(input(PointerAction::Release(button)));
         }
         "assert-map" => {

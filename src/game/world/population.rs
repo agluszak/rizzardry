@@ -1,14 +1,17 @@
-//! Putting a level's monsters in their places when it is built.
+//! Putting a level's monsters and items in their places when it is built.
 
 use bevy::prelude::*;
 
 use super::level::Level;
+use crate::content::items::ItemCatalog;
 use crate::content::level::LevelGeometry;
 use crate::content::monster::MonsterModel;
 use crate::content::species::MonsterCatalog;
 use crate::game::characters::{Condition, Lasting};
 use crate::game::data::GameData;
+use crate::game::inventory::ItemIds;
 use crate::game::rng::GameRng;
+use crate::game::world::items::{WorldItem, placed_item};
 use crate::presentation::monsters::MonsterAppearance;
 
 /// A monster in the level: which one (its level-unique location id), what
@@ -68,9 +71,14 @@ pub fn populate_level(
     assets: Res<AssetServer>,
     data: Option<Res<GameData>>,
     catalogs: Res<Assets<MonsterCatalog>>,
+    items: Res<Assets<ItemCatalog>>,
+    mut ids: ResMut<ItemIds>,
     mut rng: ResMut<GameRng>,
 ) {
-    let Some(catalog) = data.and_then(|d| catalogs.get(&d.species)) else { return };
+    let Some(data) = data else { return };
+    let (Some(catalog), Some(items)) = (catalogs.get(&data.species), items.get(&data.items)) else {
+        return;
+    };
     for (root, level) in &levels {
         let Some(geometry) = geometry.get(&level.geometry) else { continue };
         for monster in &geometry.monsters {
@@ -106,7 +114,19 @@ pub fn populate_level(
                 ChildOf(root),
             ));
         }
-        info!("placed {} monsters", geometry.monsters.len());
+        for placement in &geometry.items {
+            let Some(definition) = items.get(placement.item) else { continue };
+            commands.spawn((
+                Name::new(definition.name.clone()),
+                WorldItem {
+                    item: placed_item(placement, definition, &mut ids),
+                    hidden: placement.hidden,
+                },
+                Transform::from_translation(placement.position),
+                ChildOf(root),
+            ));
+        }
+        info!("placed {} monsters and {} items", geometry.monsters.len(), geometry.items.len());
         commands.entity(root).insert(Populated);
     }
 }

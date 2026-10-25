@@ -29,8 +29,8 @@ fn chunk<'a>(bytes: &mut Bytes<'a>) -> Result<([u8; 4], &'a [u8]), PvlError> {
     Ok((id, bytes.take(extent)?))
 }
 
-/// The monsters placed in a level's `.sts` file.
-pub fn read_placements(data: &[u8]) -> Result<Vec<Placement>, PvlError> {
+/// A level state chunk's payload, if the file has it.
+fn level_chunk<'a>(data: &'a [u8], wanted: &[u8; 4]) -> Result<Option<&'a [u8]>, PvlError> {
     let mut bytes = Bytes::new(data);
     let (id, root) = chunk(&mut bytes)?;
     if &id != b"RIFF" {
@@ -47,11 +47,62 @@ pub fn read_placements(data: &[u8]) -> Result<Vec<Placement>, PvlError> {
     level.u32()?; // level id
     for _ in 0..children {
         let (id, payload) = chunk(&mut level)?;
-        if &id == b"MONS" {
-            return read_monsters(payload);
+        if &id == wanted {
+            return Ok(Some(payload));
         }
     }
-    Ok(Vec::new())
+    Ok(None)
+}
+
+/// The monsters placed in a level's `.sts` file.
+pub fn read_placements(data: &[u8]) -> Result<Vec<Placement>, PvlError> {
+    level_chunk(data, b"MONS")?.map_or(Ok(Vec::new()), read_monsters)
+}
+
+/// One item lying in a level (a `W8WorldItem` record of the `ITEM` chunk,
+/// retail `LoadItem`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorldItemRecord {
+    /// Index into `items.dbs`.
+    pub item: u32,
+    /// A stack's count, or charges or uses, by the item's quantity kind.
+    pub stack: u8,
+    pub uses: u8,
+    pub identified: bool,
+    /// Retail units: the item's origin, about 125 units above the ground.
+    pub position: [f32; 3],
+    /// Unseen until found by searching (`W8_WORLD_ITEM_HIDDEN`).
+    pub hidden: bool,
+}
+
+const WORLD_ITEM_SIZE: usize = 0xad;
+const WORLD_ITEM_HIDDEN: u32 = 1;
+
+/// The items lying in a level's `.sts` file. An entry may chain more items
+/// into a pile (retail builds those at runtime for its item picker); no
+/// retail level has one, and the chained items are skipped.
+pub fn read_world_items(data: &[u8]) -> Result<Vec<WorldItemRecord>, PvlError> {
+    let Some(payload) = level_chunk(data, b"ITEM")? else { return Ok(Vec::new()) };
+    let mut bytes = Bytes::new(payload);
+    let count = bytes.u32()?;
+    (0..count)
+        .map(|_| {
+            let image = bytes.take(WORLD_ITEM_SIZE)?;
+            let mut at = Bytes::new(&image[0x09..]);
+            let item = at.u32()?;
+            let (stack, uses, identified) = (at.u8()?, at.u8()?, at.u8()? != 0);
+            let position = Bytes::new(&image[0x15..]).f32s::<3>()?;
+            let mut at = Bytes::new(&image[0x29..]);
+            let hidden = at.u32()? & WORLD_ITEM_HIDDEN != 0;
+            at.u32()?; // saved marker
+            let mut chained = at.u32()? != 0;
+            while chained {
+                let next = bytes.take(WORLD_ITEM_SIZE)?;
+                chained = Bytes::new(&next[0x31..]).u32()? != 0;
+            }
+            Ok(WorldItemRecord { item, stack, uses, identified, position, hidden })
+        })
+        .collect()
 }
 
 fn read_monsters(data: &[u8]) -> Result<Vec<Placement>, PvlError> {
@@ -111,6 +162,24 @@ fn read_monsters(data: &[u8]) -> Result<Vec<Placement>, PvlError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires a retail installation"]
+    fn the_monastery_has_items_lying_about() {
+        let root =
+            std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL to run this test");
+        let files = crate::retail::files::RetailFiles::open(root).unwrap();
+        let items =
+            read_world_items(&files.read("levels/monastery/monastery1.sts").unwrap().unwrap())
+                .unwrap();
+        assert_eq!(items.len(), 58);
+        // The first: item 350 lying in the open; the second hidden.
+        assert_eq!((items[0].item, items[0].hidden), (350, false));
+        assert_eq!(items[0].position.map(f32::round), [89732.0, 6192.0, 83747.0]);
+        assert!(items[1].hidden);
+        // A stack of 21 of item 132.
+        assert_eq!((items[2].item, items[2].stack), (132, 21));
+    }
 
     #[test]
     #[ignore = "requires a retail installation"]

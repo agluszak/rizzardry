@@ -7,6 +7,7 @@
 use avian3d::prelude::*;
 use bevy::camera::visibility::RenderLayers;
 use bevy::picking::mesh_picking::ray_cast::MeshRayCast;
+use bevy::picking::pointer::{PointerId, PointerLocation};
 use bevy::prelude::*;
 use bevy_enhanced_input::prelude::*;
 use bevy_tnua::builtins::{TnuaBuiltinWalk, TnuaBuiltinWalkConfig};
@@ -15,7 +16,7 @@ use bevy_tnua_avian3d::prelude::*;
 
 use crate::content::level::LevelGeometry;
 use crate::game::world::level::{Level, LevelReady};
-use crate::game::world::props::{Prop, prop_under_ray};
+use crate::game::world::props::{Prop, drawn_under_ray, owner, ray_under_pointer};
 use crate::game::world::triggers::{LevelTriggers, TriggerEffect};
 use crate::retail::space::UNITS_PER_METRE as U;
 
@@ -144,10 +145,9 @@ pub fn spawn_exploration_controls(mut commands: Commands) {
                 Binding(KeyCode::ShiftRight)
             ]
             --
+            // Retail interacts by clicking in the view only.
             Action::<Interact>::new()
             Bindings [
-                Binding(KeyCode::Space)
-                --
                 Binding(MouseButton::Left)
             ]
             --
@@ -291,13 +291,14 @@ pub fn aim_camera(party: Query<&PartyBody>, mut camera: Query<&mut Transform, Wi
     }
 }
 
-/// Use the prop at the centre of the view, within reach.
+/// Use the prop under the pointer, within reach.
+#[allow(clippy::too_many_arguments)]
 pub fn interact(
     interact: Single<&ActionEvents, With<Action<Interact>>>,
-    camera: Query<&GlobalTransform, With<PartyCamera>>,
+    pointers: Query<(&PointerId, &PointerLocation)>,
+    camera: Query<(&Camera, &GlobalTransform), With<PartyCamera>>,
     mut meshes: MeshRayCast,
     sky: Query<(), With<RenderLayers>>,
-    prop_entities: Query<(), With<Prop>>,
     parents: Query<&ChildOf>,
     props: Query<(&Name, &Prop)>,
     mut triggers: LevelTriggers,
@@ -305,15 +306,18 @@ pub fn interact(
     if !interact.contains(ActionEvents::START) {
         return;
     }
-    let Ok(camera) = camera.single() else { return };
-    let ray = Ray3d::new(camera.translation(), camera.forward());
-    let Some((target, distance)) = prop_under_ray(ray, &mut meshes, &sky, &prop_entities, &parents)
-    else {
+    let Ok((camera, transform)) = camera.single() else { return };
+    let Some(ray) = ray_under_pointer(&pointers, camera, transform) else { return };
+    let Some((hit, distance)) = drawn_under_ray(ray, &mut meshes, &sky) else {
         debug!("nothing to use there");
         return;
     };
+    let Some(target) = owner(hit, |e| props.contains(e), &parents) else { return };
     let Ok((name, prop)) = props.get(target) else { return };
-    let Some(trigger) = &prop.trigger else { return };
+    let Some(trigger) = &prop.trigger else {
+        debug!("{name} does nothing");
+        return;
+    };
     // Retail measures from the middle of the prop; the hit point is close.
     triggers.with(|triggers| {
         let Some(index) = triggers.state.find(trigger) else { return };
