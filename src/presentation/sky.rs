@@ -73,3 +73,37 @@ pub fn shade_clouds(
         }
     }
 }
+
+/// A sky body's authored position, and which one it is.
+#[derive(Component, Debug)]
+pub struct Celestial {
+    pub sun: bool,
+    pub authored: Vec3,
+}
+
+/// Move the Sun by day and the Moon by night around the midpoint of their
+/// authored positions (Whizzardry `AdvanceEnvironmentTime`); the body not
+/// in the sky waits at the centre.
+pub fn orbit_sun_and_moon(clock: Res<GameClock>, mut bodies: Query<(&Celestial, &mut Transform)>) {
+    let (mut sun, mut moon) = (None, None);
+    for (body, _) in &bodies {
+        if body.sun { sun = Some(body.authored) } else { moon = Some(body.authored) }
+    }
+    let (Some(sun), Some(moon)) = (sun, moon) else { return };
+    let centre = (sun + moon) / 2.0;
+    let radius = sun.distance(moon) / 2.0;
+    let t = (clock.ms % 86_400_000) as f32;
+    let day = (18_000_000.0..=79_200_000.0).contains(&t) && t > 18_000_000.0;
+    let degrees = if day {
+        (t - 18_000_000.0) * 80.0 * 1.634e-8
+    } else if t <= 18_000_000.0 {
+        (t + 7_200_000.0) * 80.0 * 3.968e-8
+    } else {
+        (t - 79_200_000.0) * 80.0 * 3.968e-8
+    };
+    // A rotation about Z keeps its sense under the Z mirror.
+    let orbit = centre + Quat::from_rotation_z((degrees - 40.0).to_radians()) * Vec3::Y * radius;
+    for (body, mut transform) in &mut bodies {
+        transform.translation = if body.sun == day { orbit } else { centre };
+    }
+}

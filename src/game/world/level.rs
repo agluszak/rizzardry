@@ -11,7 +11,7 @@ use bevy_landmass::NavMesh3d;
 
 use super::props::{Prop, PropMotion};
 use crate::content::level::LevelGeometry;
-use crate::presentation::sky::Cloud;
+use crate::presentation::sky::{Celestial, Cloud};
 
 /// The root of the level the party is in.
 #[derive(Component, Debug)]
@@ -64,6 +64,11 @@ pub fn build_sky(
         }
         for prop in &sky.props {
             let cloud = prop.name.to_lowercase().starts_with("clouds");
+            let celestial = match prop.name.to_lowercase().as_str() {
+                "sun" => Some(true),
+                "moon" => Some(false),
+                _ => None,
+            };
             for part in &prop.parts {
                 let part_entity = commands
                     .spawn((
@@ -73,6 +78,11 @@ pub fn build_sky(
                         ChildOf(sky_root),
                     ))
                     .id();
+                if let Some(sun) = celestial {
+                    commands
+                        .entity(part_entity)
+                        .insert(Celestial { sun, authored: part.transform.translation });
+                }
                 for mesh in &part.meshes {
                     let mut entity = commands.spawn((
                         Mesh3d(mesh.mesh.clone()),
