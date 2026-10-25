@@ -13,6 +13,7 @@ use crate::dev::{
 };
 use crate::game::party::PartyPlugin;
 use crate::game::party::body::PartyStart;
+use crate::game::party::roster::{PartyRoster, Recruit, recruit};
 use crate::game::time::{GameClock, TimePlugin};
 use crate::game::world::WorldPlugin;
 use crate::game::world::level::{Destination, Level};
@@ -55,6 +56,9 @@ pub struct Options {
     /// Developer: seconds after entering to take the screenshot (default 2).
     #[arg(long, value_name = "SECONDS")]
     pub screenshot_after: Option<f32>,
+    /// The new game's party, until party creation exists.
+    #[arg(long, value_name = "FILE.ron", default_value = "assets/party.ron")]
+    pub party: PathBuf,
     /// Start at this hour of the day (0-24) instead of a new game's noon.
     #[arg(long, value_name = "HOUR")]
     pub hour: Option<f32>,
@@ -143,6 +147,10 @@ pub fn build(options: &Options) -> Result<App, String> {
         Ok(level) if files.contains(&level) => level,
         _ => return Err(format!("{} is not in the retail installation", options.level)),
     };
+    let party = std::fs::read_to_string(&options.party)
+        .map_err(|error| error.to_string())
+        .and_then(|text| ron::from_str::<Vec<Recruit>>(&text).map_err(|error| error.to_string()))
+        .map_err(|error| format!("cannot read the party {}: {error}", options.party.display()))?;
     let start = PartyStart {
         entrance: options.entrance(&level).map(str::to_owned),
         eye: options.start,
@@ -259,9 +267,12 @@ pub fn build(options: &Options) -> Result<App, String> {
         })
         .add_systems(Update, (spawn_test_agents, log_test_agents));
     }
-    // A new game: the test party until party creation exists, entering
-    // the chosen level.
-    app.add_systems(Startup, crate::game::party::roster::spawn_test_party);
+    // A new game: the party, entering the chosen level.
+    app.add_systems(Startup, move |mut commands: Commands, mut roster: ResMut<PartyRoster>| {
+        for member in &party {
+            recruit(&mut commands, &mut roster, member);
+        }
+    });
     app.add_systems(Startup, move |mut commands: Commands, assets: Res<AssetServer>| {
         let first = Destination::new(Level::load(&level, &assets));
         commands.spawn((Name::new(level.clone()), first));

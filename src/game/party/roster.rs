@@ -1,6 +1,7 @@
 //! Who is in the party, in order.
 
 use bevy::prelude::*;
+use serde::Deserialize;
 
 use crate::content::items::{ItemCatalog, ItemId};
 use crate::content::characters::Skill;
@@ -14,21 +15,26 @@ use crate::game::rng::GameRng;
 #[derive(Resource, Debug, Default)]
 pub struct PartyRoster(pub Vec<Entity>);
 
-/// A party to play with until party creation exists.
-pub fn spawn_test_party(mut commands: Commands, mut roster: ResMut<PartyRoster>) {
-    let members = [
-        ("Ragnar", Race::Human, Gender::Male, Profession::Fighter, "hummf"),
-        ("Saphra", Race::Dracon, Gender::Female, Profession::Valkyrie, "dracff"),
-        ("Borin", Race::Dwarf, Gender::Male, Profession::Priest, "dwarfmn"),
-        ("Pippa", Race::Hobbit, Gender::Female, Profession::Rogue, "hobfn"),
-        ("Elwen", Race::Elf, Gender::Female, Profession::Mage, "elffm"),
-        ("Purrl", Race::Felpurr, Gender::Male, Profession::Bard, "felpmf"),
-    ];
-    for (name, race, gender, profession, portrait) in members {
-        let mut character = Character::new(name, race, gender, profession);
-        character.portrait = portrait.to_owned();
-        roster.0.push(commands.spawn((Name::new(name.to_owned()), character, NeedsEquipment)).id());
-    }
+/// Someone joining a new party, as party creation (or a party file) makes
+/// them.
+#[derive(Clone, Debug, Deserialize)]
+pub struct Recruit {
+    pub name: String,
+    pub race: Race,
+    pub gender: Gender,
+    pub profession: Profession,
+    /// The portrait's file stem, such as `hummf`.
+    pub portrait: String,
+}
+
+/// Add a new member at the end of the party; they receive their starting
+/// equipment once the items have loaded.
+pub fn recruit(commands: &mut Commands, roster: &mut PartyRoster, recruit: &Recruit) -> Entity {
+    let mut character = Character::new(&recruit.name, recruit.race, recruit.gender, recruit.profession);
+    character.portrait = recruit.portrait.clone();
+    let member = commands.spawn((Name::new(recruit.name.clone()), character, NeedsEquipment)).id();
+    roster.0.push(member);
+    member
 }
 
 /// A new member still to receive their starting equipment.

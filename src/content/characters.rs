@@ -5,8 +5,9 @@
 use enum_map::Enum;
 use enumset::EnumSetType;
 use num_enum::TryFromPrimitive;
+use serde::Deserialize;
 
-#[derive(Debug, Enum, EnumSetType)]
+#[derive(Debug, Enum, EnumSetType, Deserialize)]
 #[enumset(repr = "u32")]
 pub enum Race {
     Human,
@@ -27,7 +28,7 @@ pub enum Race {
     Android,
 }
 
-#[derive(Debug, Enum, EnumSetType)]
+#[derive(Debug, Enum, EnumSetType, Deserialize)]
 #[enumset(repr = "u16")]
 pub enum Profession {
     Fighter,
@@ -47,7 +48,7 @@ pub enum Profession {
     Mage,
 }
 
-#[derive(Debug, Enum, EnumSetType)]
+#[derive(Debug, Enum, EnumSetType, Deserialize)]
 #[enumset(repr = "u8")]
 pub enum Gender {
     Male,

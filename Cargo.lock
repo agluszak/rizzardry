@@ -5642,6 +5642,7 @@ dependencies = [
  "rand 0.9.5",
  "rand_chacha",
  "rerecast",
+ "ron",
  "serde",
  "thiserror 2.0.21",
 ]

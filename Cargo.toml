@@ -26,6 +26,7 @@ rand = { version = "0.9", features = ["small_rng", "os_rng"] }
 rand_chacha = "0.9"
 enum-map = "3.1.0"
 enumset = "1.1.15"
+ron = "0.12"
 
 # Dependencies compile with optimisations so the game stays playable in debug.
 [profile.dev.package."*"]
