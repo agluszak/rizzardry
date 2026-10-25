@@ -380,6 +380,7 @@ pub fn say_line(
 /// A scripted UI session: keys, clicks and typing fed through the same
 /// input messages a player's devices produce. Steps are separated by `;`:
 /// `key Tab`, `click X Y` (in the 640×480 screen layout), `type TEXT`,
+/// `travel ENTRANCE`,
 /// `wait SECONDS`. One step runs every [`UI_STEP`] seconds once the party
 /// is in the world.
 #[derive(Resource, Debug, Clone)]
@@ -584,6 +585,9 @@ pub fn run_ui_script(
         }
         "use" => {
             commands.insert_resource(ScriptedUse(rest.to_owned()));
+        }
+        "travel" => {
+            commands.write_message(crate::game::world::level::Travel { entrance: rest.to_owned() });
         }
         "hurt" => {
             let amount: u32 = rest.parse().expect("hurt expects an amount");

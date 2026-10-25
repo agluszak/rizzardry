@@ -4,6 +4,7 @@
 //! built under it as their assets load. Despawning the root unloads the
 //! level. The party is not level-owned and survives travel.
 
+use super::items::WorldItem;
 use std::collections::HashMap;
 
 use avian3d::prelude::*;
@@ -81,6 +82,7 @@ pub fn travel(
     mut requests: MessageReader<Travel>,
     levels: Query<(Entity, &Level, Option<&LevelState>, &Children)>,
     props: Query<&PropMotion>,
+    items: Query<(&WorldItem, &Transform)>,
     mut memory: ResMut<LevelMemory>,
     assets: Res<AssetServer>,
     mut start: ResMut<crate::game::party::body::PartyStart>,
@@ -96,7 +98,15 @@ pub fn travel(
         if let Some(state) = state {
             let prop_frames =
                 children.iter().filter_map(|c| props.get(c).ok()).map(|m| m.target).collect();
-            memory.0.insert(level.path.clone(), LevelRecord { state: state.clone(), prop_frames });
+            let items = children
+                .iter()
+                .filter_map(|c| items.get(c).ok())
+                .map(|(item, at)| (item.clone(), at.translation))
+                .collect();
+            memory.0.insert(
+                level.path.clone(),
+                LevelRecord { state: state.clone(), prop_frames, items },
+            );
         }
         commands.entity(entity).despawn();
     }
@@ -112,12 +122,15 @@ pub fn travel(
 /// Levels the party has left, as they were when it left (props by their
 /// order in the level). Not yet saved with the game.
 #[derive(Resource, Debug, Default)]
-pub struct LevelMemory(HashMap<String, LevelRecord>);
+pub struct LevelMemory(pub(super) HashMap<String, LevelRecord>);
 
 #[derive(Debug)]
 pub struct LevelRecord {
     state: LevelState,
     prop_frames: Vec<f32>,
+    /// The items lying about, and where (retail keeps them in the level
+    /// state's `ITEM` chunk).
+    pub(super) items: Vec<(WorldItem, Vec3)>,
 }
 
 /// The level's sky has not been built yet.

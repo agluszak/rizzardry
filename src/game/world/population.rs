@@ -2,7 +2,7 @@
 
 use bevy::prelude::*;
 
-use super::level::Level;
+use super::level::{Level, LevelMemory};
 use crate::content::items::ItemCatalog;
 use crate::content::level::LevelGeometry;
 use crate::content::monster::MonsterModel;
@@ -72,6 +72,7 @@ pub fn populate_level(
     data: Option<Res<GameData>>,
     catalogs: Res<Assets<MonsterCatalog>>,
     items: Res<Assets<ItemCatalog>>,
+    memory: Res<LevelMemory>,
     mut ids: ResMut<ItemIds>,
     mut rng: ResMut<GameRng>,
 ) {
@@ -114,19 +115,24 @@ pub fn populate_level(
                 ChildOf(root),
             ));
         }
-        for placement in &geometry.items {
-            let Some(definition) = items.get(placement.item) else { continue };
-            commands.spawn((
-                Name::new(definition.name.clone()),
-                WorldItem {
-                    item: placed_item(placement, definition, &mut ids),
-                    hidden: placement.hidden,
-                },
-                Transform::from_translation(placement.position),
-                ChildOf(root),
-            ));
+        // Items lie as the party left them, or as authored on a first visit.
+        let lying: Vec<(WorldItem, Vec3)> = match memory.0.get(&level.path) {
+            Some(record) => record.items.clone(),
+            None => geometry
+                .items
+                .iter()
+                .filter_map(|placement| {
+                    let definition = items.get(placement.item)?;
+                    let item = placed_item(placement, definition, &mut ids);
+                    Some((WorldItem { item, hidden: placement.hidden }, placement.position))
+                })
+                .collect(),
+        };
+        info!("placed {} monsters and {} items", geometry.monsters.len(), lying.len());
+        for (item, at) in lying {
+            let name = items.get(item.item.item).map_or_else(String::new, |d| d.name.clone());
+            commands.spawn((Name::new(name), item, Transform::from_translation(at), ChildOf(root)));
         }
-        info!("placed {} monsters and {} items", geometry.monsters.len(), geometry.items.len());
         commands.entity(root).insert(Populated);
     }
 }

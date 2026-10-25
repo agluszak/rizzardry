@@ -17,7 +17,7 @@ use crate::game::world::level::Level;
 use crate::game::world::props::{Prop, drawn_under_ray, owner, ray_under_pointer};
 
 /// An item lying in the level.
-#[derive(Component, Debug)]
+#[derive(Component, Debug, Clone)]
 #[require(Visibility)]
 pub struct WorldItem {
     pub item: ItemInstance,

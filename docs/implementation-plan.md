@@ -220,8 +220,8 @@ Known gaps, in rough order:
   0.2 m per point of score and in sight. Search mode pauses for a fight.
   Not yet: searchable triggers, skill practice, turning the view to the
   find, the identify attempt, retail's rare search-mode mishap. The green hover
-  highlight and name tooltip, containers' item picker, and remembering
-  taken items when the level is left are still to come.
+  highlight and name tooltip and containers' item picker are still to
+  come. A level left keeps its items as they lay (for the session).
 - Stamina and healing fountains (`0x25`, `0x26`) restore every member by
   `data[2]`, with `data[0]` uses (−1 endless) refilled `data[1]` × 720 game
   seconds after use. Spell-point and spell-casting fountains (`0x27`–`0x2b`)
