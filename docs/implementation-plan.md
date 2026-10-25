@@ -209,9 +209,11 @@ Known gaps, in rough order:
   one within 10 m with an empty hand takes it into the hand; the held item
   follows the pointer on the main screen too, and clicking a portrait gives
   it to that member, or the pool when they have no room (the pool first in
-  a fight). Clicking in the
+  a fight). Clicking in the view with an item in hand, off any prop, drops
+  it: thrown along the pointer's ray at most 5 m, resting a quarter metre
+  above the ground (retail aims by its own throw angles). Clicking in the
   world goes through the pointer, as in retail, and only inside the view.
-  Hidden items (searching), dropping the held item, the green hover
+  Hidden items (searching), the green hover
   highlight and name tooltip, containers' item picker, and remembering
   taken items when the level is left are still to come.
 - Stamina and healing fountains (`0x25`, `0x26`) restore every member by

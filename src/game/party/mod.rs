@@ -37,7 +37,7 @@ impl Plugin for PartyPlugin {
                 body::place_party_on_ready.after(build_level_geometry),
                 (body::look_around, body::aim_camera).chain(),
                 body::interact,
-                crate::game::world::items::take_item_in_view,
+                crate::game::world::items::click_items_in_view,
                 roster::give_starting_equipment,
                 formation::seat_party,
                 (camp::request_camp, camp::force_camp, camp::cancel_camp, camp::advance_camp)
