@@ -17,10 +17,11 @@ use crate::game::data::GameData;
 use crate::game::inventory::{Carried, PartyInventory};
 use crate::game::party::body::{EYE_ABOVE_CENTRE, PartyBody, PartyCamera};
 use crate::game::party::formation::{self, Formation, Row};
+use crate::game::party::recovery;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::time::GameClock;
-use crate::game::world::identify::MonsterGroups;
+use crate::game::world::identify::{DetectGroups, MonsterGroups};
 use crate::game::world::population::Monster;
 use crate::presentation::monsters::MonsterAppearance;
 use attack::{
@@ -382,11 +383,12 @@ pub fn run_battle(
     items: Res<Assets<ItemCatalog>>,
     species: Res<Assets<MonsterCatalog>>,
     mut news: MessageWriter<CombatNews>,
-    (mut starts, settings, orders, groups): (
+    (mut starts, settings, orders, groups, mut detect): (
         MessageReader<StartRound>,
         Res<CombatSettings>,
         Res<PartyOrders>,
         Query<&MonsterGroups>,
+        MessageWriter<DetectGroups>,
     ),
 ) {
     let Some(mut battle) = battle else { return };
@@ -465,6 +467,7 @@ pub fn run_battle(
                 &mut members,
                 &monsters,
                 &mut news,
+                &mut detect,
             );
             return;
         }
@@ -728,8 +731,19 @@ fn end_round(
     members: &mut Query<(&mut Character, &Carried)>,
     monsters: &Query<(&mut Monster, &GlobalTransform, &MonsterAppearance)>,
     news: &mut MessageWriter<CombatNews>,
+    detect: &mut MessageWriter<DetectGroups>,
 ) {
-    clock.ms += ROUND_MS;
+    // The round's time passes now, with its meaning: conditions age and
+    // nobody recovers (retail `AdvanceCombatRound`).
+    let ticks = clock.advance(ROUND_MS);
+    for &member in &roster.0 {
+        if let Ok((mut character, _)) = members.get_mut(member) {
+            recovery::elapse(&mut character, ticks, recovery::Pace::Fighting);
+        }
+    }
+    if ticks.aging > 0 {
+        detect.write(DetectGroups);
+    }
     battle.step = 0;
     battle.executing = false;
     // Defenders get their breath back: 2d(max(1, max stamina / 20 - 1))

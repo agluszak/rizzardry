@@ -188,7 +188,7 @@ pub fn run(options: Options) -> AppExit {
         app.insert_resource(SayLine { line, started: None }).add_systems(Update, say_line);
     }
     if let Some(hour) = options.hour {
-        app.insert_resource(GameClock { ms: (hour.rem_euclid(24.0) * 3_600_000.0) as u64 });
+        app.insert_resource(GameClock::at((hour.rem_euclid(24.0) * 3_600_000.0) as u64));
     }
     if let Some(name) = options.face_prop.clone() {
         app.insert_resource(FacePropOnEntry::new(name));

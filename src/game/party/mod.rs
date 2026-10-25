@@ -51,7 +51,7 @@ impl Plugin for PartyPlugin {
             FixedUpdate,
             (
                 (body::drive_party.in_set(TnuaUserControlsSystems), walk_in::fly_party).chain(),
-                recovery::recover.after(crate::game::time::advance_clock),
+                recovery::pass_time,
             ),
         )
         .add_systems(
