@@ -67,13 +67,14 @@ impl Plugin for PresentationPlugin {
             .init_resource::<hover::Hover>()
             .init_resource::<music::Music>()
             .init_resource::<PresentationRng>()
-            .add_input_context::<automap::Screens>()
+            .add_input_context::<automap::MapKey>()
+            .add_input_context::<automap::AutomapScreen>()
             .add_input_context::<dialog::QuestionDialog>()
             .add_input_context::<camp::CampScreen>()
             .add_systems(
                 Startup,
                 (
-                    automap::spawn_screen_controls,
+                    automap::spawn_map_key,
                     automap::load_automap_art,
                     notices::load_notice_art,
                     dialog::load_dialog_art,
@@ -92,9 +93,9 @@ impl Plugin for PresentationPlugin {
                         .before(crate::game::world::interaction::act_on_click),
                     camp::show_camp,
                     (
-                        automap::toggle_automap,
+                        automap::close_automap,
+                        automap::open_automap,
                         automap::type_note,
-                        automap::pan_with_keys,
                         automap::paint_buttons,
                         automap::update_map_view,
                         automap::draw_notes,
