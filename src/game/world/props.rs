@@ -1,7 +1,8 @@
 //! Usable level props: doors, lids, levers and lifts that move along their
 //! authored paths.
 
-use avian3d::prelude::*;
+use bevy::camera::visibility::RenderLayers;
+use bevy::picking::mesh_picking::ray_cast::{MeshRayCast, MeshRayCastSettings};
 use bevy::prelude::*;
 
 use super::level::PropPart;
@@ -86,19 +87,20 @@ pub fn owning_prop(
     }
 }
 
-/// The farthest the party picks things, in metres; each trigger's own range
-/// decides whether it can be used from there.
-const PICK_DISTANCE: f32 = 50.0;
-
-/// The first prop hit by a ray, and how far along the ray it is.
+/// The prop drawn first along a ray, and how far along the ray it is. Like
+/// retail, this picks what is drawn, not what collides: a pressed pedal
+/// below the floor's collider is still there to click. Each trigger's own
+/// range decides whether it can be used from that far.
 pub fn prop_under_ray(
     ray: Ray3d,
-    exclude: Entity,
-    spatial: &SpatialQuery,
+    meshes: &mut MeshRayCast,
+    sky: &Query<(), With<RenderLayers>>,
     props: &Query<(), With<Prop>>,
     parents: &Query<&ChildOf>,
 ) -> Option<(Entity, f32)> {
-    let filter = SpatialQueryFilter::default().with_excluded_entities([exclude]);
-    let hit = spatial.cast_ray(ray.origin, ray.direction, PICK_DISTANCE, true, &filter)?;
-    Some((owning_prop(hit.entity, props, parents)?, hit.distance))
+    // The sky world is drawn by its own camera, around the world origin.
+    let not_sky = |entity| !sky.contains(entity);
+    let settings = MeshRayCastSettings::default().with_filter(&not_sky);
+    let &(entity, ref hit) = meshes.cast_ray(ray, &settings).first()?;
+    Some((owning_prop(entity, props, parents)?, hit.distance))
 }

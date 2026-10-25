@@ -118,9 +118,7 @@ Known gaps, in rough order:
   implemented. Travel does not yet ask retail's "Enter <level>?" question,
   and arriving does not probe for the ground (the party settles).
 - Most trigger actions are not performed yet (lights, missiles, fountains,
-  timed actions, required items). Picking uses colliders, so a prop sunk below the
-  floor collider (the pressed bell pedal) cannot be clicked again, where
-  retail picks what is drawn. Level state is lost when the level is left.
+  timed actions, required items). Level state is lost when the level is left.
 - Map notes are not saved; the automap does not yet track explored cells or
   project notes onto a minimap. Only the map screen exists.
 - The screenshot tool intermittently omits all or some unchanged UI artwork,

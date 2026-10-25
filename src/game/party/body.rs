@@ -5,6 +5,8 @@
 //! concern added later.
 
 use avian3d::prelude::*;
+use bevy::camera::visibility::RenderLayers;
+use bevy::picking::mesh_picking::ray_cast::MeshRayCast;
 use bevy::prelude::*;
 use bevy_enhanced_input::prelude::*;
 use bevy_tnua::builtins::{TnuaBuiltinWalk, TnuaBuiltinWalkConfig};
@@ -283,9 +285,9 @@ pub fn aim_camera(party: Query<&PartyBody>, mut camera: Query<&mut Transform, Wi
 /// Use the prop at the centre of the view, within reach.
 pub fn interact(
     interact: Single<&ActionEvents, With<Action<Interact>>>,
-    party: Query<Entity, With<PartyBody>>,
     camera: Query<&GlobalTransform, With<PartyCamera>>,
-    spatial: SpatialQuery,
+    mut meshes: MeshRayCast,
+    sky: Query<(), With<RenderLayers>>,
     prop_entities: Query<(), With<Prop>>,
     parents: Query<&ChildOf>,
     props: Query<(&Name, &Prop)>,
@@ -294,9 +296,9 @@ pub fn interact(
     if !interact.contains(ActionEvents::START) {
         return;
     }
-    let (Ok(party), Ok(camera)) = (party.single(), camera.single()) else { return };
+    let Ok(camera) = camera.single() else { return };
     let ray = Ray3d::new(camera.translation(), camera.forward());
-    let Some((target, distance)) = prop_under_ray(ray, party, &spatial, &prop_entities, &parents)
+    let Some((target, distance)) = prop_under_ray(ray, &mut meshes, &sky, &prop_entities, &parents)
     else {
         debug!("nothing to use there");
         return;
