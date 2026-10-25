@@ -290,7 +290,9 @@ pub fn follow_held(
         return;
     };
     let size = Vec2::new(frame.width as f32, frame.height as f32);
-    let at = cursor / scale.0 - size / 2.0;
+    // Retail makes the picture the cursor, its corner at the hotspot with
+    // the arrow drawn over it (`UpdateHeldItemCursor`).
+    let at = cursor / scale.0;
     match pictures.single_mut() {
         Ok((_, mut node_image, mut node)) => {
             node_image.image = image.clone();
