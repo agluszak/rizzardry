@@ -845,8 +845,10 @@ mod tests {
     fn a_given_item_goes_to_the_member_or_in_a_fight_the_pool() {
         let (catalog, mut ids) = (catalog(), ItemIds::default());
         let mut carried = Carried::default();
-        let mut party = PartyInventory::default();
-        party.held = Some(Held { item: item(&mut ids, 1, Quantity::One), origin: None });
+        let mut party = PartyInventory {
+            held: Some(Held { item: item(&mut ids, 1, Quantity::One), origin: None }),
+            ..default()
+        };
         assert_eq!(party.give_held(Some(&mut carried), false, &catalog), Some(Given::Member));
         assert!(party.held.is_none() && party.pool.is_empty());
         party.held = Some(Held { item: item(&mut ids, 1, Quantity::One), origin: None });
