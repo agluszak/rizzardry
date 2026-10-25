@@ -484,6 +484,8 @@ pub struct SlotView {
     stamina_fill: u32,
     name: String,
     armour: i32,
+    /// The worst condition's icon (`data/icons/conditions`), if any.
+    condition: Option<String>,
     /// The main and off hand's item pictures, or the race's empty hand.
     hands: [Option<String>; 2],
     two_handed: bool,
@@ -589,6 +591,11 @@ pub fn draw_main_screen(
                 stamina_fill: fill(character.stamina, character.max_stamina()),
                 name: character.name.clone(),
                 armour,
+                condition: if character.is_dead() {
+                    Some("dead".into())
+                } else {
+                    character.worst_condition().map(|c| format!("{c:?}").to_lowercase())
+                },
                 two_handed: main.as_ref().is_some_and(|m| m.1),
                 hands: [main.map(|m| m.0), off.map(|o| o.0)],
             })
@@ -859,6 +866,37 @@ pub fn draw_main_screen(
                 ));
             }
         }
+        // The condition and enchantment sockets (retail
+        // `RedrawPartyPortraitOverlay` step 7): the condition on the
+        // portrait's outer side, plugs where there is nothing; with a
+        // condition both sockets are highlighted, a retail quirk.
+        if closed {
+            let (condition_x, enchantment_x) = if left {
+                (menu_x(slot) + 25.0, menu_x(slot) + 88.0)
+            } else {
+                (menu_x(slot) + 88.0, menu_x(slot) + 25.0)
+            };
+            let plug = |x: f32| if x < 320.0 { "leftplug" } else { "rightplug" };
+            let condition = match &view.condition {
+                Some(name) => sheet(format!("data/icons/conditions/{name}.sti")),
+                None => sheet(format!("data/main interface/{}.sti", plug(condition_x))),
+            };
+            put(
+                &mut commands,
+                condition.and_then(|s| sprite(s, 0, Vec2::new(condition_x, y + 3.0))),
+            );
+            let enchantment = sheet(format!("data/main interface/{}.sti", plug(enchantment_x)));
+            put(
+                &mut commands,
+                enchantment.and_then(|s| sprite(s, 0, Vec2::new(enchantment_x, y + 3.0))),
+            );
+            if view.condition.is_some() {
+                for x in [condition_x, enchantment_x] {
+                    let rim = sheet("data/main interface/condition_highlight.sti".into());
+                    put(&mut commands, rim.and_then(|s| sprite(s, 0, Vec2::new(x - 1.0, y + 2.0))));
+                }
+            }
+        }
         // The selected member's rim.
         if slot == shown.selected {
             let part = if closed {
@@ -945,6 +983,21 @@ pub fn draw_main_screen(
         if let Some(rim) = sprite(radar_rim, 0, at) {
             commands.spawn((rim, RadarRim, UiTransform::default(), ChildOf(frame)));
         }
+        // Left-clicking the radar opens the automap (retail region 0x62, a
+        // circle of radius 46 about (75, 402)).
+        commands
+            .spawn((
+                Node {
+                    border_radius: BorderRadius::all(Val::Px(46.0)),
+                    ..absolute(Vec2::new(29.0, 356.0), Vec2::splat(92.0))
+                },
+                ChildOf(frame),
+            ))
+            .observe(
+                |_: On<PointerClick>, mut open: MessageWriter<super::automap::OpenAutomap>| {
+                    open.write(super::automap::OpenAutomap);
+                },
+            );
     }
     // The formation board: the cage, the view cone and each member's facing
     // arrow and marching-order chip in their cell (retail

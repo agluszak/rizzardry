@@ -247,9 +247,14 @@ pub fn scale_ui(windows: Query<&Window>, mut scale: ResMut<UiScale>) {
     }
 }
 
+/// Open the automap from elsewhere (the main screen's radar).
+#[derive(Message, Debug, Clone, Copy)]
+pub struct OpenAutomap;
+
 pub fn toggle_automap(
     mut commands: Commands,
     toggle: Single<&ActionEvents, With<Action<ToggleMap>>>,
+    mut open: MessageReader<OpenAutomap>,
     back: Single<&ActionEvents, With<Action<Back>>>,
     automap: Option<ResMut<Automap>>,
     mut notes: ResMut<MapNotes>,
@@ -261,6 +266,7 @@ pub fn toggle_automap(
     geometry: Res<Assets<LevelGeometry>>,
     screens: Query<Entity, With<AutomapScreen>>,
 ) {
+    let opened = open.read().count() > 0;
     let toggled = toggle.contains(ActionEvents::START);
     let backed = back.contains(ActionEvents::START);
     if let Some(mut automap) = automap {
@@ -273,7 +279,7 @@ pub fn toggle_automap(
         }
         return;
     }
-    if !toggled {
+    if !(toggled || opened) {
         return;
     }
     let (Some(art), Ok(party)) = (art, party.single()) else { return };
