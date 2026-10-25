@@ -69,7 +69,13 @@ next to its feature when that feature changes.
   round waits for Enter or the round button; backslash switches to
   continuous. Defending gives +2 armour and stamina back at the round's end. Not yet: party movement and
   orders, spells, fumbles, criticals, effects, the off hand, monster
-  movement and fleeing, factions, item drops, levelling.
+  movement and fleeing, factions, levelling. A slain monster leaves its
+  treasure (retail `DropMonsterLoot`: each slot's chance and count, table
+  slots drawing that many items, then its gold): one item lies where it fell,
+  several in a Bag of Items. Retail drops them with the dying animation,
+  here at the blow; NPC monsters' own item lists are not ported; and retail
+  opens a bag in its item picker, while here a click empties it into the
+  party's pool, as chests do.
 - The main game screen (`presentation::main_screen`, layout in
   [main game screen](research/main-game-screen.md)): retail's roof, party
   columns, bottom panels and button-row sockets around a 3D view that

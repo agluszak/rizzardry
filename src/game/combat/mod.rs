@@ -9,12 +9,13 @@ pub mod attack;
 use avian3d::prelude::{Position, RigidBody, SpatialQuery, SpatialQueryFilter};
 use bevy::prelude::*;
 
-use crate::content::items::{Dice, ItemCatalog};
+use crate::content::items::{Dice, ItemCatalog, ItemId, LootTables};
 use crate::content::monster::MonsterModel;
 use crate::content::species::{MonsterCatalog, Reach};
 use crate::game::characters::{Character, Condition};
 use crate::game::data::GameData;
-use crate::game::inventory::{Carried, PartyInventory};
+use crate::game::inventory::{Carried, ItemIds, PartyInventory, make_item};
+use crate::game::loot;
 use crate::game::party::body::{EYE_ABOVE_CENTRE, PartyBody, PartyCamera};
 use crate::game::party::formation::{self, Formation, Row};
 use crate::game::party::recovery;
@@ -22,6 +23,7 @@ use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::time::GameClock;
 use crate::game::world::identify::{DetectGroups, MonsterGroups};
+use crate::game::world::items::drop_loot;
 use crate::game::world::population::Monster;
 use crate::presentation::monsters::MonsterAppearance;
 use attack::{
@@ -382,23 +384,29 @@ pub fn run_battle(
     formation: Res<Formation>,
     mut purse: ResMut<PartyInventory>,
     data: Option<Res<GameData>>,
-    items: Res<Assets<ItemCatalog>>,
-    species: Res<Assets<MonsterCatalog>>,
+    (items, species, tables, mut ids): (
+        Res<Assets<ItemCatalog>>,
+        Res<Assets<MonsterCatalog>>,
+        Res<Assets<LootTables>>,
+        ResMut<ItemIds>,
+    ),
     mut news: MessageWriter<CombatNews>,
-    (mut starts, settings, orders, groups, mut detect): (
+    (mut starts, settings, orders, groups, mut detect, levels): (
         MessageReader<StartRound>,
         Res<CombatSettings>,
         Res<PartyOrders>,
         Query<&MonsterGroups>,
         MessageWriter<DetectGroups>,
+        Query<Entity, With<crate::game::world::level::Level>>,
     ),
 ) {
     let Some(mut battle) = battle else { return };
     let unknown = MonsterGroups::default();
     let groups = groups.single().unwrap_or(&unknown);
-    let (Some(items), Some(species)) = (
+    let (Some(items), Some(species), Some(tables)) = (
         data.as_ref().and_then(|d| items.get(&d.items)),
         data.as_ref().and_then(|d| species.get(&d.species)),
+        data.as_ref().and_then(|d| tables.get(&d.loot)),
     ) else {
         return;
     };
@@ -480,7 +488,11 @@ pub fn run_battle(
                 battle.party[slot] = Turn::default();
                 continue;
             }
-            member_acts(
+            // Retail `GetAveragePartyLevel`: what loot tables scale by.
+            let levels_sum: u32 =
+                members.iter_many(&roster.0).flatten().map(|(c, _)| u32::from(c.level)).sum();
+            let party_level = levels_sum / roster.0.len().max(1) as u32;
+            let loot = member_acts(
                 &mut battle,
                 slot,
                 member,
@@ -491,9 +503,18 @@ pub fn run_battle(
                 items,
                 species,
                 groups,
-                &mut purse,
+                (&mut purse, tables, party_level),
                 &mut news,
             );
+            if let (Some(loot), Ok(level)) = (loot, levels.single()) {
+                let made = loot
+                    .items
+                    .into_iter()
+                    .filter_map(|id| items.get(id))
+                    .map(|definition| make_item(definition, &mut ids, &mut rng, false, false))
+                    .collect();
+                drop_loot(&mut commands, level, loot.feet, made, items, &mut ids, &mut rng);
+            }
             battle.wait = ACTION_SECONDS;
             return;
         }
@@ -549,10 +570,10 @@ fn member_acts(
     items: &ItemCatalog,
     species: &MonsterCatalog,
     groups: &MonsterGroups,
-    purse: &mut PartyInventory,
+    (purse, tables, party_level): (&mut PartyInventory, &LootTables, u32),
     news: &mut MessageWriter<CombatNews>,
-) {
-    let Ok((mut character, carried)) = members.get_mut(member) else { return };
+) -> Option<Loot> {
+    let Ok((mut character, carried)) = members.get_mut(member) else { return None };
     let hand = primary_hand(&character, carried, items);
     // Retail `ChooseMonsterTarget`: among the monsters this hand reaches,
     // the least afflicted, then those "in reach" of the party, then the
@@ -581,13 +602,14 @@ fn member_acts(
     let Some(target) = target else {
         // Nobody in reach: defend for the rest of the round.
         *turn = Turn::default();
-        return;
+        return None;
     };
     turn.attacks_left -= 1;
     turn.phase = next_phase(turn.phase, turn.attacks_left);
     battle.attacked_this_round = true;
-    let Ok((mut monster, ..)) = monsters.get_mut(target) else { return };
-    let Some(kind) = species.0.get(monster.species as usize) else { return };
+    let Ok((mut monster, at, look)) = monsters.get_mut(target) else { return None };
+    let feet = at.translation() - Vec3::Y * look.float_height;
+    let kind = species.0.get(monster.species as usize)?;
     let name = kind.shown_name(groups.identified(monster.group), 1).to_owned();
     // Retail draws the attack's mode, then its swings.
     let mode = attack::Mode::choose(rng, hand.modes);
@@ -598,7 +620,7 @@ fn member_acts(
         how: Announcement::Mode(mode),
         swings,
     });
-    let (mut hits, mut dealt, mut killed) = (0, 0, false);
+    let (mut hits, mut dealt, mut loot) = (0, 0, None);
     for _ in 0..swings {
         match character_swing(rng, &character, &hand, mode, kind) {
             Swing::Hit { damage, .. } => {
@@ -606,16 +628,19 @@ fn member_acts(
                 dealt += damage.min(monster.hp);
                 monster.hp = monster.hp.saturating_sub(damage);
                 if monster.is_dead() {
-                    // Death bookkeeping at once: experience, gold, and out
-                    // of the turn order. Retail drops gold with the dying
-                    // animation; here it comes at the blow.
+                    // Death bookkeeping at once: experience, what it leaves
+                    // (its gold to the party, its items to lay where it
+                    // fell), and out of the turn order. Retail drops them
+                    // with the dying animation; here they come at the blow.
                     battle.experience += kind.experience;
                     battle.kills += 1;
-                    purse.gold += rng.roll(kind.gold);
+                    let (items_left, gold) =
+                        loot::monster_loot(kind, tables, items, party_level, rng);
+                    purse.gold += gold;
                     if let Some(entry) = battle.monsters.iter_mut().find(|(e, _)| *e == target) {
                         entry.1 = Turn::default();
                     }
-                    killed = true;
+                    loot = Some(Loot { feet, items: items_left });
                     break;
                 }
             }
@@ -625,7 +650,7 @@ fn member_acts(
     }
     // The summary, then the casualty (retail `ReportCharacterAttackResult`).
     news.write(CombatNews::Result { attacker: character.name.clone(), hits, damage: dealt });
-    if killed {
+    if loot.is_some() {
         news.write(CombatNews::Killed { name });
     }
     // Swinging tires: weight/40 + 1 = b, then b + 1 + below(b).
@@ -636,6 +661,14 @@ fn member_acts(
     let b = weight / 40 + 1;
     let cost = rng.below(b) + 1 + b;
     character.spend_stamina(cost);
+    loot
+}
+
+/// What a slain monster left to lay on the ground: where its feet were and
+/// its items.
+struct Loot {
+    feet: Vec3,
+    items: Vec<ItemId>,
 }
 
 #[allow(clippy::too_many_arguments)]
