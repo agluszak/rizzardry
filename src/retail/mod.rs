@@ -16,6 +16,7 @@ pub mod monster;
 pub mod monster_loader;
 pub mod oct;
 pub mod path;
+pub mod playlist;
 pub mod prop;
 pub mod prop_loader;
 pub mod pvl;
@@ -76,6 +77,8 @@ impl Plugin for RetailPlugin {
             .init_asset_loader::<item_loader::ItemCatalogLoader>()
             .init_asset::<crate::content::items::LootTables>()
             .init_asset_loader::<item_loader::LootTablesLoader>()
+            .init_asset::<crate::content::music::Playlist>()
+            .init_asset_loader::<playlist::PlaylistLoader>()
             .init_asset::<crate::content::ui::TextTable>()
             .init_asset_loader::<text_loader::TextLoader>()
             .init_asset::<texture_loader::RetailTexture>()

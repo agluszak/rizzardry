@@ -79,6 +79,9 @@ shown on retail content; the gaps below remain. Done:
   1088 retail cycles). Each actor animates its own mesh copies, blending
   between frames without wrapping last-to-first as retail does; play-once
   cycles report completion. Walkers play WALK or IDLE.
+- **Music.** Each level plays its retail `.mpl` playlist (else
+  `adventure.mpl`): weighted songs faded in over five seconds, with the
+  authored chance of a silence between songs; travel switches playlists.
 - **Audio.** A voice line is an entity; `SpeechFinished` names it when its
   audio ends. Retail ships MP3 where scripts name WAV.
 - **UI.** STCI images and bitmap fonts decode (all 1327 retail `.sti`). The
