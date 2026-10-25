@@ -17,18 +17,36 @@ use super::oct::read_collision;
 use super::prop::PROP_COLLIDABLE;
 use super::prop_loader::{PropLighting, part_transforms, record_collision, record_meshes};
 use super::pvl::{CompiledMesh, MaterialRecord, PvlError, read_level_geometry};
-use super::sections::read_sections;
+use super::sections::{Environment, read_sections};
+use super::space::UNITS_PER_METRE;
 use super::space::{retail_direction, retail_position};
 use super::trigger::TriggerKind;
 use crate::content::level::{
-    DoorLock, LevelGeometry, LevelPart, Playback, PropInteraction, PropModel, PropModelPart,
-    TextureAnimation,
+    DoorLock, LevelEnvironment, LevelGeometry, LevelPart, Playback, PropInteraction, PropModel,
+    PropModelPart, TextureAnimation, VertexLighting,
 };
 use crate::presentation::mipmaps::generate_mipmaps;
 
 /// Time-of-day phase used for baked lighting until the game clock exists:
 /// noon, when a new game starts.
-const NOON: usize = 128;
+const NOON: u8 = 128;
+
+fn level_environment(environment: &Environment) -> LevelEnvironment {
+    let table = |colours: &Option<Box<[[u8; 3]; 256]>>| match colours {
+        Some(colours) => colours.iter().map(|c| Vec3::from(c.map(f32::from)) / 255.0).collect(),
+        // Retail's built-in default: grey, brightest at noon.
+        None => (0..256)
+            .map(|i: i32| Vec3::splat((if i < 128 { i } else { 255 - i }) as f32 / 127.0))
+            .collect(),
+    };
+    LevelEnvironment {
+        fog_range: (environment.fog_range[0], environment.fog_range[1]),
+        view_distance: environment.view_distance / UNITS_PER_METRE,
+        intensity: environment.intensity,
+        fog_colours: table(&environment.fog_colours),
+        ambient_colours: table(&environment.ambient_colours),
+    }
+}
 
 #[derive(Default, TypePath)]
 pub struct PvlLoader;
@@ -234,20 +252,21 @@ async fn load_material(
     }
 }
 
-/// Unweld one material's polygons from a compiled mesh into a Bevy mesh.
-///
-/// Vertex colour is retail's baked light: `sky * sun_weight + static light +
-/// offset`, plus the material's emission, where `sky` is the ambient colour
-/// times the material's ambient reflectance.
+/// Unweld one material's polygons from a compiled mesh into a Bevy mesh,
+/// with retail's baked lighting: static vertex light, the environment
+/// offset and the material's emission, plus sky light scaled by the
+/// material's ambient reflectance and the vertex's sun exposure.
 fn build_part(
     source: &CompiledMesh,
     material: u32,
     emission: f32,
-    sky: Vec3,
+    reflectance: Vec3,
     offset: Vec3,
-) -> Option<Mesh> {
+    sky: Vec3,
+) -> Option<(Mesh, VertexLighting)> {
     let mut corners: HashMap<(u32, u32), u32> = HashMap::new();
-    let (mut positions, mut normals, mut uvs, mut colors) = (vec![], vec![], vec![], vec![]);
+    let (mut positions, mut normals, mut uvs) = (vec![], vec![], vec![]);
+    let mut lighting = VertexLighting { reflectance, ..default() };
     let mut indices = vec![];
     for polygon in source.polygons.iter().filter(|p| p.material == material) {
         // Mirroring Z also mirrors winding; emit corners reversed so retail
@@ -259,10 +278,8 @@ fn build_part(
                 positions.push(retail_position(source.positions[v]).to_array());
                 normals.push(retail_direction(source.normals[v]).to_array());
                 uvs.push(source.uvs[uv as usize]);
-                let sun = source.sunlight.as_ref().map_or(1.0, |sun| sun[v]);
-                let light = sky * sun + Vec3::from(source.vertex_light[v]) + offset + emission;
-                let light = light.min(Vec3::ONE);
-                colors.push([light.x, light.y, light.z, 1.0]);
+                lighting.sun.push(source.sunlight.as_ref().map_or(1.0, |sun| sun[v]));
+                lighting.fixed.push(Vec3::from(source.vertex_light[v]) + offset + emission);
                 positions.len() as u32 - 1
             });
             indices.push(index);
@@ -271,13 +288,14 @@ fn build_part(
     if indices.is_empty() {
         return None;
     }
-    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD);
+    // Kept in the main world too, so the colours can be redone.
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, lighting.colours(sky));
     mesh.insert_indices(Indices::U32(indices));
-    Some(mesh)
+    Some((mesh, lighting))
 }
 
 impl AssetLoader for PvlLoader {
@@ -296,17 +314,8 @@ impl AssetLoader for PvlLoader {
         let geometry = read_level_geometry(&data)?;
         let sections = read_sections(&mut Bytes::new(&data[geometry.end..]))?;
         let directory = "bitmaps";
-        let ambient = sections
-            .environment
-            .as_ref()
-            .and_then(|e| {
-                Some(
-                    Vec3::from(e.ambient_colours.as_ref()?[NOON].map(f32::from)) / 255.0
-                        * e.intensity,
-                )
-            })
-            .unwrap_or(Vec3::ZERO)
-            .min(Vec3::ONE);
+        let environment = sections.environment.as_ref().map(level_environment);
+        let ambient = environment.as_ref().map_or(Vec3::ZERO, |e| e.sky_light(NOON));
         let offset = Vec3::from(sections.environment_offset);
 
         let mut textures = LoadedTextures::default();
@@ -324,11 +333,16 @@ impl AssetLoader for PvlLoader {
             used.dedup();
             for material in used {
                 let loaded = &materials[material as usize];
-                let sky = ambient * loaded.ambient;
-                if let Some(part) = build_part(mesh, material, loaded.emission, sky, offset) {
+                if let Some((part, lighting)) =
+                    build_part(mesh, material, loaded.emission, loaded.ambient, offset, ambient)
+                {
                     let handle =
                         context.add_labeled_asset(format!("mesh/{mesh_index}/{material}"), part);
-                    parts.push(LevelPart { mesh: handle, material: loaded.handle.clone() });
+                    parts.push(LevelPart {
+                        mesh: handle,
+                        material: loaded.handle.clone(),
+                        lighting,
+                    });
                 }
             }
         }
@@ -357,7 +371,7 @@ impl AssetLoader for PvlLoader {
                     );
                 }
                 let mut meshes = Vec::new();
-                for (material, mesh) in
+                for (material, mesh, lighting) in
                     record_meshes(record, &transform, &lighting, |m| part_materials[m].emission)
                 {
                     let label = format!("prop/{prop_index}/{part_index}/mesh/{material}");
@@ -365,6 +379,7 @@ impl AssetLoader for PvlLoader {
                     meshes.push(LevelPart {
                         mesh,
                         material: part_materials[material].handle.clone(),
+                        lighting,
                     });
                 }
                 animated_textures.extend(part_materials.into_iter().filter_map(|m| m.animation));
@@ -396,7 +411,15 @@ impl AssetLoader for PvlLoader {
             });
         }
         let (links, teleports) = level_links(&sections);
-        Ok(LevelGeometry { parts, collision, props, links, teleports, animated_textures })
+        Ok(LevelGeometry {
+            parts,
+            collision,
+            environment,
+            props,
+            links,
+            teleports,
+            animated_textures,
+        })
     }
 
     fn extensions(&self) -> &[&str] {

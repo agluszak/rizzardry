@@ -9,12 +9,12 @@ use super::mesh_record::{FACE_TWO_SIDED, MeshRecord};
 use super::prop::Prop;
 use super::sections::Light;
 use super::space::{UNITS_PER_METRE, retail_direction, retail_position};
-use crate::content::level::CollisionMesh;
+use crate::content::level::{CollisionMesh, VertexLighting};
 
 /// Retail lights props at runtime from the level's lights. This bakes that
-/// lighting at load for the rest pose: ambient light, plus each light's
-/// linear falloff `intensity * (1 - d/range) * facing`, plus the level's
-/// environment offset.
+/// lighting at load for the rest pose: each light's linear falloff
+/// `intensity * (1 - d/range) * facing` and the level's environment offset,
+/// with the sky light (`ambient` at load) added per time of day.
 pub struct PropLighting<'a> {
     pub ambient: Vec3,
     pub offset: Vec3,
@@ -22,8 +22,9 @@ pub struct PropLighting<'a> {
 }
 
 impl PropLighting<'_> {
-    fn at(&self, position: Vec3, normal: Vec3) -> Vec3 {
-        let mut light = self.ambient + self.offset;
+    /// The light that does not depend on the time of day.
+    fn fixed_at(&self, position: Vec3, normal: Vec3) -> Vec3 {
+        let mut light = self.offset;
         for source in self.lights {
             let range = source.range / UNITS_PER_METRE;
             let to_light = retail_position(source.location) - position;
@@ -71,7 +72,7 @@ pub fn record_meshes(
     transform: &Transform,
     lighting: &PropLighting,
     emission: impl Fn(usize) -> f32,
-) -> Vec<(usize, Mesh)> {
+) -> Vec<(usize, Mesh, VertexLighting)> {
     let positions: Vec<Vec3> =
         record.vertices.first().iter().map(|&v| retail_position(v)).collect();
     // Smooth normals from the faces, in Bevy winding.
@@ -89,7 +90,7 @@ pub fn record_meshes(
         .iter()
         .zip(&normals)
         .map(|(&p, &n)| {
-            lighting.at(world.transform_point3(p), world.transform_vector3(n).normalize_or(n))
+            lighting.fixed_at(world.transform_point3(p), world.transform_vector3(n).normalize_or(n))
         })
         .collect();
 
@@ -99,15 +100,17 @@ pub fn record_meshes(
     let mut meshes = Vec::new();
     for material in materials {
         let glow = emission(material);
-        let (mut p, mut n, mut uv, mut colour) = (vec![], vec![], vec![], vec![]);
+        let (mut p, mut n, mut uv) = (vec![], vec![], vec![]);
+        // Props take the sky light in full.
+        let mut vertex_lighting = VertexLighting { reflectance: Vec3::ONE, ..default() };
         let mut corners = |face_vertices: [u32; 3], face_uvs: [[f32; 2]; 3], order: [usize; 3]| {
             for corner in order {
                 let v = face_vertices[corner] as usize;
                 p.push(positions[v].to_array());
                 n.push(normals[v].to_array());
                 uv.push(face_uvs[corner]);
-                let c = (lit[v] + glow).min(Vec3::ONE);
-                colour.push([c.x, c.y, c.z, 1.0]);
+                vertex_lighting.fixed.push(lit[v] + glow);
+                vertex_lighting.sun.push(1.0);
             }
         };
         for face in record.faces.iter().filter(|f| f.material as usize == material) {
@@ -118,13 +121,14 @@ pub fn record_meshes(
             }
         }
         let count = p.len() as u32;
-        let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD);
+        // Kept in the main world too, so the colours can be redone.
+        let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
         mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, p);
         mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, n);
         mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colour);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vertex_lighting.colours(lighting.ambient));
         mesh.insert_indices(Indices::U32((0..count).collect()));
-        meshes.push((material, mesh));
+        meshes.push((material, mesh, vertex_lighting));
     }
     meshes
 }

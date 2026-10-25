@@ -14,6 +14,7 @@ use crate::dev::{
 };
 use crate::game::party::PartyPlugin;
 use crate::game::party::body::PartyStart;
+use crate::game::time::{GameClock, TimePlugin};
 use crate::game::world::WorldPlugin;
 use crate::game::world::level::Level;
 use crate::game::world::navigation::asset::navmesh_path;
@@ -64,6 +65,9 @@ pub struct Options {
     /// Developer: once the level is built, stand 2 m in front of this prop.
     #[arg(long, value_name = "NAME")]
     pub face_prop: Option<String>,
+    /// Start at this hour of the day (0-24) instead of a new game's noon.
+    #[arg(long, value_name = "HOUR")]
+    pub hour: Option<f32>,
     /// Developer: press "interact" once, this many seconds after entering.
     #[arg(long, value_name = "SECONDS")]
     pub interact_at: Option<f32>,
@@ -146,6 +150,7 @@ pub fn run(options: Options) -> AppExit {
             WorldPlugin,
             PartyPlugin,
             PresentationPlugin,
+            TimePlugin,
         ))
         .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.07)));
     app.insert_resource(start);
@@ -153,6 +158,9 @@ pub fn run(options: Options) -> AppExit {
         let after = options.screenshot_after.unwrap_or(2.0 + options.walk.unwrap_or(0.0));
         app.insert_resource(ScreenshotAndExit::new(path, after))
             .add_systems(Update, screenshot_and_exit);
+    }
+    if let Some(hour) = options.hour {
+        app.insert_resource(GameClock { ms: (hour.rem_euclid(24.0) * 3_600_000.0) as u64 });
     }
     if let Some(name) = options.face_prop.clone() {
         app.insert_resource(FacePropOnEntry { name, done: false })

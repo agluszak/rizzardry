@@ -8,6 +8,55 @@ use bevy::prelude::*;
 pub struct LevelPart {
     pub mesh: Handle<Mesh>,
     pub material: Handle<StandardMaterial>,
+    /// The inputs of the mesh's vertex colours, per vertex.
+    pub lighting: VertexLighting,
+}
+
+/// Retail bakes lighting into vertex colours and redoes it when the time of
+/// day changes the sky light: colour = sky x reflectance x sun + fixed.
+#[derive(Clone, Debug, Default, Reflect)]
+pub struct VertexLighting {
+    /// Light that does not change with the time of day: static lights, the
+    /// environment offset and emission.
+    pub fixed: Vec<Vec3>,
+    /// How exposed each vertex is to the sky (0..1).
+    pub sun: Vec<f32>,
+    /// The material's ambient reflectance.
+    pub reflectance: Vec3,
+}
+
+impl VertexLighting {
+    pub fn colours(&self, sky: Vec3) -> Vec<[f32; 4]> {
+        self.fixed
+            .iter()
+            .zip(&self.sun)
+            .map(|(&fixed, &sun)| {
+                let c = (sky * self.reflectance * sun + fixed).min(Vec3::ONE);
+                [c.x, c.y, c.z, 1.0]
+            })
+            .collect()
+    }
+}
+
+/// A level's fog and sky light (retail "fog options").
+#[derive(Clone, Debug, Reflect)]
+pub struct LevelEnvironment {
+    /// Fog start and end as fractions of the view distance.
+    pub fog_range: (f32, f32),
+    /// The far clip, in metres.
+    pub view_distance: f32,
+    /// Scales the ambient colour; 0 for interiors.
+    pub intensity: f32,
+    /// Fog and clear colour by time-of-day phase (0 midnight, 128 noon).
+    pub fog_colours: Vec<Vec3>,
+    /// Sky light by phase, before `intensity`.
+    pub ambient_colours: Vec<Vec3>,
+}
+
+impl LevelEnvironment {
+    pub fn sky_light(&self, phase: u8) -> Vec3 {
+        (self.ambient_colours[phase as usize] * self.intensity).min(Vec3::ONE)
+    }
 }
 
 /// Immutable static geometry shared by every visit to a level.
@@ -15,6 +64,7 @@ pub struct LevelPart {
 pub struct LevelGeometry {
     pub parts: Vec<LevelPart>,
     pub collision: CollisionMesh,
+    pub environment: Option<LevelEnvironment>,
     pub props: Vec<PropModel>,
     /// Navigation links between places the navmesh does not join.
     pub links: Vec<LevelLink>,
