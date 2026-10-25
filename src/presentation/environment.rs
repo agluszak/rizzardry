@@ -4,11 +4,11 @@
 use bevy::prelude::*;
 
 use crate::content::level::LevelGeometry;
-use crate::game::party::body::PartyCamera;
 use crate::game::time::GameClock;
 use crate::game::world::level::{Level, PropPart};
 use crate::game::world::props::Prop;
 use crate::presentation::billboards::FaceCamera;
+use crate::presentation::party_view::PartyCamera;
 
 /// The level and phase the presentation was last updated for.
 #[derive(Default)]

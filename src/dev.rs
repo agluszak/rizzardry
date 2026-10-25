@@ -85,7 +85,7 @@ pub struct OverheadView {
 
 pub fn overhead_view(
     view: Res<OverheadView>,
-    mut camera: Query<&mut Transform, With<crate::game::party::body::PartyCamera>>,
+    mut camera: Query<&mut Transform, With<crate::presentation::party_view::PartyCamera>>,
 ) {
     if let Ok(mut camera) = camera.single_mut() {
         camera.translation = Vec3::Y * view.height;

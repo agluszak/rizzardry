@@ -14,6 +14,7 @@ pub mod mipmaps;
 pub mod monsters;
 pub mod music;
 pub mod notices;
+pub mod party_view;
 pub mod screen_art;
 pub mod sky;
 pub mod textures;
@@ -83,6 +84,10 @@ impl Plugin for PresentationPlugin {
                 (
                     automap::scale_ui,
                     hold_exploration,
+                    (party_view::attach_camera, party_view::aim_camera).chain(),
+                    party_view::click_in_view
+                        .run_if(crate::game::screen::party_free)
+                        .before(crate::game::world::interaction::act_on_click),
                     camp::show_camp,
                     (
                         inventory::toggle_inventory,
@@ -110,11 +115,11 @@ impl Plugin for PresentationPlugin {
                 (
                     textures::animate_level_textures,
                     environment::apply_environment,
-                    sky::follow_with_sky_camera.after(crate::game::party::body::aim_camera),
+                    sky::follow_with_sky_camera.after(party_view::aim_camera),
                     sky::shade_clouds,
                     sky::build_sky,
                     environment::attach_level_visuals,
-                    billboards::face_camera.after(crate::game::party::body::aim_camera),
+                    billboards::face_camera.after(party_view::aim_camera),
                     effects::play_trigger_effects,
                     music::play_music,
                     (ambience::place_ambient_sounds, ambience::play_ambient_sounds).chain(),
@@ -126,7 +131,7 @@ impl Plugin for PresentationPlugin {
                         dialog::paint_dialog_buttons,
                     )
                         .chain(),
-                    effects::shake_camera.after(crate::game::party::body::aim_camera),
+                    effects::shake_camera.after(party_view::aim_camera),
                     sky::orbit_sun_and_moon,
                     voice::finish_speech,
                     (

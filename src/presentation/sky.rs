@@ -8,10 +8,10 @@ use bevy::math::Affine2;
 use bevy::prelude::*;
 
 use crate::content::level::LevelGeometry;
-use crate::game::party::body::PartyCamera;
 use crate::game::time::GameClock;
 use crate::game::world::level::Level;
 use crate::presentation::billboards::FaceCamera;
+use crate::presentation::party_view::PartyCamera;
 
 #[derive(Component, Debug)]
 pub struct SkyCamera;

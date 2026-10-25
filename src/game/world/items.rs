@@ -1,23 +1,15 @@
 //! Items lying in the world. Each is an entity owning one item until the
 //! party takes it (retail `W8WorldItem`, `ItemManager.cpp`).
 
-use avian3d::prelude::{RigidBody, SpatialQuery, SpatialQueryFilter};
-use bevy::camera::visibility::RenderLayers;
-use bevy::picking::mesh_picking::ray_cast::MeshRayCast;
-use bevy::picking::pointer::{PointerId, PointerLocation};
+use avian3d::prelude::{SpatialQuery, SpatialQueryFilter};
 use bevy::prelude::*;
-use bevy_enhanced_input::prelude::*;
 
 use crate::content::items::{ItemCatalog, ItemDefinition, ItemId, QuantityKind};
 use crate::content::level::ItemPlacement;
-use crate::game::data::GameData;
 use crate::game::inventory::{
     Held, ItemIds, ItemInstance, ItemNews, PartyInventory, Quantity, make_item,
 };
-use crate::game::party::body::{Interact, PartyCamera};
 use crate::game::rng::GameRng;
-use crate::game::world::level::Level;
-use crate::game::world::props::{Prop, drawn_under_ray, owner, ray_under_pointer};
 
 /// An item lying in the level.
 #[derive(Component, Debug, Clone)]
@@ -95,80 +87,54 @@ pub fn placed_item(
     }
 }
 
-/// A click in the view, for items (retail `MainGameScreen` view click):
-/// with an item in hand and no prop under the pointer, drop it there;
-/// with an empty hand, take the item under the pointer.
-pub fn click_items_in_view(
-    mut commands: Commands,
-    interact: Single<&ActionEvents, With<Action<Interact>>>,
-    pointers: Query<(&PointerId, &PointerLocation)>,
-    camera: Query<(&Camera, &GlobalTransform), With<PartyCamera>>,
-    mut meshes: MeshRayCast,
-    (sky, parents, props, levels, bodies): (
-        Query<(), With<RenderLayers>>,
-        Query<&ChildOf>,
-        Query<(), With<Prop>>,
-        Query<Entity, With<Level>>,
-        Query<&RigidBody>,
-    ),
-    spatial: SpatialQuery,
-    mut items: Query<&mut WorldItem>,
-    (data, catalogs, mut inventory, mut news): (
-        Option<Res<GameData>>,
-        Res<Assets<ItemCatalog>>,
-        ResMut<PartyInventory>,
-        MessageWriter<ItemNews>,
-    ),
-) {
-    if !interact.contains(ActionEvents::START) {
-        return;
-    }
-    let Ok((camera, transform)) = camera.single() else { return };
-    let Some(ray) = ray_under_pointer(&pointers, camera, transform) else { return };
-    let hit = drawn_under_ray(ray, &mut meshes, &sky);
-    if inventory.held.is_some() {
-        if hit.is_some_and(|(hit, _)| owner(hit, |e| props.contains(e), &parents).is_some()) {
-            return;
-        }
-        let Ok(level) = levels.single() else { return };
-        let solid = |entity| bodies.get(entity).is_ok_and(RigidBody::is_static);
-        let Some(at) = drop_point(&spatial, ray, &solid) else { return };
-        let Some(held) = inventory.held.take() else { return };
-        commands.spawn((
-            Name::new("dropped item"),
-            WorldItem { item: held.item, hidden: false, contents: vec![] },
-            Transform::from_translation(at),
-            ChildOf(level),
-        ));
-        return;
-    }
-    let Some((hit, distance)) = hit else { return };
-    let Some(entity) = owner(hit, |e| items.contains(e), &parents) else { return };
-    let Ok(mut item) = items.get_mut(entity) else { return };
-    let Some(catalog) = data.and_then(|d| catalogs.get(&d.items)) else { return };
-    let Some(definition) = catalog.get(item.item.item) else { return };
-    if item.hidden {
-        return;
+/// Take an item clicked `distance` away (retail `MainGameScreen` view
+/// click): into the hand, or, for a container, what it holds into the pool.
+/// Whether the item is gone from the world. A hidden item, or one out of
+/// reach, stays.
+pub fn take_item(
+    item: &mut WorldItem,
+    distance: f32,
+    inventory: &mut PartyInventory,
+    catalog: &ItemCatalog,
+    tell: &mut dyn FnMut(ItemNews),
+) -> bool {
+    let Some(definition) = catalog.get(item.item.item) else { return false };
+    if item.hidden || inventory.held.is_some() {
+        return false;
     }
     if distance > REACH {
         debug!("{} is out of reach: {distance:.1} m", definition.name);
-        return;
+        return false;
     }
     // Retail opens a container in its item picker, which is not ported:
     // here, as with chests, the party takes what is inside into its pool,
     // and what does not fit stays in the container.
     if definition.container {
-        let emptied = empty_into_pool(&mut item, &mut inventory, catalog, &mut |n| {
-            news.write(n);
-        });
-        if emptied {
-            commands.entity(entity).despawn();
-        }
-        return;
+        return empty_into_pool(item, inventory, catalog, tell);
     }
     info!("took {}", definition.name);
     inventory.held = Some(Held { item: item.item.clone(), origin: None });
-    commands.entity(entity).despawn();
+    true
+}
+
+/// Drop the item in hand along `ray`, where it comes to rest on the ground
+/// (retail `DropHeldItem`). Nothing happens without ground to land on.
+pub fn drop_held(
+    commands: &mut Commands,
+    level: Entity,
+    ray: Ray3d,
+    spatial: &SpatialQuery,
+    solid: &dyn Fn(Entity) -> bool,
+    inventory: &mut PartyInventory,
+) {
+    let Some(at) = drop_point(spatial, ray, solid) else { return };
+    let Some(held) = inventory.held.take() else { return };
+    commands.spawn((
+        Name::new("dropped item"),
+        WorldItem { item: held.item, hidden: false, contents: vec![] },
+        Transform::from_translation(at),
+        ChildOf(level),
+    ));
 }
 
 /// Move what a container holds into the party's pool, telling of each item

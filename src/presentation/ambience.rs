@@ -11,8 +11,8 @@ use rand::Rng;
 use crate::presentation::PresentationRng;
 
 use crate::content::level::{AmbientSoundModel, LevelGeometry};
-use crate::game::party::body::PartyCamera;
 use crate::game::world::level::Level;
+use crate::presentation::party_view::PartyCamera;
 
 /// The inner part of the radius heard at full loudness.
 const FULL_WITHIN: f32 = 0.4;

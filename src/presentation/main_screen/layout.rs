@@ -7,7 +7,7 @@ use bevy::ui::IsDefaultUiCamera;
 
 use super::{MainScreenArt, SCREEN, loaded, put};
 use crate::content::ui::SpriteSheet;
-use crate::game::party::body::PartyCamera;
+use crate::presentation::party_view::PartyCamera;
 use crate::presentation::screen_art::sprite;
 use crate::presentation::sky::SkyCamera;
 
