@@ -58,9 +58,10 @@ pub struct Options {
     /// Start at this hour of the day (0-24) instead of a new game's noon.
     #[arg(long, value_name = "HOUR")]
     pub hour: Option<f32>,
-    /// Run without a window, sound or UI: gameplay only, with what happens
-    /// written to the log. Each update is one fixed step of game time and
-    /// they run as fast as the machine allows, not at the display's pace.
+    /// Run without a window or sound: gameplay only, with what happens
+    /// written to the log; with --screenshot, also rendered offscreen. Each
+    /// update is one fixed step of game time and they run as fast as the
+    /// machine allows, not at the display's pace.
     #[arg(long)]
     pub headless: bool,
     /// Stop after this many seconds of play (game time while a level is
@@ -142,9 +143,6 @@ pub fn build(options: &Options) -> Result<App, String> {
         Ok(level) if files.contains(&level) => level,
         _ => return Err(format!("{} is not in the retail installation", options.level)),
     };
-    if options.headless && options.screenshot.is_some() {
-        return Err("screenshots need the window; leave out --headless".into());
-    }
     let start = PartyStart {
         entrance: options.entrance(&level).map(str::to_owned),
         eye: options.start,
@@ -161,38 +159,50 @@ pub fn build(options: &Options) -> Result<App, String> {
     // Navmeshes are baked once by the asset processor and cached.
     let plugins = DefaultPlugins.set(AssetPlugin { mode: AssetMode::Processed, ..default() });
     if options.headless {
-        // Bevy's headless setup: no window or event loop, no audio device,
-        // and a renderer with no backend, so meshes and images still load as
-        // assets but nothing is drawn. Updates run back to back, each one
-        // fixed step of game time, so the simulation runs as fast as the
-        // machine allows and every run steps alike.
-        app.add_plugins(
-            plugins
-                .set(WindowPlugin {
-                    primary_window: None,
-                    exit_condition: bevy::window::ExitCondition::DontExit,
+        // No window, event loop or audio device. Updates run back to back,
+        // each one fixed step of game time, so the simulation runs as fast
+        // as the machine allows and every run steps alike.
+        let plugins = plugins
+            .set(WindowPlugin {
+                primary_window: None,
+                exit_condition: bevy::window::ExitCondition::DontExit,
+                ..default()
+            })
+            .disable::<bevy::winit::WinitPlugin>();
+        if options.screenshot.is_some() {
+            // Rendering without a window: the game and its interface draw
+            // into an offscreen image, which the screenshot captures.
+            // Presentation's sounds load but play silently.
+            app.add_plugins(plugins.set(bevy::audio::AudioPlugin {
+                global_volume: bevy::audio::GlobalVolume::new(bevy::audio::Volume::SILENT),
+                ..default()
+            }))
+            .add_systems(Startup, crate::dev::create_offscreen)
+            .add_systems(
+                First,
+                crate::dev::draw_offscreen.run_if(resource_exists::<crate::dev::Offscreen>),
+            );
+        } else {
+            // No rendering at all (Bevy's headless setup): a renderer with no
+            // GPU backend, so meshes and images still load as assets but
+            // nothing is drawn, and no presentation; gameplay news goes to
+            // the log.
+            app.add_plugins(plugins.disable::<bevy::audio::AudioPlugin>().set(
+                bevy::render::RenderPlugin {
+                    render_creation:
+                        bevy::render::settings::WgpuSettings { backends: None, ..default() }.into(),
                     ..default()
-                })
-                .set(bevy::render::RenderPlugin {
-                    render_creation: bevy::render::settings::WgpuSettings {
-                        backends: None,
-                        ..default()
-                    }
-                    .into(),
-                    ..default()
-                })
-                .disable::<bevy::winit::WinitPlugin>()
-                .disable::<bevy::audio::AudioPlugin>(),
-        )
-        .add_plugins(bevy::app::ScheduleRunnerPlugin::run_loop(std::time::Duration::ZERO))
-        .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(FIXED_STEP))
-        .add_systems(Update, crate::dev::log_news);
+                },
+            ));
+        }
+        app.add_plugins(bevy::app::ScheduleRunnerPlugin::run_loop(std::time::Duration::ZERO))
+            .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(FIXED_STEP))
+            .add_systems(Update, crate::dev::log_news);
     } else {
         app.add_plugins(plugins.set(WindowPlugin {
             primary_window: Some(Window { title: "Rizzardry".into(), ..default() }),
             ..default()
         }))
-        .add_plugins(PresentationPlugin)
         .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.07)));
     }
     app.add_plugins((
@@ -203,6 +213,12 @@ pub fn build(options: &Options) -> Result<App, String> {
         TimePlugin,
         crate::game::combat::CombatPlugin,
     ));
+    // What the player sees and hears: with the window, or offscreen for a
+    // headless screenshot. After the gameplay plugins, whose input and
+    // messages it uses.
+    if !options.headless || options.screenshot.is_some() {
+        app.add_plugins(PresentationPlugin);
+    }
     if options.continuous {
         app.insert_resource(crate::game::combat::CombatSettings { continuous: true });
     }

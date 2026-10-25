@@ -239,10 +239,14 @@ enum ButtonAction {
     Exit,
 }
 
-/// Fit the 640×480 screen layout into the window.
-pub fn scale_ui(windows: Query<&Window>, mut scale: ResMut<UiScale>) {
-    if let Ok(window) = windows.single() {
-        let fit = (window.width() / SCREEN.x).min(window.height() / SCREEN.y);
+/// Fit the 640×480 screen layout into what the interface draws into (the
+/// window, or an offscreen image).
+pub fn scale_ui(
+    interface: Query<&Camera, With<bevy::ui::IsDefaultUiCamera>>,
+    mut scale: ResMut<UiScale>,
+) {
+    if let Some(size) = interface.single().ok().and_then(Camera::logical_target_size) {
+        let fit = (size.x / SCREEN.x).min(size.y / SCREEN.y);
         if scale.0 != fit {
             scale.0 = fit;
         }

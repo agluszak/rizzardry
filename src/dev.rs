@@ -37,6 +37,7 @@ pub fn screenshot_and_exit(
     time: Res<Time>,
     mut request: ResMut<ScreenshotAndExit>,
     party: Query<(), With<PartyBody>>,
+    offscreen: Option<Res<Offscreen>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     if party.is_empty() {
@@ -45,9 +46,38 @@ pub fn screenshot_and_exit(
     request.elapsed += time.delta_secs();
     if !request.taken && request.elapsed >= request.after {
         request.taken = true;
-        commands.spawn(Screenshot::primary_window()).observe(save_to_disk(request.path.clone()));
+        let screenshot = match offscreen {
+            Some(offscreen) => Screenshot::image(offscreen.0.clone()),
+            None => Screenshot::primary_window(),
+        };
+        commands.spawn(screenshot).observe(save_to_disk(request.path.clone()));
     } else if request.taken && request.elapsed >= request.after + 0.5 {
         exit.write(AppExit::Success);
+    }
+}
+
+/// Rendering without a window: every camera draws into this image, which
+/// screenshots capture. Twice retail's 640×480.
+#[derive(Resource, Debug)]
+pub struct Offscreen(pub Handle<Image>);
+
+pub fn create_offscreen(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
+    let image = Image::new_target_texture(
+        1280,
+        960,
+        bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+        None,
+    );
+    commands.insert_resource(Offscreen(images.add(image)));
+}
+
+/// Point each new camera at the offscreen image instead of the window.
+pub fn draw_offscreen(
+    offscreen: Res<Offscreen>,
+    mut cameras: Query<&mut bevy::camera::RenderTarget, Added<Camera>>,
+) {
+    for mut target in &mut cameras {
+        *target = offscreen.0.clone().into();
     }
 }
 

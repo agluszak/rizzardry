@@ -93,7 +93,14 @@ cargo run -- --headless --continuous --run-for 30 --seed 4 \
   --start=69.5,10,-24 --yaw 0     # the Monastery's Green Slimes
 ```
 
-Screenshots still need the window; rendering offscreen without one is next.
+A window and rendering are separate: `--headless --screenshot FILE.png`
+renders the game and its interface on the GPU into an offscreen 1280×960
+image (no window, sound muted) and saves it, still stepping as fast as the
+machine allows:
+
+```sh
+cargo run -- --headless --screenshot beach.png --start=108,2.5,-96
+```
 
 Do not require GPU screenshots or all-map baking on every PR. Run focused
 retail/visual checks when the changed feature warrants them.
