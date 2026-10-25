@@ -13,14 +13,12 @@ use bevy_tnua::prelude::*;
 use bevy_tnua_avian3d::prelude::*;
 
 use super::Battle;
-use crate::content::monster::MonsterModel;
 use crate::content::species::{MonsterCatalog, Reach};
 use crate::game::data::GameData;
-use crate::game::party::body::{EYE_ABOVE_CENTRE, PartyBody};
+use crate::game::party::body::PartyBody;
 use crate::game::world::STEP_HEIGHT;
 use crate::game::world::navigation::{LevelNavigation, Walker, WalkerMotion, WalkerMotionConfig};
-use crate::game::world::population::Monster;
-use crate::presentation::monsters::MonsterAppearance;
+use crate::game::world::population::{Monster, ScaledBody};
 
 /// Half the height of a monster's body. Bodies are flat cylinders as wide
 /// as the model's walk radius, however tall the model.
@@ -35,30 +33,26 @@ const MAX_NAVIGATION_RADIUS: f32 = 1.0;
 /// Stop this far inside an attack's reach.
 const REACH_MARGIN: f32 = 0.3;
 
-/// Give monsters in the fight a walking body once their model is known.
+/// Give monsters in the fight a walking body.
 pub fn embody_fighters(
     mut commands: Commands,
     battle: Option<Res<Battle>>,
-    mut monsters: Query<(&Monster, &mut MonsterAppearance, &mut Transform), Without<Walker>>,
-    models: Res<Assets<MonsterModel>>,
+    mut monsters: Query<(&Monster, &mut Transform), Without<Walker>>,
     navigation: Query<&LevelNavigation>,
     mut configs: ResMut<Assets<WalkerMotionConfig>>,
 ) {
     let (Some(battle), Ok(navigation)) = (battle, navigation.single()) else { return };
     for &(entity, _) in &battle.monsters {
-        let Ok((monster, mut appearance, mut transform)) = monsters.get_mut(entity) else {
-            continue;
-        };
-        let Some(model) = models.get(&appearance.model) else { continue };
+        let Ok((monster, mut transform)) = monsters.get_mut(entity) else { continue };
         // In combat retail's navigator moves a monster with its fight
-        // radius; speed scales with its size (`Navigator::SetScale`).
-        let (radius, speed) = (monster.radius, model.body.movement_rate * appearance.scale(model));
-        if monster.is_dead() || speed <= 0.0 || radius <= 0.0 {
+        // radius.
+        let ScaledBody { radius, speed, .. } = monster.body;
+        if monster.is_dead() || speed <= 0.0 {
             continue;
         }
+        // The body floats over its feet, where the monster stood.
         let float_height = STEP_HEIGHT + HALF_HEIGHT;
-        transform.translation.y += float_height - appearance.float_height;
-        appearance.float_height = float_height;
+        transform.translation.y += float_height;
         let config = configs.add(WalkerMotionConfig {
             basis: TnuaBuiltinWalkConfig {
                 speed,
@@ -97,25 +91,23 @@ pub fn embody_fighters(
 pub fn close_in(
     mut battle: Option<ResMut<Battle>>,
     party: Query<(Entity, &Position), With<PartyBody>>,
-    mut walkers: Query<
-        (Entity, &Monster, &GlobalTransform, &MonsterAppearance, &mut AgentTarget3d),
-        With<Walker>,
-    >,
+    mut walkers: Query<(Entity, &Monster, &GlobalTransform, &Walker, &mut AgentTarget3d)>,
     data: Option<Res<GameData>>,
     species: Res<Assets<MonsterCatalog>>,
 ) {
     let catalog = data.and_then(|d| species.get(&d.species));
     let Ok((party, party_at)) = party.single() else { return };
     let mut approaching = false;
-    let party_eye = party_at.0 + Vec3::Y * EYE_ABOVE_CENTRE;
-    for (entity, monster, at, look, mut target) in &mut walkers {
+    let party_eye = PartyBody::eye(party_at);
+    for (entity, monster, at, walker, mut target) in &mut walkers {
         let fighting =
             battle.as_ref().is_some_and(|b| b.monsters.iter().any(|&(e, _)| e == entity));
         let reach = catalog
             .and_then(|c| c.0.get(monster.species as usize))
             .and_then(|s| s.attacks.iter().map(|a| a.reach).max())
             .unwrap_or(Reach::Touch);
-        let distance = super::distance_to_party(party_eye, monster, at, look);
+        let feet = crate::game::world::navigation::feet(at.translation(), Some(walker));
+        let distance = super::distance_to_party(party_eye, monster, feet);
         let wanted = if fighting && !monster.is_dead() && distance > reach.metres() - REACH_MARGIN {
             AgentTarget3d::Entity(party)
         } else {

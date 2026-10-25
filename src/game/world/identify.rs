@@ -14,9 +14,11 @@ use crate::content::species::MonsterCatalog;
 use crate::game::characters::{Character, Condition};
 use crate::game::combat::Battle;
 use crate::game::data::GameData;
-use crate::game::party::body::PartyCamera;
+use crate::game::party::body::PartyBody;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
+use crate::game::world::level::PlayedLevel;
+use avian3d::prelude::Position;
 
 /// What the party knows of a level's monster groups, on the level root
 /// (retail `alternate_name`, and `group_state[0]` for counted).
@@ -96,7 +98,8 @@ pub fn detect_monster_groups(
     mut requests: MessageReader<DetectGroups>,
     mut levels: Query<&mut MonsterGroups>,
     monsters: Query<(Entity, &Monster, &GlobalTransform)>,
-    camera: Query<(&GlobalTransform, &Projection), With<PartyCamera>>,
+    party: Query<(&Position, &PartyBody)>,
+    level: PlayedLevel,
     battle: Option<Res<Battle>>,
     roster: Res<PartyRoster>,
     mut members: Query<&mut Character>,
@@ -110,15 +113,13 @@ pub fn detect_monster_groups(
     if requests.read().count() == 0 {
         return;
     }
-    let (Ok(mut groups), Ok((eye, projection))) = (levels.single_mut(), camera.single()) else {
+    let (Ok(mut groups), Ok((position, body)), Some(far)) =
+        (levels.single_mut(), party.single(), level.view_distance())
+    else {
         return;
     };
     let Some(catalog) = data.and_then(|d| catalogs.get(&d.species)) else { return };
-    let far = match projection {
-        Projection::Perspective(p) => p.far,
-        _ => return,
-    };
-    let (from, forward) = (eye.translation(), eye.forward().with_y(0.0).normalize_or_zero());
+    let (from, forward) = (PartyBody::eye(position), body.forward());
     // Each group's species, living members, and whether one is seen; in a
     // fight only the groups fighting count. Ordered by group for a
     // reproducible order of rolls.

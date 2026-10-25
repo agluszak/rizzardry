@@ -36,6 +36,7 @@ impl Plugin for WorldPlugin {
             .add_message::<search::SearchNews>()
             .init_resource::<search::Search>()
             .init_resource::<level::LevelMemory>()
+            .init_resource::<population::MonsterModels>()
             .init_resource::<crate::game::rng::GameRng>()
             .init_resource::<crate::game::inventory::ItemIds>()
             .init_resource::<crate::game::inventory::PartyInventory>()
@@ -48,7 +49,6 @@ impl Plugin for WorldPlugin {
                 (
                     level::activate_level,
                     (
-                        population::measure_monsters,
                         (
                             search::search_key.run_if(crate::game::screen::party_free),
                             search::toggle_search,

@@ -1,5 +1,7 @@
 //! Putting a level's monsters and items in their places when it is built.
 
+use std::collections::HashMap;
+
 use bevy::prelude::*;
 
 use super::level::{KeptMonster, LevelRecord};
@@ -11,10 +13,9 @@ use crate::game::characters::{Condition, Lasting};
 use crate::game::inventory::ItemIds;
 use crate::game::rng::GameRng;
 use crate::game::world::items::{WorldItem, placed_item};
-use crate::presentation::monsters::MonsterAppearance;
 
 /// A monster in the level: which one (its level-unique location id), what
-/// it is, and its health and stamina.
+/// it is, its body, and its health and stamina.
 #[derive(Component, Clone, Debug)]
 pub struct Monster {
     pub location: i32,
@@ -26,11 +27,8 @@ pub struct Monster {
     pub stamina: u32,
     pub max_stamina: u32,
     pub conditions: Vec<(Condition, Lasting)>,
-    /// Reach is measured from this far out from its centre (its scaled
-    /// fight radius), in metres; 0 until its model is known.
-    pub radius: f32,
-    /// Its eyes above its feet (its scaled target height).
-    pub eye_height: f32,
+    pub model: Handle<MonsterModel>,
+    pub body: ScaledBody,
 }
 
 impl Monster {
@@ -39,20 +37,59 @@ impl Monster {
     }
 }
 
-/// Note each monster's reach radius and eye height once its model is
-/// known, scaled to its size.
-pub fn measure_monsters(
-    mut monsters: Query<(&mut Monster, &MonsterAppearance)>,
-    models: Res<Assets<MonsterModel>>,
-) {
-    for (mut monster, appearance) in &mut monsters {
-        if monster.radius > 0.0 {
-            continue;
+/// A monster's body, from its model at the size it was rolled.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScaledBody {
+    pub scale: f32,
+    /// Reach is measured from this far out from its centre (its scaled
+    /// fight radius), in metres.
+    pub radius: f32,
+    /// Its eyes above its feet (its scaled target height).
+    pub eye_height: f32,
+    /// How fast it walks, in metres a second; 0 for those that do not
+    /// (retail's navigator scales speed with size, `Navigator::SetScale`).
+    pub speed: f32,
+}
+
+impl ScaledBody {
+    /// The body of `model` at retail's size roll (below 1000).
+    pub fn new(model: &MonsterModel, size_roll: u32) -> Self {
+        let scale = model.body.scale_for(size_roll);
+        ScaledBody {
+            scale,
+            radius: model.body.fight_radius * scale,
+            eye_height: model.body.target_height * scale,
+            speed: model.body.movement_rate * scale,
         }
-        let Some(model) = models.get(&appearance.model) else { continue };
-        let scale = appearance.scale(model);
-        monster.radius = model.body.fight_radius * scale;
-        monster.eye_height = model.body.target_height * scale;
+    }
+}
+
+/// Monster models by species, loaded as levels place them and kept: a
+/// monster's body comes from its model, so a level is played only once the
+/// models of its monsters are in.
+#[derive(Resource, Debug, Default)]
+pub struct MonsterModels(pub HashMap<u32, Handle<MonsterModel>>);
+
+impl MonsterModels {
+    /// The models of the monsters a level places, loading any not yet
+    /// requested.
+    pub fn for_level(
+        &mut self,
+        geometry: &LevelGeometry,
+        species: &MonsterCatalog,
+        assets: &AssetServer,
+    ) -> Vec<Handle<MonsterModel>> {
+        geometry
+            .monsters
+            .iter()
+            .filter_map(|placed| {
+                let kind = species.0.get(placed.species as usize)?;
+                let model = self.0.entry(placed.species).or_insert_with(|| {
+                    assets.load(format!("retail://data/monsters/{}.mls", kind.model))
+                });
+                Some(model.clone())
+            })
+            .collect()
     }
 }
 
@@ -68,7 +105,7 @@ pub fn populate(
     geometry: &LevelGeometry,
     remembered: Option<&LevelRecord>,
     (species, items): (&MonsterCatalog, &ItemCatalog),
-    assets: &AssetServer,
+    (handles, models): (&HashMap<u32, Handle<MonsterModel>>, &Assets<MonsterModel>),
     ids: &mut ItemIds,
     rng: &mut GameRng,
 ) {
@@ -79,12 +116,14 @@ pub fn populate(
             .iter()
             .filter_map(|placed| {
                 let kind = species.0.get(placed.species as usize)?;
+                let model = handles.get(&placed.species)?;
                 let max_hp = rng.roll(kind.hit_points).max(1);
                 let max_stamina = rng.roll(kind.stamina);
                 // Retail draws Random(1000) for the size; its left-handed
                 // mirror draw, presentation only, is not taken from
                 // gameplay's stream.
                 let size_roll = rng.below(1000);
+                let body = ScaledBody::new(models.get(model)?, size_roll);
                 Some(KeptMonster {
                     monster: Monster {
                         location: placed.location,
@@ -95,12 +134,11 @@ pub fn populate(
                         stamina: max_stamina,
                         max_stamina,
                         conditions: Vec::new(),
-                        radius: 0.0,
-                        eye_height: 0.0,
+                        model: model.clone(),
+                        body,
                     },
                     feet: placed.position,
                     yaw: placed.yaw,
-                    size_roll: Some(size_roll),
                 })
             })
             .collect(),
@@ -111,14 +149,6 @@ pub fn populate(
         commands.spawn((
             Name::new(format!("{} #{}", kind.name, monster.location)),
             monster.clone(),
-            MonsterAppearance {
-                model: assets.load(format!("retail://data/monsters/{}.mls", kind.model)),
-                float_height: 0.0,
-                // Retail starts each idle at a random frame; vary it by
-                // location instead.
-                phase: (monster.location.unsigned_abs() % 97) as f32 * 0.37,
-                size_roll: kept.size_roll,
-            },
             Transform::from_translation(kept.feet).with_rotation(Quat::from_rotation_y(kept.yaw)),
             ChildOf(root),
         ));

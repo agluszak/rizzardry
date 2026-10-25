@@ -15,10 +15,11 @@ use bevy::ecs::system::SystemParam;
 
 use super::identify::MonsterGroups;
 use super::items::WorldItem;
+use super::navigation::Walker;
 use super::navigation::asset::navmesh_path;
 use super::navigation::bake::SIZE_CLASSES;
 use super::navigation::links::DoorLink;
-use super::population::Monster;
+use super::population::{Monster, MonsterModels};
 use super::props::{Prop, PropMotion, pose};
 use super::scripts::LevelScript;
 use super::triggers::{LevelState, TriggerMemory};
@@ -26,6 +27,7 @@ use super::{navigation, population};
 use crate::content::items::{ItemCatalog, LootTables};
 use crate::content::level::LevelGeometry;
 use crate::content::levels::LevelInfo;
+use crate::content::monster::MonsterModel;
 use crate::content::species::MonsterCatalog;
 use crate::content::ui::TextTable;
 use crate::game::automap::MapNotes;
@@ -33,7 +35,6 @@ use crate::game::data::GameData;
 use crate::game::inventory::ItemIds;
 use crate::game::party::body::PartyPlacement;
 use crate::game::rng::GameRng;
-use crate::presentation::monsters::MonsterAppearance;
 
 /// The root of the level being played (or, during travel, left). A level
 /// becomes one only by [`activate_level`]; until then its root is a
@@ -178,20 +179,19 @@ pub struct LevelRecord {
 }
 
 /// A monster as the party left it: where its feet were and which way it
-/// faced, and its size.
+/// faced.
 #[derive(Clone, Debug)]
 pub struct KeptMonster {
     pub monster: Monster,
     pub feet: Vec3,
     pub yaw: f32,
-    pub size_roll: Option<u32>,
 }
 
 /// What travel reads to remember the level it leaves.
 #[derive(SystemParam)]
 pub struct LevelContents<'w, 's> {
     props: Query<'w, 's, (&'static Prop, &'static PropMotion)>,
-    monsters: Query<'w, 's, (&'static Monster, &'static Transform, &'static MonsterAppearance)>,
+    monsters: Query<'w, 's, (&'static Monster, &'static Transform, Option<&'static Walker>)>,
     items: Query<'w, 's, (&'static WorldItem, &'static Transform)>,
     knowledge: Query<'w, 's, (Option<&'static MonsterGroups>, Option<&'static MapNotes>)>,
 }
@@ -209,11 +209,10 @@ impl LevelContents<'_, '_> {
             monsters: children
                 .iter()
                 .filter_map(|&c| self.monsters.get(c).ok())
-                .map(|(monster, at, look)| KeptMonster {
+                .map(|(monster, at, walker)| KeptMonster {
                     monster: monster.clone(),
-                    feet: at.translation - Vec3::Y * look.float_height,
+                    feet: at.translation - Vec3::Y * walker.map_or(0.0, |w| w.float_height),
                     yaw: at.rotation.to_euler(EulerRot::YXZ).0,
-                    size_roll: look.size_roll,
                 })
                 .collect(),
             items: children
@@ -229,9 +228,9 @@ impl LevelContents<'_, '_> {
 
 /// A level being prepared to be played: the first, or travel's
 /// destination. It loads until its gameplay prerequisites exist (geometry
-/// and collision, the shared databases, its navmeshes loaded or failed);
-/// then [`activate_level`] makes it the [`Level`]. Its sky and other
-/// visuals load on their own once it is played.
+/// and collision, the shared databases, its monsters' models, its navmeshes
+/// loaded or failed); then [`activate_level`] makes it the [`Level`]. Its
+/// sky and other visuals load on their own once it is played.
 #[derive(Component, Debug)]
 #[require(Transform, Visibility)]
 pub struct Destination {
@@ -250,6 +249,23 @@ impl Destination {
 /// prepared, and played again if that fails.
 #[derive(Component, Debug)]
 pub struct Departing;
+
+/// The level being played, and its geometry.
+#[derive(SystemParam)]
+pub struct PlayedLevel<'w, 's> {
+    levels: Query<'w, 's, &'static Level, Without<Departing>>,
+    geometry: Res<'w, Assets<LevelGeometry>>,
+}
+
+impl PlayedLevel<'_, '_> {
+    pub fn geometry(&self) -> Option<&LevelGeometry> {
+        self.geometry.get(&self.levels.single().ok()?.geometry)
+    }
+
+    pub fn view_distance(&self) -> Option<f32> {
+        self.geometry().map(LevelGeometry::view_distance)
+    }
+}
 
 /// Run condition: a level is being played.
 pub fn level_active(levels: Query<(), (With<Level>, Without<Departing>)>) -> bool {
@@ -399,6 +415,8 @@ pub struct SharedData<'w> {
     items: Res<'w, Assets<ItemCatalog>>,
     loot: Res<'w, Assets<LootTables>>,
     species: Res<'w, Assets<MonsterCatalog>>,
+    models: Res<'w, Assets<MonsterModel>>,
+    monster_models: ResMut<'w, MonsterModels>,
 }
 
 /// Make a destination playable once its gameplay prerequisites exist, in
@@ -413,13 +431,14 @@ pub fn activate_level(
     departing: Query<(Entity, &Level), With<Departing>>,
     geometry: Res<Assets<LevelGeometry>>,
     assets: Res<AssetServer>,
-    shared: SharedData,
+    mut shared: SharedData,
     mut memory: ResMut<LevelMemory>,
     (mut ids, mut rng): (ResMut<ItemIds>, ResMut<GameRng>),
     mut party: PartyPlacement,
     mut ready: MessageWriter<LevelReady>,
 ) {
     for (root, mut destination) in &mut destinations {
+        let destination = &mut *destination;
         if destination.failed {
             continue;
         }
@@ -446,7 +465,16 @@ pub fn activate_level(
         ) else {
             continue;
         };
-        if !navigation::navmeshes_settled(level, &assets) {
+        let models = shared.monster_models.for_level(geometry, species, &assets);
+        if models.iter().any(|model| failed(model.id().untyped())) {
+            error!("{}: a monster's model failed to load", level.path);
+            destination.failed = true;
+            stay(&mut commands, &departing, &mut memory, &mut party);
+            continue;
+        }
+        if !models.iter().all(|model| shared.models.contains(model))
+            || !navigation::navmeshes_settled(level, &assets)
+        {
             continue;
         }
         let collider = match level_collider(geometry) {
@@ -467,7 +495,7 @@ pub fn activate_level(
             geometry,
             remembered.as_ref(),
             (species, items),
-            &assets,
+            (&shared.monster_models.0, &shared.models),
             &mut ids,
             &mut rng,
         );

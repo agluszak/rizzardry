@@ -41,6 +41,17 @@ impl VertexLighting {
     }
 }
 
+/// How far is seen in a level without fog options: retail's far clip of
+/// 75000 units.
+pub const DEFAULT_VIEW_DISTANCE: f32 = 150.0;
+
+impl LevelGeometry {
+    /// How far is seen in the level: its far clip, which also bounds sight.
+    pub fn view_distance(&self) -> f32 {
+        self.environment.as_ref().map_or(DEFAULT_VIEW_DISTANCE, |e| e.view_distance)
+    }
+}
+
 /// A level's fog and sky light (retail "fog options").
 #[derive(Clone, Debug)]
 pub struct LevelEnvironment {

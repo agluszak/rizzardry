@@ -4,6 +4,7 @@
 //! members have no world collider; formation-derived positions are a rules
 //! concern added later.
 
+use crate::content::level::DEFAULT_VIEW_DISTANCE;
 use avian3d::prelude::*;
 use bevy::camera::visibility::RenderLayers;
 use bevy::picking::mesh_picking::ray_cast::MeshRayCast;
@@ -63,6 +64,16 @@ pub struct PartyBody {
 }
 
 impl PartyBody {
+    /// The way the party faces, level.
+    pub fn forward(&self) -> Vec3 {
+        Quat::from_rotation_y(self.yaw) * Vec3::NEG_Z
+    }
+
+    /// The party's eye, over the centre of its body at `position`.
+    pub fn eye(position: &Position) -> Vec3 {
+        position.0 + Vec3::Y * EYE_ABOVE_CENTRE
+    }
+
     /// Turn to face along `direction`, level.
     pub fn face(&mut self, direction: Vec3) {
         let facing = Transform::default().looking_to(direction.with_y(0.0), Vec3::Y);
@@ -271,9 +282,10 @@ fn spawn_party(
                 Camera { clear_color: ClearColorConfig::None, ..default() },
                 Projection::Perspective(PerspectiveProjection {
                     fov: 70f32.to_radians(),
-                    // Retail clip range 250..75000 units.
+                    // Retail's near clip of 250 units; the level sets the
+                    // far one.
                     near: 250.0 / U,
-                    far: 75000.0 / U,
+                    far: DEFAULT_VIEW_DISTANCE,
                     ..default()
                 }),
                 Transform::from_xyz(0.0, EYE_ABOVE_CENTRE, 0.0),

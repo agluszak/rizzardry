@@ -13,7 +13,9 @@ use crate::game::camp::can_act;
 use crate::game::characters::{Character, Profession};
 use crate::game::combat::Battle;
 use crate::game::data::GameData;
-use crate::game::party::body::{PartyCamera, Run};
+use avian3d::prelude::Position;
+
+use crate::game::party::body::{PartyBody, Run};
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::items::WorldItem;
 
@@ -130,7 +132,7 @@ pub fn search_pulse(
     mut search: ResMut<Search>,
     battle: Option<Res<Battle>>,
     run: Single<&Action<Run>>,
-    camera: Query<&GlobalTransform, With<PartyCamera>>,
+    party: Query<(&Position, &PartyBody)>,
     roster: Res<PartyRoster>,
     members: Query<&Character>,
     mut items: Query<(&mut WorldItem, &GlobalTransform)>,
@@ -146,8 +148,8 @@ pub fn search_pulse(
     if battle.is_some() {
         return;
     }
-    let Ok(eye) = camera.single() else { return };
-    let (from, forward) = (eye.translation(), eye.forward().with_y(0.0));
+    let Ok((position, body)) = party.single() else { return };
+    let (from, forward) = (PartyBody::eye(position), body.forward());
     let running = ***run;
     let best = roster
         .0

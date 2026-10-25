@@ -16,7 +16,7 @@ pub fn run_walk_in_triggers(
     mut triggers: LevelTriggers,
 ) {
     let Ok(position) = party.single() else { return };
-    let eye = position.0 + Vec3::Y * EYE_ABOVE_CENTRE;
+    let eye = PartyBody::eye(position);
     triggers.with(|triggers| triggers.walk(eye, time.delta_secs()));
 }
 

@@ -97,6 +97,12 @@ pub struct Walker {
     pub float_height: f32,
 }
 
+/// Where the feet of something at `origin` are: under a walker's floating
+/// body, else at its origin.
+pub fn feet(origin: Vec3, walker: Option<&Walker>) -> Vec3 {
+    origin - Vec3::Y * walker.map_or(0.0, |w| w.float_height)
+}
+
 /// Whether a level's navmeshes have settled: all loaded, or one failed.
 /// They come from the asset processor's cache (baked on first use).
 pub fn navmeshes_settled(level: &Level, assets: &AssetServer) -> bool {
