@@ -1,7 +1,9 @@
-//! One-line notices in the retail text font: trigger messages ("Access
-//! Denied."), and "Nothing happens." when using something does nothing.
-
-use std::collections::VecDeque;
+//! The text box's messages (decomp `MGSTextBox.cpp`): trigger messages,
+//! "Nothing happens.", camping and the fight's course, in retail's three
+//! channels (General, Combat, Dialog) of up to 350 lines, each message
+//! wrapped to the box's width less 10 (`ShowNotice`). A message goes to the
+//! Combat channel during a fight, and the box shows Combat while fighting
+//! and General otherwise (`Combat.cpp` `SelectTextBox`).
 
 use bevy::prelude::*;
 
@@ -13,10 +15,12 @@ use crate::game::world::triggers::TriggerEffect;
 
 /// Retail's "Nothing happens." in the game's string table.
 const NOTHING_HAPPENS: usize = 0x964;
-/// How long a notice stays, fading over its last second.
-const NOTICE_SECONDS: f32 = 4.0;
-/// How long a notice stays when others wait.
-const HURRIED_SECONDS: f32 = 1.5;
+/// Lines a channel keeps.
+const MAX_LINES: usize = 350;
+/// Lines the box shows.
+pub const VISIBLE_LINES: usize = 7;
+/// The body is 166..456 wide; messages wrap 10 pixels short of it.
+const WRAP_WIDTH: u32 = 456 - 166 - 10;
 
 #[derive(Resource)]
 pub struct NoticeArt {
@@ -31,14 +35,51 @@ pub fn load_notice_art(mut commands: Commands, assets: Res<AssetServer>) {
     });
 }
 
-#[derive(Component)]
-pub struct Notice {
-    remaining: f32,
+/// The text box's channels and which one it shows.
+#[derive(Resource, Debug, Default)]
+pub struct TextLog {
+    channels: [Vec<String>; 3],
+    pub selected: usize,
 }
 
-/// Notices waiting their turn; retail shows them one after another.
-#[derive(Resource, Debug, Default)]
-pub struct NoticeQueue(VecDeque<String>);
+impl TextLog {
+    /// The last lines of the shown channel.
+    pub fn visible(&self) -> &[String] {
+        let lines = &self.channels[self.selected];
+        &lines[lines.len().saturating_sub(VISIBLE_LINES)..]
+    }
+
+    fn push(&mut self, channel: usize, text: &str, font: Option<&SpriteSheet>) {
+        info!("notice: {text}");
+        let lines = &mut self.channels[channel];
+        match font {
+            Some(font) => lines.extend(wrap(text, WRAP_WIDTH, |t| font.text_width(t))),
+            None => lines.push(text.to_owned()),
+        }
+        let excess = lines.len().saturating_sub(MAX_LINES);
+        lines.drain(..excess);
+    }
+}
+
+/// Break a message into lines no wider than `width`, at spaces, keeping at
+/// least one word on each line (retail `ShowNotice`).
+fn wrap(text: &str, width: u32, measure: impl Fn(&str) -> u32) -> Vec<String> {
+    let mut lines = Vec::new();
+    for paragraph in text.split('\n') {
+        let mut line = String::new();
+        for word in paragraph.split(' ').filter(|w| !w.is_empty()) {
+            let candidate =
+                if line.is_empty() { word.to_owned() } else { format!("{line} {word}") };
+            if measure(&candidate) >= width && !line.is_empty() {
+                lines.push(std::mem::replace(&mut line, word.to_owned()));
+            } else {
+                line = candidate;
+            }
+        }
+        lines.push(line);
+    }
+    lines
+}
 
 /// "Party takes %s", and the two halves of the gold notice.
 const PARTY_TAKES: usize = 0x1e9;
@@ -69,8 +110,12 @@ pub fn queue_notices(
     art: Res<NoticeArt>,
     tables: Res<Assets<TextTable>>,
     levels: Query<&Level>,
-    mut queue: ResMut<NoticeQueue>,
+    battle: Option<Res<crate::game::combat::Battle>>,
+    sheets: Res<Assets<SpriteSheet>>,
+    mut log: ResMut<TextLog>,
 ) {
+    let font = sheets.get(&art.font);
+    let channel = usize::from(battle.is_some());
     let messages = levels.iter().find_map(|level| tables.get(level.messages.as_ref()?));
     let strings = tables.get(&art.strings);
     let string = |index| strings.and_then(|s| s.get(index)).unwrap_or_default().trim().to_owned();
@@ -91,8 +136,7 @@ pub fn queue_notices(
             | TriggerEffect::Hurt { .. } => None,
         };
         if let Some(text) = text.filter(|t| !t.trim().is_empty()) {
-            info!("notice: {}", text.trim());
-            queue.0.push_back(text.trim().to_owned());
+            log.push(channel, text.trim(), font);
         }
     }
     for news in camp.read() {
@@ -106,13 +150,16 @@ pub fn queue_notices(
             CampNews::Cancelled => string(CAMP_CANCELLED),
             CampNews::Recovered => string(RECOVERED),
         };
-        info!("notice: {text}");
-        queue.0.push_back(text);
+        log.push(channel, &text, font);
     }
-    // Blow by blow goes to the log; the notices carry the fight's course.
+    // Blow by blow goes to the log; the text box carries the fight's
+    // course (retail's own blow lines are not ported yet).
     for news in combat.read() {
         let texts = match news {
-            CombatNews::Began => vec![string(COMBAT)],
+            CombatNews::Began => {
+                log.selected = 1;
+                vec![string(COMBAT)]
+            }
             CombatNews::Hit { attacker, target, damage } => {
                 info!("combat: {attacker} hits {target} for {damage}");
                 vec![]
@@ -129,67 +176,24 @@ pub fn queue_notices(
             CombatNews::Lost => vec![string(LOST)],
             CombatNews::Over => vec![string(NOTHING_TO_FIGHT)],
         };
+        let ended = matches!(news, CombatNews::Won { .. } | CombatNews::Lost | CombatNews::Over);
         for text in texts {
-            info!("notice: {text}");
-            queue.0.push_back(text);
+            log.push(1, &text, font);
+        }
+        if ended {
+            log.selected = 0;
         }
     }
 }
 
-/// Show the next notice once the last is gone; waiting ones hurry it.
-pub fn show_notices(
-    mut commands: Commands,
-    mut queue: ResMut<NoticeQueue>,
-    art: Res<NoticeArt>,
-    sheets: Res<Assets<SpriteSheet>>,
-    mut images: ResMut<Assets<Image>>,
-    mut shown: Query<&mut Notice>,
-) {
-    if let Ok(mut current) = shown.single_mut() {
-        if !queue.0.is_empty() {
-            current.remaining = current.remaining.min(HURRIED_SECONDS);
-        }
-        return;
-    }
-    let Some(font) = sheets.get(&art.font) else { return };
-    let Some(text) = queue.0.pop_front() else { return };
-    let image = font.text_image(&text);
-    let size = image.size_f32();
-    commands
-        .spawn((
-            Notice { remaining: NOTICE_SECONDS },
-            Node {
-                position_type: PositionType::Absolute,
-                top: Val::Px(40.0),
-                width: Val::Percent(100.0),
-                justify_content: JustifyContent::Center,
-                ..default()
-            },
-            Pickable::IGNORE,
-        ))
-        .with_child((
-            ImageNode::new(images.add(image)),
-            Node { width: Val::Px(size.x), height: Val::Px(size.y), ..default() },
-            Pickable::IGNORE,
-        ));
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-pub fn fade_notices(
-    mut commands: Commands,
-    time: Res<Time>,
-    mut notices: Query<(Entity, &mut Notice, &Children)>,
-    mut images: Query<&mut ImageNode>,
-) {
-    for (entity, mut notice, children) in &mut notices {
-        notice.remaining -= time.delta_secs();
-        if notice.remaining <= 0.0 {
-            commands.entity(entity).despawn();
-            continue;
-        }
-        for child in children {
-            if let Ok(mut image) = images.get_mut(*child) {
-                image.color.set_alpha(notice.remaining.min(1.0));
-            }
-        }
+    #[test]
+    fn messages_wrap_at_spaces_and_keep_a_word_per_line() {
+        let measure = |t: &str| t.len() as u32;
+        assert_eq!(wrap("one two three", 8, measure), vec!["one two", "three"]);
+        assert_eq!(wrap("unbreakable", 3, measure), vec!["unbreakable"]);
     }
 }

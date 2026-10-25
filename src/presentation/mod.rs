@@ -50,7 +50,7 @@ impl Plugin for PresentationPlugin {
             .add_message::<dialog::TravelAnswer>()
             .init_resource::<crate::game::automap::MapNotes>()
             .init_resource::<effects::CameraShake>()
-            .init_resource::<notices::NoticeQueue>()
+            .init_resource::<notices::TextLog>()
             .init_resource::<main_screen::ScreenLayout>()
             .init_resource::<main_screen::SelectedMember>()
             .init_resource::<music::Music>()
@@ -115,7 +115,7 @@ impl Plugin for PresentationPlugin {
                     effects::play_trigger_effects,
                     music::play_music,
                     (ambience::place_ambient_sounds, ambience::play_ambient_sounds).chain(),
-                    (notices::queue_notices, notices::show_notices, notices::fade_notices).chain(),
+                    notices::queue_notices.before(main_screen::draw_main_screen),
                     (
                         dialog::show_travel_question,
                         dialog::answer_with_keys,

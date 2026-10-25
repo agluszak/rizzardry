@@ -17,6 +17,11 @@ pub struct SpriteSheet {
 }
 
 impl SpriteSheet {
+    /// How wide a line of text is in this font.
+    pub fn text_width(&self, text: &str) -> u32 {
+        crate::retail::stci::text_width(&self.frames, text)
+    }
+
     /// Draw a line of text with this sheet as a font.
     pub fn text_image(&self, text: &str) -> Image {
         let (width, height, rgba) = render_text(&self.frames, text);

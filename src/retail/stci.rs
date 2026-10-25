@@ -156,6 +156,16 @@ pub fn glyph_index(c: char) -> Option<usize> {
 /// Draw text with a font sheet into an RGBA8 image, left to right with no
 /// kerning: each glyph advances by its width plus x offset, and a line is as
 /// tall as `A`. Unknown characters draw as `?`.
+/// How wide a line of text is in a font, in pixels.
+pub fn text_width(font: &[StciFrame], text: &str) -> u32 {
+    let glyph =
+        |c: char| glyph_index(c).filter(|&i| i < font.len()).or(glyph_index('?')).map(|i| &font[i]);
+    text.chars()
+        .filter_map(glyph)
+        .map(|g| (g.width as i32 + g.offset[0] as i32).max(0) as u32)
+        .sum()
+}
+
 pub fn render_text(font: &[StciFrame], text: &str) -> (u32, u32, Vec<u8>) {
     let glyph =
         |c: char| glyph_index(c).filter(|&i| i < font.len()).or(glyph_index('?')).map(|i| &font[i]);

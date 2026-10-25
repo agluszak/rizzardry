@@ -9,6 +9,7 @@ use bevy::ui::IsDefaultUiCamera;
 
 use std::collections::HashMap;
 
+use super::notices::TextLog;
 use super::screen_art::{absolute, sprite, text};
 use super::sky::SkyCamera;
 use crate::content::items::ItemCatalog;
@@ -286,6 +287,16 @@ pub fn select_with_keys(
     }
 }
 
+/// A text box channel tab.
+#[derive(Component, Clone, Copy)]
+struct Channel(usize);
+
+fn select_channel(click: On<PointerClick>, tabs: Query<&Channel>, mut log: ResMut<TextLog>) {
+    if let Ok(tab) = tabs.get(click.entity) {
+        log.selected = tab.0;
+    }
+}
+
 /// The bottom row's previous and next character buttons.
 #[derive(Component, Clone, Copy)]
 struct Step(i32);
@@ -322,6 +333,8 @@ pub struct Shown {
     layout: ScreenLayout,
     slots: Vec<Option<SlotView>>,
     selected: usize,
+    /// The text box's channel and the lines it shows.
+    text: (usize, Vec<String>),
 }
 
 /// A bar's fill, 0 to 45 pixels, at least 1 while any is left (retail
@@ -381,6 +394,7 @@ pub fn draw_main_screen(
     data: Option<Res<GameData>>,
     catalogs: Res<Assets<ItemCatalog>>,
     screens: Query<Entity, With<MainScreen>>,
+    log: Res<TextLog>,
     mut drawn: Local<Option<Shown>>,
     mut loading: Local<HashMap<String, Handle<SpriteSheet>>>,
 ) {
@@ -412,7 +426,12 @@ pub fn draw_main_screen(
             })
         })
         .collect();
-    let shown = Shown { layout: layout.clone(), slots, selected: selected.0 };
+    let shown = Shown {
+        layout: layout.clone(),
+        slots,
+        selected: selected.0,
+        text: (log.selected, log.visible().to_vec()),
+    };
     if drawn.as_ref() == Some(&shown) && !screens.is_empty() {
         return;
     }
@@ -566,7 +585,7 @@ pub fn draw_main_screen(
     }
     if layout.shows(Panel::TextBox) {
         parts.push(sprite(textbox, 0, Vec2::new(128.0, 358.0)));
-        parts.push(sprite(tabs, 0, Vec2::new(138.0, 360.0)));
+        parts.push(sprite(tabs, shown.text.0, Vec2::new(138.0, 360.0)));
     }
     if layout.shows(Panel::Formation) {
         parts.push(sprite(formation, 0, Vec2::new(512.0, 358.0)));
@@ -704,6 +723,23 @@ pub fn draw_main_screen(
             if !locked {
                 arrow.insert(ScreenButton::Arrow(panel)).observe(press);
             }
+        }
+    }
+    // The text box: its lines centred in the body, 11 pixels apart, and its
+    // channel tabs (retail `RedrawTextBoxBody`, `TextBoxChannelTabRegionEvent`).
+    if layout.shows(Panel::TextBox) {
+        for (i, line) in shown.text.1.iter().enumerate() {
+            let at = Vec2::new(166.0, 362.0 + 11.0 * i as f32);
+            put(&mut commands, Some(text(font, &mut images, line, at, 290.0)));
+        }
+        for (channel, y) in [(0, 362.0), (1, 383.0), (2, 404.0)] {
+            commands
+                .spawn((
+                    absolute(Vec2::new(140.0, y), Vec2::new(24.0, 16.0)),
+                    Channel(channel),
+                    ChildOf(frame),
+                ))
+                .observe(select_channel);
         }
     }
     // Previous and next character (retail `main_scroll_arrows`).
