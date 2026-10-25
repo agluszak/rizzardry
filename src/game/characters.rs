@@ -60,6 +60,11 @@ pub const VITALITY: usize = 3;
 pub const SPEED: usize = 5;
 pub const SENSES: usize = 6;
 pub const SKILLS: usize = 41;
+pub const SWORD: usize = 0;
+pub const AXE: usize = 1;
+pub const MACE_AND_FLAIL: usize = 3;
+pub const STAFF_AND_WAND: usize = 5;
+pub const DUAL_WEAPONS: usize = 18;
 /// Stamina above which an exhausted member comes round.
 const COMES_ROUND_ABOVE: u32 = 9;
 

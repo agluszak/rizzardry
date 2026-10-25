@@ -34,6 +34,7 @@ impl Plugin for PartyPlugin {
                 body::place_party_on_ready.after(build_level_geometry),
                 (body::look_around, body::aim_camera).chain(),
                 body::interact,
+                roster::give_starting_equipment,
                 (camp::request_camp, camp::force_camp, camp::cancel_camp, camp::advance_camp)
                     .chain(),
             ),

@@ -8,6 +8,7 @@
 
 use bevy::prelude::*;
 
+use super::characters::{Character, DUAL_WEAPONS};
 use super::rng::GameRng;
 use crate::content::items::{EquipClass, ItemCatalog, ItemDefinition, ItemId, QuantityKind};
 
@@ -387,6 +388,85 @@ pub fn place_with_member(
         }
         None => Err(item),
     }
+}
+
+/// Give a new character an item (retail `PlaceWithCharacter` with `equip`,
+/// used only during party creation): wear it in its creation slot when the
+/// character can use it and the slot takes it, otherwise as
+/// [`place_with_member`].
+pub fn place_at_creation(
+    carried: &mut Carried,
+    item: ItemInstance,
+    catalog: &ItemCatalog,
+    member: &Character,
+) -> Result<(), ItemInstance> {
+    let mut item = item.moved();
+    if let Some(definition) = catalog.get(item.item).filter(|d| member.can_use(d))
+        && let Some(slot) = creation_slot(definition, carried, catalog, member)
+        && allowed_slots(definition, carried, catalog).contains(&slot)
+    {
+        match &mut carried.equipment[slot.index()] {
+            empty @ None => {
+                *empty = Some(item);
+                return Ok(());
+            }
+            Some(worn) => {
+                merge_stack(worn, &mut item, definition);
+                if item.quantity == Quantity::Stack(0) {
+                    return Ok(());
+                }
+            }
+        }
+    }
+    place_with_member(carried, item, catalog)
+}
+
+/// Where creation puts an item (retail `GetItemDefaultEquipSlot` with the
+/// creation adjustments of `ChooseCharacterEquipSlot`). Moving a worn
+/// weapon to the off hand to make room is not modelled.
+fn creation_slot(
+    definition: &ItemDefinition,
+    carried: &Carried,
+    catalog: &ItemCatalog,
+    member: &Character,
+) -> Option<EquipSlot> {
+    use EquipClass::*;
+    let empty = |slot| carried.worn(slot).is_none();
+    let ranged_in = |slot| {
+        carried
+            .worn(slot)
+            .and_then(|i| catalog.get(i.item))
+            .filter(|d| d.class == RangedWeapon && can_hold_together(d, definition))
+            .is_some()
+    };
+    Some(match definition.class {
+        ShortWeapon | ExtendedWeapon if empty(EquipSlot::Primary) => EquipSlot::Primary,
+        ShortWeapon | ExtendedWeapon
+            if member.skill_points[DUAL_WEAPONS] > 0 && empty(EquipSlot::Secondary) =>
+        {
+            EquipSlot::Secondary
+        }
+        RangedWeapon if empty(EquipSlot::Primary) && empty(EquipSlot::Secondary) => {
+            EquipSlot::Primary
+        }
+        RangedWeapon
+            if empty(EquipSlot::AlternatePrimary) && empty(EquipSlot::AlternateSecondary) =>
+        {
+            EquipSlot::AlternatePrimary
+        }
+        Ammunition if ranged_in(EquipSlot::Primary) => EquipSlot::Secondary,
+        Ammunition if ranged_in(EquipSlot::AlternatePrimary) => EquipSlot::AlternateSecondary,
+        ThrownWeapon => EquipSlot::AlternatePrimary,
+        Shield => EquipSlot::Secondary,
+        Misc => EquipSlot::Misc1,
+        Torso => EquipSlot::Torso,
+        Legs => EquipSlot::Legs,
+        Head => EquipSlot::Head,
+        Hands => EquipSlot::Hands,
+        Feet => EquipSlot::Feet,
+        Cloak => EquipSlot::Cloak,
+        _ => return None,
+    })
 }
 
 impl PartyInventory {
