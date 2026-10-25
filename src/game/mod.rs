@@ -3,6 +3,7 @@
 pub mod automap;
 pub mod camp;
 pub mod characters;
+pub mod combat;
 pub mod data;
 pub mod inventory;
 pub mod loot;

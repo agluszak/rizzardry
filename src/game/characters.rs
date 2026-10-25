@@ -55,8 +55,10 @@ pub enum Gender {
 /// Strength, Intelligence, Piety, Vitality, Dexterity, Speed, Senses.
 pub const ATTRIBUTES: usize = 7;
 pub const STRENGTH: usize = 0;
+pub const INTELLIGENCE: usize = 1;
 pub const PIETY: usize = 2;
 pub const VITALITY: usize = 3;
+pub const DEXTERITY: usize = 4;
 pub const SPEED: usize = 5;
 pub const SENSES: usize = 6;
 pub const SKILLS: usize = 41;
@@ -415,6 +417,19 @@ impl Character {
         let sum =
             (self.attribute(STRENGTH) + self.attribute(PIETY) + self.attribute(VITALITY)) as f32;
         (sum / 3.0 * (0.1 * f32::from(self.level) + 2.0)).round() as u32
+    }
+
+    /// How tired, 0 (fresh) to 4, by the share of stamina spent: under
+    /// 50%, 70%, 85%, up to 94%, then beyond.
+    pub fn fatigue_band(&self) -> usize {
+        let spent = 100 - self.stamina * 100 / self.max_stamina().max(1);
+        match spent {
+            0..50 => 0,
+            50..70 => 1,
+            70..85 => 2,
+            85..=94 => 3,
+            _ => 4,
+        }
     }
 
     /// Tenths of a pound: `(VIT + 2·STR) × 12`, × 8 for a Faerie.
