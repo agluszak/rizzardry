@@ -3,9 +3,7 @@
 use avian3d::prelude::Collider;
 use bevy::prelude::*;
 use rizzardry::content::level::{CollisionMesh, LevelGeometry};
-use rizzardry::game::party::body::{
-    PartyBody, PartyMotionConfig, spawn_party_on_ready,
-};
+use rizzardry::game::party::body::{PartyBody, PartyMotionConfig, spawn_party_on_ready};
 use rizzardry::game::world::level::{Level, LevelReady, build_level_geometry};
 
 fn app() -> App {
@@ -14,7 +12,10 @@ fn app() -> App {
         .init_resource::<Assets<LevelGeometry>>()
         .init_resource::<Assets<PartyMotionConfig>>()
         .add_message::<LevelReady>()
-        .add_systems(Update, (build_level_geometry, spawn_party_on_ready.after(build_level_geometry)));
+        .add_systems(
+            Update,
+            (build_level_geometry, spawn_party_on_ready.after(build_level_geometry)),
+        );
     app.finish();
     app.cleanup();
     app
@@ -55,6 +56,7 @@ fn a_level_without_collision_cannot_activate_the_party() {
     app.update();
 
     assert!(app.world().get::<Collider>(root).is_none());
+    assert!(app.world().resource::<Messages<LevelReady>>().is_empty());
     assert!(party_entities(&mut app).is_empty());
 }
 
@@ -67,6 +69,8 @@ fn the_party_survives_level_replacement_without_duplication() {
     assert!(app.world().get::<Collider>(first_level).is_some());
     let party = party_entities(&mut app);
     assert_eq!(party.len(), 1);
+    app.update();
+    assert_eq!(party_entities(&mut app), party);
 
     app.world_mut().despawn(first_level);
     let second_level = spawn_level(&mut app, floor());
