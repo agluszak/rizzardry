@@ -46,8 +46,8 @@ const PARTY_ALTERNATE_RADIUS: f32 = 1.0;
 /// (retail `g_monster_facing_tolerance`, 45 degrees).
 const FACING_TOLERANCE: f32 = std::f32::consts::FRAC_PI_4;
 
-/// Seconds between actions, so they can be followed.
-const ACTION_SECONDS: f32 = 0.5;
+/// Seconds between actors (retail `combat_delay_ms`, 1000 by default).
+const ACTION_SECONDS: f32 = 1.0;
 /// Real seconds between rounds, so that a round in which nobody can strike
 /// still lets monsters close in.
 const ROUND_SECONDS: f32 = 1.0;

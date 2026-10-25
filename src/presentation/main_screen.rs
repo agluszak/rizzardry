@@ -577,6 +577,7 @@ pub struct SlotView {
     portrait: String,
     race: Race,
     dead: bool,
+    hp: u32,
     hp_fill: u32,
     stamina_fill: u32,
     name: String,
@@ -684,6 +685,7 @@ pub fn draw_main_screen(
                 portrait: character.portrait.clone(),
                 race: character.race,
                 dead: character.is_dead(),
+                hp: character.hp,
                 hp_fill: fill(character.hp, character.max_hp()),
                 stamina_fill: fill(character.stamina, character.max_stamina()),
                 name: character.name.clone(),
@@ -944,24 +946,37 @@ pub fn draw_main_screen(
                 )),
             );
         }
-        put(&mut commands, sprite(info, 1, Vec2::new(bars_x, y)));
+        // Retail's default shows hit points as a number, with wide bars
+        // (`g_settings.numeric_hit_points`, on in `ResetGameplaySettings`).
+        put(&mut commands, sprite(info, 3, Vec2::new(bars_x, y)));
         if !view.dead {
             // The full bar, then its empty part blacked out from the top.
             for (file, dx, fill) in
-                [("healthbar", 6.0, view.hp_fill), ("staminabar", 10.0, view.stamina_fill)]
+                [("healthbarwide", 3.0, view.hp_fill), ("staminabarwide", 9.0, view.stamina_fill)]
             {
-                let at = Vec2::new(bars_x + dx, y + 23.0);
+                let at = Vec2::new(bars_x + dx, y + 17.0);
                 put(
                     &mut commands,
                     sheet(format!("data/main interface/{file}.sti")).and_then(|s| sprite(s, 0, at)),
                 );
                 commands.spawn((
-                    absolute(at, Vec2::new(3.0, (45 - fill) as f32)),
+                    absolute(at, Vec2::new(5.0, (45 - fill) as f32)),
                     BackgroundColor(Color::srgb_u8(1, 1, 1)),
                     Pickable::IGNORE,
                     ChildOf(frame),
                 ));
             }
+            commands.spawn((
+                absolute(Vec2::new(bars_x + 2.0, y + 62.0), Vec2::new(19.0, 9.0)),
+                BackgroundColor(Color::BLACK),
+                Pickable::IGNORE,
+                ChildOf(frame),
+            ));
+            let hp = view.hp.to_string();
+            put(
+                &mut commands,
+                Some(text(small_font, &mut images, &hp, Vec2::new(bars_x + 2.0, y + 62.0), 19.0)),
+            );
         }
         // The condition and enchantment sockets (retail
         // `RedrawPartyPortraitOverlay` step 7): the condition on the
