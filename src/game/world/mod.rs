@@ -6,6 +6,7 @@ pub mod navigation;
 pub mod population;
 pub mod props;
 pub mod scripts;
+pub mod search;
 pub mod triggers;
 
 use bevy::prelude::*;
@@ -28,6 +29,9 @@ impl Plugin for WorldPlugin {
             .add_message::<level::LevelReady>()
             .add_message::<level::Travel>()
             .add_message::<crate::game::inventory::ItemNews>()
+            .add_message::<search::ToggleSearch>()
+            .add_message::<search::SearchNews>()
+            .init_resource::<search::Search>()
             .init_resource::<level::LevelMemory>()
             .init_resource::<crate::game::rng::GameRng>()
             .init_resource::<crate::game::inventory::ItemIds>()
@@ -43,6 +47,7 @@ impl Plugin for WorldPlugin {
                     level::build_sky,
                     population::populate_level,
                     population::measure_monsters,
+                    (search::search_key, search::toggle_search, search::search_pulse).chain(),
                 ),
             )
             .add_systems(FixedUpdate, props::animate_props);

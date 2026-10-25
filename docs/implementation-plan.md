@@ -213,7 +213,13 @@ Known gaps, in rough order:
   it: thrown along the pointer's ray at most 5 m, resting a quarter metre
   above the ground (retail aims by its own throw angles). Clicking in the
   world goes through the pointer, as in retail, and only inside the view.
-  Hidden items (searching), the green hover
+  Hidden items come to light when searching finds them
+  (`game::world::search`, retail `Search.cpp`): every half second the best
+  searcher (half their Scouting plus a Senses bonus; rangers always, others
+  in search mode, S or the magnifier) spots hidden items in front within
+  0.2 m per point of score and in sight. Search mode pauses for a fight.
+  Not yet: searchable triggers, skill practice, turning the view to the
+  find, the identify attempt, retail's rare search-mode mishap. The green hover
   highlight and name tooltip, containers' item picker, and remembering
   taken items when the level is left are still to come.
 - Stamina and healing fountains (`0x25`, `0x26`) restore every member by

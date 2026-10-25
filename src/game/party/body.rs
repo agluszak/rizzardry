@@ -156,6 +156,11 @@ pub fn spawn_exploration_controls(mut commands: Commands) {
             Bindings [
                 Binding(KeyCode::KeyC)
             ]
+            --
+            Action::<crate::game::world::search::SearchKey>::new()
+            Bindings [
+                Binding(KeyCode::KeyS)
+            ]
         ]
     });
 }

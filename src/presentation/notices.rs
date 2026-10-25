@@ -13,6 +13,7 @@ use crate::game::combat::attack::Mode;
 use crate::game::combat::{Announcement, CombatNews};
 use crate::game::inventory::ItemNews;
 use crate::game::world::level::Level;
+use crate::game::world::search::SearchNews;
 use crate::game::world::triggers::TriggerEffect;
 
 /// Retail's "Nothing happens." in the game's string table.
@@ -87,6 +88,10 @@ fn wrap(text: &str, width: u32, measure: impl Fn(&str) -> u32) -> Vec<String> {
 const PARTY_TAKES: usize = 0x1e9;
 const TAKES: usize = 0x1e8;
 const NO_ROOM: usize = 0x90c;
+const SEARCH_ON: usize = 0x78e;
+const SEARCH_OFF: usize = 0x78f;
+const NOT_IN_COMBAT_SEARCH: usize = 0x774;
+const SPOTS_HIDDEN: usize = 0x772;
 const GOLD_BEFORE: usize = 0x15f;
 const GOLD_AFTER: usize = 0x160;
 
@@ -155,6 +160,7 @@ pub fn queue_notices(
     mut camp: MessageReader<CampNews>,
     mut combat: MessageReader<CombatNews>,
     mut items: MessageReader<ItemNews>,
+    mut search: MessageReader<SearchNews>,
     art: Res<NoticeArt>,
     tables: Res<Assets<TextTable>>,
     levels: Query<&Level>,
@@ -186,6 +192,17 @@ pub fn queue_notices(
         if let Some(text) = text.filter(|t| !t.trim().is_empty()) {
             log.push(channel, text.trim(), font);
         }
+    }
+    for news in search.read() {
+        let text = match news {
+            SearchNews::On => string(SEARCH_ON),
+            SearchNews::Off => string(SEARCH_OFF),
+            SearchNews::NotInCombat => string(NOT_IN_COMBAT_SEARCH),
+            SearchNews::Spotted { member, item } => {
+                format!("{member} {}", string(SPOTS_HIDDEN).replace("%s", item))
+            }
+        };
+        log.push(channel, &text, font);
     }
     for news in items.read() {
         let text = match news {

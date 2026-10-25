@@ -14,7 +14,7 @@ use super::screen_art::{absolute, sprite, text};
 use super::sky::SkyCamera;
 use crate::content::items::ItemCatalog;
 use crate::content::ui::SpriteSheet;
-use crate::game::characters::{Character, Condition, Race};
+use crate::game::characters::{Character, Race};
 use crate::game::combat::attack::{Armour, armour};
 use crate::game::combat::{CombatSettings, Order, PartyOrders, StartRound};
 use crate::game::data::GameData;
@@ -306,9 +306,7 @@ fn press(
             };
             let item = party.held.as_ref().and_then(|h| catalog.get(h.item.item));
             let item = item.map(|d| d.name.clone()).unwrap_or_default();
-            // Retail `IsPartySlotEligible`: alive and not turned or worse.
-            let eligible = !character.is_dead()
-                && character.worst_condition().is_none_or(|c| c < Condition::Turncoat);
+            let eligible = crate::game::camp::can_act(character);
             let member = eligible.then_some(&mut *carried);
             match party.give_held(member, !eligible || battle.is_some(), catalog) {
                 Some(Given::Member) => {
@@ -602,6 +600,7 @@ pub fn update_radar(
 #[derive(Component, Clone, Copy, PartialEq, Eq)]
 enum Bank {
     Camp,
+    Search,
     Formation,
     Order(Order),
     /// The combat round button: left click starts a round, or switches
@@ -613,6 +612,7 @@ fn press_bank(
     click: On<PointerClick>,
     buttons: Query<&Bank>,
     mut camp: MessageWriter<crate::game::camp::CampRequest>,
+    mut search: MessageWriter<crate::game::world::search::ToggleSearch>,
     mut layout: ResMut<ScreenLayout>,
     mut orders: ResMut<PartyOrders>,
     selected: Res<SelectedMember>,
@@ -631,6 +631,9 @@ fn press_bank(
         }
         Ok(Bank::Camp) => {
             camp.write(crate::game::camp::CampRequest);
+        }
+        Ok(Bank::Search) => {
+            search.write(crate::game::world::search::ToggleSearch);
         }
         // The Party Formation button opens and closes the formation panel.
         Ok(Bank::Formation) => layout.toggle(Panel::Formation),
@@ -693,6 +696,8 @@ pub struct Shown {
     /// The text box's channel and the lines it shows.
     text: (usize, Vec<String>),
     fighting: bool,
+    /// Search mode, which keeps the search button pressed.
+    searching: bool,
     orders: Vec<Order>,
     continuous: bool,
     /// The round's progress while one plays.
@@ -756,12 +761,13 @@ pub fn draw_main_screen(
     data: Option<Res<GameData>>,
     catalogs: Res<Assets<ItemCatalog>>,
     screens: Query<Entity, With<MainScreen>>,
-    (log, battle, formation, orders, settings): (
+    (log, battle, formation, orders, settings, search): (
         Res<TextLog>,
         Option<Res<crate::game::combat::Battle>>,
         Res<Formation>,
         Res<PartyOrders>,
         Res<CombatSettings>,
+        Res<crate::game::world::search::Search>,
     ),
     mut drawn: Local<Option<Shown>>,
     mut loading: Local<HashMap<String, Handle<SpriteSheet>>>,
@@ -810,6 +816,7 @@ pub fn draw_main_screen(
         selected: selected.0,
         text: (log.selected, log.visible().to_vec()),
         fighting: battle.is_some(),
+        searching: search.on,
         orders: (0..8).map(|slot| orders.of(slot)).collect(),
         continuous: settings.continuous,
         progress: battle.as_ref().and_then(|b| b.progress()),
@@ -1243,14 +1250,14 @@ pub fn draw_main_screen(
         }
     }
     // The button bank (retail `pc.cpp` positions and frames: grayed, off,
-    // ..., on). Camp and the formation panel work; the journal, search,
+    // ..., on). Camp, search and the formation panel work; the journal,
     // items, spells and options are grayed until they exist.
     let fighting = shown.fighting;
     let mut bank: Vec<(&SpriteSheet, f32, f32, usize, usize, Option<Bank>)> = vec![
         (options, 0.0, 450.0, 3, 0, None),
         (icons, 40.0, 452.0, 0x2b, 0x28, None),
         (icons, 70.0, 452.0, 3, 0, Some(Bank::Camp)),
-        (icons, 100.0, 452.0, 8, 5, None),
+        (icons, 100.0, 452.0, 8, if shown.searching { 7 } else { 5 }, Some(Bank::Search)),
         (icons, 130.0, 452.0, 0x17, 0x14, None),
         (icons, 160.0, 452.0, 0x1c, 0x19, None),
         (
@@ -1301,7 +1308,8 @@ pub fn draw_main_screen(
     }
     for (sheet, x, y, grayed, normal, action) in bank {
         // The journal, camp and the combat toggle are grayed in a fight.
-        let usable = action.is_some() && !(fighting && action == Some(Bank::Camp));
+        let usable =
+            action.is_some() && !(fighting && matches!(action, Some(Bank::Camp | Bank::Search)));
         let image = if usable { normal } else { grayed };
         if let Some((node_image, node, _)) = sprite(sheet, image, Vec2::new(x, y)) {
             let mut button = commands.spawn((node_image, node, ChildOf(frame)));
