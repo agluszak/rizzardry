@@ -3,6 +3,7 @@
 //! Gameplay never sees archive offsets or packed records: this module turns
 //! them into typed records and native Bevy assets.
 
+pub mod automap;
 pub mod bytes;
 pub mod files;
 pub mod keyframes;

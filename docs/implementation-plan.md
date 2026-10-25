@@ -62,14 +62,20 @@ shown on retail content; the gaps below remain. Done:
   audio ends. Retail ships MP3 where scripts name WAV.
 - **UI.** STCI images and bitmap fonts decode (all 1327 retail `.sti`). The
   automap is native Bevy UI from retail art: frame, buttons with picking
-  hover/click, a plan of the floors near the party, and notes pinned, typed
+  hover/click, a plan of the floors, and notes pinned, typed
   in `Wiz_Text_Font` and erased, within retail's limits. Retail zoom and
   movement buttons provide three zoom steps, bounded panning and party
   recentering; arrow keys pan, and right-click zooms out. Geometry, markers,
   notes and picking use one aspect-preserving projection. Bounds currently
   cover all walkable geometry, not just explored cells. This native orthographic
   view uses full-span, half-span and 50-metre zoom; retail's terrain-dependent
-  camera-height calculation is not reproduced.
+  camera-height calculation is not reproduced. Numbered clip planes and
+  `MapFilters.txt` supply the layer cuts; the layer buttons reveal the topmost
+  walkable surface below each cut, including slopes crossing the cut. The map
+  initially selects the party's floor band. Note labels and selection are
+  confined to their layer; note markers and the party remain visible across
+  layers, as in retail. The window backend displays the original tool cursors
+  and hotspots.
 
 Decisions made while doing this:
 
@@ -94,8 +100,8 @@ Known gaps, in rough order:
   nearest detail level, and ignore particles, sounds and skins.
 - Cross-level travel, elevators/lifts, random teleports and camera-path
   triggers are not implemented. Retail's fall-speed cap is not applied.
-- Map notes are not saved; the automap has one layer and no
-  layer buttons or tool cursors. Only the map screen exists.
+- Map notes are not saved; the automap does not yet track explored cells or
+  project notes onto a minimap. Only the map screen exists.
 - The screenshot tool intermittently omits all or some unchanged UI artwork,
   even while map/note assertions pass. Complete map frames have also been
   captured; the cause is still unresolved.

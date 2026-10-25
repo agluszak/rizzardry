@@ -25,6 +25,7 @@ fn spawn_level(app: &mut App, collision: CollisionMesh) -> Entity {
     let geometry = app.world_mut().resource_mut::<Assets<LevelGeometry>>().add(LevelGeometry {
         parts: vec![],
         collision,
+        map_layers: vec![],
         environment: None,
         props: vec![],
         links: vec![],

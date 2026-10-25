@@ -58,6 +58,13 @@ pub struct ParticleSystem {
     pub location: [f32; 3],
 }
 
+/// A named horizontal clipping plane, at a height in retail units.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClipPlane {
+    pub name: String,
+    pub height: f32,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct LevelSections {
     pub lights: Vec<Light>,
@@ -68,6 +75,7 @@ pub struct LevelSections {
     pub environment: Option<Environment>,
     pub triggers: Vec<Trigger>,
     pub camera_sway: bool,
+    pub clip_planes: Vec<ClipPlane>,
     /// Added to every baked vertex colour.
     pub environment_offset: [f32; 3],
     pub particles: Vec<ParticleSystem>,
@@ -223,10 +231,15 @@ fn read_sections_of(bytes: &mut Bytes, compiled: bool) -> Result<LevelSections, 
     let triggers = (0..count(bytes)?).map(|_| read_trigger(bytes)).collect::<Result<_, _>>()?;
     sentinel(bytes, compiled)?;
     let camera_sway = bytes.i32()? != 0;
-    let clip_planes = count(bytes)?;
-    if clip_planes > 0 {
-        bytes.u8()?;
-        bytes.take(clip_planes * (64 + 16))?;
+    let clip_count = count(bytes)?;
+    let mut clip_planes = Vec::with_capacity(clip_count);
+    if clip_count > 0 {
+        bytes.u8()?; // The retail loader reads but does not branch on this version.
+        for _ in 0..clip_count {
+            let name = text(bytes, 64)?.to_uppercase();
+            let position = bytes.f32s::<4>()?;
+            clip_planes.push(ClipPlane { name, height: position[1] * RECORD_SCALE });
+        }
     }
     sentinel(bytes, compiled)?;
     let environment_offset = bytes.f32s()?;
@@ -269,6 +282,7 @@ fn read_sections_of(bytes: &mut Bytes, compiled: bool) -> Result<LevelSections, 
         environment,
         triggers,
         camera_sway,
+        clip_planes,
         environment_offset,
         particles,
         named_positions,

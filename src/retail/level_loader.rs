@@ -61,6 +61,8 @@ pub enum PvlLoadError {
     Read(#[from] bevy::asset::ReadAssetBytesError),
     #[error("cannot name the level's octree file")]
     Path,
+    #[error("invalid automap layers: {0}")]
+    MapLayers(String),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -386,6 +388,20 @@ impl AssetLoader for PvlLoader {
         reader.read_to_end(&mut data).await?;
         let geometry = read_level_geometry(&data)?;
         let sections = read_sections(&mut Bytes::new(&data[geometry.end..]))?;
+        let level_path = context.path().path().to_string_lossy();
+        let level_index =
+            crate::content::levels::LEVELS.iter().position(|level| level.path() == level_path);
+        let filter_path = AssetPath::from("retail://data/automap/mapfilters.txt");
+        let filters = match context.read_asset_bytes(filter_path).await {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Err(bevy::asset::ReadAssetBytesError::AssetReaderError(
+                bevy::asset::io::AssetReaderError::NotFound(_),
+            )) => String::new(),
+            Err(error) => return Err(error.into()),
+        };
+        let map_layers =
+            super::automap::layer_heights(&sections.clip_planes, &filters, level_index)
+                .map_err(PvlLoadError::MapLayers)?;
         let directory = "bitmaps";
         let environment = sections.environment.as_ref().map(level_environment);
         let ambient = environment.as_ref().map_or(Vec3::ZERO, |e| e.sky_light(NOON));
@@ -442,6 +458,7 @@ impl AssetLoader for PvlLoader {
         Ok(LevelGeometry {
             parts,
             collision,
+            map_layers,
             environment,
             props,
             links,

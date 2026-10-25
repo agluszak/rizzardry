@@ -79,6 +79,7 @@ impl AssetLoader for LvlLoader {
         Ok(LevelGeometry {
             parts,
             collision: default(),
+            map_layers: vec![],
             environment: None,
             props,
             links: vec![],

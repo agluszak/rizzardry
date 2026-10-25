@@ -31,6 +31,8 @@ impl Plugin for PresentationPlugin {
                         automap::paint_buttons,
                         automap::update_map_view,
                         automap::draw_notes,
+                        automap::draw_layer_label,
+                        automap::update_map_cursor,
                         automap::glow_note_markers,
                     )
                         .chain(),

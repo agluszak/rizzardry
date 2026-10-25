@@ -3,8 +3,8 @@
 //! Layout and art after Whizzardry `AutomapScreen.cpp`: a 640×480 frame
 //! (`map_border.sti`) scaled to the window, the map in the rectangle
 //! (12, 32)–(468, 468), and four-state buttons (off, highlighted, on,
-//! greyed). The map shows the floors around the party, which retail draws
-//! from the visited parts of the level. Notes are pinned with the Add note
+//! greyed). Authored ceiling cuts select floors; retail draws only visited
+//! geometry, while the current native map shows all walkable surfaces. Notes are pinned with the Add note
 //! tool, typed in the retail text font, and erased with Erase note.
 
 use bevy::input::ButtonState;
@@ -27,9 +27,6 @@ const VIEWPORT: Vec2 = Vec2::new(456.0, 436.0);
 const MIN_SPAN: f32 = 50.0;
 /// Markers are drawn this many screen pixels wide.
 const MARKER: f32 = 16.0;
-/// Floors this far below or above the party's feet are on its layer.
-const LAYER_BELOW: f32 = 2.5;
-const LAYER_ABOVE: f32 = 2.5;
 const EDIT_BOX: Color = Color::srgb(239.0 / 255.0, 155.0 / 255.0, 86.0 / 255.0);
 /// Note markers glow from black to orange and back in this many seconds.
 const GLOW_PERIOD: f32 = 2.0;
@@ -76,6 +73,8 @@ pub struct AutomapArt {
     exit_button: Handle<SpriteSheet>,
     zoom_buttons: Handle<SpriteSheet>,
     movement_buttons: Handle<SpriteSheet>,
+    layer_buttons: Handle<SpriteSheet>,
+    cursors: Handle<SpriteSheet>,
     font: Handle<SpriteSheet>,
     note_marker: Handle<Image>,
     party_marker: Handle<Image>,
@@ -89,6 +88,8 @@ pub fn load_automap_art(mut commands: Commands, assets: Res<AssetServer>) {
         exit_button: assets.load(art("map_exitbutton.sti")),
         zoom_buttons: assets.load(art("map_zoombuttons.sti")),
         movement_buttons: assets.load(art("map_movementbuttons.sti")),
+        layer_buttons: assets.load(art("map_layerbuttons.sti")),
+        cursors: assets.load(art("map_cursors.sti")),
         font: assets.load("retail://data/fonts/wiz_text_font.sti"),
         note_marker: assets.load(art("map_textmarker_a.tga")),
         party_marker: assets.load(art("map_partymarker_a.tga")),
@@ -108,12 +109,12 @@ pub struct Automap {
     bounds_min: Vec2,
     bounds_max: Vec2,
     full_span: f32,
-    height: f32,
+    pub layer: usize,
     close: bool,
 }
 
 impl Automap {
-    fn new(collision: Option<&CollisionMesh>, feet: Vec3) -> Self {
+    fn new(collision: Option<&CollisionMesh>, layers: &[f32], feet: Vec3) -> Self {
         let mut min = feet.xz();
         let mut max = min;
         if let Some(collision) = collision {
@@ -137,7 +138,7 @@ impl Automap {
             bounds_min: min,
             bounds_max: max,
             full_span,
-            height: feet.y,
+            layer: layer_at_height(layers, feet.y),
             close: false,
         }
     }
@@ -187,6 +188,14 @@ impl Automap {
     }
 }
 
+// Both references assign markers to the band above the first lower cut.
+fn layer_at_height(layers: &[f32], height: f32) -> usize {
+    layers.iter().position(|&cut| cut < height).unwrap_or(layers.len())
+}
+
+#[derive(Component)]
+pub struct LayerLabel;
+
 #[derive(Component)]
 pub struct FloorPlan;
 
@@ -222,6 +231,8 @@ enum ButtonAction {
     Reset,
     Pan(IVec2),
     CentreParty,
+    LayerPrevious,
+    LayerNext,
     Exit,
 }
 
@@ -275,12 +286,14 @@ pub fn toggle_automap(
         Some(exit_button),
         Some(zoom_buttons),
         Some(movement_buttons),
+        Some(layer_buttons),
     ) = (
         sheets.get(&art.border),
         sheets.get(&art.note_buttons),
         sheets.get(&art.exit_button),
         sheets.get(&art.zoom_buttons),
         sheets.get(&art.movement_buttons),
+        sheets.get(&art.layer_buttons),
     )
     else {
         warn!("the automap's art is still loading");
@@ -288,8 +301,10 @@ pub fn toggle_automap(
     };
     let feet = party.translation - Vec3::Y * FLOAT_HEIGHT;
     let collision = level.single().ok().and_then(|level| geometry.get(&level.geometry));
-    let automap = Automap::new(collision.map(|level| &level.collision), feet);
-    let plan = collision.map(|level| images.add(floor_plan(&level.collision, &automap)));
+    let layers = collision.map_or(&[][..], |level| level.map_layers.as_slice());
+    let automap = Automap::new(collision.map(|level| &level.collision), layers, feet);
+    let plan = collision
+        .map(|level| images.add(floor_plan(&level.collision, &level.map_layers, &automap)));
 
     let button = |sheet: &SpriteSheet, handle: &Handle<SpriteSheet>, base, at: Vec2, action| {
         (
@@ -343,6 +358,7 @@ pub fn toggle_automap(
     let viewport = commands
         .spawn((
             MapViewport,
+            Hovered::default(),
             Node { overflow: Overflow::clip(), ..absolute(VIEWPORT_AT, VIEWPORT) },
             BackgroundColor(Color::BLACK),
             ChildOf(frame),
@@ -371,9 +387,30 @@ pub fn toggle_automap(
         Pickable::IGNORE,
         ChildOf(viewport),
     ));
+    commands.spawn((
+        LayerLabel,
+        ImageNode::default(),
+        absolute(Vec2::new(500.0, 199.0), Vec2::new(120.0, 16.0)),
+        Pickable::IGNORE,
+        ChildOf(frame),
+    ));
     let add = ButtonAction::Tool(MapTool::AddNote);
     let erase = ButtonAction::Tool(MapTool::EraseNote);
     for button in [
+        button(
+            layer_buttons,
+            &art.layer_buttons,
+            0,
+            Vec2::new(490.0, 164.0),
+            ButtonAction::LayerPrevious,
+        ),
+        button(
+            layer_buttons,
+            &art.layer_buttons,
+            4,
+            Vec2::new(591.0, 164.0),
+            ButtonAction::LayerNext,
+        ),
         button(note_buttons, &art.note_buttons, 0, Vec2::new(490.0, 70.0), add),
         button(note_buttons, &art.note_buttons, 4, Vec2::new(541.0, 70.0), erase),
         button(zoom_buttons, &art.zoom_buttons, 0, Vec2::new(490.0, 124.0), ButtonAction::ZoomIn),
@@ -424,20 +461,22 @@ pub fn toggle_automap(
     }
 }
 
-/// The level's floors near the feet' height, seen from above, north up.
-fn floor_plan(collision: &CollisionMesh, automap: &Automap) -> Image {
+/// Topmost walkable surfaces below the selected authored ceiling, north up.
+fn floor_plan(collision: &CollisionMesh, layers: &[f32], automap: &Automap) -> Image {
     let (width, height) = (VIEWPORT.x as usize, VIEWPORT.y as usize);
     let mut rgba = vec![0u8; width * height * 4];
+    let mut depth = vec![f32::NEG_INFINITY; width * height];
+    let ceiling = automap.layer.checked_sub(1).map_or(f32::INFINITY, |layer| layers[layer]);
+    let (min_height, max_height) = collision
+        .vertices
+        .iter()
+        .fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), v| (min.min(v.y), max.max(v.y)));
     let to_map = |v: Vec3| automap.project(v.xz());
     for (triangle, _) in collision.triangles.iter().zip(&collision.walkable).filter(|(_, w)| **w) {
         let [a, b, c] = triangle.map(|i| collision.vertices[i as usize]);
-        let rise = (a.y + b.y + c.y) / 3.0 - automap.height;
-        if !(-LAYER_BELOW..=LAYER_ABOVE).contains(&rise) {
+        if a.y.min(b.y).min(c.y) > ceiling {
             continue;
         }
-        // Higher floors are drawn lighter.
-        let shade = 0.55 + 0.35 * (rise + LAYER_BELOW) / (LAYER_BELOW + LAYER_ABOVE);
-        let colour = [(150.0 * shade) as u8, (130.0 * shade) as u8, (95.0 * shade) as u8, 255];
         let [p, q, r] = [to_map(a), to_map(b), to_map(c)];
         let min = p.min(q).min(r).floor().max(Vec2::ZERO);
         let max = p.max(q).max(r).ceil().min(VIEWPORT - 1.0);
@@ -451,8 +490,17 @@ fn floor_plan(collision: &CollisionMesh, automap: &Automap) -> Image {
                 let u = (r - q).perp_dot(point - q) / area;
                 let v = (p - r).perp_dot(point - r) / area;
                 if u >= 0.0 && v >= 0.0 && u + v <= 1.0 {
-                    let at = (y * width + x) * 4;
-                    rgba[at..at + 4].copy_from_slice(&colour);
+                    let height = u * a.y + v * b.y + (1.0 - u - v) * c.y;
+                    let at = y * width + x;
+                    if height > ceiling || height <= depth[at] {
+                        continue;
+                    }
+                    depth[at] = height;
+                    let shade =
+                        0.55 + 0.35 * (height - min_height) / (max_height - min_height).max(1.0);
+                    let colour =
+                        [(150.0 * shade) as u8, (130.0 * shade) as u8, (95.0 * shade) as u8, 255];
+                    rgba[at * 4..at * 4 + 4].copy_from_slice(&colour);
                 }
             }
         }
@@ -463,6 +511,8 @@ fn floor_plan(collision: &CollisionMesh, automap: &Automap) -> Image {
 fn press_button(
     click: On<PointerClick>,
     buttons: Query<&SheetButton>,
+    level: Query<&Level>,
+    geometry: Res<Assets<LevelGeometry>>,
     party: Query<&Transform, With<PartyBody>>,
     automap: Option<ResMut<Automap>>,
     mut notes: ResMut<MapNotes>,
@@ -491,12 +541,21 @@ fn press_button(
                 automap.centre_on(party.translation.xz());
             }
         }
+        ButtonAction::LayerPrevious => automap.layer = automap.layer.saturating_sub(1),
+        ButtonAction::LayerNext => {
+            if let Some(level) = level.single().ok().and_then(|level| geometry.get(&level.geometry))
+            {
+                automap.layer = (automap.layer + 1).min(level.map_layers.len());
+            }
+        }
         ButtonAction::Exit => automap.close = true,
     }
 }
 
 /// Off, highlighted while hovered, on while its tool is selected.
 pub fn paint_buttons(
+    level: Query<&Level>,
+    geometry: Res<Assets<LevelGeometry>>,
     mut buttons: Query<(&Hovered, &SheetButton, &mut ImageNode)>,
     automap: Option<Res<Automap>>,
     sheets: Res<Assets<SpriteSheet>>,
@@ -505,6 +564,12 @@ pub fn paint_buttons(
     for (hovered, button, mut image) in &mut buttons {
         let on = matches!(button.action, ButtonAction::Tool(tool) if automap.tool == Some(tool));
         let disabled = match button.action {
+            ButtonAction::LayerPrevious => automap.layer == 0,
+            ButtonAction::LayerNext => level
+                .single()
+                .ok()
+                .and_then(|l| geometry.get(&l.geometry))
+                .is_none_or(|l| automap.layer >= l.map_layers.len()),
             ButtonAction::ZoomIn => automap.span <= MIN_SPAN,
             ButtonAction::ZoomOut => automap.span >= automap.full_span,
             _ => false,
@@ -546,14 +611,14 @@ fn click_map(
     let point = automap.unproject((hit.truncate() + 0.5) * VIEWPORT);
     let reach = MARKER / automap.pixels_per_metre();
     match automap.tool {
-        Some(MapTool::AddNote) => automap.editing = notes.add(point),
+        Some(MapTool::AddNote) => automap.editing = notes.add(point, automap.layer),
         Some(MapTool::EraseNote) => {
-            if let Some(note) = notes.nearest(point, reach) {
+            if let Some(note) = notes.nearest(point, reach, automap.layer) {
                 notes.notes.remove(note);
             }
         }
         None => {
-            automap.editing = notes.nearest(point, reach);
+            automap.editing = notes.nearest(point, reach, automap.layer);
             if automap.editing.is_none() {
                 automap.zoom_in(point);
             }
@@ -645,7 +710,9 @@ pub fn draw_notes(
             ChildOf(layer),
         ));
         let editing = automap.editing == Some(index);
-        if note.text.is_empty() && !editing {
+        // Retail keeps the marker visible on other layers, but only labels
+        // and selects notes on the current layer.
+        if note.layer != automap.layer || (note.text.is_empty() && !editing) {
             continue;
         }
         let label = font.text_image(&note.text);
@@ -694,9 +761,10 @@ pub fn update_map_view(
     mut images: ResMut<Assets<Image>>,
     party: Query<&Transform, With<PartyBody>>,
     mut markers: Query<&mut Node, With<PartyMarker>>,
-    mut previous: Local<Option<(Entity, Vec2, f32, f32)>>,
+    mut previous: Local<Option<(Entity, Vec2, f32, usize)>>,
 ) {
     let Some(automap) = automap else { return };
+    let Some(level) = level.single().ok().and_then(|l| geometry.get(&l.geometry)) else { return };
     if let Ok(party) = party.single() {
         let at = automap.project(party.translation.xz()) - MARKER / 2.0;
         for mut marker in &mut markers {
@@ -705,14 +773,105 @@ pub fn update_map_view(
         }
     }
     let Ok((entity, image)) = plans.single_mut() else { return };
-    let view = (entity, automap.centre, automap.span, automap.height);
+    let view = (entity, automap.centre, automap.span, automap.layer);
     if *previous == Some(view) {
         return;
     }
-    let Some(level) = level.single().ok().and_then(|l| geometry.get(&l.geometry)) else { return };
     if let Some(mut image) = images.get_mut(&image.image) {
-        *image = floor_plan(&level.collision, &automap);
+        *image = floor_plan(&level.collision, &level.map_layers, &automap);
         *previous = Some(view);
+    }
+}
+
+/// Arrow keys pan the map while the exploration context is suspended.
+pub fn pan_with_keys(keys: Res<ButtonInput<KeyCode>>, automap: Option<ResMut<Automap>>) {
+    let Some(mut automap) = automap else { return };
+    if automap.editing.is_some() {
+        return;
+    }
+    let direction = Vec2::new(
+        keys.just_pressed(KeyCode::ArrowRight) as u8 as f32
+            - keys.just_pressed(KeyCode::ArrowLeft) as u8 as f32,
+        keys.just_pressed(KeyCode::ArrowDown) as u8 as f32
+            - keys.just_pressed(KeyCode::ArrowUp) as u8 as f32,
+    );
+    if direction != Vec2::ZERO {
+        let point = automap.centre + direction * 0.35 * automap.span;
+        automap.centre_on(point);
+    }
+}
+
+pub fn draw_layer_label(
+    automap: Option<Res<Automap>>,
+    art: Option<Res<AutomapArt>>,
+    sheets: Res<Assets<SpriteSheet>>,
+    level: Query<&Level>,
+    geometry: Res<Assets<LevelGeometry>>,
+    mut labels: Query<(Entity, &mut ImageNode, &mut Node), With<LayerLabel>>,
+    mut images: ResMut<Assets<Image>>,
+    mut previous: Local<Option<(Entity, usize)>>,
+) {
+    let (Some(automap), Some(art), Ok((entity, mut image, mut node))) =
+        (automap, art, labels.single_mut())
+    else {
+        return;
+    };
+    if *previous == Some((entity, automap.layer)) {
+        return;
+    }
+    let (Some(font), Some(level)) =
+        (sheets.get(&art.font), level.single().ok().and_then(|l| geometry.get(&l.geometry)))
+    else {
+        return;
+    };
+    let label =
+        font.text_image(&format!("Layer {}/{}", automap.layer + 1, level.map_layers.len() + 1));
+    let size = label.size_f32();
+    node.left = Val::Px(558.0 - size.x / 2.0);
+    node.width = Val::Px(size.x);
+    node.height = Val::Px(size.y);
+    image.image = images.add(label);
+    *previous = Some((entity, automap.layer));
+}
+
+/// Let the window backend draw retail tool cursors with their original hotspots.
+pub fn update_map_cursor(
+    mut commands: Commands,
+    windows: Query<(Entity, Option<&bevy::window::CursorIcon>), With<bevy::window::PrimaryWindow>>,
+    automap: Option<Res<Automap>>,
+    art: Option<Res<AutomapArt>>,
+    sheets: Res<Assets<SpriteSheet>>,
+    viewport: Query<&Hovered, With<MapViewport>>,
+) {
+    use bevy::window::{CursorIcon, CustomCursor, CustomCursorImage};
+    let Ok((window, current)) = windows.single() else { return };
+    let cursor = match (automap, art) {
+        (Some(map), Some(art)) => {
+            let inside = viewport.single().is_ok_and(|hovered| hovered.get());
+            let index = match map.tool {
+                Some(MapTool::AddNote) => 2,
+                Some(MapTool::EraseNote) => 3,
+                None if inside && map.span > MIN_SPAN => 1,
+                None if inside => 4,
+                None => 0,
+            };
+            // AutomapScreen.cpp's cursor offsets, in both references.
+            let hotspot = [(0, 0), (8, 7), (1, 24), (1, 24), (8, 7)][index];
+            sheets.get(&art.cursors).and_then(|sheet| sheet.images.get(index)).map_or_else(
+                CursorIcon::default,
+                |handle| {
+                    CursorIcon::Custom(CustomCursor::Image(CustomCursorImage {
+                        handle: handle.clone(),
+                        hotspot,
+                        ..default()
+                    }))
+                },
+            )
+        }
+        _ => CursorIcon::default(),
+    };
+    if current != Some(&cursor) {
+        commands.entity(window).insert(cursor);
     }
 }
 
@@ -726,7 +885,61 @@ mod tests {
             triangles: vec![[0, 1, 2]],
             walkable: vec![true],
         };
-        Automap::new(Some(&collision), Vec3::ZERO)
+        Automap::new(Some(&collision), &[], Vec3::ZERO)
+    }
+
+    #[test]
+    fn authored_cuts_reveal_lower_floors_without_triangle_order_artifacts() {
+        let mut collision = CollisionMesh::default();
+        for height in [0.0, 10.0] {
+            let start = collision.vertices.len() as u32;
+            collision.vertices.extend([
+                Vec3::new(-20.0, height, -20.0),
+                Vec3::new(20.0, height, -20.0),
+                Vec3::new(0.0, height, 20.0),
+            ]);
+            collision.triangles.push([start, start + 1, start + 2]);
+            collision.walkable.push(true);
+        }
+        let layers = [5.0];
+        let mut map = Automap::new(Some(&collision), &layers, Vec3::new(0.0, 10.0, 0.0));
+        assert_eq!(map.layer, 0);
+        assert_eq!(layer_at_height(&layers, 5.0), 1);
+        assert_eq!(layer_at_height(&layers, 0.0), 1);
+        let upper = floor_plan(&collision, &layers, &map);
+        collision.triangles.reverse();
+        let reversed = floor_plan(&collision, &layers, &map);
+        assert_eq!(upper.data, reversed.data);
+        map.layer = 1;
+        let lower = floor_plan(&collision, &layers, &map);
+        let pixel = ((VIEWPORT.y as usize / 2) * VIEWPORT.x as usize + VIEWPORT.x as usize / 2) * 4;
+        let upper = &upper.data.unwrap()[pixel..pixel + 4];
+        let lower = &lower.data.unwrap()[pixel..pixel + 4];
+        assert_eq!(upper[3], 255);
+        assert_eq!(lower[3], 255);
+        assert!(upper[0] > lower[0], "the high floor should be lighter");
+    }
+
+    #[test]
+    fn a_slope_is_clipped_at_the_cut_instead_of_discarded_as_a_whole() {
+        let collision = CollisionMesh {
+            vertices: vec![
+                Vec3::new(-20.0, 0.0, -20.0),
+                Vec3::new(20.0, 10.0, -20.0),
+                Vec3::new(0.0, 5.0, 20.0),
+            ],
+            triangles: vec![[0, 1, 2]],
+            walkable: vec![true],
+        };
+        let map = Automap::new(Some(&collision), &[5.0], Vec3::ZERO);
+        let image = floor_plan(&collision, &[5.0], &map);
+        let rgba = image.data.unwrap();
+        let alpha = |world| {
+            let pixel = map.project(world).as_uvec2();
+            rgba[(pixel.y as usize * VIEWPORT.x as usize + pixel.x as usize) * 4 + 3]
+        };
+        assert_eq!(alpha(Vec2::new(-10.0, -10.0)), 255);
+        assert_eq!(alpha(Vec2::new(10.0, -10.0)), 0);
     }
 
     #[test]
@@ -734,14 +947,14 @@ mod tests {
         let mut map = large_map();
         let note = Vec2::new(100.0, 80.0);
         let mut notes = MapNotes::default();
-        notes.add(note);
+        notes.add(note, 0);
         for span in [map.full_span, map.full_span / 2.0, MIN_SPAN] {
             map.span = span;
             map.centre_on(Vec2::new(90.0, 75.0));
             let pixel = map.project(note);
             let hit = map.unproject(pixel);
             assert!(hit.distance(note) < 0.0001);
-            assert_eq!(notes.nearest(hit, MARKER / map.pixels_per_metre()), Some(0));
+            assert_eq!(notes.nearest(hit, MARKER / map.pixels_per_metre(), 0), Some(0));
             // A world metre has the same scale on either viewport axis.
             assert!(
                 (map.project(note + Vec2::X).x - pixel.x - map.pixels_per_metre()).abs() < 0.0001
@@ -763,7 +976,7 @@ mod tests {
         app.cleanup();
         let controls = app.world_mut().spawn(Screens).id();
         let mut map = large_map();
-        map.editing = app.world_mut().resource_mut::<MapNotes>().add(Vec2::ZERO);
+        map.editing = app.world_mut().resource_mut::<MapNotes>().add(Vec2::ZERO, 0);
         app.insert_resource(map);
         app.update();
         assert!(!**app.world().get::<ContextActivity<Screens>>(controls).unwrap());
@@ -791,28 +1004,10 @@ mod tests {
         assert_eq!(map.centre, Vec2::new(200.0, 100.0));
         map.zoom_out();
         assert_eq!(map.span, map.full_span);
-        let mut empty = Automap::new(None, Vec3::ZERO);
+        let mut empty = Automap::new(None, &[], Vec3::ZERO);
         empty.zoom_in(Vec2::ONE);
         empty.zoom_out();
         assert_eq!(empty.span, MIN_SPAN);
         assert_eq!(empty.centre, Vec2::ZERO);
-    }
-}
-
-/// Arrow keys pan the map while the exploration context is suspended.
-pub fn pan_with_keys(keys: Res<ButtonInput<KeyCode>>, automap: Option<ResMut<Automap>>) {
-    let Some(mut automap) = automap else { return };
-    if automap.editing.is_some() {
-        return;
-    }
-    let direction = Vec2::new(
-        keys.just_pressed(KeyCode::ArrowRight) as u8 as f32
-            - keys.just_pressed(KeyCode::ArrowLeft) as u8 as f32,
-        keys.just_pressed(KeyCode::ArrowDown) as u8 as f32
-            - keys.just_pressed(KeyCode::ArrowUp) as u8 as f32,
-    );
-    if direction != Vec2::ZERO {
-        let point = automap.centre + direction * 0.35 * automap.span;
-        automap.centre_on(point);
     }
 }

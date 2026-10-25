@@ -14,6 +14,7 @@ pub const MAX_NOTE_LENGTH: usize = 39;
 pub struct MapNote {
     /// World x and z, in metres.
     pub position: Vec2,
+    pub layer: usize,
     pub text: String,
 }
 
@@ -24,11 +25,11 @@ pub struct MapNotes {
 
 impl MapNotes {
     /// Pin an empty note; none when the map is full.
-    pub fn add(&mut self, position: Vec2) -> Option<usize> {
+    pub fn add(&mut self, position: Vec2, layer: usize) -> Option<usize> {
         if self.notes.len() >= MAX_NOTES {
             return None;
         }
-        self.notes.push(MapNote { position, text: String::new() });
+        self.notes.push(MapNote { position, layer, text: String::new() });
         Some(self.notes.len() - 1)
     }
 
@@ -43,10 +44,11 @@ impl MapNotes {
     }
 
     /// The note nearest a point, within `reach` metres.
-    pub fn nearest(&self, point: Vec2, reach: f32) -> Option<usize> {
+    pub fn nearest(&self, point: Vec2, reach: f32, layer: usize) -> Option<usize> {
         self.notes
             .iter()
             .enumerate()
+            .filter(|(_, note)| note.layer == layer)
             .map(|(i, note)| (i, note.position.distance(point)))
             .filter(|&(_, distance)| distance <= reach)
             .min_by(|a, b| a.1.total_cmp(&b.1))
@@ -59,9 +61,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn notes_on_overlapping_floors_do_not_select_or_erase_each_other() {
+        let mut notes = MapNotes::default();
+        let upstairs = notes.add(Vec2::ZERO, 0).unwrap();
+        let downstairs = notes.add(Vec2::ZERO, 1).unwrap();
+        notes.type_char(upstairs, 'U');
+        notes.type_char(downstairs, 'D');
+        assert_eq!(notes.nearest(Vec2::ZERO, 1.0, 0), Some(upstairs));
+        assert_eq!(notes.nearest(Vec2::ZERO, 1.0, 1), Some(downstairs));
+        assert_eq!(notes.nearest(Vec2::ZERO, 1.0, 2), None);
+        let erased = notes.nearest(Vec2::ZERO, 1.0, 1).unwrap();
+        notes.notes.remove(erased);
+        assert_eq!(notes.notes.len(), 1);
+        assert_eq!(notes.notes[0].text, "U");
+    }
+
+    #[test]
     fn notes_keep_retail_limits() {
         let mut notes = MapNotes::default();
-        let note = notes.add(Vec2::ZERO).unwrap();
+        let note = notes.add(Vec2::ZERO, 0).unwrap();
         for _ in 0..50 {
             notes.type_char(note, 'a');
         }
@@ -71,10 +89,10 @@ mod tests {
         notes.type_char(note, '\u{1f600}');
         assert!(notes.notes[note].text.is_empty());
         for i in 1..MAX_NOTES {
-            notes.add(Vec2::splat(i as f32)).unwrap();
+            notes.add(Vec2::splat(i as f32), 0).unwrap();
         }
-        assert!(notes.add(Vec2::ZERO).is_none());
-        assert_eq!(notes.nearest(Vec2::new(3.2, 3.0), 1.0), Some(3));
-        assert_eq!(notes.nearest(Vec2::new(-5.0, 0.0), 1.0), None);
+        assert!(notes.add(Vec2::ZERO, 0).is_none());
+        assert_eq!(notes.nearest(Vec2::new(3.2, 3.0), 1.0, 0), Some(3));
+        assert_eq!(notes.nearest(Vec2::new(-5.0, 0.0), 1.0, 0), None);
     }
 }

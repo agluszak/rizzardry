@@ -413,13 +413,18 @@ pub fn run_ui_script(
     time: Res<Time>,
     mut script: ResMut<UiScript>,
     party: Query<(), With<PartyBody>>,
-    window: Query<(Entity, &Window), With<bevy::window::PrimaryWindow>>,
+    window: Query<
+        (Entity, &Window, Option<&bevy::window::CursorIcon>),
+        With<bevy::window::PrimaryWindow>,
+    >,
     mut keys: MessageWriter<KeyboardInput>,
     mut pointer: MessageWriter<PointerInput>,
     automap: Option<Res<crate::presentation::automap::Automap>>,
     notes: Res<crate::game::automap::MapNotes>,
 ) {
-    let (Ok((window_entity, window)), false) = (window.single(), party.is_empty()) else { return };
+    let (Ok((window_entity, window, cursor)), false) = (window.single(), party.is_empty()) else {
+        return;
+    };
     let now = time.elapsed_secs();
     let next_at = *script.next_at.get_or_insert(now + 1.0);
     if now < next_at {
@@ -505,6 +510,22 @@ pub fn run_ui_script(
                 _ => panic!("assert-map expects open or closed"),
             };
             assert_eq!(automap.is_some(), expected, "automap visibility");
+        }
+        "assert-cursor" => {
+            use bevy::window::{CursorIcon, CustomCursor};
+            let actual = match cursor {
+                Some(CursorIcon::Custom(CustomCursor::Image(image))) => {
+                    image.handle.path().and_then(|path| path.label())
+                }
+                Some(CursorIcon::System(_)) | None => Some("system"),
+                _ => None,
+            };
+            assert_eq!(actual, Some(rest), "window cursor");
+        }
+        "assert-layer" => {
+            let layer: usize =
+                rest.parse().expect("assert-layer expects the displayed layer number");
+            assert_eq!(automap.as_ref().map(|map| map.layer + 1), Some(layer), "automap layer");
         }
         "assert-note" => {
             assert!(notes.notes.iter().any(|note| note.text == rest), "missing map note: {rest}");

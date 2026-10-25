@@ -64,6 +64,8 @@ impl LevelEnvironment {
 pub struct LevelGeometry {
     pub parts: Vec<LevelPart>,
     pub collision: CollisionMesh,
+    /// Automap ceiling cuts in authored order, top to bottom. Layer zero is uncut.
+    pub map_layers: Vec<f32>,
     pub environment: Option<LevelEnvironment>,
     pub props: Vec<PropModel>,
     /// Navigation links between places the navmesh does not join.
