@@ -27,6 +27,18 @@ use crate::game::party::body::Exploration;
 
 pub struct PresentationPlugin;
 
+/// Presentation's own randomness (music, camera shakes, ambience), seeded
+/// from the system: never gameplay's [`crate::game::rng::GameRng`], so what
+/// is seen and heard cannot change what happens.
+#[derive(Resource, Debug)]
+pub struct PresentationRng(pub rand::rngs::SmallRng);
+
+impl Default for PresentationRng {
+    fn default() -> Self {
+        PresentationRng(rand::SeedableRng::from_os_rng())
+    }
+}
+
 /// Exploring takes input only while gameplay says the party is free
 /// (`game::screen`); presentation routes input by that rule, it does not
 /// make it.
@@ -54,7 +66,7 @@ impl Plugin for PresentationPlugin {
             .init_resource::<main_screen::ScreenLayout>()
             .init_resource::<main_screen::SelectedMember>()
             .init_resource::<music::Music>()
-            .init_resource::<ambience::AmbienceNoise>()
+            .init_resource::<PresentationRng>()
             .add_input_context::<automap::Screens>()
             .add_systems(
                 Startup,

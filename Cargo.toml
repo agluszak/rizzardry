@@ -22,6 +22,8 @@ thiserror = "2"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 serde = { version = "1.0.229", features = ["derive"] }
 num_enum = "0.7.6"
+rand = { version = "0.9", features = ["small_rng", "os_rng"] }
+rand_chacha = "0.9"
 
 # Dependencies compile with optimisations so the game stays playable in debug.
 [profile.dev.package."*"]

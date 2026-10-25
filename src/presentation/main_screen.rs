@@ -7,6 +7,7 @@ use bevy::camera::Viewport;
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::ui::IsDefaultUiCamera;
+use rand::Rng;
 
 use bevy::ecs::entity::{EntityHashMap, EntityHashSet};
 use std::collections::HashMap;
@@ -432,7 +433,8 @@ pub struct Splats;
 #[derive(Debug, Clone)]
 struct Splat {
     slot: usize,
-    started: f32,
+    /// Its frames: 8 for damage, 30 for death.
+    timer: Timer,
     damage: u32,
     death: bool,
     /// Which of retail's two damage splats (`damage_splat_anim` or `_anim2`).
@@ -444,7 +446,6 @@ struct Splat {
 pub struct SplatState {
     playing: Vec<Splat>,
     health: Vec<u32>,
-    noise: u32,
 }
 
 /// Each frame of a splat lasts this long (retail: 100 ms).
@@ -464,33 +465,36 @@ pub fn play_splats(
     roster: Res<PartyRoster>,
     members: Query<&Character>,
     layers: Query<Entity, With<Splats>>,
+    mut rng: ResMut<super::PresentationRng>,
     mut state: Local<SplatState>,
 ) {
-    let now = time.elapsed_secs();
     let health: Vec<u32> = roster.0.iter().map(|&m| members.get(m).map_or(0, |c| c.hp)).collect();
     if state.health.len() == health.len() {
         for (slot, (&before, &after)) in state.health.clone().iter().zip(&health).enumerate() {
             if after < before {
-                state.noise = state.noise.wrapping_mul(1_103_515_245).wrapping_add(12_345);
-                let second = state.noise & 0x10000 != 0;
+                let death = after == 0;
+                let frames = if death { 30.0 } else { 8.0 };
                 state.playing.retain(|s| s.slot != slot);
                 state.playing.push(Splat {
                     slot,
-                    started: now,
+                    timer: Timer::from_seconds(frames * SPLAT_FRAME, TimerMode::Once),
                     damage: before - after,
-                    death: after == 0,
-                    second,
+                    death,
+                    second: rng.0.random_bool(0.5),
                 });
             }
         }
     }
     state.health = health;
-    state.playing.retain(|s| (now - s.started) / SPLAT_FRAME < if s.death { 30.0 } else { 8.0 });
+    for splat in &mut state.playing {
+        splat.timer.tick(time.delta());
+    }
+    state.playing.retain(|s| !s.timer.is_finished());
     let Ok(layer) = layers.single() else { return };
     commands.entity(layer).despawn_related::<Children>();
     let sheet = |h: &Handle<SpriteSheet>| sheets.get(h);
     for splat in &state.playing {
-        let frame = ((now - splat.started) / SPLAT_FRAME) as usize;
+        let frame = (splat.timer.elapsed_secs() / SPLAT_FRAME) as usize;
         let handle = match (splat.death, splat.second) {
             (true, _) => &art.death_splat,
             (false, false) => &art.damage_splat,

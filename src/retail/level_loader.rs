@@ -228,6 +228,12 @@ pub(super) async fn load_material(
     }
 }
 
+/// An authored `[low, high]` pair as a range, whichever way round it was
+/// written.
+fn ordered(a: f32, b: f32) -> std::ops::RangeInclusive<f32> {
+    a.min(b)..=a.max(b)
+}
+
 /// A level's ambient sound, with Whizzardry `AddAmbientSound`'s defaults:
 /// unset volumes are full (127 of 127), unset times 5 to 20 seconds.
 fn ambient_sound(sound: &AmbientSound) -> AmbientSoundModel {
@@ -239,8 +245,11 @@ fn ambient_sound(sound: &AmbientSound) -> AmbientSoundModel {
         position: retail_position(sound.position),
         radius: sound.radius / UNITS_PER_METRE,
         looping: sound.looping,
-        volume: (volume(sound.volume[0]), volume(sound.volume[1])),
-        interval: (seconds(or(sound.interval[0], 5000)), seconds(or(sound.interval[1], 20000))),
+        volume: ordered(volume(sound.volume[0]), volume(sound.volume[1])),
+        interval: ordered(
+            seconds(or(sound.interval[0], 5000)),
+            seconds(or(sound.interval[1], 20000)),
+        ),
     }
 }
 
