@@ -15,6 +15,8 @@ use avian3d::prelude::{SpatialQuery, SpatialQueryFilter};
 
 use crate::content::level::LevelGeometry;
 use crate::content::monster::MonsterModel;
+use crate::content::species::MonsterCatalog;
+use crate::game::data::GameData;
 use crate::game::time::GameClock;
 use crate::game::world::level::Level;
 use crate::game::world::navigation::Walker;
@@ -41,6 +43,26 @@ impl CycleRequest {
     }
 }
 
+/// Optional visual content retained while its model loads and plays. It is
+/// never captured in a level record or used to size an actor's gameplay body.
+#[derive(Component, Debug)]
+pub struct MonsterVisual(pub Handle<MonsterModel>);
+
+pub fn request_monster_visuals(
+    mut commands: Commands,
+    actors: Query<(Entity, &Monster), Without<MonsterVisual>>,
+    data: Option<Res<GameData>>,
+    species: Res<Assets<MonsterCatalog>>,
+    assets: Res<AssetServer>,
+) {
+    let Some(catalog) = data.and_then(|d| species.get(&d.species)) else { return };
+    for (entity, monster) in &actors {
+        let Some(kind) = catalog.0.get(monster.species as usize) else { continue };
+        let model = assets.load(format!("retail://data/monsters/{}.mls", kind.model));
+        commands.entity(entity).insert(MonsterVisual(model));
+    }
+}
+
 /// The built model of one actor.
 #[derive(Component, Debug)]
 pub struct MonsterInstance {
@@ -57,12 +79,12 @@ pub struct MonsterInstance {
 
 pub fn build_monster_instances(
     mut commands: Commands,
-    actors: Query<(Entity, &Monster, Option<&Walker>), Without<MonsterInstance>>,
+    actors: Query<(Entity, &Monster, &MonsterVisual, Option<&Walker>), Without<MonsterInstance>>,
     models: Res<Assets<MonsterModel>>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
-    for (actor, monster, walker) in &actors {
-        let Some(model) = models.get(&monster.model) else { continue };
+    for (actor, monster, visual, walker) in &actors {
+        let Some(model) = models.get(&visual.0) else { continue };
         // Retail models face -Z; after the Z mirror that is +Z, so turn them
         // to face the actor's forward (-Z). Feet are at the model's origin.
         let model_root = commands
@@ -134,13 +156,13 @@ pub fn show_deaths(
 /// Show each actor's requested cycle at its current frame.
 pub fn animate_monsters(
     time: Res<Time<Virtual>>,
-    mut actors: Query<(&Monster, &mut MonsterInstance, Option<&CycleRequest>)>,
+    mut actors: Query<(&Monster, &MonsterVisual, &mut MonsterInstance, Option<&CycleRequest>)>,
     models: Res<Assets<MonsterModel>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut visibility: Query<&mut Visibility>,
 ) {
-    for (monster, mut instance, request) in &mut actors {
-        let Some(model) = models.get(&monster.model) else { continue };
+    for (monster, visual, mut instance, request) in &mut actors {
+        let Some(model) = models.get(&visual.0) else { continue };
         let request = request.cloned().unwrap_or_else(|| CycleRequest::looping("IDLE"));
         let name = if model.cycles.contains_key(&request.cycle) { &request.cycle } else { "IDLE" };
         let Some(cycle) = model.cycles.get(name) else { continue };
@@ -192,7 +214,7 @@ pub fn light_monsters(
     geometry: Res<Assets<LevelGeometry>>,
     models: Res<Assets<MonsterModel>>,
     spatial: SpatialQuery,
-    mut actors: Query<(&GlobalTransform, &Monster, &mut MonsterInstance)>,
+    mut actors: Query<(&GlobalTransform, &MonsterVisual, &mut MonsterInstance)>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let Some((level_entity, level)) =
@@ -201,8 +223,8 @@ pub fn light_monsters(
         return;
     };
     let sky = level.environment.as_ref().map_or(Vec3::ZERO, |e| e.sky_light(clock.phase()));
-    for (transform, monster, mut instance) in &mut actors {
-        let Some(model) = models.get(&monster.model) else { continue };
+    for (transform, visual, mut instance) in &mut actors {
+        let Some(model) = models.get(&visual.0) else { continue };
         let centre = transform.translation();
         let target = if sunlit(&spatial, level_entity, level, centre) { SUNLIT } else { 0.0 };
         let step = SKY_SCALE_PER_SECOND * time.delta_secs();

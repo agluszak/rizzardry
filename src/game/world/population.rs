@@ -7,7 +7,7 @@ use bevy::prelude::*;
 use super::level::{KeptMonster, LevelRecord};
 use crate::content::items::ItemCatalog;
 use crate::content::level::LevelGeometry;
-use crate::content::monster::MonsterModel;
+use crate::content::monster::MonsterBody;
 use crate::content::species::MonsterCatalog;
 use crate::game::characters::{Condition, Lasting};
 use crate::game::inventory::ItemIds;
@@ -27,7 +27,6 @@ pub struct Monster {
     pub stamina: u32,
     pub max_stamina: u32,
     pub conditions: Vec<(Condition, Lasting)>,
-    pub model: Handle<MonsterModel>,
     pub body: ScaledBody,
 }
 
@@ -37,7 +36,7 @@ impl Monster {
     }
 }
 
-/// A monster's body, from its model at the size it was rolled.
+/// A monster's effective gameplay body at the size it was rolled.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ScaledBody {
     pub scale: f32,
@@ -52,42 +51,41 @@ pub struct ScaledBody {
 }
 
 impl ScaledBody {
-    /// The body of `model` at retail's size roll (below 1000).
-    pub fn new(model: &MonsterModel, size_roll: u32) -> Self {
-        let scale = model.body.scale_for(size_roll);
+    /// The body of `definition` at retail's size roll (below 1000).
+    pub fn new(definition: &MonsterBody, size_roll: u32) -> Self {
+        let scale = definition.scale_for(size_roll);
         ScaledBody {
             scale,
-            radius: model.body.fight_radius * scale,
-            eye_height: model.body.target_height * scale,
-            speed: model.body.movement_rate * scale,
+            radius: definition.fight_radius * scale,
+            eye_height: definition.target_height * scale,
+            speed: definition.movement_rate * scale,
         }
     }
 }
 
-/// Monster models by species, loaded as levels place them and kept: a
-/// monster's body comes from its model, so a level is played only once the
-/// models of its monsters are in.
+/// Required body definitions by species. Visual model construction is not a
+/// gameplay prerequisite and is requested separately by presentation.
 #[derive(Resource, Debug, Default)]
-pub struct MonsterModels(pub HashMap<u32, Handle<MonsterModel>>);
+pub struct MonsterBodies(pub HashMap<u32, Handle<MonsterBody>>);
 
-impl MonsterModels {
-    /// The models of the monsters a level places, loading any not yet
+impl MonsterBodies {
+    /// The bodies of the monsters a level places, loading any not yet
     /// requested.
     pub fn for_level(
         &mut self,
         geometry: &LevelGeometry,
         species: &MonsterCatalog,
         assets: &AssetServer,
-    ) -> Vec<Handle<MonsterModel>> {
+    ) -> Vec<Handle<MonsterBody>> {
         geometry
             .monsters
             .iter()
             .filter_map(|placed| {
                 let kind = species.0.get(placed.species as usize)?;
-                let model = self.0.entry(placed.species).or_insert_with(|| {
+                let body = self.0.entry(placed.species).or_insert_with(|| {
                     assets.load(format!("retail://data/monsters/{}.mls", kind.model))
                 });
-                Some(model.clone())
+                Some(body.clone())
             })
             .collect()
     }
@@ -103,27 +101,31 @@ pub fn populate(
     commands: &mut Commands,
     root: Entity,
     geometry: &LevelGeometry,
-    remembered: Option<&LevelRecord>,
+    remembered: Option<LevelRecord>,
     (species, items): (&MonsterCatalog, &ItemCatalog),
-    (handles, models): (&HashMap<u32, Handle<MonsterModel>>, &Assets<MonsterModel>),
+    (handles, bodies): (&HashMap<u32, Handle<MonsterBody>>, &Assets<MonsterBody>),
     ids: &mut ItemIds,
     rng: &mut GameRng,
 ) {
-    let monsters: Vec<KeptMonster> = match remembered {
-        Some(record) => record.monsters.iter().filter(|m| !m.monster.is_dead()).cloned().collect(),
+    let (remembered_monsters, remembered_items, groups) = match remembered {
+        Some(record) => (Some(record.monsters), Some(record.items), record.groups),
+        None => (None, None, default()),
+    };
+    let monsters: Vec<KeptMonster> = match remembered_monsters {
+        Some(monsters) => monsters,
         None => geometry
             .monsters
             .iter()
             .filter_map(|placed| {
                 let kind = species.0.get(placed.species as usize)?;
-                let model = handles.get(&placed.species)?;
+                let body_definition = handles.get(&placed.species)?;
                 let max_hp = rng.roll(kind.hit_points).max(1);
                 let max_stamina = rng.roll(kind.stamina);
                 // Retail draws Random(1000) for the size; its left-handed
                 // mirror draw, presentation only, is not taken from
                 // gameplay's stream.
                 let size_roll = rng.below(1000);
-                let body = ScaledBody::new(models.get(model)?, size_roll);
+                let body = ScaledBody::new(bodies.get(body_definition)?, size_roll);
                 Some(KeptMonster {
                     monster: Monster {
                         location: placed.location,
@@ -134,7 +136,6 @@ pub fn populate(
                         stamina: max_stamina,
                         max_stamina,
                         conditions: Vec::new(),
-                        model: model.clone(),
                         body,
                     },
                     feet: placed.position,
@@ -143,18 +144,22 @@ pub fn populate(
             })
             .collect(),
     };
-    for kept in &monsters {
-        let monster = &kept.monster;
+    let monster_count = monsters.iter().filter(|m| !m.monster.is_dead()).count();
+    for kept in monsters {
+        let monster = kept.monster;
+        if monster.is_dead() {
+            continue;
+        }
         let Some(kind) = species.0.get(monster.species as usize) else { continue };
         commands.spawn((
             Name::new(format!("{} #{}", kind.name, monster.location)),
-            monster.clone(),
+            monster,
             Transform::from_translation(kept.feet).with_rotation(Quat::from_rotation_y(kept.yaw)),
             ChildOf(root),
         ));
     }
-    let lying: Vec<(WorldItem, Vec3)> = match remembered {
-        Some(record) => record.items.clone(),
+    let lying: Vec<(WorldItem, Vec3)> = match remembered_items {
+        Some(items) => items,
         None => geometry
             .items
             .iter()
@@ -166,10 +171,10 @@ pub fn populate(
             })
             .collect(),
     };
-    info!("placed {} monsters and {} items", monsters.len(), lying.len());
+    info!("placed {monster_count} monsters and {} items", lying.len());
     for (item, at) in lying {
         let name = items.get(item.item.item).map_or_else(String::new, |d| d.name.clone());
         commands.spawn((Name::new(name), item, Transform::from_translation(at), ChildOf(root)));
     }
-    commands.entity(root).insert(remembered.map(|r| r.groups.clone()).unwrap_or_default());
+    commands.entity(root).insert(groups);
 }

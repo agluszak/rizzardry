@@ -130,12 +130,16 @@ shown on retail content; the gaps below remain. Done:
 - **Population.** Each level's `.sts` monster placements (924 across the
   game) and `monsters.dbs` species models decode; a built level spawns its
   placed monsters and NPCs idling where retail puts them, facing their
-  heading, each starting part-way into its idle. They do not move, fight or
-  die yet; random-encounter generators and unborn monsters are not spawned.
+  heading, each starting part-way into its idle. Combatants acquire gameplay
+  walking bodies; random-encounter generators and unborn monsters are not
+  spawned. Revisit activation moves the dormant population back into ECS.
 - **Monsters.** `.mls` species and `.mon` vertex-frame cycles decode (all
   1088 retail cycles). Each actor animates its own mesh copies, blending
   between frames without wrapping last-to-first as retail does; play-once
-  cycles report completion. Walkers play WALK or IDLE.
+  cycles report completion. Walkers play WALK or IDLE. Body metadata loads
+  independently of visual cycles; activation, reach, movement and persistence
+  require no visual model. Presentation owns model handles and attaches its
+  scaled visual children when optional model assets arrive.
 - **Ambience.** Levels' ambient sounds (2339 retail records) play while
   the party is in range: looping ones continuously, one-shot ones now and
   then, full within 40% of their radius and fading to its edge; their
