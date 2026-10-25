@@ -7,8 +7,10 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy_enhanced_input::EnhancedInputPlugin;
 
-use crate::content::levels::{DEFAULT_SKY, LevelInfo};
-use crate::dev::{FacePropOnEntry, SayLine, UiScript, face_prop_on_entry, run_ui_script, say_line};
+use crate::dev::{
+    FacePropOnEntry, SayLine, ScriptedUse, UiScript, face_prop_on_entry, run_ui_script, say_line,
+    scripted_use,
+};
 use crate::dev::{
     OverheadView, ScreenshotAndExit, ScriptedInteract, ScriptedWalk, TestAgents, log_test_agents,
     overhead_view, screenshot_and_exit, scripted_interact, scripted_walk, spawn_test_agents,
@@ -18,17 +20,11 @@ use crate::game::party::body::PartyStart;
 use crate::game::time::{GameClock, TimePlugin};
 use crate::game::world::WorldPlugin;
 use crate::game::world::level::Level;
-use crate::game::world::navigation::asset::navmesh_path;
 use crate::game::world::navigation::bake::SIZE_CLASSES;
 use crate::presentation::PresentationPlugin;
 use crate::retail::RetailPlugin;
-use crate::retail::bytes::Bytes;
 use crate::retail::files::RetailFiles;
 use crate::retail::path::normalize;
-use crate::retail::pvl::read_level_geometry;
-use crate::retail::sections::read_sections;
-use crate::retail::space::{retail_position, retail_yaw};
-use crate::retail::trigger::TriggerKind;
 
 pub const DEFAULT_LEVEL: &str = "levels/monastery/monastery1.pvl";
 /// A new game enters the monastery at entrance 0 (location code `MO1`).
@@ -74,7 +70,7 @@ pub struct Options {
     #[arg(long, value_name = "HOUR")]
     pub hour: Option<f32>,
     /// Developer: drive the UI with scripted input, e.g.
-    /// `"key m; click 300 200; type Hello; key Enter"`.
+    /// `"key Tab; click 300 200; type Hello; key Enter"`.
     #[arg(long, value_name = "STEPS")]
     pub ui_script: Option<String>,
     /// Developer: speak this retail voice line on entry, e.g.
@@ -139,26 +135,12 @@ pub fn run(options: Options) -> AppExit {
         }
     };
 
-    // Retail falls back to the default sky when a level's own is missing.
-    let sky = LevelInfo::for_path(&level)
-        .and_then(LevelInfo::sky_path)
-        .map(|sky| if files.contains(&sky) { sky } else { DEFAULT_SKY.to_owned() });
-
-    let pitch = options.pitch.to_radians();
-    let yaw = options.yaw.unwrap_or_default().to_radians();
-    let mut start = PartyStart { eye: options.start, yaw, pitch };
-    if let (None, Some(entrance)) = (options.start, options.entrance(&level)) {
-        match entrance_placement(&files, &level, entrance) {
-            Some(placement) => {
-                info!("entering {level} at {entrance}: {placement:?}");
-                let yaw = options.yaw.map_or(placement.yaw, f32::to_radians);
-                start = PartyStart { yaw, pitch, ..placement }
-            }
-            None => warn!(
-                "entrance {entrance} is missing or not positioned; using the retail fallback position"
-            ),
-        }
-    }
+    let start = PartyStart {
+        entrance: options.entrance(&level).map(str::to_owned),
+        eye: options.start,
+        yaw: options.yaw.map(f32::to_radians),
+        pitch: options.pitch.to_radians(),
+    };
 
     let mut app = App::new();
     app.add_plugins(RetailPlugin {
@@ -182,6 +164,7 @@ pub fn run(options: Options) -> AppExit {
         PartyPlugin,
         PresentationPlugin,
         TimePlugin,
+        crate::game::combat::CombatPlugin,
     ))
     .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.07)));
     app.insert_resource(start);
@@ -191,17 +174,27 @@ pub fn run(options: Options) -> AppExit {
             .add_systems(Update, screenshot_and_exit);
     }
     if let Some(script) = &options.ui_script {
-        app.insert_resource(UiScript::parse(script)).add_systems(Update, run_ui_script);
+        app.insert_resource(UiScript::parse(script)).add_systems(
+            Update,
+            (
+                run_ui_script,
+                face_prop_on_entry.run_if(resource_exists::<FacePropOnEntry>),
+                scripted_use.run_if(resource_exists::<ScriptedUse>),
+                crate::dev::log_prop.run_if(resource_exists::<crate::dev::LogProp>),
+            ),
+        );
     }
     if let Some(line) = options.say.clone() {
         app.insert_resource(SayLine { line, started: None }).add_systems(Update, say_line);
     }
     if let Some(hour) = options.hour {
-        app.insert_resource(GameClock { ms: (hour.rem_euclid(24.0) * 3_600_000.0) as u64 });
+        app.insert_resource(GameClock::at((hour.rem_euclid(24.0) * 3_600_000.0) as u64));
     }
     if let Some(name) = options.face_prop.clone() {
-        app.insert_resource(FacePropOnEntry { name, done: false })
-            .add_systems(Update, face_prop_on_entry);
+        app.insert_resource(FacePropOnEntry::new(name));
+        if options.ui_script.is_none() {
+            app.add_systems(Update, face_prop_on_entry);
+        }
     }
     if let Some(after) = options.interact_at {
         app.insert_resource(ScriptedInteract { after, elapsed: 0.0, done: false })
@@ -229,35 +222,11 @@ pub fn run(options: Options) -> AppExit {
         app.insert_resource(ScriptedWalk { seconds, started: false, since_log: 0.0 })
             .add_systems(Update, scripted_walk);
     }
+    // A new game: the test party until party creation exists, entering
+    // the chosen level.
+    app.add_systems(Startup, crate::game::party::roster::spawn_test_party);
     app.add_systems(Startup, move |mut commands: Commands, assets: Res<AssetServer>| {
-        commands.spawn((
-            Name::new(level.clone()),
-            Level {
-                geometry: assets.load(format!("retail://{level}")),
-                navmeshes: (0..SIZE_CLASSES.len())
-                    .map(|class| assets.load(navmesh_path(&level, class)))
-                    .collect(),
-                sky: sky.as_ref().map(|sky| assets.load(format!("retail://{sky}"))),
-            },
-        ));
+        commands.spawn((Name::new(level.clone()), Level::load(&level, &assets)));
     });
     app.run()
-}
-
-/// Retail places the party's eye 1000 units above the ground under a
-/// positioned entrance trigger, facing along the trigger's rotation. Ground
-/// probing is not implemented: the eye starts 1000 above the trigger and the
-/// party settles under gravity.
-fn entrance_placement(files: &RetailFiles, level: &str, entrance: &str) -> Option<PartyStart> {
-    let data = files.read(level)?.ok()?;
-    let start = read_level_geometry(&data).ok()?.end;
-    let sections = read_sections(&mut Bytes::new(&data[start..])).ok()?;
-    let TriggerKind::Item(trigger) = &sections.trigger(entrance)?.kind else { return None };
-    let placement = trigger.placement?;
-    let [x, y, z] = placement.position;
-    Some(PartyStart {
-        eye: Some(retail_position([x, y + 1000.0, z])),
-        yaw: retail_yaw(placement.angle, placement.axis),
-        pitch: 0.0,
-    })
 }

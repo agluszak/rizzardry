@@ -5,14 +5,20 @@
 //! concern added later.
 
 use avian3d::prelude::*;
+use bevy::camera::visibility::RenderLayers;
+use bevy::picking::mesh_picking::ray_cast::MeshRayCast;
+use bevy::picking::pointer::{PointerId, PointerLocation};
 use bevy::prelude::*;
 use bevy_enhanced_input::prelude::*;
 use bevy_tnua::builtins::{TnuaBuiltinWalk, TnuaBuiltinWalkConfig};
 use bevy_tnua::prelude::*;
 use bevy_tnua_avian3d::prelude::*;
 
-use crate::game::world::level::LevelReady;
-use crate::game::world::props::{Prop, PropMotion, prop_under_ray, use_prop};
+use crate::content::level::LevelGeometry;
+use bevy::ecs::system::SystemParam;
+
+use crate::game::world::props::{Prop, drawn_under_ray, owner, ray_under_pointer};
+use crate::game::world::triggers::{LevelTriggers, TriggerEffect};
 use crate::retail::space::UNITS_PER_METRE as U;
 
 // Retail motion values (Whizzardry `party_camera.cpp`, `collision.cpp`,
@@ -26,18 +32,20 @@ use crate::retail::space::UNITS_PER_METRE as U;
 // ground. A sphere's curved front rides over step edges; a flat-bottomed
 // cylinder of the same reach caught on stairs rising inside its radius (it
 // never left the upper monastery's MO202 entrance).
-const RADIUS: f32 = 500.0 / U;
+pub const RADIUS: f32 = 500.0 / U;
 pub const FLOAT_HEIGHT: f32 = 500.0 / U;
 pub const EYE_ABOVE_CENTRE: f32 = 500.0 / U;
 /// The eye above the feet.
 pub const EYE_HEIGHT: f32 = 1000.0 / U;
-const WALK_SPEED: f32 = 3750.0 / U;
+pub const WALK_SPEED: f32 = 3750.0 / U;
 const RUN_SPEED: f32 = 7500.0 / U;
 /// Maximum yaw speed, 0.349 rad per tick.
 const TURN_SPEED: f32 = 3.49;
-/// 187.5 units per tick². Retail also caps falls at 3000 units per tick; that
-/// cap is not applied yet.
+/// 187.5 units per tick².
 pub const GRAVITY: f32 = 18750.0 / U;
+/// Retail caps a tick's motion at 3000 units (Whizzardry `collision.cpp`);
+/// walking never comes near it, so in practice it limits falls.
+const MAX_SPEED: f32 = 30000.0 / U;
 const MAX_PITCH: f32 = std::f32::consts::FRAC_PI_4;
 const LOOK_SENSITIVITY: f32 = 0.003;
 
@@ -94,10 +102,15 @@ pub fn spawn_exploration_controls(mut commands: Commands) {
     commands.spawn_scene(bsn! {
         Exploration
         Actions<Exploration> [
+            // Retail's keys (data/strings/mgskeyboard.ini): the arrows walk
+            // and turn, Num0 and Num. strafe; letters are commands.
             Action::<Walk>::new()
             DeadZone
             Bindings [
-                {preset::cardinal::wasd_keys()}
+                Binding(KeyCode::NumpadDecimal)
+                --
+                Binding(KeyCode::Numpad0)
+                ~Negate::all()
                 --
                 Binding(KeyCode::ArrowUp)
                 ~SwizzleAxis::YXZ
@@ -112,8 +125,6 @@ pub fn spawn_exploration_controls(mut commands: Commands) {
             Action::<Turn>::new()
             Bindings [
                 {preset::bidirectional::new(KeyCode::ArrowRight, KeyCode::ArrowLeft)}
-                --
-                {preset::bidirectional::new(KeyCode::KeyE, KeyCode::KeyQ)}
                 --
                 Binding(GamepadAxis::RightStickX)
             ]
@@ -135,43 +146,93 @@ pub fn spawn_exploration_controls(mut commands: Commands) {
                 Binding(KeyCode::ShiftRight)
             ]
             --
+            // Retail interacts by clicking in the view only.
             Action::<Interact>::new()
             Bindings [
-                Binding(KeyCode::Space)
-                --
                 Binding(MouseButton::Left)
+            ]
+            --
+            // Retail's keys are in data/strings/mgskeyboard.ini: C camps.
+            Action::<crate::game::camp::Rest>::new()
+            Bindings [
+                Binding(KeyCode::KeyC)
+            ]
+            --
+            Action::<crate::game::world::search::SearchKey>::new()
+            Bindings [
+                Binding(KeyCode::KeyS)
             ]
         ]
     });
 }
 
-/// Place the party once the level exists.
-///
-/// Retail enters a level at its entrance trigger (e.g. `MO100`) and falls
-/// back to an eye position of (0, 1000, 0) when there is none. Triggers are
-/// not decoded yet, so the fallback is the default.
-pub fn spawn_party_on_ready(
-    mut commands: Commands,
-    mut ready: MessageReader<LevelReady>,
-    party: Query<(), With<PartyBody>>,
-    start: Option<Res<PartyStart>>,
-    mut motion_configs: ResMut<Assets<PartyMotionConfig>>,
-) {
-    if ready.read().last().is_none() || !party.is_empty() {
-        return;
+/// What placing the party needs (part of a level's activation).
+#[derive(SystemParam)]
+pub struct PartyPlacement<'w, 's> {
+    party: Query<
+        'w,
+        's,
+        (
+            Entity,
+            &'static mut PartyBody,
+            &'static mut Position,
+            &'static mut Transform,
+            &'static mut LinearVelocity,
+        ),
+    >,
+    start: Option<Res<'w, PartyStart>>,
+    motion_configs: ResMut<'w, Assets<PartyMotionConfig>>,
+}
+
+impl PartyPlacement<'_, '_> {
+    /// Put the party in a level being activated: spawn it in the first,
+    /// move it into the next and resume its body, suspended for the trip.
+    ///
+    /// Retail enters a level at an entrance trigger (e.g. `MO100`) and falls
+    /// back to an eye position of (0, 1000, 0) when there is none. Entrance
+    /// triggers the party arrives inside do not fire until it leaves them.
+    pub fn place(&mut self, commands: &mut Commands, level: &LevelGeometry) {
+        let start = self.start.as_ref().map(|s| (**s).clone()).unwrap_or_default();
+        let entrance = start.entrance.as_deref().and_then(|name| {
+            let found = level.entrances.iter().find(|e| e.name.eq_ignore_ascii_case(name));
+            if found.is_none() {
+                warn!("entrance {name} is missing; using the retail fallback position");
+            }
+            found
+        });
+        let eye = start.eye.or(entrance.map(|e| e.eye)).unwrap_or(Vec3::new(0.0, 1000.0 / U, 0.0));
+        let yaw = start.yaw.or(entrance.map(|e| e.yaw)).unwrap_or_default();
+        let position = eye - Vec3::Y * EYE_ABOVE_CENTRE;
+        if let Ok((entity, mut body, mut at, mut transform, mut velocity)) = self.party.single_mut()
+        {
+            body.yaw = yaw;
+            at.0 = position;
+            transform.translation = position;
+            velocity.0 = Vec3::ZERO;
+            commands.entity(entity).remove::<RigidBodyDisabled>();
+            return;
+        }
+        spawn_party(commands, &start, yaw, position, &mut self.motion_configs);
     }
-    let start = start.map(|s| *s).unwrap_or_default();
-    let eye = start.eye.unwrap_or(Vec3::new(0.0, 1000.0 / U, 0.0));
-    let position = eye - Vec3::Y * EYE_ABOVE_CENTRE;
+}
+
+fn spawn_party(
+    commands: &mut Commands,
+    start: &PartyStart,
+    yaw: f32,
+    position: Vec3,
+    motion_configs: &mut Assets<PartyMotionConfig>,
+) {
     commands
         .spawn((
             Name::new("Party"),
-            PartyBody { yaw: start.yaw, pitch: start.pitch.clamp(-MAX_PITCH, MAX_PITCH) },
+            PartyBody { yaw, pitch: start.pitch.clamp(-MAX_PITCH, MAX_PITCH) },
             Transform::from_translation(position),
             Visibility::default(),
             RigidBody::Dynamic,
             Collider::sphere(RADIUS - 0.08),
             LockedAxes::ROTATION_LOCKED,
+            MaxLinearSpeed(MAX_SPEED),
             TnuaController::<PartyMotion>::default(),
             TnuaConfig::<PartyMotion>(motion_configs.add(PartyMotionConfig {
                 basis: TnuaBuiltinWalkConfig {
@@ -188,6 +249,7 @@ pub fn spawn_party_on_ready(
             party.spawn((
                 Name::new("Party camera"),
                 PartyCamera,
+                SpatialListener::new(0.2),
                 Camera3d::default(),
                 // The sky camera clears the frame and draws first.
                 Camera { clear_color: ClearColorConfig::None, ..default() },
@@ -203,12 +265,13 @@ pub fn spawn_party_on_ready(
         });
 }
 
-/// Where the party enters: an explicit eye position in metres, if any, and
-/// the initial yaw.
-#[derive(Resource, Debug, Clone, Copy, Default)]
+/// Where the party enters the next level that becomes ready: an entrance
+/// trigger, unless an explicit eye position (metres) or facing overrides it.
+#[derive(Resource, Debug, Clone, Default)]
 pub struct PartyStart {
+    pub entrance: Option<String>,
     pub eye: Option<Vec3>,
-    pub yaw: f32,
+    pub yaw: Option<f32>,
     pub pitch: f32,
 }
 
@@ -232,11 +295,16 @@ pub fn drive_party(
     turn: Single<&Action<Turn>>,
     run: Single<&Action<Run>>,
     mut party: Query<(&mut PartyBody, &mut TnuaController<PartyMotion>)>,
+    freedom: crate::game::screen::Freedom,
 ) {
     let Ok((mut body, mut controller)) = party.single_mut() else { return };
-    body.yaw -= ***turn * TURN_SPEED * time.delta_secs();
+    // A party held by a screen, a camp or a question stands still.
+    let free = freedom.free();
+    if free {
+        body.yaw -= ***turn * TURN_SPEED * time.delta_secs();
+    }
     // The walk config's speed is the run speed; walking scales the input.
-    let input = walk.clamp_length_max(1.0);
+    let input = if free { walk.clamp_length_max(1.0) } else { Vec2::ZERO };
     let fraction = if ***run { 1.0 } else { WALK_SPEED / RUN_SPEED };
     controller.initiate_action_feeding();
     controller.basis = TnuaBuiltinWalk {
@@ -254,26 +322,46 @@ pub fn aim_camera(party: Query<&PartyBody>, mut camera: Query<&mut Transform, Wi
     }
 }
 
-/// Use the prop at the centre of the view, within reach.
+/// Use the prop under the pointer, within reach.
+#[allow(clippy::too_many_arguments)]
 pub fn interact(
     interact: Single<&ActionEvents, With<Action<Interact>>>,
-    party: Query<Entity, With<PartyBody>>,
-    camera: Query<&GlobalTransform, With<PartyCamera>>,
-    spatial: SpatialQuery,
-    prop_entities: Query<(), With<Prop>>,
+    pointers: Query<(&PointerId, &PointerLocation)>,
+    camera: Query<(&Camera, &GlobalTransform), With<PartyCamera>>,
+    mut meshes: MeshRayCast,
+    sky: Query<(), With<RenderLayers>>,
     parents: Query<&ChildOf>,
-    mut props: Query<(&Name, &mut Prop, &mut PropMotion)>,
+    props: Query<(&Name, &Prop)>,
+    mut triggers: LevelTriggers,
 ) {
     if !interact.contains(ActionEvents::START) {
         return;
     }
-    let (Ok(party), Ok(camera)) = (party.single(), camera.single()) else { return };
-    let ray = Ray3d::new(camera.translation(), camera.forward());
-    let Some(target) = prop_under_ray(ray, party, &spatial, &prop_entities, &parents) else {
+    let Ok((camera, transform)) = camera.single() else { return };
+    let Some(ray) = ray_under_pointer(&pointers, camera, transform) else { return };
+    let Some((hit, distance)) = drawn_under_ray(ray, &mut meshes, &sky) else {
+        debug!("nothing to use there");
         return;
     };
-    if let Ok((name, mut prop, mut motion)) = props.get_mut(target) {
-        let outcome = use_prop(&mut prop, &mut motion);
-        info!("used {name}: {outcome:?}");
-    }
+    let Some(target) = owner(hit, |e| props.contains(e), &parents) else { return };
+    let Ok((name, prop)) = props.get(target) else { return };
+    let Some(trigger) = &prop.trigger else {
+        debug!("{name} does nothing");
+        return;
+    };
+    // Retail measures from the middle of the prop; the hit point is close.
+    triggers.with(|triggers| {
+        let Some(index) = triggers.state.find(trigger) else { return };
+        let (near, far) = triggers.definitions[index].range;
+        if !triggers.usable(index) {
+            debug!("{name} ({trigger}) cannot be used");
+        } else if !(near..=far).contains(&distance) {
+            debug!("{name} ({trigger}) is out of reach: {distance:.1} m, not {near:.1}..{far:.1}");
+        } else if triggers.run(trigger) {
+            info!("used {name} ({trigger})");
+        } else {
+            info!("used {name} ({trigger}): nothing happened");
+            triggers.effects.push(TriggerEffect::NothingHappened);
+        }
+    });
 }

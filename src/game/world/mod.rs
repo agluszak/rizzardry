@@ -1,8 +1,14 @@
 //! The active level and its local objects.
 
+pub mod identify;
+pub mod items;
 pub mod level;
 pub mod navigation;
+pub mod population;
 pub mod props;
+pub mod scripts;
+pub mod search;
+pub mod triggers;
 
 use bevy::prelude::*;
 
@@ -22,7 +28,39 @@ impl Plugin for WorldPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(navigation::NavigationPlugin)
             .add_message::<level::LevelReady>()
-            .add_systems(Update, (level::build_level_geometry, level::build_sky))
-            .add_systems(FixedUpdate, props::animate_props);
+            .add_message::<level::Travel>()
+            .add_message::<crate::game::inventory::ItemNews>()
+            .add_message::<search::ToggleSearch>()
+            .add_message::<identify::DetectGroups>()
+            .add_message::<identify::Identified>()
+            .add_message::<search::SearchNews>()
+            .init_resource::<search::Search>()
+            .init_resource::<level::LevelMemory>()
+            .init_resource::<crate::game::rng::GameRng>()
+            .init_resource::<crate::game::inventory::ItemIds>()
+            .init_resource::<crate::game::inventory::PartyInventory>()
+            .add_systems(Startup, crate::game::data::load_game_data)
+            .add_message::<triggers::TriggerEffect>()
+            // The level is swapped before anything builds on it this frame.
+            .add_systems(PreUpdate, level::travel)
+            .add_systems(
+                Update,
+                (
+                    level::activate_level,
+                    (
+                        population::measure_monsters,
+                        (
+                            search::search_key.run_if(crate::game::screen::party_free),
+                            search::toggle_search,
+                            search::search_pulse,
+                        )
+                            .chain(),
+                        identify::detect_monster_groups,
+                    )
+                        .run_if(level::level_active)
+                        .after(level::activate_level),
+                ),
+            )
+            .add_systems(FixedUpdate, props::animate_props.run_if(level::level_active));
     }
 }

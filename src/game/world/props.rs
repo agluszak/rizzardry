@@ -1,40 +1,30 @@
 //! Usable level props: doors, lids, levers and lifts that move along their
 //! authored paths.
 
-use avian3d::prelude::*;
+use bevy::camera::visibility::RenderLayers;
+use bevy::picking::mesh_picking::ray_cast::{MeshRayCast, MeshRayCastSettings};
+use bevy::picking::pointer::{PointerId, PointerLocation};
 use bevy::prelude::*;
 
 use super::level::PropPart;
-use crate::content::level::PropInteraction;
-
-/// Retail trigger action codes a prop can run when used.
-mod action {
-    pub const DOOR_OPEN: u32 = 0x01;
-    pub const DOOR_TOGGLE: u32 = 0x02;
-    pub const ANIMATION_TOGGLE: u32 = 0x03;
-    pub const DOOR_TOGGLE_WITH_KEY: u32 = 0x2c;
-    pub const ANIMATION_START: u32 = 0x32;
-    pub const ANIMATION_STOP: u32 = 0x33;
-}
 
 /// A placed prop. Its parts are children carrying [`PropPart`].
 #[derive(Component, Debug)]
 pub struct Prop {
-    pub interaction: Option<PropInteraction>,
+    /// Its place among the level's props (`LevelGeometry::props`), which
+    /// identifies it within the level.
+    pub definition: usize,
+    /// The trigger using the prop runs.
+    pub trigger: Option<String>,
+    /// Its trigger guards a doorway (navigation links follow it).
+    pub door: bool,
     pub frames_per_second: f32,
     /// The highest path key of any part.
     pub last_frame: usize,
-    uses: u32,
-}
-
-impl Prop {
-    pub fn new(
-        interaction: Option<PropInteraction>,
-        frames_per_second: f32,
-        last_frame: usize,
-    ) -> Self {
-        Prop { interaction, frames_per_second, last_frame, uses: 0 }
-    }
+    /// Each play starts from the first frame instead of reversing the last.
+    pub wraps: bool,
+    /// Path keys splitting the animation into segments (a dial).
+    pub slots: Vec<u16>,
 }
 
 /// Where a prop is along its path and where it is heading.
@@ -44,57 +34,8 @@ pub struct PropMotion {
     pub target: f32,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum UseOutcome {
-    Moving,
-    Locked,
-    NothingHappens,
-    /// An action this rewrite does not perform yet.
-    Unsupported(u32),
-}
-
-/// Run a prop's trigger action. The first use runs the initial action and
-/// later uses the alternate one, when set (retail `SelectAction`).
-pub fn use_prop(prop: &mut Prop, motion: &mut PropMotion) -> UseOutcome {
-    let Some(interaction) = &prop.interaction else { return UseOutcome::NothingHappens };
-    let action = if prop.uses > 0 && interaction.alternate_action != 0 {
-        interaction.alternate_action
-    } else {
-        interaction.initial_action
-    };
-    let locked = interaction.door.is_some_and(|door| door.locked);
-    prop.uses += 1;
-    let end = prop.last_frame as f32;
-    let toggle = |motion: &mut PropMotion| {
-        motion.target = if motion.target > 0.0 { 0.0 } else { end };
-    };
-    match action {
-        action::DOOR_OPEN | action::DOOR_TOGGLE | action::DOOR_TOGGLE_WITH_KEY if locked => {
-            prop.uses -= 1;
-            UseOutcome::Locked
-        }
-        action::DOOR_OPEN => {
-            motion.target = end;
-            UseOutcome::Moving
-        }
-        action::DOOR_TOGGLE | action::DOOR_TOGGLE_WITH_KEY | action::ANIMATION_TOGGLE => {
-            toggle(motion);
-            UseOutcome::Moving
-        }
-        action::ANIMATION_START => {
-            motion.target = end;
-            UseOutcome::Moving
-        }
-        action::ANIMATION_STOP => {
-            motion.target = motion.frame;
-            UseOutcome::Moving
-        }
-        other => UseOutcome::Unsupported(other),
-    }
-}
-
 /// The pose at a fractional `frame` along `keys`.
-fn pose(keys: &[Transform], frame: f32) -> Transform {
+pub fn pose(keys: &[Transform], frame: f32) -> Transform {
     let last = keys.len() - 1;
     let frame = frame.clamp(0.0, last as f32);
     let (index, t) = (frame.floor() as usize, frame.fract());
@@ -136,76 +77,51 @@ pub fn animate_props(
     }
 }
 
-/// The prop an entity belongs to: itself or an ancestor.
-pub fn owning_prop(
+/// What an entity belongs to: itself or the nearest ancestor that
+/// `is_owner`.
+pub fn owner(
     mut entity: Entity,
-    props: &Query<(), With<Prop>>,
+    is_owner: impl Fn(Entity) -> bool,
     parents: &Query<&ChildOf>,
 ) -> Option<Entity> {
     loop {
-        if props.contains(entity) {
+        if is_owner(entity) {
             return Some(entity);
         }
         entity = parents.get(entity).ok()?.parent();
     }
 }
 
-/// How far the party can reach to use something, in metres.
-pub const REACH: f32 = 3.0;
-
-/// The first prop hit by a ray, within reach.
-pub fn prop_under_ray(
-    ray: Ray3d,
-    exclude: Entity,
-    spatial: &SpatialQuery,
-    props: &Query<(), With<Prop>>,
-    parents: &Query<&ChildOf>,
-) -> Option<Entity> {
-    let filter = SpatialQueryFilter::default().with_excluded_entities([exclude]);
-    let hit = spatial.cast_ray(ray.origin, ray.direction, REACH, true, &filter)?;
-    owning_prop(hit.entity, props, parents)
+/// The ray through the mouse pointer, when it is over the view (retail
+/// picks props and items under the cursor). Both the pointer and the
+/// camera's viewport rectangle are in logical pixels of the window, which
+/// is what `viewport_to_world` takes.
+pub fn ray_under_pointer(
+    pointers: &Query<(&PointerId, &PointerLocation)>,
+    camera: &Camera,
+    transform: &GlobalTransform,
+) -> Option<Ray3d> {
+    let (_, location) = pointers.iter().find(|(id, _)| id.is_mouse())?;
+    let position = location.location()?.position;
+    let view = camera.logical_viewport_rect()?;
+    if !view.contains(position) {
+        return None;
+    }
+    camera.viewport_to_world(transform, position).ok()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::content::level::DoorLock;
-
-    fn door(locked: bool) -> Prop {
-        Prop::new(
-            Some(PropInteraction {
-                trigger: "DOOR".into(),
-                initial_action: action::DOOR_OPEN,
-                alternate_action: action::DOOR_TOGGLE,
-                door: Some(DoorLock { locked, key: None }),
-            }),
-            10.0,
-            15,
-        )
-    }
-
-    #[test]
-    fn a_door_opens_then_toggles() {
-        let (mut prop, mut motion) = (door(false), PropMotion::default());
-        assert_eq!(use_prop(&mut prop, &mut motion), UseOutcome::Moving);
-        assert_eq!(motion.target, 15.0);
-        use_prop(&mut prop, &mut motion);
-        assert_eq!(motion.target, 0.0);
-        use_prop(&mut prop, &mut motion);
-        assert_eq!(motion.target, 15.0);
-    }
-
-    #[test]
-    fn a_locked_door_stays_shut() {
-        let (mut prop, mut motion) = (door(true), PropMotion::default());
-        assert_eq!(use_prop(&mut prop, &mut motion), UseOutcome::Locked);
-        assert_eq!(motion.target, 0.0);
-    }
-
-    #[test]
-    fn poses_interpolate_between_keys() {
-        let keys = [Transform::from_xyz(0.0, 0.0, 0.0), Transform::from_xyz(2.0, 0.0, 0.0)];
-        assert_eq!(pose(&keys, 0.5).translation.x, 1.0);
-        assert_eq!(pose(&keys, 9.0).translation.x, 2.0);
-    }
+/// The mesh drawn first along a ray, and how far along the ray it is. Like
+/// retail, this picks what is drawn, not what collides: a pressed pedal
+/// below the floor's collider is still there to click. Each trigger's own
+/// range decides whether it can be used from that far.
+pub fn drawn_under_ray(
+    ray: Ray3d,
+    meshes: &mut MeshRayCast,
+    sky: &Query<(), With<RenderLayers>>,
+) -> Option<(Entity, f32)> {
+    // The sky world is drawn by its own camera, around the world origin.
+    let not_sky = |entity| !sky.contains(entity);
+    let settings = MeshRayCastSettings::default().with_filter(&not_sky);
+    let &(entity, ref hit) = meshes.cast_ray(ray, &settings).first()?;
+    Some((entity, hit.distance))
 }

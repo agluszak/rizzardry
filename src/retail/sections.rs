@@ -58,6 +58,13 @@ pub struct ParticleSystem {
     pub location: [f32; 3],
 }
 
+/// A named horizontal clipping plane, at a height in retail units.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClipPlane {
+    pub name: String,
+    pub height: f32,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct LevelSections {
     pub lights: Vec<Light>,
@@ -68,6 +75,7 @@ pub struct LevelSections {
     pub environment: Option<Environment>,
     pub triggers: Vec<Trigger>,
     pub camera_sway: bool,
+    pub clip_planes: Vec<ClipPlane>,
     /// Added to every baked vertex colour.
     pub environment_offset: [f32; 3],
     pub particles: Vec<ParticleSystem>,
@@ -223,10 +231,15 @@ fn read_sections_of(bytes: &mut Bytes, compiled: bool) -> Result<LevelSections, 
     let triggers = (0..count(bytes)?).map(|_| read_trigger(bytes)).collect::<Result<_, _>>()?;
     sentinel(bytes, compiled)?;
     let camera_sway = bytes.i32()? != 0;
-    let clip_planes = count(bytes)?;
-    if clip_planes > 0 {
-        bytes.u8()?;
-        bytes.take(clip_planes * (64 + 16))?;
+    let clip_count = count(bytes)?;
+    let mut clip_planes = Vec::with_capacity(clip_count);
+    if clip_count > 0 {
+        bytes.u8()?; // The retail loader reads but does not branch on this version.
+        for _ in 0..clip_count {
+            let name = text(bytes, 64)?.to_uppercase();
+            let position = bytes.f32s::<4>()?;
+            clip_planes.push(ClipPlane { name, height: position[1] * RECORD_SCALE });
+        }
     }
     sentinel(bytes, compiled)?;
     let environment_offset = bytes.f32s()?;
@@ -269,6 +282,7 @@ fn read_sections_of(bytes: &mut Bytes, compiled: bool) -> Result<LevelSections, 
         environment,
         triggers,
         camera_sway,
+        clip_planes,
         environment_offset,
         particles,
         named_positions,
@@ -333,5 +347,40 @@ mod tests {
         };
         let [x, _, z] = entrance.placement.unwrap().position;
         assert!((75_000.0..77_000.0).contains(&x) && (52_000.0..53_000.0).contains(&z));
+    }
+
+    #[test]
+    #[ignore = "requires a retail installation"]
+    fn the_monastery_bells_decode_their_trigger_logic() {
+        use crate::retail::trigger::{StateMode, action, flag};
+        let root =
+            std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL to run this test");
+        let files = crate::retail::files::RetailFiles::open(root).unwrap();
+        let data = files.read("levels/monastery/monastery2.pvl").unwrap().unwrap();
+        let start = read_level_geometry(&data).unwrap().end;
+        let sections = read_sections(&mut Bytes::new(&data[start..])).unwrap();
+        let item = |name: &str| match &sections.trigger(name).unwrap().kind {
+            TriggerKind::Item(item) => item.clone(),
+            other => panic!("{name}: {other:?}"),
+        };
+        let dial = item("BELLRINGSWITCH");
+        assert_eq!(dial.initial_action, 0x40);
+        assert!(dial.play_sound);
+        assert_eq!(dial.sound.to_lowercase(), "ambients\\lock open small.wav");
+        assert_eq!((dial.state_to_modify.as_str(), dial.state_mode), ("RING", StateMode::Set));
+        let glass = item("BELLTRIGGER01");
+        assert_eq!(glass.flags, flag::ITEM | flag::ONCE);
+        assert!(glass.fire_linked && !glass.enabled);
+        assert_eq!(glass.required_states, ["RING2"]);
+        let relay = item("BELLTRIGGERC");
+        assert_eq!(relay.initial_action, action::RELAY);
+        assert_eq!(
+            (relay.required_states.as_slice(), relay.recipients.as_str()),
+            (&["RING0".to_owned()][..], "BELL_1")
+        );
+        let dial_prop =
+            sections.props.iter().chain(&sections.bitmaps).find(|p| p.name == "dial1").unwrap();
+        let frames: Vec<u16> = dial_prop.slots.iter().map(|s| s.frame).collect();
+        assert_eq!(frames, [0, 1, 10, 20]);
     }
 }

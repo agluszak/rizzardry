@@ -59,17 +59,70 @@ impl LevelEnvironment {
     }
 }
 
+/// A level's point lights and constant light offset. Level geometry has
+/// them baked in; props and actors take them at their positions.
+#[derive(Clone, Debug, Default, Reflect)]
+pub struct LevelLighting {
+    /// Added to everything's light (the level's environment offset).
+    pub offset: Vec3,
+    pub lights: Vec<PointLightSource>,
+    /// The `SUN` light's position: actors in its line of sight get sky light.
+    pub sun: Option<Vec3>,
+}
+
+/// A static level light with retail's linear falloff.
+#[derive(Clone, Copy, Debug, Reflect)]
+pub struct PointLightSource {
+    pub position: Vec3,
+    /// Colour times intensity.
+    pub colour: Vec3,
+    /// Metres.
+    pub range: f32,
+}
+
+impl LevelLighting {
+    /// Light at a point from the offset and every light in range:
+    /// `colour * (1 - d / range) * facing`, with facing 1 when `normal` is
+    /// none.
+    pub fn at(&self, position: Vec3, normal: Option<Vec3>) -> Vec3 {
+        let mut light = self.offset;
+        for source in &self.lights {
+            let to_light = source.position - position;
+            let distance = to_light.length();
+            if distance >= source.range || distance == 0.0 {
+                continue;
+            }
+            let facing = normal.map_or(1.0, |n| n.dot(to_light / distance).max(0.0));
+            light += source.colour * (1.0 - distance / source.range) * facing;
+        }
+        light
+    }
+}
+
 /// Immutable static geometry shared by every visit to a level.
-#[derive(Asset, Clone, Debug, Reflect)]
+#[derive(Asset, Clone, Debug, Default, Reflect)]
 pub struct LevelGeometry {
     pub parts: Vec<LevelPart>,
     pub collision: CollisionMesh,
+    /// Automap ceiling cuts in authored order, top to bottom. Layer zero is uncut.
+    pub map_layers: Vec<f32>,
     pub environment: Option<LevelEnvironment>,
+    /// Light that reaches props and actors at runtime, besides the sky.
+    pub lighting: LevelLighting,
+    /// Positioned triggers, where the party can enter.
+    pub entrances: Vec<Entrance>,
+    /// Every trigger the party or props can run.
+    pub triggers: Vec<TriggerDefinition>,
+    /// Paths the party's eye can fly along (ladders, climbs, cutscenes).
+    pub camera_paths: Vec<CameraPathModel>,
+    /// Sounds places make: water, wind, birds.
+    pub ambient_sounds: Vec<AmbientSoundModel>,
+    /// Monsters and NPCs standing in the level at a new game.
+    pub monsters: Vec<MonsterPlacement>,
+    pub items: Vec<ItemPlacement>,
     pub props: Vec<PropModel>,
     /// Navigation links between places the navmesh does not join.
     pub links: Vec<LevelLink>,
-    /// Positioned triggers that move the party elsewhere in the level.
-    pub teleports: Vec<TeleportTrigger>,
     /// Materials whose texture is an animated frame list (`.ifl`).
     pub animated_textures: Vec<TextureAnimation>,
 }
@@ -104,16 +157,78 @@ pub struct LevelLink {
     pub to: Vec3,
 }
 
-/// A trigger that teleports the party within the level when it comes within
-/// range (retail action 0x34 naming a trigger in the same level).
+/// A monster placed in the level (retail `.sts` `MONS`).
 #[derive(Clone, Debug, Reflect)]
-pub struct TeleportTrigger {
+pub struct MonsterPlacement {
+    /// Unique within the level.
+    pub location: i32,
+    /// The group it belongs to, by the level's group id.
+    pub group: i32,
+    /// Its species, by `monsters.dbs` record; the species gives its model.
+    pub species: u32,
+    /// Feet.
+    pub position: Vec3,
+    pub yaw: f32,
+}
+
+/// An item lying in the level as authored (retail `.sts` `ITEM`).
+#[derive(Clone, Debug, Reflect)]
+pub struct ItemPlacement {
+    pub item: crate::content::items::ItemId,
+    /// A stack's count, or charges or uses, by the item's quantity kind.
+    pub stack: u8,
+    pub uses: u8,
+    pub identified: bool,
+    /// The item's origin, about a quarter metre above the ground.
+    pub position: Vec3,
+    /// Unseen until found by searching.
+    pub hidden: bool,
+}
+
+/// A sound a place makes (retail ambient sound).
+#[derive(Clone, Debug, Reflect)]
+pub struct AmbientSoundModel {
+    /// Retail path under `data/sound`.
+    pub path: String,
+    pub position: Vec3,
+    /// Metres; heard fully within 40% of it, fading to nothing at its edge.
+    pub radius: f32,
+    pub looping: bool,
+    /// Loudness range, 0 to 1.
+    pub volume: (f32, f32),
+    /// Seconds between plays of a one-shot sound.
+    pub interval: (f32, f32),
+}
+
+/// A path the party's eye flies along: eye position and view per key.
+#[derive(Clone, Debug, Reflect)]
+pub struct CameraPathModel {
     pub name: String,
-    pub centre: Vec3,
-    /// Fires at distances in `[range.0, range.1)` metres.
-    pub range: (f32, f32),
-    /// Where the party's eye arrives, and its facing.
-    pub destination: Vec3,
+    pub keys: Vec<Transform>,
+    pub keys_per_second: f32,
+}
+
+/// Where a teleport takes the party.
+#[derive(Clone, Debug, Reflect)]
+pub enum Arrival {
+    /// The eye's position and facing in this level.
+    Here { eye: Vec3, yaw: f32 },
+    /// An entrance trigger of another level, named by its location code and
+    /// number, e.g. `MO201`.
+    Entrance {
+        entrance: String,
+        /// Ask "Proceed to <level>?" first.
+        ask: bool,
+    },
+}
+
+/// A positioned trigger the party can enter the level at.
+#[derive(Clone, Debug, Reflect)]
+pub struct Entrance {
+    pub name: String,
+    /// Retail places the eye 1000 units above the trigger and lets the party
+    /// settle.
+    pub eye: Vec3,
     pub yaw: f32,
 }
 
@@ -128,19 +243,75 @@ pub struct PropModel {
     /// Path keys advanced per second when the prop animates.
     pub frames_per_second: f32,
     pub parts: Vec<PropModelPart>,
-    /// What using the prop does, from its attached trigger.
-    pub interaction: Option<PropInteraction>,
+    /// Each use plays the path from its start; otherwise uses alternate
+    /// direction (retail frame method wrap versus ping-pong).
+    pub wraps: bool,
+    /// Path keys splitting the animation into segments, e.g. a dial's
+    /// positions.
+    pub slots: Vec<u16>,
+    /// The name of the trigger using the prop runs.
+    pub trigger: Option<String>,
 }
 
-/// The attached trigger of a usable prop.
+/// A trigger: what happens when it runs, from the player using it, another
+/// trigger naming it as a recipient, or a level script.
 #[derive(Clone, Debug, Reflect)]
-pub struct PropInteraction {
-    pub trigger: String,
-    /// Retail action codes: the first use runs `initial_action`, later uses
-    /// `alternate_action` when it is set.
-    pub initial_action: u32,
-    pub alternate_action: u32,
+pub struct TriggerDefinition {
+    pub name: String,
+    /// The player may use it; recipients run whatever this says.
+    pub usable: bool,
+    /// It runs at most once.
+    pub once: bool,
+    /// Run the recipients when the action commits.
+    pub fire_linked: bool,
+    /// Retail action codes. The first use runs `initial`; later uses run
+    /// `alternate` if set, back and forth when `alternate_toggles`. When a
+    /// required state is unset, `fallback` runs instead (0: nothing).
+    pub initial: u32,
+    pub alternate: u32,
+    pub fallback: u32,
+    pub alternate_toggles: bool,
+    /// Triggers to run, in order.
+    pub recipients: Vec<String>,
+    /// Action parameters; their meaning depends on the action.
+    pub data: [i32; 3],
+    pub sound: Option<TriggerSound>,
+    /// Commits play the sound (retail `ANIMATE_ACTION`); otherwise only
+    /// actions that play it do.
+    pub sound_on_commit: bool,
+    /// Show level message `data[use]` on commit.
+    pub shows_message: bool,
+    /// Location variables that must all be set.
+    pub required_states: Vec<String>,
+    /// The location variable a commit changes.
+    pub state_change: Option<(String, StateChange)>,
+    /// The value its location variable starts with in a new game.
+    pub initial_state: Option<bool>,
+    /// The distance band, in metres, from which the party can use it.
+    pub range: (f32, f32),
     pub door: Option<DoorLock>,
+    /// A trigger standing at a place rather than on a prop: it runs when the
+    /// party's eye comes within `range` of it.
+    pub place: Option<Vec3>,
+    /// Where a teleport takes the party.
+    pub arrival: Option<Arrival>,
+    /// The loot table a container draws its contents from.
+    pub loot_table: Option<String>,
+}
+
+#[derive(Clone, Debug, Reflect)]
+pub struct TriggerSound {
+    /// Retail path under `data/sound`.
+    pub path: String,
+    /// 0 to 1.
+    pub volume: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Reflect)]
+pub enum StateChange {
+    Set,
+    Clear,
+    Toggle,
 }
 
 /// A door's lock state.

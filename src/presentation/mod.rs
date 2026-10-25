@@ -1,34 +1,109 @@
 //! Rendering, animation and audio presentation of game state.
 
+pub mod ambience;
 pub mod automap;
 pub mod billboards;
+pub mod camp;
+pub mod dialog;
+pub mod effects;
 pub mod environment;
+pub mod hover;
+pub mod inventory;
+pub mod main_screen;
 pub mod mipmaps;
 pub mod monsters;
+pub mod music;
+pub mod notices;
+pub mod screen_art;
 pub mod sky;
 pub mod textures;
 pub mod voice;
+pub mod world_items;
 
 use bevy::prelude::*;
 use bevy_enhanced_input::prelude::*;
 
+use crate::game::party::body::Exploration;
+
 pub struct PresentationPlugin;
+
+/// Exploring takes input only while gameplay says the party is free
+/// (`game::screen`); presentation routes input by that rule, it does not
+/// make it.
+fn hold_exploration(
+    mut commands: Commands,
+    freedom: crate::game::screen::Freedom,
+    controls: Query<(Entity, Option<&ContextActivity<Exploration>>), With<Exploration>>,
+) {
+    let active = freedom.free();
+    for (entity, activity) in &controls {
+        if activity.is_none_or(|a| **a != active) {
+            commands.entity(entity).insert(ContextActivity::<Exploration>::new(active));
+        }
+    }
+}
 
 impl Plugin for PresentationPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<voice::SpeechFinished>()
-            .init_resource::<crate::game::automap::MapNotes>()
+            .add_message::<dialog::TravelAnswer>()
+            .add_message::<automap::OpenAutomap>()
+            .init_resource::<effects::CameraShake>()
+            .init_resource::<notices::TextLog>()
+            .init_resource::<hover::Hover>()
+            .init_resource::<main_screen::ScreenLayout>()
+            .init_resource::<main_screen::SelectedMember>()
+            .init_resource::<music::Music>()
+            .init_resource::<ambience::AmbienceNoise>()
             .add_input_context::<automap::Screens>()
-            .add_systems(Startup, (automap::spawn_screen_controls, automap::load_automap_art))
+            .add_systems(
+                Startup,
+                (
+                    automap::spawn_screen_controls,
+                    automap::load_automap_art,
+                    notices::load_notice_art,
+                    dialog::load_dialog_art,
+                    camp::load_camp_art,
+                    inventory::load_inventory_art,
+                    main_screen::load_main_screen_art,
+                    main_screen::spawn_screen_cameras,
+                ),
+            )
             .add_systems(
                 Update,
                 (
                     automap::scale_ui,
+                    hold_exploration,
+                    (
+                        main_screen::cycle_layout,
+                        main_screen::select_with_keys,
+                        main_screen::combat_keys,
+                        main_screen::text_box_keys,
+                        main_screen::paint_hover_art,
+                        main_screen::fit_viewport,
+                        main_screen::draw_main_screen,
+                        main_screen::update_radar,
+                        main_screen::play_splats,
+                    )
+                        .chain()
+                        .after(automap::scale_ui),
+                    camp::show_camp,
+                    (
+                        inventory::toggle_inventory,
+                        inventory::spawn_inventory_screen,
+                        inventory::draw_inventory_cells,
+                        inventory::follow_held,
+                    )
+                        .chain(),
                     (
                         automap::toggle_automap,
                         automap::type_note,
+                        automap::pan_with_keys,
                         automap::paint_buttons,
+                        automap::update_map_view,
                         automap::draw_notes,
+                        automap::draw_layer_label,
+                        automap::update_map_cursor,
                         automap::glow_note_markers,
                     )
                         .chain(),
@@ -41,13 +116,39 @@ impl Plugin for PresentationPlugin {
                     environment::apply_environment,
                     sky::follow_with_sky_camera.after(crate::game::party::body::aim_camera),
                     sky::shade_clouds,
+                    sky::build_sky,
+                    environment::attach_level_visuals,
                     billboards::face_camera.after(crate::game::party::body::aim_camera),
+                    effects::play_trigger_effects,
+                    music::play_music,
+                    (ambience::place_ambient_sounds, ambience::play_ambient_sounds).chain(),
+                    notices::queue_notices.before(main_screen::draw_main_screen),
+                    (
+                        dialog::show_travel_question,
+                        dialog::answer_with_keys,
+                        dialog::settle_travel_question,
+                        dialog::paint_dialog_buttons,
+                    )
+                        .chain(),
+                    effects::shake_camera.after(crate::game::party::body::aim_camera),
                     sky::orbit_sun_and_moon,
                     voice::finish_speech,
                     (
                         monsters::choose_walker_cycles,
+                        monsters::show_deaths,
+                        monsters::follow_float_height,
                         monsters::build_monster_instances,
                         monsters::animate_monsters,
+                        monsters::light_monsters,
+                    )
+                        .chain(),
+                    (
+                        hover::hover,
+                        hover::show_tooltip,
+                        world_items::show_world_items,
+                        world_items::build_world_items,
+                        world_items::turn_world_items,
+                        world_items::light_world_items,
                     )
                         .chain(),
                 ),

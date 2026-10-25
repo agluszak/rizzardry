@@ -161,7 +161,7 @@ just to fit a fashionable API.
 | Rust `bsn!`, headless UI widgets | Native inventory/dialogue UI; external `.bsn` files are not required in 0.20 |
 | `ViewportNode` | Candidate for the game HUD's framed 3D view: resizable UI surface with 3D pointer forwarding |
 | `Camera.viewport`, render-to-texture | Use the simpler direct camera viewport when adequate; offscreen view for UI-integrated viewport/previews |
-| Image asset processing and `CompressedImageSaver` | After shared retail images replace level-local labeled subassets; then consider deleting CPU mipmap code |
+| Image asset processing and `CompressedImageSaver` | Retail textures are shared `RetailTexture` assets; consider replacing the CPU mipmapper only if it removes code |
 | `AudioPlayer`, `SpatialAudioSink` | Built-in audio with Bevy's `mp3` feature; voice-line completion is identified per line |
 | `States`, `DespawnOnExit` | Scope UI screens or modes, not persisted character or campaign state |
 
@@ -180,6 +180,20 @@ framework or an audio mixer are not needed merely because they exist.
 | Particle plugin | A real spell effect would otherwise require substantial custom GPU machinery |
 | Scripting runtime such as Rhai/Lua | Several real mods require behavior beyond data definitions and explicit native handlers |
 | Additional collections (`enum-map`, small vectors, arenas) | A concrete type/measurement makes them simpler than standard collections |
+
+**Binary parsing (`binrw`), evaluated and not adopted.** A prototype read
+`monsters.dbs` with `binrw` 0.15 and produced exactly the same 595 species as
+`retail::species`, but took 126 non-blank lines against 80. It needed raw
+mirror structs (`RawSpecies`, `RawAttack`, `RawDice`) and conversions into
+the content types, replaced the research tables' absolute offsets with
+relative `pad_before` arithmetic, and added three crates. Deriving on the
+content types instead would put retail layout into `content`. The retail
+layer keeps its small `Bytes` cursor and decodes straight into content
+types. `items.dbs` was not prototyped: it reads fields in order and maps
+into a 40-field definition, so a mirror struct would cost more still.
+Reconsider for formats where structure, not field offsets, dominates
+(counted, versioned or conditional records), and only if the result is
+smaller.
 
 The RNG algorithm and serializable state are required from the first gameplay
 and save implementation. Only the choice to use an external RNG crate is optional.

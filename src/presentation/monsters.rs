@@ -8,13 +8,31 @@
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 
+use avian3d::prelude::{SpatialQuery, SpatialQueryFilter};
+
+use crate::content::level::LevelGeometry;
 use crate::content::monster::MonsterModel;
+use crate::game::time::GameClock;
+use crate::game::world::level::Level;
+use crate::game::world::population::Monster;
 
 /// What an actor looks like, and how far its origin floats above its feet.
 #[derive(Component, Debug)]
+#[require(Visibility)]
 pub struct MonsterAppearance {
     pub model: Handle<MonsterModel>,
     pub float_height: f32,
+    /// Seconds into its first cycle it starts at.
+    pub phase: f32,
+    /// Its roll below 1000 within its species' scale range, if rolled.
+    pub size_roll: Option<u32>,
+}
+
+impl MonsterAppearance {
+    /// This actor's scale.
+    pub fn scale(&self, model: &MonsterModel) -> f32 {
+        self.size_roll.map_or(model.body.scale, |roll| model.body.scale_for(roll))
+    }
 }
 
 /// The cycle an actor should play. Gameplay sets it; a changed request
@@ -35,9 +53,14 @@ impl CycleRequest {
 /// The built model of one actor.
 #[derive(Component, Debug)]
 pub struct MonsterInstance {
+    /// Holds the model, lowered by the actor's float height.
+    model_root: Entity,
     /// Per cycle: its root entity and this instance's mesh copies.
     cycles: HashMap<String, (Entity, Vec<Handle<Mesh>>)>,
     playing: Option<(CycleRequest, f32)>,
+    /// How much sky light reaches the actor: retail fades it between 0.75
+    /// in sight of the level's `SUN` light and 0 out of it.
+    sky_scale: f32,
 }
 
 impl MonsterInstance {
@@ -66,7 +89,7 @@ pub fn build_monster_instances(
                 Transform {
                     translation: Vec3::NEG_Y * appearance.float_height,
                     rotation: Quat::from_rotation_y(std::f32::consts::PI),
-                    scale: Vec3::splat(model.scale),
+                    scale: Vec3::splat(appearance.scale(model)),
                 },
                 Visibility::default(),
                 ChildOf(actor),
@@ -95,7 +118,37 @@ pub fn build_monster_instances(
             }
             cycles.insert(name.clone(), (cycle_root, copies));
         }
-        commands.entity(actor).insert(MonsterInstance { cycles, playing: None });
+        commands.entity(actor).insert(MonsterInstance {
+            model_root,
+            cycles,
+            playing: None,
+            sky_scale: SUNLIT,
+        });
+    }
+}
+
+/// Keep the model's feet on the ground when the actor's float height
+/// changes (a placed monster gaining a walking body).
+pub fn follow_float_height(
+    actors: Query<(&MonsterAppearance, &MonsterInstance), Changed<MonsterAppearance>>,
+    mut transforms: Query<&mut Transform>,
+) {
+    for (appearance, instance) in &actors {
+        if let Ok(mut transform) = transforms.get_mut(instance.model_root) {
+            transform.translation = Vec3::NEG_Y * appearance.float_height;
+        }
+    }
+}
+
+/// A monster that dies plays its death once and stays on its last frame.
+pub fn show_deaths(
+    mut commands: Commands,
+    monsters: Query<(Entity, &Monster, Option<&CycleRequest>), Changed<Monster>>,
+) {
+    for (entity, monster, request) in &monsters {
+        if monster.is_dead() && request.is_none_or(|r| r.cycle != "DIE") {
+            commands.entity(entity).insert(CycleRequest { cycle: "DIE".into(), once: true });
+        }
     }
 }
 
@@ -120,7 +173,9 @@ pub fn animate_monsters(
                         if cycle_name == name { Visibility::Inherited } else { Visibility::Hidden };
                 }
             }
-            instance.playing = Some((request.clone(), now));
+            // The first cycle starts part-way in.
+            let started = if instance.playing.is_none() { now - appearance.phase } else { now };
+            instance.playing = Some((request.clone(), started));
         }
         let started = instance.playing.as_ref().map_or(now, |(_, started)| *started);
         let frames = cycle.frame_count() as f32;
@@ -138,6 +193,84 @@ pub fn animate_monsters(
     }
 }
 
+/// The sky light an actor in sight of the sun receives (Whizzardry
+/// `Monster::Update`).
+const SUNLIT: f32 = 0.75;
+/// Retail steps the sky scale by 0.05 every 25 ms.
+const SKY_SCALE_PER_SECOND: f32 = 2.0;
+
+/// Light actors as retail does models without baked light: sky light while
+/// they can see the `SUN` light, scaled by each material's ambient, plus the
+/// level's offset, nearby lights and the material's emission. Retail adds
+/// point lights per vertex with N·L; here they light the whole actor by
+/// their falloff at its centre.
+pub fn light_monsters(
+    time: Res<Time>,
+    clock: Res<GameClock>,
+    levels: Query<(Entity, &Level)>,
+    geometry: Res<Assets<LevelGeometry>>,
+    models: Res<Assets<MonsterModel>>,
+    spatial: SpatialQuery,
+    mut actors: Query<(&GlobalTransform, &MonsterAppearance, &mut MonsterInstance)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
+    let Some((level_entity, level)) =
+        levels.iter().find_map(|(e, l)| geometry.get(&l.geometry).map(|g| (e, g)))
+    else {
+        return;
+    };
+    let sky = level.environment.as_ref().map_or(Vec3::ZERO, |e| e.sky_light(clock.phase()));
+    for (transform, appearance, mut instance) in &mut actors {
+        let Some(model) = models.get(&appearance.model) else { continue };
+        let centre = transform.translation();
+        let target = if sunlit(&spatial, level_entity, level, centre) { SUNLIT } else { 0.0 };
+        let step = SKY_SCALE_PER_SECOND * time.delta_secs();
+        instance.sky_scale += (target - instance.sky_scale).clamp(-step, step);
+        let fixed = level.lighting.at(centre, None);
+        let Some(playing) = instance.playing.as_ref().map(|(request, _)| request.cycle.clone())
+        else {
+            continue;
+        };
+        let Some(cycle) = model.cycle(&playing) else { continue };
+        let Some((_, copies)) =
+            instance.cycles.get(&playing).or_else(|| instance.cycles.get("IDLE"))
+        else {
+            continue;
+        };
+        for (part, copy) in cycle.parts.iter().zip(copies) {
+            let light =
+                sky * instance.sky_scale * part.ambient + fixed + Vec3::splat(part.emission);
+            let colour = light.extend(1.0).to_array();
+            let Some(mut mesh) = meshes.get_mut(copy) else { continue };
+            let count = part.source.len();
+            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![colour; count]);
+        }
+    }
+}
+
+/// Whether the level's `SUN` light is in sight from `at`, past the level's
+/// own geometry. A level without one has no sunlight.
+pub fn sunlit(
+    spatial: &SpatialQuery,
+    level_entity: Entity,
+    level: &LevelGeometry,
+    at: Vec3,
+) -> bool {
+    level.lighting.sun.is_some_and(|sun| {
+        let Ok(direction) = Dir3::new(sun - at) else { return true };
+        spatial
+            .cast_ray_predicate(
+                at,
+                direction,
+                at.distance(sun),
+                true,
+                &SpatialQueryFilter::default(),
+                &|hit| hit == level_entity,
+            )
+            .is_none()
+    })
+}
+
 /// Walkers play WALK while moving and IDLE when still.
 pub fn choose_walker_cycles(
     mut commands: Commands,
@@ -147,6 +280,10 @@ pub fn choose_walker_cycles(
     >,
 ) {
     for (entity, velocity, current) in &walkers {
+        // A death or another play-once cycle is not interrupted.
+        if current.is_some_and(|c| c.once) {
+            continue;
+        }
         let cycle = if velocity.0.with_y(0.0).length() > 0.3 { "WALK" } else { "IDLE" };
         if current.is_none_or(|c| c.cycle != cycle) {
             commands.entity(entity).insert(CycleRequest::looping(cycle));

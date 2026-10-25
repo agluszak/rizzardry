@@ -1,13 +1,14 @@
 //! Monster species (`.mls`, text) and animation cycles (`.mon`, binary).
 //!
-//! After Whizzardry `LoadMonsterDefinition` and `CyclePlayer`; see the
-//! monster animation notes in the project docs.
+//! After Whizzardry `LoadMonsterDefinition` and `CyclePlayer`; see
+//! `docs/research/monster-anim.md`.
 
 use super::bytes::Bytes;
 use super::keyframes::read_path;
 use super::mesh_record::{MeshRecord, MeshVertices};
 use super::prop::read_animation;
 use super::pvl::{PvlError, invalid};
+use crate::content::monster::MonsterBody;
 
 /// One animation cycle: a mesh whose vertices move frame by frame.
 #[derive(Clone, Debug, PartialEq)]
@@ -65,11 +66,7 @@ pub struct MonsterSpecies {
     /// Cycle name (e.g. `IDLE`, `WALK`, `DIE`), cycle file stem and an
     /// optional frame-rate override. Only the first file per cycle is kept.
     pub cycles: Vec<(String, String, Option<f32>)>,
-    pub scale: f32,
-    /// Collision radius in metres, before `scale`.
-    pub walk_radius: f32,
-    /// Metres per second, before `scale`.
-    pub movement_rate: f32,
+    pub body: MonsterBody,
 }
 
 /// The 27 retail cycle names (`g_cycle_names`), plus legacy aliases.
@@ -116,19 +113,33 @@ fn cycle_name(keyword: &str) -> Option<&'static str> {
 }
 
 pub fn read_species(text: &str) -> MonsterSpecies {
-    let mut species =
-        MonsterSpecies { cycles: vec![], scale: 1.0, walk_radius: 0.5, movement_rate: 3.0 };
+    let mut species = MonsterSpecies { cycles: vec![], body: MonsterBody::default() };
+    let (mut range_start, mut range_end) = (None, None);
     for line in text.lines() {
         let line = line.split('#').next().unwrap_or_default();
         let tokens: Vec<&str> = line.split_whitespace().collect();
         let Some(&keyword) = tokens.first() else { continue };
         let number = |i: usize| tokens.get(i).and_then(|t| t.parse::<f32>().ok());
         match keyword.to_lowercase().as_str() {
-            "scalefactor" => species.scale = number(1).unwrap_or(1.0),
-            "walkradius" => species.walk_radius = number(1).unwrap_or(0.5),
+            "scalefactor" => species.body.scale = number(1).unwrap_or(1.0),
+            "scalerangestart" => range_start = number(1),
+            "scalerangeend" => range_end = number(1),
+            // Retail keeps the default for a radius of 0.
+            "walkradius" => {
+                species.body.walk_radius = number(1).filter(|&r| r != 0.0).unwrap_or(1.0)
+            }
+            "fightradius" => {
+                species.body.fight_radius = number(1).filter(|&r| r != 0.0).unwrap_or(1.0)
+            }
+            // At least 250 world units, half a metre.
+            "targetheight" => {
+                if let Some(height) = number(1).filter(|&h| h != 0.0) {
+                    species.body.target_height = height.max(0.5);
+                }
+            }
             "movementrate" => {
                 let rate = number(1).unwrap_or(3.0);
-                species.movement_rate = if rate < 0.1 { 2.0 } else { rate };
+                species.body.movement_rate = if rate < 0.1 { 2.0 } else { rate };
             }
             _ => {
                 if let (Some(cycle), Some(file)) = (cycle_name(keyword), tokens.get(1))
@@ -139,6 +150,11 @@ pub fn read_species(text: &str) -> MonsterSpecies {
                 }
             }
         }
+    }
+    // A range sets the scale to its middle (retail `LoadMonsterDefinition`).
+    if let (Some(low), Some(high)) = (range_start, range_end) {
+        species.body.scale_range = Some((low, high));
+        species.body.scale = (high - low) * 0.5 + low;
     }
     species
 }
@@ -155,7 +171,12 @@ mod tests {
         assert_eq!(species.cycles[0], ("IDLE".into(), "trooper_idle".into(), None));
         assert_eq!(species.cycles[1], ("ATTACK_SPECIAL".into(), "x".into(), Some(12.0)));
         assert_eq!(species.cycles.len(), 2);
-        assert_eq!((species.scale, species.walk_radius), (1.25, 0.675));
+        assert_eq!((species.body.scale, species.body.walk_radius), (1.25, 0.675));
+        assert_eq!(species.body.fight_radius, 1.0, "retail's default");
+        let crab = read_species("scalerangestart .3\nscalerangeend .6\nfightradius 2.5\n");
+        assert_eq!(crab.body.scale_range, Some((0.3, 0.6)));
+        assert!((crab.body.scale - 0.45).abs() < 1e-6, "the middle of the range");
+        assert_eq!(crab.body.scale_for(1000), 0.6);
     }
 
     #[test]

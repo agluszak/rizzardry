@@ -3,29 +3,33 @@
 use std::collections::HashMap;
 
 use bevy::asset::{AssetLoader, AssetPath, LoadContext, RenderAssetUsages, io::Reader};
-use bevy::image::{
-    CompressedImageFormats, ImageAddressMode, ImageFilterMode, ImageSampler,
-    ImageSamplerDescriptor, ImageType,
-};
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::reflect::TypePath;
 
 use super::bytes::Bytes;
-use super::links::level_links;
+use super::links::{level_entrances, level_links, teleport_arrival};
 use super::oct::read_collision;
+use super::population::{Placement, WorldItemRecord, read_placements, read_world_items};
 use super::prop::{PROP_COLLIDABLE, Prop};
-use super::prop_loader::{PropLighting, part_transforms, record_collision, record_meshes};
+use super::prop_loader::{
+    PropLighting, key_transform, level_lighting, part_transforms, record_collision, record_meshes,
+};
 use super::pvl::{CompiledMesh, MaterialRecord, PvlError, read_level_geometry};
+use super::sections::LevelSections;
 use super::sections::{Environment, read_sections};
 use super::space::UNITS_PER_METRE;
-use super::space::{retail_direction, retail_position};
-use super::trigger::TriggerKind;
-use crate::content::level::{
-    DoorLock, LevelEnvironment, LevelGeometry, LevelPart, Playback, PropInteraction, PropModel,
-    PropModelPart, TextureAnimation, VertexLighting,
+use super::space::{retail_direction, retail_position, retail_yaw};
+use super::texture_loader::file_has_alpha;
+use super::trigger::{
+    AmbientSound, ItemTrigger, StateMode, TriggerKind, action as trigger_action, flag,
 };
-use crate::presentation::mipmaps::generate_mipmaps;
+use crate::content::items::ItemId;
+use crate::content::level::{
+    AmbientSoundModel, CameraPathModel, DoorLock, ItemPlacement, LevelEnvironment, LevelGeometry,
+    LevelPart, MonsterPlacement, Playback, PropModel, PropModelPart, StateChange, TextureAnimation,
+    TriggerDefinition, TriggerSound, VertexLighting,
+};
 
 /// Time-of-day phase used for baked lighting until the game clock exists:
 /// noon, when a new game starts.
@@ -61,6 +65,8 @@ pub enum PvlLoadError {
     Read(#[from] bevy::asset::ReadAssetBytesError),
     #[error("cannot name the level's octree file")]
     Path,
+    #[error("invalid automap layers: {0}")]
+    MapLayers(String),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -76,19 +82,6 @@ pub(super) struct LoadedMaterial {
     /// The material's ambient reflectance, which scales sun and sky light.
     pub(super) ambient: Vec3,
     pub(super) animation: Option<TextureAnimation>,
-}
-
-/// Whether any texel is not fully opaque. Retail treats such textures as
-/// alpha-carrying whatever the file's channel layout.
-fn has_alpha(image: &Image) -> bool {
-    use bevy::render::render_resource::TextureFormat;
-    let Some(data) = &image.data else { return false };
-    match image.texture_descriptor.format {
-        TextureFormat::Rgba8UnormSrgb | TextureFormat::Rgba8Unorm => {
-            data.as_chunks::<4>().0.iter().any(|texel| texel[3] < 255)
-        }
-        _ => false,
-    }
 }
 
 /// A path in `directory` next to the asset being loaded, in the same source.
@@ -110,12 +103,14 @@ fn ifl_frames(list: &str) -> Vec<String> {
         .collect()
 }
 
-/// Images already decoded for this level, by file name, with whether they
-/// carry alpha; `None` records a texture that failed to load.
+/// Textures this load has already looked at, by file name, with whether they
+/// carry alpha; `None` records a texture that is missing. The images
+/// themselves are shared assets.
 #[derive(Default)]
 pub(super) struct LoadedTextures(HashMap<String, Option<(Handle<Image>, bool)>>);
 
-/// One image, decoded with a repeat sampler and a full mip chain.
+/// One texture: a shared image handle, and whether retail treats it as
+/// carrying alpha, which only needs the file header.
 async fn load_image(
     context: &mut LoadContext<'_>,
     directory: &str,
@@ -133,31 +128,7 @@ async fn load_image(
         }
         Ok(bytes) => {
             let extension = file.rsplit('.').next().unwrap_or_default();
-            // Retail: linear filtering, nearest mip selection, repeat.
-            let sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
-                address_mode_u: ImageAddressMode::Repeat,
-                address_mode_v: ImageAddressMode::Repeat,
-                mipmap_filter: ImageFilterMode::Nearest,
-                ..ImageSamplerDescriptor::linear()
-            });
-            match Image::from_buffer(
-                &bytes,
-                ImageType::Extension(extension),
-                CompressedImageFormats::NONE,
-                true,
-                sampler,
-                RenderAssetUsages::RENDER_WORLD,
-            ) {
-                Ok(mut image) => {
-                    let alpha = has_alpha(&image);
-                    generate_mipmaps(&mut image);
-                    Some((context.add_labeled_asset(format!("texture/{file}"), image), alpha))
-                }
-                Err(error) => {
-                    warn!("{}: cannot decode texture {path}: {error}", context.path());
-                    None
-                }
-            }
+            Some((context.load(path.with_label("image")), file_has_alpha(&bytes, extension)))
         }
     };
     textures.0.insert(file.to_owned(), loaded.clone());
@@ -257,6 +228,120 @@ pub(super) async fn load_material(
     }
 }
 
+/// A level's ambient sound, with Whizzardry `AddAmbientSound`'s defaults:
+/// unset volumes are full (127 of 127), unset times 5 to 20 seconds.
+fn ambient_sound(sound: &AmbientSound) -> AmbientSoundModel {
+    let or = |value: i32, default: i32| if value == -1 { default } else { value };
+    let volume = |v: i32| or(v, 127).clamp(0, 127) as f32 / 127.0;
+    let seconds = |ms: i32| ms.max(0) as f32 / 1000.0;
+    AmbientSoundModel {
+        path: format!("data/sound/{}", sound.wave.replace('\\', "/")).to_lowercase(),
+        position: retail_position(sound.position),
+        radius: sound.radius / UNITS_PER_METRE,
+        looping: sound.looping,
+        volume: (volume(sound.volume[0]), volume(sound.volume[1])),
+        interval: (seconds(or(sound.interval[0], 5000)), seconds(or(sound.interval[1], 20000))),
+    }
+}
+
+/// Placed monsters with their models, in Bevy space. Unborn ones wait for a
+/// script that is not implemented yet, so they are left out.
+fn monster_placements(placements: &[Placement]) -> Vec<MonsterPlacement> {
+    placements
+        .iter()
+        .filter(|placement| !placement.unborn)
+        .map(|placement| MonsterPlacement {
+            location: placement.location,
+            group: placement.group,
+            species: placement.species,
+            position: retail_position(placement.position),
+            yaw: retail_yaw(placement.yaw, [0.0, 1.0, 0.0]),
+        })
+        .collect()
+}
+
+fn item_placement(record: &WorldItemRecord) -> ItemPlacement {
+    ItemPlacement {
+        item: ItemId(record.item as u16),
+        stack: record.stack,
+        uses: record.uses,
+        identified: record.identified,
+        position: retail_position(record.position),
+        hidden: record.hidden,
+    }
+}
+
+/// Every type 4 trigger of the level, attached to a prop or not.
+fn level_triggers(sections: &LevelSections) -> Vec<TriggerDefinition> {
+    sections
+        .all_triggers()
+        .filter_map(|trigger| match &trigger.kind {
+            TriggerKind::Item(item) => Some(trigger_definition(sections, &trigger.name, item)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn trigger_definition(
+    sections: &LevelSections,
+    name: &str,
+    item: &ItemTrigger,
+) -> TriggerDefinition {
+    let sound = (!item.sound.is_empty()).then(|| TriggerSound {
+        path: format!("data/sound/{}", item.sound.replace('\\', "/")).to_lowercase(),
+        volume: f32::from(item.sound_volume) / 100.0,
+    });
+    let state_change = match item.state_mode {
+        _ if item.state_to_modify.is_empty() => None,
+        StateMode::Keep => None,
+        StateMode::Set => Some(StateChange::Set),
+        StateMode::Clear => Some(StateChange::Clear),
+        StateMode::Toggle => Some(StateChange::Toggle),
+    };
+    TriggerDefinition {
+        name: name.to_owned(),
+        usable: item.enabled,
+        once: item.flags & flag::ONCE != 0,
+        fire_linked: item.fire_linked,
+        initial: item.initial_action,
+        alternate: item.alternate_action,
+        fallback: item.fallback_action,
+        alternate_toggles: item.alternate_toggles,
+        recipients: item
+            .recipients
+            .split(',')
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+            .map(str::to_owned)
+            .collect(),
+        data: item.data,
+        sound,
+        sound_on_commit: item.play_sound,
+        shows_message: item.flags & flag::SHOW_MESSAGE != 0,
+        required_states: item.required_states.clone(),
+        state_change: state_change.map(|change| (item.state_to_modify.clone(), change)),
+        initial_state: item.initial_state,
+        range: (item.range[0] / UNITS_PER_METRE, item.range[1] / UNITS_PER_METRE),
+        door: item.door.as_ref().map(|door| DoorLock {
+            locked: door.locked,
+            key: (door.item != u16::MAX && door.item != 0).then_some(door.item),
+        }),
+        // Prop-backed triggers are used by clicking their prop.
+        place: item
+            .placement
+            .filter(|_| item.flags & flag::ITEM == 0)
+            .map(|placement| retail_position(placement.position)),
+        loot_table: (item.initial_action == trigger_action::TOGGLE && !item.action_data.is_empty())
+            .then(|| item.action_data.clone()),
+        arrival: matches!(
+            item.initial_action,
+            trigger_action::TELEPORT | trigger_action::RANDOM_TELEPORT
+        )
+        .then(|| teleport_arrival(sections, item))
+        .flatten(),
+    }
+}
+
 /// Unweld one material's polygons from a compiled mesh into a Bevy mesh,
 /// with retail's baked lighting: static vertex light, the environment
 /// offset and the material's emission, plus sky light scaled by the
@@ -347,16 +432,8 @@ pub(super) async fn build_props(
                 collision: record_collision(record),
             });
         }
-        let interaction = prop.trigger.as_ref().and_then(|trigger| match &trigger.kind {
-            TriggerKind::Item(item) if item.initial_action != 0 => Some(PropInteraction {
-                trigger: trigger.name.clone(),
-                initial_action: item.initial_action,
-                alternate_action: item.alternate_action,
-                door: item.door.as_ref().map(|door| DoorLock {
-                    locked: door.locked,
-                    key: (door.item != u16::MAX && door.item != 0).then_some(door.item),
-                }),
-            }),
+        let trigger = prop.trigger.as_ref().and_then(|trigger| match &trigger.kind {
+            TriggerKind::Item(_) => Some(trigger.name.clone()),
             _ => None,
         });
         props.push(PropModel {
@@ -365,7 +442,9 @@ pub(super) async fn build_props(
             face_camera: prop.face_camera,
             frames_per_second: prop.frames_per_second,
             parts,
-            interaction,
+            wraps: prop.wraps,
+            slots: prop.slots.iter().map(|slot| slot.frame).collect(),
+            trigger,
         });
     }
     props
@@ -386,6 +465,20 @@ impl AssetLoader for PvlLoader {
         reader.read_to_end(&mut data).await?;
         let geometry = read_level_geometry(&data)?;
         let sections = read_sections(&mut Bytes::new(&data[geometry.end..]))?;
+        let level_path = context.path().path().to_string_lossy();
+        let level_index =
+            crate::content::levels::LEVELS.iter().position(|level| level.path() == level_path);
+        let filter_path = AssetPath::from("retail://data/automap/mapfilters.txt");
+        let filters = match context.read_asset_bytes(filter_path).await {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Err(bevy::asset::ReadAssetBytesError::AssetReaderError(
+                bevy::asset::io::AssetReaderError::NotFound(_),
+            )) => String::new(),
+            Err(error) => return Err(error.into()),
+        };
+        let map_layers =
+            super::automap::layer_heights(&sections.clip_planes, &filters, level_index)
+                .map_err(PvlLoadError::MapLayers)?;
         let directory = "bitmaps";
         let environment = sections.environment.as_ref().map(level_environment);
         let ambient = environment.as_ref().map_or(Vec3::ZERO, |e| e.sky_light(NOON));
@@ -420,12 +513,27 @@ impl AssetLoader for PvlLoader {
             }
         }
         // Collision comes from the level's octree file, not render polygons.
-        let stem = context.path().path().file_stem().unwrap_or_default().to_string_lossy();
+        let stem =
+            context.path().path().file_stem().unwrap_or_default().to_string_lossy().into_owned();
         let octree = sibling(context, ".", &format!("{stem}.oct")).ok_or(PvlLoadError::Path)?;
         let octree = context.read_asset_bytes(octree).await?;
         let collision = read_collision(&octree)?.solid_mesh();
 
-        let lighting = PropLighting { ambient, offset, lights: &sections.lights };
+        // Who stands where and what lies about; levels without a state file
+        // are empty.
+        let (monsters, items) = match sibling(context, ".", &format!("{stem}.sts")) {
+            Some(path) => match context.read_asset_bytes(path).await {
+                Ok(state) => {
+                    let items = read_world_items(&state)?.iter().map(item_placement).collect();
+                    (monster_placements(&read_placements(&state)?), items)
+                }
+                Err(_) => (vec![], vec![]),
+            },
+            None => (vec![], vec![]),
+        };
+
+        let level_lighting = level_lighting(&sections.lights, sections.environment_offset);
+        let lighting = PropLighting { ambient, level: &level_lighting };
         let mut animated_textures: Vec<TextureAnimation> =
             materials.into_iter().filter_map(|m| m.animation).collect();
         let props = sections.props.iter().chain(&sections.bitmaps);
@@ -438,14 +546,35 @@ impl AssetLoader for PvlLoader {
             &mut animated_textures,
         )
         .await;
-        let (links, teleports) = level_links(&sections);
+        let links = level_links(&sections);
         Ok(LevelGeometry {
             parts,
             collision,
+            map_layers,
             environment,
+            lighting: level_lighting,
+            entrances: level_entrances(&sections),
+            triggers: level_triggers(&sections),
+            monsters,
+            items,
+            ambient_sounds: sections
+                .all_triggers()
+                .filter_map(|trigger| match &trigger.kind {
+                    TriggerKind::AmbientSound(sound) => Some(ambient_sound(sound)),
+                    _ => None,
+                })
+                .collect(),
+            camera_paths: sections
+                .cameras
+                .iter()
+                .map(|camera| CameraPathModel {
+                    name: camera.name.to_uppercase(),
+                    keys: camera.path.iter().map(key_transform).collect(),
+                    keys_per_second: camera.keys_per_second,
+                })
+                .collect(),
             props,
             links,
-            teleports,
             animated_textures,
         })
     }

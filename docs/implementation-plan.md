@@ -15,6 +15,56 @@ and remaining decisions.
 No time estimate is useful until the first real-map and asset experiments
 establish what Bevy handles directly.
 
+## Immediate correctness work on `slice-1-followups`
+
+These integration problems take priority over expanding combat, UI, or more
+retail-format coverage. The files exist; the following boundaries are not yet
+established by the implementation:
+
+1. Make destination preparation, failed loading and playable activation distinct.
+   Require collision, local state, references and shared gameplay catalogs before
+   enabling triggers/AI/party physics. During travel, settle old sessions and
+   suspend the party body; failed preparation leaves the source playable.
+   *Status:* one `activate_level` operation and a Loading/Active/Failed phase;
+   gameplay runs only on an active level; travel refuses during a fight, ends
+   camera flights and pending moves and suspends the party body. **Not met:**
+   travel despawns the source before the destination is prepared, so a failed
+   destination leaves the party suspended instead of where it was.
+2. Capture map-owned state on departure and restore it on revisit. A killed or
+   wounded monster, opened container, trigger and map note must not reset or
+   leak to another map. Persist domain state, not transient proximity/UI caches.
+   *Status:* done (`LevelRecord`): monsters (the dead stay gone), trigger
+   memory without per-visit fields, props by definition index, items, group
+   knowledge and map notes per level.
+3. Make clock advancement and mandatory aging/recovery one mode-aware boundary.
+   The last combat round remains combat time even after `Battle` disappears;
+   retain fractional time and avoid system-local authority for aging.
+   *Status:* done: `GameClock::advance` returns the ticks crossed and its
+   caller applies them with its pace (`recovery::elapse`).
+4. Route party-wide gameplay through `PartyRoster` in a defined order. Execute
+   inventory/trigger actions with their actual authoritative prerequisites;
+   disabled UI input or a caller's eligibility boolean does not establish
+   legality.
+   *Status:* done for recovery, triggers (roster order), camping and
+   inventory moves; party freedom is a gameplay rule (`game::screen`).
+5. Restore module direction (`retail` → `content` → `game` →
+   `presentation`, composed by `app`). Remove redundant item/monster
+   representations and repeated decoding only when that actually eliminates
+   code; do not build another framework to enforce the layering.
+   *Status:* sky and level visuals, fonts, map notes and the test party
+   moved; monster models come from the catalog. Navigation still decodes
+   PVL/OCT; see [known gaps](known-gaps.md).
+
+**Exit evidence:** a failed or slow destination load commits no partial
+interaction; a second level keeps one party; revisiting does not resurrect
+killed local monsters or move map notes; final-round recovery is correct;
+a non-roster `Character` is excluded from party effects. Use focused tests
+and representative retail checks, not a new harness. *Covered:* headless
+tests for failed collision, waiting for databases, one party across levels,
+a suspended party on a failed destination, a killed monster staying dead;
+rule tests for a combat round's recovery. *Not yet:* a test for a
+non-roster `Character`, and failed travel keeping the source.
+
 ## 1. Complete the real-world engine slice
 
 **Playable result:** enter a representative retail room, traverse stairs,
@@ -42,7 +92,27 @@ shown on retail content; the gaps below remain. Done:
   upper monastery's `MO202` stairs. A new game enters at `MO100`.
 - **Props and doors.** Props render with their animation paths; using a door
   plays its path, honours its lock data and opens or closes its navigation
-  link. Same-level teleport triggers move the party.
+  link. Teleport triggers move the party within the level or, naming
+  another level's entrance (`MO102` → `MO204`), swap the level root and place
+  the party at that entrance once the new level is ready. Exits that retail
+  confirms ask "Proceed to <level>?" first (retail message box buttons; Enter
+  and Escape answer too); declining leaves the party where it stands.
+- **Triggers.** Positioned triggers the party may use run when its eye
+  enters their range; teleports are ordinary trigger actions whose move the
+  party module applies (within the level, or travel). Camera-path triggers
+  fly the party's eye along the path, input and physics paused, and land it
+  at the end. Disabled positioned
+  teleports, which the earlier teleport system fired, no longer do.
+  Level triggers run as retail's do (`game::world::triggers`):
+  initial, alternate or fallback action by use and required location
+  variables; door, toggle, start/stop, relay, camera shake and dial actions;
+  recipients run synchronously on commit, including retail's relay double
+  fire; sounds play at their prop; location variables and `once`/`on` state
+  live on the level root. Level scripts hook in before an action; Monastery
+  2's bells work end to end (each dial position rings its bell; the third
+  breaks the windows, shakes the camera and ends the puzzle). Trigger
+  messages from the level's `.msg` file and "Nothing happens." from the
+  string table show as a notice in the retail text font.
 - **Navigation.** Rerecast navmeshes are baked by Bevy's asset processor, one
   per walker size class (0.6, 1.0, 1.6, 3.0 m), and used by Landmass. Teleport
   and ladder triggers become animation links; doors are links only while open.
@@ -50,20 +120,45 @@ shown on retail content; the gaps below remain. Done:
 - **Rendering.** Retail baked lighting (static light, sky light by phase,
   environment offset, emission), linear distance fog and view distance from
   the environment ramps, a game clock at 12× real time, `.ifl` texture
-  animation, CPU mipmaps, the sky world on its own camera with time-of-day
+  animation, retail textures as shared assets (`<file>#image`, CPU mipmaps,
+  alpha from the file's pixel format as in retail), the sky world on its own camera with time-of-day
   gradients, shaded scrolling clouds and the Sun and Moon on retail's orbit.
   Facing props turn with the camera. Slot 0-1 alpha materials blend; slot 2-3
   materials add (retail's packed shader `SRC_ALPHA, ONE`).
+- **Population.** Each level's `.sts` monster placements (924 across the
+  game) and `monsters.dbs` species models decode; a built level spawns its
+  placed monsters and NPCs idling where retail puts them, facing their
+  heading, each starting part-way into its idle. They do not move, fight or
+  die yet; random-encounter generators and unborn monsters are not spawned.
 - **Monsters.** `.mls` species and `.mon` vertex-frame cycles decode (all
   1088 retail cycles). Each actor animates its own mesh copies, blending
   between frames without wrapping last-to-first as retail does; play-once
   cycles report completion. Walkers play WALK or IDLE.
+- **Ambience.** Levels' ambient sounds (2339 retail records) play while
+  the party is in range: looping ones continuously, one-shot ones now and
+  then, full within 40% of their radius and fading to its edge; their
+  regions and stereo position are not used yet.
+- **Music.** Each level plays its retail `.mpl` playlist (else
+  `adventure.mpl`): weighted songs faded in over five seconds, with the
+  authored chance of a silence between songs; travel switches playlists.
 - **Audio.** A voice line is an entity; `SpeechFinished` names it when its
   audio ends. Retail ships MP3 where scripts name WAV.
 - **UI.** STCI images and bitmap fonts decode (all 1327 retail `.sti`). The
   automap is native Bevy UI from retail art: frame, buttons with picking
-  hover/click, a plan of the floors near the party, and notes pinned, typed
-  in `Wiz_Text_Font` and erased, within retail's limits.
+  hover/click, a plan of the floors, and notes pinned, typed
+  in `Wiz_Text_Font` and erased, within retail's limits. Retail zoom and
+  movement buttons provide three zoom steps, bounded panning and party
+  recentering; arrow keys pan, and right-click zooms out. Geometry, markers,
+  notes and picking use one aspect-preserving projection. Bounds currently
+  cover all walkable geometry, not just explored cells. This native orthographic
+  view uses full-span, half-span and 50-metre zoom; retail's terrain-dependent
+  camera-height calculation is not reproduced. Numbered clip planes and
+  `MapFilters.txt` supply the layer cuts; the layer buttons reveal the topmost
+  walkable surface below each cut, including slopes crossing the cut. The map
+  initially selects the party's floor band. Note labels and selection are
+  confined to their layer; note markers and the party remain visible across
+  layers, as in retail. The window backend displays the original tool cursors
+  and hotspots.
 
 Decisions made while doing this:
 
@@ -78,20 +173,8 @@ Decisions made while doing this:
 - Movement, navigation, prop animation and the clock step on the fixed
   timestep; look, camera aiming and presentation run per frame.
 
-Known gaps, in rough order:
-
-- Textures are decoded inside the level loader into per-level sub-assets with
-  their own cache; they should load through Bevy's asset system and be shared.
-  Retail's alpha test is the pixel format (32-bit TGA), readable from the
-  header; mipmaps then need a home (a processor, or a loader setting).
-- Monsters are unlit (retail lights them from level lights), use only the
-  nearest detail level, and ignore particles, sounds and skins.
-- Cross-level travel, elevators/lifts, random teleports and camera-path
-  triggers are not implemented. Retail's fall-speed cap is not applied.
-- Map notes are not saved; the automap has one layer and no zoom, panning,
-  layer buttons or tool cursors. Only the map screen exists.
-- The screenshot tool has once captured a frame without the UI; the cause was
-  not found.
+What is done and what is still missing, feature by feature, is in
+[known gaps](known-gaps.md).
 
 ### Next concrete implementation work
 
@@ -105,9 +188,6 @@ Known gaps, in rough order:
    a second party, original entrance ground placement, fog/sky/light
    appearance and animation/contact ordering. The ability to bake all
    34 levels doesn't prove each location's traversal.
-3. **Share retail textures through Bevy's asset system**, then consider image
-   processing in place of the CPU mipmap code
-   (see [Bevy 0.20 integration](bevy-features.md)).
 
 Outstanding work should follow the [Bevy-native feature decisions](bevy-features.md)
 instead of creating another engine layer.
@@ -154,6 +234,27 @@ Work:
 equipment changes recalculate the relevant stats; closing an inventory screen
 does not destroy an owned item. The few tests should cover conservation and
 actual rule boundaries, not merely constructor getters.
+
+**Status (25 October 2026):** started. Done: the item database decodes into
+typed definitions (`content::items`, all 819 retail items); gameplay
+randomness is one seeded, saveable PCG32 (`game::rng`); and
+`game::inventory` holds items as owned values with stable instance ids, the
+12 equipment slots, 8-slot backpacks, the 500-row pool and the held item,
+with retail's slot and pairing rules, stack merging, uses, placement order
+(merge, backpack, front of the pool), pick-up and split, swap with the hand,
+merge and pool deposit, and curses holding worn items (unit tests). Loot
+tables decode (114) and roll as retail's do; containers roll their contents
+on first opening, keep them in the level's state, and give the party their
+gold ("The party receives N gold.") and items ("Party takes …"); retail
+hands a single item over and opens a picker for several, but without an
+inventory screen everything goes to the pool for now. Not yet:
+characters, so usability is passed in; the Gadgeteer and gun ammunition
+pairs; identification; weight and load; screens; saves. Characters
+(`game::characters`) carry race, profession, attributes, skills and
+derived HP, stamina, capacity and initiative with retail's tables, and
+decide item usability; a six-member test party (until party creation
+exists) shows along the bottom of the screen with retail portraits, names
+and health.
 
 ## 3. Complete one combat and magic slice
 

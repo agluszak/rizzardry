@@ -26,6 +26,14 @@ pub struct PropPart {
     pub path: Option<Vec<PathKey>>,
 }
 
+const FRAME_METHOD_WRAP: u8 = 1;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AnimationSlot {
+    pub frame: u16,
+    pub tag: u16,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Prop {
     pub name: String,
@@ -33,6 +41,11 @@ pub struct Prop {
     pub flags: u32,
     /// Drawn turned toward the viewer (billboards: the Sun, the Moon).
     pub face_camera: bool,
+    /// Each use plays from the first frame instead of reversing the last.
+    pub wraps: bool,
+    /// Animation slots: key frames that split the animation into segments
+    /// (a dial's positions), each with a tag.
+    pub slots: Vec<AnimationSlot>,
     /// Retail units; the origin of props without positioned parts.
     pub location: [f32; 3],
     pub frames_per_second: f32,
@@ -75,6 +88,9 @@ pub fn read_animated_mesh(bytes: &mut Bytes) -> Result<AnimatedMesh, PvlError> {
 /// of props and monster cycles.
 pub struct Animation {
     pub frames_per_second: f32,
+    /// Restarts from the first frame each time it plays; otherwise each play
+    /// reverses the last (ping-pong).
+    pub wraps: bool,
     pub path: Option<Vec<PathKey>>,
     /// Three detail channels of parts.
     pub channels: [Vec<PropPart>; 3],
@@ -112,8 +128,9 @@ fn skip_lights(bytes: &mut Bytes, allowed: bool) -> Result<(), PvlError> {
 pub fn read_animation(bytes: &mut Bytes, lights_allowed: bool) -> Result<Animation, PvlError> {
     let version = bytes.u8()?;
     let groups = bytes.u8()? as usize;
-    // Playing, frame method, behaviour, cycle.
-    bytes.take(4)?;
+    bytes.u8()?; // playing
+    let wraps = bytes.u8()? == FRAME_METHOD_WRAP;
+    bytes.take(2)?; // behaviour, cycle
     let positioned = bytes.u8()? != 0;
     let frames_per_second = if version >= 3 { bytes.f32()? } else { 15.0 };
     if version >= 5 {
@@ -161,7 +178,7 @@ pub fn read_animation(bytes: &mut Bytes, lights_allowed: bool) -> Result<Animati
             }
         }
     }
-    Ok(Animation { frames_per_second, path, channels })
+    Ok(Animation { frames_per_second, wraps, path, channels })
 }
 
 pub fn read_prop(bytes: &mut Bytes) -> Result<Prop, PvlError> {
@@ -170,6 +187,8 @@ pub fn read_prop(bytes: &mut Bytes) -> Result<Prop, PvlError> {
         name: String::new(),
         flags: 0,
         face_camera: false,
+        wraps: false,
+        slots: Vec::new(),
         location: [0.0; 3],
         frames_per_second: 15.0,
         channels: Default::default(),
@@ -195,11 +214,13 @@ pub fn read_prop(bytes: &mut Bytes) -> Result<Prop, PvlError> {
             prop.name = text(bytes, 64)?;
         }
         if version > 7 {
-            let slots = bytes.i8()?.max(0) as usize;
-            bytes.take(slots * 4)?;
+            for _ in 0..bytes.i8()?.max(0) {
+                prop.slots.push(AnimationSlot { frame: bytes.u16()?, tag: bytes.u16()? });
+            }
         }
         let animation = read_animation(bytes, false)?;
         prop.frames_per_second = animation.frames_per_second;
+        prop.wraps = animation.wraps;
         prop.path = animation.path;
         prop.channels = animation.channels;
     }

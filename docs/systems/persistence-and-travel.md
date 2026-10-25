@@ -57,6 +57,33 @@ Named actors are different because their persistent identity participates in que
 
 Do not add a mutable ActorRepository that duplicates these components. A small ActorId-to-Entity index is acceptable: it is rebuilt and maintained as an index, contains no copied actor state, and cannot override the entities it indexes.
 
+### Active level is a committed state, not an asset-load notification
+
+A destination has an explicit preparation outcome: pending, ready to activate,
+or failed. Geometry completion alone is insufficient. An activation operation
+verifies all **required gameplay** dependencies (collision, valid local state,
+resolved authored references and required shared catalogs), publishes the map,
+then enables its actors, triggers and the party body together. Optional
+presentation assets may finish later if gameplay does not depend on them.
+
+A failed preparation leaves the source map alive, with input and physics
+enabled and no speculative destination mutations. During the committed switch,
+world actions stop, source-owned sessions are settled or cancelled, and the
+persistent party's controller/collision is suspended until the new map is
+active. A failed required dependency must not turn a trigger's loot, damage or
+other mandatory consequence into a silent no-op.
+
+Map records contain surviving ordinary actors (including health and death),
+container contents, mutable devices, local scripts, explored cells and notes.
+Notes belong to the map, not a global screen resource. Store only lasting
+state, not proximity caches, currently playing animation, or pending UI drafts.
+The authored population is a baseline for a **first visit**, never a fallback
+to respawn previously killed or altered monsters on a revisit.
+
+Use map/session identity to reject late asset, audio and action completions
+from the departed level. None of this requires a generic loader framework or
+two simultaneously authoritative levels.
+
 ## Stable identities and save records
 
 Bevy Entity values are runtime handles. Neither their numeric parts nor vector positions are campaign identity. Use typed stable ActorId, ItemInstanceId, MapId, and authored-object keys where a reference must survive save/load or an ownership move. Dynamic IDs can use a campaign counter; persist its next value. A UUID dependency is not required merely to allocate local single-player identities.

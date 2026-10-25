@@ -3,8 +3,11 @@
 //! Gameplay never sees archive offsets or packed records: this module turns
 //! them into typed records and native Bevy assets.
 
+pub mod automap;
 pub mod bytes;
 pub mod files;
+pub mod item_model_loader;
+pub mod items;
 pub mod keyframes;
 pub mod level_loader;
 pub mod links;
@@ -13,6 +16,8 @@ pub mod monster;
 pub mod monster_loader;
 pub mod oct;
 pub mod path;
+pub mod playlist;
+pub mod population;
 pub mod prop;
 pub mod prop_loader;
 pub mod pvl;
@@ -21,8 +26,12 @@ pub mod sky_loader;
 pub mod slf;
 pub mod source;
 pub mod space;
+pub mod species;
 pub mod stci;
 pub mod sti_loader;
+pub mod strings;
+pub mod text_loader;
+pub mod texture_loader;
 pub mod trigger;
 
 use std::sync::Arc;
@@ -65,6 +74,20 @@ impl Plugin for RetailPlugin {
             .init_asset::<crate::content::monster::MonsterModel>()
             .init_asset_loader::<monster_loader::MlsLoader>()
             .init_asset::<crate::content::ui::SpriteSheet>()
-            .init_asset_loader::<sti_loader::StiLoader>();
+            .init_asset_loader::<sti_loader::StiLoader>()
+            .init_asset::<crate::content::items::ItemCatalog>()
+            .init_asset_loader::<items::ItemCatalogLoader>()
+            .init_asset::<crate::content::items::ItemModel>()
+            .init_asset_loader::<item_model_loader::ItmLoader>()
+            .init_asset::<crate::content::items::LootTables>()
+            .init_asset_loader::<items::LootTablesLoader>()
+            .init_asset::<crate::content::species::MonsterCatalog>()
+            .init_asset_loader::<species::MonsterCatalogLoader>()
+            .init_asset::<crate::content::music::Playlist>()
+            .init_asset_loader::<playlist::PlaylistLoader>()
+            .init_asset::<crate::content::ui::TextTable>()
+            .init_asset_loader::<text_loader::TextLoader>()
+            .init_asset::<texture_loader::RetailTexture>()
+            .init_asset_loader::<texture_loader::RetailTextureLoader>();
     }
 }

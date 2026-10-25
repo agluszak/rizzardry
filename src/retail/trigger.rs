@@ -23,6 +23,8 @@ pub mod action {
     pub const CAMERA_PATH: u32 = 0x09;
     /// Fire the recipients.
     pub const RELAY: u32 = 0x0f;
+    /// Toggle a prop's animation; with a loot table, a container.
+    pub const TOGGLE: u32 = 0x03;
 }
 
 /// A position in retail units with a rotation of `angle` radians about
@@ -65,19 +67,40 @@ pub enum TriggerKind {
     /// Type 2: a positioned prop trigger.
     Prop { placement: TriggerPlacement, action: u32, recipients: String },
     /// Type 3: an ambient sound emitter.
-    AmbientSound { wave: String, position: [f32; 3], radius: f32, looping: bool },
+    AmbientSound(AmbientSound),
     /// Type 4: the general trigger used by retail levels.
     Item(ItemTrigger),
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ItemTrigger {
+    /// Packed flag bits (`TRIGGER_*`).
+    pub flags: u8,
+    /// The player may use it (click or walk into it); recipients run
+    /// regardless.
     pub enabled: bool,
+    /// Run the recipients when the action commits.
+    pub fire_linked: bool,
+    /// Uses go initial, alternate, initial, … rather than initial once and
+    /// then alternate.
+    pub alternate_toggles: bool,
     pub initial_action: u32,
     pub alternate_action: u32,
     pub fallback_action: u32,
     pub recipients: String,
     pub data: [i32; 3],
+    /// Played on commit when `play_sound`: a file under `data/sound`.
+    pub sound: String,
+    pub play_sound: bool,
+    /// Percent; retail reads 0 as 100.
+    pub sound_volume: u8,
+    /// Location variables that must all be set, or the fallback action runs.
+    pub required_states: Vec<String>,
+    /// The location variable the commit changes, and how.
+    pub state_to_modify: String,
+    pub state_mode: StateMode,
+    /// The value `state_to_modify` starts with when the level first loads.
+    pub initial_state: Option<bool>,
     pub action_data: String,
     /// The distance band, in retail units, in which a positioned trigger
     /// fires when the party is inside it.
@@ -85,6 +108,25 @@ pub struct ItemTrigger {
     /// Positioned triggers (representation kind 1), e.g. level entrances.
     pub placement: Option<TriggerPlacement>,
     pub door: Option<DoorData>,
+}
+
+/// Packed trigger flag bits (Whizzardry `World::loadTrigger`).
+pub mod flag {
+    /// Backed by a prop rather than a place.
+    pub const ITEM: u8 = 1;
+    /// Show the level message `data[use]` on commit.
+    pub const SHOW_MESSAGE: u8 = 2;
+    /// Runs at most once.
+    pub const ONCE: u8 = 4;
+}
+
+/// How a commit changes its location variable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StateMode {
+    Keep,
+    Set,
+    Clear,
+    Toggle,
 }
 
 fn read_door(bytes: &mut Bytes) -> Result<DoorData, PvlError> {
@@ -192,10 +234,26 @@ fn read_prop_trigger(bytes: &mut Bytes) -> Result<Trigger, PvlError> {
     Ok(Trigger { name, kind: TriggerKind::Prop { placement, action, recipients } })
 }
 
+/// A sound a place makes (type 3 record): looping, or now and then.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AmbientSound {
+    pub wave: String,
+    /// Retail units.
+    pub position: [f32; 3],
+    pub radius: f32,
+    pub looping: bool,
+    pub volume: [i32; 2],
+    pub speed: [i32; 2],
+    /// Milliseconds between plays of a one-shot sound; -1 when unset.
+    pub interval: [i32; 2],
+}
+
 fn read_ambient_sound(bytes: &mut Bytes) -> Result<Trigger, PvlError> {
     let version = bytes.u8()?;
-    // Volume, speed and time ranges, unbounded.
-    bytes.take(7 * 4)?;
+    let volume = bytes.i32s::<2>()?;
+    let speed = bytes.i32s::<2>()?;
+    let interval = bytes.i32s::<2>()?;
+    bytes.i32()?; // unbounded
     let radius = bytes.f32()? * RECORD_SCALE;
     let position = bytes.f32s::<3>()?.map(|v| v * RECORD_SCALE);
     // Region u and v.
@@ -214,7 +272,18 @@ fn read_ambient_sound(bytes: &mut Bytes) -> Result<Trigger, PvlError> {
     if version > 4 {
         bytes.u8()?;
     }
-    Ok(Trigger { name, kind: TriggerKind::AmbientSound { wave, position, radius, looping } })
+    Ok(Trigger {
+        name,
+        kind: TriggerKind::AmbientSound(AmbientSound {
+            wave,
+            position,
+            radius,
+            looping,
+            volume,
+            speed,
+            interval,
+        }),
+    })
 }
 
 fn read_item_trigger(bytes: &mut Bytes) -> Result<Trigger, PvlError> {
@@ -222,27 +291,48 @@ fn read_item_trigger(bytes: &mut Bytes) -> Result<Trigger, PvlError> {
     let name = text(bytes, NAME)?.to_uppercase();
     let packed_flags = bytes.u8()?;
     let enabled = bytes.u8()? != 0;
-    // Fire linked, link on deactivate, keep on finish, flag, alternate toggles.
-    bytes.take(5)?;
+    let fire_linked = bytes.u8()? != 0;
+    bytes.take(3)?; // link on deactivate, keep on finish, flag
+    let alternate_toggles = bytes.u8()? != 0;
     let initial_action = bytes.i32()? as u32;
     let alternate_action = bytes.i32()? as u32;
     let fallback_action = bytes.i32()? as u32;
     let recipients = text(bytes, LONG_TEXT)?.to_uppercase();
     bytes.u8()?; // searchable
     text(bytes, LONG_TEXT)?; // required item
-    bytes.take(1 + 4 + 1)?; // consume item, action value, animate action
-    text(bytes, NAME)?; // sound
+    bytes.take(1 + 4)?; // consume item, action value
+    let play_sound = bytes.u8()? != 0;
+    let sound = text(bytes, NAME)?;
     let mut data = [0; 3];
+    let (mut initial_state, mut sound_volume) = (None, 100);
     if version > 1 {
         data = bytes.i32s()?;
-        // Representation scale, initial location value, alternate action
-        // flag, action data mode, sound volume, four unused words.
-        bytes.take(4 + 4 + 16)?;
+        bytes.f32()?; // representation scale
+        initial_state = match bytes.u8()? {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        };
+        bytes.take(2)?; // alternate sound flag, sound mode
+        sound_volume = match bytes.u8()? {
+            0 => 100,
+            volume => volume,
+        };
+        bytes.take(16)?; // unused
     }
     bytes.take(3)?; // state count, animate states, cycle bounce
-    text(bytes, LONG_TEXT)?; // required states
-    text(bytes, LONG_TEXT)?; // state to modify
-    bytes.u8()?; // modification mode
+    let required_states = text(bytes, LONG_TEXT)?
+        .split(',')
+        .map(|s| s.trim().to_uppercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let state_to_modify = text(bytes, LONG_TEXT)?.trim().to_uppercase();
+    let state_mode = match bytes.u8()? {
+        1 => StateMode::Set,
+        2 => StateMode::Clear,
+        3 => StateMode::Toggle,
+        _ => StateMode::Keep,
+    };
     let range = [bytes.f32()? * RECORD_SCALE, bytes.f32()? * RECORD_SCALE];
     let action_data = lenient_string(bytes.take(LONG_TEXT)?).to_uppercase();
     bytes.i32()?;
@@ -275,12 +365,22 @@ fn read_item_trigger(bytes: &mut Bytes) -> Result<Trigger, PvlError> {
     Ok(Trigger {
         name,
         kind: TriggerKind::Item(ItemTrigger {
+            flags: packed_flags,
             enabled,
+            fire_linked,
+            alternate_toggles,
             initial_action,
             alternate_action,
             fallback_action,
             recipients,
             data,
+            sound,
+            play_sound,
+            sound_volume,
+            required_states,
+            state_to_modify,
+            state_mode,
+            initial_state,
             action_data,
             range,
             placement: placement_record,
