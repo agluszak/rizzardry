@@ -258,6 +258,8 @@ pub struct Character {
     pub skill_points: [u8; SKILLS],
     pub hp: u32,
     pub stamina: u32,
+    /// The portrait's file stem (e.g. `hummf` for `data/portraits/small/shummf.sti`).
+    pub portrait: String,
 }
 
 impl Character {
@@ -284,6 +286,7 @@ impl Character {
             skill_points: [0; SKILLS],
             hp: 0,
             stamina: 0,
+            portrait: String::new(),
         };
         let share = 60 / (1 + row.skills.len() as u32);
         for &skill in row.skills.iter().chain(std::iter::once(&row.bonus_skill)) {

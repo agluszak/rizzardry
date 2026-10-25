@@ -217,7 +217,12 @@ gold ("The party receives N gold.") and items ("Party takes …"); retail
 hands a single item over and opens a picker for several, but without an
 inventory screen everything goes to the pool for now. Not yet:
 characters, so usability is passed in; the Gadgeteer and gun ammunition
-pairs; identification; weight and load; screens; saves.
+pairs; identification; weight and load; screens; saves. Characters
+(`game::characters`) carry race, profession, attributes, skills and
+derived HP, stamina, capacity and initiative with retail's tables, and
+decide item usability; a six-member test party (until party creation
+exists) shows along the bottom of the screen with retail portraits, names
+and health.
 
 ## 3. Complete one combat and magic slice
 

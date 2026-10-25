@@ -1,6 +1,7 @@
 //! The party's roster, formation and spatial body.
 
 pub mod body;
+pub mod roster;
 pub mod walk_in;
 
 use avian3d::prelude::{Gravity, PhysicsSystems};
@@ -22,7 +23,8 @@ impl Plugin for PartyPlugin {
         ))
         .insert_resource(Gravity(Vec3::NEG_Y * body::GRAVITY))
         .add_input_context::<body::Exploration>()
-        .add_systems(Startup, body::spawn_exploration_controls)
+        .init_resource::<roster::PartyRoster>()
+        .add_systems(Startup, (body::spawn_exploration_controls, roster::spawn_test_party))
         .add_systems(
             Update,
             (
