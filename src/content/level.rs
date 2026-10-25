@@ -260,6 +260,9 @@ pub struct TriggerDefinition {
     /// Action parameters; their meaning depends on the action.
     pub data: [i32; 3],
     pub sound: Option<TriggerSound>,
+    /// Commits play the sound (retail `ANIMATE_ACTION`); otherwise only
+    /// actions that play it do.
+    pub sound_on_commit: bool,
     /// Show level message `data[use]` on commit.
     pub shows_message: bool,
     /// Location variables that must all be set.

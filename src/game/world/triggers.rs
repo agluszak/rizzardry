@@ -48,6 +48,8 @@ pub mod action {
     pub const STAMINA_FOUNTAIN: u32 = 0x25;
     pub const HEALING_FOUNTAIN: u32 = 0x26;
     pub const DIAL: u32 = 0x40;
+    /// Play the trigger's sound and nothing else; it does not commit.
+    pub const SOUND: u32 = 0x36;
 }
 
 /// Damage zones hurt this often, in seconds.
@@ -393,6 +395,17 @@ impl Triggers<'_> {
                 state.position ^= 1;
                 state.awaits_animation = true;
             }
+            action::SOUND => {
+                if let Some(sound) = &definition.sound {
+                    let at = self.props.get(&index).map(|prop| prop.position);
+                    self.effects.push(TriggerEffect::Sound {
+                        path: sound.path.clone(),
+                        volume: sound.volume,
+                        at,
+                    });
+                }
+                return false;
+            }
             action::RELAY => {
                 let mut found = false;
                 for recipient in &definition.recipients {
@@ -579,7 +592,7 @@ impl Triggers<'_> {
     fn commit(&mut self, index: usize, use_index: usize, changes_state: bool, depth: usize) {
         let definitions = self.definitions;
         let definition = &definitions[index];
-        if let Some(sound) = &definition.sound {
+        if let Some(sound) = definition.sound.as_ref().filter(|_| definition.sound_on_commit) {
             let at = self.props.get(&index).map(|prop| prop.position);
             self.effects.push(TriggerEffect::Sound {
                 path: sound.path.clone(),
@@ -714,6 +727,7 @@ mod tests {
             recipients: vec![],
             data: [-1; 3],
             sound: None,
+            sound_on_commit: false,
             shows_message: false,
             required_states: vec![],
             state_change: None,
@@ -829,6 +843,27 @@ mod tests {
         assert_eq!(level.motion("DOOR").target, 15.0);
         assert_eq!(level.run("LOCKED"), (false, vec![TriggerEffect::Locked]));
         assert_eq!(level.motion("LOCKED").target, 0.0);
+    }
+
+    #[test]
+    fn sounds_play_on_commit_only_when_marked_and_always_for_the_sound_action() {
+        let sound = crate::content::level::TriggerSound {
+            path: "data/sound/click.wav".into(),
+            volume: 1.0,
+        };
+        let mut quiet = trigger("QUIET", action::NOTHING);
+        quiet.sound = Some(sound.clone());
+        let mut loud = trigger("LOUD", action::NOTHING);
+        loud.sound = Some(sound.clone());
+        loud.sound_on_commit = true;
+        let mut only = trigger("ONLY", action::SOUND);
+        only.sound = Some(sound);
+        let mut level = Level::new(vec![quiet, loud, only], vec![], LevelScript::None);
+        let click =
+            TriggerEffect::Sound { path: "data/sound/click.wav".into(), volume: 1.0, at: None };
+        assert_eq!(level.run("QUIET"), (true, vec![]));
+        assert_eq!(level.run("LOUD"), (true, vec![click.clone()]));
+        assert_eq!(level.run("ONLY"), (false, vec![click]), "plays without committing");
     }
 
     /// The upper monastery's bells, as authored (`docs/research/trigger-actions.md`).

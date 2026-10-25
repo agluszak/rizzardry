@@ -278,7 +278,7 @@ fn trigger_definition(
     name: &str,
     item: &ItemTrigger,
 ) -> TriggerDefinition {
-    let sound = (item.play_sound && !item.sound.is_empty()).then(|| TriggerSound {
+    let sound = (!item.sound.is_empty()).then(|| TriggerSound {
         path: format!("data/sound/{}", item.sound.replace('\\', "/")).to_lowercase(),
         volume: f32::from(item.sound_volume) / 100.0,
     });
@@ -307,6 +307,7 @@ fn trigger_definition(
             .collect(),
         data: item.data,
         sound,
+        sound_on_commit: item.play_sound,
         shows_message: item.flags & flag::SHOW_MESSAGE != 0,
         required_states: item.required_states.clone(),
         state_change: state_change.map(|change| (item.state_to_modify.clone(), change)),
