@@ -156,9 +156,7 @@ fn read_environment(bytes: &mut Bytes) -> Result<Option<Environment>, PvlError> 
         }
         let raw = bytes.take(768)?;
         let mut colours = Box::new([[0u8; 3]; 256]);
-        for (colour, rgb) in colours.iter_mut().zip(raw.chunks_exact(3)) {
-            colour.copy_from_slice(rgb);
-        }
+        colours.copy_from_slice(raw.as_chunks::<3>().0);
         Ok(Some(colours))
     };
     let fog_colours = table(bytes)?;
