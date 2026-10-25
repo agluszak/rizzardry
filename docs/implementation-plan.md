@@ -63,7 +63,13 @@ shown on retail content; the gaps below remain. Done:
 - **UI.** STCI images and bitmap fonts decode (all 1327 retail `.sti`). The
   automap is native Bevy UI from retail art: frame, buttons with picking
   hover/click, a plan of the floors near the party, and notes pinned, typed
-  in `Wiz_Text_Font` and erased, within retail's limits.
+  in `Wiz_Text_Font` and erased, within retail's limits. Retail zoom and
+  movement buttons provide three zoom steps, bounded panning and party
+  recentering; arrow keys pan, and right-click zooms out. Geometry, markers,
+  notes and picking use one aspect-preserving projection. Bounds currently
+  cover all walkable geometry, not just explored cells. This native orthographic
+  view uses full-span, half-span and 50-metre zoom; retail's terrain-dependent
+  camera-height calculation is not reproduced.
 
 Decisions made while doing this:
 
@@ -88,10 +94,11 @@ Known gaps, in rough order:
   nearest detail level, and ignore particles, sounds and skins.
 - Cross-level travel, elevators/lifts, random teleports and camera-path
   triggers are not implemented. Retail's fall-speed cap is not applied.
-- Map notes are not saved; the automap has one layer and no zoom, panning,
+- Map notes are not saved; the automap has one layer and no
   layer buttons or tool cursors. Only the map screen exists.
-- The screenshot tool has once captured a frame without the UI; the cause was
-  not found.
+- The screenshot tool intermittently omits all or some unchanged UI artwork,
+  even while map/note assertions pass. Complete map frames have also been
+  captured; the cause is still unresolved.
 
 ### Next concrete implementation work
 

@@ -37,6 +37,8 @@ Developer options:
   and prop use.
 - `--ui-script "key m; click X Y; type TEXT; key Enter; wait S"`: drive the UI
   through real input messages; clicks use the 640×480 screen layout.
+  `assert-map open`, `assert-map closed`, and `assert-note TEXT` fail the run
+  if the expected UI state is absent.
 - `--say <line>`: speak a retail voice line, e.g. `npc_aletheides_000`.
 - `--test-agents <n>`, `--test-agent-radius <m>`, `--test-monster <species>`:
   stand-in monsters that chase the party, optionally dressed as a retail
@@ -53,6 +55,10 @@ with Bevy's asset processor (several seconds); results are cached in
 Controls: WASD or arrow keys to walk, Q/E or Left/Right to turn, hold Shift to
 run, hold the right mouse button to look around, Space or left click to use
 the prop in front of you, M to open the automap (Escape or M closes it).
+On the map, use the magnifying glasses to zoom, arrows to pan, and the centre
+button to recenter on the party. Keyboard arrows also pan; clicking empty map
+space zooms in and right-clicking zooms out. Use the quill buttons to add or
+erase notes; Enter or Escape finishes typing.
 
 `cargo run --example level_info -- [level.pvl] [--props] [--links]`
 summarises decoded level geometry, props and links; `cargo run --example

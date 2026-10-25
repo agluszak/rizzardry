@@ -27,7 +27,9 @@ impl Plugin for PresentationPlugin {
                     (
                         automap::toggle_automap,
                         automap::type_note,
+                        automap::pan_with_keys,
                         automap::paint_buttons,
+                        automap::update_map_view,
                         automap::draw_notes,
                         automap::glow_note_markers,
                     )

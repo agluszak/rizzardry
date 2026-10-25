@@ -389,6 +389,10 @@ impl UiScript {
 
 fn scripted_key(name: &str) -> Option<(KeyCode, Key)> {
     Some(match name {
+        "ArrowUp" => (KeyCode::ArrowUp, Key::ArrowUp),
+        "ArrowDown" => (KeyCode::ArrowDown, Key::ArrowDown),
+        "ArrowLeft" => (KeyCode::ArrowLeft, Key::ArrowLeft),
+        "ArrowRight" => (KeyCode::ArrowRight, Key::ArrowRight),
         "Enter" => (KeyCode::Enter, Key::Enter),
         "Escape" => (KeyCode::Escape, Key::Escape),
         "Backspace" => (KeyCode::Backspace, Key::Backspace),
@@ -412,6 +416,8 @@ pub fn run_ui_script(
     window: Query<(Entity, &Window), With<bevy::window::PrimaryWindow>>,
     mut keys: MessageWriter<KeyboardInput>,
     mut pointer: MessageWriter<PointerInput>,
+    automap: Option<Res<crate::presentation::automap::Automap>>,
+    notes: Res<crate::game::automap::MapNotes>,
 ) {
     let (Ok((window_entity, window)), false) = (window.single(), party.is_empty()) else { return };
     let now = time.elapsed_secs();
@@ -467,7 +473,7 @@ pub fn run_ui_script(
                 keys.write(key_event(code, key, ButtonState::Released, None));
             }
         }
-        "click" => {
+        "click" | "right-click" => {
             let numbers: Vec<f32> =
                 rest.split_whitespace().filter_map(|n| n.parse().ok()).collect();
             let [x, y] = numbers[..] else {
@@ -484,8 +490,24 @@ pub fn run_ui_script(
             let location = Location { target, position };
             let input = |action| PointerInput::new(PointerId::Mouse, location.clone(), action);
             pointer.write(input(PointerAction::Move { delta: Vec2::ZERO }));
-            pointer.write(input(PointerAction::Press(PointerButton::Primary)));
-            script.release_pointer = Some(input(PointerAction::Release(PointerButton::Primary)));
+            let button = if verb == "right-click" {
+                PointerButton::Secondary
+            } else {
+                PointerButton::Primary
+            };
+            pointer.write(input(PointerAction::Press(button)));
+            script.release_pointer = Some(input(PointerAction::Release(button)));
+        }
+        "assert-map" => {
+            let expected = match rest {
+                "open" => true,
+                "closed" => false,
+                _ => panic!("assert-map expects open or closed"),
+            };
+            assert_eq!(automap.is_some(), expected, "automap visibility");
+        }
+        "assert-note" => {
+            assert!(notes.notes.iter().any(|note| note.text == rest), "missing map note: {rest}");
         }
         "wait" => {
             let seconds: f32 = rest.parse().unwrap_or(1.0);
