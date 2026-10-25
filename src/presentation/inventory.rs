@@ -256,10 +256,10 @@ fn click_cell(
 #[derive(Component)]
 pub struct HeldPicture;
 
-/// Show what the hand holds at the pointer while the screen is open.
+/// Show what the hand holds at the pointer, here and on the main screen
+/// (retail's item cursor).
 pub fn follow_held(
     mut commands: Commands,
-    screen: Option<Res<InventoryScreen>>,
     party: Res<PartyInventory>,
     pointers: Query<(&PointerId, &PointerLocation)>,
     scale: Res<UiScale>,
@@ -271,8 +271,7 @@ pub fn follow_held(
     mut loading: Local<Option<Handle<SpriteSheet>>>,
 ) {
     let catalog = data.and_then(|d| catalogs.get(&d.items));
-    let held = party.held.as_ref().filter(|_| screen.is_some());
-    let definition = held.zip(catalog).and_then(|(h, c)| c.get(h.item.item));
+    let definition = party.held.as_ref().zip(catalog).and_then(|(h, c)| c.get(h.item.item));
     let cursor = pointers
         .iter()
         .find(|(id, _)| **id == PointerId::Mouse)

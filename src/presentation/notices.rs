@@ -11,6 +11,7 @@ use crate::content::ui::{SpriteSheet, TextTable};
 use crate::game::camp::CampNews;
 use crate::game::combat::attack::Mode;
 use crate::game::combat::{Announcement, CombatNews};
+use crate::game::inventory::ItemNews;
 use crate::game::world::level::Level;
 use crate::game::world::triggers::TriggerEffect;
 
@@ -84,6 +85,8 @@ fn wrap(text: &str, width: u32, measure: impl Fn(&str) -> u32) -> Vec<String> {
 
 /// "Party takes %s", and the two halves of the gold notice.
 const PARTY_TAKES: usize = 0x1e9;
+const TAKES: usize = 0x1e8;
+const NO_ROOM: usize = 0x90c;
 const GOLD_BEFORE: usize = 0x15f;
 const GOLD_AFTER: usize = 0x160;
 
@@ -151,6 +154,7 @@ pub fn queue_notices(
     mut effects: MessageReader<TriggerEffect>,
     mut camp: MessageReader<CampNews>,
     mut combat: MessageReader<CombatNews>,
+    mut items: MessageReader<ItemNews>,
     art: Res<NoticeArt>,
     tables: Res<Assets<TextTable>>,
     levels: Query<&Level>,
@@ -182,6 +186,16 @@ pub fn queue_notices(
         if let Some(text) = text.filter(|t| !t.trim().is_empty()) {
             log.push(channel, text.trim(), font);
         }
+    }
+    for news in items.read() {
+        let text = match news {
+            ItemNews::Takes { member: Some(member), item } => {
+                format!("{member} {}", string(TAKES).replace("%s", item))
+            }
+            ItemNews::Takes { member: None, item } => string(PARTY_TAKES).replace("%s", item),
+            ItemNews::NoRoom => string(NO_ROOM),
+        };
+        log.push(channel, &text, font);
     }
     for news in camp.read() {
         let text = match news {

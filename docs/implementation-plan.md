@@ -206,7 +206,10 @@ Known gaps, in rough order:
   them (`game::world::items`): one entity owns each, shown with its
   `data/items3d` model (its own or its kind's, else the question mark),
   turning a sixteenth of a turn per 50 ms and lit like monsters. Clicking
-  one within 10 m with an empty hand takes it into the hand. Clicking in the
+  one within 10 m with an empty hand takes it into the hand; the held item
+  follows the pointer on the main screen too, and clicking a portrait gives
+  it to that member, or the pool when they have no room (the pool first in
+  a fight). Clicking in the
   world goes through the pointer, as in retail, and only inside the view.
   Hidden items (searching), dropping the held item, the green hover
   highlight and name tooltip, containers' item picker, and remembering

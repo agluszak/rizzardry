@@ -14,11 +14,11 @@ use super::screen_art::{absolute, sprite, text};
 use super::sky::SkyCamera;
 use crate::content::items::ItemCatalog;
 use crate::content::ui::SpriteSheet;
-use crate::game::characters::{Character, Race};
+use crate::game::characters::{Character, Condition, Race};
 use crate::game::combat::attack::{Armour, armour};
 use crate::game::combat::{CombatSettings, Order, PartyOrders, StartRound};
 use crate::game::data::GameData;
-use crate::game::inventory::{Carried, EquipSlot};
+use crate::game::inventory::{Carried, EquipSlot, Given, ItemNews, PartyInventory};
 use crate::game::party::body::PartyCamera;
 use crate::game::party::formation::Formation;
 use crate::game::party::roster::PartyRoster;
@@ -274,6 +274,7 @@ enum ScreenButton {
     Portrait(usize),
 }
 
+#[allow(clippy::too_many_arguments)]
 fn press(
     click: On<PointerClick>,
     buttons: Query<&ScreenButton>,
@@ -283,10 +284,45 @@ fn press(
     roster: Res<PartyRoster>,
     time: Res<Time>,
     mut last_click: Local<Option<(usize, f32)>>,
+    (mut party, mut members, data, catalogs, battle, mut news): (
+        ResMut<PartyInventory>,
+        Query<(&Character, &mut Carried)>,
+        Option<Res<GameData>>,
+        Res<Assets<ItemCatalog>>,
+        Option<Res<crate::game::combat::Battle>>,
+        MessageWriter<ItemNews>,
+    ),
 ) {
     match buttons.get(click.entity) {
         Ok(ScreenButton::Mode(mode)) => layout.mode = *mode,
         Ok(ScreenButton::Arrow(panel)) => layout.toggle(*panel),
+        // With an item in hand, a click gives it to the member.
+        Ok(ScreenButton::Portrait(slot)) if party.held.is_some() => {
+            let Some(catalog) = data.and_then(|d| catalogs.get(&d.items)) else { return };
+            let Some(Ok((character, mut carried))) =
+                roster.0.get(*slot).map(|&m| members.get_mut(m))
+            else {
+                return;
+            };
+            let item = party.held.as_ref().and_then(|h| catalog.get(h.item.item));
+            let item = item.map(|d| d.name.clone()).unwrap_or_default();
+            // Retail `IsPartySlotEligible`: alive and not turned or worse.
+            let eligible = !character.is_dead()
+                && character.worst_condition().is_none_or(|c| c < Condition::Turncoat);
+            let member = eligible.then_some(&mut *carried);
+            match party.give_held(member, !eligible || battle.is_some(), catalog) {
+                Some(Given::Member) => {
+                    news.write(ItemNews::Takes { member: Some(character.name.clone()), item });
+                }
+                Some(Given::Pool) => {
+                    news.write(ItemNews::Takes { member: None, item });
+                }
+                Some(Given::NoRoom) => {
+                    news.write(ItemNews::NoRoom);
+                }
+                None => {}
+            }
+        }
         Ok(ScreenButton::Portrait(slot)) => {
             selected.0 = *slot;
             // A double click opens the member's review screen.

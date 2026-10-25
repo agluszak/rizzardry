@@ -27,6 +27,7 @@ impl Plugin for WorldPlugin {
         app.add_plugins(navigation::NavigationPlugin)
             .add_message::<level::LevelReady>()
             .add_message::<level::Travel>()
+            .add_message::<crate::game::inventory::ItemNews>()
             .init_resource::<level::LevelMemory>()
             .init_resource::<crate::game::rng::GameRng>()
             .init_resource::<crate::game::inventory::ItemIds>()

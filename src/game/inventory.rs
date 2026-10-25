@@ -249,6 +249,26 @@ pub struct PartyInventory {
     pub gold: u32,
 }
 
+/// What the main screen tells about items changing hands.
+#[derive(Message, Clone, Debug, PartialEq)]
+pub enum ItemNews {
+    /// "Ragnar takes %s", or "Party takes %s" for the pool.
+    Takes {
+        member: Option<String>,
+        item: String,
+    },
+    NoRoom,
+}
+
+/// Where a given item went.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Given {
+    Member,
+    Pool,
+    /// Neither had room ("No room!").
+    NoRoom,
+}
+
 /// Why a move did not happen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
@@ -668,6 +688,39 @@ impl PartyInventory {
         Ok(())
     }
 
+    /// Give the held item to a member clicked on the main screen (retail
+    /// `GiveHeldItemToCharacterOrParty`): to them, else the pool; the pool
+    /// first when `pool_first` (in a fight); only the pool when they cannot
+    /// take items (`member` is `None`). Refused, it stays in hand. Retail
+    /// also lets everyone try to identify it; that waits for the skill.
+    pub fn give_held(
+        &mut self,
+        member: Option<&mut Carried>,
+        pool_first: bool,
+        catalog: &ItemCatalog,
+    ) -> Option<Given> {
+        let held = self.held.take()?;
+        let item = held.item;
+        let to_member = |carried: &mut Carried, item| place_with_member(carried, item, catalog);
+        let given = match member {
+            Some(carried) if !pool_first => to_member(carried, item)
+                .map(|()| Given::Member)
+                .or_else(|rest| self.place_in_pool(rest, catalog).map(|()| Given::Pool)),
+            Some(carried) => self
+                .place_in_pool(item, catalog)
+                .map(|()| Given::Pool)
+                .or_else(|rest| to_member(carried, rest).map(|()| Given::Member)),
+            None => self.place_in_pool(item, catalog).map(|()| Given::Pool),
+        };
+        Some(match given {
+            Ok(given) => given,
+            Err(item) => {
+                self.held = Some(Held { item, origin: held.origin });
+                Given::NoRoom
+            }
+        })
+    }
+
     /// Put the held item away with a member, or in the pool when they have
     /// no room. When neither can take it, it stays in hand.
     pub fn put_away_held(&mut self, carried: &mut Carried, catalog: &ItemCatalog) {
@@ -786,6 +839,24 @@ mod tests {
             curse_released: false,
             remarked: false,
         }
+    }
+
+    #[test]
+    fn a_given_item_goes_to_the_member_or_in_a_fight_the_pool() {
+        let (catalog, mut ids) = (catalog(), ItemIds::default());
+        let mut carried = Carried::default();
+        let mut party = PartyInventory::default();
+        party.held = Some(Held { item: item(&mut ids, 1, Quantity::One), origin: None });
+        assert_eq!(party.give_held(Some(&mut carried), false, &catalog), Some(Given::Member));
+        assert!(party.held.is_none() && party.pool.is_empty());
+        party.held = Some(Held { item: item(&mut ids, 1, Quantity::One), origin: None });
+        assert_eq!(party.give_held(Some(&mut carried), true, &catalog), Some(Given::Pool));
+        assert_eq!(party.pool.len(), 1);
+        // A full pool and no member to take it: it stays in hand.
+        party.pool = vec![item(&mut ids, 3, Quantity::One); POOL_LIMIT];
+        party.held = Some(Held { item: item(&mut ids, 1, Quantity::One), origin: None });
+        assert_eq!(party.give_held(None, true, &catalog), Some(Given::NoRoom));
+        assert!(party.held.is_some());
     }
 
     #[test]
