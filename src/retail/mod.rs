@@ -37,6 +37,8 @@ pub struct RetailPlugin {
     pub files: Arc<files::RetailFiles>,
     /// Where processed navmeshes are cached.
     pub navmesh_cache: std::path::PathBuf,
+    /// How many walker size classes get a navmesh.
+    pub navmesh_classes: usize,
 }
 
 impl Plugin for RetailPlugin {
@@ -44,7 +46,11 @@ impl Plugin for RetailPlugin {
         app.register_asset_source(source::RETAIL_SOURCE, source::retail_source(self.files.clone()))
             .register_asset_source(
                 source::NAVMESH_SOURCE,
-                source::navmesh_source(self.files.clone(), &self.navmesh_cache),
+                source::navmesh_source(
+                    self.files.clone(),
+                    self.navmesh_classes,
+                    &self.navmesh_cache,
+                ),
             );
     }
 

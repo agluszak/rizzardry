@@ -19,6 +19,7 @@ use crate::game::time::{GameClock, TimePlugin};
 use crate::game::world::WorldPlugin;
 use crate::game::world::level::Level;
 use crate::game::world::navigation::asset::navmesh_path;
+use crate::game::world::navigation::bake::SIZE_CLASSES;
 use crate::presentation::PresentationPlugin;
 use crate::retail::RetailPlugin;
 use crate::retail::bytes::Bytes;
@@ -75,6 +76,9 @@ pub struct Options {
     /// Developer: spawn this many stand-in monsters that chase the party.
     #[arg(long, value_name = "COUNT", default_value_t = 0)]
     pub test_agents: usize,
+    /// Developer: the stand-in monsters' radius in metres.
+    #[arg(long, value_name = "METRES", default_value_t = 0.35)]
+    pub test_agent_radius: f32,
     /// Developer: draw the navmesh, agent paths and avoidance.
     #[arg(long)]
     pub nav_debug: bool,
@@ -140,25 +144,29 @@ pub fn run(options: Options) -> AppExit {
     }
 
     let mut app = App::new();
-    app.add_plugins(RetailPlugin { files, navmesh_cache: "imported_assets/navmesh".into() })
-        .add_plugins(
-            DefaultPlugins
-                .set(WindowPlugin {
-                    primary_window: Some(Window { title: "Rizzardry".into(), ..default() }),
-                    ..default()
-                })
-                // Navmeshes are baked once by the asset processor and cached.
-                .set(AssetPlugin { mode: AssetMode::Processed, ..default() }),
-        )
-        .add_plugins((
-            EnhancedInputPlugin,
-            PhysicsPlugins::default(),
-            WorldPlugin,
-            PartyPlugin,
-            PresentationPlugin,
-            TimePlugin,
-        ))
-        .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.07)));
+    app.add_plugins(RetailPlugin {
+        files,
+        navmesh_cache: "imported_assets/navmesh".into(),
+        navmesh_classes: SIZE_CLASSES.len(),
+    })
+    .add_plugins(
+        DefaultPlugins
+            .set(WindowPlugin {
+                primary_window: Some(Window { title: "Rizzardry".into(), ..default() }),
+                ..default()
+            })
+            // Navmeshes are baked once by the asset processor and cached.
+            .set(AssetPlugin { mode: AssetMode::Processed, ..default() }),
+    )
+    .add_plugins((
+        EnhancedInputPlugin,
+        PhysicsPlugins::default(),
+        WorldPlugin,
+        PartyPlugin,
+        PresentationPlugin,
+        TimePlugin,
+    ))
+    .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.07)));
     app.insert_resource(start);
     if let Some(path) = options.screenshot.clone() {
         let after = options.screenshot_after.unwrap_or(2.0 + options.walk.unwrap_or(0.0));
@@ -186,6 +194,7 @@ pub fn run(options: Options) -> AppExit {
     if options.test_agents > 0 {
         app.insert_resource(TestAgents {
             count: options.test_agents,
+            radius: options.test_agent_radius,
             spawned: false,
             since_log: 0.0,
             frames: 0,
@@ -201,7 +210,9 @@ pub fn run(options: Options) -> AppExit {
             Name::new(level.clone()),
             Level {
                 geometry: assets.load(format!("retail://{level}")),
-                navmesh: assets.load(navmesh_path(&level)),
+                navmeshes: (0..SIZE_CLASSES.len())
+                    .map(|class| assets.load(navmesh_path(&level, class)))
+                    .collect(),
                 sky: sky.as_ref().map(|sky| assets.load(format!("retail://{sky}"))),
             },
         ));

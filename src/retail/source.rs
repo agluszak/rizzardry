@@ -62,37 +62,61 @@ pub fn retail_source(files: Arc<RetailFiles>) -> AssetSourceBuilder {
 pub const NAVMESH_SOURCE: &str = "navmesh";
 pub const NAVMESH_EXTENSION: &str = "navmesh";
 
-/// Every retail level `<path>.pvl` as `<path>.navmesh`, whose bytes are the
-/// level's collision (`.oct`) and placement (`.pvl`) files together; see
-/// [`navmesh_input`]. The asset processor turns these into baked navmeshes,
-/// re-baking when either file changes.
-struct NavmeshInputReader(Arc<RetailFiles>);
-
-fn level_stem(path: &Path) -> Option<String> {
-    name(path).strip_suffix(&format!(".{NAVMESH_EXTENSION}")).map(str::to_owned)
+/// Every retail level `<path>.pvl` as `<path>_class<n>.navmesh`, one per
+/// walker size class, whose bytes are the class and the level's collision
+/// (`.oct`) and placement (`.pvl`) files; see [`navmesh_input`]. The asset
+/// processor turns these into baked navmeshes, re-baking when either file
+/// changes.
+struct NavmeshInputReader {
+    files: Arc<RetailFiles>,
+    classes: usize,
 }
 
-const NAVMESH_INPUT_MAGIC: &[u8; 4] = b"RZNI";
+/// The level stem and size class of a navmesh input name.
+fn level_and_class(path: &Path) -> Option<(String, u8)> {
+    let stem = name(path);
+    let stem = stem.strip_suffix(&format!(".{NAVMESH_EXTENSION}"))?;
+    let (level, class) = stem.rsplit_once("_class")?;
+    Some((level.to_owned(), class.parse().ok()?))
+}
 
-/// Split a navmesh input into its `.oct` and `.pvl` bytes.
-pub fn navmesh_input(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
+/// The navmesh input for `level` (`levels/x/y.pvl`) and size class.
+pub fn navmesh_input_path(level: &str, class: usize) -> String {
+    let stem = level.strip_suffix(".pvl").unwrap_or(level);
+    // No dot before the class: Bevy treats everything after the first dot
+    // of a file name as its extension.
+    format!("{stem}_class{class}.{NAVMESH_EXTENSION}")
+}
+
+const NAVMESH_INPUT_MAGIC: &[u8; 4] = b"RZN2";
+
+/// A navmesh input's size class and its `.oct` and `.pvl` bytes.
+pub fn navmesh_input(bytes: &[u8]) -> Option<(u8, &[u8], &[u8])> {
     let rest = bytes.strip_prefix(NAVMESH_INPUT_MAGIC)?;
+    let (&class, rest) = rest.split_first()?;
     let (length, rest) = rest.split_first_chunk::<4>()?;
     let length = u32::from_le_bytes(*length) as usize;
-    (length <= rest.len()).then(|| rest.split_at(length))
+    (length <= rest.len()).then(|| {
+        let (octree, level) = rest.split_at(length);
+        (class, octree, level)
+    })
 }
 
 impl AssetReader for NavmeshInputReader {
     async fn read<'a>(&'a self, path: &'a Path) -> Result<impl Reader + 'a, AssetReaderError> {
         let not_found = || AssetReaderError::NotFound(path.to_owned());
-        let stem = level_stem(path).ok_or_else(not_found)?;
-        let read = |extension: &str| match self.0.read(&format!("{stem}.{extension}")) {
+        let (stem, class) = level_and_class(path).ok_or_else(not_found)?;
+        if class as usize >= self.classes {
+            return Err(not_found());
+        }
+        let read = |extension: &str| match self.files.read(&format!("{stem}.{extension}")) {
             Some(Ok(bytes)) => Ok(bytes),
             Some(Err(error)) => Err(AssetReaderError::Io(Arc::new(error))),
             None => Err(not_found()),
         };
         let (octree, level) = (read("oct")?, read("pvl")?);
         let mut bytes = NAVMESH_INPUT_MAGIC.to_vec();
+        bytes.push(class);
         bytes.extend((octree.len() as u32).to_le_bytes());
         bytes.extend(octree);
         bytes.extend(level);
@@ -109,31 +133,32 @@ impl AssetReader for NavmeshInputReader {
         path: &'a Path,
     ) -> Result<Box<PathStream>, AssetReaderError> {
         let name = name(path);
-        if !self.0.is_directory(&name) {
+        if !self.files.is_directory(&name) {
             return Err(AssetReaderError::NotFound(path.to_owned()));
         }
-        let children: Vec<PathBuf> = self
-            .0
-            .list_directory(&name)
-            .into_iter()
-            .filter_map(|child| match child.strip_suffix(".pvl") {
-                Some(stem) => Some(format!("{stem}.{NAVMESH_EXTENSION}")),
-                None => self.0.is_directory(&child).then_some(child),
-            })
-            .map(PathBuf::from)
-            .collect();
+        let mut children: Vec<PathBuf> = Vec::new();
+        for child in self.files.list_directory(&name) {
+            if child.ends_with(".pvl") {
+                children.extend(
+                    (0..self.classes).map(|c| PathBuf::from(navmesh_input_path(&child, c))),
+                );
+            } else if self.files.is_directory(&child) {
+                children.push(PathBuf::from(child));
+            }
+        }
         Ok(Box::new(stream::iter(children)))
     }
 
     async fn is_directory<'a>(&'a self, path: &'a Path) -> Result<bool, AssetReaderError> {
-        Ok(self.0.is_directory(&name(path)))
+        Ok(self.files.is_directory(&name(path)))
     }
 }
 
-/// Navmesh inputs, processed into `cache` (e.g. `imported_assets/navmesh`).
-pub fn navmesh_source(files: Arc<RetailFiles>, cache: &Path) -> AssetSourceBuilder {
+/// Navmesh inputs for `classes` size classes, processed into `cache` (e.g.
+/// `imported_assets/navmesh`).
+pub fn navmesh_source(files: Arc<RetailFiles>, classes: usize, cache: &Path) -> AssetSourceBuilder {
     let cache = cache.to_string_lossy().into_owned();
-    AssetSourceBuilder::new(move || Box::new(NavmeshInputReader(files.clone())))
+    AssetSourceBuilder::new(move || Box::new(NavmeshInputReader { files: files.clone(), classes }))
         .with_processed_reader(AssetSource::get_default_reader(cache.clone()))
         .with_processed_writer(AssetSource::get_default_writer(cache))
 }

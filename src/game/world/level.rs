@@ -18,7 +18,8 @@ use crate::presentation::sky::{Celestial, Cloud};
 #[require(Transform, Visibility, AwaitingGeometry, AwaitingNavmesh, AwaitingLinks, AwaitingSky)]
 pub struct Level {
     pub geometry: Handle<LevelGeometry>,
-    pub navmesh: Handle<NavMesh3d>,
+    /// One navmesh per walker size class (`navigation::bake::SIZE_CLASSES`).
+    pub navmeshes: Vec<Handle<NavMesh3d>>,
     /// The level's sky world, drawn behind it; none for levels without one.
     pub sky: Option<Handle<LevelGeometry>>,
 }

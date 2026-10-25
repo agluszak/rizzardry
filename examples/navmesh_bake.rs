@@ -11,7 +11,7 @@ use bevy_landmass::NavigationMesh3d;
 use clap::Parser;
 
 use rizzardry::game::world::navigation::asset::level_collision;
-use rizzardry::game::world::navigation::bake::{NavmeshBakeSettings, bake};
+use rizzardry::game::world::navigation::bake::{NavmeshBakeSettings, SIZE_CLASSES, bake};
 use rizzardry::retail::files::RetailFiles;
 
 #[derive(clap::Parser)]
@@ -25,7 +25,7 @@ struct Args {
     /// Override the walkable climb (metres).
     #[arg(long)]
     climb: Option<f32>,
-    /// Override the agent radius (metres).
+    /// Override the agent radius (metres); by default every size class.
     #[arg(long)]
     radius: Option<f32>,
     /// Override the agent height (metres).
@@ -109,11 +109,15 @@ fn main() {
     };
     let mut settings = NavmeshBakeSettings::default();
     settings.walkable_climb = args.climb.unwrap_or(settings.walkable_climb);
-    settings.agent_radius = args.radius.unwrap_or(settings.agent_radius);
     settings.agent_height = args.height.unwrap_or(settings.agent_height);
-    for name in names {
-        let octree = files.read(&name.replace(".pvl", ".oct")).expect("octree exists").unwrap();
-        let level = files.read(&name).expect("level exists").unwrap();
+    let radii = args.radius.map_or(SIZE_CLASSES.to_vec(), |radius| vec![radius]);
+    for (name, radius) in names.iter().flat_map(|n| radii.iter().map(move |&r| (n, r))) {
+        settings.agent_radius = radius;
+        let name = format!("{name} r={radius}");
+        let level_name = name.split(' ').next().unwrap();
+        let octree =
+            files.read(&level_name.replace(".pvl", ".oct")).expect("octree exists").unwrap();
+        let level = files.read(level_name).expect("level exists").unwrap();
         let collision = level_collision(&octree, &level).unwrap();
         let start = Instant::now();
         let (mesh, repair) = match bake(&collision, &settings) {

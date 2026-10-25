@@ -88,16 +88,14 @@ pub fn scripted_walk(
 #[derive(Resource, Debug, Clone)]
 pub struct TestAgents {
     pub count: usize,
+    /// Body radius in metres; picks the navmesh size class.
+    pub radius: f32,
     pub spawned: bool,
     pub since_log: f32,
     pub frames: u32,
 }
 
-const TEST_AGENT_RADIUS: f32 = 0.35;
 const TEST_AGENT_HALF_LENGTH: f32 = 0.25;
-/// Keeps the capsule's bottom at the step height.
-const TEST_AGENT_FLOAT: f32 =
-    crate::game::world::STEP_HEIGHT + TEST_AGENT_RADIUS + TEST_AGENT_HALF_LENGTH;
 const TEST_AGENT_SPEED: f32 = 3.0;
 
 #[derive(Component)]
@@ -120,7 +118,12 @@ pub fn spawn_test_agents(
     else {
         return;
     };
-    let Ok(archipelago) = archipelagos.get(navigation.archipelago) else { return };
+    let radius = test.radius;
+    // Keeps the capsule's bottom at the step height.
+    let float_height = crate::game::world::STEP_HEIGHT + radius + TEST_AGENT_HALF_LENGTH;
+    let Ok(archipelago) = archipelagos.get(navigation.archipelago_for(radius)) else {
+        return;
+    };
     // Probe rings around the party; keep the points that land on the navmesh.
     let centre = party_transform.translation;
     let wide = PointSampleDistance3d {
@@ -145,7 +148,7 @@ pub fn spawn_test_agents(
         return;
     }
     test.spawned = true;
-    let mesh = meshes.add(Capsule3d::new(TEST_AGENT_RADIUS, 2.0 * TEST_AGENT_HALF_LENGTH));
+    let mesh = meshes.add(Capsule3d::new(radius, 2.0 * TEST_AGENT_HALF_LENGTH));
     let material = materials.add(StandardMaterial {
         base_color: Color::srgb(0.9, 0.2, 0.3),
         unlit: true,
@@ -154,7 +157,7 @@ pub fn spawn_test_agents(
     let config = configs.add(WalkerMotionConfig {
         basis: TnuaBuiltinWalkConfig {
             speed: TEST_AGENT_SPEED,
-            float_height: TEST_AGENT_FLOAT,
+            float_height: float_height,
             max_slope: 50f32.to_radians(),
             ..default()
         },
@@ -166,22 +169,22 @@ pub fn spawn_test_agents(
             TestAgent,
             Mesh3d(mesh.clone()),
             MeshMaterial3d(material.clone()),
-            Transform::from_translation(feet + Vec3::Y * TEST_AGENT_FLOAT),
+            Transform::from_translation(feet + Vec3::Y * float_height),
             RigidBody::Dynamic,
-            Collider::capsule(TEST_AGENT_RADIUS, 2.0 * TEST_AGENT_HALF_LENGTH),
+            Collider::capsule(radius, 2.0 * TEST_AGENT_HALF_LENGTH),
             LockedAxes::ROTATION_LOCKED,
             TnuaController::<WalkerMotion>::default(),
             TnuaConfig::<WalkerMotion>(config.clone()),
-            TnuaAvian3dSensorShape(Collider::cylinder(TEST_AGENT_RADIUS * 0.9, 0.0)),
-            Walker { speed: TEST_AGENT_SPEED, float_height: TEST_AGENT_FLOAT },
+            TnuaAvian3dSensorShape(Collider::cylinder(radius * 0.9, 0.0)),
+            Walker { speed: TEST_AGENT_SPEED, float_height: float_height },
             Agent3dBundle {
                 agent: default(),
                 settings: AgentSettings {
-                    radius: TEST_AGENT_RADIUS,
+                    radius: radius,
                     desired_speed: TEST_AGENT_SPEED * 0.8,
                     max_speed: TEST_AGENT_SPEED,
                 },
-                archipelago_ref: ArchipelagoRef3d::new(navigation.archipelago),
+                archipelago_ref: ArchipelagoRef3d::new(navigation.archipelago_for(radius)),
             },
             AgentTarget3d::Entity(party),
             Velocity3d::default(),

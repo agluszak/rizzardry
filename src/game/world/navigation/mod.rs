@@ -14,7 +14,6 @@ pub mod bake;
 pub mod links;
 
 use avian3d::prelude::*;
-use bake::NavmeshBakeSettings;
 use bevy::asset::processor::LoadTransformAndSave;
 use bevy::asset::{AssetApp, LoadState};
 use bevy::prelude::*;
@@ -81,10 +80,18 @@ impl Plugin for NavigationPlugin {
 #[scheme(basis = TnuaBuiltinWalk)]
 pub enum WalkerMotion {}
 
-/// On a level root: the level's archipelago, once its navmesh is installed.
+/// On a level root: one archipelago per walker size class, once the
+/// level's navmeshes are installed.
 #[derive(Component, Debug)]
 pub struct LevelNavigation {
-    pub archipelago: Entity,
+    pub archipelagos: Vec<Entity>,
+}
+
+impl LevelNavigation {
+    /// The archipelago a walker of `radius` metres navigates in.
+    pub fn archipelago_for(&self, radius: f32) -> Entity {
+        self.archipelagos[bake::size_class(radius)]
+    }
 }
 
 /// A world actor moved by Landmass desired velocities through Tnua.
@@ -97,77 +104,97 @@ pub struct Walker {
     pub float_height: f32,
 }
 
-/// Install a level's navmesh under its root once it has loaded. The navmesh
-/// comes from the asset processor's cache (baked on first use).
+/// Install a level's navmeshes under its root once they have loaded: one
+/// archipelago and island per size class. The navmeshes come from the asset
+/// processor's cache (baked on first use).
 fn install_navmesh(
     mut commands: Commands,
     levels: Query<(Entity, &Level), With<AwaitingNavmesh>>,
     assets: Res<AssetServer>,
 ) {
     for (root, level) in &levels {
-        match assets.get_load_state(&level.navmesh) {
-            Some(LoadState::Loaded) => {}
-            Some(LoadState::Failed(error)) => {
-                // The level stays without navigation; nothing will path.
-                error!("navmesh unavailable: {error}");
-                commands.entity(root).remove::<AwaitingNavmesh>();
-                continue;
-            }
-            _ => continue,
+        let states: Vec<_> = level.navmeshes.iter().map(|h| assets.get_load_state(h)).collect();
+        if let Some(Some(LoadState::Failed(error))) =
+            states.iter().find(|s| matches!(s, Some(LoadState::Failed(_))))
+        {
+            // The level stays without navigation; nothing will path.
+            error!("navmesh unavailable: {error}");
+            commands.entity(root).remove::<AwaitingNavmesh>();
+            continue;
         }
-        let mut options =
-            ArchipelagoOptions::from_agent_radius(NavmeshBakeSettings::default().agent_radius);
-        // Actor origins float above the ground; sample the navmesh beneath.
-        options.point_sample_distance = PointSampleDistance3d {
-            horizontal_distance: 1.0,
-            distance_above: 0.5,
-            distance_below: FLOAT_HEIGHT + 0.6,
-            vertical_preference_ratio: 2.0,
-            animation_link_max_vertical_distance: 1.0,
-        };
-        let archipelago = commands
-            .spawn((Name::new("Archipelago"), Archipelago3d::new(options), ChildOf(root)))
-            .id();
-        commands.spawn((
-            Name::new("Level navmesh"),
-            Transform::default(),
-            Island3dBundle {
-                island: Island,
-                archipelago_ref: ArchipelagoRef3d::new(archipelago),
-                nav_mesh: NavMeshHandle(level.navmesh.clone()),
-            },
-            ChildOf(root),
-        ));
-        commands.entity(root).remove::<AwaitingNavmesh>().insert(LevelNavigation { archipelago });
-        info!("navmesh installed");
+        if !states.iter().all(|s| matches!(s, Some(LoadState::Loaded))) {
+            continue;
+        }
+        let mut archipelagos = Vec::new();
+        for (class, navmesh) in level.navmeshes.iter().enumerate() {
+            let radius = bake::SIZE_CLASSES[class];
+            let mut options = ArchipelagoOptions::from_agent_radius(radius);
+            // Actor origins float above the ground; sample the navmesh beneath.
+            options.point_sample_distance = PointSampleDistance3d {
+                horizontal_distance: 1.0,
+                distance_above: 0.5,
+                distance_below: FLOAT_HEIGHT + 2.0,
+                vertical_preference_ratio: 2.0,
+                animation_link_max_vertical_distance: 1.0,
+            };
+            let archipelago = commands
+                .spawn((
+                    Name::new(format!("Archipelago for {radius} m walkers")),
+                    Archipelago3d::new(options),
+                    ChildOf(root),
+                ))
+                .id();
+            commands.spawn((
+                Name::new(format!("Navmesh for {radius} m walkers")),
+                Transform::default(),
+                Island3dBundle {
+                    island: Island,
+                    archipelago_ref: ArchipelagoRef3d::new(archipelago),
+                    nav_mesh: NavMeshHandle(navmesh.clone()),
+                },
+                ChildOf(root),
+            ));
+            archipelagos.push(archipelago);
+        }
+        commands.entity(root).remove::<AwaitingNavmesh>().insert(LevelNavigation { archipelagos });
+        info!("navmeshes installed for {} size classes", level.navmeshes.len());
     }
 }
 
-/// Register the party with the archipelago and report its velocity.
+/// The party as a Landmass character in one archipelago: a child of the
+/// party body, so walkers of every size class avoid it.
+#[derive(Component, Debug)]
+pub struct PartyCharacter;
+
+/// Register the party in every archipelago and report its velocity.
 fn track_party_character(
     mut commands: Commands,
     navigation: Query<&LevelNavigation>,
-    mut party: Query<(Entity, &LinearVelocity, Option<&mut Velocity3d>), With<PartyBody>>,
+    party: Query<(Entity, &LinearVelocity), With<PartyBody>>,
+    mut characters: Query<&mut Velocity3d, With<PartyCharacter>>,
 ) {
-    let (Ok(navigation), Ok((entity, velocity, tracked))) =
-        (navigation.single(), party.single_mut())
-    else {
+    let (Ok(navigation), Ok((party, velocity))) = (navigation.single(), party.single()) else {
         return;
     };
-    match tracked {
-        Some(mut tracked) => tracked.velocity = velocity.0,
-        None => {
-            commands.entity(entity).insert((
+    if characters.is_empty() {
+        for &archipelago in &navigation.archipelagos {
+            commands.spawn((
+                PartyCharacter,
+                Transform::default(),
                 Character3dBundle {
                     character: default(),
                     settings: CharacterSettings {
                         radius: 500.0 / crate::retail::space::UNITS_PER_METRE,
                     },
-                    archipelago_ref: ArchipelagoRef3d::new(navigation.archipelago),
+                    archipelago_ref: ArchipelagoRef3d::new(archipelago),
                 },
                 Velocity3d { velocity: velocity.0 },
+                ChildOf(party),
             ));
         }
+    }
+    for mut tracked in &mut characters {
+        tracked.velocity = velocity.0;
     }
 }
 
@@ -178,7 +205,6 @@ fn sync_walker_velocity(mut walkers: Query<(&LinearVelocity, &mut Velocity3d), W
     }
 }
 
-/// Turn Landmass's desired velocity into Tnua walk input.
 /// Feed Landmass's desired velocity to Tnua; while crossing a doorway link,
 /// head straight for its far side instead.
 fn steer_walkers(
