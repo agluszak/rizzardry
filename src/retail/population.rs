@@ -1,6 +1,5 @@
-//! Who stands where in a level: the monster placements of its `.sts` file,
-//! and each species' model from `data/databases/monsters.dbs`. See
-//! `docs/research/level-population.md`.
+//! Who stands where in a level: the monster placements of its `.sts` file.
+//! See `docs/research/level-population.md`.
 
 use super::bytes::Bytes;
 use super::pvl::{PvlError, invalid};
@@ -109,23 +108,6 @@ fn read_monsters(data: &[u8]) -> Result<Vec<Placement>, PvlError> {
         .collect()
 }
 
-const MONSTER_RECORD: usize = 0x297;
-const CYCLE_NAME_AT: usize = 0x189;
-
-/// Each species' model: the `.mls` name under `data/monsters`.
-pub fn read_monster_models(data: &[u8]) -> Result<Vec<String>, PvlError> {
-    let mut bytes = Bytes::new(data);
-    let count = bytes.u32()? as usize;
-    (0..count)
-        .map(|_| {
-            let record = bytes.take(MONSTER_RECORD)?;
-            let name = &record[CYCLE_NAME_AT..CYCLE_NAME_AT + 48];
-            let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
-            Ok(String::from_utf8_lossy(&name[..end]).to_lowercase())
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,9 +118,11 @@ mod tests {
         let root =
             std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL to run this test");
         let files = crate::retail::files::RetailFiles::open(root).unwrap();
-        let models =
-            read_monster_models(&files.read("data/databases/monsters.dbs").unwrap().unwrap())
-                .unwrap();
+        let species = crate::retail::species::read_species(
+            &files.read("data/databases/monsters.dbs").unwrap().unwrap(),
+        )
+        .unwrap();
+        let models: Vec<&str> = species.iter().map(|s| s.model.as_str()).collect();
         assert_eq!(models.len(), 595);
         let placements =
             read_placements(&files.read("levels/monastery/monastery1.sts").unwrap().unwrap())

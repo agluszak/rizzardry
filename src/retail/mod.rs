@@ -26,6 +26,7 @@ pub mod sky_loader;
 pub mod slf;
 pub mod source;
 pub mod space;
+pub mod species;
 pub mod stci;
 pub mod sti_loader;
 pub mod strings;
@@ -78,6 +79,8 @@ impl Plugin for RetailPlugin {
             .init_asset_loader::<item_loader::ItemCatalogLoader>()
             .init_asset::<crate::content::items::LootTables>()
             .init_asset_loader::<item_loader::LootTablesLoader>()
+            .init_asset::<crate::content::species::MonsterCatalog>()
+            .init_asset_loader::<species::MonsterCatalogLoader>()
             .init_asset::<crate::content::music::Playlist>()
             .init_asset_loader::<playlist::PlaylistLoader>()
             .init_asset::<crate::content::ui::TextTable>()

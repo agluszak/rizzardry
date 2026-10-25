@@ -10,7 +10,7 @@ use bevy::reflect::TypePath;
 use super::bytes::Bytes;
 use super::links::{level_entrances, level_links, teleport_arrival};
 use super::oct::read_collision;
-use super::population::{Placement, read_monster_models, read_placements};
+use super::population::{Placement, read_placements};
 use super::prop::{PROP_COLLIDABLE, Prop};
 use super::prop_loader::{
     PropLighting, key_transform, level_lighting, part_transforms, record_collision, record_meshes,
@@ -20,6 +20,7 @@ use super::sections::LevelSections;
 use super::sections::{Environment, read_sections};
 use super::space::UNITS_PER_METRE;
 use super::space::{retail_direction, retail_position, retail_yaw};
+use super::species::read_species;
 use super::texture_loader::file_has_alpha;
 use super::trigger::{
     AmbientSound, ItemTrigger, StateMode, TriggerKind, action as trigger_action, flag,
@@ -515,7 +516,8 @@ impl AssetLoader for PvlLoader {
             Some(path) => match context.read_asset_bytes(path).await {
                 Ok(state) => {
                     let species = AssetPath::from("retail://data/databases/monsters.dbs");
-                    let models = read_monster_models(&context.read_asset_bytes(species).await?)?;
+                    let species = read_species(&context.read_asset_bytes(species).await?)?;
+                    let models: Vec<String> = species.into_iter().map(|s| s.model).collect();
                     monster_placements(&read_placements(&state)?, &models)
                 }
                 Err(_) => vec![],
