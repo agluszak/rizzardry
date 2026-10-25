@@ -24,6 +24,8 @@ pub mod source;
 pub mod space;
 pub mod stci;
 pub mod sti_loader;
+pub mod strings;
+pub mod text_loader;
 pub mod texture_loader;
 pub mod trigger;
 
@@ -68,6 +70,8 @@ impl Plugin for RetailPlugin {
             .init_asset_loader::<monster_loader::MlsLoader>()
             .init_asset::<crate::content::ui::SpriteSheet>()
             .init_asset_loader::<sti_loader::StiLoader>()
+            .init_asset::<crate::content::ui::TextTable>()
+            .init_asset_loader::<text_loader::TextLoader>()
             .init_asset::<texture_loader::RetailTexture>()
             .init_asset_loader::<texture_loader::RetailTextureLoader>();
     }

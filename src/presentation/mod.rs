@@ -6,6 +6,7 @@ pub mod effects;
 pub mod environment;
 pub mod mipmaps;
 pub mod monsters;
+pub mod notices;
 pub mod sky;
 pub mod textures;
 pub mod voice;
@@ -21,7 +22,14 @@ impl Plugin for PresentationPlugin {
             .init_resource::<crate::game::automap::MapNotes>()
             .init_resource::<effects::CameraShake>()
             .add_input_context::<automap::Screens>()
-            .add_systems(Startup, (automap::spawn_screen_controls, automap::load_automap_art))
+            .add_systems(
+                Startup,
+                (
+                    automap::spawn_screen_controls,
+                    automap::load_automap_art,
+                    notices::load_notice_art,
+                ),
+            )
             .add_systems(
                 Update,
                 (
@@ -49,6 +57,7 @@ impl Plugin for PresentationPlugin {
                     sky::shade_clouds,
                     billboards::face_camera.after(crate::game::party::body::aim_camera),
                     effects::play_trigger_effects,
+                    (notices::show_notices, notices::fade_notices).chain(),
                     effects::shake_camera.after(crate::game::party::body::aim_camera),
                     sky::orbit_sun_and_moon,
                     voice::finish_speech,

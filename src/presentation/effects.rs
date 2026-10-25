@@ -51,8 +51,8 @@ pub fn play_trigger_effects(
                     noise: shake.noise,
                 };
             }
-            TriggerEffect::Message(id) => info!("level message {id} (messages are not shown yet)"),
-            TriggerEffect::Locked => info!("it is locked"),
+            // Shown as notices.
+            TriggerEffect::Message(_) | TriggerEffect::NothingHappened | TriggerEffect::Locked => {}
         }
     }
 }

@@ -15,7 +15,7 @@ use super::teleports::InsideTriggers;
 use crate::content::level::LevelGeometry;
 use crate::game::world::level::{Level, LevelReady};
 use crate::game::world::props::{Prop, prop_under_ray};
-use crate::game::world::triggers::LevelTriggers;
+use crate::game::world::triggers::{LevelTriggers, TriggerEffect};
 use crate::retail::space::UNITS_PER_METRE as U;
 
 // Retail motion values (Whizzardry `party_camera.cpp`, `collision.cpp`,
@@ -319,8 +319,8 @@ pub fn interact(
         } else if triggers.run(trigger) {
             info!("used {name} ({trigger})");
         } else {
-            // Retail says "Nothing happened".
             info!("used {name} ({trigger}): nothing happened");
+            triggers.effects.push(TriggerEffect::NothingHappened);
         }
     });
 }

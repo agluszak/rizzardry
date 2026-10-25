@@ -52,7 +52,9 @@ shown on retail content; the gaps below remain. Done:
   fire; sounds play at their prop; location variables and `once`/`on` state
   live on the level root. Level scripts hook in before an action; Monastery
   2's bells work end to end (each dial position rings its bell; the third
-  breaks the windows, shakes the camera and ends the puzzle).
+  breaks the windows, shakes the camera and ends the puzzle). Trigger
+  messages from the level's `.msg` file and "Nothing happens." from the
+  string table show as a notice in the retail text font.
 - **Navigation.** Rerecast navmeshes are baked by Bevy's asset processor, one
   per walker size class (0.6, 1.0, 1.6, 3.0 m), and used by Landmass. Teleport
   and ladder triggers become animation links; doors are links only while open.
@@ -112,7 +114,7 @@ Known gaps, in rough order:
   implemented. Travel does not yet ask retail's "Enter <level>?" question,
   and arriving does not probe for the ground (the party settles).
 - Most trigger actions are not performed yet (lights, missiles, fountains,
-  messages from `.msg` files, timed actions, proximity triggers other than
+  timed actions, proximity triggers other than
   teleports, required items). Picking uses colliders, so a prop sunk below the
   floor collider (the pressed bell pedal) cannot be clicked again, where
   retail picks what is drawn. Level state is lost when the level is left.

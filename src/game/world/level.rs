@@ -16,6 +16,7 @@ use super::scripts::LevelScript;
 use super::triggers::LevelState;
 use crate::content::level::LevelGeometry;
 use crate::content::levels::LevelInfo;
+use crate::content::ui::TextTable;
 use crate::presentation::billboards::FaceCamera;
 use crate::presentation::sky::{Celestial, Cloud};
 
@@ -29,6 +30,8 @@ pub struct Level {
     /// The level's sky world, drawn behind it; none for levels without one.
     pub sky: Option<Handle<LevelGeometry>>,
     pub script: LevelScript,
+    /// The messages its triggers show.
+    pub messages: Option<Handle<TextTable>>,
 }
 
 impl Level {
@@ -44,6 +47,9 @@ impl Level {
                 .map(|sky| assets.load(format!("retail://{sky}"))),
             script: LevelInfo::for_path(path)
                 .map_or_else(LevelScript::default, |info| LevelScript::for_location(info.location)),
+            messages: LevelInfo::for_path(path).map(|info| {
+                assets.load(format!("retail://data/messages/{}.msg", info.folder.to_lowercase()))
+            }),
         }
     }
 }

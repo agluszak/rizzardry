@@ -185,6 +185,8 @@ pub enum TriggerEffect {
     },
     /// A message from the level's message file.
     Message(i32),
+    /// The party used something and nothing came of it.
+    NothingHappened,
     Locked,
 }
 

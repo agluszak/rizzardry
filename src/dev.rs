@@ -584,6 +584,9 @@ pub fn scripted_use(
     triggers.with(|triggers| {
         let usable = triggers.state.find(&trigger).is_some_and(|index| triggers.usable(index));
         let committed = usable && triggers.run(&trigger);
+        if usable && !committed {
+            triggers.effects.push(crate::game::world::triggers::TriggerEffect::NothingHappened);
+        }
         info!(
             "ui script: used {} ({trigger}): {}",
             request.0,

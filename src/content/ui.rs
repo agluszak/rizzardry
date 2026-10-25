@@ -36,3 +36,13 @@ pub fn ui_image(width: u32, height: u32, rgba: Vec<u8>) -> Image {
     image.sampler = ImageSampler::nearest();
     image
 }
+
+/// Retail text by index: the game's string table, or a level's messages.
+#[derive(Asset, TypePath, Debug, Default)]
+pub struct TextTable(pub Vec<Option<String>>);
+
+impl TextTable {
+    pub fn get(&self, index: usize) -> Option<&str> {
+        self.0.get(index)?.as_deref()
+    }
+}
