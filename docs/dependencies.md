@@ -69,11 +69,12 @@ Integration choices:
   collider, which are already in hand. `landmass_rerecast` is not ported to
   Bevy 0.20; its 65-line mesh conversion is adapted in
   `game::world::navigation`.
-- `rerecast` is vendored in `third_party/` with one fix: when contour
-  triangulation finds no diagonal, upstream fails the whole navmesh, while
-  recastnavigation keeps the partial triangulation and warns. Without the fix,
-  18 of 34 retail levels fail to bake. Report it upstream and drop the copy
-  once fixed.
+- `rerecast` is vendored in `third_party/` with two fixes restoring
+  recastnavigation behaviour: region holes are merged into their outlines
+  (upstream omits Recast's `mergeRegionHoles`, so obstacles inside a region
+  were either a failed bake or covered by walkable polygons), and a failed
+  contour triangulation keeps its partial result instead of failing the
+  bake. See `third_party/README.md`.
 - Navmeshes go through Bevy's asset processor (`AssetMode::Processed`,
   `asset_processor` feature). A virtual `navmesh://` source exposes every
   retail `<level>.pvl` as `<level>.navmesh`. `LoadTransformAndSave` reads its
@@ -83,12 +84,15 @@ Integration choices:
   re-bakes automatically. The first launch bakes all 34 levels in parallel
   (0.1 to 2 s each); later launches only load. The retail source has a
   processed reader but no writer, so it is never processed or copied.
-- The conversion repairs Recast precision artifacts that Landmass rejects:
-  duplicate or spike vertices are removed, polygons that stay concave are
-  dropped, and flipped detail triangles are rewound
-  (`navigation::bake::repair`). All 34 levels validate. Most need no repair;
-  the worst, `trynnie2`, drops 49 of about 1600 polygons at the old 0.35 m
-  step height and none at 0.5 m.
+- The bake input is the level's `.oct` collision mesh (the same one the
+  Avian collider uses), compacted to referenced vertices. Walkable area comes
+  from the surfaces' designer-marked pathfinding flag, not a slope test.
+- The conversion fixes only numerical artifacts Landmass rejects:
+  duplicate or spike vertices are removed, polygons with no area in the
+  walking plane are dropped, flipped detail triangles are rewound
+  (`navigation::bake::repair`). A concave polygon with area fails the bake.
+  All 34 levels validate; the only repairs are 6 zero-area slivers along
+  ramps (1 in `mtgigastop`, 5 in `trynnie2`).
 - Moving actors never trigger a rebake.
 
 `cargo run --example navmesh_bake` bakes outside the game and reports
@@ -108,14 +112,13 @@ settings.
 - **Crowds.** 30 walkers on the upper monastery ran at about 110 fps (dev
   build, debug gizmos on), all in `Moving`, and closed to a median of 2.2 m
   around the party, queueing around each other instead of overlapping.
-- **Remaining splits are structural.** Several levels still have large
-  separate pieces (e.g. the monastery beach and monastery, 26,600 and 14,300
-  m², 2.2 m apart across a 1.3 m drop). Looser climb and height limits do
-  not merge them. They need retail data we do not decode yet: doors,
-  teleporters, elevators and ladders as Landmass links, and the `.oct`
-  collision surfaces with walkable flags. Those surfaces also matter because
-  translucent water is currently not solid, so riverbeds under water are
-  walkable navmesh.
+- **Retail collision surfaces.** Baking from the `.oct` collision instead of
+  opaque render polygons joined most splits: the lower monastery's largest
+  component went from 58% to 85% of the walkable area, the upper monastery's
+  to 99.6%, `marten1`'s from 38% to 94%. It also makes riverbeds under
+  translucent water walkable, as in retail, and adds the invisible walls.
+  Remaining splits are mostly doors, drops and links (teleporters,
+  elevators, ladders) still to be modelled.
 - **Party on stairs.** A wide, flat-bottomed cylinder (0.83 m radius, 0.5 m
   clearance) caught on stairs rising inside its radius and never left the
   `MO202` entrance. The party now uses retail's sphere (slightly smaller so

@@ -47,7 +47,8 @@ impl Default for NavmeshBakeSettings {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RepairReport {
     pub removed_vertices: usize,
-    pub dropped_polygons: usize,
+    /// Polygons with no area in the walking plane.
+    pub degenerate_polygons: usize,
     pub flipped_triangles: usize,
 }
 
@@ -118,7 +119,7 @@ pub fn bake(
     )
     .map_err(|e| error(&e))?;
     let mut mesh = to_landmass(&polygons, &detail);
-    let report = repair(&mut mesh);
+    let report = repair(&mut mesh)?;
     Ok((mesh, report))
 }
 
@@ -173,15 +174,17 @@ fn convex_corner(left: Vec2, center: Vec2, right: Vec2) -> bool {
     turn > 0.0 || (turn == 0.0 && right_edge.dot(left_edge) < 0.0)
 }
 
-/// Make Recast output pass Landmass validation.
+/// Make Recast output pass Landmass validation, fixing only numerical
+/// artifacts.
 ///
-/// Recast quantizes vertices to cells, which can leave a polygon with two
-/// vertices at one plane position (e.g. stacked at different heights), a
-/// spike, a slightly reflex corner, or a detail triangle whose winding
-/// flipped. Landmass rejects the whole mesh for any of these. Duplicate and
-/// spike vertices are removed; polygons that are still concave are dropped
-/// with their detail mesh; flipped detail triangles are rewound.
-pub fn repair(mesh: &mut NavigationMesh3d) -> RepairReport {
+/// Recast quantizes vertices to cells. On ramps this can leave a polygon with
+/// two vertices at one plane position (stacked at different heights), a spike,
+/// or all its vertices on one line: a polygon with no area. Landmass rejects
+/// the whole mesh for any of these. Duplicate and spike vertices are removed
+/// and zero-area polygons dropped with their detail mesh, which loses no
+/// walkable area; flipped detail triangles are rewound. A polygon that still
+/// has area but is concave is a real error, not something to drop silently.
+pub fn repair(mesh: &mut NavigationMesh3d) -> Result<RepairReport, String> {
     let mut report = RepairReport::default();
     let vertices = &mesh.vertices;
     let mut keep = vec![true; mesh.polygons.len()];
@@ -209,18 +212,16 @@ pub fn repair(mesh: &mut NavigationMesh3d) -> RepairReport {
             }
         }
         let n = polygon.len();
-        let convex = n >= 3
-            && (0..n).all(|i| {
-                convex_corner(
-                    plane(vertices[polygon[(i + n - 1) % n]]),
-                    plane(vertices[polygon[i]]),
-                    plane(vertices[polygon[(i + 1) % n]]),
-                )
-            });
+        let corners: Vec<Vec2> = polygon.iter().map(|&v| plane(vertices[v])).collect();
+        let area: f32 = (0..n).map(|i| corners[i].perp_dot(corners[(i + 1) % n])).sum();
         polygon.reverse();
-        if !convex {
+        if n < 3 || area == 0.0 {
             keep[index] = false;
-            report.dropped_polygons += 1;
+            report.degenerate_polygons += 1;
+        } else if !(0..n)
+            .all(|i| convex_corner(corners[(i + n - 1) % n], corners[i], corners[(i + 1) % n]))
+        {
+            return Err(format!("navmesh polygon {index} is concave: {corners:?}"));
         }
     }
 
@@ -254,7 +255,7 @@ pub fn repair(mesh: &mut NavigationMesh3d) -> RepairReport {
         index += 1;
         keep[index - 1]
     });
-    report
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -284,16 +285,28 @@ mod tests {
         // edge in Landmass's plane.
         let mut mesh = square_with(Vec3::new(0.0, 0.3, 0.0));
         assert!(mesh.clone().validate().is_err());
-        let report = repair(&mut mesh);
+        let report = repair(&mut mesh).unwrap();
         assert_eq!(report, RepairReport { removed_vertices: 1, ..Default::default() });
         assert!(mesh.validate().is_ok());
     }
 
     #[test]
-    fn a_reflex_polygon_is_dropped() {
+    fn a_reflex_polygon_is_an_error() {
         let mut mesh = square_with(Vec3::new(0.5, 0.0, -0.2));
-        let report = repair(&mut mesh);
-        assert_eq!(report.dropped_polygons, 1);
+        assert!(repair(&mut mesh).is_err());
+    }
+
+    #[test]
+    fn a_polygon_without_area_is_dropped() {
+        // Three corners on one line in the plane, at different heights.
+        let mut mesh = NavigationMesh3d {
+            vertices: vec![Vec3::ZERO, Vec3::new(1.0, 0.2, 0.0), Vec3::new(2.0, 0.4, 0.0)],
+            polygons: vec![vec![0, 1, 2]],
+            polygon_type_indices: vec![0],
+            height_mesh: None,
+        };
+        let report = repair(&mut mesh).unwrap();
+        assert_eq!(report.degenerate_polygons, 1);
         assert!(mesh.polygons.is_empty());
     }
 }
