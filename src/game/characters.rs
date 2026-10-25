@@ -89,11 +89,31 @@ fn profession_row(profession: Profession) -> ProfessionRow {
         &'static [Skill],
         i32,
     ) = match profession {
-        Fighter => ([55, 0, 0, 50, 50, 0, 0], 9.0, 1000, CloseCombat, &[RangedCombat, Sword, Axe, Shield], 4),
-        Lord => ([55, 0, 55, 55, 50, 50, 0], 7.5, 1400, DualWeapons, &[CloseCombat, Sword, Dagger], 4),
-        Valkyrie => ([50, 0, 55, 55, 50, 50, 0], 7.5, 1400, Polearm, &[CloseCombat, Mythology, Axe], 4),
-        Ranger => ([50, 50, 0, 50, 55, 0, 55], 6.5, 1400, RangedCombat, &[Scouting, Bow, Mythology], 4),
-        Samurai => ([50, 55, 0, 50, 55, 55, 0], 7.0, 1400, Sword, &[CloseCombat, DualWeapons, CriticalStrike], 4),
+        Fighter => (
+            [55, 0, 0, 50, 50, 0, 0],
+            9.0,
+            1000,
+            CloseCombat,
+            &[RangedCombat, Sword, Axe, Shield],
+            4,
+        ),
+        Lord => {
+            ([55, 0, 55, 55, 50, 50, 0], 7.5, 1400, DualWeapons, &[CloseCombat, Sword, Dagger], 4)
+        }
+        Valkyrie => {
+            ([50, 0, 55, 55, 50, 50, 0], 7.5, 1400, Polearm, &[CloseCombat, Mythology, Axe], 4)
+        }
+        Ranger => {
+            ([50, 50, 0, 50, 55, 0, 55], 6.5, 1400, RangedCombat, &[Scouting, Bow, Mythology], 4)
+        }
+        Samurai => (
+            [50, 55, 0, 50, 55, 55, 0],
+            7.0,
+            1400,
+            Sword,
+            &[CloseCombat, DualWeapons, CriticalStrike],
+            4,
+        ),
         Ninja => (
             [50, 50, 0, 50, 55, 55, 50],
             6.5,
@@ -110,14 +130,60 @@ fn profession_row(profession: Profession) -> ProfessionRow {
             &[CloseCombat, CriticalStrike, StaffAndWand, Stealth],
             4,
         ),
-        Rogue => ([0, 0, 0, 0, 55, 50, 50], 6.0, 1000, LocksAndTraps, &[Dagger, DualWeapons, Pickpocket, Stealth], 3),
-        Gadgeteer => ([45, 55, 0, 0, 60, 0, 55], 5.5, 1000, ModernWeapon, &[RangedCombat, Engineering, LocksAndTraps], 3),
-        Bard => ([45, 50, 0, 0, 55, 0, 55], 6.0, 1000, Communication, &[Music, Mythology, Artifacts], 3),
-        Priest => ([0, 0, 60, 55, 0, 0, 0], 5.0, 1200, Divinity, &[MaceAndFlail, StaffAndWand, Communication], 2),
-        Alchemist => ([0, 55, 0, 0, 60, 0, 0], 4.5, 1200, Alchemy, &[Mythology, ThrowingAndSling], 2),
-        Bishop => ([0, 55, 55, 0, 55, 0, 55], 4.0, 1600, Artifacts, &[Alchemy, Wizardry, Divinity, Psionics], 2),
-        Psionic => ([0, 55, 0, 0, 0, 0, 60], 3.5, 1200, Psionics, &[Communication, Mythology, MentalMagic], 2),
-        Mage => ([0, 60, 0, 0, 55, 0, 0], 3.0, 1200, Wizardry, &[FireMagic, WaterMagic, AirMagic, MentalMagic], 2),
+        Rogue => (
+            [0, 0, 0, 0, 55, 50, 50],
+            6.0,
+            1000,
+            LocksAndTraps,
+            &[Dagger, DualWeapons, Pickpocket, Stealth],
+            3,
+        ),
+        Gadgeteer => (
+            [45, 55, 0, 0, 60, 0, 55],
+            5.5,
+            1000,
+            ModernWeapon,
+            &[RangedCombat, Engineering, LocksAndTraps],
+            3,
+        ),
+        Bard => {
+            ([45, 50, 0, 0, 55, 0, 55], 6.0, 1000, Communication, &[Music, Mythology, Artifacts], 3)
+        }
+        Priest => (
+            [0, 0, 60, 55, 0, 0, 0],
+            5.0,
+            1200,
+            Divinity,
+            &[MaceAndFlail, StaffAndWand, Communication],
+            2,
+        ),
+        Alchemist => {
+            ([0, 55, 0, 0, 60, 0, 0], 4.5, 1200, Alchemy, &[Mythology, ThrowingAndSling], 2)
+        }
+        Bishop => (
+            [0, 55, 55, 0, 55, 0, 55],
+            4.0,
+            1600,
+            Artifacts,
+            &[Alchemy, Wizardry, Divinity, Psionics],
+            2,
+        ),
+        Psionic => (
+            [0, 55, 0, 0, 0, 0, 60],
+            3.5,
+            1200,
+            Psionics,
+            &[Communication, Mythology, MentalMagic],
+            2,
+        ),
+        Mage => (
+            [0, 60, 0, 0, 55, 0, 0],
+            3.0,
+            1200,
+            Wizardry,
+            &[FireMagic, WaterMagic, AirMagic, MentalMagic],
+            2,
+        ),
     };
     ProfessionRow {
         minimums: EnumMap::from_array(minimums),

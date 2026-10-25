@@ -63,7 +63,11 @@ const MONSTER_BODY: usize = 3;
 
 /// Where a blow lands, by cumulative percentages against one `below(100)`
 /// draw; anything past them hits `fallback`.
-fn location<L: Copy>(rng: &mut GameRng, chances: impl IntoIterator<Item = (L, u8)>, fallback: L) -> L {
+fn location<L: Copy>(
+    rng: &mut GameRng,
+    chances: impl IntoIterator<Item = (L, u8)>,
+    fallback: L,
+) -> L {
     let roll = rng.below(100);
     let mut total = 0;
     for (location, chance) in chances {

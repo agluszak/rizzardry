@@ -8,8 +8,7 @@ use bevy::prelude::*;
 use bevy_enhanced_input::EnhancedInputPlugin;
 
 use crate::dev::{
-    OverheadView, SayLine, ScreenshotAndExit, TestAgents, log_test_agents, overhead_view, say_line,
-    screenshot_and_exit, spawn_test_agents,
+    OverheadView, SayLine, ScreenshotAndExit, overhead_view, say_line, screenshot_and_exit,
 };
 use crate::game::party::PartyPlugin;
 use crate::game::party::body::PartyStart;
@@ -84,15 +83,6 @@ pub struct Options {
     /// `npc_aletheides_000`.
     #[arg(long, value_name = "LINE")]
     pub say: Option<String>,
-    /// Developer: spawn this many stand-in monsters that chase the party.
-    #[arg(long, value_name = "COUNT", default_value_t = 0)]
-    pub test_agents: usize,
-    /// Developer: the stand-in monsters' radius in metres.
-    #[arg(long, value_name = "METRES", default_value_t = 0.35)]
-    pub test_agent_radius: f32,
-    /// Developer: dress the stand-in monsters as this retail species.
-    #[arg(long, value_name = "SPECIES")]
-    pub test_monster: Option<String>,
     /// Developer: draw the navmesh, agent paths and avoidance.
     #[arg(long)]
     pub nav_debug: bool,
@@ -255,17 +245,6 @@ pub fn build(options: &Options) -> Result<App, String> {
     if let Some(height) = options.overhead {
         app.insert_resource(OverheadView { height })
             .add_systems(PostUpdate, overhead_view.before(TransformSystems::Propagate));
-    }
-    if options.test_agents > 0 {
-        app.insert_resource(TestAgents {
-            count: options.test_agents,
-            radius: options.test_agent_radius,
-            monster: options.test_monster.clone(),
-            spawned: false,
-            since_log: 0.0,
-            frames: 0,
-        })
-        .add_systems(Update, (spawn_test_agents, log_test_agents));
     }
     // A new game: the party, entering the chosen level.
     app.add_systems(Startup, move |mut commands: Commands, mut roster: ResMut<PartyRoster>| {

@@ -890,8 +890,7 @@ mod tests {
     fn members_merge_stacks_then_fill_the_backpack_and_the_pool_takes_the_rest() {
         let (catalog, mut ids) = (catalog(), ItemIds::default());
         let mut carried = Carried::default();
-        carried.equipment[EquipSlot::Secondary] =
-            Some(item(&mut ids, 0, Quantity::Stack(18)));
+        carried.equipment[EquipSlot::Secondary] = Some(item(&mut ids, 0, Quantity::Stack(18)));
         let mut party = PartyInventory::default();
         party.receive(&mut carried, item(&mut ids, 0, Quantity::Stack(5)), &catalog).unwrap();
         // Two topped up the worn stack; three took a backpack slot.
@@ -924,8 +923,7 @@ mod tests {
             (&catalog.0[1], &catalog.0[2], &catalog.0[3], &catalog.0[0]);
         let mut carried = Carried::default();
         assert!(allowed_slots(axe, &carried, &catalog, None).contains(&EquipSlot::Primary));
-        carried.equipment[EquipSlot::Secondary] =
-            Some(item(&mut ids, 3, Quantity::One));
+        carried.equipment[EquipSlot::Secondary] = Some(item(&mut ids, 3, Quantity::One));
         // A shield in the off hand bars a two-handed weapon from that set.
         assert_eq!(allowed_slots(axe, &carried, &catalog, None), [EquipSlot::AlternatePrimary]);
         carried.equipment[EquipSlot::Primary] = Some(item(&mut ids, 2, Quantity::One));

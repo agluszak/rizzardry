@@ -62,7 +62,7 @@ cargo test --locked
 RIZZARDRY_RETAIL=/path/to/wizardry8 cargo test --locked -- --ignored
 ```
 
-The real-game `--test-agents`, `--nav-debug`, `--overhead`, `--screenshot`
+The real-game `--nav-debug`, `--overhead`, `--screenshot`
 and `navmesh_bake` tools are useful diagnostics. Logging positions, writing a
 screenshot or printing "INVALID" does not by itself pass a test. A check used
 as a gate must assert an outcome and exit unsuccessfully on failure.

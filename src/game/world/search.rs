@@ -7,9 +7,9 @@ use avian3d::prelude::{RigidBody, SpatialQuery, SpatialQueryFilter};
 use bevy::prelude::*;
 use bevy_enhanced_input::prelude::*;
 
+use crate::content::characters::{Attribute, Skill};
 use crate::content::items::ItemCatalog;
 use crate::game::camp::can_act;
-use crate::content::characters::{Attribute, Skill};
 use crate::game::characters::{Character, Profession};
 use crate::game::combat::Battle;
 use crate::game::data::GameData;

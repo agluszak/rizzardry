@@ -11,11 +11,11 @@ use super::pvl::{PvlError, invalid};
 use enumset::EnumSet;
 
 use crate::content::characters::Skill;
-use crate::content::species::Reach;
 use crate::content::items::{
-    Ammunition,
-    Dice, EquipClass, ItemCatalog, ItemDefinition, ItemId, LootTable, LootTables, QuantityKind,
+    Ammunition, Dice, EquipClass, ItemCatalog, ItemDefinition, ItemId, LootTable, LootTables,
+    QuantityKind,
 };
+use crate::content::species::Reach;
 
 const RECORD: usize = 0x10d;
 const TABLE_RECORD: usize = 256 + 4 + 40 * 5 + 1 + 4 + 4 + 4 + 0x18;

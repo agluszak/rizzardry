@@ -3,8 +3,8 @@
 use bevy::prelude::*;
 use serde::Deserialize;
 
-use crate::content::items::{ItemCatalog, ItemId};
 use crate::content::characters::Skill;
+use crate::content::items::{ItemCatalog, ItemId};
 use crate::game::characters::{Character, Gender, Profession, Race};
 use crate::game::data::GameData;
 use crate::game::inventory::{Carried, ItemIds, make_item, place_at_creation};
@@ -30,7 +30,8 @@ pub struct Recruit {
 /// Add a new member at the end of the party; they receive their starting
 /// equipment once the items have loaded.
 pub fn recruit(commands: &mut Commands, roster: &mut PartyRoster, recruit: &Recruit) -> Entity {
-    let mut character = Character::new(&recruit.name, recruit.race, recruit.gender, recruit.profession);
+    let mut character =
+        Character::new(&recruit.name, recruit.race, recruit.gender, recruit.profession);
     character.portrait = recruit.portrait.clone();
     let member = commands.spawn((Name::new(recruit.name.clone()), character, NeedsEquipment)).id();
     roster.0.push(member);
@@ -132,8 +133,7 @@ mod tests {
             let character = Character::new("Test", race, gender, profession);
             let mut carried = Carried::default();
             for id in starting_items(&character) {
-                let item =
-                    make_item(catalog.get(id).unwrap(), &mut ids, &mut rng, true, true);
+                let item = make_item(catalog.get(id).unwrap(), &mut ids, &mut rng, true, true);
                 place_at_creation(&mut carried, item, &catalog, &character).unwrap();
             }
             let name = |i: &Option<crate::game::inventory::ItemInstance>| {

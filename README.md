@@ -28,21 +28,17 @@ Options:
 - `--start x,y,z`: an explicit eye position in metres; `--yaw` and `--pitch`
   (degrees) override the facing.
 - `--hour <0-24>`: start at this time of day instead of noon.
+- `--party <file.ron>`: the new game's party, instead of `assets/party.ron`.
+- `--continuous`: fight continuously, as retail's setting does.
 
 Developer options:
 
+- `--headless`: no window or sound; updates run as fast as the machine
+  allows, with what happens written to the log. `--run-for <s>` stops after
+  that much play, `--seed <n>` fixes gameplay's random numbers.
 - `--screenshot <file.png>` (with `--screenshot-after <s>`): capture the view
-  after entering, then exit.
-- `--walk <s>`, `--interact-at <s>`, `--face-prop <name>`: scripted movement
-  and prop use.
-- `--ui-script "key m; click X Y; type TEXT; key Enter; wait S"`: drive the UI
-  through real input messages; clicks use the 640×480 screen layout.
-  `assert-map open`, `assert-map closed`, `assert-layer N`, and `assert-note TEXT` fail the run
-  if the expected UI state is absent.
+  after entering, then exit; with `--headless`, rendered offscreen.
 - `--say <line>`: speak a retail voice line, e.g. `npc_aletheides_000`.
-- `--test-agents <n>`, `--test-agent-radius <m>`, `--test-monster <species>`:
-  stand-in monsters that chase the party, optionally dressed as a retail
-  species such as `savant_trooper`.
 - `--nav-debug`: draw the navmeshes, paths and avoidance.
 - `--overhead <metres>`: view the party from straight above.
 

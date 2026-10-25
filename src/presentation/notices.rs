@@ -7,10 +7,10 @@
 
 use bevy::prelude::*;
 
-use crate::content::ui::{SpriteSheet, TextTable};
-use crate::game::camp::CampNews;
 use crate::content::items::AttackMode;
 use crate::content::species::AttackWord;
+use crate::content::ui::{SpriteSheet, TextTable};
+use crate::game::camp::CampNews;
 use crate::game::combat::{Announcement, CombatNews};
 use crate::game::inventory::ItemNews;
 use crate::game::world::identify::Identified;

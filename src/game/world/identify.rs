@@ -9,8 +9,8 @@ use std::collections::{HashMap, HashSet};
 use bevy::prelude::*;
 
 use super::population::Monster;
-use crate::content::species::MonsterCatalog;
 use crate::content::characters::{Attribute, Skill};
+use crate::content::species::MonsterCatalog;
 use crate::game::characters::{Character, Condition};
 use crate::game::combat::Battle;
 use crate::game::data::GameData;
