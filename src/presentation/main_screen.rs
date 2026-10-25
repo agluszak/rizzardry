@@ -574,9 +574,9 @@ fn blip_position(delta: Vec3, yaw: f32, spread: bool) -> Vec2 {
     const RIM: f32 = 38.0;
     let inner = 1.0;
     let outer = 50.0 + inner;
-    let forward = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
-    let right = Vec3::new(yaw.cos(), 0.0, -yaw.sin());
-    let flat = Vec2::new(delta.dot(right), delta.dot(forward));
+    // Right and forward: in the party's frame forward is -Z.
+    let local = Quat::from_rotation_y(-yaw) * delta;
+    let flat = Vec2::new(local.x, -local.z);
     let distance = flat.length();
     let pixels = if distance <= inner {
         if spread { SCALE * distance / inner } else { SCALE }
