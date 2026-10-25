@@ -678,3 +678,46 @@ pub fn log_prop(
         None => warn!("ui script: no prop {}", request.0),
     }
 }
+
+/// Stop the game after this many real seconds (`--run-for`).
+#[derive(Resource, Debug)]
+pub struct RunFor(pub f32);
+
+pub fn exit_after_run(
+    time: Res<Time<Real>>,
+    run_for: Res<RunFor>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    if time.elapsed_secs() >= run_for.0 {
+        exit.write(AppExit::Success);
+    }
+}
+
+/// Headless, what happens goes to the log instead of the screen.
+pub fn log_news(
+    mut combat: MessageReader<crate::game::combat::CombatNews>,
+    mut items: MessageReader<crate::game::inventory::ItemNews>,
+    mut search: MessageReader<crate::game::world::search::SearchNews>,
+    mut identified: MessageReader<crate::game::world::identify::Identified>,
+    mut camp: MessageReader<crate::game::camp::CampNews>,
+    mut ready: MessageReader<crate::game::world::level::LevelReady>,
+) {
+    for news in combat.read() {
+        info!("combat: {news:?}");
+    }
+    for news in items.read() {
+        info!("items: {news:?}");
+    }
+    for news in search.read() {
+        info!("search: {news:?}");
+    }
+    for news in identified.read() {
+        info!("identified: {news:?}");
+    }
+    for news in camp.read() {
+        info!("camp: {news:?}");
+    }
+    for news in ready.read() {
+        info!("level ready: {news:?}");
+    }
+}

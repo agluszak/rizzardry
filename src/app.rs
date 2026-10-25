@@ -69,6 +69,26 @@ pub struct Options {
     /// Start at this hour of the day (0-24) instead of a new game's noon.
     #[arg(long, value_name = "HOUR")]
     pub hour: Option<f32>,
+    /// Run without a window, rendering, sound or UI: gameplay only, with
+    /// what happens written to the log. Scripted checks of rules (fights,
+    /// travel) run this way.
+    #[arg(long)]
+    pub headless: bool,
+    /// Stop after this many real seconds.
+    #[arg(long, value_name = "SECONDS")]
+    pub run_for: Option<f32>,
+    /// Run the game this many times faster than real time (Bevy's virtual
+    /// time, which the fixed step, the fight's pace and the clock follow).
+    #[arg(long, value_name = "FACTOR")]
+    pub speed: Option<f32>,
+    /// Fight continuously (retail's setting): rounds follow each other
+    /// without waiting for the player.
+    #[arg(long)]
+    pub continuous: bool,
+    /// Developer: seed gameplay's random numbers, for another reproducible
+    /// run.
+    #[arg(long, value_name = "SEED")]
+    pub seed: Option<u64>,
     /// Developer: drive the UI with scripted input, e.g.
     /// `"key Tab; click 300 200; type Hello; key Enter"`.
     #[arg(long, value_name = "STEPS")]
@@ -142,31 +162,75 @@ pub fn run(options: Options) -> AppExit {
         pitch: options.pitch.to_radians(),
     };
 
+    if options.headless && (options.screenshot.is_some() || options.ui_script.is_some()) {
+        eprintln!("screenshots and UI scripts need the window; leave out --headless");
+        return AppExit::error();
+    }
+
     let mut app = App::new();
     app.add_plugins(RetailPlugin {
         files,
         navmesh_cache: "imported_assets/navmesh".into(),
         navmesh_classes: SIZE_CLASSES.len(),
-    })
-    .add_plugins(
-        DefaultPlugins
-            .set(WindowPlugin {
-                primary_window: Some(Window { title: "Rizzardry".into(), ..default() }),
-                ..default()
-            })
-            // Navmeshes are baked once by the asset processor and cached.
-            .set(AssetPlugin { mode: AssetMode::Processed, ..default() }),
-    )
-    .add_plugins((
+    });
+    // Navmeshes are baked once by the asset processor and cached.
+    let plugins = DefaultPlugins.set(AssetPlugin { mode: AssetMode::Processed, ..default() });
+    if options.headless {
+        // Bevy's headless setup: no window or event loop, no audio device,
+        // and a renderer with no backend, so meshes and images still load as
+        // assets but nothing is drawn. The schedule runs at 60 Hz.
+        app.add_plugins(
+            plugins
+                .set(WindowPlugin {
+                    primary_window: None,
+                    exit_condition: bevy::window::ExitCondition::DontExit,
+                    ..default()
+                })
+                .set(bevy::render::RenderPlugin {
+                    render_creation: bevy::render::settings::WgpuSettings {
+                        backends: None,
+                        ..default()
+                    }
+                    .into(),
+                    ..default()
+                })
+                .disable::<bevy::winit::WinitPlugin>()
+                .disable::<bevy::audio::AudioPlugin>(),
+        )
+        .add_plugins(bevy::app::ScheduleRunnerPlugin::run_loop(std::time::Duration::from_secs_f64(
+            1.0 / 60.0,
+        )))
+        .add_systems(Update, crate::dev::log_news);
+    } else {
+        app.add_plugins(plugins.set(WindowPlugin {
+            primary_window: Some(Window { title: "Rizzardry".into(), ..default() }),
+            ..default()
+        }))
+        .add_plugins(PresentationPlugin)
+        .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.07)));
+    }
+    app.add_plugins((
         EnhancedInputPlugin,
         PhysicsPlugins::default(),
         WorldPlugin,
         PartyPlugin,
-        PresentationPlugin,
         TimePlugin,
         crate::game::combat::CombatPlugin,
-    ))
-    .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.07)));
+    ));
+    if let Some(speed) = options.speed {
+        app.add_systems(Startup, move |mut time: ResMut<Time<Virtual>>| {
+            time.set_relative_speed(speed);
+            // Let a frame cover as many fixed steps as the speed asks for.
+            time.set_max_delta(std::time::Duration::from_secs_f32(0.25 * speed.max(1.0)));
+        });
+    }
+    if options.continuous {
+        app.insert_resource(crate::game::combat::CombatSettings { continuous: true });
+    }
+    if let Some(seconds) = options.run_for {
+        app.insert_resource(crate::dev::RunFor(seconds))
+            .add_systems(Update, crate::dev::exit_after_run);
+    }
     app.insert_resource(start);
     if let Some(path) = options.screenshot.clone() {
         let after = options.screenshot_after.unwrap_or(2.0 + options.walk.unwrap_or(0.0));
@@ -186,6 +250,9 @@ pub fn run(options: Options) -> AppExit {
     }
     if let Some(line) = options.say.clone() {
         app.insert_resource(SayLine { line, started: None }).add_systems(Update, say_line);
+    }
+    if let Some(seed) = options.seed {
+        app.insert_resource(crate::game::rng::GameRng::seeded(seed));
     }
     if let Some(hour) = options.hour {
         app.insert_resource(GameClock::at((hour.rem_euclid(24.0) * 3_600_000.0) as u64));

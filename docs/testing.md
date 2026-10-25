@@ -17,6 +17,10 @@ to elaborate test scaffolding or implementation snapshots.
 - **Real-game checks:** rendering, movement feel, animation timing, input
   integration, and retail geometry that tiny synthetic worlds cannot represent.
   Exercise a representative scene and check the actual result.
+- **Headless game runs:** gameplay on retail content (fights, loot, travel)
+  without a window, rendering, sound or UI. `--headless` runs the real game
+  plugins that way and logs what happens; do not open a window to check a
+  rule.
 
 No custom harness, fixture DSL, mock engine, second gameplay model or separate
 testing crates unless a concrete problem requires one. Keep fixtures local to
@@ -62,6 +66,28 @@ The real-game `--walk`, `--test-agents`, `--nav-debug`, `--screenshot` and
 `navmesh_bake` tools are useful diagnostics. Logging positions, writing a
 screenshot or printing "INVALID" does not by itself pass a test. A check used
 as a gate must assert an outcome and exit unsuccessfully on failure.
+
+### Headless runs
+
+`--headless` builds the game without a window or event loop, without audio,
+and with a renderer that has no GPU backend (Bevy's headless setup: meshes and
+images still load as assets, nothing is drawn). Presentation is not installed;
+gameplay news (combat, items, search, identification, camping, level
+activation) goes to the log. With it:
+
+- `--continuous` fights without waiting for the player between rounds;
+- `--speed N` runs virtual time N times faster (the fixed step, the fight's
+  pace and the game clock follow it);
+- `--run-for SECONDS` exits after that many real seconds;
+- `--seed N` gives another reproducible run of gameplay's random numbers.
+
+```sh
+cargo run -- --headless --continuous --speed 8 --run-for 10 --seed 4 \
+  --start=69.5,10,-24 --yaw 0     # the Monastery's Green Slimes
+```
+
+Screenshots and UI scripts need the window and are refused with
+`--headless`.
 
 Do not require GPU screenshots or all-map baking on every PR. Run focused
 retail/visual checks when the changed feature warrants them.
