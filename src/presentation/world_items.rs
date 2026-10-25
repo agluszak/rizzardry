@@ -184,8 +184,8 @@ pub fn hover_world_items(
 
 /// Retail's help box waits the tooltip delay, at most half a second.
 const TOOLTIP_DELAY: f32 = 0.5;
-/// Retail raises the box by half the cursor's height; the main screen does
-/// not draw retail's cursor yet, so this assumes a 32-pixel one.
+/// Retail raises the box by half the cursor's height: its arrow is 32
+/// pixels high.
 const HALF_CURSOR: f32 = 16.0;
 
 /// The help box with the hovered item's name (retail `VideoToolTip`):

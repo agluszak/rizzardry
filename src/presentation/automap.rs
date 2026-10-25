@@ -834,7 +834,11 @@ pub fn draw_layer_label(
     *previous = Some((entity, automap.layer));
 }
 
-/// Let the window backend draw retail tool cursors with their original hotspots.
+/// Let the window backend draw retail's cursors with their original
+/// hotspots: the automap's tools, and elsewhere retail's arrow (frame 0 of
+/// `2D-Cursors.sti`, the first entry of retail's video object catalog,
+/// hotspot at its tip).
+#[allow(clippy::too_many_arguments)]
 pub fn update_map_cursor(
     mut commands: Commands,
     windows: Query<(Entity, Option<&bevy::window::CursorIcon>), With<bevy::window::PrimaryWindow>>,
@@ -842,9 +846,12 @@ pub fn update_map_cursor(
     art: Option<Res<AutomapArt>>,
     sheets: Res<Assets<SpriteSheet>>,
     viewport: Query<&Hovered, With<MapViewport>>,
+    assets: Res<AssetServer>,
+    mut arrow: Local<Option<Handle<SpriteSheet>>>,
 ) {
     use bevy::window::{CursorIcon, CustomCursor, CustomCursorImage};
     let Ok((window, current)) = windows.single() else { return };
+    let arrow = arrow.get_or_insert_with(|| assets.load("retail://data/cursors/2d-cursors.sti"));
     let cursor = match (automap, art) {
         (Some(map), Some(art)) => {
             let inside = viewport.single().is_ok_and(|hovered| hovered.get());
@@ -868,7 +875,15 @@ pub fn update_map_cursor(
                 },
             )
         }
-        _ => CursorIcon::default(),
+        _ => sheets.get(&*arrow).and_then(|sheet| sheet.images.first()).map_or_else(
+            CursorIcon::default,
+            |handle| {
+                CursorIcon::Custom(CustomCursor::Image(CustomCursorImage {
+                    handle: handle.clone(),
+                    ..default()
+                }))
+            },
+        ),
     };
     if current != Some(&cursor) {
         commands.entity(window).insert(cursor);
