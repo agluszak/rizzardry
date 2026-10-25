@@ -18,7 +18,7 @@ use super::items::WorldItem;
 use super::navigation::Walker;
 use super::navigation::bake::SIZE_CLASSES;
 use super::navigation::links::DoorLink;
-use super::population::{Monster, MonsterModels};
+use super::population::{Monster, MonsterBodies};
 use super::props::{Prop, PropMotion, pose};
 use super::scripts::LevelScript;
 use super::triggers::{DeviceRecords, LevelState, TriggerMemory, spawn_devices};
@@ -26,7 +26,7 @@ use super::{navigation, population};
 use crate::content::items::{ItemCatalog, LootTables};
 use crate::content::level::LevelGeometry;
 use crate::content::levels::LevelInfo;
-use crate::content::monster::MonsterModel;
+use crate::content::monster::MonsterBody;
 use crate::content::navmesh::navmesh_path;
 use crate::content::species::MonsterCatalog;
 use crate::content::ui::TextTable;
@@ -212,7 +212,7 @@ impl LevelContents<'_, '_> {
                 .filter_map(|&c| self.monsters.get(c).ok())
                 .map(|(monster, at, walker)| KeptMonster {
                     monster: monster.clone(),
-                    feet: at.translation - Vec3::Y * walker.map_or(0.0, |w| w.float_height),
+                    feet: super::navigation::feet(at.translation, walker),
                     yaw: at.rotation.to_euler(EulerRot::YXZ).0,
                 })
                 .collect(),
@@ -416,8 +416,8 @@ pub struct SharedData<'w> {
     items: Res<'w, Assets<ItemCatalog>>,
     loot: Res<'w, Assets<LootTables>>,
     species: Res<'w, Assets<MonsterCatalog>>,
-    models: Res<'w, Assets<MonsterModel>>,
-    monster_models: ResMut<'w, MonsterModels>,
+    bodies: Res<'w, Assets<MonsterBody>>,
+    monster_bodies: ResMut<'w, MonsterBodies>,
 }
 
 /// Make a destination playable once its gameplay prerequisites exist, in
@@ -466,14 +466,14 @@ pub fn activate_level(
         ) else {
             continue;
         };
-        let models = shared.monster_models.for_level(geometry, species, &assets);
-        if models.iter().any(|model| failed(model.id().untyped())) {
-            error!("{}: a monster's model failed to load", level.path);
+        let bodies = shared.monster_bodies.for_level(geometry, species, &assets);
+        if bodies.iter().any(|body| failed(body.id().untyped())) {
+            error!("{}: a monster's body definition failed to load", level.path);
             destination.failed = true;
             stay(&mut commands, &departing, &mut memory, &mut party);
             continue;
         }
-        if !models.iter().all(|model| shared.models.contains(model))
+        if !bodies.iter().all(|body| shared.bodies.contains(body))
             || !navigation::navmeshes_settled(level, &assets)
         {
             continue;
@@ -502,9 +502,9 @@ pub fn activate_level(
             &mut commands,
             root,
             geometry,
-            remembered.as_ref(),
+            remembered,
             (species, items),
-            (&shared.monster_models.0, &shared.models),
+            (&shared.monster_bodies.0, &shared.bodies),
             &mut ids,
             &mut rng,
         );

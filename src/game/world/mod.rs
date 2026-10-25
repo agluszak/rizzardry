@@ -38,7 +38,7 @@ impl Plugin for WorldPlugin {
             .add_message::<search::SearchNews>()
             .init_resource::<search::Search>()
             .init_resource::<level::LevelMemory>()
-            .init_resource::<population::MonsterModels>()
+            .init_resource::<population::MonsterBodies>()
             .init_resource::<crate::game::rng::GameRng>()
             .init_resource::<crate::game::inventory::ItemIds>()
             .init_resource::<crate::game::inventory::PartyInventory>()

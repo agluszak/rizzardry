@@ -45,6 +45,17 @@ one by one. `content` and shared presentation types must not depend on
 `retail`; move a genuinely reusable type or font operation below both users
 rather than adding another mirror representation.
 
+Monster body metadata and visual cycles have independent readiness. The retail
+adapter registers typed `.mls` loaders for `MonsterBody` and `MonsterModel`:
+the body loader reads the species description without loading `.mon` cycles,
+meshes or materials. Level activation waits for body metadata, while
+presentation requests visual models separately. A failed visual cycle cannot
+change gameplay dimensions or prevent an otherwise playable level activating.
+Effective scale, reach radius, eye height and movement speed belong to the live
+monster. Persistence captures those values and derives feet from gameplay's
+controller offset; it never requires an attached visual model. Activation moves
+owned dormant monsters, world items and group knowledge back into ECS.
+
 ## Stable content identity and overrides
 
 Authored content uses stable namespaced keys. The retail adapter maps numbered

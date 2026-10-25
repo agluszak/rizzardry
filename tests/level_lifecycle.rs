@@ -7,7 +7,7 @@ use avian3d::prelude::{Collider, RigidBodyDisabled};
 use bevy::prelude::*;
 use rizzardry::content::items::{ItemCatalog, LootTables};
 use rizzardry::content::level::{CollisionMesh, LevelGeometry, MonsterPlacement};
-use rizzardry::content::monster::MonsterModel;
+use rizzardry::content::monster::MonsterBody;
 use rizzardry::content::species::{MonsterCatalog, Species};
 use rizzardry::game::data::GameData;
 use rizzardry::game::inventory::ItemIds;
@@ -16,7 +16,7 @@ use rizzardry::game::rng::GameRng;
 use rizzardry::game::world::level::{
     Departing, Destination, Level, LevelMemory, LevelReady, Travel, activate_level, travel,
 };
-use rizzardry::game::world::population::{Monster, MonsterModels};
+use rizzardry::game::world::population::{Monster, MonsterBodies};
 use rizzardry::game::world::triggers::PendingPartyMove;
 
 fn app() -> App {
@@ -27,11 +27,11 @@ fn app() -> App {
         .init_asset::<LootTables>()
         .init_asset::<MonsterCatalog>()
         .init_asset::<bevy_landmass::NavMesh3d>()
-        .init_asset::<MonsterModel>()
+        .init_asset::<MonsterBody>()
         .init_asset::<rizzardry::content::ui::TextTable>()
         .init_resource::<Assets<PartyMotionConfig>>()
         .init_resource::<LevelMemory>()
-        .init_resource::<MonsterModels>()
+        .init_resource::<MonsterBodies>()
         .init_resource::<ItemIds>()
         .init_resource::<GameRng>()
         .init_resource::<PartyStart>()
@@ -54,10 +54,9 @@ fn with_data(app: &mut App) {
     let crab = Species { name: "Crab".into(), model: "crab".into(), ..default() };
     let species = world.resource_mut::<Assets<MonsterCatalog>>().add(MonsterCatalog(vec![crab]));
     world.insert_resource(GameData { items, loot, species });
-    // The crab's model, as the retail source would provide it.
-    let model = MonsterModel { body: default(), cycles: default() };
-    let model = world.resource_mut::<Assets<MonsterModel>>().add(model);
-    world.resource_mut::<MonsterModels>().0.insert(0, model);
+    // Required body metadata is available without a visual asset or renderer.
+    let body = world.resource_mut::<Assets<MonsterBody>>().add(MonsterBody::default());
+    world.resource_mut::<MonsterBodies>().0.insert(0, body);
 }
 
 fn test_level(app: &mut App, collision: CollisionMesh) -> Level {
@@ -217,21 +216,141 @@ fn a_killed_monster_stays_dead_when_the_party_returns() {
 }
 
 #[test]
-fn a_level_waits_for_its_monsters_models_and_sizes_them() {
+fn body_metadata_loads_even_when_the_visual_cycles_fail() {
+    use bevy::asset::LoadState;
+    use rizzardry::content::monster::MonsterModel;
+    use rizzardry::retail::monster_loader::{MlsBodyLoader, MlsLoader};
+
+    let directory =
+        std::env::temp_dir().join(format!("rizzardry-body-loader-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(
+        directory.join("crab.mls"),
+        "scalefactor 2\nfightradius 0.75\ntargetheight 1.5\nIDLE broken\n",
+    )
+    .unwrap();
+    std::fs::write(directory.join("broken.mon"), [0]).unwrap();
+    let mut app = App::new();
+    app.add_plugins((
+        MinimalPlugins,
+        AssetPlugin { file_path: directory.to_string_lossy().into_owned(), ..default() },
+    ))
+    .init_asset::<MonsterBody>()
+    .init_asset::<MonsterModel>()
+    .init_asset_loader::<MlsBodyLoader>()
+    .init_asset_loader::<MlsLoader>();
+    app.finish();
+    app.cleanup();
+    let body = app.world().resource::<AssetServer>().load::<MonsterBody>("crab.mls");
+    let visual = app.world().resource::<AssetServer>().load::<MonsterModel>("crab.mls");
+    let started = std::time::Instant::now();
+    loop {
+        app.update();
+        let assets = app.world().resource::<AssetServer>();
+        if matches!(assets.get_load_state(&body), Some(LoadState::Loaded))
+            && matches!(assets.get_load_state(&visual), Some(LoadState::Failed(_)))
+        {
+            break;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "body/visual loads did not settle independently"
+        );
+        std::thread::yield_now();
+    }
+    let definition = app.world().resource::<Assets<MonsterBody>>().get(&body).unwrap();
+    assert_eq!(
+        (definition.scale, definition.fight_radius, definition.target_height),
+        (2.0, 0.75, 1.5)
+    );
+    assert!(app.world().resource::<Assets<MonsterModel>>().is_empty());
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn attaching_visuals_does_not_change_physical_state_or_revisit_placement() {
+    use rizzardry::content::monster::MonsterModel;
+    use rizzardry::game::world::navigation::Walker;
+    use rizzardry::game::world::population::ScaledBody;
+    use rizzardry::presentation::monsters::{
+        MonsterInstance, MonsterVisual, build_monster_instances,
+    };
+
+    for show_visuals in [false, true] {
+        let mut app = app();
+        with_data(&mut app);
+        let first = spawn_level(&mut app, floor());
+        app.update();
+        let actor =
+            app.world_mut().query_filtered::<Entity, With<Monster>>().single(app.world()).unwrap();
+        let feet = Vec3::new(2.0, 3.0, 4.0);
+        let body = ScaledBody { scale: 1.4, radius: 0.75, eye_height: 1.9, speed: 3.0 };
+        let float_height = 1.1;
+        let pose = Transform::from_translation(feet + Vec3::Y * float_height)
+            .with_rotation(Quat::from_rotation_y(0.7));
+        app.world_mut().get_mut::<Monster>(actor).unwrap().body = body;
+        app.world_mut()
+            .entity_mut(actor)
+            .insert((Walker { speed: body.speed, float_height }, pose));
+        if show_visuals {
+            app.init_resource::<Assets<MonsterModel>>()
+                .init_resource::<Assets<Mesh>>()
+                .add_systems(Update, build_monster_instances);
+            let model = app.world_mut().resource_mut::<Assets<MonsterModel>>().reserve_handle();
+            app.world_mut().entity_mut(actor).insert(MonsterVisual(model.clone()));
+            app.update();
+            assert!(app.world().get::<MonsterInstance>(actor).is_none());
+            assert_eq!(*app.world().get::<Transform>(actor).unwrap(), pose);
+            app.world_mut()
+                .resource_mut::<Assets<MonsterModel>>()
+                .insert(&model, MonsterModel { cycles: default() })
+                .unwrap();
+            app.update();
+            assert!(app.world().get::<MonsterInstance>(actor).is_some());
+            assert_eq!(*app.world().get::<Transform>(actor).unwrap(), pose);
+            assert_eq!(app.world().get::<Monster>(actor).unwrap().body, body);
+        }
+        // Capture through the real travel boundary, then consume that level's
+        // dormant record. The controller offset is gameplay data in both runs.
+        app.world_mut().write_message(Travel { entrance: "MO204".into() });
+        app.world_mut().run_schedule(PreUpdate);
+        let away: Vec<_> = app
+            .world_mut()
+            .query_filtered::<Entity, With<Destination>>()
+            .iter(app.world())
+            .collect();
+        for destination in away {
+            app.world_mut().despawn(destination);
+        }
+        let back = spawn_level(&mut app, floor());
+        app.update();
+        assert!(is_played(&app, back));
+        assert!(app.world().get_entity(first).is_err());
+        let world = app.world_mut();
+        let (entity, monster, pose) =
+            world.query::<(Entity, &Monster, &Transform)>().single(world).unwrap();
+        assert_eq!(monster.body, body);
+        assert!(pose.translation.distance(feet) < 0.00001);
+        assert!((pose.rotation.to_euler(EulerRot::YXZ).0 - 0.7).abs() < 0.001);
+        assert!(world.get::<Walker>(entity).is_none());
+        assert!(world.get::<MonsterVisual>(entity).is_none());
+    }
+}
+
+#[test]
+fn a_level_waits_for_body_metadata_and_sizes_monsters_without_render_assets() {
     let mut app = app();
     with_data(&mut app);
-    // The crab's model is still loading.
-    let loading = app.world_mut().resource_mut::<Assets<MonsterModel>>().reserve_handle();
-    app.world_mut().resource_mut::<MonsterModels>().0.insert(0, loading.clone());
+    // The crab's gameplay body metadata is still loading.
+    let loading = app.world_mut().resource_mut::<Assets<MonsterBody>>().reserve_handle();
+    app.world_mut().resource_mut::<MonsterBodies>().0.insert(0, loading.clone());
     let root = spawn_level(&mut app, floor());
 
     app.update();
     assert!(!is_played(&app, root) && !failed(&app, root));
 
-    let mut model = MonsterModel { body: default(), cycles: default() };
-    model.body.fight_radius = 0.5;
-    model.body.scale = 2.0;
-    app.world_mut().resource_mut::<Assets<MonsterModel>>().insert(&loading, model).unwrap();
+    let body = MonsterBody { fight_radius: 0.5, scale: 2.0, ..default() };
+    app.world_mut().resource_mut::<Assets<MonsterBody>>().insert(&loading, body).unwrap();
     app.update();
     assert!(is_played(&app, root));
     let world = app.world_mut();

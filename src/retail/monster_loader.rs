@@ -1,5 +1,6 @@
 //! Loads a retail monster species (`data/monsters/<name>.mls`) and its
-//! cycles as a [`MonsterModel`].
+//! cycles as a [`MonsterModel`]. Body metadata has its own typed loader,
+//! which finishes without reading cycles or constructing render assets.
 
 use std::collections::HashMap;
 
@@ -12,7 +13,7 @@ use super::level_loader::{LoadedTextures, PvlLoadError, load_material, sibling};
 use super::mesh_record::FACE_TWO_SIDED;
 use super::monster::{MonsterCycle, read_cycle, read_species};
 use super::space::retail_position;
-use crate::content::monster::{MonsterCycleModel, MonsterModel, MonsterPart};
+use crate::content::monster::{MonsterBody, MonsterCycleModel, MonsterModel, MonsterPart};
 
 #[derive(Default, TypePath)]
 pub struct MlsLoader;
@@ -119,7 +120,34 @@ impl AssetLoader for MlsLoader {
         if !cycles.contains_key("IDLE") {
             warn!("{}: no IDLE cycle", context.path());
         }
-        Ok(MonsterModel { body: species.body, cycles })
+        Ok(MonsterModel { cycles })
+    }
+
+    fn extensions(&self) -> &[&str] {
+        &["mls"]
+    }
+}
+
+/// The gameplay view of a species file. Bevy selects the `.mls` loader by
+/// requested asset type, so the same authored file has independent readiness
+/// for required body metadata and optional visual construction.
+#[derive(Default, TypePath)]
+pub struct MlsBodyLoader;
+
+impl AssetLoader for MlsBodyLoader {
+    type Asset = MonsterBody;
+    type Settings = ();
+    type Error = std::io::Error;
+
+    async fn load(
+        &self,
+        reader: &mut dyn Reader,
+        _: &(),
+        _: &mut LoadContext<'_>,
+    ) -> Result<MonsterBody, Self::Error> {
+        let mut text = Vec::new();
+        reader.read_to_end(&mut text).await?;
+        Ok(read_species(&String::from_utf8_lossy(&text)).body)
     }
 
     fn extensions(&self) -> &[&str] {
