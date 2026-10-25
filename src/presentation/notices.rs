@@ -9,7 +9,8 @@ use bevy::prelude::*;
 
 use crate::content::ui::{SpriteSheet, TextTable};
 use crate::game::camp::CampNews;
-use crate::game::combat::CombatNews;
+use crate::game::combat::attack::Mode;
+use crate::game::combat::{Announcement, CombatNews};
 use crate::game::world::level::Level;
 use crate::game::world::triggers::TriggerEffect;
 
@@ -101,6 +102,43 @@ const LOST: usize = 0x230;
 const SURVIVORS_EARNED: usize = 0x231;
 const WON: usize = 0x22c;
 const NOTHING_TO_FIGHT: usize = 0x22e;
+const MISSED: usize = 0x209;
+const NO_DAMAGE: usize = 0x20e;
+const HITS: usize = 0x265;
+const HITS_TIMES: usize = 0x266;
+/// The Dead condition's singular notice ("DIES!!").
+const DIES: usize = 0x391;
+/// "at " after Swing, Thrust and Throw; "upon " after Berserk.
+const AT: usize = 0x217;
+const UPON: usize = 0x218;
+
+/// An attack's opening line in retail's terse form (`StartCharacterAttack`,
+/// `AnnounceMonsterAttack` without verbose messages): the attacker, the
+/// verb, "at" or "upon" where the mode takes it, the target, and the swings
+/// when more than one ("Ragnar Swings at Crab", "Crab Claws Pippa 2x").
+fn announce(string: &impl Fn(usize) -> String, attacker: &str, target: &str, how: Announcement, swings: u32) -> String {
+    // Retail `g_attack_flag_name_ids`: each mode's noun, then its verb.
+    let verb = |mode: Mode| string(0x51f + 2 * mode as usize + 1);
+    let preposition = |mode: Mode| match mode {
+        Mode::Swing | Mode::Thrust | Mode::Throw => string(AT),
+        Mode::Berserk => string(UPON),
+        _ => String::new(),
+    };
+    let (word, preposition) = match how {
+        Announcement::Mode(mode) => (verb(mode), preposition(mode)),
+        Announcement::Monster { weapon_type: 1, mode, named } => {
+            (verb(mode), if named { preposition(mode) } else { String::new() })
+        }
+        Announcement::Monster { weapon_type, mode, named } => (
+            string(0x619 + 2 * usize::from(weapon_type)),
+            if named { preposition(mode) } else { String::new() },
+        ),
+    };
+    let swings = if swings > 1 { format!(" {swings}x") } else { String::new() };
+    // `string` trims, so the preposition's own trailing space is restored.
+    let preposition = if preposition.is_empty() { preposition } else { format!("{preposition} ") };
+    format!("{attacker} {word} {preposition}{target}{swings}")
+}
 
 /// Turn trigger effects, camping and combat news into notice texts.
 pub fn queue_notices(
@@ -160,15 +198,20 @@ pub fn queue_notices(
                 log.selected = 1;
                 vec![string(COMBAT)]
             }
-            CombatNews::Hit { attacker, target, damage } => {
-                info!("combat: {attacker} hits {target} for {damage}");
-                vec![]
+            CombatNews::Attack { attacker, target, how, swings } => {
+                vec![announce(&string, attacker, target, *how, *swings)]
             }
-            CombatNews::Missed { attacker, target } => {
-                info!("combat: {attacker} misses {target}");
-                vec![]
-            }
-            CombatNews::Killed { name } => vec![format!("{name} dies!")],
+            // Retail's summary (`ReportCharacterAttackResult`).
+            CombatNews::Result { attacker, hits, damage } => vec![match (hits, damage) {
+                (0, _) => string(MISSED),
+                (_, 0) => string(NO_DAMAGE),
+                (1, damage) => format!("{attacker} {}", string(HITS).replace("%ld", &damage.to_string())),
+                (hits, damage) => format!(
+                    "{attacker} {}",
+                    string(HITS_TIMES).replacen("%ld", &hits.to_string(), 1).replacen("%ld", &damage.to_string(), 1)
+                ),
+            }],
+            CombatNews::Killed { name } => vec![format!("{name} {}", string(DIES))],
             CombatNews::Won { experience_each, .. } => vec![
                 string(WON),
                 string(SURVIVORS_EARNED).replace("%d", &experience_each.to_string()),

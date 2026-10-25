@@ -38,6 +38,11 @@ impl Reach {
 /// One of a species' attacks.
 #[derive(Clone, Debug, PartialEq, Reflect)]
 pub struct MonsterAttack {
+    /// How the attack is announced: 1 names it by its mode's verb, others
+    /// by a word of its own (string 0x619 + 2 × type, "Claws", "Bites").
+    pub weapon_type: u8,
+    /// The attack's weapon name, if any (0 for none).
+    pub weapon_name: u8,
     pub reach: Reach,
     pub score: u8,
     /// Bit per attack mode: swing, thrust, bash, berserk, throw, punch,

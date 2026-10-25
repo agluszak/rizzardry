@@ -138,19 +138,24 @@ impl Battle {
     }
 }
 
+/// How an attack is named: by its mode's verb ("Swings", "Punches"), or for
+/// a monster attack by its own word, with retail's weapon-name flag
+/// deciding whether "at" follows.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Announcement {
+    Mode(attack::Mode),
+    Monster { weapon_type: u8, mode: attack::Mode, named: bool },
+}
+
 /// What the fight tells the player.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum CombatNews {
     Began,
-    Hit {
-        attacker: String,
-        target: String,
-        damage: u32,
-    },
-    Missed {
-        attacker: String,
-        target: String,
-    },
+    /// An attack begins (retail `StartCharacterAttack`,
+    /// `AnnounceMonsterAttack`).
+    Attack { attacker: String, target: String, how: Announcement, swings: u32 },
+    /// What it did: hits (that landed, damage or not) and damage dealt.
+    Result { attacker: String, hits: u32, damage: u32 },
     Killed {
         name: String,
     },
@@ -558,14 +563,18 @@ fn member_acts(
     // Retail draws the attack's mode, then its swings.
     let mode = attack::Mode::choose(rng, hand.modes);
     let swings = rng.below(hand.swings) + 1;
+    news.write(CombatNews::Attack {
+        attacker: character.name.clone(),
+        target: kind.name.clone(),
+        how: Announcement::Mode(mode),
+        swings,
+    });
+    let (mut hits, mut dealt, mut killed) = (0, 0, false);
     for _ in 0..swings {
         match character_swing(rng, &character, &hand, mode, kind) {
             Swing::Hit { damage, .. } => {
-                news.write(CombatNews::Hit {
-                    attacker: character.name.clone(),
-                    target: kind.name.clone(),
-                    damage,
-                });
+                hits += 1;
+                dealt += damage.min(monster.hp);
                 monster.hp = monster.hp.saturating_sub(damage);
                 if monster.is_dead() {
                     // Death bookkeeping at once: experience, gold, and out
@@ -577,17 +586,18 @@ fn member_acts(
                     if let Some(entry) = battle.monsters.iter_mut().find(|(e, _)| *e == target) {
                         entry.1 = Turn::default();
                     }
-                    news.write(CombatNews::Killed { name: kind.name.clone() });
+                    killed = true;
                     break;
                 }
             }
-            Swing::Missed | Swing::NoPenetration => {
-                news.write(CombatNews::Missed {
-                    attacker: character.name.clone(),
-                    target: kind.name.clone(),
-                });
-            }
+            Swing::NoPenetration => hits += 1,
+            Swing::Missed => {}
         };
+    }
+    // The summary, then the casualty (retail `ReportCharacterAttackResult`).
+    news.write(CombatNews::Result { attacker: character.name.clone(), hits, damage: dealt });
+    if killed {
+        news.write(CombatNews::Killed { name: kind.name.clone() });
     }
     // Swinging tires: weight/40 + 1 = b, then b + 1 + below(b).
     let weight = carried
@@ -648,27 +658,33 @@ fn monster_acts(
         armour.by_location.iter_mut().for_each(|a| *a += 2);
     }
     let swings = rng.below(u32::from(kind.swings_per_round.max(1))) + 1;
+    news.write(CombatNews::Attack {
+        attacker: kind.name.clone(),
+        target: character.name.clone(),
+        how: Announcement::Monster {
+            weapon_type: attack.weapon_type,
+            mode,
+            named: attack.weapon_name != 0,
+        },
+        swings,
+    });
+    let (mut hits, mut dealt) = (0, 0);
     for _ in 0..swings {
         match monster_swing(rng, kind, attack, mode, &character, &armour) {
             Swing::Hit { damage, .. } => {
-                let damage = character.damage(damage);
-                news.write(CombatNews::Hit {
-                    attacker: kind.name.clone(),
-                    target: character.name.clone(),
-                    damage,
-                });
+                hits += 1;
+                dealt += character.damage(damage);
                 if character.is_dead() {
-                    news.write(CombatNews::Killed { name: character.name.clone() });
                     break;
                 }
             }
-            Swing::Missed | Swing::NoPenetration => {
-                news.write(CombatNews::Missed {
-                    attacker: kind.name.clone(),
-                    target: character.name.clone(),
-                });
-            }
+            Swing::NoPenetration => hits += 1,
+            Swing::Missed => {}
         };
+    }
+    news.write(CombatNews::Result { attacker: kind.name.clone(), hits, damage: dealt });
+    if character.is_dead() {
+        news.write(CombatNews::Killed { name: character.name.clone() });
     }
     battle.monsters[index].1 =
         Turn { phase: next_phase(turn.phase, turn_left), attacks_left: turn_left };

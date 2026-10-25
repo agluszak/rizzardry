@@ -48,6 +48,8 @@ fn species(record: &[u8]) -> Species {
         .map(|i| &record[ATTACKS_AT + ATTACK * i..ATTACKS_AT + ATTACK * (i + 1)])
         .filter(|attack| attack[0] != 0)
         .map(|attack| MonsterAttack {
+            weapon_name: attack[1],
+            weapon_type: attack[2],
             reach: Reach::from_retail(attack[3]),
             score: attack[4],
             modes: u16::from_le_bytes([attack[0x15], attack[0x16]]),
