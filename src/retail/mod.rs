@@ -5,9 +5,13 @@
 
 pub mod bytes;
 pub mod files;
+pub mod keyframes;
 pub mod level_loader;
+pub mod mesh_record;
 pub mod path;
+pub mod prop;
 pub mod pvl;
+pub mod sections;
 pub mod slf;
 pub mod source;
 pub mod space;

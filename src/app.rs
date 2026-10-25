@@ -18,9 +18,12 @@ use crate::game::world::level::ActiveLevel;
 use crate::game::world::navigation::asset::navmesh_path;
 use crate::presentation::PresentationPlugin;
 use crate::retail::RetailPlugin;
+use crate::retail::bytes::Bytes;
 use crate::retail::files::RetailFiles;
+use crate::retail::pvl::read_level_geometry;
+use crate::retail::sections::read_sections;
 use crate::retail::space::{retail_position, retail_yaw};
-use crate::retail::trigger::find_item_trigger;
+use crate::retail::trigger::TriggerKind;
 
 pub const DEFAULT_LEVEL: &str = "levels/monastery/monastery1.pvl";
 /// A new game enters the monastery at entrance 0 (location code `MO1`).
@@ -167,7 +170,10 @@ pub fn run(options: Options) -> AppExit {
 /// party settles under gravity.
 fn entrance_placement(files: &RetailFiles, level: &str, entrance: &str) -> Option<PartyStart> {
     let data = files.read(level)?.ok()?;
-    let placement = find_item_trigger(&data, entrance)?.placement?;
+    let start = read_level_geometry(&data).ok()?.end;
+    let sections = read_sections(&mut Bytes::new(&data[start..])).ok()?;
+    let TriggerKind::Item(trigger) = &sections.trigger(entrance)?.kind else { return None };
+    let placement = trigger.placement?;
     let [x, y, z] = placement.position;
     Some(PartyStart {
         eye: Some(retail_position([x, y + 1000.0, z])),

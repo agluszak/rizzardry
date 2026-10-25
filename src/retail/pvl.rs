@@ -91,11 +91,11 @@ pub enum PvlError {
     Invalid(&'static str, usize),
 }
 
-fn invalid(message: &'static str, bytes: &Bytes) -> PvlError {
+pub(crate) fn invalid(message: &'static str, bytes: &Bytes) -> PvlError {
     PvlError::Invalid(message, bytes.offset())
 }
 
-fn text(bytes: &mut Bytes, len: usize) -> Result<String, PvlError> {
+pub(crate) fn text(bytes: &mut Bytes, len: usize) -> Result<String, PvlError> {
     let offset = bytes.offset();
     c_string(bytes.take(len)?).ok_or(PvlError::Invalid("unterminated texture name", offset))
 }
