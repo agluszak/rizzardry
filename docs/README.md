@@ -1,21 +1,24 @@
 # Design documentation
 
-Status: proposed design, researched on 24 October 2026. These documents consolidate
-the Rust/Bevy architecture discussion and its seven original gameplay examples,
-then extend it with source comparisons for further complex systems. They describe
-what to build, not an already implemented engine.
+Status: active design and implementation, updated 25 October 2026. The
+[`first-slice` implementation branch](https://github.com/agluszak/rizzardry/tree/first-slice)
+is ahead of `main`; implementation notes describe that branch when explicitly
+identified. Gameplay documents are sourced designs, not claims of completed
+mechanics.
 
 ## Start here
 
 1. [Architecture and ownership](architecture.md): authoritative state, entities,
    resources, values, scheduling and module relationships.
-2. [Dependencies](dependencies.md): the proposed library set and the unresolved
-   navigation/version compatibility decision.
-3. [Content and assets](content-and-assets.md): retail loading, native content,
+2. [Dependencies](dependencies.md): chosen Bevy/Avian/Landmass/Rerecast stack
+   and when additional libraries are warranted.
+3. [Bevy 0.20 integration](bevy-features.md): concrete animation, rendering,
+   picking, UI viewport, asset and audio choices before writing custom engine code.
+4. [Content and assets](content-and-assets.md): retail loading, native content,
    animation, audio, UI and modding boundaries.
-4. [Implementation plan](implementation-plan.md): useful vertical slices and the
-   decisions that must be checked before committing to an implementation.
-5. [Revisions and open questions](revisions.md): corrections to the discussion,
+5. [Implementation plan](implementation-plan.md): playable slices and their
+   verified versus outstanding requirements.
+6. [Revisions and open questions](revisions.md): corrections to the discussion,
    deliberate native-format policies and remaining evidence gaps.
 6. [Testing](testing.md): ordinary rule tests, small headless Bevy scenarios,
    and focused real-game checks.

@@ -15,35 +15,11 @@ and remaining decisions.
 No time estimate is useful until the first real-map and asset experiments
 establish what Bevy handles directly.
 
-## 1. Establish the engine and content boundary
+## 1. Complete the real-world engine slice
 
-**Playable result:** load a representative room, walk the party through it,
-interact with one prop, play one original-style animated actor and one voice
-line.
-
-Work:
-
-- Compile one coherent engine/input/physics/UI dependency set on the intended
-  native platforms and commit its lockfile.
-- Decode enough retail content to obtain real geometry, collision, textures,
-  anchors, an actor's animation and audio. Keep proprietary assets external.
-- Test stairs, slopes, narrow doors, an elevator/platform and line-of-sight
-  queries with the party's actual dimensions.
-- Test navigation through doors, links and multiple levels. Resolve the
-  Bevy 0.20 versus navigation-plugin compatibility decision before spreading
-  plugin-specific types through gameplay.
-- Prove vertex/frame animation and identified playback completion; do not
-  assume every original animation becomes a skeletal glTF clip.
-- Build a small native UI with keyboard/gamepad focus, text entry and input
-  capture. Use it to prove map-note editing rather than building all screens.
-
-**Exit evidence:** checked-in minimal code and a documented asset invocation;
-observed behavior on the representative geometry; chosen versions and known
-gaps recorded in [dependencies](dependencies.md). A flat test plane alone does
-not settle the controller/navigation choice.
-
-**Do not build yet:** a universal asset converter, an editor suite, a scripting
-VM, interchangeable physics backends or a full UI framework.
+**Playable result:** enter a representative retail room, traverse stairs,
+open a door, use a scripted prop, observe one real animated actor, hear one
+original voice line, and interact through a small native UI.
 
 **Status (25 October 2026):** every playable result of this slice has been
 shown on retail content; the gaps below remain. Done:
@@ -116,6 +92,41 @@ Known gaps, in rough order:
   layer buttons or tool cursors. Only the map screen exists.
 - The screenshot tool has once captured a frame without the UI; the cause was
   not found.
+
+### Next concrete implementation work
+
+1. **Validate one complete authored prop interaction.** Use a monastery
+   mechanism such as the Monastery 2 `bell_button`/`dial1` combination:
+   source-backed pick/range gating, persistent trigger effect, prop frame
+   changes, the correct sound and final disabled state. Extend the existing
+   prop and door code instead of replacing it.
+2. **Check the world features against retail:** authored door
+   geometry/navigation while closing, two-level loading without spawning
+   a second party, original entrance ground placement, fog/sky/light
+   appearance and animation/contact ordering. The ability to bake all
+   34 levels doesn't prove each location's traversal.
+3. **Share retail textures through Bevy's asset system**, then consider image
+   processing in place of the CPU mipmap code
+   (see [Bevy 0.20 integration](bevy-features.md)).
+
+Outstanding work should follow the [Bevy-native feature decisions](bevy-features.md)
+instead of creating another engine layer.
+
+### Exit evidence
+
+- An interaction completes from the *same* decoded trigger and moving prop
+  that the player sees; closing/opening changes usable collision and pathing.
+- A monster's actual retail animation plays without per-frame CPU mesh
+  reuploads unless that is the simplest proven representation.
+- A real voice plays and its specific completion is observable by its owner.
+- The 3D viewport and native UI don't send the same click to two targets.
+- Travel leaves one surviving party and no orphaned prior-level entities.
+- The render result is compared against a known retail location, not only a
+  flat demo map.
+
+**Do not build yet:** a universal asset converter, interchangeable physics
+backends, a scripting VM, a generic animation-action workflow engine, a
+separate scene graph or an editor suite.
 
 ## 2. Make party and inventory state useful
 

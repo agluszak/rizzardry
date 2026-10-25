@@ -19,6 +19,27 @@ already distinguishes a party fight from monster engagement, accepted choices
 from running actions, and gameplay operations from presentation. Keep those
 distinctions without importing its `Game` service locator or screen router.
 
+## Bevy is the engine
+
+Use Bevy's native assets, animation, cameras, materials, UI, picking, audio and
+lifecycle rather than building a shadow game engine. In particular, evaluate
+`AnimationClip`, morph targets, `DistanceFog`, `ExtendedMaterial`,
+`ViewportNode`, headless UI widgets and image asset processing for their actual
+fit; see [Bevy 0.20 integration](bevy-features.md).
+
+**Gameplay authority is still explicit.** Bevy's default animation playback
+runs in `PostUpdate`, whereas the party, moving colliders and navigation
+advance on fixed schedules. Physical props must not have a second animation
+clock that moves their visible mesh independently of collision or pathing.
+Likewise, gameplay death, item transfers, door state, dialogue decisions and
+outstanding scripted consequences are not determined by animation events, UI
+widgets or Bevy's automatic world serialization.
+
+One level root owns its local entities and presentation children. An existing
+party entity survives travel. Bevy parent/child relations and screen-scoped
+cleanup should eliminate manual ownership tables, not introduce a new global
+world manager.
+
 ## Three kinds of data
 
 | Kind | Examples | Authority and lifetime |
@@ -113,7 +134,7 @@ different quantity/template representation because the original normalizes sales
 | `PartyRoster` | Ordered membership and formation |
 | `PartyInventory` | Shared pool, purse and the physically held item |
 | `CampaignState` | Story facts, journal, faction relationships and lasting discoveries |
-| `ActiveLevel` / `DormantLevels` | Current level identity/local progress and records of unloaded ordinary world objects |
+| `DormantLevels` | State of unloaded ordinary world objects; the active `Level` root is an entity, not an overlapping resource |
 | `GameClock` / `GameplayRng` | Explicit simulation time and rule randomness |
 | `Battle` | Party-fight phase order, round counters and one executing action; absent outside party combat |
 | `Conversation` | Speaker, script continuation, offered item and dialogue mode |

@@ -1,13 +1,12 @@
 # Dependencies
 
-Research snapshot: 24 October 2026. These are proposed choices, not a tested
-`Cargo.lock`. The first implementation spike must compile the selected set on
-the native target platforms before the versions become project commitments.
-
-**Compiled and running (25 October 2026)** on Linux (Wayland, Vulkan/Mesa),
-with `Cargo.lock` committed. macOS and Windows are untested. `serde`/`ron`,
-`binrw` and the inspector are not used yet: the irregular retail records so far
-read cleanly with a small bounds-checked cursor.
+Implementation status: 25 October 2026. Bevy 0.20, Avian 0.8,
+Tnua, Landmass and the vendored Rerecast core are compiled and exercised on
+Linux (Wayland, Vulkan/Mesa). The [`first-slice` branch](https://github.com/agluszak/rizzardry/tree/first-slice)
+is ahead of `main` and additionally contains retail `.oct` collision,
+animated props, doors/links, teleports, fog, lighting and skies. Those code
+changes are not merged by this documentation update. macOS and Windows are
+not verified; `serde` is present but native saves/definitions are not built.
 
 ## Chosen set
 
@@ -21,7 +20,7 @@ read cleanly with a small bounds-checked cursor.
 | Pathfinding, steering, avoidance | `bevy_landmass`, PR #195 branch pinned by git rev | Party is a `Character3d`, walkers are `Agent3d` |
 | Command line | `clap` 4 | Game and examples |
 | Definition/save serialization | `serde` + `ron` | Not yet needed |
-| Retail binary parsing | `binrw` | Not yet needed |
+| Retail binary parsing | Small bounds-checked cursor; optional `binrw` | Existing cursor is working; no library needed without a reduction in code |
 | Developer inspection | Optional `bevy-inspector-egui` 0.38 | Not yet needed |
 
 Primary references:
@@ -146,21 +145,30 @@ pathfinding demo.
 Retail fonts are STCI sprite sheets; `retail::stci` draws text from them into
 images for Bevy UI, which needs no helper crate.
 
-## Use native Bevy features first
+## Use Bevy 0.20 facilities before adding libraries
 
-- Native UI layout, picking, focus, accessibility and headless widgets. The game
-  supplies its art and behavior binding. Feathers can help development tools,
-  but its editor styling does not define the game's visual identity.
-- Rust `bsn!` composition where it simplifies UI/scene construction. The 0.20
-  release notes still put the external `.bsn` asset format under "What's Next?";
-  do not require hot-reloadable `.bsn` files for the initial UI. The release post
-  includes a future-looking file example, so the prose feature status matters.
-- Standard asset loading, meshes, materials, textures, cameras, render layers
-  and render-to-texture. No replacement C++-shaped scene graph.
-- Built-in audio initially, with the codecs needed by actual assets enabled.
-  Verify voice completion, pause/resume, spatial attenuation and music behavior
-  before adding another audio plugin.
-- Native diagnostics and tracing rather than a second logging system.
+The detailed decisions are in [Bevy 0.20 integration](bevy-features.md).
+Use the engine's existing features selectively; do not rewrite working code
+just to fit a fashionable API.
+
+| Feature | Intended use and gate |
+| --- | --- |
+| `AnimationClip`, `AnimationPlayer`, events | Visual rigid-part animation and identified milestones; **do not desynchronize fixed-step colliders** |
+| `MorphWeights` | Not used: monsters animate their own mesh copies from decoded vertex frames on the CPU (median about 200 vertices); revisit only if profiling demands it |
+| `DistanceFog`, `RenderLayers`, `StandardMaterial` | Already used on the implementation branch for retail environment and sky |
+| `ExtendedMaterial`, WESL | Add only for verified visual fidelity or less code than CPU mesh relighting |
+| Picking + Avian `SpatialQuery` | Keep one authoritative target per world interaction; native UI picking/focus for widgets |
+| Rust `bsn!`, headless UI widgets | Native inventory/dialogue UI; external `.bsn` files are not required in 0.20 |
+| `ViewportNode` | Candidate for the game HUD's framed 3D view: resizable UI surface with 3D pointer forwarding |
+| `Camera.viewport`, render-to-texture | Use the simpler direct camera viewport when adequate; offscreen view for UI-integrated viewport/previews |
+| Image asset processing and `CompressedImageSaver` | After shared retail images replace level-local labeled subassets; then consider deleting CPU mipmap code |
+| `AudioPlayer`, `SpatialAudioSink` | Built-in audio with Bevy's `mp3` feature; voice-line completion is identified per line |
+| `States`, `DespawnOnExit` | Scope UI screens or modes, not persisted character or campaign state |
+
+Retail scripts name voice lines as WAV, but the installation ships MP3, so
+the project enables Bevy's `mp3` feature. External
+`bevy_rerecast`, `avian_rerecast`, `landmass_rerecast`, a new animation
+framework or an audio mixer are not needed merely because they exist.
 
 ## Add only for a demonstrated gap
 
