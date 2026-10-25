@@ -51,7 +51,12 @@ world manager.
 There is no separate mutable `GameState` containing a second copy of all live
 entities. Save records are snapshots; dormant records are authoritative only
 while their objects are absent from ECS. Loading consumes/reconstructs those
-records into live authority rather than keeping both writable.
+records into live authority rather than keeping both writable. A killed
+monster must not become a fresh authored monster on re-entry; local notes,
+trigger states, loot and other map mutations belong to that map. Conversely,
+temporary query caches, proximity, UI drafts and in-progress render playback
+are not automatically persistent just because they share a struct with a
+persistent flag.
 
 Typed content IDs identify definitions. Persistent actor/item IDs identify
 instances. Bevy `Entity` identifies a current runtime entity; it is not a save
@@ -152,16 +157,49 @@ UI state should be scoped to its screen/session; prefer a component on the UI
 root when several instances can exist. Do not accumulate every possible dialog
 in a permanent global `UiState` god object.
 
+## Preparing and activating a level
+
+The game must distinguish **requested/preparing**, **active/playable**, and
+**failed** level states. The spawn of geometry is not proof that an action can
+run. Required collision, level state, references and gameplay catalogs must
+be ready before one activation operation permits world input, local AI,
+trigger execution and party physics. Optional visual or audio content may
+continue loading when it does not affect those rules. A failed requirement
+has an explicit outcome; it must not make opening a chest or using a trigger
+silently succeed without its required effects.
+
+Travel prepares the destination without modifying its gameplay state or
+destroying the source. At the transition boundary, settle/cancel outstanding
+source-owned actions, capture persistent local state, stop the source world's
+simulation, suspend the persistent party body, remove source entities, then
+construct and activate the destination exactly once. The game resumes the
+body and entry rules only for that activated map. Failed preparation keeps
+the source playable, except for separately committed operations such as an
+accepted companion dismissal. Every pending callback or playback completion
+must still identify its original level/session.
+
+This is one ordinary transition, not a new generic lifecycle framework or
+a second simultaneously mutable world. Its detailed failure and revisit
+semantics are in [persistence and travel](systems/persistence-and-travel.md).
+
 ## Operations, systems and observation
 
 An operation restores its own invariants before returning. Examples are
 `move_item`, `consume_use`, `apply_damage`, `commit_level_up`, `sell_item` and
 `dismiss_rpc`. A cross-domain operation is a readable sequence of ordinary calls.
-Return actual outcomes, including partial transfer and an unplaced remainder.
+Resolve stable authored links (for example trigger-to-prop names) once when
+loading the map, rather than reconstructing mutable lookup tables by scanning
+every entity on each interaction. Such indexes are derived references, never
+another mutable copy of the world. Return actual outcomes, including partial
+transfer and an unplaced remainder.
 Do not impose rollback/all-or-nothing semantics on every interaction.
 
 UI handlers can edit drafts directly. Gameplay requests are consumed by their
-owning system. Requests that may wait while that system is paused belong in an
+owning system. The owning operation validates its actual inputs at execution:
+equipment restrictions, target status, required assets and the current activity
+must not rely solely on disabled buttons, input contexts or a caller-provided
+`can_use` flag. Previews call the same non-mutating rule assessment; only a
+successful authoritative operation commits the result. Requests that may wait while that system is paused belong in an
 owned pending value/queue. A universal event router, event-sourced database,
 transaction engine or generic workflow executor is not required.
 
@@ -206,8 +244,13 @@ promising arbitrary in-flight continuations.
 ## Time and randomness
 
 Render time, simulation time, battle rounds, accelerated camping and UI/voice
-holds are distinct. Derive the appropriate advancement policy from current
-activity. A covered screen, a movement restriction and an explicit player pause
+holds are distinct. Associate each elapsed interval with the activity/policy
+that produced it, and apply its required aging and recovery before leaving
+that activity. An interval credited as the last battle round must not later
+be interpreted as exploration because `Battle` has already been removed.
+Store any deferred aging debt with its semantics, not as unlabelled clock
+progress whose meaning will be guessed from a future ECS snapshot. Retain
+fractional clock remainders instead of discarding them on each fixed step. A covered screen, a movement restriction and an explicit player pause
 need not stop the same work. The [time document](systems/time-rest-and-conditions.md)
 defines the relevant boundaries.
 
@@ -245,7 +288,11 @@ explicit native policies, not claims of retail save/RNG equivalence. See
 
 These are source modules, not independent dynamically linked services. Shared
 IDs, definitions and simple data types can live below both callers to prevent
-cycles. A high-level operation coordinates two domains without making their
+cycles. In particular, `content` must not depend on `retail`; `game` must
+not depend on `presentation` or UI; `presentation` must not be the
+initializer of persistent campaign state. Importers may decode directly into
+content types when that is simpler; create separate raw records only if file
+layout and native meaning genuinely require different representations. A high-level operation coordinates two domains without making their
 low-level helpers call each other recursively. `magic` is separate from `combat`
 because identification, curses and continuing effects also run outside a battle.
 

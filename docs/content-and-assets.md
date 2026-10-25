@@ -35,6 +35,16 @@ Do not load an unknown enum or script operation as a silent no-op. Report the
 source asset and record. Unknown bytes can remain in an import record until
 understood, without contaminating the live component layout.
 
+Importing should move in one direction: `retail` decodes and normalizes into
+`content`; gameplay uses those content values and must not parse retail
+bytes. Decode directly into a native definition when there is no meaningful
+intermediate representation. Keep a separate raw record only for a genuine
+format/native distinction (versioned disk fields, validation, unit conversion
+or unresolved references), not to duplicate the same fields and copy them
+one by one. `content` and shared presentation types must not depend on
+`retail`; move a genuinely reusable type or font operation below both users
+rather than adding another mirror representation.
+
 ## Stable content identity and overrides
 
 Authored content uses stable namespaced keys. The retail adapter maps numbered
@@ -120,7 +130,9 @@ for UI previews and portraits, not obligatory for the main world.
 Use the existing Avian center-ray for physical world interactions unless
 Bevy's 3D pointer picking replaces it cleanly. Avoid competing world
 selection models. UI overlays and modals must block underlying pointer
-events and global shortcuts as appropriate.
+events and global shortcuts as appropriate. Suppressing an input context is
+not gameplay authorization: direct world, inventory, camp and combat
+operations still validate their own current activity and prerequisites.
 
 Screen roots own their view entities and drafts. Values such as items,
 conditions, journal facts and map annotations stay in game state. Native
