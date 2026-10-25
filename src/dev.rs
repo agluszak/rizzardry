@@ -418,6 +418,7 @@ fn scripted_key(name: &str) -> Option<(KeyCode, Key)> {
                 "e" => KeyCode::KeyE,
                 "q" => KeyCode::KeyQ,
                 "r" => KeyCode::KeyR,
+                "i" => KeyCode::KeyI,
                 _ => KeyCode::Unidentified(NativeKeyCode::Unidentified),
             };
             (code, Key::Character(letter.into()))

@@ -8,6 +8,7 @@ pub mod dialog;
 pub mod effects;
 pub mod environment;
 pub mod hud;
+pub mod inventory;
 pub mod mipmaps;
 pub mod monsters;
 pub mod music;
@@ -24,15 +25,16 @@ use crate::game::party::body::Exploration;
 pub struct PresentationPlugin;
 
 /// Exploring takes input only while nothing else holds it: the automap,
-/// a question, or camping.
+/// a question, camping, or the inventory.
 fn hold_exploration(
     mut commands: Commands,
     automap: Option<Res<automap::Automap>>,
     question: Option<Res<crate::game::world::level::TravelQuestion>>,
     camp: Option<Res<crate::game::camp::Camp>>,
+    inventory: Option<Res<inventory::InventoryScreen>>,
     controls: Query<(Entity, Option<&ContextActivity<Exploration>>), With<Exploration>>,
 ) {
-    let active = automap.is_none() && question.is_none() && camp.is_none();
+    let active = automap.is_none() && question.is_none() && camp.is_none() && inventory.is_none();
     for (entity, activity) in &controls {
         if activity.is_none_or(|a| **a != active) {
             commands.entity(entity).insert(ContextActivity::<Exploration>::new(active));
@@ -58,6 +60,7 @@ impl Plugin for PresentationPlugin {
                     notices::load_notice_art,
                     dialog::load_dialog_art,
                     camp::load_camp_art,
+                    inventory::load_inventory_art,
                 ),
             )
             .add_systems(
@@ -66,6 +69,12 @@ impl Plugin for PresentationPlugin {
                     automap::scale_ui,
                     hold_exploration,
                     camp::show_camp,
+                    (
+                        inventory::toggle_inventory,
+                        inventory::spawn_inventory_screen,
+                        inventory::draw_inventory_cells,
+                    )
+                        .chain(),
                     (
                         automap::toggle_automap,
                         automap::type_note,

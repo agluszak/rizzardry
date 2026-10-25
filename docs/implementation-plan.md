@@ -153,6 +153,12 @@ Known gaps, in rough order:
   waking Senses roll and camping music wait for combat and music work.
   Exploration input is held, in one system, while the automap, a travel
   question or a camp exists.
+- The inventory screen (`presentation::inventory`, I; layout in
+  [review items](research/review-items.md)) shows a member's equipment on
+  their race's statue with retail item pictures and counts, the backpack
+  (red where they cannot use an item), the pool and the gold; the header's
+  portraits switch member, Esc or Exit closes it. Moving items, the info
+  panel, buttons, scrolling and the PCX cell texture are still to come.
   Plane-shaped triggers (falls) are not decoded as places yet.
 - Stamina and healing fountains (`0x25`, `0x26`) restore every member by
   `data[2]`, with `data[0]` uses (−1 endless) refilled `data[1]` × 720 game
