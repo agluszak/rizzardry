@@ -1,6 +1,7 @@
 //! The party's roster, formation and spatial body.
 
 pub mod body;
+pub mod formation;
 pub mod recovery;
 pub mod roster;
 pub mod walk_in;
@@ -26,6 +27,7 @@ impl Plugin for PartyPlugin {
         .insert_resource(Gravity(Vec3::NEG_Y * body::GRAVITY))
         .add_input_context::<body::Exploration>()
         .init_resource::<roster::PartyRoster>()
+        .init_resource::<formation::Formation>()
         .add_message::<camp::CampNews>()
         .add_systems(Startup, (body::spawn_exploration_controls, roster::spawn_test_party))
         .add_systems(
@@ -35,6 +37,7 @@ impl Plugin for PartyPlugin {
                 (body::look_around, body::aim_camera).chain(),
                 body::interact,
                 roster::give_starting_equipment,
+                formation::seat_party,
                 (camp::request_camp, camp::force_camp, camp::cancel_camp, camp::advance_camp)
                     .chain(),
             ),

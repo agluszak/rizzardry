@@ -1,9 +1,7 @@
 //! The party's fights (`docs/research/combat.md`), first slice: the party
-//! against the hostile monsters near it, weapon attacks only, everyone
+//! against the hostile monsters that see it, weapon attacks only, everyone
 //! fighting on their own (retail's continuous mode with every member set to
-//! attack). Monsters do not move, so a fight starts when the party walks up
-//! to one: a stand-in for retail's sight and pursuit. Slots 0-2 are the
-//! front row and 3-5 the rear until formations exist.
+//! attack). Who reaches whom in melee follows the party's formation.
 
 pub mod approach;
 pub mod attack;
@@ -18,6 +16,7 @@ use crate::game::characters::{Character, Condition};
 use crate::game::data::GameData;
 use crate::game::inventory::{Carried, PartyInventory};
 use crate::game::party::body::{EYE_ABOVE_CENTRE, PartyBody, PartyCamera};
+use crate::game::party::formation::{self, Formation};
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::time::GameClock;
@@ -54,8 +53,6 @@ const ACTION_SECONDS: f32 = 0.5;
 const ROUND_SECONDS: f32 = 1.0;
 /// Game time one round takes.
 const ROUND_MS: u64 = 120_000;
-/// Members in the front row; the rest cannot strike or be struck in melee.
-const FRONT_ROW: usize = 3;
 /// Rounds in which nobody could attack before the fight peters out.
 const PASSIVE_ROUNDS: u32 = 2;
 
@@ -156,11 +153,21 @@ pub fn sight_threshold(
     percent.clamp(2, 100) as f32 * far * 0.01
 }
 
-/// Whether a member in `slot` reaches, or is reached by, something `reach`
-/// away at `distance`.
-fn reaches(slot: usize, reach: Reach, distance: f32) -> bool {
-    let reach = if slot >= FRONT_ROW && reach <= Reach::Short { None } else { Some(reach) };
-    reach.is_some_and(|r| distance <= r.metres())
+/// Where the party stands and faces, and its formation, as reach needs them.
+struct PartyView<'a> {
+    eye: Vec3,
+    yaw: f32,
+    formation: &'a Formation,
+}
+
+impl PartyView<'_> {
+    /// Whether the member in `slot` reaches, or is reached by, a monster at
+    /// `at` with `reach` across `distance`: the formation rows between them
+    /// shorten close reach (retail `CloseFormationGap`).
+    fn reaches(&self, slot: usize, at: Vec3, reach: Reach, distance: f32) -> bool {
+        let side = formation::quadrant(self.eye, self.yaw, at);
+        self.formation.reach(slot, side, reach).is_some_and(|r| distance <= r.metres())
+    }
 }
 
 /// Start a fight when hostile monsters that see the party can act on it
@@ -290,7 +297,8 @@ pub fn run_battle(
     roster: Res<PartyRoster>,
     mut members: Query<(&mut Character, &Carried)>,
     mut monsters: Query<(&mut Monster, &GlobalTransform, &MonsterAppearance)>,
-    party_body: Query<&Position, With<PartyBody>>,
+    party_body: Query<(&Position, &PartyBody)>,
+    formation: Res<Formation>,
     mut purse: ResMut<PartyInventory>,
     data: Option<Res<GameData>>,
     items: Res<Assets<ItemCatalog>>,
@@ -304,8 +312,11 @@ pub fn run_battle(
     ) else {
         return;
     };
-    let Ok(party_at) = party_body.single().map(|p| p.0 + Vec3::Y * EYE_ABOVE_CENTRE) else {
-        return;
+    let Ok((position, body)) = party_body.single() else { return };
+    let party = PartyView {
+        eye: position.0 + Vec3::Y * EYE_ABOVE_CENTRE,
+        yaw: body.yaw,
+        formation: &formation,
     };
     battle.wait -= time.delta_secs();
     if battle.wait > 0.0 {
@@ -373,7 +384,7 @@ pub fn run_battle(
                 &mut rng,
                 &mut members,
                 &mut monsters,
-                party_at,
+                &party,
                 items,
                 species,
                 &mut purse,
@@ -395,7 +406,7 @@ pub fn run_battle(
                 &roster,
                 &mut members,
                 &monsters,
-                party_at,
+                &party,
                 items,
                 species,
                 &mut news,
@@ -429,7 +440,7 @@ fn member_acts(
     rng: &mut GameRng,
     members: &mut Query<(&mut Character, &Carried)>,
     monsters: &mut Query<(&mut Monster, &GlobalTransform, &MonsterAppearance)>,
-    party_at: Vec3,
+    party: &PartyView,
     items: &ItemCatalog,
     species: &MonsterCatalog,
     purse: &mut PartyInventory,
@@ -444,8 +455,8 @@ fn member_acts(
         .iter()
         .filter_map(|&(entity, _)| {
             let (monster, at, look) = monsters.get(entity).ok()?;
-            let distance = distance_to_party(party_at, monster, at, look);
-            (!monster.is_dead() && reaches(slot, hand.reach, distance))
+            let distance = distance_to_party(party.eye, monster, at, look);
+            (!monster.is_dead() && party.reaches(slot, at.translation(), hand.reach, distance))
                 .then_some((entity, distance))
         })
         .min_by(|a, b| a.1.total_cmp(&b.1))
@@ -511,7 +522,7 @@ fn monster_acts(
     roster: &PartyRoster,
     members: &mut Query<(&mut Character, &Carried)>,
     monsters: &Query<(&mut Monster, &GlobalTransform, &MonsterAppearance)>,
-    party_at: Vec3,
+    party: &PartyView,
     items: &ItemCatalog,
     species: &MonsterCatalog,
     news: &mut MessageWriter<CombatNews>,
@@ -519,7 +530,7 @@ fn monster_acts(
     let (entity, turn) = battle.monsters[index];
     let Ok((monster, at, look)) = monsters.get(entity) else { return };
     let Some(kind) = species.0.get(monster.species as usize) else { return };
-    let distance = distance_to_party(party_at, monster, at, look);
+    let distance = distance_to_party(party.eye, monster, at, look);
     // Every (attack, mode, member) that reaches is equally likely.
     let mut candidates = vec![];
     for (a, attack) in kind.attacks.iter().enumerate() {
@@ -528,7 +539,7 @@ fn monster_acts(
         }
         for (slot, &member) in roster.0.iter().enumerate() {
             let Ok((character, _)) = members.get(member) else { continue };
-            if able(character) && reaches(slot, attack.reach, distance) {
+            if able(character) && party.reaches(slot, at.translation(), attack.reach, distance) {
                 for bit in (0..9).filter(|b| attack.modes & (1 << b) != 0) {
                     candidates.push((a, bit, member));
                 }
@@ -636,13 +647,5 @@ mod tests {
         assert_eq!(next_phase(10, 1), 55);
         assert_eq!(next_phase(55, 1), 77);
         assert_eq!(next_phase(100, 1), 100, "again at the same step");
-    }
-
-    #[test]
-    fn the_rear_row_neither_strikes_nor_is_struck_in_melee() {
-        assert!(reaches(0, Reach::Touch, 1.5));
-        assert!(!reaches(0, Reach::Touch, 2.5));
-        assert!(!reaches(3, Reach::Short, 1.0));
-        assert!(reaches(4, Reach::Long, 20.0));
     }
 }
