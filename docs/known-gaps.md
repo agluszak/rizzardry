@@ -5,16 +5,17 @@ departs from retail, in rough order of the
 [implementation plan](implementation-plan.md)'s first slice. Keep an entry
 next to its feature when that feature changes.
 
-- Still open from the architecture review (the rest is done: level
-  activation and travel, time advancement, level records, roster
-  authority, inventory validation, gameplay-owned party freedom, sky and
-  level visuals in presentation, bitmap fonts in content): navigation's asset module decodes PVL/OCT
-  itself; the navmesh cache's hand-written RZNM codec could be a standard one;
-the inventory screen's
-  redraw snapshot does not cover all it draws (usability) and the held
-  item's picture is not screen-owned; `LevelTriggers::with` regathers
-  every prop each run and trigger actions are raw numbers with a door's
-  lock read from its definition; several screens read Escape themselves.
+- Still open from the architecture review (the rest is done): the
+  inventory screen's redraw snapshot does not cover all it draws
+  (usability) and the held item's picture is not screen-owned; several
+  screens read Escape themselves. The navmesh cache keeps its small
+  hand-written codec, which a standard codec would not make simpler.
+- Doors: a locked door with a key opens for that key in hand (unlocking
+  it for good, kept with the level) and otherwise runs its fallback, as
+  retail's `SelectAction` does; a door locked without a key stays shut,
+  since retail's lock picking and traps are not ported. Two retail
+  containers name loot tables that do not exist (the camp's chest and
+  Rapax Upper Floor's `CONSAFEDOOR`); like retail, they generate nothing.
 
 - Monsters take sky light while they can see the level's `SUN` light,
   fading as retail does, plus the level offset and nearby static lights; but
@@ -138,7 +139,7 @@ the inventory screen's
 - Most trigger actions are not performed yet (lights, missiles, fountains,
   timed actions, required items). A level the party leaves
   is kept as a record (`LevelRecord`) that its next activation consumes:
-  what its triggers keep (switches, positions, contents, fountains,
+  what its triggers keep (switches, positions, locks, contents, fountains,
   variables; not proximity, animation waits or zone timing), where its
   props were heading by definition index, its monsters as they were (the
   dead stay gone), its lying items, what the party knows of its groups,

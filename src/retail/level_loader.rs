@@ -19,16 +19,16 @@ use super::sections::LevelSections;
 use super::sections::{Environment, read_sections};
 use super::space::{retail_direction, retail_position, retail_yaw};
 use super::texture_loader::file_has_alpha;
-use super::trigger::{
-    AmbientSound, ItemTrigger, StateMode, TriggerKind, action as trigger_action, flag,
-};
+use super::trigger::{AmbientSound, ItemTrigger, StateMode, TriggerKind, action, flag};
 use crate::bytes::Bytes;
 use crate::content::UNITS_PER_METRE;
+use crate::content::items::Dice;
 use crate::content::items::ItemId;
 use crate::content::level::{
-    AmbientSoundModel, CameraPathModel, DoorLock, ItemPlacement, LevelEnvironment, LevelGeometry,
-    LevelPart, MonsterPlacement, Playback, PropModel, PropModelPart, StateChange, TextureAnimation,
-    TriggerDefinition, TriggerSound, VertexLighting,
+    AmbientSoundModel, Animation, CameraPathModel, DoorLock, Fountain, ItemPlacement,
+    LevelEnvironment, LevelGeometry, LevelPart, MonsterPlacement, Playback, PropModel,
+    PropModelPart, Restores, StateChange, TextureAnimation, TriggerAction, TriggerDefinition,
+    TriggerSound, TriggerUse, VertexLighting,
 };
 
 /// Time-of-day phase used for baked lighting until the game clock exists:
@@ -280,21 +280,29 @@ fn item_placement(record: &WorldItemRecord) -> ItemPlacement {
     }
 }
 
-/// Every type 4 trigger of the level, attached to a prop or not.
-fn level_triggers(sections: &LevelSections) -> Vec<TriggerDefinition> {
-    sections
+/// Every type 4 trigger of the level, attached to a prop or not, and their
+/// indices by name: retail looks names up ignoring case, and the newest
+/// trigger of a name wins.
+fn level_triggers(sections: &LevelSections) -> (Vec<TriggerDefinition>, HashMap<String, usize>) {
+    let items: Vec<(&str, &ItemTrigger)> = sections
         .all_triggers()
         .filter_map(|trigger| match &trigger.kind {
-            TriggerKind::Item(item) => Some(trigger_definition(sections, &trigger.name, item)),
+            TriggerKind::Item(item) => Some((trigger.name.as_str(), item)),
             _ => None,
         })
-        .collect()
+        .collect();
+    let index: HashMap<String, usize> =
+        items.iter().enumerate().map(|(i, (name, _))| (name.to_uppercase(), i)).collect();
+    let definitions =
+        items.iter().map(|(name, item)| trigger_definition(sections, name, item, &index)).collect();
+    (definitions, index)
 }
 
 fn trigger_definition(
     sections: &LevelSections,
     name: &str,
     item: &ItemTrigger,
+    index: &HashMap<String, usize>,
 ) -> TriggerDefinition {
     let sound = (!item.sound.is_empty()).then(|| TriggerSound {
         path: format!("data/sound/{}", item.sound.replace('\\', "/")).to_lowercase(),
@@ -307,47 +315,92 @@ fn trigger_definition(
         StateMode::Clear => Some(StateChange::Clear),
         StateMode::Toggle => Some(StateChange::Toggle),
     };
+    let recipients: Vec<&str> =
+        item.recipients.split(',').map(str::trim).filter(|r| !r.is_empty()).collect();
+    // The message a commit shows is the data word of the use that ran.
+    let shows_message = item.flags & flag::SHOW_MESSAGE != 0;
+    let using = |code: u32, slot: usize| TriggerUse {
+        action: decode_action(code, sections, item, recipients.first().copied()),
+        message: (shows_message && item.data[slot] >= 0).then_some(item.data[slot]),
+    };
     TriggerDefinition {
         name: name.to_owned(),
         usable: item.enabled,
         once: item.flags & flag::ONCE != 0,
         fire_linked: item.fire_linked,
-        initial: item.initial_action,
-        alternate: item.alternate_action,
-        fallback: item.fallback_action,
+        initial: using(item.initial_action, 0),
+        alternate: (item.alternate_action != 0).then(|| using(item.alternate_action, 1)),
+        fallback: (item.fallback_action != 0).then(|| using(item.fallback_action, 2)),
         alternate_toggles: item.alternate_toggles,
-        recipients: item
-            .recipients
-            .split(',')
-            .map(str::trim)
-            .filter(|r| !r.is_empty())
-            .map(str::to_owned)
+        recipients: recipients
+            .iter()
+            .filter_map(|name| index.get(&name.to_uppercase()).copied())
             .collect(),
-        data: item.data,
         sound,
         sound_on_commit: item.play_sound,
-        shows_message: item.flags & flag::SHOW_MESSAGE != 0,
         required_states: item.required_states.clone(),
         state_change: state_change.map(|change| (item.state_to_modify.clone(), change)),
         initial_state: item.initial_state,
         range: (item.range[0] / UNITS_PER_METRE, item.range[1] / UNITS_PER_METRE),
         door: item.door.as_ref().map(|door| DoorLock {
             locked: door.locked,
-            key: (door.item != u16::MAX && door.item != 0).then_some(door.item),
+            key: (door.item != u16::MAX && door.item != 0).then_some(ItemId(door.item)),
         }),
         // Prop-backed triggers are used by clicking their prop.
         place: item
             .placement
             .filter(|_| item.flags & flag::ITEM == 0)
             .map(|placement| retail_position(placement.position)),
-        loot_table: (item.initial_action == trigger_action::TOGGLE && !item.action_data.is_empty())
+        loot_table: (item.initial_action == action::TOGGLE && !item.action_data.is_empty())
             .then(|| item.action_data.clone()),
-        arrival: matches!(
-            item.initial_action,
-            trigger_action::TELEPORT | trigger_action::RANDOM_TELEPORT
-        )
-        .then(|| teleport_arrival(sections, item))
-        .flatten(),
+    }
+}
+
+/// A retail action code with its parameters (`data`, the first recipient,
+/// the teleport destination).
+fn decode_action(
+    code: u32,
+    sections: &LevelSections,
+    item: &ItemTrigger,
+    first_recipient: Option<&str>,
+) -> TriggerAction {
+    let [first, second, third] = item.data;
+    // -1 stands for retail's default.
+    let or = |value: i32, default: i32| if value < 0 { default } else { value };
+    match code {
+        0x00 => TriggerAction::Nothing,
+        0x01 => TriggerAction::OpenDoor,
+        0x02 | 0x2c => TriggerAction::ToggleDoor,
+        0x03 => TriggerAction::Animate(Animation::Toggle),
+        0x32 => TriggerAction::Animate(Animation::Start),
+        0x33 => TriggerAction::Animate(Animation::Stop),
+        0x09 => first_recipient.map_or(TriggerAction::Unsupported(code), |path| {
+            TriggerAction::CameraPath(path.to_owned())
+        }),
+        0x0f => TriggerAction::Relay,
+        action::TELEPORT | action::RANDOM_TELEPORT => teleport_arrival(sections, item)
+            .map_or(TriggerAction::Unsupported(code), TriggerAction::Teleport),
+        0x24 => TriggerAction::HurtParty(Dice {
+            count: or(first, 1) as u8,
+            sides: or(second, 6) as u8,
+            base: or(third, 2) as i16,
+        }),
+        0x23 => TriggerAction::DamageZone,
+        0x25 | 0x26 => TriggerAction::Fountain(Fountain {
+            restores: if code == 0x26 { Restores::Health } else { Restores::Stamina },
+            amount: third.max(0) as u32,
+            uses: (first != -1).then_some(first.max(0) as u32),
+            // Its second word counts retail's 720-second game hours.
+            refills_after: (second > 0).then(|| second as u64 * 720 * 1000),
+        }),
+        0x39 => TriggerAction::Shake {
+            seconds: if third == -1 { 1.0 } else { third.unsigned_abs() as f32 / 1000.0 },
+            intensity: if first == -1 { 800.0 } else { first as f32 },
+            fade_out: third < -1,
+        },
+        0x40 => TriggerAction::Dial,
+        0x36 => TriggerAction::Sound,
+        other => TriggerAction::Unsupported(other),
     }
 }
 
@@ -398,10 +451,11 @@ fn build_part(
 }
 
 /// Build placed props: their part meshes and materials, lit for their rest
-/// pose, and what using them does.
+/// pose, and the trigger using them runs (by `trigger_index`).
 pub(super) async fn build_props(
     context: &mut LoadContext<'_>,
     source: impl Iterator<Item = &Prop>,
+    trigger_index: &HashMap<String, usize>,
     directory: &str,
     textures: &mut LoadedTextures,
     lighting: &PropLighting<'_>,
@@ -442,7 +496,7 @@ pub(super) async fn build_props(
             });
         }
         let trigger = prop.trigger.as_ref().and_then(|trigger| match &trigger.kind {
-            TriggerKind::Item(_) => Some(trigger.name.clone()),
+            TriggerKind::Item(_) => trigger_index.get(&trigger.name.to_uppercase()).copied(),
             _ => None,
         });
         props.push(PropModel {
@@ -545,10 +599,12 @@ impl AssetLoader for PvlLoader {
         let lighting = PropLighting { ambient, level: &level_lighting };
         let mut animated_textures: Vec<TextureAnimation> =
             materials.into_iter().filter_map(|m| m.animation).collect();
+        let (triggers, trigger_index) = level_triggers(&sections);
         let props = sections.props.iter().chain(&sections.bitmaps);
         let props = build_props(
             context,
             props,
+            &trigger_index,
             directory,
             &mut textures,
             &lighting,
@@ -563,7 +619,7 @@ impl AssetLoader for PvlLoader {
             environment,
             lighting: level_lighting,
             entrances: level_entrances(&sections),
-            triggers: level_triggers(&sections),
+            triggers,
             monsters,
             items,
             ambient_sounds: sections
@@ -601,5 +657,52 @@ mod tests {
     fn frame_lists_end_at_the_first_short_line() {
         let list = "Candle-0000.tga\r\nCandle-0001.tga\r\n\r\nignored.tga\r\n";
         assert_eq!(ifl_frames(list), ["candle-0000.tga", "candle-0001.tga"]);
+    }
+
+    /// Every retail container names an existing loot table but two, which
+    /// generate nothing (the camp's chest holds what the party leaves in it).
+    #[test]
+    #[ignore = "requires a retail installation"]
+    fn retail_containers_name_existing_loot_tables_but_two() {
+        let root = std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL");
+        let files = crate::retail::files::RetailFiles::open(root).unwrap();
+        let tables = crate::retail::items::read_loot_tables(
+            &files.read("data/databases/itemtables.dbs").unwrap().unwrap(),
+        )
+        .unwrap();
+        let mut levels = vec![];
+        let mut directories = vec!["levels".to_owned()];
+        while let Some(directory) = directories.pop() {
+            for child in files.list_directory(&directory) {
+                if child.ends_with(".pvl") {
+                    levels.push(child);
+                } else if files.is_directory(&child) {
+                    directories.push(child);
+                }
+            }
+        }
+        let (mut containers, mut missing) = (0, vec![]);
+        for level in &levels {
+            let data = files.read(level).unwrap().unwrap();
+            let geometry = read_level_geometry(&data).unwrap();
+            let sections = read_sections(&mut Bytes::new(&data[geometry.end..])).unwrap();
+            for trigger in level_triggers(&sections).0 {
+                let Some(name) = &trigger.loot_table else { continue };
+                containers += 1;
+                if tables.find(name).is_none() {
+                    missing.push(format!("{level}: {name}"));
+                }
+            }
+        }
+        println!("{} levels, {containers} containers", levels.len());
+        assert!(levels.len() > 20 && containers > 0);
+        missing.sort();
+        assert_eq!(
+            missing,
+            [
+                "levels/camp/camp.pvl: AWAYCAMPCHEST",
+                "levels/rapax/rapaxupperfloor.pvl: CONSTABLE CHEST"
+            ]
+        );
     }
 }

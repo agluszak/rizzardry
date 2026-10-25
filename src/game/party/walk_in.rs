@@ -17,7 +17,7 @@ pub fn run_walk_in_triggers(
 ) {
     let Ok(position) = party.single() else { return };
     let eye = PartyBody::eye(position);
-    triggers.with(|triggers| triggers.walk(eye, time.delta_secs()));
+    triggers.with(|triggers| triggers.walk(eye, time.delta()));
 }
 
 /// The party's eye flying along a camera path; input and physics wait

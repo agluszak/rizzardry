@@ -3,6 +3,8 @@
 use std::ops::RangeInclusive;
 
 use bevy::prelude::*;
+
+use super::items::{Dice, ItemId};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
 /// One renderable piece of the static level: a compiled octree mesh's
@@ -179,7 +181,7 @@ pub struct MonsterPlacement {
 /// An item lying in the level as authored (retail `.sts` `ITEM`).
 #[derive(Clone, Debug)]
 pub struct ItemPlacement {
-    pub item: crate::content::items::ItemId,
+    pub item: ItemId,
     /// A stack's count, or charges or uses, by the item's quantity kind.
     pub stack: u8,
     pub uses: u8,
@@ -214,7 +216,7 @@ pub struct CameraPathModel {
 }
 
 /// Where a teleport takes the party.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Arrival {
     /// The eye's position and facing in this level.
     Here { eye: Vec3, yaw: f32 },
@@ -254,8 +256,8 @@ pub struct PropModel {
     /// Path keys splitting the animation into segments, e.g. a dial's
     /// positions.
     pub slots: Vec<u16>,
-    /// The name of the trigger using the prop runs.
-    pub trigger: Option<String>,
+    /// The trigger using the prop runs, by index in the level's triggers.
+    pub trigger: Option<usize>,
 }
 
 /// A trigger: what happens when it runs, from the player using it, another
@@ -269,23 +271,20 @@ pub struct TriggerDefinition {
     pub once: bool,
     /// Run the recipients when the action commits.
     pub fire_linked: bool,
-    /// Retail action codes. The first use runs `initial`; later uses run
-    /// `alternate` if set, back and forth when `alternate_toggles`. When a
-    /// required state is unset, `fallback` runs instead (0: nothing).
-    pub initial: u32,
-    pub alternate: u32,
-    pub fallback: u32,
+    /// The first use runs `initial`; later uses run `alternate` if there is
+    /// one, back and forth when `alternate_toggles`. When a required state
+    /// is unset, `fallback` runs instead, or nothing.
+    pub initial: TriggerUse,
+    pub alternate: Option<TriggerUse>,
+    pub fallback: Option<TriggerUse>,
     pub alternate_toggles: bool,
-    /// Triggers to run, in order.
-    pub recipients: Vec<String>,
-    /// Action parameters; their meaning depends on the action.
-    pub data: [i32; 3],
+    /// Triggers to run, in order, by index in the level's triggers (retail
+    /// looks each name up when it runs; names no trigger has are dropped).
+    pub recipients: Vec<usize>,
     pub sound: Option<TriggerSound>,
     /// Commits play the sound (retail `ANIMATE_ACTION`); otherwise only
     /// actions that play it do.
     pub sound_on_commit: bool,
-    /// Show level message `data[use]` on commit.
-    pub shows_message: bool,
     /// Location variables that must all be set.
     pub required_states: Vec<String>,
     /// The location variable a commit changes.
@@ -298,10 +297,80 @@ pub struct TriggerDefinition {
     /// A trigger standing at a place rather than on a prop: it runs when the
     /// party's eye comes within `range` of it.
     pub place: Option<Vec3>,
-    /// Where a teleport takes the party.
-    pub arrival: Option<Arrival>,
-    /// The loot table a container draws its contents from.
+    /// The loot table a container draws its contents from, by name (the
+    /// tables are their own asset; a level is played only if it exists).
     pub loot_table: Option<String>,
+}
+
+/// One of a trigger's actions, and the level message its commit shows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TriggerUse {
+    pub action: TriggerAction,
+    pub message: Option<i32>,
+}
+
+/// What a trigger does when it runs: retail's action codes, decoded with
+/// their parameters (`docs/research/trigger-actions.md`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum TriggerAction {
+    /// Commit, doing nothing else (0).
+    Nothing,
+    /// Open a door (1).
+    OpenDoor,
+    /// Open or close a door (2, and 0x2c, which retail also unlocks with a
+    /// key the party carries).
+    ToggleDoor,
+    /// Play the prop's animation (3 toggles, 0x32 starts, 0x33 stops); a
+    /// container also opens.
+    Animate(Animation),
+    /// Fly the party along the named camera path (9).
+    CameraPath(String),
+    /// Run the recipients (0xf).
+    Relay,
+    /// Send the party elsewhere (0x34, and 0x4b, whose random choice is
+    /// not ported).
+    Teleport(Arrival),
+    /// Hurt everyone in the party by their own roll (0x24).
+    HurtParty(Dice),
+    /// Hurt everyone in the party every half second while it stays (0x23).
+    DamageZone,
+    Fountain(Fountain),
+    Shake {
+        seconds: f32,
+        intensity: f32,
+        fade_out: bool,
+    },
+    /// Advance a dial to its next position (0x40).
+    Dial,
+    /// Play the trigger's sound, without committing (0x36).
+    Sound,
+    /// A retail action not ported yet, or one missing what it needs (a
+    /// teleport without a destination): running it does nothing.
+    Unsupported(u32),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Animation {
+    Toggle,
+    Start,
+    Stop,
+}
+
+/// A fountain restoring each member (retail actions 0x25 and 0x26).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Fountain {
+    pub restores: Restores,
+    pub amount: u32,
+    /// Uses before it runs dry; endless when none.
+    pub uses: Option<u32>,
+    /// Game milliseconds after it is first used that it refills.
+    pub refills_after: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Restores {
+    Stamina,
+    Health,
 }
 
 #[derive(Clone, Debug)]
@@ -319,12 +388,12 @@ pub enum StateChange {
     Toggle,
 }
 
-/// A door's lock state.
+/// A door's lock as authored: whether it starts locked, and the key that
+/// unlocks it.
 #[derive(Clone, Copy, Debug)]
 pub struct DoorLock {
     pub locked: bool,
-    /// The key item that unlocks it.
-    pub key: Option<u16>,
+    pub key: Option<ItemId>,
 }
 
 /// One rigid part of a prop, in its rest pose.

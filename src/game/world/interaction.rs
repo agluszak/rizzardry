@@ -65,18 +65,18 @@ pub fn act_on_click(
 /// there. Retail measures from the middle of the prop; the hit point is
 /// close.
 fn use_prop(name: &Name, prop: &Prop, distance: f32, triggers: &mut LevelTriggers) {
-    let Some(trigger) = &prop.trigger else {
+    let Some(index) = prop.trigger else {
         debug!("{name} does nothing");
         return;
     };
     triggers.with(|triggers| {
-        let Some(index) = triggers.state.find(trigger) else { return };
-        let (near, far) = triggers.definitions[index].range;
+        let definition = &triggers.definitions[index];
+        let (trigger, (near, far)) = (&definition.name, definition.range);
         if !triggers.usable(index) {
             debug!("{name} ({trigger}) cannot be used");
         } else if !(near..=far).contains(&distance) {
             debug!("{name} ({trigger}) is out of reach: {distance:.1} m, not {near:.1}..{far:.1}");
-        } else if triggers.run(trigger) {
+        } else if triggers.run_index(index, 0) {
             info!("used {name} ({trigger})");
         } else {
             info!("used {name} ({trigger}): nothing happened");
