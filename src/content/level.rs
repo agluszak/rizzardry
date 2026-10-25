@@ -1,6 +1,7 @@
 //! A level's static geometry as native Bevy assets.
 
 use bevy::prelude::*;
+use num_enum::{IntoPrimitive, TryFromPrimitive};
 
 /// One renderable piece of the static level: a compiled octree mesh's
 /// polygons that share a material.
@@ -128,7 +129,9 @@ pub struct LevelGeometry {
 }
 
 /// How a walker gets from one end of a link to the other.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Reflect)]
+/// Its number is its Landmass link kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Reflect, IntoPrimitive, TryFromPrimitive)]
+#[repr(usize)]
 pub enum LinkKind {
     /// A teleport pad or portal: arrive at once.
     Teleport,
@@ -136,17 +139,6 @@ pub enum LinkKind {
     Climb,
     /// Walk through an open door.
     Door,
-}
-
-impl LinkKind {
-    /// Landmass link kind numbers.
-    pub fn index(self) -> usize {
-        self as usize
-    }
-
-    pub fn from_index(index: usize) -> Option<Self> {
-        [LinkKind::Teleport, LinkKind::Climb, LinkKind::Door].get(index).copied()
-    }
 }
 
 /// A one-way link between two ground positions.

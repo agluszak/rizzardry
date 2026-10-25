@@ -1,6 +1,7 @@
 //! Small headless scenarios at the level/party ownership boundary: a level
 //! becomes active in one step once its prerequisites exist, and travel
-//! suspends the party until the destination is playable.
+//! suspends the party until the destination is playable, or leaves it where
+//! it was when the destination cannot be.
 
 use avian3d::prelude::{Collider, RigidBodyDisabled};
 use bevy::prelude::*;
@@ -12,7 +13,7 @@ use rizzardry::game::inventory::ItemIds;
 use rizzardry::game::party::body::{PartyBody, PartyMotionConfig, PartyStart};
 use rizzardry::game::rng::GameRng;
 use rizzardry::game::world::level::{
-    Level, LevelMemory, LevelPhase, LevelReady, Travel, activate_level, travel,
+    Departing, Destination, Level, LevelMemory, LevelReady, Travel, activate_level, travel,
 };
 use rizzardry::game::world::population::Monster;
 use rizzardry::game::world::triggers::PendingPartyMove;
@@ -53,7 +54,7 @@ fn with_data(app: &mut App) {
     world.insert_resource(GameData { items, loot, species });
 }
 
-fn spawn_level(app: &mut App, collision: CollisionMesh) -> Entity {
+fn test_level(app: &mut App, collision: CollisionMesh) -> Level {
     let crab =
         MonsterPlacement { location: 7, group: 1, species: 0, position: Vec3::ZERO, yaw: 0.0 };
     let geometry = app.world_mut().resource_mut::<Assets<LevelGeometry>>().add(LevelGeometry {
@@ -61,16 +62,20 @@ fn spawn_level(app: &mut App, collision: CollisionMesh) -> Entity {
         monsters: vec![crab],
         ..default()
     });
-    app.world_mut()
-        .spawn(Level {
-            path: "levels/test/test.pvl".into(),
-            geometry,
-            navmeshes: vec![],
-            sky: None,
-            script: default(),
-            messages: None,
-        })
-        .id()
+    Level {
+        path: "levels/test/test.pvl".into(),
+        geometry,
+        navmeshes: vec![],
+        sky: None,
+        script: default(),
+        messages: None,
+    }
+}
+
+/// The test level, to be activated.
+fn spawn_level(app: &mut App, collision: CollisionMesh) -> Entity {
+    let level = test_level(app, collision);
+    app.world_mut().spawn(Destination::new(level)).id()
 }
 
 fn party_entities(app: &mut App) -> Vec<Entity> {
@@ -79,8 +84,12 @@ fn party_entities(app: &mut App) -> Vec<Entity> {
     query.iter(world).collect()
 }
 
-fn phase(app: &App, level: Entity) -> LevelPhase {
-    *app.world().get::<LevelPhase>(level).unwrap()
+fn is_played(app: &App, level: Entity) -> bool {
+    app.world().get::<Level>(level).is_some() && app.world().get::<Departing>(level).is_none()
+}
+
+fn failed(app: &App, destination: Entity) -> bool {
+    app.world().get::<Destination>(destination).is_some_and(|d| d.failed)
 }
 
 fn floor() -> CollisionMesh {
@@ -99,7 +108,7 @@ fn a_level_without_collision_fails_and_places_no_party() {
 
     app.update();
 
-    assert_eq!(phase(&app, root), LevelPhase::Failed);
+    assert!(failed(&app, root));
     assert!(app.world().get::<Collider>(root).is_none());
     assert!(app.world().resource::<Messages<LevelReady>>().is_empty());
     assert!(party_entities(&mut app).is_empty());
@@ -111,12 +120,12 @@ fn a_level_waits_for_the_shared_databases() {
     let root = spawn_level(&mut app, floor());
 
     app.update();
-    assert_eq!(phase(&app, root), LevelPhase::Loading);
+    assert!(!is_played(&app, root) && !failed(&app, root));
     assert!(party_entities(&mut app).is_empty());
 
     with_data(&mut app);
     app.update();
-    assert_eq!(phase(&app, root), LevelPhase::Active);
+    assert!(is_played(&app, root));
     assert!(app.world().get::<Collider>(root).is_some());
     assert_eq!(party_entities(&mut app).len(), 1);
 }
@@ -137,12 +146,12 @@ fn the_party_survives_level_replacement_without_duplication() {
     let second_level = spawn_level(&mut app, floor());
     app.update();
 
-    assert_eq!(phase(&app, second_level), LevelPhase::Active);
+    assert!(is_played(&app, second_level));
     assert_eq!(party_entities(&mut app), party);
 }
 
 #[test]
-fn travel_suspends_the_party_until_the_destination_activates() {
+fn a_destination_that_cannot_load_leaves_the_party_where_it_was() {
     let mut app = app();
     with_data(&mut app);
     let first_level = spawn_level(&mut app, floor());
@@ -151,18 +160,16 @@ fn travel_suspends_the_party_until_the_destination_activates() {
 
     // MO2's files are not there to load here: the destination fails.
     app.world_mut().write_message(Travel { entrance: "MO204".into() });
-    app.update();
-
-    assert!(app.world().get_entity(first_level).is_err());
+    app.world_mut().run_schedule(PreUpdate);
+    assert!(app.world().get::<Departing>(first_level).is_some());
     assert!(app.world().get::<RigidBodyDisabled>(party).is_some());
-    let mut levels = app.world_mut().query::<(Entity, &Level)>();
-    let (destination, level) = levels.single(app.world()).unwrap();
-    assert_eq!(level.path, "levels/monastery/monastery2.pvl");
     for _ in 0..20 {
         app.update();
     }
-    assert_ne!(phase(&app, destination), LevelPhase::Active);
-    assert!(app.world().get::<RigidBodyDisabled>(party).is_some());
+
+    assert!(is_played(&app, first_level), "the party is back in the level it left");
+    assert!(app.world().get::<RigidBodyDisabled>(party).is_none());
+    assert!(app.world().resource::<LevelMemory>().is_empty(), "the stale record is gone");
     assert_eq!(party_entities(&mut app), vec![party]);
 }
 
@@ -185,18 +192,20 @@ fn a_killed_monster_stays_dead_when_the_party_returns() {
         query.single_mut(world).unwrap().hp = 0;
     }
 
-    // Leave (for a level that cannot load here), then come back.
+    // Leave, then come straight back: the travel step remembers the level,
+    // and its destination (which cannot load here) gives way to the same
+    // level, as returning would.
     app.world_mut().write_message(Travel { entrance: "MO204".into() });
-    app.update();
-    assert!(monsters(&mut app).is_empty());
-    let mut levels = app.world_mut().query_filtered::<Entity, With<Level>>();
-    let away: Vec<Entity> = levels.iter(app.world()).collect();
-    for level in away {
-        app.world_mut().despawn(level);
+    app.world_mut().run_schedule(PreUpdate);
+    let mut destinations = app.world_mut().query_filtered::<Entity, With<Destination>>();
+    let away: Vec<Entity> = destinations.iter(app.world()).collect();
+    for destination in away {
+        app.world_mut().despawn(destination);
     }
     let back = spawn_level(&mut app, floor());
     app.update();
 
-    assert_eq!(phase(&app, back), LevelPhase::Active);
+    assert!(is_played(&app, back));
+    assert_eq!(app.world_mut().query::<&Level>().iter(app.world()).count(), 1);
     assert!(monsters(&mut app).is_empty(), "the dead crab came back");
 }

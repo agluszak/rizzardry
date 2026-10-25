@@ -10,7 +10,7 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use crate::game::camp::Camp;
-use crate::game::world::level::{LevelPhase, TravelQuestion};
+use crate::game::world::level::{Departing, Level, TravelQuestion};
 
 /// The full screen that is up; they are mutually exclusive.
 #[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -40,7 +40,7 @@ impl Screen {
 /// What decides whether the party is free to act.
 #[derive(SystemParam)]
 pub struct Freedom<'w, 's> {
-    levels: Query<'w, 's, &'static LevelPhase>,
+    levels: Query<'w, 's, (), (With<Level>, Without<Departing>)>,
     screen: Res<'w, Screen>,
     camp: Option<Res<'w, Camp>>,
     question: Option<Res<'w, TravelQuestion>>,
@@ -48,7 +48,7 @@ pub struct Freedom<'w, 's> {
 
 impl Freedom<'_, '_> {
     pub fn free(&self) -> bool {
-        self.levels.iter().any(|phase| *phase == LevelPhase::Active)
+        !self.levels.is_empty()
             && *self.screen == Screen::World
             && self.camp.is_none()
             && self.question.is_none()

@@ -460,8 +460,8 @@ fn read_item(
         kind,
         image: image_path(&own_image, kind).ok_or(ItemLoadError::Image(index, kind))?,
         model: model_path(&ascii(&record[0x8d..0x8d + 0x20]), kind),
-        class: EquipClass::from_retail(equip_class)
-            .ok_or(ItemLoadError::EquipClass(index, equip_class))?,
+        class: EquipClass::try_from(equip_class)
+            .map_err(|_| ItemLoadError::EquipClass(index, equip_class))?,
         category,
         auto_identify: has(flag::AUTO_IDENTIFY),
         crucial: has(flag::NO_DISCARD),

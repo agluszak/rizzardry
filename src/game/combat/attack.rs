@@ -11,9 +11,11 @@ use crate::game::characters::{
 };
 use crate::game::inventory::{Carried, EquipSlot};
 use crate::game::rng::GameRng;
+use num_enum::{IntoPrimitive, TryFromPrimitive};
 
-/// How a blow is struck, in retail's mode-bit order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// How a blow is struck, in retail's mode-bit order: its number is its bit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, IntoPrimitive, TryFromPrimitive)]
+#[repr(usize)]
 pub enum Mode {
     Swing,
     Thrust,
@@ -26,26 +28,11 @@ pub enum Mode {
     Shoot,
 }
 
-const MODES: [Mode; 9] = [
-    Mode::Swing,
-    Mode::Thrust,
-    Mode::Bash,
-    Mode::Berserk,
-    Mode::Throw,
-    Mode::Punch,
-    Mode::Kick,
-    Mode::Lash,
-    Mode::Shoot,
-];
 /// To-hit and penetration terms by mode.
 const TO_HIT: [i32; 9] = [0, -10, 0, -30, -5, 5, -10, 10, 0];
 const PENETRATION: [i32; 9] = [0, 10, -5, -30, 5, -5, 0, -10, 10];
 
 impl Mode {
-    fn index(self) -> usize {
-        MODES.iter().position(|&m| m == self).unwrap_or(0)
-    }
-
     /// Pick one of the set mode bits (retail `ChooseAttackMode`): draw
     /// `w` below 9, then walk the bits round from the first, taking the
     /// (w+1)-th set one. Not uniform when the count does not divide 9.
@@ -60,7 +47,7 @@ impl Mode {
             if modes & (1 << bit) != 0 {
                 wanted -= 1;
                 if wanted == 0 {
-                    return MODES[bit];
+                    return Mode::try_from(bit).expect("modes are masked to 9 bits");
                 }
             }
             bit = (bit + 1) % 9;
@@ -275,7 +262,7 @@ pub fn character_swing(
     mode: Mode,
     species: &Species,
 ) -> Swing {
-    let mode = mode.index();
+    let mode = usize::from(mode);
     let attributes = (character_ssdi(attacker) - species_ssdi(species)) / 10;
     let base = hand.attack_rating + 5 * hand.to_hit - fatigue_penalty(attacker) + attributes;
     let to_hit = base + TO_HIT[mode] - 5 * (10 - i32::from(species.evasion));
@@ -307,7 +294,7 @@ pub fn monster_swing(
     target: &Character,
     armour: &Armour,
 ) -> Swing {
-    let mode = mode.index();
+    let mode = usize::from(mode);
     let attributes = (species_ssdi(species) - character_ssdi(target)) / 10;
     let base = i32::from(attack.score) + attributes;
     let to_hit = base + TO_HIT[mode] - 5 * armour.total;

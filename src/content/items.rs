@@ -1,6 +1,7 @@
 //! Item definitions: what every kind of item is, shared by every copy.
 
 use bevy::prelude::*;
+use num_enum::{IntoPrimitive, TryFromPrimitive};
 
 /// An item definition's stable number (retail's item number).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Reflect)]
@@ -16,7 +17,9 @@ pub struct Dice {
 
 /// Where an item can be worn or wielded, and what it is (retail equipment
 /// class; labels 1087..1119 in the string table).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Reflect)]
+/// Declared in retail's order, so its retail number converts both ways.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Reflect, IntoPrimitive, TryFromPrimitive)]
+#[repr(u8)]
 pub enum EquipClass {
     ShortWeapon,
     ExtendedWeapon,
@@ -51,47 +54,6 @@ pub enum EquipClass {
     BattleAxe,
     Flail,
     Mace,
-}
-
-impl EquipClass {
-    pub fn from_retail(class: u8) -> Option<Self> {
-        use EquipClass::*;
-        const ALL: [EquipClass; 32] = [
-            ShortWeapon,
-            ExtendedWeapon,
-            ThrownWeapon,
-            RangedWeapon,
-            Ammunition,
-            Shield,
-            Torso,
-            Legs,
-            Head,
-            Hands,
-            Feet,
-            Misc,
-            Cloak,
-            Instrument,
-            Gadget,
-            MiscMagic,
-            Potion,
-            Bomb,
-            Powder,
-            Spellbook,
-            Scroll,
-            Food,
-            Drink,
-            Key,
-            Writing,
-            Other,
-            Dagger,
-            LongSword,
-            Bipennis,
-            BattleAxe,
-            Flail,
-            Mace,
-        ];
-        ALL.get(usize::from(class)).copied()
-    }
 }
 
 /// How an item counts: a stack of identical things, or charges, uses or

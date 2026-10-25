@@ -8,18 +8,14 @@ use bevy::prelude::*;
 use bevy_enhanced_input::EnhancedInputPlugin;
 
 use crate::dev::{
-    FacePropOnEntry, SayLine, ScriptedUse, UiScript, face_prop_on_entry, run_ui_script, say_line,
-    scripted_use,
-};
-use crate::dev::{
-    OverheadView, ScreenshotAndExit, ScriptedInteract, ScriptedWalk, TestAgents, log_test_agents,
-    overhead_view, screenshot_and_exit, scripted_interact, scripted_walk, spawn_test_agents,
+    OverheadView, SayLine, ScreenshotAndExit, TestAgents, log_test_agents, overhead_view, say_line,
+    screenshot_and_exit, spawn_test_agents,
 };
 use crate::game::party::PartyPlugin;
 use crate::game::party::body::PartyStart;
 use crate::game::time::{GameClock, TimePlugin};
 use crate::game::world::WorldPlugin;
-use crate::game::world::level::Level;
+use crate::game::world::level::{Destination, Level};
 use crate::game::world::navigation::bake::SIZE_CLASSES;
 use crate::presentation::PresentationPlugin;
 use crate::retail::RetailPlugin;
@@ -56,31 +52,22 @@ pub struct Options {
     /// Developer: capture the view shortly after entering, then exit.
     #[arg(long, value_name = "FILE.png")]
     pub screenshot: Option<PathBuf>,
-    /// Developer: seconds after entering to take the screenshot (default: 2
-    /// plus any scripted walk).
+    /// Developer: seconds after entering to take the screenshot (default 2).
     #[arg(long, value_name = "SECONDS")]
     pub screenshot_after: Option<f32>,
-    /// Developer: hold "walk forward" for this many seconds after entering.
-    #[arg(long, value_name = "SECONDS")]
-    pub walk: Option<f32>,
-    /// Developer: once the level is built, stand 2 m in front of this prop.
-    #[arg(long, value_name = "NAME")]
-    pub face_prop: Option<String>,
     /// Start at this hour of the day (0-24) instead of a new game's noon.
     #[arg(long, value_name = "HOUR")]
     pub hour: Option<f32>,
-    /// Run without a window, rendering, sound or UI: gameplay only, with
-    /// what happens written to the log. Scripted checks of rules (fights,
-    /// travel) run this way.
+    /// Run without a window or sound: gameplay only, with what happens
+    /// written to the log; with --screenshot, also rendered offscreen. Each
+    /// update is one fixed step of game time and they run as fast as the
+    /// machine allows, not at the display's pace.
     #[arg(long)]
     pub headless: bool,
-    /// Stop after this many real seconds.
+    /// Stop after this many seconds of play (game time while a level is
+    /// played, not loading).
     #[arg(long, value_name = "SECONDS")]
     pub run_for: Option<f32>,
-    /// Run the game this many times faster than real time (Bevy's virtual
-    /// time, which the fixed step, the fight's pace and the clock follow).
-    #[arg(long, value_name = "FACTOR")]
-    pub speed: Option<f32>,
     /// Fight continuously (retail's setting): rounds follow each other
     /// without waiting for the player.
     #[arg(long)]
@@ -89,17 +76,10 @@ pub struct Options {
     /// run.
     #[arg(long, value_name = "SEED")]
     pub seed: Option<u64>,
-    /// Developer: drive the UI with scripted input, e.g.
-    /// `"key Tab; click 300 200; type Hello; key Enter"`.
-    #[arg(long, value_name = "STEPS")]
-    pub ui_script: Option<String>,
     /// Developer: speak this retail voice line on entry, e.g.
     /// `npc_aletheides_000`.
     #[arg(long, value_name = "LINE")]
     pub say: Option<String>,
-    /// Developer: press "interact" once, this many seconds after entering.
-    #[arg(long, value_name = "SECONDS")]
-    pub interact_at: Option<f32>,
     /// Developer: spawn this many stand-in monsters that chase the party.
     #[arg(long, value_name = "COUNT", default_value_t = 0)]
     pub test_agents: usize,
@@ -138,34 +118,37 @@ impl Options {
     }
 }
 
+/// The fixed step: Bevy's default 64 Hz, which movement and physics run on.
+const FIXED_STEP: std::time::Duration = std::time::Duration::from_micros(15_625);
+
 pub fn run(options: Options) -> AppExit {
-    let files = match RetailFiles::open(&options.retail) {
-        Ok(files) => Arc::new(files),
+    match build(&options) {
+        Ok(mut app) => app.run(),
         Err(error) => {
-            eprintln!("cannot read the retail installation: {error}");
-            return AppExit::error();
+            eprintln!("{error}");
+            AppExit::error()
         }
-    };
+    }
+}
+
+/// The game, composed from its options: the window and presentation, or
+/// headless; a new game entering the chosen level. Scenario tests build it
+/// the same way.
+pub fn build(options: &Options) -> Result<App, String> {
+    let files = RetailFiles::open(&options.retail)
+        .map(Arc::new)
+        .map_err(|error| format!("cannot read the retail installation: {error}"))?;
     // Retail names are case-insensitive; use the normalized name throughout.
     let level = match normalize(&options.level) {
         Ok(level) if files.contains(&level) => level,
-        _ => {
-            eprintln!("{} is not in the retail installation", options.level);
-            return AppExit::error();
-        }
+        _ => return Err(format!("{} is not in the retail installation", options.level)),
     };
-
     let start = PartyStart {
         entrance: options.entrance(&level).map(str::to_owned),
         eye: options.start,
         yaw: options.yaw.map(f32::to_radians),
         pitch: options.pitch.to_radians(),
     };
-
-    if options.headless && (options.screenshot.is_some() || options.ui_script.is_some()) {
-        eprintln!("screenshots and UI scripts need the window; leave out --headless");
-        return AppExit::error();
-    }
 
     let mut app = App::new();
     app.add_plugins(RetailPlugin {
@@ -176,37 +159,50 @@ pub fn run(options: Options) -> AppExit {
     // Navmeshes are baked once by the asset processor and cached.
     let plugins = DefaultPlugins.set(AssetPlugin { mode: AssetMode::Processed, ..default() });
     if options.headless {
-        // Bevy's headless setup: no window or event loop, no audio device,
-        // and a renderer with no backend, so meshes and images still load as
-        // assets but nothing is drawn. The schedule runs at 60 Hz.
-        app.add_plugins(
-            plugins
-                .set(WindowPlugin {
-                    primary_window: None,
-                    exit_condition: bevy::window::ExitCondition::DontExit,
+        // No window, event loop or audio device. Updates run back to back,
+        // each one fixed step of game time, so the simulation runs as fast
+        // as the machine allows and every run steps alike.
+        let plugins = plugins
+            .set(WindowPlugin {
+                primary_window: None,
+                exit_condition: bevy::window::ExitCondition::DontExit,
+                ..default()
+            })
+            .disable::<bevy::winit::WinitPlugin>();
+        if options.screenshot.is_some() {
+            // Rendering without a window: the game and its interface draw
+            // into an offscreen image, which the screenshot captures.
+            // Presentation's sounds load but play silently.
+            app.add_plugins(plugins.set(bevy::audio::AudioPlugin {
+                global_volume: bevy::audio::GlobalVolume::new(bevy::audio::Volume::SILENT),
+                ..default()
+            }))
+            .add_systems(Startup, crate::dev::create_offscreen)
+            .add_systems(
+                First,
+                crate::dev::draw_offscreen.run_if(resource_exists::<crate::dev::Offscreen>),
+            );
+        } else {
+            // No rendering at all (Bevy's headless setup): a renderer with no
+            // GPU backend, so meshes and images still load as assets but
+            // nothing is drawn, and no presentation; gameplay news goes to
+            // the log.
+            app.add_plugins(plugins.disable::<bevy::audio::AudioPlugin>().set(
+                bevy::render::RenderPlugin {
+                    render_creation:
+                        bevy::render::settings::WgpuSettings { backends: None, ..default() }.into(),
                     ..default()
-                })
-                .set(bevy::render::RenderPlugin {
-                    render_creation: bevy::render::settings::WgpuSettings {
-                        backends: None,
-                        ..default()
-                    }
-                    .into(),
-                    ..default()
-                })
-                .disable::<bevy::winit::WinitPlugin>()
-                .disable::<bevy::audio::AudioPlugin>(),
-        )
-        .add_plugins(bevy::app::ScheduleRunnerPlugin::run_loop(std::time::Duration::from_secs_f64(
-            1.0 / 60.0,
-        )))
-        .add_systems(Update, crate::dev::log_news);
+                },
+            ));
+        }
+        app.add_plugins(bevy::app::ScheduleRunnerPlugin::run_loop(std::time::Duration::ZERO))
+            .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(FIXED_STEP))
+            .add_systems(Update, crate::dev::log_news);
     } else {
         app.add_plugins(plugins.set(WindowPlugin {
             primary_window: Some(Window { title: "Rizzardry".into(), ..default() }),
             ..default()
         }))
-        .add_plugins(PresentationPlugin)
         .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.07)));
     }
     app.add_plugins((
@@ -217,12 +213,11 @@ pub fn run(options: Options) -> AppExit {
         TimePlugin,
         crate::game::combat::CombatPlugin,
     ));
-    if let Some(speed) = options.speed {
-        app.add_systems(Startup, move |mut time: ResMut<Time<Virtual>>| {
-            time.set_relative_speed(speed);
-            // Let a frame cover as many fixed steps as the speed asks for.
-            time.set_max_delta(std::time::Duration::from_secs_f32(0.25 * speed.max(1.0)));
-        });
+    // What the player sees and hears: with the window, or offscreen for a
+    // headless screenshot. After the gameplay plugins, whose input and
+    // messages it uses.
+    if !options.headless || options.screenshot.is_some() {
+        app.add_plugins(PresentationPlugin);
     }
     if options.continuous {
         app.insert_resource(crate::game::combat::CombatSettings { continuous: true });
@@ -233,20 +228,9 @@ pub fn run(options: Options) -> AppExit {
     }
     app.insert_resource(start);
     if let Some(path) = options.screenshot.clone() {
-        let after = options.screenshot_after.unwrap_or(2.0 + options.walk.unwrap_or(0.0));
+        let after = options.screenshot_after.unwrap_or(2.0);
         app.insert_resource(ScreenshotAndExit::new(path, after))
             .add_systems(Update, screenshot_and_exit);
-    }
-    if let Some(script) = &options.ui_script {
-        app.insert_resource(UiScript::parse(script)).add_systems(
-            Update,
-            (
-                run_ui_script,
-                face_prop_on_entry.run_if(resource_exists::<FacePropOnEntry>),
-                scripted_use.run_if(resource_exists::<ScriptedUse>),
-                crate::dev::log_prop.run_if(resource_exists::<crate::dev::LogProp>),
-            ),
-        );
     }
     if let Some(line) = options.say.clone() {
         app.insert_resource(SayLine { line, started: None }).add_systems(Update, say_line);
@@ -256,16 +240,6 @@ pub fn run(options: Options) -> AppExit {
     }
     if let Some(hour) = options.hour {
         app.insert_resource(GameClock::at((hour.rem_euclid(24.0) * 3_600_000.0) as u64));
-    }
-    if let Some(name) = options.face_prop.clone() {
-        app.insert_resource(FacePropOnEntry::new(name));
-        if options.ui_script.is_none() {
-            app.add_systems(Update, face_prop_on_entry);
-        }
-    }
-    if let Some(after) = options.interact_at {
-        app.insert_resource(ScriptedInteract { after, elapsed: 0.0, done: false })
-            .add_systems(Update, scripted_interact);
     }
     if options.nav_debug {
         app.add_plugins(bevy_landmass::debug::Landmass3dDebugPlugin::default());
@@ -285,15 +259,12 @@ pub fn run(options: Options) -> AppExit {
         })
         .add_systems(Update, (spawn_test_agents, log_test_agents));
     }
-    if let Some(seconds) = options.walk {
-        app.insert_resource(ScriptedWalk { seconds, started: false, since_log: 0.0 })
-            .add_systems(Update, scripted_walk);
-    }
     // A new game: the test party until party creation exists, entering
     // the chosen level.
     app.add_systems(Startup, crate::game::party::roster::spawn_test_party);
     app.add_systems(Startup, move |mut commands: Commands, assets: Res<AssetServer>| {
-        commands.spawn((Name::new(level.clone()), Level::load(&level, &assets)));
+        let first = Destination::new(Level::load(&level, &assets));
+        commands.spawn((Name::new(level.clone()), first));
     });
-    app.run()
+    Ok(app)
 }

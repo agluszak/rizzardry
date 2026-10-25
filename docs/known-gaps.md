@@ -10,7 +10,7 @@ next to its feature when that feature changes.
   authority, inventory validation, gameplay-owned party freedom, sky and
   level visuals in presentation, bitmap fonts in content): navigation's asset module decodes PVL/OCT
   itself; the navmesh cache's hand-written RZNM codec could be a standard one;
-  `EquipClass::ALL`-style mirrored enum arrays; the inventory screen's
+the inventory screen's
   redraw snapshot does not cover all it draws (usability) and the held
   item's picture is not screen-owned; `LevelTriggers::with` regathers
   every prop each run and trigger actions are raw numbers with a door's

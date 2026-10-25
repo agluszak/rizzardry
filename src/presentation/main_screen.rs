@@ -222,18 +222,28 @@ pub fn spawn_screen_cameras(mut commands: Commands) {
     ));
 }
 
-/// Fit the 3D cameras to the layout's viewport, in window pixels, with the
+/// Fit the 3D cameras to the layout's viewport, in the pixels of what the
+/// interface draws into (the window, or an offscreen image), with the
 /// 640×480 screen scaled and centred as the interface is.
 pub fn fit_viewport(
     layout: Res<ScreenLayout>,
-    windows: Query<&Window>,
+    interface: Query<&Camera, With<IsDefaultUiCamera>>,
     scale: Res<UiScale>,
-    mut cameras: Query<&mut Camera, Or<(With<PartyCamera>, With<SkyCamera>)>>,
+    mut cameras: Query<
+        &mut Camera,
+        (Or<(With<PartyCamera>, With<SkyCamera>)>, Without<IsDefaultUiCamera>),
+    >,
 ) {
-    let Ok(window) = windows.single() else { return };
-    let origin = (window.size() - SCREEN * scale.0) / 2.0;
+    let Some((size, factor)) = interface
+        .single()
+        .ok()
+        .and_then(|c| Some((c.logical_target_size()?, c.target_scaling_factor()?)))
+    else {
+        return;
+    };
+    let origin = (size - SCREEN * scale.0) / 2.0;
     let rect = layout.viewport();
-    let physical = |v: Vec2| ((origin + v * scale.0) * window.scale_factor()).round().as_uvec2();
+    let physical = |v: Vec2| ((origin + v * scale.0) * factor).round().as_uvec2();
     let viewport = Viewport {
         physical_position: physical(rect.min),
         physical_size: (physical(rect.max) - physical(rect.min)).max(UVec2::ONE),
@@ -1403,7 +1413,7 @@ pub fn draw_main_screen(
         put(&mut commands, sprite(view_cone, 0, board));
         for slot in 0..shown.slots.len() {
             let Some((row, seat)) = shown.formation.place_of(slot) else { continue };
-            let (x, y) = FORMATION_CELLS[Formation::index_of(row) * 3 + seat];
+            let (x, y) = FORMATION_CELLS[usize::from(row) * 3 + seat];
             let at = board + Vec2::new(x, y);
             put(&mut commands, sprite(symbols, Formation::facing(row) * 3, at));
             put(&mut commands, sprite(jewels, slot * 3, at));
