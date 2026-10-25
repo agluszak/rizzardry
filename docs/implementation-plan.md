@@ -93,8 +93,11 @@ Decisions made while doing this:
 
 Known gaps, in rough order:
 
-- Monsters are unlit (retail lights them from level lights), use only the
-  nearest detail level, and ignore particles, sounds and skins.
+- Monsters take sky light while they can see the level's `SUN` light,
+  fading as retail does, plus the level offset and nearby static lights; but
+  those lights reach the whole actor by their falloff at its centre, not per
+  vertex with N·L, and their runtime attenuation is not confirmed. Monsters
+  use only the nearest detail level and ignore particles, sounds and skins.
 - Cross-level travel, elevators/lifts, random teleports and camera-path
   triggers are not implemented. Retail's fall-speed cap is not applied.
 - Map notes are not saved; the automap does not yet track explored cells or

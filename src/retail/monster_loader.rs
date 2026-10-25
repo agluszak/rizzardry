@@ -108,6 +108,8 @@ impl AssetLoader for MlsLoader {
                 parts.push(MonsterPart {
                     mesh,
                     material: materials[material].handle.clone(),
+                    ambient: materials[material].ambient,
+                    emission: materials[material].emission,
                     source,
                 });
             }

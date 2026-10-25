@@ -11,7 +11,9 @@ use super::bytes::Bytes;
 use super::links::level_links;
 use super::oct::read_collision;
 use super::prop::{PROP_COLLIDABLE, Prop};
-use super::prop_loader::{PropLighting, part_transforms, record_collision, record_meshes};
+use super::prop_loader::{
+    PropLighting, level_lighting, part_transforms, record_collision, record_meshes,
+};
 use super::pvl::{CompiledMesh, MaterialRecord, PvlError, read_level_geometry};
 use super::sections::{Environment, read_sections};
 use super::space::UNITS_PER_METRE;
@@ -402,7 +404,8 @@ impl AssetLoader for PvlLoader {
         let octree = context.read_asset_bytes(octree).await?;
         let collision = read_collision(&octree)?.solid_mesh();
 
-        let lighting = PropLighting { ambient, offset, lights: &sections.lights };
+        let level_lighting = level_lighting(&sections.lights, sections.environment_offset);
+        let lighting = PropLighting { ambient, level: &level_lighting };
         let mut animated_textures: Vec<TextureAnimation> =
             materials.into_iter().filter_map(|m| m.animation).collect();
         let props = sections.props.iter().chain(&sections.bitmaps);
@@ -421,6 +424,7 @@ impl AssetLoader for PvlLoader {
             collision,
             map_layers,
             environment,
+            lighting: level_lighting,
             props,
             links,
             teleports,

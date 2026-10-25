@@ -8,7 +8,12 @@
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 
+use avian3d::prelude::{SpatialQuery, SpatialQueryFilter};
+
+use crate::content::level::LevelGeometry;
 use crate::content::monster::MonsterModel;
+use crate::game::time::GameClock;
+use crate::game::world::level::Level;
 
 /// What an actor looks like, and how far its origin floats above its feet.
 #[derive(Component, Debug)]
@@ -39,6 +44,9 @@ pub struct MonsterInstance {
     /// Per cycle: its root entity and this instance's mesh copies.
     cycles: HashMap<String, (Entity, Vec<Handle<Mesh>>)>,
     playing: Option<(CycleRequest, f32)>,
+    /// How much sky light reaches the actor: retail fades it between 0.75
+    /// in sight of the level's `SUN` light and 0 out of it.
+    sky_scale: f32,
 }
 
 impl MonsterInstance {
@@ -96,7 +104,7 @@ pub fn build_monster_instances(
             }
             cycles.insert(name.clone(), (cycle_root, copies));
         }
-        commands.entity(actor).insert(MonsterInstance { cycles, playing: None });
+        commands.entity(actor).insert(MonsterInstance { cycles, playing: None, sky_scale: SUNLIT });
     }
 }
 
@@ -135,6 +143,74 @@ pub fn animate_monsters(
                     part.source.iter().map(|&v| positions[v as usize].to_array()).collect();
                 mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, moved);
             }
+        }
+    }
+}
+
+/// The sky light an actor in sight of the sun receives (Whizzardry
+/// `Monster::Update`).
+const SUNLIT: f32 = 0.75;
+/// Retail steps the sky scale by 0.05 every 25 ms.
+const SKY_SCALE_PER_SECOND: f32 = 2.0;
+
+/// Light actors as retail does models without baked light: sky light while
+/// they can see the `SUN` light, scaled by each material's ambient, plus the
+/// level's offset, nearby lights and the material's emission. Retail adds
+/// point lights per vertex with N·L; here they light the whole actor by
+/// their falloff at its centre.
+pub fn light_monsters(
+    time: Res<Time>,
+    clock: Res<GameClock>,
+    levels: Query<(Entity, &Level)>,
+    geometry: Res<Assets<LevelGeometry>>,
+    models: Res<Assets<MonsterModel>>,
+    spatial: SpatialQuery,
+    mut actors: Query<(&GlobalTransform, &MonsterAppearance, &mut MonsterInstance)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
+    let Some((level_entity, level)) =
+        levels.iter().find_map(|(e, l)| geometry.get(&l.geometry).map(|g| (e, g)))
+    else {
+        return;
+    };
+    let sky = level.environment.as_ref().map_or(Vec3::ZERO, |e| e.sky_light(clock.phase()));
+    for (transform, appearance, mut instance) in &mut actors {
+        let Some(model) = models.get(&appearance.model) else { continue };
+        let centre = transform.translation();
+        let sunlit = level.lighting.sun.is_some_and(|sun| {
+            let Ok(direction) = Dir3::new(sun - centre) else { return true };
+            spatial
+                .cast_ray_predicate(
+                    centre,
+                    direction,
+                    centre.distance(sun),
+                    true,
+                    &SpatialQueryFilter::default(),
+                    &|hit| hit == level_entity,
+                )
+                .is_none()
+        });
+        let target = if sunlit { SUNLIT } else { 0.0 };
+        let step = SKY_SCALE_PER_SECOND * time.delta_secs();
+        instance.sky_scale += (target - instance.sky_scale).clamp(-step, step);
+        let fixed = level.lighting.at(centre, None);
+        let Some(playing) = instance.playing.as_ref().map(|(request, _)| request.cycle.clone())
+        else {
+            continue;
+        };
+        let Some(cycle) = model.cycle(&playing) else { continue };
+        let Some((_, copies)) =
+            instance.cycles.get(&playing).or_else(|| instance.cycles.get("IDLE"))
+        else {
+            continue;
+        };
+        for (part, copy) in cycle.parts.iter().zip(copies) {
+            let light =
+                sky * instance.sky_scale * part.ambient + fixed + Vec3::splat(part.emission);
+            let colour = light.extend(1.0).to_array();
+            let Some(mut mesh) = meshes.get_mut(copy) else { continue };
+            let count = part.source.len();
+            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![colour; count]);
         }
     }
 }

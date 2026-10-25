@@ -9,34 +9,36 @@ use super::mesh_record::{FACE_TWO_SIDED, MeshRecord};
 use super::prop::Prop;
 use super::sections::Light;
 use super::space::{UNITS_PER_METRE, retail_direction, retail_position};
-use crate::content::level::{CollisionMesh, VertexLighting};
+use crate::content::level::{CollisionMesh, LevelLighting, PointLightSource, VertexLighting};
 
 /// Retail lights props at runtime from the level's lights. This bakes that
-/// lighting at load for the rest pose: each light's linear falloff
-/// `intensity * (1 - d/range) * facing` and the level's environment offset,
-/// with the sky light (`ambient` at load) added per time of day.
+/// lighting at load for the rest pose (`LevelLighting::at`), with the sky
+/// light (`ambient` at load) added per time of day.
 pub struct PropLighting<'a> {
     pub ambient: Vec3,
-    pub offset: Vec3,
-    pub lights: &'a [Light],
+    pub level: &'a LevelLighting,
 }
 
-impl PropLighting<'_> {
-    /// The light that does not depend on the time of day.
-    fn fixed_at(&self, position: Vec3, normal: Vec3) -> Vec3 {
-        let mut light = self.offset;
-        for source in self.lights {
-            let range = source.range / UNITS_PER_METRE;
-            let to_light = retail_position(source.location) - position;
-            let distance = to_light.length();
-            if distance >= range || distance == 0.0 {
-                continue;
-            }
-            let facing = normal.dot(to_light / distance).max(0.0);
-            light +=
-                Vec3::from(source.colour) * source.intensity * (1.0 - distance / range) * facing;
-        }
-        light
+/// The level lights that reach props and actors. `Sun` lights are
+/// ambient-only: retail's prop bake skips them (Whizzardry `update.cpp`) and
+/// the day ramp stands in for them.
+pub fn level_lighting(lights: &[Light], offset: [f32; 3]) -> LevelLighting {
+    let is_sun = |light: &Light| light.name.get(..3).is_some_and(|n| n.eq_ignore_ascii_case("sun"));
+    LevelLighting {
+        offset: Vec3::from(offset),
+        lights: lights
+            .iter()
+            .filter(|light| !is_sun(light))
+            .map(|light| PointLightSource {
+                position: retail_position(light.location),
+                colour: Vec3::from(light.colour) * light.intensity,
+                range: light.range / UNITS_PER_METRE,
+            })
+            .collect(),
+        sun: lights
+            .iter()
+            .find(|light| light.name.eq_ignore_ascii_case("sun"))
+            .map(|light| retail_position(light.location)),
     }
 }
 
@@ -90,7 +92,9 @@ pub fn record_meshes(
         .iter()
         .zip(&normals)
         .map(|(&p, &n)| {
-            lighting.fixed_at(world.transform_point3(p), world.transform_vector3(n).normalize_or(n))
+            lighting
+                .level
+                .at(world.transform_point3(p), Some(world.transform_vector3(n).normalize_or(n)))
         })
         .collect();
 

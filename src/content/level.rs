@@ -59,6 +59,46 @@ impl LevelEnvironment {
     }
 }
 
+/// A level's point lights and constant light offset. Level geometry has
+/// them baked in; props and actors take them at their positions.
+#[derive(Clone, Debug, Default, Reflect)]
+pub struct LevelLighting {
+    /// Added to everything's light (the level's environment offset).
+    pub offset: Vec3,
+    pub lights: Vec<PointLightSource>,
+    /// The `SUN` light's position: actors in its line of sight get sky light.
+    pub sun: Option<Vec3>,
+}
+
+/// A static level light with retail's linear falloff.
+#[derive(Clone, Copy, Debug, Reflect)]
+pub struct PointLightSource {
+    pub position: Vec3,
+    /// Colour times intensity.
+    pub colour: Vec3,
+    /// Metres.
+    pub range: f32,
+}
+
+impl LevelLighting {
+    /// Light at a point from the offset and every light in range:
+    /// `colour * (1 - d / range) * facing`, with facing 1 when `normal` is
+    /// none.
+    pub fn at(&self, position: Vec3, normal: Option<Vec3>) -> Vec3 {
+        let mut light = self.offset;
+        for source in &self.lights {
+            let to_light = source.position - position;
+            let distance = to_light.length();
+            if distance >= source.range || distance == 0.0 {
+                continue;
+            }
+            let facing = normal.map_or(1.0, |n| n.dot(to_light / distance).max(0.0));
+            light += source.colour * (1.0 - distance / source.range) * facing;
+        }
+        light
+    }
+}
+
 /// Immutable static geometry shared by every visit to a level.
 #[derive(Asset, Clone, Debug, Reflect)]
 pub struct LevelGeometry {
@@ -67,6 +107,8 @@ pub struct LevelGeometry {
     /// Automap ceiling cuts in authored order, top to bottom. Layer zero is uncut.
     pub map_layers: Vec<f32>,
     pub environment: Option<LevelEnvironment>,
+    /// Light that reaches props and actors at runtime, besides the sky.
+    pub lighting: LevelLighting,
     pub props: Vec<PropModel>,
     /// Navigation links between places the navmesh does not join.
     pub links: Vec<LevelLink>,

@@ -56,6 +56,10 @@ pub struct MonsterPart {
     /// Positioned at frame 0; instances animate their own copies.
     pub mesh: Handle<Mesh>,
     pub material: Handle<StandardMaterial>,
+    /// The material's ambient reflectance, which scales sky light.
+    pub ambient: Vec3,
+    /// Light the material gives off itself.
+    pub emission: f32,
     /// The source vertex of each render vertex.
     pub source: Vec<u32>,
 }

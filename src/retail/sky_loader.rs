@@ -35,7 +35,8 @@ impl AssetLoader for LvlLoader {
         let directory = "bitmaps";
         let mut textures = LoadedTextures::default();
         // The sky is drawn as authored, unlit by the level.
-        let lighting = PropLighting { ambient: Vec3::ONE, offset: Vec3::ZERO, lights: &[] };
+        let unlit = default();
+        let lighting = PropLighting { ambient: Vec3::ONE, level: &unlit };
 
         let mut materials = Vec::with_capacity(record.materials.len());
         for (index, material) in record.materials.iter().enumerate() {
@@ -81,6 +82,7 @@ impl AssetLoader for LvlLoader {
             collision: default(),
             map_layers: vec![],
             environment: None,
+            lighting: default(),
             props,
             links: vec![],
             teleports: vec![],

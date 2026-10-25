@@ -27,6 +27,7 @@ fn spawn_level(app: &mut App, collision: CollisionMesh) -> Entity {
         collision,
         map_layers: vec![],
         environment: None,
+        lighting: default(),
         props: vec![],
         links: vec![],
         teleports: vec![],
