@@ -9,6 +9,8 @@ pub mod keyframes;
 pub mod level_loader;
 pub mod links;
 pub mod mesh_record;
+pub mod monster;
+pub mod monster_loader;
 pub mod oct;
 pub mod path;
 pub mod prop;
@@ -57,6 +59,8 @@ impl Plugin for RetailPlugin {
     fn finish(&self, app: &mut App) {
         app.init_asset::<LevelGeometry>()
             .init_asset_loader::<level_loader::PvlLoader>()
-            .init_asset_loader::<sky_loader::LvlLoader>();
+            .init_asset_loader::<sky_loader::LvlLoader>()
+            .init_asset::<crate::content::monster::MonsterModel>()
+            .init_asset_loader::<monster_loader::MlsLoader>();
     }
 }

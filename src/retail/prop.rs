@@ -49,7 +49,7 @@ impl Prop {
     }
 }
 
-fn read_animated_mesh(bytes: &mut Bytes) -> Result<AnimatedMesh, PvlError> {
+pub fn read_animated_mesh(bytes: &mut Bytes) -> Result<AnimatedMesh, PvlError> {
     let count = bytes.u8()? as usize;
     let first_frame = bytes.u8()? as usize;
     if count == 0 || first_frame >= count {
@@ -69,13 +69,45 @@ fn read_animated_mesh(bytes: &mut Bytes) -> Result<AnimatedMesh, PvlError> {
     Ok(AnimatedMesh { first_frame, frames })
 }
 
-struct Animation {
-    frames_per_second: f32,
-    path: Option<Vec<PathKey>>,
-    channels: [Vec<PropPart>; 3],
+/// An animation object (Whizzardry `AnimObjReadFromFile`): the shared part
+/// of props and monster cycles.
+pub struct Animation {
+    pub frames_per_second: f32,
+    pub path: Option<Vec<PathKey>>,
+    /// Three detail channels of parts.
+    pub channels: [Vec<PropPart>; 3],
 }
 
-fn read_animation(bytes: &mut Bytes) -> Result<Animation, PvlError> {
+/// Skip an animation's embedded lights. Props may not carry any; monster
+/// cycles can.
+fn skip_lights(bytes: &mut Bytes, allowed: bool) -> Result<(), PvlError> {
+    let count = bytes.u8()?;
+    if count != 0 && !allowed {
+        return Err(invalid("prop animation carries lights", bytes));
+    }
+    for _ in 0..count {
+        let version = bytes.u8()?;
+        bytes.take(12 + 12 + 4 + 4)?; // position, colour, intensity, range
+        // Version 2 lights always carry the kind 1 (animated) block.
+        let kind = match version {
+            2 => 1,
+            0..2 => 0,
+            _ => bytes.u8()?,
+        };
+        match kind {
+            1 => {
+                bytes.take(60)?;
+            }
+            2 => {
+                bytes.take(129)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+pub fn read_animation(bytes: &mut Bytes, lights_allowed: bool) -> Result<Animation, PvlError> {
     let version = bytes.u8()?;
     let groups = bytes.u8()? as usize;
     // Playing, frame method, behaviour, cycle.
@@ -100,8 +132,8 @@ fn read_animation(bytes: &mut Bytes) -> Result<Animation, PvlError> {
         let count = bytes.u8()? as usize;
         bytes.take(count * 24)?; // frame bounds
     }
-    if version > 7 && bytes.u8()? != 0 {
-        return Err(invalid("prop animation carries lights", bytes));
+    if version > 7 {
+        skip_lights(bytes, lights_allowed)?;
     }
     let mut path = None;
     if !positioned && version > 8 && bytes.u8()? != 0 {
@@ -163,7 +195,7 @@ pub fn read_prop(bytes: &mut Bytes) -> Result<Prop, PvlError> {
             let slots = bytes.i8()?.max(0) as usize;
             bytes.take(slots * 4)?;
         }
-        let animation = read_animation(bytes)?;
+        let animation = read_animation(bytes, false)?;
         prop.frames_per_second = animation.frames_per_second;
         prop.path = animation.path;
         prop.channels = animation.channels;

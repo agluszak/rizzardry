@@ -15,6 +15,7 @@ use bevy_tnua_avian3d::prelude::*;
 
 use crate::game::party::body::{Interact, PartyBody, Walk};
 use crate::game::world::navigation::{LevelNavigation, Walker, WalkerMotion, WalkerMotionConfig};
+use crate::presentation::monsters::MonsterAppearance;
 
 /// Capture the window `after` seconds once the party is in the world, then
 /// exit. Used to check rendering from the command line.
@@ -88,6 +89,8 @@ pub fn scripted_walk(
 #[derive(Resource, Debug, Clone)]
 pub struct TestAgents {
     pub count: usize,
+    /// A retail monster species for them to look like, e.g. `savant_trooper`.
+    pub monster: Option<String>,
     /// Body radius in metres; picks the navmesh size class.
     pub radius: f32,
     pub spawned: bool,
@@ -110,6 +113,7 @@ pub fn spawn_test_agents(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut configs: ResMut<Assets<WalkerMotionConfig>>,
+    assets: Res<AssetServer>,
 ) {
     if test.spawned {
         return;
@@ -162,13 +166,13 @@ pub fn spawn_test_agents(
             ..default()
         },
     });
+    let model =
+        test.monster.as_ref().map(|name| assets.load(format!("retail://data/monsters/{name}.mls")));
     let stride = (points.len() / test.count.max(1)).max(1);
     for &feet in points.iter().step_by(stride).take(test.count) {
-        commands.spawn((
+        let mut agent = commands.spawn((
             Name::new("Test agent"),
             TestAgent,
-            Mesh3d(mesh.clone()),
-            MeshMaterial3d(material.clone()),
             Transform::from_translation(feet + Vec3::Y * float_height),
             RigidBody::Dynamic,
             Collider::capsule(radius, 2.0 * TEST_AGENT_HALF_LENGTH),
@@ -189,6 +193,14 @@ pub fn spawn_test_agents(
             AgentTarget3d::Entity(party),
             Velocity3d::default(),
         ));
+        match &model {
+            Some(model) => {
+                agent.insert(MonsterAppearance { model: model.clone(), float_height });
+            }
+            None => {
+                agent.insert((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone())));
+            }
+        }
     }
     info!(
         "spawned {} test agents from {} navmesh points",

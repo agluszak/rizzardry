@@ -92,7 +92,11 @@ fn has_alpha(image: &Image) -> bool {
 }
 
 /// A path in `directory` next to the asset being loaded, in the same source.
-fn sibling(context: &LoadContext, directory: &str, file: &str) -> Option<AssetPath<'static>> {
+pub(super) fn sibling(
+    context: &LoadContext,
+    directory: &str,
+    file: &str,
+) -> Option<AssetPath<'static>> {
     context.path().resolve_embed_str(&format!("{directory}/{file}")).ok()
 }
 

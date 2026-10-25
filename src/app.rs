@@ -79,6 +79,9 @@ pub struct Options {
     /// Developer: the stand-in monsters' radius in metres.
     #[arg(long, value_name = "METRES", default_value_t = 0.35)]
     pub test_agent_radius: f32,
+    /// Developer: dress the stand-in monsters as this retail species.
+    #[arg(long, value_name = "SPECIES")]
+    pub test_monster: Option<String>,
     /// Developer: draw the navmesh, agent paths and avoidance.
     #[arg(long)]
     pub nav_debug: bool,
@@ -195,6 +198,7 @@ pub fn run(options: Options) -> AppExit {
         app.insert_resource(TestAgents {
             count: options.test_agents,
             radius: options.test_agent_radius,
+            monster: options.test_monster.clone(),
             spawned: false,
             since_log: 0.0,
             frames: 0,
