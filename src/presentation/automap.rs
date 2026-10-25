@@ -847,7 +847,6 @@ pub fn draw_layer_label(
 /// hotspots: the automap's tools, and elsewhere retail's arrow (frame 0 of
 /// `2D-Cursors.sti`, the first entry of retail's video object catalog,
 /// hotspot at its tip).
-#[allow(clippy::too_many_arguments)]
 pub fn update_map_cursor(
     mut commands: Commands,
     windows: Query<(Entity, Option<&bevy::window::CursorIcon>), With<bevy::window::PrimaryWindow>>,

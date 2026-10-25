@@ -62,7 +62,6 @@ pub fn measure_monsters(
 /// health and stamina rolled from its species in placement order, and the
 /// items as authored; on a return, the monsters as the party left them
 /// (the dead stay gone) and the items where they lay.
-#[allow(clippy::too_many_arguments)]
 pub fn populate(
     commands: &mut Commands,
     root: Entity,

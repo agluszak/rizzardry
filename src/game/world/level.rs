@@ -96,7 +96,6 @@ pub struct Travel {
 /// party move. A fight cannot be left this way; travel asked for during one
 /// is refused (retail's rule here is not established). Retail first asks
 /// "Enter <level>?" when the trigger says so.
-#[allow(clippy::too_many_arguments)]
 pub fn travel(
     mut commands: Commands,
     mut requests: MessageReader<Travel>,
@@ -408,7 +407,6 @@ pub struct SharedData<'w> {
 /// body, let the departed level go, and announce it. A destination whose
 /// geometry, databases or collision fail is marked failed, and the party
 /// plays on where it was.
-#[allow(clippy::too_many_arguments)]
 pub fn activate_level(
     mut commands: Commands,
     mut destinations: Query<(Entity, &mut Destination)>,

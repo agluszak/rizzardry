@@ -91,7 +91,6 @@ pub fn health_known(party: &[&Character], hp: u32, max_hp: u32, display_level: u
     format!("{current}/{most}")
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn detect_monster_groups(
     mut requests: MessageReader<DetectGroups>,
     mut levels: Query<&mut MonsterGroups>,

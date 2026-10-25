@@ -36,7 +36,6 @@ impl Hover {
 /// Retail picks the monster whose model is under the cursor, however far
 /// (`PickNearestMonsterUnderCursor`), and items within 5000 units
 /// (`PickNearestItemUnderCursor`).
-#[allow(clippy::too_many_arguments)]
 pub fn hover(
     time: Res<Time>,
     pointers: Query<(&PointerId, &PointerLocation)>,
@@ -75,7 +74,6 @@ const HALF_CURSOR: f32 = 16.0;
 #[derive(Component)]
 pub struct Tooltip;
 
-#[allow(clippy::too_many_arguments)]
 pub fn show_tooltip(
     mut commands: Commands,
     time: Res<Time>,

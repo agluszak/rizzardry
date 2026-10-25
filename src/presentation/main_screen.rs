@@ -8,7 +8,8 @@ use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::ui::IsDefaultUiCamera;
 
-use std::collections::{HashMap, HashSet};
+use bevy::ecs::entity::{EntityHashMap, EntityHashSet};
+use std::collections::HashMap;
 
 use super::notices::TextLog;
 use super::screen_art::{absolute, sprite, text};
@@ -287,7 +288,6 @@ enum ScreenButton {
     Portrait(usize),
 }
 
-#[allow(clippy::too_many_arguments)]
 fn press(
     click: On<PointerClick>,
     buttons: Query<&ScreenButton>,
@@ -573,10 +573,10 @@ fn blip_position(delta: Vec3, yaw: f32, spread: bool) -> Vec2 {
 /// a find).
 #[derive(Default)]
 pub struct RadarItems {
-    seen: HashSet<Entity>,
-    hidden: HashSet<Entity>,
+    seen: EntityHashSet,
+    hidden: EntityHashSet,
     /// Glowing until this time.
-    lit: HashMap<Entity, f32>,
+    lit: EntityHashMap<f32>,
 }
 
 const ITEM_GLOW_SECONDS: f32 = 10.0;
@@ -584,7 +584,6 @@ const ITEM_GLOW_SECONDS: f32 = 10.0;
 /// Turn the compass rim with the party, and mark the monsters within the
 /// far clip: hostile red, others yellow, brighter above and dimmer below;
 /// and the items once seen, grey to white.
-#[allow(clippy::too_many_arguments)]
 pub fn update_radar(
     mut commands: Commands,
     party: Query<(&avian3d::prelude::Position, &crate::game::party::body::PartyBody)>,
@@ -895,7 +894,6 @@ fn average_armour(armour: &Armour) -> i32 {
     (total as f32 / 100.0).round() as i32
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn draw_main_screen(
     mut commands: Commands,
     layout: Res<ScreenLayout>,

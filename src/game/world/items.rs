@@ -98,7 +98,6 @@ pub fn placed_item(
 /// A click in the view, for items (retail `MainGameScreen` view click):
 /// with an item in hand and no prop under the pointer, drop it there;
 /// with an empty hand, take the item under the pointer.
-#[allow(clippy::too_many_arguments)]
 pub fn click_items_in_view(
     mut commands: Commands,
     interact: Single<&ActionEvents, With<Action<Interact>>>,
