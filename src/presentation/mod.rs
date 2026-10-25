@@ -25,16 +25,22 @@ use crate::game::party::body::Exploration;
 pub struct PresentationPlugin;
 
 /// Exploring takes input only while nothing else holds it: the automap,
-/// a question, camping, or the inventory.
+/// a question, camping, the inventory, or a fight (the party does not move
+/// in a fight yet).
 fn hold_exploration(
     mut commands: Commands,
     automap: Option<Res<automap::Automap>>,
     question: Option<Res<crate::game::world::level::TravelQuestion>>,
     camp: Option<Res<crate::game::camp::Camp>>,
     inventory: Option<Res<inventory::InventoryScreen>>,
+    battle: Option<Res<crate::game::combat::Battle>>,
     controls: Query<(Entity, Option<&ContextActivity<Exploration>>), With<Exploration>>,
 ) {
-    let active = automap.is_none() && question.is_none() && camp.is_none() && inventory.is_none();
+    let active = automap.is_none()
+        && question.is_none()
+        && camp.is_none()
+        && inventory.is_none()
+        && battle.is_none();
     for (entity, activity) in &controls {
         if activity.is_none_or(|a| **a != active) {
             commands.entity(entity).insert(ContextActivity::<Exploration>::new(active));
@@ -115,6 +121,7 @@ impl Plugin for PresentationPlugin {
                     voice::finish_speech,
                     (
                         monsters::choose_walker_cycles,
+                        monsters::show_deaths,
                         monsters::build_monster_instances,
                         monsters::animate_monsters,
                         monsters::light_monsters,

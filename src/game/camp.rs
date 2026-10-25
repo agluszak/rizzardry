@@ -91,11 +91,12 @@ pub fn request_camp(
 pub fn force_camp(
     mut commands: Commands,
     camp: Option<Res<Camp>>,
+    battle: Option<Res<crate::game::combat::Battle>>,
     members: Query<&Character>,
     mut news: MessageWriter<CampNews>,
 ) {
     let anyone_alive = members.iter().any(|m| !m.is_dead());
-    if camp.is_some() || !anyone_alive || members.iter().any(can_act) {
+    if camp.is_some() || battle.is_some() || !anyone_alive || members.iter().any(can_act) {
         return;
     }
     commands.insert_resource(Camp { forced: true, phase: CampPhase::FadingIn(0.0), until: None });

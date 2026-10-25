@@ -164,6 +164,7 @@ pub fn run(options: Options) -> AppExit {
         PartyPlugin,
         PresentationPlugin,
         TimePlugin,
+        crate::game::combat::CombatPlugin,
     ))
     .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.07)));
     app.insert_resource(start);

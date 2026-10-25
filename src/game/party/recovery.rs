@@ -28,6 +28,7 @@ pub fn recover(
     mut last: Local<Option<u64>>,
     party: Query<&LinearVelocity, With<PartyBody>>,
     camp: Option<Res<Camp>>,
+    battle: Option<Res<crate::game::combat::Battle>>,
     mut members: Query<&mut Character>,
 ) {
     let previous = last.replace(clock.ms).unwrap_or(clock.ms);
@@ -39,7 +40,10 @@ pub fn recover(
     // Retail tells running (fast movement) from walking; here the speed
     // does, horizontally so that falling is not running.
     let speed = party.single().map_or(0.0, |v| Vec2::new(v.x, v.z).length());
-    let (stamina_scale, health_scale) = if camp.is_some() {
+    // A fight's rounds age conditions but bring no passive recovery.
+    let (stamina_scale, health_scale) = if battle.is_some() {
+        (0.0, 0.0)
+    } else if camp.is_some() {
         (1.0, 1.0)
     } else if speed < RESTING_BELOW {
         (0.5, 0.5)

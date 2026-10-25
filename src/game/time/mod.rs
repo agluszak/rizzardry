@@ -44,7 +44,17 @@ impl Plugin for TimePlugin {
 /// Game milliseconds per real millisecond while camping.
 pub const CAMPING_RATE: u64 = 2880;
 
-pub fn advance_clock(time: Res<Time>, camp: Option<Res<Camp>>, mut clock: ResMut<GameClock>) {
+/// The clock runs while exploring and camping; in a fight only its rounds
+/// move it.
+pub fn advance_clock(
+    time: Res<Time>,
+    camp: Option<Res<Camp>>,
+    battle: Option<Res<crate::game::combat::Battle>>,
+    mut clock: ResMut<GameClock>,
+) {
+    if battle.is_some() {
+        return;
+    }
     let rate = if camp.is_some_and(|c| c.racing()) { CAMPING_RATE } else { EXPLORATION_RATE };
     clock.ms += time.delta().as_millis() as u64 * rate;
 }

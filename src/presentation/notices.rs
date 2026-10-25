@@ -7,6 +7,7 @@ use bevy::prelude::*;
 
 use crate::content::ui::{SpriteSheet, TextTable};
 use crate::game::camp::CampNews;
+use crate::game::combat::CombatNews;
 use crate::game::world::level::Level;
 use crate::game::world::triggers::TriggerEffect;
 
@@ -53,10 +54,17 @@ const FORCED_TO_CAMP: usize = 0x794;
 const RECOVERED: usize = 0x795;
 const MOVING: usize = 0x796;
 
-/// Turn trigger effects and camping news into notice texts.
+const COMBAT: usize = 0x224;
+const LOST: usize = 0x230;
+const SURVIVORS_EARNED: usize = 0x231;
+const WON: usize = 0x22c;
+const NOTHING_TO_FIGHT: usize = 0x22e;
+
+/// Turn trigger effects, camping and combat news into notice texts.
 pub fn queue_notices(
     mut effects: MessageReader<TriggerEffect>,
     mut camp: MessageReader<CampNews>,
+    mut combat: MessageReader<CombatNews>,
     art: Res<NoticeArt>,
     tables: Res<Assets<TextTable>>,
     levels: Query<&Level>,
@@ -98,6 +106,31 @@ pub fn queue_notices(
         };
         info!("notice: {text}");
         queue.0.push_back(text);
+    }
+    // Blow by blow goes to the log; the notices carry the fight's course.
+    for news in combat.read() {
+        let texts = match news {
+            CombatNews::Began => vec![string(COMBAT)],
+            CombatNews::Hit { attacker, target, damage } => {
+                info!("combat: {attacker} hits {target} for {damage}");
+                vec![]
+            }
+            CombatNews::Missed { attacker, target } => {
+                info!("combat: {attacker} misses {target}");
+                vec![]
+            }
+            CombatNews::Killed { name } => vec![format!("{name} dies!")],
+            CombatNews::Won { experience_each, .. } => vec![
+                string(WON),
+                string(SURVIVORS_EARNED).replace("%d", &experience_each.to_string()),
+            ],
+            CombatNews::Lost => vec![string(LOST)],
+            CombatNews::Over => vec![string(NOTHING_TO_FIGHT)],
+        };
+        for text in texts {
+            info!("notice: {text}");
+            queue.0.push_back(text);
+        }
     }
 }
 

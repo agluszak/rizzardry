@@ -14,6 +14,7 @@ use crate::content::level::LevelGeometry;
 use crate::content::monster::MonsterModel;
 use crate::game::time::GameClock;
 use crate::game::world::level::Level;
+use crate::game::world::population::Monster;
 
 /// What an actor looks like, and how far its origin floats above its feet.
 #[derive(Component, Debug)]
@@ -107,6 +108,18 @@ pub fn build_monster_instances(
             cycles.insert(name.clone(), (cycle_root, copies));
         }
         commands.entity(actor).insert(MonsterInstance { cycles, playing: None, sky_scale: SUNLIT });
+    }
+}
+
+/// A monster that dies plays its death once and stays on its last frame.
+pub fn show_deaths(
+    mut commands: Commands,
+    monsters: Query<(Entity, &Monster, Option<&CycleRequest>), Changed<Monster>>,
+) {
+    for (entity, monster, request) in &monsters {
+        if monster.is_dead() && request.is_none_or(|r| r.cycle != "DIE") {
+            commands.entity(entity).insert(CycleRequest { cycle: "DIE".into(), once: true });
+        }
     }
 }
 

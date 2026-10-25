@@ -153,6 +153,22 @@ Known gaps, in rough order:
   waking Senses roll and camping music wait for combat and music work.
   Exploration input is held, in one system, while the automap, a travel
   question or a camp exists.
+- Combat, first slice (`game::combat`, rules in
+  [combat](research/combat.md)): monster species from `monsters.dbs`;
+  placed monsters roll health; a non-NPC monster within 3 m starts a fight
+  that the hostile monsters within 12 m join (a stand-in for sight and
+  pursuit while monsters cannot move). Rounds follow retail's initiative
+  phases (party first on ties, then slot, then monster order), every member
+  attacks the nearest monster in reach (slots 0-2 front, 3-5 rear), and
+  monsters pick uniformly among the (attack, mode, member) choices that
+  reach. Swings use retail's to-hit and penetration roll, hit locations,
+  armour and damage reduction; death bookkeeping happens at the blow
+  (experience pool, gold, out of the turn order) and the dead play their
+  death cycle. A round is 120 game seconds and the clock is otherwise held;
+  the fight ends when no hostile is left or after two rounds without an
+  attack, sharing experience among the living. Not yet: party movement and
+  orders, spells, fumbles, criticals, effects, the off hand, monster
+  movement and fleeing, factions, item drops, levelling.
 - The inventory screen (`presentation::inventory`, I; layout in
   [review items](research/review-items.md)) shows a member's equipment on
   their race's statue with retail item pictures and counts, the backpack
