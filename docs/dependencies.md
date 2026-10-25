@@ -181,6 +181,20 @@ framework or an audio mixer are not needed merely because they exist.
 | Scripting runtime such as Rhai/Lua | Several real mods require behavior beyond data definitions and explicit native handlers |
 | Additional collections (`enum-map`, small vectors, arenas) | A concrete type/measurement makes them simpler than standard collections |
 
+**Binary parsing (`binrw`), evaluated and not adopted.** A prototype read
+`monsters.dbs` with `binrw` 0.15 and produced exactly the same 595 species as
+`retail::species`, but took 126 non-blank lines against 80. It needed raw
+mirror structs (`RawSpecies`, `RawAttack`, `RawDice`) and conversions into
+the content types, replaced the research tables' absolute offsets with
+relative `pad_before` arithmetic, and added three crates. Deriving on the
+content types instead would put retail layout into `content`. The retail
+layer keeps its small `Bytes` cursor and decodes straight into content
+types. `items.dbs` was not prototyped: it reads fields in order and maps
+into a 40-field definition, so a mirror struct would cost more still.
+Reconsider for formats where structure, not field offsets, dominates
+(counted, versioned or conditional records), and only if the result is
+smaller.
+
 The RNG algorithm and serializable state are required from the first gameplay
 and save implementation. Only the choice to use an external RNG crate is optional.
 
