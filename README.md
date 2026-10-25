@@ -3,10 +3,12 @@
 A from-scratch Rust and Bevy rewrite of Wizardry 8.
 
 The [design documentation](docs/README.md) describes the architecture,
-dependency choices, gameplay flows and open questions. Implementation has
-started with the first slice of the [implementation plan](docs/implementation-plan.md):
-the game loads a retail level directly from your installation, lets you walk
-the party around it, and bakes a navmesh that test monsters can follow you on.
+dependency choices, gameplay flows and open questions. Implementation is on
+the first slice of the [implementation plan](docs/implementation-plan.md): the
+game loads a retail level directly from your installation with its props,
+doors, sky, fog and time of day; the party walks it, uses doors and
+teleporters, and is chased over baked navmeshes by animated retail monsters;
+a voice line plays; and the automap takes notes.
 
 ## Running
 
@@ -23,28 +25,40 @@ Options:
 - `--level <path>`: another level, e.g. `levels/arnika/arnika2.pvl`.
 - `--entrance <name>`: an entrance trigger, e.g. `MO101`. The default level
   starts at the new-game entrance `MO100`.
-- `--start x,y,z` and `--yaw <degrees>`: an explicit eye position in metres.
-- `--screenshot <file.png>`: capture the view shortly after entering, then exit.
-- `--walk <seconds>`: hold "walk forward" after entering.
-- `--test-agents <n>`: spawn stand-in monsters that chase the party over the
-  navmesh.
+- `--start x,y,z`: an explicit eye position in metres; `--yaw` and `--pitch`
+  (degrees) override the facing.
+- `--hour <0-24>`: start at this time of day instead of noon.
 
-- `--nav-debug`: draw the navmesh, paths and avoidance.
+Developer options:
+
+- `--screenshot <file.png>` (with `--screenshot-after <s>`): capture the view
+  after entering, then exit.
+- `--walk <s>`, `--interact-at <s>`, `--face-prop <name>`: scripted movement
+  and prop use.
+- `--ui-script "key m; click X Y; type TEXT; key Enter; wait S"`: drive the UI
+  through real input messages; clicks use the 640×480 screen layout.
+- `--say <line>`: speak a retail voice line, e.g. `npc_aletheides_000`.
+- `--test-agents <n>`, `--test-agent-radius <m>`, `--test-monster <species>`:
+  stand-in monsters that chase the party, optionally dressed as a retail
+  species such as `savant_trooper`.
+- `--nav-debug`: draw the navmeshes, paths and avoidance.
 - `--overhead <metres>`: view the party from straight above.
 
 Run with `--help` for the full list.
 
-The first launch bakes every level's navmesh with Bevy's asset processor
-(several seconds); results are cached in `imported_assets/`.
+The first launch bakes every level's navmeshes, one per monster size class,
+with Bevy's asset processor (several seconds); results are cached in
+`imported_assets/`.
 
 Controls: WASD or arrow keys to walk, Q/E or Left/Right to turn, hold Shift to
-run, hold the right mouse button to look around.
+run, hold the right mouse button to look around, Space or left click to use
+the prop in front of you, M to open the automap (Escape or M closes it).
 
-`cargo run --example level_info -- --retail <dir> [level.pvl]` summarises
-decoded level geometry; `cargo run --example navmesh_bake -- --retail <dir>
-[level.pvl]` bakes navmeshes and reports repairs and connectivity. Both read
-`RIZZARDRY_RETAIL` too. Tests that need retail data run when `RIZZARDRY_RETAIL` is set
-and skip otherwise.
+`cargo run --example level_info -- [level.pvl] [--props] [--links]`
+summarises decoded level geometry, props and links; `cargo run --example
+navmesh_bake -- [level.pvl]` bakes navmeshes and reports repairs and
+connectivity. Both read `RIZZARDRY_RETAIL`. Tests that need retail data run
+when `RIZZARDRY_RETAIL` is set and skip otherwise.
 
 Behavioral research compares
 [Wizardry 8 Decomp](https://github.com/agluszak/wizardry-8-decomp) and

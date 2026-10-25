@@ -13,9 +13,9 @@ read cleanly with a small bounds-checked cursor.
 
 | Need | Choice | Status |
 | --- | --- | --- |
-| Engine | Bevy 0.20.0 (`tga`, `wayland`) | In use |
-| Input actions | `bevy_enhanced_input` 0.27 | Exploration context in use |
-| Collision and physics | Avian 0.8 | Level trimesh, party and walker bodies |
+| Engine | Bevy 0.20.0 (`asset_processor`, `mp3`, `tga`, `wayland`) | In use; UI, picking and audio native |
+| Input actions | `bevy_enhanced_input` 0.27 | Exploration and screen contexts |
+| Collision and physics | Avian 0.8 | Level and prop trimeshes, party and walker bodies |
 | Grounded movement | Tnua 0.33 + `bevy-tnua-avian3d` 0.13 | Party and walkers; walk basis only, no actions |
 | Navmesh generation | `rerecast` (core), vendored from PR #63 | Baked from the level's collision triangles |
 | Pathfinding, steering, avoidance | `bevy_landmass`, PR #195 branch pinned by git rev | Party is a `Character3d`, walkers are `Agent3d` |
@@ -77,22 +77,28 @@ Integration choices:
   bake. See `third_party/README.md`.
 - Navmeshes go through Bevy's asset processor (`AssetMode::Processed`,
   `asset_processor` feature). A virtual `navmesh://` source exposes every
-  retail `<level>.pvl` as `<level>.navmesh`. `LoadTransformAndSave` reads its
+  retail `<level>.pvl` as `<level>_class<n>.navmesh`, one per walker size
+  class (agent radius 0.6, 1.0, 1.6 and 3.0 m; a walker uses the smallest
+  class that fits it, and the party joins every class's archipelago). `LoadTransformAndSave` reads its
   collision triangles, bakes them and writes a small binary file to
   `imported_assets/navmesh`. The game loads that file as a Landmass
   `NavMesh3d`. The bake settings are in the asset meta, so changing a default
-  re-bakes automatically. The first launch bakes all 34 levels in parallel
-  (0.1 to 2 s each); later launches only load. The retail source has a
+  re-bakes automatically. The first launch bakes all 34 levels × 4 classes
+  in parallel (0.1 to 2 s each); later launches only load. The retail source has a
   processed reader but no writer, so it is never processed or copied.
 - The bake input is the level's `.oct` collision mesh (the same one the
-  Avian collider uses), compacted to referenced vertices. Walkable area comes
-  from the surfaces' designer-marked pathfinding flag, not a slope test.
+  Avian collider uses), compacted to referenced vertices, plus collidable
+  props in their rest pose as obstacles. Walkable area comes from the
+  surfaces' designer-marked pathfinding flag, not a slope test.
+- Teleport and ladder triggers are Landmass animation links that walkers
+  cross by teleporting; a door is a link only while it is open, crossed by
+  walking.
 - The conversion fixes only numerical artifacts Landmass rejects:
   duplicate or spike vertices are removed, polygons with no area in the
   walking plane are dropped, flipped detail triangles are rewound
-  (`navigation::bake::repair`). A concave polygon with area fails the bake.
-  All 34 levels validate; the only repairs are 6 zero-area slivers along
-  ramps (1 in `mtgigastop`, 5 in `trynnie2`).
+  (`navigation::bake::repair`). Inverted polygons are dropped and counted
+  with their area (one in the swamp's class 1); a concave polygon with area
+  fails the bake. All 136 bakes validate.
 - Moving actors never trigger a rebake.
 
 `cargo run --example navmesh_bake` bakes outside the game and reports
@@ -105,8 +111,8 @@ settings.
 - **Step height.** At 0.35 m the upper monastery split into 22 islands, the
   largest covering 61% of the walkable area, and most walkers reported
   `NoPath`. At 0.5 m one island covers 98% and every walker finds a path.
-  Raising it to 1 m merges nothing more. `game::world::STEP_HEIGHT` (0.5 m)
-  now sets the bake, the party collider clearance and the test walkers.
+  Raising it to 1 m merges nothing more. `game::world::STEP_HEIGHT` is now
+  retail's 300 units (0.6 m) and sets the bake and the test walkers.
 - **Overlapping floors.** The upper monastery's balconies and floors bake as
   separate layers; walkers path between them.
 - **Crowds.** 30 walkers on the upper monastery ran at about 110 fps (dev
@@ -123,15 +129,22 @@ settings.
   clearance) caught on stairs rising inside its radius and never left the
   `MO202` entrance. The party now uses retail's sphere (slightly smaller so
   it clears the ground), which climbs those stairs.
-- **Not tested.** Doors (no props yet), per-size navmeshes, and flying
-  monsters. Landmass avoidance is horizontal, so flying monsters need separate
-  handling rather than pretending a surface navmesh is 3D navigation.
+- **Doors.** With a door closed, walkers behind it report `NoPath`; opened,
+  5 of 6 reach the party through it.
+- **Size classes.** Walkers of radius 0.35 m closed to a median 1.4 m from
+  the party; of 1.4 m, to 2.8 m (body contact). All stayed `Moving`.
+- **Flying.** Nothing in retail truly flies: flying monsters are snapped to
+  the ground, their altitude is a mesh offset plus a cosmetic bob, and they
+  path like walkers. Surface navmeshes suffice.
 
 A navmesh generator only builds navigation data. It does not supply Wizardry's
 group orders, target choice, moving-party pursuit, doors/links, avoidance or
 combat movement budget. The [navigation design](systems/combat-ai-and-navigation.md)
 separates those decisions. No library choice is justified solely by a flat-floor
 pathfinding demo.
+
+Retail fonts are STCI sprite sheets; `retail::stci` draws text from them into
+images for Bevy UI, which needs no helper crate.
 
 ## Use native Bevy features first
 
@@ -156,7 +169,6 @@ pathfinding demo.
 | Kira/Bevy Kira integration | Built-in audio cannot express a required verified playback/mixing behavior economically |
 | FFmpeg integration | Actual Bink/cinematic playback needs it; keep decoder/version/platform packaging at this boundary |
 | A deterministic RNG crate | Pin a named algorithm and serializable state for native saves; do not depend on an unspecified default RNG |
-| Bitmap font helper | Needed to render the retail fonts faithfully; inspect the decoded format and current Bevy support first |
 | Particle plugin | A real spell effect would otherwise require substantial custom GPU machinery |
 | Scripting runtime such as Rhai/Lua | Several real mods require behavior beyond data definitions and explicit native handlers |
 | Additional collections (`enum-map`, small vectors, arenas) | A concrete type/measurement makes them simpler than standard collections |

@@ -127,6 +127,20 @@ The first imported room must exercise actual geometry, collision, a door/trigger
 one monster's frame animation, one texture with alpha, a UI image/font and voice.
 That is the useful test of whether the proposed adapters remove the old engine.
 
+That proof now exists (see the [implementation plan](implementation-plan.md)
+status). What it established:
+
+- Direct loading suffices: every format so far is a Bevy `AssetLoader` over
+  the `retail://` source (`.pvl`, `.lvl`, `.mls`, `.sti`, MP3, TGA). Only the
+  navmesh bake, which is expensive, goes through the asset processor.
+- Monster cycles are vertex frames, not skeletons. A model asset holds each
+  cycle's frames; every actor animates its own mesh copies on the CPU, which
+  is cheap at retail vertex counts (median about 200).
+- Material alpha follows retail's texture slots: slots 0-1 blend, slots 2-3
+  add. Facing props are full billboards.
+- Retail fonts are STCI sprite sheets with no metrics table; text is drawn
+  into an image for Bevy UI.
+
 Retail `.NSF`/`.MSF` dialogue and level/database payloads are absent from the
 research trees. This prevents proving the monastery's precise entry/quote gates,
 the spaceport's complete terminal tree and a named bomb's complete definition.

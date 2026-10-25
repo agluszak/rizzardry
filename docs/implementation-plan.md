@@ -45,51 +45,77 @@ not settle the controller/navigation choice.
 **Do not build yet:** a universal asset converter, an editor suite, a scripting
 VM, interchangeable physics backends or a full UI framework.
 
-**Status (25 October 2026):** in progress. Done:
+**Status (25 October 2026):** every playable result of this slice has been
+shown on retail content; the gaps below remain. Done:
 
-- `retail::files` indexes an unmodified installation: base SLF libraries (more
-  specific prefixes win), `patches/patch.NNN`, then loose files. It is exposed
-  to Bevy as the `retail://` asset source.
-- `retail::pvl` decodes the compiled level meshes and material table at the
-  start of every retail `.pvl` (all 34 load). `retail::level_loader` turns them
-  into Bevy meshes per octree mesh and material, repeat-sampled TGA textures
-  and collision triangles.
-- `retail::trigger` decodes type 4 trigger records. A new game enters the
-  monastery at `MO100`, the retail new-game entrance.
-- The party is one Avian body moved by Tnua, using the retail eye height,
-  500-unit collision sphere, walk/run/turn speeds, pitch limit and gravity.
-  Controls use an `Exploration` input context.
-- A Rerecast navmesh is baked per level by Bevy's asset processor, cached,
-  and used by Landmass. Stand-in walkers chase the party across both
-  monastery levels. See [dependencies](dependencies.md#navigation).
+- **Files.** `retail::files` indexes an unmodified installation: base SLF
+  libraries (more specific prefixes win), `patches/patch.NNN`, then loose
+  files. It is the `retail://` Bevy asset source.
+- **Levels.** `retail::pvl` decodes the compiled meshes and materials, and
+  `retail::sections` the rest of every `.pvl` sequentially to its 72-byte
+  trailer: lights, props, bitmaps, triggers (all four types, with door data),
+  environment (fog and ambient ramps, view distance) and the environment
+  offset. All 34 levels parse. Uncompiled `.lvl` worlds (skies) use the same
+  section reader without sentinels.
+- **Collision.** The level's `.oct` collision surfaces (solid flags; the
+  pathfinding flag marks walkable floor) form the Avian collider and the
+  navmesh input. Collidable props collide; non-collidable ones are sensors
+  that can still be used.
+- **Party.** One Avian body moved by Tnua on the fixed timestep, with retail's
+  500-unit sphere, eye height, speeds, pitch limit and gravity. It climbs the
+  upper monastery's `MO202` stairs. A new game enters at `MO100`.
+- **Props and doors.** Props render with their animation paths; using a door
+  plays its path, honours its lock data and opens or closes its navigation
+  link. Same-level teleport triggers move the party.
+- **Navigation.** Rerecast navmeshes are baked by Bevy's asset processor, one
+  per walker size class (0.6, 1.0, 1.6, 3.0 m), and used by Landmass. Teleport
+  and ladder triggers become animation links; doors are links only while open.
+  All 34 levels × 4 classes validate.
+- **Rendering.** Retail baked lighting (static light, sky light by phase,
+  environment offset, emission), linear distance fog and view distance from
+  the environment ramps, a game clock at 12× real time, `.ifl` texture
+  animation, CPU mipmaps, the sky world on its own camera with time-of-day
+  gradients, shaded scrolling clouds and the Sun and Moon on retail's orbit.
+  Facing props turn with the camera. Slot 0-1 alpha materials blend; slot 2-3
+  materials add (retail's packed shader `SRC_ALPHA, ONE`).
+- **Monsters.** `.mls` species and `.mon` vertex-frame cycles decode (all
+  1088 retail cycles). Each actor animates its own mesh copies, blending
+  between frames without wrapping last-to-first as retail does; play-once
+  cycles report completion. Walkers play WALK or IDLE.
+- **Audio.** A voice line is an entity; `SpeechFinished` names it when its
+  audio ends. Retail ships MP3 where scripts name WAV.
+- **UI.** STCI images and bitmap fonts decode (all 1327 retail `.sti`). The
+  automap is native Bevy UI from retail art: frame, buttons with picking
+  hover/click, a plan of the floors near the party, and notes pinned, typed
+  in `Wiz_Text_Font` and erased, within retail's limits.
 
 Decisions made while doing this:
 
 - Retail space is Y-up and left-handed. Bevy space mirrors Z, reverses
   triangle winding and uses retail's own scale of 500 units per metre
   (authored values are metres × 500), which puts the eye 1000 units (2 m)
-  above the feet. The resulting orientation was checked
-  against the retail game.
+  above the feet. The orientation was checked against the retail game.
 - Retail velocities are per 0.1 s tick; converted constants cite their source.
+- Nothing in retail truly flies: flying monsters snap to the ground, their
+  altitude is a mesh offset plus a cosmetic bob, and they path like walkers.
+  They use the surface navmeshes.
+- Movement, navigation, prop animation and the clock step on the fixed
+  timestep; look, camera aiming and presentation run per frame.
 
 Known gaps, in rough order:
 
-- The `.pvl` sections between the meshes and the triggers are not decoded:
-  lights, monster paths, items, props, bitmaps, cameras and environment. Until
-  they are, `find_item_trigger` locates an entrance by validating a type 4
-  record found by its name. Replace it with a sequential section reader.
-- Lighting is unlit vertex colour: static light, plus sun exposure at a
-  provisional 0.75 until the environment's sun colour is decoded. There is no
-  sky, fog or dynamic lighting. Animated `.ifl` textures show their first
-  frame, and textures have no mipmaps.
-- Collision and navigation use every fully opaque level polygon. Retail
-  collision uses `.oct` surfaces with walkable flags and contact margins, and
-  props collide too. Ground probing at entry is replaced by settling under
-  gravity. Retail caps falls at 3000 units per tick; that cap is not applied.
-- Navigation needs doors, teleporters and elevators as links, and retail
-  collision surfaces; the party collider can catch on stairs. See the
-  experiment results in [dependencies](dependencies.md#experiment-results-25-october-2026).
-- No props, doors, actors, animation, UI, audio or navigation yet.
+- Textures are decoded inside the level loader into per-level sub-assets with
+  their own cache; they should load through Bevy's asset system and be shared.
+  Retail's alpha test is the pixel format (32-bit TGA), readable from the
+  header; mipmaps then need a home (a processor, or a loader setting).
+- Monsters are unlit (retail lights them from level lights), use only the
+  nearest detail level, and ignore particles, sounds and skins.
+- Cross-level travel, elevators/lifts, random teleports and camera-path
+  triggers are not implemented. Retail's fall-speed cap is not applied.
+- Map notes are not saved; the automap has one layer and no zoom, panning,
+  layer buttons or tool cursors. Only the map screen exists.
+- The screenshot tool has once captured a frame without the UI; the cause was
+  not found.
 
 ## 2. Make party and inventory state useful
 
