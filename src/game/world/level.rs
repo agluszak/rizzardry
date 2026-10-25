@@ -17,6 +17,7 @@ use super::identify::MonsterGroups;
 use super::items::WorldItem;
 use super::navigation::asset::navmesh_path;
 use super::navigation::bake::SIZE_CLASSES;
+use super::navigation::links::DoorLink;
 use super::population::Monster;
 use super::props::{Prop, PropMotion, pose};
 use super::scripts::LevelScript;
@@ -312,65 +313,75 @@ fn build_world(
                     remembered.and_then(|r| r.prop_frames.get(&index)).copied().unwrap_or(0.0);
                 let last_frame =
                     prop.parts.iter().map(|p| p.keys.len().saturating_sub(1)).max().unwrap_or(0);
-                parent
-                    .spawn((
-                        Name::new(prop.name.clone()),
-                        Prop {
-                            definition: index,
-                            trigger: prop.trigger.clone(),
-                            door: prop.trigger.as_ref().is_some_and(|name| {
-                                geometry
-                                    .triggers
-                                    .iter()
-                                    .any(|t| &t.name == name && t.door.is_some())
-                            }),
-                            frames_per_second: prop.frames_per_second,
-                            last_frame,
-                            wraps: prop.wraps,
-                            slots: prop.slots.clone(),
-                        },
-                        PropMotion { frame, target: frame },
-                        Transform::default(),
-                        Visibility::default(),
-                    ))
-                    .with_children(|prop_entity| {
-                        for (part_index, part) in prop.parts.iter().enumerate() {
-                            let at = if part.keys.is_empty() {
-                                part.transform
-                            } else {
-                                pose(&part.keys, frame)
-                            };
-                            let mut part_entity = prop_entity.spawn((
-                                PropPart { part: part_index, keys: part.keys.clone() },
-                                at,
-                                Visibility::default(),
-                            ));
-                            // Sprites turn with the view and do not collide.
-                            if !prop.face_camera {
-                                match Collider::try_trimesh_with_config(
-                                    part.collision.vertices.clone(),
-                                    part.collision.triangles.clone(),
-                                    TrimeshFlags::MERGE_DUPLICATE_VERTICES
-                                        | TrimeshFlags::DELETE_DEGENERATE_TRIANGLES,
-                                ) {
-                                    Ok(collider) => {
-                                        // Parts with a path can move (doors, lifts).
-                                        let body = if part.keys.is_empty() {
-                                            RigidBody::Static
-                                        } else {
-                                            RigidBody::Kinematic
-                                        };
-                                        part_entity.insert((body, collider));
-                                        // Props the party walks through can still be used.
-                                        if !prop.collidable {
-                                            part_entity.insert(Sensor);
-                                        }
+                let door = prop.trigger.as_ref().is_some_and(|name| {
+                    geometry.triggers.iter().any(|t| &t.name == name && t.door.is_some())
+                });
+                // A door's doorway, from its closed shape (each part at its
+                // first pose), for walkers' links while it is open.
+                let doorway = door
+                    .then(|| {
+                        DoorLink::around(prop.parts.iter().flat_map(|part| {
+                            let closed = part.keys.first().copied().unwrap_or(part.transform);
+                            part.collision.vertices.iter().map(move |&v| closed.transform_point(v))
+                        }))
+                    })
+                    .flatten();
+                let mut prop_entity = parent.spawn((
+                    Name::new(prop.name.clone()),
+                    Prop {
+                        definition: index,
+                        trigger: prop.trigger.clone(),
+                        door,
+                        frames_per_second: prop.frames_per_second,
+                        last_frame,
+                        wraps: prop.wraps,
+                        slots: prop.slots.clone(),
+                    },
+                    PropMotion { frame, target: frame },
+                    Transform::default(),
+                    Visibility::default(),
+                ));
+                if let Some(doorway) = doorway {
+                    prop_entity.insert(doorway);
+                }
+                prop_entity.with_children(|prop_entity| {
+                    for (part_index, part) in prop.parts.iter().enumerate() {
+                        let at = if part.keys.is_empty() {
+                            part.transform
+                        } else {
+                            pose(&part.keys, frame)
+                        };
+                        let mut part_entity = prop_entity.spawn((
+                            PropPart { part: part_index, keys: part.keys.clone() },
+                            at,
+                            Visibility::default(),
+                        ));
+                        // Sprites turn with the view and do not collide.
+                        if !prop.face_camera {
+                            match Collider::try_trimesh_with_config(
+                                part.collision.vertices.clone(),
+                                part.collision.triangles.clone(),
+                                TrimeshFlags::MERGE_DUPLICATE_VERTICES
+                                    | TrimeshFlags::DELETE_DEGENERATE_TRIANGLES,
+                            ) {
+                                Ok(collider) => {
+                                    // Parts with a path can move (doors, lifts).
+                                    let body = if part.keys.is_empty() {
+                                        RigidBody::Static
+                                    } else {
+                                        RigidBody::Kinematic
+                                    };
+                                    part_entity.insert((body, collider));
+                                    // Props the party walks through can still be used.
+                                    if !prop.collidable {
+                                        part_entity.insert(Sensor);
                                     }
-                                    Err(error) => warn!("prop {} collider: {error:?}", prop.name),
                                 }
+                                Err(error) => warn!("prop {} collider: {error:?}", prop.name),
                             }
                         }
-                    });
+                    }
+                });
             }
         });
         info!(

@@ -63,38 +63,23 @@ pub struct DoorLink {
 }
 
 impl DoorLink {
+    /// The doorway of a door whose closed shape covers `points` (world
+    /// space): crossed along its thinnest horizontal axis, at its floor.
+    pub fn around(points: impl IntoIterator<Item = Vec3>) -> Option<Self> {
+        let (min, max) = points.into_iter().fold(None, |bounds: Option<(Vec3, Vec3)>, p| {
+            Some(bounds.map_or((p, p), |(min, max)| (min.min(p), max.max(p))))
+        })?;
+        let size = max - min;
+        let across = if size.x < size.z { Vec3::X * size.x } else { Vec3::Z * size.z };
+        let centre = ((min + max) / 2.0).with_y(min.y);
+        Some(DoorLink { centre, half_thickness: across / 2.0, spawned: vec![] })
+    }
+
     /// The doorway crossing for walkers of `radius`: from a radius (and a
     /// margin) beyond one face to the same beyond the other.
     fn link(&self, radius: f32) -> LevelLink {
         let offset = self.half_thickness + self.half_thickness.normalize() * (radius + 0.3);
         LevelLink { kind: LinkKind::Door, from: self.centre + offset, to: self.centre - offset }
-    }
-}
-
-/// Find each door's doorway once its closed collider exists. The doorway is
-/// crossed along the door's thinnest horizontal axis.
-pub fn find_door_links(
-    mut commands: Commands,
-    doors: Query<(Entity, &Prop, &Children), Without<DoorLink>>,
-    bounds: Query<&ColliderAabb>,
-) {
-    for (entity, prop, children) in &doors {
-        if !prop.door {
-            continue;
-        }
-        let Some(aabb) = children.iter().find_map(|c| bounds.get(c).ok()) else { continue };
-        if aabb.min.x > aabb.max.x {
-            continue; // not computed yet
-        }
-        let (min, max) = (aabb.min, aabb.max);
-        let size = max - min;
-        let across = if size.x < size.z { Vec3::X * size.x } else { Vec3::Z * size.z };
-        let centre = ((min + max) / 2.0).with_y(min.y);
-        commands.entity(entity).insert(DoorLink {
-            centre,
-            half_thickness: across / 2.0,
-            spawned: vec![],
-        });
     }
 }
 
@@ -178,5 +163,20 @@ pub fn finish_crossings(
         if feet.with_y(0.0).distance(crossing.to.with_y(0.0)) < 0.4 {
             commands.entity(entity).remove::<(Crossing, UsingAnimationLink)>();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_doorway_crosses_the_door_at_its_floor() {
+        // A door 2 m wide along X, 0.2 m thick along Z, standing on y = 1.
+        let corners = [Vec3::new(-1.0, 1.0, -0.1), Vec3::new(1.0, 3.0, 0.1)];
+        let door = DoorLink::around(corners).unwrap();
+        assert_eq!(door.centre, Vec3::new(0.0, 1.0, 0.0));
+        assert_eq!(door.half_thickness, Vec3::new(0.0, 0.0, 0.1));
+        assert!(DoorLink::around([]).is_none());
     }
 }

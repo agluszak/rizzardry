@@ -62,39 +62,38 @@ cargo test --locked
 RIZZARDRY_RETAIL=/path/to/wizardry8 cargo test --locked -- --ignored
 ```
 
-The real-game `--walk`, `--test-agents`, `--nav-debug`, `--screenshot` and
-`navmesh_bake` tools are useful diagnostics. Logging positions, writing a
+The real-game `--test-agents`, `--nav-debug`, `--overhead`, `--screenshot`
+and `navmesh_bake` tools are useful diagnostics. Logging positions, writing a
 screenshot or printing "INVALID" does not by itself pass a test. A check used
 as a gate must assert an outcome and exit unsuccessfully on failure.
 
-### Headless runs
+### Scenarios on retail content
 
-`--headless` builds the game without a window or event loop, without audio,
-and with a renderer that has no GPU backend (Bevy's headless setup: meshes and
-images still load as assets, nothing is drawn). Presentation is not installed;
-gameplay news (combat, items, search, identification, camping, level
-activation) goes to the log. With it:
-
-- `--continuous` fights without waiting for the player between rounds;
-- `--speed N` runs virtual time N times faster (the fixed step, the fight's
-  pace and the game clock follow it);
-- `--run-for SECONDS` exits after that many real seconds;
-- `--seed N` gives another reproducible run of gameplay's random numbers.
+`tests/scenarios.rs` builds the real game with `app::build`, exactly as `main`
+does, headless, and drives it through gameplay requests (a `Travel` message,
+continuous combat, a seed), never through simulated keys or clicks. Each test
+steps the game until a state is reached and asserts on the world: the beach
+crabs beaten, a Green Slime's treasure on the ground, the dead staying dead
+across travel. They are `#[ignore]`d like other retail tests and run one at a
+time (they share the navmesh cache):
 
 ```sh
-cargo run -- --headless --continuous --speed 8 --run-for 10 --seed 4 \
+RIZZARDRY_RETAIL=/path/to/wizardry8 cargo test --test scenarios -- --ignored
+```
+
+Headless (`--headless`), the game has no window, event loop, audio or UI, and
+a renderer with no GPU backend: meshes and images load as assets, nothing is
+drawn. Each update is one fixed step (1/64 s) of game time and updates run
+back to back, so the simulation is not paced by the display or the clock; the
+three scenarios run in about 13 seconds. Gameplay news goes to the log. By
+hand, `--continuous`, `--seed N` and `--run-for SECONDS` (of play, not counting loading) help:
+
+```sh
+cargo run -- --headless --continuous --run-for 30 --seed 4 \
   --start=69.5,10,-24 --yaw 0     # the Monastery's Green Slimes
 ```
 
-`--ui-script` runs headless too, for its steps that need no window (`wait`,
-`travel`, `hurt`, `tire`, `use`, `log-party`, map assertions); key, typing,
-pointer and cursor steps are skipped with a warning. Screenshots need the
-window and are refused with `--headless`.
-
-```sh
-cargo run -- --headless --speed 4 --run-for 15 --start=138.2,2.5,-214 \
-  --ui-script "wait 2;travel MO204;wait 12;travel MO102;wait 12"
-```
+Screenshots still need the window; rendering offscreen without one is next.
 
 Do not require GPU screenshots or all-map baking on every PR. Run focused
 retail/visual checks when the changed feature warrants them.

@@ -1,27 +1,20 @@
 //! Developer conveniences that are not part of the game.
 
 use std::path::PathBuf;
-use std::time::Duration;
-
-use std::f32::consts::FRAC_PI_4;
 
 use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
-use bevy_enhanced_input::prelude::*;
 use bevy_landmass::PointSampleDistance3d;
 use bevy_landmass::prelude::*;
 use bevy_tnua::builtins::TnuaBuiltinWalkConfig;
 use bevy_tnua::prelude::*;
 use bevy_tnua_avian3d::prelude::*;
 
-use crate::game::party::body::{Interact, PartyBody, Walk};
+use crate::game::party::body::PartyBody;
+use crate::game::world::level::{Departing, Level};
 use crate::game::world::navigation::{LevelNavigation, Walker, WalkerMotion, WalkerMotionConfig};
 use crate::presentation::monsters::MonsterAppearance;
-use bevy::camera::NormalizedRenderTarget;
-use bevy::input::ButtonState;
-use bevy::input::keyboard::{Key, KeyboardInput, NativeKeyCode};
-use bevy::picking::pointer::{Location, PointerAction, PointerButton, PointerId, PointerInput};
 
 /// Capture the window `after` seconds once the party is in the world, then
 /// exit. Used to check rendering from the command line.
@@ -55,38 +48,6 @@ pub fn screenshot_and_exit(
         commands.spawn(Screenshot::primary_window()).observe(save_to_disk(request.path.clone()));
     } else if request.taken && request.elapsed >= request.after + 0.5 {
         exit.write(AppExit::Success);
-    }
-}
-
-/// Hold "walk forward" for a number of seconds after the party appears and log
-/// where it goes: a scripted check of the movement controller.
-#[derive(Resource, Debug, Clone)]
-pub struct ScriptedWalk {
-    pub seconds: f32,
-    pub started: bool,
-    pub since_log: f32,
-}
-
-pub fn scripted_walk(
-    mut commands: Commands,
-    time: Res<Time>,
-    mut script: ResMut<ScriptedWalk>,
-    walk: Single<Entity, With<Action<Walk>>>,
-    party: Query<&Transform, With<PartyBody>>,
-) {
-    let Ok(transform) = party.single() else { return };
-    if !script.started {
-        script.started = true;
-        commands.entity(*walk).insert(ActionMock::new(
-            TriggerState::Fired,
-            Vec2::Y,
-            Duration::from_secs_f32(script.seconds),
-        ));
-    }
-    script.since_log += time.delta_secs();
-    if script.since_log >= 0.5 {
-        script.since_log = 0.0;
-        info!("party at {:.2}", transform.translation);
     }
 }
 
@@ -265,89 +226,6 @@ pub fn overhead_view(
     }
 }
 
-/// Press "interact" once, this many seconds after the party appears.
-#[derive(Resource, Debug, Clone)]
-pub struct ScriptedInteract {
-    pub after: f32,
-    pub elapsed: f32,
-    pub done: bool,
-}
-
-pub fn scripted_interact(
-    mut commands: Commands,
-    time: Res<Time>,
-    mut script: ResMut<ScriptedInteract>,
-    interact: Single<Entity, With<Action<Interact>>>,
-    party: Query<(), With<PartyBody>>,
-) {
-    if script.done || party.is_empty() {
-        return;
-    }
-    script.elapsed += time.delta_secs();
-    if script.elapsed >= script.after {
-        script.done = true;
-        commands.entity(*interact).insert(ActionMock::once(TriggerState::Fired, true));
-    }
-}
-
-/// Put the party 2 m in front of a named prop, facing it, once its collider
-/// exists, and keep looking at its middle (the top of a flat one) as the
-/// party settles, so small props stay under the crosshair. Used to test
-/// props without walking to them.
-#[derive(Resource, Debug, Clone)]
-pub struct FacePropOnEntry {
-    pub name: String,
-    /// The point looked at, once placed.
-    pub target: Option<Vec3>,
-}
-
-impl FacePropOnEntry {
-    pub fn new(name: String) -> Self {
-        FacePropOnEntry { name, target: None }
-    }
-}
-
-pub fn face_prop_on_entry(
-    mut request: ResMut<FacePropOnEntry>,
-    props: Query<(&Name, &Children), With<crate::game::world::props::Prop>>,
-    bounds: Query<&ColliderAabb>,
-    mut party: Query<
-        (&mut PartyBody, &mut Position, &mut Transform),
-        Without<crate::game::world::props::Prop>,
-    >,
-    camera: Query<&GlobalTransform, With<crate::game::party::body::PartyCamera>>,
-) {
-    let Ok((mut body, mut position, mut transform)) = party.single_mut() else { return };
-    if let (Some(target), Ok(camera)) = (request.target, camera.single()) {
-        let to = target - camera.translation();
-        body.pitch = to.y.atan2(to.xz().length()).clamp(-FRAC_PI_4, FRAC_PI_4);
-        return;
-    }
-    let Some((_, children)) =
-        props.iter().find(|(n, _)| n.as_str().eq_ignore_ascii_case(&request.name))
-    else {
-        return;
-    };
-    let Some(aabb) = children.iter().find_map(|c| bounds.get(c).ok()) else { return };
-    if aabb.min.x > aabb.max.x {
-        return; // not computed yet
-    }
-    let (min, max) = (aabb.min, aabb.max);
-    let centre = (min + max) / 2.0;
-    let size = max - min;
-    // Stand off the prop across its thinner horizontal axis.
-    let across = if size.x < size.z { Vec3::X } else { Vec3::Z };
-    let eye = (centre + across * 2.0).with_y(min.y + crate::game::party::body::EYE_HEIGHT);
-    // Teleport: Avian takes a changed Transform as the new position.
-    position.0 = eye - Vec3::Y * crate::game::party::body::EYE_ABOVE_CENTRE;
-    transform.translation = position.0;
-    let forward = -across;
-    body.yaw = (-forward.x).atan2(-forward.z);
-    // A flat prop's middle may sit below the floor around it.
-    request.target = Some(if size.y < 0.3 { centre.with_y(max.y - 0.01) } else { centre });
-    info!("placed the party at {eye:.2} facing prop {} ({min:.2}..{max:.2})", request.name);
-}
-
 /// Speak a voice line once the party is in the world, and log when it ends.
 #[derive(Resource, Debug, Clone)]
 pub struct SayLine {
@@ -377,329 +255,21 @@ pub fn say_line(
     }
 }
 
-/// A scripted UI session: keys, clicks and typing fed through the same
-/// input messages a player's devices produce. Steps are separated by `;`:
-/// `key Tab`, `click X Y` (in the 640×480 screen layout), `type TEXT`,
-/// `hover X Y`, `travel ENTRANCE`,
-/// `wait SECONDS`. One step runs every [`UI_STEP`] seconds once the party
-/// is in the world.
-#[derive(Resource, Debug, Clone)]
-pub struct UiScript {
-    steps: std::collections::VecDeque<String>,
-    next_at: Option<f32>,
-    release: Vec<KeyboardInput>,
-    release_pointer: Option<PointerInput>,
-}
-
-const UI_STEP: f32 = 0.3;
-
-impl UiScript {
-    pub fn parse(script: &str) -> Self {
-        UiScript {
-            steps: script
-                .split(';')
-                .map(|s| s.trim().to_owned())
-                .filter(|s| !s.is_empty())
-                .collect(),
-            next_at: None,
-            release: vec![],
-            release_pointer: None,
-        }
-    }
-}
-
-fn mouse_button(
-    button: PointerButton,
-    state: ButtonState,
-    window: Entity,
-) -> bevy::input::mouse::MouseButtonInput {
-    let button = match button {
-        PointerButton::Secondary => MouseButton::Right,
-        _ => MouseButton::Left,
-    };
-    bevy::input::mouse::MouseButtonInput { button, state, window }
-}
-
-fn scripted_key(name: &str) -> Option<(KeyCode, Key)> {
-    Some(match name {
-        "ArrowUp" => (KeyCode::ArrowUp, Key::ArrowUp),
-        "ArrowDown" => (KeyCode::ArrowDown, Key::ArrowDown),
-        "ArrowLeft" => (KeyCode::ArrowLeft, Key::ArrowLeft),
-        "ArrowRight" => (KeyCode::ArrowRight, Key::ArrowRight),
-        "Enter" => (KeyCode::Enter, Key::Enter),
-        "Escape" => (KeyCode::Escape, Key::Escape),
-        "Backspace" => (KeyCode::Backspace, Key::Backspace),
-        "space" => (KeyCode::Space, Key::Space),
-        "Tab" => (KeyCode::Tab, Key::Tab),
-        letter if letter.len() == 1 && letter.chars().all(|c| c.is_ascii_lowercase()) => {
-            let code = match letter {
-                "m" => KeyCode::KeyM,
-                "e" => KeyCode::KeyE,
-                "q" => KeyCode::KeyQ,
-                "r" => KeyCode::KeyR,
-                "c" => KeyCode::KeyC,
-                "a" => KeyCode::KeyA,
-                "d" => KeyCode::KeyD,
-                "i" => KeyCode::KeyI,
-                "s" => KeyCode::KeyS,
-                _ => KeyCode::Unidentified(NativeKeyCode::Unidentified),
-            };
-            (code, Key::Character(letter.into()))
-        }
-        _ => return None,
-    })
-}
-
-pub fn run_ui_script(
-    mut commands: Commands,
-    time: Res<Time>,
-    mut script: ResMut<UiScript>,
-    party: Query<(), With<PartyBody>>,
-    window: Query<
-        (Entity, &Window, Option<&bevy::window::CursorIcon>),
-        With<bevy::window::PrimaryWindow>,
-    >,
-    mut keys: MessageWriter<KeyboardInput>,
-    mut pointer: MessageWriter<PointerInput>,
-    mut buttons: MessageWriter<bevy::input::mouse::MouseButtonInput>,
-    automap: Option<Res<crate::presentation::automap::Automap>>,
-    notes: Query<&crate::game::automap::MapNotes>,
-    mut members: Query<&mut crate::game::characters::Character>,
-) {
-    if party.is_empty() {
-        return;
-    }
-    // Headless there is no window: only the steps that need none run.
-    let window = window.single().ok();
-    let window_entity = window.map_or(Entity::PLACEHOLDER, |(entity, ..)| entity);
-    let now = time.elapsed_secs();
-    let next_at = *script.next_at.get_or_insert(now + 1.0);
-    if now < next_at {
-        return;
-    }
-    script.next_at = Some(now + UI_STEP);
-    for release in std::mem::take(&mut script.release) {
-        keys.write(release);
-    }
-    // A click registers on release, so the release gets a tick of its own
-    // and the next step sees the click's effect.
-    if let Some(release) = script.release_pointer.take() {
-        if let PointerAction::Release(button) = release.action {
-            buttons.write(mouse_button(button, ButtonState::Released, window_entity));
-        }
-        pointer.write(release);
-        return;
-    }
-    let Some(step) = script.steps.pop_front() else { return };
-    info!("ui script: {step}");
-    let key_event = |key_code, logical_key: Key, state, text| KeyboardInput {
-        key_code,
-        logical_key,
-        state,
-        text,
-        repeat: false,
-        window: window_entity,
-    };
-    let (verb, rest) = step.split_once(' ').unwrap_or((&step, ""));
-    let needs_window =
-        matches!(verb, "key" | "type" | "click" | "right-click" | "hover" | "assert-cursor");
-    if needs_window && window.is_none() {
-        warn!("ui script: {verb} needs the window; skipped");
-        return;
-    }
-    match verb {
-        "key" => {
-            let Some((code, key)) = scripted_key(rest) else {
-                warn!("ui script: unknown key {rest}");
-                return;
-            };
-            let text = match &key {
-                Key::Character(c) => Some(c.clone()),
-                _ => None,
-            };
-            keys.write(key_event(code, key.clone(), ButtonState::Pressed, text));
-            script.release.push(key_event(code, key, ButtonState::Released, None));
-        }
-        "type" => {
-            for c in rest.chars() {
-                let text = c.to_string();
-                let code = KeyCode::Unidentified(NativeKeyCode::Unidentified);
-                let key = Key::Character(text.as_str().into());
-                keys.write(key_event(
-                    code,
-                    key.clone(),
-                    ButtonState::Pressed,
-                    Some(text.as_str().into()),
-                ));
-                keys.write(key_event(code, key, ButtonState::Released, None));
-            }
-        }
-        "click" | "right-click" | "hover" => {
-            let numbers: Vec<f32> =
-                rest.split_whitespace().filter_map(|n| n.parse().ok()).collect();
-            let [x, y] = numbers[..] else {
-                warn!("ui script: {verb} needs X Y");
-                return;
-            };
-            // From the 640×480 layout, scaled and centred as the UI is.
-            let Some((_, window, _)) = window else { return };
-            let size = window.size();
-            let scale = (size.x / 640.0).min(size.y / 480.0);
-            let position = (size - Vec2::new(640.0, 480.0) * scale) / 2.0 + Vec2::new(x, y) * scale;
-            let target = NormalizedRenderTarget::Window(
-                bevy::window::WindowRef::Primary.normalize(Some(window_entity)).unwrap(),
-            );
-            let location = Location { target, position };
-            let input = |action| PointerInput::new(PointerId::Mouse, location.clone(), action);
-            pointer.write(input(PointerAction::Move { delta: Vec2::ZERO }));
-            if verb == "hover" {
-                return;
-            }
-            let button = if verb == "right-click" {
-                PointerButton::Secondary
-            } else {
-                PointerButton::Primary
-            };
-            // A real click is both a pointer event (UI picking) and a mouse
-            // button (clicking in the world).
-            pointer.write(input(PointerAction::Press(button)));
-            buttons.write(mouse_button(button, ButtonState::Pressed, window_entity));
-            script.release_pointer = Some(input(PointerAction::Release(button)));
-        }
-        "assert-map" => {
-            let expected = match rest {
-                "open" => true,
-                "closed" => false,
-                _ => panic!("assert-map expects open or closed"),
-            };
-            assert_eq!(automap.is_some(), expected, "automap visibility");
-        }
-        "assert-cursor" => {
-            use bevy::window::{CursorIcon, CustomCursor};
-            let cursor = window.and_then(|(_, _, cursor)| cursor);
-            let actual = match cursor {
-                Some(CursorIcon::Custom(CustomCursor::Image(image))) => {
-                    image.handle.path().and_then(|path| path.label())
-                }
-                Some(CursorIcon::System(_)) | None => Some("system"),
-                _ => None,
-            };
-            assert_eq!(actual, Some(rest), "window cursor");
-        }
-        "assert-layer" => {
-            let layer: usize =
-                rest.parse().expect("assert-layer expects the displayed layer number");
-            assert_eq!(automap.as_ref().map(|map| map.layer + 1), Some(layer), "automap layer");
-        }
-        "assert-note" => {
-            let found = notes.iter().flat_map(|n| &n.notes).any(|note| note.text == rest);
-            assert!(found, "missing map note: {rest}");
-        }
-        "log-prop" => {
-            commands.insert_resource(LogProp(rest.to_owned()));
-        }
-        "use" => {
-            commands.insert_resource(ScriptedUse(rest.to_owned()));
-        }
-        "travel" => {
-            commands.write_message(crate::game::world::level::Travel { entrance: rest.to_owned() });
-        }
-        "hurt" => {
-            let amount: u32 = rest.parse().expect("hurt expects an amount");
-            for mut member in &mut members {
-                member.damage(amount);
-            }
-        }
-        "tire" => {
-            let amount: u32 = rest.parse().expect("tire expects an amount");
-            for mut member in &mut members {
-                member.spend_stamina(amount);
-            }
-        }
-        "log-party" => {
-            for member in &members {
-                info!(
-                    "party: {} hp {}/{} stamina {}/{} {:?}",
-                    member.name,
-                    member.hp,
-                    member.max_hp(),
-                    member.stamina,
-                    member.max_stamina(),
-                    member.conditions
-                );
-            }
-        }
-        "face" => {
-            commands.insert_resource(FacePropOnEntry::new(rest.to_owned()));
-        }
-        "wait" => {
-            let seconds: f32 = rest.parse().unwrap_or(1.0);
-            script.next_at = Some(now + seconds);
-        }
-        _ => warn!("ui script: unknown step {step}"),
-    }
-}
-
-/// A prop (or a trigger) the UI script uses next, by name: its trigger runs
-/// as if the party used it within reach, without picking it on screen.
-#[derive(Resource, Debug, Clone)]
-pub struct ScriptedUse(pub String);
-
-pub fn scripted_use(
-    mut commands: Commands,
-    request: Res<ScriptedUse>,
-    props: Query<(&Name, &crate::game::world::props::Prop)>,
-    mut triggers: crate::game::world::triggers::LevelTriggers,
-) {
-    commands.remove_resource::<ScriptedUse>();
-    // A prop's trigger, or else a trigger by name.
-    let trigger = props
-        .iter()
-        .find(|(name, _)| name.as_str().eq_ignore_ascii_case(&request.0))
-        .and_then(|(_, prop)| prop.trigger.clone())
-        .unwrap_or_else(|| request.0.to_uppercase());
-    triggers.with(|triggers| {
-        let usable = triggers.state.find(&trigger).is_some_and(|index| triggers.usable(index));
-        let committed = usable && triggers.run(&trigger);
-        if usable && !committed {
-            triggers.effects.push(crate::game::world::triggers::TriggerEffect::NothingHappened);
-        }
-        info!(
-            "ui script: used {} ({trigger}): {}",
-            request.0,
-            if committed { "done" } else { "nothing happened" }
-        );
-    });
-}
-
-/// A prop whose path position the UI script logs next.
-#[derive(Resource, Debug, Clone)]
-pub struct LogProp(pub String);
-
-pub fn log_prop(
-    mut commands: Commands,
-    request: Res<LogProp>,
-    props: Query<(&Name, &crate::game::world::props::PropMotion)>,
-) {
-    commands.remove_resource::<LogProp>();
-    match props.iter().find(|(name, _)| name.as_str().eq_ignore_ascii_case(&request.0)) {
-        Some((name, motion)) => {
-            info!("ui script: prop {name} at frame {} heading for {}", motion.frame, motion.target)
-        }
-        None => warn!("ui script: no prop {}", request.0),
-    }
-}
-
-/// Stop the game after this many real seconds (`--run-for`).
+/// Stop the game after this many seconds of play (`--run-for`): game time
+/// while a level is being played, not loading.
 #[derive(Resource, Debug)]
 pub struct RunFor(pub f32);
 
 pub fn exit_after_run(
-    time: Res<Time<Real>>,
-    run_for: Res<RunFor>,
+    time: Res<Time<Virtual>>,
+    mut run_for: ResMut<RunFor>,
+    playing: Query<(), (With<Level>, Without<Departing>)>,
     mut exit: MessageWriter<AppExit>,
 ) {
-    if time.elapsed_secs() >= run_for.0 {
+    if !playing.is_empty() {
+        run_for.0 -= time.delta_secs();
+    }
+    if run_for.0 <= 0.0 {
         exit.write(AppExit::Success);
     }
 }
