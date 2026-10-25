@@ -22,6 +22,9 @@ impl Plugin for WorldPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(navigation::NavigationPlugin)
             .add_message::<level::LevelReady>()
+            .add_message::<level::Travel>()
+            // The level is swapped before anything builds on it this frame.
+            .add_systems(PreUpdate, level::travel)
             .add_systems(Update, (level::build_level_geometry, level::build_sky))
             .add_systems(FixedUpdate, props::animate_props);
     }

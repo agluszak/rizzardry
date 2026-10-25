@@ -7,7 +7,6 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy_enhanced_input::EnhancedInputPlugin;
 
-use crate::content::levels::{DEFAULT_SKY, LevelInfo};
 use crate::dev::{FacePropOnEntry, SayLine, UiScript, face_prop_on_entry, run_ui_script, say_line};
 use crate::dev::{
     OverheadView, ScreenshotAndExit, ScriptedInteract, ScriptedWalk, TestAgents, log_test_agents,
@@ -18,17 +17,11 @@ use crate::game::party::body::PartyStart;
 use crate::game::time::{GameClock, TimePlugin};
 use crate::game::world::WorldPlugin;
 use crate::game::world::level::Level;
-use crate::game::world::navigation::asset::navmesh_path;
 use crate::game::world::navigation::bake::SIZE_CLASSES;
 use crate::presentation::PresentationPlugin;
 use crate::retail::RetailPlugin;
-use crate::retail::bytes::Bytes;
 use crate::retail::files::RetailFiles;
 use crate::retail::path::normalize;
-use crate::retail::pvl::read_level_geometry;
-use crate::retail::sections::read_sections;
-use crate::retail::space::{retail_position, retail_yaw};
-use crate::retail::trigger::TriggerKind;
 
 pub const DEFAULT_LEVEL: &str = "levels/monastery/monastery1.pvl";
 /// A new game enters the monastery at entrance 0 (location code `MO1`).
@@ -139,26 +132,12 @@ pub fn run(options: Options) -> AppExit {
         }
     };
 
-    // Retail falls back to the default sky when a level's own is missing.
-    let sky = LevelInfo::for_path(&level)
-        .and_then(LevelInfo::sky_path)
-        .map(|sky| if files.contains(&sky) { sky } else { DEFAULT_SKY.to_owned() });
-
-    let pitch = options.pitch.to_radians();
-    let yaw = options.yaw.unwrap_or_default().to_radians();
-    let mut start = PartyStart { eye: options.start, yaw, pitch };
-    if let (None, Some(entrance)) = (options.start, options.entrance(&level)) {
-        match entrance_placement(&files, &level, entrance) {
-            Some(placement) => {
-                info!("entering {level} at {entrance}: {placement:?}");
-                let yaw = options.yaw.map_or(placement.yaw, f32::to_radians);
-                start = PartyStart { yaw, pitch, ..placement }
-            }
-            None => warn!(
-                "entrance {entrance} is missing or not positioned; using the retail fallback position"
-            ),
-        }
-    }
+    let start = PartyStart {
+        entrance: options.entrance(&level).map(str::to_owned),
+        eye: options.start,
+        yaw: options.yaw.map(f32::to_radians),
+        pitch: options.pitch.to_radians(),
+    };
 
     let mut app = App::new();
     app.add_plugins(RetailPlugin {
@@ -230,34 +209,7 @@ pub fn run(options: Options) -> AppExit {
             .add_systems(Update, scripted_walk);
     }
     app.add_systems(Startup, move |mut commands: Commands, assets: Res<AssetServer>| {
-        commands.spawn((
-            Name::new(level.clone()),
-            Level {
-                geometry: assets.load(format!("retail://{level}")),
-                navmeshes: (0..SIZE_CLASSES.len())
-                    .map(|class| assets.load(navmesh_path(&level, class)))
-                    .collect(),
-                sky: sky.as_ref().map(|sky| assets.load(format!("retail://{sky}"))),
-            },
-        ));
+        commands.spawn((Name::new(level.clone()), Level::load(&level, &assets)));
     });
     app.run()
-}
-
-/// Retail places the party's eye 1000 units above the ground under a
-/// positioned entrance trigger, facing along the trigger's rotation. Ground
-/// probing is not implemented: the eye starts 1000 above the trigger and the
-/// party settles under gravity.
-fn entrance_placement(files: &RetailFiles, level: &str, entrance: &str) -> Option<PartyStart> {
-    let data = files.read(level)?.ok()?;
-    let start = read_level_geometry(&data).ok()?.end;
-    let sections = read_sections(&mut Bytes::new(&data[start..])).ok()?;
-    let TriggerKind::Item(trigger) = &sections.trigger(entrance)?.kind else { return None };
-    let placement = trigger.placement?;
-    let [x, y, z] = placement.position;
-    Some(PartyStart {
-        eye: Some(retail_position([x, y + 1000.0, z])),
-        yaw: retail_yaw(placement.angle, placement.axis),
-        pitch: 0.0,
-    })
 }

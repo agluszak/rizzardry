@@ -164,22 +164,33 @@ fn install_navmesh(
 /// The party as a Landmass character in one archipelago: a child of the
 /// party body, so walkers of every size class avoid it.
 #[derive(Component, Debug)]
-pub struct PartyCharacter;
+pub struct PartyCharacter {
+    archipelago: Entity,
+}
 
-/// Register the party in every archipelago and report its velocity.
+/// Register the party in every archipelago of the current level and report
+/// its velocity. After travel the old archipelagos are gone; their
+/// characters are replaced.
 fn track_party_character(
     mut commands: Commands,
     navigation: Query<&LevelNavigation>,
     party: Query<(Entity, &LinearVelocity), With<PartyBody>>,
-    mut characters: Query<&mut Velocity3d, With<PartyCharacter>>,
+    mut characters: Query<(Entity, &PartyCharacter, &mut Velocity3d)>,
 ) {
     let (Ok(navigation), Ok((party, velocity))) = (navigation.single(), party.single()) else {
         return;
     };
-    if characters.is_empty() {
+    let current =
+        characters.iter().all(|(_, c, _)| navigation.archipelagos.contains(&c.archipelago));
+    if !current {
+        for (character, _, _) in &characters {
+            commands.entity(character).despawn();
+        }
+    }
+    if characters.is_empty() || !current {
         for &archipelago in &navigation.archipelagos {
             commands.spawn((
-                PartyCharacter,
+                PartyCharacter { archipelago },
                 Transform::default(),
                 Character3dBundle {
                     character: default(),
@@ -193,7 +204,7 @@ fn track_party_character(
             ));
         }
     }
-    for mut tracked in &mut characters {
+    for (_, _, mut tracked) in &mut characters {
         tracked.velocity = velocity.0;
     }
 }

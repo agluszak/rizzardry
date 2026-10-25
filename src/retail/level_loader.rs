@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use bevy::reflect::TypePath;
 
 use super::bytes::Bytes;
-use super::links::level_links;
+use super::links::{level_entrances, level_links};
 use super::oct::read_collision;
 use super::prop::{PROP_COLLIDABLE, Prop};
 use super::prop_loader::{
@@ -425,6 +425,7 @@ impl AssetLoader for PvlLoader {
             map_layers,
             environment,
             lighting: level_lighting,
+            entrances: level_entrances(&sections),
             props,
             links,
             teleports,

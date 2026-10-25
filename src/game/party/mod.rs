@@ -25,7 +25,7 @@ impl Plugin for PartyPlugin {
         .add_systems(
             Update,
             (
-                body::spawn_party_on_ready.after(build_level_geometry),
+                body::place_party_on_ready.after(build_level_geometry),
                 (body::look_around, body::aim_camera).chain(),
                 body::interact,
             ),

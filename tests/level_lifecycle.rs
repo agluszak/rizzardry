@@ -3,7 +3,8 @@
 use avian3d::prelude::Collider;
 use bevy::prelude::*;
 use rizzardry::content::level::{CollisionMesh, LevelGeometry};
-use rizzardry::game::party::body::{PartyBody, PartyMotionConfig, spawn_party_on_ready};
+use rizzardry::game::party::body::{PartyBody, PartyMotionConfig, place_party_on_ready};
+use rizzardry::game::party::teleports::InsideTriggers;
 use rizzardry::game::world::level::{Level, LevelReady, build_level_geometry};
 
 fn app() -> App {
@@ -11,10 +12,11 @@ fn app() -> App {
     app.add_plugins(MinimalPlugins)
         .init_resource::<Assets<LevelGeometry>>()
         .init_resource::<Assets<PartyMotionConfig>>()
+        .init_resource::<InsideTriggers>()
         .add_message::<LevelReady>()
         .add_systems(
             Update,
-            (build_level_geometry, spawn_party_on_ready.after(build_level_geometry)),
+            (build_level_geometry, place_party_on_ready.after(build_level_geometry)),
         );
     app.finish();
     app.cleanup();
@@ -28,6 +30,7 @@ fn spawn_level(app: &mut App, collision: CollisionMesh) -> Entity {
         map_layers: vec![],
         environment: None,
         lighting: default(),
+        entrances: vec![],
         props: vec![],
         links: vec![],
         teleports: vec![],

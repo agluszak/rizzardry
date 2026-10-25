@@ -44,8 +44,8 @@ fn main() {
             }
             for t in &teleports {
                 println!(
-                    "  teleport {} at {:.1} range {:?} -> {:.1}",
-                    t.name, t.centre, t.range, t.destination
+                    "  teleport {} at {:.1} range {:?} -> {:?}",
+                    t.name, t.centre, t.range, t.arrival
                 );
             }
         }

@@ -9,8 +9,11 @@ use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
 use bevy_landmass::NavMesh3d;
 
+use super::navigation::asset::navmesh_path;
+use super::navigation::bake::SIZE_CLASSES;
 use super::props::{Prop, PropMotion};
 use crate::content::level::LevelGeometry;
+use crate::content::levels::LevelInfo;
 use crate::presentation::billboards::FaceCamera;
 use crate::presentation::sky::{Celestial, Cloud};
 
@@ -23,6 +26,55 @@ pub struct Level {
     pub navmeshes: Vec<Handle<NavMesh3d>>,
     /// The level's sky world, drawn behind it; none for levels without one.
     pub sky: Option<Handle<LevelGeometry>>,
+}
+
+impl Level {
+    /// The level at a retail `.pvl` path, with its navmeshes and sky.
+    pub fn load(path: &str, assets: &AssetServer) -> Self {
+        Level {
+            geometry: assets.load(format!("retail://{path}")),
+            navmeshes: (0..SIZE_CLASSES.len())
+                .map(|class| assets.load(navmesh_path(path, class)))
+                .collect(),
+            sky: LevelInfo::for_path(path)
+                .and_then(LevelInfo::sky_path)
+                .map(|sky| assets.load(format!("retail://{sky}"))),
+        }
+    }
+}
+
+/// Leave the level for one of another level's entrances, e.g. `MO201`.
+#[derive(Message, Debug, Clone)]
+pub struct Travel {
+    pub entrance: String,
+}
+
+/// Replace the level root with the entrance's level. The party stays and is
+/// placed at the entrance once the new level is ready (retail
+/// `TravelToLevel`). Retail first asks "Enter <level>?" when the trigger
+/// says so; that question is not asked yet.
+pub fn travel(
+    mut commands: Commands,
+    mut requests: MessageReader<Travel>,
+    levels: Query<Entity, With<Level>>,
+    assets: Res<AssetServer>,
+    mut start: ResMut<crate::game::party::body::PartyStart>,
+) {
+    let Some(request) = requests.read().last() else { return };
+    let Some(info) = LevelInfo::for_entrance(&request.entrance) else {
+        warn!("no level has entrance {}", request.entrance);
+        return;
+    };
+    for level in &levels {
+        commands.entity(level).despawn();
+    }
+    let path = info.path();
+    info!("travelling to {path} at {}", request.entrance);
+    commands.spawn((Name::new(path.clone()), Level::load(&path, &assets)));
+    *start = crate::game::party::body::PartyStart {
+        entrance: Some(request.entrance.clone()),
+        ..default()
+    };
 }
 
 /// The level's sky has not been built yet.

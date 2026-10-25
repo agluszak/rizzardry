@@ -42,7 +42,9 @@ shown on retail content; the gaps below remain. Done:
   upper monastery's `MO202` stairs. A new game enters at `MO100`.
 - **Props and doors.** Props render with their animation paths; using a door
   plays its path, honours its lock data and opens or closes its navigation
-  link. Same-level teleport triggers move the party.
+  link. Teleport triggers move the party within the level or, naming
+  another level's entrance (`MO102` → `MO204`), swap the level root and place
+  the party at that entrance once the new level is ready.
 - **Navigation.** Rerecast navmeshes are baked by Bevy's asset processor, one
   per walker size class (0.6, 1.0, 1.6, 3.0 m), and used by Landmass. Teleport
   and ladder triggers become animation links; doors are links only while open.
@@ -98,8 +100,9 @@ Known gaps, in rough order:
   those lights reach the whole actor by their falloff at its centre, not per
   vertex with N·L, and their runtime attenuation is not confirmed. Monsters
   use only the nearest detail level and ignore particles, sounds and skins.
-- Cross-level travel, elevators/lifts, random teleports and camera-path
-  triggers are not implemented.
+- Elevators/lifts, random teleports and camera-path triggers are not
+  implemented. Travel does not yet ask retail's "Enter <level>?" question,
+  and arriving does not probe for the ground (the party settles).
 - Map notes are not saved; the automap does not yet track explored cells or
   project notes onto a minimap. Only the map screen exists.
 - The screenshot tool intermittently omits all or some unchanged UI artwork,

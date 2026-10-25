@@ -11,7 +11,9 @@ use bevy_tnua::builtins::{TnuaBuiltinWalk, TnuaBuiltinWalkConfig};
 use bevy_tnua::prelude::*;
 use bevy_tnua_avian3d::prelude::*;
 
-use crate::game::world::level::LevelReady;
+use super::teleports::InsideTriggers;
+use crate::content::level::LevelGeometry;
+use crate::game::world::level::{Level, LevelReady};
 use crate::game::world::props::{Prop, PropMotion, prop_under_ray, use_prop};
 use crate::retail::space::UNITS_PER_METRE as U;
 
@@ -147,28 +149,51 @@ pub fn spawn_exploration_controls(mut commands: Commands) {
     });
 }
 
-/// Place the party once the level exists.
+/// Place the party when a level is ready: spawn it on the first, move it on
+/// arrival at the next.
 ///
-/// Retail enters a level at its entrance trigger (e.g. `MO100`) and falls
-/// back to an eye position of (0, 1000, 0) when there is none. Triggers are
-/// not decoded yet, so the fallback is the default.
-pub fn spawn_party_on_ready(
+/// Retail enters a level at an entrance trigger (e.g. `MO100`) and falls
+/// back to an eye position of (0, 1000, 0) when there is none. Entrance
+/// triggers the party arrives inside do not fire until it leaves them.
+pub fn place_party_on_ready(
     mut commands: Commands,
     mut ready: MessageReader<LevelReady>,
-    party: Query<(), With<PartyBody>>,
+    levels: Query<&Level>,
+    geometry: Res<Assets<LevelGeometry>>,
+    mut party: Query<(&mut PartyBody, &mut Position, &mut Transform, &mut LinearVelocity)>,
     start: Option<Res<PartyStart>>,
+    mut inside: ResMut<InsideTriggers>,
     mut motion_configs: ResMut<Assets<PartyMotionConfig>>,
 ) {
-    if ready.read().last().is_none() || !party.is_empty() {
+    if ready.read().last().is_none() {
         return;
     }
-    let start = start.map(|s| *s).unwrap_or_default();
-    let eye = start.eye.unwrap_or(Vec3::new(0.0, 1000.0 / U, 0.0));
+    let start = start.map(|s| s.clone()).unwrap_or_default();
+    let level = levels.iter().find_map(|level| geometry.get(&level.geometry));
+    let entrance = start.entrance.as_deref().and_then(|name| {
+        let found = level?.entrances.iter().find(|e| e.name.eq_ignore_ascii_case(name));
+        if found.is_none() {
+            warn!("entrance {name} is missing; using the retail fallback position");
+        }
+        found
+    });
+    let eye = start.eye.or(entrance.map(|e| e.eye)).unwrap_or(Vec3::new(0.0, 1000.0 / U, 0.0));
+    let yaw = start.yaw.or(entrance.map(|e| e.yaw)).unwrap_or_default();
+    if let Some(level) = level {
+        inside.enter_at(level, eye);
+    }
     let position = eye - Vec3::Y * EYE_ABOVE_CENTRE;
+    if let Ok((mut body, mut at, mut transform, mut velocity)) = party.single_mut() {
+        body.yaw = yaw;
+        at.0 = position;
+        transform.translation = position;
+        velocity.0 = Vec3::ZERO;
+        return;
+    }
     commands
         .spawn((
             Name::new("Party"),
-            PartyBody { yaw: start.yaw, pitch: start.pitch.clamp(-MAX_PITCH, MAX_PITCH) },
+            PartyBody { yaw, pitch: start.pitch.clamp(-MAX_PITCH, MAX_PITCH) },
             Transform::from_translation(position),
             Visibility::default(),
             RigidBody::Dynamic,
@@ -206,12 +231,13 @@ pub fn spawn_party_on_ready(
         });
 }
 
-/// Where the party enters: an explicit eye position in metres, if any, and
-/// the initial yaw.
-#[derive(Resource, Debug, Clone, Copy, Default)]
+/// Where the party enters the next level that becomes ready: an entrance
+/// trigger, unless an explicit eye position (metres) or facing overrides it.
+#[derive(Resource, Debug, Clone, Default)]
 pub struct PartyStart {
+    pub entrance: Option<String>,
     pub eye: Option<Vec3>,
-    pub yaw: f32,
+    pub yaw: Option<f32>,
     pub pitch: f32,
 }
 

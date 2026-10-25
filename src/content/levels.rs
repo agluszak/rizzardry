@@ -83,6 +83,7 @@ pub const SKIES: [&str; 11] = [
 ];
 
 pub const DEFAULT_SKY: &str = "levels/test/defaultsky.lvl";
+const CIRCLE_SKY: &str = "levels/circle/circlesky.lvl";
 
 impl LevelInfo {
     /// The retail path of the level's `.pvl`, e.g. `levels/monastery/monastery1.pvl`.
@@ -90,9 +91,18 @@ impl LevelInfo {
         format!("levels/{}/{}.pvl", self.folder, self.file).to_lowercase()
     }
 
-    /// The retail path of the level's sky world, before the fallback.
+    /// The retail path of the level's sky world. Retail ships only the
+    /// default sky and the Circle's, and falls back to the default when a
+    /// level's own sky is missing.
     pub fn sky_path(&self) -> Option<String> {
-        self.sky.map(|sky| format!("levels/{}/{}.lvl", self.folder, SKIES[sky]).to_lowercase())
+        let own = format!("levels/{}/{}.lvl", self.folder, SKIES[self.sky?]).to_lowercase();
+        Some(if own == CIRCLE_SKY { own } else { DEFAULT_SKY.to_owned() })
+    }
+
+    /// The level an entrance name such as `MO201` leads to.
+    pub fn for_entrance(entrance: &str) -> Option<&'static LevelInfo> {
+        let code = entrance.get(..3)?;
+        LEVELS.iter().find(|level| level.location.eq_ignore_ascii_case(code))
     }
 
     /// The level whose files are at `path` (a normalized retail path).
@@ -109,7 +119,21 @@ mod tests {
     fn the_monastery_uses_the_default_sky() {
         let monastery = LevelInfo::for_path("levels/monastery/monastery1.pvl").unwrap();
         assert_eq!(monastery.location, "MO1");
-        assert_eq!(monastery.sky_path().unwrap(), "levels/monastery/defaultsky.lvl");
-        assert!(LevelInfo::for_path("levels/dungeon/dungeon.pvl").unwrap().sky.is_none());
+        assert_eq!(monastery.sky_path().unwrap(), DEFAULT_SKY);
+        assert_eq!(
+            LevelInfo::for_path("levels/circle/circle.pvl").unwrap().sky_path().unwrap(),
+            CIRCLE_SKY
+        );
+        assert!(LevelInfo::for_path("levels/dungeon/dungeon.pvl").unwrap().sky_path().is_none());
+    }
+
+    #[test]
+    fn entrances_name_their_level_by_location_code() {
+        assert_eq!(
+            LevelInfo::for_entrance("MO201").unwrap().path(),
+            "levels/monastery/monastery2.pvl"
+        );
+        assert_eq!(LevelInfo::for_entrance("mo100").unwrap().location, "MO1");
+        assert!(LevelInfo::for_entrance("XX").is_none());
     }
 }

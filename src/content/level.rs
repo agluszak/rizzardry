@@ -109,6 +109,8 @@ pub struct LevelGeometry {
     pub environment: Option<LevelEnvironment>,
     /// Light that reaches props and actors at runtime, besides the sky.
     pub lighting: LevelLighting,
+    /// Positioned triggers, where the party can enter.
+    pub entrances: Vec<Entrance>,
     pub props: Vec<PropModel>,
     /// Navigation links between places the navmesh does not join.
     pub links: Vec<LevelLink>,
@@ -156,8 +158,26 @@ pub struct TeleportTrigger {
     pub centre: Vec3,
     /// Fires at distances in `[range.0, range.1)` metres.
     pub range: (f32, f32),
-    /// Where the party's eye arrives, and its facing.
-    pub destination: Vec3,
+    pub arrival: Arrival,
+}
+
+/// Where a teleport takes the party.
+#[derive(Clone, Debug, Reflect)]
+pub enum Arrival {
+    /// The eye's position and facing in this level.
+    Here { eye: Vec3, yaw: f32 },
+    /// An entrance trigger of another level, named by its location code and
+    /// number, e.g. `MO201`.
+    Entrance(String),
+}
+
+/// A positioned trigger the party can enter the level at.
+#[derive(Clone, Debug, Reflect)]
+pub struct Entrance {
+    pub name: String,
+    /// Retail places the eye 1000 units above the trigger and lets the party
+    /// settle.
+    pub eye: Vec3,
     pub yaw: f32,
 }
 
