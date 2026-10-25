@@ -323,3 +323,32 @@ pub fn face_prop_on_entry(
     body.yaw = (-forward.x).atan2(-forward.z);
     info!("placed the party at {eye:.2} facing prop {} ({min:.2}..{max:.2})", request.name);
 }
+
+/// Speak a voice line once the party is in the world, and log when it ends.
+#[derive(Resource, Debug, Clone)]
+pub struct SayLine {
+    pub line: String,
+    pub started: Option<(Entity, f32)>,
+}
+
+pub fn say_line(
+    mut commands: Commands,
+    time: Res<Time>,
+    assets: Res<AssetServer>,
+    mut say: ResMut<SayLine>,
+    party: Query<(), With<PartyBody>>,
+    mut finished: MessageReader<crate::presentation::voice::SpeechFinished>,
+) {
+    if say.started.is_none() && !party.is_empty() {
+        let speech = crate::presentation::voice::speak(&mut commands, &assets, &say.line);
+        say.started = Some((speech, time.elapsed_secs()));
+        info!("speaking {}", say.line);
+    }
+    for done in finished.read() {
+        if let Some((speech, started)) = say.started
+            && speech == done.speech
+        {
+            info!("finished {} after {:.2} s", done.line, time.elapsed_secs() - started);
+        }
+    }
+}

@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use bevy_enhanced_input::EnhancedInputPlugin;
 
 use crate::content::levels::{DEFAULT_SKY, LevelInfo};
-use crate::dev::{FacePropOnEntry, face_prop_on_entry};
+use crate::dev::{FacePropOnEntry, SayLine, face_prop_on_entry, say_line};
 use crate::dev::{
     OverheadView, ScreenshotAndExit, ScriptedInteract, ScriptedWalk, TestAgents, log_test_agents,
     overhead_view, screenshot_and_exit, scripted_interact, scripted_walk, spawn_test_agents,
@@ -70,6 +70,10 @@ pub struct Options {
     /// Start at this hour of the day (0-24) instead of a new game's noon.
     #[arg(long, value_name = "HOUR")]
     pub hour: Option<f32>,
+    /// Developer: speak this retail voice line on entry, e.g.
+    /// `npc_aletheides_000`.
+    #[arg(long, value_name = "LINE")]
+    pub say: Option<String>,
     /// Developer: press "interact" once, this many seconds after entering.
     #[arg(long, value_name = "SECONDS")]
     pub interact_at: Option<f32>,
@@ -175,6 +179,9 @@ pub fn run(options: Options) -> AppExit {
         let after = options.screenshot_after.unwrap_or(2.0 + options.walk.unwrap_or(0.0));
         app.insert_resource(ScreenshotAndExit::new(path, after))
             .add_systems(Update, screenshot_and_exit);
+    }
+    if let Some(line) = options.say.clone() {
+        app.insert_resource(SayLine { line, started: None }).add_systems(Update, say_line);
     }
     if let Some(hour) = options.hour {
         app.insert_resource(GameClock { ms: (hour.rem_euclid(24.0) * 3_600_000.0) as u64 });
