@@ -130,7 +130,9 @@ for UI previews and portraits, not obligatory for the main world.
 Use the existing Avian center-ray for physical world interactions unless
 Bevy's 3D pointer picking replaces it cleanly. Avoid competing world
 selection models. UI overlays and modals must block underlying pointer
-events and global shortcuts as appropriate.
+events and global shortcuts as appropriate. Suppressing an input context is
+not gameplay authorization: direct world, inventory, camp and combat
+operations still validate their own current activity and prerequisites.
 
 Screen roots own their view entities and drafts. Values such as items,
 conditions, journal facts and map annotations stay in game state. Native
