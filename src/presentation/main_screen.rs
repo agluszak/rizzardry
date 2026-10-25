@@ -304,8 +304,11 @@ fn press(
             else {
                 return;
             };
-            let item = party.held.as_ref().and_then(|h| catalog.get(h.item.item));
-            let item = item.map(|d| d.name.clone()).unwrap_or_default();
+            let item = party
+                .held
+                .as_ref()
+                .and_then(|h| catalog.get(h.item.item).map(|d| h.item.display_name(d, false)));
+            let item = item.unwrap_or_default();
             let eligible = crate::game::camp::can_act(character);
             let member = eligible.then_some(&mut *carried);
             match party.give_held(member, !eligible || battle.is_some(), catalog) {

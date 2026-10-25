@@ -64,6 +64,17 @@ impl ItemInstance {
         }
     }
 
+    /// What the party calls it (retail `GetItemDisplayName`): its name once
+    /// identified, else its kind's; with `count`, a stack's size after it
+    /// (`FormatItemDisplayName`, "Bullet Stones (16)").
+    pub fn display_name(&self, definition: &ItemDefinition, count: bool) -> String {
+        let name = if self.identified { &definition.name } else { &definition.unidentified_name };
+        match self.quantity {
+            Quantity::Stack(n) if count && n > 1 => format!("{name} ({n})"),
+            _ => name.clone(),
+        }
+    }
+
     /// Every move goes through here: moving an item loses a released curse.
     fn moved(mut self) -> Self {
         self.curse_released = false;

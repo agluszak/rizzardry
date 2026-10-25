@@ -332,6 +332,25 @@ const KIND_MODELS: [&str; 145] = [
     "rocketlauncher",
 ];
 
+/// What an unidentified item is called, by kind: string 0x1e7 ("%s
+/// (Unidentified)") around these strings (retail `g_generic_item_name_notice`,
+/// `FormatItemDisplayName`).
+const KIND_NAMES: [usize; 147] = [
+    0x45a, 0x45b, 0x45c, 0x45d, 0x45e, 0x45f, 0x460, 0x461, 0x462, 0x463, 0x464, 0x465, 0x466,
+    0x467, 0x468, 0x469, 0x46a, 0x46b, 0x46c, 0x46d, 0x46e, 0x46f, 0x470, 0x471, 0x472, 0x473,
+    0x474, 0x475, 0x476, 0x477, 0x478, 0x479, 0x47a, 0x47b, 0x47c, 0x47d, 0x47e, 0x47f, 0x480,
+    0x481, 0x482, 0x483, 0x484, 0x485, 0x486, 0x487, 0x488, 0x489, 0x48a, 0x48b, 0x48c, 0x48d,
+    0x48e, 0x48f, 0x490, 0x491, 0x492, 0x493, 0x494, 0x495, 0x496, 0x497, 0x498, 0x499, 0x49a,
+    0x49b, 0x49c, 0x49d, 0x49e, 0x49f, 0x4a0, 0x4a1, 0x4a2, 0x4a3, 0x4a4, 0x4a5, 0x4a6, 0x4a7,
+    0x4a8, 0x4a9, 0x4aa, 0x4ab, 0x4ac, 0x4ad, 0x4ae, 0x4af, 0x4b0, 0x4b1, 0x4b2, 0x4b3, 0x4b4,
+    0x4b5, 0x4b6, 0x4b7, 0x4b8, 0x4b9, 0x4ba, 0x4bb, 0x4bc, 0x4bd, 0x4be, 0x4bf, 0x4c0, 0x4c1,
+    0x4c2, 0x4c3, 0x4c4, 0x4c5, 0x4c6, 0x4c7, 0x4c8, 0x4c9, 0x4ca, 0x4cb, 0x4cc, 0x4cd, 0x4ce,
+    0x4cf, 0x4d0, 0x459, 0x4d1, 0x4d2, 0x4d3, 0x4d4, 0x4d5, 0x4ab, 0x46f, 0x459, 0x46c, 0x4c1,
+    0x4d6, 0x4d7, 0x4d8, 0x4d9, 0x4da, 0x4db, 0x4dc, 0x4dd, 0x4de, 0x4df, 0x4e0, 0x4e1, 0x4e2,
+    0x4e3, 0x4e4, 0x4e5, 0x4e6,
+];
+const UNIDENTIFIED: usize = 0x1e7;
+
 /// Item flag bits (Whizzardry `W8ItemFlag`).
 mod flag {
     pub const AUTO_IDENTIFY: u8 = 0x01;
@@ -390,7 +409,11 @@ fn model_path(own: &str, kind: u16) -> String {
     format!("data/items3d/{name}.itm")
 }
 
-fn read_item(index: usize, record: &[u8]) -> Result<ItemDefinition, ItemLoadError> {
+fn read_item(
+    index: usize,
+    record: &[u8],
+    strings: &[String],
+) -> Result<ItemDefinition, ItemLoadError> {
     let units: Vec<u16> =
         record[..60].as_chunks::<2>().0.iter().map(|&pair| u16::from_le_bytes(pair)).collect();
     let name_end = units.iter().position(|&u| u == 0).unwrap_or(units.len());
@@ -427,7 +450,10 @@ fn read_item(index: usize, record: &[u8]) -> Result<ItemDefinition, ItemLoadErro
     let weight = bytes.u16()?;
     let cursed = bytes.u8()? != 0;
     let own_image = ascii(&record[0xcd..0xcd + 0x18]);
+    let string = |index: usize| strings.get(index).map_or("", |s| s.as_str());
+    let kind_name = KIND_NAMES.get(usize::from(kind)).map_or("", |&k| string(k));
     Ok(ItemDefinition {
+        unidentified_name: string(UNIDENTIFIED).replace("%s", kind_name),
         id: ItemId(index as u16),
         name: String::from_utf16_lossy(&units[..name_end]),
         internal_name: ascii(&record[0x8d..0x8d + 0x20]),
@@ -478,7 +504,9 @@ fn read_item(index: usize, record: &[u8]) -> Result<ItemDefinition, ItemLoadErro
 }
 
 /// Every item definition, indexed by item number.
-pub fn read_item_catalog(data: &[u8]) -> Result<ItemCatalog, ItemLoadError> {
+/// The item definitions, with their unidentified names from the string
+/// table (`data/strings/stringdata.dat`).
+pub fn read_item_catalog(data: &[u8], strings: &[String]) -> Result<ItemCatalog, ItemLoadError> {
     let mut bytes = Bytes::new(data);
     let count = bytes.u32()? as usize;
     if data.len() - 4 < count * RECORD {
@@ -486,7 +514,11 @@ pub fn read_item_catalog(data: &[u8]) -> Result<ItemCatalog, ItemLoadError> {
     }
     let records = data[4..4 + count * RECORD].as_chunks::<RECORD>().0;
     Ok(ItemCatalog(
-        records.iter().enumerate().map(|(i, r)| read_item(i, r)).collect::<Result<_, _>>()?,
+        records
+            .iter()
+            .enumerate()
+            .map(|(i, r)| read_item(i, r, strings))
+            .collect::<Result<_, _>>()?,
     ))
 }
 
@@ -532,11 +564,15 @@ impl AssetLoader for ItemCatalogLoader {
         &self,
         reader: &mut dyn Reader,
         _: &(),
-        _: &mut LoadContext<'_>,
+        context: &mut LoadContext<'_>,
     ) -> Result<ItemCatalog, ItemLoadError> {
         let mut data = Vec::new();
         reader.read_to_end(&mut data).await?;
-        read_item_catalog(&data)
+        let strings = context
+            .read_asset_bytes("retail://data/strings/stringdata.dat")
+            .await
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        read_item_catalog(&data, &super::strings::read_string_table(&strings)?)
     }
 
     fn extensions(&self) -> &[&str] {
@@ -568,6 +604,14 @@ impl AssetLoader for LootTablesLoader {
     }
 }
 
+/// The retail item catalog, for tests.
+#[cfg(test)]
+pub fn retail_catalog(files: &crate::retail::files::RetailFiles) -> ItemCatalog {
+    let strings = files.read("data/strings/stringdata.dat").unwrap().unwrap();
+    let strings = super::strings::read_string_table(&strings).unwrap();
+    read_item_catalog(&files.read("data/databases/items.dbs").unwrap().unwrap(), &strings).unwrap()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -582,11 +626,11 @@ mod tests {
     #[ignore = "requires a retail installation"]
     fn retail_items_decode() {
         let files = files();
-        let catalog =
-            read_item_catalog(&files.read("data/databases/items.dbs").unwrap().unwrap()).unwrap();
+        let catalog = retail_catalog(&files);
         assert_eq!(catalog.0.len(), 819);
         let dagger = catalog.get(ItemId(0)).unwrap();
         assert_eq!((dagger.name.as_str(), dagger.class), ("Dagger", EquipClass::ShortWeapon));
+        assert_eq!(dagger.unidentified_name, "Dagger (Unidentified)");
         assert!(dagger.off_hand && !dagger.two_handed);
         assert!(catalog.0.iter().filter(|i| !i.name.is_empty()).count() > 500);
         assert!(catalog.0.iter().any(|i| i.spell != 0), "some items cast spells");
@@ -616,8 +660,7 @@ mod tests {
         let tables =
             read_loot_tables(&files.read("data/databases/itemtables.dbs").unwrap().unwrap())
                 .unwrap();
-        let catalog =
-            read_item_catalog(&files.read("data/databases/items.dbs").unwrap().unwrap()).unwrap();
+        let catalog = retail_catalog(&files);
         assert!(tables.0.len() > 50);
         assert!(
             tables.0.iter().flat_map(|t| &t.entries).all(|&(item, _)| catalog.get(item).is_some())

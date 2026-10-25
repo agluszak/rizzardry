@@ -118,10 +118,7 @@ mod tests {
         let root =
             std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL to run this test");
         let files = crate::retail::files::RetailFiles::open(root).unwrap();
-        let catalog = crate::retail::items::read_item_catalog(
-            &files.read("data/databases/items.dbs").unwrap().unwrap(),
-        )
-        .unwrap();
+        let catalog = crate::retail::items::retail_catalog(&files);
         let (mut ids, mut rng) = (ItemIds::default(), GameRng::seeded(1));
         let professions = [
             (Race::Human, Profession::Fighter),

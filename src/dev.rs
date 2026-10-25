@@ -380,7 +380,7 @@ pub fn say_line(
 /// A scripted UI session: keys, clicks and typing fed through the same
 /// input messages a player's devices produce. Steps are separated by `;`:
 /// `key Tab`, `click X Y` (in the 640×480 screen layout), `type TEXT`,
-/// `travel ENTRANCE`,
+/// `hover X Y`, `travel ENTRANCE`,
 /// `wait SECONDS`. One step runs every [`UI_STEP`] seconds once the party
 /// is in the world.
 #[derive(Resource, Debug, Clone)]
@@ -525,11 +525,11 @@ pub fn run_ui_script(
                 keys.write(key_event(code, key, ButtonState::Released, None));
             }
         }
-        "click" | "right-click" => {
+        "click" | "right-click" | "hover" => {
             let numbers: Vec<f32> =
                 rest.split_whitespace().filter_map(|n| n.parse().ok()).collect();
             let [x, y] = numbers[..] else {
-                warn!("ui script: click needs X Y");
+                warn!("ui script: {verb} needs X Y");
                 return;
             };
             // From the 640×480 layout, scaled and centred as the UI is.
@@ -542,6 +542,9 @@ pub fn run_ui_script(
             let location = Location { target, position };
             let input = |action| PointerInput::new(PointerId::Mouse, location.clone(), action);
             pointer.write(input(PointerAction::Move { delta: Vec2::ZERO }));
+            if verb == "hover" {
+                return;
+            }
             let button = if verb == "right-click" {
                 PointerButton::Secondary
             } else {

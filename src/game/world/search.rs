@@ -179,7 +179,8 @@ pub fn search_pulse(
             continue;
         }
         item.hidden = false;
-        let name = catalog.and_then(|c| c.get(item.item.item)).map(|d| d.name.clone());
+        let name =
+            catalog.and_then(|c| c.get(item.item.item)).map(|d| item.item.display_name(d, false));
         news.write(SearchNews::Spotted {
             member: searcher.name.clone(),
             item: name.unwrap_or_default(),

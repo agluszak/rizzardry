@@ -122,6 +122,8 @@ pub struct ItemDefinition {
     /// The generic kind (retail's unidentified-name index): what it looks
     /// like before identification, and which ammunition fits which weapon.
     pub kind: u16,
+    /// What it is called before it is identified ("Dagger (Unidentified)").
+    pub unidentified_name: String,
     /// Retail's own name for it, as scripts know it.
     pub internal_name: String,
     /// The item's picture, a retail path such as `data/items/dagger.sti`.

@@ -219,8 +219,10 @@ Known gaps, in rough order:
   in search mode, S or the magnifier) spots hidden items in front within
   0.2 m per point of score and in sight. Search mode pauses for a fight.
   Not yet: searchable triggers, skill practice, turning the view to the
-  find, the identify attempt, retail's rare search-mode mishap. The green hover
-  highlight and name tooltip and containers' item picker are still to
+  find, the identify attempt, retail's rare search-mode mishap. Hovering an item
+  within reach pulses it green and, after half a second, shows its name in
+  retail's help box ("Bullets (Unidentified) (16)"); unidentified items
+  go by their kind's name everywhere. Containers' item picker is still to
   come. A level left keeps its items as they lay (for the session).
 - Stamina and healing fountains (`0x25`, `0x26`) restore every member by
   `data[2]`, with `data[0]` uses (−1 endless) refilled `data[1]` × 720 game
