@@ -1403,7 +1403,7 @@ pub fn draw_main_screen(
         put(&mut commands, sprite(view_cone, 0, board));
         for slot in 0..shown.slots.len() {
             let Some((row, seat)) = shown.formation.place_of(slot) else { continue };
-            let (x, y) = FORMATION_CELLS[Formation::index_of(row) * 3 + seat];
+            let (x, y) = FORMATION_CELLS[usize::from(row) * 3 + seat];
             let at = board + Vec2::new(x, y);
             put(&mut commands, sprite(symbols, Formation::facing(row) * 3, at));
             put(&mut commands, sprite(jewels, slot * 3, at));

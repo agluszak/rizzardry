@@ -24,7 +24,7 @@ fn link_bundle(link: &LevelLink, archipelago: Entity, half_width: f32) -> Animat
         link: AnimationLink3d {
             start_edge: edge_across(link.from, direction, half_width),
             end_edge: edge_across(link.to, direction, half_width),
-            kind: link.kind.index(),
+            kind: link.kind.into(),
             cost: 1.0,
             bidirectional: link.kind == LinkKind::Door,
         },
@@ -148,7 +148,7 @@ pub fn use_reached_links(
 ) {
     for (entity, reached, walker) in &walkers {
         let Some(kind) =
-            links.get(reached.link_entity).ok().and_then(|l| LinkKind::from_index(l.kind))
+            links.get(reached.link_entity).ok().and_then(|l| LinkKind::try_from(l.kind).ok())
         else {
             continue;
         };

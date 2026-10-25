@@ -7,6 +7,7 @@
 //! character rules that do not exist yet; callers pass it in.
 
 use bevy::prelude::*;
+use num_enum::IntoPrimitive;
 
 use super::characters::{Character, DUAL_WEAPONS};
 use super::rng::GameRng;
@@ -156,7 +157,9 @@ pub fn spend_use(item: &mut ItemInstance, keep_empty: bool) -> bool {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Reflect)]
+/// In retail's slot order: its number is its place in `Carried::equipment`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Reflect, IntoPrimitive)]
+#[repr(usize)]
 pub enum EquipSlot {
     Head,
     Misc1,
@@ -191,10 +194,6 @@ impl EquipSlot {
         EquipSlot::Feet,
     ];
 
-    fn index(self) -> usize {
-        EquipSlot::ALL.iter().position(|&s| s == self).unwrap_or(0)
-    }
-
     /// The other hand of the same weapon set.
     pub fn partner(self) -> Option<EquipSlot> {
         Some(match self {
@@ -220,12 +219,12 @@ pub struct Carried {
 
 impl Carried {
     pub fn worn(&self, slot: EquipSlot) -> Option<&ItemInstance> {
-        self.equipment[slot.index()].as_ref()
+        self.equipment[usize::from(slot)].as_ref()
     }
 
     fn slot_mut(&mut self, location: Slot) -> Option<&mut Option<ItemInstance>> {
         match location {
-            Slot::Equipment(slot) => Some(&mut self.equipment[slot.index()]),
+            Slot::Equipment(slot) => Some(&mut self.equipment[usize::from(slot)]),
             Slot::Backpack(index) => self.backpack.get_mut(index),
         }
     }
@@ -439,7 +438,7 @@ pub fn place_at_creation(
         && let Some(slot) = creation_slot(definition, carried, catalog, member)
         && allowed_slots(definition, carried, catalog, None).contains(&slot)
     {
-        match &mut carried.equipment[slot.index()] {
+        match &mut carried.equipment[usize::from(slot)] {
             empty @ None => {
                 *empty = Some(item);
                 return Ok(());
@@ -906,7 +905,7 @@ mod tests {
     fn members_merge_stacks_then_fill_the_backpack_and_the_pool_takes_the_rest() {
         let (catalog, mut ids) = (catalog(), ItemIds::default());
         let mut carried = Carried::default();
-        carried.equipment[EquipSlot::Secondary.index()] =
+        carried.equipment[usize::from(EquipSlot::Secondary)] =
             Some(item(&mut ids, 0, Quantity::Stack(18)));
         let mut party = PartyInventory::default();
         party.receive(&mut carried, item(&mut ids, 0, Quantity::Stack(5)), &catalog).unwrap();
@@ -940,10 +939,11 @@ mod tests {
             (&catalog.0[1], &catalog.0[2], &catalog.0[3], &catalog.0[0]);
         let mut carried = Carried::default();
         assert!(allowed_slots(axe, &carried, &catalog, None).contains(&EquipSlot::Primary));
-        carried.equipment[EquipSlot::Secondary.index()] = Some(item(&mut ids, 3, Quantity::One));
+        carried.equipment[usize::from(EquipSlot::Secondary)] =
+            Some(item(&mut ids, 3, Quantity::One));
         // A shield in the off hand bars a two-handed weapon from that set.
         assert_eq!(allowed_slots(axe, &carried, &catalog, None), [EquipSlot::AlternatePrimary]);
-        carried.equipment[EquipSlot::Primary.index()] = Some(item(&mut ids, 2, Quantity::One));
+        carried.equipment[usize::from(EquipSlot::Primary)] = Some(item(&mut ids, 2, Quantity::One));
         assert!(!allowed_slots(shield, &carried, &catalog, None).contains(&EquipSlot::Secondary));
         assert!(!can_hold_together(axe, shield));
         assert!(can_hold_together(sword, shield));
@@ -997,7 +997,7 @@ mod tests {
             party.swap_with_hand(&wearer, &mut carried, 0, head, &catalog),
             Err(Refusal::Cursed)
         );
-        carried.equipment[EquipSlot::Head.index()].as_mut().unwrap().curse_released = true;
+        carried.equipment[usize::from(EquipSlot::Head)].as_mut().unwrap().curse_released = true;
         party.swap_with_hand(&wearer, &mut carried, 0, head, &catalog).unwrap();
         assert!(!party.held.as_ref().unwrap().item.curse_released, "moving loses the release");
         // Something that does not belong there is refused.

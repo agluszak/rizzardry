@@ -5555,6 +5555,7 @@ dependencies = [
  "bevy_enhanced_input",
  "bevy_landmass",
  "clap",
+ "num_enum",
  "rerecast",
  "serde",
  "thiserror 2.0.21",

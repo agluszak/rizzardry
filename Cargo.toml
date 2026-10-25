@@ -21,6 +21,7 @@ rerecast = { path = "third_party/rerecast" }
 thiserror = "2"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 serde = { version = "1.0.229", features = ["derive"] }
+num_enum = "0.7.6"
 
 # Dependencies compile with optimisations so the game stays playable in debug.
 [profile.dev.package."*"]
