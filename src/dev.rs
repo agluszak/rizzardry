@@ -547,6 +547,9 @@ pub fn run_ui_script(
         "assert-note" => {
             assert!(notes.notes.iter().any(|note| note.text == rest), "missing map note: {rest}");
         }
+        "log-prop" => {
+            commands.insert_resource(LogProp(rest.to_owned()));
+        }
         "use" => {
             commands.insert_resource(ScriptedUse(rest.to_owned()));
         }
@@ -591,4 +594,22 @@ pub fn scripted_use(
             if committed { "done" } else { "nothing happened" }
         );
     });
+}
+
+/// A prop whose path position the UI script logs next.
+#[derive(Resource, Debug, Clone)]
+pub struct LogProp(pub String);
+
+pub fn log_prop(
+    mut commands: Commands,
+    request: Res<LogProp>,
+    props: Query<(&Name, &crate::game::world::props::PropMotion)>,
+) {
+    commands.remove_resource::<LogProp>();
+    match props.iter().find(|(name, _)| name.as_str().eq_ignore_ascii_case(&request.0)) {
+        Some((name, motion)) => {
+            info!("ui script: prop {name} at frame {} heading for {}", motion.frame, motion.target)
+        }
+        None => warn!("ui script: no prop {}", request.0),
+    }
 }

@@ -4,6 +4,8 @@
 //! built under it as their assets load. Despawning the root unloads the
 //! level. The party is not level-owned and survives travel.
 
+use std::collections::HashMap;
+
 use avian3d::prelude::*;
 use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
@@ -11,7 +13,7 @@ use bevy_landmass::NavMesh3d;
 
 use super::navigation::asset::navmesh_path;
 use super::navigation::bake::SIZE_CLASSES;
-use super::props::{Prop, PropMotion};
+use super::props::{Prop, PropMotion, pose};
 use super::scripts::LevelScript;
 use super::triggers::LevelState;
 use crate::content::level::LevelGeometry;
@@ -24,6 +26,8 @@ use crate::presentation::sky::{Celestial, Cloud};
 #[derive(Component, Debug)]
 #[require(Transform, Visibility, AwaitingGeometry, AwaitingNavmesh, AwaitingLinks, AwaitingSky)]
 pub struct Level {
+    /// The retail path of its `.pvl`, which identifies it.
+    pub path: String,
     pub geometry: Handle<LevelGeometry>,
     /// One navmesh per walker size class (`navigation::bake::SIZE_CLASSES`).
     pub navmeshes: Vec<Handle<NavMesh3d>>,
@@ -38,6 +42,7 @@ impl Level {
     /// The level at a retail `.pvl` path, with its navmeshes and sky.
     pub fn load(path: &str, assets: &AssetServer) -> Self {
         Level {
+            path: path.to_owned(),
             geometry: assets.load(format!("retail://{path}")),
             navmeshes: (0..SIZE_CLASSES.len())
                 .map(|class| assets.load(navmesh_path(path, class)))
@@ -67,7 +72,9 @@ pub struct Travel {
 pub fn travel(
     mut commands: Commands,
     mut requests: MessageReader<Travel>,
-    levels: Query<Entity, With<Level>>,
+    levels: Query<(Entity, &Level, Option<&LevelState>, &Children)>,
+    props: Query<&PropMotion>,
+    mut memory: ResMut<LevelMemory>,
     assets: Res<AssetServer>,
     mut start: ResMut<crate::game::party::body::PartyStart>,
 ) {
@@ -76,8 +83,15 @@ pub fn travel(
         warn!("no level has entrance {}", request.entrance);
         return;
     };
-    for level in &levels {
-        commands.entity(level).despawn();
+    for (entity, level, state, children) in &levels {
+        // Remember the level as the party leaves it; moving props are kept
+        // where they were heading.
+        if let Some(state) = state {
+            let prop_frames =
+                children.iter().filter_map(|c| props.get(c).ok()).map(|m| m.target).collect();
+            memory.0.insert(level.path.clone(), LevelRecord { state: state.clone(), prop_frames });
+        }
+        commands.entity(entity).despawn();
     }
     let path = info.path();
     info!("travelling to {path} at {}", request.entrance);
@@ -86,6 +100,17 @@ pub fn travel(
         entrance: Some(request.entrance.clone()),
         ..default()
     };
+}
+
+/// Levels the party has left, as they were when it left (props by their
+/// order in the level). Not yet saved with the game.
+#[derive(Resource, Debug, Default)]
+pub struct LevelMemory(HashMap<String, LevelRecord>);
+
+#[derive(Debug)]
+pub struct LevelRecord {
+    state: LevelState,
+    prop_frames: Vec<f32>,
 }
 
 /// The level's sky has not been built yet.
@@ -211,6 +236,7 @@ pub fn build_level_geometry(
     mut commands: Commands,
     levels: Query<(Entity, &Level), With<AwaitingGeometry>>,
     geometry: Res<Assets<LevelGeometry>>,
+    memory: Res<LevelMemory>,
     mut ready: MessageWriter<LevelReady>,
 ) {
     for (root, level) in &levels {
@@ -229,17 +255,21 @@ pub fn build_level_geometry(
                 continue;
             }
         };
+        let remembered = memory.0.get(&level.path);
         let mut root = commands.entity(root);
         root.remove::<AwaitingGeometry>().insert((
             RigidBody::Static,
             collider,
-            LevelState::new(geometry, level.script),
+            remembered
+                .map_or_else(|| LevelState::new(geometry, level.script), |r| r.state.revisited()),
         ));
         root.with_children(|parent| {
             for part in &geometry.parts {
                 parent.spawn((Mesh3d(part.mesh.clone()), MeshMaterial3d(part.material.clone())));
             }
-            for prop in &geometry.props {
+            for (index, prop) in geometry.props.iter().enumerate() {
+                let frame =
+                    remembered.and_then(|r| r.prop_frames.get(index)).copied().unwrap_or(0.0);
                 let last_frame =
                     prop.parts.iter().map(|p| p.keys.len().saturating_sub(1)).max().unwrap_or(0);
                 parent
@@ -258,15 +288,20 @@ pub fn build_level_geometry(
                             wraps: prop.wraps,
                             slots: prop.slots.clone(),
                         },
-                        PropMotion::default(),
+                        PropMotion { frame, target: frame },
                         Transform::default(),
                         Visibility::default(),
                     ))
                     .with_children(|prop_entity| {
                         for part in &prop.parts {
+                            let at = if part.keys.is_empty() {
+                                part.transform
+                            } else {
+                                pose(&part.keys, frame)
+                            };
                             let mut part_entity = prop_entity.spawn((
                                 PropPart { keys: part.keys.clone() },
-                                part.transform,
+                                at,
                                 Visibility::default(),
                             ));
                             if prop.face_camera {

@@ -179,6 +179,7 @@ pub fn run(options: Options) -> AppExit {
                 run_ui_script,
                 face_prop_on_entry.run_if(resource_exists::<FacePropOnEntry>),
                 scripted_use.run_if(resource_exists::<ScriptedUse>),
+                crate::dev::log_prop.run_if(resource_exists::<crate::dev::LogProp>),
             ),
         );
     }

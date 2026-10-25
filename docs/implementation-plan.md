@@ -121,7 +121,10 @@ Known gaps, in rough order:
   (Monastery 1's cameras, Arnika's) are not. Travel does not yet ask retail's "Enter <level>?" question,
   and arriving does not probe for the ground (the party settles).
 - Most trigger actions are not performed yet (lights, missiles, fountains,
-  timed actions, required items). Level state is lost when the level is left.
+  timed actions, required items). A level's trigger state,
+  variables and prop positions are kept when the party leaves and restored on
+  return, but only for the session: they are not saved with the game, and
+  monsters and dormant-level catch-up do not exist yet.
 - Map notes are not saved; the automap does not yet track explored cells or
   project notes onto a minimap. Only the map screen exists.
 - The screenshot tool intermittently omits all or some unchanged UI artwork,

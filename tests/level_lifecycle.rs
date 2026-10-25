@@ -4,13 +4,14 @@ use avian3d::prelude::Collider;
 use bevy::prelude::*;
 use rizzardry::content::level::{CollisionMesh, LevelGeometry};
 use rizzardry::game::party::body::{PartyBody, PartyMotionConfig, place_party_on_ready};
-use rizzardry::game::world::level::{Level, LevelReady, build_level_geometry};
+use rizzardry::game::world::level::{Level, LevelMemory, LevelReady, build_level_geometry};
 
 fn app() -> App {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins)
         .init_resource::<Assets<LevelGeometry>>()
         .init_resource::<Assets<PartyMotionConfig>>()
+        .init_resource::<LevelMemory>()
         .add_message::<LevelReady>()
         .add_systems(
             Update,
@@ -27,7 +28,14 @@ fn spawn_level(app: &mut App, collision: CollisionMesh) -> Entity {
         .resource_mut::<Assets<LevelGeometry>>()
         .add(LevelGeometry { collision, ..default() });
     app.world_mut()
-        .spawn(Level { geometry, navmeshes: vec![], sky: None, script: default(), messages: None })
+        .spawn(Level {
+            path: "levels/test/test.pvl".into(),
+            geometry,
+            navmeshes: vec![],
+            sky: None,
+            script: default(),
+            messages: None,
+        })
         .id()
 }
 

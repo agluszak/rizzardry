@@ -25,6 +25,7 @@ impl Plugin for WorldPlugin {
         app.add_plugins(navigation::NavigationPlugin)
             .add_message::<level::LevelReady>()
             .add_message::<level::Travel>()
+            .init_resource::<level::LevelMemory>()
             .add_message::<triggers::TriggerEffect>()
             // The level is swapped before anything builds on it this frame.
             .add_systems(PreUpdate, level::travel)

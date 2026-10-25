@@ -41,7 +41,7 @@ const MAX_DEPTH: usize = 16;
 
 /// The live state of a level's triggers and location variables, on the
 /// level root. Triggers are indexed as in [`LevelGeometry::triggers`].
-#[derive(Component, Debug)]
+#[derive(Component, Clone, Debug)]
 pub struct LevelState {
     triggers: Vec<TriggerState>,
     /// By name; retail looks names up case-insensitively, newest first.
@@ -105,6 +105,12 @@ impl LevelState {
             }
         }
         state
+    }
+
+    /// The state kept from an earlier visit, for the party's return: it has
+    /// not been seen here yet this time.
+    pub fn revisited(&self) -> Self {
+        LevelState { entered: false, ..self.clone() }
     }
 
     pub fn find(&self, name: &str) -> Option<usize> {
