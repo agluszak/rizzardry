@@ -21,6 +21,8 @@ use crate::game::world::level::Level;
 pub struct MonsterAppearance {
     pub model: Handle<MonsterModel>,
     pub float_height: f32,
+    /// Seconds into its first cycle it starts at.
+    pub phase: f32,
 }
 
 /// The cycle an actor should play. Gameplay sets it; a changed request
@@ -129,7 +131,9 @@ pub fn animate_monsters(
                         if cycle_name == name { Visibility::Inherited } else { Visibility::Hidden };
                 }
             }
-            instance.playing = Some((request.clone(), now));
+            // The first cycle starts part-way in.
+            let started = if instance.playing.is_none() { now - appearance.phase } else { now };
+            instance.playing = Some((request.clone(), started));
         }
         let started = instance.playing.as_ref().map_or(now, |(_, started)| *started);
         let frames = cycle.frame_count() as f32;

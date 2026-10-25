@@ -2,6 +2,7 @@
 
 pub mod level;
 pub mod navigation;
+pub mod population;
 pub mod props;
 pub mod scripts;
 pub mod triggers;
@@ -33,7 +34,10 @@ impl Plugin for WorldPlugin {
             .add_message::<triggers::TriggerEffect>()
             // The level is swapped before anything builds on it this frame.
             .add_systems(PreUpdate, level::travel)
-            .add_systems(Update, (level::build_level_geometry, level::build_sky))
+            .add_systems(
+                Update,
+                (level::build_level_geometry, level::build_sky, population::populate_level),
+            )
             .add_systems(FixedUpdate, props::animate_props);
     }
 }

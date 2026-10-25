@@ -75,6 +75,11 @@ shown on retail content; the gaps below remain. Done:
   gradients, shaded scrolling clouds and the Sun and Moon on retail's orbit.
   Facing props turn with the camera. Slot 0-1 alpha materials blend; slot 2-3
   materials add (retail's packed shader `SRC_ALPHA, ONE`).
+- **Population.** Each level's `.sts` monster placements (924 across the
+  game) and `monsters.dbs` species models decode; a built level spawns its
+  placed monsters and NPCs idling where retail puts them, facing their
+  heading, each starting part-way into its idle. They do not move, fight or
+  die yet; random-encounter generators and unborn monsters are not spawned.
 - **Monsters.** `.mls` species and `.mon` vertex-frame cycles decode (all
   1088 retail cycles). Each actor animates its own mesh copies, blending
   between frames without wrapping last-to-first as retail does; play-once

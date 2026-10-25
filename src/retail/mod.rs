@@ -17,6 +17,7 @@ pub mod monster_loader;
 pub mod oct;
 pub mod path;
 pub mod playlist;
+pub mod population;
 pub mod prop;
 pub mod prop_loader;
 pub mod pvl;

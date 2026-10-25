@@ -10,6 +10,7 @@ use bevy::reflect::TypePath;
 use super::bytes::Bytes;
 use super::links::{level_entrances, level_links, teleport_arrival};
 use super::oct::read_collision;
+use super::population::{Placement, read_monster_models, read_placements};
 use super::prop::{PROP_COLLIDABLE, Prop};
 use super::prop_loader::{
     PropLighting, key_transform, level_lighting, part_transforms, record_collision, record_meshes,
@@ -18,15 +19,15 @@ use super::pvl::{CompiledMesh, MaterialRecord, PvlError, read_level_geometry};
 use super::sections::LevelSections;
 use super::sections::{Environment, read_sections};
 use super::space::UNITS_PER_METRE;
-use super::space::{retail_direction, retail_position};
+use super::space::{retail_direction, retail_position, retail_yaw};
 use super::texture_loader::file_has_alpha;
 use super::trigger::{
     AmbientSound, ItemTrigger, StateMode, TriggerKind, action as trigger_action, flag,
 };
 use crate::content::level::{
     AmbientSoundModel, CameraPathModel, DoorLock, LevelEnvironment, LevelGeometry, LevelPart,
-    Playback, PropModel, PropModelPart, StateChange, TextureAnimation, TriggerDefinition,
-    TriggerSound, VertexLighting,
+    MonsterPlacement, Playback, PropModel, PropModelPart, StateChange, TextureAnimation,
+    TriggerDefinition, TriggerSound, VertexLighting,
 };
 
 /// Time-of-day phase used for baked lighting until the game clock exists:
@@ -240,6 +241,25 @@ fn ambient_sound(sound: &AmbientSound) -> AmbientSoundModel {
         volume: (volume(sound.volume[0]), volume(sound.volume[1])),
         interval: (seconds(or(sound.interval[0], 5000)), seconds(or(sound.interval[1], 20000))),
     }
+}
+
+/// Placed monsters with their models, in Bevy space. Unborn ones wait for a
+/// script that is not implemented yet, so they are left out.
+fn monster_placements(placements: &[Placement], models: &[String]) -> Vec<MonsterPlacement> {
+    placements
+        .iter()
+        .filter(|placement| !placement.unborn)
+        .filter_map(|placement| {
+            let model = models.get(placement.species as usize)?.clone();
+            Some(MonsterPlacement {
+                location: placement.location,
+                species: placement.species,
+                model,
+                position: retail_position(placement.position),
+                yaw: retail_yaw(placement.yaw, [0.0, 1.0, 0.0]),
+            })
+        })
+        .collect()
 }
 
 /// Every type 4 trigger of the level, attached to a prop or not.
@@ -483,10 +503,24 @@ impl AssetLoader for PvlLoader {
             }
         }
         // Collision comes from the level's octree file, not render polygons.
-        let stem = context.path().path().file_stem().unwrap_or_default().to_string_lossy();
+        let stem =
+            context.path().path().file_stem().unwrap_or_default().to_string_lossy().into_owned();
         let octree = sibling(context, ".", &format!("{stem}.oct")).ok_or(PvlLoadError::Path)?;
         let octree = context.read_asset_bytes(octree).await?;
         let collision = read_collision(&octree)?.solid_mesh();
+
+        // Who stands where; levels without a state file are empty.
+        let monsters = match sibling(context, ".", &format!("{stem}.sts")) {
+            Some(path) => match context.read_asset_bytes(path).await {
+                Ok(state) => {
+                    let species = AssetPath::from("retail://data/databases/monsters.dbs");
+                    let models = read_monster_models(&context.read_asset_bytes(species).await?)?;
+                    monster_placements(&read_placements(&state)?, &models)
+                }
+                Err(_) => vec![],
+            },
+            None => vec![],
+        };
 
         let level_lighting = level_lighting(&sections.lights, sections.environment_offset);
         let lighting = PropLighting { ambient, level: &level_lighting };
@@ -511,6 +545,7 @@ impl AssetLoader for PvlLoader {
             lighting: level_lighting,
             entrances: level_entrances(&sections),
             triggers: level_triggers(&sections),
+            monsters,
             ambient_sounds: sections
                 .all_triggers()
                 .filter_map(|trigger| match &trigger.kind {

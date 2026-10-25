@@ -117,6 +117,8 @@ pub struct LevelGeometry {
     pub camera_paths: Vec<CameraPathModel>,
     /// Sounds places make: water, wind, birds.
     pub ambient_sounds: Vec<AmbientSoundModel>,
+    /// Monsters and NPCs standing in the level at a new game.
+    pub monsters: Vec<MonsterPlacement>,
     pub props: Vec<PropModel>,
     /// Navigation links between places the navmesh does not join.
     pub links: Vec<LevelLink>,
@@ -152,6 +154,19 @@ pub struct LevelLink {
     pub kind: LinkKind,
     pub from: Vec3,
     pub to: Vec3,
+}
+
+/// A monster placed in the level (retail `.sts` `MONS`).
+#[derive(Clone, Debug, Reflect)]
+pub struct MonsterPlacement {
+    /// Unique within the level.
+    pub location: i32,
+    pub species: u32,
+    /// The species' model, `data/monsters/<model>.mls`.
+    pub model: String,
+    /// Feet.
+    pub position: Vec3,
+    pub yaw: f32,
 }
 
 /// A sound a place makes (retail ambient sound).
