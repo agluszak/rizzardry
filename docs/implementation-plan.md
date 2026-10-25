@@ -25,11 +25,12 @@ established by the implementation:
    Require collision, local state, references and shared gameplay catalogs before
    enabling triggers/AI/party physics. During travel, settle old sessions and
    suspend the party body; failed preparation leaves the source playable.
-   *Status:* one `activate_level` operation and a Loading/Active/Failed phase;
-   gameplay runs only on an active level; travel refuses during a fight, ends
-   camera flights and pending moves and suspends the party body. **Not met:**
-   travel despawns the source before the destination is prepared, so a failed
-   destination leaves the party suspended instead of where it was.
+   *Status:* done. A level being prepared is a `Destination` until one
+   `activate_level` operation makes it the `Level`; gameplay runs only on a
+   level being played. Travel refuses during a fight, ends camera flights and
+   pending moves, remembers the source and marks it `Departing` (not played)
+   and suspends the party body; activation lets the source go, and a failed
+   destination leaves the party playing on in the source.
 2. Capture map-owned state on departure and restore it on revisit. A killed or
    wounded monster, opened container, trigger and map note must not reset or
    leak to another map. Persist domain state, not transient proximity/UI caches.
@@ -62,8 +63,8 @@ a non-roster `Character` is excluded from party effects. Use focused tests
 and representative retail checks, not a new harness. *Covered:* headless
 tests for failed collision, waiting for databases, one party across levels,
 a suspended party on a failed destination, a killed monster staying dead;
-rule tests for a combat round's recovery. *Not yet:* a test for a
-non-roster `Character`, and failed travel keeping the source.
+rule tests for a combat round's recovery. Failed travel keeping the source is
+tested. *Not yet:* a test for a non-roster `Character`.
 
 ## 1. Complete the real-world engine slice
 

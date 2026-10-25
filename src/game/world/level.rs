@@ -34,9 +34,11 @@ use crate::game::party::body::PartyPlacement;
 use crate::game::rng::GameRng;
 use crate::presentation::monsters::MonsterAppearance;
 
-/// The root of the level the party is in.
-#[derive(Component, Debug)]
-#[require(Transform, Visibility, LevelPhase)]
+/// The root of the level being played (or, during travel, left). A level
+/// becomes one only by [`activate_level`]; until then its root is a
+/// [`Destination`].
+#[derive(Component, Debug, Clone)]
+#[require(Transform, Visibility)]
 pub struct Level {
     /// The retail path of its `.pvl`, which identifies it.
     pub path: String,
@@ -85,17 +87,20 @@ pub struct Travel {
 }
 
 /// Leave for another level's entrance (retail `TravelToLevel`): what the
-/// level holds is remembered, it is despawned, and the destination loads
-/// while the party's body waits, suspended, to be placed at the entrance on
-/// activation. Work that cannot cross levels ends: a camera-path flight and
-/// any pending party move. A fight cannot be left this way; travel asked
-/// for during one is refused (retail's rule here is not established).
-/// Retail first asks "Enter <level>?" when the trigger says so.
+/// level holds is remembered and it is marked [`Departing`], which stops
+/// its play; the destination loads while the party's body waits, suspended.
+/// Activation places the party at the entrance and lets the departed level
+/// go; if the destination cannot be played, the party stays where it was.
+/// Work that cannot cross levels ends: a camera-path flight and any pending
+/// party move. A fight cannot be left this way; travel asked for during one
+/// is refused (retail's rule here is not established). Retail first asks
+/// "Enter <level>?" when the trigger says so.
 #[allow(clippy::too_many_arguments)]
 pub fn travel(
     mut commands: Commands,
     mut requests: MessageReader<Travel>,
-    levels: Query<(Entity, &Level, &LevelPhase, Option<&LevelState>, Option<&Children>)>,
+    levels: Query<(Entity, &Level, Option<&LevelState>, Option<&Children>), Without<Departing>>,
+    destinations: Query<Entity, With<Destination>>,
     contents: LevelContents,
     mut memory: ResMut<LevelMemory>,
     assets: Res<AssetServer>,
@@ -115,13 +120,18 @@ pub fn travel(
         warn!("no level has entrance {}", request.entrance);
         return;
     };
-    for (entity, level, phase, state, children) in &levels {
-        // Remember the level as the party leaves it; moving props are kept
-        // where they were heading.
-        if let (LevelPhase::Active, Some(state)) = (phase, state) {
+    // Remember the level as the party leaves it (its play stops now, so
+    // nothing changes it after this); moving props are kept where they were
+    // heading.
+    for (entity, level, state, children) in &levels {
+        if let Some(state) = state {
             let children: Vec<Entity> = children.map_or_else(Vec::new, |c| c.to_vec());
             memory.0.insert(level.path.clone(), contents.remember(entity, state, &children));
         }
+        commands.entity(entity).insert(Departing);
+    }
+    // A destination that failed earlier gives way to this one.
+    for entity in &destinations {
         commands.entity(entity).despawn();
     }
     pending.0 = None;
@@ -133,7 +143,7 @@ pub fn travel(
     }
     let path = info.path();
     info!("travelling to {path} at {}", request.entrance);
-    commands.spawn((Name::new(path.clone()), Level::load(&path, &assets)));
+    commands.spawn((Name::new(path.clone()), Destination::new(Level::load(&path, &assets))));
     *start = crate::game::party::body::PartyStart {
         entrance: Some(request.entrance.clone()),
         ..default()
@@ -144,6 +154,13 @@ pub fn travel(
 /// Not yet saved with the game.
 #[derive(Resource, Debug, Default)]
 pub struct LevelMemory(pub(super) HashMap<String, LevelRecord>);
+
+impl LevelMemory {
+    /// No level is remembered.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
 
 /// A level the party has left (retail keeps it in the level's state image):
 /// what its triggers keep, where its props were heading, its monsters (the
@@ -210,23 +227,33 @@ impl LevelContents<'_, '_> {
     }
 }
 
-/// Where a level is in its life. It loads until its gameplay prerequisites
-/// exist (geometry and collision, the shared databases, its navmeshes
-/// loaded or failed), then [`activate_level`] builds its world, places the
-/// party and makes it active; only an active level is played. Its sky and
-/// other visuals load on their own.
-#[derive(Component, Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum LevelPhase {
-    #[default]
-    Loading,
-    Active,
+/// A level being prepared to be played: the first, or travel's
+/// destination. It loads until its gameplay prerequisites exist (geometry
+/// and collision, the shared databases, its navmeshes loaded or failed);
+/// then [`activate_level`] makes it the [`Level`]. Its sky and other
+/// visuals load on their own once it is played.
+#[derive(Component, Debug)]
+#[require(Transform, Visibility)]
+pub struct Destination {
+    pub level: Level,
     /// It cannot be played: an asset failed or its collision is unusable.
-    Failed,
+    pub failed: bool,
 }
 
+impl Destination {
+    pub fn new(level: Level) -> Self {
+        Destination { level, failed: false }
+    }
+}
+
+/// The level the party is leaving: not played while its destination is
+/// prepared, and played again if that fails.
+#[derive(Component, Debug)]
+pub struct Departing;
+
 /// Run condition: a level is being played.
-pub fn level_active(levels: Query<&LevelPhase>) -> bool {
-    levels.iter().any(|phase| *phase == LevelPhase::Active)
+pub fn level_active(levels: Query<(), (With<Level>, Without<Departing>)>) -> bool {
+    !levels.is_empty()
 }
 
 /// One rigid part of a placed prop, with its animation poses.
@@ -364,14 +391,17 @@ pub struct SharedData<'w> {
     species: Res<'w, Assets<MonsterCatalog>>,
 }
 
-/// Make a loading level playable once its gameplay prerequisites exist, in
+/// Make a destination playable once its gameplay prerequisites exist, in
 /// one step: build its world, navigation and population (consuming what was
-/// remembered of it), place the party and resume its body, and announce it.
-/// A level whose geometry, databases or collision fail is marked failed.
+/// remembered of it), make it the [`Level`], place the party and resume its
+/// body, let the departed level go, and announce it. A destination whose
+/// geometry, databases or collision fail is marked failed, and the party
+/// plays on where it was.
 #[allow(clippy::too_many_arguments)]
 pub fn activate_level(
     mut commands: Commands,
-    mut levels: Query<(Entity, &Level, &mut LevelPhase)>,
+    mut destinations: Query<(Entity, &mut Destination)>,
+    departing: Query<(Entity, &Level), With<Departing>>,
     geometry: Res<Assets<LevelGeometry>>,
     assets: Res<AssetServer>,
     shared: SharedData,
@@ -380,10 +410,11 @@ pub fn activate_level(
     mut party: PartyPlacement,
     mut ready: MessageWriter<LevelReady>,
 ) {
-    for (root, level, mut phase) in &mut levels {
-        if *phase != LevelPhase::Loading {
+    for (root, mut destination) in &mut destinations {
+        if destination.failed {
             continue;
         }
+        let level = &destination.level;
         let failed = |handle: UntypedAssetId| {
             matches!(assets.get_load_state(handle), Some(LoadState::Failed(_)))
         };
@@ -394,7 +425,8 @@ pub fn activate_level(
             || failed(data.species.id().untyped())
         {
             error!("{}: an asset it needs failed to load", level.path);
-            *phase = LevelPhase::Failed;
+            destination.failed = true;
+            stay(&mut commands, &departing, &mut memory, &mut party);
             continue;
         }
         let (Some(geometry), Some(items), Some(_), Some(species)) = (
@@ -412,7 +444,8 @@ pub fn activate_level(
             Ok(collider) => collider,
             Err(error) => {
                 error!("{}: {error}", level.path);
-                *phase = LevelPhase::Failed;
+                destination.failed = true;
+                stay(&mut commands, &departing, &mut memory, &mut party);
                 continue;
             }
         };
@@ -430,8 +463,28 @@ pub fn activate_level(
             &mut rng,
         );
         party.place(&mut commands, geometry);
-        *phase = LevelPhase::Active;
+        for (left, _) in &departing {
+            commands.entity(left).despawn();
+        }
         info!("{} is active", level.path);
+        commands.entity(root).remove::<Destination>().insert(level.clone());
         ready.write(LevelReady { level: root });
+    }
+}
+
+/// The destination cannot be played: the party plays on in the level it
+/// was leaving, which forgets the record taken as it left (its live state
+/// is newer). With no level to go back to, the game has none.
+fn stay(
+    commands: &mut Commands,
+    departing: &Query<(Entity, &Level), With<Departing>>,
+    memory: &mut LevelMemory,
+    party: &mut PartyPlacement,
+) {
+    for (entity, level) in departing {
+        memory.0.remove(&level.path);
+        commands.entity(entity).remove::<Departing>();
+        party.resume(commands);
+        warn!("staying in {}", level.path);
     }
 }

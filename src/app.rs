@@ -19,7 +19,7 @@ use crate::game::party::PartyPlugin;
 use crate::game::party::body::PartyStart;
 use crate::game::time::{GameClock, TimePlugin};
 use crate::game::world::WorldPlugin;
-use crate::game::world::level::Level;
+use crate::game::world::level::{Destination, Level};
 use crate::game::world::navigation::bake::SIZE_CLASSES;
 use crate::presentation::PresentationPlugin;
 use crate::retail::RetailPlugin;
@@ -162,8 +162,8 @@ pub fn run(options: Options) -> AppExit {
         pitch: options.pitch.to_radians(),
     };
 
-    if options.headless && (options.screenshot.is_some() || options.ui_script.is_some()) {
-        eprintln!("screenshots and UI scripts need the window; leave out --headless");
+    if options.headless && options.screenshot.is_some() {
+        eprintln!("screenshots need the window; leave out --headless");
         return AppExit::error();
     }
 
@@ -293,7 +293,8 @@ pub fn run(options: Options) -> AppExit {
     // the chosen level.
     app.add_systems(Startup, crate::game::party::roster::spawn_test_party);
     app.add_systems(Startup, move |mut commands: Commands, assets: Res<AssetServer>| {
-        commands.spawn((Name::new(level.clone()), Level::load(&level, &assets)));
+        let first = Destination::new(Level::load(&level, &assets));
+        commands.spawn((Name::new(level.clone()), first));
     });
     app.run()
 }

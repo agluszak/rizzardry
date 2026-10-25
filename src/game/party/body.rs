@@ -214,6 +214,14 @@ impl PartyPlacement<'_, '_> {
         }
         spawn_party(commands, &start, yaw, position, &mut self.motion_configs);
     }
+
+    /// Let the party's body move again where it stands (travel that did
+    /// not happen).
+    pub fn resume(&self, commands: &mut Commands) {
+        for (entity, ..) in &self.party {
+            commands.entity(entity).remove::<RigidBodyDisabled>();
+        }
+    }
 }
 
 fn spawn_party(

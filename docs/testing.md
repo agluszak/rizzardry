@@ -86,8 +86,15 @@ cargo run -- --headless --continuous --speed 8 --run-for 10 --seed 4 \
   --start=69.5,10,-24 --yaw 0     # the Monastery's Green Slimes
 ```
 
-Screenshots and UI scripts need the window and are refused with
-`--headless`.
+`--ui-script` runs headless too, for its steps that need no window (`wait`,
+`travel`, `hurt`, `tire`, `use`, `log-party`, map assertions); key, typing,
+pointer and cursor steps are skipped with a warning. Screenshots need the
+window and are refused with `--headless`.
+
+```sh
+cargo run -- --headless --speed 4 --run-for 15 --start=138.2,2.5,-214 \
+  --ui-script "wait 2;travel MO204;wait 12;travel MO102;wait 12"
+```
 
 Do not require GPU screenshots or all-map baking on every PR. Run focused
 retail/visual checks when the changed feature warrants them.

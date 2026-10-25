@@ -466,9 +466,12 @@ pub fn run_ui_script(
     notes: Query<&crate::game::automap::MapNotes>,
     mut members: Query<&mut crate::game::characters::Character>,
 ) {
-    let (Ok((window_entity, window, cursor)), false) = (window.single(), party.is_empty()) else {
+    if party.is_empty() {
         return;
-    };
+    }
+    // Headless there is no window: only the steps that need none run.
+    let window = window.single().ok();
+    let window_entity = window.map_or(Entity::PLACEHOLDER, |(entity, ..)| entity);
     let now = time.elapsed_secs();
     let next_at = *script.next_at.get_or_insert(now + 1.0);
     if now < next_at {
@@ -498,6 +501,12 @@ pub fn run_ui_script(
         window: window_entity,
     };
     let (verb, rest) = step.split_once(' ').unwrap_or((&step, ""));
+    let needs_window =
+        matches!(verb, "key" | "type" | "click" | "right-click" | "hover" | "assert-cursor");
+    if needs_window && window.is_none() {
+        warn!("ui script: {verb} needs the window; skipped");
+        return;
+    }
     match verb {
         "key" => {
             let Some((code, key)) = scripted_key(rest) else {
@@ -533,6 +542,7 @@ pub fn run_ui_script(
                 return;
             };
             // From the 640×480 layout, scaled and centred as the UI is.
+            let Some((_, window, _)) = window else { return };
             let size = window.size();
             let scale = (size.x / 640.0).min(size.y / 480.0);
             let position = (size - Vec2::new(640.0, 480.0) * scale) / 2.0 + Vec2::new(x, y) * scale;
@@ -566,6 +576,7 @@ pub fn run_ui_script(
         }
         "assert-cursor" => {
             use bevy::window::{CursorIcon, CustomCursor};
+            let cursor = window.and_then(|(_, _, cursor)| cursor);
             let actual = match cursor {
                 Some(CursorIcon::Custom(CustomCursor::Image(image))) => {
                     image.handle.path().and_then(|path| path.label())
