@@ -1,20 +1,22 @@
 //! The party's passive recovery as game time passes. Retail ticks stamina
 //! every 1.4 game seconds outside combat and heals on its 120-second aging
-//! tick; both depend on whether the party stands still, and run at full
-//! rate while camping. Combat is not modelled yet.
+//! tick; both depend on whether the party stands still, walks or runs, and
+//! run at full rate while camping. Combat is not modelled yet.
 
 use avian3d::prelude::LinearVelocity;
 use bevy::prelude::*;
 
 use crate::game::camp::Camp;
 use crate::game::characters::Character;
-use crate::game::party::body::PartyBody;
+use crate::game::party::body::{PartyBody, WALK_SPEED};
 use crate::game::time::GameClock;
 
 const STAMINA_TICK_MS: u64 = 1400;
 const AGING_TICK_MS: u64 = 120_000;
 /// Slower than this, in metres a second, the party is resting.
 const RESTING_BELOW: f32 = 0.05;
+/// Faster than walking: running.
+const RUNNING_ABOVE: f32 = WALK_SPEED * 1.1;
 
 /// Whole periods of `period` the clock crossed between two readings.
 fn ticks(previous: u64, now: u64, period: u64) -> u32 {
@@ -34,11 +36,17 @@ pub fn recover(
     if stamina_ticks == 0 && aging_ticks == 0 {
         return;
     }
-    let resting = party.single().is_ok_and(|v| v.length() < RESTING_BELOW);
-    let (stamina_scale, health_scale) = match (camp.is_some(), resting) {
-        (true, _) => (1.0, 1.0),
-        (false, true) => (0.5, 0.5),
-        (false, false) => (0.1, 0.0),
+    // Retail tells running (fast movement) from walking; here the speed
+    // does, horizontally so that falling is not running.
+    let speed = party.single().map_or(0.0, |v| Vec2::new(v.x, v.z).length());
+    let (stamina_scale, health_scale) = if camp.is_some() {
+        (1.0, 1.0)
+    } else if speed < RESTING_BELOW {
+        (0.5, 0.5)
+    } else if speed <= RUNNING_ABOVE {
+        (0.1, 0.0)
+    } else {
+        (0.0, 0.0)
     };
     for mut member in &mut members {
         if stamina_ticks > 0 {

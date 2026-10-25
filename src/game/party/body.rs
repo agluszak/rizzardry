@@ -35,7 +35,7 @@ pub const FLOAT_HEIGHT: f32 = 500.0 / U;
 pub const EYE_ABOVE_CENTRE: f32 = 500.0 / U;
 /// The eye above the feet.
 pub const EYE_HEIGHT: f32 = 1000.0 / U;
-const WALK_SPEED: f32 = 3750.0 / U;
+pub const WALK_SPEED: f32 = 3750.0 / U;
 const RUN_SPEED: f32 = 7500.0 / U;
 /// Maximum yaw speed, 0.349 rad per tick.
 const TURN_SPEED: f32 = 3.49;
