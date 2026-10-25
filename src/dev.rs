@@ -16,6 +16,10 @@ use bevy_tnua_avian3d::prelude::*;
 use crate::game::party::body::{Interact, PartyBody, Walk};
 use crate::game::world::navigation::{LevelNavigation, Walker, WalkerMotion, WalkerMotionConfig};
 use crate::presentation::monsters::MonsterAppearance;
+use bevy::camera::NormalizedRenderTarget;
+use bevy::input::ButtonState;
+use bevy::input::keyboard::{Key, KeyboardInput, NativeKeyCode};
+use bevy::picking::pointer::{Location, PointerAction, PointerButton, PointerId, PointerInput};
 
 /// Capture the window `after` seconds once the party is in the world, then
 /// exit. Used to check rendering from the command line.
@@ -350,5 +354,143 @@ pub fn say_line(
         {
             info!("finished {} after {:.2} s", done.line, time.elapsed_secs() - started);
         }
+    }
+}
+
+/// A scripted UI session: keys, clicks and typing fed through the same
+/// input messages a player's devices produce. Steps are separated by `;`:
+/// `key m`, `click X Y` (in the 640×480 screen layout), `type TEXT`,
+/// `wait SECONDS`. One step runs every [`UI_STEP`] seconds once the party
+/// is in the world.
+#[derive(Resource, Debug, Clone)]
+pub struct UiScript {
+    steps: std::collections::VecDeque<String>,
+    next_at: Option<f32>,
+    release: Vec<KeyboardInput>,
+    release_pointer: Option<PointerInput>,
+}
+
+const UI_STEP: f32 = 0.3;
+
+impl UiScript {
+    pub fn parse(script: &str) -> Self {
+        UiScript {
+            steps: script
+                .split(';')
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+                .collect(),
+            next_at: None,
+            release: vec![],
+            release_pointer: None,
+        }
+    }
+}
+
+fn scripted_key(name: &str) -> Option<(KeyCode, Key)> {
+    Some(match name {
+        "Enter" => (KeyCode::Enter, Key::Enter),
+        "Escape" => (KeyCode::Escape, Key::Escape),
+        "Backspace" => (KeyCode::Backspace, Key::Backspace),
+        letter if letter.len() == 1 && letter.chars().all(|c| c.is_ascii_lowercase()) => {
+            let code = match letter {
+                "m" => KeyCode::KeyM,
+                "e" => KeyCode::KeyE,
+                "q" => KeyCode::KeyQ,
+                _ => KeyCode::Unidentified(NativeKeyCode::Unidentified),
+            };
+            (code, Key::Character(letter.into()))
+        }
+        _ => return None,
+    })
+}
+
+pub fn run_ui_script(
+    time: Res<Time>,
+    mut script: ResMut<UiScript>,
+    party: Query<(), With<PartyBody>>,
+    window: Query<(Entity, &Window), With<bevy::window::PrimaryWindow>>,
+    mut keys: MessageWriter<KeyboardInput>,
+    mut pointer: MessageWriter<PointerInput>,
+) {
+    let (Ok((window_entity, window)), false) = (window.single(), party.is_empty()) else { return };
+    let now = time.elapsed_secs();
+    let next_at = *script.next_at.get_or_insert(now + 1.0);
+    if now < next_at {
+        return;
+    }
+    script.next_at = Some(now + UI_STEP);
+    for release in std::mem::take(&mut script.release) {
+        keys.write(release);
+    }
+    // A click registers on release, so the release gets a tick of its own
+    // and the next step sees the click's effect.
+    if let Some(release) = script.release_pointer.take() {
+        pointer.write(release);
+        return;
+    }
+    let Some(step) = script.steps.pop_front() else { return };
+    info!("ui script: {step}");
+    let key_event = |key_code, logical_key: Key, state, text| KeyboardInput {
+        key_code,
+        logical_key,
+        state,
+        text,
+        repeat: false,
+        window: window_entity,
+    };
+    let (verb, rest) = step.split_once(' ').unwrap_or((&step, ""));
+    match verb {
+        "key" => {
+            let Some((code, key)) = scripted_key(rest) else {
+                warn!("ui script: unknown key {rest}");
+                return;
+            };
+            let text = match &key {
+                Key::Character(c) => Some(c.clone()),
+                _ => None,
+            };
+            keys.write(key_event(code, key.clone(), ButtonState::Pressed, text));
+            script.release.push(key_event(code, key, ButtonState::Released, None));
+        }
+        "type" => {
+            for c in rest.chars() {
+                let text = c.to_string();
+                let code = KeyCode::Unidentified(NativeKeyCode::Unidentified);
+                let key = Key::Character(text.as_str().into());
+                keys.write(key_event(
+                    code,
+                    key.clone(),
+                    ButtonState::Pressed,
+                    Some(text.as_str().into()),
+                ));
+                keys.write(key_event(code, key, ButtonState::Released, None));
+            }
+        }
+        "click" => {
+            let numbers: Vec<f32> =
+                rest.split_whitespace().filter_map(|n| n.parse().ok()).collect();
+            let [x, y] = numbers[..] else {
+                warn!("ui script: click needs X Y");
+                return;
+            };
+            // From the 640×480 layout, scaled and centred as the UI is.
+            let size = window.size();
+            let scale = (size.x / 640.0).min(size.y / 480.0);
+            let position = (size - Vec2::new(640.0, 480.0) * scale) / 2.0 + Vec2::new(x, y) * scale;
+            let target = NormalizedRenderTarget::Window(
+                bevy::window::WindowRef::Primary.normalize(Some(window_entity)).unwrap(),
+            );
+            let location = Location { target, position };
+            let input = |action| PointerInput::new(PointerId::Mouse, location.clone(), action);
+            pointer.write(input(PointerAction::Move { delta: Vec2::ZERO }));
+            pointer.write(input(PointerAction::Press(PointerButton::Primary)));
+            script.release_pointer = Some(input(PointerAction::Release(PointerButton::Primary)));
+        }
+        "wait" => {
+            let seconds: f32 = rest.parse().unwrap_or(1.0);
+            script.next_at = Some(now + seconds);
+        }
+        _ => warn!("ui script: unknown step {step}"),
     }
 }

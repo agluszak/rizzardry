@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use bevy_enhanced_input::EnhancedInputPlugin;
 
 use crate::content::levels::{DEFAULT_SKY, LevelInfo};
-use crate::dev::{FacePropOnEntry, SayLine, face_prop_on_entry, say_line};
+use crate::dev::{FacePropOnEntry, SayLine, UiScript, face_prop_on_entry, run_ui_script, say_line};
 use crate::dev::{
     OverheadView, ScreenshotAndExit, ScriptedInteract, ScriptedWalk, TestAgents, log_test_agents,
     overhead_view, screenshot_and_exit, scripted_interact, scripted_walk, spawn_test_agents,
@@ -70,6 +70,10 @@ pub struct Options {
     /// Start at this hour of the day (0-24) instead of a new game's noon.
     #[arg(long, value_name = "HOUR")]
     pub hour: Option<f32>,
+    /// Developer: drive the UI with scripted input, e.g.
+    /// `"key m; click 300 200; type Hello; key Enter"`.
+    #[arg(long, value_name = "STEPS")]
+    pub ui_script: Option<String>,
     /// Developer: speak this retail voice line on entry, e.g.
     /// `npc_aletheides_000`.
     #[arg(long, value_name = "LINE")]
@@ -179,6 +183,9 @@ pub fn run(options: Options) -> AppExit {
         let after = options.screenshot_after.unwrap_or(2.0 + options.walk.unwrap_or(0.0));
         app.insert_resource(ScreenshotAndExit::new(path, after))
             .add_systems(Update, screenshot_and_exit);
+    }
+    if let Some(script) = &options.ui_script {
+        app.insert_resource(UiScript::parse(script)).add_systems(Update, run_ui_script);
     }
     if let Some(line) = options.say.clone() {
         app.insert_resource(SayLine { line, started: None }).add_systems(Update, say_line);
