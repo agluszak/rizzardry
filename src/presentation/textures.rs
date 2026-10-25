@@ -18,10 +18,9 @@ pub fn animate_level_textures(
     for animation in &level.animated_textures {
         let frame = &animation.frames[animation.frame_at(seconds)];
         let shown = materials.get(&animation.material).and_then(|m| m.base_color_texture.as_ref());
-        if shown != Some(frame) {
-            if let Some(mut material) = materials.get_mut(&animation.material) {
+        if shown != Some(frame)
+            && let Some(mut material) = materials.get_mut(&animation.material) {
                 material.base_color_texture = Some(frame.clone());
             }
-        }
     }
 }

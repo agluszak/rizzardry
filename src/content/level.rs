@@ -59,7 +59,7 @@ impl TextureAnimation {
             Playback::Once => (start + steps).min(count - 1),
             Playback::PingPong => {
                 let step = (start + steps) % count;
-                if (start + steps) / count % 2 == 0 { step } else { count - 1 - step }
+                if ((start + steps) / count).is_multiple_of(2) { step } else { count - 1 - step }
             }
         }
     }
