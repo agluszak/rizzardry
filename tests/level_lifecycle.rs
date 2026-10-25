@@ -216,27 +216,6 @@ fn a_killed_monster_stays_dead_when_the_party_returns() {
 }
 
 #[test]
-fn a_level_waits_for_body_metadata_and_sizes_monsters_without_render_assets() {
-    let mut app = app();
-    with_data(&mut app);
-    // The crab's gameplay body metadata is still loading.
-    let loading = app.world_mut().resource_mut::<Assets<MonsterBody>>().reserve_handle();
-    app.world_mut().resource_mut::<MonsterBodies>().0.insert(0, loading.clone());
-    let root = spawn_level(&mut app, floor());
-
-    app.update();
-    assert!(!is_played(&app, root) && !failed(&app, root));
-
-    let body = MonsterBody { fight_radius: 0.5, scale: 2.0, ..default() };
-    app.world_mut().resource_mut::<Assets<MonsterBody>>().insert(&loading, body).unwrap();
-    app.update();
-    assert!(is_played(&app, root));
-    let world = app.world_mut();
-    let crab = world.query::<&Monster>().single(world).unwrap();
-    assert_eq!((crab.body.scale, crab.body.radius), (2.0, 1.0), "its body at its size");
-}
-
-#[test]
 fn body_metadata_loads_even_when_the_visual_cycles_fail() {
     use bevy::asset::LoadState;
     use rizzardry::content::monster::MonsterModel;
@@ -356,4 +335,25 @@ fn attaching_visuals_does_not_change_physical_state_or_revisit_placement() {
         assert!(world.get::<Walker>(entity).is_none());
         assert!(world.get::<MonsterVisual>(entity).is_none());
     }
+}
+
+#[test]
+fn a_level_waits_for_body_metadata_and_sizes_monsters_without_render_assets() {
+    let mut app = app();
+    with_data(&mut app);
+    // The crab's gameplay body metadata is still loading.
+    let loading = app.world_mut().resource_mut::<Assets<MonsterBody>>().reserve_handle();
+    app.world_mut().resource_mut::<MonsterBodies>().0.insert(0, loading.clone());
+    let root = spawn_level(&mut app, floor());
+
+    app.update();
+    assert!(!is_played(&app, root) && !failed(&app, root));
+
+    let body = MonsterBody { fight_radius: 0.5, scale: 2.0, ..default() };
+    app.world_mut().resource_mut::<Assets<MonsterBody>>().insert(&loading, body).unwrap();
+    app.update();
+    assert!(is_played(&app, root));
+    let world = app.world_mut();
+    let crab = world.query::<&Monster>().single(world).unwrap();
+    assert_eq!((crab.body.scale, crab.body.radius), (2.0, 1.0), "its body at its size");
 }
