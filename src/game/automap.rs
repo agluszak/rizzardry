@@ -39,7 +39,7 @@ impl MapNotes {
     pub fn type_char(&mut self, note: usize, c: char) {
         if let Some(note) = self.notes.get_mut(note)
             && note.text.encode_utf16().count() < MAX_NOTE_LENGTH
-            && crate::retail::stci::glyph_index(c).is_some()
+            && crate::content::ui::glyph_index(c).is_some()
         {
             note.text.push(c);
         }

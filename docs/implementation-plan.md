@@ -128,9 +128,7 @@ Known gaps, in rough order:
 - Still open from the architecture review (the rest is done: level
   activation and travel, time advancement, level records, roster
   authority, inventory validation, gameplay-owned party freedom, sky and
-  level visuals in presentation): `content::ui` and `game::automap` use
-  the STCI decoder's frame and glyph code (the font representation should
-  move out of `retail::stci`); navigation's asset module decodes PVL/OCT
+  level visuals in presentation, bitmap fonts in content): navigation's asset module decodes PVL/OCT
   itself; `PartyPlugin` always spawns the test party (it belongs in an
   explicit new-game bootstrap); the level loader re-decodes `monsters.dbs`
   to copy model names into placements (resolve them from the catalog);
