@@ -99,7 +99,7 @@ Known gaps, in rough order:
   vertex with N·L, and their runtime attenuation is not confirmed. Monsters
   use only the nearest detail level and ignore particles, sounds and skins.
 - Cross-level travel, elevators/lifts, random teleports and camera-path
-  triggers are not implemented. Retail's fall-speed cap is not applied.
+  triggers are not implemented.
 - Map notes are not saved; the automap does not yet track explored cells or
   project notes onto a minimap. Only the map screen exists.
 - The screenshot tool intermittently omits all or some unchanged UI artwork,

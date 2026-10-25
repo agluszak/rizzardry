@@ -35,9 +35,11 @@ const WALK_SPEED: f32 = 3750.0 / U;
 const RUN_SPEED: f32 = 7500.0 / U;
 /// Maximum yaw speed, 0.349 rad per tick.
 const TURN_SPEED: f32 = 3.49;
-/// 187.5 units per tick². Retail also caps falls at 3000 units per tick; that
-/// cap is not applied yet.
+/// 187.5 units per tick².
 pub const GRAVITY: f32 = 18750.0 / U;
+/// Retail caps a tick's motion at 3000 units (Whizzardry `collision.cpp`);
+/// walking never comes near it, so in practice it limits falls.
+const MAX_SPEED: f32 = 30000.0 / U;
 const MAX_PITCH: f32 = std::f32::consts::FRAC_PI_4;
 const LOOK_SENSITIVITY: f32 = 0.003;
 
@@ -172,6 +174,7 @@ pub fn spawn_party_on_ready(
             RigidBody::Dynamic,
             Collider::sphere(RADIUS - 0.08),
             LockedAxes::ROTATION_LOCKED,
+            MaxLinearSpeed(MAX_SPEED),
             TnuaController::<PartyMotion>::default(),
             TnuaConfig::<PartyMotion>(motion_configs.add(PartyMotionConfig {
                 basis: TnuaBuiltinWalkConfig {
