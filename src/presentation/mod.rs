@@ -58,7 +58,7 @@ fn hold_exploration(
 
 impl Plugin for PresentationPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(main_screen::MainScreenPlugin)
+        app.add_plugins((main_screen::MainScreenPlugin, inventory::InventoryPlugin))
             .add_message::<voice::SpeechFinished>()
             .add_message::<dialog::TravelAnswer>()
             .add_message::<automap::OpenAutomap>()
@@ -78,7 +78,6 @@ impl Plugin for PresentationPlugin {
                     notices::load_notice_art,
                     dialog::load_dialog_art,
                     camp::load_camp_art,
-                    inventory::load_inventory_art,
                 ),
             )
             .add_systems(
@@ -92,13 +91,6 @@ impl Plugin for PresentationPlugin {
                         .run_if(crate::game::screen::party_free)
                         .before(crate::game::world::interaction::act_on_click),
                     camp::show_camp,
-                    (
-                        inventory::toggle_inventory,
-                        inventory::spawn_inventory_screen,
-                        inventory::draw_inventory_cells,
-                        inventory::follow_held,
-                    )
-                        .chain(),
                     (
                         automap::toggle_automap,
                         automap::type_note,
