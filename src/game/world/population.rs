@@ -132,7 +132,8 @@ pub fn populate(
             .filter_map(|placement| {
                 let definition = items.get(placement.item)?;
                 let item = placed_item(placement, definition, ids);
-                Some((WorldItem { item, hidden: placement.hidden }, placement.position))
+                let hidden = placement.hidden;
+                Some((WorldItem { item, hidden, contents: vec![] }, placement.position))
             })
             .collect(),
     };

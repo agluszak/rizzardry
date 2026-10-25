@@ -7,8 +7,8 @@ use thiserror::Error;
 
 use super::bytes::Bytes;
 use super::pvl::PvlError;
-use crate::content::items::Dice;
-use crate::content::species::{MonsterAttack, MonsterCatalog, Reach, Species};
+use crate::content::items::{Dice, ItemId};
+use crate::content::species::{Drop, MonsterAttack, MonsterCatalog, Reach, Species, Treasure};
 
 const RECORD: usize = 0x297;
 const ATTACKS_AT: usize = 0xe7;
@@ -86,6 +86,23 @@ fn species(record: &[u8]) -> Species {
         level: record[0x24f],
         display_level: record[0x251],
         gold: dice(record, 0x243),
+        // Eight 10-byte slots; a zero count disables one.
+        treasure: (0..8)
+            .map(|slot| &record[0x1f3 + slot * 10..0x1f3 + slot * 10 + 10])
+            .filter(|slot| i16::from_le_bytes([slot[1], slot[2]]) != 0)
+            .map(|slot| {
+                let id = u16::from_le_bytes([slot[3], slot[4]]);
+                Treasure {
+                    drop: match slot[0] {
+                        0 => Drop::Item(ItemId(id)),
+                        1 => Drop::Table(id),
+                        _ => Drop::Nothing,
+                    },
+                    chance: slot[5],
+                    dice: dice(slot, 6),
+                }
+            })
+            .collect(),
         prefers_ranged: record[0x1b9] != 0,
     }
 }
@@ -150,6 +167,10 @@ mod tests {
         assert_eq!(slime.evasion, 7);
         let crocodile = &species[62];
         assert_eq!(crocodile.name, "Ironskin Crocodile");
+        // A Venom Crab may leave item 0x27e, one in four.
+        let venom = &species[310];
+        assert_eq!(venom.treasure[0].drop, Drop::Item(ItemId(0x27e)));
+        assert_eq!(venom.treasure[0].chance, 25);
         assert_eq!(crocodile.shown_name(true, 2), "Ironskin Crocodiles");
         assert_eq!(crocodile.shown_name(false, 1), "Crocodile");
         assert_eq!(crocodile.attacks[0].damage, Dice { base: 2, count: 3, sides: 9 });

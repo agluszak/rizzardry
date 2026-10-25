@@ -91,6 +91,8 @@ pub struct Species {
     /// they can tell.
     pub display_level: u8,
     pub gold: Dice,
+    /// What it may leave behind, in retail's slot order.
+    pub treasure: Vec<Treasure>,
     pub prefers_ranged: bool,
 }
 
@@ -106,6 +108,25 @@ impl Species {
             (false, false) => &self.generic_plural,
         }
     }
+}
+
+/// One of a species' treasure slots (retail `W8MonsterTreasureEntry`): it
+/// drops with `chance` percent, `dice` times.
+#[derive(Clone, Debug, PartialEq, Reflect)]
+pub struct Treasure {
+    pub drop: Drop,
+    pub chance: u8,
+    pub dice: Dice,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Reflect)]
+pub enum Drop {
+    Item(super::items::ItemId),
+    /// Items from this loot table.
+    Table(u16),
+    /// A slot of another type (176 retail slots are 205): rolled for, but
+    /// drops nothing.
+    Nothing,
 }
 
 /// Every species, by retail record number.
