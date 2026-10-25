@@ -24,6 +24,7 @@ pub mod source;
 pub mod space;
 pub mod stci;
 pub mod sti_loader;
+pub mod texture_loader;
 pub mod trigger;
 
 use std::sync::Arc;
@@ -66,6 +67,8 @@ impl Plugin for RetailPlugin {
             .init_asset::<crate::content::monster::MonsterModel>()
             .init_asset_loader::<monster_loader::MlsLoader>()
             .init_asset::<crate::content::ui::SpriteSheet>()
-            .init_asset_loader::<sti_loader::StiLoader>();
+            .init_asset_loader::<sti_loader::StiLoader>()
+            .init_asset::<texture_loader::RetailTexture>()
+            .init_asset_loader::<texture_loader::RetailTextureLoader>();
     }
 }

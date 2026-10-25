@@ -3,10 +3,6 @@
 use std::collections::HashMap;
 
 use bevy::asset::{AssetLoader, AssetPath, LoadContext, RenderAssetUsages, io::Reader};
-use bevy::image::{
-    CompressedImageFormats, ImageAddressMode, ImageFilterMode, ImageSampler,
-    ImageSamplerDescriptor, ImageType,
-};
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::reflect::TypePath;
@@ -20,12 +16,12 @@ use super::pvl::{CompiledMesh, MaterialRecord, PvlError, read_level_geometry};
 use super::sections::{Environment, read_sections};
 use super::space::UNITS_PER_METRE;
 use super::space::{retail_direction, retail_position};
+use super::texture_loader::file_has_alpha;
 use super::trigger::TriggerKind;
 use crate::content::level::{
     DoorLock, LevelEnvironment, LevelGeometry, LevelPart, Playback, PropInteraction, PropModel,
     PropModelPart, TextureAnimation, VertexLighting,
 };
-use crate::presentation::mipmaps::generate_mipmaps;
 
 /// Time-of-day phase used for baked lighting until the game clock exists:
 /// noon, when a new game starts.
@@ -80,19 +76,6 @@ pub(super) struct LoadedMaterial {
     pub(super) animation: Option<TextureAnimation>,
 }
 
-/// Whether any texel is not fully opaque. Retail treats such textures as
-/// alpha-carrying whatever the file's channel layout.
-fn has_alpha(image: &Image) -> bool {
-    use bevy::render::render_resource::TextureFormat;
-    let Some(data) = &image.data else { return false };
-    match image.texture_descriptor.format {
-        TextureFormat::Rgba8UnormSrgb | TextureFormat::Rgba8Unorm => {
-            data.as_chunks::<4>().0.iter().any(|texel| texel[3] < 255)
-        }
-        _ => false,
-    }
-}
-
 /// A path in `directory` next to the asset being loaded, in the same source.
 pub(super) fn sibling(
     context: &LoadContext,
@@ -112,12 +95,14 @@ fn ifl_frames(list: &str) -> Vec<String> {
         .collect()
 }
 
-/// Images already decoded for this level, by file name, with whether they
-/// carry alpha; `None` records a texture that failed to load.
+/// Textures this load has already looked at, by file name, with whether they
+/// carry alpha; `None` records a texture that is missing. The images
+/// themselves are shared assets.
 #[derive(Default)]
 pub(super) struct LoadedTextures(HashMap<String, Option<(Handle<Image>, bool)>>);
 
-/// One image, decoded with a repeat sampler and a full mip chain.
+/// One texture: a shared image handle, and whether retail treats it as
+/// carrying alpha, which only needs the file header.
 async fn load_image(
     context: &mut LoadContext<'_>,
     directory: &str,
@@ -135,31 +120,7 @@ async fn load_image(
         }
         Ok(bytes) => {
             let extension = file.rsplit('.').next().unwrap_or_default();
-            // Retail: linear filtering, nearest mip selection, repeat.
-            let sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
-                address_mode_u: ImageAddressMode::Repeat,
-                address_mode_v: ImageAddressMode::Repeat,
-                mipmap_filter: ImageFilterMode::Nearest,
-                ..ImageSamplerDescriptor::linear()
-            });
-            match Image::from_buffer(
-                &bytes,
-                ImageType::Extension(extension),
-                CompressedImageFormats::NONE,
-                true,
-                sampler,
-                RenderAssetUsages::RENDER_WORLD,
-            ) {
-                Ok(mut image) => {
-                    let alpha = has_alpha(&image);
-                    generate_mipmaps(&mut image);
-                    Some((context.add_labeled_asset(format!("texture/{file}"), image), alpha))
-                }
-                Err(error) => {
-                    warn!("{}: cannot decode texture {path}: {error}", context.path());
-                    None
-                }
-            }
+            Some((context.load(path.with_label("image")), file_has_alpha(&bytes, extension)))
         }
     };
     textures.0.insert(file.to_owned(), loaded.clone());

@@ -12,6 +12,7 @@ use crate::content::monster::MonsterModel;
 
 /// What an actor looks like, and how far its origin floats above its feet.
 #[derive(Component, Debug)]
+#[require(Visibility)]
 pub struct MonsterAppearance {
     pub model: Handle<MonsterModel>,
     pub float_height: f32,

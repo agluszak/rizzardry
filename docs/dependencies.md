@@ -161,7 +161,7 @@ just to fit a fashionable API.
 | Rust `bsn!`, headless UI widgets | Native inventory/dialogue UI; external `.bsn` files are not required in 0.20 |
 | `ViewportNode` | Candidate for the game HUD's framed 3D view: resizable UI surface with 3D pointer forwarding |
 | `Camera.viewport`, render-to-texture | Use the simpler direct camera viewport when adequate; offscreen view for UI-integrated viewport/previews |
-| Image asset processing and `CompressedImageSaver` | After shared retail images replace level-local labeled subassets; then consider deleting CPU mipmap code |
+| Image asset processing and `CompressedImageSaver` | Retail textures are shared `RetailTexture` assets; consider replacing the CPU mipmapper only if it removes code |
 | `AudioPlayer`, `SpatialAudioSink` | Built-in audio with Bevy's `mp3` feature; voice-line completion is identified per line |
 | `States`, `DespawnOnExit` | Scope UI screens or modes, not persisted character or campaign state |
 

@@ -130,13 +130,14 @@ external `.bsn` scene files are **not** a shipped requirement of Bevy 0.20.
 unmodified and the expensive navmesh bake cacheable. Cache invalidation must include algorithm
 revisions, not only source bytes and settings.
 
-Today the PVL loader reads textures and registers them as **level-local labeled image subassets**,
-while `presentation/mipmaps.rs` builds CPU mipmaps. Bevy's
+Retail textures are shared assets addressed by retail path: materials load `<file>#image`, the
+`image` sub-asset of a small `RetailTexture` asset whose loader decodes with retail sampling and
+builds CPU mipmaps (`presentation/mipmaps.rs`). Its own asset type keeps Bevy's image loader the
+only `Image` loader for `.tga`, so UI art loaded as a plain image is unaffected. Material blending
+needs only whether the file carries alpha, which retail takes from the pixel format (a 32-bit TGA);
+the loaders read that from the header. Bevy's
 [`CompressedImageSaver`](https://github.com/bevyengine/bevy/blob/v0.20.0/examples/asset/compressed_image_saver.rs)
-can build mipmaps/compressed output during asset processing, but it cannot transparently intercept
-those existing labeled subassets. If texture duplication or import cost becomes significant, first
-make the image files independently addressable by retail path and shared through `AssetServer`, then
-use a single processing pipeline and delete superseded mipmap code. Check target GPU format support
+could later replace the CPU mipmapper inside one processing pipeline. Check target GPU format support
 and fidelity of alpha-tested surfaces before enabling compression globally.
 
 Animated `.ifl` textures need an ordinary shared image handle per frame plus the already-simple
@@ -167,9 +168,8 @@ persisted party/campaign state or the explicit level transition.
    door/lever motion and links, so verify and extend it rather than replacing it wholesale.
 3. **First HUD widget:** compose a small overlay with `bsn!`, native focus and a `ViewportNode`
    containing the moving party view; verify pointer/UI occlusion and gamepad focus.
-4. **Image processing only when justified:** measure repeated retail texture loads, migrate shared
-   images into the asset pipeline and replace the CPU mipmapper if this actually reduces code and
-   work.
+4. **Image processing only when justified:** retail textures are now shared assets; replace the
+   CPU mipmapper with asset processing only if that reduces code and work.
 5. **Character, inventory and native saves:** retain explicit gameplay authority and records; Bevy
    world serialization is not the native save format.
 

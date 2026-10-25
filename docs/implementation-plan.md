@@ -50,7 +50,8 @@ shown on retail content; the gaps below remain. Done:
 - **Rendering.** Retail baked lighting (static light, sky light by phase,
   environment offset, emission), linear distance fog and view distance from
   the environment ramps, a game clock at 12× real time, `.ifl` texture
-  animation, CPU mipmaps, the sky world on its own camera with time-of-day
+  animation, retail textures as shared assets (`<file>#image`, CPU mipmaps,
+  alpha from the file's pixel format as in retail), the sky world on its own camera with time-of-day
   gradients, shaded scrolling clouds and the Sun and Moon on retail's orbit.
   Facing props turn with the camera. Slot 0-1 alpha materials blend; slot 2-3
   materials add (retail's packed shader `SRC_ALPHA, ONE`).
@@ -92,10 +93,6 @@ Decisions made while doing this:
 
 Known gaps, in rough order:
 
-- Textures are decoded inside the level loader into per-level sub-assets with
-  their own cache; they should load through Bevy's asset system and be shared.
-  Retail's alpha test is the pixel format (32-bit TGA), readable from the
-  header; mipmaps then need a home (a processor, or a loader setting).
 - Monsters are unlit (retail lights them from level lights), use only the
   nearest detail level, and ignore particles, sounds and skins.
 - Cross-level travel, elevators/lifts, random teleports and camera-path
@@ -118,9 +115,6 @@ Known gaps, in rough order:
    a second party, original entrance ground placement, fog/sky/light
    appearance and animation/contact ordering. The ability to bake all
    34 levels doesn't prove each location's traversal.
-3. **Share retail textures through Bevy's asset system**, then consider image
-   processing in place of the CPU mipmap code
-   (see [Bevy 0.20 integration](bevy-features.md)).
 
 Outstanding work should follow the [Bevy-native feature decisions](bevy-features.md)
 instead of creating another engine layer.
