@@ -10,12 +10,14 @@
 
 mod bank;
 mod formation;
+mod keys;
 mod layout;
 mod party;
 mod radar;
 mod text_box;
 
 use bevy::prelude::*;
+use bevy_enhanced_input::prelude::*;
 
 use super::screen_art::{SCREEN, absolute, centred, screen, sprite};
 use crate::content::ui::SpriteSheet;
@@ -28,14 +30,15 @@ impl Plugin for MainScreenPlugin {
         app.init_resource::<ScreenLayout>()
             .init_resource::<SelectedMember>()
             .init_resource::<party::LastSlotClick>()
-            .add_systems(Startup, (load_main_screen_art, layout::spawn_screen_cameras))
+            .add_input_context::<keys::MainScreenKeys>()
+            .add_systems(
+                Startup,
+                (load_main_screen_art, layout::spawn_screen_cameras, keys::spawn_main_screen_keys),
+            )
             .add_systems(
                 Update,
                 (
-                    layout::cycle_layout,
-                    party::select_with_keys,
-                    bank::combat_keys,
-                    text_box::text_box_keys,
+                    keys::hold_main_screen_keys,
                     layout::fit_viewport,
                     build_frame,
                     (

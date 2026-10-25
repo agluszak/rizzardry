@@ -170,19 +170,6 @@ pub fn fit_viewport(
     }
 }
 
-/// Backspace cycles the layout (Shift+Backspace backwards).
-pub fn cycle_layout(
-    keys: Res<ButtonInput<KeyCode>>,
-    automap: Option<Res<crate::presentation::automap::Automap>>,
-    inventory: Option<Res<crate::presentation::inventory::InventoryScreen>>,
-    mut layout: ResMut<ScreenLayout>,
-) {
-    if keys.just_pressed(KeyCode::Backspace) && automap.is_none() && inventory.is_none() {
-        let back = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
-        layout.cycle(back);
-    }
-}
-
 /// The roof's mode buttons, the current mode pressed, and the left post's
 /// arrows: hide a panel while shown, show it while hidden; Closed keeps the
 /// radar and formation (grayed).

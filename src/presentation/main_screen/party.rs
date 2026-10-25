@@ -430,27 +430,6 @@ fn press(
     last_click.0 = Some((slot, now));
 }
 
-/// Keys 1-6 select a member; retail binds them to PC 1-6.
-pub fn select_with_keys(
-    keys: Res<ButtonInput<KeyCode>>,
-    roster: Res<PartyRoster>,
-    mut selected: ResMut<SelectedMember>,
-) {
-    let digits = [
-        KeyCode::Digit1,
-        KeyCode::Digit2,
-        KeyCode::Digit3,
-        KeyCode::Digit4,
-        KeyCode::Digit5,
-        KeyCode::Digit6,
-    ];
-    if let Some(slot) = digits.iter().position(|&k| keys.just_pressed(k))
-        && slot < roster.0.len()
-    {
-        selected.0 = slot;
-    }
-}
-
 /// A splat playing over a member's portrait.
 #[derive(Debug, Clone)]
 struct Splat {

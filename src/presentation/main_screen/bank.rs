@@ -358,31 +358,3 @@ pub fn draw_caption(
         .queue_spawn_related_scenes::<Children>(texts);
     caption.drawn = Some(lines);
 }
-
-/// Combat keys from retail's `mgskeyboard.ini`: Enter starts the round,
-/// backslash switches continuous combat, A and D set the selected member to
-/// attack or defend.
-pub fn combat_keys(
-    keys: Res<ButtonInput<KeyCode>>,
-    battle: Option<Res<Battle>>,
-    selected: Res<SelectedMember>,
-    mut orders: ResMut<PartyOrders>,
-    mut settings: ResMut<CombatSettings>,
-    mut round: MessageWriter<StartRound>,
-) {
-    if keys.just_pressed(KeyCode::Backslash) {
-        settings.continuous = !settings.continuous;
-    }
-    if battle.is_none() {
-        return;
-    }
-    if keys.just_pressed(KeyCode::Enter) {
-        round.write(StartRound);
-    }
-    if keys.just_pressed(KeyCode::KeyA) {
-        orders.set(selected.0, Order::Attack);
-    }
-    if keys.just_pressed(KeyCode::KeyD) {
-        orders.set(selected.0, Order::Defend);
-    }
-}

@@ -6,7 +6,7 @@ use bevy::prelude::*;
 
 use super::{MainScreenArt, button, layer, loaded};
 use crate::content::ui::SpriteSheet;
-use crate::presentation::notices::{TextLog, VISIBLE_LINES};
+use crate::presentation::notices::TextLog;
 use crate::presentation::screen_art::{absolute, hover_art, sprite, text};
 
 /// The text box's node, with what it last drew.
@@ -100,24 +100,4 @@ pub fn draw_text_box(
         },
     );
     text_box.drawn = Some(view);
-}
-
-/// PgUp, PgDn, Home, End and Del (`mgskeyboard.ini` 500-504): scroll the
-/// text box a page, to its top or its end, or empty it.
-pub fn text_box_keys(keys: Res<ButtonInput<KeyCode>>, mut log: ResMut<TextLog>) {
-    if keys.just_pressed(KeyCode::PageUp) {
-        log.scroll_up(VISIBLE_LINES);
-    }
-    if keys.just_pressed(KeyCode::PageDown) {
-        log.scroll_down(VISIBLE_LINES);
-    }
-    if keys.just_pressed(KeyCode::Home) {
-        log.scroll_to(0);
-    }
-    if keys.just_pressed(KeyCode::End) {
-        log.scroll_to_end();
-    }
-    if keys.just_pressed(KeyCode::Delete) {
-        log.clear();
-    }
 }
