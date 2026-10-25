@@ -113,6 +113,8 @@ pub struct LevelGeometry {
     pub entrances: Vec<Entrance>,
     /// Every trigger the party or props can run.
     pub triggers: Vec<TriggerDefinition>,
+    /// Paths the party's eye can fly along (ladders, climbs, cutscenes).
+    pub camera_paths: Vec<CameraPathModel>,
     pub props: Vec<PropModel>,
     /// Navigation links between places the navmesh does not join.
     pub links: Vec<LevelLink>,
@@ -148,6 +150,14 @@ pub struct LevelLink {
     pub kind: LinkKind,
     pub from: Vec3,
     pub to: Vec3,
+}
+
+/// A path the party's eye flies along: eye position and view per key.
+#[derive(Clone, Debug, Reflect)]
+pub struct CameraPathModel {
+    pub name: String,
+    pub keys: Vec<Transform>,
+    pub keys_per_second: f32,
 }
 
 /// Where a teleport takes the party.

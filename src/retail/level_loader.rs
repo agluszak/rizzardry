@@ -12,7 +12,7 @@ use super::links::{level_entrances, level_links, teleport_arrival};
 use super::oct::read_collision;
 use super::prop::{PROP_COLLIDABLE, Prop};
 use super::prop_loader::{
-    PropLighting, level_lighting, part_transforms, record_collision, record_meshes,
+    PropLighting, key_transform, level_lighting, part_transforms, record_collision, record_meshes,
 };
 use super::pvl::{CompiledMesh, MaterialRecord, PvlError, read_level_geometry};
 use super::sections::LevelSections;
@@ -22,8 +22,8 @@ use super::space::{retail_direction, retail_position};
 use super::texture_loader::file_has_alpha;
 use super::trigger::{ItemTrigger, StateMode, TriggerKind, action as trigger_action, flag};
 use crate::content::level::{
-    DoorLock, LevelEnvironment, LevelGeometry, LevelPart, Playback, PropModel, PropModelPart,
-    StateChange, TextureAnimation, TriggerDefinition, TriggerSound, VertexLighting,
+    CameraPathModel, DoorLock, LevelEnvironment, LevelGeometry, LevelPart, Playback, PropModel,
+    PropModelPart, StateChange, TextureAnimation, TriggerDefinition, TriggerSound, VertexLighting,
 };
 
 /// Time-of-day phase used for baked lighting until the game clock exists:
@@ -490,6 +490,15 @@ impl AssetLoader for PvlLoader {
             lighting: level_lighting,
             entrances: level_entrances(&sections),
             triggers: level_triggers(&sections),
+            camera_paths: sections
+                .cameras
+                .iter()
+                .map(|camera| CameraPathModel {
+                    name: camera.name.to_uppercase(),
+                    keys: camera.path.iter().map(key_transform).collect(),
+                    keys_per_second: camera.keys_per_second,
+                })
+                .collect(),
             props,
             links,
             animated_textures,

@@ -47,7 +47,9 @@ shown on retail content; the gaps below remain. Done:
   the party at that entrance once the new level is ready.
 - **Triggers.** Positioned triggers the party may use run when its eye
   enters their range; teleports are ordinary trigger actions whose move the
-  party module applies (within the level, or travel). Disabled positioned
+  party module applies (within the level, or travel). Camera-path triggers
+  fly the party's eye along the path, input and physics paused, and land it
+  at the end. Disabled positioned
   teleports, which the earlier teleport system fired, no longer do.
   Level triggers run as retail's do (`game::world::triggers`):
   initial, alternate or fallback action by use and required location
@@ -114,8 +116,9 @@ Known gaps, in rough order:
   those lights reach the whole actor by their falloff at its centre, not per
   vertex with N·L, and their runtime attenuation is not confirmed. Monsters
   use only the nearest detail level and ignore particles, sounds and skins.
-- Elevators/lifts, random teleports and camera-path triggers are not
-  implemented. Travel does not yet ask retail's "Enter <level>?" question,
+- Elevators/lifts and random teleports are not implemented; camera paths
+  fly the party but retail's level-specific reactions when some finish
+  (Monastery 1's cameras, Arnika's) are not. Travel does not yet ask retail's "Enter <level>?" question,
   and arriving does not probe for the ground (the party settles).
 - Most trigger actions are not performed yet (lights, missiles, fountains,
   timed actions, required items). Level state is lost when the level is left.

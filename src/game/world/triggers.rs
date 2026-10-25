@@ -25,6 +25,7 @@ pub mod action {
     pub const DOOR_OPEN: u32 = 0x01;
     pub const DOOR_TOGGLE: u32 = 0x02;
     pub const TOGGLE: u32 = 0x03;
+    pub const CAMERA_PATH: u32 = 0x09;
     pub const RELAY: u32 = 0x0f;
     pub const TELEPORT: u32 = 0x34;
     pub const RANDOM_TELEPORT: u32 = 0x4b;
@@ -205,8 +206,16 @@ pub struct Triggers<'a> {
     /// Props by the index of the trigger they carry.
     pub props: HashMap<usize, TriggerProp<'a>>,
     pub effects: Vec<TriggerEffect>,
-    /// Where a teleport sent the party.
-    pub party_moves: Option<Arrival>,
+    /// Where a teleport or camera path sends the party.
+    pub party_moves: Option<PartyMove>,
+}
+
+/// Moving the party somewhere, which the party module carries out.
+#[derive(Clone, Debug)]
+pub enum PartyMove {
+    Teleport(Arrival),
+    /// Fly the party's eye along a camera path, by name (ladders, climbs).
+    Fly(String),
 }
 
 impl Triggers<'_> {
@@ -317,7 +326,11 @@ impl Triggers<'_> {
             }
             action::TELEPORT | action::RANDOM_TELEPORT => {
                 let Some(arrival) = &definition.arrival else { return false };
-                self.party_moves = Some(arrival.clone());
+                self.party_moves = Some(PartyMove::Teleport(arrival.clone()));
+            }
+            action::CAMERA_PATH => {
+                let Some(path) = definition.recipients.first() else { return false };
+                self.party_moves = Some(PartyMove::Fly(path.clone()));
             }
             action::SHAKE => {
                 let [intensity, _, duration] = definition.data;
@@ -422,13 +435,13 @@ pub struct LevelTriggers<'w, 's> {
     party_move: ResMut<'w, PendingPartyMove>,
 }
 
-/// A teleport has sent the party somewhere; the party module moves it.
+/// A trigger has sent the party somewhere; the party module moves it.
 #[derive(Resource, Debug, Default)]
-pub struct PendingPartyMove(pub Option<Arrival>);
+pub struct PendingPartyMove(pub Option<PartyMove>);
 
 impl LevelTriggers<'_, '_> {
-    /// Where a teleport has sent the party, if anywhere; taking it clears it.
-    pub fn take_party_move(&mut self) -> Option<Arrival> {
+    /// Where a trigger has sent the party, if anywhere; taking it clears it.
+    pub fn take_party_move(&mut self) -> Option<PartyMove> {
         self.party_move.0.take()
     }
 
@@ -766,9 +779,10 @@ mod tests {
         // Standing in a trigger when the level is first seen does not fire it.
         assert!(walk(Vec3::ZERO).is_none());
         assert!(walk(Vec3::new(5.0, 0.0, 0.0)).is_none());
-        assert!(
-            matches!(walk(Vec3::new(10.5, 0.0, 0.0)), Some(Arrival::Entrance(e)) if e == "EXIT00")
-        );
+        assert!(matches!(
+            walk(Vec3::new(10.5, 0.0, 0.0)),
+            Some(PartyMove::Teleport(Arrival::Entrance(e))) if e == "EXIT00"
+        ));
         // Staying inside does not fire it again; a trigger the party may not
         // use never fires.
         assert!(walk(Vec3::new(10.0, 0.0, 0.0)).is_none());

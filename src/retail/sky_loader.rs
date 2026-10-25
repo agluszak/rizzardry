@@ -77,18 +77,7 @@ impl AssetLoader for LvlLoader {
             &mut animated_textures,
         )
         .await;
-        Ok(LevelGeometry {
-            parts,
-            collision: default(),
-            map_layers: vec![],
-            environment: None,
-            lighting: default(),
-            entrances: vec![],
-            triggers: vec![],
-            props,
-            links: vec![],
-            animated_textures,
-        })
+        Ok(LevelGeometry { parts, props, animated_textures, ..default() })
     }
 
     fn extensions(&self) -> &[&str] {

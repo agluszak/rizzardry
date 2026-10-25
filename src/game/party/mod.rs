@@ -34,7 +34,10 @@ impl Plugin for PartyPlugin {
         // Tnua and Avian step on the fixed timestep; movement input feeds
         // them on the same step.
         .init_resource::<PendingPartyMove>()
-        .add_systems(FixedUpdate, body::drive_party.in_set(TnuaUserControlsSystems))
+        .add_systems(
+            FixedUpdate,
+            (body::drive_party.in_set(TnuaUserControlsSystems), walk_in::fly_party).chain(),
+        )
         .add_systems(
             FixedPostUpdate,
             (walk_in::run_walk_in_triggers, walk_in::move_party)

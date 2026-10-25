@@ -22,18 +22,10 @@ fn app() -> App {
 }
 
 fn spawn_level(app: &mut App, collision: CollisionMesh) -> Entity {
-    let geometry = app.world_mut().resource_mut::<Assets<LevelGeometry>>().add(LevelGeometry {
-        parts: vec![],
-        collision,
-        map_layers: vec![],
-        environment: None,
-        lighting: default(),
-        entrances: vec![],
-        triggers: vec![],
-        props: vec![],
-        links: vec![],
-        animated_textures: vec![],
-    });
+    let geometry = app
+        .world_mut()
+        .resource_mut::<Assets<LevelGeometry>>()
+        .add(LevelGeometry { collision, ..default() });
     app.world_mut()
         .spawn(Level { geometry, navmeshes: vec![], sky: None, script: default(), messages: None })
         .id()

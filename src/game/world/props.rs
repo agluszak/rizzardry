@@ -31,7 +31,7 @@ pub struct PropMotion {
 }
 
 /// The pose at a fractional `frame` along `keys`.
-fn pose(keys: &[Transform], frame: f32) -> Transform {
+pub fn pose(keys: &[Transform], frame: f32) -> Transform {
     let last = keys.len() - 1;
     let frame = frame.clamp(0.0, last as f32);
     let (index, t) = (frame.floor() as usize, frame.fract());
