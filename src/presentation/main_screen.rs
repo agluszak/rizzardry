@@ -521,29 +521,24 @@ pub struct RadarRim;
 #[derive(Component)]
 pub struct RadarBlips;
 
-/// Retail `g_radar_blip_colors`: per class (neutral, hostile, friendly,
-/// unseen, item, missile), dim, level and bright, for things more than 3 m
-/// below, within 3 m, and above the party.
-const BLIP_COLOURS: [[f32; 3]; 18] = [
-    [0.5, 0.5, 0.0],
-    [0.7, 0.7, 0.0],
-    [1.0, 1.0, 0.0],
-    [0.5, 0.0, 0.0],
-    [0.7, 0.0, 0.0],
-    [1.0, 0.0, 0.0],
-    [0.0, 0.5, 0.0],
-    [0.0, 0.7, 0.0],
-    [0.0, 1.0, 0.0],
-    [0.2, 0.2, 0.2],
-    [0.5, 0.5, 0.5],
-    [0.7, 0.7, 0.7],
-    [0.5, 0.5, 0.5],
-    [0.7, 0.7, 0.7],
-    [1.0, 1.0, 1.0],
-    [0.0, 0.0, 0.5],
-    [0.0, 0.0, 0.7],
-    [0.0, 0.0, 1.0],
-];
+/// Retail `g_radar_blip_colors`, by class: dim, level and bright, for
+/// things more than 3 m below, within 3 m of, and above the party. Retail
+/// has three more classes (friendly, unseen, missile) not drawn yet.
+const NEUTRAL_BLIPS: [Color; 3] =
+    [Color::srgb(0.5, 0.5, 0.0), Color::srgb(0.7, 0.7, 0.0), Color::srgb(1.0, 1.0, 0.0)];
+const HOSTILE_BLIPS: [Color; 3] =
+    [Color::srgb(0.5, 0.0, 0.0), Color::srgb(0.7, 0.0, 0.0), Color::srgb(1.0, 0.0, 0.0)];
+const ITEM_BLIPS: [Color; 3] =
+    [Color::srgb(0.5, 0.5, 0.5), Color::srgb(0.7, 0.7, 0.7), Color::srgb(1.0, 1.0, 1.0)];
+
+/// Which of a class's colours a blip `height` metres above the party takes.
+fn blip_shade(class: [Color; 3], height: f32) -> Color {
+    match height {
+        h if h.abs() < 3.0 => class[1],
+        h if h > 0.0 => class[2],
+        _ => class[0],
+    }
+}
 
 /// Where a blip `delta` away from the party goes on the radar, for a party
 /// facing `yaw` (retail `PlaceRadarBlip`, zoomed out: 2 pixels at the
@@ -619,17 +614,10 @@ pub fn update_radar(
         }
         let hostile =
             catalog.and_then(|c| c.0.get(monster.species as usize)).is_some_and(|s| !s.npc);
-        let ring = if delta.y.abs() < 3.0 {
-            1
-        } else if delta.y > 0.0 {
-            2
-        } else {
-            0
-        };
-        let [r, g, b] = BLIP_COLOURS[usize::from(hostile) * 3 + ring];
+        let class = if hostile { HOSTILE_BLIPS } else { NEUTRAL_BLIPS };
         commands.spawn((
             absolute(blip_position(delta, body.yaw, false) - Vec2::ONE, Vec2::splat(2.0)),
-            BackgroundColor(Color::srgb(r, g, b)),
+            BackgroundColor(blip_shade(class, delta.y)),
             Pickable::IGNORE,
             ChildOf(layer),
         ));
@@ -664,28 +652,21 @@ pub fn update_radar(
             }
             known.seen.insert(entity);
         }
-        let ring = if delta.y.abs() < 3.0 {
-            1
-        } else if delta.y > 0.0 {
-            2
-        } else {
-            0
-        };
         // Retail makes a find's blip glow between the class's dim and
         // bright colours; here it shows the bright one.
-        let ring = if known.lit.contains_key(&entity) { 2 } else { ring };
-        let [r, g, b] = BLIP_COLOURS[ITEM_BLIPS * 3 + ring];
+        let colour = if known.lit.contains_key(&entity) {
+            ITEM_BLIPS[2]
+        } else {
+            blip_shade(ITEM_BLIPS, delta.y)
+        };
         commands.spawn((
             absolute(blip_position(delta, body.yaw, true) - Vec2::ONE, Vec2::splat(2.0)),
-            BackgroundColor(Color::srgb(r, g, b)),
+            BackgroundColor(colour),
             Pickable::IGNORE,
             ChildOf(layer),
         ));
     }
 }
-
-/// Items' blip class.
-const ITEM_BLIPS: usize = 4;
 
 /// A working bank button.
 #[derive(Component, Clone, Copy, PartialEq, Eq)]
