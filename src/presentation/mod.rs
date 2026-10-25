@@ -73,6 +73,7 @@ impl Plugin for PresentationPlugin {
                         inventory::toggle_inventory,
                         inventory::spawn_inventory_screen,
                         inventory::draw_inventory_cells,
+                        inventory::follow_held,
                     )
                         .chain(),
                     (

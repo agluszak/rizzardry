@@ -657,6 +657,27 @@ impl PartyInventory {
         Ok(())
     }
 
+    /// Take a pool row into the empty hand (retail `swapWithHand` on the
+    /// pool); the rows after it close up.
+    pub fn take_from_pool(&mut self, row: usize) -> Result<(), Refusal> {
+        if self.held.is_some() || row >= self.pool.len() {
+            return Err(Refusal::Nothing);
+        }
+        let item = self.pool.remove(row).moved();
+        self.held = Some(Held { item, origin: Some(ItemLocation::Pool(row)) });
+        Ok(())
+    }
+
+    /// Put the held item away with a member, or in the pool when they have
+    /// no room. When neither can take it, it stays in hand.
+    pub fn put_away_held(&mut self, carried: &mut Carried, catalog: &ItemCatalog) {
+        if let Some(held) = self.held.take()
+            && let Err(item) = self.receive(carried, held.item, catalog)
+        {
+            self.held = Some(Held { item, origin: held.origin });
+        }
+    }
+
     /// Merge the held stack into the stack at `location` (retail
     /// `mergeHeld`); returns the units moved, the rest stays in hand.
     pub fn merge_held(
@@ -936,5 +957,25 @@ mod tests {
         let shares = pool_shares(140, &[Some((0, 100)), Some((50, 100))]);
         assert_eq!(shares.iter().sum::<u32>(), 70);
         assert_eq!(shares, vec![60, 10]);
+    }
+
+    #[test]
+    fn a_pool_row_comes_into_the_hand_and_goes_back_with_a_member() {
+        let catalog = ItemCatalog(vec![definition(0, EquipClass::Misc)]);
+        let mut ids = ItemIds::default();
+        let mut rng = GameRng::seeded(1);
+        let mut party = PartyInventory::default();
+        for _ in 0..2 {
+            party.pool.push(make_item(&catalog.0[0], &mut ids, &mut rng, true, true));
+        }
+        let first = party.pool[0].id;
+        party.take_from_pool(0).unwrap();
+        assert_eq!(party.pool.len(), 1);
+        assert_eq!(party.held.as_ref().map(|h| h.item.id), Some(first));
+        assert_eq!(party.take_from_pool(0), Err(Refusal::Nothing), "the hand is full");
+        let mut carried = Carried::default();
+        party.put_away_held(&mut carried, &catalog);
+        assert!(party.held.is_none());
+        assert_eq!(carried.backpack[0].as_ref().map(|i| i.id), Some(first));
     }
 }

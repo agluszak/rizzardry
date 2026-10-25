@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 
+use bevy::picking::pointer::{PointerId, PointerLocation};
 use bevy::prelude::*;
 
 use crate::content::items::{ItemCatalog, QuantityKind};
@@ -13,7 +14,8 @@ use crate::content::ui::SpriteSheet;
 use crate::game::characters::{Character, Gender, Race};
 use crate::game::data::GameData;
 use crate::game::inventory::{
-    BACKPACK_SLOTS, Carried, EquipSlot, ItemInstance, PartyInventory, Quantity,
+    BACKPACK_SLOTS, Carried, EquipSlot, ItemInstance, ItemLocation, PartyInventory, Quantity,
+    Refusal, Slot,
 };
 use crate::game::party::roster::PartyRoster;
 
@@ -164,15 +166,9 @@ pub fn toggle_inventory(
     roster: Res<PartyRoster>,
     roots: Query<Entity, With<InventoryRoot>>,
 ) {
-    let mut close = || {
-        commands.remove_resource::<InventoryScreen>();
-        for root in &roots {
-            commands.entity(root).despawn();
-        }
-    };
     match screen {
         Some(_) if keys.just_pressed(KeyCode::Escape) || keys.just_pressed(KeyCode::KeyI) => {
-            close();
+            close(&mut commands, &roots);
         }
         None if keys.just_pressed(KeyCode::KeyI) && automap.is_none() => {
             if let Some(&member) = roster.0.first() {
@@ -185,9 +181,156 @@ pub fn toggle_inventory(
 
 /// Close the screen (the Exit button).
 fn exit(_: On<PointerClick>, mut commands: Commands, roots: Query<Entity, With<InventoryRoot>>) {
+    close(&mut commands, &roots);
+}
+
+/// Close the screen, first putting away whatever is in hand.
+fn close(commands: &mut Commands, roots: &Query<Entity, With<InventoryRoot>>) {
+    commands.run_system_cached(put_away_held);
     commands.remove_resource::<InventoryScreen>();
-    for root in &roots {
+    for root in roots {
         commands.entity(root).despawn();
+    }
+}
+
+/// The held item goes back to the reviewed member, or the pool.
+fn put_away_held(
+    screen: Option<Res<InventoryScreen>>,
+    mut party: ResMut<PartyInventory>,
+    mut members: Query<&mut Carried>,
+    data: Option<Res<GameData>>,
+    catalogs: Res<Assets<ItemCatalog>>,
+) {
+    let (Some(screen), Some(catalog)) = (screen, data.and_then(|d| catalogs.get(&d.items))) else {
+        return;
+    };
+    if let Ok(mut carried) = members.get_mut(screen.member) {
+        party.put_away_held(&mut carried, catalog);
+    }
+}
+
+/// A place an item can be clicked in or out of.
+#[derive(Component, Clone, Copy, Debug)]
+enum Cell {
+    Member(Slot),
+    /// A pool cell by its position on screen.
+    Pool(usize),
+}
+
+/// Click a cell (retail's item-page click, `rcs.cpp:1459-1742`): with an
+/// empty hand, pick the item up; holding one, a pool cell takes it in, a
+/// stack of the same item takes what it can, anything else swaps.
+/// Shift-clicking a single unit, pouring ammunition and stowing a weapon's
+/// partner are not done yet.
+fn click_cell(
+    click: On<PointerClick>,
+    cells: Query<&Cell>,
+    screen: Option<Res<InventoryScreen>>,
+    roster: Res<PartyRoster>,
+    mut members: Query<(&Character, &mut Carried)>,
+    mut party: ResMut<PartyInventory>,
+    data: Option<Res<GameData>>,
+    catalogs: Res<Assets<ItemCatalog>>,
+) {
+    let (Ok(&cell), Some(screen)) = (cells.get(click.entity), screen) else { return };
+    let Some(catalog) = data.and_then(|d| catalogs.get(&d.items)) else { return };
+    let held = party.held.as_ref().map(|h| h.item.clone());
+    let result = match cell {
+        Cell::Pool(i) => {
+            let row = screen.pool_scroll + i;
+            if held.is_some() {
+                let row = row.min(party.pool.len());
+                party.deposit_held(row, catalog)
+            } else {
+                party.take_from_pool(row)
+            }
+        }
+        Cell::Member(slot) => {
+            let Some(index) = roster.0.iter().position(|&m| m == screen.member) else { return };
+            let Ok((character, mut carried)) = members.get_mut(screen.member) else { return };
+            let target = match slot {
+                Slot::Equipment(equip) => carried.worn(equip).cloned(),
+                Slot::Backpack(i) => carried.backpack[i].clone(),
+            };
+            match (&held, &target) {
+                (Some(held), Some(target))
+                    if held.item == target.item && matches!(held.quantity, Quantity::Stack(_)) =>
+                {
+                    let location = ItemLocation::Member(index, slot);
+                    match party.merge_held(Some(&mut carried), location, catalog) {
+                        0 => Err(Refusal::DoesNotFit),
+                        _ => Ok(()),
+                    }
+                }
+                _ => {
+                    let can_use = held
+                        .as_ref()
+                        .and_then(|h| catalog.get(h.item))
+                        .is_none_or(|d| character.can_use(d));
+                    party.swap_with_hand(&mut carried, index, slot, can_use, catalog)
+                }
+            }
+        }
+    };
+    if let Err(refusal) = result {
+        info!("inventory: {cell:?} refused: {refusal:?}");
+    }
+}
+
+/// The held item, under the pointer.
+#[derive(Component)]
+pub struct HeldPicture;
+
+/// Show what the hand holds at the pointer while the screen is open.
+pub fn follow_held(
+    mut commands: Commands,
+    screen: Option<Res<InventoryScreen>>,
+    party: Res<PartyInventory>,
+    pointers: Query<(&PointerId, &PointerLocation)>,
+    scale: Res<UiScale>,
+    assets: Res<AssetServer>,
+    sheets: Res<Assets<SpriteSheet>>,
+    data: Option<Res<GameData>>,
+    catalogs: Res<Assets<ItemCatalog>>,
+    mut pictures: Query<(Entity, &mut ImageNode, &mut Node), With<HeldPicture>>,
+    mut loading: Local<Option<Handle<SpriteSheet>>>,
+) {
+    let catalog = data.and_then(|d| catalogs.get(&d.items));
+    let held = party.held.as_ref().filter(|_| screen.is_some());
+    let definition = held.zip(catalog).and_then(|(h, c)| c.get(h.item.item));
+    let cursor = pointers
+        .iter()
+        .find(|(id, _)| **id == PointerId::Mouse)
+        .and_then(|(_, location)| location.location.as_ref())
+        .map(|location| location.position);
+    let (Some(definition), Some(cursor)) = (definition, cursor) else {
+        for (entity, ..) in &pictures {
+            commands.entity(entity).despawn();
+        }
+        return;
+    };
+    let handle = loading.insert(assets.load(format!("retail://{}", definition.image)));
+    let Some((image, frame)) =
+        sheets.get(&*handle).and_then(|s| Some((s.images.first()?, s.frames.first()?)))
+    else {
+        return;
+    };
+    let size = Vec2::new(frame.width as f32, frame.height as f32);
+    let at = cursor / scale.0 - size / 2.0;
+    match pictures.single_mut() {
+        Ok((_, mut node_image, mut node)) => {
+            node_image.image = image.clone();
+            *node = absolute(at, size);
+        }
+        Err(_) => {
+            commands.spawn((
+                HeldPicture,
+                ImageNode::new(image.clone()),
+                absolute(at, size),
+                GlobalZIndex(20),
+                Pickable::IGNORE,
+            ));
+        }
     }
 }
 
@@ -480,6 +623,21 @@ pub fn draw_inventory_cells(
         {
             put(&mut commands, layer, overlay);
         }
+    }
+    // Clickable cells over everything else.
+    let cells = EquipSlot::ALL
+        .iter()
+        .zip(EQUIPMENT_CELLS)
+        .map(|(&slot, (x, y, w, h))| {
+            (Cell::Member(Slot::Equipment(slot)), Vec2::new(x, y), Vec2::new(w + 1.0, h + 1.0))
+        })
+        .chain(
+            (0..BACKPACK_SLOTS)
+                .map(|i| (Cell::Member(Slot::Backpack(i)), grid(11.0, i), CELL + 1.0)),
+        )
+        .chain((0..POOL_CELLS).map(|i| (Cell::Pool(i), grid(512.0, i), CELL + 1.0)));
+    for (cell, at, size) in cells {
+        commands.spawn((cell, absolute(at, size), ChildOf(layer))).observe(click_cell);
     }
     screen.drawn = complete.then_some(shown);
 }

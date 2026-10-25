@@ -157,7 +157,10 @@ Known gaps, in rough order:
   [review items](research/review-items.md)) shows a member's equipment on
   their race's statue with retail item pictures and counts, the backpack
   (red where they cannot use an item), the pool and the gold; the header's
-  portraits switch member, Esc or Exit closes it. Moving items, the info
+  portraits switch member, Esc or Exit closes it. Clicking picks items up
+  and puts them down (swap, merge into a stack, deposit in the pool); the
+  held item follows the pointer and is put away on closing. Shift-click
+  splitting, ammunition pouring, stowing a weapon's partner, the info
   panel, buttons, scrolling and the PCX cell texture are still to come.
   Plane-shaped triggers (falls) are not decoded as places yet.
 - Stamina and healing fountains (`0x25`, `0x26`) restore every member by
