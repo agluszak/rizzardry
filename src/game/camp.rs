@@ -8,6 +8,7 @@ use avian3d::prelude::LinearVelocity;
 use bevy::prelude::*;
 use bevy_enhanced_input::prelude::*;
 
+use crate::game::party::roster::PartyRoster;
 use crate::game::characters::{Character, Condition};
 use crate::game::party::body::PartyBody;
 use crate::game::time::GameClock;
@@ -105,11 +106,13 @@ pub fn force_camp(
     mut commands: Commands,
     camp: Option<Res<Camp>>,
     battle: Option<Res<crate::game::combat::Battle>>,
+    roster: Res<PartyRoster>,
     members: Query<&Character>,
     mut news: MessageWriter<CampNews>,
 ) {
-    let anyone_alive = members.iter().any(|m| !m.is_dead());
-    if camp.is_some() || battle.is_some() || !anyone_alive || members.iter().any(can_act) {
+    let anyone_alive = members.iter_many(&roster.0).flatten().any(|m| !m.is_dead());
+    let anyone_able = members.iter_many(&roster.0).flatten().any(can_act);
+    if camp.is_some() || battle.is_some() || !anyone_alive || anyone_able {
         return;
     }
     commands.insert_resource(Camp { forced: true, phase: CampPhase::FadingIn(0.0), until: None });
@@ -138,11 +141,13 @@ pub fn advance_camp(
     time: Res<Time>,
     clock: Res<GameClock>,
     camp: Option<ResMut<Camp>>,
+    roster: Res<PartyRoster>,
     members: Query<&Character>,
     mut news: MessageWriter<CampNews>,
 ) {
     let Some(mut camp) = camp else { return };
     let dt = time.delta_secs();
+    let anyone_able = members.iter_many(&roster.0).flatten().any(can_act);
     match camp.phase {
         CampPhase::FadingIn(elapsed) if elapsed + dt >= FADE_SECONDS => {
             camp.phase = CampPhase::Resting;
@@ -151,7 +156,7 @@ pub fn advance_camp(
         CampPhase::FadingIn(elapsed) => camp.phase = CampPhase::FadingIn(elapsed + dt),
         CampPhase::Resting => {
             let woke = if camp.forced {
-                members.iter().any(can_act)
+                anyone_able
             } else {
                 camp.until.is_some_and(|until| clock.ms >= until)
             };
@@ -161,7 +166,7 @@ pub fn advance_camp(
         }
         CampPhase::FadingOut(elapsed) if elapsed + dt >= FADE_SECONDS => {
             news.write(match (camp.forced, camp.until) {
-                (true, _) if members.iter().any(can_act) => CampNews::Recovered,
+                (true, _) if anyone_able => CampNews::Recovered,
                 (true, _) => CampNews::Interrupted,
                 (false, None) => CampNews::Cancelled,
                 (false, Some(until)) if clock.ms >= until => CampNews::Done,
