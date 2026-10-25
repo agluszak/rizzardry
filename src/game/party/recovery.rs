@@ -46,6 +46,7 @@ pub fn recover(
         }
         if aging_ticks > 0 {
             member.recover_health(aging_ticks, health_scale);
+            member.age_conditions(aging_ticks);
         }
     }
 }

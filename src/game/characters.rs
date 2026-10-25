@@ -94,6 +94,7 @@ pub enum Condition {
 /// How long a condition lasts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Reflect)]
 pub enum Lasting {
+    /// Combat rounds, which are also the 120-second aging ticks outside it.
     Rounds(u16),
     /// Until something lifts it, like exhaustion until stamina returns.
     Indefinite,
@@ -454,6 +455,19 @@ impl Character {
         self.conditions.retain(|&(c, _)| c != condition);
     }
 
+    /// Count timed conditions down, lifting those that run out (retail
+    /// `AgeCondition`). Poison's weakening is not modelled yet.
+    pub fn age_conditions(&mut self, ticks: u32) {
+        self.conditions.retain_mut(|(_, lasting)| match lasting {
+            Lasting::Rounds(left) if u32::from(*left) <= ticks => false,
+            Lasting::Rounds(left) => {
+                *left -= ticks as u16;
+                true
+            }
+            Lasting::Indefinite => true,
+        });
+    }
+
     /// Take damage (retail `damageCharacter`): two thirds of it also drain
     /// stamina, and health reaching 0 is death. The dead take none. Returns
     /// the health lost. Guardian Angel, cheating death and waking the asleep
@@ -675,5 +689,22 @@ mod tests {
         assert_eq!(fighter.hp, 2);
         fighter.recover_health(1, 0.0);
         assert_eq!(fighter.hp_fraction, 0.0, "no recovery clears the fraction");
+    }
+
+    #[test]
+    fn timed_conditions_run_out() {
+        let mut mage = Character::new("Mira", Race::Elf, Gender::Female, Profession::Mage);
+        mage.inflict(Condition::Asleep, Lasting::Rounds(3));
+        mage.inflict(Condition::Unconscious, Lasting::Indefinite);
+        mage.age_conditions(2);
+        assert_eq!(
+            mage.conditions,
+            vec![
+                (Condition::Asleep, Lasting::Rounds(1)),
+                (Condition::Unconscious, Lasting::Indefinite)
+            ]
+        );
+        mage.age_conditions(1);
+        assert_eq!(mage.conditions, vec![(Condition::Unconscious, Lasting::Indefinite)]);
     }
 }
