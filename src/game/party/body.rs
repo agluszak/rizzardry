@@ -11,7 +11,6 @@ use bevy_tnua::builtins::{TnuaBuiltinWalk, TnuaBuiltinWalkConfig};
 use bevy_tnua::prelude::*;
 use bevy_tnua_avian3d::prelude::*;
 
-use crate::game::world::STEP_HEIGHT;
 use crate::game::world::level::LevelReady;
 use crate::retail::space::UNITS_PER_METRE as U;
 
@@ -22,9 +21,10 @@ use crate::retail::space::UNITS_PER_METRE as U;
 //
 // Tnua floats the body above the ground instead of resting a collider on it.
 // The body's origin is the retail sphere centre, held FLOAT_HEIGHT above the
-// ground. Its collider keeps the retail 500-unit horizontal reach but is a
-// cylinder raised STEP_HEIGHT off the ground so that steps reach the
-// floating spring rather than the collider.
+// ground, and its collider is that sphere, a little smaller so it clears the
+// ground. A sphere's curved front rides over step edges; a flat-bottomed
+// cylinder of the same reach caught on stairs rising inside its radius (it
+// never left the upper monastery's MO202 entrance).
 const RADIUS: f32 = 500.0 / U;
 pub const FLOAT_HEIGHT: f32 = 500.0 / U;
 const EYE_ABOVE_CENTRE: f32 = 500.0 / U;
@@ -154,7 +154,7 @@ pub fn spawn_party_on_ready(
             Transform::from_translation(position),
             Visibility::default(),
             RigidBody::Dynamic,
-            Collider::cylinder(RADIUS, 2.0 * (FLOAT_HEIGHT - STEP_HEIGHT)),
+            Collider::sphere(RADIUS - 0.08),
             LockedAxes::ROTATION_LOCKED,
             TnuaController::<PartyMotion>::default(),
             TnuaConfig::<PartyMotion>(motion_configs.add(PartyMotionConfig {

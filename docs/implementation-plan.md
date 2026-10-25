@@ -57,8 +57,7 @@ VM, interchangeable physics backends or a full UI framework.
 - `retail::trigger` decodes type 4 trigger records. A new game enters the
   monastery at `MO100`, the retail new-game entrance.
 - The party is one Avian body moved by Tnua, using the retail eye height,
-  500-unit reach, walk/run/turn speeds, pitch limit and gravity. Its collider
-  is raised 0.35 m (provisional) so steps meet Tnua's floating spring.
+  500-unit collision sphere, walk/run/turn speeds, pitch limit and gravity.
   Controls use an `Exploration` input context.
 - A Rerecast navmesh is baked per level by Bevy's asset processor, cached,
   and used by Landmass. Stand-in walkers chase the party across both
@@ -68,7 +67,8 @@ Decisions made while doing this:
 
 - Retail space is Y-up and left-handed. Bevy space mirrors Z, reverses
   triangle winding and uses 600 retail units per metre, which puts the eye
-  1000 units (1.67 m) above the feet.
+  1000 units (1.67 m) above the feet. The resulting orientation was checked
+  against the retail game.
 - Retail velocities are per 0.1 s tick; converted constants cite their source.
 
 Known gaps, in rough order:
@@ -88,8 +88,6 @@ Known gaps, in rough order:
 - Navigation needs doors, teleporters and elevators as links, and retail
   collision surfaces; the party collider can catch on stairs. See the
   experiment results in [dependencies](dependencies.md#experiment-results-25-october-2026).
-- The handedness conversion has only been checked visually. Compare it against
-  a retail screenshot, e.g. readable text or a known landmark layout.
 - No props, doors, actors, animation, UI, audio or navigation yet.
 
 ## 2. Make party and inventory state useful

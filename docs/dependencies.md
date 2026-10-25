@@ -116,10 +116,10 @@ settings.
   collision surfaces with walkable flags. Those surfaces also matter because
   translucent water is currently not solid, so riverbeds under water are
   walkable navmesh.
-- **Party on stairs.** The party's wide, flat-bottomed cylinder (0.83 m
-  radius, 0.5 m clearance) can catch on stairs that rise inside its radius;
-  at entrance `MO202` it did not move under scripted input. Retail moves a
-  sphere. Not resolved.
+- **Party on stairs.** A wide, flat-bottomed cylinder (0.83 m radius, 0.5 m
+  clearance) caught on stairs rising inside its radius and never left the
+  `MO202` entrance. The party now uses retail's sphere (slightly smaller so
+  it clears the ground), which climbs those stairs.
 - **Not tested.** Doors (no props yet), per-size navmeshes, and flying
   monsters. Landmass avoidance is horizontal, so flying monsters need separate
   handling rather than pretending a surface navmesh is 3D navigation.
