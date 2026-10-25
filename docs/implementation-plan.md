@@ -25,26 +25,45 @@ established by the implementation:
    Require collision, local state, references and shared gameplay catalogs before
    enabling triggers/AI/party physics. During travel, settle old sessions and
    suspend the party body; failed preparation leaves the source playable.
+   *Status:* one `activate_level` operation and a Loading/Active/Failed phase;
+   gameplay runs only on an active level; travel refuses during a fight, ends
+   camera flights and pending moves and suspends the party body. **Not met:**
+   travel despawns the source before the destination is prepared, so a failed
+   destination leaves the party suspended instead of where it was.
 2. Capture map-owned state on departure and restore it on revisit. A killed or
    wounded monster, opened container, trigger and map note must not reset or
    leak to another map. Persist domain state, not transient proximity/UI caches.
+   *Status:* done (`LevelRecord`): monsters (the dead stay gone), trigger
+   memory without per-visit fields, props by definition index, items, group
+   knowledge and map notes per level.
 3. Make clock advancement and mandatory aging/recovery one mode-aware boundary.
    The last combat round remains combat time even after `Battle` disappears;
    retain fractional time and avoid system-local authority for aging.
+   *Status:* done: `GameClock::advance` returns the ticks crossed and its
+   caller applies them with its pace (`recovery::elapse`).
 4. Route party-wide gameplay through `PartyRoster` in a defined order. Execute
    inventory/trigger actions with their actual authoritative prerequisites;
    disabled UI input or a caller's eligibility boolean does not establish
    legality.
+   *Status:* done for recovery, triggers (roster order), camping and
+   inventory moves; party freedom is a gameplay rule (`game::screen`).
 5. Restore module direction (`retail` → `content` → `game` →
    `presentation`, composed by `app`). Remove redundant item/monster
    representations and repeated decoding only when that actually eliminates
    code; do not build another framework to enforce the layering.
+   *Status:* sky and level visuals, fonts, map notes and the test party
+   moved; monster models come from the catalog. Navigation still decodes
+   PVL/OCT; see [known gaps](known-gaps.md).
 
 **Exit evidence:** a failed or slow destination load commits no partial
 interaction; a second level keeps one party; revisiting does not resurrect
 killed local monsters or move map notes; final-round recovery is correct;
 a non-roster `Character` is excluded from party effects. Use focused tests
-and representative retail checks, not a new harness.
+and representative retail checks, not a new harness. *Covered:* headless
+tests for failed collision, waiting for databases, one party across levels,
+a suspended party on a failed destination, a killed monster staying dead;
+rule tests for a combat round's recovery. *Not yet:* a test for a
+non-roster `Character`, and failed travel keeping the source.
 
 ## 1. Complete the real-world engine slice
 
