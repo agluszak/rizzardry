@@ -32,7 +32,7 @@ impl Plugin for PartyPlugin {
         .init_resource::<formation::Formation>()
         .add_message::<camp::CampNews>()
         .add_message::<camp::CampRequest>()
-        .add_systems(Startup, (body::spawn_exploration_controls, roster::spawn_test_party))
+        .add_systems(Startup, body::spawn_exploration_controls)
         .add_systems(
             Update,
             (

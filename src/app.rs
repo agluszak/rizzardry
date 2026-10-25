@@ -222,6 +222,9 @@ pub fn run(options: Options) -> AppExit {
         app.insert_resource(ScriptedWalk { seconds, started: false, since_log: 0.0 })
             .add_systems(Update, scripted_walk);
     }
+    // A new game: the test party until party creation exists, entering
+    // the chosen level.
+    app.add_systems(Startup, crate::game::party::roster::spawn_test_party);
     app.add_systems(Startup, move |mut commands: Commands, assets: Res<AssetServer>| {
         commands.spawn((Name::new(level.clone()), Level::load(&level, &assets)));
     });

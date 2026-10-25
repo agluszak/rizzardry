@@ -129,8 +129,7 @@ Known gaps, in rough order:
   activation and travel, time advancement, level records, roster
   authority, inventory validation, gameplay-owned party freedom, sky and
   level visuals in presentation, bitmap fonts in content): navigation's asset module decodes PVL/OCT
-  itself; `PartyPlugin` always spawns the test party (it belongs in an
-  explicit new-game bootstrap); the level loader re-decodes `monsters.dbs`
+  itself; the level loader re-decodes `monsters.dbs`
   to copy model names into placements (resolve them from the catalog);
   the navmesh cache's hand-written RZNM codec could be a standard one;
   `EquipClass::ALL`-style mirrored enum arrays; the inventory screen's
