@@ -594,6 +594,7 @@ mod tests {
             id: ItemId(0),
             name: "Strong Bow".into(),
             kind: 0,
+            image: String::new(),
             class: EquipClass::RangedWeapon,
             auto_identify: false,
             crucial: false,

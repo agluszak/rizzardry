@@ -120,6 +120,8 @@ pub struct ItemDefinition {
     /// The generic kind (retail's unidentified-name index): what it looks
     /// like before identification, and which ammunition fits which weapon.
     pub kind: u16,
+    /// The item's picture, a retail path such as `data/items/dagger.sti`.
+    pub image: String,
     pub class: EquipClass,
     /// Identified as soon as the party has it.
     pub auto_identify: bool,

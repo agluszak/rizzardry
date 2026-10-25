@@ -111,6 +111,11 @@ Invariants:
   Gadgeteer class item family (`inv.cpp:688`, `ir.cpp:255`). The generic name
   string is looked up through a 147-entry table (`ir.cpp:364-385`). It is not a
   direct string id.
+- **Image**: `video_object_name` (0xcd, 0x18 bytes) names the item's picture
+  under `data/items`; when it is empty (most records), a 145-entry table
+  indexed by the kind supplies it (Whizzardry `ItemSprites`,
+  `PC Item.cpp:250-264`). Checked: every one of the 819 records resolves to an
+  existing file.
 - `merge_component_a/b`, `merge_skill` and `merge_skill_level` (recipes) and
   `attack_flags`, `resistance_bonus` and the regen bonuses (used by "has hidden
   properties") are not yet decoded by `src/retail/items.rs`.

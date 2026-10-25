@@ -24,6 +24,8 @@ pub enum ItemLoadError {
     EquipClass(usize, u8),
     #[error("item {0}: unknown quantity kind {1}")]
     QuantityKind(usize, u8),
+    #[error("item {0}: kind {1} has no image")]
+    Image(usize, u16),
 }
 
 fn definition(index: usize, record: &ItemRecord) -> Result<ItemDefinition, ItemLoadError> {
@@ -34,6 +36,7 @@ fn definition(index: usize, record: &ItemRecord) -> Result<ItemDefinition, ItemL
         id: ItemId(index as u16),
         name: record.name.clone(),
         kind: record.unidentified_name,
+        image: record.image_path().ok_or(ItemLoadError::Image(index, record.unidentified_name))?,
         class: EquipClass::from_retail(record.equip_class)
             .ok_or(ItemLoadError::EquipClass(index, record.equip_class))?,
         auto_identify: has(item_flag::AUTO_IDENTIFY),

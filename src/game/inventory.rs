@@ -602,6 +602,7 @@ mod tests {
             id: ItemId(id),
             name: format!("item {id}"),
             kind: 0,
+            image: String::new(),
             class,
             auto_identify: false,
             crucial: false,
