@@ -4,6 +4,12 @@
 
 Use one spatial Party entity and independent character entities. The PartyRoster resource is the sole authority for membership and formation: six regular-character places and two recruitable-companion places. PartyInventory is a separate resource for the shared bag, purse, and physically held item. The Party entity owns spatial pose and body; party members do not each need a world collider or independent walking pose.
 
+Party-wide actions, trap targets, recovery and incapacitation checks must
+iterate `PartyRoster` and resolve those entities. Querying every entity with
+an adventurer/Character component includes off-party named NPCs and is not a
+membership test. Use roster order for gameplay draws that depend on order;
+rendering order or ECS query iteration is not authoritative.
+
 A named NPC keeps the same ActorId and campaign-lived entity when recruited, dismissed, moved by a quest, killed, or restored from a save. Recruitment changes membership and active role; it does not create a second identity. Named NPCs on unloaded maps retain their gameplay data but have no active body, AI, navigation, or per-frame condition simulation.
 
 **One identity does not imply one numeric combat profile.** The inspected sources maintain a recruitable character profile and a separate world-monster representation with specific conversion rules. The proposal retains that semantic distinction on one actor while removing the copied full-character ownership protocol.
