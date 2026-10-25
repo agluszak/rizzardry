@@ -10,6 +10,7 @@ use bevy::asset::io::{
 use bevy::tasks::futures_lite::stream;
 
 use super::files::RetailFiles;
+use crate::content::navmesh::{NAVMESH_EXTENSION, navmesh_input_path};
 
 pub const RETAIL_SOURCE: &str = "retail";
 
@@ -59,9 +60,6 @@ pub fn retail_source(files: Arc<RetailFiles>) -> AssetSourceBuilder {
         .with_processed_reader(move || Box::new(RetailReader(processed.clone())))
 }
 
-pub const NAVMESH_SOURCE: &str = "navmesh";
-pub const NAVMESH_EXTENSION: &str = "navmesh";
-
 /// Every retail level `<path>.pvl` as `<path>_class<n>.navmesh`, one per
 /// walker size class, whose bytes are the class and the level's collision
 /// (`.oct`) and placement (`.pvl`) files; see [`navmesh_input`]. The asset
@@ -78,14 +76,6 @@ fn level_and_class(path: &Path) -> Option<(String, u8)> {
     let stem = stem.strip_suffix(&format!(".{NAVMESH_EXTENSION}"))?;
     let (level, class) = stem.rsplit_once("_class")?;
     Some((level.to_owned(), class.parse().ok()?))
-}
-
-/// The navmesh input for `level` (`levels/x/y.pvl`) and size class.
-pub fn navmesh_input_path(level: &str, class: usize) -> String {
-    let stem = level.strip_suffix(".pvl").unwrap_or(level);
-    // No dot before the class: Bevy treats everything after the first dot
-    // of a file name as its extension.
-    format!("{stem}_class{class}.{NAVMESH_EXTENSION}")
 }
 
 const NAVMESH_INPUT_MAGIC: &[u8; 4] = b"RZN2";

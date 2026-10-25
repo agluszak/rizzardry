@@ -273,7 +273,7 @@ pub fn draw_caption(
 ) {
     let Ok((node, mut caption)) = captions.single_mut() else { return };
     let catalog = data.and_then(|d| catalogs.get(&d.items));
-    let lines = match roster.0.get(selected.0).and_then(|&m| members.get(m).ok()) {
+    let lines = match roster.0.get_index(selected.0).and_then(|&m| members.get(m).ok()) {
         None => vec![],
         Some((character, carried)) => {
             let first = format!("{} - {:?}", character.name, character.profession);

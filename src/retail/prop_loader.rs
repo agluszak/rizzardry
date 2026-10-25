@@ -8,7 +8,8 @@ use super::keyframes::PathKey;
 use super::mesh_record::{FACE_TWO_SIDED, MeshRecord};
 use super::prop::Prop;
 use super::sections::Light;
-use super::space::{UNITS_PER_METRE, retail_direction, retail_position};
+use super::space::{retail_direction, retail_position};
+use crate::content::UNITS_PER_METRE;
 use crate::content::level::{CollisionMesh, LevelLighting, PointLightSource, VertexLighting};
 
 /// Retail lights props at runtime from the level's lights. This bakes that

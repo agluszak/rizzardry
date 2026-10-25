@@ -6,11 +6,7 @@
 
 use bevy::math::Vec3;
 
-/// Retail length units in one metre: retail's own `kWorldScale`. Authored
-/// values (`.mls` monster sizes, `pathparms.txt`, positions stored in level
-/// records) are metres multiplied by 500. The party eye is 1000 units (2 m)
-/// above the feet.
-pub const UNITS_PER_METRE: f32 = 500.0;
+use crate::content::UNITS_PER_METRE;
 
 pub fn retail_position([x, y, z]: [f32; 3]) -> Vec3 {
     Vec3::new(x, y, -z) / UNITS_PER_METRE

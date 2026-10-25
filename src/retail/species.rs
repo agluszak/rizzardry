@@ -5,8 +5,8 @@ use bevy::asset::{AssetLoader, LoadContext, io::Reader};
 use bevy::reflect::TypePath;
 use thiserror::Error;
 
-use super::bytes::Bytes;
 use super::pvl::PvlError;
+use crate::bytes::Bytes;
 use enum_map::EnumMap;
 use enumset::EnumSet;
 

@@ -204,7 +204,7 @@ pub fn draw_party(
         let slot = party_slot.slot;
         let view = roster
             .0
-            .get(slot)
+            .get_index(slot)
             .and_then(|&m| members.get(m).ok())
             .map(|(c, carried)| SlotView::of(c, carried, catalog, slot == selected.0));
         if party_slot.drawn.as_ref() == Some(&view) {
@@ -399,7 +399,8 @@ fn press(
     let Ok(&SlotButton(slot)) = buttons.get(click.entity) else { return };
     if party.held.is_some() {
         let Some(catalog) = data.and_then(|d| catalogs.get(&d.items)) else { return };
-        let Some(Ok((character, mut carried))) = roster.0.get(slot).map(|&m| members.get_mut(m))
+        let Some(Ok((character, mut carried))) =
+            roster.0.get_index(slot).map(|&m| members.get_mut(m))
         else {
             return;
         };
@@ -427,7 +428,7 @@ fn press(
     selected.0 = slot;
     let now = time.elapsed();
     if last_click.is_some_and(|(s, at)| s == slot && now - at < DOUBLE_CLICK)
-        && let Some(&member) = roster.0.get(slot)
+        && let Some(&member) = roster.0.get_index(slot)
     {
         crate::presentation::inventory::open(&mut commands, &mut screen, member);
     }

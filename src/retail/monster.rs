@@ -3,11 +3,11 @@
 //! After Whizzardry `LoadMonsterDefinition` and `CyclePlayer`; see
 //! `docs/research/monster-anim.md`.
 
-use super::bytes::Bytes;
 use super::keyframes::read_path;
 use super::mesh_record::{MeshRecord, MeshVertices};
 use super::prop::read_animation;
 use super::pvl::{PvlError, invalid};
+use crate::bytes::Bytes;
 use crate::content::monster::MonsterBody;
 
 /// One animation cycle: a mesh whose vertices move frame by frame.

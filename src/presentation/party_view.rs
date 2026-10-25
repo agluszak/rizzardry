@@ -8,12 +8,12 @@ use bevy::picking::pointer::{PointerId, PointerLocation};
 use bevy::prelude::*;
 use bevy_enhanced_input::prelude::*;
 
+use crate::content::UNITS_PER_METRE;
 use crate::content::level::DEFAULT_VIEW_DISTANCE;
 use crate::game::party::body::{EYE_ABOVE_CENTRE, Interact, PartyBody};
 use crate::game::world::interaction::WorldClick;
 use crate::game::world::items::WorldItem;
 use crate::game::world::props::Prop;
-use crate::retail::space::UNITS_PER_METRE;
 
 /// The first-person camera on the party's body.
 #[derive(Component, Debug)]

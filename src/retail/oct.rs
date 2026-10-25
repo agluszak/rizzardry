@@ -8,9 +8,9 @@
 
 use std::collections::HashMap;
 
-use super::bytes::Bytes;
 use super::pvl::{PvlError, invalid};
 use super::space::retail_position;
+use crate::bytes::Bytes;
 use crate::content::level::CollisionMesh;
 
 const VERSION: usize = 0x22;

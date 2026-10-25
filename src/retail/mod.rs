@@ -4,7 +4,6 @@
 //! them into typed records and native Bevy assets.
 
 pub mod automap;
-pub mod bytes;
 pub mod files;
 pub mod item_model_loader;
 pub mod items;
@@ -14,6 +13,7 @@ pub mod links;
 pub mod mesh_record;
 pub mod monster;
 pub mod monster_loader;
+pub mod navmesh;
 pub mod oct;
 pub mod path;
 pub mod playlist;
@@ -58,7 +58,7 @@ impl Plugin for RetailPlugin {
     fn build(&self, app: &mut App) {
         app.register_asset_source(source::RETAIL_SOURCE, source::retail_source(self.files.clone()))
             .register_asset_source(
-                source::NAVMESH_SOURCE,
+                crate::content::navmesh::NAVMESH_SOURCE,
                 source::navmesh_source(
                     self.files.clone(),
                     self.navmesh_classes,
@@ -68,7 +68,9 @@ impl Plugin for RetailPlugin {
     }
 
     fn finish(&self, app: &mut App) {
-        app.init_asset::<LevelGeometry>()
+        app.init_asset::<crate::content::navmesh::LevelCollision>()
+            .init_asset_loader::<navmesh::LevelCollisionLoader>()
+            .init_asset::<LevelGeometry>()
             .init_asset_loader::<level_loader::PvlLoader>()
             .init_asset_loader::<sky_loader::LvlLoader>()
             .init_asset::<crate::content::monster::MonsterModel>()

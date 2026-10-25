@@ -21,7 +21,7 @@ use bevy::prelude::*;
 /// upper monastery's navmesh split into 22 pieces, the largest 61% of the
 /// walkable area; at 300 one piece covers 98%. Raising it to 600 merged
 /// nothing further. Characterize against retail stairs.
-pub const STEP_HEIGHT: f32 = 300.0 / crate::retail::space::UNITS_PER_METRE;
+pub const STEP_HEIGHT: f32 = 300.0 / crate::content::UNITS_PER_METRE;
 
 pub struct WorldPlugin;
 

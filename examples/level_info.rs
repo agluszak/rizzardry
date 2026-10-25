@@ -3,7 +3,7 @@
 //! cargo run --example level_info -- --retail <dir> [levels/monastery/monastery1.pvl]
 
 use clap::Parser;
-use rizzardry::retail::bytes::Bytes;
+use rizzardry::bytes::Bytes;
 use rizzardry::retail::links::{level_links, teleport_arrival};
 use rizzardry::retail::prop_loader::part_transforms;
 use rizzardry::retail::sections::read_sections;

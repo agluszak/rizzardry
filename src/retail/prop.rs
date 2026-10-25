@@ -1,11 +1,11 @@
 //! Prop records (Whizzardry `Prop::LoadProp`, `AnimObjReadFromFile`,
 //! `ReadAnimatedMesh`): placed scenery, doors, levers, lifts and billboards.
 
-use super::bytes::Bytes;
 use super::keyframes::{PathKey, read_path};
 use super::mesh_record::{MeshRecord, MeshVertices, RECORD_SCALE, read_mesh_record};
 use super::pvl::{PvlError, invalid, text};
 use super::trigger::{Trigger, read_trigger};
+use crate::bytes::Bytes;
 
 /// Prop flag: the party and monsters collide with the prop.
 pub const PROP_COLLIDABLE: u32 = 1;

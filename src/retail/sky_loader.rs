@@ -6,11 +6,11 @@ use bevy::asset::{AssetLoader, LoadContext, io::Reader};
 use bevy::prelude::*;
 use bevy::reflect::TypePath;
 
-use super::bytes::Bytes;
 use super::level_loader::{LoadedTextures, PvlLoadError, build_props, load_material};
 use super::mesh_record::read_mesh_record;
 use super::prop_loader::{PropLighting, record_meshes};
 use super::sections::read_uncompiled_sections;
+use crate::bytes::Bytes;
 use crate::content::level::{LevelGeometry, LevelPart, Playback, TextureAnimation};
 
 #[derive(Default, TypePath)]

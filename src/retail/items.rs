@@ -6,8 +6,8 @@ use bevy::asset::{AssetLoader, LoadContext, io::Reader};
 use bevy::reflect::TypePath;
 use thiserror::Error;
 
-use super::bytes::{Bytes, Truncated};
 use super::pvl::{PvlError, invalid};
+use crate::bytes::{Bytes, Truncated};
 use enumset::EnumSet;
 
 use crate::content::characters::Skill;

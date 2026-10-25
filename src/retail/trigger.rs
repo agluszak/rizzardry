@@ -4,9 +4,9 @@
 //! items. Retail ships types 3 (ambient sound) and 4; types 1 and 2 are
 //! decoded from the reference code only.
 
-use super::bytes::{Bytes, lenient_string};
 use super::mesh_record::RECORD_SCALE;
 use super::pvl::{PvlError, invalid, text};
+use crate::bytes::{Bytes, lenient_string};
 
 const NAME: usize = 0x80;
 const LONG_TEXT: usize = 0x100;

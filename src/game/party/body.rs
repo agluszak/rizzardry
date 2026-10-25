@@ -14,7 +14,7 @@ use bevy_tnua_avian3d::prelude::*;
 use crate::content::level::LevelGeometry;
 use bevy::ecs::system::SystemParam;
 
-use crate::retail::space::UNITS_PER_METRE as U;
+use crate::content::UNITS_PER_METRE;
 
 // Retail motion values (Whizzardry `party_camera.cpp`, `collision.cpp`,
 // `world.cpp`). Retail velocities are per 0.1 s tick. Retail collides a
@@ -27,20 +27,20 @@ use crate::retail::space::UNITS_PER_METRE as U;
 // ground. A sphere's curved front rides over step edges; a flat-bottomed
 // cylinder of the same reach caught on stairs rising inside its radius (it
 // never left the upper monastery's MO202 entrance).
-pub const RADIUS: f32 = 500.0 / U;
-pub const FLOAT_HEIGHT: f32 = 500.0 / U;
-pub const EYE_ABOVE_CENTRE: f32 = 500.0 / U;
+pub const RADIUS: f32 = 500.0 / UNITS_PER_METRE;
+pub const FLOAT_HEIGHT: f32 = 500.0 / UNITS_PER_METRE;
+pub const EYE_ABOVE_CENTRE: f32 = 500.0 / UNITS_PER_METRE;
 /// The eye above the feet.
-pub const EYE_HEIGHT: f32 = 1000.0 / U;
-pub const WALK_SPEED: f32 = 3750.0 / U;
-const RUN_SPEED: f32 = 7500.0 / U;
+pub const EYE_HEIGHT: f32 = 1000.0 / UNITS_PER_METRE;
+pub const WALK_SPEED: f32 = 3750.0 / UNITS_PER_METRE;
+const RUN_SPEED: f32 = 7500.0 / UNITS_PER_METRE;
 /// Maximum yaw speed, 0.349 rad per tick.
 const TURN_SPEED: f32 = 3.49;
 /// 187.5 units per tick².
-pub const GRAVITY: f32 = 18750.0 / U;
+pub const GRAVITY: f32 = 18750.0 / UNITS_PER_METRE;
 /// Retail caps a tick's motion at 3000 units (Whizzardry `collision.cpp`);
 /// walking never comes near it, so in practice it limits falls.
-const MAX_SPEED: f32 = 30000.0 / U;
+const MAX_SPEED: f32 = 30000.0 / UNITS_PER_METRE;
 const MAX_PITCH: f32 = std::f32::consts::FRAC_PI_4;
 const LOOK_SENSITIVITY: f32 = 0.003;
 
@@ -209,7 +209,11 @@ impl PartyPlacement<'_, '_> {
             }
             found
         });
-        let eye = start.eye.or(entrance.map(|e| e.eye)).unwrap_or(Vec3::new(0.0, 1000.0 / U, 0.0));
+        let eye = start.eye.or(entrance.map(|e| e.eye)).unwrap_or(Vec3::new(
+            0.0,
+            1000.0 / UNITS_PER_METRE,
+            0.0,
+        ));
         let yaw = start.yaw.or(entrance.map(|e| e.yaw)).unwrap_or_default();
         let position = eye - Vec3::Y * EYE_ABOVE_CENTRE;
         if let Ok((entity, mut body, mut at, mut transform, mut velocity)) = self.party.single_mut()

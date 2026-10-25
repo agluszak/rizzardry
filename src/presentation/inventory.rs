@@ -170,7 +170,7 @@ pub fn toggle_inventory(
         }
         // Retail opens the selected character.
         None if keys.just_pressed(KeyCode::KeyI) => {
-            if let Some(&member) = roster.0.get(selected.0).or(roster.0.first()) {
+            if let Some(&member) = roster.0.get_index(selected.0).or(roster.0.first()) {
                 open(&mut commands, &mut screen, member);
             }
         }
