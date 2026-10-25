@@ -66,7 +66,9 @@ pub fn queue_notices(
             TriggerEffect::Gold(gold) => {
                 Some(format!("{} {gold} {}.", string(GOLD_BEFORE), string(GOLD_AFTER)))
             }
-            TriggerEffect::Sound { .. } | TriggerEffect::Shake { .. } => None,
+            TriggerEffect::Sound { .. }
+            | TriggerEffect::Shake { .. }
+            | TriggerEffect::Hurt { .. } => None,
         };
         if let Some(text) = text.filter(|t| !t.trim().is_empty()) {
             info!("notice: {}", text.trim());

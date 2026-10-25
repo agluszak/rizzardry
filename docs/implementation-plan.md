@@ -133,6 +133,10 @@ Known gaps, in rough order:
 - Elevators/lifts and random teleports are not implemented; camera paths
   fly the party but retail's level-specific reactions when some finish
   (Monastery 1's cameras, Arnika's) are not. Arriving does not probe for the ground (the party settles).
+- Traps (`0x24`, each living member hurt by their own roll) and damage
+  zones (`0x23`, 1d6+2 every half second while the party stays) hurt the
+  party; unconsciousness and death are not modelled, so health stops at 0.
+  Plane-shaped triggers (falls) are not decoded as places yet.
 - Most trigger actions are not performed yet (lights, missiles, fountains,
   timed actions, required items). A level's trigger state,
   variables and prop positions are kept when the party leaves and restored on

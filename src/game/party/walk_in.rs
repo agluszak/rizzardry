@@ -10,10 +10,14 @@ use crate::game::world::level::{Level, Travel, TravelQuestion};
 use crate::game::world::props::pose;
 use crate::game::world::triggers::{LevelTriggers, PartyMove};
 
-pub fn run_walk_in_triggers(party: Query<&Position, With<PartyBody>>, mut triggers: LevelTriggers) {
+pub fn run_walk_in_triggers(
+    time: Res<Time>,
+    party: Query<&Position, With<PartyBody>>,
+    mut triggers: LevelTriggers,
+) {
     let Ok(position) = party.single() else { return };
     let eye = position.0 + Vec3::Y * EYE_ABOVE_CENTRE;
-    triggers.with(|triggers| triggers.walk(eye));
+    triggers.with(|triggers| triggers.walk(eye, time.delta_secs()));
 }
 
 /// The party's eye flying along a camera path; input and physics wait

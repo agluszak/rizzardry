@@ -17,8 +17,9 @@ use bevy::ecs::system::SystemParam;
 use super::level::{Level, PropPart};
 use super::props::{Prop, PropMotion};
 use super::scripts::LevelScript;
-use crate::content::items::{ItemCatalog, LootTables};
+use crate::content::items::{Dice, ItemCatalog, LootTables};
 use crate::content::level::{Arrival, LevelGeometry, StateChange, TriggerDefinition};
+use crate::game::characters::Character;
 use crate::game::data::GameData;
 use crate::game::inventory::{ItemIds, ItemInstance, PartyInventory, make_item};
 use crate::game::loot::roll_loot;
@@ -38,8 +39,15 @@ pub mod action {
     pub const START: u32 = 0x32;
     pub const STOP: u32 = 0x33;
     pub const SHAKE: u32 = 0x39;
+    /// Hurt everyone in the party now: `data` count d sides + base.
+    pub const PARTY_HEALTH: u32 = 0x24;
+    /// Hurt everyone in the party every half second while it stays.
+    pub const DAMAGE_ZONE: u32 = 0x23;
     pub const DIAL: u32 = 0x40;
 }
+
+/// Damage zones hurt this often, in seconds.
+const DAMAGE_ZONE_PERIOD: f32 = 0.5;
 
 /// Recipients naming each other in a loop stop here.
 const MAX_DEPTH: usize = 16;
@@ -71,6 +79,8 @@ pub struct TriggerState {
     inside: bool,
     /// A container's contents, rolled when it is first opened.
     pub contents: Option<Contents>,
+    /// A damage zone the party stands in: seconds since it last hurt.
+    zone: Option<f32>,
 }
 
 /// What a container holds.
@@ -92,6 +102,7 @@ impl LevelState {
                     position: 0,
                     inside: false,
                     contents: None,
+                    zone: None,
                 };
                 geometry.triggers.len()
             ],
@@ -217,6 +228,11 @@ pub enum TriggerEffect {
     Message(i32),
     /// The party used something and nothing came of it.
     NothingHappened,
+    /// A member was hurt.
+    Hurt {
+        member: String,
+        amount: u32,
+    },
     /// An item went to the party ("Party takes %s").
     PartyTakes(String),
     Gold(u32),
@@ -230,16 +246,17 @@ pub struct Triggers<'a> {
     /// Props by the index of the trigger they carry.
     pub props: HashMap<usize, TriggerProp<'a>>,
     pub effects: Vec<TriggerEffect>,
-    /// Items, randomness and the party's possessions, for containers; none
-    /// while the databases load.
-    pub items: Option<PartyItems<'a>>,
+    /// The party, its possessions, items and randomness, for containers and
+    /// traps; none while the databases load.
+    pub party: Option<PartyContext<'a>>,
     /// Where a teleport or camera path sends the party.
     pub party_moves: Option<PartyMove>,
 }
 
-/// What containers need: item definitions, loot tables, randomness and the
-/// party's possessions.
-pub struct PartyItems<'a> {
+/// What containers and traps need: item definitions, loot tables,
+/// randomness, the party's possessions and its members.
+pub struct PartyContext<'a> {
+    pub members: Vec<&'a mut Character>,
     pub catalog: &'a ItemCatalog,
     pub loot: &'a LootTables,
     pub rng: &'a mut GameRng,
@@ -266,7 +283,7 @@ impl Triggers<'_> {
     /// range of (retail `UpdateWorldTriggers`; retail reruns one each step
     /// while it is not running, here it runs on entering). The first time
     /// the party is seen in a level, triggers it stands in count as entered.
-    pub fn walk(&mut self, eye: Vec3) {
+    pub fn walk(&mut self, eye: Vec3, seconds: f32) {
         let first = !self.state.entered;
         self.state.entered = true;
         for index in 0..self.definitions.len() {
@@ -275,6 +292,21 @@ impl Triggers<'_> {
             let inside = (near..far).contains(&eye.distance(place));
             let entering = inside && !self.state.triggers[index].inside;
             self.state.triggers[index].inside = inside;
+            // A damage zone hurts every half second until the party leaves
+            // (retail: a 1d6+2 timed action, ended by `FinishAction`).
+            match (inside, self.state.triggers[index].zone) {
+                (false, Some(_)) => self.state.triggers[index].zone = None,
+                (true, Some(elapsed)) => {
+                    let elapsed = elapsed + seconds;
+                    let due = elapsed >= DAMAGE_ZONE_PERIOD;
+                    self.state.triggers[index].zone =
+                        Some(if due { elapsed - DAMAGE_ZONE_PERIOD } else { elapsed });
+                    if due {
+                        self.damage_party(Dice { count: 1, sides: 6, base: 2 });
+                    }
+                }
+                _ => {}
+            }
             if entering && !first && self.party_moves.is_none() && self.usable(index) {
                 self.run_index(index, 0);
             }
@@ -372,6 +404,18 @@ impl Triggers<'_> {
                 let Some(path) = definition.recipients.first() else { return false };
                 self.party_moves = Some(PartyMove::Fly(path.clone()));
             }
+            action::PARTY_HEALTH => {
+                let [count, sides, base] = definition.data;
+                let or = |v: i32, default: i32| if v < 0 { default } else { v };
+                self.damage_party(Dice {
+                    count: or(count, 1) as u8,
+                    sides: or(sides, 6) as u8,
+                    base: or(base, 2) as i16,
+                });
+            }
+            action::DAMAGE_ZONE => {
+                self.state.triggers[index].zone = Some(0.0);
+            }
             action::SHAKE => {
                 let [intensity, _, duration] = definition.data;
                 self.effects.push(TriggerEffect::Shake {
@@ -404,6 +448,18 @@ impl Triggers<'_> {
         true
     }
 
+    /// Hurt each living member by their own roll (retail
+    /// `ApplyRolledHealthChangeToParty`). Unconsciousness and death are not
+    /// modelled yet: health stops at 0.
+    fn damage_party(&mut self, dice: Dice) {
+        let Some(party) = &mut self.party else { return };
+        for member in party.members.iter_mut().filter(|m| m.hp > 0) {
+            let amount = party.rng.roll(dice);
+            member.hp = member.hp.saturating_sub(amount);
+            self.effects.push(TriggerEffect::Hurt { member: member.name.clone(), amount });
+        }
+    }
+
     /// Open a container: roll its contents the first time (retail
     /// `GenerateItemGroup`), then give the party its gold and as many items
     /// as the pool takes. Retail puts a single item in the hand and opens a
@@ -411,7 +467,7 @@ impl Triggers<'_> {
     fn open_container(&mut self, index: usize) {
         let definitions = self.definitions;
         let Some(table_name) = &definitions[index].loot_table else { return };
-        let Some(items) = &mut self.items else { return };
+        let Some(items) = &mut self.party else { return };
         let contents = self.state.triggers[index].contents.get_or_insert_with(|| {
             let Some(table) = items.loot.find(table_name) else {
                 warn!("no loot table {table_name}");
@@ -517,6 +573,7 @@ pub struct LevelTriggers<'w, 's> {
     rng: ResMut<'w, GameRng>,
     ids: ResMut<'w, ItemIds>,
     party: ResMut<'w, PartyInventory>,
+    members: Query<'w, 's, &'static mut Character>,
 }
 
 /// A trigger has sent the party somewhere; the party module moves it.
@@ -558,8 +615,10 @@ impl LevelTriggers<'_, '_> {
                 },
             );
         }
-        let items = self.data.as_ref().and_then(|data| {
-            Some(PartyItems {
+        let members = self.members.iter_mut().map(|m| m.into_inner()).collect();
+        let party = self.data.as_ref().and_then(|data| {
+            Some(PartyContext {
+                members,
                 catalog: self.catalogs.get(&data.items)?,
                 loot: self.loot.get(&data.loot)?,
                 rng: self.rng.as_mut(),
@@ -572,7 +631,7 @@ impl LevelTriggers<'_, '_> {
             state,
             props,
             effects: Vec::new(),
-            items,
+            party,
             party_moves: None,
         };
         let result = run(&mut triggers);
@@ -673,7 +732,7 @@ mod tests {
                 state: &mut self.state,
                 props,
                 effects: vec![],
-                items: None,
+                party: None,
                 party_moves: None,
             };
             let committed = triggers.run(name);
@@ -867,10 +926,10 @@ mod tests {
                 state: &mut state,
                 props: HashMap::new(),
                 effects: vec![],
-                items: None,
+                party: None,
                 party_moves: None,
             };
-            triggers.walk(eye);
+            triggers.walk(eye, 0.1);
             triggers.party_moves
         };
         // Standing in a trigger when the level is first seen does not fire it.
@@ -884,5 +943,67 @@ mod tests {
         // use never fires.
         assert!(walk(Vec3::new(10.0, 0.0, 0.0)).is_none());
         assert!(walk(Vec3::new(20.0, 0.0, 0.0)).is_none());
+    }
+
+    #[test]
+    fn traps_hurt_each_member_by_their_own_roll_and_zones_hurt_while_stood_in() {
+        use crate::game::characters::{Gender, Profession, Race};
+        let mut trap = trigger("TRAP", action::PARTY_HEALTH);
+        trap.data = [2, 4, 0];
+        let mut zone = trigger("ACID", action::DAMAGE_ZONE);
+        zone.usable = true;
+        zone.place = Some(Vec3::ZERO);
+        zone.range = (0.0, 2.0);
+        let geometry = LevelGeometry { triggers: vec![trap, zone], ..default() };
+        let mut state = LevelState::new(&geometry, LevelScript::None);
+        let (catalog, loot) = (ItemCatalog::default(), LootTables::default());
+        let (mut rng, mut ids, mut inventory) =
+            (GameRng::seeded(5), ItemIds::default(), PartyInventory::default());
+        let mut a = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
+        let mut b = Character::new("B", Race::Human, Gender::Male, Profession::Fighter);
+        let full = a.hp;
+        let mut triggers = Triggers {
+            definitions: &geometry.triggers,
+            state: &mut state,
+            props: HashMap::new(),
+            effects: vec![],
+            party: Some(PartyContext {
+                members: vec![&mut a, &mut b],
+                catalog: &catalog,
+                loot: &loot,
+                rng: &mut rng,
+                ids: &mut ids,
+                party: &mut inventory,
+            }),
+            party_moves: None,
+        };
+        assert!(triggers.run("TRAP"));
+        let hurt: Vec<u32> = triggers
+            .effects
+            .iter()
+            .filter_map(|e| match e {
+                TriggerEffect::Hurt { amount, .. } => Some(*amount),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(hurt.len(), 2);
+        assert!(hurt.iter().all(|n| (2..=8).contains(n)));
+        triggers.effects.clear();
+        // Seen standing outside, then walking in: the zone starts; a second
+        // inside hurts twice; leaving stops it.
+        triggers.walk(Vec3::new(5.0, 0.0, 0.0), 0.1);
+        triggers.walk(Vec3::ZERO, 0.1);
+        for _ in 0..10 {
+            triggers.walk(Vec3::ZERO, 0.1);
+        }
+        let zone_hits =
+            triggers.effects.iter().filter(|e| matches!(e, TriggerEffect::Hurt { .. })).count();
+        assert_eq!(zone_hits, 2 * 2, "two ticks for each of two members");
+        triggers.walk(Vec3::new(5.0, 0.0, 0.0), 0.1);
+        triggers.effects.clear();
+        triggers.walk(Vec3::new(5.0, 0.0, 0.0), 1.0);
+        assert!(triggers.effects.is_empty());
+        drop(triggers);
+        assert!(a.hp < full && b.hp < full);
     }
 }

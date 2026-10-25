@@ -59,6 +59,7 @@ pub fn play_trigger_effects(
                 ));
             }
             // Shown as notices.
+            TriggerEffect::Hurt { member, amount } => info!("{member} takes {amount} damage"),
             TriggerEffect::Message(_)
             | TriggerEffect::NothingHappened
             | TriggerEffect::Locked
