@@ -7,7 +7,7 @@ use bevy::camera::Viewport;
 use bevy::prelude::*;
 use bevy::ui::IsDefaultUiCamera;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::notices::TextLog;
 use super::screen_art::{absolute, sprite, text};
@@ -530,8 +530,10 @@ const BLIP_COLOURS: [[f32; 3]; 18] = [
 
 /// Where a blip `delta` away from the party goes on the radar, for a party
 /// facing `yaw` (retail `PlaceRadarBlip`, zoomed out: 2 pixels at the
-/// party's radius, growing to the 38-pixel rim at extreme range).
-fn blip_position(delta: Vec3, yaw: f32) -> Vec2 {
+/// party's radius, growing to the 38-pixel rim at extreme range). Inside
+/// the party's radius monsters sit on its edge and items (`spread`) are
+/// spread across it.
+fn blip_position(delta: Vec3, yaw: f32, spread: bool) -> Vec2 {
     const SCALE: f32 = 2.0;
     const RIM: f32 = 38.0;
     let inner = 1.0;
@@ -541,7 +543,7 @@ fn blip_position(delta: Vec3, yaw: f32) -> Vec2 {
     let flat = Vec2::new(delta.dot(right), delta.dot(forward));
     let distance = flat.length();
     let pixels = if distance <= inner {
-        SCALE
+        if spread { SCALE * distance / inner } else { SCALE }
     } else {
         (SCALE + (distance - inner) * (RIM - SCALE) / (outer - inner)).min(RIM)
     };
@@ -549,26 +551,48 @@ fn blip_position(delta: Vec3, yaw: f32) -> Vec2 {
     Vec2::new(75.0 + unit.x * pixels, 404.0 - unit.y * pixels)
 }
 
+/// What the radar knows of lying items (retail's `RADAR_SEEN` flag, cleared
+/// whenever a level is entered, and `LightRadarBlip`'s 10-second glow for
+/// a find).
+#[derive(Default)]
+pub struct RadarItems {
+    seen: HashSet<Entity>,
+    hidden: HashSet<Entity>,
+    /// Glowing until this time.
+    lit: HashMap<Entity, f32>,
+}
+
+const ITEM_GLOW_SECONDS: f32 = 10.0;
+
 /// Turn the compass rim with the party, and mark the monsters within the
-/// far clip: hostile red, others yellow, brighter above and dimmer below.
+/// far clip: hostile red, others yellow, brighter above and dimmer below;
+/// and the items once seen, grey to white.
+#[allow(clippy::too_many_arguments)]
 pub fn update_radar(
     mut commands: Commands,
     party: Query<(&avian3d::prelude::Position, &crate::game::party::body::PartyBody)>,
-    camera: Query<&Projection, With<PartyCamera>>,
+    camera: Query<(&Projection, &GlobalTransform), With<PartyCamera>>,
     mut rims: Query<&mut UiTransform, With<RadarRim>>,
     layers: Query<Entity, With<RadarBlips>>,
     monsters: Query<(&crate::game::world::population::Monster, &GlobalTransform)>,
+    (items, time, spatial, bodies): (
+        Query<(Entity, &crate::game::world::items::WorldItem, &GlobalTransform)>,
+        Res<Time>,
+        avian3d::prelude::SpatialQuery,
+        Query<&avian3d::prelude::RigidBody>,
+    ),
     data: Option<Res<GameData>>,
     species: Res<Assets<crate::content::species::MonsterCatalog>>,
+    mut known: Local<RadarItems>,
 ) {
     let (Ok((position, body)), Ok(layer)) = (party.single(), layers.single()) else { return };
     for mut rim in &mut rims {
         // North stays put while the view turns.
         rim.rotation = Rot2::radians(body.yaw);
     }
-    let far = match camera.single() {
-        Ok(Projection::Perspective(p)) => p.far,
-        _ => 0.0,
+    let (far, eye) = match camera.single() {
+        Ok((Projection::Perspective(p), eye)) => (p.far, eye.translation()),
+        _ => (0.0, position.0),
     };
     let catalog = data.and_then(|d| species.get(&d.species));
     commands.entity(layer).despawn_related::<Children>();
@@ -588,13 +612,64 @@ pub fn update_radar(
         };
         let [r, g, b] = BLIP_COLOURS[usize::from(hostile) * 3 + ring];
         commands.spawn((
-            absolute(blip_position(delta, body.yaw) - Vec2::ONE, Vec2::splat(2.0)),
+            absolute(blip_position(delta, body.yaw, false) - Vec2::ONE, Vec2::splat(2.0)),
+            BackgroundColor(Color::srgb(r, g, b)),
+            Pickable::IGNORE,
+            ChildOf(layer),
+        ));
+    }
+    // Items: once the eye has had them in sight, within the far clip.
+    let now = time.elapsed_secs();
+    let level = |entity| bodies.get(entity).is_ok_and(avian3d::prelude::RigidBody::is_static);
+    let filter = avian3d::prelude::SpatialQueryFilter::default();
+    known.seen.retain(|e| items.contains(*e));
+    known.lit.retain(|e, until| items.contains(*e) && *until > now);
+    for (entity, item, at) in &items {
+        if item.hidden {
+            known.hidden.insert(entity);
+            continue;
+        }
+        if known.hidden.remove(&entity) {
+            known.lit.insert(entity, now + ITEM_GLOW_SECONDS);
+        }
+        let delta = at.translation() - position.0;
+        if delta.length() > far {
+            continue;
+        }
+        if !known.seen.contains(&entity) {
+            let to = at.translation();
+            let in_sight = Dir3::new(to - eye).is_ok_and(|direction| {
+                spatial
+                    .cast_ray_predicate(eye, direction, eye.distance(to), true, &filter, &level)
+                    .is_none()
+            });
+            if !in_sight {
+                continue;
+            }
+            known.seen.insert(entity);
+        }
+        let ring = if delta.y.abs() < 3.0 {
+            1
+        } else if delta.y > 0.0 {
+            2
+        } else {
+            0
+        };
+        // Retail makes a find's blip glow between the class's dim and
+        // bright colours; here it shows the bright one.
+        let ring = if known.lit.contains_key(&entity) { 2 } else { ring };
+        let [r, g, b] = BLIP_COLOURS[ITEM_BLIPS * 3 + ring];
+        commands.spawn((
+            absolute(blip_position(delta, body.yaw, true) - Vec2::ONE, Vec2::splat(2.0)),
             BackgroundColor(Color::srgb(r, g, b)),
             Pickable::IGNORE,
             ChildOf(layer),
         ));
     }
 }
+
+/// Items' blip class.
+const ITEM_BLIPS: usize = 4;
 
 /// A working bank button.
 #[derive(Component, Clone, Copy, PartialEq, Eq)]
