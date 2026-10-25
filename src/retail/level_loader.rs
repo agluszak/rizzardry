@@ -15,14 +15,15 @@ use super::prop_loader::{
     PropLighting, level_lighting, part_transforms, record_collision, record_meshes,
 };
 use super::pvl::{CompiledMesh, MaterialRecord, PvlError, read_level_geometry};
+use super::sections::LevelSections;
 use super::sections::{Environment, read_sections};
 use super::space::UNITS_PER_METRE;
 use super::space::{retail_direction, retail_position};
 use super::texture_loader::file_has_alpha;
-use super::trigger::TriggerKind;
+use super::trigger::{ItemTrigger, StateMode, TriggerKind, flag};
 use crate::content::level::{
-    DoorLock, LevelEnvironment, LevelGeometry, LevelPart, Playback, PropInteraction, PropModel,
-    PropModelPart, TextureAnimation, VertexLighting,
+    DoorLock, LevelEnvironment, LevelGeometry, LevelPart, Playback, PropModel, PropModelPart,
+    StateChange, TextureAnimation, TriggerDefinition, TriggerSound, VertexLighting,
 };
 
 /// Time-of-day phase used for baked lighting until the game clock exists:
@@ -222,6 +223,59 @@ pub(super) async fn load_material(
     }
 }
 
+/// Every type 4 trigger of the level, attached to a prop or not.
+fn level_triggers(sections: &LevelSections) -> Vec<TriggerDefinition> {
+    sections
+        .all_triggers()
+        .filter_map(|trigger| match &trigger.kind {
+            TriggerKind::Item(item) => Some(trigger_definition(&trigger.name, item)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn trigger_definition(name: &str, item: &ItemTrigger) -> TriggerDefinition {
+    let sound = (item.play_sound && !item.sound.is_empty()).then(|| TriggerSound {
+        path: format!("data/sound/{}", item.sound.replace('\\', "/")).to_lowercase(),
+        volume: f32::from(item.sound_volume) / 100.0,
+    });
+    let state_change = match item.state_mode {
+        _ if item.state_to_modify.is_empty() => None,
+        StateMode::Keep => None,
+        StateMode::Set => Some(StateChange::Set),
+        StateMode::Clear => Some(StateChange::Clear),
+        StateMode::Toggle => Some(StateChange::Toggle),
+    };
+    TriggerDefinition {
+        name: name.to_owned(),
+        usable: item.enabled,
+        once: item.flags & flag::ONCE != 0,
+        fire_linked: item.fire_linked,
+        initial: item.initial_action,
+        alternate: item.alternate_action,
+        fallback: item.fallback_action,
+        alternate_toggles: item.alternate_toggles,
+        recipients: item
+            .recipients
+            .split(',')
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+            .map(str::to_owned)
+            .collect(),
+        data: item.data,
+        sound,
+        shows_message: item.flags & flag::SHOW_MESSAGE != 0,
+        required_states: item.required_states.clone(),
+        state_change: state_change.map(|change| (item.state_to_modify.clone(), change)),
+        initial_state: item.initial_state,
+        range: (item.range[0] / UNITS_PER_METRE, item.range[1] / UNITS_PER_METRE),
+        door: item.door.as_ref().map(|door| DoorLock {
+            locked: door.locked,
+            key: (door.item != u16::MAX && door.item != 0).then_some(door.item),
+        }),
+    }
+}
+
 /// Unweld one material's polygons from a compiled mesh into a Bevy mesh,
 /// with retail's baked lighting: static vertex light, the environment
 /// offset and the material's emission, plus sky light scaled by the
@@ -312,16 +366,8 @@ pub(super) async fn build_props(
                 collision: record_collision(record),
             });
         }
-        let interaction = prop.trigger.as_ref().and_then(|trigger| match &trigger.kind {
-            TriggerKind::Item(item) if item.initial_action != 0 => Some(PropInteraction {
-                trigger: trigger.name.clone(),
-                initial_action: item.initial_action,
-                alternate_action: item.alternate_action,
-                door: item.door.as_ref().map(|door| DoorLock {
-                    locked: door.locked,
-                    key: (door.item != u16::MAX && door.item != 0).then_some(door.item),
-                }),
-            }),
+        let trigger = prop.trigger.as_ref().and_then(|trigger| match &trigger.kind {
+            TriggerKind::Item(_) => Some(trigger.name.clone()),
             _ => None,
         });
         props.push(PropModel {
@@ -330,7 +376,9 @@ pub(super) async fn build_props(
             face_camera: prop.face_camera,
             frames_per_second: prop.frames_per_second,
             parts,
-            interaction,
+            wraps: prop.wraps,
+            slots: prop.slots.iter().map(|slot| slot.frame).collect(),
+            trigger,
         });
     }
     props
@@ -426,6 +474,7 @@ impl AssetLoader for PvlLoader {
             environment,
             lighting: level_lighting,
             entrances: level_entrances(&sections),
+            triggers: level_triggers(&sections),
             props,
             links,
             teleports,

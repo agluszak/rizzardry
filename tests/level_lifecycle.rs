@@ -31,12 +31,13 @@ fn spawn_level(app: &mut App, collision: CollisionMesh) -> Entity {
         environment: None,
         lighting: default(),
         entrances: vec![],
+        triggers: vec![],
         props: vec![],
         links: vec![],
         teleports: vec![],
         animated_textures: vec![],
     });
-    app.world_mut().spawn(Level { geometry, navmeshes: vec![], sky: None }).id()
+    app.world_mut().spawn(Level { geometry, navmeshes: vec![], sky: None, script: default() }).id()
 }
 
 fn party_entities(app: &mut App) -> Vec<Entity> {

@@ -348,4 +348,39 @@ mod tests {
         let [x, _, z] = entrance.placement.unwrap().position;
         assert!((75_000.0..77_000.0).contains(&x) && (52_000.0..53_000.0).contains(&z));
     }
+
+    #[test]
+    #[ignore = "requires a retail installation"]
+    fn the_monastery_bells_decode_their_trigger_logic() {
+        use crate::retail::trigger::{StateMode, action, flag};
+        let root =
+            std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL to run this test");
+        let files = crate::retail::files::RetailFiles::open(root).unwrap();
+        let data = files.read("levels/monastery/monastery2.pvl").unwrap().unwrap();
+        let start = read_level_geometry(&data).unwrap().end;
+        let sections = read_sections(&mut Bytes::new(&data[start..])).unwrap();
+        let item = |name: &str| match &sections.trigger(name).unwrap().kind {
+            TriggerKind::Item(item) => item.clone(),
+            other => panic!("{name}: {other:?}"),
+        };
+        let dial = item("BELLRINGSWITCH");
+        assert_eq!(dial.initial_action, 0x40);
+        assert!(dial.play_sound);
+        assert_eq!(dial.sound.to_lowercase(), "ambients\\lock open small.wav");
+        assert_eq!((dial.state_to_modify.as_str(), dial.state_mode), ("RING", StateMode::Set));
+        let glass = item("BELLTRIGGER01");
+        assert_eq!(glass.flags, flag::ITEM | flag::ONCE);
+        assert!(glass.fire_linked && !glass.enabled);
+        assert_eq!(glass.required_states, ["RING2"]);
+        let relay = item("BELLTRIGGERC");
+        assert_eq!(relay.initial_action, action::RELAY);
+        assert_eq!(
+            (relay.required_states.as_slice(), relay.recipients.as_str()),
+            (&["RING0".to_owned()][..], "BELL_1")
+        );
+        let dial_prop =
+            sections.props.iter().chain(&sections.bitmaps).find(|p| p.name == "dial1").unwrap();
+        let frames: Vec<u16> = dial_prop.slots.iter().map(|s| s.frame).collect();
+        assert_eq!(frames, [0, 1, 10, 20]);
+    }
 }

@@ -12,6 +12,8 @@ use bevy_landmass::NavMesh3d;
 use super::navigation::asset::navmesh_path;
 use super::navigation::bake::SIZE_CLASSES;
 use super::props::{Prop, PropMotion};
+use super::scripts::LevelScript;
+use super::triggers::LevelState;
 use crate::content::level::LevelGeometry;
 use crate::content::levels::LevelInfo;
 use crate::presentation::billboards::FaceCamera;
@@ -26,6 +28,7 @@ pub struct Level {
     pub navmeshes: Vec<Handle<NavMesh3d>>,
     /// The level's sky world, drawn behind it; none for levels without one.
     pub sky: Option<Handle<LevelGeometry>>,
+    pub script: LevelScript,
 }
 
 impl Level {
@@ -39,6 +42,8 @@ impl Level {
             sky: LevelInfo::for_path(path)
                 .and_then(LevelInfo::sky_path)
                 .map(|sky| assets.load(format!("retail://{sky}"))),
+            script: LevelInfo::for_path(path)
+                .map_or_else(LevelScript::default, |info| LevelScript::for_location(info.location)),
         }
     }
 }
@@ -219,7 +224,11 @@ pub fn build_level_geometry(
             }
         };
         let mut root = commands.entity(root);
-        root.remove::<AwaitingGeometry>().insert((RigidBody::Static, collider));
+        root.remove::<AwaitingGeometry>().insert((
+            RigidBody::Static,
+            collider,
+            LevelState::new(geometry, level.script),
+        ));
         root.with_children(|parent| {
             for part in &geometry.parts {
                 parent.spawn((Mesh3d(part.mesh.clone()), MeshMaterial3d(part.material.clone())));
@@ -230,7 +239,19 @@ pub fn build_level_geometry(
                 parent
                     .spawn((
                         Name::new(prop.name.clone()),
-                        Prop::new(prop.interaction.clone(), prop.frames_per_second, last_frame),
+                        Prop {
+                            trigger: prop.trigger.clone(),
+                            door: prop.trigger.as_ref().is_some_and(|name| {
+                                geometry
+                                    .triggers
+                                    .iter()
+                                    .any(|t| &t.name == name && t.door.is_some())
+                            }),
+                            frames_per_second: prop.frames_per_second,
+                            last_frame,
+                            wraps: prop.wraps,
+                            slots: prop.slots.clone(),
+                        },
                         PropMotion::default(),
                         Transform::default(),
                         Visibility::default(),

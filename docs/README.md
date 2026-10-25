@@ -22,6 +22,8 @@ mechanics.
    deliberate native-format policies and remaining evidence gaps.
 6. [Testing](testing.md): ordinary rule tests, small headless Bevy scenarios,
    and focused real-game checks.
+7. [Retail research notes](research/README.md): file formats and retail
+   behaviour the decoders and rules follow, with their sources.
 
 ## Gameplay systems
 

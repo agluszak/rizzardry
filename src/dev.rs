@@ -3,6 +3,8 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use std::f32::consts::FRAC_PI_4;
+
 use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
@@ -284,11 +286,20 @@ pub fn scripted_interact(
 }
 
 /// Put the party 2 m in front of a named prop, facing it, once its collider
-/// exists. Used to test props without walking to them.
+/// exists, and keep looking at its middle (the top of a flat one) as the
+/// party settles, so small props stay under the crosshair. Used to test
+/// props without walking to them.
 #[derive(Resource, Debug, Clone)]
 pub struct FacePropOnEntry {
     pub name: String,
-    pub done: bool,
+    /// The point looked at, once placed.
+    pub target: Option<Vec3>,
+}
+
+impl FacePropOnEntry {
+    pub fn new(name: String) -> Self {
+        FacePropOnEntry { name, target: None }
+    }
 }
 
 pub fn face_prop_on_entry(
@@ -299,11 +310,14 @@ pub fn face_prop_on_entry(
         (&mut PartyBody, &mut Position, &mut Transform),
         Without<crate::game::world::props::Prop>,
     >,
+    camera: Query<&GlobalTransform, With<crate::game::party::body::PartyCamera>>,
 ) {
-    if request.done {
+    let Ok((mut body, mut position, mut transform)) = party.single_mut() else { return };
+    if let (Some(target), Ok(camera)) = (request.target, camera.single()) {
+        let to = target - camera.translation();
+        body.pitch = to.y.atan2(to.xz().length()).clamp(-FRAC_PI_4, FRAC_PI_4);
         return;
     }
-    let Ok((mut body, mut position, mut transform)) = party.single_mut() else { return };
     let Some((_, children)) =
         props.iter().find(|(n, _)| n.as_str().eq_ignore_ascii_case(&request.name))
     else {
@@ -313,7 +327,6 @@ pub fn face_prop_on_entry(
     if aabb.min.x > aabb.max.x {
         return; // not computed yet
     }
-    request.done = true;
     let (min, max) = (aabb.min, aabb.max);
     let centre = (min + max) / 2.0;
     let size = max - min;
@@ -325,6 +338,8 @@ pub fn face_prop_on_entry(
     transform.translation = position.0;
     let forward = -across;
     body.yaw = (-forward.x).atan2(-forward.z);
+    // A flat prop's middle may sit below the floor around it.
+    request.target = Some(if size.y < 0.3 { centre.with_y(max.y - 0.01) } else { centre });
     info!("placed the party at {eye:.2} facing prop {} ({min:.2}..{max:.2})", request.name);
 }
 
@@ -396,6 +411,7 @@ fn scripted_key(name: &str) -> Option<(KeyCode, Key)> {
         "Enter" => (KeyCode::Enter, Key::Enter),
         "Escape" => (KeyCode::Escape, Key::Escape),
         "Backspace" => (KeyCode::Backspace, Key::Backspace),
+        "space" => (KeyCode::Space, Key::Space),
         letter if letter.len() == 1 && letter.chars().all(|c| c.is_ascii_lowercase()) => {
             let code = match letter {
                 "m" => KeyCode::KeyM,
@@ -410,6 +426,7 @@ fn scripted_key(name: &str) -> Option<(KeyCode, Key)> {
 }
 
 pub fn run_ui_script(
+    mut commands: Commands,
     time: Res<Time>,
     mut script: ResMut<UiScript>,
     party: Query<(), With<PartyBody>>,
@@ -530,10 +547,47 @@ pub fn run_ui_script(
         "assert-note" => {
             assert!(notes.notes.iter().any(|note| note.text == rest), "missing map note: {rest}");
         }
+        "use" => {
+            commands.insert_resource(ScriptedUse(rest.to_owned()));
+        }
+        "face" => {
+            commands.insert_resource(FacePropOnEntry::new(rest.to_owned()));
+        }
         "wait" => {
             let seconds: f32 = rest.parse().unwrap_or(1.0);
             script.next_at = Some(now + seconds);
         }
         _ => warn!("ui script: unknown step {step}"),
     }
+}
+
+/// A prop the UI script uses next, by name: its trigger runs as if the party
+/// used it within reach, without picking it on screen.
+#[derive(Resource, Debug, Clone)]
+pub struct ScriptedUse(pub String);
+
+pub fn scripted_use(
+    mut commands: Commands,
+    request: Res<ScriptedUse>,
+    props: Query<(&Name, &crate::game::world::props::Prop)>,
+    mut triggers: crate::game::world::triggers::LevelTriggers,
+) {
+    commands.remove_resource::<ScriptedUse>();
+    let Some(trigger) = props
+        .iter()
+        .find(|(name, _)| name.as_str().eq_ignore_ascii_case(&request.0))
+        .and_then(|(_, prop)| prop.trigger.clone())
+    else {
+        warn!("ui script: no prop {} with a trigger", request.0);
+        return;
+    };
+    triggers.with(|triggers| {
+        let usable = triggers.state.find(&trigger).is_some_and(|index| triggers.usable(index));
+        let committed = usable && triggers.run(&trigger);
+        info!(
+            "ui script: used {} ({trigger}): {}",
+            request.0,
+            if committed { "done" } else { "nothing happened" }
+        );
+    });
 }

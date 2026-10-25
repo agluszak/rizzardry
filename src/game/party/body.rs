@@ -14,7 +14,8 @@ use bevy_tnua_avian3d::prelude::*;
 use super::teleports::InsideTriggers;
 use crate::content::level::LevelGeometry;
 use crate::game::world::level::{Level, LevelReady};
-use crate::game::world::props::{Prop, PropMotion, prop_under_ray, use_prop};
+use crate::game::world::props::{Prop, prop_under_ray};
+use crate::game::world::triggers::LevelTriggers;
 use crate::retail::space::UNITS_PER_METRE as U;
 
 // Retail motion values (Whizzardry `party_camera.cpp`, `collision.cpp`,
@@ -216,6 +217,7 @@ pub fn place_party_on_ready(
             party.spawn((
                 Name::new("Party camera"),
                 PartyCamera,
+                SpatialListener::new(0.2),
                 Camera3d::default(),
                 // The sky camera clears the frame and draws first.
                 Camera { clear_color: ClearColorConfig::None, ..default() },
@@ -291,18 +293,34 @@ pub fn interact(
     spatial: SpatialQuery,
     prop_entities: Query<(), With<Prop>>,
     parents: Query<&ChildOf>,
-    mut props: Query<(&Name, &mut Prop, &mut PropMotion)>,
+    props: Query<(&Name, &Prop)>,
+    mut triggers: LevelTriggers,
 ) {
     if !interact.contains(ActionEvents::START) {
         return;
     }
     let (Ok(party), Ok(camera)) = (party.single(), camera.single()) else { return };
     let ray = Ray3d::new(camera.translation(), camera.forward());
-    let Some(target) = prop_under_ray(ray, party, &spatial, &prop_entities, &parents) else {
+    let Some((target, distance)) = prop_under_ray(ray, party, &spatial, &prop_entities, &parents)
+    else {
+        debug!("nothing to use there");
         return;
     };
-    if let Ok((name, mut prop, mut motion)) = props.get_mut(target) {
-        let outcome = use_prop(&mut prop, &mut motion);
-        info!("used {name}: {outcome:?}");
-    }
+    let Ok((name, prop)) = props.get(target) else { return };
+    let Some(trigger) = &prop.trigger else { return };
+    // Retail measures from the middle of the prop; the hit point is close.
+    triggers.with(|triggers| {
+        let Some(index) = triggers.state.find(trigger) else { return };
+        let (near, far) = triggers.definitions[index].range;
+        if !triggers.usable(index) {
+            debug!("{name} ({trigger}) cannot be used");
+        } else if !(near..=far).contains(&distance) {
+            debug!("{name} ({trigger}) is out of reach: {distance:.1} m, not {near:.1}..{far:.1}");
+        } else if triggers.run(trigger) {
+            info!("used {name} ({trigger})");
+        } else {
+            // Retail says "Nothing happened".
+            info!("used {name} ({trigger}): nothing happened");
+        }
+    });
 }

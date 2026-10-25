@@ -100,7 +100,7 @@ impl LevelLighting {
 }
 
 /// Immutable static geometry shared by every visit to a level.
-#[derive(Asset, Clone, Debug, Reflect)]
+#[derive(Asset, Clone, Debug, Default, Reflect)]
 pub struct LevelGeometry {
     pub parts: Vec<LevelPart>,
     pub collision: CollisionMesh,
@@ -111,6 +111,8 @@ pub struct LevelGeometry {
     pub lighting: LevelLighting,
     /// Positioned triggers, where the party can enter.
     pub entrances: Vec<Entrance>,
+    /// Every trigger the party or props can run.
+    pub triggers: Vec<TriggerDefinition>,
     pub props: Vec<PropModel>,
     /// Navigation links between places the navmesh does not join.
     pub links: Vec<LevelLink>,
@@ -192,19 +194,65 @@ pub struct PropModel {
     /// Path keys advanced per second when the prop animates.
     pub frames_per_second: f32,
     pub parts: Vec<PropModelPart>,
-    /// What using the prop does, from its attached trigger.
-    pub interaction: Option<PropInteraction>,
+    /// Each use plays the path from its start; otherwise uses alternate
+    /// direction (retail frame method wrap versus ping-pong).
+    pub wraps: bool,
+    /// Path keys splitting the animation into segments, e.g. a dial's
+    /// positions.
+    pub slots: Vec<u16>,
+    /// The name of the trigger using the prop runs.
+    pub trigger: Option<String>,
 }
 
-/// The attached trigger of a usable prop.
+/// A trigger: what happens when it runs, from the player using it, another
+/// trigger naming it as a recipient, or a level script.
 #[derive(Clone, Debug, Reflect)]
-pub struct PropInteraction {
-    pub trigger: String,
-    /// Retail action codes: the first use runs `initial_action`, later uses
-    /// `alternate_action` when it is set.
-    pub initial_action: u32,
-    pub alternate_action: u32,
+pub struct TriggerDefinition {
+    pub name: String,
+    /// The player may use it; recipients run whatever this says.
+    pub usable: bool,
+    /// It runs at most once.
+    pub once: bool,
+    /// Run the recipients when the action commits.
+    pub fire_linked: bool,
+    /// Retail action codes. The first use runs `initial`; later uses run
+    /// `alternate` if set, back and forth when `alternate_toggles`. When a
+    /// required state is unset, `fallback` runs instead (0: nothing).
+    pub initial: u32,
+    pub alternate: u32,
+    pub fallback: u32,
+    pub alternate_toggles: bool,
+    /// Triggers to run, in order.
+    pub recipients: Vec<String>,
+    /// Action parameters; their meaning depends on the action.
+    pub data: [i32; 3],
+    pub sound: Option<TriggerSound>,
+    /// Show level message `data[use]` on commit.
+    pub shows_message: bool,
+    /// Location variables that must all be set.
+    pub required_states: Vec<String>,
+    /// The location variable a commit changes.
+    pub state_change: Option<(String, StateChange)>,
+    /// The value its location variable starts with in a new game.
+    pub initial_state: Option<bool>,
+    /// The distance band, in metres, from which the party can use it.
+    pub range: (f32, f32),
     pub door: Option<DoorLock>,
+}
+
+#[derive(Clone, Debug, Reflect)]
+pub struct TriggerSound {
+    /// Retail path under `data/sound`.
+    pub path: String,
+    /// 0 to 1.
+    pub volume: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Reflect)]
+pub enum StateChange {
+    Set,
+    Clear,
+    Toggle,
 }
 
 /// A door's lock state.

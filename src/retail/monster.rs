@@ -1,7 +1,7 @@
 //! Monster species (`.mls`, text) and animation cycles (`.mon`, binary).
 //!
-//! After Whizzardry `LoadMonsterDefinition` and `CyclePlayer`; see the
-//! monster animation notes in the project docs.
+//! After Whizzardry `LoadMonsterDefinition` and `CyclePlayer`; see
+//! `docs/research/monster-anim.md`.
 
 use super::bytes::Bytes;
 use super::keyframes::read_path;

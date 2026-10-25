@@ -82,7 +82,7 @@ pub fn find_door_links(
     bounds: Query<&ColliderAabb>,
 ) {
     for (entity, prop, children) in &doors {
-        if !prop.interaction.as_ref().is_some_and(|i| i.door.is_some()) {
+        if !prop.door {
             continue;
         }
         let Some(aabb) = children.iter().find_map(|c| bounds.get(c).ok()) else { continue };

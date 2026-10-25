@@ -84,6 +84,7 @@ impl AssetLoader for LvlLoader {
             environment: None,
             lighting: default(),
             entrances: vec![],
+            triggers: vec![],
             props,
             links: vec![],
             teleports: vec![],

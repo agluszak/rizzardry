@@ -3,6 +3,8 @@
 pub mod level;
 pub mod navigation;
 pub mod props;
+pub mod scripts;
+pub mod triggers;
 
 use bevy::prelude::*;
 
@@ -23,6 +25,7 @@ impl Plugin for WorldPlugin {
         app.add_plugins(navigation::NavigationPlugin)
             .add_message::<level::LevelReady>()
             .add_message::<level::Travel>()
+            .add_message::<triggers::TriggerEffect>()
             // The level is swapped before anything builds on it this frame.
             .add_systems(PreUpdate, level::travel)
             .add_systems(Update, (level::build_level_geometry, level::build_sky))

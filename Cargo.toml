@@ -7,7 +7,7 @@ description = "A Rust and Bevy rewrite of Wizardry 8"
 publish = false
 
 [dependencies]
-bevy = { version = "0.20.0", features = ["asset_processor", "mp3", "tga", "wayland"] }
+bevy = { version = "0.20.0", features = ["asset_processor", "mp3", "tga", "wav", "wayland"] }
 avian3d = "0.8.0"
 bevy-tnua = "0.33.0"
 bevy-tnua-avian3d = "0.13.0"

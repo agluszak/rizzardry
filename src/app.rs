@@ -7,7 +7,10 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy_enhanced_input::EnhancedInputPlugin;
 
-use crate::dev::{FacePropOnEntry, SayLine, UiScript, face_prop_on_entry, run_ui_script, say_line};
+use crate::dev::{
+    FacePropOnEntry, SayLine, ScriptedUse, UiScript, face_prop_on_entry, run_ui_script, say_line,
+    scripted_use,
+};
 use crate::dev::{
     OverheadView, ScreenshotAndExit, ScriptedInteract, ScriptedWalk, TestAgents, log_test_agents,
     overhead_view, screenshot_and_exit, scripted_interact, scripted_walk, spawn_test_agents,
@@ -170,7 +173,14 @@ pub fn run(options: Options) -> AppExit {
             .add_systems(Update, screenshot_and_exit);
     }
     if let Some(script) = &options.ui_script {
-        app.insert_resource(UiScript::parse(script)).add_systems(Update, run_ui_script);
+        app.insert_resource(UiScript::parse(script)).add_systems(
+            Update,
+            (
+                run_ui_script,
+                face_prop_on_entry.run_if(resource_exists::<FacePropOnEntry>),
+                scripted_use.run_if(resource_exists::<ScriptedUse>),
+            ),
+        );
     }
     if let Some(line) = options.say.clone() {
         app.insert_resource(SayLine { line, started: None }).add_systems(Update, say_line);
@@ -179,8 +189,10 @@ pub fn run(options: Options) -> AppExit {
         app.insert_resource(GameClock { ms: (hour.rem_euclid(24.0) * 3_600_000.0) as u64 });
     }
     if let Some(name) = options.face_prop.clone() {
-        app.insert_resource(FacePropOnEntry { name, done: false })
-            .add_systems(Update, face_prop_on_entry);
+        app.insert_resource(FacePropOnEntry::new(name));
+        if options.ui_script.is_none() {
+            app.add_systems(Update, face_prop_on_entry);
+        }
     }
     if let Some(after) = options.interact_at {
         app.insert_resource(ScriptedInteract { after, elapsed: 0.0, done: false })
