@@ -8,7 +8,7 @@ use bevy_enhanced_input::prelude::*;
 use bevy_tnua::prelude::*;
 use bevy_tnua_avian3d::prelude::*;
 
-use crate::game::world::level::spawn_active_level;
+use crate::game::world::level::build_level_geometry;
 
 pub struct PartyPlugin;
 
@@ -24,9 +24,12 @@ impl Plugin for PartyPlugin {
         .add_systems(
             Update,
             (
-                body::spawn_party_on_ready.after(spawn_active_level),
-                body::move_party.in_set(TnuaUserControlsSystems),
+                body::spawn_party_on_ready.after(build_level_geometry),
+                (body::look_around, body::aim_camera).chain(),
             ),
-        );
+        )
+        // Tnua and Avian step on the fixed timestep; movement input feeds
+        // them on the same step.
+        .add_systems(FixedUpdate, body::drive_party.in_set(TnuaUserControlsSystems));
     }
 }

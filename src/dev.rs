@@ -106,7 +106,7 @@ pub struct TestAgent;
 pub fn spawn_test_agents(
     mut commands: Commands,
     mut test: ResMut<TestAgents>,
-    navigation: Option<Res<LevelNavigation>>,
+    navigation: Query<&LevelNavigation>,
     archipelagos: Query<&Archipelago3d>,
     party: Query<(Entity, &Transform), With<PartyBody>>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -116,7 +116,8 @@ pub fn spawn_test_agents(
     if test.spawned {
         return;
     }
-    let (Some(navigation), Ok((party, party_transform))) = (navigation, party.single()) else {
+    let (Ok(navigation), Ok((party, party_transform))) = (navigation.single(), party.single())
+    else {
         return;
     };
     let Ok(archipelago) = archipelagos.get(navigation.archipelago) else { return };

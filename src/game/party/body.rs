@@ -193,35 +193,44 @@ pub struct PartyStart {
     pub yaw: f32,
 }
 
-pub fn move_party(
-    time: Res<Time>,
-    walk: Single<&Action<Walk>>,
-    turn: Single<&Action<Turn>>,
+/// Mouse look: a per-frame input delta, applied every frame.
+pub fn look_around(
     look: Single<&Action<Look>>,
     free_look: Single<&Action<FreeLook>>,
-    run: Single<&Action<Run>>,
-    mut party: Query<(&mut PartyBody, &mut TnuaController<PartyMotion>)>,
-    mut camera: Query<&mut Transform, With<PartyCamera>>,
+    mut party: Query<&mut PartyBody>,
 ) {
-    let Ok((mut body, mut controller)) = party.single_mut() else { return };
-    let dt = time.delta_secs();
-
-    body.yaw -= ***turn * TURN_SPEED * dt;
+    let Ok(mut body) = party.single_mut() else { return };
     if ***free_look {
         body.yaw -= look.x * LOOK_SENSITIVITY;
         body.pitch = (body.pitch - look.y * LOOK_SENSITIVITY).clamp(-MAX_PITCH, MAX_PITCH);
     }
-    let facing = Quat::from_rotation_y(body.yaw);
-    if let Ok(mut camera) = camera.single_mut() {
-        camera.rotation = facing * Quat::from_rotation_x(body.pitch);
-    }
+}
 
+/// Turn and walk on the fixed simulation step, feeding Tnua.
+pub fn drive_party(
+    time: Res<Time>,
+    walk: Single<&Action<Walk>>,
+    turn: Single<&Action<Turn>>,
+    run: Single<&Action<Run>>,
+    mut party: Query<(&mut PartyBody, &mut TnuaController<PartyMotion>)>,
+) {
+    let Ok((mut body, mut controller)) = party.single_mut() else { return };
+    body.yaw -= ***turn * TURN_SPEED * time.delta_secs();
     // The walk config's speed is the run speed; walking scales the input.
     let input = walk.clamp_length_max(1.0);
     let fraction = if ***run { 1.0 } else { WALK_SPEED / RUN_SPEED };
     controller.initiate_action_feeding();
     controller.basis = TnuaBuiltinWalk {
-        desired_motion: facing * Vec3::new(input.x, 0.0, -input.y) * fraction,
+        desired_motion: Quat::from_rotation_y(body.yaw)
+            * Vec3::new(input.x, 0.0, -input.y)
+            * fraction,
         desired_forward: None,
     };
+}
+
+/// Point the camera along the party's facing.
+pub fn aim_camera(party: Query<&PartyBody>, mut camera: Query<&mut Transform, With<PartyCamera>>) {
+    if let (Ok(body), Ok(mut camera)) = (party.single(), camera.single_mut()) {
+        camera.rotation = Quat::from_rotation_y(body.yaw) * Quat::from_rotation_x(body.pitch);
+    }
 }

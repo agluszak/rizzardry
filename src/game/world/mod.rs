@@ -21,6 +21,6 @@ impl Plugin for WorldPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(navigation::NavigationPlugin)
             .add_message::<level::LevelReady>()
-            .add_systems(Update, level::spawn_active_level);
+            .add_systems(Update, level::build_level_geometry);
     }
 }

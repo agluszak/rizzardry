@@ -14,12 +14,13 @@ use crate::dev::{
 use crate::game::party::PartyPlugin;
 use crate::game::party::body::PartyStart;
 use crate::game::world::WorldPlugin;
-use crate::game::world::level::ActiveLevel;
+use crate::game::world::level::Level;
 use crate::game::world::navigation::asset::navmesh_path;
 use crate::presentation::PresentationPlugin;
 use crate::retail::RetailPlugin;
 use crate::retail::bytes::Bytes;
 use crate::retail::files::RetailFiles;
+use crate::retail::path::normalize;
 use crate::retail::pvl::read_level_geometry;
 use crate::retail::sections::read_sections;
 use crate::retail::space::{retail_position, retail_yaw};
@@ -78,10 +79,10 @@ fn parse_vec3(text: &str) -> Result<Vec3, String> {
 impl Options {
     /// The entrance to use: the explicit one, or the new-game entrance when
     /// starting the default level without an explicit position.
-    fn entrance(&self) -> Option<&str> {
+    fn entrance(&self, level: &str) -> Option<&str> {
         match (&self.entrance, self.start) {
             (Some(entrance), _) => Some(entrance),
-            (None, None) if self.level == DEFAULT_LEVEL => Some(DEFAULT_ENTRANCE),
+            (None, None) if level == DEFAULT_LEVEL => Some(DEFAULT_ENTRANCE),
             _ => None,
         }
     }
@@ -95,14 +96,18 @@ pub fn run(options: Options) -> AppExit {
             return AppExit::error();
         }
     };
-    if !files.contains(&options.level) {
-        eprintln!("{} is not in the retail installation", options.level);
-        return AppExit::error();
-    }
+    // Retail names are case-insensitive; use the normalized name throughout.
+    let level = match normalize(&options.level) {
+        Ok(level) if files.contains(&level) => level,
+        _ => {
+            eprintln!("{} is not in the retail installation", options.level);
+            return AppExit::error();
+        }
+    };
 
     let mut start = PartyStart { eye: options.start, yaw: options.yaw.to_radians() };
-    if let (None, Some(entrance)) = (options.start, options.entrance()) {
-        match entrance_placement(&files, &options.level, entrance) {
+    if let (None, Some(entrance)) = (options.start, options.entrance(&level)) {
+        match entrance_placement(&files, &level, entrance) {
             Some(placement) => start = placement,
             None => warn!("entrance {entrance} not found; using the retail fallback position"),
         }
@@ -153,13 +158,14 @@ pub fn run(options: Options) -> AppExit {
         app.insert_resource(ScriptedWalk { seconds, started: false, since_log: 0.0 })
             .add_systems(Update, scripted_walk);
     }
-    let level = options.level.clone();
     app.add_systems(Startup, move |mut commands: Commands, assets: Res<AssetServer>| {
-        commands.insert_resource(ActiveLevel {
-            geometry: assets.load(format!("retail://{level}")),
-            navmesh: assets.load(navmesh_path(&level)),
-            spawned: false,
-        });
+        commands.spawn((
+            Name::new(level.clone()),
+            Level {
+                geometry: assets.load(format!("retail://{level}")),
+                navmesh: assets.load(navmesh_path(&level)),
+            },
+        ));
     });
     app.run()
 }
