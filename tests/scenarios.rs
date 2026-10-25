@@ -120,3 +120,29 @@ fn the_dead_stay_dead_across_travel() {
 
     assert_eq!(monsters(app.world_mut()), (count - dead, 0), "the crabs did not come back");
 }
+
+#[test]
+#[ignore = "requires a retail installation"]
+fn the_party_rests_eight_hours_and_wakes() {
+    use avian3d::prelude::LinearVelocity;
+    use rizzardry::game::camp::{Camp, CampNews, CampRequest};
+    use rizzardry::game::party::body::PartyBody;
+    use rizzardry::game::time::GameClock;
+    let _one = ONE_AT_A_TIME.lock();
+    // After beating the beach crabs, with the beach quiet.
+    let mut app = game(&["--continuous", "--start=108,2.5,-96"]);
+    crab_fight(&mut app);
+    // The party may not camp while moving.
+    step_until(&mut app, "the party standing still", |w| {
+        let mut party = w.query_filtered::<&LinearVelocity, With<PartyBody>>();
+        party.iter(w).all(|v| v.length() < 0.05)
+    });
+    let before = app.world().resource::<GameClock>().ms;
+    app.world_mut().write_message(CampRequest);
+    app.update();
+    let news: Vec<_> = app.world_mut().resource_mut::<Messages<CampNews>>().drain().collect();
+    assert!(app.world().contains_resource::<Camp>(), "not camping: {news:?}");
+    step_until(&mut app, "waking", |w| !w.contains_resource::<Camp>());
+    let rested = app.world().resource::<GameClock>().ms - before;
+    assert!(rested >= 8 * 3_600_000, "rested {} game hours", rested / 3_600_000);
+}

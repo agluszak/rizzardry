@@ -1,12 +1,13 @@
 //! Retail's "Proceed to <level>?" question before a level change, in native
 //! Bevy UI with the retail message box buttons and text font.
 
-use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
+use bevy_enhanced_input::prelude::*;
 
 use crate::content::levels::LevelInfo;
 use crate::content::ui::{SpriteSheet, TextTable};
 use crate::game::world::level::{Travel, TravelQuestion};
+use crate::presentation::screen_art::{centred, hover_art};
 
 /// "Proceed to" in the game string table.
 const PROCEED_TO: usize = 0x799;
@@ -30,15 +31,23 @@ pub fn load_dialog_art(mut commands: Commands, assets: Res<AssetServer>) {
     });
 }
 
-#[derive(Component)]
+/// The travel question on screen, with its keys: Enter accepts and Escape
+/// declines, like its buttons. They come before every other screen's keys,
+/// which do not see them while it is up.
+#[derive(Component, Clone, Default)]
 pub struct QuestionDialog;
 
-/// A dialog button, drawn from its sheet: frame 0, frame 1 while hovered.
-#[derive(Component)]
-pub struct DialogButton {
-    sheet: Handle<SpriteSheet>,
-    accept: bool,
-}
+#[derive(InputAction)]
+#[action_output(bool)]
+struct Accept;
+
+#[derive(InputAction)]
+#[action_output(bool)]
+struct Decline;
+
+/// The player's answer to the travel question.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct TravelAnswer(pub bool);
 
 /// Show the question when one is asked, once its art has loaded.
 pub fn show_travel_question(
@@ -68,91 +77,63 @@ pub fn show_travel_question(
         .unwrap_or(&question.entrance);
     let text = format!("{} {}?", strings.get(PROCEED_TO).unwrap_or("Proceed to"), level.trim());
     let label = font.text_image(&text);
-    let label_size = label.size_f32();
-    let screen = commands
-        .spawn((
-            QuestionDialog,
+    let (width, height) = (label.width(), label.height());
+    let label = images.add(label);
+    let buttons: Vec<_> = [(ok, true), (cancel, false)]
+        .into_iter()
+        .filter_map(|(sheet, accept)| {
+            let frame = sheet.frames.first()?;
+            let (width, height) = (frame.width, frame.height);
+            Some(bsn! {
+                Node { width: px(width), height: px(height) }
+                ImageNode
+                @hover_art(sheet, 0, if sheet.images.len() > 1 { 1 } else { 0 })
+                on(move |_: On<PointerClick>, mut answers: MessageWriter<TravelAnswer>| {
+                    answers.write(TravelAnswer(accept));
+                })
+            })
+        })
+        .collect();
+    commands.spawn_scene(bsn! {
+        @centred()
+        QuestionDialog
+        ContextPriority::<QuestionDialog>::new(1)
+        Actions<QuestionDialog> [
+            Action::<Accept>::new()
+            ActionSettings { consume_input: true }
+            Bindings [ Binding(KeyCode::Enter) ]
+            --
+            Action::<Decline>::new()
+            ActionSettings { consume_input: true }
+            Bindings [ Binding(KeyCode::Escape) ]
+        ]
+        on(|_: On<Start<Accept>>, mut answers: MessageWriter<TravelAnswer>| {
+            answers.write(TravelAnswer(true));
+        })
+        on(|_: On<Start<Decline>>, mut answers: MessageWriter<TravelAnswer>| {
+            answers.write(TravelAnswer(false));
+        })
+        Children [
             Node {
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                ..default()
-            },
-        ))
-        .id();
-    let panel = commands
-        .spawn((
-            Node {
-                width: Val::Px(PANEL.x),
-                height: Val::Px(PANEL.y),
+                width: px(PANEL.x),
+                height: px(PANEL.y),
                 flex_direction: FlexDirection::Column,
                 justify_content: JustifyContent::SpaceEvenly,
                 align_items: AlignItems::Center,
-                border: UiRect::all(Val::Px(1.0)),
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.05, 0.04, 0.03, 0.92)),
-            BorderColor::from(Color::srgb(0.55, 0.45, 0.3)),
-            ChildOf(screen),
-        ))
-        .id();
-    commands.spawn((
-        ImageNode::new(images.add(label)),
-        Node { width: Val::Px(label_size.x), height: Val::Px(label_size.y), ..default() },
-        Pickable::IGNORE,
-        ChildOf(panel),
-    ));
-    let row =
-        commands.spawn((Node { column_gap: Val::Px(24.0), ..default() }, ChildOf(panel))).id();
-    for (sheet, handle, accept) in [(ok, &art.ok, true), (cancel, &art.cancel, false)] {
-        let (Some(image), Some(frame)) = (sheet.images.first(), sheet.frames.first()) else {
-            continue;
-        };
-        commands
-            .spawn((
-                DialogButton { sheet: handle.clone(), accept },
-                Hovered::default(),
-                ImageNode::new(image.clone()),
-                Node {
-                    width: Val::Px(frame.width as f32),
-                    height: Val::Px(frame.height as f32),
-                    ..default()
-                },
-                ChildOf(row),
-            ))
-            .observe(press_dialog_button);
-    }
-}
-
-fn press_dialog_button(
-    click: On<PointerClick>,
-    buttons: Query<&DialogButton>,
-    mut answers: MessageWriter<TravelAnswer>,
-) {
-    if let Ok(button) = buttons.get(click.entity) {
-        answers.write(TravelAnswer(button.accept));
-    }
-}
-
-/// The player's answer to the travel question.
-#[derive(Message, Debug, Clone, Copy)]
-pub struct TravelAnswer(pub bool);
-
-/// Enter accepts and Escape declines, like the buttons.
-pub fn answer_with_keys(
-    keys: Res<ButtonInput<KeyCode>>,
-    question: Option<Res<TravelQuestion>>,
-    mut answers: MessageWriter<TravelAnswer>,
-) {
-    if question.is_none() {
-        return;
-    }
-    if keys.just_pressed(KeyCode::Enter) {
-        answers.write(TravelAnswer(true));
-    } else if keys.just_pressed(KeyCode::Escape) {
-        answers.write(TravelAnswer(false));
-    }
+                border: UiRect::all(px(1)),
+            }
+            BackgroundColor(Color::srgba(0.05, 0.04, 0.03, 0.92))
+            BorderColor::all(Color::srgb(0.55, 0.45, 0.3))
+            Children [
+                Node { width: px(width), height: px(height) }
+                ImageNode { image: {label} }
+                Pickable::IGNORE
+                --
+                Node { column_gap: px(24) }
+                Children [ {buttons} ]
+            ]
+        ]
+    });
 }
 
 /// Travel on yes; on no the party stays where it is (retail places it back
@@ -171,18 +152,5 @@ pub fn settle_travel_question(
     commands.remove_resource::<TravelQuestion>();
     for dialog in &dialogs {
         commands.entity(dialog).despawn();
-    }
-}
-
-pub fn paint_dialog_buttons(
-    mut buttons: Query<(&Hovered, &DialogButton, &mut ImageNode)>,
-    sheets: Res<Assets<SpriteSheet>>,
-) {
-    for (hovered, button, mut image) in &mut buttons {
-        let Some(sheet) = sheets.get(&button.sheet) else { continue };
-        let frame = if hovered.get() && sheet.images.len() > 1 { 1 } else { 0 };
-        if image.image != sheet.images[frame] {
-            image.image = sheet.images[frame].clone();
-        }
     }
 }

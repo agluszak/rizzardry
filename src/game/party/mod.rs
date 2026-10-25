@@ -32,6 +32,7 @@ impl Plugin for PartyPlugin {
         .init_resource::<formation::Formation>()
         .add_message::<camp::CampNews>()
         .add_message::<camp::CampRequest>()
+        .add_message::<camp::LeaveCamp>()
         .add_systems(Startup, body::spawn_exploration_controls)
         .add_systems(
             Update,
@@ -44,7 +45,7 @@ impl Plugin for PartyPlugin {
                     (
                         camp::request_camp.run_if(party_free),
                         camp::force_camp,
-                        camp::cancel_camp,
+                        camp::leave_camp,
                         camp::advance_camp,
                     )
                         .chain(),

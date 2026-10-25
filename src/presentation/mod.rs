@@ -68,6 +68,8 @@ impl Plugin for PresentationPlugin {
             .init_resource::<music::Music>()
             .init_resource::<PresentationRng>()
             .add_input_context::<automap::Screens>()
+            .add_input_context::<dialog::QuestionDialog>()
+            .add_input_context::<camp::CampScreen>()
             .add_systems(
                 Startup,
                 (
@@ -125,13 +127,7 @@ impl Plugin for PresentationPlugin {
                     music::play_music,
                     (ambience::place_ambient_sounds, ambience::play_ambient_sounds).chain(),
                     notices::queue_notices,
-                    (
-                        dialog::show_travel_question,
-                        dialog::answer_with_keys,
-                        dialog::settle_travel_question,
-                        dialog::paint_dialog_buttons,
-                    )
-                        .chain(),
+                    (dialog::show_travel_question, dialog::settle_travel_question).chain(),
                     effects::shake_camera.after(party_view::aim_camera),
                     sky::orbit_sun_and_moon,
                     voice::finish_speech,
