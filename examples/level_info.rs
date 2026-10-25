@@ -4,10 +4,11 @@
 
 use clap::Parser;
 use rizzardry::retail::bytes::Bytes;
-use rizzardry::retail::links::level_links;
+use rizzardry::retail::links::{level_links, teleport_arrival};
 use rizzardry::retail::prop_loader::part_transforms;
 use rizzardry::retail::sections::read_sections;
-use rizzardry::retail::trigger::TriggerKind;
+use rizzardry::retail::space::retail_position;
+use rizzardry::retail::trigger::{TriggerKind, action};
 use rizzardry::retail::{files::RetailFiles, pvl::read_level_geometry};
 
 #[derive(clap::Parser)]
@@ -38,15 +39,22 @@ fn main() {
         let level = read_level_geometry(&data).unwrap();
         if args.links {
             let sections = read_sections(&mut Bytes::new(&data[level.end..])).unwrap();
-            let (links, teleports) = level_links(&sections);
-            for link in &links {
+            for link in level_links(&sections) {
                 println!("  {:?} {:.1} -> {:.1}", link.kind, link.from, link.to);
             }
-            for t in &teleports {
-                println!(
-                    "  teleport {} at {:.1} range {:?} -> {:?}",
-                    t.name, t.centre, t.range, t.arrival
-                );
+            for trigger in sections.all_triggers() {
+                let TriggerKind::Item(item) = &trigger.kind else { continue };
+                if let Some(arrival) = teleport_arrival(&sections, item)
+                    && item.placement.is_some()
+                    && matches!(item.initial_action, action::TELEPORT | action::RANDOM_TELEPORT)
+                {
+                    let usable = if item.enabled { "" } else { " (not walk-in)" };
+                    let at = retail_position(item.placement.unwrap().position);
+                    println!(
+                        "  teleport {}{usable} flags {:#x} at {at:.1} range {:?} -> {arrival:?}",
+                        trigger.name, item.flags, item.range
+                    );
+                }
             }
         }
         if args.props {

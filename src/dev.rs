@@ -561,8 +561,8 @@ pub fn run_ui_script(
     }
 }
 
-/// A prop the UI script uses next, by name: its trigger runs as if the party
-/// used it within reach, without picking it on screen.
+/// A prop (or a trigger) the UI script uses next, by name: its trigger runs
+/// as if the party used it within reach, without picking it on screen.
 #[derive(Resource, Debug, Clone)]
 pub struct ScriptedUse(pub String);
 
@@ -573,14 +573,12 @@ pub fn scripted_use(
     mut triggers: crate::game::world::triggers::LevelTriggers,
 ) {
     commands.remove_resource::<ScriptedUse>();
-    let Some(trigger) = props
+    // A prop's trigger, or else a trigger by name.
+    let trigger = props
         .iter()
         .find(|(name, _)| name.as_str().eq_ignore_ascii_case(&request.0))
         .and_then(|(_, prop)| prop.trigger.clone())
-    else {
-        warn!("ui script: no prop {} with a trigger", request.0);
-        return;
-    };
+        .unwrap_or_else(|| request.0.to_uppercase());
     triggers.with(|triggers| {
         let usable = triggers.state.find(&trigger).is_some_and(|index| triggers.usable(index));
         let committed = usable && triggers.run(&trigger);

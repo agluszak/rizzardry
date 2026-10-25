@@ -87,7 +87,6 @@ impl AssetLoader for LvlLoader {
             triggers: vec![],
             props,
             links: vec![],
-            teleports: vec![],
             animated_textures,
         })
     }

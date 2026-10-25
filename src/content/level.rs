@@ -116,8 +116,6 @@ pub struct LevelGeometry {
     pub props: Vec<PropModel>,
     /// Navigation links between places the navmesh does not join.
     pub links: Vec<LevelLink>,
-    /// Positioned triggers that move the party elsewhere in the level.
-    pub teleports: Vec<TeleportTrigger>,
     /// Materials whose texture is an animated frame list (`.ifl`).
     pub animated_textures: Vec<TextureAnimation>,
 }
@@ -150,17 +148,6 @@ pub struct LevelLink {
     pub kind: LinkKind,
     pub from: Vec3,
     pub to: Vec3,
-}
-
-/// A trigger that teleports the party within the level when it comes within
-/// range (retail action 0x34 naming a trigger in the same level).
-#[derive(Clone, Debug, Reflect)]
-pub struct TeleportTrigger {
-    pub name: String,
-    pub centre: Vec3,
-    /// Fires at distances in `[range.0, range.1)` metres.
-    pub range: (f32, f32),
-    pub arrival: Arrival,
 }
 
 /// Where a teleport takes the party.
@@ -238,6 +225,11 @@ pub struct TriggerDefinition {
     /// The distance band, in metres, from which the party can use it.
     pub range: (f32, f32),
     pub door: Option<DoorLock>,
+    /// A trigger standing at a place rather than on a prop: it runs when the
+    /// party's eye comes within `range` of it.
+    pub place: Option<Vec3>,
+    /// Where a teleport takes the party.
+    pub arrival: Option<Arrival>,
 }
 
 #[derive(Clone, Debug, Reflect)]

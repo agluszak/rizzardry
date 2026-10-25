@@ -17,7 +17,7 @@ use bevy::ecs::system::SystemParam;
 use super::level::{Level, PropPart};
 use super::props::{Prop, PropMotion};
 use super::scripts::LevelScript;
-use crate::content::level::{LevelGeometry, StateChange, TriggerDefinition};
+use crate::content::level::{Arrival, LevelGeometry, StateChange, TriggerDefinition};
 
 /// Retail trigger action codes performed so far.
 pub mod action {
@@ -26,6 +26,8 @@ pub mod action {
     pub const DOOR_TOGGLE: u32 = 0x02;
     pub const TOGGLE: u32 = 0x03;
     pub const RELAY: u32 = 0x0f;
+    pub const TELEPORT: u32 = 0x34;
+    pub const RANDOM_TELEPORT: u32 = 0x4b;
     pub const DOOR_TOGGLE_WITH_KEY: u32 = 0x2c;
     pub const START: u32 = 0x32;
     pub const STOP: u32 = 0x33;
@@ -45,6 +47,8 @@ pub struct LevelState {
     index: HashMap<String, usize>,
     variables: HashMap<String, bool>,
     pub script: LevelScript,
+    /// Whether the party has been seen in the level yet.
+    entered: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -57,6 +61,8 @@ pub struct TriggerState {
     awaits_animation: bool,
     /// The dial position or door state (retail `state_index`).
     pub position: usize,
+    /// The party's eye is within its range (positioned triggers).
+    inside: bool,
 }
 
 impl LevelState {
@@ -69,12 +75,14 @@ impl LevelState {
                     use_alternate: false,
                     awaits_animation: false,
                     position: 0,
+                    inside: false,
                 };
                 geometry.triggers.len()
             ],
             index: HashMap::new(),
             variables: HashMap::new(),
             script,
+            entered: false,
         };
         for (i, trigger) in geometry.triggers.iter().enumerate() {
             state.index.insert(trigger.name.to_uppercase(), i);
@@ -197,6 +205,8 @@ pub struct Triggers<'a> {
     /// Props by the index of the trigger they carry.
     pub props: HashMap<usize, TriggerProp<'a>>,
     pub effects: Vec<TriggerEffect>,
+    /// Where a teleport sent the party.
+    pub party_moves: Option<Arrival>,
 }
 
 impl Triggers<'_> {
@@ -204,6 +214,36 @@ impl Triggers<'_> {
     pub fn usable(&self, index: usize) -> bool {
         let (definition, state) = (&self.definitions[index], &self.state.triggers[index]);
         definition.usable && !(definition.once && state.fired)
+    }
+
+    /// Run the positioned triggers the party's eye has just come within
+    /// range of (retail `UpdateWorldTriggers`; retail reruns one each step
+    /// while it is not running, here it runs on entering). The first time
+    /// the party is seen in a level, triggers it stands in count as entered.
+    pub fn walk(&mut self, eye: Vec3) {
+        let first = !self.state.entered;
+        self.state.entered = true;
+        for index in 0..self.definitions.len() {
+            let Some(place) = self.definitions[index].place else { continue };
+            let (near, far) = self.definitions[index].range;
+            let inside = (near..far).contains(&eye.distance(place));
+            let entering = inside && !self.state.triggers[index].inside;
+            self.state.triggers[index].inside = inside;
+            if entering && !first && self.party_moves.is_none() && self.usable(index) {
+                self.run_index(index, 0);
+            }
+        }
+    }
+
+    /// The party arrived at `eye`: triggers there count as entered, so an
+    /// exit beside an entrance does not send it straight back.
+    pub fn arrive(&mut self, eye: Vec3) {
+        for (index, definition) in self.definitions.iter().enumerate() {
+            if let Some(place) = definition.place {
+                let (near, far) = definition.range;
+                self.state.triggers[index].inside = (near..far).contains(&eye.distance(place));
+            }
+        }
     }
 
     /// Run a trigger by name. Returns whether its action committed.
@@ -274,6 +314,10 @@ impl Triggers<'_> {
                 if !found {
                     return false;
                 }
+            }
+            action::TELEPORT | action::RANDOM_TELEPORT => {
+                let Some(arrival) = &definition.arrival else { return false };
+                self.party_moves = Some(arrival.clone());
             }
             action::SHAKE => {
                 let [intensity, _, duration] = definition.data;
@@ -375,9 +419,19 @@ pub struct LevelTriggers<'w, 's> {
     props: Query<'w, 's, (&'static Prop, &'static mut PropMotion, &'static Children)>,
     parts: Query<'w, 's, &'static GlobalTransform, With<PropPart>>,
     effects: MessageWriter<'w, TriggerEffect>,
+    party_move: ResMut<'w, PendingPartyMove>,
 }
 
+/// A teleport has sent the party somewhere; the party module moves it.
+#[derive(Resource, Debug, Default)]
+pub struct PendingPartyMove(pub Option<Arrival>);
+
 impl LevelTriggers<'_, '_> {
+    /// Where a teleport has sent the party, if anywhere; taking it clears it.
+    pub fn take_party_move(&mut self) -> Option<Arrival> {
+        self.party_move.0.take()
+    }
+
     /// Run triggers with `run`, then send their effects to presentation.
     /// Nothing runs while no level is built.
     pub fn with<R>(&mut self, run: impl FnOnce(&mut Triggers) -> R) -> Option<R> {
@@ -407,10 +461,18 @@ impl LevelTriggers<'_, '_> {
                 },
             );
         }
-        let mut triggers =
-            Triggers { definitions: &geometry.triggers, state, props, effects: Vec::new() };
+        let mut triggers = Triggers {
+            definitions: &geometry.triggers,
+            state,
+            props,
+            effects: Vec::new(),
+            party_moves: None,
+        };
         let result = run(&mut triggers);
         self.effects.write_batch(triggers.effects);
+        if let Some(arrival) = triggers.party_moves {
+            self.party_move.0 = Some(arrival);
+        }
         Some(result)
     }
 }
@@ -439,6 +501,8 @@ mod tests {
             initial_state: None,
             range: (0.0, 10.0),
             door: None,
+            place: None,
+            arrival: None,
         }
     }
 
@@ -501,6 +565,7 @@ mod tests {
                 state: &mut self.state,
                 props,
                 effects: vec![],
+                party_moves: None,
             };
             let committed = triggers.run(name);
             (committed, triggers.effects)
@@ -666,5 +731,47 @@ mod tests {
         assert_eq!(level.run("BELL_BUTTON").1, [bell_sound(1)]);
         assert_eq!(level.motion("BELL_1").frame, bell);
         assert_eq!(level.motion("BELL_1").target, 36.0);
+    }
+
+    #[test]
+    fn walk_in_triggers_fire_on_entering_when_usable() {
+        let teleport = |name: &str, x: f32, usable: bool| {
+            let mut trigger = trigger(name, action::TELEPORT);
+            trigger.usable = usable;
+            trigger.place = Some(Vec3::new(x, 0.0, 0.0));
+            trigger.range = (0.0, 2.0);
+            trigger.arrival = Some(Arrival::Entrance(format!("{name}00")));
+            trigger
+        };
+        let geometry = LevelGeometry {
+            triggers: vec![
+                teleport("START", 0.0, true),
+                teleport("EXIT", 10.0, true),
+                teleport("OFF", 20.0, false),
+            ],
+            ..default()
+        };
+        let mut state = LevelState::new(&geometry, LevelScript::None);
+        let mut walk = |eye: Vec3| {
+            let mut triggers = Triggers {
+                definitions: &geometry.triggers,
+                state: &mut state,
+                props: HashMap::new(),
+                effects: vec![],
+                party_moves: None,
+            };
+            triggers.walk(eye);
+            triggers.party_moves
+        };
+        // Standing in a trigger when the level is first seen does not fire it.
+        assert!(walk(Vec3::ZERO).is_none());
+        assert!(walk(Vec3::new(5.0, 0.0, 0.0)).is_none());
+        assert!(
+            matches!(walk(Vec3::new(10.5, 0.0, 0.0)), Some(Arrival::Entrance(e)) if e == "EXIT00")
+        );
+        // Staying inside does not fire it again; a trigger the party may not
+        // use never fires.
+        assert!(walk(Vec3::new(10.0, 0.0, 0.0)).is_none());
+        assert!(walk(Vec3::new(20.0, 0.0, 0.0)).is_none());
     }
 }

@@ -45,7 +45,11 @@ shown on retail content; the gaps below remain. Done:
   link. Teleport triggers move the party within the level or, naming
   another level's entrance (`MO102` → `MO204`), swap the level root and place
   the party at that entrance once the new level is ready.
-- **Triggers.** Level triggers run as retail's do (`game::world::triggers`):
+- **Triggers.** Positioned triggers the party may use run when its eye
+  enters their range; teleports are ordinary trigger actions whose move the
+  party module applies (within the level, or travel). Disabled positioned
+  teleports, which the earlier teleport system fired, no longer do.
+  Level triggers run as retail's do (`game::world::triggers`):
   initial, alternate or fallback action by use and required location
   variables; door, toggle, start/stop, relay, camera shake and dial actions;
   recipients run synchronously on commit, including retail's relay double
@@ -114,8 +118,7 @@ Known gaps, in rough order:
   implemented. Travel does not yet ask retail's "Enter <level>?" question,
   and arriving does not probe for the ground (the party settles).
 - Most trigger actions are not performed yet (lights, missiles, fountains,
-  timed actions, proximity triggers other than
-  teleports, required items). Picking uses colliders, so a prop sunk below the
+  timed actions, required items). Picking uses colliders, so a prop sunk below the
   floor collider (the pressed bell pedal) cannot be clicked again, where
   retail picks what is drawn. Level state is lost when the level is left.
 - Map notes are not saved; the automap does not yet track explored cells or

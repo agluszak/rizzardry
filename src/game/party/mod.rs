@@ -1,7 +1,7 @@
 //! The party's roster, formation and spatial body.
 
 pub mod body;
-pub mod teleports;
+pub mod walk_in;
 
 use avian3d::prelude::{Gravity, PhysicsSystems};
 use bevy::prelude::*;
@@ -10,6 +10,7 @@ use bevy_tnua::prelude::*;
 use bevy_tnua_avian3d::prelude::*;
 
 use crate::game::world::level::build_level_geometry;
+use crate::game::world::triggers::PendingPartyMove;
 
 pub struct PartyPlugin;
 
@@ -32,11 +33,13 @@ impl Plugin for PartyPlugin {
         )
         // Tnua and Avian step on the fixed timestep; movement input feeds
         // them on the same step.
-        .init_resource::<teleports::InsideTriggers>()
+        .init_resource::<PendingPartyMove>()
         .add_systems(FixedUpdate, body::drive_party.in_set(TnuaUserControlsSystems))
         .add_systems(
             FixedPostUpdate,
-            teleports::run_teleport_triggers.after(PhysicsSystems::Writeback),
+            (walk_in::run_walk_in_triggers, walk_in::move_party)
+                .chain()
+                .after(PhysicsSystems::Writeback),
         );
     }
 }

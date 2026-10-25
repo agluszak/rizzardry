@@ -5,9 +5,9 @@ use std::collections::HashMap;
 use bevy::math::Vec3;
 
 use super::sections::LevelSections;
-use super::space::{UNITS_PER_METRE, retail_position, retail_yaw};
+use super::space::{retail_position, retail_yaw};
 use super::trigger::{ItemTrigger, TriggerKind, TriggerPlacement, action};
-use crate::content::level::{Arrival, Entrance, LevelLink, LinkKind, TeleportTrigger};
+use crate::content::level::{Arrival, Entrance, LevelLink, LinkKind};
 
 /// The eye above the feet, in retail units.
 const EYE_HEIGHT: f32 = 1000.0;
@@ -38,54 +38,51 @@ pub fn level_entrances(sections: &LevelSections) -> Vec<Entrance> {
         .collect()
 }
 
-/// Teleports (action 0x34/0x4b) and the links walkers use: teleports to a
-/// trigger in this level, and climbs (action 0x09 naming a camera path).
-///
-/// A teleport naming no trigger here leads to another level's entrance,
-/// e.g. `MO201` (Whizzardry `RunDestination`); it is not a link. Named
-/// positions are not handled. A random teleport becomes one link per
-/// destination; the party takes the first until the game has a random
-/// source for it.
-pub fn level_links(sections: &LevelSections) -> (Vec<LevelLink>, Vec<TeleportTrigger>) {
-    let positioned: HashMap<&str, (&ItemTrigger, TriggerPlacement)> = sections
+/// Where a teleport trigger (action 0x34/0x4b) takes the party: a trigger
+/// in this level, or another level's entrance named by location code and
+/// number, e.g. `MO201` (Whizzardry `RunDestination`). Named positions are
+/// not handled. A random teleport takes the first destination until the game
+/// has a random source for it.
+pub fn teleport_arrival(sections: &LevelSections, item: &ItemTrigger) -> Option<Arrival> {
+    let name = recipients(item).next()?;
+    let here = recipients(item).find_map(|name| match &sections.trigger(name)?.kind {
+        TriggerKind::Item(item) => item.placement,
+        _ => None,
+    });
+    match here {
+        Some(destination) => Some(Arrival::Here {
+            eye: retail_position(destination.position),
+            yaw: retail_yaw(destination.angle, destination.axis),
+        }),
+        None if name.len() >= 5 => Some(Arrival::Entrance(name.to_uppercase())),
+        None => None,
+    }
+}
+
+/// The links walkers use: teleports to a trigger in this level, and climbs
+/// (action 0x09 naming a camera path). A random teleport becomes one link per
+/// destination.
+pub fn level_links(sections: &LevelSections) -> Vec<LevelLink> {
+    let positioned: HashMap<&str, TriggerPlacement> = sections
         .all_triggers()
         .filter_map(|t| match &t.kind {
-            TriggerKind::Item(item) => Some((t.name.as_str(), (item, item.placement?))),
+            TriggerKind::Item(item) => Some((t.name.as_str(), item.placement?)),
             _ => None,
         })
         .collect();
     let mut links = Vec::new();
-    let mut teleports = Vec::new();
     for trigger in sections.all_triggers() {
         let TriggerKind::Item(item) = &trigger.kind else { continue };
         match item.initial_action {
             action::TELEPORT | action::RANDOM_TELEPORT => {
                 let Some(from) = item.placement else { continue };
-                let destinations: Vec<TriggerPlacement> = recipients(item)
-                    .filter_map(|name| positioned.get(name).map(|(_, placement)| *placement))
-                    .collect();
-                for destination in &destinations {
+                for destination in recipients(item).filter_map(|name| positioned.get(name)) {
                     links.push(LevelLink {
                         kind: LinkKind::Teleport,
                         from: feet(from.position),
                         to: feet(destination.position),
                     });
                 }
-                let arrival = match (destinations.first(), recipients(item).next()) {
-                    (Some(destination), _) => Arrival::Here {
-                        eye: retail_position(destination.position),
-                        yaw: retail_yaw(destination.angle, destination.axis),
-                    },
-                    // Retail reads a location code and an entrance number.
-                    (None, Some(name)) if name.len() >= 5 => Arrival::Entrance(name.to_uppercase()),
-                    (None, _) => continue,
-                };
-                teleports.push(TeleportTrigger {
-                    name: trigger.name.clone(),
-                    centre: retail_position(from.position),
-                    range: (item.range[0] / UNITS_PER_METRE, item.range[1] / UNITS_PER_METRE),
-                    arrival,
-                });
             }
             action::CAMERA_PATH => {
                 for name in recipients(item) {
@@ -106,7 +103,7 @@ pub fn level_links(sections: &LevelSections) -> (Vec<LevelLink>, Vec<TeleportTri
             _ => {}
         }
     }
-    (links, teleports)
+    links
 }
 
 #[cfg(test)]
@@ -130,16 +127,21 @@ mod tests {
             let data = files.read(level).unwrap().unwrap();
             let start = read_level_geometry(&data).unwrap().end;
             let sections = read_sections(&mut Bytes::new(&data[start..])).unwrap();
-            let (links, triggers) = level_links(&sections);
+            let links = level_links(&sections);
             teleports += links.iter().filter(|l| l.kind == LinkKind::Teleport).count();
             climbs += links.iter().filter(|l| l.kind == LinkKind::Climb).count();
             let names: Vec<String> =
                 level_entrances(&sections).into_iter().map(|e| e.name.to_uppercase()).collect();
             entrances.insert(level.to_owned(), names);
-            travel.extend(triggers.into_iter().filter_map(|t| match t.arrival {
-                Arrival::Entrance(name) => Some((level.to_owned(), name)),
-                Arrival::Here { .. } => None,
-            }));
+            for trigger in sections.all_triggers() {
+                let TriggerKind::Item(item) = &trigger.kind else { continue };
+                if item.enabled
+                    && item.initial_action == action::TELEPORT
+                    && let Some(Arrival::Entrance(name)) = teleport_arrival(&sections, item)
+                {
+                    travel.push((level.to_owned(), name));
+                }
+            }
         }
         // Every exit to another level names a level and one of its entrances.
         assert!(travel.len() > 20, "{} level exits", travel.len());

@@ -11,7 +11,6 @@ use bevy_tnua::builtins::{TnuaBuiltinWalk, TnuaBuiltinWalkConfig};
 use bevy_tnua::prelude::*;
 use bevy_tnua_avian3d::prelude::*;
 
-use super::teleports::InsideTriggers;
 use crate::content::level::LevelGeometry;
 use crate::game::world::level::{Level, LevelReady};
 use crate::game::world::props::{Prop, prop_under_ray};
@@ -163,7 +162,6 @@ pub fn place_party_on_ready(
     geometry: Res<Assets<LevelGeometry>>,
     mut party: Query<(&mut PartyBody, &mut Position, &mut Transform, &mut LinearVelocity)>,
     start: Option<Res<PartyStart>>,
-    mut inside: ResMut<InsideTriggers>,
     mut motion_configs: ResMut<Assets<PartyMotionConfig>>,
 ) {
     if ready.read().last().is_none() {
@@ -180,9 +178,6 @@ pub fn place_party_on_ready(
     });
     let eye = start.eye.or(entrance.map(|e| e.eye)).unwrap_or(Vec3::new(0.0, 1000.0 / U, 0.0));
     let yaw = start.yaw.or(entrance.map(|e| e.yaw)).unwrap_or_default();
-    if let Some(level) = level {
-        inside.enter_at(level, eye);
-    }
     let position = eye - Vec3::Y * EYE_ABOVE_CENTRE;
     if let Ok((mut body, mut at, mut transform, mut velocity)) = party.single_mut() {
         body.yaw = yaw;

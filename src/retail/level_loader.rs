@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use bevy::reflect::TypePath;
 
 use super::bytes::Bytes;
-use super::links::{level_entrances, level_links};
+use super::links::{level_entrances, level_links, teleport_arrival};
 use super::oct::read_collision;
 use super::prop::{PROP_COLLIDABLE, Prop};
 use super::prop_loader::{
@@ -20,7 +20,7 @@ use super::sections::{Environment, read_sections};
 use super::space::UNITS_PER_METRE;
 use super::space::{retail_direction, retail_position};
 use super::texture_loader::file_has_alpha;
-use super::trigger::{ItemTrigger, StateMode, TriggerKind, flag};
+use super::trigger::{ItemTrigger, StateMode, TriggerKind, action as trigger_action, flag};
 use crate::content::level::{
     DoorLock, LevelEnvironment, LevelGeometry, LevelPart, Playback, PropModel, PropModelPart,
     StateChange, TextureAnimation, TriggerDefinition, TriggerSound, VertexLighting,
@@ -228,13 +228,17 @@ fn level_triggers(sections: &LevelSections) -> Vec<TriggerDefinition> {
     sections
         .all_triggers()
         .filter_map(|trigger| match &trigger.kind {
-            TriggerKind::Item(item) => Some(trigger_definition(&trigger.name, item)),
+            TriggerKind::Item(item) => Some(trigger_definition(sections, &trigger.name, item)),
             _ => None,
         })
         .collect()
 }
 
-fn trigger_definition(name: &str, item: &ItemTrigger) -> TriggerDefinition {
+fn trigger_definition(
+    sections: &LevelSections,
+    name: &str,
+    item: &ItemTrigger,
+) -> TriggerDefinition {
     let sound = (item.play_sound && !item.sound.is_empty()).then(|| TriggerSound {
         path: format!("data/sound/{}", item.sound.replace('\\', "/")).to_lowercase(),
         volume: f32::from(item.sound_volume) / 100.0,
@@ -273,6 +277,17 @@ fn trigger_definition(name: &str, item: &ItemTrigger) -> TriggerDefinition {
             locked: door.locked,
             key: (door.item != u16::MAX && door.item != 0).then_some(door.item),
         }),
+        // Prop-backed triggers are used by clicking their prop.
+        place: item
+            .placement
+            .filter(|_| item.flags & flag::ITEM == 0)
+            .map(|placement| retail_position(placement.position)),
+        arrival: matches!(
+            item.initial_action,
+            trigger_action::TELEPORT | trigger_action::RANDOM_TELEPORT
+        )
+        .then(|| teleport_arrival(sections, item))
+        .flatten(),
     }
 }
 
@@ -466,7 +481,7 @@ impl AssetLoader for PvlLoader {
             &mut animated_textures,
         )
         .await;
-        let (links, teleports) = level_links(&sections);
+        let links = level_links(&sections);
         Ok(LevelGeometry {
             parts,
             collision,
@@ -477,7 +492,6 @@ impl AssetLoader for PvlLoader {
             triggers: level_triggers(&sections),
             props,
             links,
-            teleports,
             animated_textures,
         })
     }
