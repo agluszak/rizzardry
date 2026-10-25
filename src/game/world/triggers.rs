@@ -487,9 +487,9 @@ impl Triggers<'_> {
         let amount = amount.max(0) as u32;
         for member in party.members.iter_mut() {
             if action == action::HEALING_FOUNTAIN {
-                member.hp = (member.hp + amount).min(member.max_hp());
+                member.heal(amount);
             } else {
-                member.stamina = (member.stamina + amount).min(member.max_stamina());
+                member.restore_stamina(amount);
             }
         }
         let at = self.props.get(&index).map(|prop| prop.position);
@@ -502,13 +502,11 @@ impl Triggers<'_> {
     }
 
     /// Hurt each living member by their own roll (retail
-    /// `ApplyRolledHealthChangeToParty`). Unconsciousness and death are not
-    /// modelled yet: health stops at 0.
+    /// `ApplyRolledHealthChangeToParty`).
     fn damage_party(&mut self, dice: Dice) {
         let Some(party) = &mut self.party else { return };
-        for member in party.members.iter_mut().filter(|m| m.hp > 0) {
-            let amount = party.rng.roll(dice);
-            member.hp = member.hp.saturating_sub(amount);
+        for member in party.members.iter_mut().filter(|m| !m.is_dead()) {
+            let amount = member.damage(party.rng.roll(dice));
             self.effects.push(TriggerEffect::Hurt { member: member.name.clone(), amount });
         }
     }

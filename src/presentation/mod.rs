@@ -67,7 +67,7 @@ impl Plugin for PresentationPlugin {
                     billboards::face_camera.after(crate::game::party::body::aim_camera),
                     effects::play_trigger_effects,
                     music::play_music,
-                    (hud::spawn_party_bar, hud::show_portraits, hud::update_health_bars).chain(),
+                    (hud::spawn_party_bar, hud::update_portraits, hud::update_pool_bars).chain(),
                     (ambience::place_ambient_sounds, ambience::play_ambient_sounds).chain(),
                     (notices::queue_notices, notices::show_notices, notices::fade_notices).chain(),
                     (

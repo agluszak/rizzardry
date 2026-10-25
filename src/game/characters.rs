@@ -60,6 +60,39 @@ pub const VITALITY: usize = 3;
 pub const SPEED: usize = 5;
 pub const SENSES: usize = 6;
 pub const SKILLS: usize = 41;
+/// Stamina above which an exhausted member comes round.
+const COMES_ROUND_ABOVE: u32 = 9;
+
+/// Retail's conditions, mildest first. Death is not one of them here: a
+/// member is dead exactly when their health is 0.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Reflect)]
+pub enum Condition {
+    Drained,
+    Diseased,
+    Irritated,
+    Nauseated,
+    Slowed,
+    Afraid,
+    Poisoned,
+    Silenced,
+    Hexed,
+    Infatuated,
+    Insane,
+    Blind,
+    Turncoat,
+    Webbed,
+    Asleep,
+    Paralyzed,
+    Unconscious,
+}
+
+/// How long a condition lasts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Reflect)]
+pub enum Lasting {
+    Rounds(u16),
+    /// Until something lifts it, like exhaustion until stamina returns.
+    Indefinite,
+}
 /// The expert skill Snake Speed, which adds to initiative.
 const SNAKE_SPEED: usize = 39;
 
@@ -258,6 +291,7 @@ pub struct Character {
     pub skill_points: [u8; SKILLS],
     pub hp: u32,
     pub stamina: u32,
+    pub conditions: Vec<(Condition, Lasting)>,
     /// The portrait's file stem (e.g. `hummf` for `data/portraits/small/shummf.sti`).
     pub portrait: String,
 }
@@ -286,6 +320,7 @@ impl Character {
             skill_points: [0; SKILLS],
             hp: 0,
             stamina: 0,
+            conditions: Vec::new(),
             portrait: String::new(),
         };
         let share = 60 / (1 + row.skills.len() as u32);
@@ -376,6 +411,88 @@ impl Character {
             goal += step;
         }
         goal
+    }
+
+    pub fn is_dead(&self) -> bool {
+        self.hp == 0
+    }
+
+    pub fn has(&self, condition: Condition) -> bool {
+        self.conditions.iter().any(|&(c, _)| c == condition)
+    }
+
+    /// The worst condition, which retail shows and which decides whether
+    /// the member can act.
+    pub fn worst_condition(&self) -> Option<Condition> {
+        self.conditions.iter().map(|&(c, _)| c).max()
+    }
+
+    /// Inflict a condition, keeping the longer duration if already afflicted.
+    pub fn inflict(&mut self, condition: Condition, lasting: Lasting) {
+        match self.conditions.iter_mut().find(|(c, _)| *c == condition) {
+            Some((_, existing)) => {
+                *existing = match (*existing, lasting) {
+                    (Lasting::Rounds(a), Lasting::Rounds(b)) => Lasting::Rounds(a.max(b)),
+                    _ => Lasting::Indefinite,
+                }
+            }
+            None => self.conditions.push((condition, lasting)),
+        }
+    }
+
+    pub fn lift(&mut self, condition: Condition) {
+        self.conditions.retain(|&(c, _)| c != condition);
+    }
+
+    /// Take damage (retail `damageCharacter`): two thirds of it also drain
+    /// stamina, and health reaching 0 is death. The dead take none. Returns
+    /// the health lost. Guardian Angel, cheating death and waking the asleep
+    /// are not modelled yet.
+    pub fn damage(&mut self, amount: u32) -> u32 {
+        if self.is_dead() {
+            return 0;
+        }
+        self.spend_stamina(amount * 2 / 3);
+        let lost = amount.min(self.hp);
+        self.hp -= lost;
+        if self.is_dead() {
+            // Death clears every condition but infatuation (retail `Die`).
+            self.conditions.retain(|&(c, _)| c == Condition::Infatuated);
+            self.stamina = 0;
+        }
+        lost
+    }
+
+    /// Spend stamina; running out knocks the member unconscious until it
+    /// comes back.
+    pub fn spend_stamina(&mut self, amount: u32) {
+        if self.stamina == 0 || self.is_dead() || amount == 0 {
+            return;
+        }
+        self.stamina -= amount.min(self.stamina);
+        if self.stamina == 0 {
+            self.inflict(Condition::Unconscious, Lasting::Indefinite);
+        }
+    }
+
+    /// Restore stamina up to its maximum; an exhausted member comes round
+    /// once it is above 9.
+    pub fn restore_stamina(&mut self, amount: u32) {
+        if self.is_dead() {
+            return;
+        }
+        self.stamina = (self.stamina + amount).min(self.max_stamina());
+        let exhausted = self.conditions.contains(&(Condition::Unconscious, Lasting::Indefinite));
+        if exhausted && self.stamina > COMES_ROUND_ABOVE {
+            self.lift(Condition::Unconscious);
+        }
+    }
+
+    /// Heal up to the maximum. Healing does not raise the dead.
+    pub fn heal(&mut self, amount: u32) {
+        if !self.is_dead() {
+            self.hp = (self.hp + amount).min(self.max_hp());
+        }
     }
 
     /// Whether the character may use an item (retail `CanCharacterUseItem`):
@@ -472,5 +589,24 @@ mod tests {
         bow.gender_mask = 3;
         bow.profession_mask = 1 << Profession::Mage as u16;
         assert!(!fighter.can_use(&bow));
+    }
+
+    #[test]
+    fn damage_tires_knocks_out_and_kills() {
+        let mut fighter = Character::new("Ragnar", Race::Human, Gender::Male, Profession::Fighter);
+        assert_eq!(fighter.damage(6), 6);
+        assert_eq!((fighter.hp, fighter.stamina), (12, 101));
+        fighter.spend_stamina(200);
+        assert!(fighter.has(Condition::Unconscious));
+        fighter.restore_stamina(9);
+        assert!(fighter.has(Condition::Unconscious), "not above 9 yet");
+        fighter.restore_stamina(1);
+        assert!(!fighter.has(Condition::Unconscious));
+        assert_eq!(fighter.damage(100), 12);
+        assert!(fighter.is_dead());
+        assert!(fighter.conditions.is_empty() && fighter.stamina == 0);
+        assert_eq!(fighter.damage(5), 0);
+        fighter.heal(10);
+        assert!(fighter.is_dead(), "healing does not raise the dead");
     }
 }

@@ -135,7 +135,11 @@ Known gaps, in rough order:
   (Monastery 1's cameras, Arnika's) are not. Arriving does not probe for the ground (the party settles).
 - Traps (`0x24`, each living member hurt by their own roll) and damage
   zones (`0x23`, 1d6+2 every half second while the party stays) hurt the
-  party; unconsciousness and death are not modelled, so health stops at 0.
+  party. Damage drains two thirds of itself from stamina; running out of
+  stamina knocks a member unconscious until it climbs above 9, and 0 HP is
+  death (derived from health, not stored as a condition), which clears
+  other conditions but infatuation. The HUD dims the unconscious and shows
+  the dead as their race's skull.
   Plane-shaped triggers (falls) are not decoded as places yet.
 - Stamina and healing fountains (`0x25`, `0x26`) restore every member by
   `data[2]`, with `data[0]` uses (−1 endless) refilled `data[1]` × 720 game
