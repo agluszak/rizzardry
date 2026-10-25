@@ -5556,6 +5556,8 @@ dependencies = [
  "bevy_landmass",
  "clap",
  "num_enum",
+ "rand 0.9.5",
+ "rand_chacha",
  "rerecast",
  "serde",
  "thiserror 2.0.21",

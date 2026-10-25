@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
+use bevy::time::Stopwatch;
 use bevy_landmass::PointSampleDistance3d;
 use bevy_landmass::prelude::*;
 use bevy_tnua::builtins::TnuaBuiltinWalkConfig;
@@ -260,7 +261,8 @@ pub fn overhead_view(
 #[derive(Resource, Debug, Clone)]
 pub struct SayLine {
     pub line: String,
-    pub started: Option<(Entity, f32)>,
+    /// The speech playing, and for how long.
+    pub started: Option<(Entity, Stopwatch)>,
 }
 
 pub fn say_line(
@@ -273,14 +275,14 @@ pub fn say_line(
 ) {
     if say.started.is_none() && !party.is_empty() {
         let speech = crate::presentation::voice::speak(&mut commands, &assets, &say.line);
-        say.started = Some((speech, time.elapsed_secs()));
+        say.started = Some((speech, Stopwatch::new()));
         info!("speaking {}", say.line);
     }
+    let Some((speech, played)) = &mut say.started else { return };
+    played.tick(time.delta());
     for done in finished.read() {
-        if let Some((speech, started)) = say.started
-            && speech == done.speech
-        {
-            info!("finished {} after {:.2} s", done.line, time.elapsed_secs() - started);
+        if *speech == done.speech {
+            info!("finished {} after {:.2} s", done.line, played.elapsed_secs());
         }
     }
 }

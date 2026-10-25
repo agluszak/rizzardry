@@ -331,7 +331,6 @@ pub fn aim_camera(party: Query<&PartyBody>, mut camera: Query<&mut Transform, Wi
 }
 
 /// Use the prop under the pointer, within reach.
-#[allow(clippy::too_many_arguments)]
 pub fn interact(
     interact: Single<&ActionEvents, With<Action<Interact>>>,
     pointers: Query<(&PointerId, &PointerLocation)>,

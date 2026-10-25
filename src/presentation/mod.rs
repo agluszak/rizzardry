@@ -27,6 +27,18 @@ use crate::game::party::body::Exploration;
 
 pub struct PresentationPlugin;
 
+/// Presentation's own randomness (music, camera shakes, ambience), seeded
+/// from the system: never gameplay's [`crate::game::rng::GameRng`], so what
+/// is seen and heard cannot change what happens.
+#[derive(Resource, Debug)]
+pub struct PresentationRng(pub rand::rngs::SmallRng);
+
+impl Default for PresentationRng {
+    fn default() -> Self {
+        PresentationRng(rand::SeedableRng::from_os_rng())
+    }
+}
+
 /// Exploring takes input only while gameplay says the party is free
 /// (`game::screen`); presentation routes input by that rule, it does not
 /// make it.
@@ -45,16 +57,15 @@ fn hold_exploration(
 
 impl Plugin for PresentationPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<voice::SpeechFinished>()
+        app.add_plugins(main_screen::MainScreenPlugin)
+            .add_message::<voice::SpeechFinished>()
             .add_message::<dialog::TravelAnswer>()
             .add_message::<automap::OpenAutomap>()
             .init_resource::<effects::CameraShake>()
             .init_resource::<notices::TextLog>()
             .init_resource::<hover::Hover>()
-            .init_resource::<main_screen::ScreenLayout>()
-            .init_resource::<main_screen::SelectedMember>()
             .init_resource::<music::Music>()
-            .init_resource::<ambience::AmbienceNoise>()
+            .init_resource::<PresentationRng>()
             .add_input_context::<automap::Screens>()
             .add_systems(
                 Startup,
@@ -65,8 +76,6 @@ impl Plugin for PresentationPlugin {
                     dialog::load_dialog_art,
                     camp::load_camp_art,
                     inventory::load_inventory_art,
-                    main_screen::load_main_screen_art,
-                    main_screen::spawn_screen_cameras,
                 ),
             )
             .add_systems(
@@ -74,19 +83,6 @@ impl Plugin for PresentationPlugin {
                 (
                     automap::scale_ui,
                     hold_exploration,
-                    (
-                        main_screen::cycle_layout,
-                        main_screen::select_with_keys,
-                        main_screen::combat_keys,
-                        main_screen::text_box_keys,
-                        main_screen::paint_hover_art,
-                        main_screen::fit_viewport,
-                        main_screen::draw_main_screen,
-                        main_screen::update_radar,
-                        main_screen::play_splats,
-                    )
-                        .chain()
-                        .after(automap::scale_ui),
                     camp::show_camp,
                     (
                         inventory::toggle_inventory,
@@ -122,7 +118,7 @@ impl Plugin for PresentationPlugin {
                     effects::play_trigger_effects,
                     music::play_music,
                     (ambience::place_ambient_sounds, ambience::play_ambient_sounds).chain(),
-                    notices::queue_notices.before(main_screen::draw_main_screen),
+                    notices::queue_notices,
                     (
                         dialog::show_travel_question,
                         dialog::answer_with_keys,

@@ -124,7 +124,6 @@ pub fn search_score(member: &Character, search_mode: bool, running: bool) -> u32
 /// The half-second sweep (retail `RunSearchPulse`): each hidden item
 /// within the search radius, in front of the eye and in its sight, is
 /// spotted by the best searcher if it lies within their range.
-#[allow(clippy::too_many_arguments)]
 pub fn search_pulse(
     time: Res<Time>,
     mut search: ResMut<Search>,

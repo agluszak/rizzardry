@@ -11,6 +11,9 @@ use crate::content::levels::LevelInfo;
 use crate::content::music::Playlist;
 use crate::game::camp::Camp;
 use crate::game::world::level::Level;
+use crate::presentation::PresentationRng;
+use rand::Rng;
+use rand::seq::IndexedRandom;
 
 const VOLUME: f32 = 0.6;
 const FADE_IN_SECONDS: f32 = 5.0;
@@ -24,30 +27,17 @@ pub struct Music {
     /// for it, which is the fallback when a level has none.
     wanted: Option<String>,
     playlist: Option<Handle<Playlist>>,
-    /// No new song before this time.
-    quiet_until: f32,
+    /// A silence between songs, while it lasts.
+    silence: Option<Timer>,
     /// A song has played since the level's music began, so the next gap
     /// may be a silence.
     played: bool,
-    /// Presentation randomness, apart from gameplay's.
-    noise: u32,
 }
 
-impl Music {
-    fn random(&mut self, below: u32) -> u32 {
-        let mut x = self.noise.max(1);
-        x ^= x << 13;
-        x ^= x >> 17;
-        x ^= x << 5;
-        self.noise = x;
-        if below == 0 { 0 } else { x % below }
-    }
-}
-
-/// The song playing.
+/// The song playing, fading in.
 #[derive(Component, Debug)]
 pub struct Song {
-    started: f32,
+    fade_in: Timer,
 }
 
 pub fn play_music(
@@ -58,9 +48,9 @@ pub fn play_music(
     camp: Option<Res<Camp>>,
     playlists: Res<Assets<Playlist>>,
     mut music: ResMut<Music>,
-    mut songs: Query<(Entity, &Song, Option<&mut AudioSink>)>,
+    mut rng: ResMut<PresentationRng>,
+    mut songs: Query<(Entity, &mut Song, Option<&mut AudioSink>)>,
 ) {
-    let now = time.elapsed_secs();
     let Ok(level) = levels.single() else { return };
     let wanted = if camp.is_some() {
         CAMPING.to_owned()
@@ -72,10 +62,10 @@ pub fn play_music(
     if music.wanted.as_ref() != Some(&wanted) {
         music.playlist = Some(assets.load(&wanted));
         music.wanted = Some(wanted);
-        for (song, _, _) in &songs {
+        for (song, ..) in &songs {
             commands.entity(song).despawn();
         }
-        music.quiet_until = now;
+        music.silence = None;
         music.played = false;
         return;
     }
@@ -85,42 +75,39 @@ pub fn play_music(
         return;
     }
     let Some(playlist) = playlists.get(&handle) else { return };
-    if let Some((_, song, sink)) = songs.iter_mut().next() {
+    if let Some((_, mut song, sink)) = songs.iter_mut().next() {
+        song.fade_in.tick(time.delta());
         if let Some(mut sink) = sink {
-            let faded = ((now - song.started) / FADE_IN_SECONDS).clamp(0.0, 1.0);
-            sink.set_volume(Volume::Linear(VOLUME * faded));
+            sink.set_volume(Volume::Linear(VOLUME * song.fade_in.fraction()));
         }
         return;
     }
-    if now < music.quiet_until || playlist.songs.is_empty() {
-        return;
+    if let Some(silence) = &mut music.silence {
+        if !silence.tick(time.delta()).is_finished() {
+            return;
+        }
+        music.silence = None;
     }
     // A song just ended: perhaps a silence first.
-    if music.played && music.random(100) < playlist.pause_chance {
-        let span = playlist.pause_max.saturating_sub(playlist.pause_min);
-        music.quiet_until = now + (playlist.pause_min + music.random(span + 1)) as f32;
+    if music.played && rng.0.random_range(0..100) < playlist.pause_chance {
+        let low = playlist.pause_min;
+        let seconds = rng.0.random_range(low..=playlist.pause_max.max(low));
+        music.silence = Some(Timer::from_seconds(seconds as f32, TimerMode::Once));
         music.played = false;
         return;
     }
-    let weights: Vec<u32> = if playlist.songs.iter().any(|(_, w)| w.is_none()) {
-        vec![1; playlist.songs.len()]
-    } else {
-        playlist.songs.iter().map(|(_, w)| w.unwrap_or(1)).collect()
+    // Weighted, unless any song has no weight: then all alike.
+    let weighted = playlist.songs.iter().all(|(_, w)| w.is_some());
+    let Ok((file, _)) = playlist
+        .songs
+        .choose_weighted(&mut rng.0, |(_, w)| if weighted { w.unwrap_or(1) } else { 1 })
+    else {
+        return;
     };
-    let mut roll = music.random(weights.iter().sum::<u32>().max(1));
-    let mut pick = 0;
-    for (index, &weight) in weights.iter().enumerate() {
-        if roll < weight {
-            pick = index;
-            break;
-        }
-        roll -= weight;
-    }
-    let file = &playlist.songs[pick].0;
     info!("music: {file}");
     commands.spawn((
         Name::new(format!("Song {file}")),
-        Song { started: now },
+        Song { fade_in: Timer::from_seconds(FADE_IN_SECONDS, TimerMode::Once) },
         AudioPlayer::new(assets.load(format!("retail://data/music/{file}"))),
         PlaybackSettings::DESPAWN.with_volume(Volume::Linear(0.0)),
     ));

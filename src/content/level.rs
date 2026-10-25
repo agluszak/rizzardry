@@ -1,5 +1,7 @@
 //! A level's static geometry as native Bevy assets.
 
+use std::ops::RangeInclusive;
+
 use bevy::prelude::*;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
@@ -186,10 +188,10 @@ pub struct AmbientSoundModel {
     /// Metres; heard fully within 40% of it, fading to nothing at its edge.
     pub radius: f32,
     pub looping: bool,
-    /// Loudness range, 0 to 1.
-    pub volume: (f32, f32),
+    /// Loudness, 0 to 1.
+    pub volume: RangeInclusive<f32>,
     /// Seconds between plays of a one-shot sound.
-    pub interval: (f32, f32),
+    pub interval: RangeInclusive<f32>,
 }
 
 /// A path the party's eye flies along: eye position and view per key.

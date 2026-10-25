@@ -370,7 +370,6 @@ pub fn start_battle(
 }
 
 /// Advance the fight by one action when its pause is over.
-#[allow(clippy::too_many_arguments)]
 pub fn run_battle(
     mut commands: Commands,
     time: Res<Time>,
@@ -558,7 +557,6 @@ fn next_phase(step: u8, attacks_left: u32) -> u8 {
     if next > 100 { 0 } else { next as u8 }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn member_acts(
     battle: &mut Battle,
     slot: usize,
@@ -671,7 +669,6 @@ struct Loot {
     items: Vec<ItemId>,
 }
 
-#[allow(clippy::too_many_arguments)]
 fn monster_acts(
     battle: &mut Battle,
     index: usize,

@@ -5,6 +5,7 @@ use bevy::camera::visibility::RenderLayers;
 use bevy::picking::mesh_picking::ray_cast::MeshRayCast;
 use bevy::picking::pointer::{PointerId, PointerLocation};
 use bevy::prelude::*;
+use bevy::time::Stopwatch;
 
 use crate::content::items::ItemCatalog;
 use crate::content::species::MonsterCatalog;
@@ -20,11 +21,12 @@ use crate::game::world::props::{drawn_under_ray, owner, ray_under_pointer};
 use crate::presentation::screen_art::absolute;
 
 /// The living monster, or the lying item within reach, drawn under the
-/// pointer, and since when (retail `highlighted_item`, `selected_item`).
+/// pointer, and how long it has been (retail `highlighted_item`,
+/// `selected_item`).
 #[derive(Resource, Debug, Default)]
 pub struct Hover {
     entity: Option<Entity>,
-    since: f32,
+    held: Stopwatch,
 }
 
 impl Hover {
@@ -36,7 +38,6 @@ impl Hover {
 /// Retail picks the monster whose model is under the cursor, however far
 /// (`PickNearestMonsterUnderCursor`), and items within 5000 units
 /// (`PickNearestItemUnderCursor`).
-#[allow(clippy::too_many_arguments)]
 pub fn hover(
     time: Res<Time>,
     pointers: Query<(&PointerId, &PointerLocation)>,
@@ -60,8 +61,9 @@ pub fn hover(
         wanted.then_some(entity)
     });
     if under != hovered.entity {
-        *hovered = Hover { entity: under, since: time.elapsed_secs() };
+        *hovered = Hover { entity: under, held: Stopwatch::new() };
     }
+    hovered.held.tick(time.delta());
 }
 
 /// Retail's help box waits the tooltip delay, at most half a second.
@@ -75,10 +77,8 @@ const HALF_CURSOR: f32 = 16.0;
 #[derive(Component)]
 pub struct Tooltip;
 
-#[allow(clippy::too_many_arguments)]
 pub fn show_tooltip(
     mut commands: Commands,
-    time: Res<Time>,
     hovered: Res<Hover>,
     (items, monsters, groups, roster, members): (
         Query<&WorldItem>,
@@ -108,7 +108,7 @@ pub fn show_tooltip(
         .and_then(|(_, location)| location.location())
         .map(|location| (location.position / scale.0).round());
     let wanted =
-        hovered.entity.filter(|_| time.elapsed_secs() - hovered.since >= TOOLTIP_DELAY).zip(cursor);
+        hovered.entity.filter(|_| hovered.held.elapsed_secs() >= TOOLTIP_DELAY).zip(cursor);
     if wanted == *current && (wanted.is_none() || !shown.is_empty()) {
         return;
     }

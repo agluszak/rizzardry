@@ -82,7 +82,7 @@ pub fn build_world_items(
         shown.parts = Some(parts);
         // Retail rolls a yaw below 360 degrees; presentation does not take
         // gameplay's random numbers, so it comes from the item's identity.
-        transform.rotation = Quat::from_rotation_y((item.item.id.0 % 360) as f32 * 0.0174533);
+        transform.rotation = Quat::from_rotation_y(((item.item.id.0 % 360) as f32).to_radians());
     }
 }
 

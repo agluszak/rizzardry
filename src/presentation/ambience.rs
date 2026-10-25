@@ -6,6 +6,9 @@
 
 use bevy::audio::{AudioPlayer, AudioSink, AudioSinkPlayback, PlaybackSettings, Volume};
 use bevy::prelude::*;
+use rand::Rng;
+
+use crate::presentation::PresentationRng;
 
 use crate::content::level::{AmbientSoundModel, LevelGeometry};
 use crate::game::party::body::PartyCamera;
@@ -20,37 +23,13 @@ pub struct AmbientEmitter {
     index: usize,
     inside: bool,
     playing: Option<Entity>,
-    next_at: f32,
+    /// Until it may play again.
+    wait: Timer,
 }
 
 /// The level's ambient sounds have been placed.
 #[derive(Component, Debug)]
 pub struct AmbiencePlaced;
-
-/// Presentation randomness for ambience, apart from gameplay's.
-#[derive(Resource, Debug)]
-pub struct AmbienceNoise(u32);
-
-impl Default for AmbienceNoise {
-    fn default() -> Self {
-        AmbienceNoise(0x2545_f491)
-    }
-}
-
-impl AmbienceNoise {
-    fn unit(&mut self) -> f32 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 17;
-        x ^= x << 5;
-        self.0 = x;
-        x as f32 / u32::MAX as f32
-    }
-
-    fn between(&mut self, (low, high): (f32, f32)) -> f32 {
-        low + (high - low).max(0.0) * self.unit()
-    }
-}
 
 pub fn place_ambient_sounds(
     mut commands: Commands,
@@ -62,7 +41,7 @@ pub fn place_ambient_sounds(
         for (index, sound) in geometry.ambient_sounds.iter().enumerate() {
             commands.spawn((
                 Name::new(format!("Ambience {}", sound.path)),
-                AmbientEmitter { index, inside: false, playing: None, next_at: 0.0 },
+                AmbientEmitter { index, inside: false, playing: None, wait: Timer::default() },
                 Transform::from_translation(sound.position),
                 ChildOf(root),
             ));
@@ -85,14 +64,13 @@ pub fn play_ambient_sounds(
     geometry: Res<Assets<LevelGeometry>>,
     mut emitters: Query<(Entity, &mut AmbientEmitter, &Transform)>,
     mut sinks: Query<&mut AudioSink>,
-    mut noise: ResMut<AmbienceNoise>,
+    mut rng: ResMut<PresentationRng>,
 ) {
     let (Ok(listener), Some(level)) =
         (listener.single(), levels.iter().find_map(|l| geometry.get(&l.geometry)))
     else {
         return;
     };
-    let now = time.elapsed_secs();
     let ear = listener.translation();
     for (entity, mut emitter, at) in &mut emitters {
         let Some(sound) = level.ambient_sounds.get(emitter.index) else { continue };
@@ -115,7 +93,7 @@ pub fn play_ambient_sounds(
             match emitter.playing {
                 Some(playing) => {
                     if let Ok(mut sink) = sinks.get_mut(playing) {
-                        sink.set_volume(Volume::Linear(sound.volume.1 * loudness));
+                        sink.set_volume(Volume::Linear(sound.volume.end() * loudness));
                     }
                 }
                 None => {
@@ -124,7 +102,7 @@ pub fn play_ambient_sounds(
                         .spawn((
                             AudioPlayer::new(assets.load(format!("retail://{}", sound.path))),
                             PlaybackSettings::LOOP
-                                .with_volume(Volume::Linear(sound.volume.1 * loudness)),
+                                .with_volume(Volume::Linear(sound.volume.end() * loudness)),
                             ChildOf(entity),
                         ))
                         .id();
@@ -133,12 +111,17 @@ pub fn play_ambient_sounds(
             }
             continue;
         }
-        let due = if entering { noise.unit() < 2.0 / 3.0 } else { now >= emitter.next_at };
+        let due = if entering {
+            rng.0.random_bool(2.0 / 3.0)
+        } else {
+            emitter.wait.tick(time.delta()).is_finished()
+        };
         if entering {
-            emitter.next_at = now + noise.between(sound.interval);
+            emitter.wait =
+                Timer::from_seconds(rng.0.random_range(sound.interval.clone()), TimerMode::Once);
         }
         if due && emitter.playing.is_none() {
-            let volume = noise.between(sound.volume) * loudness;
+            let volume = rng.0.random_range(sound.volume.clone()) * loudness;
             let playing = commands
                 .spawn((
                     AudioPlayer::new(assets.load(format!("retail://{}", sound.path))),
@@ -147,7 +130,8 @@ pub fn play_ambient_sounds(
                 ))
                 .id();
             emitter.playing = Some(playing);
-            emitter.next_at = now + noise.between(sound.interval);
+            emitter.wait =
+                Timer::from_seconds(rng.0.random_range(sound.interval.clone()), TimerMode::Once);
         }
     }
 }
