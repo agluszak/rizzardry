@@ -9,8 +9,8 @@ use bevy::prelude::*;
 use super::{MainScreenArt, layer, loaded, put};
 use crate::content::ui::SpriteSheet;
 use crate::game::data::GameData;
-use crate::game::party::body::PartyCamera;
 use crate::presentation::automap::OpenAutomap;
+use crate::presentation::party_view::PartyCamera;
 use crate::presentation::screen_art::{absolute, sprite};
 
 pub fn spawn(

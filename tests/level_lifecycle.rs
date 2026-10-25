@@ -7,6 +7,7 @@ use avian3d::prelude::{Collider, RigidBodyDisabled};
 use bevy::prelude::*;
 use rizzardry::content::items::{ItemCatalog, LootTables};
 use rizzardry::content::level::{CollisionMesh, LevelGeometry, MonsterPlacement};
+use rizzardry::content::monster::MonsterModel;
 use rizzardry::content::species::{MonsterCatalog, Species};
 use rizzardry::game::data::GameData;
 use rizzardry::game::inventory::ItemIds;
@@ -15,7 +16,7 @@ use rizzardry::game::rng::GameRng;
 use rizzardry::game::world::level::{
     Departing, Destination, Level, LevelMemory, LevelReady, Travel, activate_level, travel,
 };
-use rizzardry::game::world::population::Monster;
+use rizzardry::game::world::population::{Monster, MonsterModels};
 use rizzardry::game::world::triggers::PendingPartyMove;
 
 fn app() -> App {
@@ -26,10 +27,11 @@ fn app() -> App {
         .init_asset::<LootTables>()
         .init_asset::<MonsterCatalog>()
         .init_asset::<bevy_landmass::NavMesh3d>()
-        .init_asset::<rizzardry::content::monster::MonsterModel>()
+        .init_asset::<MonsterModel>()
         .init_asset::<rizzardry::content::ui::TextTable>()
         .init_resource::<Assets<PartyMotionConfig>>()
         .init_resource::<LevelMemory>()
+        .init_resource::<MonsterModels>()
         .init_resource::<ItemIds>()
         .init_resource::<GameRng>()
         .init_resource::<PartyStart>()
@@ -52,6 +54,10 @@ fn with_data(app: &mut App) {
     let crab = Species { name: "Crab".into(), model: "crab".into(), ..default() };
     let species = world.resource_mut::<Assets<MonsterCatalog>>().add(MonsterCatalog(vec![crab]));
     world.insert_resource(GameData { items, loot, species });
+    // The crab's model, as the retail source would provide it.
+    let model = MonsterModel { body: default(), cycles: default() };
+    let model = world.resource_mut::<Assets<MonsterModel>>().add(model);
+    world.resource_mut::<MonsterModels>().0.insert(0, model);
 }
 
 fn test_level(app: &mut App, collision: CollisionMesh) -> Level {
@@ -208,4 +214,27 @@ fn a_killed_monster_stays_dead_when_the_party_returns() {
     assert!(is_played(&app, back));
     assert_eq!(app.world_mut().query::<&Level>().iter(app.world()).count(), 1);
     assert!(monsters(&mut app).is_empty(), "the dead crab came back");
+}
+
+#[test]
+fn a_level_waits_for_its_monsters_models_and_sizes_them() {
+    let mut app = app();
+    with_data(&mut app);
+    // The crab's model is still loading.
+    let loading = app.world_mut().resource_mut::<Assets<MonsterModel>>().reserve_handle();
+    app.world_mut().resource_mut::<MonsterModels>().0.insert(0, loading.clone());
+    let root = spawn_level(&mut app, floor());
+
+    app.update();
+    assert!(!is_played(&app, root) && !failed(&app, root));
+
+    let mut model = MonsterModel { body: default(), cycles: default() };
+    model.body.fight_radius = 0.5;
+    model.body.scale = 2.0;
+    app.world_mut().resource_mut::<Assets<MonsterModel>>().insert(&loading, model).unwrap();
+    app.update();
+    assert!(is_played(&app, root));
+    let world = app.world_mut();
+    let crab = world.query::<&Monster>().single(world).unwrap();
+    assert_eq!((crab.body.scale, crab.body.radius), (2.0, 1.0), "its body at its size");
 }

@@ -12,12 +12,12 @@ use crate::content::species::MonsterCatalog;
 use crate::content::ui::SpriteSheet;
 use crate::game::characters::Character;
 use crate::game::data::GameData;
-use crate::game::party::body::PartyCamera;
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::identify::{MonsterGroups, health_known};
 use crate::game::world::items::{REACH, WorldItem};
 use crate::game::world::population::Monster;
-use crate::game::world::props::{drawn_under_ray, owner, ray_under_pointer};
+use crate::presentation::party_view::PartyCamera;
+use crate::presentation::party_view::{drawn_under_ray, owner, ray_under_pointer};
 use crate::presentation::screen_art::absolute;
 
 /// The living monster, or the lying item within reach, drawn under the

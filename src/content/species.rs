@@ -2,12 +2,16 @@
 //! (`docs/research/combat.md` §6).
 
 use bevy::prelude::*;
+use enum_map::EnumMap;
+use enumset::EnumSet;
 
-use super::items::Dice;
+use super::characters::BodyPart;
+use super::items::{AttackMode, Dice};
 
 /// How far an attack reaches (retail range category).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Reflect)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Reach {
+    #[default]
     Touch,
     Short,
     Long,
@@ -35,23 +39,39 @@ impl Reach {
     }
 }
 
+/// How an attack is announced: by its mode's verb, or by a word of its own
+/// ("Claws", "Bites"), retail string 0x619 + 2 × the word's number.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttackWord {
+    Verb,
+    Word(u8),
+}
+
 /// One of a species' attacks.
-#[derive(Clone, Debug, PartialEq, Reflect)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct MonsterAttack {
-    /// How the attack is announced: 1 names it by its mode's verb, others
-    /// by a word of its own (string 0x619 + 2 × type, "Claws", "Bites").
-    pub weapon_type: u8,
-    /// The attack's weapon name, if any (0 for none).
-    pub weapon_name: u8,
+    pub word: AttackWord,
+    /// The attack has a weapon name of its own, which adds a preposition
+    /// to its announcement.
+    pub named: bool,
     pub reach: Reach,
     pub score: u8,
-    /// Bit per attack mode: swing, thrust, bash, berserk, throw, punch,
-    /// kick, lash, shoot.
-    pub modes: u16,
+    pub modes: EnumSet<AttackMode>,
     pub damage: Dice,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Reflect)]
+/// A species' attributes, which the attack rolls compare with a
+/// character's.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct MonsterAttributes {
+    pub strength: u8,
+    pub intelligence: u8,
+    pub dexterity: u8,
+    pub speed: u8,
+    pub senses: u8,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Species {
     /// What it is ("Ironskin Crocodile"), once the party knows.
     pub name: String,
@@ -61,29 +81,31 @@ pub struct Species {
     pub generic_plural: String,
     /// `data/monsters/<model>.mls`.
     pub model: String,
-    pub kind: u8,
+    /// Sees the party further by its level (retail species kind 4; what
+    /// the kinds mean is not established).
+    pub level_sight: bool,
     /// An NPC's record: its loot is its NPC's, not the treasure table.
     pub npc: bool,
     /// Percent taken off every hit.
     pub damage_reduction: u8,
-    /// Strength, intelligence, dexterity, speed, senses.
-    pub attributes: [u8; 5],
+    pub attributes: MonsterAttributes,
     pub hit_points: Dice,
     pub stamina: Dice,
-    pub flee_chance: u8,
     pub initiative: u8,
     pub attacks_per_round: u8,
     pub swings_per_round: u8,
     pub attacks: Vec<MonsterAttack>,
-    /// Where its hits land on a character: head, body, leg, hand, foot (%).
-    pub hits_on_party: [u8; 5],
+    /// Where its hits land on a character (%).
+    pub hits_on_party: EnumMap<BodyPart, u8>,
     /// Higher is easier to hit.
     pub evasion: i8,
-    /// Where hits land on it (%), by its own seven locations.
+    /// Where hits land on it (%), by its own seven locations, whose names
+    /// depend on its build (Wing, Tail, Head, Body, Leg, Hand, Foot for
+    /// most).
     pub hit_locations: [u8; 7],
     /// Armour by location and by attack mode; negative is better.
     pub armour_by_location: [i8; 7],
-    pub armour_by_mode: [i8; 9],
+    pub armour_by_mode: EnumMap<AttackMode, i8>,
     pub experience: u32,
     /// The level the rules use.
     pub level: u8,
@@ -93,7 +115,6 @@ pub struct Species {
     pub gold: Dice,
     /// What it may leave behind, in retail's slot order.
     pub treasure: Vec<Treasure>,
-    pub prefers_ranged: bool,
 }
 
 impl Species {
@@ -112,14 +133,14 @@ impl Species {
 
 /// One of a species' treasure slots (retail `W8MonsterTreasureEntry`): it
 /// drops with `chance` percent, `dice` times.
-#[derive(Clone, Debug, PartialEq, Reflect)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Treasure {
     pub drop: Drop,
     pub chance: u8,
     pub dice: Dice,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Reflect)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Drop {
     Item(super::items::ItemId),
     /// Items from this loot table.

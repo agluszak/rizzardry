@@ -39,11 +39,7 @@ impl Plugin for PartyPlugin {
                 roster::give_starting_equipment,
                 formation::seat_party,
                 (
-                    (
-                        (body::look_around, body::aim_camera).chain(),
-                        body::interact,
-                        crate::game::world::items::click_items_in_view,
-                    )
+                    (body::look_around, crate::game::world::interaction::act_on_click)
                         .run_if(party_free),
                     (
                         camp::request_camp.run_if(party_free),

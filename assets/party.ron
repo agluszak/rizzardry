@@ -1,0 +1,9 @@
+// The party a new game starts with, until party creation exists.
+[
+    (name: "Ragnar", race: Human, gender: Male, profession: Fighter, portrait: "hummf"),
+    (name: "Saphra", race: Dracon, gender: Female, profession: Valkyrie, portrait: "dracff"),
+    (name: "Borin", race: Dwarf, gender: Male, profession: Priest, portrait: "dwarfmn"),
+    (name: "Pippa", race: Hobbit, gender: Female, profession: Rogue, portrait: "hobfn"),
+    (name: "Elwen", race: Elf, gender: Female, profession: Mage, portrait: "elffm"),
+    (name: "Purrl", race: Felpurr, gender: Male, profession: Bard, portrait: "felpmf"),
+]

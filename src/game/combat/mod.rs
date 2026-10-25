@@ -6,17 +6,22 @@
 pub mod approach;
 pub mod attack;
 
+use crate::game::world::level::PlayedLevel;
+use crate::game::world::navigation::{Walker, feet};
 use avian3d::prelude::{Position, RigidBody, SpatialQuery, SpatialQueryFilter};
 use bevy::prelude::*;
+use enumset::EnumSet;
+
+use crate::content::items::AttackMode;
+use crate::content::species::AttackWord;
 
 use crate::content::items::{Dice, ItemCatalog, ItemId, LootTables};
-use crate::content::monster::MonsterModel;
 use crate::content::species::{MonsterCatalog, Reach};
 use crate::game::characters::{Character, Condition};
 use crate::game::data::GameData;
 use crate::game::inventory::{Carried, ItemIds, PartyInventory, make_item};
 use crate::game::loot;
-use crate::game::party::body::{EYE_ABOVE_CENTRE, PartyBody, PartyCamera};
+use crate::game::party::body::PartyBody;
 use crate::game::party::formation::{self, Formation, Row};
 use crate::game::party::recovery;
 use crate::game::party::roster::PartyRoster;
@@ -25,7 +30,6 @@ use crate::game::time::GameClock;
 use crate::game::world::identify::{DetectGroups, MonsterGroups};
 use crate::game::world::items::drop_loot;
 use crate::game::world::population::Monster;
-use crate::presentation::monsters::MonsterAppearance;
 use attack::{
     Swing, armour, character_initiative, character_swing, monster_swing, phase, primary_hand,
 };
@@ -132,8 +136,8 @@ pub struct Battle {
     attacked_this_round: bool,
     /// Monsters are walking up to the party: the round is not passive.
     approaching: bool,
-    /// Seconds until the next action.
-    wait: f32,
+    /// Until the next action.
+    wait: Timer,
 }
 
 impl Battle {
@@ -154,8 +158,8 @@ impl Battle {
 /// deciding whether "at" follows.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Announcement {
-    Mode(attack::Mode),
-    Monster { weapon_type: u8, mode: attack::Mode, named: bool },
+    Mode(AttackMode),
+    Monster { word: AttackWord, mode: AttackMode, named: bool },
 }
 
 /// What the fight tells the player.
@@ -198,15 +202,9 @@ fn able(member: &Character) -> bool {
 /// from its feet to the point 1000 world units (2 m) under the party's eye,
 /// less both bodies' alternate radii (its fight radius, the party's 1 m),
 /// never below 0. Reach and sight compare against this.
-fn distance_to_party(
-    party_eye: Vec3,
-    monster: &Monster,
-    at: &GlobalTransform,
-    look: &MonsterAppearance,
-) -> f32 {
-    let feet = at.translation() - Vec3::Y * look.float_height;
+fn distance_to_party(party_eye: Vec3, monster: &Monster, feet: Vec3) -> f32 {
     let party_point = party_eye - Vec3::Y * CAMERA_ABOVE_PARTY_POINT;
-    ((feet - party_point).length() - monster.radius - PARTY_ALTERNATE_RADIUS).max(0.0)
+    ((feet - party_point).length() - monster.body.radius - PARTY_ALTERNATE_RADIUS).max(0.0)
 }
 
 /// Retail `ComputeSightThreshold`: how far an observer facing away by
@@ -262,10 +260,9 @@ pub fn start_battle(
     battle: Option<Res<Battle>>,
     camp: Option<Res<crate::game::camp::Camp>>,
     mut party: Query<(&Position, &mut PartyBody)>,
-    camera: Query<&Projection, With<PartyCamera>>,
+    level: PlayedLevel,
     members: Query<&Character>,
-    monsters: Query<(Entity, &Monster, &GlobalTransform, &MonsterAppearance)>,
-    models: Res<Assets<MonsterModel>>,
+    monsters: Query<(Entity, &Monster, &GlobalTransform, Option<&Walker>)>,
     spatial: SpatialQuery,
     bodies: Query<&RigidBody>,
     data: Option<Res<GameData>>,
@@ -282,11 +279,8 @@ pub fn start_battle(
     else {
         return;
     };
-    let far = match camera.single() {
-        Ok(Projection::Perspective(perspective)) => perspective.far,
-        _ => return,
-    };
-    let party_eye = party_at.0 + Vec3::Y * EYE_ABOVE_CENTRE;
+    let Some(far) = level.view_distance() else { return };
+    let party_eye = PartyBody::eye(party_at);
     // The party's lowest level among those who can act weakens sight
     // from behind.
     let lowest_level = roster
@@ -308,31 +302,32 @@ pub fn start_battle(
     };
     let mut joined: Vec<(i32, Entity)> = monsters
         .iter()
-        .filter(|(_, monster, at, look)| {
+        .filter(|(_, monster, at, walker)| {
             let Some(kind) = catalog.0.get(monster.species as usize) else { return false };
-            if kind.npc || monster.is_dead() || monster.radius == 0.0 {
+            if kind.npc || monster.is_dead() {
                 return false;
             }
             if monster.conditions.iter().any(|&(c, _)| c > Condition::Webbed) {
                 return false;
             }
-            let distance = distance_to_party(party_eye, monster, at, look);
-            let eye = at.translation() - Vec3::Y * look.float_height + Vec3::Y * monster.eye_height;
+            let feet = feet(at.translation(), *walker);
+            let distance = distance_to_party(party_eye, monster, feet);
+            let eye = feet + Vec3::Y * monster.body.eye_height;
             if distance > far || !clear(eye, party_eye) {
                 return false;
             }
             let forward = at.forward().with_y(0.0);
             let to_party = (party_eye - eye).with_y(0.0);
             let angle = forward.angle_between(to_party);
-            let senses = i32::from(kind.attributes[4]);
-            let bonus = if kind.kind == 4 { (u32::from(kind.level) * 5).min(125) } else { 0 };
+            let senses = i32::from(kind.attributes.senses);
+            let bonus = if kind.level_sight { (u32::from(kind.level) * 5).min(125) } else { 0 };
             if sight_threshold(angle, senses, bonus, lowest_level, far, distance) < distance {
                 return false;
             }
             let reaches = kind.attacks.iter().any(|a| distance <= a.reach.metres());
             let close =
                 kind.attacks.iter().map(|a| a.reach).max().is_some_and(|r| r <= Reach::Short);
-            let walks = models.get(&look.model).is_some_and(|m| m.body.movement_rate > 0.0);
+            let walks = monster.body.speed > 0.0;
             reaches || (close && walks)
         })
         .map(|(entity, m, ..)| (m.location, entity))
@@ -349,8 +344,7 @@ pub fn start_battle(
         .map(|(_, _, at, _)| at.translation())
         .min_by(|a, b| a.distance(party_eye).total_cmp(&b.distance(party_eye)));
     if let Some(nearest) = nearest {
-        let to = nearest - party_eye;
-        body.yaw = (-to.x).atan2(-to.z);
+        body.face(nearest - party_eye);
     }
     commands.insert_resource(Battle {
         round: 0,
@@ -363,7 +357,7 @@ pub fn start_battle(
         passive_rounds: 0,
         attacked_this_round: false,
         approaching: false,
-        wait: 0.0,
+        wait: Timer::default(),
     });
     news.write(CombatNews::Began);
     detect.write(crate::game::world::identify::DetectGroups);
@@ -378,7 +372,7 @@ pub fn run_battle(
     mut clock: ResMut<GameClock>,
     roster: Res<PartyRoster>,
     mut members: Query<(&mut Character, &Carried)>,
-    mut monsters: Query<(&mut Monster, &GlobalTransform, &MonsterAppearance)>,
+    mut monsters: Query<(&mut Monster, &GlobalTransform, Option<&Walker>)>,
     party_body: Query<(&Position, &PartyBody)>,
     formation: Res<Formation>,
     mut purse: ResMut<PartyInventory>,
@@ -411,13 +405,12 @@ pub fn run_battle(
     };
     let Ok((position, body)) = party_body.single() else { return };
     let party = PartyView {
-        eye: position.0 + Vec3::Y * EYE_ABOVE_CENTRE,
+        eye: PartyBody::eye(position),
         yaw: body.yaw,
         formation: &formation,
         orders: &orders,
     };
-    battle.wait -= time.delta_secs();
-    if battle.wait > 0.0 {
+    if !battle.wait.tick(time.delta()).is_finished() {
         return;
     }
 
@@ -514,7 +507,7 @@ pub fn run_battle(
                     .collect();
                 drop_loot(&mut commands, level, loot.feet, made, items, &mut ids, &mut rng);
             }
-            battle.wait = ACTION_SECONDS;
+            battle.wait = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
             return;
         }
         if let Some(index) = battle.monsters.iter().position(|(_, t)| t.phase == step) {
@@ -536,7 +529,7 @@ pub fn run_battle(
                 groups,
                 &mut news,
             );
-            battle.wait = ACTION_SECONDS;
+            battle.wait = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
             if !roster.0.iter().any(|&m| members.get(m).is_ok_and(|(c, _)| !c.is_dead())) {
                 news.write(CombatNews::Lost);
                 commands.remove_resource::<Battle>();
@@ -563,7 +556,7 @@ fn member_acts(
     member: Entity,
     rng: &mut GameRng,
     members: &mut Query<(&mut Character, &Carried)>,
-    monsters: &mut Query<(&mut Monster, &GlobalTransform, &MonsterAppearance)>,
+    monsters: &mut Query<(&mut Monster, &GlobalTransform, Option<&Walker>)>,
     party: &PartyView,
     items: &ItemCatalog,
     species: &MonsterCatalog,
@@ -580,8 +573,8 @@ fn member_acts(
         .monsters
         .iter()
         .filter_map(|&(entity, _)| {
-            let (monster, at, look) = monsters.get(entity).ok()?;
-            let distance = distance_to_party(party.eye, monster, at, look);
+            let (monster, at, walker) = monsters.get(entity).ok()?;
+            let distance = distance_to_party(party.eye, monster, feet(at.translation(), walker));
             if monster.is_dead() || !party.reaches(slot, at.translation(), hand.reach, distance) {
                 return None;
             }
@@ -605,12 +598,12 @@ fn member_acts(
     turn.attacks_left -= 1;
     turn.phase = next_phase(turn.phase, turn.attacks_left);
     battle.attacked_this_round = true;
-    let Ok((mut monster, at, look)) = monsters.get_mut(target) else { return None };
-    let feet = at.translation() - Vec3::Y * look.float_height;
+    let Ok((mut monster, at, walker)) = monsters.get_mut(target) else { return None };
+    let feet = feet(at.translation(), walker);
     let kind = species.0.get(monster.species as usize)?;
     let name = kind.shown_name(groups.identified(monster.group), 1).to_owned();
     // Retail draws the attack's mode, then its swings.
-    let mode = attack::Mode::choose(rng, hand.modes);
+    let mode = attack::choose_mode(rng, hand.modes);
     let swings = rng.below(hand.swings) + 1;
     news.write(CombatNews::Attack {
         attacker: character.name.clone(),
@@ -621,7 +614,7 @@ fn member_acts(
     let (mut hits, mut dealt, mut loot) = (0, 0, None);
     for _ in 0..swings {
         match character_swing(rng, &character, &hand, mode, kind) {
-            Swing::Hit { damage, .. } => {
+            Swing::Hit(damage) => {
                 hits += 1;
                 dealt += damage.min(monster.hp);
                 monster.hp = monster.hp.saturating_sub(damage);
@@ -675,7 +668,7 @@ fn monster_acts(
     rng: &mut GameRng,
     roster: &PartyRoster,
     members: &mut Query<(&mut Character, &Carried)>,
-    monsters: &Query<(&mut Monster, &GlobalTransform, &MonsterAppearance)>,
+    monsters: &Query<(&mut Monster, &GlobalTransform, Option<&Walker>)>,
     party: &PartyView,
     items: &ItemCatalog,
     species: &MonsterCatalog,
@@ -683,21 +676,18 @@ fn monster_acts(
     news: &mut MessageWriter<CombatNews>,
 ) {
     let (entity, turn) = battle.monsters[index];
-    let Ok((monster, at, look)) = monsters.get(entity) else { return };
+    let Ok((monster, at, walker)) = monsters.get(entity) else { return };
     let Some(kind) = species.0.get(monster.species as usize) else { return };
     let name = kind.shown_name(groups.identified(monster.group), 1).to_owned();
-    let distance = distance_to_party(party.eye, monster, at, look);
+    let distance = distance_to_party(party.eye, monster, feet(at.translation(), walker));
     // Every (attack, mode, member) that reaches is equally likely.
     let mut candidates = vec![];
     for (a, attack) in kind.attacks.iter().enumerate() {
-        if attack.modes & 0x1ff == 0 {
-            continue;
-        }
         for (slot, &member) in roster.0.iter().enumerate() {
             let Ok((character, _)) = members.get(member) else { continue };
             if able(character) && party.reaches(slot, at.translation(), attack.reach, distance) {
-                for bit in (0..9).filter(|b| attack.modes & (1 << b) != 0) {
-                    candidates.push((a, bit, slot, member));
+                for mode in attack.modes {
+                    candidates.push((a, mode, slot, member));
                 }
             }
         }
@@ -708,31 +698,28 @@ fn monster_acts(
         return;
     }
     battle.attacked_this_round = true;
-    let (a, bit, slot, member) = candidates[rng.below(candidates.len() as u32) as usize];
+    let (a, mode, slot, member) = candidates[rng.below(candidates.len() as u32) as usize];
     let attack = &kind.attacks[a];
-    let mode = attack::Mode::choose(rng, 1 << bit);
+    // Retail draws for the mode again, from just the one chosen.
+    let mode = attack::choose_mode(rng, EnumSet::only(mode));
     let Ok((mut character, carried)) = members.get_mut(member) else { return };
     let mut armour = armour(&character, carried, items);
     // Defending is worth 2 (`characters.md` §4.8, component 10).
     if party.orders.of(slot) == Order::Defend {
         armour.total += 2;
-        armour.by_location.iter_mut().for_each(|a| *a += 2);
+        armour.by_location.values_mut().for_each(|a| *a += 2);
     }
     let swings = rng.below(u32::from(kind.swings_per_round.max(1))) + 1;
     news.write(CombatNews::Attack {
         attacker: name.clone(),
         target: character.name.clone(),
-        how: Announcement::Monster {
-            weapon_type: attack.weapon_type,
-            mode,
-            named: attack.weapon_name != 0,
-        },
+        how: Announcement::Monster { word: attack.word, mode, named: attack.named },
         swings,
     });
     let (mut hits, mut dealt) = (0, 0);
     for _ in 0..swings {
         match monster_swing(rng, kind, attack, mode, &character, &armour) {
-            Swing::Hit { damage, .. } => {
+            Swing::Hit(damage) => {
                 hits += 1;
                 dealt += character.damage(damage);
                 if character.is_dead() {
@@ -761,7 +748,7 @@ fn end_round(
     orders: &PartyOrders,
     roster: &PartyRoster,
     members: &mut Query<(&mut Character, &Carried)>,
-    monsters: &Query<(&mut Monster, &GlobalTransform, &MonsterAppearance)>,
+    monsters: &Query<(&mut Monster, &GlobalTransform, Option<&Walker>)>,
     news: &mut MessageWriter<CombatNews>,
     detect: &mut MessageWriter<DetectGroups>,
 ) {
@@ -791,7 +778,7 @@ fn end_round(
             character.restore_stamina(gained);
         }
     }
-    battle.wait = ROUND_SECONDS;
+    battle.wait = Timer::from_seconds(ROUND_SECONDS, TimerMode::Once);
     let active = battle.attacked_this_round || battle.approaching;
     battle.passive_rounds = if active { 0 } else { battle.passive_rounds + 1 };
     let hostiles_left =

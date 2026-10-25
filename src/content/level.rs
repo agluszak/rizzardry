@@ -7,7 +7,7 @@ use num_enum::{IntoPrimitive, TryFromPrimitive};
 
 /// One renderable piece of the static level: a compiled octree mesh's
 /// polygons that share a material.
-#[derive(Clone, Debug, Reflect)]
+#[derive(Clone, Debug)]
 pub struct LevelPart {
     pub mesh: Handle<Mesh>,
     pub material: Handle<StandardMaterial>,
@@ -17,7 +17,7 @@ pub struct LevelPart {
 
 /// Retail bakes lighting into vertex colours and redoes it when the time of
 /// day changes the sky light: colour = sky x reflectance x sun + fixed.
-#[derive(Clone, Debug, Default, Reflect)]
+#[derive(Clone, Debug, Default)]
 pub struct VertexLighting {
     /// Light that does not change with the time of day: static lights, the
     /// environment offset and emission.
@@ -41,8 +41,19 @@ impl VertexLighting {
     }
 }
 
+/// How far is seen in a level without fog options: retail's far clip of
+/// 75000 units.
+pub const DEFAULT_VIEW_DISTANCE: f32 = 150.0;
+
+impl LevelGeometry {
+    /// How far is seen in the level: its far clip, which also bounds sight.
+    pub fn view_distance(&self) -> f32 {
+        self.environment.as_ref().map_or(DEFAULT_VIEW_DISTANCE, |e| e.view_distance)
+    }
+}
+
 /// A level's fog and sky light (retail "fog options").
-#[derive(Clone, Debug, Reflect)]
+#[derive(Clone, Debug)]
 pub struct LevelEnvironment {
     /// Fog start and end as fractions of the view distance.
     pub fog_range: (f32, f32),
@@ -64,7 +75,7 @@ impl LevelEnvironment {
 
 /// A level's point lights and constant light offset. Level geometry has
 /// them baked in; props and actors take them at their positions.
-#[derive(Clone, Debug, Default, Reflect)]
+#[derive(Clone, Debug, Default)]
 pub struct LevelLighting {
     /// Added to everything's light (the level's environment offset).
     pub offset: Vec3,
@@ -74,7 +85,7 @@ pub struct LevelLighting {
 }
 
 /// A static level light with retail's linear falloff.
-#[derive(Clone, Copy, Debug, Reflect)]
+#[derive(Clone, Copy, Debug)]
 pub struct PointLightSource {
     pub position: Vec3,
     /// Colour times intensity.
@@ -103,7 +114,7 @@ impl LevelLighting {
 }
 
 /// Immutable static geometry shared by every visit to a level.
-#[derive(Asset, Clone, Debug, Default, Reflect)]
+#[derive(Asset, TypePath, Clone, Debug, Default)]
 pub struct LevelGeometry {
     pub parts: Vec<LevelPart>,
     pub collision: CollisionMesh,
@@ -132,7 +143,7 @@ pub struct LevelGeometry {
 
 /// How a walker gets from one end of a link to the other.
 /// Its number is its Landmass link kind.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Reflect, IntoPrimitive, TryFromPrimitive)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, IntoPrimitive, TryFromPrimitive)]
 #[repr(usize)]
 pub enum LinkKind {
     /// A teleport pad or portal: arrive at once.
@@ -144,7 +155,7 @@ pub enum LinkKind {
 }
 
 /// A one-way link between two ground positions.
-#[derive(Clone, Copy, Debug, Reflect)]
+#[derive(Clone, Copy, Debug)]
 pub struct LevelLink {
     pub kind: LinkKind,
     pub from: Vec3,
@@ -152,7 +163,7 @@ pub struct LevelLink {
 }
 
 /// A monster placed in the level (retail `.sts` `MONS`).
-#[derive(Clone, Debug, Reflect)]
+#[derive(Clone, Debug)]
 pub struct MonsterPlacement {
     /// Unique within the level.
     pub location: i32,
@@ -166,7 +177,7 @@ pub struct MonsterPlacement {
 }
 
 /// An item lying in the level as authored (retail `.sts` `ITEM`).
-#[derive(Clone, Debug, Reflect)]
+#[derive(Clone, Debug)]
 pub struct ItemPlacement {
     pub item: crate::content::items::ItemId,
     /// A stack's count, or charges or uses, by the item's quantity kind.
@@ -180,7 +191,7 @@ pub struct ItemPlacement {
 }
 
 /// A sound a place makes (retail ambient sound).
-#[derive(Clone, Debug, Reflect)]
+#[derive(Clone, Debug)]
 pub struct AmbientSoundModel {
     /// Retail path under `data/sound`.
     pub path: String,
@@ -195,7 +206,7 @@ pub struct AmbientSoundModel {
 }
 
 /// A path the party's eye flies along: eye position and view per key.
-#[derive(Clone, Debug, Reflect)]
+#[derive(Clone, Debug)]
 pub struct CameraPathModel {
     pub name: String,
     pub keys: Vec<Transform>,
@@ -203,7 +214,7 @@ pub struct CameraPathModel {
 }
 
 /// Where a teleport takes the party.
-#[derive(Clone, Debug, Reflect)]
+#[derive(Clone, Debug)]
 pub enum Arrival {
     /// The eye's position and facing in this level.
     Here { eye: Vec3, yaw: f32 },
@@ -217,7 +228,7 @@ pub enum Arrival {
 }
 
 /// A positioned trigger the party can enter the level at.
-#[derive(Clone, Debug, Reflect)]
+#[derive(Clone, Debug)]
 pub struct Entrance {
     pub name: String,
     /// Retail places the eye 1000 units above the trigger and lets the party
@@ -227,7 +238,7 @@ pub struct Entrance {
 }
 
 /// A placed prop: scenery, a door, a lever, a lift or a billboard.
-#[derive(Clone, Debug, Reflect)]
+#[derive(Clone, Debug)]
 pub struct PropModel {
     pub name: String,
     /// Retail `COLLIDABLE`: the party and monsters collide with its parts.
@@ -249,7 +260,7 @@ pub struct PropModel {
 
 /// A trigger: what happens when it runs, from the player using it, another
 /// trigger naming it as a recipient, or a level script.
-#[derive(Clone, Debug, Reflect)]
+#[derive(Clone, Debug)]
 pub struct TriggerDefinition {
     pub name: String,
     /// The player may use it; recipients run whatever this says.
@@ -293,7 +304,7 @@ pub struct TriggerDefinition {
     pub loot_table: Option<String>,
 }
 
-#[derive(Clone, Debug, Reflect)]
+#[derive(Clone, Debug)]
 pub struct TriggerSound {
     /// Retail path under `data/sound`.
     pub path: String,
@@ -301,7 +312,7 @@ pub struct TriggerSound {
     pub volume: f32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Reflect)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StateChange {
     Set,
     Clear,
@@ -309,7 +320,7 @@ pub enum StateChange {
 }
 
 /// A door's lock state.
-#[derive(Clone, Copy, Debug, Reflect)]
+#[derive(Clone, Copy, Debug)]
 pub struct DoorLock {
     pub locked: bool,
     /// The key item that unlocks it.
@@ -317,7 +328,7 @@ pub struct DoorLock {
 }
 
 /// One rigid part of a prop, in its rest pose.
-#[derive(Clone, Debug, Reflect)]
+#[derive(Clone, Debug)]
 pub struct PropModelPart {
     pub transform: Transform,
     /// The part's poses along its animation path, starting with the rest
@@ -330,7 +341,7 @@ pub struct PropModelPart {
 
 /// A level's solid collision triangles in world space (metres), with outward
 /// winding. Only vertices some triangle uses are kept.
-#[derive(Clone, Debug, Default, Reflect)]
+#[derive(Clone, Debug, Default)]
 pub struct CollisionMesh {
     pub vertices: Vec<Vec3>,
     pub triangles: Vec<[u32; 3]>,
@@ -349,7 +360,7 @@ impl CollisionMesh {
 }
 
 /// How an animated texture advances (retail `W8TextureAnimationMode`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Reflect)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Playback {
     Loop,
     PingPong,
@@ -360,7 +371,7 @@ pub enum Playback {
 }
 
 /// A material showing one frame of a frame list at a time.
-#[derive(Clone, Debug, Reflect)]
+#[derive(Clone, Debug)]
 pub struct TextureAnimation {
     pub material: Handle<StandardMaterial>,
     pub frames: Vec<Handle<Image>>,

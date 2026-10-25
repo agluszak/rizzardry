@@ -135,8 +135,8 @@ impl Formation {
 /// facing, clockwise, in quarters centred on the four sides).
 pub fn quadrant(from: Vec3, yaw: f32, to: Vec3) -> Row {
     // In the party's frame forward is -Z and right is +X.
-    let local = Quat::from_rotation_y(-yaw) * (to - from);
-    let bearing = local.x.atan2(-local.z).to_degrees().rem_euclid(360.0);
+    let local = (Quat::from_rotation_y(-yaw) * (to - from)).xz();
+    let bearing = Vec2::NEG_Y.angle_to(local).to_degrees().rem_euclid(360.0);
     row_at((((bearing + 45.0) % 360.0) / 90.0) as usize)
 }
 

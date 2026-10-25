@@ -7,14 +7,16 @@
 //! character rules that do not exist yet; callers pass it in.
 
 use bevy::prelude::*;
-use num_enum::IntoPrimitive;
+use enum_map::{Enum, EnumMap};
+use enumset::EnumSetType;
 
-use super::characters::{Character, DUAL_WEAPONS};
+use super::characters::Character;
 use super::rng::GameRng;
+use crate::content::characters::Skill;
 use crate::content::items::{EquipClass, ItemCatalog, ItemDefinition, ItemId, QuantityKind};
 
 /// One item's identity, kept through moves; a split makes a new one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Reflect)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ItemInstanceId(pub u32);
 
 /// Hands out item identities.
@@ -31,7 +33,7 @@ impl ItemIds {
 }
 
 /// How much of an item there is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Reflect)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Quantity {
     One,
     /// Identical things in one slot.
@@ -40,7 +42,7 @@ pub enum Quantity {
     Uses(u8),
 }
 
-#[derive(Clone, Debug, PartialEq, Reflect)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ItemInstance {
     pub id: ItemInstanceId,
     pub item: ItemId,
@@ -157,9 +159,8 @@ pub fn spend_use(item: &mut ItemInstance, keep_empty: bool) -> bool {
     }
 }
 
-/// In retail's slot order: its number is its place in `Carried::equipment`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Reflect, IntoPrimitive)]
-#[repr(usize)]
+/// Where an item is worn, in retail's slot order.
+#[derive(Debug, Hash, Enum, EnumSetType)]
 pub enum EquipSlot {
     Head,
     Misc1,
@@ -179,21 +180,6 @@ pub enum EquipSlot {
 }
 
 impl EquipSlot {
-    pub const ALL: [EquipSlot; 12] = [
-        EquipSlot::Head,
-        EquipSlot::Misc1,
-        EquipSlot::Misc2,
-        EquipSlot::Cloak,
-        EquipSlot::Torso,
-        EquipSlot::Hands,
-        EquipSlot::Primary,
-        EquipSlot::Secondary,
-        EquipSlot::AlternatePrimary,
-        EquipSlot::AlternateSecondary,
-        EquipSlot::Legs,
-        EquipSlot::Feet,
-    ];
-
     /// The other hand of the same weapon set.
     pub fn partner(self) -> Option<EquipSlot> {
         Some(match self {
@@ -213,32 +199,32 @@ pub const POOL_LIMIT: usize = 500;
 /// What one party member carries: worn equipment and a backpack.
 #[derive(Component, Clone, Debug, Default, PartialEq)]
 pub struct Carried {
-    pub equipment: [Option<ItemInstance>; 12],
+    pub equipment: EnumMap<EquipSlot, Option<ItemInstance>>,
     pub backpack: [Option<ItemInstance>; BACKPACK_SLOTS],
 }
 
 impl Carried {
     pub fn worn(&self, slot: EquipSlot) -> Option<&ItemInstance> {
-        self.equipment[usize::from(slot)].as_ref()
+        self.equipment[slot].as_ref()
     }
 
     fn slot_mut(&mut self, location: Slot) -> Option<&mut Option<ItemInstance>> {
         match location {
-            Slot::Equipment(slot) => Some(&mut self.equipment[usize::from(slot)]),
+            Slot::Equipment(slot) => Some(&mut self.equipment[slot]),
             Slot::Backpack(index) => self.backpack.get_mut(index),
         }
     }
 }
 
 /// A place on a member.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Reflect)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Slot {
     Equipment(EquipSlot),
     Backpack(usize),
 }
 
 /// Where an item is: on a member (by party position) or in the pool.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Reflect)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ItemLocation {
     Member(usize, Slot),
     Pool(usize),
@@ -361,11 +347,6 @@ pub fn allowed_slots(
     }
 }
 
-/// Ammunition kinds that fit a ranged weapon kind, from retail's hard-coded
-/// table (`CompatiblePartnerItems`). Only the plain pairs are here; the
-/// Gadgeteer's tiers and the guns' range rule are not yet.
-const PARTNERS: [(u16, u16); 4] = [(0x0b, 0x16), (0x25, 0x16), (0x0c, 0x53), (0x0d, 0x17)];
-
 /// Whether two items can share a weapon set (retail `CanHoldItemsTogether`).
 pub fn can_hold_together(a: &ItemDefinition, b: &ItemDefinition) -> bool {
     use EquipClass::*;
@@ -374,13 +355,16 @@ pub fn can_hold_together(a: &ItemDefinition, b: &ItemDefinition) -> bool {
     }
     let ranged = |d: &ItemDefinition| matches!(d.class, RangedWeapon | Ammunition);
     if ranged(a) || ranged(b) {
-        return PARTNERS.iter().any(|&(weapon, ammo)| {
-            (a.kind, b.kind) == (weapon, ammo) || (b.kind, a.kind) == (weapon, ammo)
-        });
+        // A launcher with the ammunition it shoots (retail
+        // `CompatiblePartnerItems`).
+        let fits = |launcher: &ItemDefinition, ammunition: &ItemDefinition| {
+            launcher.shoots.is_some() && launcher.shoots == ammunition.ammunition
+        };
+        return fits(a, b) || fits(b, a);
     }
     let weapon =
         |d: &ItemDefinition| matches!(d.class, ShortWeapon | ExtendedWeapon | ThrownWeapon);
-    !(weapon(a) && weapon(b)) || a.range == b.range
+    !(weapon(a) && weapon(b)) || a.reach == b.reach
 }
 
 /// Whether what is in a slot may come off (retail `CanUnequipSlotItem`): a
@@ -407,7 +391,7 @@ pub fn place_with_member(
 ) -> Result<(), ItemInstance> {
     let mut item = item.moved();
     if let (Some(definition), Quantity::Stack(_)) = (catalog.get(item.item), item.quantity) {
-        for slot in carried.equipment.iter_mut().chain(carried.backpack.iter_mut()).flatten() {
+        for slot in carried.equipment.values_mut().chain(carried.backpack.iter_mut()).flatten() {
             merge_stack(slot, &mut item, definition);
             if item.quantity == Quantity::Stack(0) {
                 return Ok(());
@@ -438,7 +422,7 @@ pub fn place_at_creation(
         && let Some(slot) = creation_slot(definition, carried, catalog, member)
         && allowed_slots(definition, carried, catalog, None).contains(&slot)
     {
-        match &mut carried.equipment[usize::from(slot)] {
+        match &mut carried.equipment[slot] {
             empty @ None => {
                 *empty = Some(item);
                 return Ok(());
@@ -475,7 +459,7 @@ fn creation_slot(
     Some(match definition.class {
         ShortWeapon | ExtendedWeapon if empty(EquipSlot::Primary) => EquipSlot::Primary,
         ShortWeapon | ExtendedWeapon
-            if member.skill_points[DUAL_WEAPONS] > 0 && empty(EquipSlot::Secondary) =>
+            if member.skill_points[Skill::DualWeapons] > 0 && empty(EquipSlot::Secondary) =>
         {
             EquipSlot::Secondary
         }
@@ -511,7 +495,7 @@ pub fn item_weight(item: &ItemInstance, catalog: &ItemCatalog) -> u32 {
 pub fn carried_weight(carried: &Carried, catalog: &ItemCatalog) -> u32 {
     carried
         .equipment
-        .iter()
+        .values()
         .chain(&carried.backpack)
         .flatten()
         .map(|i| item_weight(i, catalog))
@@ -807,15 +791,16 @@ impl PartyInventory {
 mod tests {
     use super::*;
     use crate::content::items::Dice;
+    use enumset::EnumSet;
 
     fn definition(id: u16, class: EquipClass) -> ItemDefinition {
         ItemDefinition {
             id: ItemId(id),
             name: format!("item {id}"),
             class,
-            profession_mask: 0xffff,
-            race_mask: u32::MAX,
-            gender_mask: 3,
+            professions: EnumSet::all(),
+            races: EnumSet::all(),
+            genders: EnumSet::all(),
             weight: 10,
             ..default()
         }
@@ -829,9 +814,9 @@ mod tests {
         arrows.maximum_quantity = 20;
         arrows.initial_quantity = Dice { count: 2, sides: 6, base: 0 };
         let mut sword = definition(1, EquipClass::ShortWeapon);
-        sword.weapon_skill = Some(0);
+        sword.weapon_skill = Some(Skill::Sword);
         let mut axe = definition(2, EquipClass::ExtendedWeapon);
-        axe.weapon_skill = Some(1);
+        axe.weapon_skill = Some(Skill::Axe);
         axe.two_handed = true;
         let shield = definition(3, EquipClass::Shield);
         let mut helm = definition(4, EquipClass::Head);
@@ -905,8 +890,7 @@ mod tests {
     fn members_merge_stacks_then_fill_the_backpack_and_the_pool_takes_the_rest() {
         let (catalog, mut ids) = (catalog(), ItemIds::default());
         let mut carried = Carried::default();
-        carried.equipment[usize::from(EquipSlot::Secondary)] =
-            Some(item(&mut ids, 0, Quantity::Stack(18)));
+        carried.equipment[EquipSlot::Secondary] = Some(item(&mut ids, 0, Quantity::Stack(18)));
         let mut party = PartyInventory::default();
         party.receive(&mut carried, item(&mut ids, 0, Quantity::Stack(5)), &catalog).unwrap();
         // Two topped up the worn stack; three took a backpack slot.
@@ -939,11 +923,10 @@ mod tests {
             (&catalog.0[1], &catalog.0[2], &catalog.0[3], &catalog.0[0]);
         let mut carried = Carried::default();
         assert!(allowed_slots(axe, &carried, &catalog, None).contains(&EquipSlot::Primary));
-        carried.equipment[usize::from(EquipSlot::Secondary)] =
-            Some(item(&mut ids, 3, Quantity::One));
+        carried.equipment[EquipSlot::Secondary] = Some(item(&mut ids, 3, Quantity::One));
         // A shield in the off hand bars a two-handed weapon from that set.
         assert_eq!(allowed_slots(axe, &carried, &catalog, None), [EquipSlot::AlternatePrimary]);
-        carried.equipment[usize::from(EquipSlot::Primary)] = Some(item(&mut ids, 2, Quantity::One));
+        carried.equipment[EquipSlot::Primary] = Some(item(&mut ids, 2, Quantity::One));
         assert!(!allowed_slots(shield, &carried, &catalog, None).contains(&EquipSlot::Secondary));
         assert!(!can_hold_together(axe, shield));
         assert!(can_hold_together(sword, shield));
@@ -997,7 +980,7 @@ mod tests {
             party.swap_with_hand(&wearer, &mut carried, 0, head, &catalog),
             Err(Refusal::Cursed)
         );
-        carried.equipment[usize::from(EquipSlot::Head)].as_mut().unwrap().curse_released = true;
+        carried.equipment[EquipSlot::Head].as_mut().unwrap().curse_released = true;
         party.swap_with_hand(&wearer, &mut carried, 0, head, &catalog).unwrap();
         assert!(!party.held.as_ref().unwrap().item.curse_released, "moving loses the release");
         // Something that does not belong there is refused.

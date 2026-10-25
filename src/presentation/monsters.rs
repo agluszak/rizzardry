@@ -1,7 +1,7 @@
 //! Showing and animating monster models.
 //!
-//! An actor with [`MonsterAppearance`] gets the model's cycles as children,
-//! one visible at a time. Each instance animates its own copy of the cycle
+//! Each [`Monster`] gets its model's cycles as children, one visible at a
+//! time. Each instance animates its own copy of the cycle
 //! meshes, interpolating vertex positions between frames as retail does with
 //! smooth animation on.
 
@@ -17,25 +17,13 @@ use crate::content::level::LevelGeometry;
 use crate::content::monster::MonsterModel;
 use crate::game::time::GameClock;
 use crate::game::world::level::Level;
+use crate::game::world::navigation::Walker;
 use crate::game::world::population::Monster;
 
-/// What an actor looks like, and how far its origin floats above its feet.
-#[derive(Component, Debug)]
-#[require(Visibility)]
-pub struct MonsterAppearance {
-    pub model: Handle<MonsterModel>,
-    pub float_height: f32,
-    /// Seconds into its first cycle it starts at.
-    pub phase: f32,
-    /// Its roll below 1000 within its species' scale range, if rolled.
-    pub size_roll: Option<u32>,
-}
-
-impl MonsterAppearance {
-    /// This actor's scale.
-    pub fn scale(&self, model: &MonsterModel) -> f32 {
-        self.size_roll.map_or(model.body.scale, |roll| model.body.scale_for(roll))
-    }
+/// Seconds into its first cycle a monster starts at. Retail starts each
+/// idle at a random frame; here it varies by location.
+fn first_phase(monster: &Monster) -> f32 {
+    (monster.location.unsigned_abs() % 97) as f32 * 0.37
 }
 
 /// The cycle an actor should play. Gameplay sets it; a changed request
@@ -69,20 +57,20 @@ pub struct MonsterInstance {
 
 pub fn build_monster_instances(
     mut commands: Commands,
-    actors: Query<(Entity, &MonsterAppearance), Without<MonsterInstance>>,
+    actors: Query<(Entity, &Monster, Option<&Walker>), Without<MonsterInstance>>,
     models: Res<Assets<MonsterModel>>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
-    for (actor, appearance) in &actors {
-        let Some(model) = models.get(&appearance.model) else { continue };
+    for (actor, monster, walker) in &actors {
+        let Some(model) = models.get(&monster.model) else { continue };
         // Retail models face -Z; after the Z mirror that is +Z, so turn them
         // to face the actor's forward (-Z). Feet are at the model's origin.
         let model_root = commands
             .spawn((
                 Transform {
-                    translation: Vec3::NEG_Y * appearance.float_height,
+                    translation: Vec3::NEG_Y * walker.map_or(0.0, |w| w.float_height),
                     rotation: Quat::from_rotation_y(std::f32::consts::PI),
-                    scale: Vec3::splat(appearance.scale(model)),
+                    scale: Vec3::splat(monster.body.scale),
                 },
                 Visibility::default(),
                 ChildOf(actor),
@@ -111,24 +99,22 @@ pub fn build_monster_instances(
             }
             cycles.insert(name.clone(), (cycle_root, copies));
         }
-        commands.entity(actor).insert(MonsterInstance {
-            model_root,
-            cycles,
-            playing: None,
-            sky_scale: SUNLIT,
-        });
+        commands.entity(actor).insert((
+            MonsterInstance { model_root, cycles, playing: None, sky_scale: SUNLIT },
+            Visibility::default(),
+        ));
     }
 }
 
-/// Keep the model's feet on the ground when the actor's float height
-/// changes (a placed monster gaining a walking body).
+/// Keep the model's feet on the ground when a monster gains a walking body
+/// that floats over them.
 pub fn follow_float_height(
-    actors: Query<(&MonsterAppearance, &MonsterInstance), Changed<MonsterAppearance>>,
+    actors: Query<(&Walker, &MonsterInstance), Changed<Walker>>,
     mut transforms: Query<&mut Transform>,
 ) {
-    for (appearance, instance) in &actors {
+    for (walker, instance) in &actors {
         if let Ok(mut transform) = transforms.get_mut(instance.model_root) {
-            transform.translation = Vec3::NEG_Y * appearance.float_height;
+            transform.translation = Vec3::NEG_Y * walker.float_height;
         }
     }
 }
@@ -148,13 +134,13 @@ pub fn show_deaths(
 /// Show each actor's requested cycle at its current frame.
 pub fn animate_monsters(
     time: Res<Time<Virtual>>,
-    mut actors: Query<(&MonsterAppearance, &mut MonsterInstance, Option<&CycleRequest>)>,
+    mut actors: Query<(&Monster, &mut MonsterInstance, Option<&CycleRequest>)>,
     models: Res<Assets<MonsterModel>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut visibility: Query<&mut Visibility>,
 ) {
-    for (appearance, mut instance, request) in &mut actors {
-        let Some(model) = models.get(&appearance.model) else { continue };
+    for (monster, mut instance, request) in &mut actors {
+        let Some(model) = models.get(&monster.model) else { continue };
         let request = request.cloned().unwrap_or_else(|| CycleRequest::looping("IDLE"));
         let name = if model.cycles.contains_key(&request.cycle) { &request.cycle } else { "IDLE" };
         let Some(cycle) = model.cycles.get(name) else { continue };
@@ -168,7 +154,7 @@ pub fn animate_monsters(
             // The first cycle starts part-way in.
             let mut played = Stopwatch::new();
             if instance.playing.is_none() {
-                played.set_elapsed(Duration::from_secs_f32(appearance.phase));
+                played.set_elapsed(Duration::from_secs_f32(first_phase(monster)));
             }
             instance.playing = Some((request.clone(), played));
         }
@@ -206,7 +192,7 @@ pub fn light_monsters(
     geometry: Res<Assets<LevelGeometry>>,
     models: Res<Assets<MonsterModel>>,
     spatial: SpatialQuery,
-    mut actors: Query<(&GlobalTransform, &MonsterAppearance, &mut MonsterInstance)>,
+    mut actors: Query<(&GlobalTransform, &Monster, &mut MonsterInstance)>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let Some((level_entity, level)) =
@@ -215,8 +201,8 @@ pub fn light_monsters(
         return;
     };
     let sky = level.environment.as_ref().map_or(Vec3::ZERO, |e| e.sky_light(clock.phase()));
-    for (transform, appearance, mut instance) in &mut actors {
-        let Some(model) = models.get(&appearance.model) else { continue };
+    for (transform, monster, mut instance) in &mut actors {
+        let Some(model) = models.get(&monster.model) else { continue };
         let centre = transform.translation();
         let target = if sunlit(&spatial, level_entity, level, centre) { SUNLIT } else { 0.0 };
         let step = SKY_SCALE_PER_SECOND * time.delta_secs();
@@ -271,7 +257,7 @@ pub fn choose_walker_cycles(
     mut commands: Commands,
     walkers: Query<
         (Entity, &avian3d::prelude::LinearVelocity, Option<&CycleRequest>),
-        With<MonsterAppearance>,
+        With<Monster>,
     >,
 ) {
     for (entity, velocity, current) in &walkers {

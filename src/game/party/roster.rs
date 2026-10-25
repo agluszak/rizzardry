@@ -1,11 +1,11 @@
 //! Who is in the party, in order.
 
 use bevy::prelude::*;
+use serde::Deserialize;
 
+use crate::content::characters::Skill;
 use crate::content::items::{ItemCatalog, ItemId};
-use crate::game::characters::{
-    AXE, Character, Gender, MACE_AND_FLAIL, Profession, Race, STAFF_AND_WAND, SWORD,
-};
+use crate::game::characters::{Character, Gender, Profession, Race};
 use crate::game::data::GameData;
 use crate::game::inventory::{Carried, ItemIds, make_item, place_at_creation};
 use crate::game::rng::GameRng;
@@ -15,71 +15,68 @@ use crate::game::rng::GameRng;
 #[derive(Resource, Debug, Default)]
 pub struct PartyRoster(pub Vec<Entity>);
 
-/// A party to play with until party creation exists.
-pub fn spawn_test_party(mut commands: Commands, mut roster: ResMut<PartyRoster>) {
-    let members = [
-        ("Ragnar", Race::Human, Gender::Male, Profession::Fighter, "hummf"),
-        ("Saphra", Race::Dracon, Gender::Female, Profession::Valkyrie, "dracff"),
-        ("Borin", Race::Dwarf, Gender::Male, Profession::Priest, "dwarfmn"),
-        ("Pippa", Race::Hobbit, Gender::Female, Profession::Rogue, "hobfn"),
-        ("Elwen", Race::Elf, Gender::Female, Profession::Mage, "elffm"),
-        ("Purrl", Race::Felpurr, Gender::Male, Profession::Bard, "felpmf"),
-    ];
-    for (name, race, gender, profession, portrait) in members {
-        let mut character = Character::new(name, race, gender, profession);
-        character.portrait = portrait.to_owned();
-        roster.0.push(commands.spawn((Name::new(name.to_owned()), character, NeedsEquipment)).id());
-    }
+/// Someone joining a new party, as party creation (or a party file) makes
+/// them.
+#[derive(Clone, Debug, Deserialize)]
+pub struct Recruit {
+    pub name: String,
+    pub race: Race,
+    pub gender: Gender,
+    pub profession: Profession,
+    /// The portrait's file stem, such as `hummf`.
+    pub portrait: String,
+}
+
+/// Add a new member at the end of the party; they receive their starting
+/// equipment once the items have loaded.
+pub fn recruit(commands: &mut Commands, roster: &mut PartyRoster, recruit: &Recruit) -> Entity {
+    let mut character =
+        Character::new(&recruit.name, recruit.race, recruit.gender, recruit.profession);
+    character.portrait = recruit.portrait.clone();
+    let member = commands.spawn((Name::new(recruit.name.clone()), character, NeedsEquipment)).id();
+    roster.0.push(member);
+    member
 }
 
 /// A new member still to receive their starting equipment.
 #[derive(Component, Debug)]
 pub struct NeedsEquipment;
 
-/// Each profession's six starting items (Faeries share their own set),
-/// retail `g_starting_equipment`.
-const STARTING_SETS: [[Option<u16>; 6]; 16] = {
-    const N: Option<u16> = None;
-    const fn s(i: u16) -> Option<u16> {
-        Some(i)
-    }
-    [
-        [s(143), s(153), s(203), s(246), N, N],
-        [s(35), s(1), s(158), s(204), s(247), s(210)],
-        [s(75), s(170), s(197), s(246), s(215), N],
-        [s(110), s(125), s(157), s(188), s(247), N],
-        [s(38), s(49), s(165), s(192), s(246), N],
-        [s(105), s(230), s(180), s(209), s(253), N],
-        [s(79), s(105), s(165), s(192), s(246), N],
-        [s(0), s(0), s(99), s(156), s(187), s(247)],
-        [s(132), s(156), s(187), s(246), N, N],
-        [s(769), s(116), s(132), s(156), s(187), N],
-        [s(165), s(192), s(246), s(335), N, N],
-        [s(28), s(165), s(192), s(246), s(350), N],
-        [s(82), s(165), s(192), s(246), s(223), N],
-        [s(0), s(165), s(192), s(246), s(347), N],
-        [s(28), s(165), s(192), s(246), s(385), N],
-        [s(63), s(169), s(196), s(335), s(358), s(0)],
-    ]
-};
-
-/// A new character's starting items (retail
-/// `AddCharacterStartingEquipment`): their set, then one extra item for
-/// some professions, chosen by their weapon skills.
-fn starting_items(character: &Character) -> Vec<u16> {
-    let set = if character.race == Race::Faerie { 15 } else { character.profession as usize };
-    let mut items: Vec<u16> = STARTING_SETS[set].iter().flatten().copied().collect();
+/// A new character's starting items (retail `g_starting_equipment` and
+/// `AddCharacterStartingEquipment`): their profession's set (Faeries have
+/// their own), then one extra item for some professions, chosen by their
+/// weapon skills.
+fn starting_items(character: &Character) -> Vec<ItemId> {
+    use Profession::*;
+    let set: &[u16] = match character.profession {
+        _ if character.race == Race::Faerie => &[63, 169, 196, 335, 358, 0],
+        Fighter => &[143, 153, 203, 246],
+        Lord => &[35, 1, 158, 204, 247, 210],
+        Valkyrie => &[75, 170, 197, 246, 215],
+        Ranger => &[110, 125, 157, 188, 247],
+        Samurai => &[38, 49, 165, 192, 246],
+        Ninja => &[105, 230, 180, 209, 253],
+        Monk => &[79, 105, 165, 192, 246],
+        Rogue => &[0, 0, 99, 156, 187, 247],
+        Gadgeteer => &[132, 156, 187, 246],
+        Bard => &[769, 116, 132, 156, 187],
+        Priest => &[165, 192, 246, 335],
+        Alchemist => &[28, 165, 192, 246, 350],
+        Bishop => &[82, 165, 192, 246, 223],
+        Psionic => &[0, 165, 192, 246, 347],
+        Mage => &[28, 165, 192, 246, 385],
+    };
     let skill = |s| character.skill(s);
-    items.extend(match character.profession {
-        Profession::Priest if skill(MACE_AND_FLAIL) > skill(STAFF_AND_WAND) => Some(0x16),
-        Profession::Priest => Some(0x52),
-        Profession::Fighter if skill(AXE) > skill(SWORD) => Some(0x12),
-        Profession::Fighter => Some(7),
-        Profession::Gadgeteer => Some(599),
-        Profession::Bard => Some(0x144),
+    let extra = match character.profession {
+        Priest if skill(Skill::MaceAndFlail) > skill(Skill::StaffAndWand) => Some(0x16),
+        Priest => Some(0x52),
+        Fighter if skill(Skill::Axe) > skill(Skill::Sword) => Some(0x12),
+        Fighter => Some(7),
+        Gadgeteer => Some(599),
+        Bard => Some(0x144),
         _ => None,
-    });
-    items
+    };
+    set.iter().copied().chain(extra).map(ItemId).collect()
 }
 
 /// Hand new members their starting equipment once the items have loaded:
@@ -96,7 +93,7 @@ pub fn give_starting_equipment(
     for (entity, character) in &members {
         let mut carried = Carried::default();
         for id in starting_items(character) {
-            let Some(definition) = catalog.get(ItemId(id)) else { continue };
+            let Some(definition) = catalog.get(id) else { continue };
             let item = make_item(definition, &mut ids, &mut rng, true, true);
             if place_at_creation(&mut carried, item, catalog, character).is_err() {
                 warn!("{}: no room for {}", character.name, definition.name);
@@ -136,15 +133,14 @@ mod tests {
             let character = Character::new("Test", race, gender, profession);
             let mut carried = Carried::default();
             for id in starting_items(&character) {
-                let item =
-                    make_item(catalog.get(ItemId(id)).unwrap(), &mut ids, &mut rng, true, true);
+                let item = make_item(catalog.get(id).unwrap(), &mut ids, &mut rng, true, true);
                 place_at_creation(&mut carried, item, &catalog, &character).unwrap();
             }
             let name = |i: &Option<crate::game::inventory::ItemInstance>| {
                 i.as_ref().map(|i| catalog.get(i.item).unwrap().name.clone())
             };
             println!("{race:?} {profession:?}");
-            for (slot, item) in EquipSlot::ALL.iter().zip(&carried.equipment) {
+            for (slot, item) in &carried.equipment {
                 if let Some(name) = name(item) {
                     println!("  {slot:?}: {name}");
                 }

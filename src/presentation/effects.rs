@@ -3,9 +3,10 @@
 use bevy::audio::{AudioPlayer, PlaybackSettings, Volume};
 use bevy::prelude::*;
 
-use crate::game::party::body::{EYE_ABOVE_CENTRE, PartyCamera};
+use crate::game::party::body::EYE_ABOVE_CENTRE;
 use crate::game::world::triggers::TriggerEffect;
 use crate::presentation::PresentationRng;
+use crate::presentation::party_view::PartyCamera;
 use crate::retail::space::UNITS_PER_METRE;
 use rand::Rng;
 

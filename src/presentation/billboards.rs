@@ -6,7 +6,7 @@
 
 use bevy::prelude::*;
 
-use crate::game::party::body::PartyCamera;
+use crate::presentation::party_view::PartyCamera;
 
 /// A prop part that faces the viewer. Its parents must not rotate: level
 /// and sky roots and prop roots do not.

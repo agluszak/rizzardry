@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use bevy::picking::pointer::{PointerId, PointerLocation};
 use bevy::prelude::*;
+use enumset::EnumSet;
 
 use crate::game::screen::Screen;
 
@@ -29,20 +30,41 @@ const FILL: Color = Color::srgb(0.16, 0.14, 0.11);
 const POOL_CELLS: usize = 8;
 
 /// Equipment cells on the paper doll, by equipment slot: position and size.
-const EQUIPMENT_CELLS: [(f32, f32, f32, f32); 12] = [
-    (188.0, 176.0, 45.0, 57.0),
-    (431.0, 198.0, 40.0, 40.0),
-    (431.0, 241.0, 40.0, 40.0),
-    (376.0, 176.0, 38.0, 73.0),
-    (134.0, 241.0, 57.0, 58.0),
-    (387.0, 257.0, 35.0, 43.0),
-    (158.0, 308.0, 34.0, 101.0),
-    (400.0, 308.0, 34.0, 72.0),
-    (121.0, 308.0, 34.0, 101.0),
-    (437.0, 308.0, 34.0, 72.0),
-    (203.0, 359.0, 34.0, 77.0),
-    (362.0, 378.0, 26.0, 58.0),
-];
+fn equipment_cell(slot: EquipSlot) -> Rect {
+    let (x, y, width, height) = match slot {
+        EquipSlot::Head => (188.0, 176.0, 45.0, 57.0),
+        EquipSlot::Misc1 => (431.0, 198.0, 40.0, 40.0),
+        EquipSlot::Misc2 => (431.0, 241.0, 40.0, 40.0),
+        EquipSlot::Cloak => (376.0, 176.0, 38.0, 73.0),
+        EquipSlot::Torso => (134.0, 241.0, 57.0, 58.0),
+        EquipSlot::Hands => (387.0, 257.0, 35.0, 43.0),
+        EquipSlot::Primary => (158.0, 308.0, 34.0, 101.0),
+        EquipSlot::Secondary => (400.0, 308.0, 34.0, 72.0),
+        EquipSlot::AlternatePrimary => (121.0, 308.0, 34.0, 101.0),
+        EquipSlot::AlternateSecondary => (437.0, 308.0, 34.0, 72.0),
+        EquipSlot::Legs => (203.0, 359.0, 34.0, 77.0),
+        EquipSlot::Feet => (362.0, 378.0, 26.0, 58.0),
+    };
+    Rect::new(x, y, x + width, y + height)
+}
+
+/// The slot's highlight rim, its first frame in the highlights sheet.
+fn equipment_rim(slot: EquipSlot) -> usize {
+    match slot {
+        EquipSlot::Head => 0,
+        EquipSlot::Misc1 => 40,
+        EquipSlot::Misc2 => 36,
+        EquipSlot::Cloak => 44,
+        EquipSlot::Torso => 4,
+        EquipSlot::Hands => 32,
+        EquipSlot::Primary => 12,
+        EquipSlot::Secondary => 24,
+        EquipSlot::AlternatePrimary => 8,
+        EquipSlot::AlternateSecondary => 28,
+        EquipSlot::Legs => 16,
+        EquipSlot::Feet => 20,
+    }
+}
 
 /// The open screen, reviewing one member. Absent while exploring.
 #[derive(Resource, Debug)]
@@ -522,11 +544,11 @@ pub fn draw_inventory_cells(
     );
 
     // Equipment on the statue.
-    for (index, slot) in EquipSlot::ALL.iter().enumerate() {
-        let (x, y, w, h) = EQUIPMENT_CELLS[index];
-        let at = Vec2::new(x, y);
+    for slot in EnumSet::<EquipSlot>::all() {
+        let cell = equipment_cell(slot);
+        let at = cell.min;
         // The doll's own wells show through empty cells.
-        let Some(item) = carried.worn(*slot) else { continue };
+        let Some(item) = carried.worn(slot) else { continue };
         let Some(definition) = catalog.get(item.item) else { continue };
         if let Some(picture) = sheet(definition.image.clone()).and_then(|s| sprite(s, 1, at)) {
             put(&mut commands, layer, picture);
@@ -538,16 +560,15 @@ pub fn draw_inventory_cells(
             &mut images,
             item,
             definition.quantity,
-            Vec2::new(x + 2.0, y + h - 13.0),
-            w - 4.0,
+            Vec2::new(cell.min.x + 2.0, cell.max.y - 13.0),
+            cell.width() - 4.0,
         );
         if !item.identified
             && let Some(overlay) = sprite(unidentified, 0, at)
         {
             put(&mut commands, layer, overlay);
         }
-        let rim = [0, 40, 36, 44, 4, 32, 12, 24, 8, 28, 16, 20][index];
-        if let Some(rim) = sprite(highlights, rim + 3, at - Vec2::splat(2.0)) {
+        if let Some(rim) = sprite(highlights, equipment_rim(slot) + 3, at - Vec2::splat(2.0)) {
             put(&mut commands, layer, rim);
         }
     }
@@ -610,11 +631,11 @@ pub fn draw_inventory_cells(
         }
     }
     // Clickable cells over everything else.
-    let cells = EquipSlot::ALL
+    let cells = EnumSet::<EquipSlot>::all()
         .iter()
-        .zip(EQUIPMENT_CELLS)
-        .map(|(&slot, (x, y, w, h))| {
-            (Cell::Member(Slot::Equipment(slot)), Vec2::new(x, y), Vec2::new(w + 1.0, h + 1.0))
+        .map(|slot| {
+            let cell = equipment_cell(slot);
+            (Cell::Member(Slot::Equipment(slot)), cell.min, cell.size() + 1.0)
         })
         .chain(
             (0..BACKPACK_SLOTS)

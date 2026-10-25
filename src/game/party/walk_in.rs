@@ -16,7 +16,7 @@ pub fn run_walk_in_triggers(
     mut triggers: LevelTriggers,
 ) {
     let Ok(position) = party.single() else { return };
-    let eye = position.0 + Vec3::Y * EYE_ABOVE_CENTRE;
+    let eye = PartyBody::eye(position);
     triggers.with(|triggers| triggers.walk(eye, time.delta_secs()));
 }
 
@@ -104,9 +104,7 @@ pub fn fly_party(
     let last = path.keys.len().saturating_sub(1) as f32;
     flight.frame = (flight.frame + path.keys_per_second * time.delta_secs()).min(last);
     let key = pose(&path.keys, flight.frame);
-    let forward = key.rotation * Vec3::NEG_Z;
-    body.yaw = (-forward.x).atan2(-forward.z);
-    body.pitch = forward.y.clamp(-1.0, 1.0).asin();
+    (body.yaw, body.pitch, _) = key.rotation.to_euler(EulerRot::YXZ);
     position.0 = key.translation - Vec3::Y * EYE_ABOVE_CENTRE;
     transform.translation = position.0;
     velocity.0 = Vec3::ZERO;

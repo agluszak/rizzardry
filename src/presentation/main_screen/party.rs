@@ -10,6 +10,7 @@ use bevy::prelude::*;
 use rand::Rng;
 
 use super::{LayoutMode, MainScreenArt, ScreenLayout, SelectedMember, layer, loaded, put};
+use crate::content::characters::BodyPart;
 use crate::content::items::ItemCatalog;
 use crate::content::ui::SpriteSheet;
 use crate::game::characters::{Character, Race};
@@ -158,11 +159,17 @@ fn empty_hands(race: Race) -> [&'static str; 2] {
     }
 }
 
-/// The displayed armour class: the locations' values weighted 15/40/30/10/5
-/// (head, body, legs, hands, feet), rounded (`characters.md` §4.8).
+/// The displayed armour class: the locations' values weighted by how
+/// often blows land there, in percent, rounded (`characters.md` §4.8).
 fn average_armour(armour: &Armour) -> i32 {
-    let weights = [15, 40, 30, 10, 5];
-    let total: i32 = armour.by_location.iter().zip(weights).map(|(a, w)| a * w).sum();
+    let weight = |part| match part {
+        BodyPart::Head => 15,
+        BodyPart::Body => 40,
+        BodyPart::Leg => 30,
+        BodyPart::Hand => 10,
+        BodyPart::Foot => 5,
+    };
+    let total: i32 = armour.by_location.iter().map(|(part, a)| a * weight(part)).sum();
     (total as f32 / 100.0).round() as i32
 }
 

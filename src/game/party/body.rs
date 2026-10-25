@@ -5,9 +5,6 @@
 //! concern added later.
 
 use avian3d::prelude::*;
-use bevy::camera::visibility::RenderLayers;
-use bevy::picking::mesh_picking::ray_cast::MeshRayCast;
-use bevy::picking::pointer::{PointerId, PointerLocation};
 use bevy::prelude::*;
 use bevy_enhanced_input::prelude::*;
 use bevy_tnua::builtins::{TnuaBuiltinWalk, TnuaBuiltinWalkConfig};
@@ -17,8 +14,6 @@ use bevy_tnua_avian3d::prelude::*;
 use crate::content::level::LevelGeometry;
 use bevy::ecs::system::SystemParam;
 
-use crate::game::world::props::{Prop, drawn_under_ray, owner, ray_under_pointer};
-use crate::game::world::triggers::{LevelTriggers, TriggerEffect};
 use crate::retail::space::UNITS_PER_METRE as U;
 
 // Retail motion values (Whizzardry `party_camera.cpp`, `collision.cpp`,
@@ -62,9 +57,23 @@ pub struct PartyBody {
     pub pitch: f32,
 }
 
-/// The first-person camera attached to the party body.
-#[derive(Component, Debug)]
-pub struct PartyCamera;
+impl PartyBody {
+    /// The way the party faces, level.
+    pub fn forward(&self) -> Vec3 {
+        Quat::from_rotation_y(self.yaw) * Vec3::NEG_Z
+    }
+
+    /// The party's eye, over the centre of its body at `position`.
+    pub fn eye(position: &Position) -> Vec3 {
+        position.0 + Vec3::Y * EYE_ABOVE_CENTRE
+    }
+
+    /// Turn to face along `direction`, level.
+    pub fn face(&mut self, direction: Vec3) {
+        let facing = Transform::default().looking_to(direction.with_y(0.0), Vec3::Y);
+        (self.yaw, _, _) = facing.rotation.to_euler(EulerRot::YXZ);
+    }
+}
 
 /// Input context while exploring the world.
 #[derive(Component, Default, Clone)]
@@ -231,46 +240,27 @@ fn spawn_party(
     position: Vec3,
     motion_configs: &mut Assets<PartyMotionConfig>,
 ) {
-    commands
-        .spawn((
-            Name::new("Party"),
-            PartyBody { yaw, pitch: start.pitch.clamp(-MAX_PITCH, MAX_PITCH) },
-            Transform::from_translation(position),
-            Visibility::default(),
-            RigidBody::Dynamic,
-            Collider::sphere(RADIUS - 0.08),
-            LockedAxes::ROTATION_LOCKED,
-            MaxLinearSpeed(MAX_SPEED),
-            TnuaController::<PartyMotion>::default(),
-            TnuaConfig::<PartyMotion>(motion_configs.add(PartyMotionConfig {
-                basis: TnuaBuiltinWalkConfig {
-                    speed: RUN_SPEED,
-                    float_height: FLOAT_HEIGHT,
-                    max_slope: 50f32.to_radians(),
-                    free_fall_extra_gravity: 0.0,
-                    ..default()
-                },
-            })),
-            TnuaAvian3dSensorShape(Collider::cylinder(RADIUS * 0.9, 0.0)),
-        ))
-        .with_children(|party| {
-            party.spawn((
-                Name::new("Party camera"),
-                PartyCamera,
-                SpatialListener::new(0.2),
-                Camera3d::default(),
-                // The sky camera clears the frame and draws first.
-                Camera { clear_color: ClearColorConfig::None, ..default() },
-                Projection::Perspective(PerspectiveProjection {
-                    fov: 70f32.to_radians(),
-                    // Retail clip range 250..75000 units.
-                    near: 250.0 / U,
-                    far: 75000.0 / U,
-                    ..default()
-                }),
-                Transform::from_xyz(0.0, EYE_ABOVE_CENTRE, 0.0),
-            ));
-        });
+    commands.spawn((
+        Name::new("Party"),
+        PartyBody { yaw, pitch: start.pitch.clamp(-MAX_PITCH, MAX_PITCH) },
+        Transform::from_translation(position),
+        Visibility::default(),
+        RigidBody::Dynamic,
+        Collider::sphere(RADIUS - 0.08),
+        LockedAxes::ROTATION_LOCKED,
+        MaxLinearSpeed(MAX_SPEED),
+        TnuaController::<PartyMotion>::default(),
+        TnuaConfig::<PartyMotion>(motion_configs.add(PartyMotionConfig {
+            basis: TnuaBuiltinWalkConfig {
+                speed: RUN_SPEED,
+                float_height: FLOAT_HEIGHT,
+                max_slope: 50f32.to_radians(),
+                free_fall_extra_gravity: 0.0,
+                ..default()
+            },
+        })),
+        TnuaAvian3dSensorShape(Collider::cylinder(RADIUS * 0.9, 0.0)),
+    ));
 }
 
 /// Where the party enters the next level that becomes ready: an entrance
@@ -323,52 +313,17 @@ pub fn drive_party(
     };
 }
 
-/// Point the camera along the party's facing.
-pub fn aim_camera(party: Query<&PartyBody>, mut camera: Query<&mut Transform, With<PartyCamera>>) {
-    if let (Ok(body), Ok(mut camera)) = (party.single(), camera.single_mut()) {
-        camera.rotation = Quat::from_rotation_y(body.yaw) * Quat::from_rotation_x(body.pitch);
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// Use the prop under the pointer, within reach.
-pub fn interact(
-    interact: Single<&ActionEvents, With<Action<Interact>>>,
-    pointers: Query<(&PointerId, &PointerLocation)>,
-    camera: Query<(&Camera, &GlobalTransform), With<PartyCamera>>,
-    mut meshes: MeshRayCast,
-    sky: Query<(), With<RenderLayers>>,
-    parents: Query<&ChildOf>,
-    props: Query<(&Name, &Prop)>,
-    mut triggers: LevelTriggers,
-) {
-    if !interact.contains(ActionEvents::START) {
-        return;
-    }
-    let Ok((camera, transform)) = camera.single() else { return };
-    let Some(ray) = ray_under_pointer(&pointers, camera, transform) else { return };
-    let Some((hit, distance)) = drawn_under_ray(ray, &mut meshes, &sky) else {
-        debug!("nothing to use there");
-        return;
-    };
-    let Some(target) = owner(hit, |e| props.contains(e), &parents) else { return };
-    let Ok((name, prop)) = props.get(target) else { return };
-    let Some(trigger) = &prop.trigger else {
-        debug!("{name} does nothing");
-        return;
-    };
-    // Retail measures from the middle of the prop; the hit point is close.
-    triggers.with(|triggers| {
-        let Some(index) = triggers.state.find(trigger) else { return };
-        let (near, far) = triggers.definitions[index].range;
-        if !triggers.usable(index) {
-            debug!("{name} ({trigger}) cannot be used");
-        } else if !(near..=far).contains(&distance) {
-            debug!("{name} ({trigger}) is out of reach: {distance:.1} m, not {near:.1}..{far:.1}");
-        } else if triggers.run(trigger) {
-            info!("used {name} ({trigger})");
-        } else {
-            info!("used {name} ({trigger}): nothing happened");
-            triggers.effects.push(TriggerEffect::NothingHappened);
+    #[test]
+    fn facing_a_direction_turns_the_view_that_way() {
+        let mut body = PartyBody::default();
+        for direction in [Vec3::NEG_X, Vec3::Z, Vec3::new(1.0, 5.0, -1.0)] {
+            body.face(direction);
+            let view = Quat::from_rotation_y(body.yaw) * Vec3::NEG_Z;
+            assert!(view.abs_diff_eq(direction.with_y(0.0).normalize(), 1e-5), "{direction}");
         }
-    });
+    }
 }

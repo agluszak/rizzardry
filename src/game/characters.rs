@@ -4,77 +4,18 @@
 //! class and attacks are not modelled yet.
 
 use bevy::prelude::*;
+use enum_map::EnumMap;
 
+use crate::content::characters::{Attribute, Skill};
+pub use crate::content::characters::{Gender, Profession, Race};
 use crate::content::items::ItemDefinition;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Reflect)]
-pub enum Race {
-    Human,
-    Elf,
-    Dwarf,
-    Gnome,
-    Hobbit,
-    Faerie,
-    Lizardman,
-    Dracon,
-    Felpurr,
-    Rawulf,
-    Mook,
-    Trynnie,
-    TRang,
-    Umpani,
-    Rapax,
-    Android,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Reflect)]
-pub enum Profession {
-    Fighter,
-    Lord,
-    Valkyrie,
-    Ranger,
-    Samurai,
-    Ninja,
-    Monk,
-    Rogue,
-    Gadgeteer,
-    Bard,
-    Priest,
-    Alchemist,
-    Bishop,
-    Psionic,
-    Mage,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Reflect)]
-pub enum Gender {
-    Male,
-    Female,
-}
-
-/// Strength, Intelligence, Piety, Vitality, Dexterity, Speed, Senses.
-pub const ATTRIBUTES: usize = 7;
-pub const STRENGTH: usize = 0;
-pub const INTELLIGENCE: usize = 1;
-pub const PIETY: usize = 2;
-pub const VITALITY: usize = 3;
-pub const DEXTERITY: usize = 4;
-pub const SPEED: usize = 5;
-pub const SENSES: usize = 6;
-pub const SKILLS: usize = 41;
-pub const SWORD: usize = 0;
-pub const AXE: usize = 1;
-pub const MACE_AND_FLAIL: usize = 3;
-pub const STAFF_AND_WAND: usize = 5;
-pub const DUAL_WEAPONS: usize = 18;
-pub const SCOUTING: usize = 15;
-pub const MYTHOLOGY: usize = 21;
 /// Stamina above which an exhausted member comes round.
 const COMES_ROUND_ABOVE: u32 = 9;
 
 /// Retail's conditions, mildest first. Death is not one of them here: a
 /// member is dead exactly when their health is 0.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Reflect)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Condition {
     Drained,
     Diseased,
@@ -96,194 +37,193 @@ pub enum Condition {
 }
 
 /// How long a condition lasts.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Reflect)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lasting {
     /// Combat rounds, which are also the 120-second aging ticks outside it.
     Rounds(u16),
     /// Until something lifts it, like exhaustion until stamina returns.
     Indefinite,
 }
-/// The expert skill Snake Speed, which adds to initiative.
-const SNAKE_SPEED: usize = 39;
 
-/// Base attributes of the playable races, in [`ATTRIBUTES`] order.
-const RACE_ATTRIBUTES: [[u8; ATTRIBUTES]; 11] = [
-    [45, 45, 45, 45, 45, 45, 45],
-    [35, 50, 50, 35, 50, 45, 40],
-    [55, 30, 50, 60, 35, 35, 35],
-    [35, 50, 40, 50, 50, 35, 45],
-    [40, 40, 30, 45, 55, 50, 50],
-    [25, 55, 35, 30, 50, 60, 45],
-    [60, 25, 25, 70, 40, 50, 30],
-    [55, 35, 30, 60, 50, 40, 30],
-    [40, 40, 30, 35, 50, 60, 50],
-    [40, 30, 55, 50, 40, 40, 50],
-    [50, 50, 25, 50, 35, 35, 55],
-];
-
-/// Per profession: attribute minimums (0 = none), HP factor, experience
-/// weight, bonus skill and profession skills.
-struct ProfessionRow {
-    minimums: [u8; ATTRIBUTES],
-    hp_factor: f32,
-    experience: u32,
-    bonus_skill: usize,
-    skills: &'static [usize],
+/// A playable race's base attributes (retail `g_race_base_attributes`);
+/// the five monster races have none.
+fn race_attributes(race: Race) -> Option<EnumMap<Attribute, u8>> {
+    let attributes = match race {
+        Race::Human => [45, 45, 45, 45, 45, 45, 45],
+        Race::Elf => [35, 50, 50, 35, 50, 45, 40],
+        Race::Dwarf => [55, 30, 50, 60, 35, 35, 35],
+        Race::Gnome => [35, 50, 40, 50, 50, 35, 45],
+        Race::Hobbit => [40, 40, 30, 45, 55, 50, 50],
+        Race::Faerie => [25, 55, 35, 30, 50, 60, 45],
+        Race::Lizardman => [60, 25, 25, 70, 40, 50, 30],
+        Race::Dracon => [55, 35, 30, 60, 50, 40, 30],
+        Race::Felpurr => [40, 40, 30, 35, 50, 60, 50],
+        Race::Rawulf => [40, 30, 55, 50, 40, 40, 50],
+        Race::Mook => [50, 50, 25, 50, 35, 35, 55],
+        Race::Trynnie | Race::TRang | Race::Umpani | Race::Rapax | Race::Android => return None,
+    };
+    Some(EnumMap::from_array(attributes))
 }
 
-const PROFESSIONS: [ProfessionRow; 15] = [
-    ProfessionRow {
-        minimums: [55, 0, 0, 50, 50, 0, 0],
-        hp_factor: 9.0,
-        experience: 1000,
-        bonus_skill: 16,
-        skills: &[17, 0, 1, 6],
-    },
-    ProfessionRow {
-        minimums: [55, 0, 55, 55, 50, 50, 0],
-        hp_factor: 7.5,
-        experience: 1400,
-        bonus_skill: 18,
-        skills: &[16, 0, 4],
-    },
-    ProfessionRow {
-        minimums: [50, 0, 55, 55, 50, 50, 0],
-        hp_factor: 7.5,
-        experience: 1400,
-        bonus_skill: 2,
-        skills: &[16, 21, 1],
-    },
-    ProfessionRow {
-        minimums: [50, 50, 0, 50, 55, 0, 55],
-        hp_factor: 6.5,
-        experience: 1400,
-        bonus_skill: 17,
-        skills: &[15, 8, 21],
-    },
-    ProfessionRow {
-        minimums: [50, 55, 0, 50, 55, 55, 0],
-        hp_factor: 7.0,
-        experience: 1400,
-        bonus_skill: 0,
-        skills: &[16, 18, 19],
-    },
-    ProfessionRow {
-        minimums: [50, 50, 0, 50, 55, 55, 50],
-        hp_factor: 6.5,
-        experience: 1600,
-        bonus_skill: 19,
-        skills: &[16, 14, 9, 11],
-    },
-    ProfessionRow {
-        minimums: [0, 50, 50, 0, 50, 55, 55],
-        hp_factor: 6.5,
-        experience: 1400,
-        bonus_skill: 14,
-        skills: &[16, 19, 5, 11],
-    },
-    ProfessionRow {
-        minimums: [0, 0, 0, 0, 55, 50, 50],
-        hp_factor: 6.0,
-        experience: 1000,
-        bonus_skill: 10,
-        skills: &[4, 18, 13, 11],
-    },
-    ProfessionRow {
-        minimums: [45, 55, 0, 0, 60, 0, 55],
-        hp_factor: 5.5,
-        experience: 1000,
-        bonus_skill: 7,
-        skills: &[17, 23, 10],
-    },
-    ProfessionRow {
-        minimums: [45, 50, 0, 0, 55, 0, 55],
-        hp_factor: 6.0,
-        experience: 1000,
-        bonus_skill: 22,
-        skills: &[12, 21, 20],
-    },
-    ProfessionRow {
-        minimums: [0, 0, 60, 55, 0, 0, 0],
-        hp_factor: 5.0,
-        experience: 1200,
-        bonus_skill: 25,
-        skills: &[3, 5, 22],
-    },
-    ProfessionRow {
-        minimums: [0, 55, 0, 0, 60, 0, 0],
-        hp_factor: 4.5,
-        experience: 1200,
-        bonus_skill: 26,
-        skills: &[21, 9],
-    },
-    ProfessionRow {
-        minimums: [0, 55, 55, 0, 55, 0, 55],
-        hp_factor: 4.0,
-        experience: 1600,
-        bonus_skill: 20,
-        skills: &[26, 24, 25, 27],
-    },
-    ProfessionRow {
-        minimums: [0, 55, 0, 0, 0, 0, 60],
-        hp_factor: 3.5,
-        experience: 1200,
-        bonus_skill: 27,
-        skills: &[22, 21, 32],
-    },
-    ProfessionRow {
-        minimums: [0, 60, 0, 0, 55, 0, 0],
-        hp_factor: 3.0,
-        experience: 1200,
-        bonus_skill: 24,
-        skills: &[28, 29, 30, 32],
-    },
-];
+/// What a profession asks and gives (retail `g_profession_table`).
+struct ProfessionRow {
+    /// Attribute minimums; 0 for none.
+    minimums: EnumMap<Attribute, u8>,
+    hp_factor: f32,
+    experience: u32,
+    bonus_skill: Skill,
+    skills: &'static [Skill],
+    /// Weight of its levels in a hand's physical score (`characters.md`
+    /// §4.7).
+    physical: i32,
+}
 
-/// The two attributes each skill's base level averages (one for spellbooks
-/// and expert skills), by skill id.
-const GOVERNING: [(usize, usize); SKILLS] = [
-    (0, 4),
-    (0, 4),
-    (0, 4),
-    (0, 4),
-    (4, 5),
-    (0, 4),
-    (0, 4),
-    (4, 5),
-    (4, 0),
-    (4, 0),
-    (4, 1),
-    (4, 1),
-    (4, 1),
-    (4, 5),
-    (4, 5),
-    (6, 1),
-    (6, 1),
-    (6, 1),
-    (4, 6),
-    (6, 5),
-    (1, 6),
-    (6, 1),
-    (1, 6),
-    (1, 4),
-    (1, 1),
-    (2, 2),
-    (4, 1),
-    (6, 1),
-    (1, 2),
-    (1, 2),
-    (1, 2),
-    (1, 2),
-    (1, 2),
-    (1, 2),
-    (0, 0),
-    (1, 1),
-    (2, 2),
-    (3, 3),
-    (4, 4),
-    (5, 5),
-    (6, 6),
-];
+fn profession_row(profession: Profession) -> ProfessionRow {
+    use Profession::*;
+    use Skill::*;
+    let (minimums, hp_factor, experience, bonus_skill, skills, physical): (
+        [u8; 7],
+        f32,
+        u32,
+        Skill,
+        &'static [Skill],
+        i32,
+    ) = match profession {
+        Fighter => (
+            [55, 0, 0, 50, 50, 0, 0],
+            9.0,
+            1000,
+            CloseCombat,
+            &[RangedCombat, Sword, Axe, Shield],
+            4,
+        ),
+        Lord => {
+            ([55, 0, 55, 55, 50, 50, 0], 7.5, 1400, DualWeapons, &[CloseCombat, Sword, Dagger], 4)
+        }
+        Valkyrie => {
+            ([50, 0, 55, 55, 50, 50, 0], 7.5, 1400, Polearm, &[CloseCombat, Mythology, Axe], 4)
+        }
+        Ranger => {
+            ([50, 50, 0, 50, 55, 0, 55], 6.5, 1400, RangedCombat, &[Scouting, Bow, Mythology], 4)
+        }
+        Samurai => (
+            [50, 55, 0, 50, 55, 55, 0],
+            7.0,
+            1400,
+            Sword,
+            &[CloseCombat, DualWeapons, CriticalStrike],
+            4,
+        ),
+        Ninja => (
+            [50, 50, 0, 50, 55, 55, 50],
+            6.5,
+            1600,
+            CriticalStrike,
+            &[CloseCombat, MartialArts, ThrowingAndSling, Stealth],
+            4,
+        ),
+        Monk => (
+            [0, 50, 50, 0, 50, 55, 55],
+            6.5,
+            1400,
+            MartialArts,
+            &[CloseCombat, CriticalStrike, StaffAndWand, Stealth],
+            4,
+        ),
+        Rogue => (
+            [0, 0, 0, 0, 55, 50, 50],
+            6.0,
+            1000,
+            LocksAndTraps,
+            &[Dagger, DualWeapons, Pickpocket, Stealth],
+            3,
+        ),
+        Gadgeteer => (
+            [45, 55, 0, 0, 60, 0, 55],
+            5.5,
+            1000,
+            ModernWeapon,
+            &[RangedCombat, Engineering, LocksAndTraps],
+            3,
+        ),
+        Bard => {
+            ([45, 50, 0, 0, 55, 0, 55], 6.0, 1000, Communication, &[Music, Mythology, Artifacts], 3)
+        }
+        Priest => (
+            [0, 0, 60, 55, 0, 0, 0],
+            5.0,
+            1200,
+            Divinity,
+            &[MaceAndFlail, StaffAndWand, Communication],
+            2,
+        ),
+        Alchemist => {
+            ([0, 55, 0, 0, 60, 0, 0], 4.5, 1200, Alchemy, &[Mythology, ThrowingAndSling], 2)
+        }
+        Bishop => (
+            [0, 55, 55, 0, 55, 0, 55],
+            4.0,
+            1600,
+            Artifacts,
+            &[Alchemy, Wizardry, Divinity, Psionics],
+            2,
+        ),
+        Psionic => (
+            [0, 55, 0, 0, 0, 0, 60],
+            3.5,
+            1200,
+            Psionics,
+            &[Communication, Mythology, MentalMagic],
+            2,
+        ),
+        Mage => (
+            [0, 60, 0, 0, 55, 0, 0],
+            3.0,
+            1200,
+            Wizardry,
+            &[FireMagic, WaterMagic, AirMagic, MentalMagic],
+            2,
+        ),
+    };
+    ProfessionRow {
+        minimums: EnumMap::from_array(minimums),
+        hp_factor,
+        experience,
+        bonus_skill,
+        skills,
+        physical,
+    }
+}
+
+/// The two attributes a skill's base level averages (one for spellbooks
+/// and expert skills).
+fn governing(skill: Skill) -> (Attribute, Attribute) {
+    use Attribute::*;
+    use Skill::*;
+    match skill {
+        Sword | Axe | Polearm | MaceAndFlail | StaffAndWand | Shield | Bow | ThrowingAndSling => {
+            (Strength, Dexterity)
+        }
+        Dagger | ModernWeapon | Pickpocket | MartialArts => (Dexterity, Speed),
+        LocksAndTraps | Stealth | Music | Engineering | Alchemy => (Dexterity, Intelligence),
+        Scouting | CloseCombat | RangedCombat | Artifacts | Mythology | Communication
+        | Psionics => (Senses, Intelligence),
+        DualWeapons => (Dexterity, Senses),
+        CriticalStrike => (Senses, Speed),
+        Wizardry => (Intelligence, Intelligence),
+        Divinity => (Piety, Piety),
+        FireMagic | WaterMagic | AirMagic | EarthMagic | MentalMagic | DivineMagic => {
+            (Intelligence, Piety)
+        }
+        PowerStrike => (Strength, Strength),
+        PowerCast => (Intelligence, Intelligence),
+        IronWill => (Piety, Piety),
+        IronSkin => (Vitality, Vitality),
+        Reflextion => (Dexterity, Dexterity),
+        SnakeSpeed => (Speed, Speed),
+        EagleEye => (Senses, Senses),
+    }
+}
 
 /// How heavily a member is loaded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -311,7 +251,7 @@ fn load_band(weight: u32, capacity: u32) -> Load {
 }
 
 /// One adventurer.
-#[derive(Component, Clone, Debug, PartialEq, Reflect)]
+#[derive(Component, Clone, Debug, PartialEq)]
 pub struct Character {
     pub name: String,
     pub race: Race,
@@ -319,11 +259,11 @@ pub struct Character {
     pub profession: Profession,
     pub original_profession: Profession,
     pub level: u8,
-    pub profession_levels: [u8; 15],
+    pub profession_levels: EnumMap<Profession, u8>,
     pub experience: u32,
-    pub attributes: [u8; ATTRIBUTES],
+    pub attributes: EnumMap<Attribute, u8>,
     /// Points invested per skill.
-    pub skill_points: [u8; SKILLS],
+    pub skill_points: EnumMap<Skill, u8>,
     pub hp: u32,
     pub stamina: u32,
     pub conditions: Vec<(Condition, Lasting)>,
@@ -343,11 +283,11 @@ impl Character {
     /// is higher; the profession's skills seeded from their base levels;
     /// full health and stamina. Only the eleven playable races have bases.
     pub fn new(name: &str, race: Race, gender: Gender, profession: Profession) -> Self {
-        let row = &PROFESSIONS[profession as usize];
-        let base = RACE_ATTRIBUTES.get(race as usize).copied().unwrap_or([45; ATTRIBUTES]);
-        let attributes = std::array::from_fn(|a| base[a].max(row.minimums[a]));
-        let mut profession_levels = [0; 15];
-        profession_levels[profession as usize] = 1;
+        let row = profession_row(profession);
+        let base = race_attributes(race).unwrap_or(EnumMap::from_fn(|_| 45));
+        let attributes = EnumMap::from_fn(|a| base[a].max(row.minimums[a]));
+        let mut profession_levels = EnumMap::default();
+        profession_levels[profession] = 1;
         let mut character = Character {
             name: name.to_owned(),
             race,
@@ -358,7 +298,7 @@ impl Character {
             profession_levels,
             experience: 0,
             attributes,
-            skill_points: [0; SKILLS],
+            skill_points: EnumMap::default(),
             hp: 0,
             stamina: 0,
             conditions: Vec::new(),
@@ -378,21 +318,21 @@ impl Character {
 
     /// Effective attribute: no modifiers are modelled yet, so the base,
     /// within retail's 1..=125.
-    pub fn attribute(&self, attribute: usize) -> u32 {
+    pub fn attribute(&self, attribute: Attribute) -> u32 {
         u32::from(self.attributes[attribute]).clamp(1, 125)
     }
 
     /// The average of a skill's governing attributes' bases.
-    fn skill_base(&self, skill: usize) -> u32 {
-        let (a, b) = GOVERNING[skill];
+    fn skill_base(&self, skill: Skill) -> u32 {
+        let (a, b) = governing(skill);
         (u32::from(self.attributes[a]) + u32::from(self.attributes[b])) / 2
     }
 
     /// Effective skill level: the points, plus a quarter (at least one) for
     /// the profession's bonus skill.
-    pub fn skill(&self, skill: usize) -> u32 {
+    pub fn skill(&self, skill: Skill) -> u32 {
         let points = u32::from(self.skill_points[skill]);
-        let bonus = if PROFESSIONS[self.profession as usize].bonus_skill == skill && points > 0 {
+        let bonus = if profession_row(self.profession).bonus_skill == skill && points > 0 {
             (points * 25 / 100).max(1)
         } else {
             0
@@ -403,16 +343,16 @@ impl Character {
     /// `round(Σ (0.6 + 0.008·VIT) × factor × levels)`, counting one extra
     /// level for the original profession.
     pub fn max_hp(&self) -> u32 {
-        let vitality = 0.6 + 0.008 * self.attribute(VITALITY) as f32;
-        let total: f32 = PROFESSIONS
+        let vitality = 0.6 + 0.008 * self.attribute(Attribute::Vitality) as f32;
+        let total: f32 = self
+            .profession_levels
             .iter()
-            .enumerate()
-            .map(|(p, row)| {
-                let mut levels = u32::from(self.profession_levels[p]);
-                if p == self.original_profession as usize && levels > 0 {
+            .map(|(profession, &levels)| {
+                let mut levels = u32::from(levels);
+                if profession == self.original_profession && levels > 0 {
                     levels += 1;
                 }
-                vitality * row.hp_factor * levels as f32
+                vitality * profession_row(profession).hp_factor * levels as f32
             })
             .sum();
         (total.round() as u32).max(1)
@@ -420,28 +360,31 @@ impl Character {
 
     /// `round((STR + PIE + VIT) / 3 × (0.1·level + 2))`.
     pub fn max_stamina(&self) -> u32 {
-        let sum =
-            (self.attribute(STRENGTH) + self.attribute(PIETY) + self.attribute(VITALITY)) as f32;
+        let sum = [Attribute::Strength, Attribute::Piety, Attribute::Vitality]
+            .map(|a| self.attribute(a))
+            .iter()
+            .sum::<u32>() as f32;
         (sum / 3.0 * (0.1 * f32::from(self.level) + 2.0)).round() as u32
     }
 
-    /// How tired, 0 (fresh) to 4, by the share of stamina spent: under
-    /// 50%, 70%, 85%, up to 94%, then beyond.
-    pub fn fatigue_band(&self) -> usize {
-        let spent = 100 - self.stamina * 100 / self.max_stamina().max(1);
-        match spent {
-            0..50 => 0,
-            50..70 => 1,
-            70..85 => 2,
-            85..=94 => 3,
-            _ => 4,
-        }
+    /// Levels weighted by how physical each profession is (a hand's
+    /// physical score, `characters.md` §4.7).
+    pub fn physical_levels(&self) -> i32 {
+        self.profession_levels
+            .iter()
+            .map(|(profession, &levels)| i32::from(levels) * profession_row(profession).physical)
+            .sum()
+    }
+
+    /// The share of stamina spent, in percent.
+    pub fn stamina_spent(&self) -> u32 {
+        100 - self.stamina * 100 / self.max_stamina().max(1)
     }
 
     /// Tenths of a pound: `(VIT + 2·STR) × 12`, × 8 for a Faerie.
     pub fn capacity(&self) -> u32 {
         let factor = if self.race == Race::Faerie { 8 } else { 12 };
-        (self.attribute(VITALITY) + 2 * self.attribute(STRENGTH)) * factor
+        (self.attribute(Attribute::Vitality) + 2 * self.attribute(Attribute::Strength)) * factor
     }
 
     /// The load band of carrying `weight` (own plus pool share).
@@ -453,11 +396,11 @@ impl Character {
     /// or 8 by load.
     pub fn initiative(&self, load: Load) -> i32 {
         let mut initiative = (i32::from(self.level) + 1) / 2
-            + self.attribute(SENSES) as i32 / 5
-            + self.attribute(SPEED) as i32 / 5
+            + self.attribute(Attribute::Senses) as i32 / 5
+            + self.attribute(Attribute::Speed) as i32 / 5
             - 10;
-        if self.skill_points[SNAKE_SPEED] > 0 {
-            initiative += self.skill(SNAKE_SPEED) as i32 / 10 + 1;
+        if self.skill_points[Skill::SnakeSpeed] > 0 {
+            initiative += self.skill(Skill::SnakeSpeed) as i32 / 10 + 1;
         }
         initiative
             - match load {
@@ -472,7 +415,7 @@ impl Character {
     /// Experience needed for the next level (retail goals): the weight at
     /// level 1, doubling increments to level 10, then 20% more each level.
     pub fn experience_goal(&self) -> u32 {
-        let weight = PROFESSIONS[self.profession as usize].experience;
+        let weight = profession_row(self.profession).experience;
         let mut goal = weight;
         let mut step = weight;
         for level in 2..=u32::from(self.level) {
@@ -616,32 +559,25 @@ impl Character {
     /// profession, race and gender, and every attribute and skill minimum.
     /// Spellbooks and casting items' extra tests need spells, not modelled.
     pub fn can_use(&self, item: &ItemDefinition) -> bool {
-        let gender_bit = match self.gender {
-            Gender::Male => 1,
-            Gender::Female => 2,
-        };
-        item.profession_mask & (1 << self.profession as u16) != 0
-            && item.race_mask & (1 << self.race as u32) != 0
-            && (item.gender_mask == 3 || item.gender_mask & gender_bit != 0)
-            && item.attribute_requirements.iter().all(|r| {
-                usize::from(r.id) >= ATTRIBUTES
-                    || self.attribute(usize::from(r.id)) >= u32::from(r.minimum)
-            })
-            && item.skill_requirements.iter().all(|r| {
-                usize::from(r.id) >= SKILLS || self.skill(usize::from(r.id)) >= u32::from(r.minimum)
-            })
+        item.professions.contains(self.profession)
+            && item.races.contains(self.race)
+            && item.genders.contains(self.gender)
+            && item.attribute_minimums.iter().all(|(a, &m)| self.attribute(a) >= u32::from(m))
+            && item.skill_minimums.iter().all(|(s, &m)| self.skill(s) >= u32::from(m))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::content::items::{EquipClass, Requirement};
+    use crate::content::characters::Attribute::*;
+    use crate::content::items::EquipClass;
+    use enumset::EnumSet;
 
     #[test]
     fn a_human_fighter_has_the_worked_example_numbers() {
         let fighter = Character::new("Ragnar", Race::Human, Gender::Male, Profession::Fighter);
-        assert_eq!(fighter.attributes, [55, 45, 45, 50, 50, 45, 45]);
+        assert_eq!(fighter.attributes, EnumMap::from_array([55, 45, 45, 50, 50, 45, 45]));
         assert_eq!(fighter.max_hp(), 18);
         assert_eq!(fighter.max_stamina(), 105);
         assert_eq!(fighter.capacity(), 1920);
@@ -654,8 +590,10 @@ mod tests {
         assert_eq!((fighter.hp, fighter.stamina), (18, 105));
         assert_eq!(fighter.experience_goal(), 1000);
         // Profession and bonus skills are seeded; others are not.
-        assert!(fighter.skill(16) > fighter.skill_points[16].into());
-        assert!(fighter.skill_points[0] > 0 && fighter.skill_points[10] == 0);
+        let close_combat = fighter.skill_points[Skill::CloseCombat];
+        assert!(fighter.skill(Skill::CloseCombat) > close_combat.into());
+        assert!(fighter.skill_points[Skill::Sword] > 0);
+        assert_eq!(fighter.skill_points[Skill::LocksAndTraps], 0);
     }
 
     #[test]
@@ -675,21 +613,21 @@ mod tests {
         let mut bow = ItemDefinition {
             name: "Strong Bow".into(),
             class: EquipClass::RangedWeapon,
-            weapon_skill: Some(8),
-            profession_mask: 0x7fff,
-            race_mask: 0xffff,
-            gender_mask: 3,
-            attribute_requirements: vec![Requirement { id: 0, minimum: 85 }],
+            weapon_skill: Some(Skill::Bow),
+            professions: EnumSet::all(),
+            races: EnumSet::all(),
+            genders: EnumSet::all(),
             ..default()
         };
+        bow.attribute_minimums[Strength] = 85;
 
         assert!(!fighter.can_use(&bow), "too weak");
-        bow.attribute_requirements.clear();
+        bow.attribute_minimums[Strength] = 0;
         assert!(fighter.can_use(&bow));
-        bow.gender_mask = 2;
+        bow.genders = EnumSet::only(Gender::Female);
         assert!(!fighter.can_use(&bow), "female only");
-        bow.gender_mask = 3;
-        bow.profession_mask = 1 << Profession::Mage as u16;
+        bow.genders = EnumSet::all();
+        bow.professions = EnumSet::only(Profession::Mage);
         assert!(!fighter.can_use(&bow));
     }
 

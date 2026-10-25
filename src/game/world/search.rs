@@ -7,12 +7,15 @@ use avian3d::prelude::{RigidBody, SpatialQuery, SpatialQueryFilter};
 use bevy::prelude::*;
 use bevy_enhanced_input::prelude::*;
 
+use crate::content::characters::{Attribute, Skill};
 use crate::content::items::ItemCatalog;
 use crate::game::camp::can_act;
-use crate::game::characters::{Character, Profession, SCOUTING, SENSES};
+use crate::game::characters::{Character, Profession};
 use crate::game::combat::Battle;
 use crate::game::data::GameData;
-use crate::game::party::body::{PartyCamera, Run};
+use avian3d::prelude::Position;
+
+use crate::game::party::body::{PartyBody, Run};
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::items::WorldItem;
 
@@ -25,13 +28,25 @@ const RANGE_PER_POINT: f32 = 0.2;
 const PULSE_SECONDS: f32 = 0.5;
 
 /// The party's search mode (retail `search_mode`).
-#[derive(Resource, Debug, Default)]
+#[derive(Resource, Debug)]
 pub struct Search {
     pub on: bool,
     /// On before the fight that suspended it (`search_mode_saved`).
     suspended: bool,
-    /// Seconds until the next sweep.
-    pulse: f32,
+    /// The sweeps, every half second.
+    pulse: Timer,
+}
+
+impl Search {
+    fn new(on: bool, suspended: bool) -> Self {
+        Search { on, suspended, pulse: Timer::from_seconds(PULSE_SECONDS, TimerMode::Repeating) }
+    }
+}
+
+impl Default for Search {
+    fn default() -> Self {
+        Search::new(false, false)
+    }
 }
 
 /// Retail's S key (`mgskeyboard.ini` command 312).
@@ -74,11 +89,11 @@ pub fn toggle_search(
     // (retail `InitializeCombat`, `EndCombat`).
     match (battle.is_some(), search.on, search.suspended) {
         (true, true, _) => {
-            *search = Search { on: false, suspended: true, pulse: 0.0 };
+            *search = Search::new(false, true);
             news.write(SearchNews::Off);
         }
         (false, false, true) => {
-            *search = Search { on: true, suspended: false, pulse: PULSE_SECONDS };
+            *search = Search::new(true, false);
             news.write(SearchNews::On);
         }
         _ => {}
@@ -90,7 +105,7 @@ pub fn toggle_search(
         } else if battle.is_some() {
             news.write(SearchNews::NotInCombat);
         } else {
-            *search = Search { on: true, suspended: false, pulse: PULSE_SECONDS };
+            *search = Search::new(true, false);
             news.write(SearchNews::On);
         }
     }
@@ -104,12 +119,12 @@ pub fn search_score(member: &Character, search_mode: bool, running: bool) -> u32
     if member.profession != Profession::Ranger && !search_mode {
         return 0;
     }
-    let level = member.skill(SCOUTING);
+    let level = member.skill(Skill::Scouting);
     let base = if running { level / 4 } else { level / 2 };
     if base == 0 && !(search_mode && !running) {
         return 0;
     }
-    let senses = member.attribute(SENSES);
+    let senses = member.attribute(Attribute::Senses);
     let score = match senses {
         0..=50 => base + senses / 5,
         51..=80 => base + 10 + (senses - 50) / 3,
@@ -129,7 +144,7 @@ pub fn search_pulse(
     mut search: ResMut<Search>,
     battle: Option<Res<Battle>>,
     run: Single<&Action<Run>>,
-    camera: Query<&GlobalTransform, With<PartyCamera>>,
+    party: Query<(&Position, &PartyBody)>,
     roster: Res<PartyRoster>,
     members: Query<&Character>,
     mut items: Query<(&mut WorldItem, &GlobalTransform)>,
@@ -137,16 +152,14 @@ pub fn search_pulse(
     (data, catalogs): (Option<Res<GameData>>, Res<Assets<ItemCatalog>>),
     mut news: MessageWriter<SearchNews>,
 ) {
-    search.pulse -= time.delta_secs();
-    if search.pulse > 0.0 {
+    if !search.pulse.tick(time.delta()).just_finished() {
         return;
     }
-    search.pulse = PULSE_SECONDS;
     if battle.is_some() {
         return;
     }
-    let Ok(eye) = camera.single() else { return };
-    let (from, forward) = (eye.translation(), eye.forward().with_y(0.0));
+    let Ok((position, body)) = party.single() else { return };
+    let (from, forward) = (PartyBody::eye(position), body.forward());
     let running = ***run;
     let best = roster
         .0
@@ -194,11 +207,11 @@ mod tests {
     fn rangers_search_on_their_own_and_others_only_in_search_mode() {
         let mut ranger = Character::new("Scout", Race::Elf, Gender::Female, Profession::Ranger);
         let fighter = Character::new("Brute", Race::Human, Gender::Male, Profession::Fighter);
-        ranger.skill_points[SCOUTING] = 20;
-        ranger.attributes[SENSES] = 60;
+        ranger.skill_points[Skill::Scouting] = 20;
+        ranger.attributes[Attribute::Senses] = 60;
         // Half of Scouting 20 (plus the ranger's bonus, if Scouting is it)
         // and Senses 60's bonus of 10 + 10 / 3.
-        let base = ranger.skill(SCOUTING) / 2;
+        let base = ranger.skill(Skill::Scouting) / 2;
         assert_eq!(search_score(&ranger, false, false), base + 13);
         assert_eq!(search_score(&fighter, false, false), 0);
         // In search mode anyone searches by Senses alone, but not running.

@@ -1,6 +1,7 @@
 //! The active level and its local objects.
 
 pub mod identify;
+pub mod interaction;
 pub mod items;
 pub mod level;
 pub mod navigation;
@@ -29,6 +30,7 @@ impl Plugin for WorldPlugin {
         app.add_plugins(navigation::NavigationPlugin)
             .add_message::<level::LevelReady>()
             .add_message::<level::Travel>()
+            .add_message::<interaction::WorldClick>()
             .add_message::<crate::game::inventory::ItemNews>()
             .add_message::<search::ToggleSearch>()
             .add_message::<identify::DetectGroups>()
@@ -36,6 +38,7 @@ impl Plugin for WorldPlugin {
             .add_message::<search::SearchNews>()
             .init_resource::<search::Search>()
             .init_resource::<level::LevelMemory>()
+            .init_resource::<population::MonsterModels>()
             .init_resource::<crate::game::rng::GameRng>()
             .init_resource::<crate::game::inventory::ItemIds>()
             .init_resource::<crate::game::inventory::PartyInventory>()
@@ -48,7 +51,6 @@ impl Plugin for WorldPlugin {
                 (
                     level::activate_level,
                     (
-                        population::measure_monsters,
                         (
                             search::search_key.run_if(crate::game::screen::party_free),
                             search::toggle_search,
