@@ -53,6 +53,8 @@ pub enum CampNews {
     },
     /// "You may not camp while moving!"
     Moving,
+    /// "Not while in combat!"
+    InCombat,
     Done,
     Interrupted,
     Cancelled,
@@ -73,10 +75,15 @@ pub fn request_camp(
     mut commands: Commands,
     rest: Single<&ActionEvents, With<Action<Rest>>>,
     camp: Option<Res<Camp>>,
+    battle: Option<Res<crate::game::combat::Battle>>,
     party: Query<&LinearVelocity, With<PartyBody>>,
     mut news: MessageWriter<CampNews>,
 ) {
     if !rest.contains(ActionEvents::START) || camp.is_some() {
+        return;
+    }
+    if battle.is_some() {
+        news.write(CampNews::InCombat);
         return;
     }
     if !party.single().is_ok_and(|v| v.length() < STILL_BELOW) {

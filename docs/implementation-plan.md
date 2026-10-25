@@ -157,7 +157,8 @@ Known gaps, in rough order:
   [combat](research/combat.md)): monster species from `monsters.dbs`;
   placed monsters roll health; a non-NPC monster within 3 m starts a fight
   that the hostile monsters within 12 m join (a stand-in for sight and
-  pursuit while monsters cannot move). Rounds follow retail's initiative
+  pursuit while monsters cannot move); the party may walk away, as in
+  retail's continuous mode, and cannot camp. Rounds follow retail's initiative
   phases (party first on ties, then slot, then monster order), every member
   attacks the nearest monster in reach (slots 0-2 front, 3-5 rear), and
   monsters pick uniformly among the (attack, mode, member) choices that

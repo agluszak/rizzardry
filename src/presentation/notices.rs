@@ -53,6 +53,7 @@ const CAMP_CANCELLED: usize = 0x793;
 const FORCED_TO_CAMP: usize = 0x794;
 const RECOVERED: usize = 0x795;
 const MOVING: usize = 0x796;
+const NOT_IN_COMBAT: usize = 0x774;
 
 const COMBAT: usize = 0x224;
 const LOST: usize = 0x230;
@@ -99,6 +100,7 @@ pub fn queue_notices(
             CampNews::Started { forced: false } => string(CAMPING_FOR).replace("%d", "8"),
             CampNews::Started { forced: true } => string(FORCED_TO_CAMP),
             CampNews::Moving => string(MOVING),
+            CampNews::InCombat => string(NOT_IN_COMBAT),
             CampNews::Done => string(CAMP_DONE),
             CampNews::Interrupted => string(CAMP_INTERRUPTED),
             CampNews::Cancelled => string(CAMP_CANCELLED),
