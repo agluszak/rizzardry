@@ -2,8 +2,6 @@
 //! [`LevelGeometry`]: one mesh record (the dome), then the level sections
 //! without sentinels (the clouds, Sun and Moon as props).
 
-use std::collections::HashMap;
-
 use bevy::asset::{AssetLoader, LoadContext, io::Reader};
 use bevy::prelude::*;
 use bevy::reflect::TypePath;
@@ -72,9 +70,8 @@ impl AssetLoader for LvlLoader {
         let props = sections.props.iter().chain(&sections.bitmaps);
         let props = build_props(
             context,
-            props,
             // The sky world's props run no triggers.
-            &HashMap::new(),
+            props.map(|prop| (prop, None)),
             directory,
             &mut textures,
             &lighting,

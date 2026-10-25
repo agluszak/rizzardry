@@ -314,7 +314,7 @@ fn build_world(
     remembered: Option<&LevelRecord>,
 ) {
     let props: Vec<_> = geometry.props.iter().map(|_| commands.spawn(ChildOf(root)).id()).collect();
-    let devices = spawn_devices(
+    spawn_devices(
         commands,
         root,
         geometry,
@@ -350,7 +350,6 @@ fn build_world(
             Name::new(prop.name.clone()),
             Prop {
                 definition: index,
-                trigger: prop.trigger.map(|i| devices[i]),
                 centre,
                 door,
                 frames_per_second: prop.frames_per_second,

@@ -32,13 +32,12 @@ const DAMAGE_ZONE_PERIOD: f32 = 0.5;
 const MAX_DEPTH: usize = 16;
 
 /// A device's immutable definition and links, resolved once per visit.
-/// A shared device has its own entity; a device used by one prop lives on it.
+/// A prop-backed device lives on that prop; positioned devices stand alone.
 #[derive(Component, Debug)]
 pub struct Device {
     pub level: Entity,
     pub definition: usize,
     pub recipients: Vec<Entity>,
-    pub prop: Option<Entity>,
 }
 
 /// Only level-wide variables and visit state live on the level.
@@ -174,9 +173,7 @@ impl DeviceRecords<'_, '_> {
     }
 }
 
-/// Allocate identities before linking devices or building prop children. The
-/// final prop is the animation source for a shared trigger, preserving the
-/// previous executor's selection. Recipients use the shared device identity.
+/// Allocate identities before linking devices or building prop children.
 pub fn spawn_devices(
     commands: &mut Commands,
     level: Entity,
@@ -186,15 +183,18 @@ pub fn spawn_devices(
     tables: &LootTables,
     memory: Option<&TriggerMemory>,
 ) -> Vec<Entity> {
-    let mut attached = vec![Vec::new(); geometry.triggers.len()];
+    let mut attached = vec![None; geometry.triggers.len()];
     for (index, prop) in geometry.props.iter().enumerate() {
         if let Some(trigger) = prop.trigger {
-            attached[trigger].push(props[index]);
+            assert!(
+                attached[trigger].replace(props[index]).is_none(),
+                "a trigger belongs to one prop"
+            );
         }
     }
     let devices: Vec<Entity> = attached
-        .iter()
-        .map(|props| if props.len() == 1 { props[0] } else { commands.spawn(ChildOf(level)).id() })
+        .into_iter()
+        .map(|prop| prop.unwrap_or_else(|| commands.spawn(ChildOf(level)).id()))
         .collect();
     let mut state = LevelState::default();
     for (index, definition) in geometry.triggers.iter().enumerate() {
@@ -204,7 +204,6 @@ pub fn spawn_devices(
             Device {
                 level,
                 definition: index,
-                prop: attached[index].last().copied(),
                 recipients: definition.recipients.iter().map(|&i| devices[i]).collect(),
             },
             TriggerState {
@@ -447,17 +446,13 @@ impl<'w, 's> DeviceOperations<'w, 's> {
     }
 
     fn sound_position(&self, entity: Entity) -> Option<Vec3> {
-        let prop = self.devices.get(entity).ok()?.1.prop?;
-        self.props.get(prop).ok().map(|(prop, _)| prop.centre)
+        self.definition(entity)?
+            .place
+            .or_else(|| self.props.get(entity).ok().map(|(prop, _)| prop.centre))
     }
 
     fn playing(&self, entity: Entity) -> bool {
-        self.devices
-            .get(entity)
-            .ok()
-            .and_then(|(_, d)| d.prop)
-            .and_then(|p| self.props.get(p).ok())
-            .is_some_and(|(_, m)| m.frame != m.target)
+        self.props.get(entity).is_ok_and(|(_, motion)| motion.frame != motion.target)
     }
 
     /// Selection advances the alternate choice even if the action later fails
@@ -518,7 +513,7 @@ impl<'w, 's> DeviceOperations<'w, 's> {
             self.effects.write(bell.ring(entity, &self.dials.as_readonly(), &mut self.states));
         }
         let (_, device) = self.devices.get_inner(entity).unwrap();
-        let (level, prop, recipients) = (device.level, device.prop, &device.recipients);
+        let (level, recipients) = (device.level, &device.recipients);
         let mut changes_state = true;
         match &chosen.action {
             TriggerAction::Nothing => {}
@@ -531,8 +526,7 @@ impl<'w, 's> DeviceOperations<'w, 's> {
                 if self.playing(entity) {
                     return false;
                 }
-                let Some(prop) = prop else { return false };
-                let Ok((prop, mut motion)) = self.props.get_mut(prop) else { return false };
+                let Ok((prop, mut motion)) = self.props.get_mut(entity) else { return false };
                 let mut door = self.doors.get_mut(entity).unwrap();
                 if *action == TriggerAction::OpenDoor && door.open {
                     return false;
@@ -542,9 +536,11 @@ impl<'w, 's> DeviceOperations<'w, 's> {
                 self.states.get_mut(entity).unwrap().awaits_animation = true;
             }
             TriggerAction::Animate(animation) => {
-                let Some(prop) = prop.filter(|&p| self.props.contains(p)) else { return false };
+                if !self.props.contains(entity) {
+                    return false;
+                }
                 self.open_container(entity);
-                let (prop, mut motion) = self.props.get_mut(prop).unwrap();
+                let (prop, mut motion) = self.props.get_mut(entity).unwrap();
                 let playing = motion.frame != motion.target;
                 match animation {
                     Animation::Toggle if playing => motion.target = motion.frame,
@@ -609,8 +605,7 @@ impl<'w, 's> DeviceOperations<'w, 's> {
                 self.effects.write(TriggerEffect::Shake { seconds, intensity, fade_out });
             }
             TriggerAction::Dial => {
-                let Some(prop) = prop else { return false };
-                let Ok((prop, mut motion)) = self.props.get_mut(prop) else { return false };
+                let Ok((prop, mut motion)) = self.props.get_mut(entity) else { return false };
                 let mut dial = self.dials.get_mut(entity).unwrap();
                 let old = dial.position;
                 let new = if prop.slots.len() < 3 {
@@ -917,7 +912,6 @@ mod tests {
                 commands.entity(props[index]).insert((
                     Prop {
                         definition: index,
-                        trigger: model.trigger.map(|i| self.devices[i]),
                         centre: Vec3::ZERO,
                         door: false,
                         frames_per_second: 10.0,
@@ -962,8 +956,7 @@ mod tests {
         }
 
         fn motion(&self, name: &str) -> &PropMotion {
-            let prop = self.world.get::<Device>(self.device(name)).unwrap().prop.unwrap();
-            self.world.get::<PropMotion>(prop).unwrap()
+            self.world.get::<PropMotion>(self.device(name)).unwrap()
         }
 
         fn settle(&mut self) {
@@ -1457,38 +1450,45 @@ mod tests {
     }
 
     #[test]
-    fn props_share_a_device_only_when_the_authored_trigger_is_shared() {
+    fn same_named_props_keep_their_own_device_state_and_animation() {
         let mut level = Scenario::new(
             vec![
-                trigger("SHARED", TriggerAction::Nothing),
-                trigger("ALONE", TriggerAction::Nothing),
+                trigger("FIRST", TriggerAction::OpenDoor),
+                trigger("SECOND", TriggerAction::OpenDoor),
             ],
-            &[
-                PropSpec("SHARED", 0.0, false, &[]),
-                PropSpec("SHARED", 0.0, false, &[]),
-                PropSpec("ALONE", 0.0, false, &[]),
-            ],
+            &[PropSpec("FIRST", 10.0, false, &[]), PropSpec("SECOND", 20.0, false, &[])],
             LevelScript::None,
         );
-        let shared = level.device("SHARED");
-        let alone = level.device("ALONE");
-        assert!(level.world.get::<Prop>(shared).is_none());
-        assert_eq!(level.world.get::<Prop>(alone).unwrap().trigger, Some(alone));
+        for definition in &mut level.geometry.triggers {
+            definition.sound = Some(TriggerSound { path: definition.name.clone(), volume: 1.0 });
+            definition.sound_on_commit = true;
+            definition.name = "SAME".into();
+        }
+        level.visit(None);
+        let [first, second] = level.devices[..] else { panic!("two devices") };
+        assert!(level.world.get::<Prop>(first).is_some());
+        level.world.get_mut::<Prop>(second).unwrap().centre = Vec3::X;
+        assert!(level.operations.get_mut(&mut level.world).unwrap().run(first));
         assert_eq!(
-            level
-                .world
-                .query::<&Prop>()
-                .iter(&level.world)
-                .filter(|p| p.trigger == Some(shared))
-                .count(),
-            2
+            level.effects(),
+            [TriggerEffect::Sound { path: "FIRST".into(), volume: 1.0, at: Some(Vec3::ZERO) }]
         );
-        assert_eq!(level.world.query::<&Device>().iter(&level.world).count(), 2);
-        let old = level.devices.clone();
+        assert_eq!(level.world.get::<PropMotion>(first).unwrap().target, 10.0);
+        assert_eq!(level.world.get::<PropMotion>(second).unwrap().target, 0.0);
+        assert!(!level.world.get::<TriggerState>(second).unwrap().fired);
+        assert!(level.operations.get_mut(&mut level.world).unwrap().run(second));
+        assert_eq!(
+            level.effects(),
+            [TriggerEffect::Sound { path: "SECOND".into(), volume: 1.0, at: Some(Vec3::X) }]
+        );
+        assert_eq!(level.world.get::<PropMotion>(second).unwrap().target, 20.0);
         let memory = level.remember();
         level.visit(Some(&memory));
-        for entity in old {
-            assert!(level.world.get_entity(entity).is_err());
+        for old in [first, second] {
+            assert!(level.world.get_entity(old).is_err());
+        }
+        for &device in &level.devices {
+            assert!(level.world.get::<DoorState>(device).unwrap().open);
         }
     }
     #[test]
