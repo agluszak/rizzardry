@@ -56,7 +56,15 @@ pub fn draw_formation(
     for (slot, place) in places.iter().enumerate() {
         let Some((row, seat)) = *place else { continue };
         let at = cell(row, seat);
-        markers.push(sprite(symbols, Formation::facing(row) * 3, at));
+        // The arrow shows the way the row faces; the center faces ahead
+        // (retail `SetFormationPosition`).
+        let facing = match row {
+            Row::Front | Row::Center => 0,
+            Row::Right => 3,
+            Row::Rear => 6,
+            Row::Left => 9,
+        };
+        markers.push(sprite(symbols, facing, at));
         markers.push(sprite(jewels, slot * 3, at));
     }
     commands

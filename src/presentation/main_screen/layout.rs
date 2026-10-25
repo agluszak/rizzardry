@@ -4,6 +4,7 @@
 use bevy::camera::Viewport;
 use bevy::prelude::*;
 use bevy::ui::IsDefaultUiCamera;
+use enumset::{EnumSet, EnumSetType};
 
 use super::{MainScreenArt, button, loaded};
 use crate::content::ui::SpriteSheet;
@@ -25,7 +26,7 @@ pub enum LayoutMode {
 }
 
 /// The bottom panels.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug, EnumSetType)]
 pub enum Panel {
     Radar,
     TextBox,
@@ -39,22 +40,14 @@ pub struct ScreenLayout {
     pub mode: LayoutMode,
     /// Closed shows the radar and formation always; the text box by choice.
     closed_text: bool,
-    /// Wide's choices: radar, text box, formation.
-    wide: [bool; 3],
+    /// The panels Wide shows.
+    wide: EnumSet<Panel>,
 }
 
 impl Default for ScreenLayout {
     /// New games start Wide with all three panels.
     fn default() -> Self {
-        ScreenLayout { mode: LayoutMode::Wide, closed_text: true, wide: [true; 3] }
-    }
-}
-
-fn panel_index(panel: Panel) -> usize {
-    match panel {
-        Panel::Radar => 0,
-        Panel::TextBox => 1,
-        Panel::Formation => 2,
+        ScreenLayout { mode: LayoutMode::Wide, closed_text: true, wide: EnumSet::all() }
     }
 }
 
@@ -62,7 +55,7 @@ impl ScreenLayout {
     pub fn shows(&self, panel: Panel) -> bool {
         match self.mode {
             LayoutMode::Closed => panel != Panel::TextBox || self.closed_text,
-            LayoutMode::Wide => self.wide[panel_index(panel)],
+            LayoutMode::Wide => self.wide.contains(panel),
             LayoutMode::Full => false,
         }
     }
@@ -71,7 +64,7 @@ impl ScreenLayout {
     /// chosen by `GetMainGameViewportMode`): the narrow view in Closed,
     /// reaching down over hidden panels; the wide view over the strips.
     pub fn viewport(&self) -> Rect {
-        let all = [Panel::Radar, Panel::TextBox, Panel::Formation].iter().all(|&p| self.shows(p));
+        let all = EnumSet::all().iter().all(|panel| self.shows(panel));
         match self.mode {
             LayoutMode::Closed if self.shows(Panel::TextBox) => {
                 Rect::new(128.0, 18.0, 512.0, 358.0)
@@ -98,19 +91,17 @@ impl ScreenLayout {
     /// A layout arrow: Closed toggles only the text box; hiding Wide's last
     /// panel goes Full; showing one in Full goes Wide with only that one.
     pub fn toggle(&mut self, panel: Panel) {
-        let i = panel_index(panel);
         match self.mode {
             LayoutMode::Closed if panel == Panel::TextBox => self.closed_text = !self.closed_text,
             LayoutMode::Closed => {}
             LayoutMode::Wide => {
-                self.wide[i] = !self.wide[i];
-                if self.wide == [false; 3] {
+                self.wide ^= panel;
+                if self.wide.is_empty() {
                     self.mode = LayoutMode::Full;
                 }
             }
             LayoutMode::Full => {
-                self.wide = [false; 3];
-                self.wide[i] = true;
+                self.wide = EnumSet::only(panel);
                 self.mode = LayoutMode::Wide;
             }
         }
