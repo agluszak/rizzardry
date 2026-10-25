@@ -71,32 +71,6 @@ pub fn rect(at: Vec2, size: Vec2, colour: Color) -> impl Scene {
     bsn! { node BackgroundColor({colour}) Pickable::IGNORE }
 }
 
-/// A sheet's frame drawn with its top-left at `at`, as components.
-pub fn sprite_bundle(
-    sheet: &SpriteSheet,
-    frame: usize,
-    at: Vec2,
-) -> Option<(ImageNode, Node, Pickable)> {
-    let (image, info) = (sheet.images.get(frame)?, sheet.frames.get(frame)?);
-    let offset = Vec2::new(f32::from(info.offset[0]), f32::from(info.offset[1]));
-    let size = Vec2::new(info.width as f32, info.height as f32);
-    Some((ImageNode::new(image.clone()), absolute(at + offset, size), Pickable::IGNORE))
-}
-
-/// A line of text, as components.
-pub fn text_bundle(
-    font: &SpriteSheet,
-    images: &mut Assets<Image>,
-    line: &str,
-    at: Vec2,
-    width: f32,
-) -> (ImageNode, Node, Pickable) {
-    let image = font.text_image(line);
-    let size = image.size_f32();
-    let x = if width > 0.0 { at.x + ((width - size.x) / 2.0).floor() } else { at.x };
-    (ImageNode::new(images.add(image)), absolute(Vec2::new(x, at.y), size), Pickable::IGNORE)
-}
-
 /// A button's look while hovered (retail's buttons have a frame for it).
 #[derive(Component, Clone, FromTemplate)]
 #[require(Hovered)]
