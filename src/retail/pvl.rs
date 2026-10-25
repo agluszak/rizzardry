@@ -91,11 +91,11 @@ pub enum PvlError {
     Invalid(&'static str, usize),
 }
 
-fn invalid(message: &'static str, bytes: &Bytes) -> PvlError {
+pub(crate) fn invalid(message: &'static str, bytes: &Bytes) -> PvlError {
     PvlError::Invalid(message, bytes.offset())
 }
 
-fn text(bytes: &mut Bytes, len: usize) -> Result<String, PvlError> {
+pub(crate) fn text(bytes: &mut Bytes, len: usize) -> Result<String, PvlError> {
     let offset = bytes.offset();
     c_string(bytes.take(len)?).ok_or(PvlError::Invalid("unterminated texture name", offset))
 }
@@ -268,8 +268,10 @@ mod tests {
 
     /// Runs against a real installation when `RIZZARDRY_RETAIL` names one.
     #[test]
+    #[ignore = "requires a retail installation"]
     fn decodes_retail_level_geometry() {
-        let Ok(root) = std::env::var("RIZZARDRY_RETAIL") else { return };
+        let root =
+            std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL to run this test");
         let files = crate::retail::files::RetailFiles::open(root).unwrap();
         let levels: Vec<String> =
             files.names().filter(|name| name.ends_with(".pvl")).map(str::to_owned).collect();

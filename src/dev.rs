@@ -13,8 +13,13 @@ use bevy_tnua::builtins::TnuaBuiltinWalkConfig;
 use bevy_tnua::prelude::*;
 use bevy_tnua_avian3d::prelude::*;
 
-use crate::game::party::body::{PartyBody, Walk};
+use crate::game::party::body::{Interact, PartyBody, Walk};
 use crate::game::world::navigation::{LevelNavigation, Walker, WalkerMotion, WalkerMotionConfig};
+use crate::presentation::monsters::MonsterAppearance;
+use bevy::camera::NormalizedRenderTarget;
+use bevy::input::ButtonState;
+use bevy::input::keyboard::{Key, KeyboardInput, NativeKeyCode};
+use bevy::picking::pointer::{Location, PointerAction, PointerButton, PointerId, PointerInput};
 
 /// Capture the window `after` seconds once the party is in the world, then
 /// exit. Used to check rendering from the command line.
@@ -88,16 +93,16 @@ pub fn scripted_walk(
 #[derive(Resource, Debug, Clone)]
 pub struct TestAgents {
     pub count: usize,
+    /// A retail monster species for them to look like, e.g. `savant_trooper`.
+    pub monster: Option<String>,
+    /// Body radius in metres; picks the navmesh size class.
+    pub radius: f32,
     pub spawned: bool,
     pub since_log: f32,
     pub frames: u32,
 }
 
-const TEST_AGENT_RADIUS: f32 = 0.35;
 const TEST_AGENT_HALF_LENGTH: f32 = 0.25;
-/// Keeps the capsule's bottom at the step height.
-const TEST_AGENT_FLOAT: f32 =
-    crate::game::world::STEP_HEIGHT + TEST_AGENT_RADIUS + TEST_AGENT_HALF_LENGTH;
 const TEST_AGENT_SPEED: f32 = 3.0;
 
 #[derive(Component)]
@@ -106,20 +111,27 @@ pub struct TestAgent;
 pub fn spawn_test_agents(
     mut commands: Commands,
     mut test: ResMut<TestAgents>,
-    navigation: Option<Res<LevelNavigation>>,
+    navigation: Query<&LevelNavigation>,
     archipelagos: Query<&Archipelago3d>,
     party: Query<(Entity, &Transform), With<PartyBody>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut configs: ResMut<Assets<WalkerMotionConfig>>,
+    assets: Res<AssetServer>,
 ) {
     if test.spawned {
         return;
     }
-    let (Some(navigation), Ok((party, party_transform))) = (navigation, party.single()) else {
+    let (Ok(navigation), Ok((party, party_transform))) = (navigation.single(), party.single())
+    else {
         return;
     };
-    let Ok(archipelago) = archipelagos.get(navigation.archipelago) else { return };
+    let radius = test.radius;
+    // Keeps the capsule's bottom at the step height.
+    let float_height = crate::game::world::STEP_HEIGHT + radius + TEST_AGENT_HALF_LENGTH;
+    let Ok(archipelago) = archipelagos.get(navigation.archipelago_for(radius)) else {
+        return;
+    };
     // Probe rings around the party; keep the points that land on the navmesh.
     let centre = party_transform.translation;
     let wide = PointSampleDistance3d {
@@ -144,7 +156,7 @@ pub fn spawn_test_agents(
         return;
     }
     test.spawned = true;
-    let mesh = meshes.add(Capsule3d::new(TEST_AGENT_RADIUS, 2.0 * TEST_AGENT_HALF_LENGTH));
+    let mesh = meshes.add(Capsule3d::new(radius, 2.0 * TEST_AGENT_HALF_LENGTH));
     let material = materials.add(StandardMaterial {
         base_color: Color::srgb(0.9, 0.2, 0.3),
         unlit: true,
@@ -153,38 +165,46 @@ pub fn spawn_test_agents(
     let config = configs.add(WalkerMotionConfig {
         basis: TnuaBuiltinWalkConfig {
             speed: TEST_AGENT_SPEED,
-            float_height: TEST_AGENT_FLOAT,
+            float_height,
             max_slope: 50f32.to_radians(),
             ..default()
         },
     });
+    let model =
+        test.monster.as_ref().map(|name| assets.load(format!("retail://data/monsters/{name}.mls")));
     let stride = (points.len() / test.count.max(1)).max(1);
     for &feet in points.iter().step_by(stride).take(test.count) {
-        commands.spawn((
+        let mut agent = commands.spawn((
             Name::new("Test agent"),
             TestAgent,
-            Mesh3d(mesh.clone()),
-            MeshMaterial3d(material.clone()),
-            Transform::from_translation(feet + Vec3::Y * TEST_AGENT_FLOAT),
+            Transform::from_translation(feet + Vec3::Y * float_height),
             RigidBody::Dynamic,
-            Collider::capsule(TEST_AGENT_RADIUS, 2.0 * TEST_AGENT_HALF_LENGTH),
+            Collider::capsule(radius, 2.0 * TEST_AGENT_HALF_LENGTH),
             LockedAxes::ROTATION_LOCKED,
             TnuaController::<WalkerMotion>::default(),
             TnuaConfig::<WalkerMotion>(config.clone()),
-            TnuaAvian3dSensorShape(Collider::cylinder(TEST_AGENT_RADIUS * 0.9, 0.0)),
-            Walker { speed: TEST_AGENT_SPEED },
+            TnuaAvian3dSensorShape(Collider::cylinder(radius * 0.9, 0.0)),
+            Walker { speed: TEST_AGENT_SPEED, float_height },
             Agent3dBundle {
                 agent: default(),
                 settings: AgentSettings {
-                    radius: TEST_AGENT_RADIUS,
+                    radius,
                     desired_speed: TEST_AGENT_SPEED * 0.8,
                     max_speed: TEST_AGENT_SPEED,
                 },
-                archipelago_ref: ArchipelagoRef3d::new(navigation.archipelago),
+                archipelago_ref: ArchipelagoRef3d::new(navigation.archipelago_for(radius)),
             },
             AgentTarget3d::Entity(party),
             Velocity3d::default(),
         ));
+        match &model {
+            Some(model) => {
+                agent.insert(MonsterAppearance { model: model.clone(), float_height });
+            }
+            None => {
+                agent.insert((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone())));
+            }
+        }
     }
     info!(
         "spawned {} test agents from {} navmesh points",
@@ -235,5 +255,242 @@ pub fn overhead_view(
     if let Ok(mut camera) = camera.single_mut() {
         camera.translation = Vec3::Y * view.height;
         camera.rotation = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+    }
+}
+
+/// Press "interact" once, this many seconds after the party appears.
+#[derive(Resource, Debug, Clone)]
+pub struct ScriptedInteract {
+    pub after: f32,
+    pub elapsed: f32,
+    pub done: bool,
+}
+
+pub fn scripted_interact(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut script: ResMut<ScriptedInteract>,
+    interact: Single<Entity, With<Action<Interact>>>,
+    party: Query<(), With<PartyBody>>,
+) {
+    if script.done || party.is_empty() {
+        return;
+    }
+    script.elapsed += time.delta_secs();
+    if script.elapsed >= script.after {
+        script.done = true;
+        commands.entity(*interact).insert(ActionMock::once(TriggerState::Fired, true));
+    }
+}
+
+/// Put the party 2 m in front of a named prop, facing it, once its collider
+/// exists. Used to test props without walking to them.
+#[derive(Resource, Debug, Clone)]
+pub struct FacePropOnEntry {
+    pub name: String,
+    pub done: bool,
+}
+
+pub fn face_prop_on_entry(
+    mut request: ResMut<FacePropOnEntry>,
+    props: Query<(&Name, &Children), With<crate::game::world::props::Prop>>,
+    bounds: Query<&ColliderAabb>,
+    mut party: Query<
+        (&mut PartyBody, &mut Position, &mut Transform),
+        Without<crate::game::world::props::Prop>,
+    >,
+) {
+    if request.done {
+        return;
+    }
+    let Ok((mut body, mut position, mut transform)) = party.single_mut() else { return };
+    let Some((_, children)) =
+        props.iter().find(|(n, _)| n.as_str().eq_ignore_ascii_case(&request.name))
+    else {
+        return;
+    };
+    let Some(aabb) = children.iter().find_map(|c| bounds.get(c).ok()) else { return };
+    if aabb.min.x > aabb.max.x {
+        return; // not computed yet
+    }
+    request.done = true;
+    let (min, max) = (aabb.min, aabb.max);
+    let centre = (min + max) / 2.0;
+    let size = max - min;
+    // Stand off the prop across its thinner horizontal axis.
+    let across = if size.x < size.z { Vec3::X } else { Vec3::Z };
+    let eye = (centre + across * 2.0).with_y(min.y + crate::game::party::body::EYE_HEIGHT);
+    // Teleport: Avian takes a changed Transform as the new position.
+    position.0 = eye - Vec3::Y * crate::game::party::body::EYE_ABOVE_CENTRE;
+    transform.translation = position.0;
+    let forward = -across;
+    body.yaw = (-forward.x).atan2(-forward.z);
+    info!("placed the party at {eye:.2} facing prop {} ({min:.2}..{max:.2})", request.name);
+}
+
+/// Speak a voice line once the party is in the world, and log when it ends.
+#[derive(Resource, Debug, Clone)]
+pub struct SayLine {
+    pub line: String,
+    pub started: Option<(Entity, f32)>,
+}
+
+pub fn say_line(
+    mut commands: Commands,
+    time: Res<Time>,
+    assets: Res<AssetServer>,
+    mut say: ResMut<SayLine>,
+    party: Query<(), With<PartyBody>>,
+    mut finished: MessageReader<crate::presentation::voice::SpeechFinished>,
+) {
+    if say.started.is_none() && !party.is_empty() {
+        let speech = crate::presentation::voice::speak(&mut commands, &assets, &say.line);
+        say.started = Some((speech, time.elapsed_secs()));
+        info!("speaking {}", say.line);
+    }
+    for done in finished.read() {
+        if let Some((speech, started)) = say.started
+            && speech == done.speech
+        {
+            info!("finished {} after {:.2} s", done.line, time.elapsed_secs() - started);
+        }
+    }
+}
+
+/// A scripted UI session: keys, clicks and typing fed through the same
+/// input messages a player's devices produce. Steps are separated by `;`:
+/// `key m`, `click X Y` (in the 640×480 screen layout), `type TEXT`,
+/// `wait SECONDS`. One step runs every [`UI_STEP`] seconds once the party
+/// is in the world.
+#[derive(Resource, Debug, Clone)]
+pub struct UiScript {
+    steps: std::collections::VecDeque<String>,
+    next_at: Option<f32>,
+    release: Vec<KeyboardInput>,
+    release_pointer: Option<PointerInput>,
+}
+
+const UI_STEP: f32 = 0.3;
+
+impl UiScript {
+    pub fn parse(script: &str) -> Self {
+        UiScript {
+            steps: script
+                .split(';')
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+                .collect(),
+            next_at: None,
+            release: vec![],
+            release_pointer: None,
+        }
+    }
+}
+
+fn scripted_key(name: &str) -> Option<(KeyCode, Key)> {
+    Some(match name {
+        "Enter" => (KeyCode::Enter, Key::Enter),
+        "Escape" => (KeyCode::Escape, Key::Escape),
+        "Backspace" => (KeyCode::Backspace, Key::Backspace),
+        letter if letter.len() == 1 && letter.chars().all(|c| c.is_ascii_lowercase()) => {
+            let code = match letter {
+                "m" => KeyCode::KeyM,
+                "e" => KeyCode::KeyE,
+                "q" => KeyCode::KeyQ,
+                _ => KeyCode::Unidentified(NativeKeyCode::Unidentified),
+            };
+            (code, Key::Character(letter.into()))
+        }
+        _ => return None,
+    })
+}
+
+pub fn run_ui_script(
+    time: Res<Time>,
+    mut script: ResMut<UiScript>,
+    party: Query<(), With<PartyBody>>,
+    window: Query<(Entity, &Window), With<bevy::window::PrimaryWindow>>,
+    mut keys: MessageWriter<KeyboardInput>,
+    mut pointer: MessageWriter<PointerInput>,
+) {
+    let (Ok((window_entity, window)), false) = (window.single(), party.is_empty()) else { return };
+    let now = time.elapsed_secs();
+    let next_at = *script.next_at.get_or_insert(now + 1.0);
+    if now < next_at {
+        return;
+    }
+    script.next_at = Some(now + UI_STEP);
+    for release in std::mem::take(&mut script.release) {
+        keys.write(release);
+    }
+    // A click registers on release, so the release gets a tick of its own
+    // and the next step sees the click's effect.
+    if let Some(release) = script.release_pointer.take() {
+        pointer.write(release);
+        return;
+    }
+    let Some(step) = script.steps.pop_front() else { return };
+    info!("ui script: {step}");
+    let key_event = |key_code, logical_key: Key, state, text| KeyboardInput {
+        key_code,
+        logical_key,
+        state,
+        text,
+        repeat: false,
+        window: window_entity,
+    };
+    let (verb, rest) = step.split_once(' ').unwrap_or((&step, ""));
+    match verb {
+        "key" => {
+            let Some((code, key)) = scripted_key(rest) else {
+                warn!("ui script: unknown key {rest}");
+                return;
+            };
+            let text = match &key {
+                Key::Character(c) => Some(c.clone()),
+                _ => None,
+            };
+            keys.write(key_event(code, key.clone(), ButtonState::Pressed, text));
+            script.release.push(key_event(code, key, ButtonState::Released, None));
+        }
+        "type" => {
+            for c in rest.chars() {
+                let text = c.to_string();
+                let code = KeyCode::Unidentified(NativeKeyCode::Unidentified);
+                let key = Key::Character(text.as_str().into());
+                keys.write(key_event(
+                    code,
+                    key.clone(),
+                    ButtonState::Pressed,
+                    Some(text.as_str().into()),
+                ));
+                keys.write(key_event(code, key, ButtonState::Released, None));
+            }
+        }
+        "click" => {
+            let numbers: Vec<f32> =
+                rest.split_whitespace().filter_map(|n| n.parse().ok()).collect();
+            let [x, y] = numbers[..] else {
+                warn!("ui script: click needs X Y");
+                return;
+            };
+            // From the 640×480 layout, scaled and centred as the UI is.
+            let size = window.size();
+            let scale = (size.x / 640.0).min(size.y / 480.0);
+            let position = (size - Vec2::new(640.0, 480.0) * scale) / 2.0 + Vec2::new(x, y) * scale;
+            let target = NormalizedRenderTarget::Window(
+                bevy::window::WindowRef::Primary.normalize(Some(window_entity)).unwrap(),
+            );
+            let location = Location { target, position };
+            let input = |action| PointerInput::new(PointerId::Mouse, location.clone(), action);
+            pointer.write(input(PointerAction::Move { delta: Vec2::ZERO }));
+            pointer.write(input(PointerAction::Press(PointerButton::Primary)));
+            script.release_pointer = Some(input(PointerAction::Release(PointerButton::Primary)));
+        }
+        "wait" => {
+            let seconds: f32 = rest.parse().unwrap_or(1.0);
+            script.next_at = Some(now + seconds);
+        }
+        _ => warn!("ui script: unknown step {step}"),
     }
 }

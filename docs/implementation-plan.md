@@ -21,49 +21,96 @@ establish what Bevy handles directly.
 open a door, use a scripted prop, observe one real animated actor, hear one
 original voice line, and interact through a small native UI.
 
-The [`first-slice` implementation branch](https://github.com/agluszak/rizzardry/tree/first-slice)
-is ahead of `main`. **Observed/reporting status as of 25 October 2026:**
-on Linux it has Bevy 0.20 + Avian 0.8 + Tnua + Landmass + Rerecast working
-together; it reads retail SLF/PVL/OCT assets, renders level and prop meshes,
-loads material textures and animation lists, uses the original 500-units-per-
-metre scale, and bakes navigation from authored `.oct` collision surfaces.
-The branch further implements a single level root, fixed-step movement, a
-collision sphere for the party, door/lever/lid paths, navigation links and
-same-level teleports, an advancing game clock, time-of-day sky lighting and
-fog, and a background sky view. This is **not** a claim that `main` has
-merged the branch or that every retail behavior has been verified.
+**Status (25 October 2026):** every playable result of this slice has been
+shown on retail content; the gaps below remain. Done:
 
-Outstanding work should follow the [Bevy-native feature decisions](bevy-features.md)
-instead of creating another engine layer.
+- **Files.** `retail::files` indexes an unmodified installation: base SLF
+  libraries (more specific prefixes win), `patches/patch.NNN`, then loose
+  files. It is the `retail://` Bevy asset source.
+- **Levels.** `retail::pvl` decodes the compiled meshes and materials, and
+  `retail::sections` the rest of every `.pvl` sequentially to its 72-byte
+  trailer: lights, props, bitmaps, triggers (all four types, with door data),
+  environment (fog and ambient ramps, view distance) and the environment
+  offset. All 34 levels parse. Uncompiled `.lvl` worlds (skies) use the same
+  section reader without sentinels.
+- **Collision.** The level's `.oct` collision surfaces (solid flags; the
+  pathfinding flag marks walkable floor) form the Avian collider and the
+  navmesh input. Collidable props collide; non-collidable ones are sensors
+  that can still be used.
+- **Party.** One Avian body moved by Tnua on the fixed timestep, with retail's
+  500-unit sphere, eye height, speeds, pitch limit and gravity. It climbs the
+  upper monastery's `MO202` stairs. A new game enters at `MO100`.
+- **Props and doors.** Props render with their animation paths; using a door
+  plays its path, honours its lock data and opens or closes its navigation
+  link. Same-level teleport triggers move the party.
+- **Navigation.** Rerecast navmeshes are baked by Bevy's asset processor, one
+  per walker size class (0.6, 1.0, 1.6, 3.0 m), and used by Landmass. Teleport
+  and ladder triggers become animation links; doors are links only while open.
+  All 34 levels × 4 classes validate.
+- **Rendering.** Retail baked lighting (static light, sky light by phase,
+  environment offset, emission), linear distance fog and view distance from
+  the environment ramps, a game clock at 12× real time, `.ifl` texture
+  animation, CPU mipmaps, the sky world on its own camera with time-of-day
+  gradients, shaded scrolling clouds and the Sun and Moon on retail's orbit.
+  Facing props turn with the camera. Slot 0-1 alpha materials blend; slot 2-3
+  materials add (retail's packed shader `SRC_ALPHA, ONE`).
+- **Monsters.** `.mls` species and `.mon` vertex-frame cycles decode (all
+  1088 retail cycles). Each actor animates its own mesh copies, blending
+  between frames without wrapping last-to-first as retail does; play-once
+  cycles report completion. Walkers play WALK or IDLE.
+- **Audio.** A voice line is an entity; `SpeechFinished` names it when its
+  audio ends. Retail ships MP3 where scripts name WAV.
+- **UI.** STCI images and bitmap fonts decode (all 1327 retail `.sti`). The
+  automap is native Bevy UI from retail art: frame, buttons with picking
+  hover/click, a plan of the floors near the party, and notes pinned, typed
+  in `Wiz_Text_Font` and erased, within retail's limits.
+
+Decisions made while doing this:
+
+- Retail space is Y-up and left-handed. Bevy space mirrors Z, reverses
+  triangle winding and uses retail's own scale of 500 units per metre
+  (authored values are metres × 500), which puts the eye 1000 units (2 m)
+  above the feet. The orientation was checked against the retail game.
+- Retail velocities are per 0.1 s tick; converted constants cite their source.
+- Nothing in retail truly flies: flying monsters snap to the ground, their
+  altitude is a mesh offset plus a cosmetic bob, and they path like walkers.
+  They use the surface navmeshes.
+- Movement, navigation, prop animation and the clock step on the fixed
+  timestep; look, camera aiming and presentation run per frame.
+
+Known gaps, in rough order:
+
+- Textures are decoded inside the level loader into per-level sub-assets with
+  their own cache; they should load through Bevy's asset system and be shared.
+  Retail's alpha test is the pixel format (32-bit TGA), readable from the
+  header; mipmaps then need a home (a processor, or a loader setting).
+- Monsters are unlit (retail lights them from level lights), use only the
+  nearest detail level, and ignore particles, sounds and skins.
+- Cross-level travel, elevators/lifts, random teleports and camera-path
+  triggers are not implemented. Retail's fall-speed cap is not applied.
+- Map notes are not saved; the automap has one layer and no zoom, panning,
+  layer buttons or tool cursors. Only the map screen exists.
+- The screenshot tool has once captured a frame without the UI; the cause was
+  not found.
 
 ### Next concrete implementation work
 
 1. **Validate one complete authored prop interaction.** Use a monastery
    mechanism such as the Monastery 2 `bell_button`/`dial1` combination:
    source-backed pick/range gating, persistent trigger effect, prop frame
-   changes, the correct sound and final disabled state. The branch already
-   has the prop and door basics, so extend them instead of replacing them.
-2. **Prove an actual animated actor.** Convert one real monster's
-   idle/walk/attack/death. Compare Bevy `MorphWeights` for fixed-topology
-   vertex frames with immutable per-frame mesh handles. Use
-   `AnimationClip`/`AnimationPlayer` for ordinary visual transform
-   tracks where beneficial. Preserve a fixed-step pose for collision-driven
-   doors and lifts; Bevy's default animation system runs in `PostUpdate`.
-3. **Implement original WAV playback and completion.** Enable Bevy's
-   `wav` feature. Use `AudioPlayer`/`AudioSink` or
-   `SpatialAudioSink`; test voice completion and holds with a real clip.
-   Keep the identifying playback request separate from game consequences.
-4. **Prove the first UI screen.** Rust `bsn!`, native focus/widgets,
-   a framed 3D `ViewportNode` if it simplifies the Wizardry HUD, and
-   correctly routed UI/world pointer events; exercise keyboard/gamepad
-   focus and modal capture. Prefer `Camera.viewport` if a simple direct
-   rectangle is enough. Do not build a UI framework or require external
-   `.bsn` files.
-5. **Check the new world features against retail:** authored door
+   changes, the correct sound and final disabled state. Extend the existing
+   prop and door code instead of replacing it.
+2. **Check the world features against retail:** authored door
    geometry/navigation while closing, two-level loading without spawning
    a second party, original entrance ground placement, fog/sky/light
    appearance and animation/contact ordering. The ability to bake all
    34 levels doesn't prove each location's traversal.
+3. **Share retail textures through Bevy's asset system**, then consider image
+   processing in place of the CPU mipmap code
+   (see [Bevy 0.20 integration](bevy-features.md)).
+
+Outstanding work should follow the [Bevy-native feature decisions](bevy-features.md)
+instead of creating another engine layer.
 
 ### Exit evidence
 

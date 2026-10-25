@@ -6,9 +6,11 @@
 
 use bevy::math::Vec3;
 
-/// Retail length units in one metre. The party eye is 1000 units above the
-/// feet; 600 units per metre gives a 1.67 m eye height.
-pub const UNITS_PER_METRE: f32 = 600.0;
+/// Retail length units in one metre: retail's own `kWorldScale`. Authored
+/// values (`.mls` monster sizes, `pathparms.txt`, positions stored in level
+/// records) are metres multiplied by 500. The party eye is 1000 units (2 m)
+/// above the feet.
+pub const UNITS_PER_METRE: f32 = 500.0;
 
 pub fn retail_position([x, y, z]: [f32; 3]) -> Vec3 {
     Vec3::new(x, y, -z) / UNITS_PER_METRE
@@ -34,7 +36,7 @@ mod tests {
 
     #[test]
     fn mirrors_z_and_scales() {
-        assert_eq!(retail_position([600.0, 1200.0, 1800.0]), Vec3::new(1.0, 2.0, -3.0));
+        assert_eq!(retail_position([500.0, 1000.0, 1500.0]), Vec3::new(1.0, 2.0, -3.0));
     }
 
     #[test]

@@ -7,19 +7,28 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy_enhanced_input::EnhancedInputPlugin;
 
+use crate::content::levels::{DEFAULT_SKY, LevelInfo};
+use crate::dev::{FacePropOnEntry, SayLine, UiScript, face_prop_on_entry, run_ui_script, say_line};
 use crate::dev::{
-    OverheadView, ScreenshotAndExit, ScriptedWalk, TestAgents, log_test_agents, overhead_view,
-    screenshot_and_exit, scripted_walk, spawn_test_agents,
+    OverheadView, ScreenshotAndExit, ScriptedInteract, ScriptedWalk, TestAgents, log_test_agents,
+    overhead_view, screenshot_and_exit, scripted_interact, scripted_walk, spawn_test_agents,
 };
 use crate::game::party::PartyPlugin;
 use crate::game::party::body::PartyStart;
+use crate::game::time::{GameClock, TimePlugin};
 use crate::game::world::WorldPlugin;
-use crate::game::world::level::ActiveLevel;
+use crate::game::world::level::Level;
 use crate::game::world::navigation::asset::navmesh_path;
+use crate::game::world::navigation::bake::SIZE_CLASSES;
+use crate::presentation::PresentationPlugin;
 use crate::retail::RetailPlugin;
+use crate::retail::bytes::Bytes;
 use crate::retail::files::RetailFiles;
+use crate::retail::path::normalize;
+use crate::retail::pvl::read_level_geometry;
+use crate::retail::sections::read_sections;
 use crate::retail::space::{retail_position, retail_yaw};
-use crate::retail::trigger::find_item_trigger;
+use crate::retail::trigger::TriggerKind;
 
 pub const DEFAULT_LEVEL: &str = "levels/monastery/monastery1.pvl";
 /// A new game enters the monastery at entrance 0 (location code `MO1`).
@@ -42,18 +51,48 @@ pub struct Options {
     /// An explicit eye position in metres, overriding the entrance.
     #[arg(long, value_name = "X,Y,Z", value_parser = parse_vec3)]
     pub start: Option<Vec3>,
-    /// Initial yaw in degrees, with --start.
-    #[arg(long, default_value_t = 0.0)]
-    pub yaw: f32,
+    /// Initial yaw in degrees, overriding the entrance's.
+    #[arg(long, allow_negative_numbers = true)]
+    pub yaw: Option<f32>,
+    /// Initial pitch in degrees, up positive; retail allows ±45.
+    #[arg(long, default_value_t = 0.0, allow_negative_numbers = true)]
+    pub pitch: f32,
     /// Developer: capture the view shortly after entering, then exit.
     #[arg(long, value_name = "FILE.png")]
     pub screenshot: Option<PathBuf>,
+    /// Developer: seconds after entering to take the screenshot (default: 2
+    /// plus any scripted walk).
+    #[arg(long, value_name = "SECONDS")]
+    pub screenshot_after: Option<f32>,
     /// Developer: hold "walk forward" for this many seconds after entering.
     #[arg(long, value_name = "SECONDS")]
     pub walk: Option<f32>,
+    /// Developer: once the level is built, stand 2 m in front of this prop.
+    #[arg(long, value_name = "NAME")]
+    pub face_prop: Option<String>,
+    /// Start at this hour of the day (0-24) instead of a new game's noon.
+    #[arg(long, value_name = "HOUR")]
+    pub hour: Option<f32>,
+    /// Developer: drive the UI with scripted input, e.g.
+    /// `"key m; click 300 200; type Hello; key Enter"`.
+    #[arg(long, value_name = "STEPS")]
+    pub ui_script: Option<String>,
+    /// Developer: speak this retail voice line on entry, e.g.
+    /// `npc_aletheides_000`.
+    #[arg(long, value_name = "LINE")]
+    pub say: Option<String>,
+    /// Developer: press "interact" once, this many seconds after entering.
+    #[arg(long, value_name = "SECONDS")]
+    pub interact_at: Option<f32>,
     /// Developer: spawn this many stand-in monsters that chase the party.
     #[arg(long, value_name = "COUNT", default_value_t = 0)]
     pub test_agents: usize,
+    /// Developer: the stand-in monsters' radius in metres.
+    #[arg(long, value_name = "METRES", default_value_t = 0.35)]
+    pub test_agent_radius: f32,
+    /// Developer: dress the stand-in monsters as this retail species.
+    #[arg(long, value_name = "SPECIES")]
+    pub test_monster: Option<String>,
     /// Developer: draw the navmesh, agent paths and avoidance.
     #[arg(long)]
     pub nav_debug: bool,
@@ -74,10 +113,10 @@ fn parse_vec3(text: &str) -> Result<Vec3, String> {
 impl Options {
     /// The entrance to use: the explicit one, or the new-game entrance when
     /// starting the default level without an explicit position.
-    fn entrance(&self) -> Option<&str> {
+    fn entrance(&self, level: &str) -> Option<&str> {
         match (&self.entrance, self.start) {
             (Some(entrance), _) => Some(entrance),
-            (None, None) if self.level == DEFAULT_LEVEL => Some(DEFAULT_ENTRANCE),
+            (None, None) if level == DEFAULT_LEVEL => Some(DEFAULT_ENTRANCE),
             _ => None,
         }
     }
@@ -91,37 +130,82 @@ pub fn run(options: Options) -> AppExit {
             return AppExit::error();
         }
     };
-    if !files.contains(&options.level) {
-        eprintln!("{} is not in the retail installation", options.level);
-        return AppExit::error();
-    }
+    // Retail names are case-insensitive; use the normalized name throughout.
+    let level = match normalize(&options.level) {
+        Ok(level) if files.contains(&level) => level,
+        _ => {
+            eprintln!("{} is not in the retail installation", options.level);
+            return AppExit::error();
+        }
+    };
 
-    let mut start = PartyStart { eye: options.start, yaw: options.yaw.to_radians() };
-    if let (None, Some(entrance)) = (options.start, options.entrance()) {
-        match entrance_placement(&files, &options.level, entrance) {
-            Some(placement) => start = placement,
-            None => warn!("entrance {entrance} not found; using the retail fallback position"),
+    // Retail falls back to the default sky when a level's own is missing.
+    let sky = LevelInfo::for_path(&level)
+        .and_then(LevelInfo::sky_path)
+        .map(|sky| if files.contains(&sky) { sky } else { DEFAULT_SKY.to_owned() });
+
+    let pitch = options.pitch.to_radians();
+    let yaw = options.yaw.unwrap_or_default().to_radians();
+    let mut start = PartyStart { eye: options.start, yaw, pitch };
+    if let (None, Some(entrance)) = (options.start, options.entrance(&level)) {
+        match entrance_placement(&files, &level, entrance) {
+            Some(placement) => {
+                info!("entering {level} at {entrance}: {placement:?}");
+                let yaw = options.yaw.map_or(placement.yaw, f32::to_radians);
+                start = PartyStart { yaw, pitch, ..placement }
+            }
+            None => warn!(
+                "entrance {entrance} is missing or not positioned; using the retail fallback position"
+            ),
         }
     }
 
     let mut app = App::new();
-    app.add_plugins(RetailPlugin { files, navmesh_cache: "imported_assets/navmesh".into() })
-        .add_plugins(
-            DefaultPlugins
-                .set(WindowPlugin {
-                    primary_window: Some(Window { title: "Rizzardry".into(), ..default() }),
-                    ..default()
-                })
-                // Navmeshes are baked once by the asset processor and cached.
-                .set(AssetPlugin { mode: AssetMode::Processed, ..default() }),
-        )
-        .add_plugins((EnhancedInputPlugin, PhysicsPlugins::default(), WorldPlugin, PartyPlugin))
-        .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.07)));
+    app.add_plugins(RetailPlugin {
+        files,
+        navmesh_cache: "imported_assets/navmesh".into(),
+        navmesh_classes: SIZE_CLASSES.len(),
+    })
+    .add_plugins(
+        DefaultPlugins
+            .set(WindowPlugin {
+                primary_window: Some(Window { title: "Rizzardry".into(), ..default() }),
+                ..default()
+            })
+            // Navmeshes are baked once by the asset processor and cached.
+            .set(AssetPlugin { mode: AssetMode::Processed, ..default() }),
+    )
+    .add_plugins((
+        EnhancedInputPlugin,
+        PhysicsPlugins::default(),
+        WorldPlugin,
+        PartyPlugin,
+        PresentationPlugin,
+        TimePlugin,
+    ))
+    .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.07)));
     app.insert_resource(start);
     if let Some(path) = options.screenshot.clone() {
-        let after = 2.0 + options.walk.unwrap_or(0.0);
+        let after = options.screenshot_after.unwrap_or(2.0 + options.walk.unwrap_or(0.0));
         app.insert_resource(ScreenshotAndExit::new(path, after))
             .add_systems(Update, screenshot_and_exit);
+    }
+    if let Some(script) = &options.ui_script {
+        app.insert_resource(UiScript::parse(script)).add_systems(Update, run_ui_script);
+    }
+    if let Some(line) = options.say.clone() {
+        app.insert_resource(SayLine { line, started: None }).add_systems(Update, say_line);
+    }
+    if let Some(hour) = options.hour {
+        app.insert_resource(GameClock { ms: (hour.rem_euclid(24.0) * 3_600_000.0) as u64 });
+    }
+    if let Some(name) = options.face_prop.clone() {
+        app.insert_resource(FacePropOnEntry { name, done: false })
+            .add_systems(Update, face_prop_on_entry);
+    }
+    if let Some(after) = options.interact_at {
+        app.insert_resource(ScriptedInteract { after, elapsed: 0.0, done: false })
+            .add_systems(Update, scripted_interact);
     }
     if options.nav_debug {
         app.add_plugins(bevy_landmass::debug::Landmass3dDebugPlugin::default());
@@ -133,6 +217,8 @@ pub fn run(options: Options) -> AppExit {
     if options.test_agents > 0 {
         app.insert_resource(TestAgents {
             count: options.test_agents,
+            radius: options.test_agent_radius,
+            monster: options.test_monster.clone(),
             spawned: false,
             since_log: 0.0,
             frames: 0,
@@ -143,13 +229,17 @@ pub fn run(options: Options) -> AppExit {
         app.insert_resource(ScriptedWalk { seconds, started: false, since_log: 0.0 })
             .add_systems(Update, scripted_walk);
     }
-    let level = options.level.clone();
     app.add_systems(Startup, move |mut commands: Commands, assets: Res<AssetServer>| {
-        commands.insert_resource(ActiveLevel {
-            geometry: assets.load(format!("retail://{level}")),
-            navmesh: assets.load(navmesh_path(&level)),
-            spawned: false,
-        });
+        commands.spawn((
+            Name::new(level.clone()),
+            Level {
+                geometry: assets.load(format!("retail://{level}")),
+                navmeshes: (0..SIZE_CLASSES.len())
+                    .map(|class| assets.load(navmesh_path(&level, class)))
+                    .collect(),
+                sky: sky.as_ref().map(|sky| assets.load(format!("retail://{sky}"))),
+            },
+        ));
     });
     app.run()
 }
@@ -160,10 +250,14 @@ pub fn run(options: Options) -> AppExit {
 /// party settles under gravity.
 fn entrance_placement(files: &RetailFiles, level: &str, entrance: &str) -> Option<PartyStart> {
     let data = files.read(level)?.ok()?;
-    let placement = find_item_trigger(&data, entrance)?.placement?;
+    let start = read_level_geometry(&data).ok()?.end;
+    let sections = read_sections(&mut Bytes::new(&data[start..])).ok()?;
+    let TriggerKind::Item(trigger) = &sections.trigger(entrance)?.kind else { return None };
+    let placement = trigger.placement?;
     let [x, y, z] = placement.position;
     Some(PartyStart {
         eye: Some(retail_position([x, y + 1000.0, z])),
         yaw: retail_yaw(placement.angle, placement.axis),
+        pitch: 0.0,
     })
 }

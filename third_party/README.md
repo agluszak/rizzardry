@@ -8,11 +8,19 @@
 workspace inheritance were removed; `Cargo.toml` lists the workspace's
 dependency versions directly.
 
-One behavioral change, in `src/poly_mesh.rs` `triangulate`: when no diagonal
-can be found, upstream returns `PolygonNavmeshError::InvalidContour` and the
-whole navmesh fails. recastnavigation's `triangulate` instead returns the
-triangles found so far (`return -ntris`), and `rcBuildPolyMesh` logs a
-warning and keeps them. The patch restores that. Without it, 18 of the 34
-retail Wizardry 8 levels cannot be baked at all.
+Two behavioral changes restore recastnavigation's behaviour:
 
-Drop this copy once an upstream release contains an equivalent fix.
+1. **Region holes are merged into their outlines** (`src/contour_holes.rs`,
+   called at the end of `build_contours`): a port of `mergeRegionHoles` from
+   `RecastContour.cpp`, which upstream omits (rerecast issue #64). Without
+   it, a region surrounding an obstacle yields a backwards-wound hole
+   contour; triangulating it fails, and the outline is triangulated across
+   the obstacle as if it were walkable. The port sorts stably and skips the
+   diagonal's own outline vertex in the intersection test, where the C++
+   passes the hole index.
+2. **Partial triangulation is kept** (`src/poly_mesh.rs` `triangulate`):
+   when no diagonal exists, upstream fails the whole navmesh with
+   `InvalidContour`; Recast keeps the triangles found so far and warns.
+   Since holes are merged, no retail level reaches this path.
+
+Drop this copy once an upstream release contains equivalent fixes.

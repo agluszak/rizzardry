@@ -14,6 +14,7 @@ mod compact_cell;
 mod compact_heightfield;
 mod compact_span;
 mod config;
+mod contour_holes;
 mod contours;
 mod detail_mesh;
 mod erosion;

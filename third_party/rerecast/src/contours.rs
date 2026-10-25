@@ -155,6 +155,8 @@ impl CompactHeightfield {
             }
         }
         cset.contours.resize_with(contour_count, Contour::default);
+        // Rizzardry patch: merge holes into outlines, as Recast does.
+        crate::contour_holes::merge_region_holes(&mut cset.contours);
         cset
     }
 

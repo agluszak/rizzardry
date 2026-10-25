@@ -15,7 +15,7 @@ authority.
 | Job | Native feature | Choice and boundary |
 | --- | --- | --- |
 | Transform animation | `AnimationClip`, `AnimationPlayer`, animation curves and events | Prefer for nonphysical authored animation; keep collision-critical motion on the fixed simulation clock |
-| Vertex-frame animation | `MorphWeights` / mesh morph targets | Investigate for fixed vertex topology; validate asset size, frame count and GPU limits on a real monster |
+| Vertex-frame animation | Per-instance meshes from decoded frames | In use (CPU blend between frames); `MorphWeights` only if profiling demands it |
 | Different mesh each frame | Shared `Handle<Mesh>` alternatives | Select the appropriate handle; do not force incompatible topology into morph targets |
 | Retail lighting | `StandardMaterial`, `DistanceFog`, `RenderLayers` | Already in use on the implementation branch; preserve authored vertex light and fog |
 | Specialized lighting | `ExtendedMaterial<StandardMaterial, ...>` and WESL shaders | Consider only if it simplifies correct runtime sunlight/material behavior |
@@ -23,7 +23,7 @@ authority.
 | Integrated 3D viewport | `bevy::ui::widget::ViewportNode` | Strong candidate when building the framed Wizardry HUD; handles UI sizing and pointer forwarding |
 | UI screens | Rust `bsn!`, native UI and headless widgets | Use for focus, buttons, text entry, dialogs and keyboard/controller input |
 | Shared retail images | `AssetServer`, custom asset source, `CompressedImageSaver` | Make textures independently addressable before replacing manual mipmaps |
-| Audio | `AudioPlayer`, `AudioSink`, `SpatialAudioSink` | Enable Bevy's `wav` feature for retail WAV; inspect actual completion behavior |
+| Audio | `AudioPlayer`, `AudioSink`, `SpatialAudioSink` | In use with Bevy's `mp3` feature; voice completion is identified per line |
 | Screen lifetime | Parent/child relations and `DespawnOnExit` | Use where natural; do not replace the game/save domain with global Bevy states |
 
 ## Animation: distinguish visual and physical timelines
@@ -52,7 +52,10 @@ correct ordering at the same physical milestone.
 topology and vertex order, including idle, walk, attack and death. Bevy supports up to 256 weights
 per mesh, subject to texture/memory limits. Importing the retail format into Bevy morph-target data
 may still need a small adapter. Evaluate memory, loading time, interpolation and the needed normals;
-do not assume morph targets beat simple frame meshes for every actor.
+do not assume morph targets beat simple frame meshes for every actor. The
+first-slice branch animates retail monsters by blending decoded frames into
+each actor's own mesh copies on the CPU, which is cheap at retail vertex
+counts (median about 200); move to morph targets only if profiling demands it.
 [Bevy morph-target example](https://github.com/bevyengine/bevy/blob/v0.20.0/examples/animation/morph_targets.rs)
 .
 
@@ -141,7 +144,8 @@ playback selection. Do not add an animation-texture framework merely for these l
 
 ## Audio and lifetime
 
-Enable Bevy 0.20's `wav` feature (the default audio collection enables Vorbis, not WAV). Start with
+Retail scripts name voice lines as WAV, but the installation ships MP3, so enable Bevy 0.20's
+`mp3` feature (the branch does). Start with
 `AudioPlayer` and `AudioSink` or `SpatialAudioSink`, including native spatial positioning. Compare
 actual voice completion, dialogue hold/pause and looping behavior before adding Kira. The game
 dialogue/scene owns the outstanding request; presentation owns the Bevy playback entity/handle.

@@ -47,6 +47,14 @@ impl<'a> Bytes<'a> {
         Ok(self.array::<1>()?[0])
     }
 
+    pub fn i8(&mut self) -> Result<i8, Truncated> {
+        Ok(self.u8()? as i8)
+    }
+
+    pub fn u16(&mut self) -> Result<u16, Truncated> {
+        Ok(u16::from_le_bytes(self.array()?))
+    }
+
     pub fn i16(&mut self) -> Result<i16, Truncated> {
         Ok(i16::from_le_bytes(self.array()?))
     }
@@ -92,6 +100,12 @@ impl<'a> Bytes<'a> {
         }
         (0..count).map(|_| read(self)).collect()
     }
+}
+
+/// A fixed-size text field up to its first NUL (or its whole length).
+pub fn lenient_string(field: &[u8]) -> String {
+    let end = field.iter().position(|&b| b == 0).unwrap_or(field.len());
+    String::from_utf8_lossy(&field[..end]).into_owned()
 }
 
 /// A fixed-size, NUL-terminated text field; `None` if unterminated.

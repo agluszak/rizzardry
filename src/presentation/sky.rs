@@ -1,0 +1,109 @@
+//! The sky camera: it sits at the sky world's origin and turns with the
+//! party camera, so the sky has no parallax (Whizzardry `world.cpp`). It
+//! draws first and clears the frame; the party camera draws the level over
+//! it.
+
+use bevy::camera::visibility::RenderLayers;
+use bevy::math::Affine2;
+use bevy::prelude::*;
+
+use crate::game::party::body::PartyCamera;
+use crate::game::time::GameClock;
+use crate::game::world::level::SKY_LAYER;
+
+#[derive(Component, Debug)]
+pub struct SkyCamera;
+
+pub fn follow_with_sky_camera(
+    mut commands: Commands,
+    party: Query<(&GlobalTransform, &Projection), (With<PartyCamera>, Without<SkyCamera>)>,
+    mut sky: Query<(&mut Transform, &mut Projection), With<SkyCamera>>,
+) {
+    let Ok((party, party_projection)) = party.single() else { return };
+    let rotation = party.rotation();
+    match sky.single_mut() {
+        Ok((mut transform, mut projection)) => {
+            transform.rotation = rotation;
+            if let (Projection::Perspective(sky), Projection::Perspective(level)) =
+                (projection.as_mut(), party_projection)
+            {
+                sky.fov = level.fov;
+            }
+        }
+        Err(_) => {
+            let mut projection = party_projection.clone();
+            if let Projection::Perspective(perspective) = &mut projection {
+                perspective.near = 0.1;
+                perspective.far = 10_000.0;
+            }
+            commands.spawn((
+                Name::new("Sky camera"),
+                SkyCamera,
+                Camera3d::default(),
+                Camera { order: -1, ..default() },
+                projection,
+                Transform::from_rotation(rotation),
+                RenderLayers::layer(SKY_LAYER),
+            ));
+        }
+    }
+}
+
+/// Retail gives every `CloudsN` prop one shared material: brightness
+/// `b = 1 - |t - noon| / noon`, alpha `0.75 b + 0.25`, and textures
+/// scrolling along U at 0.002 per second.
+#[derive(Component, Debug)]
+pub struct Cloud;
+
+pub fn shade_clouds(
+    time: Res<Time<Virtual>>,
+    clock: Res<GameClock>,
+    clouds: Query<&MeshMaterial3d<StandardMaterial>, With<Cloud>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    const NOON_MS: f32 = 43_200_000.0;
+    let t = (clock.ms % 86_400_000) as f32;
+    let brightness = 1.0 - (t - NOON_MS).abs() / NOON_MS;
+    let offset = (time.elapsed_secs() * 0.002).fract();
+    for material in &clouds {
+        if let Some(mut material) = materials.get_mut(&material.0) {
+            material.base_color =
+                Color::linear_rgba(brightness, brightness, brightness, 0.75 * brightness + 0.25);
+            material.uv_transform = Affine2::from_translation(Vec2::new(offset, 0.0));
+        }
+    }
+}
+
+/// A sky body's authored position, and which one it is.
+#[derive(Component, Debug)]
+pub struct Celestial {
+    pub sun: bool,
+    pub authored: Vec3,
+}
+
+/// Move the Sun by day and the Moon by night around the midpoint of their
+/// authored positions (Whizzardry `AdvanceEnvironmentTime`); the body not
+/// in the sky waits at the centre.
+pub fn orbit_sun_and_moon(clock: Res<GameClock>, mut bodies: Query<(&Celestial, &mut Transform)>) {
+    let (mut sun, mut moon) = (None, None);
+    for (body, _) in &bodies {
+        if body.sun { sun = Some(body.authored) } else { moon = Some(body.authored) }
+    }
+    let (Some(sun), Some(moon)) = (sun, moon) else { return };
+    let centre = (sun + moon) / 2.0;
+    let radius = sun.distance(moon) / 2.0;
+    let t = (clock.ms % 86_400_000) as f32;
+    let day = (18_000_000.0..=79_200_000.0).contains(&t) && t > 18_000_000.0;
+    let degrees = if day {
+        (t - 18_000_000.0) * 80.0 * 1.634e-8
+    } else if t <= 18_000_000.0 {
+        (t + 7_200_000.0) * 80.0 * 3.968e-8
+    } else {
+        (t - 79_200_000.0) * 80.0 * 3.968e-8
+    };
+    // A rotation about Z keeps its sense under the Z mirror.
+    let orbit = centre + Quat::from_rotation_z((degrees - 40.0).to_radians()) * Vec3::Y * radius;
+    for (body, mut transform) in &mut bodies {
+        transform.translation = if body.sun == day { orbit } else { centre };
+    }
+}

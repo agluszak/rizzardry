@@ -209,6 +209,8 @@ For meaningful changes, verify the observable result. Use the original game and 
 
 Tests should focus on important rules, invariants, and lifecycle boundaries. Prefer a few valuable tests to large amounts of scaffolding.
 
+Use ordinary Rust tests for rules, headless Bevy `App` scenarios for system/lifecycle behavior, and real-game checks when rendering or movement matters. See [testing](docs/testing.md).
+
 Do not add tests merely to protect an implementation detail or justify an abstraction. Refactoring should not require rewriting unrelated tests.
 
 For rendering, movement, interaction, and timing problems, exercise the real game when possible.

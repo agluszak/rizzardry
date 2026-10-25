@@ -20,6 +20,8 @@ mechanics.
    verified versus outstanding requirements.
 6. [Revisions and open questions](revisions.md): corrections to the discussion,
    deliberate native-format policies and remaining evidence gaps.
+6. [Testing](testing.md): ordinary rule tests, small headless Bevy scenarios,
+   and focused real-game checks.
 
 ## Gameplay systems
 

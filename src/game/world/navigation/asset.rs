@@ -1,15 +1,14 @@
 //! Navmeshes through Bevy's asset processor.
 //!
-//! Each retail level has a `navmesh://<level>.navmesh` input (its `.pvl`
-//! bytes, see [`crate::retail::source`]). The processor bakes it once with
-//! [`NavmeshProcess`] and caches the result under `imported_assets/navmesh`,
+//! Each retail level has a `navmesh://<level>.navmesh` input (its `.oct`
+//! collision and `.pvl` placement bytes, see [`crate::retail::source`]). The processor bakes it once with
+//! `LoadTransformAndSave<LevelCollisionLoader, BakeNavmesh, NavmeshSaver>` and caches the result under `imported_assets/navmesh`,
 //! re-baking only when the level or the [`NavmeshBakeSettings`] in its meta
 //! change. The game loads the processed file as a Landmass [`NavMesh3d`].
 
 use std::sync::Arc;
 
 use bevy::asset::io::{Reader, Writer};
-use bevy::asset::processor::LoadTransformAndSave;
 use bevy::asset::saver::{AssetSaver, SavedAsset};
 use bevy::asset::transformer::{AssetTransformer, TransformedAsset};
 use bevy::asset::{AssetLoader, AssetPath, LoadContext};
@@ -18,26 +17,28 @@ use bevy::reflect::TypePath;
 use bevy::tasks::futures_lite::AsyncWriteExt;
 use bevy_landmass::{HeightNavigationMesh3d, HeightPolygon, NavMesh3d, NavigationMesh3d};
 
-use super::bake::{NavmeshBakeSettings, bake};
+use super::bake::{NavmeshBakeSettings, SIZE_CLASSES, bake};
+use crate::content::level::CollisionMesh;
 use crate::retail::bytes::{Bytes, Truncated};
-use crate::retail::level_loader::collision_triangles;
+use crate::retail::oct::read_collision;
+use crate::retail::prop::PROP_COLLIDABLE;
+use crate::retail::prop_loader::{part_transforms, record_collision};
 use crate::retail::pvl::{PvlError, read_level_geometry};
-use crate::retail::source::{NAVMESH_EXTENSION, NAVMESH_SOURCE};
+use crate::retail::sections::read_sections;
+use crate::retail::source::navmesh_input;
+use crate::retail::source::{NAVMESH_EXTENSION, NAVMESH_SOURCE, navmesh_input_path};
 
-/// The import-time processor for `.navmesh` inputs.
-pub type NavmeshProcess = LoadTransformAndSave<LevelCollisionLoader, BakeNavmesh, NavmeshSaver>;
-
-/// The navmesh path for a retail level path, e.g. `levels/x/y.pvl`.
-pub fn navmesh_path(level: &str) -> AssetPath<'static> {
-    let stem = level.strip_suffix(".pvl").unwrap_or(level);
-    AssetPath::from(format!("{stem}.{NAVMESH_EXTENSION}")).with_source(NAVMESH_SOURCE)
+/// The navmesh path for a retail level path (`levels/x/y.pvl`) and walker
+/// size class.
+pub fn navmesh_path(level: &str, class: usize) -> AssetPath<'static> {
+    AssetPath::from(navmesh_input_path(level, class)).with_source(NAVMESH_SOURCE)
 }
 
-/// A level's solid triangles: the bake's input.
+/// A level's collision and the walker radius to bake for: the bake's input.
 #[derive(Asset, TypePath, Debug)]
 pub struct LevelCollision {
-    pub vertices: Vec<Vec3>,
-    pub triangles: Vec<[u32; 3]>,
+    pub collision: CollisionMesh,
+    pub agent_radius: f32,
 }
 
 /// An unvalidated baked navmesh, between the transformer and the saver.
@@ -60,7 +61,7 @@ pub enum NavmeshAssetError {
     Invalid(String),
 }
 
-/// Reads a level's collision triangles from its `.pvl` bytes.
+/// Reads a level's collision from its navmesh input (`.oct` and `.pvl`).
 #[derive(Default, TypePath)]
 pub struct LevelCollisionLoader;
 
@@ -77,9 +78,26 @@ impl AssetLoader for LevelCollisionLoader {
     ) -> Result<LevelCollision, NavmeshAssetError> {
         let mut data = Vec::new();
         reader.read_to_end(&mut data).await?;
-        let (vertices, triangles) = collision_triangles(&read_level_geometry(&data)?);
-        Ok(LevelCollision { vertices, triangles })
+        let (class, octree, level) = navmesh_input(&data).ok_or(NavmeshAssetError::Format)?;
+        let agent_radius = *SIZE_CLASSES.get(class as usize).ok_or(NavmeshAssetError::Format)?;
+        Ok(LevelCollision { collision: level_collision(octree, level)?, agent_radius })
     }
+}
+
+/// The navmesh bake's input: the level's solid collision surfaces, plus its
+/// collidable props in their rest pose as obstacles. Doorways closed by doors
+/// become gaps, joined by links while the doors are open.
+pub fn level_collision(octree: &[u8], level: &[u8]) -> Result<CollisionMesh, PvlError> {
+    let mut collision = read_collision(octree)?.solid_mesh();
+    let geometry = read_level_geometry(level)?;
+    let sections = read_sections(&mut Bytes::new(&level[geometry.end..]))?;
+    for prop in sections.props.iter().filter(|p| p.flags & PROP_COLLIDABLE != 0) {
+        for (part, (transform, _)) in prop.detailed_parts().iter().zip(part_transforms(prop)) {
+            let record = &part.mesh.frames[part.mesh.first_frame];
+            collision.append(&record_collision(record), &transform, false);
+        }
+    }
+    Ok(collision)
 }
 
 #[derive(Default, TypePath)]
@@ -96,9 +114,11 @@ impl AssetTransformer for BakeNavmesh {
         asset: TransformedAsset<LevelCollision>,
         settings: &'a NavmeshBakeSettings,
     ) -> Result<TransformedAsset<BakedNavmesh>, NavmeshAssetError> {
-        let (mesh, report) =
-            bake(&asset.vertices, &asset.triangles, settings).map_err(NavmeshAssetError::Bake)?;
-        if report != Default::default() {
+        let settings = NavmeshBakeSettings { agent_radius: asset.agent_radius, ..settings.clone() };
+        let (mesh, report) = bake(&asset.collision, &settings).map_err(NavmeshAssetError::Bake)?;
+        if report.inverted_polygons > 0 {
+            warn!("navmesh dropped folded polygons: {report:?}");
+        } else if report != Default::default() {
             info!("navmesh repaired: {report:?}");
         }
         Ok(asset.replace_asset(BakedNavmesh(mesh)))

@@ -5,12 +5,24 @@
 
 pub mod bytes;
 pub mod files;
+pub mod keyframes;
 pub mod level_loader;
+pub mod links;
+pub mod mesh_record;
+pub mod monster;
+pub mod monster_loader;
+pub mod oct;
 pub mod path;
+pub mod prop;
+pub mod prop_loader;
 pub mod pvl;
+pub mod sections;
+pub mod sky_loader;
 pub mod slf;
 pub mod source;
 pub mod space;
+pub mod stci;
+pub mod sti_loader;
 pub mod trigger;
 
 use std::sync::Arc;
@@ -29,6 +41,8 @@ pub struct RetailPlugin {
     pub files: Arc<files::RetailFiles>,
     /// Where processed navmeshes are cached.
     pub navmesh_cache: std::path::PathBuf,
+    /// How many walker size classes get a navmesh.
+    pub navmesh_classes: usize,
 }
 
 impl Plugin for RetailPlugin {
@@ -36,11 +50,21 @@ impl Plugin for RetailPlugin {
         app.register_asset_source(source::RETAIL_SOURCE, source::retail_source(self.files.clone()))
             .register_asset_source(
                 source::NAVMESH_SOURCE,
-                source::navmesh_source(self.files.clone(), &self.navmesh_cache),
+                source::navmesh_source(
+                    self.files.clone(),
+                    self.navmesh_classes,
+                    &self.navmesh_cache,
+                ),
             );
     }
 
     fn finish(&self, app: &mut App) {
-        app.init_asset::<LevelGeometry>().init_asset_loader::<level_loader::PvlLoader>();
+        app.init_asset::<LevelGeometry>()
+            .init_asset_loader::<level_loader::PvlLoader>()
+            .init_asset_loader::<sky_loader::LvlLoader>()
+            .init_asset::<crate::content::monster::MonsterModel>()
+            .init_asset_loader::<monster_loader::MlsLoader>()
+            .init_asset::<crate::content::ui::SpriteSheet>()
+            .init_asset_loader::<sti_loader::StiLoader>();
     }
 }

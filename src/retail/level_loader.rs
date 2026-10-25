@@ -4,19 +4,49 @@ use std::collections::HashMap;
 
 use bevy::asset::{AssetLoader, AssetPath, LoadContext, RenderAssetUsages, io::Reader};
 use bevy::image::{
-    CompressedImageFormats, ImageAddressMode, ImageSampler, ImageSamplerDescriptor, ImageType,
+    CompressedImageFormats, ImageAddressMode, ImageFilterMode, ImageSampler,
+    ImageSamplerDescriptor, ImageType,
 };
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::reflect::TypePath;
 
-use super::pvl::{self, CompiledMesh, MaterialRecord, PvlError, read_level_geometry};
+use super::bytes::Bytes;
+use super::links::level_links;
+use super::oct::read_collision;
+use super::prop::{PROP_COLLIDABLE, Prop};
+use super::prop_loader::{PropLighting, part_transforms, record_collision, record_meshes};
+use super::pvl::{CompiledMesh, MaterialRecord, PvlError, read_level_geometry};
+use super::sections::{Environment, read_sections};
+use super::space::UNITS_PER_METRE;
 use super::space::{retail_direction, retail_position};
-use crate::content::level::{LevelGeometry, LevelPart};
+use super::trigger::TriggerKind;
+use crate::content::level::{
+    DoorLock, LevelEnvironment, LevelGeometry, LevelPart, Playback, PropInteraction, PropModel,
+    PropModelPart, TextureAnimation, VertexLighting,
+};
+use crate::presentation::mipmaps::generate_mipmaps;
 
-/// Light contributed by full sun exposure until the level environment's sun
-/// colour is decoded.
-const PROVISIONAL_SUN: f32 = 0.75;
+/// Time-of-day phase used for baked lighting until the game clock exists:
+/// noon, when a new game starts.
+const NOON: u8 = 128;
+
+fn level_environment(environment: &Environment) -> LevelEnvironment {
+    let table = |colours: &Option<Box<[[u8; 3]; 256]>>| match colours {
+        Some(colours) => colours.iter().map(|c| Vec3::from(c.map(f32::from)) / 255.0).collect(),
+        // Retail's built-in default: grey, brightest at noon.
+        None => (0..256)
+            .map(|i: i32| Vec3::splat((if i < 128 { i } else { 255 - i }) as f32 / 127.0))
+            .collect(),
+    };
+    LevelEnvironment {
+        fog_range: (environment.fog_range[0], environment.fog_range[1]),
+        view_distance: environment.view_distance / UNITS_PER_METRE,
+        intensity: environment.intensity,
+        fog_colours: table(&environment.fog_colours),
+        ambient_colours: table(&environment.ambient_colours),
+    }
+}
 
 #[derive(Default, TypePath)]
 pub struct PvlLoader;
@@ -27,18 +57,25 @@ pub enum PvlLoadError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Pvl(#[from] PvlError),
+    #[error(transparent)]
+    Read(#[from] bevy::asset::ReadAssetBytesError),
+    #[error("cannot name the level's octree file")]
+    Path,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Blend {
     Opaque,
-    Mask,
     Translucent,
+    Additive,
 }
 
-struct LoadedMaterial {
-    handle: Handle<StandardMaterial>,
-    emission: f32,
+pub(super) struct LoadedMaterial {
+    pub(super) handle: Handle<StandardMaterial>,
+    pub(super) emission: f32,
+    /// The material's ambient reflectance, which scales sun and sky light.
+    pub(super) ambient: Vec3,
+    pub(super) animation: Option<TextureAnimation>,
 }
 
 /// Whether any texel is not fully opaque. Retail treats such textures as
@@ -55,96 +92,136 @@ fn has_alpha(image: &Image) -> bool {
 }
 
 /// A path in `directory` next to the asset being loaded, in the same source.
-fn sibling(context: &LoadContext, directory: &str, file: &str) -> Option<AssetPath<'static>> {
+pub(super) fn sibling(
+    context: &LoadContext,
+    directory: &str,
+    file: &str,
+) -> Option<AssetPath<'static>> {
     context.path().resolve_embed_str(&format!("{directory}/{file}")).ok()
 }
 
-async fn load_texture(
+/// The frame files an `.ifl` lists. Retail stops at the first line of two
+/// characters or fewer, so trailing blank lines end the list.
+fn ifl_frames(list: &str) -> Vec<String> {
+    list.lines()
+        .map(str::trim_end)
+        .take_while(|line| line.len() > 2)
+        .map(str::to_lowercase)
+        .collect()
+}
+
+/// Images already decoded for this level, by file name, with whether they
+/// carry alpha; `None` records a texture that failed to load.
+#[derive(Default)]
+pub(super) struct LoadedTextures(HashMap<String, Option<(Handle<Image>, bool)>>);
+
+/// One image, decoded with a repeat sampler and a full mip chain.
+async fn load_image(
+    context: &mut LoadContext<'_>,
+    directory: &str,
+    file: &str,
+    textures: &mut LoadedTextures,
+) -> Option<(Handle<Image>, bool)> {
+    if let Some(loaded) = textures.0.get(file) {
+        return loaded.clone();
+    }
+    let path = sibling(context, directory, file)?;
+    let loaded = match context.read_asset_bytes(path.clone()).await {
+        Err(error) => {
+            warn!("{}: missing texture {path}: {error}", context.path());
+            None
+        }
+        Ok(bytes) => {
+            let extension = file.rsplit('.').next().unwrap_or_default();
+            // Retail: linear filtering, nearest mip selection, repeat.
+            let sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+                address_mode_u: ImageAddressMode::Repeat,
+                address_mode_v: ImageAddressMode::Repeat,
+                mipmap_filter: ImageFilterMode::Nearest,
+                ..ImageSamplerDescriptor::linear()
+            });
+            match Image::from_buffer(
+                &bytes,
+                ImageType::Extension(extension),
+                CompressedImageFormats::NONE,
+                true,
+                sampler,
+                RenderAssetUsages::RENDER_WORLD,
+            ) {
+                Ok(mut image) => {
+                    let alpha = has_alpha(&image);
+                    generate_mipmaps(&mut image);
+                    Some((context.add_labeled_asset(format!("texture/{file}"), image), alpha))
+                }
+                Err(error) => {
+                    warn!("{}: cannot decode texture {path}: {error}", context.path());
+                    None
+                }
+            }
+        }
+    };
+    textures.0.insert(file.to_owned(), loaded.clone());
+    loaded
+}
+
+/// A texture's frames: one image, or every frame an `.ifl` lists.
+async fn load_frames(
     context: &mut LoadContext<'_>,
     directory: &str,
     name: &str,
-) -> Option<(Handle<Image>, bool)> {
-    let mut file = name.to_lowercase();
-    if file.ends_with(".ifl") {
-        // Animated texture list: one frame name per line. Playback is not
-        // implemented yet; show the first frame.
-        let list = context.read_asset_bytes(sibling(context, directory, &file)?).await.ok()?;
-        let list = String::from_utf8_lossy(&list);
-        file = list.lines().map(str::trim).find(|line| !line.is_empty())?.to_lowercase();
+    textures: &mut LoadedTextures,
+) -> Vec<(Handle<Image>, bool)> {
+    let file = name.to_lowercase();
+    if !file.ends_with(".ifl") {
+        return load_image(context, directory, &file, textures).await.into_iter().collect();
     }
-    let label = format!("texture/{file}");
-    let path = sibling(context, directory, &file)?;
-    let bytes = match context.read_asset_bytes(path.clone()).await {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            warn!("{}: missing texture {path}: {error}", context.path());
-            return None;
-        }
+    let Some(path) = sibling(context, directory, &file) else { return vec![] };
+    let Ok(list) = context.read_asset_bytes(path).await else {
+        warn!("{}: missing frame list {file}", context.path());
+        return vec![];
     };
-    let extension = file.rsplit('.').next().unwrap_or_default().to_owned();
-    let sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
-        address_mode_u: ImageAddressMode::Repeat,
-        address_mode_v: ImageAddressMode::Repeat,
-        ..ImageSamplerDescriptor::linear()
-    });
-    let image = match Image::from_buffer(
-        &bytes,
-        ImageType::Extension(&extension),
-        CompressedImageFormats::NONE,
-        true,
-        sampler,
-        RenderAssetUsages::RENDER_WORLD,
-    ) {
-        Ok(image) => image,
-        Err(error) => {
-            warn!("{}: cannot decode texture {path}: {error}", context.path());
-            return None;
-        }
-    };
-    let alpha = has_alpha(&image);
-    Some((context.add_labeled_asset(label, image), alpha))
+    let mut frames = Vec::new();
+    for frame in ifl_frames(&String::from_utf8_lossy(&list)) {
+        frames.extend(load_image(context, directory, &frame, textures).await);
+    }
+    frames
 }
 
-async fn load_material(
+pub(super) async fn load_material(
     context: &mut LoadContext<'_>,
+    label: String,
     directory: &str,
-    textures: &mut HashMap<String, Option<(Handle<Image>, bool)>>,
+    textures: &mut LoadedTextures,
     index: usize,
     record: &MaterialRecord,
 ) -> LoadedMaterial {
     let selected = if index == 0 { None } else { record.texture() };
-    let mut texture = None;
+    let mut frames = Vec::new();
     let mut alpha = false;
     let mut slot = 0;
     if let Some((texture_slot, name)) = selected {
         slot = texture_slot;
         // Retail: a texture found only in the fourth slot carries alpha.
         alpha = slot == 3;
-        let key = name.to_lowercase();
-        if !textures.contains_key(&key) {
-            let loaded = load_texture(context, directory, name).await;
-            textures.insert(key.clone(), loaded);
-        }
-        if let Some((handle, texture_alpha)) = textures[&key].clone() {
-            texture = Some(handle);
-            alpha |= texture_alpha;
-        }
+        frames = load_frames(context, directory, name, textures).await;
+        alpha |= frames.iter().any(|(_, frame_alpha)| *frame_alpha);
     }
+    // Retail's packed shaders: slots 0-1 blend by alpha, slots 2-3 add
+    // colour times alpha (glows, flares, sparks, beams; black adds nothing).
     let blend = if record.opacity < 1.0 || alpha {
-        // Slots 0-1 blend; slots 2-3 select the alpha-tested shader.
-        if slot <= 1 { Blend::Translucent } else { Blend::Mask }
+        if slot <= 1 { Blend::Translucent } else { Blend::Additive }
     } else {
         Blend::Opaque
     };
-    let opacity = if index == 0 { 1.0 } else { record.opacity.clamp(0.0, 1.0) };
+    // Retail takes an opacity of 0 as 0.7.
+    let opacity = match record.opacity {
+        _ if index == 0 => 1.0,
+        0.0 => 0.7,
+        opacity => opacity.clamp(0.0, 1.0),
+    };
     let material = StandardMaterial {
-        base_color: Color::srgba(
-            1.0,
-            1.0,
-            1.0,
-            if blend == Blend::Translucent { opacity.max(0.05) } else { 1.0 },
-        ),
-        base_color_texture: texture,
+        base_color: Color::srgba(1.0, 1.0, 1.0, if blend == Blend::Opaque { 1.0 } else { opacity }),
+        base_color_texture: frames.first().map(|(handle, _)| handle.clone()),
         unlit: true,
         double_sided: record.two_sided(),
         cull_mode: if record.two_sided() {
@@ -154,43 +231,47 @@ async fn load_material(
         },
         alpha_mode: match blend {
             Blend::Opaque => AlphaMode::Opaque,
-            Blend::Mask => AlphaMode::Mask(0.5),
             Blend::Translucent => AlphaMode::Blend,
+            Blend::Additive => AlphaMode::Add,
         },
         ..default()
     };
-    let handle = context.add_labeled_asset(format!("material/{index}"), material);
-    LoadedMaterial { handle, emission: record.emission }
-}
-
-/// Solid level triangles in Bevy space: every polygon whose material is not
-/// the default and is fully opaque (alpha-tested foliage included; water and
-/// other translucent surfaces excluded). Winding is reversed like the render
-/// meshes, so normals face out.
-pub fn collision_triangles(geometry: &pvl::LevelGeometry) -> (Vec<Vec3>, Vec<[u32; 3]>) {
-    let solid: Vec<bool> = geometry
-        .materials
-        .iter()
-        .enumerate()
-        .map(|(index, material)| index != 0 && material.opacity >= 1.0)
-        .collect();
-    let mut vertices = Vec::new();
-    let mut triangles = Vec::new();
-    for mesh in &geometry.meshes {
-        let base = vertices.len() as u32;
-        vertices.extend(mesh.positions.iter().map(|&p| retail_position(p)));
-        for polygon in mesh.polygons.iter().filter(|p| solid[p.material as usize]) {
-            let [a, b, c] = polygon.vertices.map(|v| base + v);
-            triangles.push([a, c, b]);
-        }
+    let handle = context.add_labeled_asset(label, material);
+    let animation = (frames.len() > 1).then(|| TextureAnimation {
+        material: handle.clone(),
+        frames: frames.into_iter().map(|(frame, _)| frame).collect(),
+        playback: match record.animation_mode {
+            1 => Playback::PingPong,
+            2 => Playback::Once,
+            3 => Playback::Manual,
+            _ => Playback::Loop,
+        },
+        frames_per_second: record.animation_rate,
+        start_frame: record.animation_frame.max(0) as usize,
+    });
+    LoadedMaterial {
+        handle,
+        emission: record.emission,
+        ambient: Vec3::from(record.ambient),
+        animation,
     }
-    (vertices, triangles)
 }
 
-/// Unweld one material's polygons from a compiled mesh into a Bevy mesh.
-fn build_part(source: &CompiledMesh, material: u32, emission: f32) -> Option<Mesh> {
+/// Unweld one material's polygons from a compiled mesh into a Bevy mesh,
+/// with retail's baked lighting: static vertex light, the environment
+/// offset and the material's emission, plus sky light scaled by the
+/// material's ambient reflectance and the vertex's sun exposure.
+fn build_part(
+    source: &CompiledMesh,
+    material: u32,
+    emission: f32,
+    reflectance: Vec3,
+    offset: Vec3,
+    sky: Vec3,
+) -> Option<(Mesh, VertexLighting)> {
     let mut corners: HashMap<(u32, u32), u32> = HashMap::new();
-    let (mut positions, mut normals, mut uvs, mut colors) = (vec![], vec![], vec![], vec![]);
+    let (mut positions, mut normals, mut uvs) = (vec![], vec![], vec![]);
+    let mut lighting = VertexLighting { reflectance, ..default() };
     let mut indices = vec![];
     for polygon in source.polygons.iter().filter(|p| p.material == material) {
         // Mirroring Z also mirrors winding; emit corners reversed so retail
@@ -202,10 +283,8 @@ fn build_part(source: &CompiledMesh, material: u32, emission: f32) -> Option<Mes
                 positions.push(retail_position(source.positions[v]).to_array());
                 normals.push(retail_direction(source.normals[v]).to_array());
                 uvs.push(source.uvs[uv as usize]);
-                let sun = source.sunlight.as_ref().map_or(0.0, |sun| sun[v]) * PROVISIONAL_SUN;
-                let light =
-                    source.vertex_light[v].map(|channel| (channel + sun + emission).min(1.0));
-                colors.push([light[0], light[1], light[2], 1.0]);
+                lighting.sun.push(source.sunlight.as_ref().map_or(1.0, |sun| sun[v]));
+                lighting.fixed.push(Vec3::from(source.vertex_light[v]) + offset + emission);
                 positions.len() as u32 - 1
             });
             indices.push(index);
@@ -214,13 +293,82 @@ fn build_part(source: &CompiledMesh, material: u32, emission: f32) -> Option<Mes
     if indices.is_empty() {
         return None;
     }
-    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD);
+    // Kept in the main world too, so the colours can be redone.
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, lighting.colours(sky));
     mesh.insert_indices(Indices::U32(indices));
-    Some(mesh)
+    Some((mesh, lighting))
+}
+
+/// Build placed props: their part meshes and materials, lit for their rest
+/// pose, and what using them does.
+pub(super) async fn build_props(
+    context: &mut LoadContext<'_>,
+    source: impl Iterator<Item = &Prop>,
+    directory: &str,
+    textures: &mut LoadedTextures,
+    lighting: &PropLighting<'_>,
+    animated_textures: &mut Vec<TextureAnimation>,
+) -> Vec<PropModel> {
+    let mut props = Vec::new();
+    for (prop_index, prop) in source.enumerate() {
+        let mut parts = Vec::new();
+        for (part_index, (part, (transform, keys))) in
+            prop.detailed_parts().iter().zip(part_transforms(prop)).enumerate()
+        {
+            let record = &part.mesh.frames[part.mesh.first_frame];
+            let mut part_materials = Vec::with_capacity(record.materials.len());
+            for (index, material) in record.materials.iter().enumerate() {
+                let label = format!("prop/{prop_index}/{part_index}/material/{index}");
+                part_materials.push(
+                    load_material(context, label, directory, textures, index, material).await,
+                );
+            }
+            let mut meshes = Vec::new();
+            for (material, mesh, lighting) in
+                record_meshes(record, &transform, lighting, |m| part_materials[m].emission)
+            {
+                let label = format!("prop/{prop_index}/{part_index}/mesh/{material}");
+                let mesh = context.add_labeled_asset(label, mesh);
+                meshes.push(LevelPart {
+                    mesh,
+                    material: part_materials[material].handle.clone(),
+                    lighting,
+                });
+            }
+            animated_textures.extend(part_materials.into_iter().filter_map(|m| m.animation));
+            parts.push(PropModelPart {
+                transform,
+                keys,
+                meshes,
+                collision: record_collision(record),
+            });
+        }
+        let interaction = prop.trigger.as_ref().and_then(|trigger| match &trigger.kind {
+            TriggerKind::Item(item) if item.initial_action != 0 => Some(PropInteraction {
+                trigger: trigger.name.clone(),
+                initial_action: item.initial_action,
+                alternate_action: item.alternate_action,
+                door: item.door.as_ref().map(|door| DoorLock {
+                    locked: door.locked,
+                    key: (door.item != u16::MAX && door.item != 0).then_some(door.item),
+                }),
+            }),
+            _ => None,
+        });
+        props.push(PropModel {
+            name: prop.name.clone(),
+            collidable: prop.flags & PROP_COLLIDABLE != 0,
+            face_camera: prop.face_camera,
+            frames_per_second: prop.frames_per_second,
+            parts,
+            interaction,
+        });
+    }
+    props
 }
 
 impl AssetLoader for PvlLoader {
@@ -237,12 +385,18 @@ impl AssetLoader for PvlLoader {
         let mut data = Vec::new();
         reader.read_to_end(&mut data).await?;
         let geometry = read_level_geometry(&data)?;
+        let sections = read_sections(&mut Bytes::new(&data[geometry.end..]))?;
         let directory = "bitmaps";
+        let environment = sections.environment.as_ref().map(level_environment);
+        let ambient = environment.as_ref().map_or(Vec3::ZERO, |e| e.sky_light(NOON));
+        let offset = Vec3::from(sections.environment_offset);
 
-        let mut textures = HashMap::new();
+        let mut textures = LoadedTextures::default();
         let mut materials = Vec::with_capacity(geometry.materials.len());
         for (index, record) in geometry.materials.iter().enumerate() {
-            materials.push(load_material(context, directory, &mut textures, index, record).await);
+            let label = format!("material/{index}");
+            materials
+                .push(load_material(context, label, directory, &mut textures, index, record).await);
         }
 
         let mut parts = Vec::new();
@@ -252,21 +406,62 @@ impl AssetLoader for PvlLoader {
             used.dedup();
             for material in used {
                 let loaded = &materials[material as usize];
-                if let Some(part) = build_part(mesh, material, loaded.emission) {
+                if let Some((part, lighting)) =
+                    build_part(mesh, material, loaded.emission, loaded.ambient, offset, ambient)
+                {
                     let handle =
                         context.add_labeled_asset(format!("mesh/{mesh_index}/{material}"), part);
-                    parts.push(LevelPart { mesh: handle, material: loaded.handle.clone() });
+                    parts.push(LevelPart {
+                        mesh: handle,
+                        material: loaded.handle.clone(),
+                        lighting,
+                    });
                 }
             }
         }
-        let (collision_vertices, collision_triangles) = collision_triangles(&geometry);
-        let (min, max) = collision_vertices
-            .iter()
-            .fold((Vec3::MAX, Vec3::MIN), |(min, max), &p| (min.min(p), max.max(p)));
-        Ok(LevelGeometry { parts, collision_vertices, collision_triangles, bounds: (min, max) })
+        // Collision comes from the level's octree file, not render polygons.
+        let stem = context.path().path().file_stem().unwrap_or_default().to_string_lossy();
+        let octree = sibling(context, ".", &format!("{stem}.oct")).ok_or(PvlLoadError::Path)?;
+        let octree = context.read_asset_bytes(octree).await?;
+        let collision = read_collision(&octree)?.solid_mesh();
+
+        let lighting = PropLighting { ambient, offset, lights: &sections.lights };
+        let mut animated_textures: Vec<TextureAnimation> =
+            materials.into_iter().filter_map(|m| m.animation).collect();
+        let props = sections.props.iter().chain(&sections.bitmaps);
+        let props = build_props(
+            context,
+            props,
+            directory,
+            &mut textures,
+            &lighting,
+            &mut animated_textures,
+        )
+        .await;
+        let (links, teleports) = level_links(&sections);
+        Ok(LevelGeometry {
+            parts,
+            collision,
+            environment,
+            props,
+            links,
+            teleports,
+            animated_textures,
+        })
     }
 
     fn extensions(&self) -> &[&str] {
         &["pvl"]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_lists_end_at_the_first_short_line() {
+        let list = "Candle-0000.tga\r\nCandle-0001.tga\r\n\r\nignored.tga\r\n";
+        assert_eq!(ifl_frames(list), ["candle-0000.tga", "candle-0001.tga"]);
     }
 }
