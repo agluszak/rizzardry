@@ -112,7 +112,8 @@ fn fatigue_penalty(c: &Character) -> i32 {
 pub struct Hand {
     pub reach: Reach,
     pub dice: Dice,
-    pub mode: Mode,
+    /// The ways it strikes, a bit per mode; one is chosen per attack.
+    pub modes: u16,
     pub attacks: u32,
     pub swings: u32,
     pub attack_rating: i32,
@@ -124,8 +125,29 @@ pub struct Hand {
     pub initiative: i32,
 }
 
+/// Unarmed damage by Martial Arts level / 11 (retail
+/// `g_unarmed_damage_dice`), with 2 more in the main hand.
+fn unarmed_dice(martial_arts: u32) -> Dice {
+    const DICE: [(i16, u8, u8); 12] = [
+        (0, 1, 2),
+        (0, 1, 3),
+        (0, 2, 2),
+        (0, 2, 3),
+        (0, 2, 4),
+        (0, 3, 3),
+        (1, 3, 3),
+        (2, 3, 3),
+        (0, 3, 5),
+        (0, 4, 4),
+        (2, 4, 4),
+        (4, 4, 4),
+    ];
+    let (base, count, sides) = DICE[(martial_arts as usize / 11).min(11)];
+    Dice { base: base + 2, count, sides }
+}
+
 /// The primary hand's numbers (`characters.md` §4.7), without a second
-/// weapon, Martial Arts' dice table or load.
+/// weapon or load.
 pub fn primary_hand(c: &Character, carried: &Carried, catalog: &ItemCatalog) -> Hand {
     let weapon = carried
         .worn(EquipSlot::Primary)
@@ -167,12 +189,10 @@ pub fn primary_hand(c: &Character, carried: &Carried, catalog: &ItemCatalog) -> 
     let to_hit = weapon.map_or(0, |d| i32::from(d.hit_bonus)) + str_hit + (dex - 50) / 10 + sen_hit;
     Hand {
         reach: weapon.map_or(Reach::Touch, |d| Reach::from_retail(d.range)),
-        dice: weapon.map_or(Dice { count: 1, sides: 4, base: 0 }, |d| d.damage),
-        mode: if weapon.is_some_and(|d| d.class == EquipClass::RangedWeapon) {
-            Mode::Shoot
-        } else {
-            Mode::Swing
-        },
+        dice: weapon.map_or_else(|| unarmed_dice(c.skill(14)), |d| d.damage),
+        // An empty hand punches, and kicks too past Martial Arts 4
+        // (retail GameplayCode.cpp:696-699).
+        modes: weapon.map_or(if c.skill(14) > 4 { 0x60 } else { 0x20 }, |d| d.attack_modes),
         attacks,
         swings,
         attack_rating,
@@ -252,9 +272,10 @@ pub fn character_swing(
     rng: &mut GameRng,
     attacker: &Character,
     hand: &Hand,
+    mode: Mode,
     species: &Species,
 ) -> Swing {
-    let mode = hand.mode.index();
+    let mode = mode.index();
     let attributes = (character_ssdi(attacker) - species_ssdi(species)) / 10;
     let base = hand.attack_rating + 5 * hand.to_hit - fatigue_penalty(attacker) + attributes;
     let to_hit = base + TO_HIT[mode] - 5 * (10 - i32::from(species.evasion));
@@ -388,8 +409,11 @@ mod retail_tests {
                 .collect();
             (hits.len(), hits.iter().sum::<u32>() as f32 / hits.len().max(1) as f32)
         };
-        let ours =
-            tally((0..1000).map(|_| character_swing(&mut rng, &fighter, &hand, crab)).collect());
+        let ours = tally(
+            (0..1000)
+                .map(|_| character_swing(&mut rng, &fighter, &hand, Mode::Swing, crab))
+                .collect(),
+        );
         let attack = &crab.attacks[0];
         let theirs = tally(
             (0..1000)

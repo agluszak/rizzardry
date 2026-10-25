@@ -145,6 +145,9 @@ pub struct ItemDefinition {
     /// The range band a weapon attacks at; two weapons in one set share it.
     pub range: u8,
     pub damage: Dice,
+    /// The ways it strikes, a bit per attack mode: swing, thrust, bash,
+    /// berserk, throw, punch, kick, lash, shoot.
+    pub attack_modes: u16,
     pub damage_bonus: i8,
     pub hit_bonus: i8,
     pub armor_class_bonus: i8,

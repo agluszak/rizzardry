@@ -37,7 +37,8 @@ impl Formation {
         self.seats.iter().position(|row| row.contains(&Some(slot))).map(|r| ROWS[r])
     }
 
-    fn occupied(&self, row: Row) -> bool {
+    /// Whether anyone sits in a row.
+    pub fn occupied(&self, row: Row) -> bool {
         self.seats[row.index()].iter().any(Option::is_some)
     }
 

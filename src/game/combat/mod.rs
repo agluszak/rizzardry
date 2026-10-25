@@ -16,7 +16,7 @@ use crate::game::characters::{Character, Condition};
 use crate::game::data::GameData;
 use crate::game::inventory::{Carried, PartyInventory};
 use crate::game::party::body::{EYE_ABOVE_CENTRE, PartyBody, PartyCamera};
-use crate::game::party::formation::{self, Formation};
+use crate::game::party::formation::{self, Formation, Row};
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::time::GameClock;
@@ -448,19 +448,29 @@ fn member_acts(
 ) {
     let Ok((mut character, carried)) = members.get_mut(member) else { return };
     let hand = primary_hand(&character, carried, items);
-    // The nearest monster in reach (retail prefers the least hurt first,
-    // then those that can strike back; nearness is the last test).
+    // Retail `ChooseMonsterTarget`: among the monsters this hand reaches,
+    // the least afflicted, then those "in reach" of the party, then the
+    // nearest; ties keep the fight's order.
     let target = battle
         .monsters
         .iter()
         .filter_map(|&(entity, _)| {
             let (monster, at, look) = monsters.get(entity).ok()?;
             let distance = distance_to_party(party.eye, monster, at, look);
-            (!monster.is_dead() && party.reaches(slot, at.translation(), hand.reach, distance))
-                .then_some((entity, distance))
+            if monster.is_dead() || !party.reaches(slot, at.translation(), hand.reach, distance) {
+                return None;
+            }
+            let worst = monster.conditions.iter().map(|&(c, _)| c).max();
+            let has_attack =
+                species.0.get(monster.species as usize).is_some_and(|s| !s.attacks.is_empty());
+            let side = formation::quadrant(party.eye, party.yaw, at.translation());
+            let in_reach = has_attack
+                && (side == Row::Rear
+                    || (!party.formation.occupied(side) && party.formation.occupied(Row::Center)));
+            Some(((worst, !in_reach, distance), entity))
         })
-        .min_by(|a, b| a.1.total_cmp(&b.1))
-        .map(|(entity, _)| entity);
+        .min_by(|a, b| a.0.0.cmp(&b.0.0).then(a.0.1.cmp(&b.0.1)).then(a.0.2.total_cmp(&b.0.2)))
+        .map(|(_, entity)| entity);
     let turn = &mut battle.party[slot];
     let Some(target) = target else {
         // Nobody in reach: defend for the rest of the round.
@@ -472,9 +482,11 @@ fn member_acts(
     battle.attacked_this_round = true;
     let Ok((mut monster, ..)) = monsters.get_mut(target) else { return };
     let Some(kind) = species.0.get(monster.species as usize) else { return };
+    // Retail draws the attack's mode, then its swings.
+    let mode = attack::Mode::choose(rng, hand.modes);
     let swings = rng.below(hand.swings) + 1;
     for _ in 0..swings {
-        match character_swing(rng, &character, &hand, kind) {
+        match character_swing(rng, &character, &hand, mode, kind) {
             Swing::Hit { damage, .. } => {
                 news.write(CombatNews::Hit {
                     attacker: character.name.clone(),

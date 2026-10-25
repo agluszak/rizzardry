@@ -244,7 +244,7 @@ fn read_item(index: usize, record: &[u8]) -> Result<ItemDefinition, ItemLoadErro
     let damage_bonus = bytes.i8()?;
     let hit_bonus = bytes.i8()?;
     let damage = dice(&mut bytes)?;
-    bytes.u16()?; // attack flags
+    let attack_modes = bytes.u16()?;
     bytes.take(16 + 1 + 1)?; // effect chances, magnitude, slays
     let armor_class_bonus = bytes.i8()?;
     let spell = bytes.u8()?;
@@ -284,6 +284,7 @@ fn read_item(index: usize, record: &[u8]) -> Result<ItemDefinition, ItemLoadErro
         weapon_skill,
         range,
         damage,
+        attack_modes,
         damage_bonus,
         hit_bonus,
         armor_class_bonus,
