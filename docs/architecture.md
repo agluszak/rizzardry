@@ -134,7 +134,7 @@ different quantity/template representation because the original normalizes sales
 | `PartyRoster` | Ordered membership and formation |
 | `PartyInventory` | Shared pool, purse and the physically held item |
 | `CampaignState` | Story facts, journal, faction relationships and lasting discoveries |
-| `ActiveLevel` / `DormantLevels` | Current level identity/local progress and records of unloaded ordinary world objects |
+| `DormantLevels` | State of unloaded ordinary world objects; the active `Level` root is an entity, not an overlapping resource |
 | `GameClock` / `GameplayRng` | Explicit simulation time and rule randomness |
 | `Battle` | Party-fight phase order, round counters and one executing action; absent outside party combat |
 | `Conversation` | Speaker, script continuation, offered item and dialogue mode |

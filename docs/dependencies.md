@@ -104,8 +104,9 @@ settings.
 - **Step height.** At 0.35 m the upper monastery split into 22 islands, the
   largest covering 61% of the walkable area, and most walkers reported
   `NoPath`. At 0.5 m one island covers 98% and every walker finds a path.
-  Raising it to 1 m merges nothing more. `game::world::STEP_HEIGHT` (0.5 m)
-  now sets the bake, the party collider clearance and the test walkers.
+  Raising it to 1 m merges nothing more. The implementation branch now uses
+  `game::world::STEP_HEIGHT` = 300 retail units (0.6 m) for the bake and
+  walking-actor clearance; the party uses the original-style collision sphere.
 - **Overlapping floors.** The upper monastery's balconies and floors bake as
   separate layers; walkers path between them.
 - **Crowds.** 30 walkers on the upper monastery ran at about 110 fps (dev
