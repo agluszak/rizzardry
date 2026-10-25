@@ -142,7 +142,8 @@ mod tests {
         assert_eq!(slime.attacks[0].score, 130);
         assert_eq!(slime.attacks[0].damage, Dice { base: 2, count: 1, sides: 6 });
         assert_eq!(slime.evasion, 7);
-        let crocodile = species.iter().find(|s| s.name == "Crocodile").unwrap();
+        let crocodile = &species[62];
+        assert_eq!(crocodile.name, "Ironskin Crocodile");
         assert_eq!(crocodile.attacks[0].damage, Dice { base: 2, count: 3, sides: 9 });
         assert!(species.iter().all(|s| s.attacks.len() <= 3));
     }
