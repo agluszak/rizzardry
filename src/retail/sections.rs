@@ -90,8 +90,10 @@ impl LevelSections {
     }
 }
 
-fn sentinel(bytes: &mut Bytes) -> Result<(), PvlError> {
-    if bytes.i32()? != -1 {
+/// Compiled levels (`.pvl`) end each section with `-1`; uncompiled ones
+/// (`.lvl`, e.g. skies) do not.
+fn sentinel(bytes: &mut Bytes, compiled: bool) -> Result<(), PvlError> {
+    if compiled && bytes.i32()? != -1 {
         return Err(invalid("section has the wrong length", bytes));
     }
     Ok(())
@@ -173,16 +175,25 @@ fn read_environment(bytes: &mut Bytes) -> Result<Option<Environment>, PvlError> 
 
 const PARTICLE_RECORD: [usize; 4] = [0x216, 0x218, 0x21d, 0x225];
 
-/// Read a level's sections, starting where the compiled meshes end.
+/// Read a compiled level's sections, starting where its meshes end.
 pub fn read_sections(bytes: &mut Bytes) -> Result<LevelSections, PvlError> {
+    read_sections_of(bytes, true)
+}
+
+/// Read an uncompiled level's sections, starting after its mesh record.
+pub fn read_uncompiled_sections(bytes: &mut Bytes) -> Result<LevelSections, PvlError> {
+    read_sections_of(bytes, false)
+}
+
+fn read_sections_of(bytes: &mut Bytes, compiled: bool) -> Result<LevelSections, PvlError> {
     let lights = read_lights(bytes)?;
-    sentinel(bytes)?;
+    sentinel(bytes, compiled)?;
     for _ in 0..count(bytes)? {
         // Monster paths: unused by retail levels.
         text(bytes, 20)?;
         read_path(bytes)?;
     }
-    sentinel(bytes)?;
+    sentinel(bytes, compiled)?;
     for _ in 0..count(bytes)? {
         // Items: unused by retail levels.
         bytes.take(20 + 12 + 16)?;
@@ -191,13 +202,13 @@ pub fn read_sections(bytes: &mut Bytes) -> Result<LevelSections, PvlError> {
         }
         bytes.take(3 + 16)?;
     }
-    sentinel(bytes)?;
+    sentinel(bytes, compiled)?;
     bytes.i32()?; // missile count, no records
-    sentinel(bytes)?;
+    sentinel(bytes, compiled)?;
     let props = (0..count(bytes)?).map(|_| read_prop(bytes)).collect::<Result<_, _>>()?;
-    sentinel(bytes)?;
+    sentinel(bytes, compiled)?;
     let bitmaps = (0..count(bytes)?).map(|_| read_prop(bytes)).collect::<Result<_, _>>()?;
-    sentinel(bytes)?;
+    sentinel(bytes, compiled)?;
     let mut cameras = Vec::new();
     for _ in 0..count(bytes)? {
         bytes.take(8)?;
@@ -206,18 +217,18 @@ pub fn read_sections(bytes: &mut Bytes) -> Result<LevelSections, PvlError> {
         let keys_per_second = if has_speed { bytes.f32()? } else { 15.0 };
         cameras.push(CameraPath { name, keys_per_second, path: read_path(bytes)? });
     }
-    sentinel(bytes)?;
+    sentinel(bytes, compiled)?;
     let environment = read_environment(bytes)?;
-    sentinel(bytes)?;
+    sentinel(bytes, compiled)?;
     let triggers = (0..count(bytes)?).map(|_| read_trigger(bytes)).collect::<Result<_, _>>()?;
-    sentinel(bytes)?;
+    sentinel(bytes, compiled)?;
     let camera_sway = bytes.i32()? != 0;
     let clip_planes = count(bytes)?;
     if clip_planes > 0 {
         bytes.u8()?;
         bytes.take(clip_planes * (64 + 16))?;
     }
-    sentinel(bytes)?;
+    sentinel(bytes, compiled)?;
     let environment_offset = bytes.f32s()?;
     let mut particles = Vec::new();
     for _ in 0..count(bytes)? {
@@ -232,7 +243,7 @@ pub fn read_sections(bytes: &mut Bytes) -> Result<LevelSections, PvlError> {
             location: location.f32s::<3>()?.map(|v| v * RECORD_SCALE),
         });
     }
-    sentinel(bytes)?;
+    sentinel(bytes, compiled)?;
     let mut named_positions = Vec::new();
     for _ in 0..count(bytes)? {
         if bytes.u8()? != 1 {
@@ -245,11 +256,11 @@ pub fn read_sections(bytes: &mut Bytes) -> Result<LevelSections, PvlError> {
             direction: bytes.f32s()?,
         });
     }
-    sentinel(bytes)?;
+    sentinel(bytes, compiled)?;
     let automap_cell_size = bytes.f32()?;
     let cells = bytes.u32()? as usize;
     let automap_cells = bytes.records(cells, 4, |b| b.u32())?;
-    sentinel(bytes)?;
+    sentinel(bytes, compiled)?;
     Ok(LevelSections {
         lights,
         props,
@@ -288,6 +299,19 @@ mod tests {
             assert_eq!(bytes.remaining(), 72, "{level}");
             assert!(sections.environment.is_some(), "{level}");
         }
+    }
+
+    #[test]
+    fn the_default_sky_parses() {
+        let Ok(root) = std::env::var("RIZZARDRY_RETAIL") else { return };
+        let files = crate::retail::files::RetailFiles::open(root).unwrap();
+        let data = files.read("levels/test/defaultsky.lvl").unwrap().unwrap();
+        let mut bytes = Bytes::new(&data);
+        crate::retail::mesh_record::read_mesh_record(&mut bytes).unwrap();
+        let sky = read_uncompiled_sections(&mut bytes).unwrap();
+        let names: Vec<&str> =
+            sky.props.iter().chain(&sky.bitmaps).map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"Sun") && names.contains(&"Moon"), "{names:?}");
     }
 
     #[test]

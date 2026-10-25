@@ -188,6 +188,8 @@ pub fn spawn_party_on_ready(
                 Name::new("Party camera"),
                 PartyCamera,
                 Camera3d::default(),
+                // The sky camera clears the frame and draws first.
+                Camera { clear_color: ClearColorConfig::None, ..default() },
                 Projection::Perspective(PerspectiveProjection {
                     fov: 70f32.to_radians(),
                     // Retail clip range 250..75000 units.

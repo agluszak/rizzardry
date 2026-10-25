@@ -7,6 +7,7 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy_enhanced_input::EnhancedInputPlugin;
 
+use crate::content::levels::{DEFAULT_SKY, LevelInfo};
 use crate::dev::{FacePropOnEntry, face_prop_on_entry};
 use crate::dev::{
     OverheadView, ScreenshotAndExit, ScriptedInteract, ScriptedWalk, TestAgents, log_test_agents,
@@ -120,6 +121,11 @@ pub fn run(options: Options) -> AppExit {
         }
     };
 
+    // Retail falls back to the default sky when a level's own is missing.
+    let sky = LevelInfo::for_path(&level)
+        .and_then(LevelInfo::sky_path)
+        .map(|sky| if files.contains(&sky) { sky } else { DEFAULT_SKY.to_owned() });
+
     let mut start = PartyStart { eye: options.start, yaw: options.yaw.to_radians() };
     if let (None, Some(entrance)) = (options.start, options.entrance(&level)) {
         match entrance_placement(&files, &level, entrance) {
@@ -196,6 +202,7 @@ pub fn run(options: Options) -> AppExit {
             Level {
                 geometry: assets.load(format!("retail://{level}")),
                 navmesh: assets.load(navmesh_path(&level)),
+                sky: sky.as_ref().map(|sky| assets.load(format!("retail://{sky}"))),
             },
         ));
     });

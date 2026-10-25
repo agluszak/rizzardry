@@ -15,6 +15,7 @@ pub mod prop;
 pub mod prop_loader;
 pub mod pvl;
 pub mod sections;
+pub mod sky_loader;
 pub mod slf;
 pub mod source;
 pub mod space;
@@ -48,6 +49,8 @@ impl Plugin for RetailPlugin {
     }
 
     fn finish(&self, app: &mut App) {
-        app.init_asset::<LevelGeometry>().init_asset_loader::<level_loader::PvlLoader>();
+        app.init_asset::<LevelGeometry>()
+            .init_asset_loader::<level_loader::PvlLoader>()
+            .init_asset_loader::<sky_loader::LvlLoader>();
     }
 }

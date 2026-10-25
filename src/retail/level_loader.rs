@@ -14,7 +14,7 @@ use bevy::reflect::TypePath;
 use super::bytes::Bytes;
 use super::links::level_links;
 use super::oct::read_collision;
-use super::prop::PROP_COLLIDABLE;
+use super::prop::{PROP_COLLIDABLE, Prop};
 use super::prop_loader::{PropLighting, part_transforms, record_collision, record_meshes};
 use super::pvl::{CompiledMesh, MaterialRecord, PvlError, read_level_geometry};
 use super::sections::{Environment, read_sections};
@@ -70,12 +70,12 @@ enum Blend {
     Translucent,
 }
 
-struct LoadedMaterial {
-    handle: Handle<StandardMaterial>,
-    emission: f32,
+pub(super) struct LoadedMaterial {
+    pub(super) handle: Handle<StandardMaterial>,
+    pub(super) emission: f32,
     /// The material's ambient reflectance, which scales sun and sky light.
-    ambient: Vec3,
-    animation: Option<TextureAnimation>,
+    pub(super) ambient: Vec3,
+    pub(super) animation: Option<TextureAnimation>,
 }
 
 /// Whether any texel is not fully opaque. Retail treats such textures as
@@ -109,7 +109,7 @@ fn ifl_frames(list: &str) -> Vec<String> {
 /// Images already decoded for this level, by file name, with whether they
 /// carry alpha; `None` records a texture that failed to load.
 #[derive(Default)]
-struct LoadedTextures(HashMap<String, Option<(Handle<Image>, bool)>>);
+pub(super) struct LoadedTextures(HashMap<String, Option<(Handle<Image>, bool)>>);
 
 /// One image, decoded with a repeat sampler and a full mip chain.
 async fn load_image(
@@ -183,7 +183,7 @@ async fn load_frames(
     frames
 }
 
-async fn load_material(
+pub(super) async fn load_material(
     context: &mut LoadContext<'_>,
     label: String,
     directory: &str,
@@ -298,6 +298,73 @@ fn build_part(
     Some((mesh, lighting))
 }
 
+/// Build placed props: their part meshes and materials, lit for their rest
+/// pose, and what using them does.
+pub(super) async fn build_props(
+    context: &mut LoadContext<'_>,
+    source: impl Iterator<Item = &Prop>,
+    directory: &str,
+    textures: &mut LoadedTextures,
+    lighting: &PropLighting<'_>,
+    animated_textures: &mut Vec<TextureAnimation>,
+) -> Vec<PropModel> {
+    let mut props = Vec::new();
+    for (prop_index, prop) in source.enumerate() {
+        let mut parts = Vec::new();
+        for (part_index, (part, (transform, keys))) in
+            prop.detailed_parts().iter().zip(part_transforms(prop)).enumerate()
+        {
+            let record = &part.mesh.frames[part.mesh.first_frame];
+            let mut part_materials = Vec::with_capacity(record.materials.len());
+            for (index, material) in record.materials.iter().enumerate() {
+                let label = format!("prop/{prop_index}/{part_index}/material/{index}");
+                part_materials.push(
+                    load_material(context, label, directory, textures, index, material).await,
+                );
+            }
+            let mut meshes = Vec::new();
+            for (material, mesh, lighting) in
+                record_meshes(record, &transform, lighting, |m| part_materials[m].emission)
+            {
+                let label = format!("prop/{prop_index}/{part_index}/mesh/{material}");
+                let mesh = context.add_labeled_asset(label, mesh);
+                meshes.push(LevelPart {
+                    mesh,
+                    material: part_materials[material].handle.clone(),
+                    lighting,
+                });
+            }
+            animated_textures.extend(part_materials.into_iter().filter_map(|m| m.animation));
+            parts.push(PropModelPart {
+                transform,
+                keys,
+                meshes,
+                collision: record_collision(record),
+            });
+        }
+        let interaction = prop.trigger.as_ref().and_then(|trigger| match &trigger.kind {
+            TriggerKind::Item(item) if item.initial_action != 0 => Some(PropInteraction {
+                trigger: trigger.name.clone(),
+                initial_action: item.initial_action,
+                alternate_action: item.alternate_action,
+                door: item.door.as_ref().map(|door| DoorLock {
+                    locked: door.locked,
+                    key: (door.item != u16::MAX && door.item != 0).then_some(door.item),
+                }),
+            }),
+            _ => None,
+        });
+        props.push(PropModel {
+            name: prop.name.clone(),
+            collidable: prop.flags & PROP_COLLIDABLE != 0,
+            frames_per_second: prop.frames_per_second,
+            parts,
+            interaction,
+        });
+    }
+    props
+}
+
 impl AssetLoader for PvlLoader {
     type Asset = LevelGeometry;
     type Settings = ();
@@ -353,63 +420,18 @@ impl AssetLoader for PvlLoader {
         let collision = read_collision(&octree)?.solid_mesh();
 
         let lighting = PropLighting { ambient, offset, lights: &sections.lights };
-        let mut props = Vec::new();
         let mut animated_textures: Vec<TextureAnimation> =
             materials.into_iter().filter_map(|m| m.animation).collect();
-        for (prop_index, prop) in sections.props.iter().chain(&sections.bitmaps).enumerate() {
-            let mut parts = Vec::new();
-            for (part_index, (part, (transform, keys))) in
-                prop.detailed_parts().iter().zip(part_transforms(prop)).enumerate()
-            {
-                let record = &part.mesh.frames[part.mesh.first_frame];
-                let mut part_materials = Vec::with_capacity(record.materials.len());
-                for (index, material) in record.materials.iter().enumerate() {
-                    let label = format!("prop/{prop_index}/{part_index}/material/{index}");
-                    part_materials.push(
-                        load_material(context, label, directory, &mut textures, index, material)
-                            .await,
-                    );
-                }
-                let mut meshes = Vec::new();
-                for (material, mesh, lighting) in
-                    record_meshes(record, &transform, &lighting, |m| part_materials[m].emission)
-                {
-                    let label = format!("prop/{prop_index}/{part_index}/mesh/{material}");
-                    let mesh = context.add_labeled_asset(label, mesh);
-                    meshes.push(LevelPart {
-                        mesh,
-                        material: part_materials[material].handle.clone(),
-                        lighting,
-                    });
-                }
-                animated_textures.extend(part_materials.into_iter().filter_map(|m| m.animation));
-                parts.push(PropModelPart {
-                    transform,
-                    keys,
-                    meshes,
-                    collision: record_collision(record),
-                });
-            }
-            let interaction = prop.trigger.as_ref().and_then(|trigger| match &trigger.kind {
-                TriggerKind::Item(item) if item.initial_action != 0 => Some(PropInteraction {
-                    trigger: trigger.name.clone(),
-                    initial_action: item.initial_action,
-                    alternate_action: item.alternate_action,
-                    door: item.door.as_ref().map(|door| DoorLock {
-                        locked: door.locked,
-                        key: (door.item != u16::MAX && door.item != 0).then_some(door.item),
-                    }),
-                }),
-                _ => None,
-            });
-            props.push(PropModel {
-                name: prop.name.clone(),
-                collidable: prop.flags & PROP_COLLIDABLE != 0,
-                frames_per_second: prop.frames_per_second,
-                parts,
-                interaction,
-            });
-        }
+        let props = sections.props.iter().chain(&sections.bitmaps);
+        let props = build_props(
+            context,
+            props,
+            directory,
+            &mut textures,
+            &lighting,
+            &mut animated_textures,
+        )
+        .await;
         let (links, teleports) = level_links(&sections);
         Ok(LevelGeometry {
             parts,
