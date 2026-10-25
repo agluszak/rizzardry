@@ -14,14 +14,14 @@ use crate::game::world::level::{Departing, Level};
 #[derive(Resource, Debug, Clone)]
 pub struct ScreenshotAndExit {
     pub path: PathBuf,
-    pub after: f32,
-    pub elapsed: f32,
+    /// Until the screenshot, then until it has been saved.
+    pub wait: Timer,
     pub taken: bool,
 }
 
 impl ScreenshotAndExit {
     pub fn new(path: PathBuf, after: f32) -> Self {
-        ScreenshotAndExit { path, after, elapsed: 0.0, taken: false }
+        ScreenshotAndExit { path, wait: Timer::from_seconds(after, TimerMode::Once), taken: false }
     }
 }
 
@@ -36,15 +36,18 @@ pub fn screenshot_and_exit(
     if party.is_empty() {
         return;
     }
-    request.elapsed += time.delta_secs();
-    if !request.taken && request.elapsed >= request.after {
+    if !request.wait.tick(time.delta()).is_finished() {
+        return;
+    }
+    if !request.taken {
         request.taken = true;
+        request.wait = Timer::from_seconds(0.5, TimerMode::Once);
         let screenshot = match offscreen {
             Some(offscreen) => Screenshot::image(offscreen.0.clone()),
             None => Screenshot::primary_window(),
         };
         commands.spawn(screenshot).observe(save_to_disk(request.path.clone()));
-    } else if request.taken && request.elapsed >= request.after + 0.5 {
+    } else {
         exit.write(AppExit::Success);
     }
 }
@@ -123,7 +126,7 @@ pub fn say_line(
 /// Stop the game after this many seconds of play (`--run-for`): game time
 /// while a level is being played, not loading.
 #[derive(Resource, Debug)]
-pub struct RunFor(pub f32);
+pub struct RunFor(pub Timer);
 
 pub fn exit_after_run(
     time: Res<Time<Virtual>>,
@@ -132,9 +135,9 @@ pub fn exit_after_run(
     mut exit: MessageWriter<AppExit>,
 ) {
     if !playing.is_empty() {
-        run_for.0 -= time.delta_secs();
+        run_for.0.tick(time.delta());
     }
-    if run_for.0 <= 0.0 {
+    if run_for.0.is_finished() {
         exit.write(AppExit::Success);
     }
 }

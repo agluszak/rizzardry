@@ -136,8 +136,8 @@ pub struct Battle {
     attacked_this_round: bool,
     /// Monsters are walking up to the party: the round is not passive.
     approaching: bool,
-    /// Seconds until the next action.
-    wait: f32,
+    /// Until the next action.
+    wait: Timer,
 }
 
 impl Battle {
@@ -357,7 +357,7 @@ pub fn start_battle(
         passive_rounds: 0,
         attacked_this_round: false,
         approaching: false,
-        wait: 0.0,
+        wait: Timer::default(),
     });
     news.write(CombatNews::Began);
     detect.write(crate::game::world::identify::DetectGroups);
@@ -410,8 +410,7 @@ pub fn run_battle(
         formation: &formation,
         orders: &orders,
     };
-    battle.wait -= time.delta_secs();
-    if battle.wait > 0.0 {
+    if !battle.wait.tick(time.delta()).is_finished() {
         return;
     }
 
@@ -508,7 +507,7 @@ pub fn run_battle(
                     .collect();
                 drop_loot(&mut commands, level, loot.feet, made, items, &mut ids, &mut rng);
             }
-            battle.wait = ACTION_SECONDS;
+            battle.wait = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
             return;
         }
         if let Some(index) = battle.monsters.iter().position(|(_, t)| t.phase == step) {
@@ -530,7 +529,7 @@ pub fn run_battle(
                 groups,
                 &mut news,
             );
-            battle.wait = ACTION_SECONDS;
+            battle.wait = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
             if !roster.0.iter().any(|&m| members.get(m).is_ok_and(|(c, _)| !c.is_dead())) {
                 news.write(CombatNews::Lost);
                 commands.remove_resource::<Battle>();
@@ -779,7 +778,7 @@ fn end_round(
             character.restore_stamina(gained);
         }
     }
-    battle.wait = ROUND_SECONDS;
+    battle.wait = Timer::from_seconds(ROUND_SECONDS, TimerMode::Once);
     let active = battle.attacked_this_round || battle.approaching;
     battle.passive_rounds = if active { 0 } else { battle.passive_rounds + 1 };
     let hostiles_left =

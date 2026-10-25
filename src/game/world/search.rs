@@ -28,13 +28,25 @@ const RANGE_PER_POINT: f32 = 0.2;
 const PULSE_SECONDS: f32 = 0.5;
 
 /// The party's search mode (retail `search_mode`).
-#[derive(Resource, Debug, Default)]
+#[derive(Resource, Debug)]
 pub struct Search {
     pub on: bool,
     /// On before the fight that suspended it (`search_mode_saved`).
     suspended: bool,
-    /// Seconds until the next sweep.
-    pulse: f32,
+    /// The sweeps, every half second.
+    pulse: Timer,
+}
+
+impl Search {
+    fn new(on: bool, suspended: bool) -> Self {
+        Search { on, suspended, pulse: Timer::from_seconds(PULSE_SECONDS, TimerMode::Repeating) }
+    }
+}
+
+impl Default for Search {
+    fn default() -> Self {
+        Search::new(false, false)
+    }
 }
 
 /// Retail's S key (`mgskeyboard.ini` command 312).
@@ -77,11 +89,11 @@ pub fn toggle_search(
     // (retail `InitializeCombat`, `EndCombat`).
     match (battle.is_some(), search.on, search.suspended) {
         (true, true, _) => {
-            *search = Search { on: false, suspended: true, pulse: 0.0 };
+            *search = Search::new(false, true);
             news.write(SearchNews::Off);
         }
         (false, false, true) => {
-            *search = Search { on: true, suspended: false, pulse: PULSE_SECONDS };
+            *search = Search::new(true, false);
             news.write(SearchNews::On);
         }
         _ => {}
@@ -93,7 +105,7 @@ pub fn toggle_search(
         } else if battle.is_some() {
             news.write(SearchNews::NotInCombat);
         } else {
-            *search = Search { on: true, suspended: false, pulse: PULSE_SECONDS };
+            *search = Search::new(true, false);
             news.write(SearchNews::On);
         }
     }
@@ -140,11 +152,9 @@ pub fn search_pulse(
     (data, catalogs): (Option<Res<GameData>>, Res<Assets<ItemCatalog>>),
     mut news: MessageWriter<SearchNews>,
 ) {
-    search.pulse -= time.delta_secs();
-    if search.pulse > 0.0 {
+    if !search.pulse.tick(time.delta()).just_finished() {
         return;
     }
-    search.pulse = PULSE_SECONDS;
     if battle.is_some() {
         return;
     }

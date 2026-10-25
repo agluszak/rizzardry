@@ -221,7 +221,7 @@ pub fn build(options: &Options) -> Result<App, String> {
         app.insert_resource(crate::game::combat::CombatSettings { continuous: true });
     }
     if let Some(seconds) = options.run_for {
-        app.insert_resource(crate::dev::RunFor(seconds))
+        app.insert_resource(crate::dev::RunFor(Timer::from_seconds(seconds, TimerMode::Once)))
             .add_systems(Update, crate::dev::exit_after_run);
     }
     app.insert_resource(start);
