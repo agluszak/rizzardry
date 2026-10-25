@@ -353,8 +353,7 @@ pub fn start_battle(
         .map(|(_, _, at, _)| at.translation())
         .min_by(|a, b| a.distance(party_eye).total_cmp(&b.distance(party_eye)));
     if let Some(nearest) = nearest {
-        let to = nearest - party_eye;
-        body.yaw = (-to.x).atan2(-to.z);
+        body.face(nearest - party_eye);
     }
     commands.insert_resource(Battle {
         round: 0,

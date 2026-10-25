@@ -62,6 +62,14 @@ pub struct PartyBody {
     pub pitch: f32,
 }
 
+impl PartyBody {
+    /// Turn to face along `direction`, level.
+    pub fn face(&mut self, direction: Vec3) {
+        let facing = Transform::default().looking_to(direction.with_y(0.0), Vec3::Y);
+        (self.yaw, _, _) = facing.rotation.to_euler(EulerRot::YXZ);
+    }
+}
+
 /// The first-person camera attached to the party body.
 #[derive(Component, Debug)]
 pub struct PartyCamera;
@@ -371,4 +379,19 @@ pub fn interact(
             triggers.effects.push(TriggerEffect::NothingHappened);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn facing_a_direction_turns_the_view_that_way() {
+        let mut body = PartyBody::default();
+        for direction in [Vec3::NEG_X, Vec3::Z, Vec3::new(1.0, 5.0, -1.0)] {
+            body.face(direction);
+            let view = Quat::from_rotation_y(body.yaw) * Vec3::NEG_Z;
+            assert!(view.abs_diff_eq(direction.with_y(0.0).normalize(), 1e-5), "{direction}");
+        }
+    }
 }
