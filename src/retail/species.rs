@@ -29,8 +29,10 @@ fn u32_at(record: &[u8], at: usize) -> u32 {
 /// A name of UTF-16 text up to a NUL; retail drops anything after `#`.
 fn name(raw: &[u8]) -> String {
     let units: Vec<u16> = raw
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&c| u16::from_le_bytes(c))
         .take_while(|&u| u != 0)
         .collect();
     let name = String::from_utf16_lossy(&units);
