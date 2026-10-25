@@ -54,6 +54,7 @@ pub struct ItemRecord {
     pub value: u32,
     /// Tenths of a pound.
     pub weight: u16,
+    pub binds_on_equip: bool,
     pub internal_name: String,
     /// The model shown when the item lies in the world.
     pub model: String,
@@ -65,7 +66,10 @@ pub mod item_flag {
     pub const NO_DISCARD: u8 = 0x02;
     pub const TWO_HANDED: u8 = 0x04;
     pub const OFF_HAND_ALLOWED: u8 = 0x08;
+    pub const MERCHANT_CANNOT_SELL: u8 = 0x10;
     pub const CONTAINER: u8 = 0x20;
+    pub const MUST_EQUIP_TO_USE: u8 = 0x40;
+    pub const NEVER_DEPLETES: u8 = 0x80;
 }
 
 fn dice(bytes: &mut Bytes) -> Result<Dice, PvlError> {
@@ -128,6 +132,7 @@ fn read_item(record: &[u8]) -> Result<ItemRecord, PvlError> {
     let identify_difficulty = bytes.u8()?;
     let value = bytes.u32()?;
     let weight = bytes.u16()?;
+    let binds_on_equip = bytes.u8()? != 0;
     Ok(ItemRecord {
         name,
         unidentified_name,
@@ -153,6 +158,7 @@ fn read_item(record: &[u8]) -> Result<ItemRecord, PvlError> {
         identify_difficulty,
         value,
         weight,
+        binds_on_equip,
         internal_name: ascii(&record[0x8d..0x8d + 0x20]),
         model: ascii(&record[0xcd..0xcd + 0x18]),
     })
