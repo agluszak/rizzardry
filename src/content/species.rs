@@ -51,7 +51,7 @@ pub struct MonsterAttack {
     pub damage: Dice,
 }
 
-#[derive(Clone, Debug, PartialEq, Reflect)]
+#[derive(Clone, Debug, Default, PartialEq, Reflect)]
 pub struct Species {
     /// What it is ("Ironskin Crocodile"), once the party knows.
     pub name: String,

@@ -18,7 +18,9 @@ pub struct MapNote {
     pub text: String,
 }
 
-#[derive(Resource, Debug, Default)]
+/// The notes pinned on a level's map, on its root (retail saves them in
+/// each level's state, the `AUTO` chunk).
+#[derive(Component, Clone, Debug, Default)]
 pub struct MapNotes {
     pub notes: Vec<MapNote>,
 }

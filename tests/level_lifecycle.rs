@@ -5,8 +5,8 @@
 use avian3d::prelude::{Collider, RigidBodyDisabled};
 use bevy::prelude::*;
 use rizzardry::content::items::{ItemCatalog, LootTables};
-use rizzardry::content::level::{CollisionMesh, LevelGeometry};
-use rizzardry::content::species::MonsterCatalog;
+use rizzardry::content::level::{CollisionMesh, LevelGeometry, MonsterPlacement};
+use rizzardry::content::species::{MonsterCatalog, Species};
 use rizzardry::game::data::GameData;
 use rizzardry::game::inventory::ItemIds;
 use rizzardry::game::party::body::{PartyBody, PartyMotionConfig, PartyStart};
@@ -14,6 +14,7 @@ use rizzardry::game::rng::GameRng;
 use rizzardry::game::world::level::{
     Level, LevelMemory, LevelPhase, LevelReady, Travel, activate_level, travel,
 };
+use rizzardry::game::world::population::Monster;
 use rizzardry::game::world::triggers::PendingPartyMove;
 
 fn app() -> App {
@@ -24,6 +25,7 @@ fn app() -> App {
         .init_asset::<LootTables>()
         .init_asset::<MonsterCatalog>()
         .init_asset::<bevy_landmass::NavMesh3d>()
+        .init_asset::<rizzardry::content::monster::MonsterModel>()
         .init_asset::<rizzardry::content::ui::TextTable>()
         .init_resource::<Assets<PartyMotionConfig>>()
         .init_resource::<LevelMemory>()
@@ -40,20 +42,31 @@ fn app() -> App {
     app
 }
 
-/// The shared databases, empty, as gameplay needs them loaded.
+/// The shared databases, nearly empty (one species), as gameplay needs them
+/// loaded.
 fn with_data(app: &mut App) {
     let world = app.world_mut();
     let items = world.resource_mut::<Assets<ItemCatalog>>().add(ItemCatalog::default());
     let loot = world.resource_mut::<Assets<LootTables>>().add(LootTables::default());
-    let species = world.resource_mut::<Assets<MonsterCatalog>>().add(MonsterCatalog::default());
+    let crab = Species { name: "Crab".into(), ..default() };
+    let species = world.resource_mut::<Assets<MonsterCatalog>>().add(MonsterCatalog(vec![crab]));
     world.insert_resource(GameData { items, loot, species });
 }
 
 fn spawn_level(app: &mut App, collision: CollisionMesh) -> Entity {
-    let geometry = app
-        .world_mut()
-        .resource_mut::<Assets<LevelGeometry>>()
-        .add(LevelGeometry { collision, ..default() });
+    let crab = MonsterPlacement {
+        location: 7,
+        group: 1,
+        species: 0,
+        model: "crab".into(),
+        position: Vec3::ZERO,
+        yaw: 0.0,
+    };
+    let geometry = app.world_mut().resource_mut::<Assets<LevelGeometry>>().add(LevelGeometry {
+        collision,
+        monsters: vec![crab],
+        ..default()
+    });
     app.world_mut()
         .spawn(Level {
             path: "levels/test/test.pvl".into(),
@@ -157,4 +170,39 @@ fn travel_suspends_the_party_until_the_destination_activates() {
     assert_ne!(phase(&app, destination), LevelPhase::Active);
     assert!(app.world().get::<RigidBodyDisabled>(party).is_some());
     assert_eq!(party_entities(&mut app), vec![party]);
+}
+
+fn monsters(app: &mut App) -> Vec<Monster> {
+    let world = app.world_mut();
+    let mut query = world.query::<&Monster>();
+    query.iter(world).cloned().collect()
+}
+
+#[test]
+fn a_killed_monster_stays_dead_when_the_party_returns() {
+    let mut app = app();
+    with_data(&mut app);
+    spawn_level(&mut app, floor());
+    app.update();
+    assert_eq!(monsters(&mut app).len(), 1);
+    {
+        let world = app.world_mut();
+        let mut query = world.query::<&mut Monster>();
+        query.single_mut(world).unwrap().hp = 0;
+    }
+
+    // Leave (for a level that cannot load here), then come back.
+    app.world_mut().write_message(Travel { entrance: "MO204".into() });
+    app.update();
+    assert!(monsters(&mut app).is_empty());
+    let mut levels = app.world_mut().query_filtered::<Entity, With<Level>>();
+    let away: Vec<Entity> = levels.iter(app.world()).collect();
+    for level in away {
+        app.world_mut().despawn(level);
+    }
+    let back = spawn_level(&mut app, floor());
+    app.update();
+
+    assert_eq!(phase(&app, back), LevelPhase::Active);
+    assert!(monsters(&mut app).is_empty(), "the dead crab came back");
 }

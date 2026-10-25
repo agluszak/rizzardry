@@ -91,6 +91,26 @@ pub struct TriggerState {
     fountain: Option<(i32, Option<u64>)>,
 }
 
+/// What a level's triggers keep while the party is away (retail's `LOCK`
+/// and `TRES` level state): each trigger's switches, position, contents and
+/// fountain, and the location variables. Proximity, animation waits and
+/// damage-zone timing belong to a visit and are not kept.
+#[derive(Clone, Debug)]
+pub struct TriggerMemory {
+    triggers: Vec<KeptTrigger>,
+    variables: HashMap<String, bool>,
+}
+
+#[derive(Clone, Debug)]
+struct KeptTrigger {
+    on: bool,
+    fired: bool,
+    use_alternate: bool,
+    position: usize,
+    contents: Option<Contents>,
+    fountain: Option<(i32, Option<u64>)>,
+}
+
 /// What a container holds.
 #[derive(Clone, Debug, Default)]
 pub struct Contents {
@@ -142,10 +162,43 @@ impl LevelState {
         state
     }
 
-    /// The state kept from an earlier visit, for the party's return: it has
-    /// not been seen here yet this time.
-    pub fn revisited(&self) -> Self {
-        LevelState { entered: false, ..self.clone() }
+    /// What the triggers keep while the party is away.
+    pub fn remember(&self) -> TriggerMemory {
+        TriggerMemory {
+            triggers: self
+                .triggers
+                .iter()
+                .map(|t| KeptTrigger {
+                    on: t.on,
+                    fired: t.fired,
+                    use_alternate: t.use_alternate,
+                    position: t.position,
+                    contents: t.contents.clone(),
+                    fountain: t.fountain,
+                })
+                .collect(),
+            variables: self.variables.clone(),
+        }
+    }
+
+    /// A visit's state for a level the party has been to: its triggers as
+    /// they were kept, nothing in progress, and the party not seen yet.
+    pub fn returning(
+        geometry: &LevelGeometry,
+        script: LevelScript,
+        memory: &TriggerMemory,
+    ) -> Self {
+        let mut state = LevelState::new(geometry, script);
+        for (trigger, kept) in state.triggers.iter_mut().zip(&memory.triggers) {
+            trigger.on = kept.on;
+            trigger.fired = kept.fired;
+            trigger.use_alternate = kept.use_alternate;
+            trigger.position = kept.position;
+            trigger.contents = kept.contents.clone();
+            trigger.fountain = kept.fountain;
+        }
+        state.variables = memory.variables.clone();
+        state
     }
 
     pub fn find(&self, name: &str) -> Option<usize> {

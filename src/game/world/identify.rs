@@ -19,7 +19,7 @@ use crate::game::rng::GameRng;
 
 /// What the party knows of a level's monster groups, on the level root
 /// (retail `alternate_name`, and `group_state[0]` for counted).
-#[derive(Component, Debug, Default)]
+#[derive(Component, Clone, Debug, Default)]
 pub struct MonsterGroups {
     identified: HashSet<i32>,
     counted: HashSet<i32>,

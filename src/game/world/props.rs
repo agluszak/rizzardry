@@ -11,6 +11,9 @@ use super::level::PropPart;
 /// A placed prop. Its parts are children carrying [`PropPart`].
 #[derive(Component, Debug)]
 pub struct Prop {
+    /// Its place among the level's props (`LevelGeometry::props`), which
+    /// identifies it within the level.
+    pub definition: usize,
     /// The trigger using the prop runs.
     pub trigger: Option<String>,
     /// Its trigger guards a doorway (navigation links follow it).

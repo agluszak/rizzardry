@@ -233,17 +233,22 @@ Known gaps, in rough order:
   within reach pulses it green and, after half a second, shows its name in
   retail's help box ("Bullets (Unidentified) (16)"); unidentified items
   go by their kind's name everywhere. Containers' item picker is still to
-  come. A level left keeps its items as they lay (for the session).
+  come.
 - Stamina and healing fountains (`0x25`, `0x26`) restore every member by
   `data[2]`, with `data[0]` uses (−1 endless) refilled `data[1]` × 720 game
   seconds after use. Spell-point and spell-casting fountains (`0x27`–`0x2b`)
   wait for spells.
 - Most trigger actions are not performed yet (lights, missiles, fountains,
-  timed actions, required items). A level's trigger state,
-  variables and prop positions are kept when the party leaves and restored on
-  return, but only for the session: they are not saved with the game, and
-  monsters and dormant-level catch-up do not exist yet.
-- Map notes are not saved; the automap does not yet track explored cells or
+  timed actions, required items). A level the party leaves
+  is kept as a record (`LevelRecord`) that its next activation consumes:
+  what its triggers keep (switches, positions, contents, fountains,
+  variables; not proximity, animation waits or zone timing), where its
+  props were heading by definition index, its monsters as they were (the
+  dead stay gone), its lying items, what the party knows of its groups,
+  and its map notes. Only for the session: not saved with the game, and
+  dormant-level catch-up does not exist yet.
+- Map notes belong to their level (retail's `AUTO` chunk) and are not saved
+  with the game; the automap does not yet track explored cells or
   project notes onto a minimap. Only the map screen exists.
 - The screenshot tool intermittently omits all or some unchanged UI artwork,
   even while map/note assertions pass. Complete map frames have also been

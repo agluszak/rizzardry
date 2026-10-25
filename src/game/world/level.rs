@@ -14,23 +14,27 @@ use bevy_landmass::NavMesh3d;
 use bevy::asset::{LoadState, UntypedAssetId};
 use bevy::ecs::system::SystemParam;
 
+use super::identify::MonsterGroups;
 use super::items::WorldItem;
 use super::navigation::asset::navmesh_path;
 use super::navigation::bake::SIZE_CLASSES;
+use super::population::Monster;
 use super::props::{Prop, PropMotion, pose};
 use super::scripts::LevelScript;
-use super::triggers::LevelState;
+use super::triggers::{LevelState, TriggerMemory};
 use super::{navigation, population};
 use crate::content::items::{ItemCatalog, LootTables};
 use crate::content::level::LevelGeometry;
 use crate::content::levels::LevelInfo;
 use crate::content::species::MonsterCatalog;
 use crate::content::ui::TextTable;
+use crate::game::automap::MapNotes;
 use crate::game::data::GameData;
 use crate::game::inventory::ItemIds;
 use crate::game::party::body::PartyPlacement;
 use crate::game::rng::GameRng;
 use crate::presentation::billboards::FaceCamera;
+use crate::presentation::monsters::MonsterAppearance;
 use crate::presentation::sky::{Celestial, Cloud};
 
 /// The root of the level the party is in.
@@ -95,8 +99,7 @@ pub fn travel(
     mut commands: Commands,
     mut requests: MessageReader<Travel>,
     levels: Query<(Entity, &Level, &LevelPhase, Option<&LevelState>, Option<&Children>)>,
-    props: Query<&PropMotion>,
-    items: Query<(&WorldItem, &Transform)>,
+    contents: LevelContents,
     mut memory: ResMut<LevelMemory>,
     assets: Res<AssetServer>,
     (battle, mut start, mut pending, party): (
@@ -120,17 +123,7 @@ pub fn travel(
         // where they were heading.
         if let (LevelPhase::Active, Some(state)) = (phase, state) {
             let children: Vec<Entity> = children.map_or_else(Vec::new, |c| c.to_vec());
-            let prop_frames =
-                children.iter().filter_map(|c| props.get(*c).ok()).map(|m| m.target).collect();
-            let items = children
-                .iter()
-                .filter_map(|c| items.get(*c).ok())
-                .map(|(item, at)| (item.clone(), at.translation))
-                .collect();
-            memory.0.insert(
-                level.path.clone(),
-                LevelRecord { state: state.clone(), prop_frames, items },
-            );
+            memory.0.insert(level.path.clone(), contents.remember(entity, state, &children));
         }
         commands.entity(entity).despawn();
     }
@@ -150,18 +143,74 @@ pub fn travel(
     };
 }
 
-/// Levels the party has left, as they were when it left (props by their
-/// order in the level). Not yet saved with the game.
+/// Levels the party has left, by path, as they will be on its return.
+/// Not yet saved with the game.
 #[derive(Resource, Debug, Default)]
 pub struct LevelMemory(pub(super) HashMap<String, LevelRecord>);
 
+/// A level the party has left (retail keeps it in the level's state image):
+/// what its triggers keep, where its props were heading, its monsters (the
+/// dead too, so they stay dead), the items lying about, what the party
+/// knows of its groups, and its map notes. Activation consumes it.
 #[derive(Debug)]
 pub struct LevelRecord {
-    state: LevelState,
-    prop_frames: Vec<f32>,
-    /// The items lying about, and where (retail keeps them in the level
-    /// state's `ITEM` chunk).
+    triggers: TriggerMemory,
+    /// By prop definition index.
+    prop_frames: HashMap<usize, f32>,
+    pub(super) monsters: Vec<KeptMonster>,
     pub(super) items: Vec<(WorldItem, Vec3)>,
+    pub(super) groups: MonsterGroups,
+    notes: MapNotes,
+}
+
+/// A monster as the party left it: where its feet were and which way it
+/// faced, and its size.
+#[derive(Clone, Debug)]
+pub struct KeptMonster {
+    pub monster: Monster,
+    pub feet: Vec3,
+    pub yaw: f32,
+    pub size_roll: Option<u32>,
+}
+
+/// What travel reads to remember the level it leaves.
+#[derive(SystemParam)]
+pub struct LevelContents<'w, 's> {
+    props: Query<'w, 's, (&'static Prop, &'static PropMotion)>,
+    monsters: Query<'w, 's, (&'static Monster, &'static Transform, &'static MonsterAppearance)>,
+    items: Query<'w, 's, (&'static WorldItem, &'static Transform)>,
+    knowledge: Query<'w, 's, (Option<&'static MonsterGroups>, Option<&'static MapNotes>)>,
+}
+
+impl LevelContents<'_, '_> {
+    fn remember(&self, root: Entity, state: &LevelState, children: &[Entity]) -> LevelRecord {
+        let (groups, notes) = self.knowledge.get(root).unwrap_or_default();
+        LevelRecord {
+            triggers: state.remember(),
+            prop_frames: children
+                .iter()
+                .filter_map(|&c| self.props.get(c).ok())
+                .map(|(prop, motion)| (prop.definition, motion.target))
+                .collect(),
+            monsters: children
+                .iter()
+                .filter_map(|&c| self.monsters.get(c).ok())
+                .map(|(monster, at, look)| KeptMonster {
+                    monster: monster.clone(),
+                    feet: at.translation - Vec3::Y * look.float_height,
+                    yaw: at.rotation.to_euler(EulerRot::YXZ).0,
+                    size_roll: look.size_roll,
+                })
+                .collect(),
+            items: children
+                .iter()
+                .filter_map(|&c| self.items.get(c).ok())
+                .map(|(item, at)| (item.clone(), at.translation))
+                .collect(),
+            groups: groups.cloned().unwrap_or_default(),
+            notes: notes.cloned().unwrap_or_default(),
+        }
+    }
 }
 
 /// The level's sky has not been built yet.
@@ -316,7 +365,11 @@ fn build_world(
     root.insert((
         RigidBody::Static,
         collider,
-        remembered.map_or_else(|| LevelState::new(geometry, level.script), |r| r.state.revisited()),
+        remembered.map_or_else(
+            || LevelState::new(geometry, level.script),
+            |r| LevelState::returning(geometry, level.script, &r.triggers),
+        ),
+        remembered.map_or_else(MapNotes::default, |r| r.notes.clone()),
     ));
     {
         root.with_children(|parent| {
@@ -325,13 +378,14 @@ fn build_world(
             }
             for (index, prop) in geometry.props.iter().enumerate() {
                 let frame =
-                    remembered.and_then(|r| r.prop_frames.get(index)).copied().unwrap_or(0.0);
+                    remembered.and_then(|r| r.prop_frames.get(&index)).copied().unwrap_or(0.0);
                 let last_frame =
                     prop.parts.iter().map(|p| p.keys.len().saturating_sub(1)).max().unwrap_or(0);
                 parent
                     .spawn((
                         Name::new(prop.name.clone()),
                         Prop {
+                            definition: index,
                             trigger: prop.trigger.clone(),
                             door: prop.trigger.as_ref().is_some_and(|name| {
                                 geometry

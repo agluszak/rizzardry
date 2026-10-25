@@ -51,7 +51,6 @@ impl Plugin for PresentationPlugin {
         app.add_message::<voice::SpeechFinished>()
             .add_message::<dialog::TravelAnswer>()
             .add_message::<automap::OpenAutomap>()
-            .init_resource::<crate::game::automap::MapNotes>()
             .init_resource::<effects::CameraShake>()
             .init_resource::<notices::TextLog>()
             .init_resource::<hover::Hover>()

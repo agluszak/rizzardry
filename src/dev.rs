@@ -463,7 +463,7 @@ pub fn run_ui_script(
     mut pointer: MessageWriter<PointerInput>,
     mut buttons: MessageWriter<bevy::input::mouse::MouseButtonInput>,
     automap: Option<Res<crate::presentation::automap::Automap>>,
-    notes: Res<crate::game::automap::MapNotes>,
+    notes: Query<&crate::game::automap::MapNotes>,
     mut members: Query<&mut crate::game::characters::Character>,
 ) {
     let (Ok((window_entity, window, cursor)), false) = (window.single(), party.is_empty()) else {
@@ -581,7 +581,8 @@ pub fn run_ui_script(
             assert_eq!(automap.as_ref().map(|map| map.layer + 1), Some(layer), "automap layer");
         }
         "assert-note" => {
-            assert!(notes.notes.iter().any(|note| note.text == rest), "missing map note: {rest}");
+            let found = notes.iter().flat_map(|n| &n.notes).any(|note| note.text == rest);
+            assert!(found, "missing map note: {rest}");
         }
         "log-prop" => {
             commands.insert_resource(LogProp(rest.to_owned()));

@@ -257,7 +257,7 @@ pub fn toggle_automap(
     mut open: MessageReader<OpenAutomap>,
     back: Single<&ActionEvents, With<Action<Back>>>,
     automap: Option<ResMut<Automap>>,
-    mut notes: ResMut<MapNotes>,
+    mut notes: Single<&mut MapNotes>,
     art: Option<Res<AutomapArt>>,
     sheets: Res<Assets<SpriteSheet>>,
     mut images: ResMut<Assets<Image>>,
@@ -515,7 +515,7 @@ fn press_button(
     geometry: Res<Assets<LevelGeometry>>,
     party: Query<&Transform, With<PartyBody>>,
     automap: Option<ResMut<Automap>>,
-    mut notes: ResMut<MapNotes>,
+    mut notes: Single<&mut MapNotes>,
 ) {
     if click.button != bevy::picking::pointer::PointerButton::Primary {
         return;
@@ -594,7 +594,7 @@ pub fn paint_buttons(
 fn click_map(
     click: On<PointerClick>,
     automap: Option<ResMut<Automap>>,
-    mut notes: ResMut<MapNotes>,
+    mut notes: Single<&mut MapNotes>,
 ) {
     // UI hits are relative to the node's centre, in node sizes.
     let (Some(mut automap), Some(hit)) = (automap, click.hit.position) else { return };
@@ -638,7 +638,7 @@ fn finish_editing(automap: &mut Automap, notes: &mut MapNotes) {
 pub fn type_note(
     mut keys: MessageReader<KeyboardInput>,
     automap: Option<ResMut<Automap>>,
-    mut notes: ResMut<MapNotes>,
+    mut notes: Single<&mut MapNotes>,
     screens: Query<(Entity, &ContextActivity<Screens>), With<Screens>>,
     mut commands: Commands,
 ) {
@@ -679,7 +679,7 @@ pub fn draw_notes(
     mut commands: Commands,
     layer: Query<Entity, With<NotesLayer>>,
     automap: Option<Res<Automap>>,
-    notes: Res<MapNotes>,
+    notes: Single<Ref<MapNotes>>,
     art: Option<Res<AutomapArt>>,
     sheets: Res<Assets<SpriteSheet>>,
     mut images: ResMut<Assets<Image>>,
@@ -985,13 +985,14 @@ mod tests {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, bevy::input::InputPlugin, EnhancedInputPlugin))
             .add_input_context::<Screens>()
-            .init_resource::<MapNotes>()
             .add_systems(Update, type_note);
         app.finish();
         app.cleanup();
         let controls = app.world_mut().spawn(Screens).id();
         let mut map = large_map();
-        map.editing = app.world_mut().resource_mut::<MapNotes>().add(Vec2::ZERO, 0);
+        let mut notes = MapNotes::default();
+        map.editing = notes.add(Vec2::ZERO, 0);
+        app.world_mut().spawn(notes);
         app.insert_resource(map);
         app.update();
         assert!(!**app.world().get::<ContextActivity<Screens>>(controls).unwrap());
