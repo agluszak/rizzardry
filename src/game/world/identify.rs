@@ -68,6 +68,29 @@ pub fn recognition(member: &Character, species: u32, level: u8) -> i32 {
         + member.skill(MYTHOLOGY) as i32
 }
 
+/// What the party can tell of a monster's health (retail
+/// `FormatMonsterHealth`): its best Mythology, less three for each level the
+/// monster shows above the party's average, tells the current health from
+/// 10 and the most from 5; otherwise "?" ("12/20", "?/20", "?/?").
+pub fn health_known(party: &[&Character], hp: u32, max_hp: u32, display_level: u8) -> String {
+    let mythology = party
+        .iter()
+        .filter(|m| crate::game::camp::can_act(m))
+        .map(|m| m.skill(MYTHOLOGY))
+        .max()
+        .unwrap_or(0);
+    let average = party.iter().map(|m| f32::from(m.level)).sum::<f32>() / party.len().max(1) as f32;
+    let level = i32::from(display_level);
+    let knowledge = if (average as i32) < level {
+        (mythology as f32 - (level as f32 - average) * 3.0 + 0.5).max(0.0) as u32
+    } else {
+        mythology
+    };
+    let current = if knowledge >= 10 { hp.to_string() } else { "?".to_owned() };
+    let most = if knowledge > 4 { max_hp.to_string() } else { "?".to_owned() };
+    format!("{current}/{most}")
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn detect_monster_groups(
     mut requests: MessageReader<DetectGroups>,
@@ -161,6 +184,29 @@ pub fn detect_monster_groups(
 mod tests {
     use super::*;
     use crate::game::characters::{Gender, Profession, Race};
+
+    #[test]
+    fn mythology_tells_a_monsters_health() {
+        let mut sage = Character::new("Sage", Race::Human, Gender::Male, Profession::Bishop);
+        sage.skill_points[MYTHOLOGY] = 0;
+        assert_eq!(health_known(&[&sage], 7, 20, 1), "?/?");
+        sage.skill_points[MYTHOLOGY] = 6;
+        let known = sage.skill(MYTHOLOGY);
+        assert!(known > 4 && known < 10, "{known}");
+        assert_eq!(health_known(&[&sage], 7, 20, 1), "?/20");
+        sage.skill_points[MYTHOLOGY] = 12;
+        assert_eq!(health_known(&[&sage], 7, 20, 1), "7/20");
+        // Three levels above the party's average cost nine points.
+        let left = sage.skill(MYTHOLOGY) - 9;
+        let expected = if left >= 10 {
+            "7/20"
+        } else if left > 4 {
+            "?/20"
+        } else {
+            "?/?"
+        };
+        assert_eq!(health_known(&[&sage], 7, 20, 4), expected);
+    }
 
     #[test]
     fn seeing_more_of_a_kind_makes_it_easier_to_recognise() {

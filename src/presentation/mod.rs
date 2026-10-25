@@ -7,6 +7,7 @@ pub mod camp;
 pub mod dialog;
 pub mod effects;
 pub mod environment;
+pub mod hover;
 pub mod inventory;
 pub mod main_screen;
 pub mod mipmaps;
@@ -53,7 +54,7 @@ impl Plugin for PresentationPlugin {
             .init_resource::<crate::game::automap::MapNotes>()
             .init_resource::<effects::CameraShake>()
             .init_resource::<notices::TextLog>()
-            .init_resource::<world_items::HoveredItem>()
+            .init_resource::<hover::Hover>()
             .init_resource::<main_screen::ScreenLayout>()
             .init_resource::<main_screen::SelectedMember>()
             .init_resource::<music::Music>()
@@ -144,8 +145,8 @@ impl Plugin for PresentationPlugin {
                     )
                         .chain(),
                     (
-                        world_items::hover_world_items,
-                        world_items::show_item_tooltip,
+                        hover::hover,
+                        hover::show_tooltip,
                         world_items::show_world_items,
                         world_items::build_world_items,
                         world_items::turn_world_items,

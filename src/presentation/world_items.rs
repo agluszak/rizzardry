@@ -1,25 +1,17 @@
 //! Showing items lying in the world: their models turning in place, lit as
 //! retail lights them (`ActivateItem`, `W8Item::UpdateAnimation`).
 
-use bevy::camera::visibility::RenderLayers;
-use bevy::picking::mesh_picking::ray_cast::MeshRayCast;
-use bevy::picking::pointer::{PointerId, PointerLocation};
 use bevy::prelude::*;
 
 use avian3d::prelude::SpatialQuery;
 
 use crate::content::items::{ItemCatalog, ItemModel};
 use crate::content::level::LevelGeometry;
-use crate::content::ui::SpriteSheet;
 use crate::game::data::GameData;
-use crate::game::party::body::PartyCamera;
 use crate::game::time::GameClock;
-use crate::game::world::items::REACH;
 use crate::game::world::items::WorldItem;
 use crate::game::world::level::Level;
-use crate::game::world::props::{drawn_under_ray, owner, ray_under_pointer};
 use crate::presentation::monsters::sunlit;
-use crate::presentation::screen_art::absolute;
 
 /// Retail turns a lying item a sixteenth of a turn every 50 ms (the main
 /// screen's world update); here it turns smoothly at that rate.
@@ -106,7 +98,7 @@ pub fn turn_world_items(time: Res<Time>, mut items: Query<&mut Transform, With<I
 /// nearby lights, and the material's own glow.
 pub fn light_world_items(
     time: Res<Time>,
-    hovered: Res<HoveredItem>,
+    hovered: Res<super::hover::Hover>,
     clock: Res<GameClock>,
     levels: Query<(Entity, &Level)>,
     geometry: Res<Assets<LevelGeometry>>,
@@ -135,7 +127,7 @@ pub fn light_world_items(
         let (Some(model), Some(parts)) = (models.get(&shown.model), &shown.parts) else { continue };
         for (part, copy) in model.parts.iter().zip(parts) {
             let mut light = sky * sky_scale * part.ambient + fixed + Vec3::splat(part.emission);
-            if hovered.entity == Some(entity) {
+            if hovered.entity() == Some(entity) {
                 light += Vec3::Y * pulse;
             }
             let colour = light.extend(1.0).to_array();
@@ -149,112 +141,3 @@ pub fn light_world_items(
 /// A full rise and fall of the highlight: 15 steps up and 15 down, 50 ms
 /// each.
 const PULSE_SECONDS: f32 = 1.5;
-
-/// The lying item under the pointer, and since when (retail
-/// `selected_item`).
-#[derive(Resource, Debug, Default)]
-pub struct HoveredItem {
-    entity: Option<Entity>,
-    since: f32,
-}
-
-/// Pick the item under the pointer within reach (retail
-/// `PickNearestItemUnderCursor` and `SetCombatTarget`).
-#[allow(clippy::too_many_arguments)]
-pub fn hover_world_items(
-    time: Res<Time>,
-    pointers: Query<(&PointerId, &PointerLocation)>,
-    camera: Query<(&Camera, &GlobalTransform), With<PartyCamera>>,
-    mut meshes: MeshRayCast,
-    sky: Query<(), With<RenderLayers>>,
-    parents: Query<&ChildOf>,
-    items: Query<&WorldItem>,
-    mut hovered: ResMut<HoveredItem>,
-) {
-    let under = camera.single().ok().and_then(|(camera, transform)| {
-        let ray = ray_under_pointer(&pointers, camera, transform)?;
-        let (hit, distance) = drawn_under_ray(ray, &mut meshes, &sky)?;
-        let entity = owner(hit, |e| items.contains(e), &parents)?;
-        (distance < REACH && items.get(entity).is_ok_and(|i| !i.hidden)).then_some(entity)
-    });
-    if under != hovered.entity {
-        *hovered = HoveredItem { entity: under, since: time.elapsed_secs() };
-    }
-}
-
-/// Retail's help box waits the tooltip delay, at most half a second.
-const TOOLTIP_DELAY: f32 = 0.5;
-/// Retail raises the box by half the cursor's height: its arrow is 32
-/// pixels high.
-const HALF_CURSOR: f32 = 16.0;
-
-/// The help box with the hovered item's name (retail `VideoToolTip`):
-/// Arial 10 on black inside a tan border, at the pointer, kept on screen.
-#[derive(Component)]
-pub struct ItemTooltip;
-
-#[allow(clippy::too_many_arguments)]
-pub fn show_item_tooltip(
-    mut commands: Commands,
-    time: Res<Time>,
-    hovered: Res<HoveredItem>,
-    items: Query<&WorldItem>,
-    pointers: Query<(&PointerId, &PointerLocation)>,
-    scale: Res<UiScale>,
-    (data, catalogs, sheets, assets): (
-        Option<Res<GameData>>,
-        Res<Assets<ItemCatalog>>,
-        Res<Assets<SpriteSheet>>,
-        Res<AssetServer>,
-    ),
-    mut images: ResMut<Assets<Image>>,
-    shown: Query<Entity, With<ItemTooltip>>,
-    mut current: Local<Option<(Entity, Vec2)>>,
-    mut font: Local<Option<Handle<SpriteSheet>>>,
-) {
-    let font = font.get_or_insert_with(|| assets.load("retail://data/fonts/font10arial.sti"));
-    let cursor = pointers
-        .iter()
-        .find(|(id, _)| id.is_mouse())
-        .and_then(|(_, location)| location.location())
-        .map(|location| (location.position / scale.0).round());
-    let wanted =
-        hovered.entity.filter(|_| time.elapsed_secs() - hovered.since >= TOOLTIP_DELAY).zip(cursor);
-    if wanted == *current && (wanted.is_none() || !shown.is_empty()) {
-        return;
-    }
-    for entity in &shown {
-        commands.entity(entity).despawn();
-    }
-    *current = None;
-    let Some((entity, at)) = wanted else { return };
-    let (Some(item), Some(catalog), Some(sheet)) =
-        (items.get(entity).ok(), data.and_then(|d| catalogs.get(&d.items)), sheets.get(&*font))
-    else {
-        return;
-    };
-    let Some(definition) = catalog.get(item.item.item) else { return };
-    let name = item.item.display_name(definition, true);
-    let text = sheet.text_image(&name);
-    let size = text.size_f32() + Vec2::new(4.0, 2.0);
-    let corner = Vec2::new(at.x.max(2.0), (at.y - HALF_CURSOR).max(2.0))
-        .min(Vec2::new(640.0, 480.0) - size - 2.0);
-    commands
-        .spawn((
-            ItemTooltip,
-            BackgroundColor(Color::BLACK),
-            BorderColor::all(Color::srgb(0.93, 0.6, 0.33)),
-            Node { border: UiRect::all(Val::Px(1.0)), ..absolute(corner, size) },
-            GlobalZIndex(30),
-            Pickable::IGNORE,
-        ))
-        .with_child((
-            ImageNode::new(images.add(text)),
-            Node {
-                margin: UiRect::new(Val::Px(1.0), Val::ZERO, Val::ZERO, Val::ZERO),
-                ..default()
-            },
-            Pickable::IGNORE,
-        ));
-    *current = Some((entity, at));
-}

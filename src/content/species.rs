@@ -87,6 +87,9 @@ pub struct Species {
     pub experience: u32,
     /// The level the rules use.
     pub level: u8,
+    /// The level the party is shown, which decides how much of its health
+    /// they can tell.
+    pub display_level: u8,
     pub gold: Dice,
     pub prefers_ranged: bool,
 }

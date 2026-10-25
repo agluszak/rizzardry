@@ -84,6 +84,7 @@ fn species(record: &[u8]) -> Species {
         armour_by_mode: std::array::from_fn(|i| signed(0x16d + i)),
         experience,
         level: record[0x24f],
+        display_level: record[0x251],
         gold: dice(record, 0x243),
         prefers_ranged: record[0x1b9] != 0,
     }
