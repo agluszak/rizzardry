@@ -165,7 +165,12 @@ pub fn read_items(data: &[u8]) -> Result<Vec<ItemRecord>, PvlError> {
     if data.len() - 4 < count * RECORD {
         return Err(invalid("item database shorter than its count", &bytes));
     }
-    data[4..4 + count * RECORD].chunks_exact(RECORD).map(read_item).collect()
+    data[4..4 + count * RECORD]
+        .as_chunks::<RECORD>()
+        .0
+        .iter()
+        .map(|record| read_item(record))
+        .collect()
 }
 
 #[cfg(test)]
