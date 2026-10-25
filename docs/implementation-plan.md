@@ -191,6 +191,17 @@ equipment changes recalculate the relevant stats; closing an inventory screen
 does not destroy an owned item. The few tests should cover conservation and
 actual rule boundaries, not merely constructor getters.
 
+**Status (25 October 2026):** started. Done: the item database decodes into
+typed definitions (`content::items`, all 819 retail items); gameplay
+randomness is one seeded, saveable PCG32 (`game::rng`); and
+`game::inventory` holds items as owned values with stable instance ids, the
+12 equipment slots, 8-slot backpacks, the 500-row pool and the held item,
+with retail's slot and pairing rules, stack merging, uses, placement order
+(merge, backpack, front of the pool), pick-up and split, swap with the hand,
+merge and pool deposit, and curses holding worn items (unit tests). Not yet:
+characters, so usability is passed in; the Gadgeteer and gun ammunition
+pairs; identification; weight and load; screens; saves.
+
 ## 3. Complete one combat and magic slice
 
 **Playable result:** a monster detects the party, a fight starts, the party

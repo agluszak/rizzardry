@@ -32,6 +32,7 @@ fn definition(index: usize, record: &ItemRecord) -> Result<ItemDefinition, ItemL
     Ok(ItemDefinition {
         id: ItemId(index as u16),
         name: record.name.clone(),
+        kind: record.unidentified_name,
         class: EquipClass::from_retail(record.equip_class)
             .ok_or(ItemLoadError::EquipClass(index, record.equip_class))?,
         auto_identify: has(item_flag::AUTO_IDENTIFY),
@@ -43,6 +44,7 @@ fn definition(index: usize, record: &ItemRecord) -> Result<ItemDefinition, ItemL
         equip_to_use: has(item_flag::MUST_EQUIP_TO_USE),
         never_depletes: has(item_flag::NEVER_DEPLETES),
         weapon_skill: record.weapon_skill,
+        range: record.range_category,
         damage: dice(record.damage),
         damage_bonus: record.damage_bonus,
         hit_bonus: record.hit_bonus,
@@ -65,7 +67,7 @@ fn definition(index: usize, record: &ItemRecord) -> Result<ItemDefinition, ItemL
         skill_requirements: record.skill_requirements.iter().map(requirement).collect(),
         value: record.value,
         weight: record.weight,
-        binds_on_equip: record.binds_on_equip,
+        cursed: record.binds_on_equip,
     })
 }
 

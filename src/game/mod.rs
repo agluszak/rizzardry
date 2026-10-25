@@ -1,6 +1,8 @@
 //! Gameplay state and rules.
 
 pub mod automap;
+pub mod inventory;
 pub mod party;
+pub mod rng;
 pub mod time;
 pub mod world;

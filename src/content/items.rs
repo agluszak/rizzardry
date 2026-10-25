@@ -117,6 +117,9 @@ pub struct Requirement {
 pub struct ItemDefinition {
     pub id: ItemId,
     pub name: String,
+    /// The generic kind (retail's unidentified-name index): what it looks
+    /// like before identification, and which ammunition fits which weapon.
+    pub kind: u16,
     pub class: EquipClass,
     /// Identified as soon as the party has it.
     pub auto_identify: bool,
@@ -131,6 +134,8 @@ pub struct ItemDefinition {
     pub equip_to_use: bool,
     pub never_depletes: bool,
     pub weapon_skill: Option<u8>,
+    /// The range band a weapon attacks at; two weapons in one set share it.
+    pub range: u8,
     pub damage: Dice,
     pub damage_bonus: i8,
     pub hit_bonus: i8,
@@ -148,7 +153,8 @@ pub struct ItemDefinition {
     pub value: u32,
     /// Tenths of a pound.
     pub weight: u16,
-    pub binds_on_equip: bool,
+    /// Retail's "binds on equip" byte; the assay screen shows it means cursed.
+    pub cursed: bool,
 }
 
 /// Every item definition, by id.
