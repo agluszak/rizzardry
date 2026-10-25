@@ -1,0 +1,239 @@
+//! Developer conveniences that are not part of the game.
+
+use std::path::PathBuf;
+use std::time::Duration;
+
+use avian3d::prelude::*;
+use bevy::prelude::*;
+use bevy::render::view::screenshot::{Screenshot, save_to_disk};
+use bevy_enhanced_input::prelude::*;
+use bevy_landmass::PointSampleDistance3d;
+use bevy_landmass::prelude::*;
+use bevy_tnua::builtins::TnuaBuiltinWalkConfig;
+use bevy_tnua::prelude::*;
+use bevy_tnua_avian3d::prelude::*;
+
+use crate::game::party::body::{PartyBody, Walk};
+use crate::game::world::navigation::{LevelNavigation, Walker, WalkerMotion, WalkerMotionConfig};
+
+/// Capture the window `after` seconds once the party is in the world, then
+/// exit. Used to check rendering from the command line.
+#[derive(Resource, Debug, Clone)]
+pub struct ScreenshotAndExit {
+    pub path: PathBuf,
+    pub after: f32,
+    pub elapsed: f32,
+    pub taken: bool,
+}
+
+impl ScreenshotAndExit {
+    pub fn new(path: PathBuf, after: f32) -> Self {
+        ScreenshotAndExit { path, after, elapsed: 0.0, taken: false }
+    }
+}
+
+pub fn screenshot_and_exit(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut request: ResMut<ScreenshotAndExit>,
+    party: Query<(), With<PartyBody>>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    if party.is_empty() {
+        return;
+    }
+    request.elapsed += time.delta_secs();
+    if !request.taken && request.elapsed >= request.after {
+        request.taken = true;
+        commands.spawn(Screenshot::primary_window()).observe(save_to_disk(request.path.clone()));
+    } else if request.taken && request.elapsed >= request.after + 0.5 {
+        exit.write(AppExit::Success);
+    }
+}
+
+/// Hold "walk forward" for a number of seconds after the party appears and log
+/// where it goes: a scripted check of the movement controller.
+#[derive(Resource, Debug, Clone)]
+pub struct ScriptedWalk {
+    pub seconds: f32,
+    pub started: bool,
+    pub since_log: f32,
+}
+
+pub fn scripted_walk(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut script: ResMut<ScriptedWalk>,
+    walk: Single<Entity, With<Action<Walk>>>,
+    party: Query<&Transform, With<PartyBody>>,
+) {
+    let Ok(transform) = party.single() else { return };
+    if !script.started {
+        script.started = true;
+        commands.entity(*walk).insert(ActionMock::new(
+            TriggerState::Fired,
+            Vec2::Y,
+            Duration::from_secs_f32(script.seconds),
+        ));
+    }
+    script.since_log += time.delta_secs();
+    if script.since_log >= 0.5 {
+        script.since_log = 0.0;
+        info!("party at {:.2}", transform.translation);
+    }
+}
+
+/// Spawn stand-in monsters that chase the party across the navmesh: an
+/// end-to-end check of Rerecast, Landmass, Tnua and Avian together.
+#[derive(Resource, Debug, Clone)]
+pub struct TestAgents {
+    pub count: usize,
+    pub spawned: bool,
+    pub since_log: f32,
+    pub frames: u32,
+}
+
+const TEST_AGENT_RADIUS: f32 = 0.35;
+const TEST_AGENT_HALF_LENGTH: f32 = 0.25;
+/// Keeps the capsule's bottom at the step height.
+const TEST_AGENT_FLOAT: f32 =
+    crate::game::world::STEP_HEIGHT + TEST_AGENT_RADIUS + TEST_AGENT_HALF_LENGTH;
+const TEST_AGENT_SPEED: f32 = 3.0;
+
+#[derive(Component)]
+pub struct TestAgent;
+
+pub fn spawn_test_agents(
+    mut commands: Commands,
+    mut test: ResMut<TestAgents>,
+    navigation: Option<Res<LevelNavigation>>,
+    archipelagos: Query<&Archipelago3d>,
+    party: Query<(Entity, &Transform), With<PartyBody>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut configs: ResMut<Assets<WalkerMotionConfig>>,
+) {
+    if test.spawned {
+        return;
+    }
+    let (Some(navigation), Ok((party, party_transform))) = (navigation, party.single()) else {
+        return;
+    };
+    let Ok(archipelago) = archipelagos.get(navigation.archipelago) else { return };
+    // Probe rings around the party; keep the points that land on the navmesh.
+    let centre = party_transform.translation;
+    let wide = PointSampleDistance3d {
+        horizontal_distance: 3.0,
+        distance_above: 5.0,
+        distance_below: 10.0,
+        vertical_preference_ratio: 1.0,
+        animation_link_max_vertical_distance: 1.0,
+    };
+    let mut points = Vec::new();
+    for ring in [12.0, 20.0, 30.0, 45.0] {
+        for step in 0..16 {
+            let angle = step as f32 / 16.0 * std::f32::consts::TAU;
+            let probe = centre + Vec3::new(angle.cos(), 0.0, angle.sin()) * ring;
+            if let Ok(sampled) = archipelago.sample_point(probe, &wide) {
+                points.push(sampled.point());
+            }
+        }
+    }
+    if points.is_empty() {
+        // The island may not be registered with the archipelago yet.
+        return;
+    }
+    test.spawned = true;
+    let mesh = meshes.add(Capsule3d::new(TEST_AGENT_RADIUS, 2.0 * TEST_AGENT_HALF_LENGTH));
+    let material = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.9, 0.2, 0.3),
+        unlit: true,
+        ..default()
+    });
+    let config = configs.add(WalkerMotionConfig {
+        basis: TnuaBuiltinWalkConfig {
+            speed: TEST_AGENT_SPEED,
+            float_height: TEST_AGENT_FLOAT,
+            max_slope: 50f32.to_radians(),
+            ..default()
+        },
+    });
+    let stride = (points.len() / test.count.max(1)).max(1);
+    for &feet in points.iter().step_by(stride).take(test.count) {
+        commands.spawn((
+            Name::new("Test agent"),
+            TestAgent,
+            Mesh3d(mesh.clone()),
+            MeshMaterial3d(material.clone()),
+            Transform::from_translation(feet + Vec3::Y * TEST_AGENT_FLOAT),
+            RigidBody::Dynamic,
+            Collider::capsule(TEST_AGENT_RADIUS, 2.0 * TEST_AGENT_HALF_LENGTH),
+            LockedAxes::ROTATION_LOCKED,
+            TnuaController::<WalkerMotion>::default(),
+            TnuaConfig::<WalkerMotion>(config.clone()),
+            TnuaAvian3dSensorShape(Collider::cylinder(TEST_AGENT_RADIUS * 0.9, 0.0)),
+            Walker { speed: TEST_AGENT_SPEED },
+            Agent3dBundle {
+                agent: default(),
+                settings: AgentSettings {
+                    radius: TEST_AGENT_RADIUS,
+                    desired_speed: TEST_AGENT_SPEED * 0.8,
+                    max_speed: TEST_AGENT_SPEED,
+                },
+                archipelago_ref: ArchipelagoRef3d::new(navigation.archipelago),
+            },
+            AgentTarget3d::Entity(party),
+            Velocity3d::default(),
+        ));
+    }
+    info!(
+        "spawned {} test agents from {} navmesh points",
+        test.count.min(points.len()),
+        points.len()
+    );
+}
+
+pub fn log_test_agents(
+    time: Res<Time>,
+    mut test: ResMut<TestAgents>,
+    party: Query<&Transform, With<PartyBody>>,
+    agents: Query<(&Transform, Option<&AgentState>), With<TestAgent>>,
+) {
+    test.since_log += time.delta_secs();
+    test.frames += 1;
+    if test.since_log < 1.0 || agents.is_empty() {
+        return;
+    }
+    let fps = test.frames as f32 / test.since_log;
+    (test.since_log, test.frames) = (0.0, 0);
+    let Ok(party) = party.single() else { return };
+    let mut distances: Vec<f32> =
+        agents.iter().map(|(t, _)| t.translation.distance(party.translation)).collect();
+    distances.sort_by(f32::total_cmp);
+    let mut states: std::collections::BTreeMap<String, usize> = default();
+    for (_, state) in &agents {
+        *states.entry(state.map_or("none".into(), |s| format!("{s:?}"))).or_default() += 1;
+    }
+    let arrived = distances.iter().filter(|&&d| d < 2.0).count();
+    info!(
+        "{fps:.0} fps; {arrived}/{} agents within 2 m; median {:.1} m; states {states:?}",
+        distances.len(),
+        distances[distances.len() / 2]
+    );
+}
+
+/// Look straight down at the party from `height` metres above it.
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct OverheadView {
+    pub height: f32,
+}
+
+pub fn overhead_view(
+    view: Res<OverheadView>,
+    mut camera: Query<&mut Transform, With<crate::game::party::body::PartyCamera>>,
+) {
+    if let Ok(mut camera) = camera.single_mut() {
+        camera.translation = Vec3::Y * view.height;
+        camera.rotation = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+    }
+}

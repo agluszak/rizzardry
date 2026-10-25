@@ -45,6 +45,53 @@ not settle the controller/navigation choice.
 **Do not build yet:** a universal asset converter, an editor suite, a scripting
 VM, interchangeable physics backends or a full UI framework.
 
+**Status (25 October 2026):** in progress. Done:
+
+- `retail::files` indexes an unmodified installation: base SLF libraries (more
+  specific prefixes win), `patches/patch.NNN`, then loose files. It is exposed
+  to Bevy as the `retail://` asset source.
+- `retail::pvl` decodes the compiled level meshes and material table at the
+  start of every retail `.pvl` (all 34 load). `retail::level_loader` turns them
+  into Bevy meshes per octree mesh and material, repeat-sampled TGA textures
+  and collision triangles.
+- `retail::trigger` decodes type 4 trigger records. A new game enters the
+  monastery at `MO100`, the retail new-game entrance.
+- The party is one Avian body moved by Tnua, using the retail eye height,
+  500-unit reach, walk/run/turn speeds, pitch limit and gravity. Its collider
+  is raised 0.35 m (provisional) so steps meet Tnua's floating spring.
+  Controls use an `Exploration` input context.
+- A Rerecast navmesh is baked per level by Bevy's asset processor, cached,
+  and used by Landmass. Stand-in walkers chase the party across both
+  monastery levels. See [dependencies](dependencies.md#navigation).
+
+Decisions made while doing this:
+
+- Retail space is Y-up and left-handed. Bevy space mirrors Z, reverses
+  triangle winding and uses 600 retail units per metre, which puts the eye
+  1000 units (1.67 m) above the feet.
+- Retail velocities are per 0.1 s tick; converted constants cite their source.
+
+Known gaps, in rough order:
+
+- The `.pvl` sections between the meshes and the triggers are not decoded:
+  lights, monster paths, items, props, bitmaps, cameras and environment. Until
+  they are, `find_item_trigger` locates an entrance by validating a type 4
+  record found by its name. Replace it with a sequential section reader.
+- Lighting is unlit vertex colour: static light, plus sun exposure at a
+  provisional 0.75 until the environment's sun colour is decoded. There is no
+  sky, fog or dynamic lighting. Animated `.ifl` textures show their first
+  frame, and textures have no mipmaps.
+- Collision and navigation use every fully opaque level polygon. Retail
+  collision uses `.oct` surfaces with walkable flags and contact margins, and
+  props collide too. Ground probing at entry is replaced by settling under
+  gravity. Retail caps falls at 3000 units per tick; that cap is not applied.
+- Navigation needs doors, teleporters and elevators as links, and retail
+  collision surfaces; the party collider can catch on stairs. See the
+  experiment results in [dependencies](dependencies.md#experiment-results-25-october-2026).
+- The handedness conversion has only been checked visually. Compare it against
+  a retail screenshot, e.g. readable text or a known landmark layout.
+- No props, doors, actors, animation, UI, audio or navigation yet.
+
 ## 2. Make party and inventory state useful
 
 **Playable result:** create a small party, inspect characters, move/stack/equip
