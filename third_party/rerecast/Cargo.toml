@@ -1,0 +1,30 @@
+# Vendored from https://github.com/janhohenheim/rerecast PR #63
+# (andriyDev/rerecast @ 0b41a3e0ff, crates/rerecast). See ../README.md.
+[package]
+name = "rerecast"
+description = "Rust port of recastnavigation"
+version = "0.4.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/janhohenheim/rerecast"
+publish = false
+
+[dependencies]
+slotmap = { version = "1", default-features = false }
+thiserror = { version = "2", default-features = false }
+anyhow = { version = "1", default-features = false }
+glam = { version = "0.33", default-features = false, features = ["u16", "u32", "i32"] }
+bitflags = { version = "2", default-features = false }
+tracing = { version = "0.1", default-features = false, optional = true }
+libm = { version = "0.2", default-features = false, optional = true }
+bevy_reflect = { version = "0.20.0", default-features = false, features = ["glam"], optional = true }
+serde = { version = "1", default-features = false, features = ["alloc", "derive"], optional = true }
+
+[features]
+default = ["std", "tracing"]
+libm = ["dep:libm", "glam/libm"]
+nostd-libm = ["dep:libm", "glam/nostd-libm"]
+std = ["glam/std", "slotmap/std", "bitflags/std", "tracing?/std", "anyhow/std", "thiserror/std"]
+tracing = ["dep:tracing"]
+serialize = ["dep:serde", "glam/serde", "slotmap/serde", "bitflags/serde"]
+bevy_reflect = ["dep:bevy_reflect"]

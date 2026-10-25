@@ -1,0 +1,288 @@
+//! Baking a level's navmesh: the Recast pipeline over the level's solid
+//! triangles, converted to a Landmass navigation mesh.
+//!
+//! This is pure computation; the asset pipeline (`super::asset`) runs it at
+//! import time and caches the result.
+
+use bevy::math::{Vec2, Vec3, Vec3A};
+use bevy::prelude::UVec3;
+use bevy_landmass::{HeightNavigationMesh3d, HeightPolygon, NavigationMesh3d};
+use rerecast::{
+    AreaType, ConfigBuilder, DetailNavmesh, HeightfieldBuilder, PolygonNavmesh, TriMesh,
+};
+use serde::{Deserialize, Serialize};
+
+/// Parameters of one navmesh bake. Part of the processed asset's metadata, so
+/// changing a default re-bakes cached navmeshes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NavmeshBakeSettings {
+    /// Walkers are kept this far from walls. Monsters vary in size; one bake
+    /// per size class is a later decision.
+    pub agent_radius: f32,
+    pub agent_height: f32,
+    /// Highest step a walker climbs.
+    pub walkable_climb: f32,
+    pub walkable_slope_degrees: f32,
+    /// Horizontal cells are `agent_radius / cell_size_fraction` wide.
+    pub cell_size_fraction: f32,
+}
+
+impl Default for NavmeshBakeSettings {
+    fn default() -> Self {
+        NavmeshBakeSettings {
+            agent_radius: 0.4,
+            agent_height: 1.6,
+            walkable_climb: crate::game::world::STEP_HEIGHT,
+            walkable_slope_degrees: 50.0,
+            // ~0.27 m cells keep a 500 m level within budget.
+            cell_size_fraction: 1.5,
+        }
+    }
+}
+
+/// What the precision repair had to change; see [`repair`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RepairReport {
+    pub removed_vertices: usize,
+    pub dropped_polygons: usize,
+    pub flipped_triangles: usize,
+}
+
+/// Bake the navmesh for a triangle soup in Bevy space.
+pub fn bake(
+    vertices: &[Vec3],
+    triangles: &[[u32; 3]],
+    settings: &NavmeshBakeSettings,
+) -> Result<(NavigationMesh3d, RepairReport), String> {
+    let mut trimesh = TriMesh {
+        vertices: vertices.iter().map(|&v| Vec3A::from(v)).collect(),
+        indices: triangles.iter().map(|&t| UVec3::from_array(t)).collect(),
+        area_types: vec![AreaType::NOT_WALKABLE; triangles.len()],
+    };
+    let mut builder = ConfigBuilder {
+        agent_radius: settings.agent_radius,
+        agent_height: settings.agent_height,
+        walkable_climb: settings.walkable_climb,
+        walkable_slope_angle: settings.walkable_slope_degrees.to_radians(),
+        cell_size_fraction: settings.cell_size_fraction,
+        ..Default::default()
+    };
+    builder.aabb = trimesh.compute_aabb().ok_or("the level has no solid triangles")?;
+    let config = builder.build();
+
+    // The pipeline of `bevy_rerecast_core`'s generator.
+    let error = |e: &dyn std::fmt::Display| e.to_string();
+    trimesh.mark_walkable_triangles(config.walkable_slope_angle);
+    let mut heightfield = HeightfieldBuilder {
+        aabb: config.aabb,
+        cell_size: config.cell_size,
+        cell_height: config.cell_height,
+    }
+    .build()
+    .map_err(|e| error(&e))?;
+    heightfield.rasterize_triangles(&trimesh, config.walkable_climb).map_err(|e| error(&e))?;
+    heightfield.filter_low_hanging_walkable_obstacles(config.walkable_climb);
+    heightfield.filter_ledge_spans(config.walkable_height, config.walkable_climb);
+    heightfield.filter_walkable_low_height_spans(config.walkable_height);
+    let mut compact = heightfield
+        .into_compact(config.walkable_height, config.walkable_climb)
+        .map_err(|e| error(&e))?;
+    compact.erode_walkable_area(config.walkable_radius);
+    compact.build_distance_field();
+    compact
+        .build_regions(config.border_size, config.min_region_area, config.merge_region_area)
+        .map_err(|e| error(&e))?;
+    let contours = compact.build_contours(
+        config.max_simplification_error,
+        config.max_edge_len,
+        config.contour_flags,
+    );
+    let polygons =
+        contours.into_polygon_mesh(config.max_vertices_per_polygon).map_err(|e| error(&e))?;
+    let detail = DetailNavmesh::new(
+        &polygons,
+        &compact,
+        config.detail_sample_dist,
+        config.detail_sample_max_error,
+    )
+    .map_err(|e| error(&e))?;
+    let mut mesh = to_landmass(&polygons, &detail);
+    let report = repair(&mut mesh);
+    Ok((mesh, report))
+}
+
+/// Rerecast's polygon and detail meshes as an unvalidated Landmass navmesh.
+///
+/// Adapted from `landmass_rerecast::convert_rerecast_navmesh_to_landmass_navmesh`
+/// (MIT OR Apache-2.0), which is not yet ported to Bevy 0.20.
+fn to_landmass(polygon: &PolygonNavmesh, detail: &DetailNavmesh) -> NavigationMesh3d {
+    let origin = polygon.aabb.min;
+    let to_world = Vec3::new(polygon.cell_size, polygon.cell_height, polygon.cell_size);
+    let per_polygon = polygon.max_vertices_per_polygon as usize;
+    NavigationMesh3d {
+        vertices: polygon.vertices.iter().map(|v| origin + v.as_vec3() * to_world).collect(),
+        polygons: (0..polygon.polygon_count())
+            .map(|i| {
+                polygon.polygons[i * per_polygon..][..per_polygon]
+                    .iter()
+                    .rev()
+                    .filter(|&&v| v != PolygonNavmesh::NO_INDEX)
+                    .map(|&v| v as usize)
+                    .collect()
+            })
+            .collect(),
+        polygon_type_indices: polygon.areas.iter().map(|a| a.0 as usize).collect(),
+        height_mesh: Some(HeightNavigationMesh3d {
+            polygons: detail
+                .meshes
+                .iter()
+                .map(|m| HeightPolygon {
+                    base_vertex_index: m.base_vertex_index,
+                    vertex_count: m.vertex_count,
+                    base_triangle_index: m.base_triangle_index,
+                    triangle_count: m.triangle_count,
+                })
+                .collect(),
+            triangles: detail.triangles.iter().map(|&[a, b, c]| [a, c, b]).collect(),
+            vertices: detail.vertices.clone(),
+        }),
+    }
+}
+
+/// The plane Landmass validates Bevy-space meshes in.
+fn plane(v: Vec3) -> Vec2 {
+    Vec2::new(v.x, -v.z)
+}
+
+/// Whether Landmass accepts the corner `center` between `left` and `right`
+/// of a polygon in its (reversed) winding.
+fn convex_corner(left: Vec2, center: Vec2, right: Vec2) -> bool {
+    let (left_edge, right_edge) = (left - center, right - center);
+    let turn = right_edge.perp_dot(left_edge);
+    turn > 0.0 || (turn == 0.0 && right_edge.dot(left_edge) < 0.0)
+}
+
+/// Make Recast output pass Landmass validation.
+///
+/// Recast quantizes vertices to cells, which can leave a polygon with two
+/// vertices at one plane position (e.g. stacked at different heights), a
+/// spike, a slightly reflex corner, or a detail triangle whose winding
+/// flipped. Landmass rejects the whole mesh for any of these. Duplicate and
+/// spike vertices are removed; polygons that are still concave are dropped
+/// with their detail mesh; flipped detail triangles are rewound.
+pub fn repair(mesh: &mut NavigationMesh3d) -> RepairReport {
+    let mut report = RepairReport::default();
+    let vertices = &mesh.vertices;
+    let mut keep = vec![true; mesh.polygons.len()];
+    for (index, polygon) in mesh.polygons.iter_mut().enumerate() {
+        // Landmass checks the reversed order; work in that order.
+        polygon.reverse();
+        let mut changed = true;
+        while changed && polygon.len() >= 3 {
+            changed = false;
+            for i in 0..polygon.len() {
+                let n = polygon.len();
+                let [l, c, r] = [polygon[(i + n - 1) % n], polygon[i], polygon[(i + 1) % n]];
+                let (left, center, right) =
+                    (plane(vertices[l]), plane(vertices[c]), plane(vertices[r]));
+                let (left_edge, right_edge) = (left - center, right - center);
+                let degenerate = left_edge == Vec2::ZERO
+                    || right_edge == Vec2::ZERO
+                    || (right_edge.perp_dot(left_edge) == 0.0 && right_edge.dot(left_edge) > 0.0);
+                if degenerate {
+                    polygon.remove(i);
+                    report.removed_vertices += 1;
+                    changed = true;
+                    break;
+                }
+            }
+        }
+        let n = polygon.len();
+        let convex = n >= 3
+            && (0..n).all(|i| {
+                convex_corner(
+                    plane(vertices[polygon[(i + n - 1) % n]]),
+                    plane(vertices[polygon[i]]),
+                    plane(vertices[polygon[(i + 1) % n]]),
+                )
+            });
+        polygon.reverse();
+        if !convex {
+            keep[index] = false;
+            report.dropped_polygons += 1;
+        }
+    }
+
+    if let Some(height) = &mut mesh.height_mesh {
+        for polygon in &height.polygons {
+            let first = polygon.base_triangle_index as usize;
+            let local =
+                |i: u8| plane(height.vertices[polygon.base_vertex_index as usize + i as usize]);
+            for triangle in &mut height.triangles[first..first + polygon.triangle_count as usize] {
+                // Landmass swaps the last two corners before checking.
+                let [a, c, b] = *triangle;
+                if (local(b) - local(a)).perp_dot(local(c) - local(a)) < 0.0 {
+                    triangle.swap(1, 2);
+                    report.flipped_triangles += 1;
+                }
+            }
+        }
+        let mut index = 0;
+        height.polygons.retain(|_| {
+            index += 1;
+            keep[index - 1]
+        });
+    }
+    let mut index = 0;
+    mesh.polygons.retain(|_| {
+        index += 1;
+        keep[index - 1]
+    });
+    let mut index = 0;
+    mesh.polygon_type_indices.retain(|_| {
+        index += 1;
+        keep[index - 1]
+    });
+    report
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn square_with(extra: Vec3) -> NavigationMesh3d {
+        // A unit square in Bevy XZ, wound so Landmass accepts it, with an
+        // extra vertex inserted on one edge.
+        NavigationMesh3d {
+            vertices: vec![
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, -1.0),
+                Vec3::new(1.0, 0.0, -1.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                extra,
+            ],
+            polygons: vec![vec![0, 1, 2, 3, 4]],
+            polygon_type_indices: vec![0],
+            height_mesh: None,
+        }
+    }
+
+    #[test]
+    fn a_duplicated_vertex_is_removed() {
+        // Same plane position as vertex 0 at another height: a zero-length
+        // edge in Landmass's plane.
+        let mut mesh = square_with(Vec3::new(0.0, 0.3, 0.0));
+        assert!(mesh.clone().validate().is_err());
+        let report = repair(&mut mesh);
+        assert_eq!(report, RepairReport { removed_vertices: 1, ..Default::default() });
+        assert!(mesh.validate().is_ok());
+    }
+
+    #[test]
+    fn a_reflex_polygon_is_dropped() {
+        let mut mesh = square_with(Vec3::new(0.5, 0.0, -0.2));
+        let report = repair(&mut mesh);
+        assert_eq!(report.dropped_polygons, 1);
+        assert!(mesh.polygons.is_empty());
+    }
+}

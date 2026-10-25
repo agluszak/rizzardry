@@ -4,59 +4,125 @@ Research snapshot: 24 October 2026. These are proposed choices, not a tested
 `Cargo.lock`. The first implementation spike must compile the selected set on
 the native target platforms before the versions become project commitments.
 
-## Proposed starting set
+**Compiled and running (25 October 2026)** on Linux (Wayland, Vulkan/Mesa),
+with `Cargo.lock` committed. macOS and Windows are untested. `serde`/`ron`,
+`binrw` and the inspector are not used yet: the irregular retail records so far
+read cleanly with a small bounds-checked cursor.
 
-| Need | Choice | Reason and limit |
+## Chosen set
+
+| Need | Choice | Status |
 | --- | --- | --- |
-| Engine | Bevy 0.20.0 | ECS, rendering, assets, UI, window/input, audio and schedules in one engine |
-| Input actions | `bevy_enhanced_input` 0.27 | Contexts and remappable actions for exploration, combat targeting and modal UI |
-| Collision/controller | `bevy_rapier3d` 0.37 | Scene/shape queries and a built-in kinematic controller for stairs, slopes and platforms |
-| Definition/save serialization | `serde` + `ron` | Typed, inspectable native records; schema versioning remains our responsibility |
-| Retail binary parsing | `binrw` | Declarative endian-aware records where it helps; ordinary parsing for irregular formats |
-| Developer inspection | Optional `bevy-inspector-egui` 0.38 | Inspect ECS/assets during development; not the game's UI framework |
-| Navigation | Unresolved; Rerecast + Landmass are candidates | Must pass a representative Wizardry map and match the chosen Bevy release |
+| Engine | Bevy 0.20.0 (`tga`, `wayland`) | In use |
+| Input actions | `bevy_enhanced_input` 0.27 | Exploration context in use |
+| Collision and physics | Avian 0.8 | Level trimesh, party and walker bodies |
+| Grounded movement | Tnua 0.33 + `bevy-tnua-avian3d` 0.13 | Party and walkers; walk basis only, no actions |
+| Navmesh generation | `rerecast` (core), vendored from PR #63 | Baked from the level's collision triangles |
+| Pathfinding, steering, avoidance | `bevy_landmass`, PR #195 branch pinned by git rev | Party is a `Character3d`, walkers are `Agent3d` |
+| Command line | `clap` 4 | Game and examples |
+| Definition/save serialization | `serde` + `ron` | Not yet needed |
+| Retail binary parsing | `binrw` | Not yet needed |
+| Developer inspection | Optional `bevy-inspector-egui` 0.38 | Not yet needed |
 
 Primary references:
 
 - [Bevy 0.20 release](https://bevy.org/news/bevy-0-20/) (8 October 2026).
 - [Enhanced Input compatibility table](https://github.com/simgine/bevy_enhanced_input#bevy-compatibility).
-- [Rapier plugin documentation](https://docs.rs/bevy_rapier3d/0.37.0/bevy_rapier3d/)
-  and [kinematic controller](https://rapier.rs/docs/user_guides/bevy_plugin/character_controller/).
+- [Avian](https://github.com/Jondolf/avian), [Tnua](https://github.com/idanarye/bevy-tnua).
+- [Rerecast PR #63](https://github.com/janhohenheim/rerecast/pull/63) (Bevy 0.20,
+  Avian 0.8; all CI checks passing, still open).
+- [Landmass PR #195](https://github.com/andriyDev/landmass/pull/195) (draft, Bevy
+  `0.20.0-rc.1`, which Cargo resolves to 0.20.0; `landmass_rerecast` excluded).
 - [Inspector package and Bevy 0.20 dependencies](https://docs.rs/crate/bevy-inspector-egui/0.38.0).
 - [Serde](https://serde.rs/), [RON](https://docs.rs/ron/0.12.2/ron/),
   [binrw](https://docs.rs/binrw/0.15.2/binrw/).
 
-Rapier is the first movement candidate because the controller replaces actual
-code we otherwise have to write. This does not mean delegating combat rules to
-rigid-body dynamics. The party remains kinematic; attack range, area membership,
-initiative, conditions and damage are game rules. Controller defaults do not
-prove matching Wizardry movement. Test narrow doors, steps, slopes, elevators,
-terrain edges, collision dimensions and collision-query filters.
+### Why Avian rather than Rapier
 
-Avian remains a reasonable alternative if the real-map test gives it a better
-integration story. Adding both engines, or a large physics abstraction to make
-them interchangeable, would defeat the purpose. Tnua is an additional controller
-candidate only if a floating-controller model solves a demonstrated problem.
+The first spike used `bevy_rapier3d` 0.37, whose kinematic controller worked on
+the monastery. Avian 0.8 replaced it for integration, not performance:
+Rerecast's Bevy 0.20 branch integrates with Avian, Tnua supports Bevy 0.20 +
+Avian 0.8, and together they cover navigation and grounded movement without
+our own stair-climbing controller. Only one physics engine is used. Physics
+does not decide combat rules: range, area membership, initiative, conditions
+and damage remain game rules.
 
-## The navigation decision is still open
+Tnua is a floating controller, so the party and walkers are dynamic bodies
+held above the ground by a spring, with rotation locked. Facing is game state,
+not body rotation. Avian's `MoveAndSlide` remains an option if Tnua's floating
+model causes problems on retail geometry.
 
-The published compatibility data reviewed for this plan gives:
+## Navigation
 
-| Package | Reviewed release | Bevy requirement |
-| --- | --- | --- |
-| `bevy_rerecast` | 0.5 | 0.19 |
-| `bevy_landmass` | 0.12.1 | 0.19 |
+The movement loop for a navigating actor:
 
-Sources: [Rerecast compatibility](https://github.com/janhohenheim/rerecast#compatibility),
-[Rerecast package](https://docs.rs/crate/bevy_rerecast/0.5.0),
-[Landmass package](https://docs.rs/crate/bevy_landmass/0.12.1).
+1. AI (not yet written) chooses a destination or target entity.
+2. Landmass computes the desired velocity, including path following and local
+   avoidance of other agents and the party.
+3. Tnua and Avian move the body under collision.
+4. The body's resulting velocity goes back to Landmass on the next step.
 
-Do not list those versions as working Bevy 0.20 dependencies. Evaluate a small
-compatible upstream update, a proven lower-level integration, or a coherent
-Bevy 0.19 stack. Choose the smallest working stack after the map spike; do not
-maintain a substantial engine-version bridge for the sake of using the newest
-Bevy. If 0.19 wins, select its matching input, physics and inspector releases as
-a set and record the result here.
+Integration choices:
+
+- `bevy_rerecast` and `avian_rerecast` are not used. The navmesh is baked with
+  the `rerecast` core pipeline directly from the same triangles as the level
+  collider, which are already in hand. `landmass_rerecast` is not ported to
+  Bevy 0.20; its 65-line mesh conversion is adapted in
+  `game::world::navigation`.
+- `rerecast` is vendored in `third_party/` with one fix: when contour
+  triangulation finds no diagonal, upstream fails the whole navmesh, while
+  recastnavigation keeps the partial triangulation and warns. Without the fix,
+  18 of 34 retail levels fail to bake. Report it upstream and drop the copy
+  once fixed.
+- Navmeshes go through Bevy's asset processor (`AssetMode::Processed`,
+  `asset_processor` feature). A virtual `navmesh://` source exposes every
+  retail `<level>.pvl` as `<level>.navmesh`. `LoadTransformAndSave` reads its
+  collision triangles, bakes them and writes a small binary file to
+  `imported_assets/navmesh`. The game loads that file as a Landmass
+  `NavMesh3d`. The bake settings are in the asset meta, so changing a default
+  re-bakes automatically. The first launch bakes all 34 levels in parallel
+  (0.1 to 2 s each); later launches only load. The retail source has a
+  processed reader but no writer, so it is never processed or copied.
+- The conversion repairs Recast precision artifacts that Landmass rejects:
+  duplicate or spike vertices are removed, polygons that stay concave are
+  dropped, and flipped detail triangles are rewound
+  (`navigation::bake::repair`). All 34 levels validate. Most need no repair;
+  the worst, `trynnie2`, drops 49 of about 1600 polygons at the old 0.35 m
+  step height and none at 0.5 m.
+- Moving actors never trigger a rebake.
+
+`cargo run --example navmesh_bake` bakes outside the game and reports
+repairs, connected components and (with `--gaps`) where the largest
+components come closest. `--climb`, `--radius` and `--height` override
+settings.
+
+### Experiment results (25 October 2026)
+
+- **Step height.** At 0.35 m the upper monastery split into 22 islands, the
+  largest covering 61% of the walkable area, and most walkers reported
+  `NoPath`. At 0.5 m one island covers 98% and every walker finds a path.
+  Raising it to 1 m merges nothing more. `game::world::STEP_HEIGHT` (0.5 m)
+  now sets the bake, the party collider clearance and the test walkers.
+- **Overlapping floors.** The upper monastery's balconies and floors bake as
+  separate layers; walkers path between them.
+- **Crowds.** 30 walkers on the upper monastery ran at about 110 fps (dev
+  build, debug gizmos on), all in `Moving`, and closed to a median of 2.2 m
+  around the party, queueing around each other instead of overlapping.
+- **Remaining splits are structural.** Several levels still have large
+  separate pieces (e.g. the monastery beach and monastery, 26,600 and 14,300
+  m², 2.2 m apart across a 1.3 m drop). Looser climb and height limits do
+  not merge them. They need retail data we do not decode yet: doors,
+  teleporters, elevators and ladders as Landmass links, and the `.oct`
+  collision surfaces with walkable flags. Those surfaces also matter because
+  translucent water is currently not solid, so riverbeds under water are
+  walkable navmesh.
+- **Party on stairs.** The party's wide, flat-bottomed cylinder (0.83 m
+  radius, 0.5 m clearance) can catch on stairs that rise inside its radius;
+  at entrance `MO202` it did not move under scripted input. Retail moves a
+  sphere. Not resolved.
+- **Not tested.** Doors (no props yet), per-size navmeshes, and flying
+  monsters. Landmass avoidance is horizontal, so flying monsters need separate
+  handling rather than pretending a surface navmesh is 3D navigation.
 
 A navmesh generator only builds navigation data. It does not supply Wizardry's
 group orders, target choice, moving-party pursuit, doors/links, avoidance or
