@@ -186,6 +186,8 @@ Start with one Cargo package and ordinary Rust modules.
 Do not split code into crates, plugins, traits, or interfaces without a demonstrated need.
 
 A Bevy plugin is useful when a module registers systems, assets, or engine integration. Pure gameplay rules do not need a plugin merely for consistency.
+Installing a plugin must not unconditionally create demo party members or
+author a new campaign; explicit new-game/demo bootstrap owns that decision.
 
 Avoid circular dependencies. Prefer moving genuinely shared data types into a small common module over introducing an abstraction to route calls between two tightly coupled systems.
 
