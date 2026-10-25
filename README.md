@@ -43,8 +43,14 @@ run, hold the right mouse button to look around.
 `cargo run --example level_info -- --retail <dir> [level.pvl]` summarises
 decoded level geometry; `cargo run --example navmesh_bake -- --retail <dir>
 [level.pvl]` bakes navmeshes and reports repairs and connectivity. Both read
-`RIZZARDRY_RETAIL` too. Tests that need retail data run when `RIZZARDRY_RETAIL` is set
-and skip otherwise.
+`RIZZARDRY_RETAIL` too. Retail-dependent tests are ignored by default;
+run them explicitly against your installation:
+
+```sh
+RIZZARDRY_RETAIL=/path/to/wizardry8 cargo test --locked -- --ignored
+```
+
+See [testing](docs/testing.md) for the lightweight Bevy testing approach.
 
 Behavioral research compares
 [Wizardry 8 Decomp](https://github.com/agluszak/wizardry-8-decomp) and
