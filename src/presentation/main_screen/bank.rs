@@ -6,7 +6,7 @@
 
 use bevy::prelude::*;
 
-use super::{MainScreenArt, Panel, ScreenLayout, SelectedMember, hover_art, layer, loaded, put};
+use super::{MainScreenArt, Panel, ScreenLayout, SelectedMember, button, layer, loaded};
 use crate::content::items::ItemCatalog;
 use crate::content::ui::SpriteSheet;
 use crate::game::camp::CampRequest;
@@ -16,10 +16,10 @@ use crate::game::data::GameData;
 use crate::game::inventory::{Carried, EquipSlot};
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::search::{Search, ToggleSearch};
-use crate::presentation::screen_art::{sprite, text};
+use crate::presentation::screen_art::{hover_art, sprite, text};
 
 /// The bank's node, with what it last drew.
-#[derive(Component, Default)]
+#[derive(Component, Clone, Default)]
 pub struct ButtonBank {
     drawn: Option<BankView>,
 }
@@ -46,42 +46,50 @@ enum RoundButton {
 }
 
 /// The selected member's caption, with the lines it last showed.
-#[derive(Component, Default)]
+#[derive(Component, Clone, Default)]
 pub struct Caption {
     drawn: Option<Vec<String>>,
 }
 
 /// The round's progress bar along the roof.
-#[derive(Component)]
+#[derive(Component, Clone, Default)]
 pub struct RoundProgress;
 
-pub fn spawn(
-    commands: &mut Commands,
-    frame: Entity,
-    art: &MainScreenArt,
-    sheets: &Assets<SpriteSheet>,
-) {
-    layer(commands, frame, ButtonBank::default());
-    layer(commands, frame, Caption::default());
-    if let Some(mut bar) =
-        put(commands, frame, sprite(loaded(sheets, &art.progress), 0, Vec2::new(177.0, 2.0)))
-    {
-        bar.insert((RoundProgress, Visibility::Hidden));
-    }
-    // Previous and next character (retail `main_scroll_arrows`).
+/// The button row's own nodes: the bank, the caption, the round's progress
+/// bar, and the previous and next character arrows (retail
+/// `main_scroll_arrows`).
+pub fn row(art: &MainScreenArt, sheets: &Assets<SpriteSheet>) -> impl SceneList {
+    let progress = sprite(loaded(sheets, &art.progress), 0, Vec2::new(177.0, 2.0));
     let arrows = loaded(sheets, &art.scroll_arrows);
-    for (image, x, step) in [(0, 300.0, -1), (4, 323.0, 1)] {
-        if let Some(mut arrow) = put(commands, frame, sprite(arrows, image, Vec2::new(x, 456.0))) {
-            arrow
-                .insert((Step(step), hover_art(arrows, image, image + 1), Pickable::default()))
-                .observe(step_selection);
-        }
+    let steps: Vec<_> = [(0, 300.0, -1_i32), (4, 323.0, 1)]
+        .into_iter()
+        .map(|(image, x, step)| {
+            bsn! {
+                @button(arrows, image, Vec2::new(x, 456.0))
+                @hover_art(arrows, image, image + 1)
+                on(move |_: On<PointerClick>,
+                         roster: Res<PartyRoster>,
+                         mut selected: ResMut<SelectedMember>| {
+                    let members = roster.0.len() as i32;
+                    if members > 0 {
+                        selected.0 = (selected.0 as i32 + step).rem_euclid(members) as usize;
+                    }
+                })
+            }
+        })
+        .collect();
+    bsn_list! {
+        @layer() ButtonBank
+        -- @layer() Caption
+        -- @{progress} RoundProgress Visibility::Hidden
+        -- {steps}
     }
 }
 
 /// A working bank button.
-#[derive(Component, Clone, Copy, PartialEq, Eq)]
+#[derive(Component, Clone, Copy, Default, PartialEq, Eq)]
 enum Bank {
+    #[default]
     Camp,
     Search,
     Formation,
@@ -89,6 +97,26 @@ enum Bank {
     /// The combat round button: left click starts a round, or switches
     /// stance while one plays.
     Round,
+}
+
+/// A bank button: where it sits, its frames in its sheet, whether it shows
+/// pressed, and what it does, if anything yet.
+struct BankButton<'a> {
+    sheet: &'a SpriteSheet,
+    at: Vec2,
+    frames: Frames,
+    pressed: bool,
+    action: Option<Bank>,
+}
+
+/// A button's frames in its sheet.
+#[derive(Clone, Copy)]
+struct Frames {
+    grayed: usize,
+    off: usize,
+    hovered: usize,
+    on: usize,
+    on_hovered: usize,
 }
 
 pub fn draw_bank(
@@ -122,80 +150,98 @@ pub fn draw_bank(
     if bank.drawn.as_ref() == Some(&view) {
         return;
     }
-    commands.entity(node).despawn_related::<Children>();
     let sheet = |handle| loaded(&sheets, handle);
     let (icons, combat_toggle) = (sheet(&art.icons), sheet(&art.combat_toggle));
-    let fighting = view.fight.is_some();
-    // Each button's frames: grayed, off, hovered, on, on and hovered.
-    let mut buttons: Vec<(&SpriteSheet, f32, f32, [usize; 5], bool, Option<Bank>)> = vec![
-        (sheet(&art.options), 0.0, 450.0, [3, 0, 1, 2, 2], false, None),
-        (icons, 40.0, 452.0, [0x2b, 0x28, 0x29, 0x2a, 0x2c], false, None),
-        (icons, 70.0, 452.0, [3, 0, 1, 2, 4], false, Some(Bank::Camp)),
-        (icons, 100.0, 452.0, [8, 5, 6, 7, 9], view.searching, Some(Bank::Search)),
-        (icons, 130.0, 452.0, [0x17, 0x14, 0x15, 0x16, 0x18], false, None),
-        (icons, 160.0, 452.0, [0x1c, 0x19, 0x1a, 0x1b, 0x1d], false, None),
-        (
-            icons,
-            571.0,
-            452.0,
-            [0x26, 0x23, 0x24, 0x25, 0x27],
-            view.formation_shown,
-            Some(Bank::Formation),
-        ),
+    let frames = |[grayed, off, hovered, on, on_hovered]: [usize; 5]| Frames {
+        grayed,
+        off,
+        hovered,
+        on,
+        on_hovered,
+    };
+    let icon = |x: f32, pressed, action, at: [usize; 5]| BankButton {
+        sheet: icons,
+        at: Vec2::new(x, 452.0),
+        frames: frames(at),
+        pressed,
+        action,
+    };
+    let mut buttons = vec![
+        BankButton {
+            sheet: sheet(&art.options),
+            at: Vec2::new(0.0, 450.0),
+            frames: frames([3, 0, 1, 2, 2]),
+            pressed: false,
+            action: None,
+        },
+        icon(40.0, false, None, [0x2b, 0x28, 0x29, 0x2a, 0x2c]),
+        icon(70.0, false, Some(Bank::Camp), [3, 0, 1, 2, 4]),
+        icon(100.0, view.searching, Some(Bank::Search), [8, 5, 6, 7, 9]),
+        icon(130.0, false, None, [0x17, 0x14, 0x15, 0x16, 0x18]),
+        icon(160.0, false, None, [0x1c, 0x19, 0x1a, 0x1b, 0x1d]),
+        icon(571.0, view.formation_shown, Some(Bank::Formation), [0x26, 0x23, 0x24, 0x25, 0x27]),
     ];
+    let combat = |x: f32, at| BankButton {
+        sheet: combat_toggle,
+        at: Vec2::new(x, 452.0),
+        frames: frames(at),
+        pressed: false,
+        action: None,
+    };
+    let mut round = None;
     match view.fight {
-        Some((order, round)) => {
+        Some((order, face)) => {
             // End Combat (ending a fight by choice is not modelled), Defend
             // and Attack set the selected member's order.
-            buttons.push((combat_toggle, 200.0, 452.0, [7, 4, 5, 6, 6], false, None));
-            buttons.push((
-                icons,
+            buttons.push(combat(200.0, [7, 4, 5, 6, 6]));
+            let (defend, attack) = (Order::Defend, Order::Attack);
+            let defending = order == defend;
+            buttons.push(icon(
                 232.0,
-                452.0,
+                defending,
+                Some(Bank::Order(defend)),
                 [0x12, 0xf, 0x10, 0x11, 0x13],
-                order == Order::Defend,
-                Some(Bank::Order(Order::Defend)),
             ));
-            buttons.push((
-                icons,
+            buttons.push(icon(
                 262.0,
-                452.0,
+                !defending,
+                Some(Bank::Order(attack)),
                 [0xd, 0xa, 0xb, 0xc, 0xe],
-                order == Order::Attack,
-                Some(Bank::Order(Order::Attack)),
             ));
-            let face = match round {
+            let face = match face {
                 RoundButton::StartRound => &art.attack_confirm,
                 RoundButton::GoContinuous => &art.cont_toggle,
                 RoundButton::GoPhased => &art.combat_stop,
                 RoundButton::StartContinuous => &art.cont_start,
             };
-            if let Some(mut button) =
-                put(&mut commands, node, sprite(sheet(face), 0, Vec2::new(610.0, 450.0)))
-            {
-                button.insert((Bank::Round, Pickable::default())).observe(press);
-            }
+            let face = button(sheet(face), 0, Vec2::new(610.0, 450.0));
+            round = Some(bsn! { @{face} Bank::Round on(press) });
         }
-        None => buttons.push((combat_toggle, 199.0, 452.0, [3, 0, 1, 2, 2], false, None)),
+        None => buttons.push(combat(199.0, [3, 0, 1, 2, 2])),
     }
-    for (sheet, x, y, [grayed, off, hover, on, on_hover], pressed, action) in buttons {
+    // In order: neighbouring buttons may overlap.
+    let mut drawn: Vec<Box<dyn Scene>> = vec![];
+    for BankButton { sheet, at, frames, pressed, action } in buttons {
         // Camp and search are grayed in a fight.
-        let usable =
-            action.is_some() && !(fighting && matches!(action, Some(Bank::Camp | Bank::Search)));
-        let (image, hover) = match (usable, pressed) {
-            (false, _) => (grayed, grayed),
-            (true, false) => (off, hover),
-            (true, true) => (on, on_hover),
+        let fighting = view.fight.is_some();
+        let action = action.filter(|a| !(fighting && matches!(a, Bank::Camp | Bank::Search)));
+        let Some(action) = action else {
+            drawn.push(Box::new(sprite(sheet, frames.grayed, at)));
+            continue;
         };
-        if let Some(mut button) = put(&mut commands, node, sprite(sheet, image, Vec2::new(x, y)))
-            && usable
-            && let Some(action) = action
-        {
-            button
-                .insert((action, hover_art(sheet, image, hover), Pickable::default()))
-                .observe(press);
-        }
+        let (image, hover) =
+            if pressed { (frames.on, frames.on_hovered) } else { (frames.off, frames.hovered) };
+        drawn.push(Box::new(bsn! {
+            @button(sheet, image, at)
+            @hover_art(sheet, image, hover)
+            action
+            on(press)
+        }));
     }
+    commands
+        .entity(node)
+        .despawn_related::<Children>()
+        .queue_spawn_related_scenes::<Children>(bsn_list! { {drawn} -- {round} });
     bank.drawn = Some(view);
 }
 
@@ -300,53 +346,15 @@ pub fn draw_caption(
     if caption.drawn.as_ref() == Some(&lines) {
         return;
     }
-    commands.entity(node).despawn_related::<Children>();
     let font = loaded(&sheets, &art.small_font);
-    for (line, y) in lines.iter().zip([454.0, 465.0]) {
-        commands.spawn((text(font, &mut images, line, Vec2::new(343.0, y), 185.0), ChildOf(node)));
-    }
+    let texts: Vec<_> = lines
+        .iter()
+        .zip([454.0, 465.0])
+        .map(|(line, y)| text(font, &mut images, line, Vec2::new(343.0, y), 185.0))
+        .collect();
+    commands
+        .entity(node)
+        .despawn_related::<Children>()
+        .queue_spawn_related_scenes::<Children>(texts);
     caption.drawn = Some(lines);
-}
-
-/// The bottom row's previous and next character buttons.
-#[derive(Component, Clone, Copy)]
-struct Step(i32);
-
-fn step_selection(
-    click: On<PointerClick>,
-    steps: Query<&Step>,
-    roster: Res<PartyRoster>,
-    mut selected: ResMut<SelectedMember>,
-) {
-    if let (Ok(step), n @ 1..) = (steps.get(click.entity), roster.0.len() as i32) {
-        selected.0 = (selected.0 as i32 + step.0).rem_euclid(n) as usize;
-    }
-}
-
-/// Combat keys from retail's `mgskeyboard.ini`: Enter starts the round,
-/// backslash switches continuous combat, A and D set the selected member to
-/// attack or defend.
-pub fn combat_keys(
-    keys: Res<ButtonInput<KeyCode>>,
-    battle: Option<Res<Battle>>,
-    selected: Res<SelectedMember>,
-    mut orders: ResMut<PartyOrders>,
-    mut settings: ResMut<CombatSettings>,
-    mut round: MessageWriter<StartRound>,
-) {
-    if keys.just_pressed(KeyCode::Backslash) {
-        settings.continuous = !settings.continuous;
-    }
-    if battle.is_none() {
-        return;
-    }
-    if keys.just_pressed(KeyCode::Enter) {
-        round.write(StartRound);
-    }
-    if keys.just_pressed(KeyCode::KeyA) {
-        orders.set(selected.0, Order::Attack);
-    }
-    if keys.just_pressed(KeyCode::KeyD) {
-        orders.set(selected.0, Order::Defend);
-    }
 }

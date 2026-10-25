@@ -30,16 +30,30 @@ pub struct Camp {
     until: Option<u64>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum CampPhase {
-    /// Seconds into the fade to the camping screen.
-    FadingIn(f32),
+    /// Fading to the camping screen.
+    FadingIn(Timer),
     Resting,
-    /// Seconds into the fade back to the world.
-    FadingOut(f32),
+    /// Fading back to the world.
+    FadingOut(Timer),
+}
+
+impl CampPhase {
+    fn fading_in() -> Self {
+        CampPhase::FadingIn(Timer::from_seconds(FADE_SECONDS, TimerMode::Once))
+    }
+
+    fn fading_out() -> Self {
+        CampPhase::FadingOut(Timer::from_seconds(FADE_SECONDS, TimerMode::Once))
+    }
 }
 
 impl Camp {
+    fn new(forced: bool) -> Self {
+        Camp { forced, phase: CampPhase::fading_in(), until: None }
+    }
+
     /// Whether game time races (retail's accelerated calendar).
     pub fn racing(&self) -> bool {
         self.phase == CampPhase::Resting
@@ -97,7 +111,7 @@ pub fn request_camp(
         news.write(CampNews::Moving);
         return;
     }
-    commands.insert_resource(Camp { forced: false, phase: CampPhase::FadingIn(0.0), until: None });
+    commands.insert_resource(Camp::new(false));
     news.write(CampNews::Started { forced: false });
 }
 
@@ -115,24 +129,25 @@ pub fn force_camp(
     if camp.is_some() || battle.is_some() || !anyone_alive || anyone_able {
         return;
     }
-    commands.insert_resource(Camp { forced: true, phase: CampPhase::FadingIn(0.0), until: None });
+    commands.insert_resource(Camp::new(true));
     news.write(CampNews::Started { forced: true });
 }
 
-/// Escape while camping: a forced camp cannot be left, a rest is cut short.
-pub fn cancel_camp(
-    keys: Res<ButtonInput<KeyCode>>,
+/// The player asks to stop camping (Escape on the camping screen).
+#[derive(Message, Debug, Clone, Copy)]
+pub struct LeaveCamp;
+
+/// A forced camp cannot be left; a rest is cut short.
+pub fn leave_camp(
+    mut requests: MessageReader<LeaveCamp>,
     camp: Option<ResMut<Camp>>,
     mut news: MessageWriter<CampNews>,
 ) {
-    let Some(mut camp) = camp else { return };
-    if !keys.just_pressed(KeyCode::Escape) {
-        return;
-    }
+    let (Some(mut camp), Some(LeaveCamp)) = (camp, requests.read().last()) else { return };
     if camp.forced {
         news.write(CampNews::Started { forced: true });
     } else if camp.phase == CampPhase::Resting {
-        camp.phase = CampPhase::FadingOut(0.0);
+        camp.phase = CampPhase::fading_out();
     }
 }
 
@@ -146,14 +161,14 @@ pub fn advance_camp(
     mut news: MessageWriter<CampNews>,
 ) {
     let Some(mut camp) = camp else { return };
-    let dt = time.delta_secs();
     let anyone_able = members.iter_many(&roster.0).flatten().any(can_act);
-    match camp.phase {
-        CampPhase::FadingIn(elapsed) if elapsed + dt >= FADE_SECONDS => {
-            camp.phase = CampPhase::Resting;
-            camp.until = Some(clock.ms + REST_MS);
+    match &mut camp.phase {
+        CampPhase::FadingIn(fade) => {
+            if fade.tick(time.delta()).is_finished() {
+                camp.phase = CampPhase::Resting;
+                camp.until = Some(clock.ms + REST_MS);
+            }
         }
-        CampPhase::FadingIn(elapsed) => camp.phase = CampPhase::FadingIn(elapsed + dt),
         CampPhase::Resting => {
             let woke = if camp.forced {
                 anyone_able
@@ -161,10 +176,13 @@ pub fn advance_camp(
                 camp.until.is_some_and(|until| clock.ms >= until)
             };
             if woke {
-                camp.phase = CampPhase::FadingOut(0.0);
+                camp.phase = CampPhase::fading_out();
             }
         }
-        CampPhase::FadingOut(elapsed) if elapsed + dt >= FADE_SECONDS => {
+        CampPhase::FadingOut(fade) => {
+            if !fade.tick(time.delta()).is_finished() {
+                return;
+            }
             news.write(match (camp.forced, camp.until) {
                 (true, _) if anyone_able => CampNews::Recovered,
                 (true, _) => CampNews::Interrupted,
@@ -174,6 +192,5 @@ pub fn advance_camp(
             });
             commands.remove_resource::<Camp>();
         }
-        CampPhase::FadingOut(elapsed) => camp.phase = CampPhase::FadingOut(elapsed + dt),
     }
 }

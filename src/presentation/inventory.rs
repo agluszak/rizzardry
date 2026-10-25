@@ -1,19 +1,19 @@
 //! The character review screen's item page (`docs/research/review-items.md`):
 //! a member's equipment on their race's statue, their backpack, and the
 //! party's pool. Opened with I for the selected member; the header's portraits
-//! switch member, Esc or the Exit button closes it. Retail fills empty cells
-//! with a PCX texture; a flat colour stands in for it.
-
-use std::collections::HashMap;
+//! switch member, Esc, I or the Exit button closes it. Retail fills empty
+//! cells with a PCX texture; a flat colour stands in for it.
+//!
+//! The screen is one scene with a node for each cell, the header and the
+//! gold; each draws itself again when what it shows changes.
 
 use bevy::picking::pointer::{PointerId, PointerLocation};
 use bevy::prelude::*;
+use bevy_enhanced_input::prelude::*;
 use enumset::EnumSet;
 
-use crate::game::screen::Screen;
-
-use super::screen_art::{absolute, sprite, text};
-use crate::content::items::{ItemCatalog, QuantityKind};
+use super::screen_art::{absolute, centred, rect, screen, sprite, text};
+use crate::content::items::{ItemCatalog, ItemDefinition, QuantityKind};
 use crate::content::ui::SpriteSheet;
 use crate::game::characters::{Character, Gender, Race};
 use crate::game::data::GameData;
@@ -22,8 +22,8 @@ use crate::game::inventory::{
     Refusal, Slot,
 };
 use crate::game::party::roster::PartyRoster;
+use crate::game::screen::Screen;
 
-const SCREEN: Vec2 = Vec2::new(640.0, 480.0);
 const CELL: Vec2 = Vec2::new(46.0, 54.0);
 const FILL: Color = Color::srgb(0.16, 0.14, 0.11);
 /// Pool cells shown at once.
@@ -66,31 +66,17 @@ fn equipment_rim(slot: EquipSlot) -> usize {
     }
 }
 
+/// Where a backpack (left) or pool (right) cell is: two columns of four.
+fn grid(left: f32, i: usize) -> Vec2 {
+    Vec2::new(left + (i % 2) as f32 * 49.0, 192.0 + (i / 2) as f32 * 57.0)
+}
+
 /// The open screen, reviewing one member. Absent while exploring.
 #[derive(Resource, Debug)]
 pub struct InventoryScreen {
     pub member: Entity,
     /// The first pool entry shown; always even.
     pub pool_scroll: usize,
-    /// What the cells last showed, to draw them again when it changes;
-    /// none until every picture they need has loaded.
-    drawn: Option<Shown>,
-}
-
-impl InventoryScreen {
-    pub fn new(member: Entity) -> Self {
-        InventoryScreen { member, pool_scroll: 0, drawn: None }
-    }
-}
-
-/// What the cells show.
-#[derive(Debug, PartialEq)]
-struct Shown {
-    member: Entity,
-    pool_scroll: usize,
-    carried: Carried,
-    pool: Vec<ItemInstance>,
-    gold: u32,
 }
 
 #[derive(Resource)]
@@ -123,13 +109,76 @@ pub fn load_inventory_art(mut commands: Commands, assets: Res<AssetServer>) {
     });
 }
 
-/// The whole screen.
-#[derive(Component)]
+/// The screen, with its keys: Escape or I closes it, before every other
+/// screen's keys.
+#[derive(Component, Clone, Default)]
 pub struct InventoryRoot;
 
-/// The part drawn again when the inventory changes.
-#[derive(Component)]
-pub struct InventoryCells;
+/// I opens the screen while the party is in the world.
+#[derive(Component, Clone, Default)]
+pub struct InventoryKey;
+
+#[derive(InputAction)]
+#[action_output(bool)]
+struct OpenInventory;
+
+#[derive(InputAction)]
+#[action_output(bool)]
+struct CloseInventory;
+
+pub fn spawn_inventory_key(mut commands: Commands) {
+    commands.spawn_scene(bsn! {
+        InventoryKey
+        Actions<InventoryKey> [
+            Action::<OpenInventory>::new()
+            Bindings [ Binding(KeyCode::KeyI) ]
+        ]
+        on(open_with_key)
+    });
+}
+
+/// Retail opens the selected character.
+fn open_with_key(
+    _: On<Start<OpenInventory>>,
+    mut commands: Commands,
+    mut screen: ResMut<Screen>,
+    roster: Res<PartyRoster>,
+    selected: Res<super::main_screen::SelectedMember>,
+) {
+    if let Some(&member) = roster.0.get_index(selected.0).or(roster.0.first()) {
+        open(&mut commands, &mut screen, member);
+    }
+}
+
+/// Bring up a member's inventory, unless another screen is up.
+pub fn open(commands: &mut Commands, screen: &mut Screen, member: Entity) {
+    if screen.open(Screen::Inventory) {
+        commands.insert_resource(InventoryScreen { member, pool_scroll: 0 });
+    }
+}
+
+/// Close the screen, first putting away whatever is in hand.
+fn close(mut commands: Commands, mut screen: ResMut<Screen>) {
+    commands.run_system_cached(put_away_held);
+    commands.remove_resource::<InventoryScreen>();
+    screen.close(Screen::Inventory);
+}
+
+/// The held item goes back to the reviewed member, or the pool.
+fn put_away_held(
+    screen: Option<Res<InventoryScreen>>,
+    mut party: ResMut<PartyInventory>,
+    mut members: Query<&mut Carried>,
+    data: Option<Res<GameData>>,
+    catalogs: Res<Assets<ItemCatalog>>,
+) {
+    let (Some(screen), Some(catalog)) = (screen, data.and_then(|d| catalogs.get(&d.items))) else {
+        return;
+    };
+    if let Ok(mut carried) = members.get_mut(screen.member) {
+        party.put_away_held(&mut carried, catalog);
+    }
+}
 
 /// The race's statue on the item page (`statue_<race>_<m|f>.sti`).
 fn statue(race: Race, gender: Gender) -> String {
@@ -155,78 +204,380 @@ fn statue(race: Race, gender: Gender) -> String {
     format!("statue_{race}_{gender}")
 }
 
-pub fn toggle_inventory(
-    mut commands: Commands,
-    keys: Res<ButtonInput<KeyCode>>,
-    inventory: Option<Res<InventoryScreen>>,
-    mut screen: ResMut<Screen>,
-    roster: Res<PartyRoster>,
-    selected: Res<super::main_screen::SelectedMember>,
-    roots: Query<Entity, With<InventoryRoot>>,
-) {
-    match inventory {
-        Some(_) if keys.just_pressed(KeyCode::Escape) || keys.just_pressed(KeyCode::KeyI) => {
-            close(&mut commands, &mut screen, &roots);
-        }
-        // Retail opens the selected character.
-        None if keys.just_pressed(KeyCode::KeyI) => {
-            if let Some(&member) = roster.0.get_index(selected.0).or(roster.0.first()) {
-                open(&mut commands, &mut screen, member);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Bring up a member's inventory, unless another screen is up.
-pub fn open(commands: &mut Commands, screen: &mut Screen, member: Entity) {
-    if screen.open(Screen::Inventory) {
-        commands.insert_resource(InventoryScreen::new(member));
-    }
-}
-
-/// Close the screen (the Exit button).
-fn exit(
-    _: On<PointerClick>,
-    mut commands: Commands,
-    mut screen: ResMut<Screen>,
-    roots: Query<Entity, With<InventoryRoot>>,
-) {
-    close(&mut commands, &mut screen, &roots);
-}
-
-/// Close the screen, first putting away whatever is in hand.
-fn close(commands: &mut Commands, screen: &mut Screen, roots: &Query<Entity, With<InventoryRoot>>) {
-    commands.run_system_cached(put_away_held);
-    commands.remove_resource::<InventoryScreen>();
-    screen.close(Screen::Inventory);
-    for root in roots {
-        commands.entity(root).despawn();
-    }
-}
-
-/// The held item goes back to the reviewed member, or the pool.
-fn put_away_held(
-    screen: Option<Res<InventoryScreen>>,
-    mut party: ResMut<PartyInventory>,
-    mut members: Query<&mut Carried>,
-    data: Option<Res<GameData>>,
-    catalogs: Res<Assets<ItemCatalog>>,
-) {
-    let (Some(screen), Some(catalog)) = (screen, data.and_then(|d| catalogs.get(&d.items))) else {
-        return;
-    };
-    if let Ok(mut carried) = members.get_mut(screen.member) {
-        party.put_away_held(&mut carried, catalog);
-    }
-}
-
 /// A place an item can be clicked in or out of.
-#[derive(Component, Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Cell {
     Member(Slot),
     /// A pool cell by its position on screen.
     Pool(usize),
+}
+
+impl Cell {
+    /// Where the cell is and its size.
+    fn area(self) -> Rect {
+        match self {
+            Cell::Member(Slot::Equipment(slot)) => equipment_cell(slot),
+            Cell::Member(Slot::Backpack(i)) => {
+                Rect::from_corners(grid(11.0, i), grid(11.0, i) + CELL)
+            }
+            Cell::Pool(i) => Rect::from_corners(grid(512.0, i), grid(512.0, i) + CELL),
+        }
+    }
+}
+
+/// A cell's node, with what it last drew and the sheets that took.
+#[derive(Component)]
+struct ItemCell {
+    cell: Cell,
+    drawn: Option<CellView>,
+    _kept: Vec<Handle<SpriteSheet>>,
+}
+
+/// What a cell shows.
+#[derive(Clone, Debug, PartialEq)]
+struct CellView {
+    item: Option<ShownItem>,
+    /// The member cannot use what is in it (backpack and pool).
+    unusable: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ShownItem {
+    picture: String,
+    count: Option<String>,
+    identified: bool,
+}
+
+fn shown_item(item: &ItemInstance, definition: &ItemDefinition) -> ShownItem {
+    ShownItem {
+        picture: definition.image.clone(),
+        count: count_label(item, definition.quantity),
+        identified: item.identified,
+    }
+}
+
+/// A cell's count: a stack above one, charges or shots; `?` for charges
+/// not yet identified.
+fn count_label(item: &ItemInstance, kind: QuantityKind) -> Option<String> {
+    let count = match item.quantity {
+        Quantity::One => return None,
+        Quantity::Stack(n) | Quantity::Uses(n) => n,
+    };
+    match kind {
+        QuantityKind::None | QuantityKind::Unlabelled => None,
+        QuantityKind::Stack if count <= 1 => None,
+        QuantityKind::Charges | QuantityKind::Uses if !item.identified => Some("?".to_owned()),
+        _ => Some(count.to_string()),
+    }
+}
+
+/// The header (the party's small portraits, the reviewed member's
+/// portrait, name, race and profession) and their statue.
+#[derive(Component, Clone, Default)]
+struct Header {
+    drawn: Option<HeaderView>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct HeaderView {
+    /// Each member and their portrait, in party order.
+    party: Vec<(Entity, String)>,
+    portrait: String,
+    name: String,
+    race: Race,
+    profession: String,
+    statue: String,
+}
+
+#[derive(Component, Clone, Default)]
+struct GoldLabel {
+    drawn: Option<u32>,
+}
+
+/// Build the screen when it opens, once its fixed art has loaded; remove
+/// it when it closes.
+pub fn spawn_inventory_screen(
+    mut commands: Commands,
+    open: Option<Res<InventoryScreen>>,
+    art: Res<InventoryArt>,
+    sheets: Res<Assets<SpriteSheet>>,
+    mut images: ResMut<Assets<Image>>,
+    roots: Query<Entity, With<InventoryRoot>>,
+) {
+    if open.is_none() {
+        for root in &roots {
+            commands.entity(root).despawn();
+        }
+        return;
+    }
+    if !roots.is_empty() {
+        return;
+    }
+    let get = |handle: &Handle<SpriteSheet>| sheets.get(handle);
+    let (Some(corner), Some(page), Some(bar), Some(gold), Some(exit), Some(bold)) = (
+        get(&art.corner),
+        get(&art.page),
+        get(&art.bottom_bar),
+        get(&art.gold_icon),
+        get(&art.exit),
+        get(&art.bold),
+    ) else {
+        return;
+    };
+    let fixed = vec![
+        sprite(corner, 0, Vec2::ZERO),
+        sprite(page, 0, Vec2::new(310.0, 0.0)),
+        sprite(page, 1, Vec2::new(0.0, 165.0)),
+        sprite(page, 2, Vec2::new(113.0, 165.0)),
+        sprite(page, 3, Vec2::new(478.0, 165.0)),
+        sprite(gold, 0, Vec2::new(514.0, 422.0)),
+        sprite(bar, 0, Vec2::new(0.0, 450.0)),
+    ];
+    let titles = vec![
+        text(bold, &mut images, "Carried", Vec2::new(12.0, 174.0), 93.0),
+        text(bold, &mut images, "Party Items", Vec2::new(486.0, 174.0), 141.0),
+    ];
+    let exit = sprite(exit, 16, Vec2::new(596.0, 450.0));
+    let cells: Vec<_> = EnumSet::<EquipSlot>::all()
+        .iter()
+        .map(|slot| Cell::Member(Slot::Equipment(slot)))
+        .chain((0..BACKPACK_SLOTS).map(|i| Cell::Member(Slot::Backpack(i))))
+        .chain((0..POOL_CELLS).map(Cell::Pool))
+        .map(|cell| {
+            let area = cell.area();
+            let node = absolute(area.min, area.size() + 1.0);
+            bsn! {
+                node
+                template(move |_| Ok(ItemCell { cell, drawn: None, _kept: vec![] }))
+                on(click_cell)
+            }
+        })
+        .collect();
+    commands.spawn_scene(bsn! {
+        @centred()
+        InventoryRoot
+        BackgroundColor(Color::BLACK)
+        GlobalZIndex(10)
+        ContextPriority::<InventoryRoot>::new(1)
+        Actions<InventoryRoot> [
+            Action::<CloseInventory>::new()
+            ActionSettings { consume_input: true }
+            Bindings [ Binding(KeyCode::Escape) Binding(KeyCode::KeyI) ]
+        ]
+        on(|_: On<Start<CloseInventory>>, mut commands: Commands| {
+            commands.run_system_cached(close);
+        })
+        Children [
+            @screen()
+            Children [
+                {fixed}
+                -- {titles}
+                -- @{exit}
+                    Pickable { should_block_lower: true, is_hoverable: true }
+                    on(|_: On<PointerClick>, mut commands: Commands| {
+                        commands.run_system_cached(close);
+                    })
+                // The header and statue lie under the cells.
+                -- Node { position_type: PositionType::Absolute } Header
+                -- Node { position_type: PositionType::Absolute } GoldLabel
+                -- {cells}
+            ]
+        ]
+    });
+}
+
+/// Draw the header and statue again when the reviewed member or the party
+/// changes.
+fn draw_header(
+    mut commands: Commands,
+    screen: Option<Res<InventoryScreen>>,
+    art: Res<InventoryArt>,
+    assets: Res<AssetServer>,
+    sheets: Res<Assets<SpriteSheet>>,
+    mut images: ResMut<Assets<Image>>,
+    roster: Res<PartyRoster>,
+    members: Query<&Character>,
+    mut headers: Query<(Entity, &mut Header)>,
+    mut kept: Local<Vec<Handle<SpriteSheet>>>,
+) {
+    let (Some(screen), Ok((node, mut header))) = (screen, headers.single_mut()) else { return };
+    let Ok(member) = members.get(screen.member) else { return };
+    let view = HeaderView {
+        party: roster
+            .0
+            .iter()
+            .filter_map(|&m| Some((m, members.get(m).ok()?.portrait.clone())))
+            .collect(),
+        portrait: member.portrait.clone(),
+        name: member.name.clone(),
+        race: member.race,
+        profession: format!("{:?}", member.profession),
+        statue: statue(member.race, member.gender),
+    };
+    if header.drawn.as_ref() == Some(&view) {
+        return;
+    }
+    let (Some(corner), Some(font), Some(bold)) =
+        (sheets.get(&art.corner), sheets.get(&art.font), sheets.get(&art.bold))
+    else {
+        return;
+    };
+    let mut complete = true;
+    let mut held = vec![];
+    let mut sheet = |path: String| {
+        let handle = assets.load(format!("retail://{path}"));
+        let loaded = sheets.get(&handle);
+        complete &= loaded.is_some();
+        held.push(handle);
+        loaded
+    };
+    let mut parts: Vec<Box<dyn Scene>> = vec![];
+    // The party's cells switch member; the rest are empty.
+    for (slot, (member, portrait)) in view.party.iter().enumerate() {
+        let at = Vec2::new(6.0 + (slot % 2) as f32 * 48.0, 5.0 + (slot / 2) as f32 * 39.0);
+        let picture = sheet(format!("data/portraits/small/s{portrait}.sti"));
+        let member = *member;
+        parts.push(Box::new(bsn! {
+            @{picture.and_then(|s| sprite(s, 0, at))}
+            Pickable { should_block_lower: true, is_hoverable: true }
+            on(move |_: On<PointerClick>, screen: Option<ResMut<InventoryScreen>>| {
+                if let Some(mut screen) = screen {
+                    screen.member = member;
+                }
+            })
+        }));
+    }
+    for slot in view.party.len()..8 {
+        let at = Vec2::new(5.0 + (slot % 2) as f32 * 48.0, 4.0 + (slot / 2) as f32 * 39.0);
+        parts.push(Box::new(sprite(corner, slot + 1, at)));
+    }
+    let portrait = sheet(format!("data/portraits/medium/m{}.sti", view.portrait));
+    parts.push(Box::new(portrait.and_then(|s| sprite(s, 0, Vec2::new(164.0, 12.0)))));
+    parts.push(Box::new(sprite(corner, 9, Vec2::new(164.0, 12.0))));
+    parts.push(Box::new(text(bold, &mut images, &view.name, Vec2::new(116.0, 96.0), 186.0)));
+    let race = format!("{:?}", view.race);
+    parts.push(Box::new(text(font, &mut images, &race, Vec2::new(116.0, 111.0), 186.0)));
+    parts.push(Box::new(text(font, &mut images, &view.profession, Vec2::new(116.0, 124.0), 186.0)));
+    let statue = sheet(format!("data/review/{}.sti", view.statue));
+    parts.push(Box::new(statue.and_then(|s| sprite(s, 0, Vec2::new(194.0, 165.0)))));
+    commands
+        .entity(node)
+        .despawn_related::<Children>()
+        .queue_spawn_related_scenes::<Children>(parts);
+    *kept = held;
+    header.drawn = complete.then_some(view);
+}
+
+fn draw_gold(
+    mut commands: Commands,
+    art: Res<InventoryArt>,
+    sheets: Res<Assets<SpriteSheet>>,
+    mut images: ResMut<Assets<Image>>,
+    party: Res<PartyInventory>,
+    mut labels: Query<(Entity, &mut GoldLabel)>,
+) {
+    let (Ok((node, mut label)), Some(font)) = (labels.single_mut(), sheets.get(&art.font)) else {
+        return;
+    };
+    if label.drawn == Some(party.gold) {
+        return;
+    }
+    let gold = text(font, &mut images, &format_gold(party.gold), Vec2::new(553.0, 425.0), 48.0);
+    commands
+        .entity(node)
+        .despawn_related::<Children>()
+        .queue_spawn_related_scenes::<Children>(vec![gold]);
+    label.drawn = Some(party.gold);
+}
+
+/// Draw each cell again when what it shows changes: the item, its count
+/// and identification, and whether the reviewed member can use it.
+fn draw_cells(
+    mut commands: Commands,
+    screen: Option<Res<InventoryScreen>>,
+    art: Res<InventoryArt>,
+    assets: Res<AssetServer>,
+    sheets: Res<Assets<SpriteSheet>>,
+    mut images: ResMut<Assets<Image>>,
+    data: Option<Res<GameData>>,
+    catalogs: Res<Assets<ItemCatalog>>,
+    members: Query<(&Character, &Carried)>,
+    party: Res<PartyInventory>,
+    mut cells: Query<(Entity, &mut ItemCell)>,
+) {
+    let Some(screen) = screen else { return };
+    let Some(catalog) = data.and_then(|d| catalogs.get(&d.items)) else { return };
+    let Ok((character, carried)) = members.get(screen.member) else { return };
+    let get = |handle: &Handle<SpriteSheet>| sheets.get(handle);
+    let (Some(font), Some(highlights), Some(unusable), Some(unidentified)) =
+        (get(&art.font), get(&art.highlights), get(&art.unusable), get(&art.unidentified))
+    else {
+        return;
+    };
+    for (node, mut cell) in &mut cells {
+        let item = match cell.cell {
+            Cell::Member(Slot::Equipment(slot)) => carried.worn(slot),
+            Cell::Member(Slot::Backpack(i)) => carried.backpack[i].as_ref(),
+            Cell::Pool(i) => party.pool.get(screen.pool_scroll + i),
+        };
+        let definition = item.and_then(|item| Some((item, catalog.get(item.item)?)));
+        let view = CellView {
+            item: definition.map(|(item, definition)| shown_item(item, definition)),
+            unusable: definition.is_some_and(|(_, definition)| !character.can_use(definition)),
+        };
+        if cell.drawn.as_ref() == Some(&view) {
+            continue;
+        }
+        let mut complete = true;
+        let mut kept = vec![];
+        let mut parts: Vec<Box<dyn Scene>> = vec![];
+        let area = cell.cell.area();
+        let size = area.size();
+        // Equipment shows the item's large picture over the statue's own
+        // well; the backpack and pool show it on a cell.
+        let (picture_frame, picture_at, count_at, count_width) = match cell.cell {
+            Cell::Member(Slot::Equipment(_)) => {
+                (1, Vec2::ZERO, Vec2::new(2.0, size.y - 13.0), size.x - 4.0)
+            }
+            _ => {
+                if view.unusable {
+                    parts.push(Box::new(sprite(unusable, 0, Vec2::ZERO)));
+                } else {
+                    parts.push(Box::new(rect(Vec2::ZERO, CELL, FILL)));
+                }
+                (0, Vec2::ONE, Vec2::new(1.0, 40.0), 44.0)
+            }
+        };
+        if let Some(item) = &view.item {
+            let handle = assets.load(format!("retail://{}", item.picture));
+            let picture = sheets.get(&handle);
+            complete &= picture.is_some();
+            kept.push(handle);
+            parts.push(Box::new(picture.and_then(|s| sprite(s, picture_frame, picture_at))));
+            if let Some(count) = &item.count {
+                // Right-aligned.
+                let width = font.text_width(count) as f32;
+                let at = Vec2::new(count_at.x + count_width - width, count_at.y);
+                parts.push(Box::new(text(font, &mut images, count, at, 0.0)));
+            }
+            if !item.identified {
+                parts.push(Box::new(sprite(unidentified, 0, Vec2::ZERO)));
+            }
+            if let Cell::Member(Slot::Equipment(slot)) = cell.cell {
+                parts.push(Box::new(sprite(
+                    highlights,
+                    equipment_rim(slot) + 3,
+                    -Vec2::splat(2.0),
+                )));
+            }
+        }
+        commands
+            .entity(node)
+            .despawn_related::<Children>()
+            .queue_spawn_related_scenes::<Children>(parts);
+        cell._kept = kept;
+        cell.drawn = complete.then_some(view);
+    }
 }
 
 /// Click a cell (retail's item-page click, `rcs.cpp:1459-1742`): with an
@@ -236,7 +587,7 @@ enum Cell {
 /// partner are not done yet.
 fn click_cell(
     click: On<PointerClick>,
-    cells: Query<&Cell>,
+    cells: Query<&ItemCell>,
     screen: Option<Res<InventoryScreen>>,
     roster: Res<PartyRoster>,
     mut members: Query<(&Character, &mut Carried)>,
@@ -244,10 +595,10 @@ fn click_cell(
     data: Option<Res<GameData>>,
     catalogs: Res<Assets<ItemCatalog>>,
 ) {
-    let (Ok(&cell), Some(screen)) = (cells.get(click.entity), screen) else { return };
+    let (Ok(cell), Some(screen)) = (cells.get(click.entity), screen) else { return };
     let Some(catalog) = data.and_then(|d| catalogs.get(&d.items)) else { return };
     let held = party.held.as_ref().map(|h| h.item.clone());
-    let result = match cell {
+    let result = match cell.cell {
         Cell::Pool(i) => {
             let row = screen.pool_scroll + i;
             if held.is_some() {
@@ -258,7 +609,7 @@ fn click_cell(
             }
         }
         Cell::Member(slot) => {
-            let Some(index) = roster.0.iter().position(|&m| m == screen.member) else { return };
+            let Some(index) = roster.0.get_index_of(&screen.member) else { return };
             let Ok((character, mut carried)) = members.get_mut(screen.member) else { return };
             let target = match slot {
                 Slot::Equipment(equip) => carried.worn(equip).cloned(),
@@ -279,18 +630,28 @@ fn click_cell(
         }
     };
     if let Err(refusal) = result {
-        info!("inventory: {cell:?} refused: {refusal:?}");
+        info!("inventory: {:?} refused: {refusal:?}", cell.cell);
     }
 }
 
-/// The held item, under the pointer.
-#[derive(Component)]
+/// The held item at the pointer, here and on the main screen (retail's
+/// item cursor): one node for the game's whole run, shown while the hand
+/// holds something.
+#[derive(Component, Clone, Default)]
 pub struct HeldPicture;
 
-/// Show what the hand holds at the pointer, here and on the main screen
-/// (retail's item cursor).
+pub fn spawn_held_picture(mut commands: Commands) {
+    commands.spawn_scene(bsn! {
+        HeldPicture
+        ImageNode
+        Node { position_type: PositionType::Absolute }
+        GlobalZIndex(20)
+        Pickable::IGNORE
+        Visibility::Hidden
+    });
+}
+
 pub fn follow_held(
-    mut commands: Commands,
     party: Res<PartyInventory>,
     pointers: Query<(&PointerId, &PointerLocation)>,
     scale: Res<UiScale>,
@@ -298,9 +659,10 @@ pub fn follow_held(
     sheets: Res<Assets<SpriteSheet>>,
     data: Option<Res<GameData>>,
     catalogs: Res<Assets<ItemCatalog>>,
-    mut pictures: Query<(Entity, &mut ImageNode, &mut Node), With<HeldPicture>>,
+    mut picture: Single<(&mut ImageNode, &mut Node, &mut Visibility), With<HeldPicture>>,
     mut loading: Local<Option<Handle<SpriteSheet>>>,
 ) {
+    let (image, node, visibility) = &mut *picture;
     let catalog = data.and_then(|d| catalogs.get(&d.items));
     let definition = party.held.as_ref().zip(catalog).and_then(|(h, c)| c.get(h.item.item));
     let cursor = pointers
@@ -309,381 +671,34 @@ pub fn follow_held(
         .and_then(|(_, location)| location.location.as_ref())
         .map(|location| location.position);
     let (Some(definition), Some(cursor)) = (definition, cursor) else {
-        for (entity, ..) in &pictures {
-            commands.entity(entity).despawn();
-        }
+        visibility.set_if_neq(Visibility::Hidden);
         return;
     };
     let handle = loading.insert(assets.load(format!("retail://{}", definition.image)));
-    let Some((image, frame)) =
+    let Some((picture, frame)) =
         sheets.get(&*handle).and_then(|s| Some((s.images.first()?, s.frames.first()?)))
     else {
         return;
     };
-    let size = Vec2::new(frame.width as f32, frame.height as f32);
     // Retail makes the picture the cursor, its corner at the hotspot with
     // the arrow drawn over it (`UpdateHeldItemCursor`).
-    let at = cursor / scale.0;
-    match pictures.single_mut() {
-        Ok((_, mut node_image, mut node)) => {
-            node_image.image = image.clone();
-            *node = absolute(at, size);
-        }
-        Err(_) => {
-            commands.spawn((
-                HeldPicture,
-                ImageNode::new(image.clone()),
-                absolute(at, size),
-                GlobalZIndex(20),
-                Pickable::IGNORE,
-            ));
-        }
-    }
+    image.image = picture.clone();
+    **node = absolute(cursor / scale.0, Vec2::new(frame.width as f32, frame.height as f32));
+    visibility.set_if_neq(Visibility::Inherited);
 }
 
-/// Review another member (a header portrait).
-#[derive(Component)]
-struct ReviewMember(Entity);
+pub struct InventoryPlugin;
 
-fn review_member(
-    click: On<PointerClick>,
-    targets: Query<&ReviewMember>,
-    screen: Option<ResMut<InventoryScreen>>,
-) {
-    if let (Ok(target), Some(mut screen)) = (targets.get(click.entity), screen) {
-        screen.member = target.0;
+impl Plugin for InventoryPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_input_context::<InventoryKey>()
+            .add_input_context::<InventoryRoot>()
+            .add_systems(Startup, (load_inventory_art, spawn_inventory_key, spawn_held_picture))
+            .add_systems(
+                Update,
+                (spawn_inventory_screen, draw_header, draw_gold, draw_cells, follow_held).chain(),
+            );
     }
-}
-
-/// Build the screen's fixed art once its sheets have loaded.
-pub fn spawn_inventory_screen(
-    mut commands: Commands,
-    screen: Option<Res<InventoryScreen>>,
-    art: Res<InventoryArt>,
-    sheets: Res<Assets<SpriteSheet>>,
-    mut images: ResMut<Assets<Image>>,
-    roots: Query<(), With<InventoryRoot>>,
-) {
-    if screen.is_none() || !roots.is_empty() {
-        return;
-    }
-    let get = |handle: &Handle<SpriteSheet>| sheets.get(handle);
-    let (Some(corner), Some(page), Some(bar), Some(gold), Some(exit_button), Some(bold)) = (
-        get(&art.corner),
-        get(&art.page),
-        get(&art.bottom_bar),
-        get(&art.gold_icon),
-        get(&art.exit),
-        get(&art.bold),
-    ) else {
-        return;
-    };
-    let root = commands
-        .spawn((
-            InventoryRoot,
-            Node {
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                ..default()
-            },
-            BackgroundColor(Color::BLACK),
-            GlobalZIndex(10),
-        ))
-        .id();
-    let frame = commands
-        .spawn((
-            Node { width: Val::Px(SCREEN.x), height: Val::Px(SCREEN.y), ..default() },
-            ChildOf(root),
-        ))
-        .id();
-    let layers = [
-        sprite(corner, 0, Vec2::ZERO),
-        sprite(page, 0, Vec2::new(310.0, 0.0)),
-        sprite(page, 1, Vec2::new(0.0, 165.0)),
-        sprite(page, 2, Vec2::new(113.0, 165.0)),
-        sprite(page, 3, Vec2::new(478.0, 165.0)),
-        sprite(gold, 0, Vec2::new(514.0, 422.0)),
-        sprite(bar, 0, Vec2::new(0.0, 450.0)),
-    ];
-    for layer in layers.into_iter().flatten() {
-        commands.spawn((layer, ChildOf(frame)));
-    }
-    commands
-        .spawn((text(bold, &mut images, "Carried", Vec2::new(12.0, 174.0), 93.0), ChildOf(frame)));
-    commands.spawn((
-        text(bold, &mut images, "Party Items", Vec2::new(486.0, 174.0), 141.0),
-        ChildOf(frame),
-    ));
-    if let Some((image, node, _)) = sprite(exit_button, 16, Vec2::new(596.0, 450.0)) {
-        commands.spawn((image, node, ChildOf(frame))).observe(exit);
-    }
-    commands.spawn((
-        InventoryCells,
-        // Sizeless, so it catches no clicks itself; its cells overflow it.
-        absolute(Vec2::ZERO, Vec2::ZERO),
-        ChildOf(frame),
-    ));
-}
-
-/// Draw the reviewed member's header, statue and items, and the pool.
-pub fn draw_inventory_cells(
-    mut commands: Commands,
-    screen: Option<ResMut<InventoryScreen>>,
-    art: Res<InventoryArt>,
-    assets: Res<AssetServer>,
-    sheets: Res<Assets<SpriteSheet>>,
-    mut images: ResMut<Assets<Image>>,
-    data: Option<Res<GameData>>,
-    catalogs: Res<Assets<ItemCatalog>>,
-    roster: Res<PartyRoster>,
-    members: Query<(&Character, &Carried)>,
-    party: Res<PartyInventory>,
-    layers: Query<Entity, With<InventoryCells>>,
-    mut loading: Local<HashMap<String, Handle<SpriteSheet>>>,
-) {
-    let Some(mut screen) = screen else { return };
-    let Ok(layer) = layers.single() else { return };
-    let get = |handle: &Handle<SpriteSheet>| sheets.get(handle);
-    let (
-        Some(font),
-        Some(bold),
-        Some(corner),
-        Some(highlights),
-        Some(unusable),
-        Some(unidentified),
-    ) = (
-        get(&art.font),
-        get(&art.bold),
-        get(&art.corner),
-        get(&art.highlights),
-        get(&art.unusable),
-        get(&art.unidentified),
-    )
-    else {
-        return;
-    };
-    let Some(catalog) = data.and_then(|d| catalogs.get(&d.items)) else { return };
-    let Ok((character, carried)) = members.get(screen.member) else { return };
-    let shown = Shown {
-        member: screen.member,
-        pool_scroll: screen.pool_scroll,
-        carried: carried.clone(),
-        pool: party.pool.iter().skip(screen.pool_scroll).take(POOL_CELLS).cloned().collect(),
-        gold: party.gold,
-    };
-    if screen.drawn.as_ref() == Some(&shown) {
-        return;
-    }
-    let mut complete = true;
-    // Sheets loaded here are kept, or dropping the handle would cancel them.
-    let mut sheet = |path: String| {
-        let handle =
-            loading.entry(path).or_insert_with_key(|path| assets.load(format!("retail://{path}")));
-        let loaded = sheets.get(&*handle);
-        complete &= loaded.is_some();
-        loaded
-    };
-    commands.entity(layer).despawn_related::<Children>();
-
-    // Header: party cells, the big portrait, name, race and profession.
-    for (slot, &member) in roster.0.iter().enumerate() {
-        let Ok((other, _)) = members.get(member) else { continue };
-        let at = Vec2::new(6.0 + (slot % 2) as f32 * 48.0, 5.0 + (slot / 2) as f32 * 39.0);
-        let path = format!("data/portraits/small/s{}.sti", other.portrait);
-        if let Some(portrait) = sheet(path).and_then(|s| sprite(s, 0, at)) {
-            commands
-                .spawn((portrait.0, portrait.1, ReviewMember(member), ChildOf(layer)))
-                .observe(review_member);
-        }
-    }
-    for slot in roster.0.len()..8 {
-        let at = Vec2::new(5.0 + (slot % 2) as f32 * 48.0, 4.0 + (slot / 2) as f32 * 39.0);
-        if let Some(empty) = sprite(corner, slot + 1, at) {
-            put(&mut commands, layer, empty);
-        }
-    }
-    if let Some(portrait) = sheet(format!("data/portraits/medium/m{}.sti", character.portrait))
-        .and_then(|s| sprite(s, 0, Vec2::new(164.0, 12.0)))
-    {
-        put(&mut commands, layer, portrait);
-    }
-    if let Some(overlay) = sprite(corner, 9, Vec2::new(164.0, 12.0)) {
-        put(&mut commands, layer, overlay);
-    }
-    put(
-        &mut commands,
-        layer,
-        text(bold, &mut images, &character.name, Vec2::new(116.0, 96.0), 186.0),
-    );
-    put(
-        &mut commands,
-        layer,
-        text(font, &mut images, &format!("{:?}", character.race), Vec2::new(116.0, 111.0), 186.0),
-    );
-    put(
-        &mut commands,
-        layer,
-        text(
-            font,
-            &mut images,
-            &format!("{:?}", character.profession),
-            Vec2::new(116.0, 124.0),
-            186.0,
-        ),
-    );
-    let statue_path = format!("data/review/{}.sti", statue(character.race, character.gender));
-    if let Some(statue) = sheet(statue_path).and_then(|s| sprite(s, 0, Vec2::new(194.0, 165.0))) {
-        put(&mut commands, layer, statue);
-    }
-    put(
-        &mut commands,
-        layer,
-        text(font, &mut images, &format_gold(party.gold), Vec2::new(553.0, 425.0), 48.0),
-    );
-
-    // Equipment on the statue.
-    for slot in EnumSet::<EquipSlot>::all() {
-        let cell = equipment_cell(slot);
-        let at = cell.min;
-        // The doll's own wells show through empty cells.
-        let Some(item) = carried.worn(slot) else { continue };
-        let Some(definition) = catalog.get(item.item) else { continue };
-        if let Some(picture) = sheet(definition.image.clone()).and_then(|s| sprite(s, 1, at)) {
-            put(&mut commands, layer, picture);
-        }
-        quantity(
-            &mut commands,
-            layer,
-            font,
-            &mut images,
-            item,
-            definition.quantity,
-            Vec2::new(cell.min.x + 2.0, cell.max.y - 13.0),
-            cell.width() - 4.0,
-        );
-        if !item.identified
-            && let Some(overlay) = sprite(unidentified, 0, at)
-        {
-            put(&mut commands, layer, overlay);
-        }
-        if let Some(rim) = sprite(highlights, equipment_rim(slot) + 3, at - Vec2::splat(2.0)) {
-            put(&mut commands, layer, rim);
-        }
-    }
-
-    // Backpack and pool cells.
-    let grid = |left: f32, i: usize| {
-        Vec2::new(left + (i % 2) as f32 * 49.0, 192.0 + (i / 2) as f32 * 57.0)
-    };
-    let pool = party.pool.iter().skip(screen.pool_scroll).take(POOL_CELLS).map(Some);
-    let cells = carried
-        .backpack
-        .iter()
-        .take(BACKPACK_SLOTS)
-        .map(Option::as_ref)
-        .enumerate()
-        .map(|(i, item)| (grid(11.0, i), item))
-        .chain(
-            pool.chain(std::iter::repeat(None))
-                .take(POOL_CELLS)
-                .enumerate()
-                .map(|(i, item)| (grid(512.0, i), item)),
-        );
-    for (at, item) in cells {
-        let definition = item.and_then(|i| catalog.get(i.item));
-        match definition {
-            Some(definition) if !character.can_use(definition) => {
-                if let Some(background) = sprite(unusable, 0, at) {
-                    put(&mut commands, layer, background);
-                }
-            }
-            _ => {
-                commands.spawn((
-                    absolute(at, CELL),
-                    BackgroundColor(FILL),
-                    Pickable::IGNORE,
-                    ChildOf(layer),
-                ));
-            }
-        }
-        let (Some(item), Some(definition)) = (item, definition) else { continue };
-        if let Some(picture) =
-            sheet(definition.image.clone()).and_then(|s| sprite(s, 0, at + Vec2::ONE))
-        {
-            put(&mut commands, layer, picture);
-        }
-        quantity(
-            &mut commands,
-            layer,
-            font,
-            &mut images,
-            item,
-            definition.quantity,
-            at + Vec2::new(1.0, 40.0),
-            44.0,
-        );
-        if !item.identified
-            && let Some(overlay) = sprite(unidentified, 0, at)
-        {
-            put(&mut commands, layer, overlay);
-        }
-    }
-    // Clickable cells over everything else.
-    let cells = EnumSet::<EquipSlot>::all()
-        .iter()
-        .map(|slot| {
-            let cell = equipment_cell(slot);
-            (Cell::Member(Slot::Equipment(slot)), cell.min, cell.size() + 1.0)
-        })
-        .chain(
-            (0..BACKPACK_SLOTS)
-                .map(|i| (Cell::Member(Slot::Backpack(i)), grid(11.0, i), CELL + 1.0)),
-        )
-        .chain((0..POOL_CELLS).map(|i| (Cell::Pool(i), grid(512.0, i), CELL + 1.0)));
-    for (cell, at, size) in cells {
-        commands.spawn((cell, absolute(at, size), ChildOf(layer))).observe(click_cell);
-    }
-    screen.drawn = complete.then_some(shown);
-}
-
-fn put(commands: &mut Commands, layer: Entity, part: (ImageNode, Node, Pickable)) {
-    commands.spawn((part, ChildOf(layer)));
-}
-
-/// A cell's count, right-aligned: a stack above one, charges or shots.
-fn quantity(
-    commands: &mut Commands,
-    layer: Entity,
-    font: &SpriteSheet,
-    images: &mut Assets<Image>,
-    item: &ItemInstance,
-    kind: QuantityKind,
-    at: Vec2,
-    width: f32,
-) {
-    let count = match item.quantity {
-        Quantity::One => return,
-        Quantity::Stack(n) | Quantity::Uses(n) => n,
-    };
-    let label = match kind {
-        QuantityKind::None | QuantityKind::Unlabelled => return,
-        QuantityKind::Stack if count <= 1 => return,
-        QuantityKind::Charges | QuantityKind::Uses if !item.identified => "?".to_owned(),
-        _ => count.to_string(),
-    };
-    let image = font.text_image(&label);
-    let size = image.size_f32();
-    put(
-        commands,
-        layer,
-        (
-            ImageNode::new(images.add(image)),
-            absolute(Vec2::new(at.x + width - size.x, at.y), size),
-            Pickable::IGNORE,
-        ),
-    );
 }
 
 /// Gold with thousands separated by commas.

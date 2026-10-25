@@ -74,7 +74,7 @@ const HALF_CURSOR: f32 = 16.0;
 
 /// The help box (retail `VideoToolTip`): Arial 10 on black inside a tan
 /// border, at the pointer, kept on screen.
-#[derive(Component)]
+#[derive(Component, Clone, Default)]
 pub struct Tooltip;
 
 pub fn show_tooltip(
@@ -138,22 +138,20 @@ pub fn show_tooltip(
     let size = image.size_f32() + Vec2::new(4.0, 2.0);
     let corner = Vec2::new(at.x.max(2.0), (at.y - HALF_CURSOR).max(2.0))
         .min(Vec2::new(640.0, 480.0) - size - 2.0);
-    commands
-        .spawn((
-            Tooltip,
-            BackgroundColor(Color::BLACK),
-            BorderColor::all(Color::srgb(0.93, 0.6, 0.33)),
-            Node { border: UiRect::all(Val::Px(1.0)), ..absolute(corner, size) },
-            GlobalZIndex(30),
-            Pickable::IGNORE,
-        ))
-        .with_child((
-            ImageNode::new(images.add(image)),
-            Node {
-                margin: UiRect::new(Val::Px(1.0), Val::ZERO, Val::ZERO, Val::ZERO),
-                ..default()
-            },
-            Pickable::IGNORE,
-        ));
+    let (label, node) = (images.add(image), absolute(corner, size));
+    commands.spawn_scene(bsn! {
+        Tooltip
+        node
+        Node { border: UiRect::all(px(1)) }
+        BackgroundColor(Color::BLACK)
+        BorderColor::all(Color::srgb(0.93, 0.6, 0.33))
+        GlobalZIndex(30)
+        Pickable::IGNORE
+        Children [
+            ImageNode { image: {label} }
+            Node { margin: UiRect::left(px(1)) }
+            Pickable::IGNORE
+        ]
+    });
     *current = Some((entity, at));
 }

@@ -306,19 +306,16 @@ fn level_collider(geometry: &LevelGeometry) -> Result<Collider, String> {
 fn build_world(
     commands: &mut Commands,
     root: Entity,
-    level: &Level,
     geometry: &LevelGeometry,
     collider: Collider,
+    triggers: LevelState,
     remembered: Option<&LevelRecord>,
 ) {
     let mut root = commands.entity(root);
     root.insert((
         RigidBody::Static,
         collider,
-        remembered.map_or_else(
-            || LevelState::new(geometry, level.script),
-            |r| LevelState::returning(geometry, level.script, &r.triggers),
-        ),
+        triggers,
         remembered.map_or_else(MapNotes::default, |r| r.notes.clone()),
     ));
     {
@@ -328,9 +325,10 @@ fn build_world(
                     remembered.and_then(|r| r.prop_frames.get(&index)).copied().unwrap_or(0.0);
                 let last_frame =
                     prop.parts.iter().map(|p| p.keys.len().saturating_sub(1)).max().unwrap_or(0);
-                let door = prop.trigger.as_ref().is_some_and(|name| {
-                    geometry.triggers.iter().any(|t| &t.name == name && t.door.is_some())
-                });
+                let door =
+                    prop.trigger.is_some_and(|index| geometry.triggers[index].door.is_some());
+                let centre = prop.parts.iter().map(|part| part.transform.translation).sum::<Vec3>()
+                    / prop.parts.len().max(1) as f32;
                 // A door's doorway, from its closed shape (each part at its
                 // first pose), for walkers' links while it is open.
                 let doorway = door
@@ -345,7 +343,8 @@ fn build_world(
                     Name::new(prop.name.clone()),
                     Prop {
                         definition: index,
-                        trigger: prop.trigger.clone(),
+                        trigger: prop.trigger,
+                        centre,
                         door,
                         frames_per_second: prop.frames_per_second,
                         last_frame,
@@ -457,7 +456,7 @@ pub fn activate_level(
             stay(&mut commands, &departing, &mut memory, &mut party);
             continue;
         }
-        let (Some(geometry), Some(items), Some(_), Some(species)) = (
+        let (Some(geometry), Some(items), Some(loot), Some(species)) = (
             geometry.get(&level.geometry),
             shared.items.get(&data.items),
             shared.loot.get(&data.loot),
@@ -487,7 +486,11 @@ pub fn activate_level(
             }
         };
         let remembered = memory.0.remove(&level.path);
-        build_world(&mut commands, root, level, geometry, collider, remembered.as_ref());
+        let triggers = match &remembered {
+            None => LevelState::new(geometry, level.script, loot),
+            Some(record) => LevelState::returning(geometry, level.script, loot, &record.triggers),
+        };
+        build_world(&mut commands, root, geometry, collider, triggers, remembered.as_ref());
         navigation::install(&mut commands, root, level, geometry, &assets);
         population::populate(
             &mut commands,

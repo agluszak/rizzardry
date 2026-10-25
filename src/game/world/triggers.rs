@@ -1,56 +1,34 @@
 //! Triggers: what using a prop, or another trigger naming it, sets off.
 //!
-//! After Whizzardry `Trigger::Run`, `SelectAction` and `CommitActionResult`.
+//! After retail `Trigger::Run`, `SelectAction` and `CommitActionResult`.
 //! A run selects an action (initial, alternate or fallback), lets the level
 //! script veto it, performs it and, unless the action failed, commits:
 //! the trigger's sound, its recipients in order (synchronously), its
-//! location variable and its `fired` flag. Effects that presentation shows
-//! (sounds, camera shakes, messages) are returned, not played here. See
-//! `docs/research/trigger-actions.md`.
+//! location variable, its message and its `fired` flag. Effects that
+//! presentation shows (sounds, camera shakes, messages) are returned, not
+//! played here. See `docs/research/trigger-actions.md`.
 
 use std::collections::HashMap;
-
-use bevy::prelude::*;
+use std::time::Duration;
 
 use bevy::ecs::system::SystemParam;
+use bevy::prelude::*;
 
-use super::level::{Level, PropPart};
+use super::level::Level;
 use super::props::{Prop, PropMotion};
 use super::scripts::LevelScript;
 use crate::content::items::{Dice, ItemCatalog, LootTables};
-use crate::content::level::{Arrival, LevelGeometry, StateChange, TriggerDefinition};
+use crate::content::level::{
+    Animation, Fountain, LevelGeometry, Restores, StateChange, TriggerAction, TriggerDefinition,
+    TriggerUse,
+};
 use crate::game::characters::Character;
 use crate::game::data::GameData;
 use crate::game::inventory::{ItemIds, ItemInstance, PartyInventory, make_item};
 use crate::game::loot::roll_loot;
+use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::time::GameClock;
-
-/// Retail trigger action codes performed so far.
-pub mod action {
-    pub const NOTHING: u32 = 0x00;
-    pub const DOOR_OPEN: u32 = 0x01;
-    pub const DOOR_TOGGLE: u32 = 0x02;
-    pub const TOGGLE: u32 = 0x03;
-    pub const CAMERA_PATH: u32 = 0x09;
-    pub const RELAY: u32 = 0x0f;
-    pub const TELEPORT: u32 = 0x34;
-    pub const RANDOM_TELEPORT: u32 = 0x4b;
-    pub const DOOR_TOGGLE_WITH_KEY: u32 = 0x2c;
-    pub const START: u32 = 0x32;
-    pub const STOP: u32 = 0x33;
-    pub const SHAKE: u32 = 0x39;
-    /// Hurt everyone in the party now: `data` count d sides + base.
-    pub const PARTY_HEALTH: u32 = 0x24;
-    /// Hurt everyone in the party every half second while it stays.
-    pub const DAMAGE_ZONE: u32 = 0x23;
-    /// Fountains restoring each member's stamina or health by `data[2]`.
-    pub const STAMINA_FOUNTAIN: u32 = 0x25;
-    pub const HEALING_FOUNTAIN: u32 = 0x26;
-    pub const DIAL: u32 = 0x40;
-    /// Play the trigger's sound and nothing else; it does not commit.
-    pub const SOUND: u32 = 0x36;
-}
 
 /// Damage zones hurt this often, in seconds.
 const DAMAGE_ZONE_PERIOD: f32 = 0.5;
@@ -63,8 +41,14 @@ const MAX_DEPTH: usize = 16;
 #[derive(Component, Clone, Debug)]
 pub struct LevelState {
     triggers: Vec<TriggerState>,
-    /// By name; retail looks names up case-insensitively, newest first.
+    /// By name, for the level script; retail looks names up ignoring case,
+    /// the newest trigger of a name winning.
     index: HashMap<String, usize>,
+    /// Each container's loot table, by its place among the tables, resolved
+    /// when the level is prepared. Two retail containers name tables there
+    /// are none of; like retail (`GenerateItemGroup`), they generate
+    /// nothing.
+    loot: Vec<Option<usize>>,
     variables: HashMap<String, bool>,
     pub script: LevelScript,
     /// Whether the party has been seen in the level yet.
@@ -76,25 +60,35 @@ pub struct TriggerState {
     /// Cleared to switch a trigger off for good (retail `ON`).
     pub on: bool,
     pub fired: bool,
+    /// The next use runs the alternate action.
     use_alternate: bool,
     /// It waits for its prop's animation to finish (retail `RUNNING`).
     awaits_animation: bool,
     /// The dial position or door state (retail `state_index`).
     pub position: usize,
+    /// A door's lock, until its key opens it.
+    pub locked: bool,
     /// The party's eye is within its range (positioned triggers).
     inside: bool,
     /// A container's contents, rolled when it is first opened.
     pub contents: Option<Contents>,
-    /// A damage zone the party stands in: seconds since it last hurt.
-    zone: Option<f32>,
+    /// A damage zone hurting the party while it stands in it.
+    zone: Option<Timer>,
     /// A fountain's uses left, and when (game milliseconds) it refills.
-    fountain: Option<(i32, Option<u64>)>,
+    fountain: Option<FountainState>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct FountainState {
+    /// None for an endless fountain.
+    left: Option<u32>,
+    refills_at: Option<u64>,
 }
 
 /// What a level's triggers keep while the party is away (retail's `LOCK`
-/// and `TRES` level state): each trigger's switches, position, contents and
-/// fountain, and the location variables. Proximity, animation waits and
-/// damage-zone timing belong to a visit and are not kept.
+/// and `TRES` level state): each trigger's switches, position, lock,
+/// contents and fountain, and the location variables. Proximity, animation
+/// waits and damage zones belong to a visit and are not kept.
 #[derive(Clone, Debug)]
 pub struct TriggerMemory {
     triggers: Vec<KeptTrigger>,
@@ -107,8 +101,9 @@ struct KeptTrigger {
     fired: bool,
     use_alternate: bool,
     position: usize,
+    locked: bool,
     contents: Option<Contents>,
-    fountain: Option<(i32, Option<u64>)>,
+    fountain: Option<FountainState>,
 }
 
 /// What a container holds.
@@ -119,23 +114,40 @@ pub struct Contents {
 }
 
 impl LevelState {
-    pub fn new(geometry: &LevelGeometry, script: LevelScript) -> Self {
+    /// A level's triggers as authored, their containers' loot tables
+    /// looked up in `tables`.
+    pub fn new(geometry: &LevelGeometry, script: LevelScript, tables: &LootTables) -> Self {
+        let loot = geometry
+            .triggers
+            .iter()
+            .map(|trigger| {
+                let name = trigger.loot_table.as_ref()?;
+                let table = tables.0.iter().position(|t| t.name.eq_ignore_ascii_case(name));
+                if table.is_none() {
+                    warn!("trigger {}: no loot table {name}; it holds nothing", trigger.name);
+                }
+                table
+            })
+            .collect();
         let mut state = LevelState {
-            triggers: vec![
-                TriggerState {
+            triggers: geometry
+                .triggers
+                .iter()
+                .map(|trigger| TriggerState {
                     on: true,
                     fired: false,
                     use_alternate: false,
                     awaits_animation: false,
                     position: 0,
+                    locked: trigger.door.is_some_and(|door| door.locked),
                     inside: false,
                     contents: None,
                     zone: None,
                     fountain: None,
-                };
-                geometry.triggers.len()
-            ],
+                })
+                .collect(),
             index: HashMap::new(),
+            loot,
             variables: HashMap::new(),
             script,
             entered: false,
@@ -148,11 +160,11 @@ impl LevelState {
         }
         // A dial's position variables: `<state>0` is set, the rest clear.
         for prop in &geometry.props {
-            let Some(trigger) = prop.trigger.as_ref().and_then(|name| state.find(name)) else {
+            let Some(definition) = prop.trigger.map(|index| &geometry.triggers[index]) else {
                 continue;
             };
-            let definition = &geometry.triggers[trigger];
-            if let (action::DIAL, Some((name, _))) = (definition.initial, &definition.state_change)
+            if let (TriggerAction::Dial, Some((name, _))) =
+                (&definition.initial.action, &definition.state_change)
             {
                 for position in 0..prop.slots.len() {
                     state.variables.entry(format!("{name}{position}")).or_insert(position == 0);
@@ -173,6 +185,7 @@ impl LevelState {
                     fired: t.fired,
                     use_alternate: t.use_alternate,
                     position: t.position,
+                    locked: t.locked,
                     contents: t.contents.clone(),
                     fountain: t.fountain,
                 })
@@ -186,14 +199,16 @@ impl LevelState {
     pub fn returning(
         geometry: &LevelGeometry,
         script: LevelScript,
+        tables: &LootTables,
         memory: &TriggerMemory,
     ) -> Self {
-        let mut state = LevelState::new(geometry, script);
+        let mut state = LevelState::new(geometry, script, tables);
         for (trigger, kept) in state.triggers.iter_mut().zip(&memory.triggers) {
             trigger.on = kept.on;
             trigger.fired = kept.fired;
             trigger.use_alternate = kept.use_alternate;
             trigger.position = kept.position;
+            trigger.locked = kept.locked;
             trigger.contents = kept.contents.clone();
             trigger.fountain = kept.fountain;
         }
@@ -308,15 +323,15 @@ pub struct Triggers<'a> {
     /// Props by the index of the trigger they carry.
     pub props: HashMap<usize, TriggerProp<'a>>,
     pub effects: Vec<TriggerEffect>,
-    /// The party, its possessions, items and randomness, for containers and
-    /// traps; none while the databases load.
-    pub party: Option<PartyContext<'a>>,
+    /// The party, its possessions, items and randomness, for containers,
+    /// keys, traps and fountains.
+    pub party: PartyContext<'a>,
     /// Where a teleport or camera path sends the party.
     pub party_moves: Option<PartyMove>,
 }
 
-/// What containers and traps need: item definitions, loot tables,
-/// randomness, the party's possessions and its members.
+/// What containers, keys, traps and fountains need: item definitions, loot
+/// tables, randomness, the party's possessions and its members in order.
 pub struct PartyContext<'a> {
     pub members: Vec<&'a mut Character>,
     /// Game time, for things that refill.
@@ -331,12 +346,12 @@ pub struct PartyContext<'a> {
 /// Moving the party somewhere, which the party module carries out.
 #[derive(Clone, Debug)]
 pub enum PartyMove {
-    Teleport(Arrival),
+    Teleport(crate::content::level::Arrival),
     /// Fly the party's eye along a camera path, by name (ladders, climbs).
     Fly(String),
 }
 
-impl Triggers<'_> {
+impl<'a> Triggers<'a> {
     /// Whether the party may use a trigger at all (retail picking).
     pub fn usable(&self, index: usize) -> bool {
         let (definition, state) = (&self.definitions[index], &self.state.triggers[index]);
@@ -347,7 +362,7 @@ impl Triggers<'_> {
     /// range of (retail `UpdateWorldTriggers`; retail reruns one each step
     /// while it is not running, here it runs on entering). The first time
     /// the party is seen in a level, triggers it stands in count as entered.
-    pub fn walk(&mut self, eye: Vec3, seconds: f32) {
+    pub fn walk(&mut self, eye: Vec3, elapsed: Duration) {
         let first = !self.state.entered;
         self.state.entered = true;
         for index in 0..self.definitions.len() {
@@ -358,18 +373,12 @@ impl Triggers<'_> {
             self.state.triggers[index].inside = inside;
             // A damage zone hurts every half second until the party leaves
             // (retail: a 1d6+2 timed action, ended by `FinishAction`).
-            match (inside, self.state.triggers[index].zone) {
-                (false, Some(_)) => self.state.triggers[index].zone = None,
-                (true, Some(elapsed)) => {
-                    let elapsed = elapsed + seconds;
-                    let due = elapsed >= DAMAGE_ZONE_PERIOD;
-                    self.state.triggers[index].zone =
-                        Some(if due { elapsed - DAMAGE_ZONE_PERIOD } else { elapsed });
-                    if due {
-                        self.damage_party(Dice { count: 1, sides: 6, base: 2 });
-                    }
-                }
-                _ => {}
+            if !inside {
+                self.state.triggers[index].zone = None;
+            } else if let Some(zone) = &mut self.state.triggers[index].zone
+                && zone.tick(elapsed).just_finished()
+            {
+                self.damage_party(Dice { count: 1, sides: 6, base: 2 });
             }
             if entering && !first && self.party_moves.is_none() && self.usable(index) {
                 self.run_index(index, 0);
@@ -396,23 +405,25 @@ impl Triggers<'_> {
         }
     }
 
-    fn run_index(&mut self, index: usize, depth: usize) -> bool {
+    pub fn run_index(&mut self, index: usize, depth: usize) -> bool {
         if depth > MAX_DEPTH {
             warn!("trigger {} recurses too deeply", self.definitions[index].name);
             return false;
         }
         let definitions = self.definitions;
         let definition = &definitions[index];
-        let Some((action, use_index)) = self.select(index) else { return false };
+        let Some(chosen) = self.select(index) else { return false };
         let script = self.state.script;
         if !script.before_run(&definition.name, self) {
             return false;
         }
         let mut changes_state = true;
-        match action {
-            action::NOTHING => {}
-            action::DOOR_OPEN | action::DOOR_TOGGLE | action::DOOR_TOGGLE_WITH_KEY => {
-                if definition.door.is_some_and(|door| door.locked) {
+        match &chosen.action {
+            TriggerAction::Nothing => {}
+            action @ (TriggerAction::OpenDoor | TriggerAction::ToggleDoor) => {
+                // A lock its key in hand has not opened (retail lock picking
+                // is not ported).
+                if self.state.triggers[index].locked {
                     self.effects.push(TriggerEffect::Locked);
                     return false;
                 }
@@ -421,7 +432,7 @@ impl Triggers<'_> {
                     return false;
                 }
                 let state = &mut self.state.triggers[index];
-                if action == action::DOOR_OPEN {
+                if *action == TriggerAction::OpenDoor {
                     if state.position == 1 {
                         return false;
                     }
@@ -433,22 +444,20 @@ impl Triggers<'_> {
                 }
                 state.awaits_animation = true;
             }
-            action::TOGGLE | action::START | action::STOP => {
-                if definition.loot_table.is_some() {
-                    self.open_container(index);
-                }
+            TriggerAction::Animate(animation) => {
+                self.open_container(index);
                 let Some(prop) = self.props.get_mut(&index) else { return false };
-                match action {
-                    action::TOGGLE => prop.toggle(),
-                    action::START if !prop.playing() => prop.start(),
-                    action::STOP if prop.playing() => prop.motion.target = prop.motion.frame,
+                match animation {
+                    Animation::Toggle => prop.toggle(),
+                    Animation::Start if !prop.playing() => prop.start(),
+                    Animation::Stop if prop.playing() => prop.motion.target = prop.motion.frame,
                     _ => {}
                 }
                 let state = &mut self.state.triggers[index];
                 state.position ^= 1;
                 state.awaits_animation = true;
             }
-            action::SOUND => {
+            TriggerAction::Sound => {
                 if let Some(sound) = &definition.sound {
                     let at = self.props.get(&index).map(|prop| prop.position);
                     self.effects.push(TriggerEffect::Sound {
@@ -459,56 +468,34 @@ impl Triggers<'_> {
                 }
                 return false;
             }
-            action::RELAY => {
-                let mut found = false;
-                for recipient in &definition.recipients {
-                    if let Some(target) = self.state.find(recipient) {
-                        found = true;
-                        self.run_index(target, depth + 1);
-                    }
-                }
-                if !found {
+            TriggerAction::Relay => {
+                if definition.recipients.is_empty() {
                     return false;
                 }
+                for &recipient in &definition.recipients {
+                    self.run_index(recipient, depth + 1);
+                }
             }
-            action::TELEPORT | action::RANDOM_TELEPORT => {
-                let Some(arrival) = &definition.arrival else { return false };
+            TriggerAction::Teleport(arrival) => {
                 self.party_moves = Some(PartyMove::Teleport(arrival.clone()));
             }
-            action::CAMERA_PATH => {
-                let Some(path) = definition.recipients.first() else { return false };
+            TriggerAction::CameraPath(path) => {
                 self.party_moves = Some(PartyMove::Fly(path.clone()));
             }
-            action::PARTY_HEALTH => {
-                let [count, sides, base] = definition.data;
-                let or = |v: i32, default: i32| if v < 0 { default } else { v };
-                self.damage_party(Dice {
-                    count: or(count, 1) as u8,
-                    sides: or(sides, 6) as u8,
-                    base: or(base, 2) as i16,
-                });
-            }
-            action::STAMINA_FOUNTAIN | action::HEALING_FOUNTAIN => {
-                if !self.use_fountain(index, action) {
+            TriggerAction::HurtParty(dice) => self.damage_party(*dice),
+            TriggerAction::Fountain(fountain) => {
+                if !self.use_fountain(index, fountain) {
                     return false;
                 }
             }
-            action::DAMAGE_ZONE => {
-                self.state.triggers[index].zone = Some(0.0);
+            TriggerAction::DamageZone => {
+                self.state.triggers[index].zone =
+                    Some(Timer::from_seconds(DAMAGE_ZONE_PERIOD, TimerMode::Repeating));
             }
-            action::SHAKE => {
-                let [intensity, _, duration] = definition.data;
-                self.effects.push(TriggerEffect::Shake {
-                    seconds: if duration == -1 {
-                        1.0
-                    } else {
-                        duration.unsigned_abs() as f32 / 1000.0
-                    },
-                    intensity: if intensity == -1 { 800.0 } else { intensity as f32 },
-                    fade_out: duration < -1,
-                });
+            &TriggerAction::Shake { seconds, intensity, fade_out } => {
+                self.effects.push(TriggerEffect::Shake { seconds, intensity, fade_out });
             }
-            action::DIAL => {
+            TriggerAction::Dial => {
                 let Some(prop) = self.props.get_mut(&index) else { return false };
                 let old = self.state.triggers[index].position;
                 let new = prop.advance_segment(old);
@@ -519,43 +506,39 @@ impl Triggers<'_> {
                 }
                 changes_state = false;
             }
-            other => {
-                debug!("trigger {}: action {other:#x} is not implemented", definition.name);
+            TriggerAction::Unsupported(code) => {
+                debug!("trigger {}: action {code:#x} is not implemented", definition.name);
                 return false;
             }
         }
-        self.commit(index, use_index, changes_state, depth);
+        self.commit(index, chosen.message, changes_state, depth);
         true
     }
 
-    /// Drink from a fountain (retail actions 0x25-0x2b): `data[0]` uses
-    /// (-1 for endless), refilled `data[1]` × 720 game seconds after use,
-    /// each restoring `data[2]` to every member. False when it is dry.
-    fn use_fountain(&mut self, index: usize, action: u32) -> bool {
-        let [uses, recharge, amount] = self.definitions[index].data;
-        let Some(party) = &mut self.party else { return false };
-        let now = party.now_ms;
-        let state = &mut self.state.triggers[index];
-        let (left, refill) = state.fountain.get_or_insert((uses, None));
-        if refill.is_some_and(|at| at <= now) {
-            *left = uses;
-            *refill = None;
+    /// Drink from a fountain (retail actions 0x25-0x2b): each restores its
+    /// amount to every member until it is dry, refilling some time after
+    /// its first use. False when it is dry.
+    fn use_fountain(&mut self, index: usize, fountain: &Fountain) -> bool {
+        let now = self.party.now_ms;
+        let state = self.state.triggers[index]
+            .fountain
+            .get_or_insert(FountainState { left: fountain.uses, refills_at: None });
+        if state.refills_at.is_some_and(|at| at <= now) {
+            *state = FountainState { left: fountain.uses, refills_at: None };
         }
-        if uses != -1 && *left <= 0 {
-            return false;
-        }
-        if uses != -1 {
+        if let Some(left) = &mut state.left {
+            if *left == 0 {
+                return false;
+            }
             *left -= 1;
-            if recharge > 0 && refill.is_none() {
-                *refill = Some(now + recharge as u64 * 720 * 1000);
+            if state.refills_at.is_none() {
+                state.refills_at = fountain.refills_after.map(|after| now + after);
             }
         }
-        let amount = amount.max(0) as u32;
-        for member in party.members.iter_mut() {
-            if action == action::HEALING_FOUNTAIN {
-                member.heal(amount);
-            } else {
-                member.restore_stamina(amount);
+        for member in self.party.members.iter_mut() {
+            match fountain.restores {
+                Restores::Health => member.heal(fountain.amount),
+                Restores::Stamina => member.restore_stamina(fountain.amount),
             }
         }
         let at = self.props.get(&index).map(|prop| prop.position);
@@ -570,28 +553,23 @@ impl Triggers<'_> {
     /// Hurt each living member by their own roll (retail
     /// `ApplyRolledHealthChangeToParty`).
     fn damage_party(&mut self, dice: Dice) {
-        let Some(party) = &mut self.party else { return };
+        let party = &mut self.party;
         for member in party.members.iter_mut().filter(|m| !m.is_dead()) {
             let amount = member.damage(party.rng.roll(dice));
             self.effects.push(TriggerEffect::Hurt { member: member.name.clone(), amount });
         }
     }
 
-    /// Open a container: roll its contents the first time (retail
-    /// `GenerateItemGroup`), then give the party its gold and as many items
-    /// as the pool takes. Retail puts a single item in the hand and opens a
-    /// picker for several; with no inventory screen yet, all go to the pool.
+    /// Open a container, if the trigger is one: roll its contents the first
+    /// time (retail `GenerateItemGroup`), then give the party its gold and
+    /// as many items as the pool takes. Retail puts a single item in the
+    /// hand and opens a picker for several; here all go to the pool.
     fn open_container(&mut self, index: usize) {
-        let definitions = self.definitions;
-        let Some(table_name) = &definitions[index].loot_table else { return };
-        let Some(items) = &mut self.party else { return };
+        let Some(table) = self.state.loot[index] else { return };
+        let items = &mut self.party;
         let contents = self.state.triggers[index].contents.get_or_insert_with(|| {
-            let Some(table) = items.loot.find(table_name) else {
-                warn!("no loot table {table_name}");
-                return Contents::default();
-            };
             // The party's level once characters exist.
-            let (found, gold) = roll_loot(table, items.catalog, 1, items.rng);
+            let (found, gold) = roll_loot(&items.loot.0[table], items.catalog, 1, items.rng);
             let made = found
                 .into_iter()
                 .filter_map(|id| items.catalog.get(id))
@@ -615,34 +593,48 @@ impl Triggers<'_> {
         contents.items = kept;
     }
 
-    /// Retail `SelectAction`: the action this run performs, and which of
-    /// initial (0), alternate (1) and fallback (2) it is.
-    fn select(&mut self, index: usize) -> Option<(u32, usize)> {
-        let definition = &self.definitions[index];
+    /// Retail `SelectAction`: the use this run performs. Like retail, it
+    /// moves on to the alternate as it selects, before the script or the
+    /// action can still fail.
+    fn select(&mut self, index: usize) -> Option<&'a TriggerUse> {
+        let definitions = self.definitions;
+        let definition = &definitions[index];
         let running = self.state.triggers[index].awaits_animation
             && self.props.get(&index).is_some_and(TriggerProp::playing);
         let state = &self.state.triggers[index];
-        if !state.on
-            || (definition.once && state.fired)
-            || (running && definition.initial != action::SHAKE)
-        {
+        let shakes = matches!(definition.initial.action, TriggerAction::Shake { .. });
+        if !state.on || (definition.once && state.fired) || (running && !shakes) {
             return None;
         }
         if !definition.required_states.iter().all(|name| self.state.variable(name)) {
-            return (definition.fallback != 0).then_some((definition.fallback, 2));
+            return definition.fallback.as_ref();
         }
+        // A locked door with a key opens for the key in hand, which
+        // unlocks it for good; without it the fallback runs.
         let state = &mut self.state.triggers[index];
-        if !state.use_alternate {
-            state.use_alternate = definition.alternate != 0;
-            Some((definition.initial, 0))
-        } else {
-            state.use_alternate = !definition.alternate_toggles;
-            Some((definition.alternate, 1))
+        if state.locked
+            && let Some(key) = definition.door.and_then(|door| door.key)
+        {
+            if self.party.party.held.as_ref().is_some_and(|held| held.item.item == key) {
+                state.locked = false;
+            } else {
+                return definition.fallback.as_ref();
+            }
+        }
+        match &definition.alternate {
+            Some(alternate) if state.use_alternate => {
+                state.use_alternate = !definition.alternate_toggles;
+                Some(alternate)
+            }
+            alternate => {
+                state.use_alternate = alternate.is_some();
+                Some(&definition.initial)
+            }
         }
     }
 
     /// Retail `CommitActionResult`.
-    fn commit(&mut self, index: usize, use_index: usize, changes_state: bool, depth: usize) {
+    fn commit(&mut self, index: usize, message: Option<i32>, changes_state: bool, depth: usize) {
         let definitions = self.definitions;
         let definition = &definitions[index];
         if let Some(sound) = definition.sound.as_ref().filter(|_| definition.sound_on_commit) {
@@ -654,10 +646,8 @@ impl Triggers<'_> {
             });
         }
         if definition.fire_linked {
-            for recipient in &definition.recipients {
-                if let Some(target) = self.state.find(recipient) {
-                    self.run_index(target, depth + 1);
-                }
+            for &recipient in &definition.recipients {
+                self.run_index(recipient, depth + 1);
             }
         }
         if changes_state && let Some((name, change)) = &definition.state_change {
@@ -668,8 +658,8 @@ impl Triggers<'_> {
             };
             self.state.set_variable(name, value);
         }
-        if definition.shows_message && definition.data[use_index] >= 0 {
-            self.effects.push(TriggerEffect::Message(definition.data[use_index]));
+        if let Some(message) = message {
+            self.effects.push(TriggerEffect::Message(message));
         }
         self.state.triggers[index].fired = true;
     }
@@ -680,8 +670,7 @@ impl Triggers<'_> {
 pub struct LevelTriggers<'w, 's> {
     levels: Query<'w, 's, (&'static Level, &'static mut LevelState)>,
     geometry: Res<'w, Assets<LevelGeometry>>,
-    props: Query<'w, 's, (&'static Prop, &'static mut PropMotion, &'static Children)>,
-    parts: Query<'w, 's, &'static GlobalTransform, With<PropPart>>,
+    props: Query<'w, 's, (&'static Prop, &'static mut PropMotion)>,
     effects: MessageWriter<'w, TriggerEffect>,
     party_move: ResMut<'w, PendingPartyMove>,
     data: Option<Res<'w, GameData>>,
@@ -690,8 +679,8 @@ pub struct LevelTriggers<'w, 's> {
     rng: ResMut<'w, GameRng>,
     ids: ResMut<'w, ItemIds>,
     party: ResMut<'w, PartyInventory>,
-    members: Query<'w, 's, (Entity, &'static mut Character)>,
-    roster: Res<'w, crate::game::party::roster::PartyRoster>,
+    members: Query<'w, 's, &'static mut Character>,
+    roster: Res<'w, PartyRoster>,
     clock: Res<'w, GameClock>,
 }
 
@@ -713,54 +702,42 @@ impl LevelTriggers<'_, '_> {
         let geometry = self.geometry.get(&level.geometry)?;
         let data = self.data.as_ref()?;
         let (catalog, loot) = (self.catalogs.get(&data.items)?, self.loot.get(&data.loot)?);
-        let state = state.into_inner();
-        let mut props = HashMap::new();
-        for (prop, motion, children) in &mut self.props {
-            let Some(index) = prop.trigger.as_ref().and_then(|name| state.find(name)) else {
-                continue;
-            };
-            // Sounds play from the middle of the prop's parts.
-            let parts: Vec<Vec3> = children
-                .iter()
-                .filter_map(|c| self.parts.get(c).ok())
-                .map(|t| t.translation())
-                .collect();
-            let position = parts.iter().sum::<Vec3>() / parts.len().max(1) as f32;
-            props.insert(
-                index,
-                TriggerProp {
+        let props = self
+            .props
+            .iter_mut()
+            .filter_map(|(prop, motion)| {
+                let prop_trigger = TriggerProp {
                     motion: motion.into_inner(),
                     last_frame: prop.last_frame as f32,
                     wraps: prop.wraps,
                     slots: &prop.slots,
-                    position,
-                },
-            );
-        }
+                    position: prop.centre,
+                };
+                Some((prop.trigger?, prop_trigger))
+            })
+            .collect();
         // The party's members, in its order: order-sensitive rolls (each
         // member's trap damage) follow it.
-        let roster = &self.roster.0;
-        let mut members: Vec<(usize, &mut Character)> = self
+        let members = self
             .members
-            .iter_mut()
-            .filter_map(|(e, c)| Some((roster.iter().position(|&m| m == e)?, c.into_inner())))
+            .iter_many_unique_mut(self.roster.0.iter())
+            .filter_map(Result::ok)
+            .map(Mut::into_inner)
             .collect();
-        members.sort_by_key(|(slot, _)| *slot);
-        let party = Some(PartyContext {
-            members: members.into_iter().map(|(_, c)| c).collect(),
-            now_ms: self.clock.ms,
-            catalog,
-            loot,
-            rng: self.rng.as_mut(),
-            ids: self.ids.as_mut(),
-            party: self.party.as_mut(),
-        });
         let mut triggers = Triggers {
             definitions: &geometry.triggers,
-            state,
+            state: state.into_inner(),
             props,
             effects: Vec::new(),
-            party,
+            party: PartyContext {
+                members,
+                now_ms: self.clock.ms,
+                catalog,
+                loot,
+                rng: self.rng.as_mut(),
+                ids: self.ids.as_mut(),
+                party: self.party.as_mut(),
+            },
             party_moves: None,
         };
         let result = run(&mut triggers);
@@ -775,46 +752,89 @@ impl LevelTriggers<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::content::level::{DoorLock, PropModel};
+    use crate::content::items::{ItemDefinition, ItemId, LootTable};
+    use crate::content::level::{Arrival, DoorLock, PropModel, TriggerSound};
+    use crate::game::characters::{Gender, Profession, Race};
+    use crate::game::inventory::Held;
 
-    fn trigger(name: &str, initial: u32) -> TriggerDefinition {
+    fn act(action: TriggerAction) -> TriggerUse {
+        TriggerUse { action, message: None }
+    }
+
+    fn trigger(name: &str, action: TriggerAction) -> TriggerDefinition {
         TriggerDefinition {
             name: name.into(),
             usable: false,
             once: false,
             fire_linked: false,
-            initial,
-            alternate: 0,
-            fallback: 0,
+            initial: act(action),
+            alternate: None,
+            fallback: None,
             alternate_toggles: false,
             recipients: vec![],
-            data: [-1; 3],
             sound: None,
             sound_on_commit: false,
-            shows_message: false,
             required_states: vec![],
             state_change: None,
             initial_state: None,
             range: (0.0, 10.0),
             door: None,
             place: None,
-            arrival: None,
             loot_table: None,
         }
     }
 
-    fn prop(trigger: &str, last_frame: f32, wraps: bool, slots: &[u16]) -> (PropModel, f32) {
-        let model = PropModel {
-            name: trigger.to_lowercase(),
-            collidable: false,
-            face_camera: false,
-            frames_per_second: 10.0,
-            parts: vec![],
-            wraps,
-            slots: slots.to_vec(),
-            trigger: Some(trigger.into()),
-        };
-        (model, last_frame)
+    /// Point each trigger's recipients at the named ones, as the decoder
+    /// resolves them.
+    fn link(triggers: &mut [TriggerDefinition], links: &[(&str, &[&str])]) {
+        let index = |name: &str| triggers.iter().position(|t| t.name == name).unwrap();
+        let resolved: Vec<(usize, Vec<usize>)> = links
+            .iter()
+            .map(|(from, to)| (index(from), to.iter().map(|t| index(t)).collect()))
+            .collect();
+        for (from, to) in resolved {
+            triggers[from].recipients = to;
+        }
+    }
+
+    /// A prop running `trigger`: its frames to the end, whether each play
+    /// restarts, and its dial slots.
+    struct PropSpec<'a>(&'a str, f32, bool, &'a [u16]);
+
+    /// The party and the databases triggers act on.
+    struct Party {
+        catalog: ItemCatalog,
+        loot: LootTables,
+        rng: GameRng,
+        ids: ItemIds,
+        inventory: PartyInventory,
+        members: Vec<Character>,
+    }
+
+    impl Party {
+        fn new(members: usize) -> Self {
+            let member = |n| Character::new(n, Race::Human, Gender::Male, Profession::Fighter);
+            Party {
+                catalog: ItemCatalog::default(),
+                loot: LootTables::default(),
+                rng: GameRng::seeded(5),
+                ids: ItemIds::default(),
+                inventory: PartyInventory::default(),
+                members: ["A", "B", "C"].into_iter().take(members).map(member).collect(),
+            }
+        }
+
+        fn context(&mut self, now_ms: u64) -> PartyContext<'_> {
+            PartyContext {
+                members: self.members.iter_mut().collect(),
+                now_ms,
+                catalog: &self.catalog,
+                loot: &self.loot,
+                rng: &mut self.rng,
+                ids: &mut self.ids,
+                party: &mut self.inventory,
+            }
+        }
     }
 
     /// A level's triggers with their props held still or finished.
@@ -823,56 +843,73 @@ mod tests {
         state: LevelState,
         last_frames: Vec<f32>,
         motions: Vec<PropMotion>,
+        party: Party,
     }
 
     impl Level {
-        fn new(
-            triggers: Vec<TriggerDefinition>,
-            props: Vec<(PropModel, f32)>,
-            script: LevelScript,
-        ) -> Self {
-            let (props, last_frames): (Vec<_>, Vec<_>) = props.into_iter().unzip();
+        fn new(triggers: Vec<TriggerDefinition>, props: &[PropSpec], script: LevelScript) -> Self {
+            let index = |name: &str| triggers.iter().position(|t| t.name == name).unwrap();
+            let models = props
+                .iter()
+                .map(|&PropSpec(trigger, _, wraps, slots)| PropModel {
+                    name: trigger.to_lowercase(),
+                    collidable: false,
+                    face_camera: false,
+                    frames_per_second: 10.0,
+                    parts: vec![],
+                    wraps,
+                    slots: slots.to_vec(),
+                    trigger: Some(index(trigger)),
+                })
+                .collect();
+            let last_frames = props.iter().map(|p| p.1).collect();
             let motions = props.iter().map(|_| PropMotion::default()).collect();
-            let geometry = LevelGeometry { triggers, props, ..default() };
-            let state = LevelState::new(&geometry, script);
-            Level { geometry, state, last_frames, motions }
+            let geometry = LevelGeometry { triggers, props: models, ..default() };
+            let party = Party::new(1);
+            let state = LevelState::new(&geometry, script, &party.loot);
+            Level { geometry, state, last_frames, motions, party }
         }
 
-        /// Run a trigger as the party; returns whether it committed and the
-        /// effects.
-        fn run(&mut self, name: &str) -> (bool, Vec<TriggerEffect>) {
-            let mut props = HashMap::new();
-            for ((model, motion), &last_frame) in
-                self.geometry.props.iter().zip(&mut self.motions).zip(&self.last_frames)
-            {
-                let index = self.state.find(model.trigger.as_ref().unwrap()).unwrap();
-                props.insert(
-                    index,
-                    TriggerProp {
+        fn triggers(&mut self, now_ms: u64) -> Triggers<'_> {
+            let props = self
+                .geometry
+                .props
+                .iter()
+                .zip(&mut self.motions)
+                .zip(&self.last_frames)
+                .map(|((model, motion), &last_frame)| {
+                    let prop = TriggerProp {
                         motion,
                         last_frame,
                         wraps: model.wraps,
                         slots: &model.slots,
                         position: Vec3::ZERO,
-                    },
-                );
-            }
-            let mut triggers = Triggers {
+                    };
+                    (model.trigger.unwrap(), prop)
+                })
+                .collect();
+            Triggers {
                 definitions: &self.geometry.triggers,
                 state: &mut self.state,
                 props,
                 effects: vec![],
-                party: None,
+                party: self.party.context(now_ms),
                 party_moves: None,
-            };
+            }
+        }
+
+        /// Run a trigger as the party; returns whether it committed and the
+        /// effects.
+        fn run(&mut self, name: &str) -> (bool, Vec<TriggerEffect>) {
+            let mut triggers = self.triggers(0);
             let committed = triggers.run(name);
             (committed, triggers.effects)
         }
 
         fn motion(&self, trigger: &str) -> &PropMotion {
-            let index =
-                self.geometry.props.iter().position(|p| p.trigger.as_deref() == Some(trigger));
-            &self.motions[index.unwrap()]
+            let index = self.state.find(trigger);
+            let prop = self.geometry.props.iter().position(|p| p.trigger == index);
+            &self.motions[prop.unwrap()]
         }
 
         /// Let every animation finish.
@@ -885,13 +922,13 @@ mod tests {
 
     #[test]
     fn a_door_opens_then_toggles_and_a_locked_one_stays_shut() {
-        let mut door = trigger("DOOR", action::DOOR_OPEN);
-        door.alternate = action::DOOR_TOGGLE;
-        let mut locked = trigger("LOCKED", action::DOOR_OPEN);
+        let mut door = trigger("DOOR", TriggerAction::OpenDoor);
+        door.alternate = Some(act(TriggerAction::ToggleDoor));
+        let mut locked = trigger("LOCKED", TriggerAction::OpenDoor);
         locked.door = Some(DoorLock { locked: true, key: None });
         let mut level = Level::new(
             vec![door, locked],
-            vec![prop("DOOR", 15.0, false, &[]), prop("LOCKED", 15.0, false, &[])],
+            &[PropSpec("DOOR", 15.0, false, &[]), PropSpec("LOCKED", 15.0, false, &[])],
             LevelScript::None,
         );
         assert!(level.run("DOOR").0);
@@ -909,19 +946,70 @@ mod tests {
     }
 
     #[test]
-    fn sounds_play_on_commit_only_when_marked_and_always_for_the_sound_action() {
-        let sound = crate::content::level::TriggerSound {
-            path: "data/sound/click.wav".into(),
-            volume: 1.0,
+    fn a_key_in_hand_unlocks_its_door_for_good_and_otherwise_the_fallback_runs() {
+        let key = ItemId(7);
+        let mut door = trigger("DOOR", TriggerAction::OpenDoor);
+        door.door = Some(DoorLock { locked: true, key: Some(key) });
+        door.fallback = Some(TriggerUse { action: TriggerAction::Nothing, message: Some(3) });
+        let mut level =
+            Level::new(vec![door], &[PropSpec("DOOR", 15.0, false, &[])], LevelScript::None);
+        // Without the key: the fallback, which shows its message.
+        assert_eq!(level.run("DOOR"), (true, vec![TriggerEffect::Message(3)]));
+        assert_eq!(level.motion("DOOR").target, 0.0);
+        let definition = ItemDefinition { id: key, ..default() };
+        let item = make_item(&definition, &mut level.party.ids, &mut level.party.rng, false, true);
+        level.party.inventory.held = Some(Held { item, origin: None });
+        assert!(level.run("DOOR").0);
+        assert_eq!(level.motion("DOOR").target, 15.0);
+        // Unlocked for good: kept while the party is away.
+        let memory = level.state.remember();
+        let tables = LootTables::default();
+        let back = LevelState::returning(&level.geometry, LevelScript::None, &tables, &memory);
+        assert!(!back.trigger(0).locked);
+    }
+
+    #[test]
+    fn a_container_opens_its_table_once_and_one_without_a_table_holds_nothing() {
+        let chest = |name: &str, table: &str| {
+            let mut chest = trigger(name, TriggerAction::Animate(Animation::Toggle));
+            chest.loot_table = Some(table.into());
+            chest
         };
-        let mut quiet = trigger("QUIET", action::NOTHING);
+        let props = [PropSpec("CHEST", 5.0, false, &[]), PropSpec("LOST", 5.0, false, &[])];
+        let mut level = Level::new(
+            vec![chest("CHEST", "Monastery Chest"), chest("LOST", "No Such Table")],
+            &props,
+            LevelScript::None,
+        );
+        // The tables are looked up when the level is prepared.
+        level.party.loot = LootTables(vec![LootTable {
+            name: "MONASTERY CHEST".into(),
+            entries: vec![],
+            level_scaled: false,
+            item_count: Dice::default(),
+            gold: Dice { count: 0, sides: 0, base: 5 },
+        }]);
+        level.state = LevelState::new(&level.geometry, LevelScript::None, &level.party.loot);
+        assert_eq!(level.run("CHEST"), (true, vec![TriggerEffect::Gold(5)]));
+        level.settle();
+        assert_eq!(level.run("CHEST"), (true, vec![]), "its gold was taken");
+        assert_eq!(level.run("LOST"), (true, vec![]));
+        let lost = level.state.find("LOST").unwrap();
+        assert!(level.state.trigger(lost).contents.is_none(), "no contents are made up");
+        assert_eq!(level.party.inventory.gold, 5);
+    }
+
+    #[test]
+    fn sounds_play_on_commit_only_when_marked_and_always_for_the_sound_action() {
+        let sound = TriggerSound { path: "data/sound/click.wav".into(), volume: 1.0 };
+        let mut quiet = trigger("QUIET", TriggerAction::Nothing);
         quiet.sound = Some(sound.clone());
-        let mut loud = trigger("LOUD", action::NOTHING);
+        let mut loud = trigger("LOUD", TriggerAction::Nothing);
         loud.sound = Some(sound.clone());
         loud.sound_on_commit = true;
-        let mut only = trigger("ONLY", action::SOUND);
+        let mut only = trigger("ONLY", TriggerAction::Sound);
         only.sound = Some(sound);
-        let mut level = Level::new(vec![quiet, loud, only], vec![], LevelScript::None);
+        let mut level = Level::new(vec![quiet, loud, only], &[], LevelScript::None);
         let click =
             TriggerEffect::Sound { path: "data/sound/click.wav".into(), volume: 1.0, at: None };
         assert_eq!(level.run("QUIET"), (true, vec![]));
@@ -931,51 +1019,60 @@ mod tests {
 
     /// The upper monastery's bells, as authored (`docs/research/trigger-actions.md`).
     fn bells() -> Level {
-        let mut dial = trigger("BELLRINGSWITCH", action::DIAL);
+        let toggle = || TriggerAction::Animate(Animation::Toggle);
+        let mut dial = trigger("BELLRINGSWITCH", TriggerAction::Dial);
         dial.usable = true;
         dial.state_change = Some(("RING".into(), StateChange::Set));
         dial.initial_state = Some(false);
-        let mut button = trigger("BELL_BUTTON", action::TOGGLE);
+        let mut button = trigger("BELL_BUTTON", toggle());
         button.usable = true;
         button.fire_linked = true;
-        button.recipients = ["BELLTRIGGER01", "BELLTRIGGERC", "BELL_ACTIVATE_2", "BELL_ACTIVATE_3"]
-            .map(String::from)
-            .to_vec();
-        let mut windows = trigger("BELLTRIGGER01", action::NOTHING);
+        let mut windows = trigger("BELLTRIGGER01", TriggerAction::Nothing);
         windows.once = true;
         windows.fire_linked = true;
         windows.required_states = vec!["RING2".into()];
-        windows.recipients = vec!["GLASS1".into(), "MONACAMSHAKE".into()];
-        let relay = |name: &str, ring: &str, recipients: &[&str]| {
-            let mut relay = trigger(name, action::RELAY);
+        let relay = |name: &str, ring: &str| {
+            let mut relay = trigger(name, TriggerAction::Relay);
             relay.fire_linked = true;
             relay.required_states = vec![ring.into()];
-            relay.recipients = recipients.iter().map(|r| r.to_string()).collect();
             relay
         };
-        let mut shake = trigger("MONACAMSHAKE", action::SHAKE);
-        shake.data = [90, 40, -2400];
-        Level::new(
-            vec![
-                dial,
-                button,
-                windows,
-                relay("BELLTRIGGERC", "RING0", &["BELL_1"]),
-                relay("BELL_ACTIVATE_2", "RING1", &["BELL_2"]),
-                relay("BELL_ACTIVATE_3", "RING2", &["BELL_3", "MONACAMSHAKE"]),
-                trigger("BELL_1", action::TOGGLE),
-                trigger("BELL_2", action::TOGGLE),
-                trigger("BELL_3", action::TOGGLE),
-                trigger("GLASS1", action::TOGGLE),
-                shake,
+        let shake = TriggerAction::Shake { seconds: 2.4, intensity: 90.0, fade_out: true };
+        let mut triggers = vec![
+            dial,
+            button,
+            windows,
+            relay("BELLTRIGGERC", "RING0"),
+            relay("BELL_ACTIVATE_2", "RING1"),
+            relay("BELL_ACTIVATE_3", "RING2"),
+            trigger("BELL_1", toggle()),
+            trigger("BELL_2", toggle()),
+            trigger("BELL_3", toggle()),
+            trigger("GLASS1", toggle()),
+            trigger("MONACAMSHAKE", shake),
+        ];
+        link(
+            &mut triggers,
+            &[
+                (
+                    "BELL_BUTTON",
+                    &["BELLTRIGGER01", "BELLTRIGGERC", "BELL_ACTIVATE_2", "BELL_ACTIVATE_3"],
+                ),
+                ("BELLTRIGGER01", &["GLASS1", "MONACAMSHAKE"]),
+                ("BELLTRIGGERC", &["BELL_1"]),
+                ("BELL_ACTIVATE_2", &["BELL_2"]),
+                ("BELL_ACTIVATE_3", &["BELL_3", "MONACAMSHAKE"]),
             ],
-            vec![
-                prop("BELLRINGSWITCH", 20.0, false, &[0, 1, 10, 20]),
-                prop("BELL_BUTTON", 11.0, false, &[]),
-                prop("BELL_1", 36.0, true, &[]),
-                prop("BELL_2", 36.0, true, &[]),
-                prop("BELL_3", 36.0, true, &[]),
-                prop("GLASS1", 2.0, false, &[]),
+        );
+        Level::new(
+            triggers,
+            &[
+                PropSpec("BELLRINGSWITCH", 20.0, false, &[0, 1, 10, 20]),
+                PropSpec("BELL_BUTTON", 11.0, false, &[]),
+                PropSpec("BELL_1", 36.0, true, &[]),
+                PropSpec("BELL_2", 36.0, true, &[]),
+                PropSpec("BELL_3", 36.0, true, &[]),
+                PropSpec("GLASS1", 2.0, false, &[]),
             ],
             LevelScript::Monastery2,
         )
@@ -1039,12 +1136,8 @@ mod tests {
         level.run("BELL_BUTTON");
         level.motions.iter_mut().for_each(|m| m.frame = (m.target / 2.0).floor());
         // The button finished; the bell is halfway.
-        let button = level
-            .geometry
-            .props
-            .iter()
-            .position(|p| p.trigger.as_deref() == Some("BELL_BUTTON"))
-            .unwrap();
+        let button = level.state.find("BELL_BUTTON");
+        let button = level.geometry.props.iter().position(|p| p.trigger == button).unwrap();
         level.motions[button].frame = level.motions[button].target;
         let bell = level.motion("BELL_1").frame;
         assert_eq!(level.run("BELL_BUTTON").1, [bell_sound(1)]);
@@ -1055,32 +1148,22 @@ mod tests {
     #[test]
     fn walk_in_triggers_fire_on_entering_when_usable() {
         let teleport = |name: &str, x: f32, usable: bool| {
-            let mut trigger = trigger(name, action::TELEPORT);
+            let arrival = Arrival::Entrance { entrance: format!("{name}00"), ask: false };
+            let mut trigger = trigger(name, TriggerAction::Teleport(arrival));
             trigger.usable = usable;
             trigger.place = Some(Vec3::new(x, 0.0, 0.0));
             trigger.range = (0.0, 2.0);
-            trigger.arrival = Some(Arrival::Entrance { entrance: format!("{name}00"), ask: false });
             trigger
         };
-        let geometry = LevelGeometry {
-            triggers: vec![
-                teleport("START", 0.0, true),
-                teleport("EXIT", 10.0, true),
-                teleport("OFF", 20.0, false),
-            ],
-            ..default()
-        };
-        let mut state = LevelState::new(&geometry, LevelScript::None);
+        let triggers = vec![
+            teleport("START", 0.0, true),
+            teleport("EXIT", 10.0, true),
+            teleport("OFF", 20.0, false),
+        ];
+        let mut level = Level::new(triggers, &[], LevelScript::None);
         let mut walk = |eye: Vec3| {
-            let mut triggers = Triggers {
-                definitions: &geometry.triggers,
-                state: &mut state,
-                props: HashMap::new(),
-                effects: vec![],
-                party: None,
-                party_moves: None,
-            };
-            triggers.walk(eye, 0.1);
+            let mut triggers = level.triggers(0);
+            triggers.walk(eye, Duration::from_millis(100));
             triggers.party_moves
         };
         // Standing in a trigger when the level is first seen does not fire it.
@@ -1098,37 +1181,16 @@ mod tests {
 
     #[test]
     fn traps_hurt_each_member_by_their_own_roll_and_zones_hurt_while_stood_in() {
-        use crate::game::characters::{Gender, Profession, Race};
-        let mut trap = trigger("TRAP", action::PARTY_HEALTH);
-        trap.data = [2, 4, 0];
-        let mut zone = trigger("ACID", action::DAMAGE_ZONE);
+        let trap = trigger("TRAP", TriggerAction::HurtParty(Dice { count: 2, sides: 4, base: 0 }));
+        let mut zone = trigger("ACID", TriggerAction::DamageZone);
         zone.usable = true;
         zone.place = Some(Vec3::ZERO);
         zone.range = (0.0, 2.0);
-        let geometry = LevelGeometry { triggers: vec![trap, zone], ..default() };
-        let mut state = LevelState::new(&geometry, LevelScript::None);
-        let (catalog, loot) = (ItemCatalog::default(), LootTables::default());
-        let (mut rng, mut ids, mut inventory) =
-            (GameRng::seeded(5), ItemIds::default(), PartyInventory::default());
-        let mut a = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
-        let mut b = Character::new("B", Race::Human, Gender::Male, Profession::Fighter);
-        let full = a.hp;
-        let mut triggers = Triggers {
-            definitions: &geometry.triggers,
-            state: &mut state,
-            props: HashMap::new(),
-            effects: vec![],
-            party: Some(PartyContext {
-                members: vec![&mut a, &mut b],
-                now_ms: 0,
-                catalog: &catalog,
-                loot: &loot,
-                rng: &mut rng,
-                ids: &mut ids,
-                party: &mut inventory,
-            }),
-            party_moves: None,
-        };
+        let mut level = Level::new(vec![trap, zone], &[], LevelScript::None);
+        level.party = Party::new(2);
+        let full = level.party.members[0].hp;
+        let tick = Duration::from_millis(100);
+        let mut triggers = level.triggers(0);
         assert!(triggers.run("TRAP"));
         let hurt: Vec<u32> = triggers
             .effects
@@ -1143,57 +1205,42 @@ mod tests {
         triggers.effects.clear();
         // Seen standing outside, then walking in: the zone starts; a second
         // inside hurts twice; leaving stops it.
-        triggers.walk(Vec3::new(5.0, 0.0, 0.0), 0.1);
-        triggers.walk(Vec3::ZERO, 0.1);
+        triggers.walk(Vec3::new(5.0, 0.0, 0.0), tick);
+        triggers.walk(Vec3::ZERO, tick);
         for _ in 0..10 {
-            triggers.walk(Vec3::ZERO, 0.1);
+            triggers.walk(Vec3::ZERO, tick);
         }
         let zone_hits =
             triggers.effects.iter().filter(|e| matches!(e, TriggerEffect::Hurt { .. })).count();
         assert_eq!(zone_hits, 2 * 2, "two ticks for each of two members");
-        triggers.walk(Vec3::new(5.0, 0.0, 0.0), 0.1);
+        triggers.walk(Vec3::new(5.0, 0.0, 0.0), tick);
         triggers.effects.clear();
-        triggers.walk(Vec3::new(5.0, 0.0, 0.0), 1.0);
+        triggers.walk(Vec3::new(5.0, 0.0, 0.0), Duration::from_secs(1));
         assert!(triggers.effects.is_empty());
-        drop(triggers);
-        assert!(a.hp < full && b.hp < full);
+        assert!(level.party.members.iter().all(|m| m.hp < full));
     }
 
     #[test]
     fn fountains_restore_until_dry_and_refill_with_game_time() {
-        use crate::game::characters::{Gender, Profession, Race};
-        let mut fountain = trigger("WELL", action::HEALING_FOUNTAIN);
-        fountain.data = [1, 2, 5];
-        let geometry = LevelGeometry { triggers: vec![fountain], ..default() };
-        let mut state = LevelState::new(&geometry, LevelScript::None);
-        let (catalog, loot) = (ItemCatalog::default(), LootTables::default());
-        let (mut rng, mut ids, mut inventory) =
-            (GameRng::seeded(5), ItemIds::default(), PartyInventory::default());
-        let mut a = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
-        let full = a.hp;
-        a.hp = 1;
-        let mut triggers = Triggers {
-            definitions: &geometry.triggers,
-            state: &mut state,
-            props: HashMap::new(),
-            effects: vec![],
-            party: Some(PartyContext {
-                members: vec![&mut a],
-                now_ms: 0,
-                catalog: &catalog,
-                loot: &loot,
-                rng: &mut rng,
-                ids: &mut ids,
-                party: &mut inventory,
-            }),
-            party_moves: None,
+        let fountain = Fountain {
+            restores: Restores::Health,
+            amount: 5,
+            uses: Some(1),
+            refills_after: Some(2 * 720 * 1000),
         };
+        let mut level = Level::new(
+            vec![trigger("WELL", TriggerAction::Fountain(fountain))],
+            &[],
+            LevelScript::None,
+        );
+        let full = level.party.members[0].hp;
+        level.party.members[0].hp = 1;
+        let mut triggers = level.triggers(0);
         assert!(triggers.run("WELL"));
         assert!(!triggers.run("WELL"), "dry after its one use");
         // Two × 720 game seconds later it has refilled.
-        triggers.party.as_mut().unwrap().now_ms = 2 * 720 * 1000;
+        triggers.party.now_ms = 2 * 720 * 1000;
         assert!(triggers.run("WELL"));
-        drop(triggers);
-        assert_eq!(a.hp, 11.min(full));
+        assert_eq!(level.party.members[0].hp, 11.min(full));
     }
 }

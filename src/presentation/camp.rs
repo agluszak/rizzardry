@@ -3,9 +3,10 @@
 //! and notices stay above it.
 
 use bevy::prelude::*;
+use bevy_enhanced_input::prelude::*;
 
 use crate::content::ui::SpriteSheet;
-use crate::game::camp::{Camp, CampPhase, FADE_SECONDS};
+use crate::game::camp::{Camp, CampPhase, FADE_SECONDS, LeaveCamp};
 
 #[derive(Resource)]
 pub struct CampArt(Handle<SpriteSheet>);
@@ -14,27 +15,41 @@ pub fn load_camp_art(mut commands: Commands, assets: Res<AssetServer>) {
     commands.insert_resource(CampArt(assets.load("retail://data/level load/camping screen.sti")));
 }
 
-#[derive(Component)]
+/// The camping screen, with its key: Escape asks to stop camping, before
+/// the other screens' keys.
+#[derive(Component, Clone, Default)]
 pub struct CampScreen;
 
-#[derive(Component)]
+#[derive(Component, Clone, Default)]
 pub struct CampPicture;
 
-#[derive(Component)]
+#[derive(Component, Clone, Default)]
 pub struct CampFade;
+
+#[derive(InputAction)]
+#[action_output(bool)]
+struct Leave;
 
 /// How dark the fade is, and whether the camping screen is behind it: each
 /// fade darkens for its first half and clears for its second, swapping the
 /// world and the camping screen while black.
-fn look(phase: CampPhase) -> (f32, bool) {
+fn look(phase: &CampPhase) -> (f32, bool) {
     let half = FADE_SECONDS / 2.0;
     let ramp = |elapsed: f32| {
         if elapsed < half { elapsed / half } else { 1.0 - (elapsed - half) / half }
     };
     match phase {
-        CampPhase::FadingIn(elapsed) => (ramp(elapsed), elapsed >= half),
+        CampPhase::FadingIn(fade) => (ramp(fade.elapsed_secs()), fade.elapsed_secs() >= half),
         CampPhase::Resting => (0.0, true),
-        CampPhase::FadingOut(elapsed) => (ramp(elapsed), elapsed < half),
+        CampPhase::FadingOut(fade) => (ramp(fade.elapsed_secs()), fade.elapsed_secs() < half),
+    }
+}
+
+/// Fills the window.
+fn full() -> impl Scene {
+    bsn! {
+        Node { position_type: PositionType::Absolute, width: percent(100), height: percent(100) }
+        Pickable::IGNORE
     }
 }
 
@@ -54,29 +69,29 @@ pub fn show_camp(
         return;
     };
     if screens.is_empty() {
-        let full = || Node {
-            position_type: PositionType::Absolute,
-            width: Val::Percent(100.0),
-            height: Val::Percent(100.0),
-            ..default()
-        };
-        commands.spawn((CampScreen, full(), GlobalZIndex(-10), Pickable::IGNORE)).with_children(
-            |screen| {
-                screen.spawn((
-                    CampPicture,
-                    ImageNode::default(),
-                    // Retail's screen is 4:3; black fills the rest.
-                    BackgroundColor(Color::BLACK),
-                    Visibility::Hidden,
-                    full(),
-                    Pickable::IGNORE,
-                ));
-                screen.spawn((CampFade, BackgroundColor(Color::NONE), full(), Pickable::IGNORE));
-            },
-        );
+        commands.spawn_scene(bsn! {
+            @full()
+            CampScreen
+            GlobalZIndex(-10)
+            ContextPriority::<CampScreen>::new(1)
+            Actions<CampScreen> [
+                Action::<Leave>::new()
+                ActionSettings { consume_input: true }
+                Bindings [ Binding(KeyCode::Escape) ]
+            ]
+            on(|_: On<Start<Leave>>, mut leave: MessageWriter<LeaveCamp>| {
+                leave.write(LeaveCamp);
+            })
+            Children [
+                // Retail's screen is 4:3; black fills the rest.
+                @full() CampPicture ImageNode BackgroundColor(Color::BLACK) Visibility::Hidden
+                --
+                @full() CampFade BackgroundColor(Color::NONE)
+            ]
+        });
         return;
     }
-    let (darkness, picture_shown) = look(camp.phase);
+    let (darkness, picture_shown) = look(&camp.phase);
     for mut fade in &mut fades {
         fade.0 = Color::BLACK.with_alpha(darkness);
     }
@@ -95,11 +110,16 @@ mod tests {
 
     #[test]
     fn fades_swap_the_world_and_camping_screen_while_black() {
-        assert_eq!(look(CampPhase::FadingIn(0.0)), (0.0, false));
-        assert_eq!(look(CampPhase::FadingIn(0.5)), (1.0, true));
-        assert_eq!(look(CampPhase::FadingIn(0.75)), (0.5, true));
-        assert_eq!(look(CampPhase::Resting), (0.0, true));
-        assert_eq!(look(CampPhase::FadingOut(0.25)), (0.5, true));
-        assert_eq!(look(CampPhase::FadingOut(0.5)), (1.0, false));
+        let fade = |seconds: f32| {
+            let mut fade = Timer::from_seconds(FADE_SECONDS, TimerMode::Once);
+            fade.set_elapsed(std::time::Duration::from_secs_f32(seconds));
+            fade
+        };
+        assert_eq!(look(&CampPhase::FadingIn(fade(0.0))), (0.0, false));
+        assert_eq!(look(&CampPhase::FadingIn(fade(0.5))), (1.0, true));
+        assert_eq!(look(&CampPhase::FadingIn(fade(0.75))), (0.5, true));
+        assert_eq!(look(&CampPhase::Resting), (0.0, true));
+        assert_eq!(look(&CampPhase::FadingOut(fade(0.25))), (0.5, true));
+        assert_eq!(look(&CampPhase::FadingOut(fade(0.5))), (1.0, false));
     }
 }

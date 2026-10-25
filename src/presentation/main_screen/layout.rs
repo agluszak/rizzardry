@@ -4,11 +4,12 @@
 use bevy::camera::Viewport;
 use bevy::prelude::*;
 use bevy::ui::IsDefaultUiCamera;
+use enumset::{EnumSet, EnumSetType};
 
-use super::{MainScreenArt, SCREEN, loaded, put};
+use super::{MainScreenArt, button, loaded};
 use crate::content::ui::SpriteSheet;
 use crate::presentation::party_view::PartyCamera;
-use crate::presentation::screen_art::sprite;
+use crate::presentation::screen_art::{SCREEN, sprite};
 use crate::presentation::sky::SkyCamera;
 
 /// Retail's layout modes (`g_settings.main_ui_mode`; the roof tooltips call
@@ -25,7 +26,7 @@ pub enum LayoutMode {
 }
 
 /// The bottom panels.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug, EnumSetType)]
 pub enum Panel {
     Radar,
     TextBox,
@@ -39,22 +40,14 @@ pub struct ScreenLayout {
     pub mode: LayoutMode,
     /// Closed shows the radar and formation always; the text box by choice.
     closed_text: bool,
-    /// Wide's choices: radar, text box, formation.
-    wide: [bool; 3],
+    /// The panels Wide shows.
+    wide: EnumSet<Panel>,
 }
 
 impl Default for ScreenLayout {
     /// New games start Wide with all three panels.
     fn default() -> Self {
-        ScreenLayout { mode: LayoutMode::Wide, closed_text: true, wide: [true; 3] }
-    }
-}
-
-fn panel_index(panel: Panel) -> usize {
-    match panel {
-        Panel::Radar => 0,
-        Panel::TextBox => 1,
-        Panel::Formation => 2,
+        ScreenLayout { mode: LayoutMode::Wide, closed_text: true, wide: EnumSet::all() }
     }
 }
 
@@ -62,7 +55,7 @@ impl ScreenLayout {
     pub fn shows(&self, panel: Panel) -> bool {
         match self.mode {
             LayoutMode::Closed => panel != Panel::TextBox || self.closed_text,
-            LayoutMode::Wide => self.wide[panel_index(panel)],
+            LayoutMode::Wide => self.wide.contains(panel),
             LayoutMode::Full => false,
         }
     }
@@ -71,7 +64,7 @@ impl ScreenLayout {
     /// chosen by `GetMainGameViewportMode`): the narrow view in Closed,
     /// reaching down over hidden panels; the wide view over the strips.
     pub fn viewport(&self) -> Rect {
-        let all = [Panel::Radar, Panel::TextBox, Panel::Formation].iter().all(|&p| self.shows(p));
+        let all = EnumSet::all().iter().all(|panel| self.shows(panel));
         match self.mode {
             LayoutMode::Closed if self.shows(Panel::TextBox) => {
                 Rect::new(128.0, 18.0, 512.0, 358.0)
@@ -98,19 +91,17 @@ impl ScreenLayout {
     /// A layout arrow: Closed toggles only the text box; hiding Wide's last
     /// panel goes Full; showing one in Full goes Wide with only that one.
     pub fn toggle(&mut self, panel: Panel) {
-        let i = panel_index(panel);
         match self.mode {
             LayoutMode::Closed if panel == Panel::TextBox => self.closed_text = !self.closed_text,
             LayoutMode::Closed => {}
             LayoutMode::Wide => {
-                self.wide[i] = !self.wide[i];
-                if self.wide == [false; 3] {
+                self.wide ^= panel;
+                if self.wide.is_empty() {
                     self.mode = LayoutMode::Full;
                 }
             }
             LayoutMode::Full => {
-                self.wide = [false; 3];
-                self.wide[i] = true;
+                self.wide = EnumSet::only(panel);
                 self.mode = LayoutMode::Wide;
             }
         }
@@ -170,75 +161,50 @@ pub fn fit_viewport(
     }
 }
 
-/// Backspace cycles the layout (Shift+Backspace backwards).
-pub fn cycle_layout(
-    keys: Res<ButtonInput<KeyCode>>,
-    automap: Option<Res<crate::presentation::automap::Automap>>,
-    inventory: Option<Res<crate::presentation::inventory::InventoryScreen>>,
-    mut layout: ResMut<ScreenLayout>,
-) {
-    if keys.just_pressed(KeyCode::Backspace) && automap.is_none() && inventory.is_none() {
-        let back = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
-        layout.cycle(back);
-    }
-}
-
-#[derive(Component, Clone, Copy)]
-enum LayoutButton {
-    Mode(LayoutMode),
-    Arrow(Panel),
-}
-
-fn press(click: On<PointerClick>, buttons: Query<&LayoutButton>, mut layout: ResMut<ScreenLayout>) {
-    match buttons.get(click.entity) {
-        Ok(LayoutButton::Mode(mode)) => layout.mode = *mode,
-        Ok(LayoutButton::Arrow(panel)) => layout.toggle(*panel),
-        Err(_) => {}
-    }
-}
-
 /// The roof's mode buttons, the current mode pressed, and the left post's
 /// arrows: hide a panel while shown, show it while hidden; Closed keeps the
 /// radar and formation (grayed).
-pub fn spawn_buttons(
-    commands: &mut Commands,
-    frame: Entity,
+pub fn buttons(
     layout: &ScreenLayout,
     art: &MainScreenArt,
     sheets: &Assets<SpriteSheet>,
-) {
+) -> impl SceneList {
     let roof_buttons = loaded(sheets, &art.roof_buttons);
-    for (i, (mode, x)) in
+    let modes: Vec<_> =
         [(LayoutMode::Closed, 10.0), (LayoutMode::Wide, 39.0), (LayoutMode::Full, 68.0)]
             .into_iter()
             .enumerate()
-    {
-        let image = if mode == layout.mode { 3 + i } else { i };
-        if let Some(mut button) =
-            put(commands, frame, sprite(roof_buttons, image, Vec2::new(x, 1.0)))
-        {
-            button.insert((LayoutButton::Mode(mode), Pickable::default())).observe(press);
-        }
-    }
+            .map(|(i, (mode, x))| {
+                let image = if mode == layout.mode { 3 + i } else { i };
+                bsn! {
+                    @button(roof_buttons, image, Vec2::new(x, 1.0))
+                    on(move |_: On<PointerClick>, mut layout: ResMut<ScreenLayout>| {
+                        layout.mode = mode;
+                    })
+                }
+            })
+            .collect();
     let closed = layout.mode == LayoutMode::Closed;
     let arrows = loaded(sheets, &art.layout_arrows);
-    for (panel, y, hide, show, grayed) in [
+    // In order: neighbouring arrows overlap.
+    let mut panels: Vec<Box<dyn Scene>> = vec![];
+    for (panel, y, hide, show, gray) in [
         (Panel::Radar, 371.0, 0, 3, 6),
         (Panel::TextBox, 394.0, 8, 11, 14),
         (Panel::Formation, 417.0, 16, 19, 22),
     ] {
-        let locked = closed && panel != Panel::TextBox;
-        let image = match (locked, layout.shows(panel)) {
-            (true, _) => grayed,
-            (false, true) => hide,
-            (false, false) => show,
-        };
-        if let Some(mut arrow) = put(commands, frame, sprite(arrows, image, Vec2::new(0.0, y)))
-            && !locked
-        {
-            arrow.insert((LayoutButton::Arrow(panel), Pickable::default())).observe(press);
+        let at = Vec2::new(0.0, y);
+        if closed && panel != Panel::TextBox {
+            panels.push(Box::new(sprite(arrows, gray, at)));
+            continue;
         }
+        let image = if layout.shows(panel) { hide } else { show };
+        panels.push(Box::new(bsn! {
+            @button(arrows, image, at)
+            on(move |_: On<PointerClick>, mut layout: ResMut<ScreenLayout>| layout.toggle(panel))
+        }));
     }
+    (modes, panels)
 }
 
 #[cfg(test)]

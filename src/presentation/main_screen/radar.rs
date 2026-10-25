@@ -6,47 +6,42 @@
 use bevy::ecs::entity::{EntityHashMap, EntityHashSet};
 use bevy::prelude::*;
 
-use super::{MainScreenArt, layer, loaded, put};
+use super::{MainScreenArt, layer, loaded};
 use crate::content::ui::SpriteSheet;
 use crate::game::data::GameData;
 use crate::presentation::automap::OpenAutomap;
 use crate::presentation::party_view::PartyCamera;
-use crate::presentation::screen_art::{absolute, sprite};
+use crate::presentation::screen_art::{absolute, rect, sprite};
 
-pub fn spawn(
-    commands: &mut Commands,
-    frame: Entity,
-    art: &MainScreenArt,
-    sheets: &Assets<SpriteSheet>,
-) {
+pub fn panel(art: &MainScreenArt, sheets: &Assets<SpriteSheet>) -> impl SceneList {
     let at = Vec2::new(30.0, 359.0);
-    put(commands, frame, sprite(loaded(sheets, &art.radar_disc), 0, at));
-    put(commands, frame, sprite(loaded(sheets, &art.view_cone), 0, at));
-    layer(commands, frame, RadarBlips);
-    if let Some(mut rim) = put(commands, frame, sprite(loaded(sheets, &art.radar_rim), 0, at)) {
-        rim.insert((RadarRim, UiTransform::default()));
-    }
+    let disc = sprite(loaded(sheets, &art.radar_disc), 0, at);
+    let cone = sprite(loaded(sheets, &art.view_cone), 0, at);
+    let rim = sprite(loaded(sheets, &art.radar_rim), 0, at);
     // Left-clicking the radar opens the automap (retail region 0x62, a
     // circle of radius 46 about (75, 402)).
-    commands
-        .spawn((
-            Node {
-                border_radius: BorderRadius::all(Val::Px(46.0)),
-                ..absolute(Vec2::new(29.0, 356.0), Vec2::splat(92.0))
-            },
-            ChildOf(frame),
-        ))
-        .observe(|_: On<PointerClick>, mut open: MessageWriter<OpenAutomap>| {
-            open.write(OpenAutomap);
-        });
+    let disc_area = Node {
+        border_radius: BorderRadius::all(Val::Px(46.0)),
+        ..absolute(Vec2::new(29.0, 356.0), Vec2::splat(92.0))
+    };
+    bsn_list! {
+        @{disc}
+        -- @{cone}
+        -- @layer() RadarBlips
+        -- @{rim} RadarRim UiTransform
+        -- disc_area
+            on(|_: On<PointerClick>, mut open: MessageWriter<OpenAutomap>| {
+                open.write(OpenAutomap);
+            })
+    }
 }
 
 /// The radar's compass rim, turned with the party.
-#[derive(Component)]
+#[derive(Component, Clone, Default)]
 pub struct RadarRim;
 
 /// Holds the radar's blips.
-#[derive(Component)]
+#[derive(Component, Clone, Default)]
 pub struct RadarBlips;
 
 /// One class of radar blip's colours (retail `g_radar_blip_colors`); retail
@@ -154,7 +149,7 @@ pub fn update_radar(
         _ => (0.0, position.0),
     };
     let catalog = data.and_then(|d| species.get(&d.species));
-    commands.entity(layer).despawn_related::<Children>();
+    let mut blips = vec![];
     for (monster, at) in &monsters {
         let delta = at.translation() - position.0;
         if monster.is_dead() || delta.length() > far {
@@ -163,12 +158,8 @@ pub fn update_radar(
         let hostile =
             catalog.and_then(|c| c.0.get(monster.species as usize)).is_some_and(|s| !s.npc);
         let class = if hostile { HOSTILE_BLIPS } else { NEUTRAL_BLIPS };
-        commands.spawn((
-            absolute(blip_position(delta, body.yaw, false) - Vec2::ONE, Vec2::splat(2.0)),
-            BackgroundColor(class.at(delta.y)),
-            Pickable::IGNORE,
-            ChildOf(layer),
-        ));
+        let at = blip_position(delta, body.yaw, false) - Vec2::ONE;
+        blips.push(rect(at, Vec2::splat(2.0), class.at(delta.y)));
     }
     // Items: once the eye has had them in sight, within the far clip.
     let level = |entity| bodies.get(entity).is_ok_and(avian3d::prelude::RigidBody::is_static);
@@ -203,13 +194,13 @@ pub fn update_radar(
         // here it shows `above`.
         let colour =
             if known.lit.contains_key(&entity) { ITEM_BLIPS.above } else { ITEM_BLIPS.at(delta.y) };
-        commands.spawn((
-            absolute(blip_position(delta, body.yaw, true) - Vec2::ONE, Vec2::splat(2.0)),
-            BackgroundColor(colour),
-            Pickable::IGNORE,
-            ChildOf(layer),
-        ));
+        let at = blip_position(delta, body.yaw, true) - Vec2::ONE;
+        blips.push(rect(at, Vec2::splat(2.0), colour));
     }
+    commands
+        .entity(layer)
+        .despawn_related::<Children>()
+        .queue_spawn_related_scenes::<Children>(blips);
 }
 
 #[cfg(test)]

@@ -3,14 +3,12 @@
 //! `FormationAndFacing.cpp`, `Combat Range.cpp`).
 
 use bevy::prelude::*;
-use num_enum::{IntoPrimitive, TryFromPrimitive};
+use enum_map::{Enum, EnumMap};
 
 use crate::content::species::Reach;
 
-/// A formation row, by the side of the party it faces, in retail's order
-/// (front, right, rear, left, center): its number is retail's.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, IntoPrimitive, TryFromPrimitive)]
-#[repr(usize)]
+/// A formation row: the side of the party it faces, or its center.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Enum)]
 pub enum Row {
     Front,
     Right,
@@ -19,44 +17,41 @@ pub enum Row {
     Center,
 }
 
-const SEATS: usize = 3;
-
-/// The row a seat table index is (0..5).
-fn row_at(index: usize) -> Row {
-    Row::try_from(index).expect("five rows")
+impl Row {
+    /// The side across the party; the center has none.
+    fn opposite(self) -> Option<Row> {
+        match self {
+            Row::Front => Some(Row::Rear),
+            Row::Rear => Some(Row::Front),
+            Row::Right => Some(Row::Left),
+            Row::Left => Some(Row::Right),
+            Row::Center => None,
+        }
+    }
 }
 
-/// Who sits where, by party slot.
+/// Who sits where, by party slot: three seats a row.
 #[derive(Resource, Debug, Default, Clone, PartialEq)]
 pub struct Formation {
-    seats: [[Option<usize>; SEATS]; 5],
+    seats: EnumMap<Row, [Option<usize>; 3]>,
 }
 
 impl Formation {
     /// The row a party slot sits in, if it holds a place.
     pub fn row_of(&self, slot: usize) -> Option<Row> {
-        self.seats.iter().position(|row| row.contains(&Some(slot))).map(row_at)
+        self.place_of(slot).map(|(row, _)| row)
     }
 
     /// Whether anyone sits in a row.
     pub fn occupied(&self, row: Row) -> bool {
-        self.seats[usize::from(row)].iter().any(Option::is_some)
+        self.seats[row].iter().any(Option::is_some)
     }
 
     /// Where a slot sits: its row and seat (0-2).
     pub fn place_of(&self, slot: usize) -> Option<(Row, usize)> {
-        self.seats.iter().enumerate().find_map(|(r, row)| {
-            row.iter().position(|&s| s == Some(slot)).map(|seat| (row_at(r), seat))
+        self.seats.iter().find_map(|(row, seats)| {
+            seats.iter().position(|&s| s == Some(slot)).map(|seat| (row, seat))
         })
-    }
-
-    /// The direction a slot faces: its row's side, ahead for the center
-    /// (retail `SetFormationPosition`), as 0 front, 1 right, 2 rear, 3 left.
-    pub fn facing(row: Row) -> usize {
-        match row {
-            Row::Center => 0,
-            row => usize::from(row),
-        }
     }
 
     /// Seat a slot without a place in the first row with room, front, then
@@ -69,7 +64,7 @@ impl Formation {
             return;
         }
         for row in [Row::Front, Row::Center, Row::Rear] {
-            let seats = &mut self.seats[usize::from(row)];
+            let seats = &mut self.seats[row];
             match seats.iter().flatten().count() {
                 0 => seats[0] = Some(slot),
                 1 if seats[0].is_some() => {
@@ -88,7 +83,7 @@ impl Formation {
 
     /// The dead hold no place.
     pub fn unseat(&mut self, slot: usize) {
-        for seat in self.seats.iter_mut().flatten() {
+        for seat in self.seats.values_mut().flatten() {
             if *seat == Some(slot) {
                 *seat = None;
             }
@@ -105,7 +100,7 @@ impl Formation {
             return 0;
         }
         let rows = u32::from(self.occupied(quadrant));
-        if row == Row::Center || usize::from(row).abs_diff(usize::from(quadrant)) != 2 {
+        if row.opposite() != Some(quadrant) {
             return rows;
         }
         if rows != 0 || self.occupied(Row::Center) { rows + 1 } else { rows }
@@ -137,7 +132,12 @@ pub fn quadrant(from: Vec3, yaw: f32, to: Vec3) -> Row {
     // In the party's frame forward is -Z and right is +X.
     let local = (Quat::from_rotation_y(-yaw) * (to - from)).xz();
     let bearing = Vec2::NEG_Y.angle_to(local).to_degrees().rem_euclid(360.0);
-    row_at((((bearing + 45.0) % 360.0) / 90.0) as usize)
+    match ((bearing + 45.0) % 360.0 / 90.0) as u32 {
+        0 => Row::Front,
+        1 => Row::Right,
+        2 => Row::Rear,
+        _ => Row::Left,
+    }
 }
 
 /// Keep the formation in step with the roster: the living hold a place,

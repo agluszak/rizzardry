@@ -58,7 +58,7 @@ fn hold_exploration(
 
 impl Plugin for PresentationPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(main_screen::MainScreenPlugin)
+        app.add_plugins((main_screen::MainScreenPlugin, inventory::InventoryPlugin))
             .add_message::<voice::SpeechFinished>()
             .add_message::<dialog::TravelAnswer>()
             .add_message::<automap::OpenAutomap>()
@@ -67,16 +67,18 @@ impl Plugin for PresentationPlugin {
             .init_resource::<hover::Hover>()
             .init_resource::<music::Music>()
             .init_resource::<PresentationRng>()
-            .add_input_context::<automap::Screens>()
+            .add_input_context::<automap::MapKey>()
+            .add_input_context::<automap::AutomapScreen>()
+            .add_input_context::<dialog::QuestionDialog>()
+            .add_input_context::<camp::CampScreen>()
             .add_systems(
                 Startup,
                 (
-                    automap::spawn_screen_controls,
+                    automap::spawn_map_key,
                     automap::load_automap_art,
                     notices::load_notice_art,
                     dialog::load_dialog_art,
                     camp::load_camp_art,
-                    inventory::load_inventory_art,
                 ),
             )
             .add_systems(
@@ -84,22 +86,16 @@ impl Plugin for PresentationPlugin {
                 (
                     automap::scale_ui,
                     hold_exploration,
+                    screen_art::paint_hover_art,
                     (party_view::attach_camera, party_view::aim_camera).chain(),
                     party_view::click_in_view
                         .run_if(crate::game::screen::party_free)
                         .before(crate::game::world::interaction::act_on_click),
                     camp::show_camp,
                     (
-                        inventory::toggle_inventory,
-                        inventory::spawn_inventory_screen,
-                        inventory::draw_inventory_cells,
-                        inventory::follow_held,
-                    )
-                        .chain(),
-                    (
-                        automap::toggle_automap,
+                        automap::close_automap,
+                        automap::open_automap,
                         automap::type_note,
-                        automap::pan_with_keys,
                         automap::paint_buttons,
                         automap::update_map_view,
                         automap::draw_notes,
@@ -124,13 +120,7 @@ impl Plugin for PresentationPlugin {
                     music::play_music,
                     (ambience::place_ambient_sounds, ambience::play_ambient_sounds).chain(),
                     notices::queue_notices,
-                    (
-                        dialog::show_travel_question,
-                        dialog::answer_with_keys,
-                        dialog::settle_travel_question,
-                        dialog::paint_dialog_buttons,
-                    )
-                        .chain(),
+                    (dialog::show_travel_question, dialog::settle_travel_question).chain(),
                     effects::shake_camera.after(party_view::aim_camera),
                     sky::orbit_sun_and_moon,
                     voice::finish_speech,
