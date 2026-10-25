@@ -75,6 +75,10 @@ these with real retail stairs, doors and level links when modifying movement.
 
 As gameplay grows, cover item conservation across owners, accepted-cost versus
 cancelled actions, death bookkeeping before the next combat action, interrupted
-interactions, save/load identity and cross-level lifetimes. Derive expected
+interactions, save/load identity and cross-level lifetimes. In particular,
+exercise failed/delayed level activation with a previously active party,
+a container trigger with required catalogs unavailable, map-local notes and
+killed monsters across travel, the last combat round's recovery policy, and
+party effects when an off-roster Character exists. Derive expected
 behavior from the original game when faithfulness matters. Do not lock tests
 to an incidental internal representation.

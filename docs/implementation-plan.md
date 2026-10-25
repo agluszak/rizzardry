@@ -15,6 +15,37 @@ and remaining decisions.
 No time estimate is useful until the first real-map and asset experiments
 establish what Bevy handles directly.
 
+## Immediate correctness work on `slice-1-followups`
+
+These integration problems take priority over expanding combat, UI, or more
+retail-format coverage. The files exist; the following boundaries are not yet
+established by the implementation:
+
+1. Make destination preparation, failed loading and playable activation distinct.
+   Require collision, local state, references and shared gameplay catalogs before
+   enabling triggers/AI/party physics. During travel, settle old sessions and
+   suspend the party body; failed preparation leaves the source playable.
+2. Capture map-owned state on departure and restore it on revisit. A killed or
+   wounded monster, opened container, trigger and map note must not reset or
+   leak to another map. Persist domain state, not transient proximity/UI caches.
+3. Make clock advancement and mandatory aging/recovery one mode-aware boundary.
+   The last combat round remains combat time even after `Battle` disappears;
+   retain fractional time and avoid system-local authority for aging.
+4. Route party-wide gameplay through `PartyRoster` in a defined order. Execute
+   inventory/trigger actions with their actual authoritative prerequisites;
+   disabled UI input or a caller's eligibility boolean does not establish
+   legality.
+5. Restore module direction (`retail` → `content` → `game` →
+   `presentation`, composed by `app`). Remove redundant item/monster
+   representations and repeated decoding only when that actually eliminates
+   code; do not build another framework to enforce the layering.
+
+**Exit evidence:** a failed or slow destination load commits no partial
+interaction; a second level keeps one party; revisiting does not resurrect
+killed local monsters or move map notes; final-round recovery is correct;
+a non-roster `Character` is excluded from party effects. Use focused tests
+and representative retail checks, not a new harness.
+
 ## 1. Complete the real-world engine slice
 
 **Playable result:** enter a representative retail room, traverse stairs,
