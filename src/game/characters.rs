@@ -281,6 +281,31 @@ const GOVERNING: [(usize, usize); SKILLS] = [
     (6, 6),
 ];
 
+/// How heavily a member is loaded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Load {
+    None,
+    Light,
+    Medium,
+    Heavy,
+    Extreme,
+}
+
+/// The load band of carrying `weight` with room for `capacity` (both in
+/// tenths of a pound): under 50%, 70%, 85%, up to 100%, then beyond.
+fn load_band(weight: u32, capacity: u32) -> Load {
+    if capacity == 0 {
+        return if weight == 0 { Load::None } else { Load::Extreme };
+    }
+    match weight * 100 / capacity {
+        0..50 => Load::None,
+        50..70 => Load::Light,
+        70..85 => Load::Medium,
+        85..=100 => Load::Heavy,
+        _ => Load::Extreme,
+    }
+}
+
 /// One adventurer.
 #[derive(Component, Clone, Debug, PartialEq, Reflect)]
 pub struct Character {
@@ -398,9 +423,14 @@ impl Character {
         (self.attribute(VITALITY) + 2 * self.attribute(STRENGTH)) * factor
     }
 
-    /// `(level + 1)/2 + SEN/5 + SPD/5 − 10`, plus Snake Speed; load is not
-    /// counted yet.
-    pub fn initiative(&self) -> i32 {
+    /// The load band of carrying `weight` (own plus pool share).
+    pub fn load(&self, weight: u32) -> Load {
+        load_band(weight, self.capacity())
+    }
+
+    /// `(level + 1)/2 + SEN/5 + SPD/5 − 10`, plus Snake Speed, less 1, 2, 4
+    /// or 8 by load.
+    pub fn initiative(&self, load: Load) -> i32 {
         let mut initiative = (i32::from(self.level) + 1) / 2
             + self.attribute(SENSES) as i32 / 5
             + self.attribute(SPEED) as i32 / 5
@@ -409,6 +439,13 @@ impl Character {
             initiative += self.skill(SNAKE_SPEED) as i32 / 10 + 1;
         }
         initiative
+            - match load {
+                Load::None => 0,
+                Load::Light => 1,
+                Load::Medium => 2,
+                Load::Heavy => 4,
+                Load::Extreme => 8,
+            }
     }
 
     /// Experience needed for the next level (retail goals): the weight at
@@ -587,7 +624,12 @@ mod tests {
         assert_eq!(fighter.max_hp(), 18);
         assert_eq!(fighter.max_stamina(), 105);
         assert_eq!(fighter.capacity(), 1920);
-        assert_eq!(fighter.initiative(), 9);
+        assert_eq!(fighter.initiative(Load::None), 9);
+        assert_eq!(fighter.initiative(Load::Heavy), 5);
+        assert_eq!(fighter.load(959), Load::None);
+        assert_eq!(fighter.load(960), Load::Light);
+        assert_eq!(fighter.load(1939), Load::Heavy, "integer percent: still 100");
+        assert_eq!(fighter.load(1940), Load::Extreme);
         assert_eq!((fighter.hp, fighter.stamina), (18, 105));
         assert_eq!(fighter.experience_goal(), 1000);
         // Profession and bonus skills are seeded; others are not.

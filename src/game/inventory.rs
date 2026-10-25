@@ -469,6 +469,48 @@ fn creation_slot(
     })
 }
 
+/// An item's weight in tenths of a pound: each unit of a stack counts.
+pub fn item_weight(item: &ItemInstance, catalog: &ItemCatalog) -> u32 {
+    catalog.get(item.item).map_or(0, |d| u32::from(d.weight) * item.units())
+}
+
+/// What a member wears and carries in the backpack weighs.
+pub fn carried_weight(carried: &Carried, catalog: &ItemCatalog) -> u32 {
+    carried
+        .equipment
+        .iter()
+        .chain(&carried.backpack)
+        .flatten()
+        .map(|i| item_weight(i, catalog))
+        .sum()
+}
+
+/// How the pool's weight is shared among the members (retail
+/// `DistributePartyWeight`): half of it, a tenth of a pound at a time, each
+/// to the member with the largest share of their capacity still free (the
+/// first on ties). `members` gives each member's own weight and capacity,
+/// or `None` for the dead, who carry none of it.
+pub fn pool_shares(pool_weight: u32, members: &[Option<(u32, u32)>]) -> Vec<u32> {
+    let mut shares = vec![0; members.len()];
+    let free = |own: u32, capacity: u32, share: u32| {
+        (capacity as i32 - own as i32 - share as i32) as f32 * 100.0 / capacity as f32
+    };
+    for _ in 0..pool_weight / 2 {
+        let best = members
+            .iter()
+            .zip(&shares)
+            .enumerate()
+            .filter_map(|(i, (m, &share))| m.map(|(own, cap)| (i, free(own, cap, share))))
+            .fold(None, |best: Option<(usize, f32)>, (i, ratio)| match best {
+                Some((_, b)) if b >= ratio => best,
+                _ => Some((i, ratio)),
+            });
+        let Some((index, _)) = best else { break };
+        shares[index] += 1;
+    }
+    shares
+}
+
 impl PartyInventory {
     /// Put an item in the pool (retail `placeInPool`): merge into its stacks
     /// in order, then put the rest at the front. Comes back if the pool is
@@ -883,5 +925,16 @@ mod tests {
         assert!(!spend_use(&mut wand, true));
         assert_eq!(wand.quantity, Quantity::Uses(0));
         assert!(spend_use(&mut item(&mut ids, 1, Quantity::Uses(1)), false));
+    }
+
+    #[test]
+    fn pool_weight_goes_to_whoever_has_most_room() {
+        // Half of 40 is shared: the roomier member first, then evenly by
+        // free fraction; the dead carry nothing.
+        let shares = pool_shares(40, &[Some((0, 100)), Some((50, 100)), None]);
+        assert_eq!(shares, vec![20, 0, 0]);
+        let shares = pool_shares(140, &[Some((0, 100)), Some((50, 100))]);
+        assert_eq!(shares.iter().sum::<u32>(), 70);
+        assert_eq!(shares, vec![60, 10]);
     }
 }
