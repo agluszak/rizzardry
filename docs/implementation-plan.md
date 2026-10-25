@@ -185,7 +185,9 @@ Known gaps, in rough order:
   slots), hands, average armour, names and HP/stamina bars drained from
   the top; selection by click, previous/next and keys 1-6, a double click
   opening the inventory; messages in the text box (retail channels, wrapped,
-  Combat while fighting). The radar, formation board, text box scrolling and
+  Combat while fighting); the radar (compass rim turning with the party,
+  monster blips placed and coloured as retail does) and the button bank
+  (Camp and Formation working). The formation board, text box scrolling and
   the bank's buttons are still to come.
 - The inventory screen (`presentation::inventory`, I; layout in
   [review items](research/review-items.md)) shows a member's equipment on

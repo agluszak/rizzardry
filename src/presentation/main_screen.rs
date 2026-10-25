@@ -143,6 +143,9 @@ pub struct MainScreenArt {
     scroll_arrows: Handle<SpriteSheet>,
     icons: Handle<SpriteSheet>,
     options: Handle<SpriteSheet>,
+    radar_disc: Handle<SpriteSheet>,
+    radar_rim: Handle<SpriteSheet>,
+    view_cone: Handle<SpriteSheet>,
     combat_toggle: Handle<SpriteSheet>,
     column_info: Handle<SpriteSheet>,
     font: Handle<SpriteSheet>,
@@ -164,6 +167,9 @@ pub fn load_main_screen_art(mut commands: Commands, assets: Res<AssetServer>) {
         scroll_arrows: load("main_scroll_arrows"),
         icons: load("icons_standard"),
         options: load("options_disk"),
+        radar_disc: assets.load("retail://data/radar compass/formation_dot_small.sti"),
+        radar_rim: assets.load("retail://data/radar compass/compass_rim.sti"),
+        view_cone: assets.load("retail://data/party formation/small_formation_cone.sti"),
         combat_toggle: load("icon_combat_toggle"),
         column_info: load("main_column_info_normal"),
         font: assets.load("retail://data/fonts/wiz_text_font.sti"),
@@ -290,6 +296,106 @@ pub fn select_with_keys(
         && slot < roster.0.len()
     {
         selected.0 = slot;
+    }
+}
+
+/// The radar's compass rim, turned with the party.
+#[derive(Component)]
+pub struct RadarRim;
+
+/// Holds the radar's blips.
+#[derive(Component)]
+pub struct RadarBlips;
+
+/// Retail `g_radar_blip_colors`: per class (neutral, hostile, friendly,
+/// unseen, item, missile), dim, level and bright, for things more than 3 m
+/// below, within 3 m, and above the party.
+const BLIP_COLOURS: [[f32; 3]; 18] = [
+    [0.5, 0.5, 0.0],
+    [0.7, 0.7, 0.0],
+    [1.0, 1.0, 0.0],
+    [0.5, 0.0, 0.0],
+    [0.7, 0.0, 0.0],
+    [1.0, 0.0, 0.0],
+    [0.0, 0.5, 0.0],
+    [0.0, 0.7, 0.0],
+    [0.0, 1.0, 0.0],
+    [0.2, 0.2, 0.2],
+    [0.5, 0.5, 0.5],
+    [0.7, 0.7, 0.7],
+    [0.5, 0.5, 0.5],
+    [0.7, 0.7, 0.7],
+    [1.0, 1.0, 1.0],
+    [0.0, 0.0, 0.5],
+    [0.0, 0.0, 0.7],
+    [0.0, 0.0, 1.0],
+];
+
+/// Where a blip `delta` away from the party goes on the radar, for a party
+/// facing `yaw` (retail `PlaceRadarBlip`, zoomed out: 2 pixels at the
+/// party's radius, growing to the 38-pixel rim at extreme range).
+fn blip_position(delta: Vec3, yaw: f32) -> Vec2 {
+    const SCALE: f32 = 2.0;
+    const RIM: f32 = 38.0;
+    let inner = 1.0;
+    let outer = 50.0 + inner;
+    let forward = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
+    let right = Vec3::new(yaw.cos(), 0.0, -yaw.sin());
+    let flat = Vec2::new(delta.dot(right), delta.dot(forward));
+    let distance = flat.length();
+    let pixels = if distance <= inner {
+        SCALE
+    } else {
+        (SCALE + (distance - inner) * (RIM - SCALE) / (outer - inner)).min(RIM)
+    };
+    let unit = flat.normalize_or_zero();
+    Vec2::new(75.0 + unit.x * pixels, 404.0 - unit.y * pixels)
+}
+
+/// Turn the compass rim with the party, and mark the monsters within the
+/// far clip: hostile red, others yellow, brighter above and dimmer below.
+pub fn update_radar(
+    mut commands: Commands,
+    party: Query<(&avian3d::prelude::Position, &crate::game::party::body::PartyBody)>,
+    camera: Query<&Projection, With<PartyCamera>>,
+    mut rims: Query<&mut UiTransform, With<RadarRim>>,
+    layers: Query<Entity, With<RadarBlips>>,
+    monsters: Query<(&crate::game::world::population::Monster, &GlobalTransform)>,
+    data: Option<Res<GameData>>,
+    species: Res<Assets<crate::content::species::MonsterCatalog>>,
+) {
+    let (Ok((position, body)), Ok(layer)) = (party.single(), layers.single()) else { return };
+    for mut rim in &mut rims {
+        // North stays put while the view turns.
+        rim.rotation = Rot2::radians(body.yaw);
+    }
+    let far = match camera.single() {
+        Ok(Projection::Perspective(p)) => p.far,
+        _ => 0.0,
+    };
+    let catalog = data.and_then(|d| species.get(&d.species));
+    commands.entity(layer).despawn_related::<Children>();
+    for (monster, at) in &monsters {
+        let delta = at.translation() - position.0;
+        if monster.is_dead() || delta.length() > far {
+            continue;
+        }
+        let hostile =
+            catalog.and_then(|c| c.0.get(monster.species as usize)).is_some_and(|s| !s.npc);
+        let ring = if delta.y.abs() < 3.0 {
+            1
+        } else if delta.y > 0.0 {
+            2
+        } else {
+            0
+        };
+        let [r, g, b] = BLIP_COLOURS[usize::from(hostile) * 3 + ring];
+        commands.spawn((
+            absolute(blip_position(delta, body.yaw) - Vec2::ONE, Vec2::splat(2.0)),
+            BackgroundColor(Color::srgb(r, g, b)),
+            Pickable::IGNORE,
+            ChildOf(layer),
+        ));
     }
 }
 
@@ -482,6 +588,9 @@ pub fn draw_main_screen(
         Some(scroll_arrows),
         Some(icons),
         Some(options),
+        Some(radar_disc),
+        Some(radar_rim),
+        Some(view_cone),
         Some(combat_toggle),
         Some(font),
         Some(small_font),
@@ -499,6 +608,9 @@ pub fn draw_main_screen(
         get(&art.scroll_arrows),
         get(&art.icons),
         get(&art.options),
+        get(&art.radar_disc),
+        get(&art.radar_rim),
+        get(&art.view_cone),
         get(&art.combat_toggle),
         get(&art.font),
         get(&art.small_font),
@@ -780,6 +892,22 @@ pub fn draw_main_screen(
                 .observe(select_channel);
         }
     }
+    // The radar: its disc and view cone, the blips, and the compass rim on
+    // top, 91 pixels square from (30, 359) (retail `MGSRadarMap.cpp`).
+    if layout.shows(Panel::Radar) {
+        let at = Vec2::new(30.0, 359.0);
+        put(&mut commands, sprite(radar_disc, 0, at));
+        put(&mut commands, sprite(view_cone, 0, at));
+        commands.spawn((
+            RadarBlips,
+            absolute(Vec2::ZERO, Vec2::ZERO),
+            Pickable::IGNORE,
+            ChildOf(frame),
+        ));
+        if let Some(rim) = sprite(radar_rim, 0, at) {
+            commands.spawn((rim, RadarRim, UiTransform::default(), ChildOf(frame)));
+        }
+    }
     // The button bank (retail `pc.cpp` positions and frames: grayed, off,
     // ..., on). Camp and the formation panel work; the journal, search,
     // items, spells and options are grayed until they exist.
@@ -835,6 +963,16 @@ pub fn draw_main_screen(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blips_sit_ahead_and_beyond_on_the_rim() {
+        // Ahead of a party facing -Z, 10 m off: straight up from the centre.
+        let ahead = blip_position(Vec3::new(0.0, 0.0, -10.0), 0.0);
+        assert_eq!(ahead.x, 75.0);
+        assert!(ahead.y < 404.0 && ahead.y > 404.0 - 38.0);
+        // Far beyond extreme range: on the 38-pixel rim, to the right.
+        assert_eq!(blip_position(Vec3::new(200.0, 0.0, 0.0), 0.0), Vec2::new(113.0, 404.0));
+    }
 
     #[test]
     fn the_viewport_follows_the_mode_and_panels() {
