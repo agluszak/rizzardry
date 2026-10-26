@@ -44,14 +44,7 @@ impl Plugin for CombatPlugin {
             .init_resource::<CombatSettings>()
             .add_systems(
                 Update,
-                (
-                    settle_defeat,
-                    start_battle,
-                    run_battle,
-                    settle_defeat,
-                    approach::embody_fighters,
-                    approach::close_in,
-                )
+                (settle_defeat, start_battle, run_battle, settle_defeat, approach::close_in)
                     .chain()
                     .in_set(crate::game::GameplaySet::Combat)
                     .run_if(crate::game::world::level::level_active),
@@ -131,8 +124,6 @@ pub struct Battle {
     kills: u32,
     passive_rounds: u32,
     attacked_this_round: bool,
-    /// Monsters are walking up to the party: the round is not passive.
-    approaching: bool,
     /// Until the next action.
     wait: Timer,
 }
@@ -392,6 +383,7 @@ pub fn run_battle(
     mut actors: ParamSet<(
         (Query<(&mut Character, &mut Vitals, &Carried)>, MonsterDamage),
         GroupRecognition,
+        Query<(&bevy_landmass::AgentTarget3d, &Monster)>,
     )>,
     party_body: Query<(&Position, &PartyBody)>,
     mut formation: ResMut<Formation>,
@@ -410,6 +402,11 @@ pub fn run_battle(
     if start && !battle.executing {
         battle.executing = true;
     }
+    let approaching = battle.monsters.iter().any(|&(entity, _)| {
+        actors.p2().get(entity).is_ok_and(|(target, monster)| {
+            !monster.is_dead() && matches!(target, bevy_landmass::AgentTarget3d::Entity(_))
+        })
+    });
     let (mut members, mut damage) = actors.p0();
     if !damage.ready() {
         return;
@@ -486,6 +483,7 @@ pub fn run_battle(
                 &roster,
                 &mut members,
                 &damage.monsters,
+                approaching,
                 &mut news,
             );
             // Recognition is a required part of this round, before the next
@@ -760,6 +758,7 @@ fn end_round(
     roster: &PartyRoster,
     members: &mut Query<(&mut Character, &mut Vitals, &Carried)>,
     monsters: &Query<(&mut Monster, ActorPose, Option<&Walker>, &ChildOf)>,
+    approaching: bool,
     news: &mut MessageWriter<CombatNews>,
 ) {
     // The round's time passes now, with its meaning: conditions age and
@@ -798,7 +797,7 @@ fn end_round(
         }
     }
     battle.wait = Timer::from_seconds(ROUND_SECONDS, TimerMode::Once);
-    let active = battle.attacked_this_round || battle.approaching;
+    let active = battle.attacked_this_round || approaching;
     battle.passive_rounds = if active { 0 } else { battle.passive_rounds + 1 };
     let hostiles_left =
         battle.monsters.iter().any(|&(e, _)| monsters.get(e).is_ok_and(|(m, ..)| !m.is_dead()));

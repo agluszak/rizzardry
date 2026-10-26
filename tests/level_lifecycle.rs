@@ -30,6 +30,7 @@ fn app() -> App {
         .init_asset::<MonsterBody>()
         .init_asset::<rizzardry::content::ui::TextTable>()
         .init_resource::<Assets<PartyMotionConfig>>()
+        .init_resource::<Assets<rizzardry::game::world::navigation::WalkerMotionConfig>>()
         .init_resource::<LevelMemory>()
         .init_resource::<MonsterBodies>()
         .init_resource::<rizzardry::game::inventory::PartyInventory>()
@@ -317,9 +318,12 @@ fn attaching_visuals_does_not_change_physical_state_or_revisit_placement() {
         let pose = Transform::from_translation(feet + Vec3::Y * float_height)
             .with_rotation(Quat::from_rotation_y(0.7));
         app.world_mut().get_mut::<Monster>(actor).unwrap().body = body;
-        app.world_mut()
-            .entity_mut(actor)
-            .insert((Walker { speed: body.speed, float_height }, pose));
+        app.world_mut().entity_mut(actor).insert((
+            Walker { speed: body.speed, float_height },
+            pose,
+            avian3d::prelude::Position(pose.translation),
+            avian3d::prelude::Rotation(pose.rotation),
+        ));
         if show_visuals {
             app.init_resource::<Assets<MonsterModel>>()
                 .init_resource::<Assets<Mesh>>()
@@ -353,9 +357,13 @@ fn attaching_visuals_does_not_change_physical_state_or_revisit_placement() {
         assert!(is_played(&app, back));
         assert!(app.world().get_entity(first).is_err());
         let world = app.world_mut();
-        let (monster, pose) = world.query::<(&Monster, &Transform)>().single(world).unwrap();
+        let (monster, pose, walker) =
+            world.query::<(&Monster, &Transform, &Walker)>().single(world).unwrap();
         assert_eq!(monster.body, body);
-        assert!(pose.translation.distance(feet) < 0.00001);
+        assert!(
+            rizzardry::game::world::navigation::feet(pose.translation, Some(walker)).distance(feet)
+                < 0.00001
+        );
         assert!((pose.rotation.to_euler(EulerRot::YXZ).0 - 0.7).abs() < 0.001);
     }
 }
@@ -372,13 +380,25 @@ fn a_level_waits_for_body_metadata_and_sizes_monsters_without_render_assets() {
     app.update();
     assert!(!is_played(&app, root) && !failed(&app, root));
 
-    let body = MonsterBody { fight_radius: 0.5, scale: 2.0, ..default() };
+    let body = MonsterBody { fight_radius: 0.5, scale: 2.0, movement_rate: 1.5, ..default() };
     app.world_mut().resource_mut::<Assets<MonsterBody>>().insert(&loading, body).unwrap();
     app.update();
     assert!(is_played(&app, root));
     let world = app.world_mut();
     let crab = world.query::<&Monster>().single(world).unwrap();
     assert_eq!((crab.body.scale, crab.body.radius), (2.0, 1.0), "its body at its size");
+    use bevy_tnua::TnuaController;
+    use rizzardry::game::world::navigation::{Walker, WalkerMotion, feet};
+    let (at, walker, _) = world
+        .query_filtered::<(&Transform, &Walker, &TnuaController<WalkerMotion>), With<Monster>>()
+        .single(world)
+        .unwrap();
+    assert_eq!(walker.speed, 3.0);
+    assert_eq!(feet(at.translation, Some(walker)), Vec3::ZERO);
+    assert!(
+        !world.contains_resource::<rizzardry::game::combat::Battle>(),
+        "walking bodies exist before combat, without visual assets"
+    );
 }
 
 #[test]

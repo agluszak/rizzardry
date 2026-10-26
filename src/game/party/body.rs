@@ -243,6 +243,7 @@ fn spawn_party(
         Transform::from_translation(position),
         Visibility::default(),
         RigidBody::Dynamic,
+        Position(position),
         Collider::sphere(RADIUS - 0.08),
         LockedAxes::ROTATION_LOCKED,
         MaxLinearSpeed(MAX_SPEED),

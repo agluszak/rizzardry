@@ -437,6 +437,7 @@ pub struct SharedData<'w> {
     species: Res<'w, Assets<MonsterCatalog>>,
     bodies: Res<'w, Assets<MonsterBody>>,
     monster_bodies: ResMut<'w, MonsterBodies>,
+    motion_configs: ResMut<'w, Assets<navigation::WalkerMotionConfig>>,
 }
 
 /// Make a destination playable once its gameplay prerequisites exist, in
@@ -521,7 +522,7 @@ pub fn activate_level(
     // Capture first, including same-level travel, then consume the record.
     let mut remembered = memory.0.remove(&level.path);
     build_world(&mut commands, root, geometry, collider, level.script, loot, remembered.as_mut());
-    navigation::install(&mut commands, root, level, geometry);
+    let navigation = navigation::install(&mut commands, root, level, geometry);
     population::populate(
         &mut commands,
         root,
@@ -529,6 +530,7 @@ pub fn activate_level(
         remembered,
         (species, items),
         (&shared.monster_bodies.0, &shared.bodies),
+        (&navigation, &mut shared.motion_configs),
         &mut ids,
         &mut rng,
     );
@@ -538,7 +540,7 @@ pub fn activate_level(
         commands.entity(left).despawn();
     }
     info!("{} is active", level.path);
-    commands.entity(root).remove::<Destination>().insert(level.clone());
+    commands.entity(root).remove::<Destination>().insert((level.clone(), navigation));
     ready.write(LevelReady { level: root });
 }
 

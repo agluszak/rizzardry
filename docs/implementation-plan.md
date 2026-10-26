@@ -90,10 +90,11 @@ visibility completion. Retain those production ordering boundaries.
 2. **Prepare travel before capturing the source.** Implemented: destination-owned
    arrival and success-only capture/activation replace provisional snapshots,
    `Departing` and `stay()` rollback. Failed mandatory navmeshes reject loading.
-3. **Give world actors their bodies and movement intent.** `embody_fighters`
-   still creates bodies at battle entry and changes root-position meaning from
-   feet to body centre. Monster death now cancels movement through its damage
-   operation; retain that boundary, with battle owning accepted turns and rewards.
+3. **Give world actors their bodies and movement intent.** Implemented:
+   activation creates movable bodies at their final origin convention, with
+   actor-owned navigation targets/controllers. Battle changes targets, not body
+   existence. The battle-entry embodiment system, visual offset repair system
+   and mirrored `Battle.approaching` flag are deleted. Death still cancels motion.
 4. **Finish current-frame sky following.** Gameplay borrows an `ActorPose`
    from physics, and picking now reads the propagated camera and meshes together.
    Sky following still reads the camera's previous `GlobalTransform` in Update,

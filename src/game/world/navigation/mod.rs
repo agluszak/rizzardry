@@ -100,7 +100,12 @@ pub fn navmeshes_ready(level: &Level, assets: &AssetServer) -> bool {
 /// Install a level's navigation under its root, as part of its activation:
 /// one archipelago and island per size class, and the level's links.
 /// Activation has already checked every required navmesh.
-pub fn install(commands: &mut Commands, root: Entity, level: &Level, geometry: &LevelGeometry) {
+pub fn install(
+    commands: &mut Commands,
+    root: Entity,
+    level: &Level,
+    geometry: &LevelGeometry,
+) -> LevelNavigation {
     let mut archipelagos = Vec::new();
     for (class, navmesh) in level.navmeshes.iter().enumerate() {
         let radius = bake::SIZE_CLASSES[class];
@@ -133,8 +138,8 @@ pub fn install(commands: &mut Commands, root: Entity, level: &Level, geometry: &
         archipelagos.push(archipelago);
     }
     links::spawn_level_links(commands, root, geometry, &archipelagos);
-    commands.entity(root).insert(LevelNavigation { archipelagos });
     info!("navmeshes installed for {} size classes", level.navmeshes.len());
+    LevelNavigation { archipelagos }
 }
 
 /// The party as a Landmass character in one archipelago: a child of the
@@ -196,7 +201,7 @@ fn steer_walkers(
     mut walkers: Query<(
         &Walker,
         Option<&super::population::Monster>,
-        &AgentDesiredVelocity3d,
+        Option<&AgentDesiredVelocity3d>,
         Option<&links::Crossing>,
         &Transform,
         &mut TnuaController<WalkerMotion>,
@@ -212,7 +217,7 @@ fn steer_walkers(
                         * walker.speed
                         * 0.8
                 }
-                None => desired.velocity().with_y(0.0),
+                None => desired.map_or(Vec3::ZERO, |d| d.velocity().with_y(0.0)),
             }
         };
         controller.initiate_action_feeding();
