@@ -378,7 +378,9 @@ because identification, curses and continuing effects also run outside a battle.
 
 Mutually exclusive screen state uses Bevy states. Entry creates a scoped root
 with its local selection, scroll/view data and input context; art can attach
-later without controlling whether the session exists. Explicit inventory exit
+later without controlling whether the session exists. An accepted NextState
+already blocks world input before StateTransition; another opening request cannot
+overwrite that accepted choice. Explicit inventory exit
 returns the held item through the normal inventory operation before scoped
 cleanup. A required inventory-art failure returns to the world through that same
 exit operation. The held cursor overlay remains session-wide, including the world view.

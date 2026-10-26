@@ -565,6 +565,7 @@ fn press(
         && button.review_armed
         && click.count > 1
         && *screen.get() == crate::game::screen::Screen::World
+        && matches!(*next_screen, NextState::Unchanged)
     {
         next_screen.set(crate::game::screen::Screen::Inventory);
     }

@@ -146,7 +146,10 @@ fn open_with_key(
     roster: Res<PartyRoster>,
     selected: Res<super::main_screen::SelectedMember>,
 ) {
-    if *screen.get() == Screen::World && selected.member(&roster).is_some() {
+    if *screen.get() == Screen::World
+        && matches!(*next, NextState::Unchanged)
+        && selected.member(&roster).is_some()
+    {
         next.set(Screen::Inventory);
     }
 }

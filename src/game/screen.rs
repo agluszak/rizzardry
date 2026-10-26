@@ -26,6 +26,7 @@ pub enum Screen {
 pub struct Freedom<'w, 's> {
     levels: Query<'w, 's, (), (With<Level>, Without<Departing>)>,
     screen: Res<'w, State<Screen>>,
+    next: Res<'w, NextState<Screen>>,
     camp: Option<Res<'w, Camp>>,
     questions: Query<'w, 's, (), With<TravelQuestion>>,
 }
@@ -34,6 +35,7 @@ impl Freedom<'_, '_> {
     pub fn free(&self) -> bool {
         !self.levels.is_empty()
             && *self.screen.get() == Screen::World
+            && matches!(*self.next, NextState::Unchanged | NextState::Pending(Screen::World))
             && self.camp.is_none()
             && self.questions.is_empty()
     }
@@ -42,4 +44,29 @@ impl Freedom<'_, '_> {
 /// Run condition: the party may move, use, take and rest.
 pub fn party_free(freedom: Freedom) -> bool {
     freedom.free()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+
+    #[test]
+    fn an_accepted_screen_change_blocks_world_input_before_state_transition() {
+        let mut world = World::new();
+        world.insert_resource(State::new(Screen::World));
+        world.init_resource::<NextState<Screen>>();
+        world.spawn(Level {
+            path: "test".into(),
+            geometry: default(),
+            navmeshes: vec![],
+            sky: None,
+            script: default(),
+            messages: None,
+        });
+        assert!(world.run_system_once(party_free).unwrap());
+        world.resource_mut::<NextState<Screen>>().set(Screen::Inventory);
+        assert_eq!(*world.resource::<State<Screen>>().get(), Screen::World);
+        assert!(!world.run_system_once(party_free).unwrap());
+    }
 }
