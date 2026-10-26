@@ -61,7 +61,6 @@ impl Plugin for PresentationPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((main_screen::MainScreenPlugin, inventory::InventoryPlugin))
             .add_message::<voice::SpeechFinished>()
-            .add_message::<dialog::TravelAnswer>()
             .add_message::<automap::OpenAutomap>()
             .init_resource::<effects::CameraShake>()
             .init_resource::<notices::TextLog>()
@@ -121,7 +120,7 @@ impl Plugin for PresentationPlugin {
                     music::play_music,
                     (ambience::place_ambient_sounds, ambience::play_ambient_sounds).chain(),
                     notices::queue_notices,
-                    (dialog::show_travel_question, dialog::settle_travel_question).chain(),
+                    (dialog::close_ended_questions, dialog::show_travel_question).chain(),
                     effects::shake_camera.after(party_view::aim_camera),
                     sky::orbit_sun_and_moon,
                     voice::finish_speech,

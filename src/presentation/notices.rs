@@ -14,7 +14,6 @@ use crate::game::camp::CampNews;
 use crate::game::combat::{Announcement, CombatNews};
 use crate::game::inventory::ItemNews;
 use crate::game::world::identify::Identified;
-use crate::game::world::level::Level;
 use crate::game::world::search::SearchNews;
 use crate::game::world::triggers::TriggerEffect;
 
@@ -258,21 +257,21 @@ pub fn queue_notices(
     names: super::names::ActorNames,
     art: Res<NoticeArt>,
     tables: Res<Assets<TextTable>>,
-    levels: Query<&Level>,
     battle: Option<Res<crate::game::combat::Battle>>,
     sheets: Res<Assets<SpriteSheet>>,
     mut log: ResMut<TextLog>,
 ) {
     let font = sheets.get(&art.font);
     let channel = usize::from(battle.is_some());
-    let messages = levels.iter().find_map(|level| tables.get(level.messages.as_ref()?));
     let strings = tables.get(&art.strings);
     let string = |index| strings.and_then(|s| s.get(index)).unwrap_or_default().trim().to_owned();
     for effect in effects.read() {
         let text = match effect {
-            TriggerEffect::Message(id) => {
-                messages.and_then(|m| m.get(usize::try_from(*id).ok()?)).map(str::to_owned)
-            }
+            TriggerEffect::Message { source, id } => source
+                .as_ref()
+                .and_then(|source| tables.get(source))
+                .and_then(|messages| messages.get(usize::try_from(*id).ok()?))
+                .map(str::to_owned),
             TriggerEffect::NothingHappened => Some(string(NOTHING_HAPPENS)),
             // Whizzardry's notice for a locked door without its key.
             TriggerEffect::Locked => Some("Your party doesn't have required key.".to_owned()),

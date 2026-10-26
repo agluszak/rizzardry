@@ -321,7 +321,10 @@ pub enum TriggerEffect {
         fade_out: bool,
     },
     /// A message from the level's message file.
-    Message(i32),
+    Message {
+        source: Option<Handle<crate::content::ui::TextTable>>,
+        id: i32,
+    },
     /// The party used something and nothing came of it.
     NothingHappened,
     /// A member was hurt.
@@ -379,10 +382,10 @@ pub struct DeviceOperations<'w, 's> {
 }
 
 impl<'w, 's> DeviceOperations<'w, 's> {
-    pub fn take_party_move(&mut self) -> Option<PartyMove> {
+    pub fn take_party_move(&mut self) -> Option<(Entity, PartyMove)> {
         let (level, movement) = self.party_move.0.take()?;
         self.levels.get(level).ok()?;
-        Some(movement)
+        Some((level, movement))
     }
 
     fn ready(&self) -> bool {
@@ -689,7 +692,8 @@ impl<'w, 's> DeviceOperations<'w, 's> {
             }
         }
         if let Some(message) = chosen.message {
-            self.effects.write(TriggerEffect::Message(message));
+            let source = self.levels.get(level).unwrap().0.messages.clone();
+            self.effects.write(TriggerEffect::Message { source, id: message });
         }
         let mut state = self.states.get_mut(entity).unwrap();
         if !state.fired {
@@ -992,7 +996,7 @@ mod tests {
         fn walk(&mut self, eye: Vec3, elapsed: Duration) -> Option<PartyMove> {
             let mut operations = self.operations.get_mut(&mut self.world).unwrap();
             operations.walk(eye, elapsed);
-            operations.take_party_move()
+            operations.take_party_move().map(|(_, movement)| movement)
         }
 
         fn motion(&self, name: &str) -> &PropMotion {
@@ -1022,6 +1026,21 @@ mod tests {
                 .unwrap()
                 .remember(self.root, self.world.get::<LevelState>(self.root).unwrap())
         }
+    }
+
+    #[test]
+    fn queued_messages_keep_the_originating_asset_when_the_level_is_replaced() {
+        use crate::content::ui::TextTable;
+        let mut definition = trigger("MESSAGE", TriggerAction::Nothing);
+        definition.initial.message = Some(3);
+        let mut level = Scenario::new(vec![definition], &[], LevelScript::default());
+        level.world.init_resource::<Assets<TextTable>>();
+        let messages = level.world.resource_mut::<Assets<TextTable>>().add(TextTable(vec![]));
+        level.world.get_mut::<Level>(level.root).unwrap().messages = Some(messages.clone());
+        let device = level.device("MESSAGE");
+        assert!(level.operations.get_mut(&mut level.world).unwrap().run(device));
+        level.visit(None);
+        assert_eq!(level.effects(), vec![TriggerEffect::Message { source: Some(messages), id: 3 }]);
     }
 
     #[test]
@@ -1058,7 +1077,7 @@ mod tests {
         let mut level =
             Scenario::new(vec![door], &[PropSpec("DOOR", 15.0, false, &[])], LevelScript::None);
         // Without the key: the fallback, which shows its message.
-        assert_eq!(level.run("DOOR"), (true, vec![TriggerEffect::Message(3)]));
+        assert_eq!(level.run("DOOR"), (true, vec![TriggerEffect::Message { source: None, id: 3 }]));
         assert_eq!(level.motion("DOOR").target, 0.0);
         let definition = ItemDefinition { id: key, ..default() };
         let item =
@@ -1427,9 +1446,9 @@ mod tests {
             (
                 true,
                 vec![
-                    TriggerEffect::Message(1),
-                    TriggerEffect::Message(2),
-                    TriggerEffect::Message(3)
+                    TriggerEffect::Message { source: None, id: 1 },
+                    TriggerEffect::Message { source: None, id: 2 },
+                    TriggerEffect::Message { source: None, id: 3 }
                 ]
             )
         );

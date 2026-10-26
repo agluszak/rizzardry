@@ -77,9 +77,43 @@ impl Level {
 
 /// The party is being asked whether to leave for another level's entrance;
 /// it waits until the player answers (retail `RequestLevelTransition`).
-#[derive(Resource, Debug, Clone)]
+#[derive(Component, Debug, Clone)]
 pub struct TravelQuestion {
     pub entrance: String,
+}
+
+/// An answer addresses the particular question that was displayed. It cannot
+/// answer a replacement question or a question from a departed level.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct TravelAnswer {
+    pub question: Entity,
+    pub accept: bool,
+}
+
+/// Resolve questions through gameplay, including when no UI is installed.
+/// The first matching answer settles a question; later answers cannot reverse it.
+pub fn answer_travel_questions(
+    mut commands: Commands,
+    mut answers: MessageReader<TravelAnswer>,
+    questions: Query<(Entity, &TravelQuestion, &ChildOf)>,
+    levels: Query<(), (With<Level>, Without<Departing>)>,
+    battle: Option<Res<crate::game::combat::Battle>>,
+    mut travel: MessageWriter<Travel>,
+) {
+    let answers: Vec<_> = answers.read().copied().collect();
+    for (entity, question, owner) in &questions {
+        if !levels.contains(owner.parent()) {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        let Some(answer) = answers.iter().find(|answer| answer.question == entity) else {
+            continue;
+        };
+        if answer.accept && battle.is_none() {
+            travel.write(Travel { entrance: question.entrance.clone() });
+        }
+        commands.entity(entity).despawn();
+    }
 }
 
 /// Leave the level for one of another level's entrances, e.g. `MO201`.
@@ -544,5 +578,73 @@ fn stay(
         commands.entity(entity).remove::<Departing>();
         party.resume(commands);
         warn!("staying in {}", level.path);
+    }
+}
+
+#[cfg(test)]
+mod travel_question_tests {
+    use super::*;
+
+    fn app() -> (App, Entity) {
+        let mut app = App::new();
+        app.add_message::<TravelAnswer>()
+            .add_message::<Travel>()
+            .add_systems(Update, answer_travel_questions);
+        let level = app
+            .world_mut()
+            .spawn(Level {
+                path: "question-test".into(),
+                geometry: default(),
+                navmeshes: vec![],
+                sky: None,
+                script: default(),
+                messages: None,
+            })
+            .id();
+        (app, level)
+    }
+
+    fn ask(app: &mut App, level: Entity, entrance: &str) -> Entity {
+        app.world_mut().spawn((TravelQuestion { entrance: entrance.into() }, ChildOf(level))).id()
+    }
+
+    #[test]
+    fn questions_complete_headlessly_and_answers_cannot_retarget_a_new_question() {
+        let (mut app, level) = app();
+        let old = ask(&mut app, level, "first");
+        app.world_mut().write_message(TravelAnswer { question: old, accept: false });
+        app.update();
+        assert!(app.world().get_entity(old).is_err());
+        assert!(app.world().resource::<Messages<Travel>>().is_empty());
+        let current = ask(&mut app, level, "second");
+        app.world_mut().write_message(TravelAnswer { question: old, accept: true });
+        app.update();
+        assert!(app.world().get_entity(current).is_ok());
+        assert!(app.world().resource::<Messages<Travel>>().is_empty());
+        app.world_mut().write_message(TravelAnswer { question: current, accept: true });
+        app.world_mut().write_message(TravelAnswer { question: current, accept: false });
+        app.update();
+        assert!(app.world().get_entity(current).is_err());
+        let travel: Vec<_> = app.world_mut().resource_mut::<Messages<Travel>>().drain().collect();
+        assert_eq!(travel.len(), 1);
+        assert_eq!(travel[0].entrance, "second");
+    }
+
+    #[test]
+    fn departed_questions_and_answers_during_a_battle_cannot_start_travel() {
+        let (mut app, level) = app();
+        let question = ask(&mut app, level, "departed");
+        app.world_mut().entity_mut(level).insert(Departing);
+        app.world_mut().write_message(TravelAnswer { question, accept: true });
+        app.update();
+        assert!(app.world().get_entity(question).is_err());
+        assert!(app.world().resource::<Messages<Travel>>().is_empty());
+        app.world_mut().entity_mut(level).remove::<Departing>();
+        app.insert_resource(crate::game::combat::Battle::default());
+        let question = ask(&mut app, level, "fighting");
+        app.world_mut().write_message(TravelAnswer { question, accept: true });
+        app.update();
+        assert!(app.world().get_entity(question).is_err());
+        assert!(app.world().resource::<Messages<Travel>>().is_empty());
     }
 }

@@ -38,7 +38,7 @@ pub fn move_party(
     mut travel: MessageWriter<Travel>,
     mut triggers: DeviceOperations,
 ) {
-    let Some(party_move) = triggers.take_party_move() else { return };
+    let Some((origin, party_move)) = triggers.take_party_move() else { return };
     let Ok((entity, mut body, mut position, mut transform, flying)) = party.single_mut() else {
         return;
     };
@@ -56,7 +56,7 @@ pub fn move_party(
         }
         // Retail asks first; until answered the party stays where it is.
         PartyMove::Teleport(Arrival::Entrance { entrance, ask: true }) => {
-            commands.insert_resource(TravelQuestion { entrance });
+            commands.spawn((TravelQuestion { entrance }, ChildOf(origin)));
         }
         // Retail ignores starting a path that is already playing; the eye
         // flying through its trigger runs it again.

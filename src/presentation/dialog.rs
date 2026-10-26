@@ -6,7 +6,7 @@ use bevy_enhanced_input::prelude::*;
 
 use crate::content::levels::LevelInfo;
 use crate::content::ui::{SpriteSheet, TextTable};
-use crate::game::world::level::{Travel, TravelQuestion};
+use crate::game::world::level::{TravelAnswer, TravelQuestion};
 use crate::presentation::screen_art::{centred, hover_art};
 
 /// "Proceed to" in the game string table.
@@ -37,6 +37,9 @@ pub fn load_dialog_art(mut commands: Commands, assets: Res<AssetServer>) {
 #[derive(Component, Clone, Default)]
 pub struct QuestionDialog;
 
+#[derive(Component, Clone, FromTemplate)]
+pub struct QuestionSession(pub Entity);
+
 #[derive(InputAction)]
 #[action_output(bool)]
 struct Accept;
@@ -45,22 +48,18 @@ struct Accept;
 #[action_output(bool)]
 struct Decline;
 
-/// The player's answer to the travel question.
-#[derive(Message, Debug, Clone, Copy)]
-pub struct TravelAnswer(pub bool);
-
 /// Show the question when one is asked, once its art has loaded.
 pub fn show_travel_question(
     mut commands: Commands,
-    question: Option<Res<TravelQuestion>>,
-    shown: Query<(), With<QuestionDialog>>,
+    questions: Query<(Entity, &TravelQuestion)>,
+    shown: Query<&QuestionSession>,
     art: Res<DialogArt>,
     sheets: Res<Assets<SpriteSheet>>,
     tables: Res<Assets<TextTable>>,
     mut images: ResMut<Assets<Image>>,
 ) {
-    let Some(question) = question else { return };
-    if !shown.is_empty() {
+    let Ok((question_id, question)) = questions.single() else { return };
+    if shown.iter().any(|shown| shown.0 == question_id) {
         return;
     }
     let (Some(ok), Some(cancel), Some(font), Some(strings)) = (
@@ -89,7 +88,7 @@ pub fn show_travel_question(
                 ImageNode
                 @hover_art(sheet, 0, if sheet.images.len() > 1 { 1 } else { 0 })
                 on(move |_: On<PointerClick>, mut answers: MessageWriter<TravelAnswer>| {
-                    answers.write(TravelAnswer(accept));
+                    answers.write(TravelAnswer { question: question_id, accept });
                 })
             })
         })
@@ -97,6 +96,7 @@ pub fn show_travel_question(
     commands.spawn_scene(bsn! {
         @centred()
         QuestionDialog
+        QuestionSession({question_id})
         ContextPriority::<QuestionDialog>::new(1)
         Actions<QuestionDialog> [
             Action::<Accept>::new()
@@ -107,11 +107,11 @@ pub fn show_travel_question(
             ActionSettings { consume_input: true }
             Bindings [ Binding(KeyCode::Escape) ]
         ]
-        on(|_: On<Start<Accept>>, mut answers: MessageWriter<TravelAnswer>| {
-            answers.write(TravelAnswer(true));
+        on(move |_: On<Start<Accept>>, mut answers: MessageWriter<TravelAnswer>| {
+            answers.write(TravelAnswer { question: question_id, accept: true });
         })
-        on(|_: On<Start<Decline>>, mut answers: MessageWriter<TravelAnswer>| {
-            answers.write(TravelAnswer(false));
+        on(move |_: On<Start<Decline>>, mut answers: MessageWriter<TravelAnswer>| {
+            answers.write(TravelAnswer { question: question_id, accept: false });
         })
         Children [
             Node {
@@ -136,21 +136,15 @@ pub fn show_travel_question(
     });
 }
 
-/// Travel on yes; on no the party stays where it is (retail places it back
-/// at the trigger it stands in, which does not fire again until it leaves).
-pub fn settle_travel_question(
+/// A dialog is a view of its gameplay session, including cancellation by travel.
+pub fn close_ended_questions(
     mut commands: Commands,
-    mut answers: MessageReader<TravelAnswer>,
-    question: Option<Res<TravelQuestion>>,
-    dialogs: Query<Entity, With<QuestionDialog>>,
-    mut travel: MessageWriter<Travel>,
+    questions: Query<(), With<TravelQuestion>>,
+    dialogs: Query<(Entity, &QuestionSession)>,
 ) {
-    let (Some(answer), Some(question)) = (answers.read().last(), question) else { return };
-    if answer.0 {
-        travel.write(Travel { entrance: question.entrance.clone() });
-    }
-    commands.remove_resource::<TravelQuestion>();
-    for dialog in &dialogs {
-        commands.entity(dialog).despawn();
+    for (entity, dialog) in &dialogs {
+        if !questions.contains(dialog.0) {
+            commands.entity(entity).despawn();
+        }
     }
 }

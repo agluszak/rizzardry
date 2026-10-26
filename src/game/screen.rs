@@ -43,7 +43,7 @@ pub struct Freedom<'w, 's> {
     levels: Query<'w, 's, (), (With<Level>, Without<Departing>)>,
     screen: Res<'w, Screen>,
     camp: Option<Res<'w, Camp>>,
-    question: Option<Res<'w, TravelQuestion>>,
+    questions: Query<'w, 's, (), With<TravelQuestion>>,
 }
 
 impl Freedom<'_, '_> {
@@ -51,7 +51,7 @@ impl Freedom<'_, '_> {
         !self.levels.is_empty()
             && *self.screen == Screen::World
             && self.camp.is_none()
-            && self.question.is_none()
+            && self.questions.is_empty()
     }
 }
 
