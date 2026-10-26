@@ -155,3 +155,28 @@ next to its feature when that feature changes.
 - The screenshot tool intermittently omits all or some unchanged UI artwork,
   even while map/note assertions pass. Complete map frames have also been
   captured; the cause is still unresolved.
+
+## Attack stamina follow-up
+
+Ordinary party attacks spend stamina after every executed swing, including misses
+and the killing blow. Punches cost 2–4, kicks 3–5, other empty-hand attacks 3–6;
+weapons use their weight band. Disease doubles the cost. Exhaustion takes effect
+through Vitals immediately and stops the remaining swings. Later swings use the
+attacker's reduced stamina in their hit calculation. Shared-load scaling and the
+separate Berserk order are still absent; a weapon's Berserk mode alone does not
+select that order. Monster attack fatigue is also still pending.
+
+Ownership: the accepted battle work identifies the actor and weapon. The attack
+operation calculates each executed swing's cost and applies it to that actor's
+Vitals before continuing. No pending-fatigue message, extra entity, or copied
+character state is involved. The cost draw now occurs between swings, so seeded
+combat outcomes change from the previous once-per-attack approximation.
+
+Both sources agree: `wizardry-8-decomp` at
+`075cbd0b853c4670e94f6ae4fe48d53b52b5e819`,
+`src/wiz8/local_code/Health Stamina Mana.cpp::CharacterActionFatigueCost` and
+`Combat Attack.cpp` around line 4338; `whizzardry-8` at
+`31a3dfd57ee99fec8ff4b47f4b9be449c42de2fa`, the same cost function and
+`src/wiz8/combat/attack.cpp` around line 3835. Both charge before decrementing
+remaining swings and stop when the attacker is incapacitated. Tests exercise
+cost ranges/disease and the actual round's stamina and exhaustion outcomes.
