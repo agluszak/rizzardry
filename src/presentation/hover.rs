@@ -79,6 +79,7 @@ pub fn show_tooltip(
     ),
     pointers: Query<(&PointerId, &PointerLocation)>,
     scale: Res<UiScale>,
+    cameras: Query<&Camera, With<bevy::ui::IsDefaultUiCamera>>,
     (data, catalogs, species, sheets, assets): (
         Option<Res<GameData>>,
         Res<Assets<ItemCatalog>>,
@@ -101,6 +102,7 @@ pub fn show_tooltip(
     let wanted = (|| {
         let (entity, at) =
             hovered.entity.filter(|_| hovered.held.elapsed_secs() >= TOOLTIP_DELAY).zip(cursor)?;
+        let target = cameras.single().ok()?.logical_target_size()? / scale.0;
         let sheet = sheets.get(&*font)?;
         let text = if let Ok(item) = items.get(entity) {
             // "Bullets (Unidentified) (16)".
@@ -129,8 +131,7 @@ pub fn show_tooltip(
             .first()
             .map_or(1.0, |f| (i32::from(f.offset[1]) + f.height as i32).max(1) as f32);
         let size = Vec2::new(width + 4.0, height + 2.0);
-        let corner = Vec2::new(at.x.max(2.0), (at.y - HALF_CURSOR).max(2.0))
-            .min((Vec2::new(640.0, 480.0) - size - 2.0).max(Vec2::splat(2.0)));
+        let corner = tooltip_corner(at, size, target);
         Some((text, corner, size))
     })();
     let Some((value, at, size)) = wanted else {
@@ -173,5 +174,36 @@ pub fn show_tooltip(
                 Pickable::IGNORE
             ]
         });
+    }
+}
+
+/// Cursor, tooltip and camera target are all in unscaled, full-target UI coordinates.
+fn tooltip_corner(cursor: Vec2, size: Vec2, target: Vec2) -> Vec2 {
+    (cursor - Vec2::new(0.0, HALF_CURSOR))
+        .max(Vec2::splat(2.0))
+        .min((target - size - 2.0).max(Vec2::splat(2.0)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tooltip_bounds_follow_the_target_instead_of_the_retail_canvas() {
+        let size = Vec2::new(100.0, 20.0);
+        for pixels in
+            [Vec2::new(1280.0, 960.0), Vec2::new(1920.0, 1080.0), Vec2::new(1080.0, 1920.0)]
+        {
+            let scale = (pixels.x / 640.0).min(pixels.y / 480.0);
+            let target = pixels / scale;
+            let cursor = target - Vec2::splat(10.0);
+            let at = tooltip_corner(cursor, size, target);
+            assert_eq!(at.x, target.x - size.x - 2.0);
+            assert!(at.y >= 2.0 && at.y + size.y <= target.y - 2.0);
+            assert_eq!(tooltip_corner(Vec2::ZERO, size, target), Vec2::splat(2.0));
+        }
+        let wide = Vec2::new(1920.0, 1080.0) / 2.25;
+        assert_eq!(tooltip_corner(Vec2::new(700.0, 200.0), size, wide), Vec2::new(700.0, 184.0));
+        assert_eq!(tooltip_corner(Vec2::new(700.0, 200.0), size, Vec2::new(640.0, 480.0)).x, 538.0);
     }
 }

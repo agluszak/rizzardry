@@ -50,9 +50,11 @@ impl Default for PresentationRng {
 fn hold_exploration(
     mut commands: Commands,
     freedom: crate::game::screen::Freedom,
+    focus: Res<bevy::input_focus::InputFocus>,
+    widgets: Query<(), With<bevy::input_focus::tab_navigation::TabIndex>>,
     controls: Query<(Entity, Option<&ContextActivity<Exploration>>), With<Exploration>>,
 ) {
-    let active = freedom.free();
+    let active = freedom.free() && !focus.get().is_some_and(|entity| widgets.contains(entity));
     for (entity, activity) in &controls {
         if activity.is_none_or(|a| **a != active) {
             commands.entity(entity).insert(ContextActivity::<Exploration>::new(active));
@@ -83,9 +85,11 @@ impl Plugin for PresentationPlugin {
         .add_systems(OnEnter(crate::game::screen::Screen::Automap), automap::enter_automap)
         .add_systems(
             PreUpdate,
-            (hold_exploration, automap::route_map_keys).before(EnhancedInputSystems::Update),
+            (hold_exploration, automap::route_map_keys)
+                .after(bevy::input_focus::InputFocusSystems::Dispatch)
+                .before(EnhancedInputSystems::Update),
         )
-        .add_systems(PostUpdate, automap::submit_note.after(bevy::text::EditableTextSystems))
+        .add_systems(PostUpdate, automap::finish_note_input.after(bevy::text::EditableTextSystems))
         .add_input_context::<dialog::QuestionDialog>()
         .add_input_context::<camp::CampScreen>()
         .add_systems(
@@ -161,7 +165,9 @@ impl Plugin for PresentationPlugin {
                 billboards::face_camera.after(party_view::aim_camera),
                 music::play_music,
                 (ambience::place_ambient_sounds, ambience::play_ambient_sounds).chain(),
-                dialog::show_travel_question.after(crate::game::GameplaySet::LevelActivation),
+                (dialog::open_travel_question, dialog::show_travel_question)
+                    .chain()
+                    .after(crate::game::GameplaySet::LevelActivation),
                 effects::shake_camera.after(party_view::aim_camera),
                 sky::orbit_sun_and_moon,
                 voice::finish_speech,
@@ -183,5 +189,37 @@ impl Plugin for PresentationPlugin {
                     .chain(),
             ),
         );
+    }
+}
+
+#[cfg(test)]
+mod focus_tests {
+    use super::*;
+    use crate::game::{screen::Screen, world::level::Level};
+    use bevy::input_focus::{InputFocus, tab_navigation::TabIndex};
+
+    #[test]
+    fn focused_ui_prevents_the_same_arrows_from_driving_exploration() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::state::app::StatesPlugin))
+            .init_state::<Screen>()
+            .init_resource::<InputFocus>()
+            .add_systems(Update, hold_exploration);
+        app.world_mut().spawn(Level {
+            path: "test".into(),
+            geometry: default(),
+            navmeshes: vec![],
+            script: default(),
+            messages: None,
+        });
+        let controls =
+            app.world_mut().spawn((Exploration, ContextActivity::<Exploration>::new(true))).id();
+        let widget = app.world_mut().spawn(TabIndex(0)).id();
+        app.insert_resource(InputFocus::from_entity(widget));
+        app.update();
+        assert!(!**app.world().get::<ContextActivity<Exploration>>(controls).unwrap());
+        app.world_mut().resource_mut::<InputFocus>().clear();
+        app.update();
+        assert!(**app.world().get::<ContextActivity<Exploration>>(controls).unwrap());
     }
 }

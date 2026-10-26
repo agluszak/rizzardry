@@ -879,6 +879,17 @@ mod keyboard_tests {
             .spawn((NameInput, EditableText { max_characters: Some(24), ..EditableText::new("A") }))
             .observe(update_name)
             .id();
+        // The real UI style system supplies the font family before editing.
+        let family = bevy::text::FontSource::Family("Fira Mono".into())
+            .resolve_font_family(&Assets::<bevy::text::Font>::default())
+            .unwrap()
+            .into_owned();
+        app.world_mut()
+            .get_mut::<EditableText>(field)
+            .unwrap()
+            .editor
+            .edit_styles()
+            .insert(family.into());
         for edit in [TextEdit::SelectAll, TextEdit::Insert("Nora".into())] {
             app.world_mut().get_mut::<EditableText>(field).unwrap().queue_edit(edit);
         }

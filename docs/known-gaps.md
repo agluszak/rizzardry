@@ -302,3 +302,6 @@ Name and map-note editing use Bevy native text input (including selection and IM
 Map notes retain retail bitmap glyphs; their input filter still limits committed
 text to that font’s supported characters and the retail note length. OS clipboard
 and platform IME verification require an interactive display.
+F6 enters keyboard navigation in the HUD; Tab/Shift+Tab navigate controls and
+Escape returns focus to the world. This keeps retail’s unfocused Tab-to-open-map
+binding, and focused UI arrows/Enter do not also move the party or start a round.

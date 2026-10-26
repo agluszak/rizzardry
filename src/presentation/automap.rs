@@ -8,7 +8,7 @@
 //! tool, typed in the retail text font, and erased with Erase note.
 
 mod note_input;
-pub(crate) use note_input::{draw_note_input, submit_note, sync_note_input};
+pub(crate) use note_input::{draw_note_input, finish_note_input, sync_note_input};
 
 #[cfg(test)]
 use bevy::input::ButtonState;
@@ -65,8 +65,10 @@ pub fn spawn_map_key(mut commands: Commands) {
             Action::<OpenMap>::new()
             Bindings [ Binding(KeyCode::Tab) ]
         ]
-        on(|_: On<Start<OpenMap>>, mut open: MessageWriter<OpenAutomap>| {
-            open.write(OpenAutomap);
+        on(|_: On<Start<OpenMap>>, mut open: MessageWriter<OpenAutomap>,
+            focus: Res<bevy::input_focus::InputFocus>,
+            widgets: Query<(),With<bevy::input_focus::tab_navigation::TabIndex>>| {
+            if !focus.get().is_some_and(|entity| widgets.contains(entity)) { open.write(OpenAutomap); }
         })
     });
 }
@@ -311,12 +313,7 @@ pub fn enter_automap(
         @centred()
         AutomapScreen
         TabGroup::default()
-        on(|mut event: On<bevy::input_focus::FocusedInput<KeyboardInput>>, map: Option<Single<&mut Automap>>| {
-            if event.input.state.is_pressed() && event.input.logical_key == bevy::input::keyboard::Key::Escape
-                && let Some(mut map)=map && map.editing.is_some() {
-                map.editing=None; event.propagate(false);
-            }
-        })
+        on(note_input::cancel_from_controls)
         BackgroundColor(Color::BLACK)
         ContextPriority::<AutomapScreen>::new(1)
         Actions<AutomapScreen> [

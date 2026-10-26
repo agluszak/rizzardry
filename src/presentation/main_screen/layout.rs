@@ -4,6 +4,7 @@
 use bevy::camera::Viewport;
 use bevy::prelude::*;
 use bevy::ui::IsDefaultUiCamera;
+use bevy::ui_widgets::Activate;
 use enumset::{EnumSet, EnumSetType};
 
 use super::{MainScreenArt, button, loaded};
@@ -178,7 +179,7 @@ pub fn buttons(
                 let image = if mode == layout.mode { 3 + i } else { i };
                 bsn! {
                     @button(roof_buttons, image, Vec2::new(x, 1.0))
-                    on(move |_: On<PointerClick>, mut layout: ResMut<ScreenLayout>| {
+                    on(move |_: On<Activate>, mut layout: ResMut<ScreenLayout>| {
                         layout.mode = mode;
                     })
                 }
@@ -201,7 +202,7 @@ pub fn buttons(
         let image = if layout.shows(panel) { hide } else { show };
         panels.push(Box::new(bsn! {
             @button(arrows, image, at)
-            on(move |_: On<PointerClick>, mut layout: ResMut<ScreenLayout>| layout.toggle(panel))
+            on(move |_: On<Activate>, mut layout: ResMut<ScreenLayout>| layout.toggle(panel))
         }));
     }
     (modes, panels)

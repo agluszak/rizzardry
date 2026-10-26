@@ -19,8 +19,11 @@ pub(crate) struct Selection;
 pub(crate) struct Caret;
 #[derive(Component)]
 pub(crate) struct InputLabel;
-#[derive(Component)]
-pub(crate) struct SubmitNote;
+#[derive(Component, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FinishNote {
+    Accept,
+    Cancel,
+}
 
 pub(crate) fn sync_note_input(
     mut commands: Commands,
@@ -131,7 +134,6 @@ fn changed(
 fn finish(
     mut event: On<FocusedInput<KeyboardInput>>,
     inputs: Query<&EditableText, With<NoteInput>>,
-    map: Option<Single<&mut Automap>>,
     mut commands: Commands,
 ) {
     let Ok(input) = inputs.get(event.original_event_target()) else { return };
@@ -142,29 +144,46 @@ fn finish(
         return;
     }
     event.propagate(false);
-    if event.input.logical_key == Key::Enter {
-        commands.entity(event.original_event_target()).insert((SubmitNote, InteractionDisabled));
-    } else {
-        if let Some(mut map) = map {
-            map.editing = None;
+    let outcome =
+        if event.input.logical_key == Key::Enter { FinishNote::Accept } else { FinishNote::Cancel };
+    commands.entity(event.original_event_target()).insert((outcome, InteractionDisabled));
+}
+
+pub(super) fn cancel_from_controls(
+    mut event: On<FocusedInput<KeyboardInput>>,
+    inputs: Query<Entity, With<NoteInput>>,
+    mut commands: Commands,
+) {
+    if event.input.state.is_pressed()
+        && event.input.logical_key == Key::Escape
+        && !inputs.is_empty()
+    {
+        event.propagate(false);
+        for entity in &inputs {
+            commands.entity(entity).insert((FinishNote::Cancel, InteractionDisabled));
         }
-        commands.entity(event.original_event_target()).despawn();
     }
 }
 
 /// Native edits (including same-frame text/IME and asynchronous paste) settle
-/// before Enter commits. A cancelled or replaced editor cannot commit later.
-pub(crate) fn submit_note(
-    inputs: Query<(Entity, &EditableText), With<SubmitNote>>,
+/// before Enter commits. Cancellation also waits until after input dispatch,
+/// so the same raw Escape cannot re-enable and close the underlying map.
+/// A cancelled or replaced editor cannot commit later.
+pub(crate) fn finish_note_input(
+    inputs: Query<(Entity, &EditableText, &FinishNote)>,
     map: Option<Single<&mut Automap>>,
     mut commands: Commands,
 ) {
     let Some(mut map) = map else { return };
-    for (entity, input) in &inputs {
-        if !input.pending_edits.is_empty() || input.pending_paste.is_some() {
+    for (entity, input, outcome) in &inputs {
+        if *outcome == FinishNote::Accept
+            && (!input.pending_edits.is_empty() || input.pending_paste.is_some())
+        {
             continue;
         }
-        if let Some(mut draft) = map.editing.take() {
+        if let Some(mut draft) = map.editing.take()
+            && *outcome == FinishNote::Accept
+        {
             draft.note.text = input.value().to_string();
             commands.queue(move |world: &mut World| {
                 let _ = crate::game::automap::commit_note(world, draft);
@@ -329,6 +348,82 @@ pub(crate) fn draw_note_input(
 mod tests {
     use super::*;
     #[test]
+    fn escape_cancels_the_editor_before_a_second_escape_closes_the_map() {
+        use bevy::input::{ButtonState, InputPlugin};
+        use bevy::input_focus::{InputDispatchPlugin, InputFocusPlugin, InputFocusSystems};
+        use bevy::window::PrimaryWindow;
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin::default(),
+            bevy::scene::ScenePlugin,
+            InputPlugin,
+            bevy::state::app::StatesPlugin,
+            EnhancedInputPlugin,
+            InputFocusPlugin,
+            InputDispatchPlugin,
+        ))
+        .init_state::<Screen>()
+        .init_asset::<LevelDefinition>()
+        .add_input_context::<AutomapScreen>()
+        .add_systems(OnEnter(Screen::Automap), enter_automap)
+        .add_systems(
+            PreUpdate,
+            route_map_keys.after(InputFocusSystems::Dispatch).before(EnhancedInputSystems::Update),
+        )
+        .add_systems(PostUpdate, finish_note_input);
+        let window = app.world_mut().spawn((Window::default(), PrimaryWindow)).id();
+        app.world_mut().spawn((PartyBody::default(), Transform::default()));
+        let level = app
+            .world_mut()
+            .spawn(Level {
+                path: "test".into(),
+                geometry: default(),
+                navmeshes: vec![],
+                script: default(),
+                messages: None,
+            })
+            .id();
+        app.world_mut().resource_mut::<NextState<Screen>>().set(Screen::Automap);
+        app.finish();
+        app.cleanup();
+        app.update();
+        app.update();
+        let root =
+            app.world_mut().query_filtered::<Entity, With<Automap>>().single(app.world()).unwrap();
+        app.world_mut().get_mut::<Automap>(root).unwrap().editing = Some(NoteDraft {
+            level,
+            original: None,
+            note: MapNote { position: Vec2::ZERO, layer: 0, text: "draft".into() },
+        });
+        let input = app
+            .world_mut()
+            .spawn((NoteInput, EditableText::new("draft"), ChildOf(root)))
+            .observe(finish)
+            .id();
+        app.insert_resource(InputFocus::from_entity(input));
+        let tap = |app: &mut App| {
+            for state in [ButtonState::Pressed, ButtonState::Released] {
+                app.world_mut().write_message(KeyboardInput {
+                    key_code: KeyCode::Escape,
+                    logical_key: Key::Escape,
+                    state,
+                    text: None,
+                    repeat: false,
+                    window,
+                });
+                app.update();
+            }
+        };
+        tap(&mut app);
+        assert_eq!(*app.world().resource::<State<Screen>>().get(), Screen::Automap);
+        assert!(app.world().get::<Automap>(root).unwrap().editing.is_none());
+        assert!(app.world().get_entity(input).is_err());
+        tap(&mut app);
+        assert_eq!(*app.world().resource::<State<Screen>>().get(), Screen::World);
+    }
+
+    #[test]
     fn native_note_input_commits_or_cancels_without_mutating_saved_notes_early() {
         for accept in [false, true] {
             let mut app = App::new();
@@ -336,7 +431,7 @@ mod tests {
                 .init_resource::<FontCx>()
                 .init_resource::<LayoutCx>()
                 .init_resource::<bevy::clipboard::Clipboard>()
-                .add_systems(PostUpdate, (bevy::text::apply_text_edits, submit_note).chain());
+                .add_systems(PostUpdate, (bevy::text::apply_text_edits, finish_note_input).chain());
             app.world_mut().resource_mut::<FontCx>().collection.register_fonts(
                 bevy::text::Font::from_bytes(bevy::text::DEFAULT_FONT_DATA.to_vec()).data,
                 None,
