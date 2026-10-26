@@ -16,11 +16,13 @@ pub fn run_walk_in_triggers(
     time: Res<Time>,
     party: Query<&Position, With<PartyBody>>,
     mut commands: Commands,
+    levels: Query<Entity, (With<Level>, Without<Departing>)>,
 ) {
+    let Ok(level) = levels.single() else { return };
     let Ok(position) = party.single() else { return };
     let eye = PartyBody::eye(position);
     let elapsed = time.delta();
-    commands.queue(move |world: &mut World| triggers::walk(world, eye, elapsed));
+    commands.queue(move |world: &mut World| triggers::walk(world, level, eye, elapsed));
 }
 
 /// The party's eye flying along a camera path; input and physics wait

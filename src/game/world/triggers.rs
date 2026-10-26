@@ -9,7 +9,8 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use bevy::ecs::system::{InRef, SystemParam};
+use bevy::ecs::system::SystemParam;
+use bevy::ecs::world::EntityMut;
 use bevy::prelude::*;
 
 use super::level::{Departing, Level};
@@ -505,13 +506,14 @@ fn ready(world: &World, entity: Entity) -> bool {
     })
 }
 
-fn select_use(
-    (In(entity), InRef(definition)): (In<Entity>, InRef<TriggerDefinition>),
-    mut devices: Query<(&Device, &mut TriggerState, Option<&mut DoorState>, Option<&PropMotion>)>,
-    levels: Query<&LevelState>,
-    inventory: Option<Res<PartyInventory>>,
-) -> Option<TriggerUse> {
-    let (device, mut state, door, motion) = devices.get_mut(entity).ok()?;
+fn select_use<'a>(
+    mut actor: EntityMut,
+    variables: &LevelState,
+    definition: &'a TriggerDefinition,
+    offered: Option<crate::content::items::ItemId>,
+) -> Option<&'a TriggerUse> {
+    let state = actor.get::<TriggerState>()?;
+    let motion = actor.get::<PropMotion>();
     let running = state.awaits_animation && motion.is_some_and(|m| m.frame != m.target);
     if !state.on
         || (definition.once && state.fired)
@@ -519,20 +521,20 @@ fn select_use(
     {
         return None;
     }
-    let variables = levels.get(device.level).ok()?;
-    if !device.required_states.iter().all(|&key| variables.variables[key].1) {
-        return definition.fallback.clone();
+    if !actor.get::<Device>()?.required_states.iter().all(|&key| variables.variables[key].1) {
+        return definition.fallback.as_ref();
     }
-    if let Some(mut door) = door
+    if let Some(mut door) = actor.get_mut::<DoorState>()
         && door.locked
         && let Some(key) = definition.door.and_then(|d| d.key)
     {
-        if inventory.as_ref().and_then(|i| i.held.as_ref()).is_some_and(|h| h.item.item == key) {
+        if offered == Some(key) {
             door.locked = false;
         } else {
-            return definition.fallback.clone();
+            return definition.fallback.as_ref();
         }
     }
+    let mut state = actor.get_mut::<TriggerState>()?;
     let (chosen, next) = match &definition.alternate {
         Some(alternate) if state.use_alternate => (alternate, !definition.alternate_toggles),
         alternate => (&definition.initial, alternate.is_some()),
@@ -540,49 +542,43 @@ fn select_use(
     if state.use_alternate != next {
         state.use_alternate = next;
     }
-    Some(chosen.clone())
+    Some(chosen)
 }
 
-fn operate_door(
-    In((entity, open_only)): In<(Entity, bool)>,
-    mut doors: Query<&mut DoorState>,
-    mut props: Query<(&Prop, &mut PropMotion, &mut TriggerState)>,
-    mut outcomes: MessageWriter<TriggerEffect>,
-) -> bool {
-    let Ok(mut door) = doors.get_mut(entity) else { return false };
-    if door.locked {
-        outcomes.write(TriggerEffect::Locked);
-        return false;
+fn operate_door(mut device: EntityMut, open_only: bool) -> Result<bool, TriggerEffect> {
+    if device.get::<DoorState>().is_some_and(|door| door.locked) {
+        return Err(TriggerEffect::Locked);
     }
-    let Ok((prop, mut motion, mut trigger)) = props.get_mut(entity) else { return false };
+    let Ok((mut door, prop, mut motion, mut trigger)) =
+        device.get_components_mut::<(&mut DoorState, &Prop, &mut PropMotion, &mut TriggerState)>()
+    else {
+        return Ok(false);
+    };
     let open = open_only || !door.open;
     if motion.frame != motion.target || door.open == open {
-        return false;
+        return Ok(false);
     }
     door.open = open;
     motion.target = if open { prop.last_frame as f32 } else { 0.0 };
     trigger.awaits_animation = true;
-    true
+    Ok(true)
 }
 
-fn animate_device(
-    In((entity, animation)): In<(Entity, crate::content::level::Animation)>,
-    mut props: Query<(&Prop, &mut PropMotion, Option<&mut DoorState>, &mut TriggerState)>,
-) {
-    let (prop, motion, door, mut state) = props.get_mut(entity).unwrap();
+fn animate_device(mut device: EntityMut, animation: crate::content::level::Animation) {
+    let (prop, motion) = device.get_components_mut::<(&Prop, &mut PropMotion)>().unwrap();
     PropMotion::activate(motion, prop, animation);
-    if let Some(mut door) = door {
+    if let Some(mut door) = device.get_mut::<DoorState>() {
         door.open = !door.open;
     }
-    state.awaits_animation = true;
+    device.get_mut::<TriggerState>().unwrap().awaits_animation = true;
 }
 
-fn turn_dial(
-    In(entity): In<Entity>,
-    mut dials: Query<(&Device, &mut DialState, &Prop, &mut PropMotion)>,
-    mut levels: Query<&mut LevelState>,
-) -> bool {
-    let Ok((device, mut dial, prop, mut motion)) = dials.get_mut(entity) else { return false };
+fn turn_dial(mut actor: EntityMut, mut level: Mut<LevelState>) -> bool {
+    let Ok((device, mut dial, prop, mut motion)) =
+        actor.get_components_mut::<(&Device, &mut DialState, &Prop, &mut PropMotion)>()
+    else {
+        return false;
+    };
     let old = dial.position;
     let next = if prop.slots.len() < 3 {
         0
@@ -596,20 +592,10 @@ fn turn_dial(
         dial.position = next;
     }
     if !device.dial_states.is_empty() {
-        let mut level = levels.get_mut(device.level).unwrap();
         level.variables[device.dial_states[old]].1 = false;
         level.variables[device.dial_states[next]].1 = true;
     }
     true
-}
-
-fn ring_bell(
-    In(entity): In<Entity>,
-    bells: Query<&BellButton>,
-    dials: Query<&DialState>,
-    mut states: Query<&mut TriggerState>,
-) -> Option<TriggerEffect> {
-    Some(bells.get(entity).ok()?.ring(entity, &dials, &mut states))
 }
 
 fn sound_position(world: &World, entity: Entity, definition: &TriggerDefinition) -> Option<Vec3> {
@@ -645,22 +631,32 @@ fn execute(world: &mut World, geometry: &LevelGeometry, entity: Entity, depth: u
         warn!("trigger {} recurses too deeply", definition.name);
         return false;
     }
-    let Some(chosen) = world.run_system_cached_with(select_use, (entity, definition)).unwrap()
-    else {
-        return false;
+    let offered =
+        world.get_resource::<PartyInventory>().and_then(|p| p.held.as_ref()).map(|h| h.item.item);
+    let chosen = {
+        let [actor, owner] = world.get_entity_mut([entity, level]).unwrap();
+        select_use(actor, owner.get::<LevelState>().unwrap(), definition, offered)
     };
-    if let Some(outcome) = world.run_system_cached_with(ring_bell, entity).unwrap() {
+    let Some(chosen) = chosen else { return false };
+    if let Some(bell) = world.get::<BellButton>(entity).copied() {
+        let [button, dial] = world.get_entity_mut([entity, bell.dial]).unwrap();
+        let outcome = super::scripts::ring_bell(button, dial);
         world.write_message(outcome);
     }
     let changes_state = !matches!(chosen.action, TriggerAction::Dial);
-    match chosen.action {
+    match &chosen.action {
         TriggerAction::Nothing => {}
         action @ (TriggerAction::OpenDoor | TriggerAction::ToggleDoor) => {
-            if !world
-                .run_system_cached_with(operate_door, (entity, action == TriggerAction::OpenDoor))
-                .unwrap()
-            {
-                return false;
+            match operate_door(
+                world.entity_mut(entity).into_mutable(),
+                *action == TriggerAction::OpenDoor,
+            ) {
+                Ok(true) => {}
+                Ok(false) => return false,
+                Err(outcome) => {
+                    world.write_message(outcome);
+                    return false;
+                }
             }
         }
         TriggerAction::Animate(animation) => {
@@ -670,7 +666,7 @@ fn execute(world: &mut World, geometry: &LevelGeometry, entity: Entity, depth: u
             if world.get::<Container>(entity).is_some() {
                 world.run_system_cached_with(open_container, entity).unwrap();
             }
-            world.run_system_cached_with(animate_device, (entity, animation)).unwrap();
+            animate_device(world.entity_mut(entity).into_mutable(), *animation);
         }
         TriggerAction::Sound => {
             play_authored_sound(world, entity, definition);
@@ -684,17 +680,18 @@ fn execute(world: &mut World, geometry: &LevelGeometry, entity: Entity, depth: u
         }
         TriggerAction::Teleport(arrival) => {
             world.resource_mut::<PendingPartyMove>().0 =
-                Some((level, PartyMove::Teleport(arrival)));
+                Some((level, PartyMove::Teleport(arrival.clone())));
         }
         TriggerAction::CameraPath(path) => {
-            world.resource_mut::<PendingPartyMove>().0 = Some((level, PartyMove::Fly(path)));
+            world.resource_mut::<PendingPartyMove>().0 =
+                Some((level, PartyMove::Fly(path.clone())));
         }
         TriggerAction::HurtParty(dice) => {
-            world.run_system_cached_with(damage_party, dice).unwrap();
+            world.run_system_cached_with(damage_party, *dice).unwrap();
         }
         TriggerAction::Fountain(fountain) => {
             let at = sound_position(world, entity, definition);
-            if !world.run_system_cached_with(drink_fountain, (entity, fountain, at)).unwrap() {
+            if !world.run_system_cached_with(drink_fountain, (entity, *fountain, at)).unwrap() {
                 return false;
             }
         }
@@ -705,10 +702,15 @@ fn execute(world: &mut World, geometry: &LevelGeometry, entity: Entity, depth: u
             }
         }
         TriggerAction::Shake { seconds, intensity, fade_out } => {
-            world.write_message(TriggerEffect::Shake { seconds, intensity, fade_out });
+            world.write_message(TriggerEffect::Shake {
+                seconds: *seconds,
+                intensity: *intensity,
+                fade_out: *fade_out,
+            });
         }
         TriggerAction::Dial => {
-            if !world.run_system_cached_with(turn_dial, entity).unwrap() {
+            let [actor, mut owner] = world.get_entity_mut([entity, level]).unwrap();
+            if !turn_dial(actor, owner.get_mut::<LevelState>().unwrap()) {
                 return false;
             }
         }
@@ -745,31 +747,14 @@ fn execute(world: &mut World, geometry: &LevelGeometry, entity: Entity, depth: u
     true
 }
 
-fn begin_walk(
-    mut levels: Query<
-        (Entity, &Level, &mut LevelState),
-        (With<PositionedDevices>, Without<Departing>),
-    >,
-) -> Option<(Entity, Handle<LevelGeometry>, bool)> {
-    let (entity, level, mut state) = levels.single_mut().ok()?;
-    let first = !state.entered;
-    if first {
-        state.entered = true;
-    }
-    Some((entity, level.geometry.clone(), first))
-}
-
 fn step_proximity(
-    (In(entity), InRef(definition), In((eye, elapsed))): (
-        In<Entity>,
-        InRef<TriggerDefinition>,
-        In<(Vec3, Duration)>,
-    ),
-    mut proximity: Query<&mut DeviceProximity>,
+    mut proximity: Mut<DeviceProximity>,
+    definition: &TriggerDefinition,
+    eye: Vec3,
+    elapsed: Duration,
 ) -> (bool, bool) {
     let inside =
         (definition.range.0..definition.range.1).contains(&eye.distance(definition.place.unwrap()));
-    let mut proximity = proximity.get_mut(entity).unwrap();
     let entering = inside && !proximity.inside;
     if proximity.inside != inside {
         proximity.inside = inside;
@@ -779,23 +764,37 @@ fn step_proximity(
             proximity.zone = None;
         }
         false
+    } else if proximity.zone.is_some() {
+        proximity.zone.as_mut().unwrap().tick(elapsed).just_finished()
     } else {
-        proximity.zone.as_mut().is_some_and(|zone| zone.tick(elapsed).just_finished())
+        false
     };
     (entering, hurt)
 }
 
-pub fn walk(world: &mut World, eye: Vec3, elapsed: Duration) {
-    let Some((level, handle, first)) = world.run_system_cached(begin_walk).unwrap() else { return };
+pub fn walk(world: &mut World, level: Entity, eye: Vec3, elapsed: Duration) {
+    if world.get::<Departing>(level).is_some() {
+        return;
+    }
+    let Some(owner) = world.get::<Level>(level) else { return };
+    let handle = owner.geometry.clone();
+    let mut state = world.get_mut::<LevelState>(level).unwrap();
+    let first = !state.entered;
+    if first {
+        state.entered = true;
+    }
     world.resource_scope(|world, geometry: Mut<Assets<LevelGeometry>>| {
         let Some(geometry) = geometry.get(&handle) else { return };
         let count = world.get::<PositionedDevices>(level).unwrap().0.len();
         for index in 0..count {
             let entity = world.get::<PositionedDevices>(level).unwrap().0[index];
             let definition = &geometry.triggers[world.get::<Device>(entity).unwrap().definition];
-            let (entering, hurt) = world
-                .run_system_cached_with(step_proximity, (entity, definition, (eye, elapsed)))
-                .unwrap();
+            let (entering, hurt) = step_proximity(
+                world.get_mut::<DeviceProximity>(entity).unwrap(),
+                definition,
+                eye,
+                elapsed,
+            );
             if hurt {
                 world
                     .run_system_cached_with(damage_party, Dice { count: 1, sides: 6, base: 2 })
@@ -1023,7 +1022,7 @@ mod tests {
         }
 
         fn walk(&mut self, eye: Vec3, elapsed: Duration) -> Option<PartyMove> {
-            walk(&mut self.world, eye, elapsed);
+            walk(&mut self.world, self.root, eye, elapsed);
             self.world.resource_mut::<PendingPartyMove>().take_for(self.root)
         }
 
@@ -1543,10 +1542,19 @@ mod tests {
         use bevy::ecs::system::RunSystemOnce;
         let mut door = trigger("DOOR", TriggerAction::OpenDoor);
         door.usable = true;
-        let mut level =
-            Scenario::new(vec![door], &[PropSpec("DOOR", 10.0, false, &[])], LevelScript::None);
+        door.initial.message = Some(1);
+        let mut button = trigger("BUTTON", TriggerAction::Nothing);
+        button.usable = true;
+        button.initial.message = Some(2);
+        let mut level = Scenario::new(
+            vec![door, button],
+            &[PropSpec("DOOR", 10.0, false, &[]), PropSpec("BUTTON", 0.0, false, &[])],
+            LevelScript::None,
+        );
         let door = level.device("DOOR");
         level.world.entity_mut(door).insert(Name::new("door"));
+        let button = level.device("BUTTON");
+        level.world.entity_mut(button).insert(Name::new("button"));
         level.world.remove_resource::<GameData>();
         level.world.remove_resource::<Assets<ItemCatalog>>();
         level.world.remove_resource::<Assets<LootTables>>();
@@ -1556,11 +1564,18 @@ mod tests {
         level.world.remove_resource::<PartyRoster>();
         level.world.remove_resource::<GameClock>();
         level.world.init_resource::<Messages<WorldClick>>();
-        level.world.write_message(WorldClick {
-            ray: Ray3d::new(Vec3::ZERO, Dir3::NEG_Z),
-            under: Some((door, 1.0)),
-        });
+        for entity in [button, door] {
+            level.world.write_message(WorldClick {
+                ray: Ray3d::new(Vec3::ZERO, Dir3::NEG_Z),
+                under: Some((entity, 1.0)),
+            });
+        }
         level.world.run_system_once(act_on_click).unwrap();
+        assert_eq!(
+            level.effects(),
+            [TriggerEffect::Message(2), TriggerEffect::Message(1)],
+            "click commands finish in input order"
+        );
         assert_eq!(level.world.get::<PropMotion>(door).unwrap().target, 10.0);
         level.world.init_resource::<Messages<Travel>>();
         let party = level
@@ -1574,6 +1589,73 @@ mod tests {
             level.world.get::<Position>(party).unwrap().0,
             Vec3::X - Vec3::Y * EYE_ABOVE_CENTRE
         );
+    }
+
+    #[test]
+    fn the_production_post_step_applies_trigger_commands_before_moving() {
+        use crate::game::party::{
+            PartyPlugin,
+            body::{EYE_ABOVE_CENTRE, PartyBody},
+        };
+        use crate::game::world::level::Travel;
+        use avian3d::prelude::Position;
+        let mut portal = trigger(
+            "PORTAL",
+            TriggerAction::Teleport(Arrival::Here { eye: Vec3::X * 10.0, yaw: 0.0 }),
+        );
+        portal.usable = true;
+        portal.place = Some(Vec3::ZERO);
+        portal.range = (0.0, 2.0);
+        let geometry = LevelGeometry { triggers: vec![portal], ..default() };
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin::default(),
+            bevy::input::InputPlugin,
+            bevy_enhanced_input::EnhancedInputPlugin,
+            PartyPlugin,
+        ))
+        .init_asset::<LevelGeometry>()
+        .add_message::<Travel>();
+        let world = app.world_mut();
+        let handle = world.resource_mut::<Assets<LevelGeometry>>().add(geometry.clone());
+        let root = world
+            .spawn(Level {
+                path: "test".into(),
+                geometry: handle,
+                navmeshes: vec![],
+                sky: None,
+                script: LevelScript::None,
+                messages: None,
+            })
+            .id();
+        let mut spawning = SystemState::<Commands>::new(world);
+        spawn_devices(
+            &mut spawning.get_mut(world).unwrap(),
+            root,
+            &geometry,
+            &[],
+            LevelScript::None,
+            &LootTables::default(),
+            None,
+        );
+        spawning.apply(world);
+        let party = world
+            .spawn((
+                PartyBody::default(),
+                Position(Vec3::X * 5.0 - Vec3::Y * EYE_ABOVE_CENTRE),
+                Transform::default(),
+            ))
+            .id();
+        // Exercise the real registered command/arrival boundary, not physics integration.
+        app.world_mut().run_schedule(FixedPostUpdate);
+        app.world_mut().get_mut::<Position>(party).unwrap().0 = -Vec3::Y * EYE_ABOVE_CENTRE;
+        app.world_mut().run_schedule(FixedPostUpdate);
+        assert_eq!(
+            app.world().get::<Position>(party).unwrap().0,
+            Vec3::X * 10.0 - Vec3::Y * EYE_ABOVE_CENTRE
+        );
+        assert!(app.world().resource::<PendingPartyMove>().0.is_none());
     }
 
     #[test]
