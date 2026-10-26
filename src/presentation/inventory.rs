@@ -11,18 +11,22 @@
 mod review;
 
 use bevy::input_focus::tab_navigation::{TabGroup, TabIndex};
-use bevy::picking::pointer::{PointerId, PointerLocation};
+use bevy::picking::{
+    hover::Hovered,
+    pointer::{PointerId, PointerLocation},
+};
 use bevy::prelude::*;
 use bevy::ui_widgets::{Activate, Button as UiButton};
 use bevy_enhanced_input::prelude::*;
 use enumset::EnumSet;
 
 use super::screen_art::{
-    BitmapText, Picture, absolute, centred, label, picture, screen, sprite, text,
+    BitmapText, Picture, absolute, centred, empty_hands, label, picture, rect, screen, sprite,
 };
 use crate::content::items::{ItemCatalog, QuantityKind};
-use crate::content::ui::SpriteSheet;
-use crate::game::characters::{Character, Gender, Race};
+use crate::content::ui::{SpriteSheet, TextTable};
+use crate::game::characters::{Character, Gender, Race, Vitals};
+use crate::game::combat::attack::armour;
 use crate::game::data::GameData;
 use crate::game::inventory::{
     BACKPACK_SLOTS, Carried, EquipSlot, ItemInstance, ItemLocation, PartyInventory, Quantity, Slot,
@@ -86,12 +90,28 @@ pub struct InventoryScreen {
     page: review::Page,
 }
 
-#[derive(Resource)]
+#[derive(Resource, Default)]
 pub struct InventoryArt {
     corner: Handle<SpriteSheet>,
+    portrait_highlight: Handle<SpriteSheet>,
     page: Handle<SpriteSheet>,
     bottom_bar: Handle<SpriteSheet>,
     page_buttons: Handle<SpriteSheet>,
+    stats_page: Handle<SpriteSheet>,
+    skills_page: Handle<SpriteSheet>,
+    skills_icons: Handle<SpriteSheet>,
+    slider: Handle<SpriteSheet>,
+    combat_panel: Handle<SpriteSheet>,
+    combat_buttons: Handle<SpriteSheet>,
+    effect_filters: Handle<SpriteSheet>,
+    scroll: Handle<SpriteSheet>,
+    column: Handle<SpriteSheet>,
+    health: Handle<SpriteSheet>,
+    stamina: Handle<SpriteSheet>,
+    left_plug: Handle<SpriteSheet>,
+    right_plug: Handle<SpriteSheet>,
+    condition_rim: Handle<SpriteSheet>,
+    strings: Handle<TextTable>,
     gold_icon: Handle<SpriteSheet>,
     highlights: Handle<SpriteSheet>,
     unusable: Handle<SpriteSheet>,
@@ -99,15 +119,36 @@ pub struct InventoryArt {
     exit: Handle<SpriteSheet>,
     font: Handle<SpriteSheet>,
     bold: Handle<SpriteSheet>,
+    small_font: Handle<SpriteSheet>,
+    green: Handle<SpriteSheet>,
+    yellow: Handle<SpriteSheet>,
+    gray: Handle<SpriteSheet>,
+    beige: Handle<SpriteSheet>,
 }
 
 pub fn load_inventory_art(mut commands: Commands, assets: Res<AssetServer>) {
     let load = |path: &str| assets.load(format!("retail://data/{path}"));
     commands.insert_resource(InventoryArt {
         corner: load("review/commoncorner.sti"),
+        portrait_highlight: load("review/smallportraithighlight.sti"),
         page: load("review/reviewitempage.sti"),
         bottom_bar: load("review/bottombuttonbar.sti"),
         page_buttons: load("review/reviewpagebuttons.sti"),
+        stats_page: load("review/reviewstatspage.sti"),
+        skills_page: load("review/reviewskillspage.sti"),
+        skills_icons: load("review/reviewskillsicons.sti"),
+        slider: load("review/reviewsliderbar.sti"),
+        combat_panel: load("review/commod_back.sti"),
+        combat_buttons: load("review/commod_buttons.sti"),
+        effect_filters: load("review/reviewfxfilters.sti"),
+        scroll: load("main interface/main_scroll.sti"),
+        column: load("main interface/main_column_info_normal.sti"),
+        health: load("main interface/healthbar.sti"),
+        stamina: load("main interface/staminabar.sti"),
+        left_plug: load("main interface/leftplug.sti"),
+        right_plug: load("main interface/rightplug.sti"),
+        condition_rim: load("main interface/condition_highlight.sti"),
+        strings: assets.load("retail://data/strings/stringdata.dat"),
         gold_icon: load("review/reviewgoldicon.sti"),
         highlights: load("review/reviewitemhighlights.sti"),
         unusable: load("review/itemusablebackground.sti"),
@@ -115,6 +156,11 @@ pub fn load_inventory_art(mut commands: Commands, assets: Res<AssetServer>) {
         exit: load("char generation/cg_bottombuttons.sti"),
         font: load("fonts/wiz_text_font.sti"),
         bold: load("fonts/wiz_text_font_bold.sti"),
+        small_font: load("fonts/smfnt.sti"),
+        green: load("fonts/palettegreen.sti"),
+        yellow: load("fonts/paletteyellow.sti"),
+        gray: load("fonts/palettegray.sti"),
+        beige: load("fonts/palettebeige.sti"),
     });
 }
 
@@ -291,6 +337,7 @@ enum HeaderPart {
     Name,
     Race,
     Profession,
+    Level,
 }
 #[derive(Component)]
 struct HeaderDisplay(HeaderPart);
@@ -298,28 +345,70 @@ struct HeaderDisplay(HeaderPart);
 struct InventoryMemberButton(Entity);
 #[derive(Component, Clone, Default)]
 struct GoldLabel;
+#[derive(Component, Clone, Copy)]
+struct RetailLabel(usize);
+#[derive(Component, Clone, Default)]
+struct PortraitHighlight;
+#[derive(Component, Clone, Default)]
+struct VitalArt;
+#[derive(Component, Clone, Copy)]
+enum VitalShade {
+    Health,
+    Stamina,
+}
+#[derive(Component, Clone, Copy)]
+enum HeaderCondition {
+    Icon,
+    Rim,
+}
+#[derive(Component, Clone, Copy)]
+enum HeaderHand {
+    Background,
+    Hand(bool),
+    Count(bool),
+    Armour,
+}
 
 fn header(art: &InventoryArt) -> impl SceneList {
     let portraits: Vec<_> = (0..8)
         .map(|slot| {
             let at = Vec2::new(5.0 + (slot % 2) as f32 * 48.0, 4.0 + (slot / 2) as f32 * 39.0);
             bsn! {
-                    @picture(default(),0,at)
-                    UiButton TabIndex(0) Pickable::default()
-            review::FocusControl Outline::new(px(1), px(1), Color::NONE)
-                    template(move |_| Ok(HeaderDisplay(HeaderPart::Member(slot))))
-                    InventoryMemberButton({Entity::PLACEHOLDER})
-                    on(select_inventory_member)
-                }
+                @picture(default(),0,at)
+                UiButton TabIndex(0) Hovered::default() Pickable::default()
+                review::FocusControl Outline::new(px(1), px(1), Color::NONE)
+                template(move |_| Ok(HeaderDisplay(HeaderPart::Member(slot))))
+                InventoryMemberButton({Entity::PLACEHOLDER})
+                on(select_inventory_member)
+                Children [
+                    @picture(art.portrait_highlight.clone(),1,Vec2::ZERO)
+                    PortraitHighlight Visibility::Hidden
+                ]
+            }
         })
         .collect();
     bsn_list! {
         {portraits}
         -- @picture(default(),0,Vec2::new(164.0,12.0)) template(|_|Ok(HeaderDisplay(HeaderPart::Portrait)))
         -- @picture(art.corner.clone(),9,Vec2::new(164.0,12.0))
+        -- @picture(art.left_plug.clone(),0,Vec2::new(165.0,14.0)) template(|_|Ok(HeaderCondition::Icon))
+        -- @picture(art.condition_rim.clone(),0,Vec2::new(164.0,13.0)) template(|_|Ok(HeaderCondition::Rim)) Visibility::Hidden
+        -- @picture(art.right_plug.clone(),0,Vec2::new(238.0,14.0))
         -- @label(art.bold.clone(),Vec2::new(116.0,96.0),186.0) template(|_|Ok(HeaderDisplay(HeaderPart::Name)))
         -- @label(art.font.clone(),Vec2::new(116.0,111.0),186.0) template(|_|Ok(HeaderDisplay(HeaderPart::Race)))
         -- @label(art.font.clone(),Vec2::new(116.0,124.0),186.0) template(|_|Ok(HeaderDisplay(HeaderPart::Profession)))
+        -- @label(art.font.clone(),Vec2::new(116.0,137.0),186.0) template(|_|Ok(HeaderDisplay(HeaderPart::Level)))
+        -- @picture(art.column.clone(),0,Vec2::new(129.0,11.0)) template(|_|Ok(HeaderHand::Background))
+        -- @picture(default(),0,Vec2::new(133.0,34.0)) template(|_|Ok(HeaderHand::Hand(false)))
+        -- @picture(default(),0,Vec2::new(133.0,58.0)) template(|_|Ok(HeaderHand::Hand(true)))
+        -- @label(art.small_font.clone(),Vec2::new(129.0,49.0),16.0) template(|_|Ok(HeaderHand::Count(false)))
+        -- @label(art.small_font.clone(),Vec2::new(132.0,73.0),16.0) template(|_|Ok(HeaderHand::Count(true)))
+        -- @label(art.small_font.clone(),Vec2::new(132.0,14.0),13.0) template(|_|Ok(HeaderHand::Armour))
+        -- @picture(art.column.clone(),1,Vec2::new(268.0,11.0))
+        -- @picture(art.health.clone(),0,Vec2::new(274.0,34.0)) VitalArt
+        -- @picture(art.stamina.clone(),0,Vec2::new(278.0,34.0)) VitalArt
+        -- @rect(Vec2::new(274.0,34.0),Vec2::new(3.0,0.0),Color::BLACK) VitalArt template(|_|Ok(VitalShade::Health))
+        -- @rect(Vec2::new(278.0,34.0),Vec2::new(3.0,0.0),Color::BLACK) VitalArt template(|_|Ok(VitalShade::Stamina))
     }
 }
 
@@ -334,6 +423,38 @@ fn select_inventory_member(
         && let Some(mut screen) = screen
     {
         screen.member = button.0;
+    }
+}
+
+fn draw_portrait_highlights(
+    screen: Option<Single<&InventoryScreen>>,
+    roster: Res<PartyRoster>,
+    buttons: Query<(&InventoryMemberButton, &Hovered, &Children)>,
+    mut highlights: Query<(&mut Picture, &mut Visibility), With<PortraitHighlight>>,
+) {
+    let Some(screen) = screen else { return };
+    for (button, hovered, children) in &buttons {
+        for child in children.iter() {
+            let Ok((mut picture, mut visibility)) = highlights.get_mut(child) else { continue };
+            let occupied = roster.0.contains(&button.0);
+            let frame = if hovered.0 {
+                Some(0)
+            } else if button.0 == screen.member {
+                Some(1)
+            } else {
+                None
+            };
+            visibility.set_if_neq(if occupied && frame.is_some() {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            });
+            if let Some(frame) = frame
+                && picture.frame != frame
+            {
+                picture.frame = frame;
+            }
+        }
     }
 }
 
@@ -381,18 +502,37 @@ pub fn spawn_inventory_screen(
     assets: Res<AssetServer>,
     mut next: ResMut<NextState<Screen>>,
     sheets: Res<Assets<SpriteSheet>>,
-    mut images: ResMut<Assets<Image>>,
     roots: Query<Entity, (With<InventoryRoot>, Without<InventoryBuilt>)>,
 ) {
     let Ok(root) = roots.single() else { return };
     if [
         &art.corner,
+        &art.portrait_highlight,
         &art.page,
         &art.bottom_bar,
         &art.page_buttons,
+        &art.stats_page,
+        &art.skills_page,
+        &art.skills_icons,
+        &art.slider,
+        &art.combat_panel,
+        &art.combat_buttons,
+        &art.effect_filters,
+        &art.scroll,
+        &art.column,
+        &art.health,
+        &art.stamina,
+        &art.left_plug,
+        &art.right_plug,
+        &art.condition_rim,
         &art.gold_icon,
         &art.exit,
         &art.bold,
+        &art.small_font,
+        &art.green,
+        &art.yellow,
+        &art.gray,
+        &art.beige,
         &art.highlights,
         &art.unusable,
         &art.unidentified,
@@ -400,19 +540,19 @@ pub fn spawn_inventory_screen(
     ]
     .into_iter()
     .any(|handle| matches!(assets.get_load_state(handle), Some(bevy::asset::LoadState::Failed(_))))
+        || matches!(assets.get_load_state(&art.strings), Some(bevy::asset::LoadState::Failed(_)))
     {
         warn!("inventory artwork failed to load; returning to the world");
         next.set(Screen::World);
         return;
     }
     let get = |handle: &Handle<SpriteSheet>| sheets.get(handle);
-    let (Some(corner), Some(page), Some(bar), Some(gold), Some(exit), Some(bold)) = (
+    let (Some(corner), Some(page), Some(bar), Some(gold), Some(exit)) = (
         get(&art.corner),
         get(&art.page),
         get(&art.bottom_bar),
         get(&art.gold_icon),
         get(&art.exit),
-        get(&art.bold),
     ) else {
         return;
     };
@@ -422,10 +562,6 @@ pub fn spawn_inventory_screen(
         sprite(page, 2, Vec2::new(113.0, 165.0)),
         sprite(page, 3, Vec2::new(478.0, 165.0)),
         sprite(gold, 0, Vec2::new(514.0, 422.0)),
-    ];
-    let titles = vec![
-        text(bold, &mut images, "Carried", Vec2::new(12.0, 174.0), 93.0),
-        text(bold, &mut images, "Party Items", Vec2::new(486.0, 174.0), 141.0),
     ];
     let exit = sprite(exit, 16, Vec2::new(596.0, 450.0));
     let corner = sprite(corner, 0, Vec2::ZERO);
@@ -447,7 +583,8 @@ pub fn spawn_inventory_screen(
                 template(|_| Ok(review::Page::Items))
                 Children [
                     {fixed}
-                    -- {titles}
+                    -- @label(art.bold.clone(),Vec2::new(12.0,174.0),93.0) template(|_|Ok(RetailLabel(0x92b)))
+                    -- @label(art.bold.clone(),Vec2::new(486.0,174.0),141.0) template(|_|Ok(RetailLabel(0x92c)))
                     -- @picture(default(),0,Vec2::new(194.0,165.0)) template(|_|Ok(HeaderDisplay(HeaderPart::Statue)))
                     -- @label(art.font.clone(),Vec2::new(553.0,425.0),48.0) GoldLabel
                     -- {cells}
@@ -459,7 +596,198 @@ pub fn spawn_inventory_screen(
                 on(|_: On<Activate>, mut next: ResMut<NextState<Screen>>| { next.set(Screen::World); })
         ]
     }).id();
-    review::build(&mut commands, content, art.page_buttons.clone());
+    review::build(&mut commands, content, &art);
+}
+
+// Retail profession titles, indexed by profession and level band.
+fn profession_title(profile: &Character) -> usize {
+    const TITLES: [[usize; 9]; 15] = [
+        [0x3b6, 0x3b7, 0x3b8, 0x3b9, 0x3ba, 0x3bb, 0x3bc, 0x3bd, 0x3be],
+        [0x3b6, 0x3b7, 0x3bf, 0x3c0, 0x3c1, 0x3c2, 0x3c3, 0x3c4, 0x3c5],
+        [0x3b6, 0x3b7, 0x3c6, 0x3b9, 0x3c7, 0x3c2, 0x3c8, 0x3c9, 0x3ca],
+        [0x3b6, 0x3b7, 0x3cb, 0x3cc, 0x3cd, 0x3ce, 0x3cf, 0x3d0, 0x3d1],
+        [0x3b6, 0x3b7, 0x3d2, 0x3d3, 0x3d4, 0x3d5, 0x3d6, 0x3bd, 0x3d7],
+        [0x3b6, 0x3b7, 0x3d8, 0x3d9, 0x3da, 0x3db, 0x3dc, 0x3dd, 0x3de],
+        [0x3b6, 0x3b7, 0x3f9, 0x3df, 0x3e0, 0x3e1, 0x3dc, 0x3e2, 0x3e3],
+        [0x3b6, 0x3b7, 0x3e4, 0x3e5, 0x3e6, 0x3e7, 0x3e8, 0x3e9, 0x3ea],
+        [0x3b6, 0x3b7, 0x3eb, 0x3ec, 0x3ed, 0x3ee, 0x3ef, 0x3f0, 0x3f1],
+        [0x3b6, 0x3b7, 0x3f2, 0x3f3, 0x3f4, 0x3f5, 0x3f6, 0x3f7, 0x3f8],
+        [0x3b6, 0x3b7, 0x3f9, 0x3fa, 0x3fb, 0x3fc, 0x3fd, 0x3fe, 0x3ff],
+        [0x3b6, 0x3b7, 0x400, 0x401, 0x402, 0x403, 0x404, 0x405, 0x406],
+        [0x3b6, 0x3b7, 0x407, 0x408, 0x409, 0x40a, 0x40b, 0x40c, 0x40d],
+        [0x3b6, 0x3b7, 0x40e, 0x40f, 0x410, 0x411, 0x412, 0x413, 0x414],
+        [0x3b6, 0x3b7, 0x415, 0x416, 0x417, 0x418, 0x419, 0x41a, 0x41b],
+    ];
+    let level = profile.profession_levels[profile.profession];
+    let band = match level {
+        0 => 0,
+        1 => 1,
+        2..=3 => 2,
+        4..=6 => 3,
+        7..=10 => 4,
+        11..=15 => 5,
+        16..=21 => 6,
+        22..=27 => 7,
+        _ => 8,
+    };
+    TITLES[profile.profession as usize][band]
+}
+
+fn draw_vitals(
+    screen: Option<Single<Ref<InventoryScreen>>>,
+    members: Query<(Ref<Character>, Ref<Vitals>)>,
+    mut art: Query<(Ref<VitalArt>, Option<&VitalShade>, Option<&mut Node>, &mut Visibility)>,
+) {
+    let Some(screen) = screen else { return };
+    let Ok((profile, vitals)) = members.get(screen.member) else { return };
+    for (marker, shade, node, mut visibility) in &mut art {
+        if !marker.is_added()
+            && !screen.is_changed()
+            && !profile.is_changed()
+            && !vitals.is_changed()
+        {
+            continue;
+        }
+        visibility.set_if_neq(if vitals.is_dead() {
+            Visibility::Hidden
+        } else {
+            Visibility::Inherited
+        });
+        if let (Some(shade), Some(mut node)) = (shade, node) {
+            let (current, maximum) = match shade {
+                VitalShade::Health => (vitals.hp, profile.max_hp()),
+                VitalShade::Stamina => (vitals.stamina, profile.max_stamina()),
+            };
+            let filled = current.min(maximum).saturating_mul(45) / maximum.max(1);
+            let height = px((45 - filled) as f32);
+            if node.height != height {
+                node.height = height;
+            }
+        }
+    }
+}
+
+fn draw_header_condition(
+    screen: Option<Single<Ref<InventoryScreen>>>,
+    members: Query<Ref<Vitals>>,
+    assets: Res<AssetServer>,
+    art: Res<InventoryArt>,
+    mut displays: Query<(Ref<HeaderCondition>, &mut Picture, &mut Visibility)>,
+) {
+    let Some(screen) = screen else { return };
+    let Ok(vitals) = members.get(screen.member) else { return };
+    let condition = super::screen_art::condition_icon(&vitals);
+    for (display, mut picture, mut visibility) in &mut displays {
+        if !display.is_added() && !screen.is_changed() && !vitals.is_changed() {
+            continue;
+        }
+        match *display {
+            HeaderCondition::Icon => {
+                let sheet = condition
+                    .as_ref()
+                    .map(|name| assets.load(format!("retail://data/icons/conditions/{name}.sti")))
+                    .unwrap_or_else(|| art.left_plug.clone());
+                if picture.sheet != sheet {
+                    picture.sheet = sheet;
+                }
+            }
+            HeaderCondition::Rim => {
+                visibility.set_if_neq(if condition.is_some() {
+                    Visibility::Inherited
+                } else {
+                    Visibility::Hidden
+                });
+            }
+        };
+    }
+}
+
+fn draw_header_hands(
+    screen: Option<Single<Ref<InventoryScreen>>>,
+    assets: Res<AssetServer>,
+    data: Option<Res<GameData>>,
+    catalogs: Res<Assets<ItemCatalog>>,
+    members: Query<(Ref<Character>, Ref<Carried>)>,
+    art: Res<InventoryArt>,
+    mut parts: Query<(
+        Ref<HeaderHand>,
+        &mut Visibility,
+        Option<&mut Picture>,
+        Option<&mut BitmapText>,
+    )>,
+) {
+    let Some(screen) = screen else { return };
+    let Some(catalog) = data.and_then(|data| catalogs.get(&data.items)) else { return };
+    let Ok((profile, carried)) = members.get(screen.member) else { return };
+    let changed = screen.is_changed()
+        || profile.is_changed()
+        || carried.is_changed()
+        || catalogs.is_changed();
+    let two_handed = carried
+        .worn(EquipSlot::Primary)
+        .and_then(|item| catalog.get(item.item))
+        .is_some_and(|item| item.two_handed);
+    for (part, mut visibility, picture, text) in &mut parts {
+        if !part.is_added() && !changed {
+            continue;
+        }
+        let mut source = None;
+        let mut value = None;
+        let mut shown = true;
+        match *part {
+            HeaderHand::Background => {
+                source = Some(Picture {
+                    sheet: art.column.clone(),
+                    frame: if two_handed { 2 } else { 0 },
+                    at: Vec2::new(129.0, 11.0),
+                    ..default()
+                })
+            }
+            HeaderHand::Hand(off) => {
+                shown = !(off && two_handed);
+                let slot = if off { EquipSlot::Secondary } else { EquipSlot::Primary };
+                let item = carried.worn(slot).and_then(|item| catalog.get(item.item));
+                let (path, frame, x) = if let Some(item) = item {
+                    (item.image.clone(), 2, 132.0)
+                } else {
+                    (
+                        format!(
+                            "data/main interface/{}.sti",
+                            empty_hands(profile.race)[usize::from(off)]
+                        ),
+                        0,
+                        133.0,
+                    )
+                };
+                source = Some(Picture {
+                    sheet: assets.load(format!("retail://{path}")),
+                    frame,
+                    at: Vec2::new(x, if off { 58.0 } else { 34.0 }),
+                    ..default()
+                });
+            }
+            HeaderHand::Count(off) => {
+                shown = !(off && two_handed);
+                let slot = if off { EquipSlot::Secondary } else { EquipSlot::Primary };
+                value = Some(match carried.worn(slot).map(|item| item.quantity) {
+                    Some(Quantity::Stack(count)) if count > 0 => count.to_string(),
+                    _ => String::new(),
+                });
+            }
+            HeaderHand::Armour => {
+                value = Some(armour(&profile, &carried, catalog).average().to_string())
+            }
+        }
+        visibility.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
+        if let (Some(mut picture), Some(source)) = (picture, source) {
+            picture.set_if_neq(source);
+        }
+        if let (Some(mut text), Some(value)) = (text, value)
+            && text.value != value
+        {
+            text.value = value;
+        }
+    }
 }
 
 /// Update the existing header controls from their actual dependencies.
@@ -468,7 +796,8 @@ fn draw_header(
     art: Res<InventoryArt>,
     assets: Res<AssetServer>,
     roster: Res<PartyRoster>,
-    members: Query<Ref<Character>>,
+    members: Query<(Ref<Character>, Option<Ref<Vitals>>)>,
+    tables: Res<Assets<TextTable>>,
     mut displays: Query<(
         Ref<HeaderDisplay>,
         Option<&mut InventoryMemberButton>,
@@ -477,10 +806,13 @@ fn draw_header(
     )>,
 ) {
     let Some(screen) = screen else { return };
-    let Ok(profile) = members.get(screen.member) else { return };
+    let Ok((profile, vitals)) = members.get(screen.member) else { return };
     let changed = screen.is_changed()
         || roster.is_changed()
-        || members.iter_many(&roster.0).flatten().any(|c| c.is_changed());
+        || tables.is_changed()
+        || members.iter_many(&roster.0).flatten().any(|(character, vitals)| {
+            character.is_changed() || vitals.is_some_and(|vitals| vitals.is_changed())
+        });
     for (display, button, picture, label) in &mut displays {
         if !display.is_added() && !changed {
             continue;
@@ -506,14 +838,25 @@ fn draw_header(
                 );
                 anchor = Some(at);
                 source = Some(match member.and_then(|m| members.get(m).ok()) {
-                    Some(profile) => {
-                        image(format!("data/portraits/small/s{}.sti", profile.portrait), 0)
+                    Some((profile, vitals)) => {
+                        let path = if vitals.is_some_and(|v| v.is_dead()) {
+                            let skull = super::screen_art::skull(profile.race);
+                            format!("data/portraits/small/s{}.sti", &skull[1..])
+                        } else {
+                            format!("data/portraits/small/s{}.sti", profile.portrait)
+                        };
+                        image(path, 0)
                     }
                     None => Picture { sheet: art.corner.clone(), frame: slot + 1, ..default() },
                 });
             }
             HeaderPart::Portrait => {
-                source = Some(image(format!("data/portraits/medium/m{}.sti", profile.portrait), 0))
+                let portrait = if vitals.as_ref().is_some_and(|v| v.is_dead()) {
+                    super::screen_art::skull(profile.race).to_owned()
+                } else {
+                    format!("m{}", profile.portrait)
+                };
+                source = Some(image(format!("data/portraits/medium/{portrait}.sti"), 0))
             }
             HeaderPart::Statue => {
                 source = Some(image(
@@ -522,8 +865,28 @@ fn draw_header(
                 ))
             }
             HeaderPart::Name => value = Some(profile.name.clone()),
-            HeaderPart::Race => value = Some(format!("{:?}", profile.race)),
-            HeaderPart::Profession => value = Some(format!("{:?}", profile.profession)),
+            HeaderPart::Race => {
+                let gender = if profile.gender == Gender::Male { 0x2d1 } else { 0x2d2 };
+                let table = tables.get(&art.strings);
+                let gender = table.and_then(|t| t.get(gender)).unwrap_or("");
+                let race = table.and_then(|t| t.get(0x284 + profile.race as usize)).unwrap_or("");
+                value = Some(format!("{gender} {race}").trim().to_owned());
+            }
+            HeaderPart::Profession => {
+                value = Some(
+                    tables
+                        .get(&art.strings)
+                        .and_then(|t| t.get(0x2a4 + profile.profession as usize))
+                        .unwrap_or("")
+                        .to_owned(),
+                )
+            }
+            HeaderPart::Level => {
+                let table = tables.get(&art.strings);
+                let title = table.and_then(|t| t.get(profession_title(&profile))).unwrap_or("");
+                let level = table.and_then(|t| t.get(0x91a)).unwrap_or("");
+                value = Some(format!("{level} {} ({title})", profile.level));
+            }
         }
         if let Some(mut picture) = picture
             && let Some(mut source) = source
@@ -536,6 +899,20 @@ fn draw_header(
             && label.value != value
         {
             label.value = value;
+        }
+    }
+}
+
+fn draw_retail_labels(
+    art: Res<InventoryArt>,
+    tables: Res<Assets<TextTable>>,
+    mut labels: Query<(&RetailLabel, &mut BitmapText)>,
+) {
+    let Some(table) = tables.get(&art.strings) else { return };
+    for (label, mut text) in &mut labels {
+        let value = table.get(label.0).unwrap_or("");
+        if text.value != value {
+            text.value = value.to_owned();
         }
     }
 }
@@ -714,11 +1091,32 @@ impl Plugin for InventoryPlugin {
             )
             .add_systems(
                 Update,
-                (spawn_inventory_screen, draw_header, draw_gold, draw_cells, follow_held).chain(),
+                (
+                    spawn_inventory_screen,
+                    draw_header,
+                    draw_header_condition,
+                    draw_header_hands,
+                    draw_portrait_highlights,
+                    draw_vitals,
+                    draw_retail_labels,
+                    draw_gold,
+                    draw_cells,
+                    follow_held,
+                )
+                    .chain(),
             )
             .add_systems(
                 Update,
-                (review::refresh, review::style_buttons, review::focus_controls)
+                (
+                    review::show_pages,
+                    review::refresh,
+                    review::layout_skills,
+                    review::style_scroll.after(review::refresh),
+                    review::style_buttons,
+                    review::style_info_button,
+                    review::style_effect_buttons,
+                    review::focus_controls,
+                )
                     .after(spawn_inventory_screen),
             );
     }
@@ -759,6 +1157,7 @@ mod tests {
             ))
             .init_state::<Screen>()
             .init_asset::<SpriteSheet>()
+            .init_asset::<TextTable>()
             .init_asset::<Image>()
             .init_asset::<ItemCatalog>()
             .init_resource::<UiScale>()

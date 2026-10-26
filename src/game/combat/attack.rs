@@ -228,6 +228,21 @@ pub struct Armour {
     pub by_location: EnumMap<BodyPart, i32>,
 }
 
+impl Armour {
+    /// Hit-location-weighted average displayed on the character portrait.
+    pub fn average(&self) -> i32 {
+        let weight = |part| match part {
+            BodyPart::Head => 15,
+            BodyPart::Body => 40,
+            BodyPart::Leg => 30,
+            BodyPart::Hand => 10,
+            BodyPart::Foot => 5,
+        };
+        let total: i32 = self.by_location.iter().map(|(part, value)| value * weight(part)).sum();
+        (total as f32 / 100.0).round() as i32
+    }
+}
+
 pub fn armour(c: &Character, carried: &Carried, catalog: &ItemCatalog) -> Armour {
     let definition = |slot| carried.worn(slot).and_then(|i| catalog.get(i.item));
     let speed = c.attribute(Attribute::Speed);

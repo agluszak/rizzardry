@@ -141,7 +141,7 @@ impl CharacterDraft {
             // in their governing attribute, unreachable with creation's budgets.
             return false;
         }
-        if AVAILABILITY[index] & (1 << self.profession as usize) == 0 {
+        if SKILL_AVAILABILITY[index] & (1 << self.profession as usize) == 0 {
             return false;
         }
         if index >= Skill::Wizardry as usize {
@@ -190,14 +190,6 @@ impl CharacterDraft {
         Ok(self.preview())
     }
 }
-
-// Retail g_profession_skill_availability, ordinary and spellbook skills.
-// Bit order is Profession's authored order; realm availability needs learned spells.
-const AVAILABILITY: [u16; 28] = [
-    0x03bf, 0x000f, 0x006f, 0x146f, 0x6bbf, 0x7fff, 0x1f9f, 0x018f, 0x03bf, 0x7fff, 0x03a0, 0x00e0,
-    0x0200, 0x02a0, 0x0060, 0x0008, 0x7fff, 0x7fff, 0x03ff, 0x0070, 0x7fff, 0x7fff, 0x7fff, 0x0100,
-    0x5010, 0x1406, 0x1828, 0x3040,
-];
 
 #[cfg(test)]
 mod tests {

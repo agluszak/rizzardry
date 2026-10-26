@@ -40,7 +40,10 @@ impl AssetLoader for StiLoader {
                 context.add_labeled_asset(format!("frame/{index}"), image)
             })
             .collect();
-        Ok(SpriteSheet { frames, images })
+        // `read_stci` has already validated the header and indexed palette.
+        let flags = u32::from_le_bytes(data[16..20].try_into().unwrap());
+        let palette = (flags & 0x08 != 0).then(|| data[64..832].as_chunks::<3>().0.to_vec());
+        Ok(SpriteSheet { frames, images, palette })
     }
 
     fn extensions(&self) -> &[&str] {

@@ -283,7 +283,7 @@ pub fn draw_caption(
                     }
                 }
             } else {
-                super::party::condition_icon(vitals)
+                crate::presentation::screen_art::condition_icon(vitals)
                     .map(|mut c| {
                         c[..1].make_ascii_uppercase();
                         c

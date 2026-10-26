@@ -168,7 +168,7 @@ pub fn show_tooltip(
             Tooltip node Node{border:UiRect::all(px(1))}
             BackgroundColor(Color::BLACK) BorderColor::all(Color::srgb(0.93,0.6,0.33)) GlobalZIndex(30) Pickable::IGNORE
             Children [
-                template(move |_|Ok(BitmapText{font:font.clone(),value:value.clone(),at:Vec2::new(1.0,0.0),width:0.0,justify:bevy::text::Justify::Left}))
+                template(move |_|Ok(BitmapText{palette:None,font:font.clone(),value:value.clone(),at:Vec2::new(1.0,0.0),width:0.0,justify:bevy::text::Justify::Left}))
                 Node{position_type:PositionType::Absolute}
                 Pickable::IGNORE
             ]

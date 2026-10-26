@@ -1,101 +1,65 @@
 # In-game character review
 
-Compared against both fixed revisions:
+The review screen is sourced from Wizardry 8 Decomp
+[`075cbd0`](https://github.com/agluszak/wizardry-8-decomp/tree/075cbd0b853c4670e94f6ae4fe48d53b52b5e819)
+(`RCSCommon.cpp`, `RCSStatsPage.cpp`, `ReviewCharacterScreen.cpp`, and
+`character_skills.cpp`) and Whizzardry 8
+[`31a3dfd`](https://github.com/agluszak/whizzardry-8/tree/31a3dfd57ee99fec8ff4b47f4b9be449c42de2fa)
+(the corresponding screen files and `character_tables.cpp`). Frame dimensions
+and artwork were checked against the extracted retail installation.
 
-- [Decomp `075cbd0`](https://github.com/agluszak/wizardry-8-decomp/tree/075cbd0b853c4670e94f6ae4fe48d53b52b5e819),
-  `src/wiz8/local_screens/ReviewCharacterScreen.cpp` (`DrawCampScreen`, page dispatch)
-  and `RCSStatsPage.cpp` (`DrawCampSkillsPage`).
-- [Whizzardry `31a3dfd`](https://github.com/agluszak/whizzardry-8/tree/31a3dfd57ee99fec8ff4b47f4b9be449c42de2fa),
-  the same screen files (`W8CampSkillsPage::DrawCampSkillsPage`) and
-  `src/data/character_tables.cpp` (skill categories).
+The screen has a shared portrait header and equipment, skills, statistics, and
+spells pages. The implemented pages are state-scoped retained Bevy UI: the root
+owns the selected character and page, and the statistics panel owns its filter,
+scroll position and combat/armor selection. Widgets read the live character,
+vitals and inventory; they do not retain copied gameplay snapshots. Native
+buttons and focus handle pointer and keyboard activation. Page visibility also
+controls inherited visibility, which Bevy tab navigation uses to skip hidden
+controls. Changing pages does not transfer the cursor-held item.
 
-Both references share the reviewed character across equipment, statistics and
-skills. Skills distinguish base points from effective levels and group entries
-into weapons, miscellaneous, combat, magic and expert skills. Retail filters
-entries by active status or nonzero points/levels and can highlight the party's
-best member. Review and level-up editing are separate flows.
+The shared header uses the retail corner, portrait and selection rim, condition
+and empty sockets, hand graphics, column art, and health/stamina strips. Text
+comes from `stringdata.dat` and the retail bitmap fonts. Hand items and armor
+come from the current inventory and combat rules. The level-title band is derived
+from current profession levels; retail also has a separate band base for imported
+characters, which is not modelled.
 
-The Rust port adds Statistics and Skills alongside Equipment under the existing
-`Screen::Inventory` lifetime. `InventoryScreen` owns only the selected entity,
-page and pool scroll. All page nodes remain mounted; `Node.display` and inherited visibility select the
-visible page and exclude its hidden controls from native tab navigation. Shared portraits and exit controls remain outside the pages.
-Bevy 0.20 headless buttons supply pointer/Enter/Space activation, with native tab
-navigation and a modal focus group. The creation pages and unavailable skill rows receive the same visibility fix.
-Equipment activation continues to call the
-existing validated inventory operation. Changing pages neither transfers the
-held item nor changes the selected actor.
+The bottom bar uses `ReviewPageButtons.sti` at x=420, 464, 508, and 552, with
+the retail normal, hover, selected and disabled frames. Spells is disabled until
+its gameplay and page exist. The skills screen uses `ReviewSkillsPage.sti`
+frame 2 at (0, 165), and frame 0 or 1 at (310, 0) depending on expert skills.
+The category origins are weapons (352, 173), miscellaneous (352, 369), combat
+(34, 174), magic (34, 299), and expert (352, 33). Category icons use
+`ReviewSkillsIcons.sti` frames 2, 3, 0, 1, and 4, offset (-22, -3). Active or
+nonzero skills get 273×14 rows from frame 3, with text from string IDs starting
+at `0x2e2` and base/bonus segments from `ReviewSliderbar.sti`. Availability is
+derived from profession, profession levels and the seven mastery thresholds.
+Realm skills require learned spells, which are not implemented.
 
-Statistics reads the existing character/vitals APIs for attributes, level,
-experience, HP, stamina and conditions. Skills shows base/effective values using
-`Character::skill`, including its profession bonus. Retained text responds to
-changes in those components or the selected member; there is no display model
-copy, periodic reconstruction or separate gameplay state.
+The statistics screen uses `ReviewStatsPage.sti` frame 1 at (0, 165), seven
+attribute rows at 14-pixel intervals and 125-pixel retail value bars. The upper
+combat/armor switch uses `commod_back.sti` and `commod_buttons.sti`; the current
+combat rules supply primary-hand damage, attack and swing counts, hit and damage
+bonuses and initiative. The current personal-effects area uses
+`ReviewFXFilters.sti` and `main_scroll.sti`; its filters, arrows, wheel and
+thumb operate on the current character's conditions and the item modifiers
+currently represented in the item catalog. The screen uses the same armor-average
+calculation as the main HUD.
 
-Limits: the runtime has no active-skill flag, so all 41 skills are listed and zero
-is explicitly not presented as proof of training. Best-in-party highlighting,
-stat information dialogs, profession history, spell points, resistances, attack
-summaries and level-up editing remain unported. This uses native text and a new
-layout, not a reconstruction of the retail statistics artwork. Equipment and
-the shared header still need retail artwork.
+The following retail content is still missing or incomplete:
 
-## Validation and open rendering check
+- Learned spell/realm state, the spell review page, and level-up editing.
+- Trait and enchantment lists, most item modifiers, kill/death counts, and the
+  full armor-component and secondary-hand calculations. Unavailable numbers are
+  left blank instead of being fabricated.
+- The improved-skill palette (the improvement flag is not yet modelled), skill
+  and stat information dialogs, and some portrait interactions and status details.
+- The game currently models neither imported-character level-band bases nor all
+  skill eligibility restrictions (such as traits that prevent learning).
 
-The focused headless review test exercises displayed HP after damage and healing,
-condition expiry, and selecting another actor. It does not assert widget counts,
-entity identities, or the internal page representation. Existing inventory exit
-contracts remain in the library suite.
-
-A temporary software-Vulkan harness rendered the real Statistics and Skills
-builders and activated their page buttons. It exposed and helped correct a
-wrapped value-column layout error. It also intermittently omitted the standalone
-shared header and Equipment button, despite valid computed geometry and inherited
-visibility. Disabling pipelined rendering and pacing updates did not conclusively
-resolve that omission. The cause is not established; this is an outstanding visual
-validation issue, not a passing end-to-end rendering check. No forced redraw or
-renderer-cache workaround has been added. Full review with retail artwork and
-interactive pointer/keyboard input still needs checking before merge.
-
-A subsequent fresh, single-page software-Vulkan capture of Statistics included
-the shared sample header and all three buttons. This narrows but does not resolve
-the earlier intermittent omission or verify the retail-artwork screen.
-
-## Retail artwork and layout evidence for the replacement
-
-The current native-text Statistics and Skills layouts above are placeholders,
-not a faithful port. They must be replaced before this PR is considered ready.
-Both references' artwork catalogs associate review IDs `0x141` through `0x144`
-with `Data/Review/ReviewSkillsPage.sti`, `ReviewStatsPage.sti`,
-`ReviewSliderbar.sti`, and `ReviewSkillsIcons.sti`, respectively. The existing
-retail bitmap font is used for labels; native text in the draft does not reproduce
-it. The bottom page controls use `ReviewPageButtons.sti` (`review-items.md`).
-
-In both `RCSStatsPage.cpp` implementations, the statistics page draws frame 1 of
-`ReviewStatsPage.sti` at (0, 165). Attribute rows start at y=191, advance by 14
-pixels, and place their value bars at x=136. The right-hand effects area begins
-at (349, 190); it is not a generic list of health and experience. Stats and
-skills retain the shared top character information panel.
-
-The skills page draws frame 2 of `ReviewSkillsPage.sti` at (0, 165), and frame 0
-or 1 at (310, 0), depending on whether an expert skill is present. Its five
-category positions before the page offsets are (352, 8), (352, 204), (34, 9),
-(34, 134), and (42, 33), in weapon, miscellaneous, combat, magic, and expert
-order. The first four receive y += 165; the expert block receives x += 310.
-`ReviewSkillsIcons.sti` frames 2, 3, 0, 1, and 4 provide the corresponding
-category headings, offset (-22, -3). Rows are spaced 14 pixels; frame 3 of the
-skills page provides the row, and the slider bar's frames 0, 1, and 2 represent
-base, gained, and lost skill segments. The source includes skills that are active
-or have nonzero points or effective level. The game currently lacks the retail
-active-skill flag, so matching this visibility rule requires modelling it rather
-than silently treating all zero-valued skills as active.
-
-The retail installation at `/workspace/wizardry8` confirms the frame dimensions:
-page buttons are 44×30, statistics frame 1 and skills frame 2 are 640×285,
-skills frame 3 is 273×14, and the slider frames are 125×10. The complete
-composite screen still needs visual verification against the game. Page controls, the upper information panel, skill
-availability, and effect information need to be ported together for a faithful
-screen. No claim of pixel accuracy is supported by the current draft.
-
-The bottom page strip now uses the retail page button sheet at the original
-positions, with the decomp's normal, hover, selected and unavailable frames.
-The unimplemented spell page is shown as unavailable. The statistics and skills
-page interiors are still placeholders and are not ready for merge.
+A software-Vulkan integration harness rendered the actual inventory scene and
+loaded the retail assets, including a character portrait; the library tests
+exercise live character/condition updates, filter behavior and skill eligibility.
+This is not a side-by-side run of the original executable. A final interactive
+comparison with the original game remains necessary before claiming pixel or
+behavioral equivalence.
