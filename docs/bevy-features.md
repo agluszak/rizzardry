@@ -158,6 +158,31 @@ persisted party/campaign state or the explicit level transition.
 [State-scoped entities](https://github.com/bevyengine/bevy/blob/v0.20.0/examples/ecs/state_scoped.rs)
 .
 
+## Relationships and notifications in the current implementation
+
+Radar blips and travel dialogs use one-to-one Bevy relationships to their
+subjects, with `linked_spawn` on the reverse target. The UI still owns its
+layout through `ChildOf`. Removing a gameplay subject removes its view;
+removing the UI removes the reverse reference without deleting gameplay.
+Neither direction requires a polling cleanup system or a parallel entity map.
+These presentation relationships are declared entirely in presentation modules.
+View creation runs after level activation has committed its deferred despawns;
+it cannot attach a view to a subject being removed in the same update.
+
+Radar item visibility memory and glow timers are presentation components on
+world items. They survive HUD reconstruction and disappear on level departure.
+The existing `SearchNews::Spotted` message identifies its target, so glow follows
+a committed discovery instead of comparing a cached copy of gameplay's hidden
+flag. Messages suit these independent, scheduled notification readers. Mandatory
+gameplay consequences still run in the operation itself, not observer chains.
+
+Door navigation uses its existing `ChildOf`/`Children` hierarchy instead of a
+second spawned-link list. Physical prop poses advance in `FixedPreUpdate`, then
+door links update before Landmass's `SyncExistence` set. Navigation and physics
+therefore consume the same doorway pose within each simulation step, including
+frames with several fixed steps. Authored prop parts remain separate children
+and are never removed when closing a navigation link.
+
 ## Next evaluation, in order
 
 1. **One actual animated prop and one monster:** compare a fixed-step physical prop path to an

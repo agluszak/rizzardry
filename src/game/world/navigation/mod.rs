@@ -22,7 +22,7 @@ use bevy_tnua::builtins::TnuaBuiltinWalk;
 use bevy_tnua::prelude::*;
 
 use super::level::Level;
-use crate::content::level::LevelGeometry;
+use crate::content::level::LevelDefinition;
 use crate::game::party::body::{FLOAT_HEIGHT, PartyBody};
 
 pub struct NavigationPlugin;
@@ -36,7 +36,12 @@ impl Plugin for NavigationPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(Landmass3dPlugin::default())
             .add_plugins(TnuaControllerPlugin::<WalkerMotion>::new(FixedUpdate))
-            .add_systems(Update, links::sync_door_links.run_if(super::level::level_active))
+            .add_systems(
+                FixedPreUpdate,
+                links::sync_door_links
+                    .before(bevy_landmass::LandmassSystems::SyncExistence)
+                    .run_if(super::level::level_active),
+            )
             // Each fixed step: Landmass plans (FixedPreUpdate), walkers feed
             // Tnua (FixedUpdate), Avian moves them (FixedPostUpdate), and
             // the resulting velocities go back to Landmass.
@@ -104,7 +109,7 @@ pub fn install(
     commands: &mut Commands,
     root: Entity,
     level: &Level,
-    geometry: &LevelGeometry,
+    geometry: &LevelDefinition,
     assets: &AssetServer,
 ) {
     if let Some(Some(LoadState::Failed(error))) = level

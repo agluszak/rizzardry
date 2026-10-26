@@ -8,12 +8,9 @@ pub mod walk_in;
 
 use avian3d::prelude::{Gravity, PhysicsSystems};
 use bevy::prelude::*;
-use bevy_enhanced_input::prelude::*;
 use bevy_tnua::prelude::*;
 use bevy_tnua_avian3d::prelude::*;
 
-use crate::game::camp;
-use crate::game::screen::party_free;
 use crate::game::world::level::level_active;
 use crate::game::world::triggers::PendingPartyMove;
 
@@ -36,31 +33,17 @@ impl Plugin for PartyPlugin {
             TnuaAvian3dPlugin::new(FixedUpdate),
         ))
         .insert_resource(Gravity(Vec3::NEG_Y * body::GRAVITY))
-        .add_input_context::<body::Exploration>()
+        .init_resource::<body::PartyMovement>()
+        .add_message::<body::PartyLook>()
         .init_resource::<roster::PartyRoster>()
         .init_resource::<formation::Formation>()
-        .add_message::<camp::CampNews>()
-        .add_message::<camp::CampRequest>()
-        .add_message::<camp::LeaveCamp>()
-        .add_systems(Startup, body::spawn_exploration_controls)
         .add_systems(
             Update,
             (
                 roster::give_starting_equipment.in_set(crate::game::GameplaySet::Equipment),
-                (
-                    body::look_around
-                        .run_if(party_free)
-                        .after(crate::game::GameplaySet::LevelActivation)
-                        .before(crate::game::GameplaySet::Perception),
-                    (
-                        camp::request_camp.run_if(party_free),
-                        camp::force_camp,
-                        camp::leave_camp,
-                        camp::advance_camp,
-                    )
-                        .chain()
-                        .after(crate::game::GameplaySet::Combat),
-                )
+                body::look_around
+                    .after(crate::game::GameplaySet::LevelActivation)
+                    .before(crate::game::GameplaySet::Perception)
                     .run_if(level_active),
             ),
         )
@@ -69,10 +52,8 @@ impl Plugin for PartyPlugin {
         .init_resource::<PendingPartyMove>()
         .add_systems(
             FixedUpdate,
-            (
-                (body::drive_party.in_set(TnuaUserControlsSystems), walk_in::fly_party).chain(),
-                recovery::pass_time,
-            )
+            (body::drive_party.in_set(TnuaUserControlsSystems), walk_in::fly_party)
+                .chain()
                 .run_if(level_active),
         )
         .add_systems(

@@ -5,12 +5,12 @@ use bevy::prelude::*;
 
 use avian3d::prelude::SpatialQuery;
 
+use super::environment::LevelAppearance;
 use crate::content::items::{ItemCatalog, ItemModel};
 use crate::content::level::LevelGeometry;
 use crate::game::data::GameData;
 use crate::game::time::GameClock;
 use crate::game::world::items::WorldItem;
-use crate::game::world::level::Level;
 use crate::presentation::monsters::sunlit;
 
 /// Retail turns a lying item a sixteenth of a turn every 50 ms (the main
@@ -73,6 +73,7 @@ pub fn build_world_items(
             continue;
         }
         let Some(model) = models.get(&shown.model) else { continue };
+        commands.entity(entity).insert(Visibility::default());
         let root = commands
             .spawn((
                 ItemVisual,
@@ -109,7 +110,7 @@ pub fn light_world_items(
     time: Res<Time>,
     hovered: Res<super::hover::Hover>,
     clock: Res<GameClock>,
-    levels: Query<(Entity, &Level)>,
+    levels: Query<(Entity, &LevelAppearance)>,
     geometry: Res<Assets<LevelGeometry>>,
     models: Res<Assets<ItemModel>>,
     spatial: SpatialQuery,
@@ -119,7 +120,7 @@ pub fn light_world_items(
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let Some((level_entity, level)) =
-        levels.iter().find_map(|(e, l)| geometry.get(&l.geometry).map(|g| (e, g)))
+        levels.iter().find_map(|(e, l)| geometry.get(&l.0).map(|g| (e, g)))
     else {
         return;
     };

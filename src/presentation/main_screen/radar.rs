@@ -3,7 +3,6 @@
 //! compass rim on top, turned with the party. Clicking it opens the
 //! automap.
 
-use bevy::ecs::entity::{EntityHashMap, EntityHashSet};
 use bevy::prelude::*;
 
 use super::{MainScreenArt, layer, loaded};
@@ -44,8 +43,15 @@ pub struct RadarRim;
 #[derive(Component, Clone, Default)]
 pub struct RadarBlips;
 
+/// The UI hierarchy owns placement; the target relationship owns validity.
+/// Despawning either the screen or the target removes its blip automatically.
 #[derive(Component)]
+#[relationship(relationship_target = RadarView)]
 pub(super) struct RadarBlip(Entity);
+
+#[derive(Component)]
+#[relationship_target(relationship = RadarBlip, linked_spawn)]
+pub(super) struct RadarView(Entity);
 
 /// One class of radar blip's colours (retail `g_radar_blip_colors`); retail
 /// has three more classes (friendly, unseen, missile) not drawn yet.
@@ -112,15 +118,44 @@ fn blip_position(delta: Vec3, yaw: f32, spread: bool) -> Vec2 {
 /// What the radar knows of lying items (retail's `RADAR_SEEN` flag, cleared
 /// whenever a level is entered, and `LightRadarBlip`'s 10-second glow for
 /// a find).
-#[derive(Default)]
-pub struct RadarItems {
-    seen: EntityHashSet,
-    hidden: EntityHashSet,
-    /// Glowing while its timer runs.
-    lit: EntityHashMap<Timer>,
+#[derive(Component, Default)]
+pub struct RadarItem {
+    seen: bool,
+    glow: Option<Timer>,
 }
 
 const ITEM_GLOW_SECONDS: f32 = 10.0;
+
+/// Presentation memory belongs to the item and survives rebuilding the HUD,
+/// but disappears with the item or level. It is never part of a save record.
+pub fn track_radar_items(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut items: Query<(Entity, Option<&mut RadarItem>), With<crate::game::world::items::WorldItem>>,
+    mut news: MessageReader<crate::game::world::search::SearchNews>,
+) {
+    for (entity, known) in &mut items {
+        if let Some(mut known) = known {
+            if known.glow.as_mut().is_some_and(|glow| glow.tick(time.delta()).is_finished()) {
+                known.glow = None;
+            }
+        } else {
+            commands.entity(entity).insert(RadarItem::default());
+        }
+    }
+    for notice in news.read() {
+        let crate::game::world::search::SearchNews::Spotted { target, .. } = notice else {
+            continue;
+        };
+        let Ok((entity, known)) = items.get_mut(*target) else { continue };
+        let glow = Some(Timer::from_seconds(ITEM_GLOW_SECONDS, TimerMode::Once));
+        if let Some(mut known) = known {
+            known.glow = glow;
+        } else {
+            commands.entity(entity).insert(RadarItem { glow, ..default() });
+        }
+    }
+}
 
 /// Turn the compass rim with the party, and mark the monsters within the
 /// far clip: hostile red, others yellow, brighter above and dimmer below;
@@ -132,16 +167,15 @@ pub fn update_radar(
     mut rims: Query<&mut UiTransform, With<RadarRim>>,
     layers: Query<Entity, With<RadarBlips>>,
     monsters: Query<(Entity, &crate::game::world::population::Monster, &GlobalTransform)>,
-    mut blips: Query<(Entity, &RadarBlip, &mut Node, &mut BackgroundColor, &mut Visibility)>,
-    (items, time, spatial, bodies): (
-        Query<(Entity, &crate::game::world::items::WorldItem, &GlobalTransform)>,
-        Res<Time>,
+    views: Query<&RadarView>,
+    mut blips: Query<(&mut Node, &mut BackgroundColor, &mut Visibility), With<RadarBlip>>,
+    (mut items, spatial, bodies): (
+        Query<(Entity, &crate::game::world::items::WorldItem, &GlobalTransform, &mut RadarItem)>,
         avian3d::prelude::SpatialQuery,
         Query<&avian3d::prelude::RigidBody>,
     ),
     data: Option<Res<GameData>>,
     species: Res<Assets<crate::content::species::MonsterCatalog>>,
-    mut known: Local<RadarItems>,
 ) {
     let (Ok((position, body)), Ok(layer)) = (party.single(), layers.single()) else { return };
     for mut rim in &mut rims {
@@ -153,17 +187,12 @@ pub fn update_radar(
         _ => (0.0, position.0),
     };
     let catalog = data.and_then(|d| species.get(&d.species));
-    for (entity, blip, _, _, mut visible) in &mut blips {
-        if !monsters.contains(blip.0) && !items.contains(blip.0) {
-            commands.entity(entity).despawn();
-        } else {
-            visible.set_if_neq(Visibility::Hidden);
-        }
+    for (_, _, mut visible) in &mut blips {
+        visible.set_if_neq(Visibility::Hidden);
     }
-    // The node is the blip registry: no parallel cache or recreated hierarchy.
     let mut show = |target: Entity, at: Vec2, colour: Color| {
-        if let Some((_, _, mut node, mut color, mut visibility)) =
-            blips.iter_mut().find(|(_, blip, ..)| blip.0 == target)
+        if let Ok(view) = views.get(target)
+            && let Ok((mut node, mut color, mut visibility)) = blips.get_mut(view.0)
         {
             node.left = px(at.x);
             node.top = px(at.y);
@@ -193,21 +222,15 @@ pub fn update_radar(
     // Items: once the eye has had them in sight, within the far clip.
     let level = |entity| bodies.get(entity).is_ok_and(avian3d::prelude::RigidBody::is_static);
     let filter = avian3d::prelude::SpatialQueryFilter::default();
-    known.seen.retain(|e| items.contains(*e));
-    known.lit.retain(|e, glow| items.contains(*e) && !glow.tick(time.delta()).is_finished());
-    for (entity, item, at) in &items {
+    for (entity, item, at, mut known) in &mut items {
         if item.hidden {
-            known.hidden.insert(entity);
             continue;
-        }
-        if known.hidden.remove(&entity) {
-            known.lit.insert(entity, Timer::from_seconds(ITEM_GLOW_SECONDS, TimerMode::Once));
         }
         let delta = at.translation() - position.0;
         if delta.length() > far {
             continue;
         }
-        if !known.seen.contains(&entity) {
+        if !known.seen {
             let to = at.translation();
             let in_sight = Dir3::new(to - eye).is_ok_and(|direction| {
                 spatial
@@ -217,12 +240,11 @@ pub fn update_radar(
             if !in_sight {
                 continue;
             }
-            known.seen.insert(entity);
+            known.seen = true;
         }
         // Retail makes a find's blip glow between `below` and `above`;
         // here it shows `above`.
-        let colour =
-            if known.lit.contains_key(&entity) { ITEM_BLIPS.above } else { ITEM_BLIPS.at(delta.y) };
+        let colour = if known.glow.is_some() { ITEM_BLIPS.above } else { ITEM_BLIPS.at(delta.y) };
         let at = blip_position(delta, body.yaw, true) - Vec2::ONE;
         show(entity, at, colour);
     }
@@ -231,6 +253,58 @@ pub fn update_radar(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn radar_views_follow_both_target_and_screen_lifetimes() {
+        let mut world = World::new();
+        let level = world.spawn_empty().id();
+        let target = world.spawn((RadarItem { seen: true, ..default() }, ChildOf(level))).id();
+        let screen = world.spawn(RadarBlips).id();
+        let blip = world.spawn((RadarBlip(target), ChildOf(screen))).id();
+        world.despawn(screen);
+        world.flush();
+        assert!(world.get_entity(blip).is_err());
+        assert!(world.get::<RadarItem>(target).unwrap().seen);
+        assert!(world.get::<RadarView>(target).is_none());
+        let screen = world.spawn(RadarBlips).id();
+        let blip = world.spawn((RadarBlip(target), ChildOf(screen))).id();
+        world.despawn(level);
+        world.flush();
+        assert!(world.get_entity(blip).is_err());
+        assert!(world.get_entity(target).is_err());
+        assert!(world.get_entity(screen).is_ok());
+        assert!(world.get::<Children>(screen).is_none());
+    }
+
+    #[test]
+    fn discovery_glows_even_when_the_hud_has_not_been_built() {
+        use crate::game::inventory::{ItemIds, make_item};
+        use crate::game::rng::GameRng;
+        use crate::game::world::{items::WorldItem, search::SearchNews};
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_message::<SearchNews>()
+            .add_systems(Update, track_radar_items);
+        let item =
+            make_item(&default(), &mut ItemIds::default(), &mut GameRng::default(), true, true);
+        let target =
+            app.world_mut().spawn(WorldItem { item, hidden: false, contents: vec![] }).id();
+        app.world_mut().write_message(SearchNews::Spotted {
+            target,
+            member: "Finder".into(),
+            item: "Dagger".into(),
+        });
+        app.update();
+        assert!(app.world().get::<RadarItem>(target).unwrap().glow.is_some());
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_secs(11),
+        ));
+        app.world_mut()
+            .resource_mut::<Time<Virtual>>()
+            .set_max_delta(std::time::Duration::from_secs(11));
+        app.update();
+        assert!(app.world().get::<RadarItem>(target).unwrap().glow.is_none());
+    }
 
     #[test]
     fn blips_sit_ahead_and_beyond_on_the_rim() {

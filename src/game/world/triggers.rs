@@ -13,12 +13,12 @@ use bevy::ecs::system::SystemParam;
 use bevy::ecs::world::EntityMut;
 use bevy::prelude::*;
 
-use super::level::{Departing, Level};
+use super::level::Level;
 use super::props::{Prop, PropMotion};
 use super::scripts::{BellButton, LevelScript};
 use crate::content::items::{Dice, ItemCatalog, LootTables};
 use crate::content::level::{
-    Fountain, LevelGeometry, Restores, StateChange, TriggerAction, TriggerDefinition, TriggerUse,
+    Fountain, LevelDefinition, Restores, StateChange, TriggerAction, TriggerDefinition, TriggerUse,
     VariableName,
 };
 use crate::game::characters::{Character, Vitals};
@@ -191,7 +191,7 @@ impl DeviceRecords<'_, '_> {
 pub fn spawn_devices(
     commands: &mut Commands,
     level: Entity,
-    geometry: &LevelGeometry,
+    geometry: &LevelDefinition,
     props: &[Entity],
     script: LevelScript,
     tables: &LootTables,
@@ -475,14 +475,11 @@ pub fn activate(world: &mut World, entity: Entity, distance: Option<f32>) -> boo
     }
     let Some(device) = world.get::<Device>(entity) else { return false };
     let level = device.level;
-    if world.get::<Departing>(level).is_some() {
-        return false;
-    }
     let Some(level) = world.get::<Level>(level) else { return false };
     let handle = level.geometry.clone();
     // Borrow immutable definitions for the entire synchronous operation. Nested
     // links use these same definitions, without cloning a graph or a definition.
-    world.resource_scope(|world, geometry: Mut<Assets<LevelGeometry>>| {
+    world.resource_scope(|world, geometry: Mut<Assets<LevelDefinition>>| {
         let Some(geometry) = geometry.get(&handle) else { return false };
         let definition = &geometry.triggers[world.get::<Device>(entity).unwrap().definition];
         if distance.is_some_and(|distance| {
@@ -627,7 +624,7 @@ fn play_authored_sound(world: &mut World, entity: Entity, definition: &TriggerDe
     }
 }
 
-fn execute_links(world: &mut World, geometry: &LevelGeometry, entity: Entity, depth: usize) {
+fn execute_links(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth: usize) {
     let count = world.get::<Device>(entity).unwrap().recipients.len();
     for index in 0..count {
         let recipient = world.get::<Device>(entity).unwrap().recipients[index];
@@ -635,7 +632,7 @@ fn execute_links(world: &mut World, geometry: &LevelGeometry, entity: Entity, de
     }
 }
 
-fn execute(world: &mut World, geometry: &LevelGeometry, entity: Entity, depth: usize) -> bool {
+fn execute(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth: usize) -> bool {
     if !ready(world, entity) {
         return false;
     }
@@ -777,8 +774,8 @@ fn contains(definition: &TriggerDefinition, eye: Vec3) -> bool {
 pub(crate) fn walk(
     In(sample): In<Option<(Entity, Vec3, Duration)>>,
     mut commands: Commands,
-    mut levels: Query<(&Level, &PositionedDevices, &mut LevelState), Without<Departing>>,
-    geometry: Res<Assets<LevelGeometry>>,
+    mut levels: Query<(&Level, &PositionedDevices, &mut LevelState)>,
+    geometry: Res<Assets<LevelDefinition>>,
     mut devices: Query<(&Device, &TriggerState, Option<&mut ActiveDamageZone>)>,
     pending: Res<PendingPartyMove>,
 ) {
@@ -822,12 +819,9 @@ fn walk_activation(
     elapsed: Duration,
     start: usize,
 ) {
-    if world.get::<Departing>(level).is_some() {
-        return;
-    }
     let Some(owner) = world.get::<Level>(level) else { return };
     let handle = owner.geometry.clone();
-    world.resource_scope(|world, geometry: Mut<Assets<LevelGeometry>>| {
+    world.resource_scope(|world, geometry: Mut<Assets<LevelDefinition>>| {
         let Some(geometry) = geometry.get(&handle) else { return };
         let count = world.get::<PositionedDevices>(level).unwrap().0.len();
         for index in start..count {
@@ -917,7 +911,7 @@ mod tests {
     /// The actual ECS state and operation parameter, with no presentation.
     struct Scenario {
         world: World,
-        geometry: LevelGeometry,
+        geometry: LevelDefinition,
         script: LevelScript,
         last_frames: Vec<f32>,
         root: Entity,
@@ -940,9 +934,9 @@ mod tests {
                     trigger: triggers.iter().position(|t| t.name == name),
                 })
                 .collect();
-            let geometry = LevelGeometry { triggers, props: models, ..default() };
+            let geometry = LevelDefinition { triggers, props: models, ..default() };
             let mut world = World::new();
-            world.init_resource::<Assets<LevelGeometry>>();
+            world.init_resource::<Assets<LevelDefinition>>();
             world.init_resource::<Assets<ItemCatalog>>();
             world.init_resource::<Assets<LootTables>>();
             world.init_resource::<Messages<TriggerEffect>>();
@@ -978,7 +972,7 @@ mod tests {
         fn visit(&mut self, memory: Option<TriggerMemory>) {
             self.world.despawn(self.root);
             let handle =
-                self.world.resource_mut::<Assets<LevelGeometry>>().add(self.geometry.clone());
+                self.world.resource_mut::<Assets<LevelDefinition>>().add(self.geometry.clone());
             self.root = self
                 .world
                 .spawn(super::super::level::Level {
@@ -986,7 +980,6 @@ mod tests {
                     geometry: handle,
                     script: self.script,
                     navmeshes: vec![],
-                    sky: None,
                     messages: None,
                 })
                 .id();
@@ -1625,9 +1618,9 @@ mod tests {
         );
         level.world.insert_resource(data);
         level.settle();
-        level.world.entity_mut(level.root).insert(Departing);
+        let source = level.world.entity_mut(level.root).take::<Level>().unwrap();
         assert!(!level.run("DOOR").0);
-        level.world.entity_mut(level.root).remove::<Departing>();
+        level.world.entity_mut(level.root).insert(source);
         assert!(level.run("DOOR").0);
         assert_eq!(level.motion("DOOR").target, 0.0);
     }
@@ -1708,7 +1701,7 @@ mod tests {
         destination.place = Some(Vec3::X * 10.0);
         destination.initial.action =
             TriggerAction::Teleport(Arrival::Here { eye: Vec3::X * 20.0, yaw: 0.0 });
-        let geometry = LevelGeometry { triggers: vec![portal, destination], ..default() };
+        let geometry = LevelDefinition { triggers: vec![portal, destination], ..default() };
         let mut app = App::new();
         app.add_plugins((
             MinimalPlugins,
@@ -1717,16 +1710,15 @@ mod tests {
             bevy_enhanced_input::EnhancedInputPlugin,
             PartyPlugin,
         ))
-        .init_asset::<LevelGeometry>()
+        .init_asset::<LevelDefinition>()
         .add_message::<Travel>();
         let world = app.world_mut();
-        let handle = world.resource_mut::<Assets<LevelGeometry>>().add(geometry.clone());
+        let handle = world.resource_mut::<Assets<LevelDefinition>>().add(geometry.clone());
         let root = world
             .spawn(Level {
                 path: "test".into(),
                 geometry: handle,
                 navmeshes: vec![],
-                sky: None,
                 script: LevelScript::None,
                 messages: None,
             })

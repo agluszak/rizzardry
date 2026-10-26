@@ -9,7 +9,7 @@ use bevy_landmass::{AgentTarget3d, UsingAnimationLink, Velocity3d};
 use bevy_tnua::{TnuaController, TnuaMotor};
 
 use super::items::drop_loot;
-use super::level::{Departing, Level};
+use super::level::Level;
 use super::navigation::{Walker, feet};
 use super::population::Monster;
 use crate::content::items::{ItemCatalog, LootTables};
@@ -53,7 +53,7 @@ pub struct MonsterDamage<'w, 's> {
             Option<&'static mut Velocity3d>,
         ),
     >,
-    levels: Query<'w, 's, (), (With<Level>, Without<Departing>)>,
+    levels: Query<'w, 's, (), With<Level>>,
     commands: Commands<'w, 's>,
     data: Option<Res<'w, GameData>>,
     catalogs: Res<'w, Assets<ItemCatalog>>,
