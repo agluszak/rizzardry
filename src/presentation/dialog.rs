@@ -34,11 +34,15 @@ pub fn load_dialog_art(mut commands: Commands, assets: Res<AssetServer>) {
 /// The travel question on screen, with its keys: Enter accepts and Escape
 /// declines, like its buttons. They come before every other screen's keys,
 /// which do not see them while it is up.
-#[derive(Component, Clone, Default)]
-pub struct QuestionDialog;
+#[derive(Component, Clone)]
+#[component(immutable)]
+#[relationship(relationship_target = QuestionDialogs)]
+pub struct QuestionDialog(pub Entity);
 
-#[derive(Component, Clone, FromTemplate)]
-pub struct QuestionSession(pub Entity);
+/// Own the dialog without UI parenting it under the non-UI level hierarchy.
+#[derive(Component)]
+#[relationship_target(relationship = QuestionDialog, linked_spawn)]
+pub struct QuestionDialogs(Vec<Entity>);
 
 #[derive(InputAction)]
 #[action_output(bool)]
@@ -51,17 +55,13 @@ struct Decline;
 /// Show the question when one is asked, once its art has loaded.
 pub fn show_travel_question(
     mut commands: Commands,
-    questions: Query<(Entity, &TravelQuestion)>,
-    shown: Query<&QuestionSession>,
+    questions: Query<(Entity, &TravelQuestion), Without<QuestionDialogs>>,
     art: Res<DialogArt>,
     sheets: Res<Assets<SpriteSheet>>,
     tables: Res<Assets<TextTable>>,
     mut images: ResMut<Assets<Image>>,
 ) {
-    let Ok((question_id, question)) = questions.single() else { return };
-    if shown.iter().any(|shown| shown.0 == question_id) {
-        return;
-    }
+    let Ok((question_entity, question)) = questions.single() else { return };
     let (Some(ok), Some(cancel), Some(font), Some(strings)) = (
         sheets.get(&art.ok),
         sheets.get(&art.cancel),
@@ -88,15 +88,15 @@ pub fn show_travel_question(
                 ImageNode
                 @hover_art(sheet, 0, if sheet.images.len() > 1 { 1 } else { 0 })
                 on(move |_: On<PointerClick>, mut answers: MessageWriter<TravelAnswer>| {
-                    answers.write(TravelAnswer { question: question_id, accept });
+                    answers.write(TravelAnswer { question: question_entity, accept });
                 })
             })
         })
         .collect();
+    let dialog = QuestionDialog(question_entity);
     commands.spawn_scene(bsn! {
         @centred()
-        QuestionDialog
-        QuestionSession({question_id})
+        dialog
         ContextPriority::<QuestionDialog>::new(1)
         Actions<QuestionDialog> [
             Action::<Accept>::new()
@@ -108,10 +108,10 @@ pub fn show_travel_question(
             Bindings [ Binding(KeyCode::Escape) ]
         ]
         on(move |_: On<Start<Accept>>, mut answers: MessageWriter<TravelAnswer>| {
-            answers.write(TravelAnswer { question: question_id, accept: true });
+            answers.write(TravelAnswer { question: question_entity, accept: true });
         })
         on(move |_: On<Start<Decline>>, mut answers: MessageWriter<TravelAnswer>| {
-            answers.write(TravelAnswer { question: question_id, accept: false });
+            answers.write(TravelAnswer { question: question_entity, accept: false });
         })
         Children [
             Node {
@@ -134,17 +134,4 @@ pub fn show_travel_question(
             ]
         ]
     });
-}
-
-/// A dialog is a view of its gameplay session, including cancellation by travel.
-pub fn close_ended_questions(
-    mut commands: Commands,
-    questions: Query<(), With<TravelQuestion>>,
-    dialogs: Query<(Entity, &QuestionSession)>,
-) {
-    for (entity, dialog) in &dialogs {
-        if !questions.contains(dialog.0) {
-            commands.entity(entity).despawn();
-        }
-    }
 }

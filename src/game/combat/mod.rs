@@ -21,11 +21,11 @@ use crate::content::species::{MonsterCatalog, Reach};
 use crate::game::characters::{Character, Condition, Vitals};
 use crate::game::data::GameData;
 use crate::game::inventory::{Carried, EquipSlot, ItemInstanceId};
-use crate::game::party::Order;
 use crate::game::party::body::PartyBody;
 use crate::game::party::formation::{self, Formation, Row};
 use crate::game::party::recovery;
 use crate::game::party::roster::PartyRoster;
+use crate::game::party::{DamageApplied, Order};
 use crate::game::rng::GameRng;
 use crate::game::time::GameClock;
 use crate::game::world::damage::{DamageOutcome, MonsterDamage};
@@ -280,7 +280,10 @@ pub fn start_battle(
     mut recognition: GroupRecognition,
     mut rng: ResMut<GameRng>,
 ) {
-    if battle.is_some() || camp.is_some() {
+    if battle.is_some()
+        || camp.is_some()
+        || !roster.0.iter().any(|&member| members.get(member).is_ok_and(|(_, v)| !v.is_dead()))
+    {
         return;
     }
     let (Ok((party_at, mut body)), Some(catalog)) =
@@ -394,7 +397,7 @@ pub fn run_battle(
     mut formation: ResMut<Formation>,
     data: Option<Res<GameData>>,
     (items, species): (Res<Assets<ItemCatalog>>, Res<Assets<MonsterCatalog>>),
-    mut news: MessageWriter<CombatNews>,
+    (mut news, mut party_damage): (MessageWriter<CombatNews>, MessageWriter<DamageApplied>),
     (mut starts, settings, orders): (MessageReader<StartRound>, Res<CombatSettings>, Query<&Order>),
 ) {
     let Some(mut battle) = battle else {
@@ -548,6 +551,7 @@ pub fn run_battle(
                 items,
                 species,
                 &mut news,
+                &mut party_damage,
             );
             battle.wait = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
             return;
@@ -674,6 +678,7 @@ fn monster_acts(
     items: &ItemCatalog,
     species: &MonsterCatalog,
     news: &mut MessageWriter<CombatNews>,
+    damage: &mut MessageWriter<DamageApplied>,
 ) {
     let (entity, turn) = battle.monsters[index];
     let Ok((monster, at, walker, _)) = monsters.get(entity) else { return };
@@ -720,9 +725,15 @@ fn monster_acts(
     let (mut hits, mut dealt) = (0, 0);
     for _ in 0..swings {
         match monster_swing(rng, kind, attack, mode, &character, &armour) {
-            Swing::Hit(damage) => {
+            Swing::Hit(amount) => {
                 hits += 1;
-                dealt += crate::game::party::damage_member(member, &mut vitals, formation, damage);
+                dealt += crate::game::party::damage_member(
+                    member,
+                    &mut vitals,
+                    formation,
+                    amount,
+                    damage,
+                );
                 if vitals.is_dead() {
                     break;
                 }
@@ -841,7 +852,7 @@ mod tests {
         assert_eq!(next_phase(55, 1), 77);
         assert_eq!(next_phase(100, 1), 100, "again at the same step");
     }
-    /// Real round execution without perception, movement, rendering or UI.
+    /// Real battle acceptance and round execution without movement, rendering or UI.
     fn round_app(defending: bool) -> (App, [Entity; 2]) {
         use crate::content::characters::Skill;
         use crate::content::items::{ItemDefinition, QuantityKind};
@@ -856,6 +867,7 @@ mod tests {
             .init_resource::<Assets<ItemCatalog>>()
             .init_resource::<Assets<MonsterCatalog>>()
             .init_resource::<Assets<LootTables>>()
+            .init_resource::<avian3d::collider_tree::ColliderTrees>()
             .init_resource::<PartyRoster>()
             .init_resource::<Formation>()
             .init_resource::<PartyInventory>()
@@ -864,10 +876,11 @@ mod tests {
             .insert_resource(GameRng::seeded(5))
             .init_resource::<CombatSettings>()
             .add_message::<CombatNews>()
+            .add_message::<DamageApplied>()
             .add_message::<StartRound>()
             .init_resource::<Assets<crate::content::level::LevelGeometry>>()
             .add_message::<crate::game::world::identify::Identified>()
-            .add_systems(Update, (settle_defeat, run_battle, settle_defeat).chain());
+            .add_systems(Update, (settle_defeat, start_battle, run_battle, settle_defeat).chain());
         app.world_mut()
             .resource_mut::<Time<Virtual>>()
             .set_max_delta(std::time::Duration::from_secs(2));
@@ -1100,7 +1113,7 @@ mod tests {
         let (mut app, members) = round_app(false);
         app.world_mut().resource_mut::<Battle>().wait = Timer::from_seconds(60.0, TimerMode::Once);
         app.world_mut().resource_mut::<Messages<StartRound>>().clear();
-        app.world_mut().remove_resource::<GameData>();
+        let data = app.world_mut().remove_resource::<GameData>().unwrap();
         for member in members {
             app.world_mut().get_mut::<Vitals>(member).unwrap().hp = 0;
         }
@@ -1112,6 +1125,36 @@ mod tests {
         );
         app.update();
         assert!(app.world().resource::<Messages<CombatNews>>().is_empty());
+
+        // A visible hostile must not restart combat once content is ready again.
+        {
+            let world = app.world_mut();
+            let geometry = world
+                .resource_mut::<Assets<crate::content::level::LevelGeometry>>()
+                .add(crate::content::level::LevelGeometry::default());
+            world
+                .query::<&mut crate::game::world::level::Level>()
+                .single_mut(world)
+                .unwrap()
+                .geometry = geometry;
+            world.resource_mut::<Assets<MonsterCatalog>>().get_mut(&data.species).unwrap().0[0]
+                .attacks
+                .push(crate::content::species::MonsterAttack {
+                    word: AttackWord::Verb,
+                    named: false,
+                    reach: Reach::Touch,
+                    score: 0,
+                    modes: EnumSet::only(AttackMode::Swing),
+                    damage: Dice::default(),
+                });
+            world.insert_resource(data);
+        }
+        app.update();
+        assert!(!app.world().contains_resource::<Battle>());
+        assert!(app.world().resource::<Messages<CombatNews>>().is_empty());
+        app.world_mut().get_mut::<Vitals>(members[0]).unwrap().hp = 1;
+        app.update();
+        assert!(app.world().contains_resource::<Battle>(), "the hostile can engage a live party");
     }
 
     #[test]

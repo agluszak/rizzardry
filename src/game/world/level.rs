@@ -78,6 +78,7 @@ impl Level {
 /// The party is being asked whether to leave for another level's entrance;
 /// it waits until the player answers (retail `RequestLevelTransition`).
 #[derive(Component, Debug, Clone)]
+#[component(immutable)]
 pub struct TravelQuestion {
     pub entrance: String,
 }

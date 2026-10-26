@@ -39,6 +39,7 @@ impl Plugin for PartyPlugin {
         .add_input_context::<body::Exploration>()
         .init_resource::<roster::PartyRoster>()
         .init_resource::<formation::Formation>()
+        .add_message::<DamageApplied>()
         .add_message::<camp::CampNews>()
         .add_message::<camp::CampRequest>()
         .add_message::<camp::LeaveCamp>()
@@ -88,6 +89,15 @@ impl Plugin for PartyPlugin {
     }
 }
 
+/// Actual damage to an actor, after its gameplay consequences have settled.
+/// Presentation can retain this result even if healing follows before it draws.
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DamageApplied {
+    pub member: Entity,
+    pub amount: u32,
+    pub died: bool,
+}
+
 /// Apply party damage and settle the target's death invariants before another
 /// operation can use its formation seat. Retain resource change tracking until
 /// death actually changes a seat.
@@ -96,10 +106,52 @@ pub fn damage_member(
     vitals: &mut crate::game::characters::Vitals,
     formation: &mut ResMut<formation::Formation>,
     amount: u32,
+    damage: &mut MessageWriter<DamageApplied>,
 ) -> u32 {
     let lost = vitals.damage(amount);
     if vitals.is_dead() && formation.row_of(member).is_some() {
         formation.unseat(member);
     }
+    if lost > 0 {
+        damage.write(DamageApplied { member, amount: lost, died: vitals.is_dead() });
+    }
     lost
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::characters::Vitals;
+    use bevy::ecs::system::SystemState;
+
+    #[test]
+    fn damage_reports_actual_loss_and_death_even_when_healing_follows() {
+        let mut world = World::new();
+        world.init_resource::<formation::Formation>();
+        world.init_resource::<Messages<DamageApplied>>();
+        let first = world.spawn(Vitals { hp: 10, stamina: 20, ..default() }).id();
+        world.resource_mut::<formation::Formation>().seat(first);
+        let mut operation = SystemState::<(
+            Query<&mut Vitals>,
+            ResMut<formation::Formation>,
+            MessageWriter<DamageApplied>,
+        )>::new(&mut world);
+        {
+            let (mut members, mut formation, mut damage) = operation.get_mut(&mut world).unwrap();
+            let mut vitals = members.get_mut(first).unwrap();
+            assert_eq!(damage_member(first, &mut vitals, &mut formation, 3, &mut damage), 3);
+            vitals.heal(3, 10);
+        }
+        let reported: Vec<_> = world.resource_mut::<Messages<DamageApplied>>().drain().collect();
+        assert_eq!(reported, [DamageApplied { member: first, amount: 3, died: false }]);
+        {
+            let (mut members, mut formation, mut damage) = operation.get_mut(&mut world).unwrap();
+            let mut vitals = members.get_mut(first).unwrap();
+            assert_eq!(damage_member(first, &mut vitals, &mut formation, 100, &mut damage), 10);
+            assert!(formation.row_of(first).is_none(), "death settles before another action");
+            assert_eq!(damage_member(first, &mut vitals, &mut formation, 1, &mut damage), 0);
+        }
+        let reported: Vec<_> = world.resource_mut::<Messages<DamageApplied>>().drain().collect();
+        assert_eq!(reported, [DamageApplied { member: first, amount: 10, died: true }]);
+    }
 }

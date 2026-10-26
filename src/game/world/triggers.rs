@@ -25,6 +25,7 @@ use crate::game::characters::{Character, Vitals};
 use crate::game::data::GameData;
 use crate::game::inventory::{ItemIds, ItemInstance, PartyInventory, make_item};
 use crate::game::loot::roll_loot;
+use crate::game::party::DamageApplied;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::time::GameClock;
@@ -323,7 +324,7 @@ fn open_container(
         &mut party,
         catalog,
     ) {
-        outcomes.write(TriggerEffect::PartyTakes(name));
+        item_news.write(crate::game::inventory::ItemNews::Takes { member: None, item: name });
     }
     if !contents.items.is_empty() {
         item_news.write(crate::game::inventory::ItemNews::NoRoom);
@@ -337,7 +338,7 @@ fn damage_party(
     mut members: Query<&mut Vitals>,
     mut rng: ResMut<GameRng>,
     mut formation: ResMut<crate::game::party::formation::Formation>,
-    mut outcomes: MessageWriter<TriggerEffect>,
+    mut damage: MessageWriter<DamageApplied>,
 ) {
     for entity in roster.0.iter() {
         let Ok(member) = members.get(*entity) else { continue };
@@ -345,13 +346,16 @@ fn damage_party(
             continue;
         }
         let rolled = rng.roll(dice);
-        let amount = if rolled > 0 {
+        if rolled > 0 {
             let mut member = members.get_mut(*entity).unwrap();
-            crate::game::party::damage_member(*entity, &mut member, &mut formation, rolled)
-        } else {
-            0
-        };
-        outcomes.write(TriggerEffect::Hurt { member: *entity, amount });
+            crate::game::party::damage_member(
+                *entity,
+                &mut member,
+                &mut formation,
+                rolled,
+                &mut damage,
+            );
+        }
     }
     commands.run_system_cached(crate::game::combat::settle_defeat);
 }
@@ -430,13 +434,6 @@ pub enum TriggerEffect {
     },
     /// The party used something and nothing came of it.
     NothingHappened,
-    /// A member was hurt.
-    Hurt {
-        member: Entity,
-        amount: u32,
-    },
-    /// An item went to the party ("Party takes %s").
-    PartyTakes(String),
     Gold(u32),
     FountainUsed {
         at: Option<Vec3>,
@@ -946,6 +943,7 @@ mod tests {
             world.init_resource::<Assets<ItemCatalog>>();
             world.init_resource::<Assets<LootTables>>();
             world.init_resource::<Messages<TriggerEffect>>();
+            world.init_resource::<Messages<DamageApplied>>();
             world.init_resource::<Messages<crate::game::combat::CombatNews>>();
             world.init_resource::<PendingPartyMove>();
             world.init_resource::<PartyInventory>();
@@ -1047,6 +1045,10 @@ mod tests {
 
         fn effects(&mut self) -> Vec<TriggerEffect> {
             self.world.resource_mut::<Messages<TriggerEffect>>().drain().collect()
+        }
+
+        fn damage(&mut self) -> Vec<DamageApplied> {
+            self.world.resource_mut::<Messages<DamageApplied>>().drain().collect()
         }
 
         fn run(&mut self, name: &str) -> (bool, Vec<TriggerEffect>) {
@@ -1360,15 +1362,9 @@ mod tests {
         level.add_member("B");
         let full = level.world.get::<Vitals>(level.members[0]).unwrap().hp;
         let tick = Duration::from_millis(100);
-        let (committed, effects) = level.run("TRAP");
+        let (committed, _) = level.run("TRAP");
         assert!(committed);
-        let hurt: Vec<_> = effects
-            .iter()
-            .filter_map(|e| match e {
-                TriggerEffect::Hurt { amount, .. } => Some(*amount),
-                _ => None,
-            })
-            .collect();
+        let hurt: Vec<_> = level.damage().into_iter().map(|hit| hit.amount).collect();
         assert_eq!(hurt.len(), 2);
         assert!(hurt.iter().all(|n| (2..=8).contains(n)));
         level.walk(Vec3::new(5.0, 0.0, 0.0), tick);
@@ -1376,24 +1372,19 @@ mod tests {
         for _ in 0..10 {
             level.walk(Vec3::ZERO, tick);
         }
-        let zone_hits =
-            level.effects().iter().filter(|e| matches!(e, TriggerEffect::Hurt { .. })).count();
+        let zone_hits = level.damage().len();
         assert_eq!(zone_hits, 2 * 2, "two ticks for each of two members");
         level.walk(Vec3::new(5.0, 0.0, 0.0), tick);
-        level.effects();
+        level.damage();
         level.walk(Vec3::new(5.0, 0.0, 0.0), Duration::from_secs(1));
-        assert!(level.effects().is_empty());
+        assert!(level.damage().is_empty());
         for &member in &level.members {
             level.world.get_mut::<Vitals>(member).unwrap().hp = full;
         }
         level.walk(Vec3::ZERO, tick);
-        assert!(level.effects().is_empty(), "reentry starts a fresh hazard interval");
+        assert!(level.damage().is_empty(), "reentry starts a fresh hazard interval");
         level.walk(Vec3::ZERO, Duration::from_millis(500));
-        assert_eq!(
-            level.effects().iter().filter(|e| matches!(e, TriggerEffect::Hurt { .. })).count(),
-            2,
-            "the restarted hazard hurts each member once"
-        );
+        assert_eq!(level.damage().len(), 2, "the restarted hazard hurts each member once");
         assert!(level.members.iter().all(|&m| level.world.get::<Vitals>(m).unwrap().hp < full));
     }
 
@@ -1416,8 +1407,7 @@ mod tests {
             let mut level = Scenario::new(definitions, &[], LevelScript::None);
             level.walk(Vec3::X * 5.0, Duration::ZERO);
             level.walk(Vec3::ZERO, Duration::from_millis(500));
-            let hurts =
-                level.effects().iter().filter(|e| matches!(e, TriggerEffect::Hurt { .. })).count();
+            let hurts = level.damage().len();
             assert_eq!(
                 hurts,
                 usize::from(!zone_first),
@@ -1431,7 +1421,7 @@ mod tests {
         level.run("ZONE");
         level.walk(Vec3::X * 5.0, Duration::from_millis(400));
         level.walk(Vec3::ZERO, Duration::from_millis(100));
-        assert!(level.effects().is_empty(), "the earlier relay resets the hazard before it ticks");
+        assert!(level.damage().is_empty(), "the earlier relay resets the hazard before it ticks");
     }
 
     #[test]
@@ -1581,14 +1571,8 @@ mod tests {
         level.world.resource_mut::<PartyRoster>().0 = [second, first].into_iter().collect();
         level.world.clear_trackers();
         let before = [second, first].map(|e| level.world.get::<Vitals>(e).unwrap().hp);
-        let effects = level.run("TRAP").1;
-        let hits: Vec<_> = effects
-            .into_iter()
-            .filter_map(|effect| match effect {
-                TriggerEffect::Hurt { member, amount } => Some((member, amount)),
-                _ => None,
-            })
-            .collect();
+        level.run("TRAP");
+        let hits: Vec<_> = level.damage().into_iter().map(|hit| (hit.member, hit.amount)).collect();
         assert_eq!(hits.iter().map(|&(member, _)| member).collect::<Vec<_>>(), [second, first]);
         for ((member, amount), hp) in hits.into_iter().zip(before) {
             assert!((2..=8).contains(&amount));

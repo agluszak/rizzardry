@@ -148,7 +148,7 @@ impl Plugin for PresentationPlugin {
                     billboards::face_camera.after(party_view::aim_camera),
                     music::play_music,
                     (ambience::place_ambient_sounds, ambience::play_ambient_sounds).chain(),
-                    (dialog::close_ended_questions, dialog::show_travel_question).chain(),
+                    dialog::show_travel_question,
                     effects::shake_camera.after(party_view::aim_camera),
                     sky::orbit_sun_and_moon,
                     voice::finish_speech,

@@ -40,10 +40,11 @@ party entity survives travel. The root has one phase — loading, active or
 failed — and one operation (`activate_level`) makes it playable once its
 gameplay prerequisites exist: it builds the world, navigation and
 population, consumes what was remembered of the level, places and resumes
-the party, and only then announces `LevelReady`. Gameplay systems run only
-while a level is active; travel captures the level it leaves, ends work that
-cannot cross levels and suspends the party's body until the destination is
-active. Cosmetic loading (the sky) proceeds on its own. Bevy parent/child relations and screen-scoped
+the party, and only then announces `LevelReady`. Travel currently captures the
+source before preparation and marks it `Departing`; this gates some gameplay and
+suspends the party body, but does not freeze all source navigation/physics.
+Moving source capture to the successful activation commit remains outstanding.
+Cosmetic loading (the sky) proceeds on its own. Bevy parent/child relations and screen-scoped
 cleanup should eliminate manual ownership tables, not introduce a new global
 world manager.
 
@@ -232,7 +233,7 @@ continue loading when it does not affect those rules. A failed requirement
 has an explicit outcome; it must not make opening a chest or using a trigger
 silently succeed without its required effects.
 
-Travel prepares the destination without modifying its gameplay state or
+The intended boundary prepares the destination without modifying its gameplay state or
 destroying the source. At the transition boundary, settle/cancel outstanding
 source-owned actions, capture persistent local state, stop the source world's
 simulation, suspend the persistent party body, remove source entities, then
@@ -245,6 +246,11 @@ must still identify its original level/session.
 This is one ordinary transition, not a new generic lifecycle framework or
 a second simultaneously mutable world. Its detailed failure and revisit
 semantics are in [persistence and travel](systems/persistence-and-travel.md).
+
+The current implementation still takes a provisional source snapshot and uses
+`stay()` to discard it on failure. It also treats failed navmesh loading as
+settled and can activate without navigation. These are limitations of the current
+boundary, not guarantees established by the readiness tests.
 
 ## Operations, systems and observation
 
@@ -279,6 +285,18 @@ Only order systems whose dependencies require it. Mandatory consequences within
 an operation are direct calls: lethal damage performs death bookkeeping before
 another action can use the actor. UI repaint and sound are observations after
 that mutation.
+
+`DamageApplied` reports the actor, actual HP loss and death result from the party
+damage operation. Retained portrait splats consume that fact directly; recording
+and playback are ordered so a new hit refreshes its animation before expiry.
+Chest and bag transfers report through `ItemNews`, sharing the inventory rule
+and its notification path.
+
+A gameplay question owns its dialog through a native linked relationship. This
+preserves a UI root without parenting it under the non-UI level. Replacing or
+ending the question removes the view without a per-frame reconciliation system.
+Likewise, an ambient emitter's sound child represents pending or active playback;
+the presence of an `AudioSink` only indicates that playback is ready.
 
 Bevy's [observer documentation](https://docs.rs/bevy/0.20.0/bevy/ecs/observer/struct.Observer.html)
 does not promise a convenient gameplay order between independent observers of

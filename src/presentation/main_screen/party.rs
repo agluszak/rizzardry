@@ -4,6 +4,8 @@
 //! splats over the portraits. Clicking a slot selects the member, gives
 //! them the held item, or (double click) opens their review screen.
 
+use std::time::Duration;
+
 use bevy::prelude::*;
 use rand::Rng;
 
@@ -15,6 +17,7 @@ use crate::game::characters::{Character, Race, Vitals};
 use crate::game::combat::attack::{Armour, armour};
 use crate::game::data::GameData;
 use crate::game::inventory::{Carried, EquipSlot, ItemNews};
+use crate::game::party::DamageApplied;
 use crate::game::party::roster::PartyRoster;
 use crate::presentation::PresentationRng;
 use crate::presentation::screen_art::{BitmapText, Picture, absolute, label, picture, rect};
@@ -590,35 +593,30 @@ const SPLAT_FRAME: f32 = 0.1;
 
 pub fn record_splats(
     mut commands: Commands,
-    mut combat: MessageReader<crate::game::combat::CombatNews>,
-    mut devices: MessageReader<crate::game::world::triggers::TriggerEffect>,
+    mut damage: MessageReader<DamageApplied>,
     art: Res<MainScreenArt>,
-    members: Query<&Vitals>,
     layers: Query<Entity, With<Splats>>,
-    existing: Query<(Entity, &Splat)>,
+    mut existing: Query<&mut Splat>,
     mut rng: ResMut<PresentationRng>,
 ) {
-    use crate::game::combat::CombatNews;
-    use crate::game::world::triggers::TriggerEffect;
-    let mut damage = std::collections::BTreeMap::<Entity, u32>::new();
-    for news in combat.read() {
-        if let CombatNews::Result { target, damage: lost, .. } = news
-            && *lost > 0
-            && members.contains(*target)
-        {
-            *damage.entry(*target).or_default() += lost;
-        }
-    }
-    for news in devices.read() {
-        if let TriggerEffect::Hurt { member, amount } = news
-            && *amount > 0
-        {
-            *damage.entry(*member).or_default() += amount;
-        }
+    let mut hits = std::collections::BTreeMap::<Entity, (u32, bool)>::new();
+    for &DamageApplied { member, amount, died } in damage.read() {
+        let (lost, death) = hits.entry(member).or_default();
+        *lost += amount;
+        *death |= died;
     }
     let Ok(layer) = layers.single() else { return };
-    for (actor, damage) in damage {
-        let death = members.get(actor).is_ok_and(|v| v.is_dead());
+    for (actor, (damage, death)) in hits {
+        // RecordCharacterDamage accumulates hits while the splat is playing.
+        if let Some(mut splat) = existing.iter_mut().find(|s| s.actor == actor) {
+            splat.damage += damage;
+            splat.death |= death;
+            if splat.death {
+                splat.timer.set_duration(Duration::from_secs_f32(30.0 * SPLAT_FRAME));
+            }
+            splat.timer.reset();
+            continue;
+        }
         let second = rng.0.random_bool(0.5);
         let splat = Splat {
             actor,
@@ -630,20 +628,16 @@ pub fn record_splats(
                 TimerMode::Once,
             ),
         };
-        if let Some((root, _)) = existing.iter().find(|(_, s)| s.actor == actor) {
-            commands.entity(root).insert(splat);
-        } else {
-            let value = damage.to_string();
-            let font = art.bold_font.clone();
-            commands.spawn_scene(bsn!{
-                Node{position_type:PositionType::Absolute} Pickable::IGNORE
-                Children [
-                    template(|_|Ok(Picture::default())) Pickable::IGNORE
-                    -- Node{position_type:PositionType::Absolute} SplatNumber Pickable::IGNORE
-                    template(move |_|Ok(BitmapText{font:font.clone(),value:value.clone(),at:Vec2::new(0.0,4.0),width:82.0,justify:bevy::text::Justify::Center}))
-                ]
-            }).insert((splat,ChildOf(layer)));
-        }
+        let value = damage.to_string();
+        let font = art.bold_font.clone();
+        commands.spawn_scene(bsn!{
+            Node{position_type:PositionType::Absolute} Pickable::IGNORE
+            Children [
+                template(|_|Ok(Picture::default())) Pickable::IGNORE
+                -- Node{position_type:PositionType::Absolute} SplatNumber Pickable::IGNORE
+                template(move |_|Ok(BitmapText{font:font.clone(),value:value.clone(),at:Vec2::new(0.0,4.0),width:82.0,justify:bevy::text::Justify::Center}))
+            ]
+        }).insert((splat,ChildOf(layer)));
     }
 }
 

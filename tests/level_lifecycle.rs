@@ -107,6 +107,34 @@ fn floor() -> CollisionMesh {
 }
 
 #[test]
+fn travel_dialogs_end_with_their_question_without_a_cleanup_system() {
+    use rizzardry::game::world::level::{TravelAnswer, answer_travel_questions, ask_travel};
+    use rizzardry::presentation::dialog::QuestionDialog;
+
+    let mut app = app();
+    app.add_message::<TravelAnswer>().add_systems(Update, answer_travel_questions);
+    let level = test_level(&mut app, floor());
+    let level = app.world_mut().spawn(level).id();
+    let old = ask_travel(app.world_mut(), level, "first".into()).unwrap();
+    let old_dialog = app.world_mut().spawn(QuestionDialog(old)).id();
+    let current = ask_travel(app.world_mut(), level, "second".into()).unwrap();
+    assert!(app.world().get_entity(old_dialog).is_err());
+
+    let dialog = app.world_mut().spawn(QuestionDialog(current)).id();
+    app.world_mut().write_message(TravelAnswer { question: old, accept: true });
+    app.update();
+    assert!(app.world().get_entity(dialog).is_ok(), "a stale answer cannot close the new view");
+    app.world_mut().write_message(TravelAnswer { question: current, accept: false });
+    app.update();
+    assert!(app.world().get_entity(dialog).is_err());
+
+    let question = ask_travel(app.world_mut(), level, "third".into()).unwrap();
+    let dialog = app.world_mut().spawn(QuestionDialog(question)).id();
+    app.world_mut().despawn(level);
+    assert!(app.world().get_entity(dialog).is_err(), "leaving ends the pending view");
+}
+
+#[test]
 fn a_level_without_collision_fails_and_places_no_party() {
     let mut app = app();
     with_data(&mut app);

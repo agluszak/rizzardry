@@ -5,7 +5,9 @@ departs from retail, in rough order of the
 [implementation plan](implementation-plan.md)'s first slice. Keep an entry
 next to its feature when that feature changes.
 
-- The architecture reviews are addressed. The navmesh cache keeps its
+- Architecture follow-up remains open; see
+  [remaining composition work](implementation-plan.md#remaining-composition-work).
+  The navmesh cache keeps its
   small hand-written codec, which a standard codec would not make
   simpler. A headless run without rendering logs Bevy's harmless
   "Sub app did not exist" error for `ClearColor`'s extraction.
