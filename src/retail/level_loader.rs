@@ -350,8 +350,8 @@ fn trigger_definition(
             .collect(),
         sound,
         sound_on_commit: item.play_sound,
-        required_states: item.required_states.clone(),
-        state_change: state_change.map(|change| (item.state_to_modify.clone(), change)),
+        required_states: item.required_states.iter().map(|name| name.as_str().into()).collect(),
+        state_change: state_change.map(|change| (item.state_to_modify.as_str().into(), change)),
         initial_state: item.initial_state,
         range: (item.range[0] / UNITS_PER_METRE, item.range[1] / UNITS_PER_METRE),
         door: item.door.as_ref().map(|door| DoorLock {

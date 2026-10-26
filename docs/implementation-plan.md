@@ -433,7 +433,7 @@ versus physical state, and the retail-specific decoding and animation math.
 
 | Review item | Current state | Required outcome / remaining verification |
 | --- | --- | --- |
-| 1. Devices and scripts | Implemented in device PR | Live device entities, resolved relay/script/variable references, no reconstructed trigger world. |
+| 1. Devices and scripts | Implemented in device PR | Live device entities, resolved relay/script references and one canonical named map for level variables; no reconstructed trigger world or extra variable binding table. |
 | 2. Change detection | Implemented across bounded devices, actor transitions and vitals | Assessment uses reads; only affected components change. Zero-tick/full recovery, zero damage and zero XP avoid unrelated writes; nonlethal damage leaves formation unchanged. |
 | 3. Typed actions | Present in baseline; retained | Import decodes payloads/defaults/units and resolves camera-path indices; unsupported or missing paths stay explicit; live locks remain on devices. |
 | 4. Gameplay body authority | Implemented in body PR | Metadata loads without meshes/cycles; visual failures and attachment do not change physical state or persistence. |

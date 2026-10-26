@@ -2,6 +2,7 @@
 //! in level data.
 
 use crate::content::level::LevelGeometry;
+use bevy::ecs::world::EntityMut;
 use bevy::prelude::*;
 
 use super::triggers::{DialState, TriggerEffect, TriggerState};
@@ -49,20 +50,12 @@ pub struct BellButton {
     pub dial: Entity,
 }
 
-impl BellButton {
-    /// The selected bell rings before the button's ordinary recipients run.
-    /// The third bell also disables the button and dial for good.
-    pub fn ring(
-        &self,
-        button: Entity,
-        dials: &Query<&DialState>,
-        triggers: &mut Query<&mut TriggerState>,
-    ) -> TriggerEffect {
-        let position = dials.get(self.dial).unwrap().position;
-        if position == 2 {
-            triggers.get_mut(self.dial).unwrap().on = false;
-            triggers.get_mut(button).unwrap().on = false;
-        }
-        TriggerEffect::BellRang(position + 1)
+/// The puzzle changes only its button and dial; playback interprets the outcome.
+pub(crate) fn ring_bell(mut button: EntityMut, mut dial: EntityMut) -> TriggerEffect {
+    let position = dial.get::<DialState>().unwrap().position;
+    if position == 2 {
+        dial.get_mut::<TriggerState>().unwrap().on = false;
+        button.get_mut::<TriggerState>().unwrap().on = false;
     }
+    TriggerEffect::BellRang(position + 1)
 }

@@ -260,6 +260,22 @@ pub struct PropModel {
     pub trigger: Option<usize>,
 }
 
+/// A case-insensitive location-variable name, canonicalized at the content boundary.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct VariableName(String);
+
+impl From<&str> for VariableName {
+    fn from(name: &str) -> Self {
+        Self(name.to_uppercase())
+    }
+}
+
+impl VariableName {
+    pub fn numbered(&self, position: usize) -> Self {
+        Self(format!("{}{position}", self.0))
+    }
+}
+
 /// A trigger: what happens when it runs, from the player using it, another
 /// trigger naming it as a recipient, or a level script.
 #[derive(Clone, Debug)]
@@ -286,9 +302,9 @@ pub struct TriggerDefinition {
     /// actions that play it do.
     pub sound_on_commit: bool,
     /// Location variables that must all be set.
-    pub required_states: Vec<String>,
+    pub required_states: Vec<VariableName>,
     /// The location variable a commit changes.
-    pub state_change: Option<(String, StateChange)>,
+    pub state_change: Option<(VariableName, StateChange)>,
     /// The value its location variable starts with in a new game.
     pub initial_state: Option<bool>,
     /// The distance band, in metres, from which the party can use it.

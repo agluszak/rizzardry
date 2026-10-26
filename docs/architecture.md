@@ -74,17 +74,20 @@ created. A derived ID-to-entity lookup is an index, not another actor database.
 
 A prop-backed device is the prop entity, not a second object linked back to it.
 Duplicate authored names do not merge identities; only named links select the
-last registered matching record. Activation resolves entity links, the level's
-ordered positioned-device index and location-variable keys. Values remain on the
-level; names are needed for activation and dormant records, not each action.
+last registered matching record. Activation resolves entity links and the level's
+ordered positioned-device index. Location variables remain one named map on the
+level, moved directly to/from dormant records. Content canonicalizes variable
+names once; execution uses those names without a second numeric binding table.
+Dial-position names are formed on use, rather than maintaining another key cache.
 
-Trigger requests enter through Bevy's command boundary. A plain synchronous
-coordinator borrows the immutable level definitions and invokes bounded native
-systems for door/animation, container, party and dial operations. Each system
-declares only its own queries/resources; Bevy caches it, with no application
-registry or service object. Linked actions recurse directly and finish before
-the sender commits. Commands are exclusive by design; this favors a visible,
-complete operation over parallelizing the parts of one player action.
+Trigger requests enter through Bevy's command boundary. Entity-local operations
+borrow only their device, or the specific device and level they coordinate; they
+cannot reach unrelated resources. Only loot and party-wide effects use bounded
+native systems to borrow their required resources. There is no application
+registry or service object. A plain synchronous coordinator borrows immutable
+level definitions, runs the selected operation, follows links and commits in
+order. Commands are exclusive by design; this favors a visible, complete
+operation over parallelizing the parts of one player action.
 
 Movement and arrival consume their level-bound request and proximity data without
 entering trigger execution. Presentation follows completed click commands and
