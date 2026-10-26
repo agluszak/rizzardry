@@ -6,7 +6,7 @@ use bevy::prelude::*;
 
 use super::body::{EYE_ABOVE_CENTRE, PartyBody};
 use crate::content::level::{Arrival, LevelGeometry};
-use crate::game::world::level::{Departing, Level, Travel, TravelQuestion};
+use crate::game::world::level::{Departing, Level, Travel, ask_travel};
 use crate::game::world::props::pose;
 use crate::game::world::triggers::{self, LevelState, PartyMove, PendingPartyMove};
 
@@ -60,7 +60,9 @@ pub fn move_party(
         }
         // Retail asks first; until answered the party stays where it is.
         PartyMove::Teleport(Arrival::Entrance { entrance, ask: true }) => {
-            commands.spawn((TravelQuestion { entrance }, ChildOf(origin)));
+            commands.queue(move |world: &mut World| {
+                ask_travel(world, origin, entrance);
+            });
         }
         // Retail ignores starting a path that is already playing; the eye
         // flying through its trigger runs it again.

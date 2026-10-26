@@ -332,6 +332,7 @@ fn open_container(
 
 fn damage_party(
     In(dice): In<Dice>,
+    mut commands: Commands,
     roster: Res<PartyRoster>,
     mut members: Query<&mut Vitals>,
     mut rng: ResMut<GameRng>,
@@ -352,6 +353,7 @@ fn damage_party(
         };
         outcomes.write(TriggerEffect::Hurt { member: *entity, amount });
     }
+    commands.run_system_cached(crate::game::combat::settle_defeat);
 }
 
 fn drink_fountain(
@@ -895,6 +897,7 @@ mod tests {
             world.init_resource::<Assets<ItemCatalog>>();
             world.init_resource::<Assets<LootTables>>();
             world.init_resource::<Messages<TriggerEffect>>();
+            world.init_resource::<Messages<crate::game::combat::CombatNews>>();
             world.init_resource::<PendingPartyMove>();
             world.init_resource::<PartyInventory>();
             world.init_resource::<crate::game::party::formation::Formation>();

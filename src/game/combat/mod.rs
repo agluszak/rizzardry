@@ -43,7 +43,14 @@ impl Plugin for CombatPlugin {
             .init_resource::<CombatSettings>()
             .add_systems(
                 Update,
-                (start_battle, run_battle, approach::embody_fighters, approach::close_in)
+                (
+                    settle_defeat,
+                    start_battle,
+                    run_battle,
+                    settle_defeat,
+                    approach::embody_fighters,
+                    approach::close_in,
+                )
                     .chain()
                     .in_set(crate::game::GameplaySet::Combat)
                     .run_if(crate::game::world::level::level_active),
@@ -110,8 +117,8 @@ struct PartyTurn {
 #[derive(Resource, Debug, Default)]
 pub struct Battle {
     pub round: u32,
-    /// A round is being played out; between rounds a phased fight waits for
-    /// the player (retail `execution_active`).
+    /// A round has been accepted, including its pacing delay. Between rounds
+    /// a phased fight waits for the player (retail `execution_active`).
     pub executing: bool,
     /// The phase being played, 1..=100; 0 between rounds.
     step: u8,
@@ -353,6 +360,23 @@ pub fn start_battle(
     news.write(CombatNews::Began);
 }
 
+/// Terminal state is settled independently of whose action dealt the damage.
+/// Used before/after combat execution and at the end of environmental damage.
+pub fn settle_defeat(
+    mut commands: Commands,
+    battle: Option<Res<Battle>>,
+    roster: Res<PartyRoster>,
+    members: Query<&Vitals>,
+    mut news: MessageWriter<CombatNews>,
+) {
+    if battle.is_some()
+        && !roster.0.iter().any(|&member| members.get(member).is_ok_and(|v| !v.is_dead()))
+    {
+        news.write(CombatNews::Lost);
+        commands.remove_resource::<Battle>();
+    }
+}
+
 /// Advance the fight by one action when its pause is over.
 pub fn run_battle(
     mut commands: Commands,
@@ -376,6 +400,12 @@ pub fn run_battle(
         starts.clear();
         return;
     };
+    // Accept input before any pacing/content early return. The existing round
+    // state owns the request; it must not wait in the transient message buffer.
+    let start = starts.read().count() > 0;
+    if start && !battle.executing {
+        battle.executing = true;
+    }
     let (mut members, mut damage) = actors.p0();
     if !damage.ready() {
         return;
@@ -394,9 +424,8 @@ pub fn run_battle(
 
     // Between rounds a phased fight waits for the player; a continuous one
     // goes on (retail `UpdateCombat`, `BeginCombatExecution`).
-    let start = starts.read().count() > 0;
     if !battle.executing {
-        if !(settings.continuous || start) {
+        if !settings.continuous {
             return;
         }
         battle.executing = true;
@@ -520,10 +549,6 @@ pub fn run_battle(
                 &mut news,
             );
             battle.wait = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
-            if !roster.0.iter().any(|&m| members.get(m).is_ok_and(|(_, v, _)| !v.is_dead())) {
-                news.write(CombatNews::Lost);
-                commands.remove_resource::<Battle>();
-            }
             return;
         }
         battle.step += 1;
@@ -841,7 +866,7 @@ mod tests {
             .add_message::<StartRound>()
             .init_resource::<Assets<crate::content::level::LevelGeometry>>()
             .add_message::<crate::game::world::identify::Identified>()
-            .add_systems(Update, run_battle);
+            .add_systems(Update, (settle_defeat, run_battle, settle_defeat).chain());
         app.world_mut()
             .resource_mut::<Time<Virtual>>()
             .set_max_delta(std::time::Duration::from_secs(2));
@@ -1051,6 +1076,43 @@ mod tests {
         app.update();
         assert_eq!(attacks(&mut app), ["B"]);
     }
+    #[test]
+    fn a_round_request_survives_its_pacing_delay() {
+        let (mut app, _) = round_app(false);
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_millis(100),
+        ));
+        app.world_mut().resource_mut::<Battle>().wait = Timer::from_seconds(1.0, TimerMode::Once);
+        app.update();
+        assert!(app.world().resource::<Battle>().executing);
+        let mut announced = Vec::new();
+        for _ in 0..12 {
+            app.update();
+            announced.extend(attacks(&mut app));
+        }
+        assert_eq!(app.world().resource::<Battle>().round, 1);
+        assert_eq!(announced, ["A"]);
+    }
+
+    #[test]
+    fn defeat_settles_without_round_input_content_or_an_expired_timer() {
+        let (mut app, members) = round_app(false);
+        app.world_mut().resource_mut::<Battle>().wait = Timer::from_seconds(60.0, TimerMode::Once);
+        app.world_mut().resource_mut::<Messages<StartRound>>().clear();
+        app.world_mut().remove_resource::<GameData>();
+        for member in members {
+            app.world_mut().get_mut::<Vitals>(member).unwrap().hp = 0;
+        }
+        app.update();
+        assert!(!app.world().contains_resource::<Battle>());
+        assert_eq!(
+            app.world_mut().resource_mut::<Messages<CombatNews>>().drain().collect::<Vec<_>>(),
+            [CombatNews::Lost]
+        );
+        app.update();
+        assert!(app.world().resource::<Messages<CombatNews>>().is_empty());
+    }
+
     #[test]
     fn a_despawned_monster_cannot_leave_the_battle_stuck_on_its_turn() {
         let (mut app, _) = round_app(false);
