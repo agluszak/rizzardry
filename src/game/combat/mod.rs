@@ -118,11 +118,7 @@ struct PartyTurn {
 #[derive(Resource, Debug, Default)]
 pub struct Battle {
     pub round: u32,
-    /// A round has been accepted, including its pacing delay. Between rounds
-    /// a phased fight waits for the player (retail `execution_active`).
-    pub executing: bool,
-    /// The phase being played, 1..=100; 0 between rounds.
-    step: u8,
+    phase: RoundPhase,
     party: Vec<PartyTurn>,
     /// The monsters in the fight, in a stable order (by location id).
     monsters: Vec<(Entity, Turn)>,
@@ -131,13 +127,26 @@ pub struct Battle {
     kills: u32,
     passive_rounds: u32,
     attacked_this_round: bool,
-    /// Monsters are walking up to the party: the round is not passive.
-    approaching: bool,
     /// Until the next action.
     wait: Timer,
 }
 
+/// Accepted work survives pacing/content waits without pretending the round
+/// has already initialized its actors. Waiting cannot retain an executing phase.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum RoundPhase {
+    #[default]
+    Waiting,
+    Accepted,
+    Executing(u8),
+}
+
 impl Battle {
+    /// A round is accepted or running, including its pacing delay.
+    pub fn executing(&self) -> bool {
+        self.phase != RoundPhase::Waiting
+    }
+
     fn defends(&self, actor: Entity) -> bool {
         self.party.iter().any(|p| p.actor == actor && matches!(p.action, AcceptedAction::Defend))
     }
@@ -150,7 +159,11 @@ impl Battle {
     /// How far through the round its play is, 0 to 1, while a round is
     /// being played.
     pub fn progress(&self) -> Option<f32> {
-        self.executing.then_some(f32::from(self.step.min(100)) / 100.0)
+        match self.phase {
+            RoundPhase::Waiting => None,
+            RoundPhase::Accepted => Some(0.0),
+            RoundPhase::Executing(step) => Some(f32::from(step.min(100)) / 100.0),
+        }
     }
 }
 
@@ -407,8 +420,8 @@ pub fn run_battle(
     // Accept input before any pacing/content early return. The existing round
     // state owns the request; it must not wait in the transient message buffer.
     let start = starts.read().count() > 0;
-    if start && !battle.executing {
-        battle.executing = true;
+    if start && !battle.executing() {
+        battle.phase = RoundPhase::Accepted;
     }
     let (mut members, mut damage) = actors.p0();
     if !damage.ready() {
@@ -428,13 +441,13 @@ pub fn run_battle(
 
     // Between rounds a phased fight waits for the player; a continuous one
     // goes on (retail `UpdateCombat`, `BeginCombatExecution`).
-    if !battle.executing {
+    if !battle.executing() {
         if !settings.continuous {
             return;
         }
-        battle.executing = true;
+        battle.phase = RoundPhase::Accepted;
     }
-    if battle.step == 0 {
+    if battle.phase == RoundPhase::Accepted {
         // A new round: the party's phases, then the monsters'.
         battle.round += 1;
         battle.attacked_this_round = false;
@@ -471,12 +484,11 @@ pub fn run_battle(
                 }
             };
         }
-        battle.step = 1;
+        battle.phase = RoundPhase::Executing(1);
     }
 
     // The next actor due: accepted party order first, then monsters in order.
-    loop {
-        let step = battle.step;
+    while let RoundPhase::Executing(step) = battle.phase {
         if step > 100 {
             end_round(
                 &mut commands,
@@ -486,6 +498,8 @@ pub fn run_battle(
                 &roster,
                 &mut members,
                 &damage.monsters,
+                party.eye,
+                species,
                 &mut news,
             );
             // Recognition is a required part of this round, before the next
@@ -556,7 +570,7 @@ pub fn run_battle(
             battle.wait = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
             return;
         }
-        battle.step += 1;
+        battle.phase = RoundPhase::Executing(step + 1);
     }
 }
 
@@ -760,6 +774,8 @@ fn end_round(
     roster: &PartyRoster,
     members: &mut Query<(&mut Character, &mut Vitals, &Carried)>,
     monsters: &Query<(&mut Monster, ActorPose, Option<&Walker>, &ChildOf)>,
+    party_eye: Vec3,
+    species: &MonsterCatalog,
     news: &mut MessageWriter<CombatNews>,
 ) {
     // The round's time passes now, with its meaning: conditions age and
@@ -773,8 +789,7 @@ fn end_round(
             recovery::elapse(&profile, &mut vitals, ticks, recovery::Pace::Fighting);
         }
     }
-    battle.step = 0;
-    battle.executing = false;
+    battle.phase = RoundPhase::Waiting;
     // Defenders get their breath back: 2d(max(1, max stamina / 20 - 1))
     // (retail `AdvanceCombatRound`); the Fighter trait's scaling is not
     // modelled.
@@ -798,7 +813,12 @@ fn end_round(
         }
     }
     battle.wait = Timer::from_seconds(ROUND_SECONDS, TimerMode::Once);
-    let active = battle.attacked_this_round || battle.approaching;
+    let approaching = battle.monsters.iter().any(|&(entity, _)| {
+        monsters.get(entity).is_ok_and(|(monster, at, walker, _)| {
+            approach::needs_approach(monster, at.translation(), walker, party_eye, species)
+        })
+    });
+    let active = battle.attacked_this_round || approaching;
     battle.passive_rounds = if active { 0 } else { battle.passive_rounds + 1 };
     let hostiles_left =
         battle.monsters.iter().any(|&(e, _)| monsters.get(e).is_ok_and(|(m, ..)| !m.is_dead()));
@@ -878,7 +898,7 @@ mod tests {
             .add_message::<CombatNews>()
             .add_message::<DamageApplied>()
             .add_message::<StartRound>()
-            .init_resource::<Assets<crate::content::level::LevelGeometry>>()
+            .init_resource::<Assets<crate::content::level::LevelDefinition>>()
             .add_message::<crate::game::world::identify::Identified>()
             .add_systems(Update, (settle_defeat, start_battle, run_battle, settle_defeat).chain());
         app.world_mut()
@@ -928,7 +948,6 @@ mod tests {
                 path: "combat-test".into(),
                 geometry: default(),
                 navmeshes: vec![],
-                sky: None,
                 script: default(),
                 messages: None,
             })
@@ -974,8 +993,35 @@ mod tests {
     }
 
     #[test]
+    fn passive_rounds_use_current_actor_reach_without_waiting_for_navigation() {
+        let (mut app, _) = round_app(true);
+        let actor = app.world().resource::<Battle>().monsters[0].0;
+        app.world_mut().entity_mut(actor).insert((
+            Walker { speed: 2.0, float_height: 1.0 },
+            Transform::from_translation(Vec3::NEG_Z * 20.0),
+        ));
+        {
+            let mut battle = app.world_mut().resource_mut::<Battle>();
+            battle.phase = RoundPhase::Executing(101);
+            battle.passive_rounds = 1;
+        }
+        app.update();
+        assert!(app.world().contains_resource::<Battle>(), "a living walker is still approaching");
+        assert_eq!(app.world().resource::<Battle>().passive_rounds, 0);
+        app.world_mut().get_mut::<Transform>(actor).unwrap().translation = Vec3::NEG_Z;
+        {
+            let mut battle = app.world_mut().resource_mut::<Battle>();
+            battle.phase = RoundPhase::Executing(101);
+            battle.passive_rounds = 1;
+            battle.wait = default();
+        }
+        app.update();
+        assert!(!app.world().contains_resource::<Battle>(), "the actor is now in reach and idle");
+    }
+
+    #[test]
     fn a_round_recognises_only_its_participants_before_the_session_ends() {
-        use crate::content::level::LevelGeometry;
+        use crate::content::level::LevelDefinition;
         use crate::game::characters::MonsterKnowledge;
         use crate::game::world::identify::{GroupMember, MonsterGroup};
         use crate::game::world::level::Level;
@@ -985,8 +1031,10 @@ mod tests {
         }
         let level =
             app.world_mut().query_filtered::<Entity, With<Level>>().single(app.world()).unwrap();
-        let geometry =
-            app.world_mut().resource_mut::<Assets<LevelGeometry>>().add(LevelGeometry::default());
+        let geometry = app
+            .world_mut()
+            .resource_mut::<Assets<LevelDefinition>>()
+            .add(LevelDefinition::default());
         app.world_mut().get_mut::<Level>(level).unwrap().geometry = geometry;
         let monster = app.world_mut().query::<(Entity, &Monster)>().single(app.world()).unwrap().0;
         let group =
@@ -1076,14 +1124,14 @@ mod tests {
         app.update();
         assert!(attacks(&mut app).is_empty());
         for _ in 0..4 {
-            if !app.world().resource::<Battle>().executing {
+            if !app.world().resource::<Battle>().executing() {
                 break;
             }
             app.update();
         }
         assert!(attacks(&mut app).is_empty());
         assert!(app.world().get::<Vitals>(b).unwrap().stamina > before);
-        assert!(!app.world().resource::<Battle>().executing);
+        assert!(!app.world().resource::<Battle>().executing());
         app.world_mut().write_message(StartRound);
         app.update();
         assert_eq!(attacks(&mut app), ["A"]);
@@ -1098,7 +1146,7 @@ mod tests {
         ));
         app.world_mut().resource_mut::<Battle>().wait = Timer::from_seconds(1.0, TimerMode::Once);
         app.update();
-        assert!(app.world().resource::<Battle>().executing);
+        assert!(app.world().resource::<Battle>().executing());
         let mut announced = Vec::new();
         for _ in 0..12 {
             app.update();
@@ -1130,8 +1178,8 @@ mod tests {
         {
             let world = app.world_mut();
             let geometry = world
-                .resource_mut::<Assets<crate::content::level::LevelGeometry>>()
-                .add(crate::content::level::LevelGeometry::default());
+                .resource_mut::<Assets<crate::content::level::LevelDefinition>>()
+                .add(crate::content::level::LevelDefinition::default());
             world
                 .query::<&mut crate::game::world::level::Level>()
                 .single_mut(world)

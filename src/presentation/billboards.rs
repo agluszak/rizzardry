@@ -8,8 +8,8 @@ use bevy::prelude::*;
 
 use crate::presentation::party_view::PartyCamera;
 
-/// A prop part that faces the viewer. Its parents must not rotate: level
-/// and sky roots and prop roots do not.
+/// A visual that faces the viewer. Its immediate parent may be an animated
+/// gameplay part; ancestors above that part have identity rotations.
 #[derive(Component, Debug, Default)]
 pub struct FaceCamera;
 
@@ -17,10 +17,12 @@ pub struct FaceCamera;
 /// rotation in the world. The sky camera shares it.
 pub fn face_camera(
     camera: Query<&Transform, With<PartyCamera>>,
-    mut sprites: Query<&mut Transform, (With<FaceCamera>, Without<PartyCamera>)>,
+    parents: Query<&Transform, (Without<FaceCamera>, Without<PartyCamera>)>,
+    mut sprites: Query<(&ChildOf, &mut Transform), (With<FaceCamera>, Without<PartyCamera>)>,
 ) {
     let Ok(camera) = camera.single() else { return };
-    for mut sprite in &mut sprites {
-        sprite.rotation = camera.rotation;
+    for (parent, mut sprite) in &mut sprites {
+        let Ok(parent) = parents.get(parent.parent()) else { continue };
+        sprite.rotation = parent.rotation.inverse() * camera.rotation;
     }
 }

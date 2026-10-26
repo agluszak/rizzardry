@@ -7,7 +7,7 @@ use bevy::prelude::*;
 use super::identify::{GroupMember, MonsterGroup};
 use super::level::{KeptMonster, LevelRecord};
 use crate::content::items::ItemCatalog;
-use crate::content::level::LevelGeometry;
+use crate::content::level::LevelDefinition;
 use crate::content::monster::MonsterBody;
 use crate::content::species::MonsterCatalog;
 use crate::game::characters::{Condition, Lasting};
@@ -72,7 +72,7 @@ impl MonsterBodies {
     /// requested.
     pub fn for_level(
         &mut self,
-        geometry: &LevelGeometry,
+        geometry: &LevelDefinition,
         species: &MonsterCatalog,
         assets: &AssetServer,
     ) -> Vec<Handle<MonsterBody>> {
@@ -99,7 +99,7 @@ impl MonsterBodies {
 pub fn populate(
     commands: &mut Commands,
     root: Entity,
-    geometry: &LevelGeometry,
+    geometry: &LevelDefinition,
     remembered: Option<LevelRecord>,
     (species, items): (&MonsterCatalog, &ItemCatalog),
     (handles, bodies): (&HashMap<u32, Handle<MonsterBody>>, &Assets<MonsterBody>),

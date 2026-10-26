@@ -54,7 +54,10 @@ impl Plugin for MainScreenPlugin {
                         party::draw_party,
                         (party::record_splats, party::play_splats).chain(),
                         text_box::draw_text_box,
-                        radar::update_radar,
+                        (radar::track_radar_items, radar::update_radar)
+                            .chain()
+                            .after(crate::game::GameplaySet::LevelActivation)
+                            .after(crate::game::world::search::search_pulse),
                         formation::draw_formation,
                         bank::draw_bank,
                         bank::draw_caption,

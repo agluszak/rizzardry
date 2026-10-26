@@ -35,14 +35,12 @@ pub fn load_dialog_art(mut commands: Commands, assets: Res<AssetServer>) {
 /// declines, like its buttons. They come before every other screen's keys,
 /// which do not see them while it is up.
 #[derive(Component, Clone)]
-#[component(immutable)]
-#[relationship(relationship_target = QuestionDialogs)]
+#[relationship(relationship_target = QuestionView)]
 pub struct QuestionDialog(pub Entity);
 
-/// Own the dialog without UI parenting it under the non-UI level hierarchy.
 #[derive(Component)]
 #[relationship_target(relationship = QuestionDialog, linked_spawn)]
-pub struct QuestionDialogs(Vec<Entity>);
+pub struct QuestionView(Entity);
 
 #[derive(InputAction)]
 #[action_output(bool)]
@@ -55,13 +53,13 @@ struct Decline;
 /// Show the question when one is asked, once its art has loaded.
 pub fn show_travel_question(
     mut commands: Commands,
-    questions: Query<(Entity, &TravelQuestion), Without<QuestionDialogs>>,
+    questions: Query<(Entity, &TravelQuestion), Without<QuestionView>>,
     art: Res<DialogArt>,
     sheets: Res<Assets<SpriteSheet>>,
     tables: Res<Assets<TextTable>>,
     mut images: ResMut<Assets<Image>>,
 ) {
-    let Ok((question_entity, question)) = questions.single() else { return };
+    let Ok((question_id, question)) = questions.single() else { return };
     let (Some(ok), Some(cancel), Some(font), Some(strings)) = (
         sheets.get(&art.ok),
         sheets.get(&art.cancel),
@@ -88,12 +86,12 @@ pub fn show_travel_question(
                 ImageNode
                 @hover_art(sheet, 0, if sheet.images.len() > 1 { 1 } else { 0 })
                 on(move |_: On<PointerClick>, mut answers: MessageWriter<TravelAnswer>| {
-                    answers.write(TravelAnswer { question: question_entity, accept });
+                    answers.write(TravelAnswer { question: question_id, accept });
                 })
             })
         })
         .collect();
-    let dialog = QuestionDialog(question_entity);
+    let dialog = QuestionDialog(question_id);
     commands.spawn_scene(bsn! {
         @centred()
         dialog
@@ -108,10 +106,10 @@ pub fn show_travel_question(
             Bindings [ Binding(KeyCode::Escape) ]
         ]
         on(move |_: On<Start<Accept>>, mut answers: MessageWriter<TravelAnswer>| {
-            answers.write(TravelAnswer { question: question_entity, accept: true });
+            answers.write(TravelAnswer { question: question_id, accept: true });
         })
         on(move |_: On<Start<Decline>>, mut answers: MessageWriter<TravelAnswer>| {
-            answers.write(TravelAnswer { question: question_entity, accept: false });
+            answers.write(TravelAnswer { question: question_id, accept: false });
         })
         Children [
             Node {
@@ -134,4 +132,37 @@ pub fn show_travel_question(
             ]
         ]
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ending_a_question_removes_its_dialog_and_controls() {
+        let mut world = World::new();
+        let level = world.spawn_empty().id();
+        let question =
+            world.spawn((TravelQuestion { entrance: "MO204".into() }, ChildOf(level))).id();
+        let dialog = world.spawn(QuestionDialog(question)).id();
+        let button = world.spawn(ChildOf(dialog)).id();
+        assert_eq!(world.get::<QuestionView>(question).unwrap().0, dialog);
+        world.despawn(level);
+        assert!(world.get_entity(question).is_err());
+        assert!(world.get_entity(dialog).is_err());
+        assert!(world.get_entity(button).is_err());
+    }
+
+    #[test]
+    fn rebuilding_a_dialog_keeps_the_question_and_allows_a_new_view() {
+        let mut world = World::new();
+        let question = world.spawn(TravelQuestion { entrance: "MO204".into() }).id();
+        let dialog = world.spawn(QuestionDialog(question)).id();
+        world.despawn(dialog);
+        world.flush();
+        assert!(world.get::<TravelQuestion>(question).is_some());
+        assert!(world.get::<QuestionView>(question).is_none());
+        let replacement = world.spawn(QuestionDialog(question)).id();
+        assert_eq!(world.get::<QuestionView>(question).unwrap().0, replacement);
+    }
 }

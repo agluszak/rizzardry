@@ -10,8 +10,8 @@ use rand::Rng;
 
 use crate::presentation::PresentationRng;
 
+use super::environment::LevelAppearance;
 use crate::content::level::{AmbientSoundModel, LevelGeometry};
-use crate::game::world::level::Level;
 use crate::presentation::party_view::PartyCamera;
 
 /// The inner part of the radius heard at full loudness.
@@ -32,11 +32,11 @@ pub struct AmbiencePlaced;
 
 pub fn place_ambient_sounds(
     mut commands: Commands,
-    levels: Query<(Entity, &Level), Without<AmbiencePlaced>>,
+    levels: Query<(Entity, &LevelAppearance), Without<AmbiencePlaced>>,
     geometry: Res<Assets<LevelGeometry>>,
 ) {
     for (root, level) in &levels {
-        let Some(geometry) = geometry.get(&level.geometry) else { continue };
+        let Some(geometry) = geometry.get(&level.0) else { continue };
         for (index, sound) in geometry.ambient_sounds.iter().enumerate() {
             commands.spawn((
                 Name::new(format!("Ambience {}", sound.path)),
@@ -59,14 +59,14 @@ pub fn play_ambient_sounds(
     time: Res<Time>,
     assets: Res<AssetServer>,
     listener: Query<&GlobalTransform, With<PartyCamera>>,
-    levels: Query<&Level>,
+    levels: Query<&LevelAppearance>,
     geometry: Res<Assets<LevelGeometry>>,
     mut emitters: Query<(Entity, &mut AmbientEmitter, &Transform, Option<&Children>)>,
     mut sinks: Query<&mut AudioSink>,
     mut rng: ResMut<PresentationRng>,
 ) {
     let (Ok(listener), Some(level)) =
-        (listener.single(), levels.iter().find_map(|l| geometry.get(&l.geometry)))
+        (listener.single(), levels.iter().find_map(|l| geometry.get(&l.0)))
     else {
         return;
     };
@@ -151,14 +151,7 @@ mod tests {
             }],
             ..default()
         });
-        app.world_mut().spawn(Level {
-            path: "test".into(),
-            geometry,
-            navmeshes: vec![],
-            sky: None,
-            script: default(),
-            messages: None,
-        });
+        app.world_mut().spawn(LevelAppearance(geometry));
         let listener = app.world_mut().spawn((PartyCamera, GlobalTransform::default())).id();
         let emitter = app
             .world_mut()

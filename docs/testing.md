@@ -81,11 +81,12 @@ time (they share the navmesh cache):
 RIZZARDRY_RETAIL=/path/to/wizardry8 cargo test --test scenarios -- --ignored
 ```
 
-Headless (`--headless`), the game has no window, event loop, audio or UI, and
-a renderer with no GPU backend: meshes and images load as assets, nothing is
-drawn. Each update is one fixed step (1/64 s) of game time and updates run
+Headless (`--headless`), the game has no window, event loop, audio, UI, input
+bindings or renderer. Level gameplay content loads without mesh, material or
+image assets; the retail scenarios assert that these resources are absent.
+Each update is one fixed step (1/64 s) of game time and updates run
 back to back, so the simulation is not paced by the display or the clock; the
-three scenarios run in about 13 seconds. Gameplay news goes to the log. By
+scenarios advance without wall-clock sleeps. Gameplay news goes to the log. By
 hand, `--continuous`, `--seed N` and `--run-for SECONDS` (of play, not counting loading) help:
 
 ```sh

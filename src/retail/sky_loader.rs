@@ -71,7 +71,7 @@ impl AssetLoader for LvlLoader {
         let props = build_props(
             context,
             // The sky world's props run no triggers.
-            props.map(|prop| (prop, None)),
+            props,
             directory,
             &mut textures,
             &lighting,

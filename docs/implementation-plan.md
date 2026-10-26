@@ -23,14 +23,13 @@ established by the implementation:
 
 1. Make destination preparation, failed loading and playable activation distinct.
    Require collision, local state, references and shared gameplay catalogs before
-   enabling triggers/AI/party physics. During travel, settle old sessions and
-   suspend the party body; failed preparation leaves the source playable.
-   *Status:* partial. A level being prepared is a `Destination` until one
-   `activate_level` operation makes it the `Level`; gameplay runs only on a
-   level being played. Travel refuses during a fight, ends camera flights and
-   pending moves, remembers the source and marks it `Departing` (not played)
-   and suspends the party body; activation lets the source go, and a failed
-   destination leaves the party playing on in the source.
+   enabling triggers/AI/party physics. At the travel commit, settle old sessions;
+   failed preparation leaves the source playable.
+   *Status:* activation and travel ownership are implemented. A destination owns
+   its arrival request and prepares while the source remains active. Activation
+   captures the latest source state and swaps levels in one operation. Gameplay
+   definitions load independently from visual assets. Navigation failure policy
+   remains an explicit open decision.
 2. Capture map-owned state on departure and restore it on revisit. A killed or
    wounded monster, opened container, trigger and map note must not reset or
    leak to another map. Persist domain state, not transient proximity/UI caches.
@@ -62,7 +61,7 @@ killed local monsters or move map notes; final-round recovery is correct;
 a non-roster `Character` is excluded from party effects. Use focused tests
 and representative retail checks, not a new harness. *Covered:* headless
 tests for failed collision, waiting for databases, one party across levels,
-a suspended party on a failed destination, a killed monster staying dead;
+a playable source during destination preparation, a killed monster staying dead;
 rule tests for a combat round's recovery. Failed travel keeping the source is
 tested, and passing time healing the roster but not a non-roster
 `Character`.
@@ -89,11 +88,10 @@ visibility completion. Retain those production ordering boundaries.
    Update reader coalesces requests. Recognition consumes gameplay RNG; each
    required pass belongs to its ordered time operation. Keep notifications
    separate from commands whose count matters.
-2. **Prepare travel before capturing the source.** Let the destination own its
-   arrival request. After required assets succeed, capture, activate, place and
-   retire in one commit. Delete provisional snapshots and `stay()` rollback.
-   Decide explicitly whether failed mandatory navigation rejects preparation;
-   it currently counts as settled and permits activation without navigation.
+2. **Decide navigation failure policy.** Source capture and arrival now commit
+   together after destination preparation. A failed navmesh still counts as
+   settled and permits activation without navigation; decide whether it should
+   reject preparation instead.
 3. **Give world actors their bodies and movement intent.** `embody_fighters`
    still creates bodies at battle entry and changes root-position meaning from
    feet to body centre. Monster death now cancels movement through its damage
@@ -103,11 +101,10 @@ visibility completion. Retain those production ordering boundaries.
    Sky following still reads the camera's previous `GlobalTransform` in Update,
    before propagation. Input gates and stationary tooltip refresh are already
    fixed; do not recreate them.
-5. **Separate level gameplay content from visual construction.** Monster body
-   loading demonstrates the useful boundary. `LevelGeometry` still combines
-   collision, triggers and placement with materials/meshes and lighting. Keep
-   the already-evaluated navmesh processor cache policy; this is an asset ownership
-   change, not a request for another generic loading framework.
+
+Gameplay level definitions and optional visual construction are now separate
+assets/loaders. Headless gameplay does not initialize rendering or input. Camp
+transitions and recovery now settle together on the fixed simulation step.
 
 Headless checks establish ownership and gameplay behavior, not retail pixels,
 audio-device output or complete cross-plugin frame timing. Use the production

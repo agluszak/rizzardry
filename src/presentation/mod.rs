@@ -4,6 +4,7 @@ pub mod ambience;
 pub mod automap;
 pub mod billboards;
 pub mod camp;
+pub mod controls;
 pub mod dialog;
 pub mod effects;
 pub mod environment;
@@ -26,7 +27,7 @@ pub mod world_items;
 use bevy::prelude::*;
 use bevy_enhanced_input::prelude::*;
 
-use crate::game::party::body::Exploration;
+use controls::Exploration;
 
 pub struct PresentationPlugin;
 
@@ -61,6 +62,9 @@ fn hold_exploration(
 impl Plugin for PresentationPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((main_screen::MainScreenPlugin, inventory::InventoryPlugin))
+            .add_input_context::<Exploration>()
+            .add_systems(Startup, controls::spawn_exploration_controls)
+            .add_systems(PreUpdate, controls::read_controls.after(EnhancedInputSystems::Apply))
             .add_message::<voice::SpeechFinished>()
             .add_message::<automap::OpenAutomap>()
             .init_resource::<effects::CameraShake>()
@@ -143,12 +147,13 @@ impl Plugin for PresentationPlugin {
                     environment::apply_environment,
                     sky::follow_with_sky_camera.after(party_view::aim_camera),
                     sky::shade_clouds,
-                    sky::build_sky,
-                    environment::attach_level_visuals,
+                    (sky::request_skies, sky::build_sky).chain(),
+                    (environment::request_level_visuals, environment::attach_level_visuals).chain(),
                     billboards::face_camera.after(party_view::aim_camera),
                     music::play_music,
                     (ambience::place_ambient_sounds, ambience::play_ambient_sounds).chain(),
-                    dialog::show_travel_question,
+                    dialog::show_travel_question
+                        .after(crate::game::GameplaySet::LevelActivation),
                     effects::shake_camera.after(party_view::aim_camera),
                     sky::orbit_sun_and_moon,
                     voice::finish_speech,

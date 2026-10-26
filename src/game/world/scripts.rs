@@ -1,7 +1,7 @@
 //! Level-specific behaviour that retail keeps in per-level code rather than
 //! in level data.
 
-use crate::content::level::LevelGeometry;
+use crate::content::level::LevelDefinition;
 use bevy::ecs::world::EntityMut;
 use bevy::prelude::*;
 
@@ -27,7 +27,7 @@ impl LevelScript {
 
     /// Resolve this level's exceptional behavior once, while identities are
     /// allocated. Ordinary trigger execution does not dispatch by level/name.
-    pub fn bind(self, commands: &mut Commands, geometry: &LevelGeometry, devices: &[Entity]) {
+    pub fn bind(self, commands: &mut Commands, geometry: &LevelDefinition, devices: &[Entity]) {
         if self != Self::Monastery2 {
             return;
         }
