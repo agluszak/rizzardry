@@ -1,10 +1,9 @@
 # Design documentation
 
-Status: active design and implementation, updated 25 October 2026. The
-[`first-slice` implementation branch](https://github.com/agluszak/rizzardry/tree/first-slice)
-is ahead of `main`; implementation notes describe that branch when explicitly
-identified. Gameplay documents are sourced designs, not claims of completed
-mechanics.
+Status: active design and implementation, updated 26 October 2026. Implementation
+notes describe the integrated code on `main` unless a historical branch is
+explicitly identified. Gameplay documents are sourced designs, not claims of
+completed mechanics. See known gaps for validation limits and unfinished work.
 
 ## Start here
 

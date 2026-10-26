@@ -51,10 +51,20 @@ pub fn recruit(
     let mut character =
         Character::new(&recruit.name, recruit.race, recruit.gender, recruit.profession);
     character.portrait = recruit.portrait.clone();
+    recruit_character(commands, roster, formation, character)
+}
+
+/// Commit the completed profile, including the player's allocated points.
+pub fn recruit_character(
+    commands: &mut Commands,
+    roster: &mut PartyRoster,
+    formation: &mut super::formation::Formation,
+    character: Character,
+) -> Entity {
     let vitals = crate::game::characters::Vitals::new(&character);
     let member = commands
         .spawn((
-            Name::new(recruit.name.clone()),
+            Name::new(character.name.clone()),
             character,
             vitals,
             super::Order::Attack,

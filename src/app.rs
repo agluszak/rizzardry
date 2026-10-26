@@ -59,9 +59,9 @@ pub struct Options {
     /// Developer: seconds after entering to take the screenshot (default 2).
     #[arg(long, value_name = "SECONDS")]
     pub screenshot_after: Option<f32>,
-    /// The new game's party, until party creation exists.
-    #[arg(long, value_name = "FILE.ron", default_value = "assets/party.ron")]
-    pub party: PathBuf,
+    /// Skip the menus and start with a party file. Headless runs default to assets/party.ron.
+    #[arg(long, value_name = "FILE.ron")]
+    pub party: Option<PathBuf>,
     /// Start at this hour of the day (0-24) instead of a new game's noon.
     #[arg(long, value_name = "HOUR")]
     pub hour: Option<f32>,
@@ -141,10 +141,15 @@ pub fn build(options: &Options) -> Result<App, String> {
         Ok(level) if files.contains(&level) => level,
         _ => return Err(format!("{} is not in the retail installation", options.level)),
     };
-    let party = std::fs::read_to_string(&options.party)
-        .map_err(|error| error.to_string())
-        .and_then(|text| ron::from_str::<Vec<Recruit>>(&text).map_err(|error| error.to_string()))
-        .map_err(|error| format!("cannot read the party {}: {error}", options.party.display()))?;
+    let quick_start = options.headless || options.party.is_some() || options.screenshot.is_some();
+    let party = if quick_start {
+        let path = options.party.clone().unwrap_or_else(|| "assets/party.ron".into());
+        let text = std::fs::read_to_string(&path)
+            .map_err(|error| format!("cannot read the party {}: {error}", path.display()))?;
+        ron::from_str::<Vec<Recruit>>(&text).map_err(|error| error.to_string())?
+    } else {
+        Vec::new()
+    };
     let start = PartyStart {
         entrance: options.entrance(&level).map(str::to_owned),
         eye: options.start,
@@ -256,6 +261,15 @@ pub fn build(options: &Options) -> Result<App, String> {
         app.insert_resource(crate::dev::RunFor(Timer::from_seconds(seconds, TimerMode::Once)))
             .add_systems(Update, crate::dev::exit_after_run);
     }
+    app.insert_state(if quick_start {
+        crate::game::session::Session::Playing
+    } else {
+        crate::game::session::Session::MainMenu
+    });
+    app.insert_resource(crate::game::session::NewGameDestination {
+        path: level.clone(),
+        start: start.clone(),
+    });
     if let Some(path) = options.screenshot.clone() {
         let after = options.screenshot_after.unwrap_or(2.0);
         app.insert_resource(ScreenshotAndExit::new(path, after))
@@ -281,20 +295,22 @@ pub fn build(options: &Options) -> Result<App, String> {
                 .before(TransformSystems::Propagate),
         );
     }
-    // A new game: the party, entering the chosen level.
-    app.add_systems(
-        Startup,
-        move |mut commands: Commands,
-              mut roster: ResMut<PartyRoster>,
-              mut formation: ResMut<crate::game::party::formation::Formation>| {
-            for member in &party {
-                recruit(&mut commands, &mut roster, &mut formation, member);
-            }
-        },
-    );
-    app.add_systems(Startup, move |mut commands: Commands, assets: Res<AssetServer>| {
-        let first = Destination::new(Level::load(&level, &assets), start.clone());
-        commands.spawn((Name::new(level.clone()), first));
-    });
+    // Explicit developer/headless bootstrap. Interactive play commits from the creation flow.
+    if quick_start {
+        app.add_systems(
+            Startup,
+            move |mut commands: Commands,
+                  mut roster: ResMut<PartyRoster>,
+                  mut formation: ResMut<crate::game::party::formation::Formation>| {
+                for member in &party {
+                    recruit(&mut commands, &mut roster, &mut formation, member);
+                }
+            },
+        );
+        app.add_systems(Startup, move |mut commands: Commands, assets: Res<AssetServer>| {
+            let first = Destination::new(Level::load(&level, &assets), start.clone());
+            commands.spawn((Name::new(level.clone()), first));
+        });
+    }
     Ok(app)
 }

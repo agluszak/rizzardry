@@ -47,7 +47,7 @@ impl Plugin for MainScreenPlugin {
                 Update,
                 (
                     layout::fit_viewport,
-                    build_frame,
+                    build_frame.run_if(in_state(crate::game::session::Session::Playing)),
                     (
                         party::build_party_parts,
                         party::bind_party_buttons,

@@ -783,26 +783,28 @@ fn end_round(
         }
     }
     battle.phase = RoundPhase::Waiting;
-    // Defenders get their breath back: 2d(max(1, max stamina / 20 - 1))
-    // (retail `AdvanceCombatRound`); the Fighter trait's scaling is not
-    // modelled.
+    // Recover after aging conditions, in accepted actor order.
     for work in &battle.party {
         let member = work.actor;
-        if matches!(work.action, AcceptedAction::Defend)
-            && roster.0.contains(&member)
-            && let Ok((character, mut vitals, _)) = members.get_mut(member)
-            && !vitals.is_dead()
+        if !roster.0.contains(&member) {
+            continue;
+        }
+        let Ok((character, vitals, _)) = members.get(member) else { continue };
+        let resting = matches!(work.action, AcceptedAction::Defend)
+            || matches!(vitals.worst_condition(), Some(Condition::Asleep | Condition::Unconscious));
+        if vitals.is_dead() || !resting {
+            continue;
+        }
+        let sides = (character.max_stamina() / 20).saturating_sub(1).max(1);
+        let rolled = rng.roll(Dice { count: 2, sides: sides.min(255) as u8, base: 0 });
+        let gained = recovery::combat_rest_amount(character, rolled);
+        if vitals.stamina < character.max_stamina()
+            || vitals
+                .conditions
+                .contains(&(Condition::Unconscious, crate::game::characters::Lasting::Indefinite))
         {
-            let sides = (character.max_stamina() / 20).saturating_sub(1).max(1);
-            let gained = rng.roll(Dice { count: 2, sides: sides.min(255) as u8, base: 0 });
-            if vitals.stamina < character.max_stamina()
-                || vitals.conditions.contains(&(
-                    Condition::Unconscious,
-                    crate::game::characters::Lasting::Indefinite,
-                ))
-            {
-                vitals.restore_stamina(gained, character.max_stamina());
-            }
+            let (character, mut vitals, _) = members.get_mut(member).unwrap();
+            vitals.restore_stamina(gained, character.max_stamina());
         }
     }
     battle.wait = Timer::from_seconds(ROUND_SECONDS, TimerMode::Once);
@@ -1091,6 +1093,34 @@ mod tests {
         assert_eq!(exhausted.stamina, 0);
         assert!(exhausted.has(Condition::Unconscious));
         assert!(hp >= 9999, "exhaustion allows at most one one-damage swing");
+    }
+
+    #[test]
+    fn incapacitated_attackers_recover_at_round_end_without_defending() {
+        use crate::game::characters::Lasting;
+        for condition in [Condition::Asleep, Condition::Unconscious, Condition::Paralyzed] {
+            let (mut app, [_, actor]) = round_app(false);
+            let before = 1;
+            {
+                let mut vitals = app.world_mut().get_mut::<Vitals>(actor).unwrap();
+                vitals.stamina = before;
+                vitals.inflict(condition, Lasting::Indefinite);
+            }
+            app.update();
+            for _ in 0..8 {
+                app.update();
+                if !app.world().resource::<Battle>().executing() {
+                    break;
+                }
+            }
+            assert!(!app.world().resource::<Battle>().executing());
+            let after = app.world().get::<Vitals>(actor).unwrap();
+            if condition == Condition::Paralyzed {
+                assert_eq!(after.stamina, before);
+            } else {
+                assert!(after.stamina > before);
+            }
+        }
     }
 
     #[test]

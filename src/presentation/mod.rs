@@ -8,6 +8,7 @@ pub mod controls;
 pub mod dialog;
 pub mod effects;
 pub mod environment;
+pub mod frontend;
 pub mod hover;
 pub mod inventory;
 pub mod main_screen;
@@ -61,119 +62,125 @@ fn hold_exploration(
 
 impl Plugin for PresentationPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins((main_screen::MainScreenPlugin, inventory::InventoryPlugin))
-            .add_input_context::<Exploration>()
-            .add_systems(Startup, controls::spawn_exploration_controls)
-            .add_systems(PreUpdate, controls::read_controls.after(EnhancedInputSystems::Apply))
-            .add_message::<voice::SpeechFinished>()
-            .add_message::<automap::OpenAutomap>()
-            .init_resource::<effects::CameraShake>()
-            .init_resource::<notices::TextLog>()
-            .init_resource::<hover::Hover>()
-            .init_resource::<selection::WorldSelection>()
-            .init_resource::<music::Music>()
-            .init_resource::<PresentationRng>()
-            .add_input_context::<automap::MapKey>()
-            .add_input_context::<automap::AutomapScreen>()
-            .add_input_context::<automap::NoteEditing>()
-            .add_systems(OnEnter(crate::game::screen::Screen::Automap), automap::enter_automap)
-            .add_systems(
-                PreUpdate,
-                (hold_exploration, automap::route_map_keys).before(EnhancedInputSystems::Update),
+        app.add_plugins((
+            main_screen::MainScreenPlugin,
+            inventory::InventoryPlugin,
+            frontend::FrontendPlugin,
+        ))
+        .add_input_context::<Exploration>()
+        .add_systems(Startup, controls::spawn_exploration_controls)
+        .add_systems(PreUpdate, controls::read_controls.after(EnhancedInputSystems::Apply))
+        .add_message::<voice::SpeechFinished>()
+        .add_message::<automap::OpenAutomap>()
+        .init_resource::<effects::CameraShake>()
+        .init_resource::<notices::TextLog>()
+        .init_resource::<hover::Hover>()
+        .init_resource::<selection::WorldSelection>()
+        .init_resource::<music::Music>()
+        .init_resource::<PresentationRng>()
+        .add_input_context::<automap::MapKey>()
+        .add_input_context::<automap::AutomapScreen>()
+        .add_input_context::<automap::NoteEditing>()
+        .add_systems(OnEnter(crate::game::screen::Screen::Automap), automap::enter_automap)
+        .add_systems(
+            PreUpdate,
+            (hold_exploration, automap::route_map_keys).before(EnhancedInputSystems::Update),
+        )
+        .add_input_context::<dialog::QuestionDialog>()
+        .add_input_context::<camp::CampScreen>()
+        .add_systems(
+            PostUpdate,
+            (screen_art::render_pictures, screen_art::render_text)
+                .chain()
+                .before(bevy::ui::UiSystems::Content),
+        )
+        // Pick the same propagated camera/meshes and visibility used for
+        // rendering, after fixed physics and Update animation/aiming. UI
+        // rasterization observes resulting text on its next presentation pass.
+        .add_systems(
+            PostUpdate,
+            (
+                (selection::select_world_target, selection::activate_selection).chain(),
+                (effects::play_trigger_effects, notices::queue_notices)
+                    .after(selection::activate_selection),
+                (hover::hover, hover::show_tooltip).chain().after(selection::activate_selection),
             )
-            .add_input_context::<dialog::QuestionDialog>()
-            .add_input_context::<camp::CampScreen>()
-            .add_systems(
-                PostUpdate,
-                (screen_art::render_pictures, screen_art::render_text)
+                .after(bevy::transform::TransformSystems::Propagate)
+                .after(bevy::camera::CameraUpdateSystems)
+                .after(
+                    bevy::camera::visibility::VisibilitySystems::MarkNewlyHiddenEntitiesInvisible,
+                ),
+        )
+        .add_systems(
+            Startup,
+            (
+                automap::spawn_map_key,
+                automap::load_automap_art,
+                notices::load_notice_art,
+                dialog::load_dialog_art,
+                camp::load_camp_art,
+            ),
+        )
+        .add_systems(
+            Update,
+            (
+                automap::scale_ui,
+                screen_art::paint_hover_art,
+                (party_view::attach_camera, party_view::aim_camera)
                     .chain()
-                    .before(bevy::ui::UiSystems::Content),
-            )
-            // Pick the same propagated camera/meshes and visibility used for
-            // rendering, after fixed physics and Update animation/aiming. UI
-            // rasterization observes resulting text on its next presentation pass.
-            .add_systems(
-                PostUpdate,
+                    .after(crate::game::GameplaySet::Combat),
+                camp::show_camp,
                 (
-                    (selection::select_world_target, selection::activate_selection).chain(),
-                    (effects::play_trigger_effects, notices::queue_notices)
-                        .after(selection::activate_selection),
-                    (hover::hover, hover::show_tooltip)
-                        .chain()
-                        .after(selection::activate_selection),
+                    automap::close_ended_map,
+                    automap::request_automap,
+                    automap::build_automap,
+                    automap::type_note,
+                    automap::paint_buttons,
+                    automap::update_map_view,
+                    automap::draw_notes,
+                    automap::draw_layer_label,
+                    automap::update_map_cursor,
+                    automap::glow_note_markers,
                 )
-                    .after(bevy::transform::TransformSystems::Propagate)
-                    .after(bevy::camera::CameraUpdateSystems)
-                    .after(bevy::camera::visibility::VisibilitySystems::MarkNewlyHiddenEntitiesInvisible),
-            )
-            .add_systems(
-                Startup,
+                    .chain(),
+            ),
+        )
+        .add_systems(
+            PostUpdate,
+            sky::follow_with_sky_camera.before(bevy::transform::TransformSystems::Propagate),
+        )
+        .add_systems(
+            Update,
+            (
+                textures::animate_level_textures,
+                environment::apply_environment,
+                sky::shade_clouds,
+                (sky::request_skies, sky::build_sky).chain(),
+                (environment::request_level_visuals, environment::attach_level_visuals).chain(),
+                billboards::face_camera.after(party_view::aim_camera),
+                music::play_music,
+                (ambience::place_ambient_sounds, ambience::play_ambient_sounds).chain(),
+                dialog::show_travel_question.after(crate::game::GameplaySet::LevelActivation),
+                effects::shake_camera.after(party_view::aim_camera),
+                sky::orbit_sun_and_moon,
+                voice::finish_speech,
                 (
-                    automap::spawn_map_key,
-                    automap::load_automap_art,
-                    notices::load_notice_art,
-                    dialog::load_dialog_art,
-                    camp::load_camp_art,
-                ),
-            )
-            .add_systems(
-                Update,
+                    monsters::choose_walker_cycles,
+                    monsters::show_deaths,
+                    monsters::request_monster_visuals,
+                    monsters::build_monster_instances,
+                    monsters::animate_monsters,
+                    monsters::light_monsters,
+                )
+                    .chain(),
                 (
-                    automap::scale_ui,
-                    screen_art::paint_hover_art,
-                    (party_view::attach_camera, party_view::aim_camera)
-                        .chain()
-                        .after(crate::game::GameplaySet::Combat),
-                    camp::show_camp,
-                    (
-                        automap::close_ended_map,
-                        automap::request_automap,
-                        automap::build_automap,
-                        automap::type_note,
-                        automap::paint_buttons,
-                        automap::update_map_view,
-                        automap::draw_notes,
-                        automap::draw_layer_label,
-                        automap::update_map_cursor,
-                        automap::glow_note_markers,
-                    )
-                        .chain(),
-                ),
-            )
-            .add_systems(PostUpdate, sky::follow_with_sky_camera.before(bevy::transform::TransformSystems::Propagate))
-            .add_systems(
-                Update,
-                (
-                    textures::animate_level_textures,
-                    environment::apply_environment,
-                    sky::shade_clouds,
-                    (sky::request_skies, sky::build_sky).chain(),
-                    (environment::request_level_visuals, environment::attach_level_visuals).chain(),
-                    billboards::face_camera.after(party_view::aim_camera),
-                    music::play_music,
-                    (ambience::place_ambient_sounds, ambience::play_ambient_sounds).chain(),
-                    dialog::show_travel_question
-                        .after(crate::game::GameplaySet::LevelActivation),
-                    effects::shake_camera.after(party_view::aim_camera),
-                    sky::orbit_sun_and_moon,
-                    voice::finish_speech,
-                    (
-                        monsters::choose_walker_cycles,
-                        monsters::show_deaths,
-                        monsters::request_monster_visuals,
-                        monsters::build_monster_instances,
-                        monsters::animate_monsters,
-                        monsters::light_monsters,
-                    )
-                        .chain(),
-                    (
-                        world_items::show_world_items,
-                        world_items::build_world_items,
-                        world_items::turn_world_items,
-                        world_items::light_world_items,
-                    )
-                        .chain(),
-                ),
-            );
+                    world_items::show_world_items,
+                    world_items::build_world_items,
+                    world_items::turn_world_items,
+                    world_items::light_world_items,
+                )
+                    .chain(),
+            ),
+        );
     }
 }
