@@ -911,7 +911,6 @@ mod tests {
                     stamina: 0,
                     max_stamina: 0,
                     conditions: vec![],
-                    model: default(),
                     body: ScaledBody { scale: 1.0, radius: 1.0, eye_height: 1.0, speed: 0.0 },
                 },
                 GlobalTransform::from_translation(Vec3::NEG_Z),
@@ -1055,5 +1054,36 @@ mod tests {
             .inflict(Condition::Asleep, crate::game::characters::Lasting::Rounds(2));
         app.update();
         assert!(attacks(&mut app).is_empty());
+    }
+    #[test]
+    fn defender_recovery_keeps_accepted_actor_order_after_roster_changes() {
+        use crate::game::characters::{Gender, Profession, Race};
+        let (mut app, [a, b]) = round_app(true);
+        let mut character = Character::new("C", Race::Human, Gender::Male, Profession::Fighter);
+        character.stamina = 1;
+        let c = app.world_mut().spawn((character, Carried::default(), Order::Defend)).id();
+        app.world_mut().resource_mut::<PartyRoster>().0.insert(c);
+        app.world_mut().resource_mut::<Formation>().seat(c);
+        app.world_mut().get_mut::<Character>(b).unwrap().stamina = 1;
+        app.update();
+        assert_eq!(attacks(&mut app), ["A"]);
+        let sides = (app.world().get::<Character>(b).unwrap().max_stamina() / 20)
+            .saturating_sub(1)
+            .max(1) as u8;
+        let dice = Dice { count: 2, sides, base: 0 };
+        let mut expected = GameRng::seeded(17);
+        let (b_gain, c_gain) = (expected.roll(dice), expected.roll(dice));
+        assert_ne!(b_gain, c_gain, "this fixture distinguishes roll assignment order");
+        app.insert_resource(GameRng::seeded(17));
+        app.world_mut().resource_mut::<PartyRoster>().0 = [c, a, b].into_iter().collect();
+        for _ in 0..4 {
+            app.update();
+            if !app.world().resource::<Battle>().executing {
+                break;
+            }
+        }
+        assert!(!app.world().resource::<Battle>().executing);
+        assert_eq!(app.world().get::<Character>(b).unwrap().stamina, 1 + b_gain);
+        assert_eq!(app.world().get::<Character>(c).unwrap().stamina, 1 + c_gain);
     }
 }
