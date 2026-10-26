@@ -250,8 +250,9 @@ fn load_band(weight: u32, capacity: u32) -> Load {
     }
 }
 
-/// One adventurer.
+/// An adventurer's identity, training and progression.
 #[derive(Component, Clone, Debug, PartialEq)]
+#[require(MonsterKnowledge)]
 pub struct Character {
     pub name: String,
     pub race: Race,
@@ -264,24 +265,22 @@ pub struct Character {
     pub attributes: EnumMap<Attribute, u8>,
     /// Points invested per skill.
     pub skill_points: EnumMap<Skill, u8>,
-    pub hp: u32,
-    pub stamina: u32,
-    pub conditions: Vec<(Condition, Lasting)>,
-    /// Recovery not yet whole points; retail keeps these between ticks.
-    pub hp_fraction: f32,
-    pub stamina_fraction: f32,
     /// The portrait's file stem (e.g. `hummf` for `data/portraits/small/shummf.sti`).
     pub portrait: String,
-    /// How many of each species (by retail record) they have seen, at most
-    /// 255 (retail `monster_awareness`).
-    pub monster_awareness: std::collections::HashMap<u32, u8>,
+}
+
+/// Recognition history changes independently of profile, vitals or inventory.
+#[derive(Component, Clone, Debug, Default, PartialEq, Eq)]
+pub struct MonsterKnowledge {
+    /// How many of each species the actor has seen, capped at 255.
+    pub seen: std::collections::HashMap<u32, u8>,
 }
 
 impl Character {
     /// A minimal valid level 1 character (retail's NPC recipe): each
     /// attribute at the race's base or the profession's minimum, whichever
     /// is higher; the profession's skills seeded from their base levels;
-    /// full health and stamina. Only the eleven playable races have bases.
+    /// Vitals initialize separately. Only the eleven playable races have bases.
     pub fn new(name: &str, race: Race, gender: Gender, profession: Profession) -> Self {
         let row = profession_row(profession);
         let base = race_attributes(race).unwrap_or(EnumMap::from_fn(|_| 45));
@@ -299,20 +298,12 @@ impl Character {
             experience: 0,
             attributes,
             skill_points: EnumMap::default(),
-            hp: 0,
-            stamina: 0,
-            conditions: Vec::new(),
-            hp_fraction: 0.0,
-            stamina_fraction: 0.0,
             portrait: String::new(),
-            monster_awareness: default(),
         };
         let share = 60 / (1 + row.skills.len() as u32);
         for &skill in row.skills.iter().chain(std::iter::once(&row.bonus_skill)) {
             character.skill_points[skill] = (character.skill_base(skill) * share / 100) as u8;
         }
-        character.hp = character.max_hp();
-        character.stamina = character.max_stamina();
         character
     }
 
@@ -376,11 +367,6 @@ impl Character {
             .sum()
     }
 
-    /// The share of stamina spent, in percent.
-    pub fn stamina_spent(&self) -> u32 {
-        100 - self.stamina * 100 / self.max_stamina().max(1)
-    }
-
     /// Tenths of a pound: `(VIT + 2·STR) × 12`, × 8 for a Faerie.
     pub fn capacity(&self) -> u32 {
         let factor = if self.race == Race::Faerie { 8 } else { 12 };
@@ -423,6 +409,40 @@ impl Character {
             goal += step;
         }
         goal
+    }
+
+    /// Whether the character may use an item (retail `CanCharacterUseItem`):
+    /// profession, race and gender, and every attribute and skill minimum.
+    /// Spellbooks and casting items' extra tests need spells, not modelled.
+    pub fn can_use(&self, item: &ItemDefinition) -> bool {
+        item.professions.contains(self.profession)
+            && item.races.contains(self.race)
+            && item.genders.contains(self.gender)
+            && item.attribute_minimums.iter().all(|(a, &m)| self.attribute(a) >= u32::from(m))
+            && item.skill_minimums.iter().all(|(s, &m)| self.skill(s) >= u32::from(m))
+    }
+}
+
+/// Health, fatigue and conditions change independently of identity, training
+/// and recognition. Recruitment initializes these from the actual profile.
+#[derive(Component, Clone, Debug, Default, PartialEq)]
+pub struct Vitals {
+    pub hp: u32,
+    pub stamina: u32,
+    pub conditions: Vec<(Condition, Lasting)>,
+    /// Recovery not yet whole points; retail keeps these between ticks.
+    pub hp_fraction: f32,
+    pub stamina_fraction: f32,
+}
+
+impl Vitals {
+    pub fn new(profile: &Character) -> Self {
+        Self { hp: profile.max_hp(), stamina: profile.max_stamina(), ..default() }
+    }
+
+    /// The share of stamina spent, in percent.
+    pub fn stamina_spent(&self, maximum: u32) -> u32 {
+        100 - self.stamina * 100 / maximum.max(1)
     }
 
     pub fn is_dead(&self) -> bool {
@@ -502,11 +522,11 @@ impl Character {
 
     /// Restore stamina up to its maximum; an exhausted member comes round
     /// once it is above 9.
-    pub fn restore_stamina(&mut self, amount: u32) {
+    pub fn restore_stamina(&mut self, amount: u32, maximum: u32) {
         if self.is_dead() {
             return;
         }
-        self.stamina = (self.stamina + amount).min(self.max_stamina());
+        self.stamina = (self.stamina + amount).min(maximum);
         let exhausted = self.conditions.contains(&(Condition::Unconscious, Lasting::Indefinite));
         if exhausted && self.stamina > COMES_ROUND_ABOVE {
             self.lift(Condition::Unconscious);
@@ -514,17 +534,17 @@ impl Character {
     }
 
     /// Heal up to the maximum. Healing does not raise the dead.
-    pub fn heal(&mut self, amount: u32) {
+    pub fn heal(&mut self, amount: u32, maximum: u32) {
         if !self.is_dead() {
-            self.hp = (self.hp + amount).min(self.max_hp());
+            self.hp = (self.hp + amount).min(maximum);
         }
     }
 
     /// Passive stamina recovery over `ticks` 1.4-second stamina ticks, at
     /// `(0.9·max + 20)/240` per tick times `scale` (retail
     /// `RegenCharacterStamina`).
-    pub fn recover_stamina(&mut self, ticks: u32, scale: f32) {
-        let max = self.max_stamina();
+    pub fn recover_stamina(&mut self, ticks: u32, scale: f32, maximum: u32) {
+        let max = maximum;
         if self.is_dead() || scale <= 0.0 || self.stamina >= max {
             self.stamina_fraction = 0.0;
             return;
@@ -532,7 +552,7 @@ impl Character {
         self.stamina_fraction += ticks as f32 * (0.9 * max as f32 + 20.0) / 240.0 * scale;
         let whole = self.stamina_fraction.trunc();
         self.stamina_fraction -= whole;
-        self.restore_stamina(whole as u32);
+        self.restore_stamina(whole as u32, maximum);
         if self.stamina >= max {
             self.stamina_fraction = 0.0;
         }
@@ -540,8 +560,8 @@ impl Character {
 
     /// Passive healing over `ticks` 120-second aging ticks, at
     /// `(0.4·max + 20)/240` per tick times `scale` (retail aging).
-    pub fn recover_health(&mut self, ticks: u32, scale: f32) {
-        let max = self.max_hp();
+    pub fn recover_health(&mut self, ticks: u32, scale: f32, maximum: u32) {
+        let max = maximum;
         if self.is_dead() || scale <= 0.0 || self.hp >= max {
             self.hp_fraction = 0.0;
             return;
@@ -549,21 +569,10 @@ impl Character {
         self.hp_fraction += ticks as f32 * (0.4 * max as f32 + 20.0) / 240.0 * scale;
         let whole = self.hp_fraction.trunc();
         self.hp_fraction -= whole;
-        self.heal(whole as u32);
+        self.heal(whole as u32, maximum);
         if self.hp >= max {
             self.hp_fraction = 0.0;
         }
-    }
-
-    /// Whether the character may use an item (retail `CanCharacterUseItem`):
-    /// profession, race and gender, and every attribute and skill minimum.
-    /// Spellbooks and casting items' extra tests need spells, not modelled.
-    pub fn can_use(&self, item: &ItemDefinition) -> bool {
-        item.professions.contains(self.profession)
-            && item.races.contains(self.race)
-            && item.genders.contains(self.gender)
-            && item.attribute_minimums.iter().all(|(a, &m)| self.attribute(a) >= u32::from(m))
-            && item.skill_minimums.iter().all(|(s, &m)| self.skill(s) >= u32::from(m))
     }
 }
 
@@ -587,7 +596,8 @@ mod tests {
         assert_eq!(fighter.load(960), Load::Light);
         assert_eq!(fighter.load(1939), Load::Heavy, "integer percent: still 100");
         assert_eq!(fighter.load(1940), Load::Extreme);
-        assert_eq!((fighter.hp, fighter.stamina), (18, 105));
+        let vitals = Vitals::new(&fighter);
+        assert_eq!((vitals.hp, vitals.stamina), (18, 105));
         assert_eq!(fighter.experience_goal(), 1000);
         // Profession and bonus skills are seeded; others are not.
         let close_combat = fighter.skill_points[Skill::CloseCombat];
@@ -633,47 +643,50 @@ mod tests {
 
     #[test]
     fn damage_tires_knocks_out_and_kills() {
-        let mut fighter = Character::new("Ragnar", Race::Human, Gender::Male, Profession::Fighter);
+        let profile = Character::new("Ragnar", Race::Human, Gender::Male, Profession::Fighter);
+        let mut fighter = Vitals::new(&profile);
         assert_eq!(fighter.damage(6), 6);
         assert_eq!((fighter.hp, fighter.stamina), (12, 101));
         fighter.spend_stamina(200);
         assert!(fighter.has(Condition::Unconscious));
-        fighter.restore_stamina(9);
+        fighter.restore_stamina(9, profile.max_stamina());
         assert!(fighter.has(Condition::Unconscious), "not above 9 yet");
-        fighter.restore_stamina(1);
+        fighter.restore_stamina(1, profile.max_stamina());
         assert!(!fighter.has(Condition::Unconscious));
         assert_eq!(fighter.damage(100), 12);
         assert!(fighter.is_dead());
         assert!(fighter.conditions.is_empty() && fighter.stamina == 0);
         assert_eq!(fighter.damage(5), 0);
-        fighter.heal(10);
+        fighter.heal(10, profile.max_hp());
         assert!(fighter.is_dead(), "healing does not raise the dead");
     }
 
     #[test]
     fn rest_recovers_stamina_quickly_and_health_slowly() {
-        let mut fighter = Character::new("Ragnar", Race::Human, Gender::Male, Profession::Fighter);
+        let profile = Character::new("Ragnar", Race::Human, Gender::Male, Profession::Fighter);
+        let mut fighter = Vitals::new(&profile);
         fighter.hp = 1;
         fighter.stamina = 0;
         fighter.inflict(Condition::Unconscious, Lasting::Indefinite);
         // (0.9 × 105 + 20) / 240 × 0.5 ≈ 0.24 a tick: 10 above 9 after 42.
-        fighter.recover_stamina(41, 0.5);
+        fighter.recover_stamina(41, 0.5, profile.max_stamina());
         assert!(fighter.has(Condition::Unconscious));
-        fighter.recover_stamina(1, 0.5);
+        fighter.recover_stamina(1, 0.5, profile.max_stamina());
         assert_eq!(fighter.stamina, 10);
         assert!(!fighter.has(Condition::Unconscious));
         // (0.4 × 18 + 20) / 240 × 0.5 ≈ 0.057 a tick.
-        fighter.recover_health(17, 0.5);
+        fighter.recover_health(17, 0.5, profile.max_hp());
         assert_eq!(fighter.hp, 1);
-        fighter.recover_health(1, 0.5);
+        fighter.recover_health(1, 0.5, profile.max_hp());
         assert_eq!(fighter.hp, 2);
-        fighter.recover_health(1, 0.0);
+        fighter.recover_health(1, 0.0, profile.max_hp());
         assert_eq!(fighter.hp_fraction, 0.0, "no recovery clears the fraction");
     }
 
     #[test]
     fn timed_conditions_run_out() {
-        let mut mage = Character::new("Mira", Race::Elf, Gender::Female, Profession::Mage);
+        let profile = Character::new("Mira", Race::Elf, Gender::Female, Profession::Mage);
+        let mut mage = Vitals::new(&profile);
         mage.inflict(Condition::Asleep, Lasting::Rounds(3));
         mage.inflict(Condition::Unconscious, Lasting::Indefinite);
         mage.age_conditions(2);

@@ -25,19 +25,21 @@ pub fn play_trigger_effects(
     assets: Res<AssetServer>,
     mut effects: MessageReader<TriggerEffect>,
     mut shake: ResMut<CameraShake>,
+    members: Query<&crate::game::characters::Character>,
 ) {
     for effect in effects.read() {
-        match effect {
+        let sound = match effect {
             TriggerEffect::Sound { path, volume, at } => {
-                let settings = PlaybackSettings::DESPAWN
-                    .with_volume(Volume::Linear(*volume))
-                    .with_spatial(at.is_some());
-                commands.spawn((
-                    Name::new(format!("Sound {path}")),
-                    AudioPlayer::new(assets.load(format!("retail://{path}"))),
-                    settings,
-                    Transform::from_translation(at.unwrap_or_default()),
-                ));
+                Some((format!("retail://{path}"), *volume, *at))
+            }
+            TriggerEffect::FountainUsed { at } => {
+                Some(("retail://data/sound/misc/fountain_magic.wav".to_owned(), 1.0, *at))
+            }
+            TriggerEffect::BellRang(number) => {
+                Some((format!("retail://data/sound/ambients/mon2bell{number}.wav"), 1.0, None))
+            }
+            TriggerEffect::Gold(_) => {
+                Some(("retail://data/sound/misc/chaching.wav".to_owned(), 1.0, None))
             }
             TriggerEffect::Shake { seconds, intensity, fade_out } => {
                 // Retail offsets the view by up to 250 units at full
@@ -49,20 +51,29 @@ pub fn play_trigger_effects(
                     amplitude: (intensity / 250.0).min(1.0) * 250.0 / UNITS_PER_METRE,
                     fade_out: *fade_out,
                 };
-            }
-            TriggerEffect::Gold(_) => {
-                commands.spawn((
-                    Name::new("Sound gold"),
-                    AudioPlayer::new(assets.load("retail://data/sound/misc/chaching.wav")),
-                    PlaybackSettings::DESPAWN,
-                ));
+                None
             }
             // Shown as notices.
-            TriggerEffect::Hurt { member, amount } => info!("{member} takes {amount} damage"),
-            TriggerEffect::Message(_)
+            TriggerEffect::Hurt { member, amount } => {
+                let name = members.get(*member).map_or("Adventurer", |c| c.name.as_str());
+                info!("{name} takes {amount} damage");
+                None
+            }
+            TriggerEffect::Message { .. }
             | TriggerEffect::NothingHappened
             | TriggerEffect::Locked
-            | TriggerEffect::PartyTakes(_) => {}
+            | TriggerEffect::PartyTakes(_) => None,
+        };
+        if let Some((path, volume, at)) = sound {
+            let settings = PlaybackSettings::DESPAWN
+                .with_volume(Volume::Linear(volume))
+                .with_spatial(at.is_some());
+            commands.spawn((
+                Name::new(format!("Sound {path}")),
+                AudioPlayer::new(assets.load(path)),
+                settings,
+                Transform::from_translation(at.unwrap_or_default()),
+            ));
         }
     }
 }

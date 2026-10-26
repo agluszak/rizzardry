@@ -8,7 +8,7 @@ use avian3d::prelude::LinearVelocity;
 use bevy::prelude::*;
 use bevy_enhanced_input::prelude::*;
 
-use crate::game::characters::{Character, Condition};
+use crate::game::characters::{Condition, Vitals};
 use crate::game::party::body::PartyBody;
 use crate::game::party::roster::PartyRoster;
 use crate::game::time::GameClock;
@@ -82,7 +82,7 @@ pub enum CampNews {
 pub struct Rest;
 
 /// Whether a member can act: alive and nothing worse than webbed.
-pub fn can_act(member: &Character) -> bool {
+pub fn can_act(member: &Vitals) -> bool {
     !member.is_dead() && member.worst_condition().is_none_or(|c| c < Condition::Turncoat)
 }
 
@@ -121,7 +121,7 @@ pub fn force_camp(
     camp: Option<Res<Camp>>,
     battle: Option<Res<crate::game::combat::Battle>>,
     roster: Res<PartyRoster>,
-    members: Query<&Character>,
+    members: Query<&Vitals>,
     mut news: MessageWriter<CampNews>,
 ) {
     let anyone_alive = members.iter_many(&roster.0).flatten().any(|m| !m.is_dead());
@@ -157,7 +157,7 @@ pub fn advance_camp(
     clock: Res<GameClock>,
     camp: Option<ResMut<Camp>>,
     roster: Res<PartyRoster>,
-    members: Query<&Character>,
+    members: Query<&Vitals>,
     mut news: MessageWriter<CampNews>,
 ) {
     let Some(mut camp) = camp else { return };

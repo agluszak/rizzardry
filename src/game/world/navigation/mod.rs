@@ -210,20 +210,25 @@ fn sync_walker_velocity(mut walkers: Query<(&LinearVelocity, &mut Velocity3d), W
 fn steer_walkers(
     mut walkers: Query<(
         &Walker,
+        Option<&super::population::Monster>,
         &AgentDesiredVelocity3d,
         Option<&links::Crossing>,
         &Transform,
         &mut TnuaController<WalkerMotion>,
     )>,
 ) {
-    for (walker, desired, crossing, transform, mut controller) in &mut walkers {
-        let velocity = match crossing {
-            Some(crossing) => {
-                (crossing.to - transform.translation).with_y(0.0).normalize_or_zero()
-                    * walker.speed
-                    * 0.8
+    for (walker, monster, desired, crossing, transform, mut controller) in &mut walkers {
+        let velocity = if monster.is_some_and(|m| m.is_dead()) {
+            Vec3::ZERO
+        } else {
+            match crossing {
+                Some(crossing) => {
+                    (crossing.to - transform.translation).with_y(0.0).normalize_or_zero()
+                        * walker.speed
+                        * 0.8
+                }
+                None => desired.velocity().with_y(0.0),
             }
-            None => desired.velocity().with_y(0.0),
         };
         controller.initiate_action_feeding();
         controller.basis = TnuaBuiltinWalk {

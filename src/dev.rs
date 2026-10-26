@@ -144,6 +144,7 @@ pub fn exit_after_run(
 
 /// Headless, what happens goes to the log instead of the screen.
 pub fn log_news(
+    names: crate::presentation::names::ActorNames,
     mut combat: MessageReader<crate::game::combat::CombatNews>,
     mut items: MessageReader<crate::game::inventory::ItemNews>,
     mut search: MessageReader<crate::game::world::search::SearchNews>,
@@ -152,7 +153,21 @@ pub fn log_news(
     mut ready: MessageReader<crate::game::world::level::LevelReady>,
 ) {
     for news in combat.read() {
-        info!("combat: {news:?}");
+        use crate::game::combat::CombatNews;
+        match news {
+            CombatNews::Attack { attacker, target, how, swings } => info!(
+                "combat: {:?} attacks {:?}: {how:?}, {swings} swings",
+                names.name(*attacker),
+                names.name(*target)
+            ),
+            CombatNews::Result { attacker, target, hits, damage } => info!(
+                "combat: {:?} -> {:?}: {hits} hits, {damage} damage",
+                names.name(*attacker),
+                names.name(*target)
+            ),
+            CombatNews::Killed { actor } => info!("combat: {:?} died", names.name(*actor)),
+            _ => info!("combat: {news:?}"),
+        }
     }
     for news in items.read() {
         info!("items: {news:?}");

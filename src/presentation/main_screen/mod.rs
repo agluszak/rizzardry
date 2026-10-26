@@ -6,7 +6,8 @@
 //! The frame holds what the layout alone decides and is built again when
 //! the layout changes. Each part showing game state (the party's slots, the
 //! text box, the radar, the formation board, the button bank) has its own
-//! node in the frame and redraws only that, when what it shows changes.
+//! node in the frame. Controls and markers persist; their source data and
+//! geometry change in place.
 
 mod bank;
 mod formation;
@@ -36,13 +37,19 @@ impl Plugin for MainScreenPlugin {
                 (load_main_screen_art, layout::spawn_screen_cameras, keys::spawn_main_screen_keys),
             )
             .add_systems(
+                PreUpdate,
+                keys::hold_main_screen_keys
+                    .before(bevy_enhanced_input::EnhancedInputSystems::Update),
+            )
+            .add_systems(
                 Update,
                 (
-                    keys::hold_main_screen_keys,
                     layout::fit_viewport,
                     build_frame,
                     (
+                        party::build_party_parts,
                         party::draw_party,
+                        party::record_splats,
                         party::play_splats,
                         text_box::draw_text_box,
                         radar::update_radar,
@@ -61,7 +68,15 @@ impl Plugin for MainScreenPlugin {
 
 /// The member the buttons and keys act for (retail's selected character).
 #[derive(Resource, Debug, Default, Clone, Copy, PartialEq)]
-pub struct SelectedMember(pub usize);
+pub struct SelectedMember(pub Option<Entity>);
+
+impl SelectedMember {
+    /// An explicit selection follows its actor through roster reordering.
+    /// With no current selection, display the first remaining member.
+    pub fn member(&self, roster: &crate::game::party::roster::PartyRoster) -> Option<Entity> {
+        self.0.filter(|m| roster.0.contains(m)).or_else(|| roster.0.first().copied())
+    }
+}
 
 #[derive(Resource)]
 pub struct MainScreenArt {

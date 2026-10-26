@@ -125,13 +125,21 @@ pub struct Crossing {
 pub fn use_reached_links(
     mut commands: Commands,
     walkers: Query<
-        (Entity, &ReachedAnimationLink3d, &super::Walker),
+        (
+            Entity,
+            &ReachedAnimationLink3d,
+            &super::Walker,
+            Option<&crate::game::world::population::Monster>,
+        ),
         (Without<UsingAnimationLink>, Without<Crossing>),
     >,
     links: Query<&AnimationLink3d>,
     mut bodies: Query<(&mut Position, &mut Transform)>,
 ) {
-    for (entity, reached, walker) in &walkers {
+    for (entity, reached, walker, monster) in &walkers {
+        if monster.is_some_and(|m| m.is_dead()) {
+            continue;
+        }
         let Some(kind) =
             links.get(reached.link_entity).ok().and_then(|l| LinkKind::try_from(l.kind).ok())
         else {
@@ -156,11 +164,19 @@ pub fn use_reached_links(
 /// Finish a crossing once the walker reaches the far side.
 pub fn finish_crossings(
     mut commands: Commands,
-    walkers: Query<(Entity, &Crossing, &Transform, &super::Walker)>,
+    walkers: Query<(
+        Entity,
+        &Crossing,
+        &Transform,
+        &super::Walker,
+        Option<&crate::game::world::population::Monster>,
+    )>,
 ) {
-    for (entity, crossing, transform, walker) in &walkers {
+    for (entity, crossing, transform, walker, monster) in &walkers {
         let feet = transform.translation - Vec3::Y * walker.float_height;
-        if feet.with_y(0.0).distance(crossing.to.with_y(0.0)) < 0.4 {
+        if monster.is_some_and(|m| m.is_dead())
+            || feet.with_y(0.0).distance(crossing.to.with_y(0.0)) < 0.4
+        {
             commands.entity(entity).remove::<(Crossing, UsingAnimationLink)>();
         }
     }

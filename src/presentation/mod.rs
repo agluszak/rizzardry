@@ -13,9 +13,11 @@ pub mod main_screen;
 pub mod mipmaps;
 pub mod monsters;
 pub mod music;
+pub mod names;
 pub mod notices;
 pub mod party_view;
 pub mod screen_art;
+pub mod selection;
 pub mod sky;
 pub mod textures;
 pub mod voice;
@@ -60,17 +62,29 @@ impl Plugin for PresentationPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((main_screen::MainScreenPlugin, inventory::InventoryPlugin))
             .add_message::<voice::SpeechFinished>()
-            .add_message::<dialog::TravelAnswer>()
             .add_message::<automap::OpenAutomap>()
             .init_resource::<effects::CameraShake>()
             .init_resource::<notices::TextLog>()
             .init_resource::<hover::Hover>()
+            .init_resource::<selection::WorldSelection>()
             .init_resource::<music::Music>()
             .init_resource::<PresentationRng>()
             .add_input_context::<automap::MapKey>()
             .add_input_context::<automap::AutomapScreen>()
+            .add_input_context::<automap::NoteEditing>()
+            .add_systems(OnEnter(crate::game::screen::Screen::Automap), automap::enter_automap)
+            .add_systems(
+                PreUpdate,
+                (hold_exploration, automap::route_map_keys).before(EnhancedInputSystems::Update),
+            )
             .add_input_context::<dialog::QuestionDialog>()
             .add_input_context::<camp::CampScreen>()
+            .add_systems(
+                PostUpdate,
+                (screen_art::render_pictures, screen_art::render_text)
+                    .chain()
+                    .before(bevy::ui::UiSystems::Content),
+            )
             .add_systems(
                 Startup,
                 (
@@ -85,16 +99,19 @@ impl Plugin for PresentationPlugin {
                 Update,
                 (
                     automap::scale_ui,
-                    hold_exploration,
                     screen_art::paint_hover_art,
-                    (party_view::attach_camera, party_view::aim_camera).chain(),
-                    party_view::click_in_view
-                        .run_if(crate::game::screen::party_free)
-                        .before(crate::game::world::interaction::act_on_click),
+                    (party_view::attach_camera, party_view::aim_camera)
+                        .chain()
+                        .after(crate::game::GameplaySet::Combat),
+                    (selection::select_world_target, selection::activate_selection)
+                        .chain()
+                        .after(party_view::aim_camera)
+                        .in_set(crate::game::GameplaySet::Interaction),
                     camp::show_camp,
                     (
-                        automap::close_automap,
-                        automap::open_automap,
+                        automap::close_ended_map,
+                        automap::request_automap,
+                        automap::build_automap,
                         automap::type_note,
                         automap::paint_buttons,
                         automap::update_map_view,
@@ -116,11 +133,11 @@ impl Plugin for PresentationPlugin {
                     sky::build_sky,
                     environment::attach_level_visuals,
                     billboards::face_camera.after(party_view::aim_camera),
-                    effects::play_trigger_effects,
+                    effects::play_trigger_effects.after(selection::activate_selection),
                     music::play_music,
                     (ambience::place_ambient_sounds, ambience::play_ambient_sounds).chain(),
-                    notices::queue_notices,
-                    (dialog::show_travel_question, dialog::settle_travel_question).chain(),
+                    notices::queue_notices.after(selection::activate_selection),
+                    (dialog::close_ended_questions, dialog::show_travel_question).chain(),
                     effects::shake_camera.after(party_view::aim_camera),
                     sky::orbit_sun_and_moon,
                     voice::finish_speech,
@@ -128,13 +145,14 @@ impl Plugin for PresentationPlugin {
                         monsters::choose_walker_cycles,
                         monsters::show_deaths,
                         monsters::follow_float_height,
+                        monsters::request_monster_visuals,
                         monsters::build_monster_instances,
                         monsters::animate_monsters,
                         monsters::light_monsters,
                     )
                         .chain(),
                     (
-                        hover::hover,
+                        hover::hover.after(selection::select_world_target),
                         hover::show_tooltip,
                         world_items::show_world_items,
                         world_items::build_world_items,

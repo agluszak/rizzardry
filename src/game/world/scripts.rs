@@ -1,7 +1,11 @@
 //! Level-specific behaviour that retail keeps in per-level code rather than
 //! in level data.
 
-use super::triggers::{TriggerEffect, Triggers};
+use crate::content::level::LevelGeometry;
+use bevy::ecs::world::EntityMut;
+use bevy::prelude::*;
+
+use super::triggers::{DialState, TriggerEffect, TriggerState};
 
 /// The level whose special behaviour applies.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -21,32 +25,37 @@ impl LevelScript {
         }
     }
 
-    /// Runs before a trigger's action; returning false cancels the run.
-    pub fn before_run(self, trigger: &str, triggers: &mut Triggers) -> bool {
-        match (self, trigger) {
-            (LevelScript::Monastery2, "BELL_BUTTON") => ring_bell(triggers),
-            _ => true,
+    /// Resolve this level's exceptional behavior once, while identities are
+    /// allocated. Ordinary trigger execution does not dispatch by level/name.
+    pub fn bind(self, commands: &mut Commands, geometry: &LevelGeometry, devices: &[Entity]) {
+        if self != Self::Monastery2 {
+            return;
+        }
+        let find = |name: &str| {
+            geometry
+                .triggers
+                .iter()
+                .rposition(|t| t.name.eq_ignore_ascii_case(name))
+                .map(|i| devices[i])
+        };
+        if let (Some(button), Some(dial)) = (find("BELL_BUTTON"), find("BELLRINGSWITCH")) {
+            commands.entity(button).insert(BellButton { dial });
         }
     }
 }
 
-/// The bell button rings the bell the dial points at (Whizzardry
-/// `Monastery2.cpp`). The third bell, which also breaks the windows through
-/// the button's recipients, ends the puzzle: dial and button switch off.
-fn ring_bell(triggers: &mut Triggers) -> bool {
-    let Some(dial) = triggers.state.find("BELLRINGSWITCH") else { return true };
-    let position = triggers.state.trigger(dial).position;
-    triggers.effects.push(TriggerEffect::Sound {
-        path: format!("data/sound/ambients/mon2bell{}.wav", position + 1),
-        volume: 1.0,
-        at: None,
-    });
+/// The bell button's actual dial. Grouping is not lifetime ownership.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct BellButton {
+    pub dial: Entity,
+}
+
+/// The puzzle changes only its button and dial; playback interprets the outcome.
+pub(crate) fn ring_bell(mut button: EntityMut, mut dial: EntityMut) -> TriggerEffect {
+    let position = dial.get::<DialState>().unwrap().position;
     if position == 2 {
-        for name in ["BELLRINGSWITCH", "BELL_BUTTON"] {
-            if let Some(trigger) = triggers.state.find(name) {
-                triggers.state.trigger_mut(trigger).on = false;
-            }
-        }
+        dial.get_mut::<TriggerState>().unwrap().on = false;
+        button.get_mut::<TriggerState>().unwrap().on = false;
     }
-    true
+    TriggerEffect::BellRang(position + 1)
 }

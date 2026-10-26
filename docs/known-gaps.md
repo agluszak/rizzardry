@@ -56,8 +56,8 @@ next to its feature when that feature changes.
   `GetDistanceToPlayer`: feet to the party point 2 m under the eye, less
   both alternate radii. The party may walk away, as in retail's continuous
   mode, and cannot camp. Rounds follow retail's initiative
-  phases (party first on ties, then slot, then monster order), every member
-  attacks the nearest monster in reach (slots 0-2 front, 3-5 rear), and
+  phases (party first on ties, then accepted roster order, then monster order).
+  Members use the live formation to choose among reachable targets, and
   monsters pick uniformly among the (attack, mode, member) choices that
   reach. Swings use retail's to-hit and penetration roll, hit locations,
   armour and damage reduction; death bookkeeping happens at the blow
@@ -67,8 +67,10 @@ next to its feature when that feature changes.
   attack, sharing experience among the living. Fights are phased by default as in
   retail: the party's orders (Attack or Defend; A and D) stand, and each
   round waits for Enter or the round button; backslash switches to
-  continuous. Defending gives +2 armour and stamina back at the round's end. Not yet: party movement and
-  orders, spells, fumbles, criticals, effects, the off hand, monster
+  continuous. Actor-owned orders and weapon choices are accepted at round
+  start; edits affect the next round. Defending gives +2 armour and stamina
+  back at the round's end, in accepted actor order. Not yet: party movement,
+  additional orders, spells, fumbles, criticals, effects, the off hand, monster
   movement and fleeing, factions, levelling. A slain monster leaves its
   treasure (retail `DropMonsterLoot`: each slot's chance and count, table
   slots drawing that many items, then its gold): one item lies where it fell,

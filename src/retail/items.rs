@@ -369,17 +369,19 @@ fn dice(bytes: &mut Bytes) -> Result<Dice, PvlError> {
     Ok(Dice { base, count: bytes.u8()?, sides: bytes.u8()? })
 }
 
-/// Two (id, minimum) pairs as minimums by attribute or skill. Retail
-/// ignores an id it has no attribute or skill for (0xff marks none).
+/// Two (id, minimum) pairs in the typed attribute or skill domain. Only
+/// 0xff marks none; invalid constraints must not become unrestricted items.
 fn minimums<K: enum_map::Enum + TryFrom<u8>>(
     bytes: &mut Bytes,
 ) -> Result<enum_map::EnumMap<K, u8>, PvlError> {
     let mut minimums = enum_map::EnumMap::default();
     for _ in 0..2 {
         let (id, minimum) = (bytes.u8()?, bytes.u8()?);
-        if let Ok(of) = K::try_from(id) {
-            minimums[of] = minimum;
+        if id == u8::MAX {
+            continue;
         }
+        let of = K::try_from(id).map_err(|_| invalid("unknown item requirement", bytes))?;
+        minimums[of] = minimum;
     }
     Ok(minimums)
 }
@@ -631,6 +633,22 @@ mod tests {
         let root =
             std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL to run this test");
         crate::retail::files::RetailFiles::open(root).unwrap()
+    }
+
+    #[test]
+    fn invalid_requirement_ids_cannot_import_as_unrestricted_items() {
+        let mut data = vec![0; 4 + RECORD];
+        data[..4].copy_from_slice(&1_u32.to_le_bytes());
+        for (offset, invalid_id) in [(0x7d, 7), (0x81, 41)] {
+            data[4 + offset] = invalid_id;
+            data[4 + offset + 1] = 85;
+            assert!(read_item_catalog(&data, &[]).is_err());
+            data[4 + offset] = 0xff;
+            assert!(
+                read_item_catalog(&data, &[]).is_ok(),
+                "the documented absent-requirement sentinel is valid"
+            );
+        }
     }
 
     #[test]

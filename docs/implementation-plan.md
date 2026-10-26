@@ -109,8 +109,14 @@ shown on retail content; the gaps below remain. Done:
   initial, alternate or fallback action by use and required location
   variables; door, toggle, start/stop, relay, camera shake and dial actions;
   recipients run synchronously on commit, including retail's relay double
-  fire; sounds play at their prop; location variables and `once`/`on` state
-  live on the level root. Level scripts hook in before an action; Monastery
+  fire; sounds play at their prop. Device entities own execution, door,
+  dial, container and fountain state; only location variables and visit
+  state live on the level root. Activation resolves ordered recipients and
+  prop links to entities, and binds Monastery 2's bell button to its dial.
+  Operations borrow affected components directly, without reconstructing
+  a borrowed prop/party object graph. Dormant records use authored device
+  indices and activation rebinds them to new entities. Pending party moves
+  carry their originating level and cannot be applied to a later visit. Monastery
   2's bells work end to end (each dial position rings its bell; the third
   breaks the windows, shakes the camera and ends the puzzle). Trigger
   messages from the level's `.msg` file and "Nothing happens." from the
@@ -130,12 +136,16 @@ shown on retail content; the gaps below remain. Done:
 - **Population.** Each level's `.sts` monster placements (924 across the
   game) and `monsters.dbs` species models decode; a built level spawns its
   placed monsters and NPCs idling where retail puts them, facing their
-  heading, each starting part-way into its idle. They do not move, fight or
-  die yet; random-encounter generators and unborn monsters are not spawned.
+  heading, each starting part-way into its idle. Combatants acquire gameplay
+  walking bodies; random-encounter generators and unborn monsters are not
+  spawned. Revisit activation moves the dormant population back into ECS.
 - **Monsters.** `.mls` species and `.mon` vertex-frame cycles decode (all
   1088 retail cycles). Each actor animates its own mesh copies, blending
   between frames without wrapping last-to-first as retail does; play-once
-  cycles report completion. Walkers play WALK or IDLE.
+  cycles report completion. Walkers play WALK or IDLE. Body metadata loads
+  independently of visual cycles; activation, reach, movement and persistence
+  require no visual model. Presentation owns model handles and attaches its
+  scaled visual children when optional model assets arrive.
 - **Ambience.** Levels' ambient sounds (2339 retail records) play while
   the party is in range: looping ones continuously, one-shot ones now and
   then, full within 40% of their radius and fading to its edge; their
@@ -269,6 +279,11 @@ Work:
   engagement separately from the party Battle.
 - Implement accepted choices, initiative and one executing action; AI produces
   choices through the same rule boundary as player input.
+  *Weapon-attack slice implemented:* orders belong to actor components; round
+  work stores actor and weapon identities, initiative and attack count. Execution
+  revalidates membership, ability, weapon presence and reach. Edits apply to the
+  next round, including defending and its recovery. Formation membership changes
+  settle at recruitment/removal/death; no continuous repair is scheduled.
 - Implement targeting, cast validation, accepted consumption, projectile/effect
   delivery, resistance/damage/conditions and immediate death consequences.
 - Include the area-bomb walkthrough, fizzle/backfire consumption and a target
@@ -406,3 +421,38 @@ explicitly chosen gameplay behavior. Retail save import/export and arbitrary
 mid-combat or mid-cutscene saves are separate future work. They should not
 silently determine the first Rust data model.
 
+
+
+## Architecture review follow-up
+
+The full source review is the scope of this work. A completed row requires the
+stated ownership/operation boundary and relevant behavior checks; deriving more
+components or moving code between modules does not complete it. Retain owned
+inventory values, ordered queues, synchronous consequences, meaningful logical
+versus physical state, and the retail-specific decoding and animation math.
+
+| Review item | Current state | Required outcome / remaining verification |
+| --- | --- | --- |
+| 1. Devices and scripts | Implemented in device PR | Live device entities, resolved relay/script references and one canonical named map for level variables; no reconstructed trigger world or extra variable binding table. |
+| 2. Change detection | Implemented across bounded devices, actor transitions and vitals | Assessment uses reads; only affected components change. Zero-tick/full recovery, zero damage and zero XP avoid unrelated writes; nonlethal damage leaves formation unchanged. |
+| 3. Typed actions | Present in baseline; retained | Import decodes payloads/defaults/units and resolves camera-path indices; unsupported or missing paths stay explicit; live locks remain on devices. |
+| 4. Gameplay body authority | Implemented in body PR | Metadata loads without meshes/cycles; visual failures and attachment do not change physical state or persistence. |
+| 5. Gameplay perception | Baseline separation verified in group work | Headless recognition follows authored view distance even when camera pose/far plane disagree. |
+| 6. Actor identity | Implemented in actor work | Entity-owned orders, accepted actor/weapon work, entity formation/selection/provenance; coherent membership/death transitions. |
+| 7. Combat responsibilities | Accepted work and synchronous damage/death operation implemented | Synchronous monster damage settles death, world drops and gold outside weapon attacks; the battle owns scheduling and aggregate rewards; presentation resolves actor names. Death materializes owned drops before attacker fatigue, defining the gameplay RNG order (seeded sequences change). |
+| 8. Group ownership | Implemented in group work | Group entities own knowledge; Bevy maintains reverse membership without lifetime ownership; revisit restores authored identities onto fresh entities. |
+| 9. Picking and gameplay input | Implemented in world selection work | One mesh-selection/ancestry policy feeds hover and activation, preserving rendered-pedal selection. Device/take/drop operations validate current gameplay state; item operations move owned values synchronously without pointers, cameras or render queries. |
+| 10. Gameplay completion | Implemented in gameplay request work | Question entities are level-owned, answers identify their question and gameplay validates/settles them headlessly; dialogs observe session completion. Trigger notices retain their originating immutable message asset. |
+| 11. Screen lifecycle and focus | Implemented in screen session work | Native states and scoped roots own lifecycle; local selection/scroll/drafts live on roots. Inventory exit explicitly invokes the normal return operation before scoped despawn. Input routing runs before enhanced-input evaluation; note typing has its own context. |
+| 12. Inventory operations | Implemented in inventory operation work | Cells submit resolved destinations; gameplay chooses merge/swap/deposit, validates membership/equipment and reports actual held remainder. Chest/bag transfers share partial-merge and overflow handling. Main-screen giving also uses a gameplay operation for eligibility and pool/member precedence. |
+| 13. Retained UI | Implemented in retained interface work | Party health, orders, captions, inventory cells/headers and tooltip nodes persist. Systems update actual picture/text/geometry sources; only bitmap raster images are cached. Stationary tooltips read current health and knowledge. Damage splats address actors and keep their animation nodes. Notice lines, scroll controls, formation markers and radar blips also persist. |
+| 14. Annotation drafts | Implemented in screen session work | Drafts own map, placement, layer and text; Enter commits, Escape/tool changes/closing discard. Gameplay validates the originating map and expected old entry; snapshots contain committed notes only. |
+| 15. Render hierarchy | Implemented in render part work | Cycles and source-part indices live on actual render entities; playback/light queries use Mesh3d plus hierarchy, with no mirrored registry. Item rotation stays on one cosmetic child and root placement remains unchanged. |
+| 16. Asset integration | Body boundary implemented; navigation importer already in retail; wrapper evaluated and retained | Gameplay consumes typed collision, not retail bytes. Direct processor dependency reads require processed full hashes absent from the raw retail source; removing the synthetic input would not preserve cache behavior. See architecture.md for evidence. Retail rebake validation remains unavailable. |
+| 17. Snapshot ownership | Implemented in body/device work | Move owned revisit population, devices and notes into ECS; capture physical state without visuals. |
+| 18. Composition and ordering | Implemented in gameplay ordering work | Composition initializes shared campaign data. Explicit Update sets and roster/authored order define RNG consumption. Battle recognition is synchronous at start/end; clock requests carry the source level. |
+| Rust modeling | Typed domains retained and invalid imported constraints rejected; profile, vitals and recognition split | Health/fatigue/conditions and fractions live on Vitals; recovery assesses work before mutation and does not dirty full actors or profile data. Attribute/skill requirements reject invalid IDs except the documented absence sentinel. Camp, combat and recognition retain their distinct eligibility predicates; monster roles remain separate. |
+
+Validation status and PR descriptions record what was actually run. Retail and
+visual scenarios requiring an external installation remain explicit unverified
+evidence rather than being counted as passing checks.

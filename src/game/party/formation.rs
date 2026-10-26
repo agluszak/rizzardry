@@ -30,16 +30,16 @@ impl Row {
     }
 }
 
-/// Who sits where, by party slot: three seats a row.
+/// Who sits where, by member entity: three seats a row.
 #[derive(Resource, Debug, Default, Clone, PartialEq)]
 pub struct Formation {
-    seats: EnumMap<Row, [Option<usize>; 3]>,
+    seats: EnumMap<Row, [Option<Entity>; 3]>,
 }
 
 impl Formation {
-    /// The row a party slot sits in, if it holds a place.
-    pub fn row_of(&self, slot: usize) -> Option<Row> {
-        self.place_of(slot).map(|(row, _)| row)
+    /// The row a member sits in, if it holds a place.
+    pub fn row_of(&self, member: Entity) -> Option<Row> {
+        self.place_of(member).map(|(row, _)| row)
     }
 
     /// Whether anyone sits in a row.
@@ -47,33 +47,33 @@ impl Formation {
         self.seats[row].iter().any(Option::is_some)
     }
 
-    /// Where a slot sits: its row and seat (0-2).
-    pub fn place_of(&self, slot: usize) -> Option<(Row, usize)> {
+    /// Where a member sits: its row and seat (0-2).
+    pub fn place_of(&self, member: Entity) -> Option<(Row, usize)> {
         self.seats.iter().find_map(|(row, seats)| {
-            seats.iter().position(|&s| s == Some(slot)).map(|seat| (row, seat))
+            seats.iter().position(|&s| s == Some(member)).map(|seat| (row, seat))
         })
     }
 
-    /// Seat a slot without a place in the first row with room, front, then
+    /// Seat a member without a place in the first row with room, front, then
     /// center, then rear (retail `PlaceCharacterInFormation`). Within a row
     /// (`MakeRoomInFormationRow`): the first takes the lead seat; a second
     /// moves the leader to the middle and takes the far seat; a third takes
     /// the lead seat again.
-    pub fn seat(&mut self, slot: usize) {
-        if self.row_of(slot).is_some() {
+    pub fn seat(&mut self, member: Entity) {
+        if self.row_of(member).is_some() {
             return;
         }
         for row in [Row::Front, Row::Center, Row::Rear] {
             let seats = &mut self.seats[row];
             match seats.iter().flatten().count() {
-                0 => seats[0] = Some(slot),
+                0 => seats[0] = Some(member),
                 1 if seats[0].is_some() => {
                     seats[1] = seats[0].take();
-                    seats[2] = Some(slot);
+                    seats[2] = Some(member);
                 }
                 3 => continue,
                 _ => match seats.iter_mut().find(|s| s.is_none()) {
-                    Some(free) => *free = Some(slot),
+                    Some(free) => *free = Some(member),
                     None => continue,
                 },
             }
@@ -82,20 +82,20 @@ impl Formation {
     }
 
     /// The dead hold no place.
-    pub fn unseat(&mut self, slot: usize) {
+    pub fn unseat(&mut self, member: Entity) {
         for seat in self.seats.values_mut().flatten() {
-            if *seat == Some(slot) {
+            if *seat == Some(member) {
                 *seat = None;
             }
         }
     }
 
-    /// How many occupied rows stand between a slot and a monster in
+    /// How many occupied rows stand between a member and a monster in
     /// `quadrant` (retail `CountRowsBetween`): none in the same row; one when
     /// the monster's row is occupied; for the row opposite it, one more when
     /// that row or the center screens.
-    pub fn rows_between(&self, slot: usize, quadrant: Row) -> u32 {
-        let Some(row) = self.row_of(slot) else { return 0 };
+    pub fn rows_between(&self, member: Entity, quadrant: Row) -> u32 {
+        let Some(row) = self.row_of(member) else { return 0 };
         if row == quadrant {
             return 0;
         }
@@ -106,16 +106,16 @@ impl Formation {
         if rows != 0 || self.occupied(Row::Center) { rows + 1 } else { rows }
     }
 
-    /// The reach left to a slot against a monster in `quadrant` (retail
+    /// The reach left to a member against a monster in `quadrant` (retail
     /// `CloseFormationGap`): each row between shortens touch and short
     /// reach a step, past touch to none; long and extreme reach are not
     /// shortened.
-    pub fn reach(&self, slot: usize, quadrant: Row, reach: Reach) -> Option<Reach> {
+    pub fn reach(&self, member: Entity, quadrant: Row, reach: Reach) -> Option<Reach> {
         if reach >= Reach::Long {
             return Some(reach);
         }
         let mut reach = Some(reach);
-        for _ in 0..self.rows_between(slot, quadrant) {
+        for _ in 0..self.rows_between(member, quadrant) {
             reach = match reach {
                 Some(Reach::Short) => Some(Reach::Touch),
                 _ => None,
@@ -140,63 +140,46 @@ pub fn quadrant(from: Vec3, yaw: f32, to: Vec3) -> Row {
     }
 }
 
-/// Keep the formation in step with the roster: the living hold a place,
-/// the dead do not.
-pub fn seat_party(
-    roster: Res<super::roster::PartyRoster>,
-    members: Query<&crate::game::characters::Character>,
-    mut formation: ResMut<Formation>,
-) {
-    let mut wanted = formation.clone();
-    for (slot, &member) in roster.0.iter().enumerate() {
-        match members.get(member) {
-            Ok(character) if !character.is_dead() => wanted.seat(slot),
-            _ => wanted.unseat(slot),
-        }
-    }
-    if wanted != *formation {
-        *formation = wanted;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn six() -> Formation {
+    fn six() -> (Formation, Vec<Entity>) {
+        let mut world = World::new();
+        let members: Vec<_> = (0..6).map(|_| world.spawn_empty().id()).collect();
         let mut formation = Formation::default();
-        for slot in 0..6 {
-            formation.seat(slot);
+        for &member in &members {
+            formation.seat(member);
         }
-        formation
+        (formation, members)
     }
 
     #[test]
     fn six_members_fill_the_front_then_the_center() {
-        let formation = six();
+        let (formation, members) = six();
         // The first moved aside for the second and the third took the lead.
-        assert_eq!(formation.place_of(0), Some((Row::Front, 1)));
-        assert_eq!(formation.place_of(1), Some((Row::Front, 2)));
-        assert_eq!(formation.place_of(2), Some((Row::Front, 0)));
-        assert_eq!(formation.row_of(0), Some(Row::Front));
-        assert_eq!(formation.row_of(2), Some(Row::Front));
-        assert_eq!(formation.row_of(3), Some(Row::Center));
-        assert_eq!(formation.row_of(5), Some(Row::Center));
+        assert_eq!(formation.place_of(members[0]), Some((Row::Front, 1)));
+        assert_eq!(formation.place_of(members[1]), Some((Row::Front, 2)));
+        assert_eq!(formation.place_of(members[2]), Some((Row::Front, 0)));
+        assert_eq!(formation.row_of(members[0]), Some(Row::Front));
+        assert_eq!(formation.row_of(members[2]), Some(Row::Front));
+        assert_eq!(formation.row_of(members[3]), Some(Row::Center));
+        assert_eq!(formation.row_of(members[5]), Some(Row::Center));
     }
 
     #[test]
     fn rows_in_between_shorten_close_reach() {
-        let formation = six();
+        let (formation, members) = six();
         // A monster in front: the front reaches, the center needs a
         // polearm, long reach is unaffected.
-        assert_eq!(formation.reach(0, Row::Front, Reach::Touch), Some(Reach::Touch));
-        assert_eq!(formation.reach(4, Row::Front, Reach::Touch), None);
-        assert_eq!(formation.reach(4, Row::Front, Reach::Short), Some(Reach::Touch));
-        assert_eq!(formation.reach(4, Row::Front, Reach::Long), Some(Reach::Long));
+        assert_eq!(formation.reach(members[0], Row::Front, Reach::Touch), Some(Reach::Touch));
+        assert_eq!(formation.reach(members[4], Row::Front, Reach::Touch), None);
+        assert_eq!(formation.reach(members[4], Row::Front, Reach::Short), Some(Reach::Touch));
+        assert_eq!(formation.reach(members[4], Row::Front, Reach::Long), Some(Reach::Long));
         // From behind the rear row is empty: the front is two rows away and
         // the center screens it.
-        assert_eq!(formation.rows_between(0, Row::Rear), 1);
-        assert_eq!(formation.rows_between(4, Row::Rear), 0);
+        assert_eq!(formation.rows_between(members[0], Row::Rear), 1);
+        assert_eq!(formation.rows_between(members[4], Row::Rear), 0);
     }
 
     #[test]

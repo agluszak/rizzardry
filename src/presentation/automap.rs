@@ -8,7 +8,7 @@
 //! tool, typed in the retail text font, and erased with Erase note.
 
 use bevy::input::ButtonState;
-use bevy::input::keyboard::{Key, KeyboardInput};
+use bevy::input::keyboard::KeyboardInput;
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 
@@ -17,9 +17,9 @@ use bevy_enhanced_input::prelude::*;
 
 use crate::content::level::{CollisionMesh, LevelGeometry};
 use crate::content::ui::{SpriteSheet, ui_image};
-use crate::game::automap::MapNotes;
+use crate::game::automap::{MapNote, MapNotes, NoteDraft};
 use crate::game::party::body::{FLOAT_HEIGHT, PartyBody};
-use crate::game::world::level::Level;
+use crate::game::world::level::{Departing, Level};
 use crate::presentation::screen_art::{SCREEN, absolute, centred, screen};
 
 const VIEWPORT_AT: Vec2 = Vec2::new(12.0, 32.0);
@@ -101,11 +101,12 @@ pub fn load_automap_art(mut commands: Commands, assets: Res<AssetServer>) {
 }
 
 /// The open automap. Absent while exploring.
-#[derive(Resource, Debug)]
+#[derive(Component, Debug)]
 pub struct Automap {
+    level: Entity,
     tool: Option<MapTool>,
     /// The note being typed.
-    editing: Option<usize>,
+    editing: Option<NoteDraft>,
     /// The world x and z at the middle of the map.
     centre: Vec2,
     /// Horizontal world span; vertical span preserves the viewport aspect ratio.
@@ -114,7 +115,6 @@ pub struct Automap {
     bounds_max: Vec2,
     full_span: f32,
     pub layer: usize,
-    close: bool,
 }
 
 impl Automap {
@@ -135,6 +135,7 @@ impl Automap {
         let size = max - min;
         let full_span = size.x.max(size.y * VIEWPORT.x / VIEWPORT.y).max(MIN_SPAN);
         Self {
+            level: Entity::PLACEHOLDER,
             tool: None,
             editing: None,
             centre: (min + max) / 2.0,
@@ -143,7 +144,6 @@ impl Automap {
             bounds_max: max,
             full_span,
             layer: layer_at_height(layers, feet.y),
-            close: false,
         }
     }
 
@@ -261,40 +261,138 @@ pub fn scale_ui(
 #[derive(Message, Debug, Clone, Copy)]
 pub struct OpenAutomap;
 
-/// Close the map when asked (its keys, its exit button), finishing any
-/// note being typed.
-pub fn close_automap(
-    mut commands: Commands,
-    automap: Option<ResMut<Automap>>,
-    mut notes: Single<&mut MapNotes>,
-    screens: Query<Entity, With<AutomapScreen>>,
-    mut screen: ResMut<Screen>,
+pub fn close_ended_map(
+    map: Option<Single<&Automap>>,
+    levels: Query<(), (With<Level>, Without<Departing>)>,
+    mut next: ResMut<NextState<Screen>>,
 ) {
-    let Some(mut automap) = automap.filter(|map| map.close) else { return };
-    finish_editing(&mut automap, &mut notes);
-    for screen in &screens {
-        commands.entity(screen).despawn();
+    if map.is_some_and(|map| !levels.contains(map.level)) {
+        next.set(Screen::World);
     }
-    commands.remove_resource::<Automap>();
-    screen.close(Screen::Automap);
+}
+
+pub fn request_automap(
+    mut open: MessageReader<OpenAutomap>,
+    freedom: crate::game::screen::Freedom,
+    mut next: ResMut<NextState<Screen>>,
+) {
+    if open.read().count() > 0 && freedom.free() {
+        next.set(Screen::Automap);
+    }
+}
+
+pub fn enter_automap(
+    mut commands: Commands,
+    party: Query<&Transform, With<PartyBody>>,
+    levels: Query<(Entity, &Level), Without<Departing>>,
+    geometry: Res<Assets<LevelGeometry>>,
+    mut next: ResMut<NextState<Screen>>,
+) {
+    let (Ok(party), Ok((level, definition))) = (party.single(), levels.single()) else {
+        next.set(Screen::World);
+        return;
+    };
+    let collision = geometry.get(&definition.geometry);
+    let layers = collision.map_or(&[][..], |g| g.map_layers.as_slice());
+    let mut map = Automap::new(
+        collision.map(|g| &g.collision),
+        layers,
+        party.translation - Vec3::Y * FLOAT_HEIGHT,
+    );
+    map.level = level;
+    commands.spawn_scene(bsn! {
+        #Automap
+        @centred()
+        AutomapScreen
+        NoteEditing
+        BackgroundColor(Color::BLACK)
+        ContextPriority::<AutomapScreen>::new(1)
+        Actions<AutomapScreen> [
+            Action::<CloseMap>::new()
+            ActionSettings { consume_input: true }
+            Bindings [ Binding(KeyCode::Escape) Binding(KeyCode::Tab) ]
+            -- Action::<PanMap>::new()
+            ActionSettings { consume_input: true }
+            Bindings [ {preset::cardinal::arrows()} ]
+        ]
+        on(|_: On<Start<CloseMap>>, mut next: ResMut<NextState<Screen>>| { next.set(Screen::World); })
+        on(|pan: On<Start<PanMap>>, map: Option<Single<&mut Automap>>| {
+            if let Some(mut map) = map {
+                let step = Vec2::new(pan.value.x, -pan.value.y) * 0.35 * map.span;
+                let point = map.centre + step;
+                map.centre_on(point);
+            }
+        })
+        ContextPriority::<NoteEditing>::new(2)
+        ContextActivity::<NoteEditing>::new(false)
+        Actions<NoteEditing> [
+            Action::<ConfirmNote>::new() ActionSettings { consume_input: true } Bindings [ Binding(KeyCode::Enter) ]
+            -- Action::<CancelNote>::new() ActionSettings { consume_input: true } Bindings [ Binding(KeyCode::Escape) ]
+            -- Action::<EraseLetter>::new() ActionSettings { consume_input: true } Bindings [ Binding(KeyCode::Backspace) ]
+        ]
+        on(confirm_note)
+        on(|_: On<Start<CancelNote>>, map: Option<Single<&mut Automap>>| { if let Some(mut map) = map { map.editing = None; } })
+        on(|_: On<Start<EraseLetter>>, map: Option<Single<&mut Automap>>| { if let Some(mut map) = map && let Some(draft) = map.editing.as_mut() { draft.note.text.pop(); } })
+    }).insert((map, DespawnOnExit(Screen::Automap)));
+}
+
+#[derive(Component, Clone, Default)]
+pub struct NoteEditing;
+#[derive(InputAction)]
+#[action_output(bool)]
+struct ConfirmNote;
+#[derive(InputAction)]
+#[action_output(bool)]
+struct CancelNote;
+#[derive(InputAction)]
+#[action_output(bool)]
+struct EraseLetter;
+#[derive(Component)]
+pub struct AutomapBuilt;
+
+fn confirm_note(
+    _: On<Start<ConfirmNote>>,
+    map: Option<Single<&mut Automap>>,
+    mut commands: Commands,
+) {
+    if let Some(mut map) = map
+        && let Some(draft) = map.editing.take()
+    {
+        commands.queue(move |world: &mut World| {
+            let _ = crate::game::automap::commit_note(world, draft);
+        });
+    }
+}
+
+/// Typing focus changes input routing, independently of simulation activity.
+pub fn route_map_keys(
+    mut commands: Commands,
+    maps: Query<(Entity, &Automap, &ContextActivity<AutomapScreen>, &ContextActivity<NoteEditing>)>,
+) {
+    for (entity, map, map_keys, note_keys) in &maps {
+        let typing = map.editing.is_some();
+        if **map_keys == typing {
+            commands.entity(entity).insert(ContextActivity::<AutomapScreen>::new(!typing));
+        }
+        if **note_keys != typing {
+            commands.entity(entity).insert(ContextActivity::<NoteEditing>::new(typing));
+        }
+    }
 }
 
 /// Open the map when asked (Tab, the radar) while the party is in the
 /// world, once its art has loaded.
-pub fn open_automap(
+pub fn build_automap(
     mut commands: Commands,
-    mut open: MessageReader<OpenAutomap>,
     art: Option<Res<AutomapArt>>,
     sheets: Res<Assets<SpriteSheet>>,
     mut images: ResMut<Assets<Image>>,
     party: Query<&Transform, With<PartyBody>>,
     level: Query<&Level>,
     geometry: Res<Assets<LevelGeometry>>,
-    mut showing: ResMut<Screen>,
+    roots: Query<(Entity, &Automap), Without<AutomapBuilt>>,
 ) {
-    if open.read().count() == 0 || *showing != Screen::World {
-        return;
-    }
+    let Ok((root, automap)) = roots.single() else { return };
     let (Some(art), Ok(party)) = (art, party.single()) else { return };
     let (
         Some(border),
@@ -316,12 +414,9 @@ pub fn open_automap(
         return;
     };
     let feet = party.translation - Vec3::Y * FLOAT_HEIGHT;
-    let collision = level.single().ok().and_then(|level| geometry.get(&level.geometry));
-    let layers = collision.map_or(&[][..], |level| level.map_layers.as_slice());
-    showing.open(Screen::Automap);
-    let automap = Automap::new(collision.map(|level| &level.collision), layers, feet);
+    let collision = level.get(automap.level).ok().and_then(|level| geometry.get(&level.geometry));
     let plan = collision
-        .map(|level| images.add(floor_plan(&level.collision, &level.map_layers, &automap)))
+        .map(|level| images.add(floor_plan(&level.collision, &level.map_layers, automap)))
         .map(|plan| {
             let node = absolute(Vec2::ZERO, VIEWPORT);
             bsn! { FloorPlan ImageNode { image: {plan} } node Pickable::IGNORE }
@@ -374,58 +469,28 @@ pub fn open_automap(
     let (whole, map_area) = (absolute(Vec2::ZERO, SCREEN), absolute(VIEWPORT_AT, VIEWPORT));
     let (notes_layer, label) =
         (absolute(Vec2::ZERO, VIEWPORT), absolute(Vec2::new(500.0, 199.0), Vec2::new(120.0, 16.0)));
-    commands.spawn_scene(bsn! {
-        #Automap
-        @centred()
-        AutomapScreen
+    commands.entity(root).insert(AutomapBuilt).queue_spawn_related_scenes::<Children>(vec![bsn! {
+    @screen()
+    Children [
+        // The frame goes underneath: its map area is opaque black,
+        // and the map is drawn on it.
+        ImageNode { image: {frame} } whole Pickable::IGNORE
+        --
+        MapViewport
+        Hovered
+        map_area
+        Node { overflow: Overflow::clip() }
         BackgroundColor(Color::BLACK)
-        ContextPriority::<AutomapScreen>::new(1)
-        Actions<AutomapScreen> [
-            Action::<CloseMap>::new()
-            ActionSettings { consume_input: true }
-            Bindings [ Binding(KeyCode::Escape) Binding(KeyCode::Tab) ]
-            --
-            Action::<PanMap>::new()
-            ActionSettings { consume_input: true }
-            Bindings [ {preset::cardinal::arrows()} ]
-        ]
-        on(|_: On<Start<CloseMap>>, automap: Option<ResMut<Automap>>| {
-            if let Some(mut automap) = automap {
-                automap.close = true;
-            }
-        })
-        on(|pan: On<Start<PanMap>>, automap: Option<ResMut<Automap>>| {
-            if let Some(mut automap) = automap {
-                // The map's y runs south.
-                let step = Vec2::new(pan.value.x, -pan.value.y) * 0.35 * automap.span;
-                let point = automap.centre + step;
-                automap.centre_on(point);
-            }
-        })
+        on(click_map)
         Children [
-            @screen()
-            Children [
-                // The frame goes underneath: its map area is opaque black,
-                // and the map is drawn on it.
-                ImageNode { image: {frame} } whole Pickable::IGNORE
-                --
-                MapViewport
-                Hovered
-                map_area
-                Node { overflow: Overflow::clip() }
-                BackgroundColor(Color::BLACK)
-                on(click_map)
-                Children [
-                    {plan.into_iter().collect::<Vec<_>>()}
-                    -- PartyMarker ImageNode { image: {marker_image} } marker Pickable::IGNORE
-                    -- NotesLayer notes_layer Pickable::IGNORE
-                ]
-                -- LayerLabel ImageNode label Pickable::IGNORE
-                -- {buttons}
-            ]
+            {plan.into_iter().collect::<Vec<_>>()}
+            -- PartyMarker ImageNode { image: {marker_image} } marker Pickable::IGNORE
+            -- NotesLayer notes_layer Pickable::IGNORE
         ]
-    });
-    commands.insert_resource(automap);
+        -- LayerLabel ImageNode label Pickable::IGNORE
+        -- {buttons}
+    ]
+    }]);
 }
 
 /// Topmost walkable surfaces below the selected authored ceiling, north up.
@@ -481,14 +546,14 @@ fn press_button(
     level: Query<&Level>,
     geometry: Res<Assets<LevelGeometry>>,
     party: Query<&Transform, With<PartyBody>>,
-    automap: Option<ResMut<Automap>>,
-    mut notes: Single<&mut MapNotes>,
+    automap: Option<Single<&mut Automap>>,
+    mut next: ResMut<NextState<Screen>>,
 ) {
     if click.button != bevy::picking::pointer::PointerButton::Primary {
         return;
     }
     let (Some(mut automap), Ok(button)) = (automap, buttons.get(click.entity)) else { return };
-    finish_editing(&mut automap, &mut notes);
+    automap.editing = None;
     match button.action {
         ButtonAction::Tool(tool) => {
             automap.tool = if automap.tool == Some(tool) { None } else { Some(tool) };
@@ -510,12 +575,13 @@ fn press_button(
         }
         ButtonAction::LayerPrevious => automap.layer = automap.layer.saturating_sub(1),
         ButtonAction::LayerNext => {
-            if let Some(level) = level.single().ok().and_then(|level| geometry.get(&level.geometry))
+            if let Some(level) =
+                level.get(automap.level).ok().and_then(|level| geometry.get(&level.geometry))
             {
                 automap.layer = (automap.layer + 1).min(level.map_layers.len());
             }
         }
-        ButtonAction::Exit => automap.close = true,
+        ButtonAction::Exit => next.set(Screen::World),
     }
 }
 
@@ -524,7 +590,7 @@ pub fn paint_buttons(
     level: Query<&Level>,
     geometry: Res<Assets<LevelGeometry>>,
     mut buttons: Query<(&Hovered, &SheetButton, &mut ImageNode)>,
-    automap: Option<Res<Automap>>,
+    automap: Option<Single<Ref<Automap>>>,
     sheets: Res<Assets<SpriteSheet>>,
 ) {
     let Some(automap) = automap else { return };
@@ -533,7 +599,7 @@ pub fn paint_buttons(
         let disabled = match button.action {
             ButtonAction::LayerPrevious => automap.layer == 0,
             ButtonAction::LayerNext => level
-                .single()
+                .get(automap.level)
                 .ok()
                 .and_then(|l| geometry.get(&l.geometry))
                 .is_none_or(|l| automap.layer >= l.map_layers.len()),
@@ -560,99 +626,80 @@ pub fn paint_buttons(
 /// Pin, erase, or (with no tool) pick a note to retype.
 fn click_map(
     click: On<PointerClick>,
-    automap: Option<ResMut<Automap>>,
-    mut notes: Single<&mut MapNotes>,
+    map: Option<Single<&mut Automap>>,
+    mut levels: Query<&mut MapNotes>,
 ) {
-    // UI hits are relative to the node's centre, in node sizes.
-    let (Some(mut automap), Some(hit)) = (automap, click.hit.position) else { return };
+    let (Some(mut map), Some(hit)) = (map, click.hit.position) else { return };
     use bevy::picking::pointer::PointerButton;
     if click.button == PointerButton::Secondary {
-        finish_editing(&mut automap, &mut notes);
-        automap.zoom_out();
+        map.editing = None;
+        map.zoom_out();
         return;
     }
     if click.button != PointerButton::Primary {
         return;
     }
-    finish_editing(&mut automap, &mut notes);
-    let point = automap.unproject((hit.truncate() + 0.5) * VIEWPORT);
-    let reach = MARKER / automap.pixels_per_metre();
-    match automap.tool {
-        Some(MapTool::AddNote) => automap.editing = notes.add(point, automap.layer),
+    map.editing = None;
+    let Ok(mut notes) = levels.get_mut(map.level) else { return };
+    let point = map.unproject((hit.truncate() + 0.5) * VIEWPORT);
+    let reach = MARKER / map.pixels_per_metre();
+    let original = notes.nearest(point, reach, map.layer);
+    match map.tool {
+        Some(MapTool::AddNote) if notes.notes.len() < crate::game::automap::MAX_NOTES => {
+            map.editing = Some(NoteDraft {
+                level: map.level,
+                original: None,
+                note: MapNote { position: point, layer: map.layer, text: String::new() },
+            });
+        }
+        Some(MapTool::AddNote) => {}
         Some(MapTool::EraseNote) => {
-            if let Some(note) = notes.nearest(point, reach, automap.layer) {
-                notes.notes.remove(note);
+            if let Some(index) = original {
+                notes.notes.remove(index);
             }
         }
         None => {
-            automap.editing = notes.nearest(point, reach, automap.layer);
-            if automap.editing.is_none() {
-                automap.zoom_in(point);
+            if let Some(index) = original {
+                map.editing = Some(NoteDraft {
+                    level: map.level,
+                    original: Some((index, notes.notes[index].clone())),
+                    note: notes.notes[index].clone(),
+                });
+            } else {
+                map.zoom_in(point);
             }
         }
     }
 }
 
-/// Stop typing; a note left empty is removed.
-fn finish_editing(automap: &mut Automap, notes: &mut MapNotes) {
-    if let Some(note) = automap.editing.take()
-        && notes.notes.get(note).is_some_and(|n| n.text.is_empty())
-    {
-        notes.notes.remove(note);
-    }
-}
-
-pub fn type_note(
-    mut keys: MessageReader<KeyboardInput>,
-    automap: Option<ResMut<Automap>>,
-    mut notes: Single<&mut MapNotes>,
-    screens: Query<(Entity, &ContextActivity<AutomapScreen>), With<AutomapScreen>>,
-    mut commands: Commands,
-) {
-    // The map's keys are off while a note is typed: they type into it.
-    let typing = automap.as_ref().is_some_and(|map| map.editing.is_some());
-    for (controls, active) in &screens {
-        if **active == typing {
-            commands.entity(controls).insert(ContextActivity::<AutomapScreen>::new(!typing));
-        }
-    }
-    let Some(mut automap) = automap else {
-        keys.clear();
+pub fn type_note(mut keys: MessageReader<KeyboardInput>, map: Option<Single<&mut Automap>>) {
+    let incoming: String = keys
+        .read()
+        .filter(|key| key.state == ButtonState::Pressed)
+        .flat_map(|key| key.text.iter().flat_map(|text| text.chars()))
+        .collect();
+    if incoming.is_empty() {
         return;
-    };
-    let Some(note) = automap.editing else {
-        keys.clear();
-        return;
-    };
-    for key in keys.read().filter(|k| k.state == ButtonState::Pressed) {
-        match &key.logical_key {
-            Key::Enter | Key::Escape => {
-                finish_editing(&mut automap, &mut notes);
-                return;
-            }
-            Key::Backspace => {
-                notes.notes[note].text.pop();
-            }
-            _ => {
-                for c in key.text.iter().flat_map(|text| text.chars()) {
-                    notes.type_char(note, c);
-                }
-            }
-        }
+    }
+    let Some(mut map) = map else { return };
+    let Some(draft) = map.editing.as_mut() else { return };
+    for c in incoming.chars() {
+        draft.note.type_char(c);
     }
 }
 
 pub fn draw_notes(
     mut commands: Commands,
     layer: Query<Entity, With<NotesLayer>>,
-    automap: Option<Res<Automap>>,
-    notes: Single<Ref<MapNotes>>,
+    automap: Option<Single<Ref<Automap>>>,
+    notes: Query<Ref<MapNotes>>,
     art: Option<Res<AutomapArt>>,
     sheets: Res<Assets<SpriteSheet>>,
     mut images: ResMut<Assets<Image>>,
     mut drawn: Local<Option<Entity>>,
 ) {
     let (Some(automap), Some(art), Ok(layer)) = (automap, art, layer.single()) else { return };
+    let Ok(notes) = notes.get(automap.level) else { return };
     let fresh = *drawn != Some(layer);
     if !fresh && !notes.is_changed() && !automap.is_changed() {
         return;
@@ -660,14 +707,27 @@ pub fn draw_notes(
     let Some(font) = sheets.get(&art.font) else { return };
     *drawn = Some(layer);
     let mut parts: Vec<Box<dyn Scene>> = vec![];
-    for (index, note) in notes.notes.iter().enumerate() {
+    // The draft replaces only its displayed label; persistent notes remain
+    // untouched until the explicit confirm operation succeeds.
+    let displayed = notes
+        .notes
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| {
+            automap
+                .editing
+                .as_ref()
+                .is_none_or(|d| d.original.as_ref().map(|(index, _)| *index) != Some(*index))
+        })
+        .map(|(_, note)| (note, false))
+        .chain(automap.editing.iter().map(|d| (&d.note, true)));
+    for (note, editing) in displayed {
         let at = automap.project(note.position);
         let (marker, image) =
             (absolute(at - MARKER / 2.0, Vec2::splat(MARKER)), art.note_marker.clone());
         parts.push(Box::new(
             bsn! { NoteMarker ImageNode { image: {image} } marker Pickable::IGNORE },
         ));
-        let editing = automap.editing == Some(index);
         // Retail keeps the marker visible on other layers, but only labels
         // and selects notes on the current layer.
         if note.layer != automap.layer || (note.text.is_empty() && !editing) {
@@ -718,7 +778,7 @@ pub fn glow_note_markers(time: Res<Time>, mut markers: Query<&mut ImageNode, Wit
 
 /// Redraw the raster only when its view changes, not while typing or glowing.
 pub fn update_map_view(
-    automap: Option<Res<Automap>>,
+    automap: Option<Single<Ref<Automap>>>,
     level: Query<&Level>,
     geometry: Res<Assets<LevelGeometry>>,
     mut plans: Query<(Entity, &mut ImageNode), With<FloorPlan>>,
@@ -728,7 +788,9 @@ pub fn update_map_view(
     mut previous: Local<Option<(Entity, Vec2, f32, usize)>>,
 ) {
     let Some(automap) = automap else { return };
-    let Some(level) = level.single().ok().and_then(|l| geometry.get(&l.geometry)) else { return };
+    let Some(level) = level.get(automap.level).ok().and_then(|l| geometry.get(&l.geometry)) else {
+        return;
+    };
     if let Ok(party) = party.single() {
         let at = automap.project(party.translation.xz()) - MARKER / 2.0;
         for mut marker in &mut markers {
@@ -748,7 +810,7 @@ pub fn update_map_view(
 }
 
 pub fn draw_layer_label(
-    automap: Option<Res<Automap>>,
+    automap: Option<Single<Ref<Automap>>>,
     art: Option<Res<AutomapArt>>,
     sheets: Res<Assets<SpriteSheet>>,
     level: Query<&Level>,
@@ -765,9 +827,10 @@ pub fn draw_layer_label(
     if *previous == Some((entity, automap.layer)) {
         return;
     }
-    let (Some(font), Some(level)) =
-        (sheets.get(&art.font), level.single().ok().and_then(|l| geometry.get(&l.geometry)))
-    else {
+    let (Some(font), Some(level)) = (
+        sheets.get(&art.font),
+        level.get(automap.level).ok().and_then(|l| geometry.get(&l.geometry)),
+    ) else {
         return;
     };
     let label =
@@ -787,7 +850,7 @@ pub fn draw_layer_label(
 pub fn update_map_cursor(
     mut commands: Commands,
     windows: Query<(Entity, Option<&bevy::window::CursorIcon>), With<bevy::window::PrimaryWindow>>,
-    automap: Option<Res<Automap>>,
+    automap: Option<Single<Ref<Automap>>>,
     art: Option<Res<AutomapArt>>,
     sheets: Res<Assets<SpriteSheet>>,
     viewport: Query<&Hovered, With<MapViewport>>,
@@ -907,7 +970,7 @@ mod tests {
         let mut map = large_map();
         let note = Vec2::new(100.0, 80.0);
         let mut notes = MapNotes::default();
-        notes.add(note, 0);
+        notes.notes.push(MapNote { position: note, layer: 0, text: "Note".into() });
         for span in [map.full_span, map.full_span / 2.0, MIN_SPAN] {
             map.span = span;
             map.centre_on(Vec2::new(90.0, 75.0));
@@ -923,27 +986,6 @@ mod tests {
                 (map.project(note + Vec2::Y).y - pixel.y - map.pixels_per_metre()).abs() < 0.0001
             );
         }
-    }
-
-    #[test]
-    fn typing_a_note_turns_the_map_keys_off() {
-        let mut app = App::new();
-        app.add_plugins((MinimalPlugins, bevy::input::InputPlugin, EnhancedInputPlugin))
-            .add_input_context::<AutomapScreen>()
-            .add_systems(Update, type_note);
-        app.finish();
-        app.cleanup();
-        let controls = app.world_mut().spawn(AutomapScreen).id();
-        let mut map = large_map();
-        let mut notes = MapNotes::default();
-        map.editing = notes.add(Vec2::ZERO, 0);
-        app.world_mut().spawn(notes);
-        app.insert_resource(map);
-        app.update();
-        assert!(!**app.world().get::<ContextActivity<AutomapScreen>>(controls).unwrap());
-        app.world_mut().resource_mut::<Automap>().editing = None;
-        app.update();
-        assert!(**app.world().get::<ContextActivity<AutomapScreen>>(controls).unwrap());
     }
 
     #[test]

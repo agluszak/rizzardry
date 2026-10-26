@@ -73,6 +73,8 @@ impl Plugin for RetailPlugin {
             .init_asset::<LevelGeometry>()
             .init_asset_loader::<level_loader::PvlLoader>()
             .init_asset_loader::<sky_loader::LvlLoader>()
+            .init_asset::<crate::content::monster::MonsterBody>()
+            .init_asset_loader::<monster_loader::MlsBodyLoader>()
             .init_asset::<crate::content::monster::MonsterModel>()
             .init_asset_loader::<monster_loader::MlsLoader>()
             .init_asset::<crate::content::ui::SpriteSheet>()

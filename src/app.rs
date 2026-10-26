@@ -207,6 +207,24 @@ pub fn build(options: &Options) -> Result<App, String> {
         }))
         .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.07)));
     }
+    // Shared campaign services are composed here, not owned by world loading.
+    app.init_resource::<crate::game::rng::GameRng>()
+        .init_resource::<crate::game::inventory::ItemIds>()
+        .init_resource::<crate::game::inventory::PartyInventory>()
+        .init_state::<crate::game::screen::Screen>()
+        .add_message::<crate::game::inventory::ItemNews>()
+        .add_systems(Startup, crate::game::data::load_game_data)
+        .configure_sets(
+            Update,
+            (
+                crate::game::GameplaySet::Equipment,
+                crate::game::GameplaySet::LevelActivation,
+                crate::game::GameplaySet::Perception,
+                crate::game::GameplaySet::Combat,
+                crate::game::GameplaySet::Interaction,
+            )
+                .chain(),
+        );
     app.add_plugins((
         EnhancedInputPlugin,
         PhysicsPlugins::default(),
@@ -262,11 +280,16 @@ pub fn build(options: &Options) -> Result<App, String> {
             .add_systems(PostUpdate, overhead_view.before(TransformSystems::Propagate));
     }
     // A new game: the party, entering the chosen level.
-    app.add_systems(Startup, move |mut commands: Commands, mut roster: ResMut<PartyRoster>| {
-        for member in &party {
-            recruit(&mut commands, &mut roster, member);
-        }
-    });
+    app.add_systems(
+        Startup,
+        move |mut commands: Commands,
+              mut roster: ResMut<PartyRoster>,
+              mut formation: ResMut<crate::game::party::formation::Formation>| {
+            for member in &party {
+                recruit(&mut commands, &mut roster, &mut formation, member);
+            }
+        },
+    );
     app.add_systems(Startup, move |mut commands: Commands, assets: Res<AssetServer>| {
         let first = Destination::new(Level::load(&level, &assets));
         commands.spawn((Name::new(level.clone()), first));

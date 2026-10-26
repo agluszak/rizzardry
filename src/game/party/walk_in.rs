@@ -6,18 +6,21 @@ use bevy::prelude::*;
 
 use super::body::{EYE_ABOVE_CENTRE, PartyBody};
 use crate::content::level::{Arrival, LevelGeometry};
-use crate::game::world::level::{Level, Travel, TravelQuestion};
+use crate::game::world::level::{Departing, Level, Travel, TravelQuestion};
 use crate::game::world::props::pose;
-use crate::game::world::triggers::{LevelTriggers, PartyMove};
+use crate::game::world::triggers::{self, LevelState, PartyMove, PendingPartyMove};
 
 pub fn run_walk_in_triggers(
     time: Res<Time>,
     party: Query<&Position, With<PartyBody>>,
-    mut triggers: LevelTriggers,
+    mut commands: Commands,
+    levels: Query<Entity, (With<Level>, Without<Departing>)>,
 ) {
+    let Ok(level) = levels.single() else { return };
     let Ok(position) = party.single() else { return };
     let eye = PartyBody::eye(position);
-    triggers.with(|triggers| triggers.walk(eye, time.delta()));
+    let elapsed = time.delta();
+    commands.queue(move |world: &mut World| triggers::walk(world, level, eye, elapsed));
 }
 
 /// The party's eye flying along a camera path; input and physics wait
@@ -33,12 +36,13 @@ pub struct PathFlight {
 pub fn move_party(
     mut commands: Commands,
     mut party: Query<(Entity, &mut PartyBody, &mut Position, &mut Transform, Has<PathFlight>)>,
-    levels: Query<&Level>,
+    mut levels: Query<(Entity, &Level, &mut LevelState), Without<Departing>>,
     geometry: Res<Assets<LevelGeometry>>,
     mut travel: MessageWriter<Travel>,
-    mut triggers: LevelTriggers,
+    mut pending: ResMut<PendingPartyMove>,
 ) {
-    let Some(party_move) = triggers.take_party_move() else { return };
+    let Ok((origin, level, mut state)) = levels.single_mut() else { return };
+    let Some(party_move) = pending.take_for(origin) else { return };
     let Ok((entity, mut body, mut position, mut transform, flying)) = party.single_mut() else {
         return;
     };
@@ -49,27 +53,26 @@ pub fn move_party(
             transform.translation = position.0;
             body.yaw = yaw;
             info!("teleport to {eye:.2}");
-            triggers.with(|triggers| triggers.arrive(eye));
+            state.arrive(eye);
         }
         PartyMove::Teleport(Arrival::Entrance { entrance, ask: false }) => {
             travel.write(Travel { entrance });
         }
         // Retail asks first; until answered the party stays where it is.
         PartyMove::Teleport(Arrival::Entrance { entrance, ask: true }) => {
-            commands.insert_resource(TravelQuestion { entrance });
+            commands.spawn((TravelQuestion { entrance }, ChildOf(origin)));
         }
         // Retail ignores starting a path that is already playing; the eye
         // flying through its trigger runs it again.
         PartyMove::Fly(_) if flying => {}
-        PartyMove::Fly(name) => {
-            let level = levels.iter().find_map(|level| geometry.get(&level.geometry));
-            let Some(path) = level.and_then(|level| {
-                level.camera_paths.iter().position(|p| p.name.eq_ignore_ascii_case(&name))
-            }) else {
-                warn!("no camera path {name}");
+        PartyMove::Fly(path) => {
+            let Some(camera) =
+                geometry.get(&level.geometry).and_then(|level| level.camera_paths.get(path))
+            else {
+                warn!("invalid camera path {path}");
                 return;
             };
-            info!("flying camera path {name}");
+            info!("flying camera path {}", camera.name);
             commands.entity(entity).insert((PathFlight { path, frame: 0.0 }, RigidBodyDisabled));
         }
     }

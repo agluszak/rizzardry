@@ -14,7 +14,6 @@ use crate::game::camp::CampNews;
 use crate::game::combat::{Announcement, CombatNews};
 use crate::game::inventory::ItemNews;
 use crate::game::world::identify::Identified;
-use crate::game::world::level::Level;
 use crate::game::world::search::SearchNews;
 use crate::game::world::triggers::TriggerEffect;
 
@@ -255,23 +254,24 @@ pub fn queue_notices(
     mut items: MessageReader<ItemNews>,
     mut search: MessageReader<SearchNews>,
     mut identified: MessageReader<Identified>,
+    names: super::names::ActorNames,
     art: Res<NoticeArt>,
     tables: Res<Assets<TextTable>>,
-    levels: Query<&Level>,
     battle: Option<Res<crate::game::combat::Battle>>,
     sheets: Res<Assets<SpriteSheet>>,
     mut log: ResMut<TextLog>,
 ) {
     let font = sheets.get(&art.font);
     let channel = usize::from(battle.is_some());
-    let messages = levels.iter().find_map(|level| tables.get(level.messages.as_ref()?));
     let strings = tables.get(&art.strings);
     let string = |index| strings.and_then(|s| s.get(index)).unwrap_or_default().trim().to_owned();
     for effect in effects.read() {
         let text = match effect {
-            TriggerEffect::Message(id) => {
-                messages.and_then(|m| m.get(usize::try_from(*id).ok()?)).map(str::to_owned)
-            }
+            TriggerEffect::Message { source, id } => source
+                .as_ref()
+                .and_then(|source| tables.get(source))
+                .and_then(|messages| messages.get(usize::try_from(*id).ok()?))
+                .map(str::to_owned),
             TriggerEffect::NothingHappened => Some(string(NOTHING_HAPPENS)),
             // Whizzardry's notice for a locked door without its key.
             TriggerEffect::Locked => Some("Your party doesn't have required key.".to_owned()),
@@ -280,6 +280,8 @@ pub fn queue_notices(
                 Some(format!("{} {gold} {}.", string(GOLD_BEFORE), string(GOLD_AFTER)))
             }
             TriggerEffect::Sound { .. }
+            | TriggerEffect::FountainUsed { .. }
+            | TriggerEffect::BellRang(_)
             | TriggerEffect::Shake { .. }
             | TriggerEffect::Hurt { .. } => None,
         };
@@ -345,25 +347,36 @@ pub fn queue_notices(
                 vec![string(COMBAT)]
             }
             CombatNews::Attack { attacker, target, how, swings } => {
-                vec![announce(&string, attacker, target, *how, *swings)]
+                match (names.name(*attacker), names.name(*target)) {
+                    (Some(attacker), Some(target)) => {
+                        vec![announce(&string, &attacker, &target, *how, *swings)]
+                    }
+                    _ => vec![],
+                }
             }
             // Retail's summary (`ReportCharacterAttackResult`).
-            CombatNews::Result { attacker, hits, damage } => vec![match (hits, damage) {
-                (0, _) => string(MISSED),
-                (_, 0) => string(NO_DAMAGE),
-                (1, damage) => {
-                    format!("{attacker} {}", string(HITS).replace("%ld", &damage.to_string()))
-                }
-                (hits, damage) => format!(
-                    "{attacker} {}",
-                    string(HITS_TIMES).replacen("%ld", &hits.to_string(), 1).replacen(
-                        "%ld",
-                        &damage.to_string(),
-                        1
-                    )
-                ),
-            }],
-            CombatNews::Killed { name } => vec![format!("{name} {}", string(DIES))],
+            CombatNews::Result { attacker, hits, damage, .. } => {
+                let Some(attacker) = names.name(*attacker) else { continue };
+                vec![match (hits, damage) {
+                    (0, _) => string(MISSED),
+                    (_, 0) => string(NO_DAMAGE),
+                    (1, damage) => {
+                        format!("{attacker} {}", string(HITS).replace("%ld", &damage.to_string()))
+                    }
+                    (hits, damage) => format!(
+                        "{attacker} {}",
+                        string(HITS_TIMES).replacen("%ld", &hits.to_string(), 1).replacen(
+                            "%ld",
+                            &damage.to_string(),
+                            1
+                        )
+                    ),
+                }]
+            }
+            CombatNews::Killed { actor } => names
+                .name(*actor)
+                .map(|name| vec![format!("{name} {}", string(DIES))])
+                .unwrap_or_default(),
             CombatNews::Won { experience_each, .. } => vec![
                 string(WON),
                 string(SURVIVORS_EARNED).replace("%d", &experience_each.to_string()),

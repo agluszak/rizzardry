@@ -3,10 +3,9 @@
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 
-/// A monster species' look and body (retail `.mls` and its `.mon` cycles).
+/// A monster species' visual cycles. Gameplay dimensions load independently.
 #[derive(Asset, TypePath, Debug)]
 pub struct MonsterModel {
-    pub body: MonsterBody,
     /// Cycles by retail name (`IDLE`, `WALK`, `DIE`, ...).
     pub cycles: HashMap<String, MonsterCycleModel>,
 }
@@ -14,7 +13,7 @@ pub struct MonsterModel {
 /// A species' body measurements (`.mls` keywords). Lengths are metres and
 /// speeds metres per second before the monster's scale, as retail's
 /// navigator scales them (`Navigator::SetScale`).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Asset, TypePath, Clone, Copy, Debug, PartialEq)]
 pub struct MonsterBody {
     /// The scale without a range, or the middle of the range.
     pub scale: f32,

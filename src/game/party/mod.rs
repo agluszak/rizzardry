@@ -17,6 +17,16 @@ use crate::game::screen::party_free;
 use crate::game::world::level::level_active;
 use crate::game::world::triggers::PendingPartyMove;
 
+/// A member's standing choice for the next round. Recruitment starts on
+/// Attack (retail `ResetPartySlotRow`).
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Order {
+    #[default]
+    Attack,
+    /// No attack; +2 armour, and stamina back at the round's end.
+    Defend,
+}
+
 pub struct PartyPlugin;
 
 impl Plugin for PartyPlugin {
@@ -28,7 +38,6 @@ impl Plugin for PartyPlugin {
         .insert_resource(Gravity(Vec3::NEG_Y * body::GRAVITY))
         .add_input_context::<body::Exploration>()
         .init_resource::<roster::PartyRoster>()
-        .init_resource::<crate::game::screen::Screen>()
         .init_resource::<formation::Formation>()
         .add_message::<camp::CampNews>()
         .add_message::<camp::CampRequest>()
@@ -37,11 +46,9 @@ impl Plugin for PartyPlugin {
         .add_systems(
             Update,
             (
-                roster::give_starting_equipment,
-                formation::seat_party,
+                roster::give_starting_equipment.in_set(crate::game::GameplaySet::Equipment),
                 (
-                    (body::look_around, crate::game::world::interaction::act_on_click)
-                        .run_if(party_free),
+                    body::look_around.run_if(party_free),
                     (
                         camp::request_camp.run_if(party_free),
                         camp::force_camp,
@@ -72,4 +79,20 @@ impl Plugin for PartyPlugin {
                 .run_if(level_active),
         );
     }
+}
+
+/// Apply party damage and settle the target's death invariants before another
+/// operation can use its formation seat. Retain resource change tracking until
+/// death actually changes a seat.
+pub fn damage_member(
+    member: Entity,
+    vitals: &mut crate::game::characters::Vitals,
+    formation: &mut ResMut<formation::Formation>,
+    amount: u32,
+) -> u32 {
+    let lost = vitals.damage(amount);
+    if vitals.is_dead() && formation.row_of(member).is_some() {
+        formation.unseat(member);
+    }
+    lost
 }

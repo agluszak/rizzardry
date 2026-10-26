@@ -1,5 +1,5 @@
 //! Monsters closing in on the party during a fight. A monster in the fight
-//! gets a walking body sized and paced by its model and heads for the party
+//! gets a walking body sized and paced by its gameplay body and heads for the party
 //! through the navmesh until one of its attacks reaches; the dead and those
 //! in reach stand. Retail moves monsters as a scheduled action within the
 //! round (advance and charge); here they close in continuously, a

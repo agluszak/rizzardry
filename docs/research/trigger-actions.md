@@ -2,9 +2,33 @@
 
 Sources. Unless stated otherwise, every path is relative to `whizzardry-8/`. `TA` = `src/entities/trigger_actions.cpp`,
 `TIO` = `src/entities/trigger_io.cpp`, `PR` = `src/entities/prop.cpp`, `TH` = `include/wiz8/entities/trigger.h`.
-The original-binary decomp was not available, so every claim rests on Whizzardry's reconstruction.
+The original action catalogue below rests on Whizzardry's reconstruction; the activation-identity
+section additionally checks the pinned decomp source.
 Level data comes from `wizardry-prepared/levels/monastery/monastery2.pvl`. I decoded it with throwaway scripts that
 re-implement `World::loadTrigger` type 4 (TIO:785-1002) and the prop header (PR:1034-1151).
+
+## Activation identity (verified against decomp)
+
+At decomp revision `075cbd0b853c4670e94f6ae4fe48d53b52b5e819`,
+`engine_code/Trigger.cpp` (`CreateAndLoadLevelTrigger`, lines 1348–1370)
+allocates each non-ambient record independently. `engine_code/Prop.cpp`
+(`LoadProp`, lines 1691–1724) binds that record to its own prop; picking
+uses that pointer directly (lines 363–380), not the trigger's name.
+Equal names therefore do not imply shared activation state or animation.
+
+`engine_code/ReadLevel.cpp` loads props, bitmaps, then standalone triggers
+(lines 1077–1079, 1102–1106). Named recipients select the latest registered
+match: `surrender/type_registry.cpp` prepends entries (lines 73–90) and
+returns the first matching entry (lines 123–143). The importer preserves
+record identity for prop bindings and uses names only for named links.
+Prop-backed devices are colocated with their prop; neither needs a runtime
+reference back to itself. Collision-door binding is a separate relationship.
+
+Sound uses an explicitly positioned trigger first, otherwise its own prop
+(`Trigger.cpp`, lines 1025–1057). Rizzardry still approximates a prop's sound
+origin by its rest centre instead of retail's current-frame bounds centre.
+No retail asset survey was available for this check; these conclusions are
+from the recovered source, not a claim about duplicate-name frequency.
 
 ---
 

@@ -70,6 +70,34 @@ instances. Bevy `Entity` identifies a current runtime entity; it is not a save
 identifier. Resolve persistent references after all target entities have been
 created. A derived ID-to-entity lookup is an index, not another actor database.
 
+## Live devices
+
+A prop-backed device is the prop entity, not a second object linked back to it.
+Duplicate authored names do not merge identities; only named links select the
+last registered matching record. Activation resolves entity links and the level's
+ordered positioned-device index. Walk-in detection keeps one previous party-eye
+sample on the level, not an occupancy flag on every device. Teleportation rebases
+that sample without walking the device population. Only activated damage zones
+own a timer; their timing is not inferred from occupancy. Location variables
+remain one named map on the level, moved directly to/from dormant records. Content canonicalizes variable
+names once; execution uses those names without a second numeric binding table.
+Dial-position names are formed on use, rather than maintaining another key cache.
+
+Trigger requests enter through Bevy's command boundary. Entity-local operations
+borrow only their device, or the specific device and level they coordinate; they
+cannot reach unrelated resources. Only loot and party-wide effects use bounded
+native systems to borrow their required resources. There is no application
+registry or service object. A plain synchronous coordinator borrows immutable
+level definitions, runs the selected operation, follows links and commits in
+order. Commands are exclusive by design; this favors a visible, complete
+operation over parallelizing the parts of one player action.
+
+Movement consumes its level-bound request and rebases walk-in detection without
+entering trigger execution. Presentation follows completed click commands and
+interprets outcomes such as a fountain use or a bell ringing; it does not complete
+required mutations. Dormant device contents and variables move back into live
+components after destination preparation succeeds.
+
 ## Entities and components
 
 | Entity | Proposed state | Why it is an entity |
@@ -84,9 +112,10 @@ created. A derived ID-to-entity lookup is an index, not another actor database.
 | Pending spell/projectile/continuing field | Source, target/payload, delivery state, placement if spatial | Independent lifetime that can outlast its source action or consumed item |
 | UI/render/audio node | Native Bevy presentation components | Presentation lifetime, not ownership of the represented gameplay item |
 
-`AdventurerState` is a coherent aggregate of progression, attributes, skills,
-learned spells, party-role vitals and conditions. The eventual component split
-can follow actual query/mutation patterns. Do not start with a component for
+The current adventurer profile is `Character` (identity, training, progression
+and portrait). `Vitals` owns health, stamina, conditions and their recovery
+fractions; `MonsterKnowledge` owns recognition history. Recovery/damage can
+change vitals without changing the profile. Their queries justified this split. Do not start with a component for
 each attribute, each backpack slot or each condition counter.
 
 ### Party geometry
@@ -98,8 +127,30 @@ every targeting rule to use per-character positions either: the recovered radius
 spell path tests the shared party body before including eligible members. See
 [combat items](systems/combat-items-and-magic.md).
 
+The live formation grid holds member entities. Recruitment seats the new actor;
+removal and lethal party damage clear its seat within that operation, without a
+continuous repair system. Roster order remains the order for UI positions,
+initial placement, round acceptance and deterministic tie breaking. Standing
+`Order` components, held-item provenance and explicit UI selection refer to
+actors, so roster edits cannot transfer those facts to another occupant.
+
+The weapon-attack slice accepts an ordered entity-keyed queue at round start.
+It locks the order, weapon identity, initiative and attack count. Execution
+revalidates membership, current ability to act, that weapon's presence and
+reach; combat profiles, fatigue and target defenses remain live. Editing orders
+while a round executes affects the next round, including defense bonuses and
+stamina recovery. A removed actor's work is cancelled, never reassigned.
+
 Party movement during combat is one scheduled party action. Individual action
 budgets after it remain combat rules, not eight copies of a movement controller.
+
+Monster groups own their identification/counting knowledge on group entities.
+`GroupMember` is an immutable Bevy relationship; its reverse `GroupMembers`
+collection is maintained by the engine. Both groups and monsters are owned by
+the level independently, so deleting a group does not delete its members.
+Dormant records retain authored group IDs and knowledge, then rebind membership
+to fresh group entities. Character recognition history is a separate
+`MonsterKnowledge` component; recognition does not mutate profile/vitals data.
 
 ### NPC identity is not a promise of identical stats in both roles
 
@@ -316,3 +367,57 @@ because identification, curses and continuing effects also run outside a battle.
   has a direct representation.
 - New abstractions must eliminate a demonstrated problem. Prefer small enums and
   ordinary functions to a framework for hypothetical future mods.
+
+## Screen sessions and drafts
+
+Mutually exclusive screen state uses Bevy states. Entry creates a scoped root
+with its local selection, scroll/view data and input context; art can attach
+later without controlling whether the session exists. Explicit inventory exit
+returns the held item through the normal inventory operation before scoped
+cleanup. The held cursor overlay remains session-wide, including the world view.
+
+Automap typing is a separate input context. A draft carries its source level,
+placement, layer and text, and the expected old entry when editing. Enter submits
+it to the gameplay commit operation. Escape, changing tools, closing or leaving
+the level discard the draft. Persistent map notes never contain unfinished
+editing, and delayed confirmation cannot overwrite a changed vector entry.
+
+## Gameplay ordering and retained views
+
+The application composes common campaign resources, item notices, game-data
+loading and the screen state. Feature plugins register their own behavior.
+Within Update, equipment precedes level activation, then clock-requested
+perception, battle work and world input activation. Roster/authored ordering
+also defines random consumption within those operations. Cosmetic RNG remains
+independent.
+
+Battle start and round completion invoke group recognition synchronously with
+the actual battle participants and gameplay eye/facing. Clock requests carry
+the originating level entity; a departed level cannot redirect them. Required
+round recognition completes before a following action or battle removal takes
+effect. Damage makes actors ineligible for further attacks and navigation,
+including off-mesh links and a crossing already in progress.
+
+Main-screen and inventory controls persist through display changes. Concrete
+`Picture` and `BitmapText` components on actual UI entities describe their
+rendered sources, layout anchors and text alignment. Systems change their
+properties, visibility and bar geometry; font raster images remain cached.
+Tooltips read current health/knowledge even at a stationary pointer. Screen
+sessions still own lifecycle; these display sources are not gameplay copies.
+
+## Navigation importer and processor caching
+
+Retail's navigation loader converts OCT/PVL into typed `LevelCollision`.
+Gameplay navigation consumes those triangles and size class; it imports no
+retail sections, flags or byte cursor. Body metadata likewise loads independently
+of optional monster meshes, materials and animation cycles.
+
+The small synthetic navmesh input is retained for processor cache invalidation:
+its source bytes include both retail files and the size class. Replacing this
+with `LoadContext::read_asset_bytes` dependencies is not equivalent in the
+current source configuration. In Bevy 0.20, processor dependency reads require
+processed metadata with `ProcessedInfo.full_hash`; `retail://` deliberately
+serves raw assets through both readers and has no processed metadata. A direct
+substitution would fail to obtain that hash. Any later replacement must first
+prove invalidation/rebaking across both source files and bake settings. This is
+source-level evidence; a retail cache-rebake experiment has not been run.

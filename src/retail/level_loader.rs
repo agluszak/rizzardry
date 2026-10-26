@@ -280,10 +280,9 @@ fn item_placement(record: &WorldItemRecord) -> ItemPlacement {
     }
 }
 
-/// Every type 4 trigger of the level, attached to a prop or not, and their
-/// indices by name: retail looks names up ignoring case, and the newest
-/// trigger of a name wins.
-fn level_triggers(sections: &LevelSections) -> (Vec<TriggerDefinition>, HashMap<String, usize>) {
+/// Each embedded trigger has its own identity, even when names repeat.
+/// Only named recipients resolve to the last registered trigger of that name.
+fn level_triggers(sections: &LevelSections) -> (Vec<TriggerDefinition>, Vec<Option<usize>>) {
     let items: Vec<(&str, &ItemTrigger)> = sections
         .all_triggers()
         .filter_map(|trigger| match &trigger.kind {
@@ -295,7 +294,20 @@ fn level_triggers(sections: &LevelSections) -> (Vec<TriggerDefinition>, HashMap<
         items.iter().enumerate().map(|(i, (name, _))| (name.to_uppercase(), i)).collect();
     let definitions =
         items.iter().map(|(name, item)| trigger_definition(sections, name, item, &index)).collect();
-    (definitions, index)
+    let mut next = 0;
+    let props = sections
+        .props
+        .iter()
+        .chain(&sections.bitmaps)
+        .map(|prop| {
+            prop.trigger.as_ref().filter(|t| matches!(t.kind, TriggerKind::Item(_))).map(|_| {
+                let index = next;
+                next += 1;
+                index
+            })
+        })
+        .collect();
+    (definitions, props)
 }
 
 fn trigger_definition(
@@ -338,8 +350,8 @@ fn trigger_definition(
             .collect(),
         sound,
         sound_on_commit: item.play_sound,
-        required_states: item.required_states.clone(),
-        state_change: state_change.map(|change| (item.state_to_modify.clone(), change)),
+        required_states: item.required_states.iter().map(|name| name.as_str().into()).collect(),
+        state_change: state_change.map(|change| (item.state_to_modify.as_str().into(), change)),
         initial_state: item.initial_state,
         range: (item.range[0] / UNITS_PER_METRE, item.range[1] / UNITS_PER_METRE),
         door: item.door.as_ref().map(|door| DoorLock {
@@ -374,9 +386,11 @@ fn decode_action(
         0x03 => TriggerAction::Animate(Animation::Toggle),
         0x32 => TriggerAction::Animate(Animation::Start),
         0x33 => TriggerAction::Animate(Animation::Stop),
-        0x09 => first_recipient.map_or(TriggerAction::Unsupported(code), |path| {
-            TriggerAction::CameraPath(path.to_owned())
-        }),
+        0x09 => first_recipient
+            .and_then(|name| {
+                sections.cameras.iter().position(|camera| camera.name.eq_ignore_ascii_case(name))
+            })
+            .map_or(TriggerAction::Unsupported(code), TriggerAction::CameraPath),
         0x0f => TriggerAction::Relay,
         action::TELEPORT | action::RANDOM_TELEPORT => teleport_arrival(sections, item)
             .map_or(TriggerAction::Unsupported(code), TriggerAction::Teleport),
@@ -451,18 +465,17 @@ fn build_part(
 }
 
 /// Build placed props: their part meshes and materials, lit for their rest
-/// pose, and the trigger using them runs (by `trigger_index`).
+/// pose, with the identity of their own embedded trigger.
 pub(super) async fn build_props(
     context: &mut LoadContext<'_>,
-    source: impl Iterator<Item = &Prop>,
-    trigger_index: &HashMap<String, usize>,
+    source: impl Iterator<Item = (&Prop, Option<usize>)>,
     directory: &str,
     textures: &mut LoadedTextures,
     lighting: &PropLighting<'_>,
     animated_textures: &mut Vec<TextureAnimation>,
 ) -> Vec<PropModel> {
     let mut props = Vec::new();
-    for (prop_index, prop) in source.enumerate() {
+    for (prop_index, (prop, trigger)) in source.enumerate() {
         let mut parts = Vec::new();
         for (part_index, (part, (transform, keys))) in
             prop.detailed_parts().iter().zip(part_transforms(prop)).enumerate()
@@ -495,10 +508,6 @@ pub(super) async fn build_props(
                 collision: record_collision(record),
             });
         }
-        let trigger = prop.trigger.as_ref().and_then(|trigger| match &trigger.kind {
-            TriggerKind::Item(_) => trigger_index.get(&trigger.name.to_uppercase()).copied(),
-            _ => None,
-        });
         props.push(PropModel {
             name: prop.name.clone(),
             collidable: prop.flags & PROP_COLLIDABLE != 0,
@@ -599,12 +608,11 @@ impl AssetLoader for PvlLoader {
         let lighting = PropLighting { ambient, level: &level_lighting };
         let mut animated_textures: Vec<TextureAnimation> =
             materials.into_iter().filter_map(|m| m.animation).collect();
-        let (triggers, trigger_index) = level_triggers(&sections);
+        let (triggers, prop_triggers) = level_triggers(&sections);
         let props = sections.props.iter().chain(&sections.bitmaps);
         let props = build_props(
             context,
-            props,
-            &trigger_index,
+            props.zip(prop_triggers),
             directory,
             &mut textures,
             &lighting,
@@ -652,6 +660,78 @@ impl AssetLoader for PvlLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prop_bindings_use_records_while_named_links_use_registration_order() {
+        use crate::retail::trigger::Trigger;
+        let item = ItemTrigger {
+            flags: 0,
+            enabled: true,
+            fire_linked: false,
+            alternate_toggles: false,
+            initial_action: 1,
+            alternate_action: 0,
+            fallback_action: 0,
+            recipients: "SAME".into(),
+            data: [-1; 3],
+            sound: String::new(),
+            play_sound: false,
+            sound_volume: 100,
+            required_states: vec![],
+            state_to_modify: String::new(),
+            state_mode: StateMode::Keep,
+            initial_state: None,
+            action_data: String::new(),
+            range: [0.0, 5000.0],
+            placement: None,
+            door: None,
+        };
+        let trigger = Trigger { name: "SAME".into(), kind: TriggerKind::Item(item) };
+        let prop = Prop {
+            name: "prop".into(),
+            flags: 0,
+            face_camera: false,
+            wraps: false,
+            slots: vec![],
+            location: [0.0; 3],
+            frames_per_second: 10.0,
+            channels: Default::default(),
+            path: None,
+            trigger: Some(trigger.clone()),
+        };
+        let mut sections = LevelSections {
+            lights: vec![],
+            props: vec![prop.clone(), prop.clone()],
+            bitmaps: vec![prop],
+            cameras: vec![],
+            environment: None,
+            triggers: vec![],
+            camera_sway: false,
+            clip_planes: vec![],
+            environment_offset: [0.0; 3],
+            particles: vec![],
+            named_positions: vec![],
+            automap_cell_size: 0.0,
+            automap_cells: vec![],
+        };
+        let (definitions, props) = level_triggers(&sections);
+        assert_eq!(props, [Some(0), Some(1), Some(2)]);
+        assert!(definitions.iter().all(|d| d.recipients == [2]));
+        let mut standalone = trigger;
+        if let TriggerKind::Item(item) = &mut standalone.kind {
+            item.initial_action = 2;
+        }
+        sections.triggers.push(standalone);
+        let (definitions, props) = level_triggers(&sections);
+        assert_eq!(props, [Some(0), Some(1), Some(2)]);
+        assert_eq!(definitions.len(), 4);
+        assert!(definitions.iter().all(|d| d.recipients == [3]));
+        assert!(matches!(definitions[0].initial.action, TriggerAction::OpenDoor));
+        assert!(matches!(definitions[3].initial.action, TriggerAction::ToggleDoor));
+        assert!(
+            matches!(&sections.trigger("same").unwrap().kind, TriggerKind::Item(item) if item.initial_action == 2)
+        );
+    }
 
     #[test]
     fn frame_lists_end_at_the_first_short_line() {

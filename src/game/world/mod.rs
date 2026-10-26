@@ -1,7 +1,7 @@
 //! The active level and its local objects.
 
+pub mod damage;
 pub mod identify;
-pub mod interaction;
 pub mod items;
 pub mod level;
 pub mod navigation;
@@ -30,26 +30,21 @@ impl Plugin for WorldPlugin {
         app.add_plugins(navigation::NavigationPlugin)
             .add_message::<level::LevelReady>()
             .add_message::<level::Travel>()
-            .add_message::<interaction::WorldClick>()
-            .add_message::<crate::game::inventory::ItemNews>()
+            .add_message::<level::TravelAnswer>()
             .add_message::<search::ToggleSearch>()
             .add_message::<identify::DetectGroups>()
             .add_message::<identify::Identified>()
             .add_message::<search::SearchNews>()
             .init_resource::<search::Search>()
             .init_resource::<level::LevelMemory>()
-            .init_resource::<population::MonsterModels>()
-            .init_resource::<crate::game::rng::GameRng>()
-            .init_resource::<crate::game::inventory::ItemIds>()
-            .init_resource::<crate::game::inventory::PartyInventory>()
-            .add_systems(Startup, crate::game::data::load_game_data)
+            .init_resource::<population::MonsterBodies>()
             .add_message::<triggers::TriggerEffect>()
             // The level is swapped before anything builds on it this frame.
-            .add_systems(PreUpdate, level::travel)
+            .add_systems(PreUpdate, (level::answer_travel_questions, level::travel).chain())
             .add_systems(
                 Update,
                 (
-                    level::activate_level,
+                    level::activate_level.in_set(crate::game::GameplaySet::LevelActivation),
                     (
                         (
                             search::search_key.run_if(crate::game::screen::party_free),
@@ -57,7 +52,8 @@ impl Plugin for WorldPlugin {
                             search::search_pulse,
                         )
                             .chain(),
-                        identify::detect_monster_groups,
+                        identify::detect_monster_groups
+                            .in_set(crate::game::GameplaySet::Perception),
                     )
                         .run_if(level::level_active)
                         .after(level::activate_level),
