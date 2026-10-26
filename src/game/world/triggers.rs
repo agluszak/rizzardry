@@ -1348,6 +1348,26 @@ mod tests {
     }
 
     #[test]
+    fn environmental_damage_finishes_a_waiting_battle_before_returning() {
+        let mut level = Scenario::new(
+            vec![trigger("LETHAL", TriggerAction::HurtParty(Dice { base: 10000, ..default() }))],
+            &[],
+            LevelScript::None,
+        );
+        level.world.insert_resource(crate::game::combat::Battle::default());
+        assert!(level.run("LETHAL").0);
+        assert!(!level.world.contains_resource::<crate::game::combat::Battle>());
+        assert_eq!(
+            level
+                .world
+                .resource_mut::<Messages<crate::game::combat::CombatNews>>()
+                .drain()
+                .collect::<Vec<_>>(),
+            [crate::game::combat::CombatNews::Lost]
+        );
+    }
+
+    #[test]
     fn fountains_restore_until_dry_and_refill_with_game_time() {
         let fountain = Fountain {
             restores: Restores::Health,

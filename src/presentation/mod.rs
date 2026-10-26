@@ -138,7 +138,9 @@ impl Plugin for PresentationPlugin {
                     (ambience::place_ambient_sounds, ambience::play_ambient_sounds).chain(),
                     notices::queue_notices.after(selection::activate_selection),
                     (dialog::close_ended_questions, dialog::show_travel_question).chain(),
-                    effects::shake_camera.after(party_view::aim_camera),
+                    effects::shake_camera
+                        .after(party_view::aim_camera)
+                        .before(selection::select_world_target),
                     sky::orbit_sun_and_moon,
                     voice::finish_speech,
                     (

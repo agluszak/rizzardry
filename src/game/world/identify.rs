@@ -4,6 +4,7 @@
 //! name ("Ironskin Crocodiles"). Every group seen adds its members to each
 //! seer's count of that kind, once.
 
+use crate::game::world::ActorPose;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
@@ -120,7 +121,7 @@ pub struct GroupRecognition<'w, 's> {
         's,
         (Entity, &'static mut MonsterGroup, Option<&'static GroupMembers>, &'static ChildOf),
     >,
-    monsters: Query<'w, 's, (&'static Monster, &'static GlobalTransform)>,
+    monsters: Query<'w, 's, (&'static Monster, ActorPose)>,
     level: PlayedLevel<'w, 's>,
     roster: Res<'w, PartyRoster>,
     members: Query<'w, 's, (&'static Character, &'static Vitals, &'static mut MonsterKnowledge)>,
@@ -327,7 +328,9 @@ mod tests {
                 conditions: vec![],
                 body: ScaledBody { scale: 1.0, radius: 1.0, eye_height: 1.0, speed: 0.0 },
             },
-            GlobalTransform::from_translation(Vec3::new(0.0, 0.0, -10.0)),
+            Transform::from_translation(Vec3::splat(1000.0)),
+            GlobalTransform::from_translation(Vec3::splat(2000.0)),
+            Position(Vec3::new(0.0, 0.0, -10.0)),
             GroupMember(group),
             ChildOf(root),
         ));
@@ -342,7 +345,7 @@ mod tests {
             .spawn((
                 crate::presentation::party_view::PartyCamera,
                 Projection::Perspective(PerspectiveProjection { far: 1000.0, ..default() }),
-                GlobalTransform::from_translation(Vec3::splat(1000.0)),
+                Transform::from_translation(Vec3::splat(1000.0)),
             ))
             .id();
         app.finish();

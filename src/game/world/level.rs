@@ -244,12 +244,7 @@ pub struct LevelContents<'w, 's> {
     monsters: Query<
         'w,
         's,
-        (
-            &'static Monster,
-            &'static Transform,
-            Option<&'static Walker>,
-            Option<&'static GroupMember>,
-        ),
+        (&'static Monster, super::ActorPose, Option<&'static Walker>, Option<&'static GroupMember>),
     >,
     items: Query<'w, 's, (&'static WorldItem, &'static Transform)>,
     groups: Query<'w, 's, &'static MonsterGroup>,
@@ -272,8 +267,8 @@ impl LevelContents<'_, '_> {
                 .map(|(monster, at, walker, group)| KeptMonster {
                     group: group.and_then(|m| self.groups.get(m.0).ok()).map(|g| g.authored),
                     monster: monster.clone(),
-                    feet: super::navigation::feet(at.translation, walker),
-                    yaw: at.rotation.to_euler(EulerRot::YXZ).0,
+                    feet: super::navigation::feet(at.translation(), walker),
+                    yaw: at.rotation().to_euler(EulerRot::YXZ).0,
                 })
                 .collect(),
             items: children

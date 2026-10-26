@@ -13,6 +13,30 @@ pub mod triggers;
 
 use bevy::prelude::*;
 
+/// A borrowed gameplay pose, never a second position cache. Physics owns an
+/// embodied actor's pose; before embodiment its level-local placement is current.
+/// Gameplay level roots have identity transforms.
+#[derive(bevy::ecs::query::QueryData)]
+pub struct ActorPose {
+    transform: &'static Transform,
+    position: Option<&'static avian3d::prelude::Position>,
+    rotation: Option<&'static avian3d::prelude::Rotation>,
+}
+
+impl ActorPoseItem<'_, '_> {
+    pub fn translation(&self) -> Vec3 {
+        self.position.map_or(self.transform.translation, |position| position.0)
+    }
+
+    pub fn rotation(&self) -> Quat {
+        self.rotation.map_or(self.transform.rotation, |rotation| rotation.0)
+    }
+
+    pub fn forward(&self) -> Vec3 {
+        self.rotation() * Vec3::NEG_Z
+    }
+}
+
 /// The highest step the party and walking monsters climb: 300 retail units
 /// (0.6 m).
 ///

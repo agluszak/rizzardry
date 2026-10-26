@@ -6,6 +6,7 @@
 pub mod approach;
 pub mod attack;
 
+use crate::game::world::ActorPose;
 use crate::game::world::level::PlayedLevel;
 use crate::game::world::navigation::{Walker, feet};
 use avian3d::prelude::{Position, RigidBody, SpatialQuery, SpatialQueryFilter};
@@ -269,7 +270,7 @@ pub fn start_battle(
     mut party: Query<(&Position, &mut PartyBody)>,
     level: PlayedLevel,
     members: Query<(&Character, &Vitals)>,
-    monsters: Query<(Entity, &Monster, &GlobalTransform, Option<&Walker>)>,
+    monsters: Query<(Entity, &Monster, ActorPose, Option<&Walker>)>,
     spatial: SpatialQuery,
     bodies: Query<&RigidBody>,
     data: Option<Res<GameData>>,
@@ -667,7 +668,7 @@ fn monster_acts(
     rng: &mut GameRng,
     roster: &PartyRoster,
     members: &mut Query<(&mut Character, &mut Vitals, &Carried)>,
-    monsters: &Query<(&mut Monster, &GlobalTransform, Option<&Walker>, &ChildOf)>,
+    monsters: &Query<(&mut Monster, ActorPose, Option<&Walker>, &ChildOf)>,
     party: &PartyView,
     formation: &mut ResMut<Formation>,
     items: &ItemCatalog,
@@ -747,7 +748,7 @@ fn end_round(
     rng: &mut GameRng,
     roster: &PartyRoster,
     members: &mut Query<(&mut Character, &mut Vitals, &Carried)>,
-    monsters: &Query<(&mut Monster, &GlobalTransform, Option<&Walker>, &ChildOf)>,
+    monsters: &Query<(&mut Monster, ActorPose, Option<&Walker>, &ChildOf)>,
     news: &mut MessageWriter<CombatNews>,
 ) {
     // The round's time passes now, with its meaning: conditions age and
@@ -932,7 +933,7 @@ mod tests {
                     conditions: vec![],
                     body: ScaledBody { scale: 1.0, radius: 1.0, eye_height: 1.0, speed: 0.0 },
                 },
-                GlobalTransform::from_translation(Vec3::NEG_Z),
+                Transform::from_translation(Vec3::NEG_Z),
                 ChildOf(root),
             ))
             .id();
@@ -983,7 +984,7 @@ mod tests {
         let outsider = app.world().get::<Monster>(monster).unwrap().clone();
         app.world_mut().spawn((
             outsider,
-            GlobalTransform::from_translation(Vec3::NEG_Z),
+            Transform::from_translation(Vec3::NEG_Z),
             GroupMember(outsider_group),
             ChildOf(level),
         ));

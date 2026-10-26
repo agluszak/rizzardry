@@ -5,6 +5,7 @@
 //! round (advance and charge); here they close in continuously, a
 //! deliberate simplification until those actions exist.
 
+use crate::game::world::ActorPose;
 use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy_landmass::prelude::*;
@@ -91,7 +92,7 @@ pub fn embody_fighters(
 pub fn close_in(
     mut battle: Option<ResMut<Battle>>,
     party: Query<(Entity, &Position), With<PartyBody>>,
-    mut walkers: Query<(Entity, &Monster, &GlobalTransform, &Walker, &mut AgentTarget3d)>,
+    mut walkers: Query<(Entity, &Monster, ActorPose, &Walker, &mut AgentTarget3d)>,
     data: Option<Res<GameData>>,
     species: Res<Assets<MonsterCatalog>>,
 ) {

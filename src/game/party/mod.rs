@@ -48,7 +48,10 @@ impl Plugin for PartyPlugin {
             (
                 roster::give_starting_equipment.in_set(crate::game::GameplaySet::Equipment),
                 (
-                    body::look_around.run_if(party_free),
+                    body::look_around
+                        .run_if(party_free)
+                        .after(crate::game::GameplaySet::LevelActivation)
+                        .before(crate::game::GameplaySet::Perception),
                     (
                         camp::request_camp.run_if(party_free),
                         camp::force_camp,

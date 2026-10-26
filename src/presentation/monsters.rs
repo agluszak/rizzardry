@@ -138,8 +138,10 @@ pub fn follow_float_height(
     mut roots: Query<(&ChildOf, &mut Transform), With<ModelRoot>>,
 ) {
     for (owner, mut transform) in &mut roots {
-        if let Ok(walker) = actors.get(owner.parent()) {
-            transform.translation = Vec3::NEG_Y * walker.float_height;
+        let offset =
+            actors.get(owner.parent()).map_or(Vec3::ZERO, |w| Vec3::NEG_Y * w.float_height);
+        if transform.translation != offset {
+            transform.translation = offset;
         }
     }
 }
