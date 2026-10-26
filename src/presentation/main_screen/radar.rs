@@ -29,7 +29,7 @@ pub fn panel(art: &MainScreenArt, sheets: &Assets<SpriteSheet>) -> impl SceneLis
         -- @{cone}
         -- @layer() RadarBlips
         -- @{rim} RadarRim UiTransform
-        -- disc_area bevy::ui_widgets::Button bevy::input_focus::tab_navigation::TabIndex(0)
+        -- disc_area bevy::ui_widgets::Button bevy::input_focus::tab_navigation::TabIndex(0) super::HudFocus Outline::new(px(1),px(1),Color::NONE)
             on(|_: On<Activate>, mut open: MessageWriter<OpenAutomap>| {
                 open.write(OpenAutomap);
             })

@@ -46,6 +46,7 @@ impl Plugin for MainScreenPlugin {
             .add_systems(
                 PreUpdate,
                 keys::hold_main_screen_keys
+                    .after(InputFocusSystems::Dispatch)
                     .before(bevy_enhanced_input::EnhancedInputSystems::Update),
             )
             .add_systems(PreUpdate, route_hud_focus.before(InputFocusSystems::Dispatch))
@@ -66,6 +67,7 @@ impl Plugin for MainScreenPlugin {
                             .after(crate::game::world::search::search_pulse),
                         formation::draw_formation,
                         bank::draw_bank,
+                        paint_focus,
                         bank::draw_caption,
                         bank::show_round_progress,
                     ),
@@ -190,12 +192,42 @@ fn layer() -> impl Scene {
 
 /// A sheet's frame that is a button: it catches the pointer.
 fn button(sheet: &SpriteSheet, frame: usize, at: Vec2) -> impl Scene + use<> {
-    bsn! { @{sprite(sheet, frame, at)} Button TabIndex(0) Pickable::default() }
+    bsn! { @{sprite(sheet, frame, at)} Button TabIndex(0) HudFocus Outline::new(px(1),px(1),Color::NONE) Pickable::default() }
 }
 
 /// The screen's root, with the layout its frame was built for.
 #[derive(Component, Clone, Default)]
 pub struct MainScreen(ScreenLayout);
+
+#[derive(Component, Clone, Default)]
+pub(super) struct HudFocus;
+
+fn paint_focus(
+    focus: Res<InputFocus>,
+    visible: Res<bevy::input_focus::InputFocusVisible>,
+    mut controls: Query<(Entity, &mut Outline), With<HudFocus>>,
+) {
+    for (entity, mut outline) in &mut controls {
+        let color = if visible.0 && focus.get() == Some(entity) {
+            Color::srgb(0.83, 0.68, 0.4)
+        } else {
+            Color::NONE
+        };
+        if outline.color != color {
+            outline.color = color;
+        }
+    }
+}
+
+fn leave_hud_focus(
+    mut event: On<bevy::input_focus::FocusedInput<bevy::input::keyboard::KeyboardInput>>,
+    mut focus: ResMut<InputFocus>,
+) {
+    if event.input.state.is_pressed() && event.input.key_code == KeyCode::Escape {
+        event.propagate(false);
+        focus.clear();
+    }
+}
 
 /// Other screens own keyboard navigation while covering the HUD. A modal tab
 /// group is excluded from global navigation, without hiding the visible HUD.
@@ -203,7 +235,7 @@ fn route_hud_focus(
     screen: Res<State<crate::game::screen::Screen>>,
     next: Res<NextState<crate::game::screen::Screen>>,
     questions: Query<(), With<crate::game::world::level::TravelQuestion>>,
-    mut roots: Query<(Entity, &mut TabGroup), With<MainScreen>>,
+    roots: Query<Entity, With<MainScreen>>,
     parents: Query<&ChildOf>,
     mut focus: ResMut<InputFocus>,
 ) {
@@ -211,10 +243,7 @@ fn route_hud_focus(
     let active = *screen.get() == Screen::World
         && matches!(*next, NextState::Unchanged | NextState::Pending(Screen::World))
         && questions.is_empty();
-    for (root, mut group) in &mut roots {
-        if group.modal == active {
-            group.modal = !active;
-        }
+    for root in &roots {
         if !active && focus.get().is_some_and(|e| parents.iter_ancestors(e).any(|p| p == root)) {
             focus.clear();
         }
@@ -297,7 +326,8 @@ fn build_frame(
     commands.spawn_scene(bsn! {
         @centred()
         MainScreen({layout.clone()})
-        TabGroup::default()
+        TabGroup::modal()
+        on(leave_hud_focus)
         GlobalZIndex(-5)
         Pickable::IGNORE
         Children [

@@ -73,7 +73,7 @@ fn bank_button(
     let frames = Frames::from(frames);
     bsn! {
         @picture(default(),0,at)
-        bevy::ui_widgets::Button bevy::input_focus::tab_navigation::TabIndex(0) Pickable::default()
+        bevy::ui_widgets::Button bevy::input_focus::tab_navigation::TabIndex(0) super::HudFocus Outline::new(px(1),px(1),Color::NONE) Pickable::default()
         template(move |_| Ok(BankFace {kind,sheet:sheet.clone(),frames}))
         on(press)
     }

@@ -91,7 +91,7 @@ pub fn draw_text_box(
                 let at = Vec2::new(461.0, if down { 429.0 } else { 363.0 });
                 bsn! {
                     @picture(art.text_scroll.clone(), if down { 8 } else { 0 }, at)
-                    template(move |_| Ok(Scroll { down })) Button TabIndex(0) Pickable::default()
+                    template(move |_| Ok(Scroll { down })) Button TabIndex(0) super::HudFocus Outline::new(px(1),px(1),Color::NONE) Pickable::default()
                     on(move |_: On<Activate>, mut log: ResMut<TextLog>| {
                         if down && log.can_scroll().1 { log.scroll_down(1); }
                         else if !down && log.can_scroll().0 { log.scroll_up(1); }
@@ -104,7 +104,7 @@ pub fn draw_text_box(
             .map(|(channel, y)| {
                 bsn! {
                     template(move |_| Ok(absolute(Vec2::new(140.0, y), Vec2::new(24.0, 16.0))))
-                    Tab
+                    Tab super::HudFocus Outline::new(px(1),px(1),Color::NONE)
                     template(move |_| Ok(Channel(channel)))
                 }
             })
@@ -113,7 +113,7 @@ pub fn draw_text_box(
             bsn_list! {
                 @picture(art.textbox_tabs.clone(), 0, Vec2::new(138.0, 360.0)) Tabs
                 -- {text} -- {arrows}
-                -- @layer() TabList::default() Channels on(select_channel) Children [ {channels} ]
+                -- @layer() TabList { orientation: bevy::ui_widgets::ControlOrientation::Vertical, ..default() } Channels on(select_channel) Children [ {channels} ]
                 -- @picture(art.text_scroll.clone(), 4, Vec2::new(461.0, 379.0)) Thumb
             },
         );
