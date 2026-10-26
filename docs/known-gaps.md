@@ -297,3 +297,8 @@ for that earlier revision only. These are local checks, not CI results.
 Automap uses Tab/Shift+Tab to navigate controls while open; Escape closes it.
 Tab still opens it from the world. This intentionally replaces the old Tab-to-close
 binding so native keyboard control navigation is available.
+
+Name and map-note editing use Bevy native text input (including selection and IME).
+Map notes retain retail bitmap glyphs; their input filter still limits committed
+text to that font’s supported characters and the retail note length. OS clipboard
+and platform IME verification require an interactive display.

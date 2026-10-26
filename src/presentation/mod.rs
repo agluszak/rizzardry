@@ -80,7 +80,6 @@ impl Plugin for PresentationPlugin {
         .init_resource::<PresentationRng>()
         .add_input_context::<automap::MapKey>()
         .add_input_context::<automap::AutomapScreen>()
-        .add_input_context::<automap::NoteEditing>()
         .add_systems(OnEnter(crate::game::screen::Screen::Automap), automap::enter_automap)
         .add_systems(
             PreUpdate,
@@ -134,7 +133,8 @@ impl Plugin for PresentationPlugin {
                     automap::close_ended_map,
                     automap::request_automap,
                     automap::build_automap,
-                    automap::type_note,
+                    automap::sync_note_input,
+                    automap::draw_note_input,
                     automap::paint_buttons,
                     automap::update_map_view,
                     automap::draw_notes,

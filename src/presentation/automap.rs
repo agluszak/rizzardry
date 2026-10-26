@@ -7,6 +7,10 @@
 //! geometry, while the current native map shows all walkable surfaces. Notes are pinned with the Add note
 //! tool, typed in the retail text font, and erased with Erase note.
 
+mod note_input;
+pub use note_input::{draw_note_input, sync_note_input};
+
+#[cfg(test)]
 use bevy::input::ButtonState;
 use bevy::input::keyboard::KeyboardInput;
 use bevy::input_focus::tab_navigation::{TabGroup, TabIndex};
@@ -307,7 +311,6 @@ pub fn enter_automap(
         @centred()
         AutomapScreen
         TabGroup::default()
-        NoteEditing
         BackgroundColor(Color::BLACK)
         ContextPriority::<AutomapScreen>::new(1)
         Actions<AutomapScreen> [
@@ -326,59 +329,21 @@ pub fn enter_automap(
                 map.centre_on(point);
             }
         })
-        ContextPriority::<NoteEditing>::new(2)
-        ContextActivity::<NoteEditing>::new(false)
-        Actions<NoteEditing> [
-            Action::<ConfirmNote>::new() ActionSettings { consume_input: true } Bindings [ Binding(KeyCode::Enter) ]
-            -- Action::<CancelNote>::new() ActionSettings { consume_input: true } Bindings [ Binding(KeyCode::Escape) ]
-            -- Action::<EraseLetter>::new() ActionSettings { consume_input: true } Bindings [ Binding(KeyCode::Backspace) ]
-        ]
-        on(confirm_note)
-        on(|_: On<Start<CancelNote>>, map: Option<Single<&mut Automap>>| { if let Some(mut map) = map { map.editing = None; } })
-        on(|_: On<Start<EraseLetter>>, map: Option<Single<&mut Automap>>| { if let Some(mut map) = map && let Some(draft) = map.editing.as_mut() { draft.note.text.pop(); } })
     }).insert((map, DespawnOnExit(Screen::Automap)));
 }
 
-#[derive(Component, Clone, Default)]
-pub struct NoteEditing;
-#[derive(InputAction)]
-#[action_output(bool)]
-struct ConfirmNote;
-#[derive(InputAction)]
-#[action_output(bool)]
-struct CancelNote;
-#[derive(InputAction)]
-#[action_output(bool)]
-struct EraseLetter;
 #[derive(Component)]
 pub struct AutomapBuilt;
-
-fn confirm_note(
-    _: On<Start<ConfirmNote>>,
-    map: Option<Single<&mut Automap>>,
-    mut commands: Commands,
-) {
-    if let Some(mut map) = map
-        && let Some(draft) = map.editing.take()
-    {
-        commands.queue(move |world: &mut World| {
-            let _ = crate::game::automap::commit_note(world, draft);
-        });
-    }
-}
 
 /// Typing focus changes input routing, independently of simulation activity.
 pub fn route_map_keys(
     mut commands: Commands,
-    maps: Query<(Entity, &Automap, &ContextActivity<AutomapScreen>, &ContextActivity<NoteEditing>)>,
+    maps: Query<(Entity, &Automap, &ContextActivity<AutomapScreen>)>,
 ) {
-    for (entity, map, map_keys, note_keys) in &maps {
+    for (entity, map, map_keys) in &maps {
         let typing = map.editing.is_some();
         if **map_keys == typing {
             commands.entity(entity).insert(ContextActivity::<AutomapScreen>::new(!typing));
-        }
-        if **note_keys != typing {
-            commands.entity(entity).insert(ContextActivity::<NoteEditing>::new(typing));
         }
     }
 }
@@ -667,8 +632,13 @@ fn click_map(
     click: On<PointerClick>,
     map: Option<Single<&mut Automap>>,
     mut levels: Query<&mut MapNotes>,
+    mut commands: Commands,
+    editors: Query<Entity, With<note_input::NoteInput>>,
 ) {
     let (Some(mut map), Some(hit)) = (map, click.hit.position) else { return };
+    for editor in &editors {
+        commands.entity(editor).despawn();
+    }
     use bevy::picking::pointer::PointerButton;
     if click.button == PointerButton::Secondary {
         map.editing = None;
@@ -708,22 +678,6 @@ fn click_map(
                 map.zoom_in(point);
             }
         }
-    }
-}
-
-pub fn type_note(mut keys: MessageReader<KeyboardInput>, map: Option<Single<&mut Automap>>) {
-    let incoming: String = keys
-        .read()
-        .filter(|key| key.state == ButtonState::Pressed)
-        .flat_map(|key| key.text.iter().flat_map(|text| text.chars()))
-        .collect();
-    if incoming.is_empty() {
-        return;
-    }
-    let Some(mut map) = map else { return };
-    let Some(draft) = map.editing.as_mut() else { return };
-    for c in incoming.chars() {
-        draft.note.type_char(c);
     }
 }
 
@@ -773,7 +727,7 @@ pub fn draw_notes(
         ));
         // Retail keeps the marker visible on other layers, but only labels
         // and selects notes on the current layer.
-        if note.layer != automap.layer || (note.text.is_empty() && !editing) {
+        if editing || note.layer != automap.layer || note.text.is_empty() {
             continue;
         }
         let label = font.text_image(&note.text);

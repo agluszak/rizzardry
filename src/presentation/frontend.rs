@@ -4,18 +4,18 @@ use crate::content::characters::{Attribute, Gender, Profession, Skill};
 use crate::game::characters::creation::{CharacterDraft, PLAYABLE_RACES};
 use crate::game::party::{formation::Formation, roster::PartyRoster};
 use crate::game::session::{NewGameDestination, Session, begin_adventure};
-use bevy::input::{
-    ButtonState,
-    keyboard::{Key, KeyboardInput},
-};
+#[cfg(test)]
+use bevy::input::ButtonState;
+use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::input_focus::{
     InputFocus,
     tab_navigation::{TabGroup, TabIndex, TabNavigationPlugin},
 };
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
+use bevy::text::{EditableText, EditableTextFilter, TextEditChange};
 use bevy::ui::{InteractionDisabled, Pressed};
-use bevy::ui_widgets::{Activate, Button as UiButton};
+use bevy::ui_widgets::{Activate, Button as UiButton, TextInput};
 use enumset::EnumSet;
 
 pub struct FrontendPlugin;
@@ -25,7 +25,7 @@ impl Plugin for FrontendPlugin {
             .add_observer(activate)
             .add_systems(OnEnter(Session::MainMenu), main_menu)
             .add_systems(OnEnter(Session::Creation), creation)
-            .add_systems(Update, (type_name, refresh, button_colours).chain());
+            .add_systems(Update, (refresh, button_colours).chain());
     }
 }
 
@@ -61,7 +61,6 @@ enum Action {
     Cancel,
     Finish,
     Begin,
-    Name,
     Race(i32),
     Gender,
     Profession(i32),
@@ -72,7 +71,6 @@ enum Action {
 #[derive(Component)]
 enum Field {
     Slot(usize),
-    Name,
     Race,
     Gender,
     Profession,
@@ -84,6 +82,8 @@ enum Field {
 }
 #[derive(Component)]
 struct PreviewPortrait;
+#[derive(Component)]
+struct NameInput;
 
 fn text(
     commands: &mut Commands,
@@ -266,15 +266,27 @@ fn creation(mut commands: Commands, assets: Res<AssetServer>) {
             }
             Page::Identity => {
                 text(&mut commands, panel, (0., 0.), 320., 20., "01 / Identity");
-                let field = button(
-                    &mut commands,
-                    panel,
-                    (0., 43.),
-                    260.,
-                    "Click to enter a name",
-                    Action::Name,
-                );
-                commands.entity(field).insert(Field::Name);
+                commands
+                    .spawn((
+                        NameInput,
+                        TextInput,
+                        bevy::text::TextCursorStyle::default(),
+                        TabIndex(0),
+                        EditableText {
+                            max_characters: Some(24),
+                            allow_newlines: false,
+                            ..EditableText::new("")
+                        },
+                        EditableTextFilter::new(|c| !c.is_control()),
+                        TextFont { font_size: 11.0.into(), ..default() },
+                        TextColor(PAPER),
+                        absolute(Vec2::new(0.0, 43.0), Vec2::new(260.0, 27.0)),
+                        BackgroundColor(PANEL),
+                        BorderColor::all(GOLD),
+                        ChildOf(panel),
+                    ))
+                    .observe(update_name)
+                    .observe(finish_name);
                 for (y, title, previous, next, field) in [
                     (87., "Race", Action::Race(-1), Action::Race(1), Field::Race),
                     (128., "Gender", Action::Gender, Action::Gender, Field::Gender),
@@ -456,6 +468,7 @@ fn activate(
     mut formation: ResMut<Formation>,
     assets: Res<AssetServer>,
     destination: Res<NewGameDestination>,
+    mut names: Query<&mut EditableText, With<NameInput>>,
 ) {
     let Ok(action) = buttons.get(click.entity) else { return };
     if matches!(
@@ -601,41 +614,52 @@ fn activate(
             }
         }
     }
-}
-
-fn type_name(
-    mut keys: MessageReader<KeyboardInput>,
-    mut sessions: Query<&mut Creation>,
-    mut focus: ResMut<InputFocus>,
-    actions: Query<&Action>,
-) {
-    for key in keys.read().filter(|k| k.state == ButtonState::Pressed) {
-        let Ok(mut session) = sessions.single_mut() else { continue };
-        if !focus.get().and_then(|e| actions.get(e).ok()).is_some_and(|a| matches!(a, Action::Name))
-            || session.page != Page::Identity
-        {
-            continue;
-        }
-        if key.logical_key == Key::Enter || key.logical_key == Key::Escape {
-            focus.clear();
-            continue;
-        }
-        let Some((_, draft)) = session.editing.as_mut() else { continue };
-        if key.logical_key == Key::Backspace {
-            draft.name.pop();
-        } else if let Some(value) = &key.text {
-            for c in value.chars().filter(|c| !c.is_control()) {
-                if draft.name.chars().count() < 24 {
-                    draft.name.push(c);
-                }
-            }
+    if matches!(*action, Action::Add | Action::Edit(_))
+        && let Some((_, draft)) = &session.editing
+    {
+        for mut name in &mut names {
+            *name = EditableText {
+                max_characters: Some(24),
+                allow_newlines: false,
+                ..EditableText::new(&draft.name)
+            };
         }
     }
 }
+
+fn update_name(
+    event: On<TextEditChange>,
+    names: Query<&EditableText, With<NameInput>>,
+    mut sessions: Query<&mut Creation>,
+) {
+    let (Ok(name), Ok(mut session)) = (names.get(event.event_target()), sessions.single_mut())
+    else {
+        return;
+    };
+    if let Some((_, draft)) = session.editing.as_mut() {
+        let value = name.value().to_string();
+        if draft.name != value {
+            draft.name = value;
+        }
+    }
+}
+
+fn finish_name(
+    event: On<bevy::input_focus::FocusedInput<KeyboardInput>>,
+    names: Query<&EditableText, With<NameInput>>,
+    mut focus: ResMut<InputFocus>,
+) {
+    if event.input.state.is_pressed()
+        && event.input.logical_key == Key::Enter
+        && names.get(event.original_event_target()).is_ok_and(|name| !name.is_composing())
+    {
+        focus.clear();
+    }
+}
+
 fn refresh(
     sessions: Query<Ref<Creation>>,
     focus: Res<InputFocus>,
-    actions: Query<&Action>,
     mut commands: Commands,
     mut buttons: Query<(Entity, &Action, Has<InteractionDisabled>, &mut TabIndex)>,
     mut pages: Query<(&Page, &mut Node, &mut Visibility), Without<SkillRow>>,
@@ -648,8 +672,6 @@ fn refresh(
     if !session.is_changed() && !focus.is_changed() {
         return;
     }
-    let name_focus =
-        focus.get().and_then(|e| actions.get(e).ok()).is_some_and(|a| matches!(a, Action::Name));
     for (page, mut node, mut visibility) in &mut pages {
         let display = if *page == session.page { Display::Flex } else { Display::None };
         if node.display != display {
@@ -702,11 +724,6 @@ fn refresh(
             _ => {
                 let (Some(draft), Some(profile)) = (draft, &profile) else { continue };
                 match field {
-                    Field::Name => format!(
-                        "{}{}",
-                        if draft.name.is_empty() { "Click to enter a name" } else { &draft.name },
-                        if name_focus { " |" } else { "" }
-                    ),
                     Field::Race => format!("{:?}", draft.race()),
                     Field::Gender => format!("{:?}", draft.gender()),
                     Field::Profession => format!("{:?}", draft.profession()),
@@ -835,6 +852,68 @@ mod keyboard_tests {
     }
 
     #[test]
+    fn native_name_edits_update_only_the_working_draft() {
+        use bevy::text::{FontCx, LayoutCx, TextEdit, apply_text_edits};
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<FontCx>()
+            .init_resource::<LayoutCx>()
+            .init_resource::<bevy::clipboard::Clipboard>()
+            .add_systems(Update, apply_text_edits);
+        let root = app
+            .world_mut()
+            .spawn(Creation {
+                party: vec![],
+                editing: Some((None, CharacterDraft::default())),
+                page: Page::Identity,
+                message: String::new(),
+            })
+            .id();
+        let field = app
+            .world_mut()
+            .spawn((NameInput, EditableText { max_characters: Some(24), ..EditableText::new("A") }))
+            .observe(update_name)
+            .id();
+        for edit in [TextEdit::SelectAll, TextEdit::Insert("Nora".into())] {
+            app.world_mut().get_mut::<EditableText>(field).unwrap().queue_edit(edit);
+        }
+        app.update();
+        assert_eq!(
+            app.world().get::<Creation>(root).unwrap().editing.as_ref().unwrap().1.name,
+            "Nora"
+        );
+        for edit in
+            [TextEdit::TextStart(false), TextEdit::Right(true), TextEdit::Insert("Z".into())]
+        {
+            app.world_mut().get_mut::<EditableText>(field).unwrap().queue_edit(edit);
+        }
+        app.update();
+        assert_eq!(
+            app.world().get::<Creation>(root).unwrap().editing.as_ref().unwrap().1.name,
+            "Zora"
+        );
+        app.world_mut()
+            .get_mut::<EditableText>(field)
+            .unwrap()
+            .queue_edit(TextEdit::ImeSetCompose { value: "é".into(), cursor: None });
+        app.update();
+        assert_eq!(
+            app.world().get::<Creation>(root).unwrap().editing.as_ref().unwrap().1.name,
+            "Zora"
+        );
+        app.world_mut()
+            .get_mut::<EditableText>(field)
+            .unwrap()
+            .queue_edit(TextEdit::ImeCommit { value: "é".into() });
+        app.update();
+        assert_eq!(
+            app.world().get::<Creation>(root).unwrap().editing.as_ref().unwrap().1.name,
+            "Zéora"
+        );
+        assert!(app.world().get::<Creation>(root).unwrap().party.is_empty());
+    }
+
+    #[test]
     fn frontend_can_reenter_tab_navigation_after_page_and_name_changes() {
         let mut app = App::new();
         app.add_plugins((
@@ -845,6 +924,7 @@ mod keyboard_tests {
             InputFocusPlugin,
             InputDispatchPlugin,
             ButtonPlugin,
+            bevy::ui_widgets::TextInputPlugin,
             bevy::camera::visibility::VisibilityPlugin,
         ))
         .init_state::<Session>()
@@ -879,9 +959,9 @@ mod keyboard_tests {
         assert!(app.world().get::<InheritedVisibility>(focused).unwrap().get());
         let name = app
             .world_mut()
-            .query::<(Entity, &Action)>()
+            .query_filtered::<Entity, With<NameInput>>()
             .iter(app.world())
-            .find_map(|(e, a)| matches!(a, Action::Name).then_some(e))
+            .next()
             .unwrap();
         app.world_mut()
             .resource_mut::<InputFocus>()
