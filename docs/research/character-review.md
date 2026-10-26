@@ -105,7 +105,11 @@ fixture had no equipment, and the implementation does not yet draw the ovals.
 The original's party-assembly review
 is a pre-game state: its pool and party portraits differ from the in-game
 implementation fixture, and its skills do not use the in-game best-skill
-highlight. Those differences must not be treated as layout regressions.
+highlight. Its item scrollbar also displays enabled arrows and a thumb before
+the game starts. In game, retail rebuilds the pool list and enables the scrollbar
+only when more than eight items are visible; the empty in-game fixture therefore
+shows disabled arrows and no thumb. Those state differences must not be treated
+as layout regressions.
 
 The original reached its main menu, character creator, party assembly and all
 four review pages. It crashed when proceeding into the 3D world in this guest,
