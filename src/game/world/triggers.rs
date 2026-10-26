@@ -19,6 +19,7 @@ use super::scripts::{BellButton, LevelScript};
 use crate::content::items::{Dice, ItemCatalog, LootTables};
 use crate::content::level::{
     Fountain, LevelGeometry, Restores, StateChange, TriggerAction, TriggerDefinition, TriggerUse,
+    VariableName,
 };
 use crate::game::characters::Character;
 use crate::game::data::GameData;
@@ -38,9 +39,6 @@ pub struct Device {
     pub level: Entity,
     pub definition: usize,
     pub recipients: Vec<Entity>,
-    required_states: Vec<usize>,
-    state_change: Option<(usize, StateChange)>,
-    dial_states: Vec<usize>,
 }
 
 /// Authored traversal order, resolved once per visit; not an owner of device state.
@@ -50,20 +48,21 @@ pub struct PositionedDevices(Vec<Entity>);
 /// Only level-wide variables and visit state live on the level.
 #[derive(Component, Debug, Default)]
 pub struct LevelState {
-    variables: Vec<(String, bool)>,
+    variables: HashMap<VariableName, bool>,
     entered: bool,
 }
 
 impl LevelState {
-    // Activation resolves names; normal execution reads/writes the level's value by key.
-    fn resolve(&mut self, name: &str, initial: bool) -> usize {
-        let name = name.to_uppercase();
-        if let Some(key) = self.variables.iter().position(|(n, _)| *n == name) {
-            return key;
+    fn variable(&self, name: &VariableName) -> bool {
+        self.variables.get(name).copied().unwrap_or(false)
+    }
+
+    fn set_variable(&mut self, name: &VariableName, value: bool) {
+        if let Some(stored) = self.variables.get_mut(name) {
+            *stored = value;
+        } else {
+            self.variables.insert(name.clone(), value);
         }
-        let key = self.variables.len();
-        self.variables.push((name, initial));
-        key
     }
 }
 
@@ -120,7 +119,7 @@ pub struct DeviceProximity {
 #[derive(Debug, Default)]
 pub struct TriggerMemory {
     devices: HashMap<usize, KeptDevice>,
-    variables: HashMap<String, bool>,
+    variables: HashMap<VariableName, bool>,
 }
 
 #[derive(Debug)]
@@ -178,7 +177,7 @@ impl DeviceRecords<'_, '_> {
                 )
             })
             .collect();
-        TriggerMemory { devices, variables: state.variables.iter().cloned().collect() }
+        TriggerMemory { devices, variables: state.variables.clone() }
     }
 }
 
@@ -205,39 +204,27 @@ pub fn spawn_devices(
         .into_iter()
         .map(|prop| prop.unwrap_or_else(|| commands.spawn(ChildOf(level)).id()))
         .collect();
-    let restored = memory.is_some();
     let mut state = LevelState::default();
     if let Some(memory) = &mut memory {
-        state.variables = std::mem::take(&mut memory.variables).into_iter().collect();
+        state.variables = std::mem::take(&mut memory.variables);
     } else {
         for definition in &geometry.triggers {
             if let (Some((name, _)), Some(value)) =
                 (&definition.state_change, definition.initial_state)
             {
-                state.resolve(name, value);
+                state.variables.entry(name.clone()).or_insert(value);
             }
         }
-    }
-    let mut dial_states = vec![Vec::new(); geometry.triggers.len()];
-    for prop in &geometry.props {
-        let Some(index) = prop.trigger else { continue };
-        let definition = &geometry.triggers[index];
-        let Some((name, _)) = &definition.state_change else { continue };
-        if std::iter::once(&definition.initial)
-            .chain(definition.alternate.iter())
-            .chain(definition.fallback.iter())
-            .any(|action| matches!(action.action, TriggerAction::Dial))
-        {
-            dial_states[index] = (0..prop.slots.len().max(1))
-                .map(|position| {
-                    state.resolve(
-                        &format!("{name}{position}"),
-                        !restored
-                            && position == 0
-                            && matches!(definition.initial.action, TriggerAction::Dial),
-                    )
-                })
-                .collect();
+        for prop in &geometry.props {
+            let Some(index) = prop.trigger else { continue };
+            let definition = &geometry.triggers[index];
+            if let (TriggerAction::Dial, Some((name, _))) =
+                (&definition.initial.action, &definition.state_change)
+            {
+                for position in 0..prop.slots.len() {
+                    state.variables.entry(name.numbered(position)).or_insert(position == 0);
+                }
+            }
         }
     }
     let mut positioned = PositionedDevices::default();
@@ -249,16 +236,6 @@ pub fn spawn_devices(
                 level,
                 definition: index,
                 recipients: definition.recipients.iter().map(|&i| devices[i]).collect(),
-                required_states: definition
-                    .required_states
-                    .iter()
-                    .map(|name| state.resolve(name, false))
-                    .collect(),
-                state_change: definition
-                    .state_change
-                    .as_ref()
-                    .map(|(name, change)| (state.resolve(name, false), *change)),
-                dial_states: std::mem::take(&mut dial_states[index]),
             },
             TriggerState {
                 on: kept.as_ref().is_none_or(|k| k.on),
@@ -521,7 +498,7 @@ fn select_use<'a>(
     {
         return None;
     }
-    if !actor.get::<Device>()?.required_states.iter().all(|&key| variables.variables[key].1) {
+    if !definition.required_states.iter().all(|name| variables.variable(name)) {
         return definition.fallback.as_ref();
     }
     if let Some(mut door) = actor.get_mut::<DoorState>()
@@ -573,9 +550,13 @@ fn animate_device(mut device: EntityMut, animation: crate::content::level::Anima
     device.get_mut::<TriggerState>().unwrap().awaits_animation = true;
 }
 
-fn turn_dial(mut actor: EntityMut, mut level: Mut<LevelState>) -> bool {
-    let Ok((device, mut dial, prop, mut motion)) =
-        actor.get_components_mut::<(&Device, &mut DialState, &Prop, &mut PropMotion)>()
+fn turn_dial(
+    mut actor: EntityMut,
+    mut level: Mut<LevelState>,
+    variable: Option<&VariableName>,
+) -> bool {
+    let Ok((mut dial, prop, mut motion)) =
+        actor.get_components_mut::<(&mut DialState, &Prop, &mut PropMotion)>()
     else {
         return false;
     };
@@ -591,9 +572,9 @@ fn turn_dial(mut actor: EntityMut, mut level: Mut<LevelState>) -> bool {
     if old != next {
         dial.position = next;
     }
-    if !device.dial_states.is_empty() {
-        level.variables[device.dial_states[old]].1 = false;
-        level.variables[device.dial_states[next]].1 = true;
+    if let Some(name) = variable {
+        level.set_variable(&name.numbered(old), false);
+        level.set_variable(&name.numbered(next), true);
     }
     true
 }
@@ -710,7 +691,11 @@ fn execute(world: &mut World, geometry: &LevelGeometry, entity: Entity, depth: u
         }
         TriggerAction::Dial => {
             let [actor, mut owner] = world.get_entity_mut([entity, level]).unwrap();
-            if !turn_dial(actor, owner.get_mut::<LevelState>().unwrap()) {
+            if !turn_dial(
+                actor,
+                owner.get_mut::<LevelState>().unwrap(),
+                definition.state_change.as_ref().map(|(name, _)| name),
+            ) {
                 return false;
             }
         }
@@ -725,16 +710,15 @@ fn execute(world: &mut World, geometry: &LevelGeometry, entity: Entity, depth: u
     if definition.fire_linked {
         execute_links(world, geometry, entity, depth);
     }
-    if changes_state && let Some((key, change)) = world.get::<Device>(entity).unwrap().state_change
-    {
+    if changes_state && let Some((name, change)) = &definition.state_change {
         let mut state = world.get_mut::<LevelState>(level).unwrap();
         let value = match change {
             StateChange::Set => true,
             StateChange::Clear => false,
-            StateChange::Toggle => !state.variables[key].1,
+            StateChange::Toggle => !state.variable(name),
         };
-        if state.variables[key].1 != value {
-            state.variables[key].1 = value;
+        if state.variable(name) != value {
+            state.set_variable(name, value);
         }
     }
     if let Some(message) = chosen.message {
@@ -1037,13 +1021,7 @@ mod tests {
         }
 
         fn variable(&self, name: &str) -> bool {
-            self.world
-                .get::<LevelState>(self.root)
-                .unwrap()
-                .variables
-                .iter()
-                .find(|(n, _)| n.eq_ignore_ascii_case(name))
-                .is_some_and(|(_, value)| *value)
+            self.world.get::<LevelState>(self.root).unwrap().variable(&name.into())
         }
 
         fn remember(&mut self) -> TriggerMemory {
