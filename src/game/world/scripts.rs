@@ -63,10 +63,6 @@ impl BellButton {
             triggers.get_mut(self.dial).unwrap().on = false;
             triggers.get_mut(button).unwrap().on = false;
         }
-        TriggerEffect::Sound {
-            path: format!("data/sound/ambients/mon2bell{}.wav", position + 1),
-            volume: 1.0,
-            at: None,
-        }
+        TriggerEffect::BellRang(position + 1)
     }
 }

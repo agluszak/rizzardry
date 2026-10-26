@@ -17,8 +17,7 @@ use super::props::{Prop, PropMotion};
 use super::scripts::{BellButton, LevelScript};
 use crate::content::items::{Dice, ItemCatalog, LootTables};
 use crate::content::level::{
-    Animation, Fountain, LevelGeometry, Restores, StateChange, TriggerAction, TriggerDefinition,
-    TriggerUse,
+    Fountain, LevelGeometry, Restores, StateChange, TriggerAction, TriggerDefinition, TriggerUse,
 };
 use crate::game::characters::Character;
 use crate::game::data::GameData;
@@ -88,9 +87,38 @@ pub struct DoorState {
     pub locked: bool,
 }
 
+impl DoorState {
+    // Keep Bevy's change tracking: refusing an operation must not mark state changed.
+    fn set_open(mut door: Mut<Self>, open: bool, prop: &Prop, mut motion: Mut<PropMotion>) -> bool {
+        if door.locked || motion.frame != motion.target || door.open == open {
+            return false;
+        }
+        door.open = open;
+        motion.target = if open { prop.last_frame as f32 } else { 0.0 };
+        true
+    }
+}
+
 #[derive(Component, Clone, Debug, Default)]
 pub struct DialState {
     pub position: usize,
+}
+
+impl DialState {
+    fn advance(mut dial: Mut<Self>, prop: &Prop, mut motion: Mut<PropMotion>) -> usize {
+        let next = if prop.slots.len() < 3 {
+            0
+        } else {
+            let next = (dial.position + 1) % (prop.slots.len() - 1);
+            motion.frame = f32::from(prop.slots[next]);
+            motion.target = f32::from(prop.slots[next + 1]);
+            next
+        };
+        if dial.position != next {
+            dial.position = next;
+        }
+        next
+    }
 }
 
 #[derive(Component, Debug)]
@@ -306,6 +334,101 @@ pub fn spawn_devices(
     devices
 }
 
+impl Container {
+    // Lazy generation and partial placement belong to the contents' owner.
+    fn open(
+        mut container: Mut<Self>,
+        catalog: &ItemCatalog,
+        loot: &LootTables,
+        party: &mut PartyInventory,
+        ids: &mut ItemIds,
+        rng: &mut GameRng,
+        outcomes: &mut MessageWriter<TriggerEffect>,
+    ) {
+        let Some(table) = container.table else { return };
+        let contents = container.contents.get_or_insert_with(|| {
+            let (found, gold) = roll_loot(&loot.0[table], catalog, 1, rng);
+            let items = found
+                .into_iter()
+                .filter_map(|id| catalog.get(id))
+                .map(|d| make_item(d, ids, rng, false, false))
+                .collect();
+            Contents { items, gold }
+        });
+        if contents.gold > 0 {
+            party.gold += contents.gold;
+            outcomes.write(TriggerEffect::Gold(contents.gold));
+            contents.gold = 0;
+        }
+        let mut kept = Vec::new();
+        for item in contents.items.drain(..) {
+            let name = catalog.get(item.item).map(|d| d.name.clone()).unwrap_or_default();
+            match party.place_in_pool(item, catalog) {
+                Ok(()) => {
+                    outcomes.write(TriggerEffect::PartyTakes(name));
+                }
+                Err(item) => kept.push(item),
+            }
+        }
+        contents.items = kept;
+    }
+}
+
+fn damage_party(
+    roster: &PartyRoster,
+    members: &mut Query<&mut Character>,
+    dice: Dice,
+    rng: &mut GameRng,
+    outcomes: &mut MessageWriter<TriggerEffect>,
+) {
+    for entity in roster.0.iter() {
+        let Ok(member) = members.get(*entity) else { continue };
+        if member.is_dead() {
+            continue;
+        }
+        let mut member = members.get_mut(*entity).unwrap();
+        let amount = member.damage(rng.roll(dice));
+        outcomes.write(TriggerEffect::Hurt { member: member.name.clone(), amount });
+    }
+}
+
+fn drink_fountain(
+    mut state: Mut<FountainState>,
+    fountain: &Fountain,
+    now: u64,
+    roster: &PartyRoster,
+    members: &mut Query<&mut Character>,
+) -> bool {
+    // A dry fountain is assessed without marking it changed.
+    if state.used.is_some_and(|s| s.left == Some(0) && !s.refills_at.is_some_and(|at| at <= now)) {
+        return false;
+    }
+    let state = state.used.get_or_insert(FountainUses { left: fountain.uses, refills_at: None });
+    if state.refills_at.is_some_and(|at| at <= now) {
+        *state = FountainUses { left: fountain.uses, refills_at: None };
+    }
+    if let Some(left) = &mut state.left {
+        if *left == 0 {
+            return false;
+        }
+        *left -= 1;
+        if state.refills_at.is_none() {
+            state.refills_at = fountain.refills_after.map(|after| now + after);
+        }
+    }
+    for entity in roster.0.iter() {
+        if !members.get(*entity).is_ok_and(|m| !m.is_dead()) {
+            continue;
+        }
+        let mut member = members.get_mut(*entity).unwrap();
+        match fountain.restores {
+            Restores::Health => member.heal(fountain.amount),
+            Restores::Stamina => member.restore_stamina(fountain.amount),
+        }
+    }
+    true
+}
+
 /// Something presentation shows after triggers ran.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum TriggerEffect {
@@ -332,6 +455,10 @@ pub enum TriggerEffect {
     /// An item went to the party ("Party takes %s").
     PartyTakes(String),
     Gold(u32),
+    FountainUsed {
+        at: Option<Vec3>,
+    },
+    BellRang(usize),
     Locked,
 }
 
@@ -348,8 +475,9 @@ pub enum PartyMove {
 #[derive(Resource, Debug, Default)]
 pub struct PendingPartyMove(pub Option<(Entity, PartyMove)>);
 
-/// Focused ECS access for synchronous operations. Queries stay queries: merely
-/// assessing a device never extracts mutable props or party members.
+/// Cross-device coordination needs the union of possible action inputs. Local
+/// door, animation, container and party operations receive only their own inputs;
+/// no domain operation retains this parameter or borrows unrelated components.
 #[derive(SystemParam)]
 pub struct DeviceOperations<'w, 's> {
     levels: Query<'w, 's, (&'static Level, &'static mut LevelState), Without<Departing>>,
@@ -384,10 +512,12 @@ impl<'w, 's> DeviceOperations<'w, 's> {
         Some(movement)
     }
 
-    fn ready(&self) -> bool {
-        self.data
-            .as_ref()
-            .is_some_and(|d| self.catalogs.contains(&d.items) && self.loot.contains(&d.loot))
+    fn ready(&self, entity: Entity) -> bool {
+        !self.containers.contains(entity)
+            || self
+                .data
+                .as_ref()
+                .is_some_and(|d| self.catalogs.contains(&d.items) && self.loot.contains(&d.loot))
     }
 
     fn definition(&self, entity: Entity) -> Option<&'w TriggerDefinition> {
@@ -409,7 +539,7 @@ impl<'w, 's> DeviceOperations<'w, 's> {
         let Some(definition) = self.definition(entity) else { return false };
         if !self.usable(entity)
             || !(definition.range.0..=definition.range.1).contains(&distance)
-            || !self.ready()
+            || !self.ready(entity)
         {
             return false;
         }
@@ -421,13 +551,10 @@ impl<'w, 's> DeviceOperations<'w, 's> {
     }
 
     pub fn run(&mut self, entity: Entity) -> bool {
-        self.ready() && self.run_device(entity, 0)
+        self.run_device(entity, 0)
     }
 
     pub fn walk(&mut self, eye: Vec3, elapsed: Duration) {
-        if !self.ready() {
-            return;
-        }
         let Ok((level, positioned)) = self.positioned.single_inner() else { return };
         let Ok((_, mut state)) = self.levels.get_mut(level) else { return };
         let first = !state.entered;
@@ -455,7 +582,13 @@ impl<'w, 's> DeviceOperations<'w, 's> {
                 false
             };
             if hurt {
-                self.damage_party(Dice { count: 1, sides: 6, base: 2 });
+                damage_party(
+                    &self.roster,
+                    &mut self.members,
+                    Dice { count: 1, sides: 6, base: 2 },
+                    &mut self.rng,
+                    &mut self.effects,
+                );
             }
             if entering && !first && self.party_move.0.is_none() && self.usable(entity) {
                 self.run_device(entity, 0);
@@ -535,6 +668,9 @@ impl<'w, 's> DeviceOperations<'w, 's> {
     }
 
     fn run_device(&mut self, entity: Entity, depth: usize) -> bool {
+        if !self.ready(entity) {
+            return false;
+        }
         let Some(definition) = self.definition(entity) else { return false };
         if depth > MAX_DEPTH {
             warn!("trigger {} recurses too deeply", definition.name);
@@ -558,39 +694,32 @@ impl<'w, 's> DeviceOperations<'w, 's> {
                 if self.playing(entity) {
                     return false;
                 }
-                let Ok((prop, mut motion)) = self.props.get_mut(entity) else { return false };
-                let mut door = self.doors.get_mut(entity).unwrap();
-                if *action == TriggerAction::OpenDoor && door.open {
+                let Ok((prop, motion)) = self.props.get_mut(entity) else { return false };
+                let door = self.doors.get_mut(entity).unwrap();
+                let open = *action == TriggerAction::OpenDoor || !door.open;
+                if !DoorState::set_open(door, open, prop, motion) {
                     return false;
                 }
-                door.open = *action == TriggerAction::OpenDoor || !door.open;
-                motion.target = if door.open { prop.last_frame as f32 } else { 0.0 };
                 self.states.get_mut(entity).unwrap().awaits_animation = true;
             }
             TriggerAction::Animate(animation) => {
                 if !self.props.contains(entity) {
                     return false;
                 }
-                self.open_container(entity);
-                let (prop, mut motion) = self.props.get_mut(entity).unwrap();
-                let playing = motion.frame != motion.target;
-                match animation {
-                    Animation::Toggle if playing => motion.target = motion.frame,
-                    Animation::Toggle | Animation::Start if !playing => {
-                        if prop.wraps {
-                            motion.frame = 0.0;
-                            motion.target = prop.last_frame as f32;
-                        } else {
-                            motion.target = if motion.frame >= prop.last_frame as f32 {
-                                0.0
-                            } else {
-                                prop.last_frame as f32
-                            };
-                        }
-                    }
-                    Animation::Stop if playing => motion.target = motion.frame,
-                    _ => {}
+                if let Ok(container) = self.containers.get_mut(entity) {
+                    let data = self.data.as_ref().unwrap();
+                    Container::open(
+                        container,
+                        self.catalogs.get(&data.items).unwrap(),
+                        self.loot.get(&data.loot).unwrap(),
+                        &mut self.party,
+                        &mut self.ids,
+                        &mut self.rng,
+                        &mut self.effects,
+                    );
                 }
+                let (prop, motion) = self.props.get_mut(entity).unwrap();
+                PropMotion::activate(motion, prop, *animation);
                 if let Ok(mut door) = self.doors.get_mut(entity) {
                     door.open = !door.open;
                 }
@@ -621,11 +750,24 @@ impl<'w, 's> DeviceOperations<'w, 's> {
             TriggerAction::CameraPath(path) => {
                 self.party_move.0 = Some((level, PartyMove::Fly(path.clone())));
             }
-            TriggerAction::HurtParty(dice) => self.damage_party(*dice),
+            TriggerAction::HurtParty(dice) => damage_party(
+                &self.roster,
+                &mut self.members,
+                *dice,
+                &mut self.rng,
+                &mut self.effects,
+            ),
             TriggerAction::Fountain(fountain) => {
-                if !self.use_fountain(entity, fountain) {
+                if !drink_fountain(
+                    self.fountains.get_mut(entity).unwrap(),
+                    fountain,
+                    self.clock.ms,
+                    &self.roster,
+                    &mut self.members,
+                ) {
                     return false;
                 }
+                self.effects.write(TriggerEffect::FountainUsed { at: self.sound_position(entity) });
             }
             TriggerAction::DamageZone => {
                 if let Ok(mut proximity) = self.proximity.get_mut(entity) {
@@ -637,20 +779,10 @@ impl<'w, 's> DeviceOperations<'w, 's> {
                 self.effects.write(TriggerEffect::Shake { seconds, intensity, fade_out });
             }
             TriggerAction::Dial => {
-                let Ok((prop, mut motion)) = self.props.get_mut(entity) else { return false };
-                let mut dial = self.dials.get_mut(entity).unwrap();
+                let Ok((prop, motion)) = self.props.get_mut(entity) else { return false };
+                let dial = self.dials.get_mut(entity).unwrap();
                 let old = dial.position;
-                let new = if prop.slots.len() < 3 {
-                    0
-                } else {
-                    let next = (old + 1) % (prop.slots.len() - 1);
-                    motion.frame = f32::from(prop.slots[next]);
-                    motion.target = f32::from(prop.slots[next + 1]);
-                    next
-                };
-                if old != new {
-                    dial.position = new;
-                }
+                let new = DialState::advance(dial, prop, motion);
                 if !device.dial_states.is_empty() {
                     let (_, mut state) = self.levels.get_mut(level).unwrap();
                     state.variables[device.dial_states[old]].1 = false;
@@ -696,102 +828,13 @@ impl<'w, 's> DeviceOperations<'w, 's> {
         }
         true
     }
-
-    fn damage_party(&mut self, dice: Dice) {
-        for entity in self.roster.0.iter() {
-            let Ok(member) = self.members.get(*entity) else { continue };
-            if member.is_dead() {
-                continue;
-            }
-            let mut member = self.members.get_mut(*entity).unwrap();
-            let amount = member.damage(self.rng.roll(dice));
-            self.effects.write(TriggerEffect::Hurt { member: member.name.clone(), amount });
-        }
-    }
-
-    fn use_fountain(&mut self, entity: Entity, fountain: &Fountain) -> bool {
-        let mut state = self.fountains.get_mut(entity).unwrap();
-        let now = self.clock.ms;
-        // A dry fountain is assessed without marking it changed.
-        if state
-            .used
-            .is_some_and(|s| s.left == Some(0) && !s.refills_at.is_some_and(|at| at <= now))
-        {
-            return false;
-        }
-        let state =
-            state.used.get_or_insert(FountainUses { left: fountain.uses, refills_at: None });
-        if state.refills_at.is_some_and(|at| at <= now) {
-            *state = FountainUses { left: fountain.uses, refills_at: None };
-        }
-        if let Some(left) = &mut state.left {
-            if *left == 0 {
-                return false;
-            }
-            *left -= 1;
-            if state.refills_at.is_none() {
-                state.refills_at = fountain.refills_after.map(|after| now + after);
-            }
-        }
-        for entity in self.roster.0.iter() {
-            if !self.members.get(*entity).is_ok_and(|m| !m.is_dead()) {
-                continue;
-            }
-            let mut member = self.members.get_mut(*entity).unwrap();
-            match fountain.restores {
-                Restores::Health => member.heal(fountain.amount),
-                Restores::Stamina => member.restore_stamina(fountain.amount),
-            }
-        }
-        let at = self.sound_position(entity);
-        self.effects.write(TriggerEffect::Sound {
-            path: "data/sound/misc/fountain_magic.wav".into(),
-            volume: 1.0,
-            at,
-        });
-        true
-    }
-
-    fn open_container(&mut self, entity: Entity) {
-        let Ok(container) = self.containers.get(entity) else { return };
-        let Some(table) = container.table else { return };
-        let data = self.data.as_ref().unwrap();
-        let catalog = self.catalogs.get(&data.items).unwrap();
-        let loot = self.loot.get(&data.loot).unwrap();
-        let mut container = self.containers.get_mut(entity).unwrap();
-        let contents = container.contents.get_or_insert_with(|| {
-            let (found, gold) = roll_loot(&loot.0[table], catalog, 1, &mut self.rng);
-            let items = found
-                .into_iter()
-                .filter_map(|id| catalog.get(id))
-                .map(|d| make_item(d, &mut self.ids, &mut self.rng, false, false))
-                .collect();
-            Contents { items, gold }
-        });
-        if contents.gold > 0 {
-            self.party.gold += contents.gold;
-            self.effects.write(TriggerEffect::Gold(contents.gold));
-            contents.gold = 0;
-        }
-        let mut kept = Vec::new();
-        for item in contents.items.drain(..) {
-            let name = catalog.get(item.item).map(|d| d.name.clone()).unwrap_or_default();
-            match self.party.place_in_pool(item, catalog) {
-                Ok(()) => {
-                    self.effects.write(TriggerEffect::PartyTakes(name));
-                }
-                Err(item) => kept.push(item),
-            }
-        }
-        contents.items = kept;
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::content::items::{ItemDefinition, ItemId, LootTable};
-    use crate::content::level::{Arrival, DoorLock, PropModel, TriggerSound};
+    use crate::content::level::{Animation, Arrival, DoorLock, PropModel, TriggerSound};
     use crate::game::characters::{Gender, Profession, Race};
     use crate::game::inventory::Held;
 
@@ -1190,21 +1233,13 @@ mod tests {
         )
     }
 
-    fn bell_sound(n: u32) -> TriggerEffect {
-        TriggerEffect::Sound {
-            path: format!("data/sound/ambients/mon2bell{n}.wav"),
-            volume: 1.0,
-            at: None,
-        }
-    }
-
     #[test]
     fn each_dial_position_rings_its_own_bell() {
         let mut level = bells();
         assert!(level.variable("RING0"));
         let (committed, effects) = level.run("BELL_BUTTON");
         assert!(committed);
-        assert_eq!(effects, [bell_sound(1)]);
+        assert_eq!(effects, [TriggerEffect::BellRang(1)]);
         assert_eq!(level.motion("BELL_1").target, 36.0);
         assert_eq!(level.motion("BELL_2").target, 0.0);
         level.settle();
@@ -1215,7 +1250,7 @@ mod tests {
             (1.0, 10.0)
         );
         level.settle();
-        assert_eq!(level.run("BELL_BUTTON").1, [bell_sound(2)]);
+        assert_eq!(level.run("BELL_BUTTON").1, [TriggerEffect::BellRang(2)]);
         assert_eq!(level.motion("BELL_2").target, 36.0);
         assert_eq!(level.motion("GLASS1").target, 0.0, "the windows hold until the third bell");
     }
@@ -1229,7 +1264,7 @@ mod tests {
         level.settle();
         let (committed, effects) = level.run("BELL_BUTTON");
         assert!(committed);
-        assert_eq!(effects[0], bell_sound(3));
+        assert_eq!(effects[0], TriggerEffect::BellRang(3));
         let shake = TriggerEffect::Shake { seconds: 2.4, intensity: 90.0, fade_out: true };
         assert!(effects.contains(&shake));
         assert_eq!(level.motion("GLASS1").target, 2.0);
@@ -1254,7 +1289,7 @@ mod tests {
         let mut motion = level.world.get_mut::<PropMotion>(button).unwrap();
         motion.frame = motion.target;
         let bell = level.motion("BELL_1").frame;
-        assert_eq!(level.run("BELL_BUTTON").1, [bell_sound(1)]);
+        assert_eq!(level.run("BELL_BUTTON").1, [TriggerEffect::BellRang(1)]);
         assert_eq!(level.motion("BELL_1").frame, bell);
         assert_eq!(level.motion("BELL_1").target, 36.0);
     }
@@ -1400,12 +1435,23 @@ mod tests {
             level.world.query_filtered::<Entity, Changed<LevelState>>().iter(&level.world).count(),
             0
         );
+        level.settle();
+        level.world.clear_trackers();
+        assert!(!level.run("DOOR").0, "opening an open door is a no-op");
+        assert_eq!(
+            level
+                .world
+                .query_filtered::<Entity, Or<(Changed<DoorState>, Changed<PropMotion>)>>()
+                .iter(&level.world)
+                .count(),
+            0
+        );
     }
 
     #[test]
     fn relay_recipients_complete_in_order_before_the_senders_commit() {
         let mut first = trigger("FIRST", TriggerAction::Nothing);
-        first.state_change = Some(("READY".into(), StateChange::Set));
+        first.state_change = Some(("rEaDy".into(), StateChange::Set));
         first.initial.message = Some(1);
         let mut second = trigger("SECOND", TriggerAction::Nothing);
         second.required_states.push("READY".into());
@@ -1425,6 +1471,9 @@ mod tests {
                 ]
             )
         );
+        let memory = level.remember();
+        level.visit(Some(memory));
+        assert_eq!(level.run("SECOND").1, [TriggerEffect::Message(2)]);
     }
 
     #[test]
@@ -1460,17 +1509,20 @@ mod tests {
     }
 
     #[test]
-    fn missing_catalogs_and_departed_levels_cannot_partially_run_a_device() {
-        let mut definition = trigger("DOOR", TriggerAction::OpenDoor);
-        definition.alternate = Some(act(TriggerAction::ToggleDoor));
+    fn only_loot_operations_require_catalogs_and_departed_devices_cannot_run() {
+        let mut door = trigger("DOOR", TriggerAction::OpenDoor);
+        door.alternate = Some(act(TriggerAction::ToggleDoor));
+        let mut chest = trigger("CHEST", TriggerAction::Animate(Animation::Toggle));
+        chest.loot_table = Some("Loot".into());
         let mut level = Scenario::new(
-            vec![definition],
-            &[PropSpec("DOOR", 10.0, false, &[])],
+            vec![door, chest],
+            &[PropSpec("DOOR", 10.0, false, &[]), PropSpec("CHEST", 5.0, false, &[])],
             LevelScript::None,
         );
         let data = level.world.remove_resource::<GameData>().unwrap();
+        assert!(level.run("DOOR").0, "door state does not depend on loot catalogs");
         level.world.clear_trackers();
-        assert!(!level.run("DOOR").0);
+        assert!(!level.run("CHEST").0);
         assert_eq!(
             level
                 .world
@@ -1480,11 +1532,12 @@ mod tests {
             0
         );
         level.world.insert_resource(data);
+        level.settle();
         level.world.entity_mut(level.root).insert(Departing);
         assert!(!level.run("DOOR").0);
         level.world.entity_mut(level.root).remove::<Departing>();
         assert!(level.run("DOOR").0);
-        assert_eq!(level.motion("DOOR").target, 10.0);
+        assert_eq!(level.motion("DOOR").target, 0.0);
     }
 
     #[test]

@@ -35,7 +35,6 @@ pub fn act_on_click(
         MessageWriter<ItemNews>,
     ),
 ) {
-    let Some(catalog) = data.and_then(|d| catalogs.get(&d.items)) else { return };
     for click in clicks.read() {
         if let Some((entity, name, device, distance)) =
             click.under.and_then(|(e, d)| props.get(e).ok().map(|(n, device)| (e, n, device, d)))
@@ -55,6 +54,9 @@ pub fn act_on_click(
         {
             let tell = &mut |n| {
                 news.write(n);
+            };
+            let Some(catalog) = data.as_ref().and_then(|d| catalogs.get(&d.items)) else {
+                continue;
             };
             if take_item(&mut item, distance, &mut inventory, catalog, tell) {
                 commands.entity(entity).despawn();

@@ -4,6 +4,7 @@
 use bevy::prelude::*;
 
 use super::level::PropPart;
+use crate::content::level::Animation;
 
 /// A placed prop. Its parts are children carrying [`PropPart`].
 #[derive(Component, Debug)]
@@ -29,6 +30,29 @@ pub struct Prop {
 pub struct PropMotion {
     pub frame: f32,
     pub target: f32,
+}
+
+impl PropMotion {
+    pub fn activate(mut motion: Mut<Self>, prop: &Prop, animation: Animation) {
+        let playing = motion.frame != motion.target;
+        match animation {
+            Animation::Toggle if playing => motion.target = motion.frame,
+            Animation::Toggle | Animation::Start if !playing => {
+                if prop.wraps {
+                    motion.frame = 0.0;
+                    motion.target = prop.last_frame as f32;
+                } else {
+                    motion.target = if motion.frame >= prop.last_frame as f32 {
+                        0.0
+                    } else {
+                        prop.last_frame as f32
+                    };
+                }
+            }
+            Animation::Stop if playing => motion.target = motion.frame,
+            _ => {}
+        }
+    }
 }
 
 /// The pose at a fractional `frame` along `keys`.

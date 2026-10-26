@@ -70,6 +70,22 @@ instances. Bevy `Entity` identifies a current runtime entity; it is not a save
 identifier. Resolve persistent references after all target entities have been
 created. A derived ID-to-entity lookup is an index, not another actor database.
 
+## Live devices
+
+A prop-backed device is the prop entity, not a second object linked back to it.
+Duplicate authored names do not merge identities; only named links select the
+last registered matching record. Activation resolves entity links, the level's
+ordered positioned-device index and location-variable keys. Values remain on the
+level; names are needed for activation and dormant records, not each action.
+
+Trigger execution sequences local door/animation, container and party operations
+and linked commits synchronously. Those operations accept only the state they
+change and the definitions they need, not the entire execution parameter. Bevy's
+outer system access is still the union needed by arbitrary linked actions.
+Presentation interprets outcomes such as a fountain use or a bell ringing; it does
+not complete required mutations. Dormant device contents and variables move back
+into live components after destination preparation succeeds.
+
 ## Entities and components
 
 | Entity | Proposed state | Why it is an entity |

@@ -280,6 +280,8 @@ pub fn queue_notices(
                 Some(format!("{} {gold} {}.", string(GOLD_BEFORE), string(GOLD_AFTER)))
             }
             TriggerEffect::Sound { .. }
+            | TriggerEffect::FountainUsed { .. }
+            | TriggerEffect::BellRang(_)
             | TriggerEffect::Shake { .. }
             | TriggerEffect::Hurt { .. } => None,
         };
