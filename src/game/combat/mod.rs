@@ -44,14 +44,7 @@ impl Plugin for CombatPlugin {
             .init_resource::<CombatSettings>()
             .add_systems(
                 Update,
-                (
-                    settle_defeat,
-                    start_battle,
-                    run_battle,
-                    settle_defeat,
-                    approach::embody_fighters,
-                    approach::close_in,
-                )
+                (settle_defeat, start_battle, run_battle, settle_defeat, approach::close_in)
                     .chain()
                     .in_set(crate::game::GameplaySet::Combat)
                     .run_if(crate::game::world::level::level_active),

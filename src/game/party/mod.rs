@@ -44,7 +44,7 @@ impl Plugin for PartyPlugin {
                 roster::give_starting_equipment.in_set(crate::game::GameplaySet::Equipment),
                 body::look_around
                     .after(crate::game::GameplaySet::LevelActivation)
-                    .before(crate::game::GameplaySet::Perception)
+                    .before(crate::game::GameplaySet::Combat)
                     .run_if(level_active),
             ),
         )

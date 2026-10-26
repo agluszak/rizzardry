@@ -140,12 +140,12 @@ impl Plugin for PresentationPlugin {
                         .chain(),
                 ),
             )
+            .add_systems(PostUpdate, sky::follow_with_sky_camera.before(bevy::transform::TransformSystems::Propagate))
             .add_systems(
                 Update,
                 (
                     textures::animate_level_textures,
                     environment::apply_environment,
-                    sky::follow_with_sky_camera.after(party_view::aim_camera),
                     sky::shade_clouds,
                     (sky::request_skies, sky::build_sky).chain(),
                     (environment::request_level_visuals, environment::attach_level_visuals).chain(),
@@ -160,7 +160,6 @@ impl Plugin for PresentationPlugin {
                     (
                         monsters::choose_walker_cycles,
                         monsters::show_deaths,
-                        monsters::follow_float_height,
                         monsters::request_monster_visuals,
                         monsters::build_monster_instances,
                         monsters::animate_monsters,

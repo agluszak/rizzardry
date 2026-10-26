@@ -56,7 +56,6 @@ impl Plugin for WorldPlugin {
             .add_message::<level::Travel>()
             .add_message::<level::TravelAnswer>()
             .add_message::<search::ToggleSearch>()
-            .add_message::<identify::DetectGroups>()
             .add_message::<identify::Identified>()
             .add_message::<search::SearchNews>()
             .init_resource::<search::Search>()
@@ -69,11 +68,8 @@ impl Plugin for WorldPlugin {
                 Update,
                 (
                     level::activate_level.in_set(crate::game::GameplaySet::LevelActivation),
-                    (
-                        (search::toggle_search, search::search_pulse).chain(),
-                        identify::detect_monster_groups
-                            .in_set(crate::game::GameplaySet::Perception),
-                    )
+                    (search::toggle_search, search::search_pulse)
+                        .chain()
                         .run_if(level::level_active)
                         .after(level::activate_level),
                 ),

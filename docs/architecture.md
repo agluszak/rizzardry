@@ -48,8 +48,7 @@ destination owns its entrance/placement, rather than a separate global resource.
 There is no partially frozen source or speculative dormant snapshot to repair
 after loading fails. Combat or camping that starts during loading delays the
 commit until it ends. Presentation requests and retains sky assets on the active
-level; gameplay
-never requests them. Presentation also installs visibility on the ancestors of
+level; gameplay never requests them. Presentation also installs visibility on the ancestors of
 its meshes and cameras. Billboard rotation belongs to a visual child, leaving
 the authored prop-part pose under gameplay ownership. Cosmetic loading proceeds
 on its own. Bevy parent/child relations and screen-scoped
@@ -478,6 +477,13 @@ without maintaining a second pointer/timestamp tracker. Rebinding a slot retires
 only its hit target, so a press cannot release onto a different actor; ordinary
 health, selection and inventory display changes retain that target. Screen
 sessions still own lifecycle; these display sources are not gameplay copies.
+
+The fixed time operation follows physical movement and trigger settlement. Each
+aging pass updates conditions and performs recognition before the next pass;
+no transient request coalesces RNG-consuming work. Camp progression settles in
+that same fixed operation. World activation creates walking bodies before battle,
+so neither combat nor presentation repairs their coordinate convention afterward.
+Mandatory navigation failures reject destination preparation.
 
 ## Navigation importer and processor caching
 

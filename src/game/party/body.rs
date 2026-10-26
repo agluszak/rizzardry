@@ -151,6 +151,7 @@ fn spawn_party(
         PartyBody { yaw, pitch: start.pitch.clamp(-MAX_PITCH, MAX_PITCH) },
         Transform::from_translation(position),
         RigidBody::Dynamic,
+        Position(position),
         Collider::sphere(RADIUS - 0.08),
         LockedAxes::ROTATION_LOCKED,
         MaxLinearSpeed(MAX_SPEED),

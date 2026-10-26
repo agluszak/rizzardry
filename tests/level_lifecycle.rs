@@ -30,6 +30,7 @@ fn app() -> App {
         .init_asset::<MonsterBody>()
         .init_asset::<rizzardry::content::ui::TextTable>()
         .init_resource::<Assets<PartyMotionConfig>>()
+        .init_resource::<Assets<rizzardry::game::world::navigation::WalkerMotionConfig>>()
         .init_resource::<LevelMemory>()
         .init_resource::<MonsterBodies>()
         .init_resource::<rizzardry::game::inventory::PartyInventory>()
@@ -316,9 +317,12 @@ fn attaching_visuals_does_not_change_physical_state_or_revisit_placement() {
         let pose = Transform::from_translation(feet + Vec3::Y * float_height)
             .with_rotation(Quat::from_rotation_y(0.7));
         app.world_mut().get_mut::<Monster>(actor).unwrap().body = body;
-        app.world_mut()
-            .entity_mut(actor)
-            .insert((Walker { speed: body.speed, float_height }, pose));
+        app.world_mut().entity_mut(actor).insert((
+            Walker { speed: body.speed, float_height },
+            pose,
+            avian3d::prelude::Position(pose.translation),
+            avian3d::prelude::Rotation(pose.rotation),
+        ));
         if show_visuals {
             app.init_resource::<Assets<MonsterModel>>()
                 .init_resource::<Assets<Mesh>>()
@@ -352,9 +356,13 @@ fn attaching_visuals_does_not_change_physical_state_or_revisit_placement() {
         assert!(is_played(&app, back));
         assert!(app.world().get_entity(first).is_err());
         let world = app.world_mut();
-        let (monster, pose) = world.query::<(&Monster, &Transform)>().single(world).unwrap();
+        let (monster, pose, walker) =
+            world.query::<(&Monster, &Transform, &Walker)>().single(world).unwrap();
         assert_eq!(monster.body, body);
-        assert!(pose.translation.distance(feet) < 0.00001);
+        assert!(
+            rizzardry::game::world::navigation::feet(pose.translation, Some(walker)).distance(feet)
+                < 0.00001
+        );
         assert!((pose.rotation.to_euler(EulerRot::YXZ).0 - 0.7).abs() < 0.001);
     }
 }
@@ -371,13 +379,25 @@ fn a_level_waits_for_body_metadata_and_sizes_monsters_without_render_assets() {
     app.update();
     assert!(!is_played(&app, root) && !failed(&app, root));
 
-    let body = MonsterBody { fight_radius: 0.5, scale: 2.0, ..default() };
+    let body = MonsterBody { fight_radius: 0.5, scale: 2.0, movement_rate: 1.5, ..default() };
     app.world_mut().resource_mut::<Assets<MonsterBody>>().insert(&loading, body).unwrap();
     app.update();
     assert!(is_played(&app, root));
     let world = app.world_mut();
     let crab = world.query::<&Monster>().single(world).unwrap();
     assert_eq!((crab.body.scale, crab.body.radius), (2.0, 1.0), "its body at its size");
+    use bevy_tnua::TnuaController;
+    use rizzardry::game::world::navigation::{Walker, WalkerMotion, feet};
+    let (at, walker, _) = world
+        .query_filtered::<(&Transform, &Walker, &TnuaController<WalkerMotion>), With<Monster>>()
+        .single(world)
+        .unwrap();
+    assert_eq!(walker.speed, 3.0);
+    assert_eq!(feet(at.translation, Some(walker)), Vec3::ZERO);
+    assert!(
+        !world.contains_resource::<rizzardry::game::combat::Battle>(),
+        "walking bodies exist before combat, without visual assets"
+    );
 }
 
 #[test]
@@ -544,4 +564,143 @@ fn departure_captures_live_changes_after_loading_and_waits_for_combat_to_end() {
     assert!(is_played(&app, returned));
     assert!(monsters(&mut app).is_empty(), "departure must remember the late kill");
     assert_eq!(party_entities(&mut app), [party]);
+}
+
+#[test]
+fn preparation_keeps_the_source_live_and_commit_captures_its_latest_state() {
+    use avian3d::prelude::Position;
+    let mut app = app();
+    with_data(&mut app);
+    let source = spawn_level(&mut app, floor());
+    app.update();
+    let party = party_entities(&mut app)[0];
+    let at = app.world().get::<Position>(party).unwrap().0;
+    // Start through the real camera-path operation, not a hand-made marker.
+    use bevy::ecs::system::RunSystemOnce;
+    use rizzardry::game::party::walk_in::{PathFlight, move_party};
+    use rizzardry::game::world::triggers::PartyMove;
+    let handle = app.world().get::<Level>(source).unwrap().geometry.clone();
+    app.world_mut()
+        .resource_mut::<Assets<LevelDefinition>>()
+        .get_mut(&handle)
+        .unwrap()
+        .camera_paths
+        .push(rizzardry::content::level::CameraPathModel {
+            name: "travel flight".into(),
+            keys: vec![Transform::default()],
+            keys_per_second: 1.0,
+        });
+    app.world_mut().resource_mut::<PendingPartyMove>().0 = Some((source, PartyMove::Fly(0)));
+    app.world_mut().run_system_once(move_party).unwrap();
+    assert!(app.world().get::<PathFlight>(party).is_some());
+    let mut next = app.world().get::<Level>(source).unwrap().clone();
+    let geometry =
+        app.world().resource::<Assets<LevelDefinition>>().get(&next.geometry).unwrap().clone();
+    let loading = app.world_mut().resource_mut::<Assets<LevelDefinition>>().reserve_handle();
+    next.geometry = loading.clone();
+    let mut destination = Destination::new(next.clone(), default());
+    destination.start.eye = Some(Vec3::new(9.0, 4.0, 2.0));
+    let destination = app.world_mut().spawn(destination).id();
+    app.update();
+    assert!(is_played(&app, source));
+    assert_eq!(app.world().get::<Position>(party).unwrap().0, at);
+    assert!(app.world().resource::<LevelMemory>().is_empty());
+    assert!(app.world().get::<PathFlight>(party).is_some());
+    assert!(app.world().get::<RigidBodyDisabled>(party).is_some());
+    // Damage while loading must survive same-path replacement. An early
+    // snapshot would resurrect this monster at the commit boundary.
+    let monster =
+        app.world_mut().query_filtered::<Entity, With<Monster>>().single(app.world()).unwrap();
+    app.world_mut().get_mut::<Monster>(monster).unwrap().hp = 0;
+    app.world_mut().resource_mut::<Assets<LevelDefinition>>().insert(&loading, geometry).unwrap();
+    app.update();
+    assert!(is_played(&app, destination));
+    assert!(app.world().get::<PathFlight>(party).is_none());
+    assert!(app.world().get::<RigidBodyDisabled>(party).is_none());
+    assert!(app.world().get_entity(source).is_err());
+    assert!(monsters(&mut app).is_empty());
+    assert_eq!(
+        app.world().get::<Position>(party).unwrap().0,
+        Vec3::new(9.0, 4.0, 2.0) - Vec3::Y * rizzardry::game::party::body::EYE_ABOVE_CENTRE
+    );
+}
+
+#[test]
+fn failed_navigation_is_a_failed_destination_not_degraded_activation() {
+    let mut app = app();
+    with_data(&mut app);
+    let source = spawn_level(&mut app, floor());
+    app.update();
+    let mut next = test_level(&mut app, floor());
+    next.navmeshes.push(app.world().resource::<AssetServer>().load("missing.navmesh"));
+    let destination = app.world_mut().spawn(Destination::new(next, default())).id();
+    let started = std::time::Instant::now();
+    while !failed(&app, destination) {
+        app.update();
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        std::thread::yield_now();
+    }
+    assert!(is_played(&app, source));
+    assert!(!is_played(&app, destination));
+    assert!(app.world().resource::<LevelMemory>().is_empty());
+}
+
+#[test]
+fn retail_level_definitions_load_without_render_asset_resources() {
+    use rizzardry::content::level::LevelGeometry;
+    use rizzardry::retail::level_loader::{PvlDefinitionLoader, PvlLoader};
+    // An empty compiled level with one material. Even this material would need
+    // StandardMaterial registration if gameplay still ran the visual loader.
+    let mut pvl = vec![0; 8]; // mesh/root counts
+    pvl.extend(1i16.to_le_bytes());
+    pvl.extend([0; 0x11a]);
+    pvl.extend([-1i32, -1].into_iter().flat_map(i32::to_le_bytes));
+    pvl.extend(0i16.to_le_bytes()); // lights
+    pvl.extend((-1i32).to_le_bytes());
+    for _ in 0..8 {
+        // paths, items, missiles, props, billboards, cameras, environment, triggers
+        pvl.extend([0i32, -1].into_iter().flat_map(i32::to_le_bytes));
+    }
+    pvl.extend([0i32, 0, -1].into_iter().flat_map(i32::to_le_bytes)); // sway, map cuts
+    pvl.extend([0i32, 0, 0, 0, -1].into_iter().flat_map(i32::to_le_bytes)); // offset, particles
+    pvl.extend([0i32, -1, 0, 0, -1].into_iter().flat_map(i32::to_le_bytes)); // names, map
+    let mut oct = vec![0; 0xf5];
+    oct[..2].copy_from_slice(&0x22u16.to_le_bytes());
+    oct[0x86..0x8a].copy_from_slice(&1u32.to_le_bytes()); // collision stream present
+    oct.extend([-1i32, 0, -1, -1, -1, 1].into_iter().flat_map(i32::to_le_bytes));
+    oct.extend([0; 100]); // empty collision tables and bounds
+    oct.extend((-1i32).to_le_bytes());
+    let directory =
+        std::env::temp_dir().join(format!("rizzardry-level-loader-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join("empty.pvl"), pvl).unwrap();
+    std::fs::write(directory.join("empty.oct"), oct).unwrap();
+    let files =
+        std::sync::Arc::new(rizzardry::retail::files::RetailFiles::open(&directory).unwrap());
+    let mut app = App::new();
+    app.register_asset_source("retail", rizzardry::retail::source::retail_source(files))
+        .add_plugins((MinimalPlugins, AssetPlugin::default()))
+        .init_asset::<LevelDefinition>()
+        .init_asset::<LevelGeometry>()
+        .init_asset_loader::<PvlDefinitionLoader>()
+        .init_asset_loader::<PvlLoader>();
+    app.finish();
+    app.cleanup();
+    let definition =
+        app.world().resource::<AssetServer>().load::<LevelDefinition>("retail://empty.pvl");
+    let started = std::time::Instant::now();
+    loop {
+        app.update();
+        match app.world().resource::<AssetServer>().get_load_state(&definition) {
+            Some(bevy::asset::LoadState::Loaded) => break,
+            Some(bevy::asset::LoadState::Failed(error)) => panic!("definition failed: {error}"),
+            _ => assert!(started.elapsed() < std::time::Duration::from_secs(5)),
+        }
+        std::thread::yield_now();
+    }
+    assert!(app.world().resource::<Assets<LevelDefinition>>().contains(&definition));
+    assert!(!app.world().contains_resource::<Assets<Mesh>>());
+    assert!(!app.world().contains_resource::<Assets<StandardMaterial>>());
+    assert!(app.world().resource::<Assets<LevelGeometry>>().is_empty());
+    std::fs::remove_dir_all(directory).unwrap();
 }

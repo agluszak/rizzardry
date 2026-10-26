@@ -426,6 +426,7 @@ pub struct SharedData<'w> {
     species: Res<'w, Assets<MonsterCatalog>>,
     bodies: Res<'w, Assets<MonsterBody>>,
     monster_bodies: ResMut<'w, MonsterBodies>,
+    motion_configs: ResMut<'w, Assets<navigation::WalkerMotionConfig>>,
 }
 
 /// Make a destination playable once its gameplay prerequisites exist, in
@@ -460,6 +461,7 @@ pub fn activate_level(
         };
         let Some(data) = shared.data.as_ref() else { continue };
         if failed(level.geometry.id().untyped())
+            || level.navmeshes.iter().any(|h| failed(h.id().untyped()))
             || failed(data.items.id().untyped())
             || failed(data.loot.id().untyped())
             || failed(data.species.id().untyped())
@@ -483,7 +485,7 @@ pub fn activate_level(
             continue;
         }
         if !bodies.iter().all(|body| shared.bodies.contains(body))
-            || !navigation::navmeshes_settled(level, &assets)
+            || !navigation::navmeshes_ready(level, &assets)
         {
             continue;
         }
@@ -502,10 +504,8 @@ pub fn activate_level(
         // One authority until now: capture the source's latest state exactly at
         // departure, including changes made while the destination was loading.
         for (entity, source, state, children) in &current {
-            let children: Vec<Entity> = children.map_or_else(Vec::new, |c| c.to_vec());
-            memory
-                .0
-                .insert(source.path.clone(), transition.p0().remember(entity, state, &children));
+            let children = children.map_or(&[][..], |c| &c[..]);
+            memory.0.insert(source.path.clone(), transition.p0().remember(entity, state, children));
             commands.entity(entity).despawn();
         }
         pending.0 = None;
@@ -519,7 +519,7 @@ pub fn activate_level(
             loot,
             remembered.as_mut(),
         );
-        navigation::install(&mut commands, root, level, geometry, &assets);
+        let navigation = navigation::install(&mut commands, root, level, geometry);
         population::populate(
             &mut commands,
             root,
@@ -527,12 +527,13 @@ pub fn activate_level(
             remembered,
             (species, items),
             (&shared.monster_bodies.0, &shared.bodies),
+            (&navigation, &mut shared.motion_configs),
             &mut ids,
             &mut rng,
         );
         transition.p1().place(&mut commands, geometry, &destination.start);
         info!("{} is active", level.path);
-        commands.entity(root).remove::<Destination>().insert(level.clone());
+        commands.entity(root).remove::<Destination>().insert((level.clone(), navigation));
         ready.write(LevelReady { level: root });
         break;
     }

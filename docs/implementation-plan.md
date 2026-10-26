@@ -71,7 +71,8 @@ tested, and passing time healing the roster but not a non-roster
 The merged ownership refactors and the lifecycle follow-up provide useful
 primitives. Retain their actor identities, owned item transfers, native screen
 sessions, retained controls and synchronous battle recognition. The following
-boundaries remain open despite the implemented rows in the review inventory.
+boundaries are now completed by #29 and its follow-up; this is not a claim
+that all gameplay systems or retail compatibility are complete.
 
 This cleanup adds actual party damage outcomes, orders retained damage-animation
 refresh before playback, links dialog lifetime to its gameplay question, derives
@@ -83,24 +84,23 @@ Camp acceptance now follows battle acceptance and its deferred commits. World
 picking and activation now follow camera updates, transform propagation and
 visibility completion. Retain those production ordering boundaries.
 
-1. **Preserve every time consequence.** Battle recognition is now synchronous,
-   but `pass_time` emits one request whenever any aging ticks crossed, and the
-   Update reader coalesces requests. Recognition consumes gameplay RNG; each
-   required pass belongs to its ordered time operation. Keep notifications
-   separate from commands whose count matters.
-2. **Decide navigation failure policy.** Source capture and arrival now commit
-   together after destination preparation. A failed navmesh still counts as
-   settled and permits activation without navigation; decide whether it should
-   reject preparation instead.
-3. **Give world actors their bodies and movement intent.** `embody_fighters`
-   still creates bodies at battle entry and changes root-position meaning from
-   feet to body centre. Monster death now cancels movement through its damage
-   operation; retain that boundary, with battle owning accepted turns and rewards.
-4. **Finish current-frame sky following.** Gameplay borrows an `ActorPose`
-   from physics, and picking now reads the propagated camera and meshes together.
-   Sky following still reads the camera's previous `GlobalTransform` in Update,
-   before propagation. Input gates and stationary tooltip refresh are already
-   fixed; do not recreate them.
+1. **Preserve every time consequence.** The fixed time operation now applies
+   each aging tick and its recognition rolls synchronously, preserving conditions
+   at each pass. The coalescing request/reader and empty Perception stage are gone.
+   Camp progression remains in that same fixed operation.
+2. **Finish travel preparation.** Destination-owned arrival and source capture at
+   successful commit are retained. Mandatory navmesh failure rejects preparation;
+   combat or camping during loading delays commit, preserving main's policy. There is no provisional snapshot or
+   rollback protocol. Camera-flight suspension ends only on successful commit.
+3. **Give world actors their bodies and movement intent.** Activation constructs
+   movable bodies at their final coordinate convention, with actor-owned targets
+   and controllers. Combat only selects intent; `embody_fighters` and the visual
+   offset repair system are deleted. Main's shared `needs_approach` calculation
+   remains the authority for both targeting and passive-round decisions.
+4. **Finish current-frame sky following.** The sky reads the current camera
+   hierarchy through TransformHelper in PostUpdate, after aiming/shake/overhead
+   changes and before engine propagation. Picking still follows propagation and
+   visibility completion.
 
 Gameplay level definitions and optional visual construction are now separate
 assets/loaders. Headless gameplay does not initialize rendering or input. Camp

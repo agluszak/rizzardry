@@ -93,34 +93,24 @@ pub fn feet(origin: Vec3, walker: Option<&Walker>) -> Vec3 {
     origin - Vec3::Y * walker.map_or(0.0, |w| w.float_height)
 }
 
-/// Whether a level's navmeshes have settled: all loaded, or one failed.
+/// Whether every mandatory navmesh has loaded successfully.
 /// They come from the asset processor's cache (baked on first use).
-pub fn navmeshes_settled(level: &Level, assets: &AssetServer) -> bool {
-    level.navmeshes.iter().all(|navmesh| {
-        matches!(assets.get_load_state(navmesh), Some(LoadState::Loaded | LoadState::Failed(_)))
-    })
+pub fn navmeshes_ready(level: &Level, assets: &AssetServer) -> bool {
+    level
+        .navmeshes
+        .iter()
+        .all(|navmesh| matches!(assets.get_load_state(navmesh), Some(LoadState::Loaded)))
 }
 
 /// Install a level's navigation under its root, as part of its activation:
-/// one archipelago and island per size class, and the level's links. A
-/// navmesh that failed to load leaves the level without navigation; nothing
-/// will path.
+/// one archipelago and island per size class, and the level's links.
+/// Activation has already checked every required navmesh.
 pub fn install(
     commands: &mut Commands,
     root: Entity,
     level: &Level,
     geometry: &LevelDefinition,
-    assets: &AssetServer,
-) {
-    if let Some(Some(LoadState::Failed(error))) = level
-        .navmeshes
-        .iter()
-        .map(|h| assets.get_load_state(h))
-        .find(|s| matches!(s, Some(LoadState::Failed(_))))
-    {
-        error!("navmesh unavailable: {error}");
-        return;
-    }
+) -> LevelNavigation {
     let mut archipelagos = Vec::new();
     for (class, navmesh) in level.navmeshes.iter().enumerate() {
         let radius = bake::SIZE_CLASSES[class];
@@ -153,8 +143,8 @@ pub fn install(
         archipelagos.push(archipelago);
     }
     links::spawn_level_links(commands, root, geometry, &archipelagos);
-    commands.entity(root).insert(LevelNavigation { archipelagos });
     info!("navmeshes installed for {} size classes", level.navmeshes.len());
+    LevelNavigation { archipelagos }
 }
 
 /// The party as a Landmass character in one archipelago: a child of the
@@ -216,7 +206,7 @@ fn steer_walkers(
     mut walkers: Query<(
         &Walker,
         Option<&super::population::Monster>,
-        &AgentDesiredVelocity3d,
+        Option<&AgentDesiredVelocity3d>,
         Option<&links::Crossing>,
         &Transform,
         &mut TnuaController<WalkerMotion>,
@@ -232,7 +222,7 @@ fn steer_walkers(
                         * walker.speed
                         * 0.8
                 }
-                None => desired.velocity().with_y(0.0),
+                None => desired.map_or(Vec3::ZERO, |d| d.velocity().with_y(0.0)),
             }
         };
         controller.initiate_action_feeding();

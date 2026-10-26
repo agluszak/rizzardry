@@ -7,8 +7,10 @@ use crate::game::party::{
     recovery::{self, Pace},
     roster::PartyRoster,
 };
-use crate::game::world::{identify::DetectGroups, level::level_active};
+use crate::game::rng::GameRng;
+use crate::game::world::{identify::GroupRecognition, level::level_active};
 use avian3d::prelude::LinearVelocity;
+use avian3d::prelude::Position;
 use bevy::prelude::*;
 
 const RESTING_BELOW: f32 = 0.05;
@@ -98,7 +100,13 @@ impl Plugin for TimePlugin {
                     .after(crate::game::GameplaySet::Combat)
                     .run_if(level_active),
             )
-            .add_systems(FixedUpdate, pass_time.run_if(level_active));
+            .add_systems(
+                FixedPostUpdate,
+                pass_time
+                    .after(crate::game::party::walk_in::move_party)
+                    .after(avian3d::prelude::PhysicsSystems::Writeback)
+                    .run_if(level_active),
+            );
     }
 }
 
@@ -132,18 +140,17 @@ mod tests {
 
 /// Exploring and camping: the clock runs on the fixed step and the party
 /// recovers as it passes. In a fight only its rounds pass time.
-fn pass_time(
+pub(crate) fn pass_time(
     mut commands: Commands,
     time: Res<Time>,
     mut camp: Option<ResMut<Camp>>,
     mut news: MessageWriter<CampNews>,
     battle: Option<Res<crate::game::combat::Battle>>,
-    party: Query<&LinearVelocity, With<PartyBody>>,
+    party: Query<(&Position, &PartyBody, &LinearVelocity)>,
     roster: Res<PartyRoster>,
-    mut members: Query<(&Character, &mut Vitals)>,
+    mut affected: ParamSet<(Query<(&Character, &mut Vitals)>, GroupRecognition)>,
     mut clock: ResMut<GameClock>,
-    mut detect: MessageWriter<DetectGroups>,
-    levels: Query<Entity, With<crate::game::world::level::Level>>,
+    mut rng: ResMut<GameRng>,
 ) {
     if battle.is_some() {
         return;
@@ -153,7 +160,7 @@ fn pass_time(
         clock.advance_real(time.delta(), if racing { CAMPING_RATE } else { EXPLORATION_RATE });
     // Retail tells running (fast movement) from walking; here the speed
     // does, horizontally so that falling is not running.
-    let speed = party.single().map_or(0.0, |v| Vec2::new(v.x, v.z).length());
+    let speed = party.single().map_or(0.0, |(_, _, v)| Vec2::new(v.x, v.z).length());
     let pace = if camp.is_some() {
         Pace::Camping
     } else if speed < RESTING_BELOW {
@@ -163,23 +170,33 @@ fn pass_time(
     } else {
         Pace::Running
     };
-    for &member in &roster.0 {
-        if members
-            .get(member)
-            .is_ok_and(|(profile, vitals)| recovery::has_work(profile, vitals, ticks, pace))
+    // Each aging pass settles conditions before its recognition rolls. Do not
+    // collapse passes across fixed steps or inspect the final conditions for all
+    // of them: a blindness duration may expire partway through this interval.
+    for pass in 0..=ticks.aging {
+        let ticks = if pass == 0 {
+            Ticks { stamina: ticks.stamina, aging: 0 }
+        } else {
+            Ticks { stamina: 0, aging: 1 }
+        };
+        let mut members = affected.p0();
+        for &member in &roster.0 {
+            if members
+                .get(member)
+                .is_ok_and(|(profile, vitals)| recovery::has_work(profile, vitals, ticks, pace))
+            {
+                let (profile, mut vitals) = members.get_mut(member).unwrap();
+                recovery::elapse(profile, &mut vitals, ticks, pace);
+            }
+        }
+        if pass > 0
+            && let Ok((position, body, _)) = party.single()
         {
-            let (profile, mut vitals) = members.get_mut(member).unwrap();
-            recovery::elapse(profile, &mut vitals, ticks, pace);
+            affected.p1().detect(PartyBody::eye(position), body.forward(), None, &mut rng);
         }
     }
-    // Retail looks the monsters over at the end of each aging pass.
-    if ticks.aging > 0
-        && let Ok(level) = levels.single()
-    {
-        detect.write(DetectGroups { level });
-    }
     let anyone_able =
-        members.iter_many(&roster.0).flatten().any(|(_, vitals)| camp::can_act(vitals));
+        affected.p0().iter_many(&roster.0).flatten().any(|(_, vitals)| camp::can_act(vitals));
     if let Some(camp) = camp.as_mut()
         && let Some(outcome) = camp.advance(time.delta(), clock.ms, anyone_able)
     {
@@ -201,7 +218,10 @@ mod roster_tests {
         app.add_plugins(MinimalPlugins)
             .init_resource::<GameClock>()
             .init_resource::<PartyRoster>()
-            .add_message::<DetectGroups>()
+            .init_resource::<GameRng>()
+            .init_resource::<Assets<crate::content::species::MonsterCatalog>>()
+            .init_resource::<Assets<crate::content::level::LevelDefinition>>()
+            .add_message::<crate::game::world::identify::Identified>()
             .add_message::<CampNews>()
             .add_systems(Update, pass_time);
         let hurt = || {
@@ -241,7 +261,10 @@ mod camp_tests {
             .insert_resource(Time::<Fixed>::from_hz(64.0))
             .insert_resource(GameClock::at(0))
             .init_resource::<PartyRoster>()
-            .add_message::<DetectGroups>()
+            .init_resource::<GameRng>()
+            .init_resource::<Assets<crate::content::species::MonsterCatalog>>()
+            .init_resource::<Assets<crate::content::level::LevelDefinition>>()
+            .add_message::<crate::game::world::identify::Identified>()
             .add_message::<CampNews>()
             .add_systems(FixedUpdate, pass_time);
         app.update();
