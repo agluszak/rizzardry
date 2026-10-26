@@ -85,16 +85,17 @@ pub struct LevelSections {
 }
 
 impl LevelSections {
-    /// Every trigger: the section's, then those attached to props and
-    /// billboards.
+    /// Retail registration order: props, billboards, then standalone triggers.
     pub fn all_triggers(&self) -> impl Iterator<Item = &Trigger> {
-        self.triggers
+        self.props
             .iter()
-            .chain(self.props.iter().chain(&self.bitmaps).filter_map(|p| p.trigger.as_ref()))
+            .chain(&self.bitmaps)
+            .filter_map(|p| p.trigger.as_ref())
+            .chain(&self.triggers)
     }
 
     pub fn trigger(&self, name: &str) -> Option<&Trigger> {
-        self.all_triggers().find(|t| t.name.eq_ignore_ascii_case(name))
+        self.all_triggers().filter(|t| t.name.eq_ignore_ascii_case(name)).last()
     }
 }
 

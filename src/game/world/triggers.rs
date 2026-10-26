@@ -32,30 +32,38 @@ const DAMAGE_ZONE_PERIOD: f32 = 0.5;
 const MAX_DEPTH: usize = 16;
 
 /// A device's immutable definition and links, resolved once per visit.
-/// A shared device has its own entity; a device used by one prop lives on it.
+/// A prop-backed device lives on that prop; positioned devices stand alone.
 #[derive(Component, Debug)]
 pub struct Device {
     pub level: Entity,
     pub definition: usize,
     pub recipients: Vec<Entity>,
-    pub prop: Option<Entity>,
+    required_states: Vec<usize>,
+    state_change: Option<(usize, StateChange)>,
+    dial_states: Vec<usize>,
 }
+
+/// Authored traversal order, resolved once per visit; not an owner of device state.
+#[derive(Component, Debug, Default)]
+struct PositionedDevices(Vec<Entity>);
 
 /// Only level-wide variables and visit state live on the level.
 #[derive(Component, Debug, Default)]
 pub struct LevelState {
-    variables: HashMap<String, bool>,
+    variables: Vec<(String, bool)>,
     entered: bool,
 }
 
 impl LevelState {
-    pub fn variable(&self, name: &str) -> bool {
-        self.variables.get(&name.to_uppercase()).copied().unwrap_or(false)
-    }
-
-    pub fn set_variable(&mut self, name: &str, value: bool) {
+    // Activation resolves names; normal execution reads/writes the level's value by key.
+    fn resolve(&mut self, name: &str, initial: bool) -> usize {
         let name = name.to_uppercase();
-        self.variables.insert(name, value);
+        if let Some(key) = self.variables.iter().position(|(n, _)| *n == name) {
+            return key;
+        }
+        let key = self.variables.len();
+        self.variables.push((name, initial));
+        key
     }
 }
 
@@ -109,7 +117,7 @@ pub struct DeviceProximity {
 }
 
 /// Dormant records use authored indices, never runtime entity references.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct TriggerMemory {
     devices: HashMap<usize, KeptDevice>,
     variables: HashMap<String, bool>,
@@ -170,13 +178,11 @@ impl DeviceRecords<'_, '_> {
                 )
             })
             .collect();
-        TriggerMemory { devices, variables: state.variables.clone() }
+        TriggerMemory { devices, variables: state.variables.iter().cloned().collect() }
     }
 }
 
-/// Allocate identities before linking devices or building prop children. The
-/// final prop is the animation source for a shared trigger, preserving the
-/// previous executor's selection. Recipients use the shared device identity.
+/// Allocate identities before linking devices or building prop children.
 pub fn spawn_devices(
     commands: &mut Commands,
     level: Entity,
@@ -184,33 +190,80 @@ pub fn spawn_devices(
     props: &[Entity],
     script: LevelScript,
     tables: &LootTables,
-    memory: Option<&TriggerMemory>,
+    mut memory: Option<TriggerMemory>,
 ) -> Vec<Entity> {
-    let mut attached = vec![Vec::new(); geometry.triggers.len()];
+    let mut attached = vec![None; geometry.triggers.len()];
     for (index, prop) in geometry.props.iter().enumerate() {
         if let Some(trigger) = prop.trigger {
-            attached[trigger].push(props[index]);
+            assert!(
+                attached[trigger].replace(props[index]).is_none(),
+                "a trigger belongs to one prop"
+            );
         }
     }
     let devices: Vec<Entity> = attached
-        .iter()
-        .map(|props| if props.len() == 1 { props[0] } else { commands.spawn(ChildOf(level)).id() })
+        .into_iter()
+        .map(|prop| prop.unwrap_or_else(|| commands.spawn(ChildOf(level)).id()))
         .collect();
+    let restored = memory.is_some();
     let mut state = LevelState::default();
+    if let Some(memory) = &mut memory {
+        state.variables = std::mem::take(&mut memory.variables).into_iter().collect();
+    } else {
+        for definition in &geometry.triggers {
+            if let (Some((name, _)), Some(value)) =
+                (&definition.state_change, definition.initial_state)
+            {
+                state.resolve(name, value);
+            }
+        }
+    }
+    let mut dial_states = vec![Vec::new(); geometry.triggers.len()];
+    for prop in &geometry.props {
+        let Some(index) = prop.trigger else { continue };
+        let definition = &geometry.triggers[index];
+        let Some((name, _)) = &definition.state_change else { continue };
+        if std::iter::once(&definition.initial)
+            .chain(definition.alternate.iter())
+            .chain(definition.fallback.iter())
+            .any(|action| matches!(action.action, TriggerAction::Dial))
+        {
+            dial_states[index] = (0..prop.slots.len().max(1))
+                .map(|position| {
+                    state.resolve(
+                        &format!("{name}{position}"),
+                        !restored
+                            && position == 0
+                            && matches!(definition.initial.action, TriggerAction::Dial),
+                    )
+                })
+                .collect();
+        }
+    }
+    let mut positioned = PositionedDevices::default();
     for (index, definition) in geometry.triggers.iter().enumerate() {
-        let kept = memory.and_then(|m| m.devices.get(&index));
+        let mut kept = memory.as_mut().and_then(|m| m.devices.remove(&index));
         let mut entity = commands.entity(devices[index]);
         entity.insert((
             Device {
                 level,
                 definition: index,
-                prop: attached[index].last().copied(),
                 recipients: definition.recipients.iter().map(|&i| devices[i]).collect(),
+                required_states: definition
+                    .required_states
+                    .iter()
+                    .map(|name| state.resolve(name, false))
+                    .collect(),
+                state_change: definition
+                    .state_change
+                    .as_ref()
+                    .map(|(name, change)| (state.resolve(name, false), *change)),
+                dial_states: std::mem::take(&mut dial_states[index]),
             },
             TriggerState {
-                on: kept.is_none_or(|k| k.on),
-                fired: kept.is_some_and(|k| k.fired),
-                use_alternate: kept.is_some_and(|k| k.use_alternate),
+                on: kept.as_ref().is_none_or(|k| k.on),
+                fired: kept.as_ref().is_some_and(|k| k.fired),
+                use_alternate: kept.as_ref().is_some_and(|k| k.use_alternate),
                 awaits_animation: false,
             },
         ));
@@ -222,49 +275,33 @@ pub fn spawn_devices(
                 .clone()
                 .any(|b| matches!(b.action, TriggerAction::OpenDoor | TriggerAction::ToggleDoor))
         {
-            entity.insert(kept.and_then(|k| k.door.clone()).unwrap_or(DoorState {
+            entity.insert(kept.as_mut().and_then(|k| k.door.take()).unwrap_or(DoorState {
                 open: false,
                 locked: definition.door.is_some_and(|d| d.locked),
             }));
         }
         if actions.clone().any(|b| matches!(b.action, TriggerAction::Dial)) {
-            entity.insert(kept.and_then(|k| k.dial.clone()).unwrap_or_default());
+            entity.insert(kept.as_mut().and_then(|k| k.dial.take()).unwrap_or_default());
         }
         if actions.clone().any(|b| matches!(b.action, TriggerAction::Fountain(_))) {
-            entity.insert(kept.and_then(|k| k.fountain.clone()).unwrap_or_default());
+            entity.insert(kept.as_mut().and_then(|k| k.fountain.take()).unwrap_or_default());
         }
         if let Some(name) = &definition.loot_table {
             let table = tables.0.iter().position(|t| t.name.eq_ignore_ascii_case(name));
             if table.is_none() {
                 warn!("trigger {}: no loot table {name}; it holds nothing", definition.name);
             }
-            entity.insert(Container { table, contents: kept.and_then(|k| k.contents.clone()) });
+            entity.insert(Container {
+                table,
+                contents: kept.as_mut().and_then(|k| k.contents.take()),
+            });
         }
         if definition.place.is_some() {
             entity.insert(DeviceProximity::default());
-        }
-        if let (Some((name, _)), Some(value)) = (&definition.state_change, definition.initial_state)
-        {
-            state.variables.entry(name.to_uppercase()).or_insert(value);
+            positioned.0.push(devices[index]);
         }
     }
-    for prop in &geometry.props {
-        let Some(definition) = prop.trigger.map(|i| &geometry.triggers[i]) else { continue };
-        if let (TriggerAction::Dial, Some((name, _))) =
-            (&definition.initial.action, &definition.state_change)
-        {
-            for position in 0..prop.slots.len() {
-                state
-                    .variables
-                    .entry(format!("{name}{position}").to_uppercase())
-                    .or_insert(position == 0);
-            }
-        }
-    }
-    if let Some(memory) = memory {
-        state.variables = memory.variables.clone();
-    }
-    commands.entity(level).insert(state);
+    commands.entity(level).insert((state, positioned));
     script.bind(commands, geometry, &devices);
     devices
 }
@@ -317,6 +354,7 @@ pub struct PendingPartyMove(pub Option<(Entity, PartyMove)>);
 pub struct DeviceOperations<'w, 's> {
     levels: Query<'w, 's, (&'static Level, &'static mut LevelState), Without<Departing>>,
     geometry: Res<'w, Assets<LevelGeometry>>,
+    positioned: Query<'w, 's, (Entity, &'static PositionedDevices), Without<Departing>>,
     devices: Query<'w, 's, (Entity, &'static Device)>,
     states: Query<'w, 's, &'static mut TriggerState>,
     doors: Query<'w, 's, &'static mut DoorState>,
@@ -391,22 +429,14 @@ impl<'w, 's> DeviceOperations<'w, 's> {
         if !self.ready() {
             return;
         }
-        let Ok((_, mut state)) = self.levels.single_mut() else { return };
+        let Ok((level, positioned)) = self.positioned.single_inner() else { return };
+        let Ok((_, mut state)) = self.levels.get_mut(level) else { return };
         let first = !state.entered;
         if first {
             state.entered = true;
         }
-        // Authored order determines relay side effects and gameplay RNG use.
-        let mut positioned: Vec<_> = self
-            .devices
-            .iter()
-            .filter(|(entity, device)| {
-                self.proximity.contains(*entity) && self.levels.get(device.level).is_ok()
-            })
-            .map(|(entity, device)| (device.definition, entity))
-            .collect();
-        positioned.sort_by_key(|&(index, _)| index);
-        for (_, entity) in positioned {
+        // The level's activation resolved the order that side effects and RNG follow.
+        for &entity in &positioned.0 {
             let definition = self.definition(entity).unwrap();
             let inside = (definition.range.0..definition.range.1)
                 .contains(&eye.distance(definition.place.unwrap()));
@@ -435,9 +465,10 @@ impl<'w, 's> DeviceOperations<'w, 's> {
     }
 
     pub fn arrive(&mut self, eye: Vec3) {
-        for (entity, _) in &self.devices {
+        let Ok((_, positioned)) = self.positioned.single_inner() else { return };
+        for &entity in &positioned.0 {
             let Some(definition) = self.definition(entity) else { continue };
-            let Some(place) = definition.place else { continue };
+            let place = definition.place.unwrap();
             let inside = (definition.range.0..definition.range.1).contains(&eye.distance(place));
             if let Ok(mut proximity) = self.proximity.get_mut(entity)
                 && proximity.inside != inside
@@ -448,17 +479,13 @@ impl<'w, 's> DeviceOperations<'w, 's> {
     }
 
     fn sound_position(&self, entity: Entity) -> Option<Vec3> {
-        let prop = self.devices.get(entity).ok()?.1.prop?;
-        self.props.get(prop).ok().map(|(prop, _)| prop.centre)
+        self.definition(entity)?
+            .place
+            .or_else(|| self.props.get(entity).ok().map(|(prop, _)| prop.centre))
     }
 
     fn playing(&self, entity: Entity) -> bool {
-        self.devices
-            .get(entity)
-            .ok()
-            .and_then(|(_, d)| d.prop)
-            .and_then(|p| self.props.get(p).ok())
-            .is_some_and(|(_, m)| m.frame != m.target)
+        self.props.get(entity).is_ok_and(|(_, motion)| motion.frame != motion.target)
     }
 
     /// Selection advances the alternate choice even if the action later fails
@@ -476,7 +503,7 @@ impl<'w, 's> DeviceOperations<'w, 's> {
         if !state.on || (definition.once && state.fired) || (running && !shakes) {
             return None;
         }
-        if !definition.required_states.iter().all(|name| variables.variable(name)) {
+        if !device.required_states.iter().all(|&key| variables.variables[key].1) {
             return definition.fallback.as_ref();
         }
         if let Ok(door) = self.doors.get(entity)
@@ -519,7 +546,7 @@ impl<'w, 's> DeviceOperations<'w, 's> {
             self.effects.write(bell.ring(entity, &self.dials.as_readonly(), &mut self.states));
         }
         let (_, device) = self.devices.get_inner(entity).unwrap();
-        let (level, prop, recipients) = (device.level, device.prop, &device.recipients);
+        let (level, recipients) = (device.level, &device.recipients);
         let mut changes_state = true;
         match &chosen.action {
             TriggerAction::Nothing => {}
@@ -532,8 +559,7 @@ impl<'w, 's> DeviceOperations<'w, 's> {
                 if self.playing(entity) {
                     return false;
                 }
-                let Some(prop) = prop else { return false };
-                let Ok((prop, mut motion)) = self.props.get_mut(prop) else { return false };
+                let Ok((prop, mut motion)) = self.props.get_mut(entity) else { return false };
                 let mut door = self.doors.get_mut(entity).unwrap();
                 if *action == TriggerAction::OpenDoor && door.open {
                     return false;
@@ -543,9 +569,11 @@ impl<'w, 's> DeviceOperations<'w, 's> {
                 self.states.get_mut(entity).unwrap().awaits_animation = true;
             }
             TriggerAction::Animate(animation) => {
-                let Some(prop) = prop.filter(|&p| self.props.contains(p)) else { return false };
+                if !self.props.contains(entity) {
+                    return false;
+                }
                 self.open_container(entity);
-                let (prop, mut motion) = self.props.get_mut(prop).unwrap();
+                let (prop, mut motion) = self.props.get_mut(entity).unwrap();
                 let playing = motion.frame != motion.target;
                 match animation {
                     Animation::Toggle if playing => motion.target = motion.frame,
@@ -610,8 +638,7 @@ impl<'w, 's> DeviceOperations<'w, 's> {
                 self.effects.write(TriggerEffect::Shake { seconds, intensity, fade_out });
             }
             TriggerAction::Dial => {
-                let Some(prop) = prop else { return false };
-                let Ok((prop, mut motion)) = self.props.get_mut(prop) else { return false };
+                let Ok((prop, mut motion)) = self.props.get_mut(entity) else { return false };
                 let mut dial = self.dials.get_mut(entity).unwrap();
                 let old = dial.position;
                 let new = if prop.slots.len() < 3 {
@@ -625,10 +652,10 @@ impl<'w, 's> DeviceOperations<'w, 's> {
                 if old != new {
                     dial.position = new;
                 }
-                if let Some((name, _)) = &definition.state_change {
+                if !device.dial_states.is_empty() {
                     let (_, mut state) = self.levels.get_mut(level).unwrap();
-                    state.set_variable(&format!("{name}{old}"), false);
-                    state.set_variable(&format!("{name}{new}"), true);
+                    state.variables[device.dial_states[old]].1 = false;
+                    state.variables[device.dial_states[new]].1 = true;
                 }
                 changes_state = false;
             }
@@ -650,15 +677,15 @@ impl<'w, 's> DeviceOperations<'w, 's> {
                 self.run_device(recipient, depth + 1);
             }
         }
-        if changes_state && let Some((name, change)) = &definition.state_change {
+        if changes_state && let Some((key, change)) = device.state_change {
             let (_, mut state) = self.levels.get_mut(level).unwrap();
             let value = match change {
                 StateChange::Set => true,
                 StateChange::Clear => false,
-                StateChange::Toggle => !state.variable(name),
+                StateChange::Toggle => !state.variables[key].1,
             };
-            if state.variable(name) != value {
-                state.set_variable(name, value);
+            if state.variables[key].1 != value {
+                state.variables[key].1 = value;
             }
         }
         if let Some(message) = chosen.message {
@@ -880,7 +907,7 @@ mod tests {
             scenario
         }
 
-        fn visit(&mut self, memory: Option<&TriggerMemory>) {
+        fn visit(&mut self, memory: Option<TriggerMemory>) {
             self.world.despawn(self.root);
             let handle =
                 self.world.resource_mut::<Assets<LevelGeometry>>().add(self.geometry.clone());
@@ -924,7 +951,6 @@ mod tests {
                 commands.entity(props[index]).insert((
                     Prop {
                         definition: index,
-                        trigger: model.trigger.map(|i| self.devices[i]),
                         centre: Vec3::ZERO,
                         door: false,
                         frames_per_second: 10.0,
@@ -970,8 +996,7 @@ mod tests {
         }
 
         fn motion(&self, name: &str) -> &PropMotion {
-            let prop = self.world.get::<Device>(self.device(name)).unwrap().prop.unwrap();
-            self.world.get::<PropMotion>(prop).unwrap()
+            self.world.get::<PropMotion>(self.device(name)).unwrap()
         }
 
         fn settle(&mut self) {
@@ -981,7 +1006,13 @@ mod tests {
         }
 
         fn variable(&self, name: &str) -> bool {
-            self.world.get::<LevelState>(self.root).unwrap().variable(name)
+            self.world
+                .get::<LevelState>(self.root)
+                .unwrap()
+                .variables
+                .iter()
+                .find(|(n, _)| n.eq_ignore_ascii_case(name))
+                .is_some_and(|(_, value)| *value)
         }
 
         fn remember(&mut self) -> TriggerMemory {
@@ -1038,7 +1069,7 @@ mod tests {
         // Unlocked for good: kept while the party is away.
         let memory = level.remember();
         let old = level.device("DOOR");
-        level.visit(Some(&memory));
+        level.visit(Some(memory));
         assert_ne!(old, level.device("DOOR"));
         assert!(!level.world.get::<DoorState>(level.device("DOOR")).unwrap().locked);
     }
@@ -1078,7 +1109,7 @@ mod tests {
         );
         assert_eq!(level.world.resource::<PartyInventory>().gold, 5);
         let memory = level.remember();
-        level.visit(Some(&memory));
+        level.visit(Some(memory));
         assert!(level.run("CHEST").1.is_empty(), "returning never rolls the gold again");
         level.visit(None);
         let chest = level.device("CHEST");
@@ -1321,7 +1352,7 @@ mod tests {
         assert!(level.run("WELL").0);
         assert!(!level.run("WELL").0, "dry after its one use");
         let memory = level.remember();
-        level.visit(Some(&memory));
+        level.visit(Some(memory));
         assert!(!level.run("WELL").0, "still dry after returning");
         level.world.resource_mut::<GameClock>().ms = 2 * 720 * 1000;
         assert!(level.run("WELL").0);
@@ -1465,38 +1496,45 @@ mod tests {
     }
 
     #[test]
-    fn props_share_a_device_only_when_the_authored_trigger_is_shared() {
+    fn same_named_props_keep_their_own_device_state_and_animation() {
         let mut level = Scenario::new(
             vec![
-                trigger("SHARED", TriggerAction::Nothing),
-                trigger("ALONE", TriggerAction::Nothing),
+                trigger("FIRST", TriggerAction::OpenDoor),
+                trigger("SECOND", TriggerAction::OpenDoor),
             ],
-            &[
-                PropSpec("SHARED", 0.0, false, &[]),
-                PropSpec("SHARED", 0.0, false, &[]),
-                PropSpec("ALONE", 0.0, false, &[]),
-            ],
+            &[PropSpec("FIRST", 10.0, false, &[]), PropSpec("SECOND", 20.0, false, &[])],
             LevelScript::None,
         );
-        let shared = level.device("SHARED");
-        let alone = level.device("ALONE");
-        assert!(level.world.get::<Prop>(shared).is_none());
-        assert_eq!(level.world.get::<Prop>(alone).unwrap().trigger, Some(alone));
+        for definition in &mut level.geometry.triggers {
+            definition.sound = Some(TriggerSound { path: definition.name.clone(), volume: 1.0 });
+            definition.sound_on_commit = true;
+            definition.name = "SAME".into();
+        }
+        level.visit(None);
+        let [first, second] = level.devices[..] else { panic!("two devices") };
+        assert!(level.world.get::<Prop>(first).is_some());
+        level.world.get_mut::<Prop>(second).unwrap().centre = Vec3::X;
+        assert!(level.operations.get_mut(&mut level.world).unwrap().run(first));
         assert_eq!(
-            level
-                .world
-                .query::<&Prop>()
-                .iter(&level.world)
-                .filter(|p| p.trigger == Some(shared))
-                .count(),
-            2
+            level.effects(),
+            [TriggerEffect::Sound { path: "FIRST".into(), volume: 1.0, at: Some(Vec3::ZERO) }]
         );
-        assert_eq!(level.world.query::<&Device>().iter(&level.world).count(), 2);
-        let old = level.devices.clone();
+        assert_eq!(level.world.get::<PropMotion>(first).unwrap().target, 10.0);
+        assert_eq!(level.world.get::<PropMotion>(second).unwrap().target, 0.0);
+        assert!(!level.world.get::<TriggerState>(second).unwrap().fired);
+        assert!(level.operations.get_mut(&mut level.world).unwrap().run(second));
+        assert_eq!(
+            level.effects(),
+            [TriggerEffect::Sound { path: "SECOND".into(), volume: 1.0, at: Some(Vec3::X) }]
+        );
+        assert_eq!(level.world.get::<PropMotion>(second).unwrap().target, 20.0);
         let memory = level.remember();
-        level.visit(Some(&memory));
-        for entity in old {
-            assert!(level.world.get_entity(entity).is_err());
+        level.visit(Some(memory));
+        for old in [first, second] {
+            assert!(level.world.get_entity(old).is_err());
+        }
+        for &device in &level.devices {
+            assert!(level.world.get::<DoorState>(device).unwrap().open);
         }
     }
     #[test]

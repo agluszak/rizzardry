@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use super::items::{WorldItem, drop_held, take_item};
 use super::level::Level;
 use super::props::Prop;
-use super::triggers::DeviceOperations;
+use super::triggers::{Device, DeviceOperations};
 use crate::content::items::ItemCatalog;
 use crate::game::data::GameData;
 use crate::game::inventory::{ItemNews, PartyInventory};
@@ -24,7 +24,7 @@ pub struct WorldClick {
 pub fn act_on_click(
     mut commands: Commands,
     mut clicks: MessageReader<WorldClick>,
-    props: Query<(&Name, &Prop)>,
+    props: Query<(&Name, Has<Device>), With<Prop>>,
     // Triggers give the party things too: one or the other at a time.
     mut acting: ParamSet<(DeviceOperations, ResMut<PartyInventory>)>,
     mut items: Query<&mut WorldItem>,
@@ -37,10 +37,12 @@ pub fn act_on_click(
 ) {
     let Some(catalog) = data.and_then(|d| catalogs.get(&d.items)) else { return };
     for click in clicks.read() {
-        if let Some((name, prop, distance)) =
-            click.under.and_then(|(e, d)| props.get(e).ok().map(|(n, p)| (n, p, d)))
+        if let Some((entity, name, device, distance)) =
+            click.under.and_then(|(e, d)| props.get(e).ok().map(|(n, device)| (e, n, device, d)))
         {
-            use_prop(name, prop, distance, &mut acting.p0());
+            if device && acting.p0().use_device(entity, distance) {
+                info!("used {name}");
+            }
             continue;
         }
         let mut inventory = acting.p1();
@@ -58,18 +60,5 @@ pub fn act_on_click(
                 commands.entity(entity).despawn();
             }
         }
-    }
-}
-
-/// Use a prop clicked `distance` away, if its trigger can be used from
-/// there. Retail measures from the middle of the prop; the hit point is
-/// close.
-fn use_prop(name: &Name, prop: &Prop, distance: f32, triggers: &mut DeviceOperations) {
-    let Some(device) = prop.trigger else {
-        debug!("{name} does nothing");
-        return;
-    };
-    if triggers.use_device(device, distance) {
-        info!("used {name}");
     }
 }
