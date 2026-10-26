@@ -21,8 +21,6 @@ const TURN_PER_SECOND: f32 = std::f32::consts::PI / 16.0 / 0.05;
 #[derive(Component, Debug)]
 pub struct ItemShown {
     model: Handle<ItemModel>,
-    /// This item's copies of the model's meshes, once built.
-    parts: Option<Vec<Handle<Mesh>>>,
     /// The sky light it gets: all in sight of the `SUN` light, none out of
     /// it, decided where it lies (retail `light_scale`).
     sky_scale: Option<f32>,
@@ -50,45 +48,56 @@ pub fn show_world_items(
         if let Some(model) = model {
             commands.entity(entity).insert(ItemShown {
                 model: assets.load(format!("retail://{model}")),
-                parts: None,
                 sky_scale: None,
             });
         }
     }
 }
 
+/// Cosmetic pose belongs to the visual child, never the world-placement root.
+#[derive(Component, Debug)]
+pub struct ItemVisual;
+
+#[derive(Component, Debug)]
+pub struct ItemPart(usize);
+
 pub fn build_world_items(
     mut commands: Commands,
-    mut items: Query<(Entity, &WorldItem, &mut ItemShown, &mut Transform)>,
+    items: Query<(Entity, &WorldItem, &ItemShown, Option<&Children>)>,
+    visuals: Query<(), With<ItemVisual>>,
     models: Res<Assets<ItemModel>>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
-    for (entity, item, mut shown, mut transform) in &mut items {
-        if shown.parts.is_some() {
+    for (entity, item, shown, children) in &items {
+        if children.is_some_and(|c| c.iter().any(|e| visuals.contains(e))) {
             continue;
         }
         let Some(model) = models.get(&shown.model) else { continue };
-        let mut parts = Vec::new();
-        for part in &model.parts {
+        let root = commands
+            .spawn((
+                ItemVisual,
+                Transform::from_rotation(Quat::from_rotation_y(
+                    ((item.item.id.0 % 360) as f32).to_radians(),
+                )),
+                Visibility::default(),
+                ChildOf(entity),
+            ))
+            .id();
+        for (index, part) in model.parts.iter().enumerate() {
             let Some(mesh) = meshes.get(&part.mesh).cloned() else { continue };
             let copy = meshes.add(mesh);
             commands.spawn((
-                Mesh3d(copy.clone()),
+                ItemPart(index),
+                Mesh3d(copy),
                 MeshMaterial3d(part.material.clone()),
-                ChildOf(entity),
+                ChildOf(root),
             ));
-            parts.push(copy);
         }
-        shown.parts = Some(parts);
-        // Retail rolls a yaw below 360 degrees; presentation does not take
-        // gameplay's random numbers, so it comes from the item's identity.
-        transform.rotation = Quat::from_rotation_y(((item.item.id.0 % 360) as f32).to_radians());
     }
 }
 
-pub fn turn_world_items(time: Res<Time>, mut items: Query<&mut Transform, With<ItemShown>>) {
+pub fn turn_world_items(time: Res<Time>, mut items: Query<&mut Transform, With<ItemVisual>>) {
     for mut transform in &mut items {
-        // Retail turns them clockwise seen from above.
         transform.rotate_y(-TURN_PER_SECOND * time.delta_secs());
     }
 }
@@ -104,7 +113,9 @@ pub fn light_world_items(
     geometry: Res<Assets<LevelGeometry>>,
     models: Res<Assets<ItemModel>>,
     spatial: SpatialQuery,
-    mut items: Query<(Entity, &GlobalTransform, &mut ItemShown)>,
+    mut items: Query<(Entity, &GlobalTransform, &mut ItemShown, &Children)>,
+    visuals: Query<&Children, With<ItemVisual>>,
+    parts: Query<(&ItemPart, &Mesh3d)>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let Some((level_entity, level)) =
@@ -118,22 +129,26 @@ pub fn light_world_items(
     // highlight in is not recovered; here it adds green light.
     let phase = (time.elapsed_secs() / PULSE_SECONDS).fract();
     let pulse = 0.25 + 0.75 * (1.0 - (2.0 * phase - 1.0).abs());
-    for (entity, transform, mut shown) in &mut items {
+    for (entity, transform, mut shown, children) in &mut items {
         let at = transform.translation();
         let sky_scale = *shown.sky_scale.get_or_insert_with(|| {
             if sunlit(&spatial, level_entity, level, at) { 1.0 } else { 0.0 }
         });
         let fixed = level.lighting.at(at, None);
-        let (Some(model), Some(parts)) = (models.get(&shown.model), &shown.parts) else { continue };
-        for (part, copy) in model.parts.iter().zip(parts) {
-            let mut light = sky * sky_scale * part.ambient + fixed + Vec3::splat(part.emission);
-            if hovered.entity() == Some(entity) {
-                light += Vec3::Y * pulse;
+        let Some(model) = models.get(&shown.model) else { continue };
+        for visual in children.iter().filter_map(|e| visuals.get(e).ok()) {
+            for child in visual.iter() {
+                let Ok((index, copy)) = parts.get(child) else { continue };
+                let Some(part) = model.parts.get(index.0) else { continue };
+                let mut light = sky * sky_scale * part.ambient + fixed + Vec3::splat(part.emission);
+                if hovered.entity() == Some(entity) {
+                    light += Vec3::Y * pulse;
+                }
+                let colour = light.extend(1.0).to_array();
+                let Some(mut mesh) = meshes.get_mut(&copy.0) else { continue };
+                let count = mesh.count_vertices();
+                mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![colour; count]);
             }
-            let colour = light.extend(1.0).to_array();
-            let Some(mut mesh) = meshes.get_mut(copy) else { continue };
-            let count = mesh.count_vertices();
-            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![colour; count]);
         }
     }
 }
@@ -141,3 +156,58 @@ pub fn light_world_items(
 /// A full rise and fall of the highlight: 15 steps up and 15 down, 50 ms
 /// each.
 const PULSE_SECONDS: f32 = 1.5;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::content::items::{ItemDefinition, ItemId};
+    use crate::game::inventory::{ItemIds, make_item};
+    use crate::game::rng::GameRng;
+
+    #[test]
+    fn cosmetic_spin_preserves_world_placement_and_uses_one_visual_hierarchy() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<Assets<ItemModel>>()
+            .init_resource::<Assets<Mesh>>()
+            .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::from_millis(100),
+            ))
+            .add_systems(Update, (build_world_items, turn_world_items).chain());
+        let model =
+            app.world_mut().resource_mut::<Assets<ItemModel>>().add(ItemModel { parts: vec![] });
+        let item = make_item(
+            &ItemDefinition { id: ItemId(0), ..default() },
+            &mut ItemIds::default(),
+            &mut GameRng::seeded(1),
+            false,
+            true,
+        );
+        let placement =
+            Transform::from_xyz(5.0, 2.0, 3.0).with_rotation(Quat::from_rotation_x(0.25));
+        let root = app
+            .world_mut()
+            .spawn((
+                WorldItem { item, hidden: false, contents: vec![] },
+                placement,
+                ItemShown { model, sky_scale: None },
+            ))
+            .id();
+        app.update();
+        let first = *app
+            .world_mut()
+            .query_filtered::<&Transform, With<ItemVisual>>()
+            .single(app.world())
+            .unwrap();
+        app.update();
+        assert_eq!(*app.world().get::<Transform>(root).unwrap(), placement);
+        let second = *app
+            .world_mut()
+            .query_filtered::<&Transform, With<ItemVisual>>()
+            .single(app.world())
+            .unwrap();
+        assert_ne!(first.rotation, second.rotation);
+        assert_eq!(second.translation, Vec3::ZERO);
+        assert_eq!(app.world_mut().query::<&ItemVisual>().iter(app.world()).count(), 1);
+    }
+}

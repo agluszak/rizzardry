@@ -447,7 +447,7 @@ versus physical state, and the retail-specific decoding and animation math.
 | 12. Inventory operations | Implemented in inventory operation work | Cells submit resolved destinations; gameplay chooses merge/swap/deposit, validates membership/equipment and reports actual held remainder. Chest/bag transfers share partial-merge and overflow handling. |
 | 13. Retained UI | Open | Stable health/order/caption/inventory nodes respond to actual dependencies; stationary tooltips refresh; retain text raster caching. |
 | 14. Annotation drafts | Open | Session-owned drafts; explicit commit/cancel; no unfinished notes in campaign state or snapshots. |
-| 15. Render hierarchy | Open | Parts/cycles identify themselves in ECS; delete mirrored mesh/entity registries; item spin stays on visual children. |
+| 15. Render hierarchy | Implemented in render part work | Cycles and source-part indices live on actual render entities; playback/light queries use Mesh3d plus hierarchy, with no mirrored registry. Item rotation stays on one cosmetic child and root placement remains unchanged. |
 | 16. Asset integration | Body boundary implemented; navigation importer moved to retail in baseline | Evaluate remaining synthetic navmesh packaging with dependency hashing/rebake evidence; keep cache correctness. |
 | 17. Snapshot ownership | Implemented in body/device work | Move owned revisit population, devices and notes into ECS; capture physical state without visuals. |
 | 18. Composition and ordering | Open | Campaign initialization belongs in composition; feature registrations match ownership; identification/combat RNG ordering is explicit. |

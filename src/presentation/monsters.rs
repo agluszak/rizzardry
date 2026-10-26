@@ -5,7 +5,6 @@
 //! meshes, interpolating vertex positions between frames as retail does with
 //! smooth animation on.
 
-use bevy::platform::collections::HashMap;
 use std::time::Duration;
 
 use bevy::prelude::*;
@@ -66,16 +65,22 @@ pub fn request_monster_visuals(
 /// The built model of one actor.
 #[derive(Component, Debug)]
 pub struct MonsterInstance {
-    /// Holds the model, lowered by the actor's float height.
-    model_root: Entity,
-    /// Per cycle: its root entity and this instance's mesh copies.
-    cycles: HashMap<String, (Entity, Vec<Handle<Mesh>>)>,
     /// The cycle shown, and how long it has played.
     playing: Option<(CycleRequest, Stopwatch)>,
     /// How much sky light reaches the actor: retail fades it between 0.75
     /// in sight of the level's `SUN` light and 0 out of it.
     sky_scale: f32,
 }
+
+/// The hierarchy itself records which visual entities were successfully built.
+#[derive(Component, Debug)]
+pub struct ModelRoot;
+
+#[derive(Component, Debug)]
+pub struct ModelCycle(String);
+
+#[derive(Component, Debug)]
+pub struct ModelPart(usize);
 
 pub fn build_monster_instances(
     mut commands: Commands,
@@ -89,6 +94,7 @@ pub fn build_monster_instances(
         // to face the actor's forward (-Z). Feet are at the model's origin.
         let model_root = commands
             .spawn((
+                ModelRoot,
                 Transform {
                     translation: Vec3::NEG_Y * walker.map_or(0.0, |w| w.float_height),
                     rotation: Quat::from_rotation_y(std::f32::consts::PI),
@@ -98,44 +104,41 @@ pub fn build_monster_instances(
                 ChildOf(actor),
             ))
             .id();
-        let mut cycles = HashMap::new();
         for (name, cycle) in &model.cycles {
             let cycle_root = commands
                 .spawn((
                     Name::new(name.clone()),
+                    ModelCycle(name.clone()),
                     Transform::default(),
                     Visibility::Hidden,
                     ChildOf(model_root),
                 ))
                 .id();
-            let mut copies = Vec::new();
-            for part in &cycle.parts {
+            for (index, part) in cycle.parts.iter().enumerate() {
                 let Some(mesh) = meshes.get(&part.mesh).cloned() else { continue };
                 let copy = meshes.add(mesh);
                 commands.spawn((
-                    Mesh3d(copy.clone()),
+                    ModelPart(index),
+                    Mesh3d(copy),
                     MeshMaterial3d(part.material.clone()),
                     ChildOf(cycle_root),
                 ));
-                copies.push(copy);
             }
-            cycles.insert(name.clone(), (cycle_root, copies));
         }
-        commands.entity(actor).insert((
-            MonsterInstance { model_root, cycles, playing: None, sky_scale: SUNLIT },
-            Visibility::default(),
-        ));
+        commands
+            .entity(actor)
+            .insert((MonsterInstance { playing: None, sky_scale: SUNLIT }, Visibility::default()));
     }
 }
 
 /// Keep the model's feet on the ground when a monster gains a walking body
 /// that floats over them.
 pub fn follow_float_height(
-    actors: Query<(&Walker, &MonsterInstance), Changed<Walker>>,
-    mut transforms: Query<&mut Transform>,
+    actors: Query<&Walker>,
+    mut roots: Query<(&ChildOf, &mut Transform), With<ModelRoot>>,
 ) {
-    for (walker, instance) in &actors {
-        if let Ok(mut transform) = transforms.get_mut(instance.model_root) {
+    for (owner, mut transform) in &mut roots {
+        if let Ok(walker) = actors.get(owner.parent()) {
             transform.translation = Vec3::NEG_Y * walker.float_height;
         }
     }
@@ -156,23 +159,25 @@ pub fn show_deaths(
 /// Show each actor's requested cycle at its current frame.
 pub fn animate_monsters(
     time: Res<Time<Virtual>>,
-    mut actors: Query<(&Monster, &MonsterVisual, &mut MonsterInstance, Option<&CycleRequest>)>,
+    mut actors: Query<(
+        &Monster,
+        &MonsterVisual,
+        &mut MonsterInstance,
+        Option<&CycleRequest>,
+        &Children,
+    )>,
     models: Res<Assets<MonsterModel>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut visibility: Query<&mut Visibility>,
+    roots: Query<&Children, With<ModelRoot>>,
+    mut cycles: Query<(&ModelCycle, &Children, &mut Visibility)>,
+    parts: Query<(&ModelPart, &Mesh3d)>,
 ) {
-    for (monster, visual, mut instance, request) in &mut actors {
+    for (monster, visual, mut instance, request, children) in &mut actors {
         let Some(model) = models.get(&visual.0) else { continue };
         let request = request.cloned().unwrap_or_else(|| CycleRequest::looping("IDLE"));
         let name = if model.cycles.contains_key(&request.cycle) { &request.cycle } else { "IDLE" };
         let Some(cycle) = model.cycles.get(name) else { continue };
         if instance.playing.as_ref().is_none_or(|(playing, _)| *playing != request) {
-            for (cycle_name, (root, _)) in &instance.cycles {
-                if let Ok(mut shown) = visibility.get_mut(*root) {
-                    *shown =
-                        if cycle_name == name { Visibility::Inherited } else { Visibility::Hidden };
-                }
-            }
             // The first cycle starts part-way in.
             let mut played = Stopwatch::new();
             if instance.playing.is_none() {
@@ -185,12 +190,29 @@ pub fn animate_monsters(
         let elapsed = played.tick(time.delta()).elapsed_secs() * cycle.frames_per_second;
         let frame = if request.once { elapsed.min(frames - 1.0) } else { elapsed % frames };
         let positions = cycle.positions_at(frame);
-        let Some((_, copies)) = instance.cycles.get(name) else { continue };
-        for (part, copy) in cycle.parts.iter().zip(copies) {
-            if let Some(mut mesh) = meshes.get_mut(copy) {
-                let moved: Vec<[f32; 3]> =
-                    part.source.iter().map(|&v| positions[v as usize].to_array()).collect();
-                mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, moved);
+        for root in children.iter().filter_map(|e| roots.get(e).ok()) {
+            for child in root.iter() {
+                let Ok((cycle_name, children, mut visibility)) = cycles.get_mut(child) else {
+                    continue;
+                };
+                let active = cycle_name.0 == name;
+                visibility.set_if_neq(if active {
+                    Visibility::Inherited
+                } else {
+                    Visibility::Hidden
+                });
+                if !active {
+                    continue;
+                }
+                for entity in children.iter() {
+                    let Ok((index, copy)) = parts.get(entity) else { continue };
+                    let Some(part) = cycle.parts.get(index.0) else { continue };
+                    if let Some(mut mesh) = meshes.get_mut(&copy.0) {
+                        let moved: Vec<[f32; 3]> =
+                            part.source.iter().map(|&v| positions[v as usize].to_array()).collect();
+                        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, moved);
+                    }
+                }
             }
         }
     }
@@ -214,7 +236,10 @@ pub fn light_monsters(
     geometry: Res<Assets<LevelGeometry>>,
     models: Res<Assets<MonsterModel>>,
     spatial: SpatialQuery,
-    mut actors: Query<(&GlobalTransform, &MonsterVisual, &mut MonsterInstance)>,
+    mut actors: Query<(&GlobalTransform, &MonsterVisual, &mut MonsterInstance, &Children)>,
+    roots: Query<&Children, With<ModelRoot>>,
+    cycles: Query<(&ModelCycle, &Children, &Visibility)>,
+    parts: Query<(&ModelPart, &Mesh3d)>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let Some((level_entity, level)) =
@@ -223,30 +248,32 @@ pub fn light_monsters(
         return;
     };
     let sky = level.environment.as_ref().map_or(Vec3::ZERO, |e| e.sky_light(clock.phase()));
-    for (transform, visual, mut instance) in &mut actors {
+    for (transform, visual, mut instance, children) in &mut actors {
         let Some(model) = models.get(&visual.0) else { continue };
         let centre = transform.translation();
         let target = if sunlit(&spatial, level_entity, level, centre) { SUNLIT } else { 0.0 };
         let step = SKY_SCALE_PER_SECOND * time.delta_secs();
         instance.sky_scale += (target - instance.sky_scale).clamp(-step, step);
         let fixed = level.lighting.at(centre, None);
-        let Some(playing) = instance.playing.as_ref().map(|(request, _)| request.cycle.clone())
-        else {
-            continue;
-        };
-        let Some(cycle) = model.cycle(&playing) else { continue };
-        let Some((_, copies)) =
-            instance.cycles.get(&playing).or_else(|| instance.cycles.get("IDLE"))
-        else {
-            continue;
-        };
-        for (part, copy) in cycle.parts.iter().zip(copies) {
-            let light =
-                sky * instance.sky_scale * part.ambient + fixed + Vec3::splat(part.emission);
-            let colour = light.extend(1.0).to_array();
-            let Some(mut mesh) = meshes.get_mut(copy) else { continue };
-            let count = part.source.len();
-            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![colour; count]);
+        for root in children.iter().filter_map(|e| roots.get(e).ok()) {
+            for child in root.iter() {
+                let Ok((cycle_name, children, visibility)) = cycles.get(child) else { continue };
+                if *visibility == Visibility::Hidden {
+                    continue;
+                }
+                let Some(cycle) = model.cycles.get(&cycle_name.0) else { continue };
+                for entity in children.iter() {
+                    let Ok((index, copy)) = parts.get(entity) else { continue };
+                    let Some(part) = cycle.parts.get(index.0) else { continue };
+                    let light = sky * instance.sky_scale * part.ambient
+                        + fixed
+                        + Vec3::splat(part.emission);
+                    let colour = light.extend(1.0).to_array();
+                    let Some(mut mesh) = meshes.get_mut(&copy.0) else { continue };
+                    let count = mesh.count_vertices();
+                    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![colour; count]);
+                }
+            }
         }
     }
 }
@@ -291,5 +318,90 @@ pub fn choose_walker_cycles(
         if current.is_none_or(|c| c.cycle != cycle) {
             commands.entity(entity).insert(CycleRequest::looping(cycle));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::content::monster::{MonsterCycleModel, MonsterPart};
+    use crate::game::world::population::ScaledBody;
+    use bevy::mesh::VertexAttributeValues;
+    use bevy::platform::collections::HashMap;
+
+    #[test]
+    fn sparse_render_parts_keep_their_source_identity_and_cycle_fallback() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<MonsterModel>>()
+            .add_systems(Update, (build_monster_instances, animate_monsters).chain());
+        let mesh = Mesh::from(Cuboid::default());
+        let count = mesh.count_vertices();
+        let good_mesh = app.world_mut().resource_mut::<Assets<Mesh>>().add(mesh);
+        let parts = vec![
+            MonsterPart {
+                mesh: default(),
+                material: default(),
+                ambient: Vec3::ZERO,
+                emission: 0.0,
+                source: vec![0],
+            },
+            MonsterPart {
+                mesh: good_mesh,
+                material: default(),
+                ambient: Vec3::ONE,
+                emission: 0.0,
+                source: vec![1; count],
+            },
+        ];
+        let mut cycles = HashMap::new();
+        cycles.insert(
+            "IDLE".into(),
+            MonsterCycleModel {
+                frames_per_second: 1.0,
+                parts,
+                frames: vec![vec![Vec3::ZERO, Vec3::new(7.0, 8.0, 9.0)]],
+            },
+        );
+        let model =
+            app.world_mut().resource_mut::<Assets<MonsterModel>>().add(MonsterModel { cycles });
+        let placement = Transform::from_xyz(10.0, 2.0, 5.0);
+        let actor = app
+            .world_mut()
+            .spawn((
+                Monster {
+                    location: 0,
+                    species: 0,
+                    hp: 1,
+                    max_hp: 1,
+                    stamina: 1,
+                    max_stamina: 1,
+                    conditions: vec![],
+                    body: ScaledBody { scale: 2.0, radius: 1.0, eye_height: 1.0, speed: 1.0 },
+                },
+                placement,
+                MonsterVisual(model),
+                CycleRequest::looping("MISSING"),
+            ))
+            .id();
+        app.update();
+        assert_eq!(*app.world().get::<Transform>(actor).unwrap(), placement);
+        let (part_entity, source, copy) =
+            app.world_mut().query::<(Entity, &ModelPart, &Mesh3d)>().single(app.world()).unwrap();
+        assert_eq!(source.0, 1, "missing parts cannot shift the remaining source correspondence");
+        let mesh = app.world().resource::<Assets<Mesh>>().get(&copy.0).unwrap();
+        let Some(VertexAttributeValues::Float32x3(positions)) =
+            mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+        else {
+            panic!("positions")
+        };
+        assert_eq!(positions, &vec![[7.0, 8.0, 9.0]; count]);
+        let (_, visibility) =
+            app.world_mut().query::<(&ModelCycle, &Visibility)>().single(app.world()).unwrap();
+        assert_eq!(*visibility, Visibility::Inherited);
+        app.world_mut().despawn(part_entity);
+        app.update();
+        assert_eq!(app.world_mut().query::<&ModelPart>().iter(app.world()).count(), 0);
     }
 }
