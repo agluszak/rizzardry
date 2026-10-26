@@ -10,7 +10,7 @@ use bevy::prelude::*;
 use crate::game::characters::{Condition, Vitals};
 use crate::game::party::body::PartyBody;
 use crate::game::party::roster::PartyRoster;
-use crate::game::time::GameClock;
+use std::time::Duration;
 
 /// How long a requested rest lasts, in game milliseconds.
 const REST_MS: u64 = 8 * 3_600_000;
@@ -20,42 +20,81 @@ pub const FADE_SECONDS: f32 = 1.0;
 const STILL_BELOW: f32 = 0.05;
 
 /// The party is camping. Exists only while it does.
-#[derive(Resource, Debug)]
-pub struct Camp {
-    /// Nobody could act: rest until someone can, not for eight hours.
-    pub forced: bool,
-    pub phase: CampPhase,
-    /// When a requested rest ends; set once the fade-in has finished.
-    until: Option<u64>,
+#[derive(Resource, Clone, Debug)]
+pub enum Camp {
+    FadingIn { fade: Timer, forced: bool },
+    Resting(RestGoal),
+    FadingOut { fade: Timer, outcome: CampNews },
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum CampPhase {
-    /// Fading to the camping screen.
-    FadingIn(Timer),
-    Resting,
-    /// Fading back to the world.
-    FadingOut(Timer),
+#[derive(Clone, Copy, Debug)]
+pub enum RestGoal {
+    Until(u64),
+    UntilAble,
 }
 
-impl CampPhase {
-    fn fading_in() -> Self {
-        CampPhase::FadingIn(Timer::from_seconds(FADE_SECONDS, TimerMode::Once))
-    }
-
-    fn fading_out() -> Self {
-        CampPhase::FadingOut(Timer::from_seconds(FADE_SECONDS, TimerMode::Once))
-    }
+fn fade() -> Timer {
+    Timer::from_seconds(FADE_SECONDS, TimerMode::Once)
 }
 
 impl Camp {
     fn new(forced: bool) -> Self {
-        Camp { forced, phase: CampPhase::fading_in(), until: None }
+        Self::FadingIn { fade: fade(), forced }
     }
 
     /// Whether game time races (retail's accelerated calendar).
     pub fn racing(&self) -> bool {
-        self.phase == CampPhase::Resting
+        matches!(self, Self::Resting(_))
+    }
+
+    fn leave(&mut self) -> Option<CampNews> {
+        match self {
+            Self::FadingIn { forced: true, .. } | Self::Resting(RestGoal::UntilAble) => {
+                Some(CampNews::Started { forced: true })
+            }
+            Self::Resting(RestGoal::Until(_)) => {
+                *self = Self::FadingOut { fade: fade(), outcome: CampNews::Interrupted };
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Called after this interval's clock and recovery have been settled under
+    /// the phase that began it. Rendering only observes these simulation phases.
+    pub(crate) fn advance(
+        &mut self,
+        elapsed: Duration,
+        now: u64,
+        anyone_able: bool,
+    ) -> Option<CampNews> {
+        match self {
+            Self::FadingIn { fade, forced } => {
+                if fade.tick(elapsed).is_finished() {
+                    *self = Self::Resting(if *forced {
+                        RestGoal::UntilAble
+                    } else {
+                        RestGoal::Until(now + REST_MS)
+                    });
+                }
+            }
+            Self::Resting(goal) => {
+                let outcome = match goal {
+                    RestGoal::Until(until) if now >= *until => Some(CampNews::Done),
+                    RestGoal::UntilAble if anyone_able => Some(CampNews::Recovered),
+                    _ => None,
+                };
+                if let Some(outcome) = outcome {
+                    *self = Self::FadingOut { fade: fade(), outcome };
+                }
+            }
+            Self::FadingOut { fade, outcome } => {
+                if fade.tick(elapsed).is_finished() {
+                    return Some(*outcome);
+                }
+            }
+        }
+        None
     }
 }
 
@@ -71,7 +110,6 @@ pub enum CampNews {
     InCombat,
     Done,
     Interrupted,
-    Cancelled,
     Recovered,
 }
 
@@ -137,53 +175,31 @@ pub fn leave_camp(
     mut news: MessageWriter<CampNews>,
 ) {
     let (Some(mut camp), Some(LeaveCamp)) = (camp, requests.read().last()) else { return };
-    if camp.forced {
-        news.write(CampNews::Started { forced: true });
-    } else if camp.phase == CampPhase::Resting {
-        camp.phase = CampPhase::fading_out();
+    if let Some(outcome) = camp.leave() {
+        news.write(outcome);
     }
 }
 
-pub fn advance_camp(
-    mut commands: Commands,
-    time: Res<Time>,
-    clock: Res<GameClock>,
-    camp: Option<ResMut<Camp>>,
-    roster: Res<PartyRoster>,
-    members: Query<&Vitals>,
-    mut news: MessageWriter<CampNews>,
-) {
-    let Some(mut camp) = camp else { return };
-    let anyone_able = members.iter_many(&roster.0).flatten().any(can_act);
-    match &mut camp.phase {
-        CampPhase::FadingIn(fade) => {
-            if fade.tick(time.delta()).is_finished() {
-                camp.phase = CampPhase::Resting;
-                camp.until = Some(clock.ms + REST_MS);
-            }
-        }
-        CampPhase::Resting => {
-            let woke = if camp.forced {
-                anyone_able
-            } else {
-                camp.until.is_some_and(|until| clock.ms >= until)
-            };
-            if woke {
-                camp.phase = CampPhase::fading_out();
-            }
-        }
-        CampPhase::FadingOut(fade) => {
-            if !fade.tick(time.delta()).is_finished() {
-                return;
-            }
-            news.write(match (camp.forced, camp.until) {
-                (true, _) if anyone_able => CampNews::Recovered,
-                (true, _) => CampNews::Interrupted,
-                (false, None) => CampNews::Cancelled,
-                (false, Some(until)) if clock.ms >= until => CampNews::Done,
-                (false, Some(_)) => CampNews::Interrupted,
-            });
-            commands.remove_resource::<Camp>();
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interrupting_before_the_deadline_stays_interrupted_after_fading() {
+        let mut camp = Camp::Resting(RestGoal::Until(1000));
+        assert_eq!(camp.leave(), None);
+        assert!(!camp.racing());
+        assert_eq!(camp.advance(Duration::from_secs(1), 2000, true), Some(CampNews::Interrupted));
+    }
+
+    #[test]
+    fn forced_rest_cannot_be_cancelled_and_records_recovery_before_fading() {
+        let mut camp = Camp::Resting(RestGoal::UntilAble);
+        assert_eq!(camp.leave(), Some(CampNews::Started { forced: true }));
+        camp.advance(Duration::from_millis(16), 0, false);
+        assert!(camp.racing());
+        camp.advance(Duration::from_millis(16), 0, true);
+        assert!(!camp.racing());
+        assert_eq!(camp.advance(Duration::from_secs(1), 0, false), Some(CampNews::Recovered));
     }
 }

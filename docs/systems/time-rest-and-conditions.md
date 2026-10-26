@@ -107,6 +107,15 @@ round increment. Conditions do not each run a Bevy timer against whichever
    condition. Execute these gameplay consequences once, then update portraits,
    input, notices, and music. [W-reset][W-wake]
 
+The current implementation advances the clock, applies party recovery, and
+checks camp transitions together on each fixed simulation step. Fade timers
+also use this simulation clock; rendering reads their progress. A frame running
+several fixed steps can therefore leave accelerated rest between those steps.
+The deadline is checked after each step (so it can overshoot by at most one
+fixed step). The wake reason is recorded when rest ends and announced after
+the fade, rather than reinterpreted from the later clock or party condition.
+Ambush and waking Senses behavior remains unimplemented.
+
 Cancellation does not rewind the elapsed clock, restore expired effects, undo
 damage, or remove a potion already brewed. Pre-entry rejection creates no
 session. A cancellation during a running session follows its allowed phase;
