@@ -38,7 +38,12 @@ pub fn load_dialog_art(mut commands: Commands, assets: Res<AssetServer>) {
 pub struct QuestionDialog;
 
 #[derive(Component, Clone, FromTemplate)]
+#[relationship(relationship_target = QuestionView)]
 pub struct QuestionSession(pub Entity);
+
+#[derive(Component)]
+#[relationship_target(relationship = QuestionSession, linked_spawn)]
+pub struct QuestionView(Entity);
 
 #[derive(InputAction)]
 #[action_output(bool)]
@@ -51,17 +56,13 @@ struct Decline;
 /// Show the question when one is asked, once its art has loaded.
 pub fn show_travel_question(
     mut commands: Commands,
-    questions: Query<(Entity, &TravelQuestion)>,
-    shown: Query<&QuestionSession>,
+    questions: Query<(Entity, &TravelQuestion), Without<QuestionView>>,
     art: Res<DialogArt>,
     sheets: Res<Assets<SpriteSheet>>,
     tables: Res<Assets<TextTable>>,
     mut images: ResMut<Assets<Image>>,
 ) {
     let Ok((question_id, question)) = questions.single() else { return };
-    if shown.iter().any(|shown| shown.0 == question_id) {
-        return;
-    }
     let (Some(ok), Some(cancel), Some(font), Some(strings)) = (
         sheets.get(&art.ok),
         sheets.get(&art.cancel),
@@ -136,15 +137,35 @@ pub fn show_travel_question(
     });
 }
 
-/// A dialog is a view of its gameplay session, including cancellation by travel.
-pub fn close_ended_questions(
-    mut commands: Commands,
-    questions: Query<(), With<TravelQuestion>>,
-    dialogs: Query<(Entity, &QuestionSession)>,
-) {
-    for (entity, dialog) in &dialogs {
-        if !questions.contains(dialog.0) {
-            commands.entity(entity).despawn();
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ending_a_question_removes_its_dialog_and_controls() {
+        let mut world = World::new();
+        let level = world.spawn_empty().id();
+        let question =
+            world.spawn((TravelQuestion { entrance: "MO204".into() }, ChildOf(level))).id();
+        let dialog = world.spawn((QuestionDialog, QuestionSession(question))).id();
+        let button = world.spawn(ChildOf(dialog)).id();
+        assert_eq!(world.get::<QuestionView>(question).unwrap().0, dialog);
+        world.despawn(level);
+        assert!(world.get_entity(question).is_err());
+        assert!(world.get_entity(dialog).is_err());
+        assert!(world.get_entity(button).is_err());
+    }
+
+    #[test]
+    fn rebuilding_a_dialog_keeps_the_question_and_allows_a_new_view() {
+        let mut world = World::new();
+        let question = world.spawn(TravelQuestion { entrance: "MO204".into() }).id();
+        let dialog = world.spawn((QuestionDialog, QuestionSession(question))).id();
+        world.despawn(dialog);
+        world.flush();
+        assert!(world.get::<TravelQuestion>(question).is_some());
+        assert!(world.get::<QuestionView>(question).is_none());
+        let replacement = world.spawn((QuestionDialog, QuestionSession(question))).id();
+        assert_eq!(world.get::<QuestionView>(question).unwrap().0, replacement);
     }
 }

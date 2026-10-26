@@ -308,7 +308,7 @@ pub fn queue_notices(
             SearchNews::On => string(SEARCH_ON),
             SearchNews::Off => string(SEARCH_OFF),
             SearchNews::NotInCombat => string(NOT_IN_COMBAT_SEARCH),
-            SearchNews::Spotted { member, item } => {
+            SearchNews::Spotted { member, item, .. } => {
                 format!("{member} {}", string(SPOTS_HIDDEN).replace("%s", item))
             }
         };

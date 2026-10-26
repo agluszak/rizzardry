@@ -69,6 +69,7 @@ pub enum SearchNews {
     NotInCombat,
     /// "Ragnar spots a hidden Dagger!"
     Spotted {
+        target: Entity,
         member: String,
         item: String,
     },
@@ -146,7 +147,7 @@ pub fn search_pulse(
     party: Query<(&Position, &PartyBody)>,
     roster: Res<PartyRoster>,
     members: Query<(&Character, &Vitals)>,
-    mut items: Query<(&mut WorldItem, &Transform)>,
+    mut items: Query<(Entity, &mut WorldItem, &Transform)>,
     (spatial, bodies): (SpatialQuery, Query<&RigidBody>),
     (data, catalogs): (Option<Res<GameData>>, Res<Assets<ItemCatalog>>),
     mut news: MessageWriter<SearchNews>,
@@ -172,7 +173,7 @@ pub fn search_pulse(
     let Some((score, searcher)) = best else { return };
     let solid = |entity| bodies.get(entity).is_ok_and(RigidBody::is_static);
     let catalog = data.and_then(|d| catalogs.get(&d.items));
-    for (mut item, at) in &mut items {
+    for (target, mut item, at) in &mut items {
         if !item.hidden {
             continue;
         }
@@ -191,6 +192,7 @@ pub fn search_pulse(
         let name =
             catalog.and_then(|c| c.get(item.item.item)).map(|d| item.item.display_name(d, false));
         news.write(SearchNews::Spotted {
+            target,
             member: searcher.name.clone(),
             item: name.unwrap_or_default(),
         });

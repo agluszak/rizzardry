@@ -59,7 +59,6 @@ pub struct DoorLink {
     centre: Vec3,
     /// From the centre to one face of the closed door.
     half_thickness: Vec3,
-    spawned: Vec<Entity>,
 }
 
 impl DoorLink {
@@ -72,7 +71,7 @@ impl DoorLink {
         let size = max - min;
         let across = if size.x < size.z { Vec3::X * size.x } else { Vec3::Z * size.z };
         let centre = ((min + max) / 2.0).with_y(min.y);
-        Some(DoorLink { centre, half_thickness: across / 2.0, spawned: vec![] })
+        Some(DoorLink { centre, half_thickness: across / 2.0 })
     }
 
     /// The doorway crossing for walkers of `radius`: from a radius (and a
@@ -86,26 +85,26 @@ impl DoorLink {
 /// Keep each door's link present exactly while the door is open.
 pub fn sync_door_links(
     mut commands: Commands,
-    mut doors: Query<(Entity, &Prop, &PropMotion, &mut DoorLink)>,
+    doors: Query<(Entity, &Prop, &PropMotion, &DoorLink, Option<&Children>)>,
+    links: Query<(), With<AnimationLink3d>>,
     navigation: Query<&LevelNavigation>,
 ) {
     let Ok(navigation) = navigation.single() else { return };
-    for (entity, prop, motion, mut door) in &mut doors {
+    for (entity, prop, motion, door, children) in &doors {
         let open = prop.last_frame > 0 && motion.frame >= prop.last_frame as f32 * 0.5;
-        if open && door.spawned.is_empty() {
+        let existing =
+            children.into_iter().flatten().copied().filter(|&child| links.contains(child));
+        if open && existing.clone().next().is_none() {
             for (class, &archipelago) in navigation.archipelagos.iter().enumerate() {
                 let radius = SIZE_CLASSES[class];
-                let link = commands
-                    .spawn((
-                        Name::new("Door link"),
-                        link_bundle(&door.link(radius), archipelago, radius),
-                        ChildOf(entity),
-                    ))
-                    .id();
-                door.spawned.push(link);
+                commands.spawn((
+                    Name::new("Door link"),
+                    link_bundle(&door.link(radius), archipelago, radius),
+                    ChildOf(entity),
+                ));
             }
         } else if !open {
-            for link in door.spawned.drain(..) {
+            for link in existing {
                 commands.entity(link).despawn();
             }
         }
@@ -185,6 +184,72 @@ pub fn finish_crossings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn physical_door_pose_and_navigation_agree_before_each_planning_step() {
+        use crate::game::world::{WorldPlugin, level::Level};
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default(), WorldPlugin));
+        app.finish();
+        app.cleanup();
+        let archipelago = app
+            .world_mut()
+            .spawn(Archipelago3d::new(ArchipelagoOptions::from_agent_radius(SIZE_CLASSES[0])))
+            .id();
+        let level = app
+            .world_mut()
+            .spawn((
+                Level {
+                    path: "test".into(),
+                    geometry: default(),
+                    navmeshes: vec![],
+                    script: default(),
+                    messages: None,
+                },
+                LevelNavigation { archipelagos: vec![archipelago] },
+            ))
+            .id();
+        let door = app
+            .world_mut()
+            .spawn((
+                Prop {
+                    definition: 0,
+                    centre: Vec3::ZERO,
+                    door: true,
+                    frames_per_second: 10.0,
+                    last_frame: 10,
+                    wraps: false,
+                    slots: vec![],
+                },
+                PropMotion { frame: 0.0, target: 10.0 },
+                DoorLink::around([Vec3::new(-1.0, 0.0, -0.1), Vec3::new(1.0, 2.0, 0.1)]).unwrap(),
+                ChildOf(level),
+            ))
+            .id();
+        // An authored part is a sibling of the navigation links and must survive closing.
+        let part = app.world_mut().spawn(ChildOf(door)).id();
+        app.world_mut().resource_mut::<Time>().advance_by(std::time::Duration::from_millis(500));
+        app.world_mut().run_schedule(FixedPreUpdate);
+        let links: Vec<_> = app
+            .world_mut()
+            .query_filtered::<Entity, With<AnimationLink3d>>()
+            .iter(app.world())
+            .collect();
+        assert_eq!(links.len(), 1, "the halfway pose opens navigation in this same step");
+        app.world_mut().get_mut::<PropMotion>(door).unwrap().target = 0.0;
+        app.world_mut().run_schedule(FixedPreUpdate);
+        assert!(app.world().get_entity(links[0]).is_err());
+        assert!(app.world().get_entity(part).is_ok());
+        app.world_mut().get_mut::<PropMotion>(door).unwrap().target = 10.0;
+        app.world_mut().run_schedule(FixedPreUpdate);
+        let link = app
+            .world_mut()
+            .query_filtered::<Entity, With<AnimationLink3d>>()
+            .single(app.world())
+            .unwrap();
+        app.world_mut().despawn(door);
+        assert!(app.world().get_entity(link).is_err());
+    }
 
     #[test]
     fn a_doorway_crosses_the_door_at_its_floor() {
