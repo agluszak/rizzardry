@@ -166,7 +166,7 @@ fn root(commands: &mut Commands, state: Session) -> Entity {
             BackgroundColor(INK),
             GlobalZIndex(50),
             DespawnOnExit(state),
-            TabGroup::modal(),
+            TabGroup::default(),
         ))
         .id();
     let inner = commands
@@ -637,7 +637,7 @@ fn refresh(
     focus: Res<InputFocus>,
     actions: Query<&Action>,
     mut commands: Commands,
-    buttons: Query<(Entity, &Action, Has<InteractionDisabled>)>,
+    mut buttons: Query<(Entity, &Action, Has<InteractionDisabled>, &mut TabIndex)>,
     mut pages: Query<(&Page, &mut Node, &mut Visibility), Without<SkillRow>>,
     mut fields: Query<(&Field, &mut Text)>,
     mut rows: Query<(&SkillRow, &mut Node, &mut Visibility), Without<Page>>,
@@ -664,7 +664,7 @@ fn refresh(
     }
     let draft = session.editing.as_ref().map(|(_, d)| d);
     let profile = draft.map(CharacterDraft::preview);
-    for (entity, action, disabled) in &buttons {
+    for (entity, action, disabled, mut tab) in &mut buttons {
         let enabled = match *action {
             Action::Add => session.editing.is_none() && session.party.len() < 6,
             Action::Edit(i) | Action::Remove(i) => {
@@ -673,6 +673,7 @@ fn refresh(
             Action::Begin => session.editing.is_none() && !session.party.is_empty(),
             _ => true,
         };
+        tab.set_if_neq(TabIndex(if enabled { 0 } else { -1 }));
         if enabled == disabled {
             if enabled {
                 commands.entity(entity).remove::<InteractionDisabled>();
@@ -811,3 +812,88 @@ const PORTRAITS: &[&str] = &[
     "madras", "sparkle", "myles", "vi", "drazic", "tantris", "rodan", "glumph", "saxx", "humm4",
     "humf4", "elfm1", "elff1",
 ];
+
+#[cfg(test)]
+mod keyboard_tests {
+    use super::*;
+    use bevy::input_focus::{InputDispatchPlugin, InputFocusPlugin};
+    use bevy::ui_widgets::ButtonPlugin;
+    use bevy::window::PrimaryWindow;
+
+    fn tap(app: &mut App, window: Entity, key_code: KeyCode) {
+        for state in [ButtonState::Pressed, ButtonState::Released] {
+            app.world_mut().write_message(KeyboardInput {
+                key_code,
+                logical_key: Key::Unidentified(bevy::input::keyboard::NativeKey::Unidentified),
+                state,
+                text: None,
+                repeat: false,
+                window,
+            });
+            app.update();
+        }
+    }
+
+    #[test]
+    fn frontend_can_reenter_tab_navigation_after_page_and_name_changes() {
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin::default(),
+            bevy::input::InputPlugin,
+            bevy::state::app::StatesPlugin,
+            InputFocusPlugin,
+            InputDispatchPlugin,
+            ButtonPlugin,
+            bevy::camera::visibility::VisibilityPlugin,
+        ))
+        .init_state::<Session>()
+        .init_asset::<crate::content::ui::SpriteSheet>()
+        .init_asset::<Mesh>()
+        .init_asset::<bevy::mesh::skinning::SkinnedMeshInverseBindposes>()
+        .init_resource::<PartyRoster>()
+        .init_resource::<Formation>()
+        .insert_resource(NewGameDestination { path: String::new(), start: default() })
+        .add_message::<AppExit>()
+        .add_plugins(FrontendPlugin);
+        let window = app.world_mut().spawn((Window::default(), PrimaryWindow)).id();
+        app.finish();
+        app.cleanup();
+        app.update();
+        tap(&mut app, window, KeyCode::Tab);
+        let focused = app.world().resource::<InputFocus>().get().unwrap();
+        assert!(matches!(app.world().get::<Action>(focused), Some(Action::NewGame)));
+        tap(&mut app, window, KeyCode::Enter);
+        app.update();
+        assert_eq!(*app.world().resource::<State<Session>>().get(), Session::Creation);
+        tap(&mut app, window, KeyCode::Tab);
+        let focused = app.world().resource::<InputFocus>().get().unwrap();
+        assert!(matches!(app.world().get::<Action>(focused), Some(Action::Add)));
+        tap(&mut app, window, KeyCode::Enter);
+        app.update();
+        // The transition cleared focus. Tab still finds a visible enabled control.
+        tap(&mut app, window, KeyCode::Tab);
+        let focused = app.world().resource::<InputFocus>().get().unwrap();
+        assert!(app.world().get::<Action>(focused).is_some());
+        assert!(app.world().get::<InteractionDisabled>(focused).is_none());
+        assert!(app.world().get::<InheritedVisibility>(focused).unwrap().get());
+        let name = app
+            .world_mut()
+            .query::<(Entity, &Action)>()
+            .iter(app.world())
+            .find_map(|(e, a)| matches!(a, Action::Name).then_some(e))
+            .unwrap();
+        app.world_mut()
+            .resource_mut::<InputFocus>()
+            .set(name, bevy::input_focus::FocusCause::Navigated);
+        tap(&mut app, window, KeyCode::Escape);
+        tap(&mut app, window, KeyCode::Tab);
+        assert!(
+            app.world()
+                .resource::<InputFocus>()
+                .get()
+                .and_then(|e| app.world().get::<Action>(e))
+                .is_some()
+        );
+    }
+}
