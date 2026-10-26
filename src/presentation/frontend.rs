@@ -1,6 +1,7 @@
 //! Retained frontend screens. Drafts belong to the creation root, never the campaign.
-use super::screen_art::{Picture, absolute};
+use super::screen_art::{BitmapText, Picture, absolute};
 use crate::content::characters::{Attribute, Gender, Profession, Skill};
+use crate::content::ui::SpriteSheet;
 use crate::game::characters::creation::{CharacterDraft, PLAYABLE_RACES};
 use crate::game::party::{formation::Formation, roster::PartyRoster};
 use crate::game::session::{NewGameDestination, Session, begin_adventure};
@@ -16,17 +17,70 @@ use bevy::prelude::*;
 use bevy::text::{EditableText, EditableTextFilter, TextEditChange};
 use bevy::ui::{InteractionDisabled, Pressed};
 use bevy::ui_widgets::{Activate, Button as UiButton, TextInput};
+use bevy_enhanced_input::prelude::Action as InputBindingAction;
+use bevy_enhanced_input::prelude::*;
 use enumset::EnumSet;
+
+mod credits;
+mod party;
 
 pub struct FrontendPlugin;
 impl Plugin for FrontendPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(TabNavigationPlugin)
+            .add_sub_state::<MenuPage>()
+            .add_input_context::<MenuInput>()
+            .add_input_context::<credits::CreditsInput>()
+            .add_systems(PreUpdate, arm_menu_input.before(EnhancedInputSystems::Update))
             .add_observer(activate)
-            .add_systems(OnEnter(Session::MainMenu), main_menu)
+            .add_systems(OnEnter(MenuPage::Main), main_menu)
+            .add_systems(OnEnter(MenuPage::Credits), credits::enter)
             .add_systems(OnEnter(Session::Creation), creation)
-            .add_systems(Update, (refresh, button_colours).chain());
+            .add_systems(
+                Update,
+                (
+                    refresh,
+                    show_editor,
+                    party::refresh,
+                    button_colours,
+                    paint_menu,
+                    party::paint,
+                    credits::populate,
+                    credits::scroll,
+                )
+                    .chain(),
+            );
     }
+}
+
+// A key that opened a screen must be released before that screen handles input.
+fn arm_menu_input(
+    mut commands: Commands,
+    keys: Res<ButtonInput<KeyCode>>,
+    menu: Query<(Entity, &ContextActivity<MenuInput>)>,
+    credits: Query<(Entity, &ContextActivity<credits::CreditsInput>)>,
+) {
+    if keys.get_pressed().next().is_some() {
+        return;
+    }
+    for (entity, active) in &menu {
+        if !**active {
+            commands.entity(entity).insert(ContextActivity::<MenuInput>::ACTIVE);
+        }
+    }
+    for (entity, active) in &credits {
+        if !**active {
+            commands.entity(entity).insert(ContextActivity::<credits::CreditsInput>::ACTIVE);
+        }
+    }
+}
+
+#[derive(SubStates, Default, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[source(Session = Session::MainMenu)]
+enum MenuPage {
+    #[default]
+    Main,
+    Credits,
 }
 
 const INK: Color = Color::srgb(0.035, 0.045, 0.06);
@@ -44,19 +98,26 @@ enum Page {
 }
 #[derive(Component)]
 struct Creation {
-    party: Vec<CharacterDraft>,
-    editing: Option<(Option<usize>, CharacterDraft)>,
+    candidates: Vec<(u32, CharacterDraft)>,
+    party: Vec<u32>,
+    selected: Option<u32>,
+    next_id: u32,
+    editing: Option<(Option<u32>, CharacterDraft)>,
     page: Page,
     message: String,
 }
 #[derive(Component, Clone, Copy)]
 enum Action {
     NewGame,
+    Credits,
     Quit,
     Menu,
     Add,
     Edit(usize),
     Remove(usize),
+    SelectCandidate(Option<u32>),
+    ToggleCandidate,
+    DeleteCandidate,
     Page(Page),
     Cancel,
     Finish,
@@ -84,6 +145,8 @@ enum Field {
 struct PreviewPortrait;
 #[derive(Component)]
 struct NameInput;
+#[derive(Component)]
+struct EditorGroup;
 
 fn text(
     commands: &mut Commands,
@@ -173,51 +236,215 @@ fn root(commands: &mut Commands, state: Session) -> Entity {
         .spawn((Node { width: px(640), height: px(480), ..default() }, BackgroundColor(INK)))
         .id();
     commands.entity(outer).add_child(inner);
+    if state == Session::MainMenu {
+        commands.entity(outer).insert(DespawnOnExit(MenuPage::Main));
+    }
     inner
 }
-fn main_menu(mut commands: Commands) {
+#[derive(Component)]
+struct MenuItem {
+    index: usize,
+    normal: Handle<SpriteSheet>,
+    highlighted: Handle<SpriteSheet>,
+    pressed: Handle<SpriteSheet>,
+    unavailable: Handle<SpriteSheet>,
+}
+
+#[derive(Component, Clone, Default)]
+struct MenuInput;
+#[derive(InputAction)]
+#[action_output(bool)]
+struct MenuUp;
+#[derive(InputAction)]
+#[action_output(bool)]
+struct MenuDown;
+#[derive(InputAction)]
+#[action_output(bool)]
+struct MenuStart;
+#[derive(InputAction)]
+#[action_output(bool)]
+struct MenuExit;
+
+fn main_menu(mut commands: Commands, assets: Res<AssetServer>, mut focus: ResMut<InputFocus>) {
     let root = root(&mut commands, Session::MainMenu);
-    text(&mut commands, root, (54., 58.), 530., 12., "A JOURNEY TO DOMINUS");
-    text(&mut commands, root, (50., 90.), 540., 56., "RIZZARDRY");
-    text(
-        &mut commands,
-        root,
-        (54., 161.),
-        480.,
-        15.,
-        "Six strangers. Three artifacts. One ascension.",
-    );
-    button(&mut commands, root, (54., 245.), 236., "NEW ADVENTURE", Action::NewGame);
-    button(&mut commands, root, (54., 285.), 236., "QUIT", Action::Quit);
-    text(
-        &mut commands,
-        root,
-        (54., 348.),
-        510.,
-        12.,
-        "Create your party, then begin on the shores of the monastery.\nSaved-game loading is not available yet.",
-    );
-    text(
-        &mut commands,
-        root,
-        (54., 438.),
-        530.,
-        10.,
-        "WIZARDRY 8  /  RUST + BEVY RECREATION  /  DEVELOPMENT BUILD",
-    );
+    let load = |path: &str| assets.load(format!("retail://data/options/{path}.sti"));
+    let normal = load("introtext_normal");
+    let highlighted = load("introtext_highlight");
+    let pressed = load("introtext_depressed");
+    let unavailable = load("introtext_unavailable");
+    commands.spawn((
+        Picture { sheet: load("intro_bg_text"), frame: 0, at: Vec2::ZERO, bounds: None },
+        Node { position_type: PositionType::Absolute, ..default() },
+        Pickable::IGNORE,
+        ChildOf(root),
+    ));
+    // Retail's hit rectangles are narrower than the shared artwork origin.
+    for (frame, (x, y, width, action)) in [
+        (174., 138., 294., None),
+        (140., 187., 362., Some(Action::NewGame)),
+        (204., 235., 233., None),
+        (239., 284., 165., Some(Action::Credits)),
+        (234., 335., 175., None),
+        (279., 423., 86., Some(Action::Quit)),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut button = commands.spawn((
+            UiButton,
+            TabIndex(0),
+            Hovered::default(),
+            absolute(Vec2::new(x, y), Vec2::new(width, 45.)),
+            Pickable::default(),
+            MenuItem {
+                index: frame,
+                normal: normal.clone(),
+                highlighted: highlighted.clone(),
+                pressed: pressed.clone(),
+                unavailable: unavailable.clone(),
+            },
+            ChildOf(root),
+        ));
+        if let Some(action) = action {
+            button.insert(action);
+            if frame == 1 {
+                focus.set(button.id(), bevy::input_focus::FocusCause::Navigated);
+            }
+        } else {
+            button.insert(InteractionDisabled);
+        }
+        let button = button.id();
+        commands.spawn((
+            Picture {
+                sheet: if action.is_some() { normal.clone() } else { unavailable.clone() },
+                frame,
+                at: Vec2::new(152. - x, 0.),
+                bounds: None,
+            },
+            Node { position_type: PositionType::Absolute, ..default() },
+            Pickable::IGNORE,
+            ChildOf(button),
+        ));
+    }
+    commands.spawn((
+        BitmapText {
+            font: assets.load("retail://data/fonts/smfnt.sti"),
+            value: "v1.2.4".into(),
+            at: Vec2::new(590., 5.),
+            width: 45.,
+            justify: bevy::text::Justify::Right,
+            ..default()
+        },
+        Node { position_type: PositionType::Absolute, ..default() },
+        Pickable::IGNORE,
+        ChildOf(root),
+    ));
+    commands.spawn_scene(bsn! {
+        MenuInput
+        ChildOf({root})
+        ContextPriority::<MenuInput>::new(1)
+        ContextActivity::<MenuInput>::INACTIVE
+        Actions<MenuInput> [
+            InputBindingAction::<MenuUp>::new() ActionSettings { consume_input: true } Bindings [ Binding(KeyCode::ArrowUp) ]
+            -- InputBindingAction::<MenuDown>::new() ActionSettings { consume_input: true } Bindings [ Binding(KeyCode::ArrowDown) ]
+            -- InputBindingAction::<MenuStart>::new() ActionSettings { consume_input: true } Bindings [ Binding(KeyCode::KeyS) ]
+            -- InputBindingAction::<MenuExit>::new() ActionSettings { consume_input: true } Bindings [ Binding(KeyCode::Escape) Binding(KeyCode::KeyX) Binding(KeyCode::KeyE) ]
+        ]
+        on(menu_up)
+        on(menu_down)
+        on(|_: On<Start<MenuStart>>, mut next: ResMut<NextState<Session>>| { next.set(Session::Creation); })
+        on(|_: On<Start<MenuExit>>, mut exit: MessageWriter<AppExit>| { exit.write(AppExit::Success); })
+    });
+}
+
+fn move_menu_focus(
+    forwards: bool,
+    focus: &mut InputFocus,
+    buttons: &Query<(Entity, &MenuItem), Without<InteractionDisabled>>,
+) {
+    let mut entries: Vec<_> = buttons.iter().map(|(entity, item)| (item.index, entity)).collect();
+    entries.sort_unstable_by_key(|entry| entry.0);
+    if entries.is_empty() {
+        return;
+    }
+    let current = entries.iter().position(|(_, entity)| Some(*entity) == focus.get()).unwrap_or(0);
+    let next = if forwards {
+        (current + 1) % entries.len()
+    } else {
+        (current + entries.len() - 1) % entries.len()
+    };
+    focus.set(entries[next].1, bevy::input_focus::FocusCause::Navigated);
+}
+
+fn menu_up(
+    _: On<Start<MenuUp>>,
+    mut focus: ResMut<InputFocus>,
+    buttons: Query<(Entity, &MenuItem), Without<InteractionDisabled>>,
+) {
+    move_menu_focus(false, &mut focus, &buttons);
+}
+
+fn menu_down(
+    _: On<Start<MenuDown>>,
+    mut focus: ResMut<InputFocus>,
+    buttons: Query<(Entity, &MenuItem), Without<InteractionDisabled>>,
+) {
+    move_menu_focus(true, &mut focus, &buttons);
+}
+
+fn paint_menu(
+    focus: Res<InputFocus>,
+    buttons: Query<(
+        Entity,
+        &MenuItem,
+        &Hovered,
+        Has<Pressed>,
+        Has<InteractionDisabled>,
+        &Children,
+    )>,
+    mut pictures: Query<&mut Picture>,
+) {
+    let hovered_button = buttons.iter().find_map(|(entity, _, hovered, _, disabled, _)| {
+        (hovered.get() && !disabled).then_some(entity)
+    });
+    for (entity, item, hovered, pressed, disabled, children) in &buttons {
+        let sheet = if disabled {
+            &item.unavailable
+        } else if pressed {
+            &item.pressed
+        } else if hovered.get() || (hovered_button.is_none() && focus.get() == Some(entity)) {
+            &item.highlighted
+        } else {
+            &item.normal
+        };
+        for child in children.iter() {
+            if let Ok(mut picture) = pictures.get_mut(child)
+                && picture.sheet != *sheet
+            {
+                picture.sheet = sheet.clone();
+            }
+        }
+    }
 }
 fn creation(mut commands: Commands, assets: Res<AssetServer>) {
     let root = root(&mut commands, Session::Creation);
     commands.entity(root).insert(Creation {
+        candidates: Vec::new(),
         party: Vec::new(),
+        selected: None,
+        next_id: 0,
         editing: None,
         page: Page::Party,
         message: String::new(),
     });
-    text(&mut commands, root, (22., 16.), 590., 25., "ASSEMBLE YOUR PARTY");
+    party::build(&mut commands, root, &assets);
+    let editor = commands
+        .spawn((EditorGroup, absolute(Vec2::ZERO, Vec2::new(640., 480.)), ChildOf(root)))
+        .id();
+    text(&mut commands, editor, (22., 16.), 590., 25., "ASSEMBLE YOUR PARTY");
     text(
         &mut commands,
-        root,
+        editor,
         (22., 51.),
         580.,
         10.,
@@ -226,44 +453,33 @@ fn creation(mut commands: Commands, assets: Res<AssetServer>) {
     for i in 0..6 {
         let label = button(
             &mut commands,
-            root,
+            editor,
             (22., 88. + i as f32 * 45.),
             139.,
             "Empty slot",
             Action::Edit(i),
         );
         commands.entity(label).insert(Field::Slot(i));
-        button(&mut commands, root, (165., 88. + i as f32 * 45.), 22., "x", Action::Remove(i));
+        button(&mut commands, editor, (165., 88. + i as f32 * 45.), 22., "x", Action::Remove(i));
     }
-    button(&mut commands, root, (22., 369.), 165., "+ NEW ADVENTURER", Action::Add);
-    button(&mut commands, root, (22., 435.), 165., "DISCARD PARTY & BACK", Action::Menu);
+    button(&mut commands, editor, (22., 369.), 165., "+ NEW ADVENTURER", Action::Add);
+    button(&mut commands, editor, (22., 435.), 165., "DISCARD PARTY & BACK", Action::Menu);
     text(
         &mut commands,
-        root,
+        editor,
         (205., 445.),
         410.,
         10.,
         "TAB / SHIFT+TAB to navigate / ENTER to activate",
     );
-    let message = text(&mut commands, root, (205., 402.), 410., 10., "");
+    let message = text(&mut commands, editor, (205., 402.), 410., 10., "");
     commands.entity(message).insert(Field::Message);
-    for page in [Page::Party, Page::Identity, Page::Attributes, Page::Skills, Page::Review] {
+    for page in [Page::Identity, Page::Attributes, Page::Skills, Page::Review] {
         let panel =
             commands.spawn((absolute(Vec2::new(205., 80.), Vec2::new(413., 310.)), page)).id();
-        commands.entity(root).add_child(panel);
+        commands.entity(editor).add_child(panel);
         match page {
-            Page::Party => {
-                text(&mut commands, panel, (0., 4.), 410., 24., "Your fellowship begins here");
-                text(
-                    &mut commands,
-                    panel,
-                    (0., 55.),
-                    395.,
-                    14.,
-                    "Choose a race and profession, shape their attributes, and train their skills.\n\nSelect a party member to revise their draft. Canceling an edit keeps the previous version.\n\nOne adventurer is enough to begin. Six gives you more ways to survive.",
-                );
-                button(&mut commands, panel, (0., 275.), 240., "BEGIN ADVENTURE", Action::Begin);
-            }
+            Page::Party => unreachable!(),
             Page::Identity => {
                 text(&mut commands, panel, (0., 0.), 320., 20., "01 / Identity");
                 commands
@@ -461,6 +677,7 @@ fn activate(
     buttons: Query<&Action, Without<InteractionDisabled>>,
     mut sessions: Query<&mut Creation>,
     mut next: ResMut<NextState<Session>>,
+    mut menu: ResMut<NextState<MenuPage>>,
     state: Res<State<Session>>,
     mut focus: ResMut<InputFocus>,
     mut exit: MessageWriter<AppExit>,
@@ -494,6 +711,11 @@ fn activate(
             exit.write(AppExit::Success);
             return;
         }
+        Action::Credits => {
+            focus.clear();
+            menu.set(MenuPage::Credits);
+            return;
+        }
         Action::Menu => {
             next.set(Session::MainMenu);
             return;
@@ -503,22 +725,43 @@ fn activate(
     let Ok(mut session) = sessions.single_mut() else { return };
     session.message.clear();
     match *action {
-        Action::Add if session.party.len() < 6 => {
+        Action::Add if session.candidates.len() < 6 => {
             session.editing = Some((None, CharacterDraft::default()));
             session.page = Page::Identity;
         }
         Action::Edit(i) => {
-            if let Some(draft) = session.party.get(i).cloned() {
-                session.editing = Some((Some(i), draft));
+            let candidate = session.party.get(i).and_then(|id| {
+                session.candidates.iter().find(|(candidate, _)| candidate == id).cloned()
+            });
+            if let Some((id, draft)) = candidate {
+                session.editing = Some((Some(id), draft));
                 session.page = Page::Identity;
             }
         }
         Action::Remove(i) => {
             if i < session.party.len() {
                 session.party.remove(i);
-                // An edit may refer to a shifted slot: discard the editing session.
-                session.editing = None;
-                session.page = Page::Party;
+            }
+        }
+        Action::SelectCandidate(Some(id)) => {
+            if session.candidates.iter().any(|(candidate, _)| *candidate == id) {
+                session.selected = Some(id);
+            }
+        }
+        Action::ToggleCandidate => {
+            if let Some(id) = session.selected {
+                if let Some(index) = session.party.iter().position(|member| *member == id) {
+                    session.party.remove(index);
+                } else if session.party.len() < 6 {
+                    session.party.push(id);
+                }
+            }
+        }
+        Action::DeleteCandidate => {
+            if let Some(id) = session.selected.take() {
+                session.candidates.retain(|(candidate, _)| *candidate != id);
+                session.party.retain(|member| *member != id);
+                session.selected = session.candidates.first().map(|(id, _)| *id);
             }
         }
         Action::Cancel => {
@@ -533,10 +776,19 @@ fn activate(
                     Ok(_) => {
                         let index = *index;
                         let (_, draft) = session.editing.take().unwrap();
-                        if let Some(i) = index {
-                            session.party[i] = draft;
+                        if let Some(id) = index {
+                            if let Some((_, candidate)) = session
+                                .candidates
+                                .iter_mut()
+                                .find(|(candidate, _)| *candidate == id)
+                            {
+                                *candidate = draft;
+                            }
                         } else {
-                            session.party.push(draft);
+                            let id = session.next_id;
+                            session.next_id += 1;
+                            session.candidates.push((id, draft));
+                            session.selected = Some(id);
                         }
                         session.page = Page::Party;
                     }
@@ -544,8 +796,23 @@ fn activate(
             }
         }
         Action::Begin => {
+            let drafts: Option<Vec<_>> = session
+                .party
+                .iter()
+                .map(|id| {
+                    session
+                        .candidates
+                        .iter()
+                        .find(|(candidate, _)| candidate == id)
+                        .map(|(_, draft)| draft.clone())
+                })
+                .collect();
+            let Some(mut drafts) = drafts else {
+                session.message = "A party member is no longer available.".into();
+                return;
+            };
             if let Err(message) = begin_adventure(
-                &mut session.party,
+                &mut drafts,
                 &state,
                 &mut commands,
                 &mut roster,
@@ -658,11 +925,26 @@ fn finish_name(
     }
 }
 
+fn show_editor(
+    session: Option<Single<Ref<Creation>>>,
+    mut editors: Query<(&mut Node, &mut Visibility), With<EditorGroup>>,
+) {
+    let Some(session) = session else { return };
+    for (mut node, mut visibility) in &mut editors {
+        let shown = session.page != Page::Party;
+        node.display = if shown { Display::Flex } else { Display::None };
+        visibility.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
+    }
+}
+
 fn refresh(
     sessions: Query<Ref<Creation>>,
     focus: Res<InputFocus>,
     mut commands: Commands,
-    mut buttons: Query<(Entity, &Action, Has<InteractionDisabled>, &mut TabIndex)>,
+    mut buttons: Query<
+        (Entity, &Action, Has<InteractionDisabled>, &mut TabIndex),
+        Without<party::Control>,
+    >,
     mut pages: Query<(&Page, &mut Node, &mut Visibility), Without<SkillRow>>,
     mut fields: Query<(&Field, &mut Text)>,
     mut rows: Query<(&SkillRow, &mut Node, &mut Visibility), Without<Page>>,
@@ -689,7 +971,7 @@ fn refresh(
     let profile = draft.map(CharacterDraft::preview);
     for (entity, action, disabled, mut tab) in &mut buttons {
         let enabled = match *action {
-            Action::Add => session.editing.is_none() && session.party.len() < 6,
+            Action::Add => session.editing.is_none() && session.candidates.len() < 6,
             Action::Edit(i) | Action::Remove(i) => {
                 session.editing.is_none() && i < session.party.len()
             }
@@ -711,6 +993,8 @@ fn refresh(
             Field::Slot(i) => session
                 .party
                 .get(*i)
+                .and_then(|id| session.candidates.iter().find(|(candidate, _)| candidate == id))
+                .map(|(_, draft)| draft)
                 .map(|d| {
                     let name: String = d.name.chars().take(16).collect();
                     format!(
@@ -799,7 +1083,7 @@ fn button_colours(
     focus: Res<InputFocus>,
     mut buttons: Query<
         (Entity, &Hovered, Has<Pressed>, Has<InteractionDisabled>, &mut BackgroundColor),
-        With<Action>,
+        (With<Action>, Without<MenuItem>, Without<party::Control>),
     >,
 ) {
     for (entity, hovered, pressed, disabled, mut background) in &mut buttons {
@@ -868,7 +1152,10 @@ mod keyboard_tests {
         let root = app
             .world_mut()
             .spawn(Creation {
+                candidates: vec![],
                 party: vec![],
+                selected: None,
+                next_id: 0,
                 editing: Some((None, CharacterDraft::default())),
                 page: Page::Identity,
                 message: String::new(),
@@ -935,6 +1222,8 @@ mod keyboard_tests {
         app.add_plugins((
             MinimalPlugins,
             AssetPlugin::default(),
+            bevy::scene::ScenePlugin,
+            EnhancedInputPlugin,
             bevy::input::InputPlugin,
             bevy::state::app::StatesPlugin,
             InputFocusPlugin,
@@ -943,6 +1232,8 @@ mod keyboard_tests {
             bevy::ui_widgets::TextInputPlugin,
             bevy::camera::visibility::VisibilityPlugin,
         ))
+        .init_asset::<crate::content::ui::Credits>()
+        .init_asset::<Image>()
         .init_state::<Session>()
         .init_asset::<crate::content::ui::SpriteSheet>()
         .init_asset::<Mesh>()
@@ -960,10 +1251,45 @@ mod keyboard_tests {
         app.finish();
         app.cleanup();
         app.update();
-        tap(&mut app, window, KeyCode::Tab);
-        let focused = app.world().resource::<InputFocus>().get().unwrap();
-        assert!(matches!(app.world().get::<Action>(focused), Some(Action::NewGame)));
-        tap(&mut app, window, KeyCode::Enter);
+        let credits = app
+            .world_mut()
+            .query::<(Entity, &Action)>()
+            .iter(app.world())
+            .find_map(|(entity, action)| matches!(action, Action::Credits).then_some(entity))
+            .unwrap();
+        app.world_mut().trigger(Activate { entity: credits });
+        app.update();
+        assert_eq!(*app.world().resource::<State<MenuPage>>().get(), MenuPage::Credits);
+        app.update();
+        app.world_mut().write_message(KeyboardInput {
+            key_code: KeyCode::Escape,
+            logical_key: Key::Escape,
+            state: ButtonState::Pressed,
+            text: None,
+            repeat: false,
+            window,
+        });
+        app.update();
+        app.update();
+        assert_eq!(*app.world().resource::<State<MenuPage>>().get(), MenuPage::Main);
+        app.world_mut().write_message(KeyboardInput {
+            key_code: KeyCode::Escape,
+            logical_key: Key::Escape,
+            state: ButtonState::Released,
+            text: None,
+            repeat: false,
+            window,
+        });
+        app.update();
+        app.world_mut().write_message(KeyboardInput {
+            key_code: KeyCode::KeyS,
+            logical_key: Key::Character("s".into()),
+            state: ButtonState::Pressed,
+            text: Some("s".into()),
+            repeat: false,
+            window,
+        });
+        app.update();
         app.update();
         assert_eq!(*app.world().resource::<State<Session>>().get(), Session::Creation);
         tap(&mut app, window, KeyCode::Tab);
