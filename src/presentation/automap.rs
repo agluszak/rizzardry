@@ -9,8 +9,11 @@
 
 use bevy::input::ButtonState;
 use bevy::input::keyboard::KeyboardInput;
+use bevy::input_focus::tab_navigation::{TabGroup, TabIndex};
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
+use bevy::ui::{InteractionDisabled, Pressed};
+use bevy::ui_widgets::{Activate, Button};
 
 use crate::game::screen::Screen;
 use bevy_enhanced_input::prelude::*;
@@ -303,13 +306,14 @@ pub fn enter_automap(
         #Automap
         @centred()
         AutomapScreen
+        TabGroup::default()
         NoteEditing
         BackgroundColor(Color::BLACK)
         ContextPriority::<AutomapScreen>::new(1)
         Actions<AutomapScreen> [
             Action::<CloseMap>::new()
             ActionSettings { consume_input: true }
-            Bindings [ Binding(KeyCode::Escape) Binding(KeyCode::Tab) ]
+            Bindings [ Binding(KeyCode::Escape) ]
             -- Action::<PanMap>::new()
             ActionSettings { consume_input: true }
             Bindings [ {preset::cardinal::arrows()} ]
@@ -426,7 +430,8 @@ pub fn build_automap(
             bsn! {
                 Node { position_type: PositionType::Absolute, left: px(at.x), top: px(at.y) }
                 ImageNode { image: {image} }
-                Hovered
+                Hovered Button TabIndex(0)
+                on(primary_press)
                 template(move |_| Ok(SheetButton { sheet: handle.clone(), base, action }))
                 on(press_button)
             }
@@ -539,8 +544,26 @@ fn floor_plan(collision: &CollisionMesh, layers: &[f32], automap: &Automap) -> I
     ui_image(width as u32, height as u32, rgba)
 }
 
+// Button tracks presses natively; reject non-primary presses before its later
+// click can activate. Keeping this policy local preserves the map canvas gestures.
+fn primary_press(event: On<PointerPress>, mut commands: Commands) {
+    if event.button != bevy::picking::pointer::PointerButton::Primary {
+        commands.entity(event.entity).remove::<Pressed>();
+    }
+}
+
+fn action_enabled(action: ButtonAction, map: &Automap, layers: Option<usize>) -> bool {
+    match action {
+        ButtonAction::LayerPrevious => map.layer > 0,
+        ButtonAction::LayerNext => layers.is_some_and(|count| map.layer < count),
+        ButtonAction::ZoomIn => map.span > MIN_SPAN,
+        ButtonAction::ZoomOut => map.span < map.full_span,
+        _ => true,
+    }
+}
+
 fn press_button(
-    click: On<PointerClick>,
+    click: On<Activate>,
     buttons: Query<&SheetButton>,
     level: Query<&Level>,
     geometry: Res<Assets<LevelDefinition>>,
@@ -548,10 +571,15 @@ fn press_button(
     automap: Option<Single<&mut Automap>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
-    if click.button != bevy::picking::pointer::PointerButton::Primary {
+    let (Some(mut automap), Ok(button)) = (automap, buttons.get(click.entity)) else { return };
+    let layers = level
+        .get(automap.level)
+        .ok()
+        .and_then(|l| geometry.get(&l.geometry))
+        .map(|g| g.map_layers.len());
+    if !action_enabled(button.action, &automap, layers) {
         return;
     }
-    let (Some(mut automap), Ok(button)) = (automap, buttons.get(click.entity)) else { return };
     automap.editing = None;
     match button.action {
         ButtonAction::Tool(tool) => {
@@ -588,27 +616,39 @@ fn press_button(
 pub fn paint_buttons(
     level: Query<&Level>,
     geometry: Res<Assets<LevelDefinition>>,
-    mut buttons: Query<(&Hovered, &SheetButton, &mut ImageNode)>,
+    mut commands: Commands,
+    mut buttons: Query<(
+        Entity,
+        &Hovered,
+        &SheetButton,
+        Has<InteractionDisabled>,
+        Has<Pressed>,
+        &mut TabIndex,
+        &mut ImageNode,
+    )>,
     automap: Option<Single<Ref<Automap>>>,
     sheets: Res<Assets<SpriteSheet>>,
 ) {
     let Some(automap) = automap else { return };
-    for (hovered, button, mut image) in &mut buttons {
+    for (entity, hovered, button, disabled, pressed, mut tab, mut image) in &mut buttons {
         let on = matches!(button.action, ButtonAction::Tool(tool) if automap.tool == Some(tool));
-        let disabled = match button.action {
-            ButtonAction::LayerPrevious => automap.layer == 0,
-            ButtonAction::LayerNext => level
-                .get(automap.level)
-                .ok()
-                .and_then(|l| geometry.get(&l.geometry))
-                .is_none_or(|l| automap.layer >= l.map_layers.len()),
-            ButtonAction::ZoomIn => automap.span <= MIN_SPAN,
-            ButtonAction::ZoomOut => automap.span >= automap.full_span,
-            _ => false,
-        };
-        let state = if disabled {
+        let layers = level
+            .get(automap.level)
+            .ok()
+            .and_then(|l| geometry.get(&l.geometry))
+            .map(|g| g.map_layers.len());
+        let enabled = action_enabled(button.action, &automap, layers);
+        tab.set_if_neq(TabIndex(if enabled { 0 } else { -1 }));
+        if enabled == disabled {
+            if enabled {
+                commands.entity(entity).remove::<InteractionDisabled>();
+            } else {
+                commands.entity(entity).insert(InteractionDisabled).remove::<Pressed>();
+            }
+        }
+        let state = if !enabled {
             3
-        } else if on {
+        } else if on || pressed {
             2
         } else {
             hovered.get() as usize
@@ -912,6 +952,129 @@ mod tests {
             walkable: vec![true],
         };
         Automap::new(Some(&collision), &[], Vec3::ZERO)
+    }
+
+    #[test]
+    fn disabled_map_actions_leave_the_note_draft_untouched() {
+        use bevy::input::keyboard::Key;
+        use bevy::input_focus::{FocusedInput, InputFocus};
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::ui_widgets::ButtonPlugin))
+            .init_resource::<Assets<LevelDefinition>>()
+            .init_resource::<NextState<Screen>>()
+            .init_resource::<InputFocus>();
+        let mut map = Automap::new(None, &[], Vec3::ZERO);
+        map.editing = Some(NoteDraft {
+            level: Entity::PLACEHOLDER,
+            original: None,
+            note: MapNote { position: Vec2::ZERO, layer: 0, text: "keep me".into() },
+        });
+        let root = app.world_mut().spawn(map).id();
+        for action in [
+            ButtonAction::ZoomIn,
+            ButtonAction::ZoomOut,
+            ButtonAction::LayerPrevious,
+            ButtonAction::LayerNext,
+        ] {
+            let button = app
+                .world_mut()
+                .spawn((Button, SheetButton { sheet: default(), base: 0, action }))
+                .observe(press_button)
+                .id();
+            // Even a queued activation must recheck prerequisites before clearing the draft.
+            app.world_mut().trigger(Activate { entity: button });
+            app.update();
+            assert_eq!(
+                app.world().get::<Automap>(root).unwrap().editing.as_ref().unwrap().note.text,
+                "keep me"
+            );
+        }
+        let button = app
+            .world_mut()
+            .spawn((
+                Button,
+                SheetButton {
+                    sheet: default(),
+                    base: 0,
+                    action: ButtonAction::Tool(MapTool::AddNote),
+                },
+            ))
+            .observe(press_button)
+            .id();
+        app.world_mut().trigger(FocusedInput::new(
+            button,
+            KeyboardInput {
+                key_code: KeyCode::Enter,
+                logical_key: Key::Enter,
+                state: ButtonState::Pressed,
+                text: None,
+                repeat: false,
+                window: Entity::PLACEHOLDER,
+            },
+            Entity::PLACEHOLDER,
+        ));
+        app.update();
+        let map = app.world().get::<Automap>(root).unwrap();
+        assert_eq!(map.tool, Some(MapTool::AddNote));
+        assert!(map.editing.is_none());
+    }
+
+    #[test]
+    fn non_primary_press_cannot_activate_a_map_button() {
+        use bevy::picking::{
+            backend::HitData,
+            events::Pointer,
+            pointer::{Location, PointerButton, PointerId},
+        };
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::ui_widgets::ButtonPlugin))
+            .init_resource::<Assets<LevelDefinition>>()
+            .init_resource::<NextState<Screen>>();
+        let root = app.world_mut().spawn(Automap::new(None, &[], Vec3::ZERO)).id();
+        let button = app
+            .world_mut()
+            .spawn((
+                Button,
+                SheetButton {
+                    sheet: default(),
+                    base: 0,
+                    action: ButtonAction::Tool(MapTool::AddNote),
+                },
+            ))
+            .observe(primary_press)
+            .observe(press_button)
+            .id();
+        for mouse_button in [PointerButton::Secondary, PointerButton::Primary] {
+            let pointer = Pointer::new(
+                PointerId::Mouse,
+                Location {
+                    target: bevy::camera::NormalizedRenderTarget::None { width: 640, height: 480 },
+                    position: Vec2::ZERO,
+                },
+            );
+            let hit = HitData::new(Entity::PLACEHOLDER, 0.0, None, None);
+            app.world_mut().trigger(PointerPress {
+                entity: button,
+                pointer: pointer.clone(),
+                button: mouse_button,
+                hit: hit.clone(),
+                count: 1,
+            });
+            app.update();
+            app.world_mut().trigger(PointerClick {
+                entity: button,
+                pointer,
+                button: mouse_button,
+                hit,
+                count: 1,
+                duration: std::time::Duration::ZERO,
+            });
+            app.update();
+            assert_eq!(
+                app.world().get::<Automap>(root).unwrap().tool.is_some(),
+                mouse_button == PointerButton::Primary
+            );
+        }
     }
 
     #[test]

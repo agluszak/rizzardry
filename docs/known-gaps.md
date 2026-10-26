@@ -293,3 +293,7 @@ scenario target compiles. Strict Clippy across all targets, package formatting
 and whitespace checks pass. No retail gameplay, graphical or audible validation
 was repeated on this integrated tree; earlier frontend screenshots are evidence
 for that earlier revision only. These are local checks, not CI results.
+
+Automap uses Tab/Shift+Tab to navigate controls while open; Escape closes it.
+Tab still opens it from the world. This intentionally replaces the old Tab-to-close
+binding so native keyboard control navigation is available.
