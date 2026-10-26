@@ -3,9 +3,8 @@
 A from-scratch Rust and Bevy rewrite of Wizardry 8.
 
 The [design documentation](docs/README.md) describes the architecture,
-dependency choices, gameplay flows and open questions. Implementation is on
-the first slice of the [implementation plan](docs/implementation-plan.md): the
-game loads a retail level directly from your installation with its props,
+dependency choices, gameplay flows and open questions. See [implementation priorities](docs/implementation-plan.md) and
+[known gaps](docs/known-gaps.md) for its current scope. The game loads a retail level directly from your installation with its props,
 doors, sky, fog and time of day; the party walks it, uses doors and
 teleporters, and is chased over baked navmeshes by animated retail monsters;
 a voice line plays; and the automap takes notes.
@@ -54,12 +53,14 @@ with Bevy's asset processor (several seconds); results are cached in
 
 Controls: WASD or arrow keys to walk, Q/E or Left/Right to turn, hold Shift to
 run, hold the right mouse button to look around, Space or left click to use
-the prop in front of you, M to open the automap (Escape or M closes it).
+the prop in front of you, Tab to open the automap (Escape closes it; Tab navigates its controls).
 On the map, use the magnifying glasses to zoom, arrows to pan, and the centre
 button to recenter on the party. Keyboard arrows also pan; clicking empty map
 space zooms in and right-clicking zooms out. Use the quill buttons to add or
-erase notes; Enter or Escape finishes typing. The layer buttons above the pan
+erase notes; Enter accepts typing and Escape cancels it. The layer buttons above the pan
 controls switch floors; note text and picking follow the selected layer.
+F6 enters HUD keyboard navigation; Tab/Shift+Tab navigate and Escape returns
+focus to the world.
 
 `cargo run --example level_info -- [level.pvl] [--props] [--links]`
 summarises decoded level geometry, props and links; `cargo run --example

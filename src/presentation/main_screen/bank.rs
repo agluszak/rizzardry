@@ -162,17 +162,16 @@ pub fn draw_bank(
                     .remove::<bevy::ui::Pressed>();
             }
         }
-        let pressed = pressing
-            || match face.kind {
-                Some(Bank::Search) => search.on(),
-                Some(Bank::Formation) => layout.shows(Panel::Formation),
-                Some(Bank::Order(wanted)) => wanted == order,
-                _ => false,
-            };
+        let selected_state = match face.kind {
+            Some(Bank::Search) => search.on(),
+            Some(Bank::Formation) => layout.shows(Panel::Formation),
+            Some(Bank::Order(wanted)) => wanted == order,
+            _ => false,
+        };
         let mut frame = if !enabled {
             face.frames.grayed
         } else {
-            match (pressed, hovered.get()) {
+            match (selected_state || pressing, hovered.get()) {
                 (true, true) => face.frames.on_hovered,
                 (true, false) => face.frames.on,
                 (false, true) => face.frames.hovered,
@@ -200,7 +199,7 @@ pub fn draw_bank(
         let at = picture.at;
         let bounds = if !enabled {
             frame
-        } else if pressed {
+        } else if selected_state {
             face.frames.on
         } else {
             face.frames.off
