@@ -51,7 +51,7 @@ struct Accept;
 struct Decline;
 
 #[derive(Component)]
-struct DialogBuilt;
+pub struct DialogBuilt;
 
 /// Input belongs to the question, not to the availability of its artwork.
 pub fn open_travel_question(
