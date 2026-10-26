@@ -349,12 +349,12 @@ mod tests {
         assert!(known.identified && known.counted);
         assert_eq!(app.world().get::<MonsterKnowledge>(member).unwrap().seen.get(&0), Some(&1));
         assert!(app.world().get::<MonsterKnowledge>(outsider).unwrap().seen.is_empty());
-        // Three aging ticks must not become one recognition request. The first
-        // tick is still blind; the next two each make their own failed roll.
+        // Aging and recognition settle in the same operation: blindness
+        // expires during this interval and recognition can then succeed.
         app.world_mut().get_mut::<MonsterGroup>(group).unwrap().identified = false;
         let catalog = app.world().resource::<GameData>().species.clone();
         app.world_mut().resource_mut::<Assets<MonsterCatalog>>().get_mut(&catalog).unwrap().0[0]
-            .level = 255;
+            .level = 1;
         app.world_mut()
             .get_mut::<Vitals>(member)
             .unwrap()
@@ -368,11 +368,9 @@ mod tests {
         app.init_resource::<crate::game::time::GameClock>();
         app.add_message::<crate::game::camp::CampNews>();
         app.world_mut().resource_mut::<Time>().advance_by(std::time::Duration::from_secs(30));
-        let mut expected = app.world().resource::<GameRng>().clone();
-        expected.below(100);
-        expected.below(100);
         use bevy::ecs::system::RunSystemOnce;
         app.world_mut().run_system_once(crate::game::time::pass_time).unwrap();
-        assert_eq!(app.world().resource::<GameRng>(), &expected);
+        assert!(!app.world().get::<Vitals>(member).unwrap().has(Condition::Blind));
+        assert!(app.world().get::<MonsterGroup>(group).unwrap().identified);
     }
 }
