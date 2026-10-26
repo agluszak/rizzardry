@@ -389,6 +389,7 @@ mod keyboard_tests {
         let mut app = App::new();
         app.add_plugins((
             MinimalPlugins,
+            AssetPlugin::default(),
             bevy::input::InputPlugin,
             bevy::scene::ScenePlugin,
             bevy::state::app::StatesPlugin,

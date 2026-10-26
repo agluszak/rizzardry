@@ -157,8 +157,10 @@ pub fn hold_main_screen_keys(
     keys: Query<(Entity, &ContextActivity<MainScreenKeys>)>,
     focus: Res<bevy::input_focus::InputFocus>,
     controls: Query<(), With<bevy::input_focus::tab_navigation::TabIndex>>,
+    questions: Query<(), With<crate::game::world::level::TravelQuestion>>,
 ) {
     let active = *screen.get() == Screen::World
+        && questions.is_empty()
         && !focus.get().is_some_and(|entity| controls.contains(entity));
     for (entity, activity) in &keys {
         if **activity != active {
@@ -230,6 +232,8 @@ mod tests {
         .add_input_context::<MainScreenKeys>()
         .init_resource::<ScreenLayout>()
         .init_resource::<SelectedMember>()
+        .init_resource::<bevy::input_focus::InputFocus>()
+        .init_resource::<bevy::input_focus::InputFocusVisible>()
         .init_state::<Screen>()
         .init_resource::<PartyRoster>()
         .add_systems(Startup, spawn_main_screen_keys)

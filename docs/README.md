@@ -15,10 +15,8 @@ completed mechanics. See known gaps for validation limits and unfinished work.
    picking, UI viewport, asset and audio choices before writing custom engine code.
 4. [Content and assets](content-and-assets.md): retail loading, native content,
    animation, audio, UI and modding boundaries.
-5. [Implementation plan](implementation-plan.md): playable slices and their
-   verified versus outstanding requirements.
-6. [Known gaps](known-gaps.md): what each implemented feature leaves out or
-   does differently from retail, and the architecture review's open items.
+5. [Implementation plan](implementation-plan.md): remaining playable outcomes, without completed-task history.
+6. [Known gaps](known-gaps.md): unfinished behavior, deliberate departures and validation limits.
 7. [Revisions and open questions](revisions.md): corrections to the discussion,
    deliberate native-format policies and remaining evidence gaps.
 8. [Testing](testing.md): ordinary rule tests, small headless Bevy scenarios,
