@@ -3,7 +3,7 @@
 //! checked on its state. They need `RIZZARDRY_RETAIL` and fail without it.
 //!
 //! ```sh
-//! RIZZARDRY_RETAIL=/path/to/wizardry8 cargo test --test scenarios -- --ignored
+//! RIZZARDRY_RETAIL=/path/to/wizardry8 cargo test --test integration -- --ignored scenarios::
 //! ```
 
 use std::sync::Mutex;

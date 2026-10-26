@@ -24,7 +24,7 @@ cargo fmt --package rizzardry --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 RIZZARDRY_RETAIL=/path/to/wizardry8 cargo test --locked -- --ignored
-RIZZARDRY_RETAIL=/path/to/wizardry8 cargo test --locked --test scenarios -- --ignored
+RIZZARDRY_RETAIL=/path/to/wizardry8 cargo test --locked --test integration -- --ignored scenarios::
 ```
 
 Retail tests are ignored by default and must fail if explicitly invoked without
