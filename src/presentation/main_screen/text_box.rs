@@ -9,10 +9,10 @@ use bevy::prelude::*;
 use bevy::ui::{InteractionDisabled, Pressed};
 use bevy::ui_widgets::{Activate, Button, SelectedTab, Tab, TabList, ValueChange};
 
+#[derive(Component, Clone, Default)]
+pub(super) struct Channels;
 #[derive(Component)]
-struct Channels;
-#[derive(Component)]
-struct Channel(usize);
+pub(super) struct Channel(usize);
 
 fn select_channel(
     change: On<ValueChange<Option<Entity>>>,
@@ -26,7 +26,7 @@ fn select_channel(
 
 /// TextLog owns selection across HUD rebuilds and combat-driven changes.
 /// Native tabs are a controlled projection, not another writable selection.
-pub fn sync_channels(
+pub(super) fn sync_channels(
     log: Res<TextLog>,
     mut lists: Query<(&Children, &mut SelectedTab), With<Channels>>,
     channels: Query<&Channel>,
@@ -113,7 +113,7 @@ pub fn draw_text_box(
             bsn_list! {
                 @picture(art.textbox_tabs.clone(), 0, Vec2::new(138.0, 360.0)) Tabs
                 -- {text} -- {arrows}
-                -- @layer() TabList { orientation: bevy::ui_widgets::ControlOrientation::Vertical, ..default() } Channels on(select_channel) Children [ {channels} ]
+                -- @layer() TabList { orientation: bevy::ui_widgets::ControlOrientation::Vertical, activation: bevy::ui_widgets::TabActivation::Manual } Channels on(select_channel) Children [ {channels} ]
                 -- @picture(art.text_scroll.clone(), 4, Vec2::new(461.0, 379.0)) Thumb
             },
         );

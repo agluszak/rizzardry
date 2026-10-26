@@ -348,3 +348,95 @@ fn build_frame(
         ]
     });
 }
+
+#[cfg(test)]
+mod keyboard_tests {
+    use super::*;
+    use bevy::input::{
+        ButtonState,
+        keyboard::{Key, KeyboardInput},
+    };
+    use bevy::input_focus::{
+        InputDispatchPlugin, InputFocusPlugin, tab_navigation::TabNavigationPlugin,
+    };
+    use bevy::ui_widgets::ButtonPlugin;
+    use bevy::window::PrimaryWindow;
+
+    fn tap(app: &mut App, window: Entity, code: KeyCode) {
+        for state in [ButtonState::Pressed, ButtonState::Released] {
+            app.world_mut().write_message(KeyboardInput {
+                key_code: code,
+                logical_key: match code {
+                    KeyCode::Tab => Key::Tab,
+                    KeyCode::Escape => Key::Escape,
+                    _ => Key::Unidentified(bevy::input::keyboard::NativeKey::Unidentified),
+                },
+                state,
+                text: None,
+                repeat: false,
+                window,
+            });
+            app.update();
+        }
+    }
+
+    #[test]
+    fn f6_enters_hud_without_stealing_the_worlds_map_binding() {
+        use crate::presentation::{
+            automap::{MapKey, OpenAutomap, spawn_map_key},
+            notices::TextLog,
+        };
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            bevy::input::InputPlugin,
+            bevy::scene::ScenePlugin,
+            bevy::state::app::StatesPlugin,
+            EnhancedInputPlugin,
+            InputFocusPlugin,
+            InputDispatchPlugin,
+            TabNavigationPlugin,
+            ButtonPlugin,
+        ))
+        .init_state::<crate::game::screen::Screen>()
+        .init_resource::<ScreenLayout>()
+        .init_resource::<SelectedMember>()
+        .init_resource::<crate::game::party::roster::PartyRoster>()
+        .init_resource::<crate::game::combat::CombatSettings>()
+        .init_resource::<TextLog>()
+        .add_message::<crate::game::combat::StartRound>()
+        .add_message::<OpenAutomap>()
+        .add_input_context::<keys::MainScreenKeys>()
+        .add_input_context::<MapKey>()
+        .add_systems(Startup, (keys::spawn_main_screen_keys, spawn_map_key))
+        .add_systems(
+            PreUpdate,
+            keys::hold_main_screen_keys
+                .after(InputFocusSystems::Dispatch)
+                .before(EnhancedInputSystems::Update),
+        );
+        let window = app.world_mut().spawn((Window::default(), PrimaryWindow)).id();
+        let root = app
+            .world_mut()
+            .spawn((MainScreen::default(), TabGroup::modal()))
+            .observe(leave_hud_focus)
+            .id();
+        let first = app.world_mut().spawn((Button, TabIndex(0), ChildOf(root))).id();
+        let second = app.world_mut().spawn((Button, TabIndex(0), ChildOf(root))).id();
+        app.finish();
+        app.cleanup();
+        app.update();
+        app.update();
+        tap(&mut app, window, KeyCode::Tab);
+        assert_eq!(app.world_mut().resource_mut::<Messages<OpenAutomap>>().drain().count(), 1);
+        tap(&mut app, window, KeyCode::F6);
+        assert_eq!(app.world().resource::<InputFocus>().get(), Some(first));
+        tap(&mut app, window, KeyCode::Tab);
+        assert_eq!(app.world().resource::<InputFocus>().get(), Some(second));
+        assert_eq!(app.world_mut().resource_mut::<Messages<OpenAutomap>>().drain().count(), 0);
+        tap(&mut app, window, KeyCode::Escape);
+        assert_ne!(app.world().resource::<InputFocus>().get(), Some(second));
+        tap(&mut app, window, KeyCode::Tab);
+        assert_eq!(app.world_mut().resource_mut::<Messages<OpenAutomap>>().drain().count(), 1);
+    }
+}
