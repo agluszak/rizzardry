@@ -19,6 +19,8 @@ struct Selection;
 struct Caret;
 #[derive(Component)]
 struct InputLabel;
+#[derive(Component)]
+struct SubmitNote;
 
 pub fn sync_note_input(
     mut commands: Commands,
@@ -43,6 +45,7 @@ pub fn sync_note_input(
         .spawn((
             NoteInput,
             TextInput,
+            TextLayout::no_wrap(),
             TabIndex(0),
             EditableText {
                 max_characters: Some(crate::game::automap::MAX_NOTE_LENGTH),
@@ -139,16 +142,36 @@ fn finish(
         return;
     }
     event.propagate(false);
-    let Some(mut map) = map else { return };
-    if let Some(mut draft) = map.editing.take()
-        && event.input.logical_key == Key::Enter
-    {
-        draft.note.text = input.value().to_string();
-        commands.queue(move |world: &mut World| {
-            let _ = crate::game::automap::commit_note(world, draft);
-        });
+    if event.input.logical_key == Key::Enter {
+        commands.entity(event.original_event_target()).insert((SubmitNote, InteractionDisabled));
+    } else {
+        if let Some(mut map) = map {
+            map.editing = None;
+        }
+        commands.entity(event.original_event_target()).despawn();
     }
-    commands.entity(event.original_event_target()).despawn();
+}
+
+/// Native edits (including same-frame text/IME and asynchronous paste) settle
+/// before Enter commits. A cancelled or replaced editor cannot commit later.
+pub fn submit_note(
+    inputs: Query<(Entity, &EditableText), With<SubmitNote>>,
+    map: Option<Single<&mut Automap>>,
+    mut commands: Commands,
+) {
+    let Some(mut map) = map else { return };
+    for (entity, input) in &inputs {
+        if !input.pending_edits.is_empty() || input.pending_paste.is_some() {
+            continue;
+        }
+        if let Some(mut draft) = map.editing.take() {
+            draft.note.text = input.value().to_string();
+            commands.queue(move |world: &mut World| {
+                let _ = crate::game::automap::commit_note(world, draft);
+            });
+        }
+        commands.entity(entity).despawn();
+    }
 }
 
 fn nearest_byte(font: &SpriteSheet, value: &str, x: f32) -> usize {
@@ -274,7 +297,7 @@ pub fn draw_note_input(
         let at = map.project(draft.note.position) + Vec2::new(MARKER / 2.0 + 1.0, -size.y / 2.0);
         node.set_if_neq(Node { border: UiRect::all(px(1)), ..absolute(at, size) });
         for mut hit in &mut hits {
-            hit.set_if_neq(absolute(Vec2::ZERO, size));
+            hit.set_if_neq(absolute(Vec2::ZERO, size - Vec2::splat(2.0)));
         }
         for mut label in &mut labels {
             if label.font == art.font && label.value != value {
@@ -297,6 +320,7 @@ pub fn draw_note_input(
                 } else {
                     Display::None
                 };
+            mark.set_if_neq(desired);
         }
     }
 }
@@ -308,7 +332,15 @@ mod tests {
     fn native_note_input_commits_or_cancels_without_mutating_saved_notes_early() {
         for accept in [false, true] {
             let mut app = App::new();
-            app.add_plugins(MinimalPlugins);
+            app.add_plugins(MinimalPlugins)
+                .init_resource::<FontCx>()
+                .init_resource::<LayoutCx>()
+                .init_resource::<bevy::clipboard::Clipboard>()
+                .add_systems(PostUpdate, (bevy::text::apply_text_edits, submit_note).chain());
+            app.world_mut().resource_mut::<FontCx>().collection.register_fonts(
+                bevy::text::Font::from_bytes(bevy::text::DEFAULT_FONT_DATA.to_vec()).data,
+                None,
+            );
             let level = app
                 .world_mut()
                 .spawn((
@@ -335,6 +367,10 @@ mod tests {
                 .spawn((NoteInput, EditableText::new("edited")))
                 .observe(finish)
                 .id();
+            app.world_mut()
+                .get_mut::<EditableText>(input)
+                .unwrap()
+                .queue_edit(bevy::text::TextEdit::Insert("!".into()));
             assert!(app.world().get::<MapNotes>(level).unwrap().notes.is_empty());
             app.world_mut().trigger(FocusedInput::new(
                 input,
@@ -353,7 +389,7 @@ mod tests {
             let notes = &app.world().get::<MapNotes>(level).unwrap().notes;
             assert_eq!(notes.len(), usize::from(accept));
             if accept {
-                assert_eq!(notes[0].text, "edited");
+                assert_eq!(notes[0].text, "edited!");
             }
             assert!(app.world().get_entity(input).is_err());
         }

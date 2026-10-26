@@ -85,6 +85,7 @@ impl Plugin for PresentationPlugin {
             PreUpdate,
             (hold_exploration, automap::route_map_keys).before(EnhancedInputSystems::Update),
         )
+        .add_systems(PostUpdate, automap::submit_note.after(bevy::text::EditableTextSystems))
         .add_input_context::<dialog::QuestionDialog>()
         .add_input_context::<camp::CampScreen>()
         .add_systems(

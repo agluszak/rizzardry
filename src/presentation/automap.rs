@@ -8,7 +8,7 @@
 //! tool, typed in the retail text font, and erased with Erase note.
 
 mod note_input;
-pub use note_input::{draw_note_input, sync_note_input};
+pub use note_input::{draw_note_input, submit_note, sync_note_input};
 
 #[cfg(test)]
 use bevy::input::ButtonState;
@@ -311,6 +311,12 @@ pub fn enter_automap(
         @centred()
         AutomapScreen
         TabGroup::default()
+        on(|mut event: On<bevy::input_focus::FocusedInput<KeyboardInput>>, map: Option<Single<&mut Automap>>| {
+            if event.input.state.is_pressed() && event.input.logical_key == bevy::input::keyboard::Key::Escape
+                && let Some(mut map)=map && map.editing.is_some() {
+                map.editing=None; event.propagate(false);
+            }
+        })
         BackgroundColor(Color::BLACK)
         ContextPriority::<AutomapScreen>::new(1)
         Actions<AutomapScreen> [

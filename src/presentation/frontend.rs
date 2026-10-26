@@ -270,6 +270,7 @@ fn creation(mut commands: Commands, assets: Res<AssetServer>) {
                     .spawn((
                         NameInput,
                         TextInput,
+                        TextLayout::no_wrap(),
                         bevy::text::TextCursorStyle::default(),
                         TabIndex(0),
                         EditableText {
@@ -860,6 +861,10 @@ mod keyboard_tests {
             .init_resource::<LayoutCx>()
             .init_resource::<bevy::clipboard::Clipboard>()
             .add_systems(Update, apply_text_edits);
+        app.world_mut().resource_mut::<FontCx>().collection.register_fonts(
+            bevy::text::Font::from_bytes(bevy::text::DEFAULT_FONT_DATA.to_vec()).data,
+            None,
+        );
         let root = app
             .world_mut()
             .spawn(Creation {
@@ -931,6 +936,10 @@ mod keyboard_tests {
         .init_asset::<crate::content::ui::SpriteSheet>()
         .init_asset::<Mesh>()
         .init_asset::<bevy::mesh::skinning::SkinnedMeshInverseBindposes>()
+        .add_message::<bevy::window::Ime>()
+        .add_message::<bevy::picking::events::PointerRelease>()
+        .init_resource::<bevy::picking::events::PointerState>()
+        .init_resource::<UiScale>()
         .init_resource::<PartyRoster>()
         .init_resource::<Formation>()
         .insert_resource(NewGameDestination { path: String::new(), start: default() })

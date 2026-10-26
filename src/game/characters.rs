@@ -1,9 +1,9 @@
 //! Party members: who they are, their attributes and skills, and the numbers
 //! derived from them. Tables are retail's, hard-coded in its executable (see
-//! `docs/research/characters.md`). Spells, conditions, resistances, armour
-//! class and attacks are not modelled yet.
+//! `docs/research/characters.md`).
 
 pub mod creation;
+pub mod resistance;
 
 use bevy::prelude::*;
 use enum_map::EnumMap;
