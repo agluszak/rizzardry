@@ -33,8 +33,7 @@ pub struct WorldSelection {
 pub fn select_world_target(
     freedom: crate::game::screen::Freedom,
     pointers: Query<(&PointerId, &PointerLocation)>,
-    camera: Query<(Entity, &Camera), With<PartyCamera>>,
-    transforms: bevy::transform::helper::TransformHelper,
+    camera: Query<(&Camera, &GlobalTransform), With<PartyCamera>>,
     mut meshes: MeshRayCast,
     sky: Query<(), With<RenderLayers>>,
     parents: Query<&ChildOf>,
@@ -46,9 +45,8 @@ pub fn select_world_target(
     if !freedom.free() {
         return;
     }
-    let Ok((entity, camera)) = camera.single() else { return };
-    let Ok(transform) = transforms.compute_global_transform(entity) else { return };
-    let Some(ray) = ray_under_pointer(&pointers, camera, &transform) else { return };
+    let Ok((camera, transform)) = camera.single() else { return };
+    let Some(ray) = ray_under_pointer(&pointers, camera, transform) else { return };
     selection.level = levels.single().ok();
     selection.ray = Some(ray);
     selection.hit = drawn_under_ray(ray, &mut meshes, &sky).and_then(|(hit, distance)| {

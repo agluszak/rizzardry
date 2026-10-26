@@ -79,8 +79,8 @@ ordered positioned-device index. Walk-in detection keeps one previous party-eye
 sample on the level, not an occupancy flag on every device. Teleportation rebases
 that sample without walking the device population. Only activated damage zones
 own a timer; their timing is not inferred from occupancy. Location variables
-remain one named map on the level, moved directly to/from dormant records. Content canonicalizes variable
-names once; execution uses those names without a second numeric binding table.
+remain one named map on the level, moved directly to/from dormant records.
+Content canonicalizes names once; execution needs no second numeric binding table.
 Dial-position names are formed on use, rather than maintaining another key cache.
 
 Trigger requests enter through Bevy's command boundary. Entity-local operations
@@ -91,6 +91,12 @@ registry or service object. A plain synchronous coordinator borrows immutable
 level definitions, runs the selected operation, follows links and commits in
 order. Commands are exclusive by design; this favors a visible, complete
 operation over parallelizing the parts of one player action.
+
+Quiet fixed steps scan proximity and hazard timers through ordinary queries.
+At the first entry activation, its remaining authored suffix stays in the
+synchronous operation: an earlier link may start or reset a later hazard before
+that hazard ticks. Pre-ticking every hazard would change timing and random draws.
+No activation candidate means no exclusive whole-level command.
 
 Movement consumes its level-bound request and rebases walk-in detection without
 entering trigger execution. Presentation follows completed click commands and
@@ -374,7 +380,8 @@ Mutually exclusive screen state uses Bevy states. Entry creates a scoped root
 with its local selection, scroll/view data and input context; art can attach
 later without controlling whether the session exists. Explicit inventory exit
 returns the held item through the normal inventory operation before scoped
-cleanup. The held cursor overlay remains session-wide, including the world view.
+cleanup. A required inventory-art failure returns to the world through that same
+exit operation. The held cursor overlay remains session-wide, including the world view.
 
 Automap typing is a separate input context. A draft carries its source level,
 placement, layer and text, and the expected old entry when editing. Enter submits
@@ -386,23 +393,40 @@ editing, and delayed confirmation cannot overwrite a changed vector entry.
 
 The application composes common campaign resources, item notices, game-data
 loading and the screen state. Feature plugins register their own behavior.
-Within Update, equipment precedes level activation, then clock-requested
-perception, battle work and world input activation. Roster/authored ordering
-also defines random consumption within those operations. Cosmetic RNG remains
-independent.
+Within Update, equipment precedes level activation, then facing input,
+clock-requested perception and battle work. Gameplay reads physics Position and
+Rotation when present, otherwise current authored Transform, never a propagated
+render pose. ActorPose is a borrowed query, not another position cache.
+
+World selection/activation runs in PostUpdate after camera updates, transform
+propagation and visibility completion, so the ray and candidate meshes describe
+the same rendered snapshot. Outcome consumers follow activation; UI text is
+rasterized on its next presentation pass. Roster/authored order defines random
+consumption within operations; cosmetic RNG remains independent.
 
 Battle start and round completion invoke group recognition synchronously with
 the actual battle participants and gameplay eye/facing. Clock requests carry
 the originating level entity; a departed level cannot redirect them. Required
 round recognition completes before a following action or battle removal takes
 effect. Damage makes actors ineligible for further attacks and navigation,
-including off-mesh links and a crossing already in progress.
+including off-mesh links and a crossing already in progress. Death clears drive
+outputs and queues crossing removal at the same command boundary as loot; body
+geometry and vertical velocity remain intact. Defeat is settled before/after
+combat execution and after environmental damage, independent of pacing or input.
+Round-start intent is accepted before waiting in Battle's existing execution
+state; it does not remain in a transient message buffer. Asking for travel
+replaces the previous question with a fresh identity, rejecting stale answers.
 
 Main-screen and inventory controls persist through display changes. Concrete
 `Picture` and `BitmapText` components on actual UI entities describe their
 rendered sources, layout anchors and text alignment. Systems change their
 properties, visibility and bar geometry; font raster images remain cached.
-Tooltips read current health/knowledge even at a stationary pointer. Screen
+Tooltips read current health/knowledge even at a stationary pointer. Bevy counts
+portrait clicks with the retained 400 ms policy. The control only remembers
+whether the previous click selected this actor: giving an item disarms review,
+without maintaining a second pointer/timestamp tracker. Rebinding a slot retires
+only its hit target, so a press cannot release onto a different actor; ordinary
+health, selection and inventory display changes retain that target. Screen
 sessions still own lifecycle; these display sources are not gameplay copies.
 
 ## Navigation importer and processor caching

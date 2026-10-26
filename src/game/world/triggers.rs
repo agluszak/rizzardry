@@ -119,7 +119,7 @@ struct FountainUses {
 
 /// An activated hazard's remaining timing, independent of party occupancy.
 #[derive(Component, Debug)]
-struct ActiveDamageZone(Timer);
+pub(crate) struct ActiveDamageZone(Timer);
 
 /// Dormant records use authored indices, never runtime entity references.
 #[derive(Debug, Default)]
@@ -767,24 +767,73 @@ fn execute(world: &mut World, geometry: &LevelGeometry, entity: Entity, depth: u
     true
 }
 
-pub fn walk(world: &mut World, level: Entity, eye: Vec3, elapsed: Duration) {
+fn contains(definition: &TriggerDefinition, eye: Vec3) -> bool {
+    (definition.range.0..definition.range.1).contains(&eye.distance(definition.place.unwrap()))
+}
+
+/// Quiet fixed ticks are ordinary ECS iteration. Only a real entry candidate
+/// starts an exclusive operation; the remaining authored suffix stays inside
+/// that operation because links can start/reset a later hazard in this step.
+pub(crate) fn walk(
+    In(sample): In<Option<(Entity, Vec3, Duration)>>,
+    mut commands: Commands,
+    mut levels: Query<(&Level, &PositionedDevices, &mut LevelState), Without<Departing>>,
+    geometry: Res<Assets<LevelGeometry>>,
+    mut devices: Query<(&Device, &TriggerState, Option<&mut ActiveDamageZone>)>,
+    pending: Res<PendingPartyMove>,
+) {
+    let Some((level, eye, elapsed)) = sample else { return };
+    let Ok((owner, positioned, mut state)) = levels.get_mut(level) else { return };
+    let Some(geometry) = geometry.get(&owner.geometry) else { return };
+    let previous_eye = state.previous_eye;
+    if previous_eye != Some(eye) {
+        state.previous_eye = Some(eye);
+    }
+    for (index, &entity) in positioned.0.iter().enumerate() {
+        let (device, state, zone) = devices.get_mut(entity).unwrap();
+        let definition = &geometry.triggers[device.definition];
+        let inside = contains(definition, eye);
+        if inside
+            && previous_eye.is_some_and(|previous| !contains(definition, previous))
+            && pending.0.is_none()
+            && definition.usable
+            && !(definition.once && state.fired)
+        {
+            commands.queue(move |world: &mut World| {
+                walk_activation(world, level, eye, previous_eye, elapsed, index);
+            });
+            return;
+        }
+        if let Some(mut zone) = zone {
+            if !inside {
+                commands.entity(entity).remove::<ActiveDamageZone>();
+            } else if zone.0.tick(elapsed).just_finished() {
+                commands.run_system_cached_with(damage_party, Dice { count: 1, sides: 6, base: 2 });
+            }
+        }
+    }
+}
+
+fn walk_activation(
+    world: &mut World,
+    level: Entity,
+    eye: Vec3,
+    previous_eye: Option<Vec3>,
+    elapsed: Duration,
+    start: usize,
+) {
     if world.get::<Departing>(level).is_some() {
         return;
     }
     let Some(owner) = world.get::<Level>(level) else { return };
     let handle = owner.geometry.clone();
-    let previous_eye = world.get_mut::<LevelState>(level).unwrap().previous_eye.replace(eye);
     world.resource_scope(|world, geometry: Mut<Assets<LevelGeometry>>| {
         let Some(geometry) = geometry.get(&handle) else { return };
         let count = world.get::<PositionedDevices>(level).unwrap().0.len();
-        for index in 0..count {
+        for index in start..count {
             let entity = world.get::<PositionedDevices>(level).unwrap().0[index];
             let definition = &geometry.triggers[world.get::<Device>(entity).unwrap().definition];
-            let contains = |eye: Vec3| {
-                (definition.range.0..definition.range.1)
-                    .contains(&eye.distance(definition.place.unwrap()))
-            };
-            let inside = contains(eye);
+            let inside = contains(definition, eye);
             let hurt = if let Some(mut zone) = world.get_mut::<ActiveDamageZone>(entity) {
                 if inside {
                     zone.0.tick(elapsed).just_finished()
@@ -801,7 +850,7 @@ pub fn walk(world: &mut World, level: Entity, eye: Vec3, elapsed: Duration) {
                     .unwrap();
             }
             if inside
-                && previous_eye.is_some_and(|previous| !contains(previous))
+                && previous_eye.is_some_and(|previous| !contains(definition, previous))
                 && world.resource::<PendingPartyMove>().0.is_none()
                 && usable(world, entity, definition)
             {
@@ -1006,7 +1055,7 @@ mod tests {
         }
 
         fn walk(&mut self, eye: Vec3, elapsed: Duration) -> Option<PartyMove> {
-            walk(&mut self.world, self.root, eye, elapsed);
+            self.world.run_system_cached_with(walk, Some((self.root, eye, elapsed))).unwrap();
             self.world.resource_mut::<PendingPartyMove>().take_for(self.root)
         }
 
@@ -1345,6 +1394,43 @@ mod tests {
             "the restarted hazard hurts each member once"
         );
         assert!(level.members.iter().all(|&m| level.world.get::<Vitals>(m).unwrap().hp < full));
+    }
+
+    #[test]
+    fn linked_hazards_tick_and_reset_in_authored_order() {
+        let mut relay = trigger("RELAY", TriggerAction::Relay);
+        relay.usable = true;
+        relay.place = Some(Vec3::ZERO);
+        relay.range = (0.0, 2.0);
+        let mut zone = trigger("ZONE", TriggerAction::DamageZone);
+        zone.place = Some(Vec3::ZERO);
+        zone.range = (0.0, 20.0);
+        for zone_first in [false, true] {
+            let mut definitions = if zone_first {
+                vec![zone.clone(), relay.clone()]
+            } else {
+                vec![relay.clone(), zone.clone()]
+            };
+            link(&mut definitions, &[("RELAY", &["ZONE"])]);
+            let mut level = Scenario::new(definitions, &[], LevelScript::None);
+            level.walk(Vec3::X * 5.0, Duration::ZERO);
+            level.walk(Vec3::ZERO, Duration::from_millis(500));
+            let hurts =
+                level.effects().iter().filter(|e| matches!(e, TriggerEffect::Hurt { .. })).count();
+            assert_eq!(
+                hurts,
+                usize::from(!zone_first),
+                "a later hazard sees its linked activation this step"
+            );
+        }
+        let mut definitions = vec![relay, zone];
+        link(&mut definitions, &[("RELAY", &["ZONE"])]);
+        let mut level = Scenario::new(definitions, &[], LevelScript::None);
+        level.walk(Vec3::X * 5.0, Duration::ZERO);
+        level.run("ZONE");
+        level.walk(Vec3::X * 5.0, Duration::from_millis(400));
+        level.walk(Vec3::ZERO, Duration::from_millis(100));
+        assert!(level.effects().is_empty(), "the earlier relay resets the hazard before it ticks");
     }
 
     #[test]

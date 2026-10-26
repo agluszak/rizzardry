@@ -322,3 +322,24 @@ pub fn choose_walker_cycles(
         }
     }
 }
+
+#[cfg(test)]
+mod float_height_tests {
+    use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+
+    #[test]
+    fn stable_body_height_does_not_dirty_visuals_and_removal_resets_the_offset() {
+        let mut world = World::new();
+        let actor = world.spawn(Walker { speed: 1.0, float_height: 2.0 }).id();
+        let model = world
+            .spawn((ModelRoot, Transform::from_translation(Vec3::NEG_Y * 2.0), ChildOf(actor)))
+            .id();
+        world.clear_trackers();
+        world.run_system_once(follow_float_height).unwrap();
+        assert_eq!(world.query_filtered::<Entity, Changed<Transform>>().iter(&world).count(), 0);
+        world.entity_mut(actor).remove::<Walker>();
+        world.run_system_once(follow_float_height).unwrap();
+        assert_eq!(world.get::<Transform>(model).unwrap().translation, Vec3::ZERO);
+    }
+}

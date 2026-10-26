@@ -21,5 +21,4 @@ pub enum GameplaySet {
     LevelActivation,
     Perception,
     Combat,
-    Interaction,
 }

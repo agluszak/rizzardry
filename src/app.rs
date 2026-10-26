@@ -221,7 +221,6 @@ pub fn build(options: &Options) -> Result<App, String> {
                 crate::game::GameplaySet::LevelActivation,
                 crate::game::GameplaySet::Perception,
                 crate::game::GameplaySet::Combat,
-                crate::game::GameplaySet::Interaction,
             )
                 .chain(),
         );
