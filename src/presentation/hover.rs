@@ -1,8 +1,6 @@
 //! What the pointer rests on in the world, and retail's help box naming it
 //! (`SetCombatSelection`, `SetCombatTarget`, `VideoToolTip`).
 
-use bevy::camera::visibility::RenderLayers;
-use bevy::picking::mesh_picking::ray_cast::MeshRayCast;
 use bevy::picking::pointer::{PointerId, PointerLocation};
 use bevy::prelude::*;
 use bevy::time::Stopwatch;
@@ -16,8 +14,6 @@ use crate::game::party::roster::PartyRoster;
 use crate::game::world::identify::{GroupMember, MonsterGroup, health_known};
 use crate::game::world::items::{REACH, WorldItem};
 use crate::game::world::population::Monster;
-use crate::presentation::party_view::PartyCamera;
-use crate::presentation::party_view::{drawn_under_ray, owner, ray_under_pointer};
 use crate::presentation::screen_art::absolute;
 
 /// The living monster, or the lying item within reach, drawn under the
@@ -40,25 +36,18 @@ impl Hover {
 /// (`PickNearestItemUnderCursor`).
 pub fn hover(
     time: Res<Time>,
-    pointers: Query<(&PointerId, &PointerLocation)>,
-    camera: Query<(&Camera, &GlobalTransform), With<PartyCamera>>,
-    mut meshes: MeshRayCast,
-    sky: Query<(), With<RenderLayers>>,
-    parents: Query<&ChildOf>,
+    selection: Res<super::selection::WorldSelection>,
     items: Query<&WorldItem>,
     monsters: Query<&Monster>,
     mut hovered: ResMut<Hover>,
 ) {
-    let under = camera.single().ok().and_then(|(camera, transform)| {
-        let ray = ray_under_pointer(&pointers, camera, transform)?;
-        let (hit, distance) = drawn_under_ray(ray, &mut meshes, &sky)?;
-        let entity = owner(hit, |e| items.contains(e) || monsters.contains(e), &parents)?;
-        let wanted = match (items.get(entity), monsters.get(entity)) {
-            (Ok(item), _) => distance < REACH && !item.hidden,
+    let under = selection.hit.and_then(|hit| {
+        let wanted = match (items.get(hit.entity), monsters.get(hit.entity)) {
+            (Ok(item), _) => hit.distance < REACH && !item.hidden,
             (_, Ok(monster)) => !monster.is_dead(),
             _ => false,
         };
-        wanted.then_some(entity)
+        wanted.then_some(hit.entity)
     });
     if under != hovered.entity {
         *hovered = Hover { entity: under, held: Stopwatch::new() };

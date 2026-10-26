@@ -13,7 +13,6 @@ use clap::Parser;
 use rizzardry::app::{Options, build};
 use rizzardry::game::combat::Battle;
 use rizzardry::game::inventory::PartyInventory;
-use rizzardry::game::world::interaction::WorldClick;
 use rizzardry::game::world::items::WorldItem;
 use rizzardry::game::world::level::{Departing, Level, Travel};
 use rizzardry::game::world::population::Monster;
@@ -91,12 +90,12 @@ fn a_green_slime_leaves_treasure() {
     step_until(&mut app, "the fight's end", |w| !w.contains_resource::<Battle>());
     assert_eq!(lying_items(app.world_mut()), before + 1);
 
-    // Clicking the treasure, within reach, takes it into the hand.
+    // Taking the resolved treasure, within reach, uses the same gameplay
+    // operation as the rendered input adapter.
     let world = app.world_mut();
     let loot = world.query::<(Entity, &Name)>().iter(world).find(|(_, n)| n.as_str() == "loot");
     let (loot, _) = loot.expect("the treasure lies in the world");
-    let ray = Ray3d::new(Vec3::ZERO, Dir3::NEG_Z);
-    world.write_message(WorldClick { ray, under: Some((loot, 1.0)) });
+    rizzardry::game::world::items::take_item(world, loot, 1.0).unwrap();
     step_until(&mut app, "taking the treasure", |w| w.resource::<PartyInventory>().held.is_some());
     assert_eq!(lying_items(app.world_mut()), before);
 }

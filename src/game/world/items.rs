@@ -1,13 +1,12 @@
 //! Items lying in the world. Each is an entity owning one item until the
 //! party takes it (retail `W8WorldItem`, `ItemManager.cpp`).
 
-use avian3d::prelude::{SpatialQuery, SpatialQueryFilter};
 use bevy::prelude::*;
 
 use crate::content::items::{ItemCatalog, ItemDefinition, ItemId, QuantityKind};
 use crate::content::level::ItemPlacement;
 use crate::game::inventory::{
-    Held, ItemIds, ItemInstance, ItemNews, PartyInventory, Quantity, make_item,
+    Held, ItemIds, ItemInstance, ItemNews, PartyInventory, Quantity, Refusal, make_item,
 };
 use crate::game::rng::GameRng;
 
@@ -98,54 +97,88 @@ pub fn placed_item(
     }
 }
 
-/// Take an item clicked `distance` away (retail `MainGameScreen` view
-/// click): into the hand, or, for a container, what it holds into the pool.
-/// Whether the item is gone from the world. A hidden item, or one out of
-/// reach, stays.
-pub fn take_item(
-    item: &mut WorldItem,
-    distance: f32,
-    inventory: &mut PartyInventory,
-    catalog: &ItemCatalog,
-    tell: &mut dyn FnMut(ItemNews),
-) -> bool {
-    let Some(definition) = catalog.get(item.item.item) else { return false };
-    if item.hidden || inventory.held.is_some() {
-        return false;
+/// Take a resolved world item. Validation and the owned-value move complete
+/// synchronously, without a pointer, camera, rendering or a battle session.
+pub fn take_item(world: &mut World, target: Entity, distance: f32) -> Result<(), Refusal> {
+    if !world.run_system_cached(crate::game::screen::party_free).unwrap_or(false) {
+        return Err(Refusal::DoesNotFit);
     }
-    if distance > REACH {
-        debug!("{} is out of reach: {distance:.1} m", definition.name);
-        return false;
+    if !distance.is_finite() || !(0.0..=REACH).contains(&distance) {
+        return Err(Refusal::DoesNotFit);
     }
-    // Retail opens a container in its item picker, which is not ported:
-    // here, as with chests, the party takes what is inside into its pool,
-    // and what does not fit stays in the container.
-    if definition.container {
-        return empty_into_pool(item, inventory, catalog, tell);
+    let handle = world
+        .get_resource::<crate::game::data::GameData>()
+        .ok_or(Refusal::MissingContent)?
+        .items
+        .clone();
+    let catalog = world
+        .get_resource::<Assets<ItemCatalog>>()
+        .and_then(|c| c.get(&handle))
+        .ok_or(Refusal::MissingContent)?;
+    let item = world.get::<WorldItem>(target).ok_or(Refusal::Nothing)?;
+    let owner = world.get::<ChildOf>(target).ok_or(Refusal::Nothing)?.parent();
+    if world.get::<super::level::Level>(owner).is_none()
+        || world.get::<super::level::Departing>(owner).is_some()
+        || item.hidden
+    {
+        return Err(Refusal::DoesNotFit);
     }
-    info!("took {}", definition.name);
-    inventory.held = Some(Held { item: item.item.clone(), origin: None });
-    true
+    let is_container = catalog.get(item.item.item).ok_or(Refusal::MissingContent)?.container;
+    if world.resource::<PartyInventory>().held.is_some() {
+        return Err(Refusal::HandFull);
+    }
+    let mut item = world.entity_mut(target).take::<WorldItem>().unwrap();
+    let mut notices = Vec::new();
+    let empty = world.resource_scope(|world, mut party: Mut<PartyInventory>| {
+        if is_container {
+            let catalog = world.resource::<Assets<ItemCatalog>>().get(&handle).unwrap();
+            empty_into_pool(&mut item, &mut party, catalog, &mut |n| notices.push(n))
+        } else {
+            true
+        }
+    });
+    if is_container && !empty {
+        world.entity_mut(target).insert(item);
+    } else {
+        if !is_container {
+            world.resource_mut::<PartyInventory>().held =
+                Some(Held { item: item.item, origin: None });
+        }
+        world.despawn(target);
+    }
+    for notice in notices {
+        world.write_message(notice);
+    }
+    Ok(())
 }
 
-/// Drop the item in hand along `ray`, where it comes to rest on the ground
-/// (retail `DropHeldItem`). Nothing happens without ground to land on.
-pub fn drop_held(
-    commands: &mut Commands,
-    level: Entity,
-    ray: Ray3d,
-    spatial: &SpatialQuery,
-    solid: &dyn Fn(Entity) -> bool,
-    inventory: &mut PartyInventory,
-) {
-    let Some(at) = drop_point(spatial, ray, solid) else { return };
-    let Some(held) = inventory.held.take() else { return };
-    commands.spawn((
-        Name::new("dropped item"),
-        WorldItem { item: held.item, hidden: false, contents: vec![] },
-        Transform::from_translation(at),
-        ChildOf(level),
-    ));
+/// Drop the held owned value at a landing point resolved by an adapter. The
+/// operation validates the current level, party activity and throw reach.
+pub fn drop_held(world: &mut World, level: Entity, at: Vec3) -> Result<Entity, Refusal> {
+    if !world.run_system_cached(crate::game::screen::party_free).unwrap_or(false)
+        || world.get::<super::level::Level>(level).is_none()
+        || world.get::<super::level::Departing>(level).is_some()
+        || !at.is_finite()
+    {
+        return Err(Refusal::DoesNotFit);
+    }
+    let eye = world
+        .query_filtered::<&avian3d::prelude::Position, With<crate::game::party::body::PartyBody>>()
+        .single(world)
+        .map(crate::game::party::body::PartyBody::eye)
+        .map_err(|_| Refusal::Nothing)?;
+    if eye.xz().distance(at.xz()) > THROW + CLEARANCE {
+        return Err(Refusal::DoesNotFit);
+    }
+    let held = world.resource_mut::<PartyInventory>().held.take().ok_or(Refusal::Nothing)?;
+    Ok(world
+        .spawn((
+            Name::new("dropped item"),
+            WorldItem { item: held.item, hidden: false, contents: vec![] },
+            Transform::from_translation(at),
+            ChildOf(level),
+        ))
+        .id())
 }
 
 /// Move what a container holds into the party's pool, telling of each item
@@ -172,22 +205,8 @@ fn empty_into_pool(
 
 /// Retail throws a dropped item at most 2500 units, stops it 125 short of
 /// what it hits, and rests it 125 above the ground below (`DropHeldItem`).
-const THROW: f32 = 5.0;
-const CLEARANCE: f32 = 0.25;
-
-/// Where an item dropped along `ray` comes to rest, if there is ground
-/// under it. Retail aims the throw from the cursor by its own angles; here
-/// it goes along the pointer's ray. Retail's search for a free spot near
-/// other items (`FindNearbyFreePosition`) is not ported.
-fn drop_point(spatial: &SpatialQuery, ray: Ray3d, solid: &dyn Fn(Entity) -> bool) -> Option<Vec3> {
-    let filter = SpatialQueryFilter::default();
-    let reach = spatial
-        .cast_ray_predicate(ray.origin, ray.direction, THROW, true, &filter, solid)
-        .map_or(THROW, |hit| hit.distance);
-    let above = ray.get_point((reach - CLEARANCE).max(0.0));
-    let ground = spatial.cast_ray_predicate(above, Dir3::NEG_Y, 100.0, true, &filter, solid)?;
-    Some(above - Vec3::Y * (ground.distance - CLEARANCE))
-}
+pub(crate) const THROW: f32 = 5.0;
+pub(crate) const CLEARANCE: f32 = 0.25;
 
 #[cfg(test)]
 mod tests {
@@ -249,5 +268,62 @@ mod tests {
         assert!(!empty_into_pool(&mut bag, &mut full, &catalog, &mut |n| told.push(n)));
         assert_eq!(bag.contents.len(), 1);
         assert_eq!(told.last(), Some(&ItemNews::NoRoom));
+    }
+}
+
+#[cfg(test)]
+mod operation_tests {
+    use super::*;
+    use crate::game::data::GameData;
+    use crate::game::party::body::PartyBody;
+    use crate::game::screen::Screen;
+    use crate::game::world::level::{Departing, Level};
+    use avian3d::prelude::Position;
+
+    #[test]
+    fn taking_and_dropping_move_one_owned_item_without_input_or_rendering() {
+        let mut world = World::new();
+        world.init_resource::<Screen>();
+        world.init_resource::<PartyInventory>();
+        world.init_resource::<Messages<ItemNews>>();
+        let mut catalogs = Assets::<ItemCatalog>::default();
+        let catalog = ItemCatalog(vec![ItemDefinition { id: ItemId(0), ..default() }]);
+        let mut ids = ItemIds::default();
+        let item = make_item(&catalog.0[0], &mut ids, &mut GameRng::seeded(1), false, true);
+        let id = item.id;
+        let items = catalogs.add(catalog);
+        world.insert_resource(catalogs);
+        world.insert_resource(GameData { items, loot: default(), species: default() });
+        let level = world
+            .spawn(Level {
+                path: "items-test".into(),
+                geometry: default(),
+                navmeshes: vec![],
+                sky: None,
+                script: default(),
+                messages: None,
+            })
+            .id();
+        world.spawn((PartyBody::default(), Position::default()));
+        let target =
+            world.spawn((WorldItem { item, hidden: false, contents: vec![] }, ChildOf(level))).id();
+        assert_eq!(take_item(&mut world, target, f32::NAN), Err(Refusal::DoesNotFit));
+        assert_eq!(take_item(&mut world, target, REACH + 1.0), Err(Refusal::DoesNotFit));
+        assert!(world.get::<WorldItem>(target).is_some());
+        take_item(&mut world, target, 1.0).unwrap();
+        assert!(world.get_entity(target).is_err());
+        assert_eq!(world.resource::<PartyInventory>().held.as_ref().unwrap().item.id, id);
+        assert_eq!(take_item(&mut world, target, 1.0), Err(Refusal::Nothing));
+        assert_eq!(drop_held(&mut world, level, Vec3::X * 100.0), Err(Refusal::DoesNotFit));
+        world.entity_mut(level).insert(Departing);
+        assert_eq!(drop_held(&mut world, level, Vec3::X), Err(Refusal::DoesNotFit));
+        world.entity_mut(level).remove::<Departing>();
+        let dropped = drop_held(&mut world, level, Vec3::X).unwrap();
+        assert!(world.resource::<PartyInventory>().held.is_none());
+        assert_eq!(world.get::<WorldItem>(dropped).unwrap().item.id, id);
+        assert_eq!(world.get::<ChildOf>(dropped).unwrap().parent(), level);
+        *world.resource_mut::<Screen>() = Screen::Inventory;
+        assert_eq!(take_item(&mut world, dropped, 1.0), Err(Refusal::DoesNotFit));
+        assert_eq!(world.get::<WorldItem>(dropped).unwrap().item.id, id);
     }
 }

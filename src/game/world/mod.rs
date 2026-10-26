@@ -2,7 +2,6 @@
 
 pub mod damage;
 pub mod identify;
-pub mod interaction;
 pub mod items;
 pub mod level;
 pub mod navigation;
@@ -32,7 +31,6 @@ impl Plugin for WorldPlugin {
             .add_message::<level::LevelReady>()
             .add_message::<level::Travel>()
             .add_message::<level::TravelAnswer>()
-            .add_message::<interaction::WorldClick>()
             .add_message::<crate::game::inventory::ItemNews>()
             .add_message::<search::ToggleSearch>()
             .add_message::<identify::DetectGroups>()

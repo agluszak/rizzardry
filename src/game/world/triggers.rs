@@ -380,6 +380,7 @@ pub struct DeviceOperations<'w, 's> {
     roster: Res<'w, PartyRoster>,
     formation: ResMut<'w, crate::game::party::formation::Formation>,
     clock: Res<'w, GameClock>,
+    freedom: crate::game::screen::Freedom<'w, 's>,
 }
 
 impl<'w, 's> DeviceOperations<'w, 's> {
@@ -412,7 +413,9 @@ impl<'w, 's> DeviceOperations<'w, 's> {
     /// operation owns reach/eligibility validation, independent of mouse input.
     pub fn use_device(&mut self, entity: Entity, distance: f32) -> bool {
         let Some(definition) = self.definition(entity) else { return false };
-        if !self.usable(entity)
+        if !self.freedom.free()
+            || !distance.is_finite()
+            || !self.usable(entity)
             || !(definition.range.0..=definition.range.1).contains(&distance)
             || !self.ready()
         {
@@ -887,6 +890,7 @@ mod tests {
             world.init_resource::<Messages<crate::game::inventory::ItemNews>>();
             world.init_resource::<PendingPartyMove>();
             world.init_resource::<PartyInventory>();
+            world.init_resource::<crate::game::screen::Screen>();
             world.init_resource::<ItemIds>();
             world.init_resource::<PartyRoster>();
             world.init_resource::<crate::game::party::formation::Formation>();

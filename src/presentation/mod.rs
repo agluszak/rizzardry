@@ -17,6 +17,7 @@ pub mod names;
 pub mod notices;
 pub mod party_view;
 pub mod screen_art;
+pub mod selection;
 pub mod sky;
 pub mod textures;
 pub mod voice;
@@ -65,6 +66,7 @@ impl Plugin for PresentationPlugin {
             .init_resource::<effects::CameraShake>()
             .init_resource::<notices::TextLog>()
             .init_resource::<hover::Hover>()
+            .init_resource::<selection::WorldSelection>()
             .init_resource::<music::Music>()
             .init_resource::<PresentationRng>()
             .add_input_context::<automap::MapKey>()
@@ -88,9 +90,9 @@ impl Plugin for PresentationPlugin {
                     hold_exploration,
                     screen_art::paint_hover_art,
                     (party_view::attach_camera, party_view::aim_camera).chain(),
-                    party_view::click_in_view
-                        .run_if(crate::game::screen::party_free)
-                        .before(crate::game::world::interaction::act_on_click),
+                    (selection::select_world_target, selection::activate_selection)
+                        .chain()
+                        .after(party_view::aim_camera),
                     camp::show_camp,
                     (
                         automap::close_automap,
@@ -135,7 +137,7 @@ impl Plugin for PresentationPlugin {
                     )
                         .chain(),
                     (
-                        hover::hover,
+                        hover::hover.after(selection::select_world_target),
                         hover::show_tooltip,
                         world_items::show_world_items,
                         world_items::build_world_items,
