@@ -2,7 +2,7 @@
 
 use bevy::prelude::*;
 
-use super::environment::LevelVisuals;
+use super::environment::LevelAppearance;
 use crate::content::level::{LevelGeometry, Playback};
 use crate::game::time::GameClock;
 
@@ -11,14 +11,16 @@ use crate::game::time::GameClock;
 pub fn animate_level_textures(
     time: Res<Time<Virtual>>,
     clock: Res<GameClock>,
-    levels: Query<&LevelVisuals>,
+    levels: Query<(&LevelAppearance, Option<&super::sky::LevelSky>)>,
     geometry: Res<Assets<LevelGeometry>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let seconds = time.elapsed_secs();
     let animations = levels
         .iter()
-        .flat_map(|level| std::iter::once(&level.geometry).chain(&level.sky))
+        .flat_map(|(level, sky)| {
+            std::iter::once(&level.0).chain(sky.and_then(|sky| sky.0.as_ref()))
+        })
         .filter_map(|handle| geometry.get(handle))
         .flat_map(|geometry| &geometry.animated_textures);
     for animation in animations {

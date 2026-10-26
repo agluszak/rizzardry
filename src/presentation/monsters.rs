@@ -12,12 +12,12 @@ use bevy::time::Stopwatch;
 
 use avian3d::prelude::{SpatialQuery, SpatialQueryFilter};
 
-use crate::content::level::LevelDefinition;
+use super::environment::LevelAppearance;
+use crate::content::level::LevelGeometry;
 use crate::content::monster::MonsterModel;
 use crate::content::species::MonsterCatalog;
 use crate::game::data::GameData;
 use crate::game::time::GameClock;
-use crate::game::world::level::Level;
 use crate::game::world::navigation::Walker;
 use crate::game::world::population::Monster;
 
@@ -219,8 +219,8 @@ const SKY_SCALE_PER_SECOND: f32 = 2.0;
 pub fn light_monsters(
     time: Res<Time>,
     clock: Res<GameClock>,
-    levels: Query<(Entity, &Level)>,
-    geometry: Res<Assets<LevelDefinition>>,
+    levels: Query<(Entity, &LevelAppearance)>,
+    geometry: Res<Assets<LevelGeometry>>,
     models: Res<Assets<MonsterModel>>,
     spatial: SpatialQuery,
     mut actors: Query<(&GlobalTransform, &MonsterVisual, &mut MonsterInstance, &Children)>,
@@ -230,7 +230,7 @@ pub fn light_monsters(
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let Some((level_entity, level)) =
-        levels.iter().find_map(|(e, l)| geometry.get(&l.geometry).map(|g| (e, g)))
+        levels.iter().find_map(|(e, l)| geometry.get(&l.0).map(|g| (e, g)))
     else {
         return;
     };
@@ -270,7 +270,7 @@ pub fn light_monsters(
 pub fn sunlit(
     spatial: &SpatialQuery,
     level_entity: Entity,
-    level: &LevelDefinition,
+    level: &LevelGeometry,
     at: Vec3,
 ) -> bool {
     level.lighting.sun.is_some_and(|sun| {

@@ -10,8 +10,8 @@ use rand::Rng;
 
 use crate::presentation::PresentationRng;
 
-use crate::content::level::{AmbientSoundModel, LevelDefinition};
-use crate::game::world::level::Level;
+use super::environment::LevelAppearance;
+use crate::content::level::{AmbientSoundModel, LevelGeometry};
 use crate::presentation::party_view::PartyCamera;
 
 /// The inner part of the radius heard at full loudness.
@@ -32,11 +32,11 @@ pub struct AmbiencePlaced;
 
 pub fn place_ambient_sounds(
     mut commands: Commands,
-    levels: Query<(Entity, &Level), Without<AmbiencePlaced>>,
-    geometry: Res<Assets<LevelDefinition>>,
+    levels: Query<(Entity, &LevelAppearance), Without<AmbiencePlaced>>,
+    geometry: Res<Assets<LevelGeometry>>,
 ) {
     for (root, level) in &levels {
-        let Some(geometry) = geometry.get(&level.geometry) else { continue };
+        let Some(geometry) = geometry.get(&level.0) else { continue };
         for (index, sound) in geometry.ambient_sounds.iter().enumerate() {
             commands.spawn((
                 Name::new(format!("Ambience {}", sound.path)),
@@ -59,14 +59,14 @@ pub fn play_ambient_sounds(
     time: Res<Time>,
     assets: Res<AssetServer>,
     listener: Query<&GlobalTransform, With<PartyCamera>>,
-    levels: Query<&Level>,
-    geometry: Res<Assets<LevelDefinition>>,
+    levels: Query<&LevelAppearance>,
+    geometry: Res<Assets<LevelGeometry>>,
     mut emitters: Query<(Entity, &mut AmbientEmitter, &Transform, Option<&Children>)>,
     mut sinks: Query<&mut AudioSink>,
     mut rng: ResMut<PresentationRng>,
 ) {
     let (Ok(listener), Some(level)) =
-        (listener.single(), levels.iter().find_map(|l| geometry.get(&l.geometry)))
+        (listener.single(), levels.iter().find_map(|l| geometry.get(&l.0)))
     else {
         return;
     };
@@ -136,29 +136,22 @@ mod tests {
     fn a_pending_sound_is_not_started_again_before_it_finishes() {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
-            .init_asset::<LevelDefinition>()
+            .init_asset::<LevelGeometry>()
             .init_asset::<bevy::audio::AudioSource>()
             .init_resource::<PresentationRng>()
             .add_systems(Update, play_ambient_sounds);
-        let geometry =
-            app.world_mut().resource_mut::<Assets<LevelDefinition>>().add(LevelDefinition {
-                ambient_sounds: vec![AmbientSoundModel {
-                    path: "pending.wav".into(),
-                    position: Vec3::ZERO,
-                    radius: 10.0,
-                    looping: false,
-                    volume: 1.0..=1.0,
-                    interval: 0.0..=0.0,
-                }],
-                ..default()
-            });
-        app.world_mut().spawn(Level {
-            path: "test".into(),
-            geometry,
-            navmeshes: vec![],
-            script: default(),
-            messages: None,
+        let geometry = app.world_mut().resource_mut::<Assets<LevelGeometry>>().add(LevelGeometry {
+            ambient_sounds: vec![AmbientSoundModel {
+                path: "pending.wav".into(),
+                position: Vec3::ZERO,
+                radius: 10.0,
+                looping: false,
+                volume: 1.0..=1.0,
+                interval: 0.0..=0.0,
+            }],
+            ..default()
         });
+        app.world_mut().spawn(LevelAppearance(geometry));
         let listener = app.world_mut().spawn((PartyCamera, GlobalTransform::default())).id();
         let emitter = app
             .world_mut()

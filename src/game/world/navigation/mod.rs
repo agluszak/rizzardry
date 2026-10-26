@@ -36,7 +36,12 @@ impl Plugin for NavigationPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(Landmass3dPlugin::default())
             .add_plugins(TnuaControllerPlugin::<WalkerMotion>::new(FixedUpdate))
-            .add_systems(Update, links::sync_door_links.run_if(super::level::level_active))
+            .add_systems(
+                FixedPreUpdate,
+                links::sync_door_links
+                    .before(bevy_landmass::LandmassSystems::SyncExistence)
+                    .run_if(super::level::level_active),
+            )
             // Each fixed step: Landmass plans (FixedPreUpdate), walkers feed
             // Tnua (FixedUpdate), Avian moves them (FixedPostUpdate), and
             // the resulting velocities go back to Landmass.

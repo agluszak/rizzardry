@@ -23,13 +23,13 @@ established by the implementation:
 
 1. Make destination preparation, failed loading and playable activation distinct.
    Require collision, local state, references and shared gameplay catalogs before
-   enabling triggers/AI/party physics. Prepare without changing the source.
-   *Status:* implemented. `Destination` owns arrival and becomes `Level` only
-   after required assets, collision and navigation succeed. Activation captures
-   the latest source state, cancels its pending movement/flight, places the
-   existing party and retires the source. Failed preparation has nothing to
-   roll back. A fight starting during preparation cancels the request.
-
+   enabling triggers/AI/party physics. At the travel commit, settle old sessions;
+   failed preparation leaves the source playable.
+   *Status:* activation and travel ownership are implemented. A destination owns
+   its arrival request and prepares while the source remains active. Activation
+   captures the latest source state and swaps levels in one operation. Gameplay
+   definitions load independently from visual assets. Navigation failure policy
+   remains an explicit open decision.
 2. Capture map-owned state on departure and restore it on revisit. A killed or
    wounded monster, opened container, trigger and map note must not reset or
    leak to another map. Persist domain state, not transient proximity/UI caches.
@@ -61,7 +61,7 @@ killed local monsters or move map notes; final-round recovery is correct;
 a non-roster `Character` is excluded from party effects. Use focused tests
 and representative retail checks, not a new harness. *Covered:* headless
 tests for failed collision, waiting for databases, one party across levels,
-an unchanged live source on a failed destination, a killed monster staying dead;
+a playable source during destination preparation, a killed monster staying dead;
 rule tests for a combat round's recovery. Failed travel keeping the source is
 tested, and passing time healing the roster but not a non-roster
 `Character`.
@@ -71,8 +71,8 @@ tested, and passing time healing the roster but not a non-roster
 The merged ownership refactors and the lifecycle follow-up provide useful
 primitives. Retain their actor identities, owned item transfers, native screen
 sessions, retained controls and synchronous battle recognition. The following
-boundaries below are now implemented in the follow-up; this is not a claim that
-all gameplay systems or retail compatibility are complete.
+boundaries are now completed by #29 and its follow-up; this is not a claim
+that all gameplay systems or retail compatibility are complete.
 
 This cleanup adds actual party damage outcomes, orders retained damage-animation
 refresh before playback, links dialog lifetime to its gameplay question, derives
@@ -84,29 +84,27 @@ Camp acceptance now follows battle acceptance and its deferred commits. World
 picking and activation now follow camera updates, transform propagation and
 visibility completion. Retain those production ordering boundaries.
 
-1. **Preserve every time consequence.** Implemented: aging applies each tick's
-   conditions followed by its recognition rolls synchronously. The transient
-   requests and coalescing reader are deleted; fixed-step batching cannot lose
-   required recognition work.
-2. **Prepare travel before capturing the source.** Implemented: destination-owned
-   arrival and success-only capture/activation replace provisional snapshots,
-   `Departing` and `stay()` rollback. Failed mandatory navmeshes reject loading.
-3. **Give world actors their bodies and movement intent.** Implemented:
-   activation creates movable bodies at their final origin convention, with
-   actor-owned navigation targets/controllers. Battle changes targets, not body
-   existence. The battle-entry embodiment system, visual offset repair system
-   and mirrored `Battle.approaching` flag are deleted. Death still cancels motion.
-4. **Finish current-frame sky following.** Implemented: sky follows the current
-   camera hierarchy in PostUpdate through Bevy's TransformHelper, after normal
-   aiming/shake and the optional overhead view, before engine propagation.
-   Picking still reads the fully propagated camera/meshes and current visibility.
-5. **Separate level gameplay content from visual construction.** Implemented:
-   independent typed PVL loaders produce `LevelDefinition` and optional
-   `LevelGeometry`. Gameplay props contain no mesh handles; presentation owns
-   world/sky handles and requests them only for active levels. Activation works
-   without Mesh, StandardMaterial or LevelGeometry resources. The navmesh
-   processor and its cache remain unchanged.
+1. **Preserve every time consequence.** The fixed time operation now applies
+   each aging tick and its recognition rolls synchronously, preserving conditions
+   at each pass. The coalescing request/reader and empty Perception stage are gone.
+   Camp progression remains in that same fixed operation.
+2. **Finish travel preparation.** Destination-owned arrival and source capture at
+   successful commit are retained. Mandatory navmesh failure rejects preparation;
+   combat or camping during loading delays commit, preserving main's policy. There is no provisional snapshot or
+   rollback protocol. Camera-flight suspension ends only on successful commit.
+3. **Give world actors their bodies and movement intent.** Activation constructs
+   movable bodies at their final coordinate convention, with actor-owned targets
+   and controllers. Combat only selects intent; `embody_fighters` and the visual
+   offset repair system are deleted. Main's shared `needs_approach` calculation
+   remains the authority for both targeting and passive-round decisions.
+4. **Finish current-frame sky following.** The sky reads the current camera
+   hierarchy through TransformHelper in PostUpdate, after aiming/shake/overhead
+   changes and before engine propagation. Picking still follows propagation and
+   visibility completion.
 
+Gameplay level definitions and optional visual construction are now separate
+assets/loaders. Headless gameplay does not initialize rendering or input. Camp
+transitions and recovery now settle together on the fixed simulation step.
 
 Headless checks establish ownership and gameplay behavior, not retail pixels,
 audio-device output or complete cross-plugin frame timing. Use the production

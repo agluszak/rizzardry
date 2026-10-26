@@ -39,16 +39,37 @@ One level root owns its local entities and presentation children. An existing
 party entity survives travel. The root has one phase — loading, active or
 failed — and one operation (`activate_level`) makes it playable once its
 gameplay prerequisites exist: it builds the world, navigation and
-population, consumes what was remembered of the level and places the party.
-Travel preparation leaves the source live. Only successful activation captures
-its latest state, clears level-bound movement, retires the source and announces
-`LevelReady`. Arrival belongs to the destination, not a shared mutable setting.
-Required navigation failures reject preparation; there is no provisional source
-snapshot, `Departing` flag or rollback path. Combat during preparation cancels
-that request rather than allowing delayed travel to escape a fight.
-Cosmetic loading (the sky) proceeds on its own. Bevy parent/child relations and screen-scoped
+population, consumes what was remembered of the level, places and resumes
+the party, and only then announces `LevelReady`. Gameplay systems run only
+while a level is active. Travel keeps the source active during preparation;
+activation captures its latest state, cancels source-owned movement, removes
+its entities and places the persistent party in one operation. The pending
+destination owns its entrance/placement, rather than a separate global resource.
+There is no partially frozen source or speculative dormant snapshot to repair
+after loading fails. Combat or camping that starts during loading delays the
+commit until it ends. Presentation requests and retains sky assets on the active
+level; gameplay never requests them. Presentation also installs visibility on the ancestors of
+its meshes and cameras. Billboard rotation belongs to a visual child, leaving
+the authored prop-part pose under gameplay ownership. Cosmetic loading proceeds
+on its own. Bevy parent/child relations and screen-scoped
 cleanup should eliminate manual ownership tables, not introduce a new global
 world manager.
+
+Level assets have two independent typed loaders for the retail source:
+`LevelDefinition` contains collision, triggers, placements, movement paths and
+sight distance; `LevelGeometry` contains meshes, materials, lighting and ambient
+sounds. Presentation owns the geometry and sky handles on live level entities.
+Gameplay activation never requests textures or waits for visual content.
+`app` composes gameplay asset loaders separately from presentation loaders;
+headless play uses `MinimalPlugins` plus assets, transforms and states, with no
+render sub-app or input plugin. Avian constructs colliders from collision data,
+so its optional mesh/scene collider constructors are disabled.
+
+Device bindings live in presentation and translate into `PartyMovement`,
+`PartyLook`, `CampRequest` and `ToggleSearch`. The owning game systems validate
+activity before applying them; neither a keyboard action entity nor an active
+input context is a prerequisite for gameplay. Headless callers use those same
+boundaries. Movement intent is a request, not a second copy of physical position.
 
 ## Three kinds of data
 
@@ -143,6 +164,14 @@ initial placement, round acceptance and deterministic tie breaking. Standing
 `Order` components, held-item provenance and explicit UI selection refer to
 actors, so roster edits cannot transfer those facts to another occupant.
 
+Whether monsters still need to approach is derived from their live positions,
+health, movement capability and attack reach by the same rule navigation uses.
+Combat does not consume a flag written by navigation on a previous frame.
+The party's path flight is also part of action legality: movement, mouse look,
+manual camping and world interactions remain blocked until the flight ends.
+
+Combat round progress is one enum: waiting, accepted (including pacing/content
+waits), or executing a phase. There is no separate executing flag to synchronize.
 The weapon-attack slice accepts an ordered entity-keyed queue at round start.
 It locks the order, weapon identity, initiative and attack count. Execution
 revalidates membership, current ability to act, that weapon's presence and
@@ -235,11 +264,11 @@ continue loading when it does not affect those rules. A failed requirement
 has an explicit outcome; it must not make opening a chest or using a trigger
 silently succeed without its required effects.
 
-The intended boundary prepares the destination without modifying its gameplay state or
+Travel prepares the destination without modifying its gameplay state or
 destroying the source. At the transition boundary, settle/cancel outstanding
-source-owned actions, capture persistent local state, stop the source world's
-simulation and activate the destination exactly once at the same boundary.
-The party retains its entity and is placed using that destination's arrival. Failed preparation keeps
+source-owned actions, capture persistent local state, remove source entities, then
+construct and activate the destination exactly once. The game places the
+body and runs entry rules only for that activated map. Failed preparation keeps
 the source playable, except for separately committed operations such as an
 accepted companion dismissal. Every pending callback or playback completion
 must still identify its original level/session.
@@ -248,10 +277,9 @@ This is one ordinary transition, not a new generic lifecycle framework or
 a second simultaneously mutable world. Its detailed failure and revisit
 semantics are in [persistence and travel](systems/persistence-and-travel.md).
 
-The implementation rejects failed mandatory navigation and never stores a
-provisional source record. Headless checks cover source preservation, latest-state
-capture, same-level replacement and cancellation when combat starts while loading.
-Retail traversal and rendered arrival still need representative content checks.
+The current implementation treats failed navmesh loading as settled and can
+activate without navigation. Navigation failure policy remains unresolved;
+readiness tests do not establish mandatory navigation availability.
 
 ## Operations, systems and observation
 
@@ -450,10 +478,12 @@ only its hit target, so a press cannot release onto a different actor; ordinary
 health, selection and inventory display changes retain that target. Screen
 sessions still own lifecycle; these display sources are not gameplay copies.
 
-The fixed gameplay step settles movement/trigger consequences, then applies aging
-and each associated recognition pass synchronously, before Update's combat work.
-Recognition is not a transient request to a later frame: batching fixed steps
-cannot discard passes or make every pass observe only the final conditions.
+The fixed time operation follows physical movement and trigger settlement. Each
+aging pass updates conditions and performs recognition before the next pass;
+no transient request coalesces RNG-consuming work. Camp progression settles in
+that same fixed operation. World activation creates walking bodies before battle,
+so neither combat nor presentation repairs their coordinate convention afterward.
+Mandatory navigation failures reject destination preparation.
 
 ## Navigation importer and processor caching
 

@@ -5,7 +5,6 @@
 
 use avian3d::prelude::{RigidBody, SpatialQuery, SpatialQueryFilter};
 use bevy::prelude::*;
-use bevy_enhanced_input::prelude::*;
 
 use crate::content::characters::{Attribute, Skill};
 use crate::content::items::ItemCatalog;
@@ -15,7 +14,7 @@ use crate::game::combat::Battle;
 use crate::game::data::GameData;
 use avian3d::prelude::Position;
 
-use crate::game::party::body::{PartyBody, Run};
+use crate::game::party::body::{PartyBody, PartyMovement};
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::items::WorldItem;
 
@@ -30,36 +29,32 @@ const PULSE_SECONDS: f32 = 0.5;
 /// The party's search mode (retail `search_mode`).
 #[derive(Resource, Debug)]
 pub struct Search {
-    pub on: bool,
-    /// On before the fight that suspended it (`search_mode_saved`).
-    suspended: bool,
+    mode: SearchMode,
     /// The sweeps, every half second.
     pulse: Timer,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchMode {
+    Off,
+    On,
+    /// Resume after the fight; cannot also be on.
+    Suspended,
+}
+
 impl Search {
-    fn new(on: bool, suspended: bool) -> Self {
-        Search { on, suspended, pulse: Timer::from_seconds(PULSE_SECONDS, TimerMode::Repeating) }
+    fn new(mode: SearchMode) -> Self {
+        Search { mode, pulse: Timer::from_seconds(PULSE_SECONDS, TimerMode::Repeating) }
+    }
+
+    pub fn on(&self) -> bool {
+        self.mode == SearchMode::On
     }
 }
 
 impl Default for Search {
     fn default() -> Self {
-        Search::new(false, false)
-    }
-}
-
-/// Retail's S key (`mgskeyboard.ini` command 312).
-#[derive(InputAction)]
-#[action_output(bool)]
-pub struct SearchKey;
-
-pub fn search_key(
-    key: Single<&ActionEvents, With<Action<SearchKey>>>,
-    mut toggle: MessageWriter<ToggleSearch>,
-) {
-    if key.contains(ActionEvents::START) {
-        toggle.write(ToggleSearch);
+        Search::new(SearchMode::Off)
     }
 }
 
@@ -74,6 +69,7 @@ pub enum SearchNews {
     NotInCombat,
     /// "Ragnar spots a hidden Dagger!"
     Spotted {
+        target: Entity,
         member: String,
         item: String,
     },
@@ -81,31 +77,35 @@ pub enum SearchNews {
 
 pub fn toggle_search(
     mut requests: MessageReader<ToggleSearch>,
+    freedom: crate::game::screen::Freedom,
     battle: Option<Res<Battle>>,
     mut search: ResMut<Search>,
     mut news: MessageWriter<SearchNews>,
 ) {
     // A fight switches search mode off, and the end of the fight back on
     // (retail `InitializeCombat`, `EndCombat`).
-    match (battle.is_some(), search.on, search.suspended) {
-        (true, true, _) => {
-            *search = Search::new(false, true);
+    match (battle.is_some(), search.mode) {
+        (true, SearchMode::On) => {
+            *search = Search::new(SearchMode::Suspended);
             news.write(SearchNews::Off);
         }
-        (false, false, true) => {
-            *search = Search::new(true, false);
+        (false, SearchMode::Suspended) => {
+            *search = Search::new(SearchMode::On);
             news.write(SearchNews::On);
         }
         _ => {}
     }
     for ToggleSearch in requests.read() {
-        if search.on {
-            search.on = false;
+        if !freedom.free() {
+            continue;
+        }
+        if search.on() {
+            search.mode = SearchMode::Off;
             news.write(SearchNews::Off);
         } else if battle.is_some() {
             news.write(SearchNews::NotInCombat);
         } else {
-            *search = Search::new(true, false);
+            *search = Search::new(SearchMode::On);
             news.write(SearchNews::On);
         }
     }
@@ -143,11 +143,11 @@ pub fn search_pulse(
     time: Res<Time>,
     mut search: ResMut<Search>,
     battle: Option<Res<Battle>>,
-    run: Single<&Action<Run>>,
+    movement: Res<PartyMovement>,
     party: Query<(&Position, &PartyBody)>,
     roster: Res<PartyRoster>,
     members: Query<(&Character, &Vitals)>,
-    mut items: Query<(&mut WorldItem, &Transform)>,
+    mut items: Query<(Entity, &mut WorldItem, &Transform)>,
     (spatial, bodies): (SpatialQuery, Query<&RigidBody>),
     (data, catalogs): (Option<Res<GameData>>, Res<Assets<ItemCatalog>>),
     mut news: MessageWriter<SearchNews>,
@@ -160,20 +160,20 @@ pub fn search_pulse(
     }
     let Ok((position, body)) = party.single() else { return };
     let (from, forward) = (PartyBody::eye(position), body.forward());
-    let running = ***run;
+    let running = movement.running;
     let best = roster
         .0
         .iter()
         .filter_map(|&m| members.get(m).ok())
         .filter(|(_, vitals)| can_act(vitals))
-        .map(|(m, _)| (search_score(m, search.on, running), m))
+        .map(|(m, _)| (search_score(m, search.on(), running), m))
         .filter(|&(score, _)| score > 0)
         // The first of equals, as retail keeps the earlier slot.
         .reduce(|a, b| if b.0 > a.0 { b } else { a });
     let Some((score, searcher)) = best else { return };
     let solid = |entity| bodies.get(entity).is_ok_and(RigidBody::is_static);
     let catalog = data.and_then(|d| catalogs.get(&d.items));
-    for (mut item, at) in &mut items {
+    for (target, mut item, at) in &mut items {
         if !item.hidden {
             continue;
         }
@@ -192,6 +192,7 @@ pub fn search_pulse(
         let name =
             catalog.and_then(|c| c.get(item.item.item)).map(|d| item.item.display_name(d, false));
         news.write(SearchNews::Spotted {
+            target,
             member: searcher.name.clone(),
             item: name.unwrap_or_default(),
         });
@@ -202,6 +203,46 @@ pub fn search_pulse(
 mod tests {
     use super::*;
     use crate::game::characters::{Gender, Race};
+
+    #[test]
+    fn search_requests_work_without_input_and_resume_after_combat() {
+        use crate::game::screen::Screen;
+        use crate::game::world::level::Level;
+        let mut app = App::new();
+        app.insert_resource(State::new(Screen::World))
+            .init_resource::<NextState<Screen>>()
+            .init_resource::<Search>()
+            .add_message::<ToggleSearch>()
+            .add_message::<SearchNews>()
+            .add_systems(Update, toggle_search);
+        app.world_mut().spawn(Level {
+            path: "test".into(),
+            geometry: default(),
+            navmeshes: vec![],
+            script: default(),
+            messages: None,
+        });
+        app.world_mut().write_message(ToggleSearch);
+        app.update();
+        assert!(app.world().resource::<Search>().on());
+        app.insert_resource(Battle::default());
+        app.update();
+        assert!(!app.world().resource::<Search>().on());
+        app.world_mut().write_message(ToggleSearch);
+        app.update();
+        assert!(!app.world().resource::<Search>().on());
+        app.world_mut().remove_resource::<Battle>();
+        app.update();
+        assert!(app.world().resource::<Search>().on());
+        app.world_mut().resource_mut::<NextState<Screen>>().set(Screen::Inventory);
+        app.world_mut().write_message(ToggleSearch);
+        app.update();
+        assert!(app.world().resource::<Search>().on(), "a held party cannot toggle search");
+        *app.world_mut().resource_mut::<NextState<Screen>>() = NextState::Unchanged;
+        app.world_mut().write_message(ToggleSearch);
+        app.update();
+        assert!(!app.world().resource::<Search>().on());
+    }
 
     #[test]
     fn rangers_search_on_their_own_and_others_only_in_search_mode() {

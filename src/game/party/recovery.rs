@@ -3,24 +3,10 @@
 //! tick; how much they recover depends on how the time is spent.
 //!
 //! Whatever passes time applies this at once, with its own pace:
-//! exploring and camping here, a combat round when it ends.
+//! exploring and camping in `game::time`, a combat round when it ends.
 
-use avian3d::prelude::LinearVelocity;
-use bevy::prelude::*;
-
-use crate::game::camp::Camp;
 use crate::game::characters::{Character, Vitals};
-use crate::game::party::body::{PartyBody, WALK_SPEED};
-use crate::game::party::roster::PartyRoster;
-use crate::game::rng::GameRng;
-use crate::game::time::{CAMPING_RATE, EXPLORATION_RATE, GameClock, Ticks};
-use crate::game::world::identify::GroupRecognition;
-use avian3d::prelude::Position;
-
-/// Slower than this, in metres a second, the party is resting.
-const RESTING_BELOW: f32 = 0.05;
-/// Faster than walking: running.
-const RUNNING_ABOVE: f32 = WALK_SPEED * 1.1;
+use crate::game::time::Ticks;
 
 /// How the party spends passing time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,66 +58,6 @@ pub fn elapse(profile: &Character, member: &mut Vitals, ticks: Ticks, pace: Pace
     }
 }
 
-/// Exploring and camping: the clock runs on the fixed step and the party
-/// recovers as it passes. In a fight only its rounds pass time.
-pub fn pass_time(
-    time: Res<Time>,
-    camp: Option<Res<Camp>>,
-    battle: Option<Res<crate::game::combat::Battle>>,
-    party: Query<(&Position, &PartyBody, &LinearVelocity)>,
-    roster: Res<PartyRoster>,
-    mut affected: ParamSet<(Query<(&Character, &mut Vitals)>, GroupRecognition)>,
-    mut clock: ResMut<GameClock>,
-    mut rng: ResMut<GameRng>,
-) {
-    if battle.is_some() {
-        return;
-    }
-    let racing = camp.as_ref().is_some_and(|c| c.racing());
-    let ticks =
-        clock.advance_real(time.delta(), if racing { CAMPING_RATE } else { EXPLORATION_RATE });
-    if ticks.stamina == 0 && ticks.aging == 0 {
-        return;
-    }
-    // Retail tells running (fast movement) from walking; here the speed
-    // does, horizontally so that falling is not running.
-    let speed = party.single().map_or(0.0, |(_, _, v)| Vec2::new(v.x, v.z).length());
-    let pace = if camp.is_some() {
-        Pace::Camping
-    } else if speed < RESTING_BELOW {
-        Pace::Still
-    } else if speed <= RUNNING_ABOVE {
-        Pace::Walking
-    } else {
-        Pace::Running
-    };
-    // Each aging pass settles conditions before its recognition rolls. Do not
-    // collapse passes across fixed steps or inspect the final conditions for all
-    // of them: a blindness duration may expire partway through this interval.
-    for pass in 0..=ticks.aging {
-        let ticks = if pass == 0 {
-            Ticks { stamina: ticks.stamina, aging: 0 }
-        } else {
-            Ticks { stamina: 0, aging: 1 }
-        };
-        let mut members = affected.p0();
-        for &member in &roster.0 {
-            if members
-                .get(member)
-                .is_ok_and(|(profile, vitals)| has_work(profile, vitals, ticks, pace))
-            {
-                let (profile, mut vitals) = members.get_mut(member).unwrap();
-                elapse(profile, &mut vitals, ticks, pace);
-            }
-        }
-        if pass > 0
-            && let Ok((position, body, _)) = party.single()
-        {
-            affected.p1().detect(PartyBody::eye(position), body.forward(), None, &mut rng);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,45 +77,5 @@ mod tests {
         // Standing still for two hours heals.
         elapse(&profile, &mut fighter, Ticks { stamina: 85, aging: 60 }, Pace::Still);
         assert!(fighter.hp > hp && fighter.stamina > stamina);
-    }
-}
-
-#[cfg(test)]
-mod roster_tests {
-    use super::*;
-    use crate::game::characters::{Gender, Profession, Race};
-    use crate::game::time::AGING_TICK_MS;
-    use bevy::time::TimeUpdateStrategy;
-
-    #[test]
-    fn passing_time_heals_the_party_not_every_character() {
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins)
-            .init_resource::<GameClock>()
-            .init_resource::<PartyRoster>()
-            .init_resource::<GameRng>()
-            .init_resource::<Assets<crate::content::species::MonsterCatalog>>()
-            .init_resource::<Assets<crate::content::level::LevelDefinition>>()
-            .add_message::<crate::game::world::identify::Identified>()
-            .add_systems(Update, pass_time);
-        let hurt = || {
-            let c = Character::new("Hurt", Race::Human, Gender::Male, Profession::Fighter);
-            let mut vitals = Vitals::new(&c);
-            vitals.hp = 1;
-            (c, vitals)
-        };
-        let member = app.world_mut().spawn(hurt()).id();
-        // An adventurer the party has not recruited.
-        let stranger = app.world_mut().spawn(hurt()).id();
-        app.world_mut().resource_mut::<PartyRoster>().0.insert(member);
-        // A long real step: at 12x, many aging ticks of standing still.
-        let step = std::time::Duration::from_millis(AGING_TICK_MS * 30 / EXPLORATION_RATE);
-        app.insert_resource(TimeUpdateStrategy::ManualDuration(step));
-        app.world_mut().resource_mut::<Time<Virtual>>().set_max_delta(step);
-        for _ in 0..3 {
-            app.update();
-        }
-        assert!(app.world().get::<Vitals>(member).unwrap().hp > 1);
-        assert_eq!(app.world().get::<Vitals>(stranger).unwrap().hp, 1);
     }
 }

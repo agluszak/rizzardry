@@ -13,7 +13,6 @@ use crate::game::rng::GameRng;
 
 /// An item lying in the level.
 #[derive(Component, Debug, Clone)]
-#[require(Visibility)]
 pub struct WorldItem {
     pub item: ItemInstance,
     /// Unseen, and out of reach, until found by searching.

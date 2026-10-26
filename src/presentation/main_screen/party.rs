@@ -705,6 +705,46 @@ mod tests {
     };
 
     #[test]
+    fn new_damage_refreshes_the_existing_splat_before_playback_expires_it() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<SpriteSheet>()
+            .init_resource::<PartyRoster>()
+            .init_resource::<PresentationRng>()
+            .add_message::<DamageApplied>()
+            .add_systems(Startup, super::super::load_main_screen_art)
+            .add_systems(Update, (record_splats, play_splats).chain());
+        let actor = app.world_mut().spawn_empty().id();
+        app.world_mut().resource_mut::<PartyRoster>().0.insert(actor);
+        let layer = app.world_mut().spawn(Splats).id();
+        let mut timer = Timer::from_seconds(8.0 * SPLAT_FRAME, TimerMode::Once);
+        timer.set_elapsed(Duration::from_secs_f32(0.79));
+        let splat = app
+            .world_mut()
+            .spawn((
+                Splat { actor, timer, damage: 10, death: false, second: false },
+                Node::default(),
+                ChildOf(layer),
+            ))
+            .id();
+        app.world_mut().spawn((Picture::default(), ChildOf(splat)));
+        app.update();
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(Duration::from_millis(
+            100,
+        )));
+        app.world_mut().write_message(DamageApplied { member: actor, amount: 3, died: false });
+        app.world_mut().write_message(DamageApplied { member: actor, amount: 4, died: true });
+        app.update();
+        let retained =
+            app.world().get::<Splat>(splat).expect("refresh must retain the animation entity");
+        assert_eq!(retained.damage, 17);
+        assert!(retained.death);
+        assert!(retained.timer.elapsed_secs() < 0.2);
+        assert_eq!(retained.timer.duration(), Duration::from_secs(3));
+        assert_eq!(app.world_mut().query::<&Splat>().iter(app.world()).count(), 1);
+    }
+
+    #[test]
     fn native_click_counts_review_only_the_current_selection_gesture() {
         let mut world = World::new();
         world.init_resource::<PartyRoster>();

@@ -6,7 +6,6 @@
 
 use avian3d::prelude::*;
 use bevy::prelude::*;
-use bevy_enhanced_input::prelude::*;
 use bevy_tnua::builtins::{TnuaBuiltinWalk, TnuaBuiltinWalkConfig};
 use bevy_tnua::prelude::*;
 use bevy_tnua_avian3d::prelude::*;
@@ -42,7 +41,6 @@ pub const GRAVITY: f32 = 18750.0 / UNITS_PER_METRE;
 /// walking never comes near it, so in practice it limits falls.
 const MAX_SPEED: f32 = 30000.0 / UNITS_PER_METRE;
 const MAX_PITCH: f32 = std::f32::consts::FRAC_PI_4;
-const LOOK_SENSITIVITY: f32 = 0.003;
 
 /// Movement the party can perform: walking only. Wizardry has no jumping.
 #[derive(TnuaScheme)]
@@ -75,105 +73,18 @@ impl PartyBody {
     }
 }
 
-/// Input context while exploring the world.
-#[derive(Component, Default, Clone)]
-pub struct Exploration;
-
-/// Forward/back (y) and strafe (x).
-#[derive(InputAction)]
-#[action_output(Vec2)]
-pub struct Walk;
-
-/// Turn right (positive) or left.
-#[derive(InputAction)]
-#[action_output(f32)]
-pub struct Turn;
-
-/// Mouse motion; applied while `FreeLook` is held.
-#[derive(InputAction)]
-#[action_output(Vec2)]
-pub struct Look;
-
-#[derive(InputAction)]
-#[action_output(bool)]
-pub struct FreeLook;
-
-#[derive(InputAction)]
-#[action_output(bool)]
-pub struct Run;
-
-/// Use the prop or object in front of the party.
-#[derive(InputAction)]
-#[action_output(bool)]
-pub struct Interact;
-
-pub fn spawn_exploration_controls(mut commands: Commands) {
-    commands.spawn_scene(bsn! {
-        Exploration
-        Actions<Exploration> [
-            // Retail's keys (data/strings/mgskeyboard.ini): the arrows walk
-            // and turn, Num0 and Num. strafe; letters are commands.
-            Action::<Walk>::new()
-            DeadZone
-            Bindings [
-                Binding(KeyCode::NumpadDecimal)
-                --
-                Binding(KeyCode::Numpad0)
-                ~Negate::all()
-                --
-                Binding(KeyCode::ArrowUp)
-                ~SwizzleAxis::YXZ
-                --
-                Binding(KeyCode::ArrowDown)
-                ~Negate::all()
-                ~SwizzleAxis::YXZ
-                --
-                {preset::axial::left_stick()}
-            ]
-            --
-            Action::<Turn>::new()
-            Bindings [
-                {preset::bidirectional::new(KeyCode::ArrowRight, KeyCode::ArrowLeft)}
-                --
-                Binding(GamepadAxis::RightStickX)
-            ]
-            --
-            Action::<Look>::new()
-            Bindings [
-                Binding::mouse_motion()
-            ]
-            --
-            Action::<FreeLook>::new()
-            Bindings [
-                Binding(MouseButton::Right)
-            ]
-            --
-            Action::<Run>::new()
-            Bindings [
-                Binding(KeyCode::ShiftLeft)
-                --
-                Binding(KeyCode::ShiftRight)
-            ]
-            --
-            // Retail interacts by clicking in the view only.
-            Action::<Interact>::new()
-            Bindings [
-                Binding(MouseButton::Left)
-            ]
-            --
-            // Retail's keys are in data/strings/mgskeyboard.ini: C camps.
-            Action::<crate::game::camp::Rest>::new()
-            Bindings [
-                Binding(KeyCode::KeyC)
-            ]
-            --
-            Action::<crate::game::world::search::SearchKey>::new()
-            Bindings [
-                Binding(KeyCode::KeyS)
-            ]
-        ]
-    });
+/// Continuous movement intent, supplied by input or a headless caller.
+/// The controller validates whether the party may move on every fixed step.
+#[derive(Resource, Debug, Default)]
+pub struct PartyMovement {
+    pub walk: Vec2,
+    pub turn: f32,
+    pub running: bool,
 }
+
+/// A relative yaw/pitch change in radians, independent of device sensitivity.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct PartyLook(pub Vec2);
 
 /// What placing the party needs (part of a level's activation).
 #[derive(SystemParam)]
@@ -194,7 +105,7 @@ pub struct PartyPlacement<'w, 's> {
 
 impl PartyPlacement<'_, '_> {
     /// Put the party in a level being activated: spawn it in the first,
-    /// move it into the next at the successful activation boundary.
+    /// move it into the next and cancel any source-owned path flight.
     ///
     /// Retail enters a level at an entrance trigger (e.g. `MO100`) and falls
     /// back to an eye position of (0, 1000, 0) when there is none. Entrance
@@ -217,13 +128,11 @@ impl PartyPlacement<'_, '_> {
         if let Ok((entity, mut body, mut at, mut transform, mut velocity)) = self.party.single_mut()
         {
             body.yaw = yaw;
+            body.pitch = start.pitch.clamp(-MAX_PITCH, MAX_PITCH);
             at.0 = position;
             transform.translation = position;
             velocity.0 = Vec3::ZERO;
-            body.pitch = start.pitch.clamp(-MAX_PITCH, MAX_PITCH);
-            commands
-                .entity(entity)
-                .remove::<(crate::game::party::walk_in::PathFlight, RigidBodyDisabled)>();
+            commands.entity(entity).remove::<(super::walk_in::PathFlight, RigidBodyDisabled)>();
             return;
         }
         spawn_party(commands, start, yaw, position, &mut self.motion_configs);
@@ -241,7 +150,6 @@ fn spawn_party(
         Name::new("Party"),
         PartyBody { yaw, pitch: start.pitch.clamp(-MAX_PITCH, MAX_PITCH) },
         Transform::from_translation(position),
-        Visibility::default(),
         RigidBody::Dynamic,
         Position(position),
         Collider::sphere(RADIUS - 0.08),
@@ -271,25 +179,25 @@ pub struct PartyStart {
     pub pitch: f32,
 }
 
-/// Mouse look: a per-frame input delta, applied every frame.
+/// Apply requested view changes only while the party can act.
 pub fn look_around(
-    look: Single<&Action<Look>>,
-    free_look: Single<&Action<FreeLook>>,
+    mut requests: MessageReader<PartyLook>,
+    freedom: crate::game::screen::Freedom,
     mut party: Query<&mut PartyBody>,
 ) {
-    let Ok(mut body) = party.single_mut() else { return };
-    if ***free_look {
-        body.yaw -= look.x * LOOK_SENSITIVITY;
-        body.pitch = (body.pitch - look.y * LOOK_SENSITIVITY).clamp(-MAX_PITCH, MAX_PITCH);
+    let delta: Vec2 = requests.read().map(|request| request.0).sum();
+    if !freedom.free() || !delta.is_finite() {
+        return;
     }
+    let Ok(mut body) = party.single_mut() else { return };
+    body.yaw += delta.x;
+    body.pitch = (body.pitch + delta.y).clamp(-MAX_PITCH, MAX_PITCH);
 }
 
 /// Turn and walk on the fixed simulation step, feeding Tnua.
 pub fn drive_party(
     time: Res<Time>,
-    walk: Single<&Action<Walk>>,
-    turn: Single<&Action<Turn>>,
-    run: Single<&Action<Run>>,
+    movement: Res<PartyMovement>,
     mut party: Query<(&mut PartyBody, &mut TnuaController<PartyMotion>)>,
     freedom: crate::game::screen::Freedom,
 ) {
@@ -297,11 +205,11 @@ pub fn drive_party(
     // A party held by a screen, a camp or a question stands still.
     let free = freedom.free();
     if free {
-        body.yaw -= ***turn * TURN_SPEED * time.delta_secs();
+        body.yaw -= movement.turn.clamp(-1.0, 1.0) * TURN_SPEED * time.delta_secs();
     }
     // The walk config's speed is the run speed; walking scales the input.
-    let input = if free { walk.clamp_length_max(1.0) } else { Vec2::ZERO };
-    let fraction = if ***run { 1.0 } else { WALK_SPEED / RUN_SPEED };
+    let input = if free { movement.walk.clamp_length_max(1.0) } else { Vec2::ZERO };
+    let fraction = if movement.running { 1.0 } else { WALK_SPEED / RUN_SPEED };
     controller.initiate_action_feeding();
     controller.basis = TnuaBuiltinWalk {
         desired_motion: Quat::from_rotation_y(body.yaw)

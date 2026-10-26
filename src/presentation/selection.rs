@@ -1,9 +1,9 @@
 //! One mesh-selection policy shared by hover and activation. Physics is used
 //! only to find a dropped item's landing point, never to replace mesh picking.
 
+use super::controls::Interact;
 use super::party_view::PartyCamera;
 use crate::game::inventory::PartyInventory;
-use crate::game::party::body::Interact;
 use crate::game::world::items::{CLEARANCE, THROW, WorldItem, drop_held, take_item};
 use crate::game::world::level::Level;
 use crate::game::world::population::Monster;

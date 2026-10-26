@@ -7,9 +7,9 @@ use bevy::camera::visibility::RenderLayers;
 use bevy::math::Affine2;
 use bevy::prelude::*;
 
-use super::environment::LevelVisuals;
 use crate::content::level::LevelGeometry;
 use crate::game::time::GameClock;
+use crate::game::world::level::Level;
 use crate::presentation::billboards::FaceCamera;
 use crate::presentation::party_view::PartyCamera;
 
@@ -117,6 +117,23 @@ pub fn orbit_sun_and_moon(clock: Res<GameClock>, mut bodies: Query<(&Celestial, 
     }
 }
 
+/// Optional sky content belongs to presentation, including its loading lifetime.
+#[derive(Component, Debug)]
+pub struct LevelSky(pub Option<Handle<LevelGeometry>>);
+
+pub fn request_skies(
+    mut commands: Commands,
+    levels: Query<(Entity, &Level), Without<LevelSky>>,
+    assets: Res<AssetServer>,
+) {
+    for (entity, level) in &levels {
+        let sky = crate::content::levels::LevelInfo::for_path(&level.path)
+            .and_then(crate::content::levels::LevelInfo::sky_path)
+            .map(|path| assets.load(format!("retail://{path}")));
+        commands.entity(entity).insert(LevelSky(sky));
+    }
+}
+
 /// The level's sky has been built (or it has none).
 #[derive(Component, Debug)]
 pub struct SkyBuilt;
@@ -128,12 +145,12 @@ pub const SKY_LAYER: usize = 1;
 /// once it has loaded. Cosmetic: the level is played without waiting.
 pub fn build_sky(
     mut commands: Commands,
-    levels: Query<(Entity, &LevelVisuals), Without<SkyBuilt>>,
+    levels: Query<(Entity, &LevelSky), Without<SkyBuilt>>,
     geometry: Res<Assets<LevelGeometry>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     for (root, level) in &levels {
-        let Some(sky) = &level.sky else {
+        let Some(sky) = &level.0 else {
             commands.entity(root).insert(SkyBuilt);
             continue;
         };

@@ -5,12 +5,13 @@ departs from retail, in rough order of the
 [implementation plan](implementation-plan.md)'s first slice. Keep an entry
 next to its feature when that feature changes.
 
-- Architecture follow-up remains open; see
-  [remaining composition work](implementation-plan.md#remaining-composition-work).
-  The navmesh cache keeps its
-  small hand-written codec, which a standard codec would not make
-  simpler. A headless run without rendering logs Bevy's harmless
-  "Sub app did not exist" error for `ClearColor`'s extraction.
+- Rendering and input no longer bootstrap gameplay: `LevelDefinition` and its
+  collision/trigger/placement loader are separate from `LevelGeometry` and
+  presentation loaders. Headless play installs no renderer, render assets,
+  input bindings, UI or audio. Visuals still share the same compiled package;
+  this is a runtime/dependency ownership boundary, not a Cargo feature split.
+- The navmesh cache keeps its small hand-written codec, which a standard codec
+  would not make simpler.
 - Doors: a locked door with a key opens for that key in hand (unlocking
   it for good, kept with the level) and otherwise runs its fallback, as
   retail's `SelectAction` does; a door locked without a key stays shut,

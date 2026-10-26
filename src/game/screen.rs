@@ -29,6 +29,7 @@ pub struct Freedom<'w, 's> {
     next: Res<'w, NextState<Screen>>,
     camp: Option<Res<'w, Camp>>,
     questions: Query<'w, 's, (), With<TravelQuestion>>,
+    flights: Query<'w, 's, (), With<crate::game::party::walk_in::PathFlight>>,
 }
 
 impl Freedom<'_, '_> {
@@ -38,6 +39,7 @@ impl Freedom<'_, '_> {
             && matches!(*self.next, NextState::Unchanged | NextState::Pending(Screen::World))
             && self.camp.is_none()
             && self.questions.is_empty()
+            && self.flights.is_empty()
     }
 }
 

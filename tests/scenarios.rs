@@ -31,6 +31,10 @@ fn game(args: &[&str]) -> App {
     let mut app = build(&options).expect("the game builds");
     app.finish();
     app.cleanup();
+    assert!(app.get_sub_app(bevy::render::RenderApp).is_none());
+    assert!(!app.world().contains_resource::<Assets<Mesh>>());
+    assert!(!app.world().contains_resource::<Assets<Image>>());
+    assert!(!app.world().contains_resource::<Assets<StandardMaterial>>());
     app
 }
 

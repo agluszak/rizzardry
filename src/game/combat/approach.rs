@@ -1,5 +1,5 @@
 //! Monsters closing in on the party during a fight. A monster in the fight
-//! heads for the party using its existing world-owned walking body
+//! uses its existing world-owned walking body to head for the party
 //! through the navmesh until one of its attacks reaches; the dead and those
 //! in reach stand. Retail moves monsters as a scheduled action within the
 //! round (advance and charge); here they close in continuously, a
@@ -20,6 +20,25 @@ use crate::game::world::population::Monster;
 /// Stop this far inside an attack's reach.
 const REACH_MARGIN: f32 = 0.3;
 
+/// Whether this living walker still needs to close to attack range. Combat's
+/// passive-round decision and navigation use the same current actor state.
+pub(super) fn needs_approach(
+    monster: &Monster,
+    origin: Vec3,
+    walker: Option<&Walker>,
+    party_eye: Vec3,
+    species: &MonsterCatalog,
+) -> bool {
+    let Some(walker) = walker else { return false };
+    if monster.is_dead() || walker.speed <= 0.0 {
+        return false;
+    }
+    let Some(kind) = species.0.get(monster.species as usize) else { return false };
+    let reach = kind.attacks.iter().map(|a| a.reach).max().unwrap_or(Reach::Touch);
+    let feet = crate::game::world::navigation::feet(origin, Some(walker));
+    super::distance_to_party(party_eye, monster, feet) > reach.metres() - REACH_MARGIN
+}
+
 /// Head for the party while no attack reaches it; stand otherwise, when
 /// dead, and when there is no fight.
 pub fn close_in(
@@ -35,13 +54,10 @@ pub fn close_in(
     for (entity, monster, at, walker, mut target) in &mut walkers {
         let fighting =
             battle.as_ref().is_some_and(|b| b.monsters.iter().any(|&(e, _)| e == entity));
-        let reach = catalog
-            .and_then(|c| c.0.get(monster.species as usize))
-            .and_then(|s| s.attacks.iter().map(|a| a.reach).max())
-            .unwrap_or(Reach::Touch);
-        let feet = crate::game::world::navigation::feet(at.translation(), Some(walker));
-        let distance = super::distance_to_party(party_eye, monster, feet);
-        let wanted = if fighting && !monster.is_dead() && distance > reach.metres() - REACH_MARGIN {
+        let wanted = if fighting
+            && catalog.is_some_and(|species| {
+                needs_approach(monster, at.translation(), Some(walker), party_eye, species)
+            }) {
             AgentTarget3d::Entity(party)
         } else {
             AgentTarget3d::None

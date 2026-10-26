@@ -254,7 +254,7 @@ mod tests {
 
     #[test]
     fn recognition_uses_authored_visibility_and_excludes_nonmembers() {
-        use crate::content::level::{LevelDefinition, LevelEnvironment};
+        use crate::content::level::LevelDefinition;
         use crate::content::species::Species;
         use crate::game::world::level::Level;
         use crate::game::world::population::ScaledBody;
@@ -274,17 +274,10 @@ mod tests {
                     recognition.detect(PartyBody::eye(at), body.forward(), None, &mut rng);
                 },
             );
-        let geometry =
-            app.world_mut().resource_mut::<Assets<LevelDefinition>>().add(LevelDefinition {
-                environment: Some(LevelEnvironment {
-                    fog_range: (0.0, 1.0),
-                    view_distance: 5.0,
-                    intensity: 0.0,
-                    fog_colours: vec![Vec3::ZERO; 256],
-                    ambient_colours: vec![Vec3::ZERO; 256],
-                }),
-                ..default()
-            });
+        let geometry = app
+            .world_mut()
+            .resource_mut::<Assets<LevelDefinition>>()
+            .add(LevelDefinition { sight_distance: Some(5.0), ..default() });
         let species =
             app.world_mut().resource_mut::<Assets<MonsterCatalog>>().add(MonsterCatalog(vec![
                 Species { name: "Crab".into(), generic_name: "Crustacean".into(), ..default() },
@@ -347,10 +340,7 @@ mod tests {
             .resource_mut::<Assets<LevelDefinition>>()
             .get_mut(&geometry)
             .unwrap()
-            .environment
-            .as_mut()
-            .unwrap()
-            .view_distance = 20.0;
+            .sight_distance = Some(20.0);
         app.world_mut()
             .entity_mut(camera)
             .insert(Projection::Perspective(PerspectiveProjection { far: 1.0, ..default() }));
@@ -359,7 +349,6 @@ mod tests {
         assert!(known.identified && known.counted);
         assert_eq!(app.world().get::<MonsterKnowledge>(member).unwrap().seen.get(&0), Some(&1));
         assert!(app.world().get::<MonsterKnowledge>(outsider).unwrap().seen.is_empty());
-
         // Three aging ticks must not become one recognition request. The first
         // tick is still blind; the next two each make their own failed roll.
         app.world_mut().get_mut::<MonsterGroup>(group).unwrap().identified = false;
@@ -377,12 +366,13 @@ mod tests {
             .unwrap();
         app.world_mut().entity_mut(body).insert(avian3d::prelude::LinearVelocity::ZERO);
         app.init_resource::<crate::game::time::GameClock>();
+        app.add_message::<crate::game::camp::CampNews>();
         app.world_mut().resource_mut::<Time>().advance_by(std::time::Duration::from_secs(30));
         let mut expected = app.world().resource::<GameRng>().clone();
         expected.below(100);
         expected.below(100);
         use bevy::ecs::system::RunSystemOnce;
-        app.world_mut().run_system_once(crate::game::party::recovery::pass_time).unwrap();
+        app.world_mut().run_system_once(crate::game::time::pass_time).unwrap();
         assert_eq!(app.world().resource::<GameRng>(), &expected);
     }
 }

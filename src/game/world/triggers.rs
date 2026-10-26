@@ -855,7 +855,7 @@ fn walk_activation(
 mod tests {
     use super::*;
     use crate::content::items::{ItemDefinition, ItemId, LootTable};
-    use crate::content::level::{Animation, Arrival, DoorLock, PropDefinition, TriggerSound};
+    use crate::content::level::{Animation, Arrival, DoorLock, PropModel, TriggerSound};
     use crate::game::characters::{Gender, Profession, Race};
     use crate::game::inventory::Held;
 
@@ -920,7 +920,7 @@ mod tests {
         fn new(triggers: Vec<TriggerDefinition>, props: &[PropSpec], script: LevelScript) -> Self {
             let models = props
                 .iter()
-                .map(|&PropSpec(name, _, wraps, slots)| PropDefinition {
+                .map(|&PropSpec(name, _, wraps, slots)| PropModel {
                     name: name.into(),
                     collidable: false,
                     face_camera: false,
@@ -1602,9 +1602,9 @@ mod tests {
         );
         level.world.insert_resource(data);
         level.settle();
-        let live = level.world.entity_mut(level.root).take::<Level>().unwrap();
+        let source = level.world.entity_mut(level.root).take::<Level>().unwrap();
         assert!(!level.run("DOOR").0);
-        level.world.entity_mut(level.root).insert(live);
+        level.world.entity_mut(level.root).insert(source);
         assert!(level.run("DOOR").0);
         assert_eq!(level.motion("DOOR").target, 0.0);
     }
@@ -1695,10 +1695,6 @@ mod tests {
             PartyPlugin,
         ))
         .init_asset::<LevelDefinition>()
-        .init_asset::<crate::content::species::MonsterCatalog>()
-        .init_resource::<crate::game::time::GameClock>()
-        .init_resource::<GameRng>()
-        .add_message::<crate::game::world::identify::Identified>()
         .add_message::<Travel>();
         let world = app.world_mut();
         let handle = world.resource_mut::<Assets<LevelDefinition>>().add(geometry.clone());

@@ -3,39 +3,59 @@
 
 use bevy::prelude::*;
 
-use crate::content::level::{LevelDefinition, LevelGeometry};
+use crate::content::level::LevelGeometry;
 use crate::game::time::GameClock;
 use crate::game::world::level::{Level, PropPart};
 use crate::game::world::props::Prop;
 use crate::presentation::billboards::FaceCamera;
 use crate::presentation::party_view::PartyCamera;
 
+/// Presentation owns the optional render payload for an active level.
+#[derive(Component, Debug)]
+pub struct LevelAppearance(pub Handle<LevelGeometry>);
+
+pub fn request_level_visuals(
+    mut commands: Commands,
+    levels: Query<(Entity, &Level), Without<LevelAppearance>>,
+    assets: Res<AssetServer>,
+) {
+    for (entity, level) in &levels {
+        commands.entity(entity).insert((
+            LevelAppearance(assets.load(format!("retail://{}", level.path))),
+            Visibility::default(),
+        ));
+    }
+}
+
+/// The render inputs applied to this camera. A replacement camera needs its
+/// own fog setup even when the level and daylight phase have not changed.
+#[derive(Component)]
+pub struct AppliedEnvironment(AssetId<LevelGeometry>, u8);
+
 /// Apply the environment when the level or the time-of-day phase changes:
 /// linear fog toward the phase's fog colour (which is also the clear
 /// colour), the far clip at the view distance, and vertex colours relit
 /// with the phase's sky light.
 pub fn apply_environment(
-    mut shown: Local<Option<(Entity, bool, u8)>>,
     clock: Res<GameClock>,
-    levels: Query<(Entity, &Level, &LevelVisuals)>,
-    definitions: Res<Assets<LevelDefinition>>,
+    levels: Query<Ref<LevelAppearance>>,
     geometry: Res<Assets<LevelGeometry>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut clear: ResMut<ClearColor>,
-    mut camera: Query<(Entity, &mut Projection), With<PartyCamera>>,
+    mut camera: Query<(Entity, &mut Projection, Option<&AppliedEnvironment>), With<PartyCamera>>,
     mut commands: Commands,
 ) {
-    let Ok((root, level, visual)) = levels.single() else { return };
-    let Some(definition) = definitions.get(&level.geometry) else { return };
-    let level_geometry = geometry.get(&visual.geometry);
-    let Ok((camera, mut projection)) = camera.single_mut() else { return };
+    let Some(level) = levels.iter().next() else { return };
+    let Some(level_geometry) = geometry.get(&level.0) else { return };
+    let Ok((camera, mut projection, applied)) = camera.single_mut() else { return };
     let phase = clock.phase();
-    let key = (root, level_geometry.is_some(), phase);
-    if *shown == Some(key) {
+    if applied.is_some_and(|applied| applied.0 == level.0.id() && applied.1 == phase)
+        && !level.is_changed()
+        && !geometry.is_changed()
+    {
         return;
     }
-    *shown = Some(key);
-    let Some(environment) = &definition.environment else { return };
+    let Some(environment) = &level_geometry.environment else { return };
 
     let fog = environment.fog_colours[phase as usize];
     clear.0 = Color::srgb(fog.x, fog.y, fog.z);
@@ -43,17 +63,19 @@ pub fn apply_environment(
     if let Projection::Perspective(perspective) = projection.as_mut() {
         perspective.far = far;
     }
-    commands.entity(camera).insert(DistanceFog {
-        color: Color::srgb(fog.x, fog.y, fog.z),
-        falloff: FogFalloff::Linear {
-            start: far * environment.fog_range.0,
-            end: far * environment.fog_range.1,
+    commands.entity(camera).insert((
+        AppliedEnvironment(level.0.id(), phase),
+        DistanceFog {
+            color: Color::srgb(fog.x, fog.y, fog.z),
+            falloff: FogFalloff::Linear {
+                start: far * environment.fog_range.0,
+                end: far * environment.fog_range.1,
+            },
+            ..default()
         },
-        ..default()
-    });
+    ));
 
     let sky = environment.sky_light(phase);
-    let Some(level_geometry) = level_geometry else { return };
     let parts = level_geometry
         .parts
         .iter()
@@ -65,43 +87,22 @@ pub fn apply_environment(
     }
 }
 
-/// Presentation owns optional render handles; a live level needs neither.
+/// The level's meshes have been attached.
 #[derive(Component, Debug)]
-pub struct LevelVisuals {
-    pub geometry: Handle<LevelGeometry>,
-    pub sky: Option<Handle<LevelGeometry>>,
-}
-
-pub fn request_level_visuals(
-    mut commands: Commands,
-    assets: Res<AssetServer>,
-    levels: Query<(Entity, &Level), Without<LevelVisuals>>,
-) {
-    for (root, level) in &levels {
-        commands.entity(root).insert(LevelVisuals {
-            geometry: assets.load(format!("retail://{}", level.path)),
-            sky: crate::content::levels::LevelInfo::for_path(&level.path)
-                .and_then(crate::content::levels::LevelInfo::sky_path)
-                .map(|path| assets.load(format!("retail://{path}"))),
-        });
-    }
-}
-
-#[derive(Component, Debug)]
-pub struct VisualsAttached;
+pub struct LevelVisuals;
 
 /// Give an active level its looks: the static geometry under its root, each
 /// prop part's meshes under the part, and sprites turning to the view.
 pub fn attach_level_visuals(
     mut commands: Commands,
-    levels: Query<(Entity, &LevelVisuals, Option<&Children>), Without<VisualsAttached>>,
+    levels: Query<(Entity, &LevelAppearance, Option<&Children>), Without<LevelVisuals>>,
     geometry: Res<Assets<LevelGeometry>>,
     props: Query<(&Prop, &Children)>,
     parts: Query<&PropPart>,
 ) {
     for (root, level, children) in &levels {
-        let Some(geometry) = geometry.get(&level.geometry) else { continue };
-        commands.entity(root).insert(VisualsAttached);
+        let Some(geometry) = geometry.get(&level.0) else { continue };
+        commands.entity(root).insert((LevelVisuals, Visibility::default()));
         for part in &geometry.parts {
             commands.spawn((
                 Mesh3d(part.mesh.clone()),
@@ -112,19 +113,32 @@ pub fn attach_level_visuals(
         for &child in children.into_iter().flatten() {
             let Ok((prop, prop_parts)) = props.get(child) else { continue };
             let Some(model) = geometry.props.get(prop.definition) else { continue };
+            commands.entity(child).insert(Visibility::default());
             for &entity in prop_parts {
                 let Some(part) = parts.get(entity).ok().and_then(|p| model.parts.get(p.part))
                 else {
                     continue;
                 };
-                if model.face_camera {
-                    commands.entity(entity).insert(FaceCamera);
-                }
+                commands.entity(entity).insert(Visibility::default());
+                // Gameplay owns the part's authored pose, including rotation.
+                // Billboard only its visual child, cancelling that rotation.
+                let visual = if model.face_camera {
+                    commands
+                        .spawn((
+                            FaceCamera,
+                            Transform::default(),
+                            Visibility::default(),
+                            ChildOf(entity),
+                        ))
+                        .id()
+                } else {
+                    entity
+                };
                 for mesh in &part.meshes {
                     commands.spawn((
                         Mesh3d(mesh.mesh.clone()),
                         MeshMaterial3d(mesh.material.clone()),
-                        ChildOf(entity),
+                        ChildOf(visual),
                     ));
                 }
             }
@@ -135,65 +149,117 @@ pub fn attach_level_visuals(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::content::level::{PropVisual, PropVisualPart};
+    use crate::game::world::props::PropMotion;
 
     #[test]
-    fn late_visuals_receive_the_current_light_without_a_clock_change() {
+    fn replacing_a_camera_and_reloading_environment_reapply_fog_at_the_same_phase() {
+        use crate::content::level::LevelEnvironment;
         let mut app = App::new();
-        app.init_resource::<GameClock>()
-            .init_resource::<ClearColor>()
-            .init_resource::<Assets<LevelDefinition>>()
-            .init_resource::<Assets<LevelGeometry>>()
+        app.init_resource::<Assets<LevelGeometry>>()
             .init_resource::<Assets<Mesh>>()
+            .init_resource::<ClearColor>()
+            .init_resource::<GameClock>()
             .add_systems(Update, apply_environment);
-        let definition =
-            app.world_mut().resource_mut::<Assets<LevelDefinition>>().add(LevelDefinition {
-                environment: Some(crate::content::level::LevelEnvironment {
-                    fog_range: (0.0, 1.0),
-                    view_distance: 50.0,
-                    intensity: 1.0,
-                    fog_colours: vec![Vec3::ZERO; 256],
-                    ambient_colours: vec![Vec3::splat(0.25); 256],
-                }),
-                ..default()
-            });
-        let visual = app.world_mut().resource_mut::<Assets<LevelGeometry>>().reserve_handle();
-        app.world_mut().spawn((
-            Level {
-                path: "test".into(),
-                geometry: definition,
-                navmeshes: vec![],
-                script: default(),
-                messages: None,
-            },
-            LevelVisuals { geometry: visual.clone(), sky: None },
-        ));
-        app.world_mut().spawn((PartyCamera, Projection::Perspective(default())));
+        let geometry = app.world_mut().resource_mut::<Assets<LevelGeometry>>().add(LevelGeometry {
+            environment: Some(LevelEnvironment {
+                fog_range: (0.2, 1.0),
+                view_distance: 80.0,
+                intensity: 1.0,
+                fog_colours: vec![Vec3::ONE; 256],
+                ambient_colours: vec![Vec3::ONE; 256],
+            }),
+            ..default()
+        });
+        app.world_mut().spawn(LevelAppearance(geometry.clone()));
+        let camera = app.world_mut().spawn((PartyCamera, Projection::default())).id();
         app.update();
-        let mesh = app.world_mut().resource_mut::<Assets<Mesh>>().add(Mesh::new(
-            bevy::mesh::PrimitiveTopology::TriangleList,
-            bevy::asset::RenderAssetUsages::default(),
-        ));
+        assert!(app.world().get::<DistanceFog>(camera).is_some());
+        app.world_mut().despawn(camera);
+        let camera = app.world_mut().spawn((PartyCamera, Projection::default())).id();
+        app.update();
+        assert!(app.world().get::<DistanceFog>(camera).is_some());
+        let far = |app: &App| match app.world().get::<Projection>(camera).unwrap() {
+            Projection::Perspective(p) => p.far,
+            _ => panic!("expected perspective camera"),
+        };
+        assert_eq!(far(&app), 80.0);
         app.world_mut()
             .resource_mut::<Assets<LevelGeometry>>()
-            .insert(
-                &visual,
-                LevelGeometry {
-                    parts: vec![crate::content::level::LevelPart {
-                        mesh: mesh.clone(),
-                        material: default(),
-                        lighting: crate::content::level::VertexLighting {
-                            fixed: vec![Vec3::ZERO],
-                            sun: vec![1.0],
-                            reflectance: Vec3::ONE,
-                        },
-                    }],
-                    ..default()
-                },
-            )
-            .unwrap();
+            .get_mut(&geometry)
+            .unwrap()
+            .environment
+            .as_mut()
+            .unwrap()
+            .view_distance = 120.0;
         app.update();
-        let mesh = app.world().resource::<Assets<Mesh>>().get(&mesh).unwrap();
-        assert!(matches!(mesh.attribute(Mesh::ATTRIBUTE_COLOR),
-            Some(bevy::mesh::VertexAttributeValues::Float32x4(colours)) if colours == &[[0.25, 0.25, 0.25, 1.0]]));
+        assert_eq!(far(&app), 120.0);
+    }
+
+    #[test]
+    fn billboards_follow_the_camera_without_changing_gameplay_poses() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, TransformPlugin))
+            .init_resource::<Assets<LevelGeometry>>()
+            .add_systems(Update, attach_level_visuals)
+            .add_systems(Update, crate::presentation::billboards::face_camera);
+        let authored = Transform::from_xyz(3.0, 4.0, 5.0).with_rotation(Quat::from_rotation_y(0.7));
+        let geometry = app.world_mut().resource_mut::<Assets<LevelGeometry>>().add(LevelGeometry {
+            props: vec![PropVisual {
+                name: "sprite".into(),
+                face_camera: true,
+                parts: vec![PropVisualPart { transform: authored, meshes: vec![] }],
+            }],
+            ..default()
+        });
+        let root = app.world_mut().spawn((LevelAppearance(geometry), Transform::default())).id();
+        let prop = app
+            .world_mut()
+            .spawn((
+                Prop {
+                    definition: 0,
+                    centre: authored.translation,
+                    door: false,
+                    frames_per_second: 1.0,
+                    last_frame: 0,
+                    wraps: false,
+                    slots: vec![],
+                },
+                PropMotion::default(),
+                Transform::default(),
+                ChildOf(root),
+            ))
+            .id();
+        let part = app
+            .world_mut()
+            .spawn((PropPart { part: 0, keys: vec![] }, authored, ChildOf(prop)))
+            .id();
+        let camera_rotation = Quat::from_euler(EulerRot::YXZ, -0.4, 0.2, 0.0);
+        app.world_mut().spawn((PartyCamera, Transform::from_rotation(camera_rotation)));
+        // Attachment and presentation can run independently on the first frame.
+        app.update();
+        app.update();
+        let visual = app
+            .world_mut()
+            .query_filtered::<Entity, With<FaceCamera>>()
+            .single(app.world())
+            .unwrap();
+        assert_eq!(*app.world().get::<Transform>(part).unwrap(), authored);
+        assert!(
+            app.world()
+                .get::<GlobalTransform>(visual)
+                .unwrap()
+                .rotation()
+                .abs_diff_eq(camera_rotation, 1e-5)
+        );
+        let moved = authored.with_rotation(Quat::from_rotation_x(1.2));
+        *app.world_mut().get_mut::<Transform>(part).unwrap() = moved;
+        app.update();
+        assert_eq!(*app.world().get::<Transform>(part).unwrap(), moved);
+        let shown = app.world().get::<GlobalTransform>(visual).unwrap();
+        assert!(shown.rotation().abs_diff_eq(camera_rotation, 1e-5));
+        assert!(shown.translation().abs_diff_eq(moved.translation, 1e-5));
+        app.world_mut().despawn(root);
+        assert!(app.world().get_entity(visual).is_err());
     }
 }
