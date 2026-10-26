@@ -61,8 +61,10 @@ pub fn spawn_map_key(mut commands: Commands) {
             Action::<OpenMap>::new()
             Bindings [ Binding(KeyCode::Tab) ]
         ]
-        on(|_: On<Start<OpenMap>>, mut open: MessageWriter<OpenAutomap>| {
-            open.write(OpenAutomap);
+        on(|_: On<Start<OpenMap>>, mut open: MessageWriter<OpenAutomap>,
+            focus: Res<bevy::input_focus::InputFocus>,
+            widgets: Query<(),With<bevy::input_focus::tab_navigation::TabIndex>>| {
+            if !focus.get().is_some_and(|entity| widgets.contains(entity)) { open.write(OpenAutomap); }
         })
     });
 }

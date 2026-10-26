@@ -297,3 +297,7 @@ for that earlier revision only. These are local checks, not CI results.
 Automap uses Tab/Shift+Tab to navigate controls while open; Escape closes it.
 Tab still opens it from the world. This intentionally replaces the old Tab-to-close
 binding so native keyboard control navigation is available.
+
+F6 enters keyboard navigation in the HUD; Tab/Shift+Tab navigate controls and
+Escape returns focus to the world. This keeps retail’s unfocused Tab-to-open-map
+binding, and focused UI arrows/Enter do not also move the party or start a round.

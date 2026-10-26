@@ -98,6 +98,13 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) {
         // The original keeps the range arrows visible but disabled for an empty realm.
         let x = (i % 3) as f32 * 213.0 + 187.0;
         let y = (i / 3) as f32 * 140.0 + 195.0;
+        // Retail fills the thumb's track even when its range is disabled.
+        commands.spawn((
+            absolute(Vec2::new(x, y + 16.0), Vec2::new(16.0, 70.0)),
+            BackgroundColor(Color::BLACK),
+            Pickable::IGNORE,
+            ChildOf(page),
+        ));
         picture(commands, page, art.scroll.clone(), 3, Vec2::new(x, y));
         picture(commands, page, art.scroll.clone(), 11, Vec2::new(x, y + 86.0));
     }

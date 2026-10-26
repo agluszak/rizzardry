@@ -5,6 +5,7 @@
 //! journal, items, spells and options are grayed until they exist.
 
 use bevy::prelude::*;
+use bevy::ui_widgets::Activate;
 
 use super::{MainScreenArt, Panel, ScreenLayout, SelectedMember, button, layer, loaded};
 use crate::content::items::ItemCatalog;
@@ -72,7 +73,7 @@ fn bank_button(
     let frames = Frames::from(frames);
     bsn! {
         @picture(default(),0,at)
-        Pickable::default()
+        bevy::ui_widgets::Button bevy::input_focus::tab_navigation::TabIndex(0) super::HudFocus Outline::new(px(1),px(1),Color::NONE) Pickable::default()
         template(move |_| Ok(BankFace {kind,sheet:sheet.clone(),frames}))
         on(press)
     }
@@ -83,7 +84,7 @@ pub fn row(art: &MainScreenArt, sheets: &Assets<SpriteSheet>) -> impl SceneList 
     let arrows = loaded(sheets, &art.scroll_arrows);
     let steps:Vec<_>=[(0,300.0,-1_i32),(4,323.0,1)].into_iter().map(|(frame,x,step)|bsn!{
         @button(arrows,frame,Vec2::new(x,456.0)) @hover_art(arrows,frame,frame+1)
-        on(move |_:On<PointerClick>,roster:Res<PartyRoster>,mut selected:ResMut<SelectedMember>|{
+        on(move |_:On<Activate>,roster:Res<PartyRoster>,mut selected:ResMut<SelectedMember>|{
             let members=roster.0.len() as i32;
             if members>0{let current=selected.member(&roster).and_then(|m|roster.0.get_index_of(&m)).unwrap_or(0);
                 selected.0=roster.0.get_index((current as i32+step).rem_euclid(members) as usize).copied();}
@@ -121,12 +122,24 @@ pub fn draw_bank(
     orders: Query<&Order>,
     settings: Res<CombatSettings>,
     search: Res<Search>,
-    mut buttons: Query<(&BankFace, &Hovered, &mut Picture, &mut Visibility, &mut Pickable)>,
+    mut commands: Commands,
+    mut buttons: Query<(
+        Entity,
+        &BankFace,
+        &Hovered,
+        Has<bevy::ui::Pressed>,
+        Has<bevy::ui::InteractionDisabled>,
+        &mut bevy::input_focus::tab_navigation::TabIndex,
+        &mut Picture,
+        &mut Visibility,
+    )>,
 ) {
     let fighting = battle.is_some();
     let order =
         selected.member(&roster).and_then(|m| orders.get(m).ok()).copied().unwrap_or_default();
-    for (face, hovered, mut picture, mut visible, mut pickable) in &mut buttons {
+    for (entity, face, hovered, pressing, disabled, mut tab, mut picture, mut visible) in
+        &mut buttons
+    {
         let combat_only = matches!(face.kind, Some(Bank::Order(_) | Bank::Round));
         visible.set_if_neq(if combat_only && !fighting {
             Visibility::Hidden
@@ -138,12 +151,24 @@ pub fn draw_bank(
                 && !(fighting && matches!(kind, Bank::Camp | Bank::Search))
                 && !(combat_only && !fighting)
         });
-        let pressed = match face.kind {
-            Some(Bank::Search) => search.on(),
-            Some(Bank::Formation) => layout.shows(Panel::Formation),
-            Some(Bank::Order(wanted)) => wanted == order,
-            _ => false,
-        };
+        tab.set_if_neq(bevy::input_focus::tab_navigation::TabIndex(if enabled { 0 } else { -1 }));
+        if enabled == disabled {
+            if enabled {
+                commands.entity(entity).remove::<bevy::ui::InteractionDisabled>();
+            } else {
+                commands
+                    .entity(entity)
+                    .insert(bevy::ui::InteractionDisabled)
+                    .remove::<bevy::ui::Pressed>();
+            }
+        }
+        let pressed = pressing
+            || match face.kind {
+                Some(Bank::Search) => search.on(),
+                Some(Bank::Formation) => layout.shows(Panel::Formation),
+                Some(Bank::Order(wanted)) => wanted == order,
+                _ => false,
+            };
         let mut frame = if !enabled {
             face.frames.grayed
         } else {
@@ -172,12 +197,6 @@ pub fn draw_bank(
             }
             _ => &face.sheet,
         };
-        if pickable.is_hoverable != enabled {
-            pickable.is_hoverable = enabled;
-        }
-        if pickable.should_block_lower != enabled {
-            pickable.should_block_lower = enabled;
-        }
         let at = picture.at;
         let bounds = if !enabled {
             frame
@@ -191,8 +210,8 @@ pub fn draw_bank(
 }
 
 fn press(
-    click: On<PointerClick>,
-    buttons: Query<&BankFace>,
+    click: On<Activate>,
+    buttons: Query<&BankFace, Without<bevy::ui::InteractionDisabled>>,
     mut camp: MessageWriter<CampRequest>,
     mut search: MessageWriter<ToggleSearch>,
     mut layout: ResMut<ScreenLayout>,

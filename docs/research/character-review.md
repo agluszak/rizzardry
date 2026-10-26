@@ -74,9 +74,6 @@ The following retail content is still missing or incomplete:
 A software-Vulkan integration harness rendered the actual inventory scene and
 loaded the retail assets, including a character portrait; the library tests
 exercise live character/condition updates, filter behavior and skill eligibility.
-This is not a side-by-side run of the original executable. A final interactive
-comparison with the original game remains necessary before claiming pixel or
-behavioral equivalence.
 
 ## Comparison with original-game images
 
@@ -91,7 +88,31 @@ additional overlays, the item page can switch its information panel, and the
 statistics page has more combat values and traits than the current game models.
 The currently unsupported item-action buttons use their disabled retail frames.
 
-An attempt to run the supplied `Wiz8.exe` under an isolated 32-bit Wine/QEMU
-setup reached game initialization but terminated with an illegal instruction
-before creating its game window. The published screenshots provide visual
-reference evidence; they do not establish interactive or pixel equivalence.
+The supplied `Wiz8.exe` was also run directly in a QEMU system guest with Wine
+and its software renderer. A newly created level-one male human fighter was
+reviewed from the party-assembly screen. The original's magic page shows 25 in
+all six resistance fields, as does the implementation for a human fighter with
+no resistance modifiers; the resistance bars, realm icons, empty spell panels and
+scroll arrows occupy the same places. The original fills each disabled spell
+scrollbar track black, including when the list is empty; the implementation does
+the same. This is a comparison of an empty spell list, not evidence for learned
+spells or casting.
+
+The original fighter's statistics page lists four abilities and traits, whereas
+the implementation currently shows only its represented skill bonus. Its item
+page also shows starting equipment and armor-value ovals; the implementation
+fixture had no equipment, and the implementation does not yet draw the ovals.
+The original's party-assembly review
+is a pre-game state: its pool and party portraits differ from the in-game
+implementation fixture, and its skills do not use the in-game best-skill
+highlight. Its item scrollbar also displays enabled arrows and a thumb before
+the game starts. In game, retail rebuilds the pool list and enables the scrollbar
+only when more than eight items are visible; the empty in-game fixture therefore
+shows disabled arrows and no thumb. Those state differences must not be treated
+as layout regressions.
+
+The original reached its main menu, character creator, party assembly and all
+four review pages. It crashed when proceeding into the 3D world in this guest,
+so in-game behavior and a comparison with identical saved character and equipment
+state remain unverified. The software renderer also exposes partially redrawn
+frames during capture; the side-by-side item and magic images use complete frames.
