@@ -27,33 +27,34 @@ pub fn request_level_visuals(
     }
 }
 
-/// The level and phase the presentation was last updated for.
-#[derive(Default)]
-pub struct Shown(Option<(AssetId<LevelGeometry>, u8)>);
+/// The render inputs applied to this camera. A replacement camera needs its
+/// own fog setup even when the level and daylight phase have not changed.
+#[derive(Component)]
+pub struct AppliedEnvironment(AssetId<LevelGeometry>, u8);
 
 /// Apply the environment when the level or the time-of-day phase changes:
 /// linear fog toward the phase's fog colour (which is also the clear
 /// colour), the far clip at the view distance, and vertex colours relit
 /// with the phase's sky light.
 pub fn apply_environment(
-    mut shown: Local<Shown>,
     clock: Res<GameClock>,
-    levels: Query<&LevelAppearance>,
+    levels: Query<Ref<LevelAppearance>>,
     geometry: Res<Assets<LevelGeometry>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut clear: ResMut<ClearColor>,
-    mut camera: Query<(Entity, &mut Projection), With<PartyCamera>>,
+    mut camera: Query<(Entity, &mut Projection, Option<&AppliedEnvironment>), With<PartyCamera>>,
     mut commands: Commands,
 ) {
     let Some(level) = levels.iter().next() else { return };
     let Some(level_geometry) = geometry.get(&level.0) else { return };
-    let Ok((camera, mut projection)) = camera.single_mut() else { return };
+    let Ok((camera, mut projection, applied)) = camera.single_mut() else { return };
     let phase = clock.phase();
-    let key = (level.0.id(), phase);
-    if shown.0 == Some(key) {
+    if applied.is_some_and(|applied| applied.0 == level.0.id() && applied.1 == phase)
+        && !level.is_changed()
+        && !geometry.is_changed()
+    {
         return;
     }
-    shown.0 = Some(key);
     let Some(environment) = &level_geometry.environment else { return };
 
     let fog = environment.fog_colours[phase as usize];
@@ -62,14 +63,17 @@ pub fn apply_environment(
     if let Projection::Perspective(perspective) = projection.as_mut() {
         perspective.far = far;
     }
-    commands.entity(camera).insert(DistanceFog {
-        color: Color::srgb(fog.x, fog.y, fog.z),
-        falloff: FogFalloff::Linear {
-            start: far * environment.fog_range.0,
-            end: far * environment.fog_range.1,
+    commands.entity(camera).insert((
+        AppliedEnvironment(level.0.id(), phase),
+        DistanceFog {
+            color: Color::srgb(fog.x, fog.y, fog.z),
+            falloff: FogFalloff::Linear {
+                start: far * environment.fog_range.0,
+                end: far * environment.fog_range.1,
+            },
+            ..default()
         },
-        ..default()
-    });
+    ));
 
     let sky = environment.sky_light(phase);
     let parts = level_geometry
@@ -147,6 +151,50 @@ mod tests {
     use super::*;
     use crate::content::level::{PropVisual, PropVisualPart};
     use crate::game::world::props::PropMotion;
+
+    #[test]
+    fn replacing_a_camera_and_reloading_environment_reapply_fog_at_the_same_phase() {
+        use crate::content::level::LevelEnvironment;
+        let mut app = App::new();
+        app.init_resource::<Assets<LevelGeometry>>()
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<ClearColor>()
+            .init_resource::<GameClock>()
+            .add_systems(Update, apply_environment);
+        let geometry = app.world_mut().resource_mut::<Assets<LevelGeometry>>().add(LevelGeometry {
+            environment: Some(LevelEnvironment {
+                fog_range: (0.2, 1.0),
+                view_distance: 80.0,
+                intensity: 1.0,
+                fog_colours: vec![Vec3::ONE; 256],
+                ambient_colours: vec![Vec3::ONE; 256],
+            }),
+            ..default()
+        });
+        app.world_mut().spawn(LevelAppearance(geometry.clone()));
+        let camera = app.world_mut().spawn((PartyCamera, Projection::default())).id();
+        app.update();
+        assert!(app.world().get::<DistanceFog>(camera).is_some());
+        app.world_mut().despawn(camera);
+        let camera = app.world_mut().spawn((PartyCamera, Projection::default())).id();
+        app.update();
+        assert!(app.world().get::<DistanceFog>(camera).is_some());
+        let far = |app: &App| match app.world().get::<Projection>(camera).unwrap() {
+            Projection::Perspective(p) => p.far,
+            _ => panic!("expected perspective camera"),
+        };
+        assert_eq!(far(&app), 80.0);
+        app.world_mut()
+            .resource_mut::<Assets<LevelGeometry>>()
+            .get_mut(&geometry)
+            .unwrap()
+            .environment
+            .as_mut()
+            .unwrap()
+            .view_distance = 120.0;
+        app.update();
+        assert_eq!(far(&app), 120.0);
+    }
 
     #[test]
     fn billboards_follow_the_camera_without_changing_gameplay_poses() {

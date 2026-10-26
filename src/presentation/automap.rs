@@ -689,22 +689,26 @@ pub fn type_note(mut keys: MessageReader<KeyboardInput>, map: Option<Single<&mut
 
 pub fn draw_notes(
     mut commands: Commands,
-    layer: Query<Entity, With<NotesLayer>>,
+    layer: Query<(Entity, Ref<NotesLayer>)>,
     automap: Option<Single<Ref<Automap>>>,
     notes: Query<Ref<MapNotes>>,
     art: Option<Res<AutomapArt>>,
     sheets: Res<Assets<SpriteSheet>>,
     mut images: ResMut<Assets<Image>>,
-    mut drawn: Local<Option<Entity>>,
 ) {
-    let (Some(automap), Some(art), Ok(layer)) = (automap, art, layer.single()) else { return };
+    let (Some(automap), Some(art), Ok((layer, layer_state))) = (automap, art, layer.single())
+    else {
+        return;
+    };
     let Ok(notes) = notes.get(automap.level) else { return };
-    let fresh = *drawn != Some(layer);
-    if !fresh && !notes.is_changed() && !automap.is_changed() {
+    if !layer_state.is_added()
+        && !notes.is_changed()
+        && !automap.is_changed()
+        && !sheets.is_changed()
+    {
         return;
     }
     let Some(font) = sheets.get(&art.font) else { return };
-    *drawn = Some(layer);
     let mut parts: Vec<Box<dyn Scene>> = vec![];
     // The draft replaces only its displayed label; persistent notes remain
     // untouched until the explicit confirm operation succeeds.
