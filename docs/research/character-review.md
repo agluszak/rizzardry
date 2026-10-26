@@ -93,8 +93,10 @@ and its software renderer. A newly created level-one male human fighter was
 reviewed from the party-assembly screen. The original's magic page shows 25 in
 all six resistance fields, as does the implementation for a human fighter with
 no resistance modifiers; the resistance bars, realm icons, empty spell panels and
-scroll arrows occupy the same places. This is a comparison of an empty spell
-list, not evidence for learned spells or casting.
+scroll arrows occupy the same places. The original fills each disabled spell
+scrollbar track black, including when the list is empty; the implementation does
+the same. This is a comparison of an empty spell list, not evidence for learned
+spells or casting.
 
 The original fighter's statistics page lists four abilities and traits, whereas
 the implementation currently shows only its represented skill bonus. Its item
