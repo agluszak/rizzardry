@@ -50,16 +50,64 @@ struct Accept;
 #[action_output(bool)]
 struct Decline;
 
-/// Show the question when one is asked, once its art has loaded.
+#[derive(Component)]
+struct DialogBuilt;
+
+/// Input belongs to the question, not to the availability of its artwork.
+pub fn open_travel_question(
+    mut commands: Commands,
+    questions: Query<Entity, (With<TravelQuestion>, Without<QuestionView>)>,
+) {
+    for question_id in &questions {
+        let dialog = QuestionDialog(question_id);
+        commands.spawn_scene(bsn! {
+        @centred()
+        dialog
+        ContextPriority::<QuestionDialog>::new(1)
+        Actions<QuestionDialog> [
+            Action::<Accept>::new()
+            ActionSettings { consume_input: true }
+            Bindings [ Binding(KeyCode::Enter) ]
+            --
+            Action::<Decline>::new()
+            ActionSettings { consume_input: true }
+            Bindings [ Binding(KeyCode::Escape) ]
+        ]
+        on(move |event: On<Start<Accept>>, built: Query<(), With<DialogBuilt>>, mut answers: MessageWriter<TravelAnswer>| {
+            if built.contains(event.context) {
+                answers.write(TravelAnswer { question: question_id, accept: true });
+            }
+        })
+        on(move |_: On<Start<Decline>>, mut answers: MessageWriter<TravelAnswer>| {
+            answers.write(TravelAnswer { question: question_id, accept: false });
+        })
+    });
+    }
+}
+
+/// Attach the visuals when ready; a failed asset must not strand the question.
 pub fn show_travel_question(
     mut commands: Commands,
-    questions: Query<(Entity, &TravelQuestion), Without<QuestionView>>,
+    questions: Query<&TravelQuestion>,
+    dialogs: Query<(Entity, &QuestionDialog), Without<DialogBuilt>>,
+    assets: Res<AssetServer>,
+    mut answers: MessageWriter<TravelAnswer>,
     art: Res<DialogArt>,
     sheets: Res<Assets<SpriteSheet>>,
     tables: Res<Assets<TextTable>>,
     mut images: ResMut<Assets<Image>>,
 ) {
-    let Ok((question_id, question)) = questions.single() else { return };
+    let Ok((dialog, owner)) = dialogs.single() else { return };
+    let question_id = owner.0;
+    let Ok(question) = questions.get(question_id) else { return };
+    if [&art.ok, &art.cancel, &art.font].into_iter().any(|handle| {
+        matches!(assets.get_load_state(handle), Some(bevy::asset::LoadState::Failed(_)))
+    }) || matches!(assets.get_load_state(&art.strings), Some(bevy::asset::LoadState::Failed(_)))
+    {
+        warn!("travel confirmation artwork failed; declining travel");
+        answers.write(TravelAnswer { question: question_id, accept: false });
+        return;
+    }
     let (Some(ok), Some(cancel), Some(font), Some(strings)) = (
         sheets.get(&art.ok),
         sheets.get(&art.cancel),
@@ -91,27 +139,8 @@ pub fn show_travel_question(
             })
         })
         .collect();
-    let dialog = QuestionDialog(question_id);
-    commands.spawn_scene(bsn! {
-        @centred()
-        dialog
-        ContextPriority::<QuestionDialog>::new(1)
-        Actions<QuestionDialog> [
-            Action::<Accept>::new()
-            ActionSettings { consume_input: true }
-            Bindings [ Binding(KeyCode::Enter) ]
-            --
-            Action::<Decline>::new()
-            ActionSettings { consume_input: true }
-            Bindings [ Binding(KeyCode::Escape) ]
-        ]
-        on(move |_: On<Start<Accept>>, mut answers: MessageWriter<TravelAnswer>| {
-            answers.write(TravelAnswer { question: question_id, accept: true });
-        })
-        on(move |_: On<Start<Decline>>, mut answers: MessageWriter<TravelAnswer>| {
-            answers.write(TravelAnswer { question: question_id, accept: false });
-        })
-        Children [
+    commands.entity(dialog).insert(DialogBuilt).queue_spawn_related_scenes::<Children>(bsn! {
+
             Node {
                 width: px(PANEL.x),
                 height: px(PANEL.y),
@@ -130,13 +159,89 @@ pub fn show_travel_question(
                 Node { column_gap: px(24) }
                 Children [ {buttons} ]
             ]
-        ]
     });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn input_app() -> App {
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin::default(),
+            bevy::scene::ScenePlugin,
+            bevy::input::InputPlugin,
+            EnhancedInputPlugin,
+        ))
+        .add_input_context::<QuestionDialog>()
+        .add_message::<TravelAnswer>()
+        .init_asset::<SpriteSheet>()
+        .init_asset::<TextTable>()
+        .init_asset::<Image>()
+        .insert_resource(DialogArt {
+            ok: default(),
+            cancel: default(),
+            font: default(),
+            strings: default(),
+        })
+        .add_systems(Update, (open_travel_question, show_travel_question).chain());
+        app.finish();
+        app.cleanup();
+        app
+    }
+
+    #[test]
+    fn escape_answers_a_question_even_without_artwork() {
+        use bevy::input::{
+            ButtonState,
+            keyboard::{Key, KeyboardInput},
+        };
+        let mut app = input_app();
+        let question = app.world_mut().spawn(TravelQuestion { entrance: "MO204".into() }).id();
+        app.update();
+        app.update();
+        let dialog = app.world().get::<QuestionView>(question).unwrap().0;
+        assert!(app.world().get::<DialogBuilt>(dialog).is_none());
+        app.world_mut().write_message(KeyboardInput {
+            key_code: KeyCode::Escape,
+            logical_key: Key::Escape,
+            state: ButtonState::Pressed,
+            text: None,
+            repeat: false,
+            window: Entity::PLACEHOLDER,
+        });
+        app.update();
+        let answers: Vec<_> =
+            app.world_mut().resource_mut::<Messages<TravelAnswer>>().drain().collect();
+        assert_eq!(answers.len(), 1);
+        assert_eq!(answers[0].question, question);
+        assert!(!answers[0].accept);
+    }
+
+    #[test]
+    fn terminal_asset_failure_declines_the_current_question() {
+        let mut app = input_app();
+        // No loader exists for this deliberately invalid asset; wait for the real
+        // async asset pipeline rather than simulating a failed-state flag.
+        let font = app.world().resource::<AssetServer>().load::<SpriteSheet>("missing.invalid");
+        app.world_mut().resource_mut::<DialogArt>().font = font;
+        let question = app.world_mut().spawn(TravelQuestion { entrance: "MO204".into() }).id();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            app.update();
+            let answers: Vec<_> =
+                app.world_mut().resource_mut::<Messages<TravelAnswer>>().drain().collect();
+            if let Some(answer) = answers.first() {
+                assert_eq!(answer.question, question);
+                assert!(!answer.accept);
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "asset failure did not resolve travel");
+            std::thread::yield_now();
+        }
+    }
 
     #[test]
     fn ending_a_question_removes_its_dialog_and_controls() {

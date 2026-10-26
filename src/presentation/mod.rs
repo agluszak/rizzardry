@@ -160,7 +160,9 @@ impl Plugin for PresentationPlugin {
                 billboards::face_camera.after(party_view::aim_camera),
                 music::play_music,
                 (ambience::place_ambient_sounds, ambience::play_ambient_sounds).chain(),
-                dialog::show_travel_question.after(crate::game::GameplaySet::LevelActivation),
+                (dialog::open_travel_question, dialog::show_travel_question)
+                    .chain()
+                    .after(crate::game::GameplaySet::LevelActivation),
                 effects::shake_camera.after(party_view::aim_camera),
                 sky::orbit_sun_and_moon,
                 voice::finish_speech,
