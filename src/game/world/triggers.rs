@@ -1705,7 +1705,7 @@ mod tests {
         .init_asset::<crate::content::species::MonsterCatalog>()
         .init_resource::<crate::game::time::GameClock>()
         .init_resource::<GameRng>()
-        .add_message::<super::identify::Identified>()
+        .add_message::<crate::game::world::identify::Identified>()
         .add_message::<Travel>();
         let world = app.world_mut();
         let handle = world.resource_mut::<Assets<LevelGeometry>>().add(geometry.clone());
