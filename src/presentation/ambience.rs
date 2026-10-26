@@ -173,16 +173,13 @@ mod tests {
             assert!(app.world().get::<AudioPlayer>(emitter).is_some());
             assert!(app.world().get::<AudioSink>(emitter).is_none());
             // Observe replacement, even if it uses the same asset handle.
-            app.world_mut().clear_trackers();
+            let started = app.world().get_ref::<AudioPlayer>(emitter).unwrap().last_changed();
             for _ in 0..3 {
                 app.update();
             }
             assert_eq!(
-                app.world_mut()
-                    .query_filtered::<Entity, Changed<AudioPlayer>>()
-                    .iter(app.world())
-                    .count(),
-                0
+                app.world().get_ref::<AudioPlayer>(emitter).unwrap().last_changed(),
+                started
             );
             assert_eq!(
                 app.world_mut()
