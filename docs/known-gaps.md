@@ -204,3 +204,60 @@ ownership; no recovery queue or additional lifecycle state is needed.
 
 Monster fatigue remains deferred until its recovery lifecycle is implemented:
 merely charging attacks could strand an exhausted monster after a fight ends.
+
+## Main menu and party creation
+
+Interactive startup now opens a main menu instead of spawning the developer
+party. New Adventure opens a six-slot party assembly screen, with a retained
+four-page editor: identity/portrait, attributes, training and review. Accepted
+character drafts can be revised or removed before beginning the campaign.
+Canceling an edit preserves its previous accepted draft; leaving creation
+removes the entire proposed party without changing the campaign.
+
+`Session` owns the main-menu/creation/playing transition independently of the
+in-game `Screen`. The creation root owns ordinary draft values and scoped UI
+entities. Gameplay's `CharacterDraft` checks race/profession eligibility, the
+60-point attribute pool after profession minimums, allocation ceilings, the
+15-point training pool, five points per skill, and profession skill eligibility.
+Changing the recipe explicitly refunds allocations. Attribute changes recompute
+initial skill seeds. The synchronous `begin_adventure` operation validates the
+whole party before spawning any actor, commits the actual completed profiles,
+then requests the initial level. Vitals and starting equipment derive from those
+profiles. No UI is needed to invoke this operation. UI edits consume no gameplay
+randomness. Text and controls remain alive across page/value changes. Buttons use native
+Bevy activation and tab navigation; name entry reads the native focus owner.
+
+The frontend deliberately uses native text and a new layout rather than copying
+retail's fixed widget hierarchy. Portraits use the retail catalog. Names support
+Unicode, with a 24-character frontend limit. Unspent points are allowed and
+explicitly shown at review. Race/profession arrows skip unavailable choices;
+Valkyrie requires choosing female first. `--party` explicitly bypasses menus;
+headless and screenshot runs retain the developer party default.
+
+Evidence: both reference revisions listed in the combat follow-ups above,
+`local_screens/MainMenuScreen.cpp`, `PartySelectionScreen.cpp`,
+`CharacterScreen.cpp`, `local_code/CharGeneration.cpp`, and
+`character_skills.cpp`; Whizzardry moves the availability table to
+`src/data/character_tables.cpp`. The two availability tables agree. Both creation
+implementations reduce the attribute pool for profession minimums **before**
+calculating the per-attribute allocation cap. This corrects the older research
+note's unconditional twenty-point cap. Small pools allow up to three points per
+attribute, bounded by the pool itself.
+
+Still absent: saved-game loading, loose-character file import/export, difficulty
+and gameplay options, the intro movie, menu music, personality/voice selection,
+and learned-spell selection. Casters begin without spells; this limitation is
+shown at review. No claim of a complete retail character generator is made.
+Created drafts are session-local and are not saved between launches. Retail
+portraits and entering the monastery with a created party require an installed
+copy and remain unverified in this environment.
+
+Validation: 122 library tests passed, with 20 retail-dependent tests ignored.
+Four new contract tests cover budgets/refunds, training eligibility and limits,
+identity validation, and whole-party acceptance with preserved allocations and
+single startup. An ephemeral offscreen harness rendered the menu and all five
+creation views using Mesa software Vulkan at 1280x960, entered a name through
+keyboard input, accepted its draft into the party, and left/re-entered creation
+without spawning a campaign. Screenshots were inspected; unsupported default-font
+glyphs were replaced. The harness was not added as a widget-layout regression
+test. Retail portrait loading and playable level entry were not exercised.

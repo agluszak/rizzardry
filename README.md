@@ -19,6 +19,9 @@ read in place from its SLF archives; nothing is converted or copied.
 RIZZARDRY_RETAIL=/path/to/wizardry8 cargo run
 ```
 
+Interactive play opens the main menu. Choose **New Adventure** to assemble a
+party and create characters before entering the monastery.
+
 Options:
 
 - `--retail <dir>`: the installation, instead of `RIZZARDRY_RETAIL`.
@@ -28,7 +31,8 @@ Options:
 - `--start x,y,z`: an explicit eye position in metres; `--yaw` and `--pitch`
   (degrees) override the facing.
 - `--hour <0-24>`: start at this time of day instead of noon.
-- `--party <file.ron>`: the new game's party, instead of `assets/party.ron`.
+- `--party <file.ron>`: skip the main menu and start with this party. Headless
+  runs use `assets/party.ron` unless overridden.
 - `--continuous`: fight continuously, as retail's setting does.
 
 Developer options:
