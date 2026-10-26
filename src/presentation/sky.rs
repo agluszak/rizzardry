@@ -18,11 +18,18 @@ pub struct SkyCamera;
 
 pub fn follow_with_sky_camera(
     mut commands: Commands,
-    party: Query<(&GlobalTransform, &Projection), (With<PartyCamera>, Without<SkyCamera>)>,
-    mut sky: Query<(&mut Transform, &mut Projection), With<SkyCamera>>,
+    party: Query<(Entity, &Projection), (With<PartyCamera>, Without<SkyCamera>)>,
+    mut transforms: ParamSet<(
+        bevy::transform::helper::TransformHelper,
+        Query<(&mut Transform, &mut Projection), With<SkyCamera>>,
+    )>,
 ) {
     let Ok((party, party_projection)) = party.single() else { return };
-    let rotation = party.rotation();
+    // Read the current local hierarchy before engine propagation, not last
+    // frame's GlobalTransform. The sky then propagates in the same engine pass.
+    let Ok(current) = transforms.p0().compute_global_transform(party) else { return };
+    let rotation = current.rotation();
+    let mut sky = transforms.p1();
     match sky.single_mut() {
         Ok((mut transform, mut projection)) => {
             transform.rotation = rotation;
@@ -200,6 +207,49 @@ pub fn build_sky(
                     }
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::transform::TransformSystems;
+
+    #[test]
+    fn sky_uses_current_parented_camera_pose_in_the_same_propagation_pass() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, TransformPlugin))
+            .add_systems(PostUpdate, follow_with_sky_camera.before(TransformSystems::Propagate));
+        let parent = app.world_mut().spawn(Transform::default()).id();
+        let camera = app
+            .world_mut()
+            .spawn((
+                PartyCamera,
+                Transform::default(),
+                Projection::Perspective(default()),
+                ChildOf(parent),
+            ))
+            .id();
+        let sky = app
+            .world_mut()
+            .spawn((SkyCamera, Transform::default(), Projection::Perspective(default())))
+            .id();
+        app.update();
+        for angle in [0.7, -1.3] {
+            let yaw = Quat::from_rotation_y(angle);
+            let pitch = Quat::from_rotation_x(0.2);
+            app.world_mut().get_mut::<Transform>(parent).unwrap().rotation = yaw;
+            app.world_mut().get_mut::<Transform>(camera).unwrap().rotation = pitch;
+            // Neither cached global pose has propagated this new orientation.
+            app.update();
+            assert!(
+                app.world()
+                    .get::<GlobalTransform>(sky)
+                    .unwrap()
+                    .rotation()
+                    .abs_diff_eq(yaw * pitch, 1e-5)
+            );
         }
     }
 }

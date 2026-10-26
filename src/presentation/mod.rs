@@ -136,6 +136,7 @@ impl Plugin for PresentationPlugin {
                         .chain(),
                 ),
             )
+            .add_systems(PostUpdate, sky::follow_with_sky_camera.before(bevy::transform::TransformSystems::Propagate))
             .add_systems(
                 Update,
                 (
@@ -143,7 +144,6 @@ impl Plugin for PresentationPlugin {
                     environment::apply_environment
                         .after(environment::request_level_visuals)
                         .after(party_view::attach_camera),
-                    sky::follow_with_sky_camera.after(party_view::aim_camera),
                     sky::shade_clouds,
                     sky::build_sky.after(environment::request_level_visuals),
                     (environment::request_level_visuals, environment::attach_level_visuals)

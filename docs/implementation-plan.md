@@ -71,7 +71,8 @@ tested, and passing time healing the roster but not a non-roster
 The merged ownership refactors and the lifecycle follow-up provide useful
 primitives. Retain their actor identities, owned item transfers, native screen
 sessions, retained controls and synchronous battle recognition. The following
-boundaries remain open despite the implemented rows in the review inventory.
+boundaries below are now implemented in the follow-up; this is not a claim that
+all gameplay systems or retail compatibility are complete.
 
 This cleanup adds actual party damage outcomes, orders retained damage-animation
 refresh before playback, links dialog lifetime to its gameplay question, derives
@@ -95,11 +96,10 @@ visibility completion. Retain those production ordering boundaries.
    actor-owned navigation targets/controllers. Battle changes targets, not body
    existence. The battle-entry embodiment system, visual offset repair system
    and mirrored `Battle.approaching` flag are deleted. Death still cancels motion.
-4. **Finish current-frame sky following.** Gameplay borrows an `ActorPose`
-   from physics, and picking now reads the propagated camera and meshes together.
-   Sky following still reads the camera's previous `GlobalTransform` in Update,
-   before propagation. Input gates and stationary tooltip refresh are already
-   fixed; do not recreate them.
+4. **Finish current-frame sky following.** Implemented: sky follows the current
+   camera hierarchy in PostUpdate through Bevy's TransformHelper, after normal
+   aiming/shake and the optional overhead view, before engine propagation.
+   Picking still reads the fully propagated camera/meshes and current visibility.
 5. **Separate level gameplay content from visual construction.** Implemented:
    independent typed PVL loaders produce `LevelDefinition` and optional
    `LevelGeometry`. Gameplay props contain no mesh handles; presentation owns

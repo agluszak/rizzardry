@@ -450,6 +450,11 @@ only its hit target, so a press cannot release onto a different actor; ordinary
 health, selection and inventory display changes retain that target. Screen
 sessions still own lifecycle; these display sources are not gameplay copies.
 
+The fixed gameplay step settles movement/trigger consequences, then applies aging
+and each associated recognition pass synchronously, before Update's combat work.
+Recognition is not a transient request to a later frame: batching fixed steps
+cannot discard passes or make every pass observe only the final conditions.
+
 ## Navigation importer and processor caching
 
 Retail's navigation loader converts OCT/PVL into typed `LevelCollision`.

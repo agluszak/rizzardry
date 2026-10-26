@@ -273,8 +273,12 @@ pub fn build(options: &Options) -> Result<App, String> {
         app.add_plugins(bevy_landmass::debug::Landmass3dDebugPlugin::default());
     }
     if let Some(height) = options.overhead {
-        app.insert_resource(OverheadView { height })
-            .add_systems(PostUpdate, overhead_view.before(TransformSystems::Propagate));
+        app.insert_resource(OverheadView { height }).add_systems(
+            PostUpdate,
+            overhead_view
+                .before(crate::presentation::sky::follow_with_sky_camera)
+                .before(TransformSystems::Propagate),
+        );
     }
     // A new game: the party, entering the chosen level.
     app.add_systems(
