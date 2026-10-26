@@ -1,11 +1,13 @@
 //! Read-only character review. The screen owns selection; actors own every value shown.
+use super::super::screen_art::Picture;
 use super::{InventoryScreen, absolute};
 use crate::content::characters::{Attribute, Skill};
+use crate::content::ui::SpriteSheet;
 use crate::game::characters::{Character, Lasting, Vitals};
 use bevy::input_focus::{InputFocus, tab_navigation::TabIndex};
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
-use bevy::ui::Pressed;
+use bevy::ui::{InteractionDisabled, Pressed};
 use bevy::ui_widgets::{Activate, Button as UiButton};
 use enumset::EnumSet;
 
@@ -59,37 +61,36 @@ fn panel(commands: &mut Commands, root: Entity, page: Page) -> Entity {
         .id()
 }
 
-pub(super) fn build(commands: &mut Commands, root: Entity) {
-    for (i, (page, name)) in
-        [(Page::Items, "Equipment"), (Page::Statistics, "Statistics"), (Page::Skills, "Skills")]
+pub(super) fn build(commands: &mut Commands, root: Entity, sheet: Handle<SpriteSheet>) {
+    // The four page buttons occupy 44-pixel cells in the retail bottom bar.
+    for (i, (page, base)) in
+        [(Some(Page::Items), 0), (None, 10), (Some(Page::Skills), 15), (Some(Page::Statistics), 5)]
             .into_iter()
             .enumerate()
     {
-        let button = commands
-            .spawn((
-                UiButton,
-                TabIndex(0),
-                Hovered::default(),
-                PageButton(page),
-                Node {
-                    border: UiRect::all(px(1)),
-                    justify_content: JustifyContent::Center,
-                    align_items: AlignItems::Center,
-                    ..absolute(Vec2::new(8.0 + i as f32 * 112.0, 451.0), Vec2::new(104.0, 27.0))
-                },
-                BackgroundColor(PANEL),
-                BorderColor::all(GOLD),
-                ChildOf(root),
-            ))
-            .observe(select_page)
-            .id();
-        commands.spawn((
-            Text::new(name),
-            TextFont { font_size: 13.0.into(), ..default() },
-            TextColor(PAPER),
-            Pickable::IGNORE,
-            ChildOf(button),
+        let at = Vec2::new(420.0 + i as f32 * 44.0, 450.0);
+        let mut button = commands.spawn((
+            UiButton,
+            TabIndex(0),
+            Hovered::default(),
+            Picture { sheet: sheet.clone(), frame: base, bounds: Some(base), at },
+            absolute(at, Vec2::new(44.0, 30.0)),
+            Pickable::default(),
+            FocusControl,
+            Outline::new(px(1), px(1), Color::NONE),
+            ChildOf(root),
         ));
+        if let Some(page) = page {
+            button.insert(PageButton(page)).observe(select_page);
+        } else {
+            button.insert(InteractionDisabled);
+            button.insert(Picture {
+                sheet: sheet.clone(),
+                frame: base + 3,
+                bounds: Some(base),
+                at,
+            });
+        }
     }
 
     let stats = panel(commands, root, Page::Statistics);
@@ -287,28 +288,26 @@ pub(super) fn refresh(
 
 pub(super) fn style_buttons(
     screen: Option<Single<&InventoryScreen>>,
-    focus: Option<Res<InputFocus>>,
-    mut buttons: Query<(
-        Entity,
-        &PageButton,
-        &Hovered,
-        Has<Pressed>,
-        &mut BackgroundColor,
-        &mut BorderColor,
-    )>,
+    mut buttons: Query<(&PageButton, &Hovered, Has<Pressed>, &mut Picture)>,
 ) {
     let Some(screen) = screen else { return };
-    for (entity, button, hovered, pressed, mut background, mut border) in &mut buttons {
-        background.set_if_neq(BackgroundColor(if pressed || screen.page == button.0 {
-            Color::srgb(0.25, 0.20, 0.12)
-        } else if hovered.0 {
-            Color::srgb(0.14, 0.16, 0.19)
-        } else {
-            PANEL
-        }));
-        border.set_if_neq(BorderColor::all(
-            if focus.as_ref().is_some_and(|f| f.get() == Some(entity)) { PAPER } else { GOLD },
-        ));
+    for (button, hovered, pressed, mut picture) in &mut buttons {
+        let base = match button.0 {
+            Page::Items => 0,
+            Page::Skills => 15,
+            Page::Statistics => 5,
+        };
+        let frame = base
+            + if screen.page == button.0 || pressed {
+                if hovered.0 { 2 } else { 4 }
+            } else if hovered.0 {
+                1
+            } else {
+                0
+            };
+        if picture.frame != frame {
+            picture.frame = frame;
+        }
     }
 }
 
@@ -350,7 +349,7 @@ mod tests {
             .id();
         app.world_mut().commands().queue(move |world: &mut World| {
             let mut commands = world.commands();
-            build(&mut commands, root);
+            build(&mut commands, root, default());
         });
         app.update();
         let contains = |world: &mut World, needle: &str| {

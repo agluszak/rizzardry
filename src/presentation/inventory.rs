@@ -91,6 +91,7 @@ pub struct InventoryArt {
     corner: Handle<SpriteSheet>,
     page: Handle<SpriteSheet>,
     bottom_bar: Handle<SpriteSheet>,
+    page_buttons: Handle<SpriteSheet>,
     gold_icon: Handle<SpriteSheet>,
     highlights: Handle<SpriteSheet>,
     unusable: Handle<SpriteSheet>,
@@ -106,6 +107,7 @@ pub fn load_inventory_art(mut commands: Commands, assets: Res<AssetServer>) {
         corner: load("review/commoncorner.sti"),
         page: load("review/reviewitempage.sti"),
         bottom_bar: load("review/bottombuttonbar.sti"),
+        page_buttons: load("review/reviewpagebuttons.sti"),
         gold_icon: load("review/reviewgoldicon.sti"),
         highlights: load("review/reviewitemhighlights.sti"),
         unusable: load("review/itemusablebackground.sti"),
@@ -387,6 +389,7 @@ pub fn spawn_inventory_screen(
         &art.corner,
         &art.page,
         &art.bottom_bar,
+        &art.page_buttons,
         &art.gold_icon,
         &art.exit,
         &art.bold,
@@ -419,7 +422,6 @@ pub fn spawn_inventory_screen(
         sprite(page, 2, Vec2::new(113.0, 165.0)),
         sprite(page, 3, Vec2::new(478.0, 165.0)),
         sprite(gold, 0, Vec2::new(514.0, 422.0)),
-        sprite(bar, 0, Vec2::new(0.0, 450.0)),
     ];
     let titles = vec![
         text(bold, &mut images, "Carried", Vec2::new(12.0, 174.0), 93.0),
@@ -427,6 +429,7 @@ pub fn spawn_inventory_screen(
     ];
     let exit = sprite(exit, 16, Vec2::new(596.0, 450.0));
     let corner = sprite(corner, 0, Vec2::ZERO);
+    let bottom_bar = sprite(bar, 0, Vec2::new(0.0, 450.0));
     let cells: Vec<_> = EnumSet::<EquipSlot>::all()
         .iter()
         .map(|slot| Cell::Member(Slot::Equipment(slot)))
@@ -449,13 +452,14 @@ pub fn spawn_inventory_screen(
                     -- @label(art.font.clone(),Vec2::new(553.0,425.0),48.0) GoldLabel
                     -- {cells}
                 ]
+            -- @{bottom_bar}
             -- @{exit}
                 UiButton TabIndex(0) Pickable::default()
                 review::FocusControl Outline::new(px(1), px(1), Color::NONE)
                 on(|_: On<Activate>, mut next: ResMut<NextState<Screen>>| { next.set(Screen::World); })
         ]
     }).id();
-    review::build(&mut commands, content);
+    review::build(&mut commands, content, art.page_buttons.clone());
 }
 
 /// Update the existing header controls from their actual dependencies.

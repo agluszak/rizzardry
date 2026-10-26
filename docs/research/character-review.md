@@ -54,3 +54,48 @@ resolve that omission. The cause is not established; this is an outstanding visu
 validation issue, not a passing end-to-end rendering check. No forced redraw or
 renderer-cache workaround has been added. Full review with retail artwork and
 interactive pointer/keyboard input still needs checking before merge.
+
+A subsequent fresh, single-page software-Vulkan capture of Statistics included
+the shared sample header and all three buttons. This narrows but does not resolve
+the earlier intermittent omission or verify the retail-artwork screen.
+
+## Retail artwork and layout evidence for the replacement
+
+The current native-text Statistics and Skills layouts above are placeholders,
+not a faithful port. They must be replaced before this PR is considered ready.
+Both references' artwork catalogs associate review IDs `0x141` through `0x144`
+with `Data/Review/ReviewSkillsPage.sti`, `ReviewStatsPage.sti`,
+`ReviewSliderbar.sti`, and `ReviewSkillsIcons.sti`, respectively. The existing
+retail bitmap font is used for labels; native text in the draft does not reproduce
+it. The bottom page controls use `ReviewPageButtons.sti` (`review-items.md`).
+
+In both `RCSStatsPage.cpp` implementations, the statistics page draws frame 1 of
+`ReviewStatsPage.sti` at (0, 165). Attribute rows start at y=191, advance by 14
+pixels, and place their value bars at x=136. The right-hand effects area begins
+at (349, 190); it is not a generic list of health and experience. Stats and
+skills retain the shared top character information panel.
+
+The skills page draws frame 2 of `ReviewSkillsPage.sti` at (0, 165), and frame 0
+or 1 at (310, 0), depending on whether an expert skill is present. Its five
+category positions before the page offsets are (352, 8), (352, 204), (34, 9),
+(34, 134), and (42, 33), in weapon, miscellaneous, combat, magic, and expert
+order. The first four receive y += 165; the expert block receives x += 310.
+`ReviewSkillsIcons.sti` frames 2, 3, 0, 1, and 4 provide the corresponding
+category headings, offset (-22, -3). Rows are spaced 14 pixels; frame 3 of the
+skills page provides the row, and the slider bar's frames 0, 1, and 2 represent
+base, gained, and lost skill segments. The source includes skills that are active
+or have nonzero points or effective level. The game currently lacks the retail
+active-skill flag, so matching this visibility rule requires modelling it rather
+than silently treating all zero-valued skills as active.
+
+The retail installation at `/workspace/wizardry8` confirms the frame dimensions:
+page buttons are 44×30, statistics frame 1 and skills frame 2 are 640×285,
+skills frame 3 is 273×14, and the slider frames are 125×10. The complete
+composite screen still needs visual verification against the game. Page controls, the upper information panel, skill
+availability, and effect information need to be ported together for a faithful
+screen. No claim of pixel accuracy is supported by the current draft.
+
+The bottom page strip now uses the retail page button sheet at the original
+positions, with the decomp's normal, hover, selected and unavailable frames.
+The unimplemented spell page is shown as unavailable. The statistics and skills
+page interiors are still placeholders and are not ready for merge.
