@@ -81,10 +81,7 @@ pub fn pass_time(
     mut members: Query<(&Character, &mut Vitals)>,
     mut clock: ResMut<GameClock>,
     mut detect: MessageWriter<DetectGroups>,
-    levels: Query<
-        Entity,
-        (With<crate::game::world::level::Level>, Without<crate::game::world::level::Departing>),
-    >,
+    levels: Query<Entity, With<crate::game::world::level::Level>>,
 ) {
     if battle.is_some() {
         return;

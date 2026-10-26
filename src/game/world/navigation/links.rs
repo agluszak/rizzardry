@@ -7,7 +7,7 @@ use bevy_landmass::prelude::*;
 
 use super::LevelNavigation;
 use super::bake::SIZE_CLASSES;
-use crate::content::level::{LevelGeometry, LevelLink, LinkKind};
+use crate::content::level::{LevelDefinition, LevelLink, LinkKind};
 
 use crate::game::world::props::{Prop, PropMotion};
 
@@ -36,7 +36,7 @@ fn link_bundle(link: &LevelLink, archipelago: Entity, half_width: f32) -> Animat
 pub fn spawn_level_links(
     commands: &mut Commands,
     root: Entity,
-    geometry: &LevelGeometry,
+    geometry: &LevelDefinition,
     archipelagos: &[Entity],
 ) {
     for link in &geometry.links {

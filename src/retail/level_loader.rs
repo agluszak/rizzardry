@@ -1,4 +1,4 @@
-//! Loads a retail `.pvl` level's static geometry as [`LevelGeometry`].
+//! Independent typed loaders for a retail level's gameplay and presentation.
 
 use std::collections::HashMap;
 
@@ -26,9 +26,9 @@ use crate::content::items::Dice;
 use crate::content::items::ItemId;
 use crate::content::level::{
     AmbientSoundModel, Animation, CameraPathModel, DoorLock, Fountain, ItemPlacement,
-    LevelEnvironment, LevelGeometry, LevelPart, MonsterPlacement, Playback, PropModel,
-    PropModelPart, Restores, StateChange, TextureAnimation, TriggerAction, TriggerDefinition,
-    TriggerSound, TriggerUse, VertexLighting,
+    LevelDefinition, LevelEnvironment, LevelGeometry, LevelPart, MonsterPlacement, Playback,
+    PropModel, PropModelPart, PropVisual, PropVisualPart, Restores, StateChange, TextureAnimation,
+    TriggerAction, TriggerDefinition, TriggerSound, TriggerUse, VertexLighting,
 };
 
 /// Time-of-day phase used for baked lighting until the game clock exists:
@@ -468,16 +468,16 @@ fn build_part(
 /// pose, with the identity of their own embedded trigger.
 pub(super) async fn build_props(
     context: &mut LoadContext<'_>,
-    source: impl Iterator<Item = (&Prop, Option<usize>)>,
+    source: impl Iterator<Item = &Prop>,
     directory: &str,
     textures: &mut LoadedTextures,
     lighting: &PropLighting<'_>,
     animated_textures: &mut Vec<TextureAnimation>,
-) -> Vec<PropModel> {
+) -> Vec<PropVisual> {
     let mut props = Vec::new();
-    for (prop_index, (prop, trigger)) in source.enumerate() {
+    for (prop_index, prop) in source.enumerate() {
         let mut parts = Vec::new();
-        for (part_index, (part, (transform, keys))) in
+        for (part_index, (part, (transform, _))) in
             prop.detailed_parts().iter().zip(part_transforms(prop)).enumerate()
         {
             let record = &part.mesh.frames[part.mesh.first_frame];
@@ -501,23 +501,9 @@ pub(super) async fn build_props(
                 });
             }
             animated_textures.extend(part_materials.into_iter().filter_map(|m| m.animation));
-            parts.push(PropModelPart {
-                transform,
-                keys,
-                meshes,
-                collision: record_collision(record),
-            });
+            parts.push(PropVisualPart { transform, meshes });
         }
-        props.push(PropModel {
-            name: prop.name.clone(),
-            collidable: prop.flags & PROP_COLLIDABLE != 0,
-            face_camera: prop.face_camera,
-            frames_per_second: prop.frames_per_second,
-            parts,
-            wraps: prop.wraps,
-            slots: prop.slots.iter().map(|slot| slot.frame).collect(),
-            trigger,
-        });
+        props.push(PropVisual { name: prop.name.clone(), face_camera: prop.face_camera, parts });
     }
     props
 }
@@ -537,20 +523,6 @@ impl AssetLoader for PvlLoader {
         reader.read_to_end(&mut data).await?;
         let geometry = read_level_geometry(&data)?;
         let sections = read_sections(&mut Bytes::new(&data[geometry.end..]))?;
-        let level_path = context.path().path().to_string_lossy();
-        let level_index =
-            crate::content::levels::LEVELS.iter().position(|level| level.path() == level_path);
-        let filter_path = AssetPath::from("retail://data/automap/mapfilters.txt");
-        let filters = match context.read_asset_bytes(filter_path).await {
-            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-            Err(bevy::asset::ReadAssetBytesError::AssetReaderError(
-                bevy::asset::io::AssetReaderError::NotFound(_),
-            )) => String::new(),
-            Err(error) => return Err(error.into()),
-        };
-        let map_layers =
-            super::automap::layer_heights(&sections.clip_planes, &filters, level_index)
-                .map_err(PvlLoadError::MapLayers)?;
         let directory = "bitmaps";
         let environment = sections.environment.as_ref().map(level_environment);
         let ambient = environment.as_ref().map_or(Vec3::ZERO, |e| e.sky_light(NOON));
@@ -584,6 +556,74 @@ impl AssetLoader for PvlLoader {
                 }
             }
         }
+        let level_lighting = level_lighting(&sections.lights, sections.environment_offset);
+        let lighting = PropLighting { ambient, level: &level_lighting };
+        let mut animated_textures: Vec<TextureAnimation> =
+            materials.into_iter().filter_map(|m| m.animation).collect();
+        let props = sections.props.iter().chain(&sections.bitmaps);
+        let props = build_props(
+            context,
+            props,
+            directory,
+            &mut textures,
+            &lighting,
+            &mut animated_textures,
+        )
+        .await;
+        Ok(LevelGeometry {
+            parts,
+            environment,
+            lighting: level_lighting,
+            ambient_sounds: sections
+                .all_triggers()
+                .filter_map(|trigger| match &trigger.kind {
+                    TriggerKind::AmbientSound(sound) => Some(ambient_sound(sound)),
+                    _ => None,
+                })
+                .collect(),
+            props,
+            animated_textures,
+        })
+    }
+
+    fn extensions(&self) -> &[&str] {
+        &["pvl"]
+    }
+}
+
+/// Gameplay loading is independent of textures, meshes, materials and skies.
+#[derive(Default, TypePath)]
+pub struct PvlDefinitionLoader;
+
+impl AssetLoader for PvlDefinitionLoader {
+    type Asset = LevelDefinition;
+    type Settings = ();
+    type Error = PvlLoadError;
+
+    async fn load(
+        &self,
+        reader: &mut dyn Reader,
+        _: &(),
+        context: &mut LoadContext<'_>,
+    ) -> Result<LevelDefinition, PvlLoadError> {
+        let mut data = Vec::new();
+        reader.read_to_end(&mut data).await?;
+        let geometry = read_level_geometry(&data)?;
+        let sections = read_sections(&mut Bytes::new(&data[geometry.end..]))?;
+        let level_path = context.path().path().to_string_lossy();
+        let level_index =
+            crate::content::levels::LEVELS.iter().position(|level| level.path() == level_path);
+        let filter_path = AssetPath::from("retail://data/automap/mapfilters.txt");
+        let filters = match context.read_asset_bytes(filter_path).await {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Err(bevy::asset::ReadAssetBytesError::AssetReaderError(
+                bevy::asset::io::AssetReaderError::NotFound(_),
+            )) => String::new(),
+            Err(error) => return Err(error.into()),
+        };
+        let map_layers =
+            super::automap::layer_heights(&sections.clip_planes, &filters, level_index)
+                .map_err(PvlLoadError::MapLayers)?;
         // Collision comes from the level's octree file, not render polygons.
         let stem =
             context.path().path().file_stem().unwrap_or_default().to_string_lossy().into_owned();
@@ -604,39 +644,43 @@ impl AssetLoader for PvlLoader {
             None => (vec![], vec![]),
         };
 
-        let level_lighting = level_lighting(&sections.lights, sections.environment_offset);
-        let lighting = PropLighting { ambient, level: &level_lighting };
-        let mut animated_textures: Vec<TextureAnimation> =
-            materials.into_iter().filter_map(|m| m.animation).collect();
         let (triggers, prop_triggers) = level_triggers(&sections);
-        let props = sections.props.iter().chain(&sections.bitmaps);
-        let props = build_props(
-            context,
-            props.zip(prop_triggers),
-            directory,
-            &mut textures,
-            &lighting,
-            &mut animated_textures,
-        )
-        .await;
-        let links = level_links(&sections);
-        Ok(LevelGeometry {
-            parts,
+        let props = sections
+            .props
+            .iter()
+            .chain(&sections.bitmaps)
+            .zip(prop_triggers)
+            .map(|(prop, trigger)| PropModel {
+                name: prop.name.clone(),
+                collidable: prop.flags & PROP_COLLIDABLE != 0,
+                face_camera: prop.face_camera,
+                frames_per_second: prop.frames_per_second,
+                parts: prop
+                    .detailed_parts()
+                    .iter()
+                    .zip(part_transforms(prop))
+                    .map(|(part, (transform, keys))| PropModelPart {
+                        transform,
+                        keys,
+                        collision: record_collision(&part.mesh.frames[part.mesh.first_frame]),
+                    })
+                    .collect(),
+                wraps: prop.wraps,
+                slots: prop.slots.iter().map(|slot| slot.frame).collect(),
+                trigger,
+            })
+            .collect();
+        Ok(LevelDefinition {
             collision,
             map_layers,
-            environment,
-            lighting: level_lighting,
+            sight_distance: sections
+                .environment
+                .as_ref()
+                .map(|e| e.view_distance / UNITS_PER_METRE),
             entrances: level_entrances(&sections),
             triggers,
             monsters,
             items,
-            ambient_sounds: sections
-                .all_triggers()
-                .filter_map(|trigger| match &trigger.kind {
-                    TriggerKind::AmbientSound(sound) => Some(ambient_sound(sound)),
-                    _ => None,
-                })
-                .collect(),
             camera_paths: sections
                 .cameras
                 .iter()
@@ -647,8 +691,7 @@ impl AssetLoader for PvlLoader {
                 })
                 .collect(),
             props,
-            links,
-            animated_textures,
+            links: level_links(&sections),
         })
     }
 

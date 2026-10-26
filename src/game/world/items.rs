@@ -12,7 +12,6 @@ use crate::game::rng::GameRng;
 
 /// An item lying in the level.
 #[derive(Component, Debug, Clone)]
-#[require(Visibility)]
 pub struct WorldItem {
     pub item: ItemInstance,
     /// Unseen, and out of reach, until found by searching.
@@ -117,10 +116,7 @@ pub fn take_item(world: &mut World, target: Entity, distance: f32) -> Result<(),
         .ok_or(Refusal::MissingContent)?;
     let item = world.get::<WorldItem>(target).ok_or(Refusal::Nothing)?;
     let owner = world.get::<ChildOf>(target).ok_or(Refusal::Nothing)?.parent();
-    if world.get::<super::level::Level>(owner).is_none()
-        || world.get::<super::level::Departing>(owner).is_some()
-        || item.hidden
-    {
+    if world.get::<super::level::Level>(owner).is_none() || item.hidden {
         return Err(Refusal::DoesNotFit);
     }
     let is_container = catalog.get(item.item.item).ok_or(Refusal::MissingContent)?.container;
@@ -157,7 +153,6 @@ pub fn take_item(world: &mut World, target: Entity, distance: f32) -> Result<(),
 pub fn drop_held(world: &mut World, level: Entity, at: Vec3) -> Result<Entity, Refusal> {
     if !world.run_system_cached(crate::game::screen::party_free).unwrap_or(false)
         || world.get::<super::level::Level>(level).is_none()
-        || world.get::<super::level::Departing>(level).is_some()
         || !at.is_finite()
     {
         return Err(Refusal::DoesNotFit);

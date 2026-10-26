@@ -12,12 +12,12 @@ use bevy::time::Stopwatch;
 
 use avian3d::prelude::{SpatialQuery, SpatialQueryFilter};
 
+use super::environment::LevelAppearance;
 use crate::content::level::LevelGeometry;
 use crate::content::monster::MonsterModel;
 use crate::content::species::MonsterCatalog;
 use crate::game::data::GameData;
 use crate::game::time::GameClock;
-use crate::game::world::level::Level;
 use crate::game::world::navigation::Walker;
 use crate::game::world::population::Monster;
 
@@ -234,7 +234,7 @@ const SKY_SCALE_PER_SECOND: f32 = 2.0;
 pub fn light_monsters(
     time: Res<Time>,
     clock: Res<GameClock>,
-    levels: Query<(Entity, &Level)>,
+    levels: Query<(Entity, &LevelAppearance)>,
     geometry: Res<Assets<LevelGeometry>>,
     models: Res<Assets<MonsterModel>>,
     spatial: SpatialQuery,
@@ -245,7 +245,7 @@ pub fn light_monsters(
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let Some((level_entity, level)) =
-        levels.iter().find_map(|(e, l)| geometry.get(&l.geometry).map(|g| (e, g)))
+        levels.iter().find_map(|(e, l)| geometry.get(&l.0).map(|g| (e, g)))
     else {
         return;
     };

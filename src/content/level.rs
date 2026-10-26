@@ -1,4 +1,4 @@
-//! A level's static geometry as native Bevy assets.
+//! Separate immutable gameplay and presentation assets for a level.
 
 use std::ops::RangeInclusive;
 
@@ -46,13 +46,6 @@ impl VertexLighting {
 /// How far is seen in a level without fog options: retail's far clip of
 /// 75000 units.
 pub const DEFAULT_VIEW_DISTANCE: f32 = 150.0;
-
-impl LevelGeometry {
-    /// How far is seen in the level: its far clip, which also bounds sight.
-    pub fn view_distance(&self) -> f32 {
-        self.environment.as_ref().map_or(DEFAULT_VIEW_DISTANCE, |e| e.view_distance)
-    }
-}
 
 /// A level's fog and sky light (retail "fog options").
 #[derive(Clone, Debug)]
@@ -115,32 +108,52 @@ impl LevelLighting {
     }
 }
 
-/// Immutable static geometry shared by every visit to a level.
+/// Immutable gameplay content. Loading it never constructs rendering assets.
 #[derive(Asset, TypePath, Clone, Debug, Default)]
-pub struct LevelGeometry {
-    pub parts: Vec<LevelPart>,
+pub struct LevelDefinition {
     pub collision: CollisionMesh,
-    /// Automap ceiling cuts in authored order, top to bottom. Layer zero is uncut.
     pub map_layers: Vec<f32>,
-    pub environment: Option<LevelEnvironment>,
-    /// Light that reaches props and actors at runtime, besides the sky.
-    pub lighting: LevelLighting,
-    /// Positioned triggers, where the party can enter.
+    /// The authored sight limit, independent of any rendering camera.
+    pub sight_distance: Option<f32>,
     pub entrances: Vec<Entrance>,
-    /// Every trigger the party or props can run.
     pub triggers: Vec<TriggerDefinition>,
-    /// Paths the party's eye can fly along (ladders, climbs, cutscenes).
     pub camera_paths: Vec<CameraPathModel>,
-    /// Sounds places make: water, wind, birds.
-    pub ambient_sounds: Vec<AmbientSoundModel>,
-    /// Monsters and NPCs standing in the level at a new game.
     pub monsters: Vec<MonsterPlacement>,
     pub items: Vec<ItemPlacement>,
     pub props: Vec<PropModel>,
-    /// Navigation links between places the navmesh does not join.
     pub links: Vec<LevelLink>,
-    /// Materials whose texture is an animated frame list (`.ifl`).
+}
+
+impl LevelDefinition {
+    pub fn view_distance(&self) -> f32 {
+        self.sight_distance.unwrap_or(DEFAULT_VIEW_DISTANCE)
+    }
+}
+
+/// Optional presentation content loaded separately from the same retail source.
+#[derive(Asset, TypePath, Clone, Debug, Default)]
+pub struct LevelGeometry {
+    pub parts: Vec<LevelPart>,
+    pub environment: Option<LevelEnvironment>,
+    pub lighting: LevelLighting,
+    pub ambient_sounds: Vec<AmbientSoundModel>,
+    /// Indexed in the same authored order as `LevelDefinition::props`.
+    pub props: Vec<PropVisual>,
     pub animated_textures: Vec<TextureAnimation>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PropVisual {
+    pub name: String,
+    pub face_camera: bool,
+    pub parts: Vec<PropVisualPart>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PropVisualPart {
+    /// Used by sky props; level props inherit the live gameplay part's pose.
+    pub transform: Transform,
+    pub meshes: Vec<LevelPart>,
 }
 
 /// How a walker gets from one end of a link to the other.
@@ -419,7 +432,6 @@ pub struct PropModelPart {
     /// The part's poses along its animation path, starting with the rest
     /// pose; empty for parts that do not move.
     pub keys: Vec<Transform>,
-    pub meshes: Vec<LevelPart>,
     /// Part-local collision triangles.
     pub collision: CollisionMesh,
 }

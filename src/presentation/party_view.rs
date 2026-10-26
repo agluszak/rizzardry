@@ -13,6 +13,7 @@ pub struct PartyCamera;
 /// Put the camera on the party's body when it appears.
 pub fn attach_camera(mut commands: Commands, party: Query<Entity, Added<PartyBody>>) {
     for party in &party {
+        commands.entity(party).insert(Visibility::default());
         commands.spawn((
             Name::new("Party camera"),
             PartyCamera,

@@ -15,11 +15,11 @@ use bevy::prelude::*;
 use crate::game::screen::Screen;
 use bevy_enhanced_input::prelude::*;
 
-use crate::content::level::{CollisionMesh, LevelGeometry};
+use crate::content::level::{CollisionMesh, LevelDefinition};
 use crate::content::ui::{SpriteSheet, ui_image};
 use crate::game::automap::{MapNote, MapNotes, NoteDraft};
 use crate::game::party::body::{FLOAT_HEIGHT, PartyBody};
-use crate::game::world::level::{Departing, Level};
+use crate::game::world::level::Level;
 use crate::presentation::screen_art::{SCREEN, absolute, centred, screen};
 
 const VIEWPORT_AT: Vec2 = Vec2::new(12.0, 32.0);
@@ -263,7 +263,7 @@ pub struct OpenAutomap;
 
 pub fn close_ended_map(
     map: Option<Single<&Automap>>,
-    levels: Query<(), (With<Level>, Without<Departing>)>,
+    levels: Query<(), With<Level>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
     if map.is_some_and(|map| !levels.contains(map.level)) {
@@ -283,8 +283,8 @@ pub fn request_automap(
 pub fn enter_automap(
     mut commands: Commands,
     party: Query<&Transform, With<PartyBody>>,
-    levels: Query<(Entity, &Level), Without<Departing>>,
-    geometry: Res<Assets<LevelGeometry>>,
+    levels: Query<(Entity, &Level)>,
+    geometry: Res<Assets<LevelDefinition>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
     let (Ok(party), Ok((level, definition))) = (party.single(), levels.single()) else {
@@ -388,7 +388,7 @@ pub fn build_automap(
     mut images: ResMut<Assets<Image>>,
     party: Query<&Transform, With<PartyBody>>,
     level: Query<&Level>,
-    geometry: Res<Assets<LevelGeometry>>,
+    geometry: Res<Assets<LevelDefinition>>,
     roots: Query<(Entity, &Automap), Without<AutomapBuilt>>,
 ) {
     let Ok((root, automap)) = roots.single() else { return };
@@ -543,7 +543,7 @@ fn press_button(
     click: On<PointerClick>,
     buttons: Query<&SheetButton>,
     level: Query<&Level>,
-    geometry: Res<Assets<LevelGeometry>>,
+    geometry: Res<Assets<LevelDefinition>>,
     party: Query<&Transform, With<PartyBody>>,
     automap: Option<Single<&mut Automap>>,
     mut next: ResMut<NextState<Screen>>,
@@ -587,7 +587,7 @@ fn press_button(
 /// Off, highlighted while hovered, on while its tool is selected.
 pub fn paint_buttons(
     level: Query<&Level>,
-    geometry: Res<Assets<LevelGeometry>>,
+    geometry: Res<Assets<LevelDefinition>>,
     mut buttons: Query<(&Hovered, &SheetButton, &mut ImageNode)>,
     automap: Option<Single<Ref<Automap>>>,
     sheets: Res<Assets<SpriteSheet>>,
@@ -779,7 +779,7 @@ pub fn glow_note_markers(time: Res<Time>, mut markers: Query<&mut ImageNode, Wit
 pub fn update_map_view(
     automap: Option<Single<Ref<Automap>>>,
     level: Query<&Level>,
-    geometry: Res<Assets<LevelGeometry>>,
+    geometry: Res<Assets<LevelDefinition>>,
     mut plans: Query<(Entity, &mut ImageNode), With<FloorPlan>>,
     mut images: ResMut<Assets<Image>>,
     party: Query<&Transform, With<PartyBody>>,
@@ -813,7 +813,7 @@ pub fn draw_layer_label(
     art: Option<Res<AutomapArt>>,
     sheets: Res<Assets<SpriteSheet>>,
     level: Query<&Level>,
-    geometry: Res<Assets<LevelGeometry>>,
+    geometry: Res<Assets<LevelDefinition>>,
     mut labels: Query<(Entity, &mut ImageNode, &mut Node), With<LayerLabel>>,
     mut images: ResMut<Assets<Image>>,
     mut previous: Local<Option<(Entity, usize)>>,

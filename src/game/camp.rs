@@ -6,7 +6,6 @@
 
 use avian3d::prelude::LinearVelocity;
 use bevy::prelude::*;
-use bevy_enhanced_input::prelude::*;
 
 use crate::game::characters::{Condition, Vitals};
 use crate::game::party::body::PartyBody;
@@ -76,11 +75,6 @@ pub enum CampNews {
     Recovered,
 }
 
-/// Rest (retail's Camp command).
-#[derive(InputAction)]
-#[action_output(bool)]
-pub struct Rest;
-
 /// Whether a member can act: alive and nothing worse than webbed.
 pub fn can_act(member: &Vitals) -> bool {
     !member.is_dead() && member.worst_condition().is_none_or(|c| c < Condition::Turncoat)
@@ -92,15 +86,14 @@ pub struct CampRequest;
 
 pub fn request_camp(
     mut commands: Commands,
-    rest: Single<&ActionEvents, With<Action<Rest>>>,
+    freedom: crate::game::screen::Freedom,
     mut button: MessageReader<CampRequest>,
-    camp: Option<Res<Camp>>,
     battle: Option<Res<crate::game::combat::Battle>>,
     party: Query<&LinearVelocity, With<PartyBody>>,
     mut news: MessageWriter<CampNews>,
 ) {
     let asked = button.read().count() > 0;
-    if !(rest.contains(ActionEvents::START) || asked) || camp.is_some() {
+    if !asked || !freedom.free() {
         return;
     }
     if battle.is_some() {

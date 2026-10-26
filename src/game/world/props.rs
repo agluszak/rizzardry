@@ -9,7 +9,7 @@ use crate::content::level::Animation;
 /// A placed prop. Its parts are children carrying [`PropPart`].
 #[derive(Component, Debug)]
 pub struct Prop {
-    /// Its place among the level's props (`LevelGeometry::props`), which
+    /// Its place among the level's props (`LevelDefinition::props`), which
     /// identifies it within the level.
     pub definition: usize,
     /// The middle of its parts at rest, where its sounds play.

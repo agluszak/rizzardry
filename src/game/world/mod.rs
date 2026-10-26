@@ -63,19 +63,14 @@ impl Plugin for WorldPlugin {
             .init_resource::<level::LevelMemory>()
             .init_resource::<population::MonsterBodies>()
             .add_message::<triggers::TriggerEffect>()
-            // The level is swapped before anything builds on it this frame.
+            // Resolve travel intent early; activation owns the later level swap.
             .add_systems(PreUpdate, (level::answer_travel_questions, level::travel).chain())
             .add_systems(
                 Update,
                 (
                     level::activate_level.in_set(crate::game::GameplaySet::LevelActivation),
                     (
-                        (
-                            search::search_key.run_if(crate::game::screen::party_free),
-                            search::toggle_search,
-                            search::search_pulse,
-                        )
-                            .chain(),
+                        (search::toggle_search, search::search_pulse).chain(),
                         identify::detect_monster_groups
                             .in_set(crate::game::GameplaySet::Perception),
                     )

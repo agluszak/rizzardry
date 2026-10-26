@@ -14,7 +14,7 @@ use rizzardry::app::{Options, build};
 use rizzardry::game::combat::Battle;
 use rizzardry::game::inventory::PartyInventory;
 use rizzardry::game::world::items::WorldItem;
-use rizzardry::game::world::level::{Departing, Level, Travel};
+use rizzardry::game::world::level::{Level, Travel};
 use rizzardry::game::world::population::Monster;
 
 /// One game at a time: they share the navmesh cache and the asset
@@ -31,6 +31,10 @@ fn game(args: &[&str]) -> App {
     let mut app = build(&options).expect("the game builds");
     app.finish();
     app.cleanup();
+    assert!(app.get_sub_app(bevy::render::RenderApp).is_none());
+    assert!(!app.world().contains_resource::<Assets<Mesh>>());
+    assert!(!app.world().contains_resource::<Assets<Image>>());
+    assert!(!app.world().contains_resource::<Assets<StandardMaterial>>());
     app
 }
 
@@ -47,7 +51,7 @@ fn step_until(app: &mut App, what: &str, done: impl Fn(&mut World) -> bool) {
 
 /// The level being played, by path.
 fn playing(world: &mut World) -> Option<String> {
-    let mut levels = world.query_filtered::<&Level, Without<Departing>>();
+    let mut levels = world.query::<&Level>();
     levels.iter(world).next().map(|level| level.path.clone())
 }
 
