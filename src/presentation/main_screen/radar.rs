@@ -4,6 +4,7 @@
 //! automap.
 
 use bevy::prelude::*;
+use bevy::ui_widgets::Activate;
 
 use super::{MainScreenArt, layer, loaded};
 use crate::content::ui::SpriteSheet;
@@ -28,8 +29,8 @@ pub fn panel(art: &MainScreenArt, sheets: &Assets<SpriteSheet>) -> impl SceneLis
         -- @{cone}
         -- @layer() RadarBlips
         -- @{rim} RadarRim UiTransform
-        -- disc_area
-            on(|_: On<PointerClick>, mut open: MessageWriter<OpenAutomap>| {
+        -- disc_area bevy::ui_widgets::Button bevy::input_focus::tab_navigation::TabIndex(0) super::HudFocus Outline::new(px(1),px(1),Color::NONE)
+            on(|_: On<Activate>, mut open: MessageWriter<OpenAutomap>| {
                 open.write(OpenAutomap);
             })
     }

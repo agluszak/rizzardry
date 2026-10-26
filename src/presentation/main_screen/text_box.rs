@@ -3,8 +3,40 @@
 use super::{MainScreenArt, layer};
 use crate::presentation::notices::{TextLog, VISIBLE_LINES};
 use crate::presentation::screen_art::{BitmapText, Picture, absolute, label, picture};
+use bevy::input_focus::tab_navigation::TabIndex;
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
+use bevy::ui::{InteractionDisabled, Pressed};
+use bevy::ui_widgets::{Activate, Button, SelectedTab, Tab, TabList, ValueChange};
+
+#[derive(Component, Clone, Default)]
+pub(super) struct Channels;
+#[derive(Component)]
+pub(super) struct Channel(usize);
+
+fn select_channel(
+    change: On<ValueChange<Option<Entity>>>,
+    channels: Query<&Channel>,
+    mut log: ResMut<TextLog>,
+) {
+    if let Some(channel) = change.value.and_then(|e| channels.get(e).ok()) {
+        log.select(channel.0);
+    }
+}
+
+/// TextLog owns selection across HUD rebuilds and combat-driven changes.
+/// Native tabs are a controlled projection, not another writable selection.
+pub(super) fn sync_channels(
+    log: Res<TextLog>,
+    mut lists: Query<(&Children, &mut SelectedTab), With<Channels>>,
+    channels: Query<&Channel>,
+) {
+    for (children, mut selection) in &mut lists {
+        let selected =
+            children.iter().find(|e| channels.get(*e).is_ok_and(|c| c.0 == log.selected()));
+        selection.set_if_neq(SelectedTab(selected));
+    }
+}
 
 #[derive(Component, Clone, Default)]
 pub struct TextBox;
@@ -34,11 +66,12 @@ pub fn draw_text_box(
     mut lines: Query<(&Line, &mut BitmapText, &mut Visibility), Without<Thumb>>,
     mut pictures: Query<
         (
+            Entity,
             &mut Picture,
             &mut Visibility,
             Option<&Tabs>,
             Option<&Thumb>,
-            Option<(&Scroll, &Hovered, &mut Pickable)>,
+            Option<(&Scroll, &Hovered, Has<Pressed>, Has<InteractionDisabled>, &mut TabIndex)>,
         ),
         (Without<Line>, Or<(With<Tabs>, With<Thumb>, With<Scroll>)>),
     >,
@@ -58,8 +91,8 @@ pub fn draw_text_box(
                 let at = Vec2::new(461.0, if down { 429.0 } else { 363.0 });
                 bsn! {
                     @picture(art.text_scroll.clone(), if down { 8 } else { 0 }, at)
-                    template(move |_| Ok(Scroll { down })) Pickable::default()
-                    on(move |_: On<PointerClick>, mut log: ResMut<TextLog>| {
+                    template(move |_| Ok(Scroll { down })) Button TabIndex(0) super::HudFocus Outline::new(px(1),px(1),Color::NONE) Pickable::default()
+                    on(move |_: On<Activate>, mut log: ResMut<TextLog>| {
                         if down && log.can_scroll().1 { log.scroll_down(1); }
                         else if !down && log.can_scroll().0 { log.scroll_up(1); }
                     })
@@ -71,14 +104,16 @@ pub fn draw_text_box(
             .map(|(channel, y)| {
                 bsn! {
                     template(move |_| Ok(absolute(Vec2::new(140.0, y), Vec2::new(24.0, 16.0))))
-                    on(move |_: On<PointerClick>, mut log: ResMut<TextLog>| log.select(channel))
+                    Tab super::HudFocus Outline::new(px(1),px(1),Color::NONE)
+                    template(move |_| Ok(Channel(channel)))
                 }
             })
             .collect();
         commands.entity(root).insert(TextBoxBuilt).queue_spawn_related_scenes::<Children>(
             bsn_list! {
                 @picture(art.textbox_tabs.clone(), 0, Vec2::new(138.0, 360.0)) Tabs
-                -- {text} -- {arrows} -- {channels}
+                -- {text} -- {arrows}
+                -- @layer() TabList { orientation: bevy::ui_widgets::ControlOrientation::Vertical, activation: bevy::ui_widgets::TabActivation::Manual } Channels on(select_channel) Children [ {channels} ]
                 -- @picture(art.text_scroll.clone(), 4, Vec2::new(461.0, 379.0)) Thumb
             },
         );
@@ -96,7 +131,7 @@ pub fn draw_text_box(
             text.value.clone_from(value);
         }
     }
-    for (mut picture, mut visibility, tabs, thumb, scroll) in &mut pictures {
+    for (entity, mut picture, mut visibility, tabs, thumb, scroll) in &mut pictures {
         if tabs.is_some() {
             picture.reborrow().map_unchanged(|p| &mut p.frame).set_if_neq(log.selected());
         }
@@ -113,12 +148,22 @@ pub fn draw_text_box(
                     .set_if_neq(Vec2::new(461.0, 379.0 + (thumb * 40.0).floor()));
             }
         }
-        if let Some((scroll, hovered, mut pickable)) = scroll {
+        if let Some((scroll, hovered, pressed, disabled, mut tab)) = scroll {
             let enabled = if scroll.down { log.can_scroll().1 } else { log.can_scroll().0 };
+            tab.set_if_neq(TabIndex(if enabled { 0 } else { -1 }));
+            if enabled == disabled {
+                if enabled {
+                    commands.entity(entity).remove::<InteractionDisabled>();
+                } else {
+                    commands.entity(entity).insert(InteractionDisabled).remove::<Pressed>();
+                }
+            }
             let normal = if scroll.down { 8 } else { 0 };
             let frame = normal
                 + if !enabled {
                     3
+                } else if pressed {
+                    2
                 } else if hovered.get() {
                     1
                 } else {
@@ -126,7 +171,38 @@ pub fn draw_text_box(
                 };
             let next = Picture { frame, bounds: Some(normal), ..picture.clone() };
             picture.set_if_neq(next);
-            pickable.set_if_neq(if enabled { Pickable::default() } else { Pickable::IGNORE });
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn native_tabs_follow_log_selection_and_survive_view_rebuilds() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<TextLog>()
+            .add_systems(Update, sync_channels);
+        for _ in 0..2 {
+            let root =
+                app.world_mut().spawn((TabList::default(), Channels)).observe(select_channel).id();
+            let tabs: Vec<_> = (0..3)
+                .map(|i| app.world_mut().spawn((Tab, Channel(i), ChildOf(root))).id())
+                .collect();
+            app.world_mut().resource_mut::<TextLog>().select(1);
+            app.update();
+            assert_eq!(app.world().get::<SelectedTab>(root).unwrap().0, Some(tabs[1]));
+            app.world_mut().trigger(ValueChange {
+                source: root,
+                value: Some(tabs[2]),
+                is_final: true,
+            });
+            app.update();
+            assert_eq!(app.world().resource::<TextLog>().selected(), 2);
+            assert_eq!(app.world().get::<SelectedTab>(root).unwrap().0, Some(tabs[2]));
+            app.world_mut().despawn(root);
+            assert_eq!(app.world().resource::<TextLog>().selected(), 2);
         }
     }
 }

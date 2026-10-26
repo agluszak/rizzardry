@@ -3,7 +3,8 @@
 //! Enter starts a combat round, backslash switches continuous combat, A and
 //! D set the selected member to attack or defend, and PgUp, PgDn, Home, End
 //! and Del scroll the text box a page, to its top or its end, or empty it.
-//! They act only while no other screen is up.
+//! They act only while no other screen is up and no widget owns focus.
+//! F6 enters the HUD; Tab navigates its controls and Escape returns to the world.
 
 use bevy::prelude::*;
 use bevy_enhanced_input::prelude::*;
@@ -17,6 +18,10 @@ use crate::presentation::notices::{TextLog, VISIBLE_LINES};
 
 #[derive(Component, Clone, Default)]
 pub struct MainScreenKeys;
+
+#[derive(InputAction)]
+#[action_output(bool)]
+struct FocusHud;
 
 #[derive(InputAction)]
 #[action_output(bool)]
@@ -98,6 +103,8 @@ pub fn spawn_main_screen_keys(mut commands: Commands) {
     commands.spawn_scene(bsn! {
         MainScreenKeys
         Actions<MainScreenKeys> [
+            Action::<FocusHud>::new() Bindings [ Binding(KeyCode::F6) ]
+            --
             Action::<CycleLayoutBack>::new()
             ActionSettings { consume_input: true }
             Bindings [ shift_backspace ]
@@ -121,6 +128,14 @@ pub fn spawn_main_screen_keys(mut commands: Commands) {
         ]
         on(|_: On<Start<CycleLayout>>, mut layout: ResMut<ScreenLayout>| layout.cycle(false))
         on(|_: On<Start<CycleLayoutBack>>, mut layout: ResMut<ScreenLayout>| layout.cycle(true))
+        on(|_: On<Start<FocusHud>>, roots: Query<Entity,With<super::MainScreen>>,
+            navigation: bevy::input_focus::tab_navigation::TabNavigation,
+            mut focus: ResMut<bevy::input_focus::InputFocus>,
+            mut visible: ResMut<bevy::input_focus::InputFocusVisible>| {
+            if let Ok(root)=roots.single() && let Ok(target)=navigation.initialize(root,bevy::input_focus::tab_navigation::NavAction::First) {
+                focus.set(target,bevy::input_focus::FocusCause::Navigated);visible.0=true;
+            }
+        })
         on(select_member)
         on(|_: On<Start<BeginRound>>, battle: Option<Res<Battle>>, mut round: MessageWriter<StartRound>| {
             if battle.is_some() {
@@ -140,8 +155,11 @@ pub fn hold_main_screen_keys(
     mut commands: Commands,
     screen: Res<State<Screen>>,
     keys: Query<(Entity, &ContextActivity<MainScreenKeys>)>,
+    focus: Res<bevy::input_focus::InputFocus>,
+    controls: Query<(), With<bevy::input_focus::tab_navigation::TabIndex>>,
 ) {
-    let active = *screen.get() == Screen::World;
+    let active = *screen.get() == Screen::World
+        && !focus.get().is_some_and(|entity| controls.contains(entity));
     for (entity, activity) in &keys {
         if **activity != active {
             commands.entity(entity).insert(ContextActivity::<MainScreenKeys>::new(active));

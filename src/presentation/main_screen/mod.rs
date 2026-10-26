@@ -17,7 +17,12 @@ mod party;
 mod radar;
 mod text_box;
 
+use bevy::input_focus::{
+    InputFocus, InputFocusSystems,
+    tab_navigation::{TabGroup, TabIndex},
+};
 use bevy::prelude::*;
+use bevy::ui_widgets::Button;
 use bevy_enhanced_input::prelude::*;
 
 use super::screen_art::{SCREEN, absolute, centred, screen, sprite};
@@ -41,8 +46,10 @@ impl Plugin for MainScreenPlugin {
             .add_systems(
                 PreUpdate,
                 keys::hold_main_screen_keys
+                    .after(InputFocusSystems::Dispatch)
                     .before(bevy_enhanced_input::EnhancedInputSystems::Update),
             )
+            .add_systems(PreUpdate, route_hud_focus.before(InputFocusSystems::Dispatch))
             .add_systems(
                 Update,
                 (
@@ -53,13 +60,14 @@ impl Plugin for MainScreenPlugin {
                         party::bind_party_buttons,
                         party::draw_party,
                         (party::record_splats, party::play_splats).chain(),
-                        text_box::draw_text_box,
+                        (text_box::draw_text_box, text_box::sync_channels).chain(),
                         (radar::track_radar_items, radar::update_radar)
                             .chain()
                             .after(crate::game::GameplaySet::LevelActivation)
                             .after(crate::game::world::search::search_pulse),
                         formation::draw_formation,
                         bank::draw_bank,
+                        paint_focus,
                         bank::draw_caption,
                         bank::show_round_progress,
                     ),
@@ -184,12 +192,63 @@ fn layer() -> impl Scene {
 
 /// A sheet's frame that is a button: it catches the pointer.
 fn button(sheet: &SpriteSheet, frame: usize, at: Vec2) -> impl Scene + use<> {
-    bsn! { @{sprite(sheet, frame, at)} Pickable { should_block_lower: true, is_hoverable: true } }
+    bsn! { @{sprite(sheet, frame, at)} Button TabIndex(0) HudFocus Outline::new(px(1),px(1),Color::NONE) Pickable::default() }
 }
 
 /// The screen's root, with the layout its frame was built for.
 #[derive(Component, Clone, Default)]
 pub struct MainScreen(ScreenLayout);
+
+#[derive(Component, Clone, Default)]
+pub(super) struct HudFocus;
+
+fn paint_focus(
+    focus: Res<InputFocus>,
+    visible: Res<bevy::input_focus::InputFocusVisible>,
+    mut controls: Query<(Entity, &mut Outline), With<HudFocus>>,
+) {
+    for (entity, mut outline) in &mut controls {
+        let color = if visible.0 && focus.get() == Some(entity) {
+            Color::srgb(0.83, 0.68, 0.4)
+        } else {
+            Color::NONE
+        };
+        if outline.color != color {
+            outline.color = color;
+        }
+    }
+}
+
+fn leave_hud_focus(
+    mut event: On<bevy::input_focus::FocusedInput<bevy::input::keyboard::KeyboardInput>>,
+    mut focus: ResMut<InputFocus>,
+) {
+    if event.input.state.is_pressed() && event.input.key_code == KeyCode::Escape {
+        event.propagate(false);
+        focus.clear();
+    }
+}
+
+/// Other screens own keyboard navigation while covering the HUD. A modal tab
+/// group is excluded from global navigation, without hiding the visible HUD.
+fn route_hud_focus(
+    screen: Res<State<crate::game::screen::Screen>>,
+    next: Res<NextState<crate::game::screen::Screen>>,
+    questions: Query<(), With<crate::game::world::level::TravelQuestion>>,
+    roots: Query<Entity, With<MainScreen>>,
+    parents: Query<&ChildOf>,
+    mut focus: ResMut<InputFocus>,
+) {
+    use crate::game::screen::Screen;
+    let active = *screen.get() == Screen::World
+        && matches!(*next, NextState::Unchanged | NextState::Pending(Screen::World))
+        && questions.is_empty();
+    for root in &roots {
+        if !active && focus.get().is_some_and(|e| parents.iter_ancestors(e).any(|p| p == root)) {
+            focus.clear();
+        }
+    }
+}
 
 /// Build the frame for the layout, once the art has loaded: black around
 /// the viewport, the roof, the columns, the bottom posts and panels, and a
@@ -267,6 +326,8 @@ fn build_frame(
     commands.spawn_scene(bsn! {
         @centred()
         MainScreen({layout.clone()})
+        TabGroup::modal()
+        on(leave_hud_focus)
         GlobalZIndex(-5)
         Pickable::IGNORE
         Children [
@@ -286,4 +347,96 @@ fn build_frame(
             ]
         ]
     });
+}
+
+#[cfg(test)]
+mod keyboard_tests {
+    use super::*;
+    use bevy::input::{
+        ButtonState,
+        keyboard::{Key, KeyboardInput},
+    };
+    use bevy::input_focus::{
+        InputDispatchPlugin, InputFocusPlugin, tab_navigation::TabNavigationPlugin,
+    };
+    use bevy::ui_widgets::ButtonPlugin;
+    use bevy::window::PrimaryWindow;
+
+    fn tap(app: &mut App, window: Entity, code: KeyCode) {
+        for state in [ButtonState::Pressed, ButtonState::Released] {
+            app.world_mut().write_message(KeyboardInput {
+                key_code: code,
+                logical_key: match code {
+                    KeyCode::Tab => Key::Tab,
+                    KeyCode::Escape => Key::Escape,
+                    _ => Key::Unidentified(bevy::input::keyboard::NativeKey::Unidentified),
+                },
+                state,
+                text: None,
+                repeat: false,
+                window,
+            });
+            app.update();
+        }
+    }
+
+    #[test]
+    fn f6_enters_hud_without_stealing_the_worlds_map_binding() {
+        use crate::presentation::{
+            automap::{MapKey, OpenAutomap, spawn_map_key},
+            notices::TextLog,
+        };
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            bevy::input::InputPlugin,
+            bevy::scene::ScenePlugin,
+            bevy::state::app::StatesPlugin,
+            EnhancedInputPlugin,
+            InputFocusPlugin,
+            InputDispatchPlugin,
+            TabNavigationPlugin,
+            ButtonPlugin,
+        ))
+        .init_state::<crate::game::screen::Screen>()
+        .init_resource::<ScreenLayout>()
+        .init_resource::<SelectedMember>()
+        .init_resource::<crate::game::party::roster::PartyRoster>()
+        .init_resource::<crate::game::combat::CombatSettings>()
+        .init_resource::<TextLog>()
+        .add_message::<crate::game::combat::StartRound>()
+        .add_message::<OpenAutomap>()
+        .add_input_context::<keys::MainScreenKeys>()
+        .add_input_context::<MapKey>()
+        .add_systems(Startup, (keys::spawn_main_screen_keys, spawn_map_key))
+        .add_systems(
+            PreUpdate,
+            keys::hold_main_screen_keys
+                .after(InputFocusSystems::Dispatch)
+                .before(EnhancedInputSystems::Update),
+        );
+        let window = app.world_mut().spawn((Window::default(), PrimaryWindow)).id();
+        let root = app
+            .world_mut()
+            .spawn((MainScreen::default(), TabGroup::modal()))
+            .observe(leave_hud_focus)
+            .id();
+        let first = app.world_mut().spawn((Button, TabIndex(0), ChildOf(root))).id();
+        let second = app.world_mut().spawn((Button, TabIndex(0), ChildOf(root))).id();
+        app.finish();
+        app.cleanup();
+        app.update();
+        app.update();
+        tap(&mut app, window, KeyCode::Tab);
+        assert_eq!(app.world_mut().resource_mut::<Messages<OpenAutomap>>().drain().count(), 1);
+        tap(&mut app, window, KeyCode::F6);
+        assert_eq!(app.world().resource::<InputFocus>().get(), Some(first));
+        tap(&mut app, window, KeyCode::Tab);
+        assert_eq!(app.world().resource::<InputFocus>().get(), Some(second));
+        assert_eq!(app.world_mut().resource_mut::<Messages<OpenAutomap>>().drain().count(), 0);
+        tap(&mut app, window, KeyCode::Escape);
+        assert_ne!(app.world().resource::<InputFocus>().get(), Some(second));
+        tap(&mut app, window, KeyCode::Tab);
+        assert_eq!(app.world_mut().resource_mut::<Messages<OpenAutomap>>().drain().count(), 1);
+    }
 }
