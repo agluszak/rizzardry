@@ -154,7 +154,7 @@ impl TextLog {
 
 /// Break a message into lines no wider than `width`, at spaces, keeping at
 /// least one word on each line (retail `ShowNotice`).
-fn wrap(text: &str, width: u32, measure: impl Fn(&str) -> u32) -> Vec<String> {
+pub(super) fn wrap(text: &str, width: u32, measure: impl Fn(&str) -> u32) -> Vec<String> {
     let mut lines = Vec::new();
     for paragraph in text.split('\n') {
         let mut line = String::new();

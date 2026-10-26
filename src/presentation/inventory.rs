@@ -8,6 +8,7 @@
 //! The screen is one scene with a node for each cell, the header and the
 //! gold; their retained nodes update when their gameplay inputs change.
 
+mod info;
 mod review;
 
 use bevy::input_focus::tab_navigation::{TabGroup, TabIndex};
@@ -124,6 +125,10 @@ pub struct InventoryArt {
     yellow: Handle<SpriteSheet>,
     gray: Handle<SpriteSheet>,
     beige: Handle<SpriteSheet>,
+    blue: Handle<SpriteSheet>,
+    bronze: Handle<SpriteSheet>,
+    info_dialog: Handle<SpriteSheet>,
+    info_buttons: Handle<SpriteSheet>,
 }
 
 pub fn load_inventory_art(mut commands: Commands, assets: Res<AssetServer>) {
@@ -161,6 +166,10 @@ pub fn load_inventory_art(mut commands: Commands, assets: Res<AssetServer>) {
         yellow: load("fonts/paletteyellow.sti"),
         gray: load("fonts/palettegray.sti"),
         beige: load("fonts/palettebeige.sti"),
+        blue: load("fonts/paletteblue.sti"),
+        bronze: load("fonts/palettebronze.sti"),
+        info_dialog: load("dialogs/popup_monsterinfo.sti"),
+        info_buttons: load("dialogs/popup_confirmationbuttons.sti"),
     });
 }
 
@@ -533,6 +542,10 @@ pub fn spawn_inventory_screen(
         &art.yellow,
         &art.gray,
         &art.beige,
+        &art.blue,
+        &art.bronze,
+        &art.info_dialog,
+        &art.info_buttons,
         &art.highlights,
         &art.unusable,
         &art.unidentified,
@@ -1081,6 +1094,7 @@ impl Plugin for InventoryPlugin {
     fn build(&self, app: &mut App) {
         app.add_input_context::<InventoryKey>()
             .add_input_context::<InventoryRoot>()
+            .add_input_context::<info::SkillDialog>()
             .add_systems(Startup, (load_inventory_art, spawn_inventory_key, spawn_held_picture))
             .add_systems(OnEnter(Screen::Inventory), enter_inventory)
             .add_systems(OnExit(Screen::Inventory), put_away_held)
@@ -1116,6 +1130,9 @@ impl Plugin for InventoryPlugin {
                     review::style_info_button,
                     review::style_effect_buttons,
                     review::focus_controls,
+                    info::update_scroll,
+                    info::style_close,
+                    info::style_arrows,
                 )
                     .after(spawn_inventory_screen),
             );

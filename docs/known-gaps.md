@@ -8,8 +8,8 @@ next to its feature when that feature changes.
 - Character review uses retail artwork, bitmap fonts, character portraits,
   statistics/skill layouts and page controls. Conditions and represented item
   effects can be filtered and scrolled. Spell review, level-up editing, trait and
-  enchantment details, several combat/armor values, retail text palettes and
-  information dialogs remain unported. See [source comparison](research/character-review.md).
+  enchantment details, several combat/armor values, the improved-skill palette and
+  attribute information dialogs remain unported. See [source comparison](research/character-review.md).
 - Rendering and input no longer bootstrap gameplay: `LevelDefinition` and its
   collision/trigger/placement loader are separate from `LevelGeometry` and
   presentation loaders. Headless play installs no renderer, render assets,

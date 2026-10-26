@@ -207,17 +207,17 @@ fn profession_row(profession: Profession) -> ProfessionRow {
 
 /// The two attributes a skill's base level averages (one for spellbooks
 /// and expert skills).
-fn governing(skill: Skill) -> (Attribute, Attribute) {
+pub(crate) fn governing(skill: Skill) -> (Attribute, Attribute) {
     use Attribute::*;
     use Skill::*;
     match skill {
-        Sword | Axe | Polearm | MaceAndFlail | StaffAndWand | Shield | Bow | ThrowingAndSling => {
-            (Strength, Dexterity)
-        }
+        Sword | Axe | Polearm | MaceAndFlail | StaffAndWand | Shield => (Strength, Dexterity),
+        Bow | ThrowingAndSling => (Dexterity, Strength),
         Dagger | ModernWeapon | Pickpocket | MartialArts => (Dexterity, Speed),
-        LocksAndTraps | Stealth | Music | Engineering | Alchemy => (Dexterity, Intelligence),
-        Scouting | CloseCombat | RangedCombat | Artifacts | Mythology | Communication
-        | Psionics => (Senses, Intelligence),
+        LocksAndTraps | Stealth | Music | Alchemy => (Dexterity, Intelligence),
+        Engineering => (Intelligence, Dexterity),
+        Scouting | CloseCombat | RangedCombat | Mythology | Psionics => (Senses, Intelligence),
+        Artifacts | Communication => (Intelligence, Senses),
         DualWeapons => (Dexterity, Senses),
         CriticalStrike => (Senses, Speed),
         Wizardry => (Intelligence, Intelligence),

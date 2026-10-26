@@ -34,7 +34,10 @@ The category origins are weapons (352, 173), miscellaneous (352, 369), combat
 nonzero skills get 273×14 rows from frame 3, with text from string IDs starting
 at `0x2e2` and base/bonus segments from `ReviewSliderbar.sti`. Availability is
 derived from profession, profession levels and the seven mastery thresholds.
-Realm skills require learned spells, which are not implemented.
+Realm skills require learned spells, which are not implemented. Right-clicking a
+skill name opens the retail skill-information popup, with its description,
+controlling attributes and applicable best, closed and primary-skill notes.
+The popup is modal, scrollable and owned by the review screen.
 
 The statistics screen uses `ReviewStatsPage.sti` frame 1 at (0, 165), seven
 attribute rows at 14-pixel intervals and 125-pixel retail value bars. The upper
@@ -52,8 +55,8 @@ The following retail content is still missing or incomplete:
 - Trait and enchantment lists, most item modifiers, kill/death counts, and the
   full armor-component and secondary-hand calculations. Unavailable numbers are
   left blank instead of being fabricated.
-- The improved-skill palette (the improvement flag is not yet modelled), skill
-  and stat information dialogs, and some portrait interactions and status details.
+- The improved-skill palette (the improvement flag is not yet modelled),
+  attribute information dialogs, and some portrait interactions and status details.
 - The game currently models neither imported-character level-band bases nor all
   skill eligibility restrictions (such as traits that prevent learning).
 

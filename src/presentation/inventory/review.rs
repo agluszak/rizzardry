@@ -401,6 +401,14 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) {
             .spawn((SkillRow(skill), absolute(Vec2::ZERO, Vec2::new(273.0, 14.0)), ChildOf(skills)))
             .id();
         picture(commands, row, art.skills_page.clone(), 3, Vec2::ZERO);
+        commands
+            .spawn((
+                super::info::SkillTarget { skill, root },
+                absolute(Vec2::ZERO, Vec2::new(109.0, 14.0)),
+                Pickable::default(),
+                ChildOf(row),
+            ))
+            .observe(super::info::open_skill);
         label(commands, row, art.font.clone(), Vec2::new(2.0, 1.0), 107.0, Field::SkillName(skill));
         label(commands, row, art.font.clone(), Vec2::new(238.0, 1.0), 36.0, Field::Skill(skill));
         bar(commands, row, art.slider.clone(), Vec2::new(111.0, 2.0), Bar::SkillBase(skill), 0);
