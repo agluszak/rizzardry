@@ -17,7 +17,8 @@ use crate::presentation::party_view::PartyCamera;
 /// The inner part of the radius heard at full loudness.
 const FULL_WITHIN: f32 = 0.4;
 
-/// One of the level's ambient sounds, by its index in the level.
+/// One of the level's ambient sounds, by its index in the owning level.
+/// Playback lives on this entity; REMOVE completion leaves its timing intact.
 #[derive(Component, Debug)]
 pub struct AmbientEmitter {
     index: usize,
@@ -61,48 +62,46 @@ pub fn play_ambient_sounds(
     listener: Query<&GlobalTransform, With<PartyCamera>>,
     levels: Query<&LevelAppearance>,
     geometry: Res<Assets<LevelGeometry>>,
-    mut emitters: Query<(Entity, &mut AmbientEmitter, &Transform, Option<&Children>)>,
-    mut sinks: Query<&mut AudioSink>,
+    mut emitters: Query<(
+        Entity,
+        &mut AmbientEmitter,
+        &Transform,
+        &ChildOf,
+        Has<AudioPlayer>,
+        Option<&mut AudioSink>,
+    )>,
     mut rng: ResMut<PresentationRng>,
 ) {
-    let (Ok(listener), Some(level)) =
-        (listener.single(), levels.iter().find_map(|l| geometry.get(&l.0)))
-    else {
-        return;
-    };
+    let Ok(listener) = listener.single() else { return };
     let ear = listener.translation();
-    for (entity, mut emitter, at, children) in &mut emitters {
+    for (entity, mut emitter, at, owner, playing, sink) in &mut emitters {
+        let Some(level) = levels.get(owner.parent()).ok().and_then(|l| geometry.get(&l.0)) else {
+            continue;
+        };
         let Some(sound) = level.ambient_sounds.get(emitter.index) else { continue };
-        // The emitter owns only its sound. The child exists while loading or
-        // playing; DESPAWN playback removes it when the one-shot finishes.
-        let playing = children.and_then(|children| children.first()).copied();
         let distance = ear.distance(at.translation);
         let inside = distance < sound.radius;
         let entering = inside && !emitter.inside;
         emitter.inside = inside;
         if !inside {
-            if let Some(playing) = playing {
-                commands.entity(playing).despawn();
+            // Removing the player also cancels audio still waiting for its asset.
+            if playing {
+                commands.entity(entity).remove::<(AudioPlayer, AudioSink, PlaybackSettings)>();
             }
             continue;
         }
         let loudness = gain(sound, distance);
         if sound.looping {
-            match playing {
-                Some(playing) => {
-                    if let Ok(mut sink) = sinks.get_mut(playing) {
-                        sink.set_volume(Volume::Linear(sound.volume.end() * loudness));
-                    }
-                }
-                None => {
-                    debug!("ambience: {} at {loudness:.2}", sound.path);
-                    commands.spawn((
-                        AudioPlayer::new(assets.load(format!("retail://{}", sound.path))),
-                        PlaybackSettings::LOOP
-                            .with_volume(Volume::Linear(sound.volume.end() * loudness)),
-                        ChildOf(entity),
-                    ));
-                }
+            if let Some(mut sink) = sink {
+                sink.set_volume(Volume::Linear(sound.volume.end() * loudness));
+            }
+            if !playing {
+                debug!("ambience: {} at {loudness:.2}", sound.path);
+                commands.entity(entity).insert((
+                    AudioPlayer::new(assets.load(format!("retail://{}", sound.path))),
+                    PlaybackSettings::LOOP
+                        .with_volume(Volume::Linear(sound.volume.end() * loudness)),
+                ));
             }
             continue;
         }
@@ -115,12 +114,11 @@ pub fn play_ambient_sounds(
             emitter.wait =
                 Timer::from_seconds(rng.0.random_range(sound.interval.clone()), TimerMode::Once);
         }
-        if due && playing.is_none() {
+        if due && !playing {
             let volume = rng.0.random_range(sound.volume.clone()) * loudness;
-            commands.spawn((
+            commands.entity(entity).insert((
                 AudioPlayer::new(assets.load(format!("retail://{}", sound.path))),
-                PlaybackSettings::DESPAWN.with_volume(Volume::Linear(volume)),
-                ChildOf(entity),
+                PlaybackSettings::REMOVE.with_volume(Volume::Linear(volume)),
             ));
             emitter.wait =
                 Timer::from_seconds(rng.0.random_range(sound.interval.clone()), TimerMode::Once);
@@ -131,52 +129,117 @@ pub fn play_ambient_sounds(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::asset::io::{AssetSourceBuilder, memory::MemoryAssetReader};
+    use bevy::audio::PlaybackMode;
 
-    #[test]
-    fn a_pending_sound_is_not_started_again_before_it_finishes() {
+    fn app(looping: bool) -> (App, Entity, Entity, Entity) {
         let mut app = App::new();
+        app.register_asset_source(
+            "retail",
+            AssetSourceBuilder::new(|| Box::new(MemoryAssetReader::default())),
+        );
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<AudioSource>()
             .init_asset::<LevelGeometry>()
-            .init_asset::<bevy::audio::AudioSource>()
             .init_resource::<PresentationRng>()
-            .add_systems(Update, play_ambient_sounds);
+            .add_systems(Update, (place_ambient_sounds, play_ambient_sounds).chain());
         let geometry = app.world_mut().resource_mut::<Assets<LevelGeometry>>().add(LevelGeometry {
             ambient_sounds: vec![AmbientSoundModel {
-                path: "pending.wav".into(),
+                path: "test.wav".into(),
                 position: Vec3::ZERO,
                 radius: 10.0,
-                looping: false,
+                looping,
+                volume: 0.5..=0.5,
+                interval: 0.0..=0.0,
+            }],
+            ..default()
+        });
+        let level = app.world_mut().spawn(LevelAppearance(geometry)).id();
+        let listener = app.world_mut().spawn((PartyCamera, GlobalTransform::default())).id();
+        app.update();
+        app.update(); // A one-shot's zero interval is due regardless of its entry roll.
+        let emitter = app
+            .world_mut()
+            .query_filtered::<Entity, With<AmbientEmitter>>()
+            .single(app.world())
+            .unwrap();
+        (app, level, listener, emitter)
+    }
+
+    #[test]
+    fn pending_audio_is_owned_once_and_cancelled_on_exit_or_travel() {
+        for looping in [false, true] {
+            let (mut app, level, listener, emitter) = app(looping);
+            assert!(app.world().get::<AudioPlayer>(emitter).is_some());
+            assert!(app.world().get::<AudioSink>(emitter).is_none());
+            // Observe replacement, even if it uses the same asset handle.
+            app.world_mut().clear_trackers();
+            for _ in 0..3 {
+                app.update();
+            }
+            assert_eq!(
+                app.world_mut()
+                    .query_filtered::<Entity, Changed<AudioPlayer>>()
+                    .iter(app.world())
+                    .count(),
+                0
+            );
+            assert_eq!(
+                app.world_mut()
+                    .query_filtered::<Entity, With<AudioPlayer>>()
+                    .iter(app.world())
+                    .count(),
+                1
+            );
+            app.world_mut()
+                .entity_mut(listener)
+                .insert(GlobalTransform::from_translation(Vec3::X * 20.0));
+            app.update();
+            assert!(app.world().get::<AudioPlayer>(emitter).is_none());
+            assert!(app.world().get::<PlaybackSettings>(emitter).is_none());
+            assert!(app.world().get::<AmbientEmitter>(emitter).is_some());
+            app.world_mut().entity_mut(listener).insert(GlobalTransform::default());
+            app.update();
+            app.update();
+            assert!(app.world().get::<AudioPlayer>(emitter).is_some());
+            app.world_mut().despawn(level);
+            assert!(app.world().get_entity(emitter).is_err());
+        }
+    }
+
+    #[test]
+    fn one_shot_completion_keeps_emitter_available_for_next_play() {
+        let (mut app, _, _, emitter) = app(false);
+        assert!(matches!(
+            app.world().get::<PlaybackSettings>(emitter).unwrap().mode,
+            PlaybackMode::Remove
+        ));
+        // The audio backend removes playback components when the sink is empty.
+        // No hardware/output device is needed to exercise the next scheduling step.
+        app.world_mut().entity_mut(emitter).remove::<(AudioPlayer, AudioSink, PlaybackSettings)>();
+        app.update();
+        assert!(app.world().get::<AmbientEmitter>(emitter).is_some());
+        assert!(app.world().get::<AudioPlayer>(emitter).is_some());
+    }
+
+    #[test]
+    fn emitters_read_their_own_levels_sound_definitions() {
+        let (mut app, _, _, _) = app(true);
+        let geometry = app.world_mut().resource_mut::<Assets<LevelGeometry>>().add(LevelGeometry {
+            ambient_sounds: vec![AmbientSoundModel {
+                path: "distant.wav".into(),
+                position: Vec3::X * 5.0,
+                radius: 1.0,
+                looping: true,
                 volume: 1.0..=1.0,
                 interval: 0.0..=0.0,
             }],
             ..default()
         });
-        app.world_mut().spawn(LevelAppearance(geometry));
-        let listener = app.world_mut().spawn((PartyCamera, GlobalTransform::default())).id();
-        let emitter = app
-            .world_mut()
-            .spawn((
-                AmbientEmitter { index: 0, inside: true, wait: Timer::default() },
-                Transform::default(),
-            ))
-            .id();
-
-        // No audio backend is installed: the player remains pending without a sink.
+        let level = app.world_mut().spawn(LevelAppearance(geometry)).id();
         app.update();
-        let sound = app.world().get::<Children>(emitter).unwrap()[0];
-        app.update();
-        assert!(app.world().get::<AudioSink>(sound).is_none());
-        assert_eq!(&**app.world().get::<Children>(emitter).unwrap(), &[sound]);
-
-        app.world_mut().despawn(sound);
-        app.update();
-        let next = app.world().get::<Children>(emitter).unwrap()[0];
-        assert_ne!(sound, next, "finished playback permits the next sound");
-
-        app.world_mut()
-            .entity_mut(listener)
-            .insert(GlobalTransform::from_translation(Vec3::X * 20.0));
-        app.update();
-        assert!(app.world().get_entity(next).is_err(), "leaving cancels pending playback");
+        let emitter = app.world().get::<Children>(level).unwrap()[0];
+        assert!(app.world().get::<AmbientEmitter>(emitter).is_some());
+        assert!(app.world().get::<AudioPlayer>(emitter).is_none());
     }
 }
