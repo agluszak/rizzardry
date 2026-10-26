@@ -69,12 +69,13 @@ pub fn play_ambient_sounds(
         &ChildOf,
         Has<AudioPlayer>,
         Option<&mut AudioSink>,
+        Option<&mut PlaybackSettings>,
     )>,
     mut rng: ResMut<PresentationRng>,
 ) {
     let Ok(listener) = listener.single() else { return };
     let ear = listener.translation();
-    for (entity, mut emitter, at, owner, playing, sink) in &mut emitters {
+    for (entity, mut emitter, at, owner, playing, sink, settings) in &mut emitters {
         let Some(level) = levels.get(owner.parent()).ok().and_then(|l| geometry.get(&l.0)) else {
             continue;
         };
@@ -92,8 +93,13 @@ pub fn play_ambient_sounds(
         }
         let loudness = gain(sound, distance);
         if sound.looping {
+            let volume = Volume::Linear(sound.volume.end() * loudness);
             if let Some(mut sink) = sink {
-                sink.set_volume(Volume::Linear(sound.volume.end() * loudness));
+                sink.set_volume(volume);
+            } else if let Some(mut settings) = settings {
+                // The listener can move while decoding audio. Its first sample
+                // must use the current gain, not the gain at the initial request.
+                settings.volume = volume;
             }
             if !playing {
                 debug!("ambience: {} at {loudness:.2}", sound.path);
@@ -189,6 +195,17 @@ mod tests {
                     .count(),
                 1
             );
+            if looping {
+                app.world_mut()
+                    .entity_mut(listener)
+                    .insert(GlobalTransform::from_translation(Vec3::X * 7.0));
+                app.update();
+                assert_eq!(
+                    app.world().get::<PlaybackSettings>(emitter).unwrap().volume,
+                    Volume::Linear(0.25),
+                    "pending playback starts at the listener's current gain"
+                );
+            }
             app.world_mut()
                 .entity_mut(listener)
                 .insert(GlobalTransform::from_translation(Vec3::X * 20.0));
