@@ -10,7 +10,7 @@ use rand::Rng;
 
 use crate::presentation::PresentationRng;
 
-use crate::content::level::{AmbientSoundModel, LevelGeometry};
+use crate::content::level::{AmbientSoundModel, LevelDefinition};
 use crate::game::world::level::Level;
 use crate::presentation::party_view::PartyCamera;
 
@@ -33,7 +33,7 @@ pub struct AmbiencePlaced;
 pub fn place_ambient_sounds(
     mut commands: Commands,
     levels: Query<(Entity, &Level), Without<AmbiencePlaced>>,
-    geometry: Res<Assets<LevelGeometry>>,
+    geometry: Res<Assets<LevelDefinition>>,
 ) {
     for (root, level) in &levels {
         let Some(geometry) = geometry.get(&level.geometry) else { continue };
@@ -60,7 +60,7 @@ pub fn play_ambient_sounds(
     assets: Res<AssetServer>,
     listener: Query<&GlobalTransform, With<PartyCamera>>,
     levels: Query<&Level>,
-    geometry: Res<Assets<LevelGeometry>>,
+    geometry: Res<Assets<LevelDefinition>>,
     mut emitters: Query<(Entity, &mut AmbientEmitter, &Transform, Option<&Children>)>,
     mut sinks: Query<&mut AudioSink>,
     mut rng: ResMut<PresentationRng>,
@@ -136,26 +136,26 @@ mod tests {
     fn a_pending_sound_is_not_started_again_before_it_finishes() {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
-            .init_asset::<LevelGeometry>()
+            .init_asset::<LevelDefinition>()
             .init_asset::<bevy::audio::AudioSource>()
             .init_resource::<PresentationRng>()
             .add_systems(Update, play_ambient_sounds);
-        let geometry = app.world_mut().resource_mut::<Assets<LevelGeometry>>().add(LevelGeometry {
-            ambient_sounds: vec![AmbientSoundModel {
-                path: "pending.wav".into(),
-                position: Vec3::ZERO,
-                radius: 10.0,
-                looping: false,
-                volume: 1.0..=1.0,
-                interval: 0.0..=0.0,
-            }],
-            ..default()
-        });
+        let geometry =
+            app.world_mut().resource_mut::<Assets<LevelDefinition>>().add(LevelDefinition {
+                ambient_sounds: vec![AmbientSoundModel {
+                    path: "pending.wav".into(),
+                    position: Vec3::ZERO,
+                    radius: 10.0,
+                    looping: false,
+                    volume: 1.0..=1.0,
+                    interval: 0.0..=0.0,
+                }],
+                ..default()
+            });
         app.world_mut().spawn(Level {
             path: "test".into(),
             geometry,
             navmeshes: vec![],
-            sky: None,
             script: default(),
             messages: None,
         });

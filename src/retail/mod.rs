@@ -70,6 +70,8 @@ impl Plugin for RetailPlugin {
     fn finish(&self, app: &mut App) {
         app.init_asset::<crate::content::navmesh::LevelCollision>()
             .init_asset_loader::<navmesh::LevelCollisionLoader>()
+            .init_asset::<crate::content::level::LevelDefinition>()
+            .init_asset_loader::<level_loader::PvlDefinitionLoader>()
             .init_asset::<LevelGeometry>()
             .init_asset_loader::<level_loader::PvlLoader>()
             .init_asset_loader::<sky_loader::LvlLoader>()

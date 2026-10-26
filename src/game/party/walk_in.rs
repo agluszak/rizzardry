@@ -5,7 +5,7 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 
 use super::body::{EYE_ABOVE_CENTRE, PartyBody};
-use crate::content::level::{Arrival, LevelGeometry};
+use crate::content::level::{Arrival, LevelDefinition};
 use crate::game::world::level::{Level, Travel, ask_travel};
 use crate::game::world::props::pose;
 use crate::game::world::triggers::{LevelState, PartyMove, PendingPartyMove};
@@ -32,7 +32,7 @@ pub fn move_party(
     mut commands: Commands,
     mut party: Query<(Entity, &mut PartyBody, &mut Position, &mut Transform, Has<PathFlight>)>,
     mut levels: Query<(Entity, &Level, &mut LevelState)>,
-    geometry: Res<Assets<LevelGeometry>>,
+    geometry: Res<Assets<LevelDefinition>>,
     mut travel: MessageWriter<Travel>,
     mut pending: ResMut<PendingPartyMove>,
 ) {
@@ -89,7 +89,7 @@ pub fn fly_party(
         &mut LinearVelocity,
     )>,
     levels: Query<&Level>,
-    geometry: Res<Assets<LevelGeometry>>,
+    geometry: Res<Assets<LevelDefinition>>,
 ) {
     let Ok((entity, mut flight, mut body, mut position, mut transform, mut velocity)) =
         party.single_mut()

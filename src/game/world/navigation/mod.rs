@@ -22,7 +22,7 @@ use bevy_tnua::builtins::TnuaBuiltinWalk;
 use bevy_tnua::prelude::*;
 
 use super::level::Level;
-use crate::content::level::LevelGeometry;
+use crate::content::level::LevelDefinition;
 use crate::game::party::body::{FLOAT_HEIGHT, PartyBody};
 
 pub struct NavigationPlugin;
@@ -104,7 +104,7 @@ pub fn install(
     commands: &mut Commands,
     root: Entity,
     level: &Level,
-    geometry: &LevelGeometry,
+    geometry: &LevelDefinition,
 ) -> LevelNavigation {
     let mut archipelagos = Vec::new();
     for (class, navmesh) in level.navmeshes.iter().enumerate() {

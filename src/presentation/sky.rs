@@ -7,9 +7,9 @@ use bevy::camera::visibility::RenderLayers;
 use bevy::math::Affine2;
 use bevy::prelude::*;
 
+use super::environment::LevelVisuals;
 use crate::content::level::LevelGeometry;
 use crate::game::time::GameClock;
-use crate::game::world::level::Level;
 use crate::presentation::billboards::FaceCamera;
 use crate::presentation::party_view::PartyCamera;
 
@@ -121,7 +121,7 @@ pub const SKY_LAYER: usize = 1;
 /// once it has loaded. Cosmetic: the level is played without waiting.
 pub fn build_sky(
     mut commands: Commands,
-    levels: Query<(Entity, &Level), Without<SkyBuilt>>,
+    levels: Query<(Entity, &LevelVisuals), Without<SkyBuilt>>,
     geometry: Res<Assets<LevelGeometry>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {

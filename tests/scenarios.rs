@@ -47,7 +47,7 @@ fn step_until(app: &mut App, what: &str, done: impl Fn(&mut World) -> bool) {
 
 /// The level being played, by path.
 fn playing(world: &mut World) -> Option<String> {
-    let mut levels = world.query_filtered::<&Level>();
+    let mut levels = world.query::<&Level>();
     levels.iter(world).next().map(|level| level.path.clone())
 }
 

@@ -56,6 +56,19 @@ monster. Persistence captures those values and derives feet from gameplay's
 controller offset; it never requires an attached visual model. Activation moves
 owned dormant monsters, world items and group knowledge back into ECS.
 
+### Independent level readiness
+
+`LevelDefinition` loads gameplay collision, prop paths/collision, devices,
+placements, map layers and lightweight environment metadata without constructing
+meshes/materials or requesting textures. `PvlDefinitionLoader` and the optional
+`PvlLoader` use the same retail path but produce different typed assets, as the
+monster body and model loaders already do. Presentation owns `LevelVisuals`
+(world and sky handles) and attaches meshes when available. Gameplay never waits
+for those handles, and headless activation needs no render-asset resources.
+Authored prop/part indices join immutable definition and visual assets; mutable
+prop poses live only in ECS. The independent navmesh processor/cache is unchanged.
+
+
 ## Stable content identity and overrides
 
 Authored content uses stable namespaced keys. The retail adapter maps numbered

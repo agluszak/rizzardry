@@ -11,7 +11,7 @@ use bevy_tnua::builtins::{TnuaBuiltinWalk, TnuaBuiltinWalkConfig};
 use bevy_tnua::prelude::*;
 use bevy_tnua_avian3d::prelude::*;
 
-use crate::content::level::LevelGeometry;
+use crate::content::level::LevelDefinition;
 use bevy::ecs::system::SystemParam;
 
 use crate::content::UNITS_PER_METRE;
@@ -199,7 +199,7 @@ impl PartyPlacement<'_, '_> {
     /// Retail enters a level at an entrance trigger (e.g. `MO100`) and falls
     /// back to an eye position of (0, 1000, 0) when there is none. Entrance
     /// triggers the party arrives inside do not fire until it leaves them.
-    pub fn place(&mut self, commands: &mut Commands, level: &LevelGeometry, start: &PartyStart) {
+    pub fn place(&mut self, commands: &mut Commands, level: &LevelDefinition, start: &PartyStart) {
         let entrance = start.entrance.as_deref().and_then(|name| {
             let found = level.entrances.iter().find(|e| e.name.eq_ignore_ascii_case(name));
             if found.is_none() {

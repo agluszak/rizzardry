@@ -1,4 +1,4 @@
-//! Loads a retail `.pvl` level's static geometry as [`LevelGeometry`].
+//! Independent gameplay definitions and optional render assets from retail PVL.
 
 use std::collections::HashMap;
 
@@ -26,9 +26,9 @@ use crate::content::items::Dice;
 use crate::content::items::ItemId;
 use crate::content::level::{
     AmbientSoundModel, Animation, CameraPathModel, DoorLock, Fountain, ItemPlacement,
-    LevelEnvironment, LevelGeometry, LevelPart, MonsterPlacement, Playback, PropModel,
-    PropModelPart, Restores, StateChange, TextureAnimation, TriggerAction, TriggerDefinition,
-    TriggerSound, TriggerUse, VertexLighting,
+    LevelDefinition, LevelEnvironment, LevelGeometry, LevelPart, MonsterPlacement, Playback,
+    PropDefinition, PropPartDefinition, PropVisual, PropVisualPart, Restores, StateChange,
+    TextureAnimation, TriggerAction, TriggerDefinition, TriggerSound, TriggerUse, VertexLighting,
 };
 
 /// Time-of-day phase used for baked lighting until the game clock exists:
@@ -54,6 +54,9 @@ fn level_environment(environment: &Environment) -> LevelEnvironment {
 
 #[derive(Default, TypePath)]
 pub struct PvlLoader;
+
+#[derive(Default, TypePath)]
+pub struct PvlDefinitionLoader;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PvlLoadError {
@@ -465,19 +468,19 @@ fn build_part(
 }
 
 /// Build placed props: their part meshes and materials, lit for their rest
-/// pose, with the identity of their own embedded trigger.
+/// pose. Device identities belong only to the gameplay definition.
 pub(super) async fn build_props(
     context: &mut LoadContext<'_>,
-    source: impl Iterator<Item = (&Prop, Option<usize>)>,
+    source: impl Iterator<Item = &Prop>,
     directory: &str,
     textures: &mut LoadedTextures,
     lighting: &PropLighting<'_>,
     animated_textures: &mut Vec<TextureAnimation>,
-) -> Vec<PropModel> {
+) -> Vec<PropVisual> {
     let mut props = Vec::new();
-    for (prop_index, (prop, trigger)) in source.enumerate() {
+    for (prop_index, prop) in source.enumerate() {
         let mut parts = Vec::new();
-        for (part_index, (part, (transform, keys))) in
+        for (part_index, (part, (transform, _))) in
             prop.detailed_parts().iter().zip(part_transforms(prop)).enumerate()
         {
             let record = &part.mesh.frames[part.mesh.first_frame];
@@ -501,29 +504,38 @@ pub(super) async fn build_props(
                 });
             }
             animated_textures.extend(part_materials.into_iter().filter_map(|m| m.animation));
-            parts.push(PropModelPart {
-                transform,
-                keys,
-                meshes,
-                collision: record_collision(record),
-            });
+            parts.push(PropVisualPart { transform, meshes });
         }
-        props.push(PropModel {
-            name: prop.name.clone(),
-            collidable: prop.flags & PROP_COLLIDABLE != 0,
-            face_camera: prop.face_camera,
-            frames_per_second: prop.frames_per_second,
-            parts,
-            wraps: prop.wraps,
-            slots: prop.slots.iter().map(|slot| slot.frame).collect(),
-            trigger,
-        });
+        props.push(PropVisual { name: prop.name.clone(), face_camera: prop.face_camera, parts });
     }
     props
 }
 
-impl AssetLoader for PvlLoader {
-    type Asset = LevelGeometry;
+/// Gameplay props decode without constructing or requesting render assets.
+fn prop_definition(prop: &Prop, trigger: Option<usize>) -> PropDefinition {
+    PropDefinition {
+        name: prop.name.clone(),
+        collidable: prop.flags & PROP_COLLIDABLE != 0,
+        face_camera: prop.face_camera,
+        frames_per_second: prop.frames_per_second,
+        parts: prop
+            .detailed_parts()
+            .iter()
+            .zip(part_transforms(prop))
+            .map(|(part, (transform, keys))| PropPartDefinition {
+                transform,
+                keys,
+                collision: record_collision(&part.mesh.frames[part.mesh.first_frame]),
+            })
+            .collect(),
+        wraps: prop.wraps,
+        slots: prop.slots.iter().map(|slot| slot.frame).collect(),
+        trigger,
+    }
+}
+
+impl AssetLoader for PvlDefinitionLoader {
+    type Asset = LevelDefinition;
     type Settings = ();
     type Error = PvlLoadError;
 
@@ -532,7 +544,7 @@ impl AssetLoader for PvlLoader {
         reader: &mut dyn Reader,
         _settings: &(),
         context: &mut LoadContext<'_>,
-    ) -> Result<LevelGeometry, PvlLoadError> {
+    ) -> Result<LevelDefinition, PvlLoadError> {
         let mut data = Vec::new();
         reader.read_to_end(&mut data).await?;
         let geometry = read_level_geometry(&data)?;
@@ -551,6 +563,87 @@ impl AssetLoader for PvlLoader {
         let map_layers =
             super::automap::layer_heights(&sections.clip_planes, &filters, level_index)
                 .map_err(PvlLoadError::MapLayers)?;
+        let environment = sections.environment.as_ref().map(level_environment);
+        // Collision comes from the level's octree file, not render polygons.
+        let stem =
+            context.path().path().file_stem().unwrap_or_default().to_string_lossy().into_owned();
+        let octree = sibling(context, ".", &format!("{stem}.oct")).ok_or(PvlLoadError::Path)?;
+        let octree = context.read_asset_bytes(octree).await?;
+        let collision = read_collision(&octree)?.solid_mesh();
+
+        // Who stands where and what lies about; levels without a state file
+        // are empty.
+        let (monsters, items) = match sibling(context, ".", &format!("{stem}.sts")) {
+            Some(path) => match context.read_asset_bytes(path).await {
+                Ok(state) => {
+                    let items = read_world_items(&state)?.iter().map(item_placement).collect();
+                    (monster_placements(&read_placements(&state)?), items)
+                }
+                Err(_) => (vec![], vec![]),
+            },
+            None => (vec![], vec![]),
+        };
+
+        let level_lighting = level_lighting(&sections.lights, sections.environment_offset);
+        let (triggers, prop_triggers) = level_triggers(&sections);
+        let props = sections
+            .props
+            .iter()
+            .chain(&sections.bitmaps)
+            .zip(prop_triggers)
+            .map(|(prop, trigger)| prop_definition(prop, trigger))
+            .collect();
+        let links = level_links(&sections);
+        Ok(LevelDefinition {
+            collision,
+            map_layers,
+            environment,
+            lighting: level_lighting,
+            entrances: level_entrances(&sections),
+            triggers,
+            monsters,
+            items,
+            ambient_sounds: sections
+                .all_triggers()
+                .filter_map(|trigger| match &trigger.kind {
+                    TriggerKind::AmbientSound(sound) => Some(ambient_sound(sound)),
+                    _ => None,
+                })
+                .collect(),
+            camera_paths: sections
+                .cameras
+                .iter()
+                .map(|camera| CameraPathModel {
+                    name: camera.name.to_uppercase(),
+                    keys: camera.path.iter().map(key_transform).collect(),
+                    keys_per_second: camera.keys_per_second,
+                })
+                .collect(),
+            props,
+            links,
+        })
+    }
+
+    fn extensions(&self) -> &[&str] {
+        &["pvl"]
+    }
+}
+
+impl AssetLoader for PvlLoader {
+    type Asset = LevelGeometry;
+    type Settings = ();
+    type Error = PvlLoadError;
+
+    async fn load(
+        &self,
+        reader: &mut dyn Reader,
+        _settings: &(),
+        context: &mut LoadContext<'_>,
+    ) -> Result<LevelGeometry, PvlLoadError> {
+        let mut data = Vec::new();
+        reader.read_to_end(&mut data).await?;
+        let geometry = read_level_geometry(&data)?;
+        let sections = read_sections(&mut Bytes::new(&data[geometry.end..]))?;
         let directory = "bitmaps";
         let environment = sections.environment.as_ref().map(level_environment);
         let ambient = environment.as_ref().map_or(Vec3::ZERO, |e| e.sky_light(NOON));
@@ -584,72 +677,21 @@ impl AssetLoader for PvlLoader {
                 }
             }
         }
-        // Collision comes from the level's octree file, not render polygons.
-        let stem =
-            context.path().path().file_stem().unwrap_or_default().to_string_lossy().into_owned();
-        let octree = sibling(context, ".", &format!("{stem}.oct")).ok_or(PvlLoadError::Path)?;
-        let octree = context.read_asset_bytes(octree).await?;
-        let collision = read_collision(&octree)?.solid_mesh();
-
-        // Who stands where and what lies about; levels without a state file
-        // are empty.
-        let (monsters, items) = match sibling(context, ".", &format!("{stem}.sts")) {
-            Some(path) => match context.read_asset_bytes(path).await {
-                Ok(state) => {
-                    let items = read_world_items(&state)?.iter().map(item_placement).collect();
-                    (monster_placements(&read_placements(&state)?), items)
-                }
-                Err(_) => (vec![], vec![]),
-            },
-            None => (vec![], vec![]),
-        };
-
         let level_lighting = level_lighting(&sections.lights, sections.environment_offset);
         let lighting = PropLighting { ambient, level: &level_lighting };
         let mut animated_textures: Vec<TextureAnimation> =
             materials.into_iter().filter_map(|m| m.animation).collect();
-        let (triggers, prop_triggers) = level_triggers(&sections);
         let props = sections.props.iter().chain(&sections.bitmaps);
         let props = build_props(
             context,
-            props.zip(prop_triggers),
+            props,
             directory,
             &mut textures,
             &lighting,
             &mut animated_textures,
         )
         .await;
-        let links = level_links(&sections);
-        Ok(LevelGeometry {
-            parts,
-            collision,
-            map_layers,
-            environment,
-            lighting: level_lighting,
-            entrances: level_entrances(&sections),
-            triggers,
-            monsters,
-            items,
-            ambient_sounds: sections
-                .all_triggers()
-                .filter_map(|trigger| match &trigger.kind {
-                    TriggerKind::AmbientSound(sound) => Some(ambient_sound(sound)),
-                    _ => None,
-                })
-                .collect(),
-            camera_paths: sections
-                .cameras
-                .iter()
-                .map(|camera| CameraPathModel {
-                    name: camera.name.to_uppercase(),
-                    keys: camera.path.iter().map(key_transform).collect(),
-                    keys_per_second: camera.keys_per_second,
-                })
-                .collect(),
-            props,
-            links,
-            animated_textures,
-        })
+        Ok(LevelGeometry { parts, props, animated_textures })
     }
 
     fn extensions(&self) -> &[&str] {

@@ -60,7 +60,6 @@ mod tests {
             path: "test".into(),
             geometry: default(),
             navmeshes: vec![],
-            sky: None,
             script: default(),
             messages: None,
         });

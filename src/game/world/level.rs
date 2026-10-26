@@ -24,7 +24,7 @@ use super::scripts::LevelScript;
 use super::triggers::{DeviceRecords, LevelState, TriggerMemory, spawn_devices};
 use super::{navigation, population};
 use crate::content::items::{ItemCatalog, LootTables};
-use crate::content::level::LevelGeometry;
+use crate::content::level::LevelDefinition;
 use crate::content::levels::LevelInfo;
 use crate::content::monster::MonsterBody;
 use crate::content::navmesh::navmesh_path;
@@ -44,11 +44,9 @@ use crate::game::rng::GameRng;
 pub struct Level {
     /// The retail path of its `.pvl`, which identifies it.
     pub path: String,
-    pub geometry: Handle<LevelGeometry>,
+    pub geometry: Handle<LevelDefinition>,
     /// One navmesh per walker size class (`navigation::bake::SIZE_CLASSES`).
     pub navmeshes: Vec<Handle<NavMesh3d>>,
-    /// The level's sky world, drawn behind it; none for levels without one.
-    pub sky: Option<Handle<LevelGeometry>>,
     pub script: LevelScript,
     /// The messages its triggers show.
     pub messages: Option<Handle<TextTable>>,
@@ -63,9 +61,6 @@ impl Level {
             navmeshes: (0..SIZE_CLASSES.len())
                 .map(|class| assets.load(navmesh_path(path, class)))
                 .collect(),
-            sky: LevelInfo::for_path(path)
-                .and_then(LevelInfo::sky_path)
-                .map(|sky| assets.load(format!("retail://{sky}"))),
             script: LevelInfo::for_path(path)
                 .map_or_else(LevelScript::default, |info| LevelScript::for_location(info.location)),
             messages: LevelInfo::for_path(path).map(|info| {
@@ -270,7 +265,7 @@ impl Destination {
 #[derive(SystemParam)]
 pub struct PlayedLevel<'w, 's> {
     levels: Query<'w, 's, (Entity, &'static Level)>,
-    geometry: Res<'w, Assets<LevelGeometry>>,
+    geometry: Res<'w, Assets<LevelDefinition>>,
 }
 
 impl PlayedLevel<'_, '_> {
@@ -278,12 +273,12 @@ impl PlayedLevel<'_, '_> {
         self.levels.single().ok().map(|(entity, _)| entity)
     }
 
-    pub fn geometry(&self) -> Option<&LevelGeometry> {
+    pub fn geometry(&self) -> Option<&LevelDefinition> {
         self.geometry.get(&self.levels.single().ok()?.1.geometry)
     }
 
     pub fn view_distance(&self) -> Option<f32> {
-        self.geometry().map(LevelGeometry::view_distance)
+        self.geometry().map(LevelDefinition::view_distance)
     }
 }
 
@@ -295,7 +290,7 @@ pub fn level_active(levels: Query<(), With<Level>>) -> bool {
 /// One rigid part of a placed prop, with its animation poses.
 #[derive(Component, Debug)]
 pub struct PropPart {
-    /// Its place among its prop's parts (`PropModel::parts`).
+    /// Its place among its prop's parts (`PropDefinition::parts`).
     pub part: usize,
     /// Poses along the part's path, starting with the rest pose; empty if
     /// the part does not move.
@@ -309,7 +304,7 @@ pub struct LevelReady {
 }
 
 /// The level's collider, or why it has none.
-fn level_collider(geometry: &LevelGeometry) -> Result<Collider, String> {
+fn level_collider(geometry: &LevelDefinition) -> Result<Collider, String> {
     Collider::try_trimesh_with_config(
         geometry.collision.vertices.clone(),
         geometry.collision.triangles.clone(),
@@ -326,7 +321,7 @@ fn level_collider(geometry: &LevelGeometry) -> Result<Collider, String> {
 fn build_world(
     commands: &mut Commands,
     root: Entity,
-    geometry: &LevelGeometry,
+    geometry: &LevelDefinition,
     collider: Collider,
     script: super::scripts::LevelScript,
     tables: &LootTables,
@@ -421,8 +416,7 @@ fn build_world(
         });
     }
     info!(
-        "level built: {} parts, {} props, {} collision triangles",
-        geometry.parts.len(),
+        "level built: {} props, {} collision triangles",
         geometry.props.len(),
         geometry.collision.triangles.len()
     );
@@ -451,7 +445,7 @@ pub fn activate_level(
     sources: Query<(Entity, &Level, Option<&LevelState>, Option<&Children>)>,
     battle: Option<Res<crate::game::combat::Battle>>,
     mut pending: ResMut<super::triggers::PendingPartyMove>,
-    geometry: Res<Assets<LevelGeometry>>,
+    geometry: Res<Assets<LevelDefinition>>,
     assets: Res<AssetServer>,
     mut shared: SharedData,
     mut memory: ResMut<LevelMemory>,
@@ -559,7 +553,6 @@ mod travel_question_tests {
                 path: "question-test".into(),
                 geometry: default(),
                 navmeshes: vec![],
-                sky: None,
                 script: default(),
                 messages: None,
             })

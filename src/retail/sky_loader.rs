@@ -71,14 +71,14 @@ impl AssetLoader for LvlLoader {
         let props = build_props(
             context,
             // The sky world's props run no triggers.
-            props.map(|prop| (prop, None)),
+            props,
             directory,
             &mut textures,
             &lighting,
             &mut animated_textures,
         )
         .await;
-        Ok(LevelGeometry { parts, props, animated_textures, ..default() })
+        Ok(LevelGeometry { parts, props, animated_textures })
     }
 
     fn extensions(&self) -> &[&str] {

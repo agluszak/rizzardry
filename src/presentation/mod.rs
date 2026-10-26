@@ -139,12 +139,15 @@ impl Plugin for PresentationPlugin {
             .add_systems(
                 Update,
                 (
-                    textures::animate_level_textures,
-                    environment::apply_environment,
+                    textures::animate_level_textures.after(environment::request_level_visuals),
+                    environment::apply_environment
+                        .after(environment::request_level_visuals)
+                        .after(party_view::attach_camera),
                     sky::follow_with_sky_camera.after(party_view::aim_camera),
                     sky::shade_clouds,
-                    sky::build_sky,
-                    environment::attach_level_visuals,
+                    sky::build_sky.after(environment::request_level_visuals),
+                    (environment::request_level_visuals, environment::attach_level_visuals)
+                        .chain().after(crate::game::GameplaySet::LevelActivation),
                     billboards::face_camera.after(party_view::aim_camera),
                     music::play_music,
                     (ambience::place_ambient_sounds, ambience::play_ambient_sounds).chain(),

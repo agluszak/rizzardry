@@ -877,7 +877,7 @@ mod tests {
             .add_message::<CombatNews>()
             .add_message::<DamageApplied>()
             .add_message::<StartRound>()
-            .init_resource::<Assets<crate::content::level::LevelGeometry>>()
+            .init_resource::<Assets<crate::content::level::LevelDefinition>>()
             .add_message::<crate::game::world::identify::Identified>()
             .add_systems(Update, (settle_defeat, start_battle, run_battle, settle_defeat).chain());
         app.world_mut()
@@ -927,7 +927,6 @@ mod tests {
                 path: "combat-test".into(),
                 geometry: default(),
                 navmeshes: vec![],
-                sky: None,
                 script: default(),
                 messages: None,
             })
@@ -974,7 +973,7 @@ mod tests {
 
     #[test]
     fn a_round_recognises_only_its_participants_before_the_session_ends() {
-        use crate::content::level::LevelGeometry;
+        use crate::content::level::LevelDefinition;
         use crate::game::characters::MonsterKnowledge;
         use crate::game::world::identify::{GroupMember, MonsterGroup};
         use crate::game::world::level::Level;
@@ -984,8 +983,10 @@ mod tests {
         }
         let level =
             app.world_mut().query_filtered::<Entity, With<Level>>().single(app.world()).unwrap();
-        let geometry =
-            app.world_mut().resource_mut::<Assets<LevelGeometry>>().add(LevelGeometry::default());
+        let geometry = app
+            .world_mut()
+            .resource_mut::<Assets<LevelDefinition>>()
+            .add(LevelDefinition::default());
         app.world_mut().get_mut::<Level>(level).unwrap().geometry = geometry;
         let monster = app.world_mut().query::<(Entity, &Monster)>().single(app.world()).unwrap().0;
         let group =
@@ -1129,8 +1130,8 @@ mod tests {
         {
             let world = app.world_mut();
             let geometry = world
-                .resource_mut::<Assets<crate::content::level::LevelGeometry>>()
-                .add(crate::content::level::LevelGeometry::default());
+                .resource_mut::<Assets<crate::content::level::LevelDefinition>>()
+                .add(crate::content::level::LevelDefinition::default());
             world
                 .query::<&mut crate::game::world::level::Level>()
                 .single_mut(world)

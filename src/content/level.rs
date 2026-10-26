@@ -47,7 +47,7 @@ impl VertexLighting {
 /// 75000 units.
 pub const DEFAULT_VIEW_DISTANCE: f32 = 150.0;
 
-impl LevelGeometry {
+impl LevelDefinition {
     /// How far is seen in the level: its far clip, which also bounds sight.
     pub fn view_distance(&self) -> f32 {
         self.environment.as_ref().map_or(DEFAULT_VIEW_DISTANCE, |e| e.view_distance)
@@ -115,10 +115,9 @@ impl LevelLighting {
     }
 }
 
-/// Immutable static geometry shared by every visit to a level.
+/// Immutable gameplay content shared by every visit. No render asset handles.
 #[derive(Asset, TypePath, Clone, Debug, Default)]
-pub struct LevelGeometry {
-    pub parts: Vec<LevelPart>,
+pub struct LevelDefinition {
     pub collision: CollisionMesh,
     /// Automap ceiling cuts in authored order, top to bottom. Layer zero is uncut.
     pub map_layers: Vec<f32>,
@@ -136,11 +135,32 @@ pub struct LevelGeometry {
     /// Monsters and NPCs standing in the level at a new game.
     pub monsters: Vec<MonsterPlacement>,
     pub items: Vec<ItemPlacement>,
-    pub props: Vec<PropModel>,
+    pub props: Vec<PropDefinition>,
     /// Navigation links between places the navmesh does not join.
     pub links: Vec<LevelLink>,
-    /// Materials whose texture is an animated frame list (`.ifl`).
+}
+
+/// Optional render assets, requested only by presentation. Loading these cannot
+/// hold up collision, navigation or gameplay definitions.
+#[derive(Asset, TypePath, Clone, Debug, Default)]
+pub struct LevelGeometry {
+    pub parts: Vec<LevelPart>,
+    pub props: Vec<PropVisual>,
     pub animated_textures: Vec<TextureAnimation>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PropVisual {
+    pub name: String,
+    pub face_camera: bool,
+    pub parts: Vec<PropVisualPart>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PropVisualPart {
+    /// Rest placement for sky props; gameplay props use their own current pose.
+    pub transform: Transform,
+    pub meshes: Vec<LevelPart>,
 }
 
 /// How a walker gets from one end of a link to the other.
@@ -241,7 +261,7 @@ pub struct Entrance {
 
 /// A placed prop: scenery, a door, a lever, a lift or a billboard.
 #[derive(Clone, Debug)]
-pub struct PropModel {
+pub struct PropDefinition {
     pub name: String,
     /// Retail `COLLIDABLE`: the party and monsters collide with its parts.
     pub collidable: bool,
@@ -249,7 +269,7 @@ pub struct PropModel {
     pub face_camera: bool,
     /// Path keys advanced per second when the prop animates.
     pub frames_per_second: f32,
-    pub parts: Vec<PropModelPart>,
+    pub parts: Vec<PropPartDefinition>,
     /// Each use plays the path from its start; otherwise uses alternate
     /// direction (retail frame method wrap versus ping-pong).
     pub wraps: bool,
@@ -414,12 +434,11 @@ pub struct DoorLock {
 
 /// One rigid part of a prop, in its rest pose.
 #[derive(Clone, Debug)]
-pub struct PropModelPart {
+pub struct PropPartDefinition {
     pub transform: Transform,
     /// The part's poses along its animation path, starting with the rest
     /// pose; empty for parts that do not move.
     pub keys: Vec<Transform>,
-    pub meshes: Vec<LevelPart>,
     /// Part-local collision triangles.
     pub collision: CollisionMesh,
 }

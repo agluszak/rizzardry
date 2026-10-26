@@ -248,10 +248,10 @@ This is one ordinary transition, not a new generic lifecycle framework or
 a second simultaneously mutable world. Its detailed failure and revisit
 semantics are in [persistence and travel](systems/persistence-and-travel.md).
 
-The current implementation still takes a provisional source snapshot and uses
-`stay()` to discard it on failure. It also treats failed navmesh loading as
-settled and can activate without navigation. These are limitations of the current
-boundary, not guarantees established by the readiness tests.
+The implementation rejects failed mandatory navigation and never stores a
+provisional source record. Headless checks cover source preservation, latest-state
+capture, same-level replacement and cancellation when combat starts while loading.
+Retail traversal and rendered arrival still need representative content checks.
 
 ## Operations, systems and observation
 

@@ -2,16 +2,16 @@
 
 use bevy::prelude::*;
 
+use super::environment::LevelVisuals;
 use crate::content::level::{LevelGeometry, Playback};
 use crate::game::time::GameClock;
-use crate::game::world::level::Level;
 
 /// Show each animated material's current frame. Runs on virtual time, so
 /// animations pause with the game as in retail.
 pub fn animate_level_textures(
     time: Res<Time<Virtual>>,
     clock: Res<GameClock>,
-    levels: Query<&Level>,
+    levels: Query<&LevelVisuals>,
     geometry: Res<Assets<LevelGeometry>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {

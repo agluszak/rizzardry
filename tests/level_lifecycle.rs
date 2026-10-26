@@ -6,7 +6,7 @@
 use avian3d::prelude::{Collider, RigidBodyDisabled};
 use bevy::prelude::*;
 use rizzardry::content::items::{ItemCatalog, LootTables};
-use rizzardry::content::level::{CollisionMesh, LevelGeometry, MonsterPlacement};
+use rizzardry::content::level::{CollisionMesh, LevelDefinition, MonsterPlacement};
 use rizzardry::content::monster::MonsterBody;
 use rizzardry::content::species::{MonsterCatalog, Species};
 use rizzardry::game::data::GameData;
@@ -22,7 +22,7 @@ use rizzardry::game::world::triggers::PendingPartyMove;
 fn app() -> App {
     let mut app = App::new();
     app.add_plugins((MinimalPlugins, AssetPlugin::default()))
-        .init_asset::<LevelGeometry>()
+        .init_asset::<LevelDefinition>()
         .init_asset::<ItemCatalog>()
         .init_asset::<LootTables>()
         .init_asset::<MonsterCatalog>()
@@ -63,7 +63,7 @@ fn with_data(app: &mut App) {
 fn test_level(app: &mut App, collision: CollisionMesh) -> Level {
     let crab =
         MonsterPlacement { location: 7, group: 1, species: 0, position: Vec3::ZERO, yaw: 0.0 };
-    let geometry = app.world_mut().resource_mut::<Assets<LevelGeometry>>().add(LevelGeometry {
+    let geometry = app.world_mut().resource_mut::<Assets<LevelDefinition>>().add(LevelDefinition {
         collision,
         monsters: vec![crab],
         ..default()
@@ -72,7 +72,6 @@ fn test_level(app: &mut App, collision: CollisionMesh) -> Level {
         path: "levels/test/test.pvl".into(),
         geometry,
         navmeshes: vec![],
-        sky: None,
         script: default(),
         messages: None,
     }
@@ -162,6 +161,9 @@ fn a_level_waits_for_the_shared_databases() {
     assert!(is_played(&app, root));
     assert!(app.world().get::<Collider>(root).is_some());
     assert_eq!(party_entities(&mut app).len(), 1);
+    assert!(!app.world().contains_resource::<Assets<rizzardry::content::level::LevelGeometry>>());
+    assert!(!app.world().contains_resource::<Assets<Mesh>>());
+    assert!(!app.world().contains_resource::<Assets<StandardMaterial>>());
 }
 
 #[test]
@@ -542,7 +544,7 @@ fn preparation_keeps_the_source_live_and_commit_captures_its_latest_state() {
     use rizzardry::game::world::triggers::PartyMove;
     let handle = app.world().get::<Level>(source).unwrap().geometry.clone();
     app.world_mut()
-        .resource_mut::<Assets<LevelGeometry>>()
+        .resource_mut::<Assets<LevelDefinition>>()
         .get_mut(&handle)
         .unwrap()
         .camera_paths
@@ -556,8 +558,8 @@ fn preparation_keeps_the_source_live_and_commit_captures_its_latest_state() {
     assert!(app.world().get::<PathFlight>(party).is_some());
     let mut next = app.world().get::<Level>(source).unwrap().clone();
     let geometry =
-        app.world().resource::<Assets<LevelGeometry>>().get(&next.geometry).unwrap().clone();
-    let loading = app.world_mut().resource_mut::<Assets<LevelGeometry>>().reserve_handle();
+        app.world().resource::<Assets<LevelDefinition>>().get(&next.geometry).unwrap().clone();
+    let loading = app.world_mut().resource_mut::<Assets<LevelDefinition>>().reserve_handle();
     next.geometry = loading.clone();
     let mut destination = Destination::new(next.clone());
     destination.arrival.eye = Some(Vec3::new(9.0, 4.0, 2.0));
@@ -573,7 +575,7 @@ fn preparation_keeps_the_source_live_and_commit_captures_its_latest_state() {
     let monster =
         app.world_mut().query_filtered::<Entity, With<Monster>>().single(app.world()).unwrap();
     app.world_mut().get_mut::<Monster>(monster).unwrap().hp = 0;
-    app.world_mut().resource_mut::<Assets<LevelGeometry>>().insert(&loading, geometry).unwrap();
+    app.world_mut().resource_mut::<Assets<LevelDefinition>>().insert(&loading, geometry).unwrap();
     app.update();
     assert!(is_played(&app, destination));
     assert!(app.world().get::<PathFlight>(party).is_none());
@@ -585,7 +587,7 @@ fn preparation_keeps_the_source_live_and_commit_captures_its_latest_state() {
         Vec3::new(9.0, 4.0, 2.0) - Vec3::Y * rizzardry::game::party::body::EYE_ABOVE_CENTRE
     );
     // Combat starting during preparation revokes permission to travel.
-    next.geometry = app.world_mut().resource_mut::<Assets<LevelGeometry>>().reserve_handle();
+    next.geometry = app.world_mut().resource_mut::<Assets<LevelDefinition>>().reserve_handle();
     let refused = app.world_mut().spawn(Destination::new(next)).id();
     app.insert_resource(Battle::default());
     app.update();
@@ -611,4 +613,64 @@ fn failed_navigation_is_a_failed_destination_not_degraded_activation() {
     assert!(is_played(&app, source));
     assert!(!is_played(&app, destination));
     assert!(app.world().resource::<LevelMemory>().is_empty());
+}
+
+#[test]
+fn retail_level_definitions_load_without_render_asset_resources() {
+    use rizzardry::content::level::LevelGeometry;
+    use rizzardry::retail::level_loader::{PvlDefinitionLoader, PvlLoader};
+    // An empty compiled level with one material. Even this material would need
+    // StandardMaterial registration if gameplay still ran the visual loader.
+    let mut pvl = vec![0; 8]; // mesh/root counts
+    pvl.extend(1i16.to_le_bytes());
+    pvl.extend([0; 0x11a]);
+    pvl.extend([-1i32, -1].into_iter().flat_map(i32::to_le_bytes));
+    pvl.extend(0i16.to_le_bytes()); // lights
+    pvl.extend((-1i32).to_le_bytes());
+    for _ in 0..8 {
+        // paths, items, missiles, props, billboards, cameras, environment, triggers
+        pvl.extend([0i32, -1].into_iter().flat_map(i32::to_le_bytes));
+    }
+    pvl.extend([0i32, 0, -1].into_iter().flat_map(i32::to_le_bytes)); // sway, map cuts
+    pvl.extend([0i32, 0, 0, 0, -1].into_iter().flat_map(i32::to_le_bytes)); // offset, particles
+    pvl.extend([0i32, -1, 0, 0, -1].into_iter().flat_map(i32::to_le_bytes)); // names, map
+    let mut oct = vec![0; 0xf5];
+    oct[..2].copy_from_slice(&0x22u16.to_le_bytes());
+    oct[0x86..0x8a].copy_from_slice(&1u32.to_le_bytes()); // collision stream present
+    oct.extend([-1i32, 0, -1, -1, -1, 1].into_iter().flat_map(i32::to_le_bytes));
+    oct.extend([0; 100]); // empty collision tables and bounds
+    oct.extend((-1i32).to_le_bytes());
+    let directory =
+        std::env::temp_dir().join(format!("rizzardry-level-loader-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join("empty.pvl"), pvl).unwrap();
+    std::fs::write(directory.join("empty.oct"), oct).unwrap();
+    let files =
+        std::sync::Arc::new(rizzardry::retail::files::RetailFiles::open(&directory).unwrap());
+    let mut app = App::new();
+    app.register_asset_source("retail", rizzardry::retail::source::retail_source(files))
+        .add_plugins((MinimalPlugins, AssetPlugin::default()))
+        .init_asset::<LevelDefinition>()
+        .init_asset::<LevelGeometry>()
+        .init_asset_loader::<PvlDefinitionLoader>()
+        .init_asset_loader::<PvlLoader>();
+    app.finish();
+    app.cleanup();
+    let definition =
+        app.world().resource::<AssetServer>().load::<LevelDefinition>("retail://empty.pvl");
+    let started = std::time::Instant::now();
+    loop {
+        app.update();
+        match app.world().resource::<AssetServer>().get_load_state(&definition) {
+            Some(bevy::asset::LoadState::Loaded) => break,
+            Some(bevy::asset::LoadState::Failed(error)) => panic!("definition failed: {error}"),
+            _ => assert!(started.elapsed() < std::time::Duration::from_secs(5)),
+        }
+        std::thread::yield_now();
+    }
+    assert!(app.world().resource::<Assets<LevelDefinition>>().contains(&definition));
+    assert!(!app.world().contains_resource::<Assets<Mesh>>());
+    assert!(!app.world().contains_resource::<Assets<StandardMaterial>>());
+    assert!(app.world().resource::<Assets<LevelGeometry>>().is_empty());
+    std::fs::remove_dir_all(directory).unwrap();
 }

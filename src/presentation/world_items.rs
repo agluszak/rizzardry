@@ -6,7 +6,7 @@ use bevy::prelude::*;
 use avian3d::prelude::SpatialQuery;
 
 use crate::content::items::{ItemCatalog, ItemModel};
-use crate::content::level::LevelGeometry;
+use crate::content::level::LevelDefinition;
 use crate::game::data::GameData;
 use crate::game::time::GameClock;
 use crate::game::world::items::WorldItem;
@@ -110,7 +110,7 @@ pub fn light_world_items(
     hovered: Res<super::hover::Hover>,
     clock: Res<GameClock>,
     levels: Query<(Entity, &Level)>,
-    geometry: Res<Assets<LevelGeometry>>,
+    geometry: Res<Assets<LevelDefinition>>,
     models: Res<Assets<ItemModel>>,
     spatial: SpatialQuery,
     mut items: Query<(Entity, &GlobalTransform, &mut ItemShown, &Children)>,

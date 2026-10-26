@@ -254,13 +254,13 @@ mod tests {
 
     #[test]
     fn recognition_uses_authored_visibility_and_excludes_nonmembers() {
-        use crate::content::level::{LevelEnvironment, LevelGeometry};
+        use crate::content::level::{LevelDefinition, LevelEnvironment};
         use crate::content::species::Species;
         use crate::game::world::level::Level;
         use crate::game::world::population::ScaledBody;
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
-            .init_resource::<Assets<LevelGeometry>>()
+            .init_resource::<Assets<LevelDefinition>>()
             .init_resource::<Assets<MonsterCatalog>>()
             .init_resource::<PartyRoster>()
             .insert_resource(GameRng::seeded(4))
@@ -274,16 +274,17 @@ mod tests {
                     recognition.detect(PartyBody::eye(at), body.forward(), None, &mut rng);
                 },
             );
-        let geometry = app.world_mut().resource_mut::<Assets<LevelGeometry>>().add(LevelGeometry {
-            environment: Some(LevelEnvironment {
-                fog_range: (0.0, 1.0),
-                view_distance: 5.0,
-                intensity: 0.0,
-                fog_colours: vec![Vec3::ZERO; 256],
-                ambient_colours: vec![Vec3::ZERO; 256],
-            }),
-            ..default()
-        });
+        let geometry =
+            app.world_mut().resource_mut::<Assets<LevelDefinition>>().add(LevelDefinition {
+                environment: Some(LevelEnvironment {
+                    fog_range: (0.0, 1.0),
+                    view_distance: 5.0,
+                    intensity: 0.0,
+                    fog_colours: vec![Vec3::ZERO; 256],
+                    ambient_colours: vec![Vec3::ZERO; 256],
+                }),
+                ..default()
+            });
         let species =
             app.world_mut().resource_mut::<Assets<MonsterCatalog>>().add(MonsterCatalog(vec![
                 Species { name: "Crab".into(), generic_name: "Crustacean".into(), ..default() },
@@ -295,7 +296,6 @@ mod tests {
                 path: "test".into(),
                 geometry: geometry.clone(),
                 navmeshes: vec![],
-                sky: None,
                 script: default(),
                 messages: None,
             })
@@ -344,7 +344,7 @@ mod tests {
         );
         assert!(app.world().get::<MonsterKnowledge>(member).unwrap().seen.is_empty());
         app.world_mut()
-            .resource_mut::<Assets<LevelGeometry>>()
+            .resource_mut::<Assets<LevelDefinition>>()
             .get_mut(&geometry)
             .unwrap()
             .environment

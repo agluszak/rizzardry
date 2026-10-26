@@ -100,11 +100,13 @@ visibility completion. Retain those production ordering boundaries.
    Sky following still reads the camera's previous `GlobalTransform` in Update,
    before propagation. Input gates and stationary tooltip refresh are already
    fixed; do not recreate them.
-5. **Separate level gameplay content from visual construction.** Monster body
-   loading demonstrates the useful boundary. `LevelGeometry` still combines
-   collision, triggers and placement with materials/meshes and lighting. Keep
-   the already-evaluated navmesh processor cache policy; this is an asset ownership
-   change, not a request for another generic loading framework.
+5. **Separate level gameplay content from visual construction.** Implemented:
+   independent typed PVL loaders produce `LevelDefinition` and optional
+   `LevelGeometry`. Gameplay props contain no mesh handles; presentation owns
+   world/sky handles and requests them only for active levels. Activation works
+   without Mesh, StandardMaterial or LevelGeometry resources. The navmesh
+   processor and its cache remain unchanged.
+
 
 Headless checks establish ownership and gameplay behavior, not retail pixels,
 audio-device output or complete cross-plugin frame timing. Use the production

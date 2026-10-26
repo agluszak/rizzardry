@@ -12,7 +12,7 @@ use bevy::time::Stopwatch;
 
 use avian3d::prelude::{SpatialQuery, SpatialQueryFilter};
 
-use crate::content::level::LevelGeometry;
+use crate::content::level::LevelDefinition;
 use crate::content::monster::MonsterModel;
 use crate::content::species::MonsterCatalog;
 use crate::game::data::GameData;
@@ -220,7 +220,7 @@ pub fn light_monsters(
     time: Res<Time>,
     clock: Res<GameClock>,
     levels: Query<(Entity, &Level)>,
-    geometry: Res<Assets<LevelGeometry>>,
+    geometry: Res<Assets<LevelDefinition>>,
     models: Res<Assets<MonsterModel>>,
     spatial: SpatialQuery,
     mut actors: Query<(&GlobalTransform, &MonsterVisual, &mut MonsterInstance, &Children)>,
@@ -270,7 +270,7 @@ pub fn light_monsters(
 pub fn sunlit(
     spatial: &SpatialQuery,
     level_entity: Entity,
-    level: &LevelGeometry,
+    level: &LevelDefinition,
     at: Vec3,
 ) -> bool {
     level.lighting.sun.is_some_and(|sun| {

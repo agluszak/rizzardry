@@ -169,7 +169,7 @@ mod roster_tests {
             .init_resource::<PartyRoster>()
             .init_resource::<GameRng>()
             .init_resource::<Assets<crate::content::species::MonsterCatalog>>()
-            .init_resource::<Assets<crate::content::level::LevelGeometry>>()
+            .init_resource::<Assets<crate::content::level::LevelDefinition>>()
             .add_message::<crate::game::world::identify::Identified>()
             .add_systems(Update, pass_time);
         let hurt = || {
