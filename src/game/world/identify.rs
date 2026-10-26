@@ -14,11 +14,9 @@ use crate::content::species::MonsterCatalog;
 use crate::game::characters::{Character, Condition, MonsterKnowledge, Vitals};
 use crate::game::combat::Battle;
 use crate::game::data::GameData;
-use crate::game::party::body::PartyBody;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::world::level::PlayedLevel;
-use avian3d::prelude::Position;
 
 /// Knowledge belongs to the identifiable group, not to parallel level tables.
 #[derive(Component, Clone, Copy, Debug, Default)]
@@ -38,14 +36,6 @@ pub struct GroupMember(pub Entity);
 #[derive(Component, Debug)]
 #[relationship_target(relationship = GroupMember)]
 pub struct GroupMembers(Vec<Entity>);
-
-/// Look the monsters over: as game time passes (each 120-second aging
-/// tick), when a fight begins and each round (retail
-/// `AdvanceTimedEffects`, `InitializeCombat`, `AdvanceCombatRound`).
-#[derive(Message, Debug, Clone, Copy)]
-pub struct DetectGroups {
-    pub level: Entity,
-}
 
 /// "Ragnar identifies the Crocodiles:", "They're Ironskin Crocodiles!"
 #[derive(Message, Debug, Clone, PartialEq)]
@@ -128,20 +118,6 @@ pub struct GroupRecognition<'w, 's> {
     data: Option<Res<'w, GameData>>,
     catalogs: Res<'w, Assets<MonsterCatalog>>,
     news: MessageWriter<'w, Identified>,
-}
-
-pub fn detect_monster_groups(
-    mut requests: MessageReader<DetectGroups>,
-    party: Query<(&Position, &PartyBody)>,
-    battle: Option<Res<Battle>>,
-    mut recognition: GroupRecognition,
-    mut rng: ResMut<GameRng>,
-) {
-    let level = recognition.level.entity();
-    let requested = requests.read().filter(|request| Some(request.level) == level).count() > 0;
-    if requested && let Ok((position, body)) = party.single() {
-        recognition.detect(PartyBody::eye(position), body.forward(), battle.as_deref(), &mut rng);
-    }
 }
 
 impl GroupRecognition<'_, '_> {
@@ -236,6 +212,8 @@ impl GroupRecognition<'_, '_> {
 mod tests {
     use super::*;
     use crate::game::characters::{Gender, Profession, Race};
+    use crate::game::party::body::PartyBody;
+    use avian3d::prelude::Position;
 
     #[test]
     fn mythology_tells_a_monsters_health() {
@@ -286,9 +264,16 @@ mod tests {
             .init_resource::<Assets<MonsterCatalog>>()
             .init_resource::<PartyRoster>()
             .insert_resource(GameRng::seeded(4))
-            .add_message::<DetectGroups>()
             .add_message::<Identified>()
-            .add_systems(Update, detect_monster_groups);
+            .add_systems(
+                Update,
+                |party: Query<(&Position, &PartyBody)>,
+                 mut recognition: GroupRecognition,
+                 mut rng: ResMut<GameRng>| {
+                    let (at, body) = party.single().unwrap();
+                    recognition.detect(PartyBody::eye(at), body.forward(), None, &mut rng);
+                },
+            );
         let geometry = app.world_mut().resource_mut::<Assets<LevelGeometry>>().add(LevelGeometry {
             environment: Some(LevelEnvironment {
                 fog_range: (0.0, 1.0),
@@ -352,7 +337,6 @@ mod tests {
         app.cleanup();
         app.update();
         app.world_mut().clear_trackers();
-        app.world_mut().write_message(DetectGroups { level: root });
         app.world_mut().run_schedule(Update);
         assert!(
             !app.world().get::<MonsterGroup>(group).unwrap().counted,
@@ -370,11 +354,35 @@ mod tests {
         app.world_mut()
             .entity_mut(camera)
             .insert(Projection::Perspective(PerspectiveProjection { far: 1.0, ..default() }));
-        app.world_mut().write_message(DetectGroups { level: root });
         app.world_mut().run_schedule(Update);
         let known = app.world().get::<MonsterGroup>(group).unwrap();
         assert!(known.identified && known.counted);
         assert_eq!(app.world().get::<MonsterKnowledge>(member).unwrap().seen.get(&0), Some(&1));
         assert!(app.world().get::<MonsterKnowledge>(outsider).unwrap().seen.is_empty());
+
+        // Three aging ticks must not become one recognition request. The first
+        // tick is still blind; the next two each make their own failed roll.
+        app.world_mut().get_mut::<MonsterGroup>(group).unwrap().identified = false;
+        let catalog = app.world().resource::<GameData>().species.clone();
+        app.world_mut().resource_mut::<Assets<MonsterCatalog>>().get_mut(&catalog).unwrap().0[0]
+            .level = 255;
+        app.world_mut()
+            .get_mut::<Vitals>(member)
+            .unwrap()
+            .inflict(Condition::Blind, crate::game::characters::Lasting::Rounds(2));
+        let body = app
+            .world_mut()
+            .query_filtered::<Entity, With<PartyBody>>()
+            .single(app.world())
+            .unwrap();
+        app.world_mut().entity_mut(body).insert(avian3d::prelude::LinearVelocity::ZERO);
+        app.init_resource::<crate::game::time::GameClock>();
+        app.world_mut().resource_mut::<Time>().advance_by(std::time::Duration::from_secs(30));
+        let mut expected = app.world().resource::<GameRng>().clone();
+        expected.below(100);
+        expected.below(100);
+        use bevy::ecs::system::RunSystemOnce;
+        app.world_mut().run_system_once(crate::game::party::recovery::pass_time).unwrap();
+        assert_eq!(app.world().resource::<GameRng>(), &expected);
     }
 }

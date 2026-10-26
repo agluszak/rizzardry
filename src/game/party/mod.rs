@@ -52,7 +52,7 @@ impl Plugin for PartyPlugin {
                     body::look_around
                         .run_if(party_free)
                         .after(crate::game::GameplaySet::LevelActivation)
-                        .before(crate::game::GameplaySet::Perception),
+                        .before(crate::game::GameplaySet::Combat),
                     (
                         camp::request_camp.run_if(party_free),
                         camp::force_camp,
@@ -70,10 +70,7 @@ impl Plugin for PartyPlugin {
         .init_resource::<PendingPartyMove>()
         .add_systems(
             FixedUpdate,
-            (
-                (body::drive_party.in_set(TnuaUserControlsSystems), walk_in::fly_party).chain(),
-                recovery::pass_time,
-            )
+            ((body::drive_party.in_set(TnuaUserControlsSystems), walk_in::fly_party).chain(),)
                 .run_if(level_active),
         )
         .add_systems(
@@ -81,6 +78,7 @@ impl Plugin for PartyPlugin {
             (
                 walk_in::run_walk_in_triggers.pipe(crate::game::world::triggers::walk),
                 walk_in::move_party,
+                recovery::pass_time,
             )
                 .chain()
                 .after(PhysicsSystems::Writeback)
