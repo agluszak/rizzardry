@@ -82,6 +82,20 @@ pub struct TravelQuestion {
     pub entrance: String,
 }
 
+/// Replace the one pending question. The new identity rejects answers from
+/// the dismissed dialog, including two asks before presentation has run.
+pub fn ask_travel(world: &mut World, level: Entity, entrance: String) -> Option<Entity> {
+    if world.get::<Level>(level).is_none() || world.get::<Departing>(level).is_some() {
+        return None;
+    }
+    let pending: Vec<_> =
+        world.query_filtered::<Entity, With<TravelQuestion>>().iter(world).collect();
+    for question in pending {
+        world.despawn(question);
+    }
+    Some(world.spawn((TravelQuestion { entrance }, ChildOf(level))).id())
+}
+
 /// An answer addresses the particular question that was displayed. It cannot
 /// answer a replacement question or a question from a departed level.
 #[derive(Message, Debug, Clone, Copy)]
@@ -230,12 +244,7 @@ pub struct LevelContents<'w, 's> {
     monsters: Query<
         'w,
         's,
-        (
-            &'static Monster,
-            &'static Transform,
-            Option<&'static Walker>,
-            Option<&'static GroupMember>,
-        ),
+        (&'static Monster, super::ActorPose, Option<&'static Walker>, Option<&'static GroupMember>),
     >,
     items: Query<'w, 's, (&'static WorldItem, &'static Transform)>,
     groups: Query<'w, 's, &'static MonsterGroup>,
@@ -258,8 +267,8 @@ impl LevelContents<'_, '_> {
                 .map(|(monster, at, walker, group)| KeptMonster {
                     group: group.and_then(|m| self.groups.get(m.0).ok()).map(|g| g.authored),
                     monster: monster.clone(),
-                    feet: super::navigation::feet(at.translation, walker),
-                    yaw: at.rotation.to_euler(EulerRot::YXZ).0,
+                    feet: super::navigation::feet(at.translation(), walker),
+                    yaw: at.rotation().to_euler(EulerRot::YXZ).0,
                 })
                 .collect(),
             items: children
@@ -609,7 +618,7 @@ mod travel_question_tests {
     }
 
     fn ask(app: &mut App, level: Entity, entrance: &str) -> Entity {
-        app.world_mut().spawn((TravelQuestion { entrance: entrance.into() }, ChildOf(level))).id()
+        ask_travel(app.world_mut(), level, entrance.into()).unwrap()
     }
 
     #[test]
@@ -629,6 +638,24 @@ mod travel_question_tests {
         app.world_mut().write_message(TravelAnswer { question: current, accept: false });
         app.update();
         assert!(app.world().get_entity(current).is_err());
+        let travel: Vec<_> = app.world_mut().resource_mut::<Messages<Travel>>().drain().collect();
+        assert_eq!(travel.len(), 1);
+        assert_eq!(travel[0].entrance, "second");
+    }
+
+    #[test]
+    fn asking_twice_replaces_the_question_before_presentation() {
+        let (mut app, level) = app();
+        let old = ask(&mut app, level, "first");
+        let current = ask(&mut app, level, "second");
+        assert!(app.world().get_entity(old).is_err());
+        assert_eq!(app.world_mut().query::<&TravelQuestion>().iter(app.world()).count(), 1);
+        app.world_mut().write_message(TravelAnswer { question: old, accept: true });
+        app.update();
+        assert!(app.world().get_entity(current).is_ok());
+        assert!(app.world().resource::<Messages<Travel>>().is_empty());
+        app.world_mut().write_message(TravelAnswer { question: current, accept: true });
+        app.update();
         let travel: Vec<_> = app.world_mut().resource_mut::<Messages<Travel>>().drain().collect();
         assert_eq!(travel.len(), 1);
         assert_eq!(travel[0].entrance, "second");

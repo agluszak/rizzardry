@@ -28,9 +28,11 @@ pub struct MainScreenPlugin;
 
 impl Plugin for MainScreenPlugin {
     fn build(&self, app: &mut App) {
+        app.init_resource::<bevy::picking::PickingSettings>();
+        app.world_mut().resource_mut::<bevy::picking::PickingSettings>().multi_click_interval =
+            std::time::Duration::from_millis(400);
         app.init_resource::<ScreenLayout>()
             .init_resource::<SelectedMember>()
-            .init_resource::<party::LastSlotClick>()
             .add_input_context::<keys::MainScreenKeys>()
             .add_systems(
                 Startup,
@@ -48,6 +50,7 @@ impl Plugin for MainScreenPlugin {
                     build_frame,
                     (
                         party::build_party_parts,
+                        party::bind_party_buttons,
                         party::draw_party,
                         party::record_splats,
                         party::play_splats,

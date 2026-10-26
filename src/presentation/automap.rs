@@ -273,11 +273,10 @@ pub fn close_ended_map(
 
 pub fn request_automap(
     mut open: MessageReader<OpenAutomap>,
-    freedom: crate::game::screen::Freedom,
-    mut next: ResMut<NextState<Screen>>,
+    mut screen: ParamSet<(crate::game::screen::Freedom, ResMut<NextState<Screen>>)>,
 ) {
-    if open.read().count() > 0 && freedom.free() {
-        next.set(Screen::Automap);
+    if open.read().count() > 0 && screen.p0().free() {
+        screen.p1().set(Screen::Automap);
     }
 }
 

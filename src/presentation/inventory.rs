@@ -146,7 +146,10 @@ fn open_with_key(
     roster: Res<PartyRoster>,
     selected: Res<super::main_screen::SelectedMember>,
 ) {
-    if *screen.get() == Screen::World && selected.member(&roster).is_some() {
+    if *screen.get() == Screen::World
+        && matches!(*next, NextState::Unchanged)
+        && selected.member(&roster).is_some()
+    {
         next.set(Screen::Inventory);
     }
 }
@@ -365,11 +368,32 @@ fn cell_controls(cell: Cell, art: &InventoryArt) -> impl Scene {
 pub fn spawn_inventory_screen(
     mut commands: Commands,
     art: Res<InventoryArt>,
+    assets: Res<AssetServer>,
+    mut next: ResMut<NextState<Screen>>,
     sheets: Res<Assets<SpriteSheet>>,
     mut images: ResMut<Assets<Image>>,
     roots: Query<Entity, (With<InventoryRoot>, Without<InventoryBuilt>)>,
 ) {
     let Ok(root) = roots.single() else { return };
+    if [
+        &art.corner,
+        &art.page,
+        &art.bottom_bar,
+        &art.gold_icon,
+        &art.exit,
+        &art.bold,
+        &art.highlights,
+        &art.unusable,
+        &art.unidentified,
+        &art.font,
+    ]
+    .into_iter()
+    .any(|handle| matches!(assets.get_load_state(handle), Some(bevy::asset::LoadState::Failed(_))))
+    {
+        warn!("inventory artwork failed to load; returning to the world");
+        next.set(Screen::World);
+        return;
+    }
     let get = |handle: &Handle<SpriteSheet>| sheets.get(handle);
     let (Some(corner), Some(page), Some(bar), Some(gold), Some(exit), Some(bold)) = (
         get(&art.corner),
@@ -698,60 +722,84 @@ mod tests {
         use crate::game::characters::{Gender, Profession, Race};
         use crate::game::inventory::{Held, ItemIds, make_item};
         use crate::game::rng::GameRng;
-        let mut app = App::new();
-        app.add_plugins((
-            MinimalPlugins,
-            AssetPlugin::default(),
-            bevy::scene::ScenePlugin,
-            bevy::input::InputPlugin,
-            bevy::state::app::StatesPlugin,
-            EnhancedInputPlugin,
-        ))
-        .init_state::<Screen>()
-        .init_asset::<SpriteSheet>()
-        .init_asset::<Image>()
-        .init_asset::<ItemCatalog>()
-        .init_resource::<UiScale>()
-        .init_resource::<PartyRoster>()
-        .init_resource::<PartyInventory>()
-        .init_resource::<super::super::main_screen::SelectedMember>()
-        .add_plugins(InventoryPlugin);
-        let definition = ItemDefinition { ..default() };
-        let item =
-            make_item(&definition, &mut ItemIds::default(), &mut GameRng::seeded(1), false, true);
-        let id = item.id;
-        let items = app
-            .world_mut()
-            .resource_mut::<Assets<ItemCatalog>>()
-            .add(ItemCatalog(vec![definition]));
-        app.insert_resource(GameData { items, loot: default(), species: default() });
-        let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
-        let member = app
-            .world_mut()
-            .spawn((crate::game::characters::Vitals::new(&profile), profile, Carried::default()))
-            .id();
-        app.world_mut().resource_mut::<PartyRoster>().0.insert(member);
-        app.world_mut().resource_mut::<PartyInventory>().held = Some(Held { item, origin: None });
-        app.world_mut().resource_mut::<super::super::main_screen::SelectedMember>().0 =
-            Some(member);
-        app.world_mut().resource_mut::<NextState<Screen>>().set(Screen::Inventory);
-        app.finish();
-        app.cleanup();
-        app.update();
-        app.world_mut().resource_mut::<NextState<Screen>>().set(Screen::World);
-        app.update();
-        assert!(app.world().resource::<PartyInventory>().held.is_none());
-        assert_eq!(
-            app.world()
-                .get::<Carried>(member)
-                .unwrap()
-                .backpack
-                .iter()
-                .flatten()
-                .map(|i| i.id)
-                .collect::<Vec<_>>(),
-            [id]
-        );
+        for still_a_member in [true, false] {
+            let mut app = App::new();
+            app.add_plugins((
+                MinimalPlugins,
+                AssetPlugin::default(),
+                bevy::scene::ScenePlugin,
+                bevy::input::InputPlugin,
+                bevy::state::app::StatesPlugin,
+                EnhancedInputPlugin,
+            ))
+            .init_state::<Screen>()
+            .init_asset::<SpriteSheet>()
+            .init_asset::<Image>()
+            .init_asset::<ItemCatalog>()
+            .init_resource::<UiScale>()
+            .init_resource::<PartyRoster>()
+            .init_resource::<PartyInventory>()
+            .init_resource::<super::super::main_screen::SelectedMember>()
+            .add_plugins(InventoryPlugin);
+            let definition = ItemDefinition { ..default() };
+            let item = make_item(
+                &definition,
+                &mut ItemIds::default(),
+                &mut GameRng::seeded(1),
+                false,
+                true,
+            );
+            let id = item.id;
+            let items = app
+                .world_mut()
+                .resource_mut::<Assets<ItemCatalog>>()
+                .add(ItemCatalog(vec![definition]));
+            app.insert_resource(GameData { items, loot: default(), species: default() });
+            let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
+            let member = app
+                .world_mut()
+                .spawn((
+                    crate::game::characters::Vitals::new(&profile),
+                    profile,
+                    Carried::default(),
+                ))
+                .id();
+            app.world_mut().resource_mut::<PartyRoster>().0.insert(member);
+            app.world_mut().resource_mut::<PartyInventory>().held =
+                Some(Held { item, origin: None });
+            app.world_mut().resource_mut::<super::super::main_screen::SelectedMember>().0 =
+                Some(member);
+            app.world_mut().resource_mut::<NextState<Screen>>().set(Screen::Inventory);
+            app.finish();
+            app.cleanup();
+            app.update();
+            if !still_a_member {
+                app.world_mut().resource_mut::<PartyRoster>().0.shift_remove(&member);
+            }
+            app.world_mut().resource_mut::<NextState<Screen>>().set(Screen::World);
+            app.update();
+            assert!(app.world().resource::<PartyInventory>().held.is_none());
+            assert_eq!(
+                app.world()
+                    .get::<Carried>(member)
+                    .unwrap()
+                    .backpack
+                    .iter()
+                    .flatten()
+                    .map(|i| i.id)
+                    .collect::<Vec<_>>(),
+                if still_a_member { vec![id] } else { vec![] }
+            );
+            assert_eq!(
+                app.world()
+                    .resource::<PartyInventory>()
+                    .pool
+                    .iter()
+                    .map(|item| item.id)
+                    .collect::<Vec<_>>(),
+                if still_a_member { vec![] } else { vec![id] }
+            );
+        }
     }
 
     #[test]

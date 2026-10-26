@@ -147,7 +147,7 @@ pub fn search_pulse(
     party: Query<(&Position, &PartyBody)>,
     roster: Res<PartyRoster>,
     members: Query<(&Character, &Vitals)>,
-    mut items: Query<(&mut WorldItem, &GlobalTransform)>,
+    mut items: Query<(&mut WorldItem, &Transform)>,
     (spatial, bodies): (SpatialQuery, Query<&RigidBody>),
     (data, catalogs): (Option<Res<GameData>>, Res<Assets<ItemCatalog>>),
     mut news: MessageWriter<SearchNews>,
@@ -177,7 +177,7 @@ pub fn search_pulse(
         if !item.hidden {
             continue;
         }
-        let to = at.translation();
+        let to = at.translation;
         let distance = from.distance(to);
         let ahead = (to - from).with_y(0.0).dot(forward) > 0.0;
         if distance >= SEARCH_RADIUS || distance >= score as f32 * RANGE_PER_POINT || !ahead {

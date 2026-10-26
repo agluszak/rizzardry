@@ -4,8 +4,6 @@
 //! splats over the portraits. Clicking a slot selects the member, gives
 //! them the held item, or (double click) opens their review screen.
 
-use std::time::Duration;
-
 use bevy::prelude::*;
 use rand::Rng;
 
@@ -277,7 +275,7 @@ pub fn build_party_parts(
             };
             let node = absolute(at, size);
             parts.push(Box::new(
-                bsn! { node PartyButton({slot}) SlotButton({Entity::PLACEHOLDER}) on(press) },
+                bsn! { node PartyButton({slot}) SlotButton { member: Entity::PLACEHOLDER, review_armed: false } on(press) },
             ));
         }
         commands
@@ -304,7 +302,6 @@ pub fn draw_party(
         Option<&mut BitmapText>,
         Option<&mut ImageNode>,
     )>,
-    mut buttons: Query<(&PartyButton, &mut SlotButton, &mut Visibility), Without<PartyPart>>,
 ) {
     let catalog = data.as_ref().and_then(|d| catalogs.get(&d.items));
     let closed = layout.mode == LayoutMode::Closed;
@@ -488,63 +485,91 @@ pub fn draw_party(
             }
         }
     }
-    for (slot, mut button, mut visibility) in &mut buttons {
-        let member = roster.0.get_index(slot.0).copied().filter(|e| members.contains(*e));
-        button.set_if_neq(SlotButton(member.unwrap_or(Entity::PLACEHOLDER)));
-        visibility.set_if_neq(if member.is_some() {
-            Visibility::Inherited
+}
+
+/// A control keeps its identity across display changes, but never changes the
+/// actor it targets while a pointer press could be in flight.
+pub fn bind_party_buttons(
+    mut commands: Commands,
+    roster: Res<PartyRoster>,
+    members: Query<(), (With<Character>, With<Vitals>)>,
+    mut buttons: Query<(Entity, &PartyButton, &SlotButton, &Node, &ChildOf, &mut Visibility)>,
+) {
+    for (entity, slot, button, node, parent, mut visibility) in &mut buttons {
+        let member = roster
+            .0
+            .get_index(slot.0)
+            .copied()
+            .filter(|e| members.contains(*e))
+            .unwrap_or(Entity::PLACEHOLDER);
+        let shown =
+            if member == Entity::PLACEHOLDER { Visibility::Hidden } else { Visibility::Inherited };
+        if button.member != member {
+            commands.entity(entity).despawn();
+            commands
+                .spawn((
+                    PartyButton(slot.0),
+                    SlotButton { member, review_armed: false },
+                    node.clone(),
+                    ChildOf(parent.parent()),
+                    shown,
+                ))
+                .observe(press);
         } else {
-            Visibility::Hidden
-        });
+            visibility.set_if_neq(shown);
+        }
     }
 }
 
 #[derive(Component, Clone, Copy, PartialEq, Eq, FromTemplate)]
-pub struct SlotButton(Entity);
-
-const DOUBLE_CLICK: Duration = Duration::from_millis(400);
-
-/// The last actor clicked and when, for double clicks.
-#[derive(Resource, Default)]
-pub struct LastSlotClick(Option<(Entity, Duration)>);
+pub struct SlotButton {
+    member: Entity,
+    /// Giving an item or rebinding the control is not the first selection click
+    /// of a review gesture. Bevy owns pointer/button identity, counts and timing.
+    review_armed: bool,
+}
 
 /// With an item in hand, a click gives it to the member; otherwise it
 /// selects them, and a double click opens their review screen.
 fn press(
     click: On<PointerClick>,
-    buttons: Query<&SlotButton>,
+    mut buttons: Query<&mut SlotButton>,
     mut selected: ResMut<SelectedMember>,
     roster: Res<PartyRoster>,
-    time: Res<Time>,
-    mut last_click: ResMut<LastSlotClick>,
     mut inventory: crate::game::inventory::operations::InventoryOperations,
     mut news: MessageWriter<ItemNews>,
     screen: Res<State<crate::game::screen::Screen>>,
     mut next_screen: ResMut<NextState<crate::game::screen::Screen>>,
 ) {
-    let Ok(&SlotButton(member)) = buttons.get(click.entity) else { return };
+    let Ok(mut button) = buttons.get_mut(click.entity) else { return };
+    let member = button.member;
     if !roster.0.contains(&member) {
         return;
     }
     match inventory.give_to(member) {
         Ok(Some(outcome)) => {
+            button.review_armed = false;
             news.write(outcome);
             return;
         }
         Err(reason) => {
+            button.review_armed = false;
             info!("giving item refused: {reason:?}");
             return;
         }
         Ok(None) => {}
     }
+    let already_selected = selected.0 == Some(member);
     selected.0 = Some(member);
-    let now = time.elapsed();
-    if last_click.0.is_some_and(|(s, at)| s == member && now - at < DOUBLE_CLICK)
+    if already_selected
+        && button.review_armed
+        && click.count > 1
         && *screen.get() == crate::game::screen::Screen::World
+        && matches!(*next_screen, NextState::Unchanged)
     {
         next_screen.set(crate::game::screen::Screen::Inventory);
     }
-    last_click.0 = Some((member, now));
+    button.review_armed = true;
 }
 
 /// Presentation owns an accepted damage animation, keyed by actor rather
@@ -668,5 +693,91 @@ pub fn play_splats(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::{
+        characters::{Gender, Profession},
+        inventory::PartyInventory,
+        screen::Screen,
+    };
+    use bevy::picking::{
+        backend::HitData,
+        events::Pointer,
+        pointer::{Location, PointerButton, PointerId},
+    };
+
+    #[test]
+    fn native_click_counts_review_only_the_current_selection_gesture() {
+        let mut world = World::new();
+        world.init_resource::<PartyRoster>();
+        world.init_resource::<PartyInventory>();
+        world.init_resource::<Assets<ItemCatalog>>();
+        world.init_resource::<SelectedMember>();
+        world.init_resource::<Messages<ItemNews>>();
+        world.insert_resource(State::new(Screen::World));
+        world.init_resource::<NextState<Screen>>();
+        let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
+        let actor = world.spawn((Vitals::new(&profile), profile, Carried::default())).id();
+        world.resource_mut::<PartyRoster>().0.insert(actor);
+        let root = world.spawn_empty().id();
+        let button = world
+            .spawn((
+                SlotButton { member: actor, review_armed: false },
+                PartyButton(0),
+                Node::default(),
+                Visibility::Inherited,
+                ChildOf(root),
+            ))
+            .observe(press)
+            .id();
+        let click = |world: &mut World, count| {
+            world.trigger(PointerClick {
+                entity: button,
+                pointer: Pointer::new(
+                    PointerId::Mouse,
+                    Location {
+                        target: bevy::camera::NormalizedRenderTarget::None {
+                            width: 640,
+                            height: 480,
+                        },
+                        position: Vec2::ZERO,
+                    },
+                ),
+                button: PointerButton::Primary,
+                hit: HitData::new(Entity::PLACEHOLDER, 0.0, None, None),
+                duration: std::time::Duration::ZERO,
+                count,
+            })
+        };
+        click(&mut world, 1);
+        assert_eq!(world.resource::<SelectedMember>().0, Some(actor));
+        world.get_mut::<Vitals>(actor).unwrap().hp -= 1;
+        use bevy::ecs::system::RunSystemOnce;
+        world.run_system_once(bind_party_buttons).unwrap();
+        assert!(world.get_entity(button).is_ok(), "health changes retain the click target");
+        click(&mut world, 2);
+        assert!(matches!(
+            world.resource::<NextState<Screen>>(),
+            NextState::Pending(Screen::Inventory)
+        ));
+        world.insert_resource(NextState::<Screen>::Unchanged);
+        // A new binding/gesture must select before review even if Bevy's
+        // pointer sequence still contains clicks on the previous binding.
+        world.entity_mut(button).insert(SlotButton { member: actor, review_armed: false });
+        click(&mut world, 3);
+        assert!(matches!(world.resource::<NextState<Screen>>(), NextState::Unchanged));
+        let replacement = Character::new("B", Race::Human, Gender::Male, Profession::Fighter);
+        let other = world.spawn((Vitals::new(&replacement), replacement, Carried::default())).id();
+        world.resource_mut::<PartyRoster>().0 = [other].into_iter().collect();
+        world.run_system_once(bind_party_buttons).unwrap();
+        assert!(
+            world.get_entity(button).is_err(),
+            "a rebind retires the pressed target instead of redirecting release"
+        );
+        assert_eq!(world.resource::<SelectedMember>().0, Some(actor));
     }
 }

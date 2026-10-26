@@ -6,21 +6,16 @@ use bevy::prelude::*;
 
 use super::body::{EYE_ABOVE_CENTRE, PartyBody};
 use crate::content::level::{Arrival, LevelGeometry};
-use crate::game::world::level::{Departing, Level, Travel, TravelQuestion};
+use crate::game::world::level::{Departing, Level, Travel, ask_travel};
 use crate::game::world::props::pose;
-use crate::game::world::triggers::{self, LevelState, PartyMove, PendingPartyMove};
+use crate::game::world::triggers::{LevelState, PartyMove, PendingPartyMove};
 
 pub fn run_walk_in_triggers(
     time: Res<Time>,
     party: Query<&Position, With<PartyBody>>,
-    mut commands: Commands,
     levels: Query<Entity, (With<Level>, Without<Departing>)>,
-) {
-    let Ok(level) = levels.single() else { return };
-    let Ok(position) = party.single() else { return };
-    let eye = PartyBody::eye(position);
-    let elapsed = time.delta();
-    commands.queue(move |world: &mut World| triggers::walk(world, level, eye, elapsed));
+) -> Option<(Entity, Vec3, std::time::Duration)> {
+    Some((levels.single().ok()?, PartyBody::eye(party.single().ok()?), time.delta()))
 }
 
 /// The party's eye flying along a camera path; input and physics wait
@@ -60,7 +55,9 @@ pub fn move_party(
         }
         // Retail asks first; until answered the party stays where it is.
         PartyMove::Teleport(Arrival::Entrance { entrance, ask: true }) => {
-            commands.spawn((TravelQuestion { entrance }, ChildOf(origin)));
+            commands.queue(move |world: &mut World| {
+                ask_travel(world, origin, entrance);
+            });
         }
         // Retail ignores starting a path that is already playing; the eye
         // flying through its trigger runs it again.

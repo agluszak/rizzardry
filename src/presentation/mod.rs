@@ -85,6 +85,23 @@ impl Plugin for PresentationPlugin {
                     .chain()
                     .before(bevy::ui::UiSystems::Content),
             )
+            // Pick the same propagated camera/meshes and visibility used for
+            // rendering, after fixed physics and Update animation/aiming. UI
+            // rasterization observes resulting text on its next presentation pass.
+            .add_systems(
+                PostUpdate,
+                (
+                    (selection::select_world_target, selection::activate_selection).chain(),
+                    (effects::play_trigger_effects, notices::queue_notices)
+                        .after(selection::activate_selection),
+                    (hover::hover, hover::show_tooltip)
+                        .chain()
+                        .after(selection::activate_selection),
+                )
+                    .after(bevy::transform::TransformSystems::Propagate)
+                    .after(bevy::camera::CameraUpdateSystems)
+                    .after(bevy::camera::visibility::VisibilitySystems::MarkNewlyHiddenEntitiesInvisible),
+            )
             .add_systems(
                 Startup,
                 (
@@ -103,10 +120,6 @@ impl Plugin for PresentationPlugin {
                     (party_view::attach_camera, party_view::aim_camera)
                         .chain()
                         .after(crate::game::GameplaySet::Combat),
-                    (selection::select_world_target, selection::activate_selection)
-                        .chain()
-                        .after(party_view::aim_camera)
-                        .in_set(crate::game::GameplaySet::Interaction),
                     camp::show_camp,
                     (
                         automap::close_ended_map,
@@ -133,10 +146,8 @@ impl Plugin for PresentationPlugin {
                     sky::build_sky,
                     environment::attach_level_visuals,
                     billboards::face_camera.after(party_view::aim_camera),
-                    effects::play_trigger_effects.after(selection::activate_selection),
                     music::play_music,
                     (ambience::place_ambient_sounds, ambience::play_ambient_sounds).chain(),
-                    notices::queue_notices.after(selection::activate_selection),
                     (dialog::close_ended_questions, dialog::show_travel_question).chain(),
                     effects::shake_camera.after(party_view::aim_camera),
                     sky::orbit_sun_and_moon,
@@ -152,8 +163,6 @@ impl Plugin for PresentationPlugin {
                     )
                         .chain(),
                     (
-                        hover::hover.after(selection::select_world_target),
-                        hover::show_tooltip,
                         world_items::show_world_items,
                         world_items::build_world_items,
                         world_items::turn_world_items,

@@ -48,14 +48,18 @@ impl Plugin for PartyPlugin {
             (
                 roster::give_starting_equipment.in_set(crate::game::GameplaySet::Equipment),
                 (
-                    body::look_around.run_if(party_free),
+                    body::look_around
+                        .run_if(party_free)
+                        .after(crate::game::GameplaySet::LevelActivation)
+                        .before(crate::game::GameplaySet::Perception),
                     (
                         camp::request_camp.run_if(party_free),
                         camp::force_camp,
                         camp::leave_camp,
                         camp::advance_camp,
                     )
-                        .chain(),
+                        .chain()
+                        .after(crate::game::GameplaySet::Combat),
                 )
                     .run_if(level_active),
             ),
@@ -73,7 +77,10 @@ impl Plugin for PartyPlugin {
         )
         .add_systems(
             FixedPostUpdate,
-            (walk_in::run_walk_in_triggers, walk_in::move_party)
+            (
+                walk_in::run_walk_in_triggers.pipe(crate::game::world::triggers::walk),
+                walk_in::move_party,
+            )
                 .chain()
                 .after(PhysicsSystems::Writeback)
                 .run_if(level_active),

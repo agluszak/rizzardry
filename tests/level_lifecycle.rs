@@ -422,6 +422,23 @@ fn direct_damage_settles_death_once_and_rejection_leaves_the_target_unchanged() 
             })
             .unwrap()
     };
+    use avian3d::prelude::{LinearVelocity, Position};
+    use bevy_landmass::{AgentTarget3d, UsingAnimationLink};
+    use bevy_tnua::{TnuaController, TnuaMotor};
+    use rizzardry::game::world::navigation::{Walker, WalkerMotion, links::Crossing};
+    let physical = Vec3::new(20.0, 3.0, 40.0);
+    let mut controller = TnuaController::<WalkerMotion>::default();
+    controller.basis.desired_motion = Vec3::X;
+    world.entity_mut(target).insert((
+        Position(physical),
+        LinearVelocity(Vec3::new(2.0, -1.0, 3.0)),
+        Walker { speed: 2.0, float_height: 1.0 },
+        Crossing { to: Vec3::splat(100.0) },
+        UsingAnimationLink,
+        AgentTarget3d::Point(Vec3::splat(100.0)),
+        controller,
+    ));
+    world.get_mut::<TnuaMotor>(target).unwrap().lin.boost = Vec3::X;
     let before = world.resource::<GameRng>().clone();
     world.entity_mut(level).insert(Departing);
     assert!(hit(world).is_err());
@@ -429,6 +446,22 @@ fn direct_damage_settles_death_once_and_rejection_leaves_the_target_unchanged() 
     assert_eq!(*world.resource::<GameRng>(), before);
     world.entity_mut(level).remove::<Departing>();
     assert!(hit(world).unwrap().died);
+    assert!(world.get::<Crossing>(target).is_none());
+    assert!(world.get::<UsingAnimationLink>(target).is_none());
+    assert!(matches!(world.get::<AgentTarget3d>(target), Some(AgentTarget3d::None)));
+    assert_eq!(
+        world.get::<TnuaController<WalkerMotion>>(target).unwrap().basis.desired_motion,
+        Vec3::ZERO
+    );
+    assert_eq!(world.get::<LinearVelocity>(target).unwrap().0, Vec3::NEG_Y);
+    assert_eq!(world.get::<TnuaMotor>(target).unwrap().lin.boost, Vec3::ZERO);
+    assert_eq!(world.get::<Walker>(target).unwrap().float_height, 1.0);
+    assert!(
+        world
+            .query_filtered::<&Transform, With<WorldItem>>()
+            .iter(world)
+            .all(|at| { at.translation == physical - Vec3::Y + Vec3::Y * 0.25 })
+    );
     let after = world.resource::<GameRng>().clone();
     hit(world).unwrap();
     assert_eq!(*world.resource::<GameRng>(), after);
