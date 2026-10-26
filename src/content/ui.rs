@@ -12,12 +12,31 @@ pub struct SpriteSheet {
     /// The decoded frames, kept for drawing text.
     pub frames: Vec<Frame>,
     pub images: Vec<Handle<Image>>,
+    /// Original indexed palette, used by retail font colour variants.
+    pub palette: Option<Vec<[u8; 3]>>,
 }
 
 impl SpriteSheet {
     /// How wide a line of text is in this font.
     pub fn text_width(&self, text: &str) -> u32 {
         text_width(&self.frames, text)
+    }
+
+    /// Draw text using a retail replacement palette.
+    pub fn text_image_with_palette(&self, text: &str, palette: &SpriteSheet) -> Image {
+        let (width, height, mut rgba) = render_text(&self.frames, text);
+        if let (Some(source), Some(target)) = (&self.palette, &palette.palette) {
+            let mut colours = std::collections::HashMap::new();
+            for (&from, &to) in source.iter().zip(target) {
+                colours.entry(from).or_insert(to);
+            }
+            for pixel in rgba.as_chunks_mut::<4>().0.iter_mut().filter(|pixel| pixel[3] != 0) {
+                if let Some(colour) = colours.get(&[pixel[0], pixel[1], pixel[2]]) {
+                    pixel[..3].copy_from_slice(colour);
+                }
+            }
+        }
+        ui_image(width, height, rgba)
     }
 
     /// Draw a line of text with this sheet as a font.

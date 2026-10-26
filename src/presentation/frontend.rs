@@ -638,9 +638,9 @@ fn refresh(
     actions: Query<&Action>,
     mut commands: Commands,
     buttons: Query<(Entity, &Action, Has<InteractionDisabled>)>,
-    mut pages: Query<(&Page, &mut Node), Without<SkillRow>>,
+    mut pages: Query<(&Page, &mut Node, &mut Visibility), Without<SkillRow>>,
     mut fields: Query<(&Field, &mut Text)>,
-    mut rows: Query<(&SkillRow, &mut Node), Without<Page>>,
+    mut rows: Query<(&SkillRow, &mut Node, &mut Visibility), Without<Page>>,
     mut portraits: Query<&mut Picture, With<PreviewPortrait>>,
     assets: Res<AssetServer>,
 ) {
@@ -650,11 +650,17 @@ fn refresh(
     }
     let name_focus =
         focus.get().and_then(|e| actions.get(e).ok()).is_some_and(|a| matches!(a, Action::Name));
-    for (page, mut node) in &mut pages {
+    for (page, mut node, mut visibility) in &mut pages {
         let display = if *page == session.page { Display::Flex } else { Display::None };
         if node.display != display {
             node.display = display;
         }
+        // Tab navigation follows visibility rather than layout display.
+        visibility.set_if_neq(if *page == session.page {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        });
     }
     let draft = session.editing.as_ref().map(|(_, d)| d);
     let profile = draft.map(CharacterDraft::preview);
@@ -741,8 +747,9 @@ fn refresh(
         // Query order does not decide the skill order.
         let available: Vec<_> =
             EnumSet::<Skill>::all().iter().filter(|&s| draft.skill_available(s)).collect();
-        for (row, mut node) in &mut rows {
+        for (row, mut node, mut visibility) in &mut rows {
             if let Some(i) = available.iter().position(|s| *s == row.0) {
+                visibility.set_if_neq(Visibility::Inherited);
                 let desired = absolute(
                     Vec2::new((i / 10) as f32 * 205., 57. + (i % 10) as f32 * 21.),
                     Vec2::new(190., 25.),
@@ -753,8 +760,11 @@ fn refresh(
                 {
                     *node = desired;
                 }
-            } else if node.display != Display::None {
-                node.display = Display::None;
+            } else {
+                visibility.set_if_neq(Visibility::Hidden);
+                if node.display != Display::None {
+                    node.display = Display::None;
+                }
             }
         }
         for mut picture in &mut portraits {

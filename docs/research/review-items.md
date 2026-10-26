@@ -9,8 +9,9 @@ Abbreviations:
 - `rvw.cpp` = `src/wiz8/local_screens/ReviewCharacterScreen.cpp`
 - `cat.cpp` = `src/wiz8/local_code/CatalogArtwork.cpp`
 
-Everything comes from Whizzardry; the original-binary decomp checkout is empty. The
-retail `wiz8.exe` string table lists exactly the `Data\Review\*.sti` files that the
+The original decomp and Whizzardry are both available; the character panel and
+its info-dialog targets were checked against `ReviewCharacterScreen.cpp` and
+`RCSItemsPage.cpp` in the original decomp. The retail `wiz8.exe` string table lists exactly the `Data\Review\*.sti` files that the
 catalog names, so the catalog matches what retail can load. Strings were decoded from
 `data/strings/stringdata.dat`. Sprite sizes were read from the retail STI headers.
 To check the coordinates, the page was composited from the retail art at the positions below.
@@ -48,7 +49,7 @@ below are file frame numbers.
 | 0x146 | `review/secondaryoccupied.sti` | 0: 34x72 |
 | 0x106 | `char generation/cg_bottombuttons.sti` | 44x30 frames; 16-19 are Exit |
 | 0x86 | `main interface/main_scroll.sti` | 0-3 up arrow, 4-5 thumb (16x10), 8-11 down arrow |
-| 0x1b6 | `main interface/basic_fill_texture.pcx` | 1285x1285 bitmap used as cell background |
+| 0x1b6 | `main interface/basic_fill_texture.pcx` | 420x340 indexed bitmap used as cell background |
 | 0x193-0x198 | `spell casting/{fire,water,air,earth,mental,divine}_realm.sti` | 18x18 realm icons |
 
 **Not referenced:** Whizzardry does not use these files and `wiz8.exe` does not contain

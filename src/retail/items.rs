@@ -458,7 +458,10 @@ fn read_item(
     let quantity_kind = bytes.u8()?;
     let initial_quantity = dice(&mut bytes)?;
     let maximum_quantity = bytes.u8()?;
-    bytes.take(3 + 6 + 1)?; // regeneration, resistances, property
+    bytes.take(3)?; // regeneration
+    let resistance_bonus =
+        enum_map::EnumMap::from_array(bytes.array::<6>()?.map(|value| value as i8));
+    bytes.take(1)?; // property
     let professions = EnumSet::from_repr_truncated(bytes.u16()?);
     let races = EnumSet::from_repr_truncated(bytes.u32()?);
     let genders = EnumSet::from_repr_truncated(bytes.u8()?);
@@ -494,6 +497,7 @@ fn read_item(
         damage_bonus,
         hit_bonus,
         armor_class_bonus,
+        resistance_bonus,
         quantity: match quantity_kind {
             0 => QuantityKind::None,
             1 => QuantityKind::Stack,

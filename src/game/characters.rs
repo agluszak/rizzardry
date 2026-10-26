@@ -1,9 +1,9 @@
 //! Party members: who they are, their attributes and skills, and the numbers
 //! derived from them. Tables are retail's, hard-coded in its executable (see
-//! `docs/research/characters.md`). Spells, conditions, resistances, armour
-//! class and attacks are not modelled yet.
+//! `docs/research/characters.md`).
 
 pub mod creation;
+pub mod resistance;
 
 use bevy::prelude::*;
 use enum_map::EnumMap;
@@ -46,6 +46,14 @@ pub enum Lasting {
     /// Until something lifts it, like exhaustion until stamina returns.
     Indefinite,
 }
+
+// Retail g_profession_skill_availability, ordinary and spellbook skills.
+// Bit order is Profession's authored order; realm availability needs learned spells.
+const SKILL_AVAILABILITY: [u16; 28] = [
+    0x03bf, 0x000f, 0x006f, 0x146f, 0x6bbf, 0x7fff, 0x1f9f, 0x018f, 0x03bf, 0x7fff, 0x03a0, 0x00e0,
+    0x0200, 0x02a0, 0x0060, 0x0008, 0x7fff, 0x7fff, 0x03ff, 0x0070, 0x7fff, 0x7fff, 0x7fff, 0x0100,
+    0x5010, 0x1406, 0x1828, 0x3040,
+];
 
 /// A playable race's base attributes (retail `g_race_base_attributes`);
 /// the five monster races have none.
@@ -199,17 +207,17 @@ fn profession_row(profession: Profession) -> ProfessionRow {
 
 /// The two attributes a skill's base level averages (one for spellbooks
 /// and expert skills).
-fn governing(skill: Skill) -> (Attribute, Attribute) {
+pub(crate) fn governing(skill: Skill) -> (Attribute, Attribute) {
     use Attribute::*;
     use Skill::*;
     match skill {
-        Sword | Axe | Polearm | MaceAndFlail | StaffAndWand | Shield | Bow | ThrowingAndSling => {
-            (Strength, Dexterity)
-        }
+        Sword | Axe | Polearm | MaceAndFlail | StaffAndWand | Shield => (Strength, Dexterity),
+        Bow | ThrowingAndSling => (Dexterity, Strength),
         Dagger | ModernWeapon | Pickpocket | MartialArts => (Dexterity, Speed),
-        LocksAndTraps | Stealth | Music | Engineering | Alchemy => (Dexterity, Intelligence),
-        Scouting | CloseCombat | RangedCombat | Artifacts | Mythology | Communication
-        | Psionics => (Senses, Intelligence),
+        LocksAndTraps | Stealth | Music | Alchemy => (Dexterity, Intelligence),
+        Engineering => (Intelligence, Dexterity),
+        Scouting | CloseCombat | RangedCombat | Mythology | Psionics => (Senses, Intelligence),
+        Artifacts | Communication => (Intelligence, Senses),
         DualWeapons => (Dexterity, Senses),
         CriticalStrike => (Senses, Speed),
         Wizardry => (Intelligence, Intelligence),
@@ -315,6 +323,46 @@ impl Character {
         u32::from(self.attributes[attribute]).clamp(1, 125)
     }
 
+    /// Whether retail currently permits this character to use a skill.
+    /// Realm skills require learned spells, which are not yet modelled.
+    pub fn skill_available(&self, skill: Skill) -> bool {
+        let index = skill as usize;
+        if index >= Skill::PowerStrike as usize {
+            let attribute = Attribute::try_from((index - Skill::PowerStrike as usize) as u8)
+                .expect("expert skills follow the attribute order");
+            return self.attributes[attribute] >= 100;
+        }
+        if index >= Skill::FireMagic as usize {
+            return false;
+        }
+        if SKILL_AVAILABILITY[index] & (1 << self.profession as usize) == 0 {
+            return false;
+        }
+        let row = profession_row(self.profession);
+        if skill == row.bonus_skill || row.skills.contains(&skill) {
+            return true;
+        }
+        if index >= Skill::Wizardry as usize {
+            let delayed = matches!(
+                self.profession,
+                Profession::Lord
+                    | Profession::Valkyrie
+                    | Profession::Ranger
+                    | Profession::Samurai
+                    | Profession::Ninja
+                    | Profession::Monk
+            );
+            if delayed {
+                return self.profession_levels[self.profession] > 4;
+            }
+        }
+        true
+    }
+
+    pub fn bonus_skill(&self) -> Skill {
+        profession_row(self.profession).bonus_skill
+    }
+
     /// The average of a skill's governing attributes' bases.
     fn skill_base(&self, skill: Skill) -> u32 {
         let (a, b) = governing(skill);
@@ -325,7 +373,7 @@ impl Character {
     /// the profession's bonus skill.
     pub fn skill(&self, skill: Skill) -> u32 {
         let points = u32::from(self.skill_points[skill]);
-        let bonus = if profession_row(self.profession).bonus_skill == skill && points > 0 {
+        let bonus = if profession_row(self.profession).bonus_skill == skill {
             (points * 25 / 100).max(1)
         } else {
             0
@@ -606,6 +654,23 @@ mod tests {
         assert!(fighter.skill(Skill::CloseCombat) > close_combat.into());
         assert!(fighter.skill_points[Skill::Sword] > 0);
         assert_eq!(fighter.skill_points[Skill::LocksAndTraps], 0);
+    }
+
+    #[test]
+    fn skill_availability_follows_profession_levels_and_attribute_mastery() {
+        let mut fighter = Character::new("F", Race::Human, Gender::Male, Profession::Fighter);
+        assert!(fighter.skill_available(Skill::Sword));
+        assert!(!fighter.skill_available(Skill::Music));
+        fighter.skill_points[Skill::CloseCombat] = 0;
+        assert_eq!(fighter.skill(Skill::CloseCombat), 1);
+        assert!(!fighter.skill_available(Skill::PowerStrike));
+        fighter.attributes[Strength] = 100;
+        assert!(fighter.skill_available(Skill::PowerStrike));
+        let mut samurai = Character::new("S", Race::Human, Gender::Male, Profession::Samurai);
+        assert!(!samurai.skill_available(Skill::Wizardry));
+        samurai.profession_levels[Profession::Samurai] = 5;
+        assert!(samurai.skill_available(Skill::Wizardry));
+        assert!(!samurai.skill_available(Skill::FireMagic));
     }
 
     #[test]

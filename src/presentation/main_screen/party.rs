@@ -10,17 +10,20 @@ use bevy::prelude::*;
 use rand::Rng;
 
 use super::{LayoutMode, MainScreenArt, ScreenLayout, SelectedMember, layer};
-use crate::content::characters::BodyPart;
 use crate::content::items::ItemCatalog;
 use crate::content::ui::SpriteSheet;
-use crate::game::characters::{Character, Race, Vitals};
-use crate::game::combat::attack::{Armour, armour};
+#[cfg(test)]
+use crate::game::characters::Race;
+use crate::game::characters::{Character, Vitals};
+use crate::game::combat::attack::armour;
 use crate::game::data::GameData;
 use crate::game::inventory::{Carried, EquipSlot, ItemNews};
 use crate::game::party::DamageApplied;
 use crate::game::party::roster::PartyRoster;
 use crate::presentation::PresentationRng;
-use crate::presentation::screen_art::{BitmapText, Picture, absolute, label, picture, rect};
+use crate::presentation::screen_art::{
+    BitmapText, Picture, absolute, condition_icon, label, picture, rect, skull,
+};
 
 /// Where a slot's row starts: four rows of 85 pixels from y 18.
 fn row_y(slot: usize) -> f32 {
@@ -105,62 +108,10 @@ pub fn slots(closed: bool) -> impl SceneList {
     (slots, closed.then(|| bsn! { @layer() Splats }))
 }
 
-/// The worst condition's icon name, `dead` for the dead.
-pub fn condition_icon(character: &Vitals) -> Option<String> {
-    if character.is_dead() {
-        Some("dead".into())
-    } else {
-        character.worst_condition().map(|c| format!("{c:?}").to_lowercase())
-    }
-}
-
 /// A bar's fill, 0 to 45 pixels, at least 1 while any is left (retail
 /// `SyncPartyPortraitVitalsBars`).
 fn fill(now: u32, max: u32) -> u32 {
     if now == 0 || max == 0 { 0 } else { (now * 45 / max).max(1) }
-}
-
-/// The dead's medium skull by race (retail `g_dead_portrait_catalog_ids`).
-fn skull(race: Race) -> &'static str {
-    match race {
-        Race::Lizardman => "mskull_liz",
-        Race::Dracon => "mskull_drac",
-        Race::Felpurr => "mskull_felp",
-        Race::Rawulf => "mskull_raw",
-        Race::Mook => "mskull_mook",
-        Race::Trynnie => "mskull_tryn",
-        Race::TRang => "mskull_trang",
-        Race::Umpani => "mskull_ump",
-        Race::Rapax => "mskull_rap",
-        Race::Android => "mskull_and",
-        _ => "mskull",
-    }
-}
-
-/// A race's empty hands, upper then lower (retail
-/// `g_empty_hand_catalog_ids`).
-fn empty_hands(race: Race) -> [&'static str; 2] {
-    match race {
-        Race::Faerie => ["fhandright", "fhandleft"],
-        Race::Lizardman | Race::Dracon | Race::TRang | Race::Rapax => ["clawright", "clawleft"],
-        Race::Felpurr | Race::Rawulf | Race::Mook | Race::Trynnie => ["pawright", "pawleft"],
-        Race::Android => ["rhandright", "rhandleft"],
-        _ => ["handright", "handleft"],
-    }
-}
-
-/// The displayed armour class: the locations' values weighted by how
-/// often blows land there, in percent, rounded (`characters.md` §4.8).
-fn average_armour(armour: &Armour) -> i32 {
-    let weight = |part| match part {
-        BodyPart::Head => 15,
-        BodyPart::Body => 40,
-        BodyPart::Leg => 30,
-        BodyPart::Hand => 10,
-        BodyPart::Foot => 5,
-    };
-    let total: i32 = armour.by_location.iter().map(|(part, a)| a * weight(part)).sum();
-    (total as f32 / 100.0).round() as i32
 }
 
 /// Create controls once for this layout. Gameplay updates their properties.
@@ -393,7 +344,8 @@ pub fn draw_party(
                         None => image(
                             &format!(
                                 "data/main interface/{}.sti",
-                                empty_hands(profile.race)[usize::from(off)]
+                                crate::presentation::screen_art::empty_hands(profile.race)
+                                    [usize::from(off)]
                             ),
                             0,
                         ),
@@ -407,9 +359,7 @@ pub fn draw_party(
                     shown = !dead;
                     value = Some(
                         match (carried.as_ref(), catalog) {
-                            (Some(c), Some(catalog)) => {
-                                average_armour(&armour(&profile, c, catalog))
-                            }
+                            (Some(c), Some(catalog)) => armour(&profile, c, catalog).average(),
                             _ => 0,
                         }
                         .to_string(),
@@ -635,7 +585,7 @@ pub fn record_splats(
             Children [
                 template(|_|Ok(Picture::default())) Pickable::IGNORE
                 -- Node{position_type:PositionType::Absolute} SplatNumber Pickable::IGNORE
-                template(move |_|Ok(BitmapText{font:font.clone(),value:value.clone(),at:Vec2::new(0.0,4.0),width:82.0,justify:bevy::text::Justify::Center}))
+                template(move |_|Ok(BitmapText{palette:None,font:font.clone(),value:value.clone(),at:Vec2::new(0.0,4.0),width:82.0,justify:bevy::text::Justify::Center}))
             ]
         }).insert((splat,ChildOf(layer)));
     }

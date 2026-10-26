@@ -114,6 +114,18 @@ pub enum Skill {
     EagleEye,
 }
 
+/// The six magical realms, in retail's resistance and spell order.
+#[derive(Debug, Enum, EnumSetType, TryFromPrimitive)]
+#[repr(u8)]
+pub enum Realm {
+    Fire,
+    Water,
+    Air,
+    Earth,
+    Mental,
+    Divine,
+}
+
 /// Where a blow lands on a character (strings 0x429..0x431).
 #[derive(Debug, Enum, EnumSetType)]
 pub enum BodyPart {

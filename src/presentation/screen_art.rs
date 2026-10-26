@@ -6,6 +6,45 @@ use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 
 use crate::content::ui::SpriteSheet;
+use crate::game::characters::{Race, Vitals};
+
+/// The two empty hand sprites used by the HUD and character review.
+pub fn empty_hands(race: crate::game::characters::Race) -> [&'static str; 2] {
+    use crate::game::characters::Race;
+    match race {
+        Race::Faerie => ["fhandright", "fhandleft"],
+        Race::Lizardman | Race::Dracon | Race::TRang | Race::Rapax => ["clawright", "clawleft"],
+        Race::Felpurr | Race::Rawulf | Race::Mook | Race::Trynnie => ["pawright", "pawleft"],
+        Race::Android => ["rhandright", "rhandleft"],
+        _ => ["handright", "handleft"],
+    }
+}
+
+/// The worst condition's icon name, `dead` for the dead.
+pub fn condition_icon(character: &Vitals) -> Option<String> {
+    if character.is_dead() {
+        Some("dead".into())
+    } else {
+        character.worst_condition().map(|c| format!("{c:?}").to_lowercase())
+    }
+}
+
+/// The dead's medium skull by race (retail `g_dead_portrait_catalog_ids`).
+pub fn skull(race: Race) -> &'static str {
+    match race {
+        Race::Lizardman => "mskull_liz",
+        Race::Dracon => "mskull_drac",
+        Race::Felpurr => "mskull_felp",
+        Race::Rawulf => "mskull_raw",
+        Race::Mook => "mskull_mook",
+        Race::Trynnie => "mskull_tryn",
+        Race::TRang => "mskull_trang",
+        Race::Umpani => "mskull_ump",
+        Race::Rapax => "mskull_rap",
+        Race::Android => "mskull_and",
+        _ => "mskull",
+    }
+}
 
 /// Retail's screen, in its own pixels.
 pub const SCREEN: Vec2 = Vec2::new(640.0, 480.0);
@@ -113,6 +152,7 @@ pub struct Picture {
 #[require(ImageNode)]
 pub struct BitmapText {
     pub font: Handle<SpriteSheet>,
+    pub palette: Option<Handle<SpriteSheet>>,
     pub value: String,
     pub at: Vec2,
     pub width: f32,
@@ -129,7 +169,7 @@ pub fn picture(sheet: Handle<SpriteSheet>, frame: usize, at: Vec2) -> impl Scene
 
 pub fn label(font: Handle<SpriteSheet>, at: Vec2, width: f32) -> impl Scene {
     bsn! {
-        template(move |_| Ok(BitmapText { font: font.clone(), value: String::new(), at, width, justify: bevy::text::Justify::Center }))
+        template(move |_| Ok(BitmapText { font: font.clone(), value: String::new(), at, width, justify: bevy::text::Justify::Center, ..default() }))
         Node { position_type: PositionType::Absolute }
         Pickable::IGNORE
     }
@@ -206,14 +246,25 @@ pub fn render_text(
         })
         .collect();
     for (text, mut image, mut node) in &mut labels {
-        if !text.is_changed() && !changed.contains(&text.font.id()) {
+        if !text.is_changed()
+            && !changed.contains(&text.font.id())
+            && !text.palette.as_ref().is_some_and(|palette| changed.contains(&palette.id()))
+        {
             continue;
         }
         let Some(font) = sheets.get(&text.font) else {
             image.color.set_alpha(0.0);
             continue;
         };
-        let raster = font.text_image(&text.value);
+        let raster = if let Some(palette) = &text.palette {
+            let Some(palette) = sheets.get(palette) else {
+                image.color.set_alpha(0.0);
+                continue;
+            };
+            font.text_image_with_palette(&text.value, palette)
+        } else {
+            font.text_image(&text.value)
+        };
         let size = raster.size_f32();
         image.image = images.add(raster);
         image.color.set_alpha(1.0);

@@ -21,5 +21,6 @@ is not kept; the Rust decoders and their retail tests
 | [monsters-db](monsters-db.md) | `monsters.dbs` records | not yet |
 | [level-population](level-population.md) | Which monsters and NPCs stand where on arrival: `.sts` `MONS`/`MONG` layouts, encounter tables, level-entry rules, Monastery 1 example | not yet |
 | [inventory](inventory.md) | Party item storage, equipment slots and usability, stacks and charges, core item moves, curses' move rule, load | not yet |
+| [character-review](character-review.md) | In-game statistics and skills, compared against both references; native retained review pages | `src/presentation/inventory/review.rs` |
 | [characters](characters.md) | Character record, race/profession/gender/attribute/skill ids and item-requirement id spaces, race and profession tables, XP and levels, derived stats (HP, stamina, SP, resistances, initiative, attacks, AC), a minimal valid character | not yet |
 | [trigger-actions](trigger-actions.md) | Trigger actions, recipients, gates, the Monastery 2 bells | `src/game/world/triggers.rs`, `scripts.rs` |

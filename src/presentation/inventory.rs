@@ -1,23 +1,35 @@
-//! The character review screen's item page (`docs/research/review-items.md`):
+//! Character review: equipment, statistics and skills. The item page follows
+//! `docs/research/review-items.md`:
 //! a member's equipment on their race's statue, their backpack, and the
 //! party's pool. Opened with I for the selected member; the header's portraits
-//! switch member, Esc, I or the Exit button closes it. Retail fills empty
-//! cells with a PCX texture; a flat colour stands in for it.
+//! switch member, Esc, I or the Exit button closes it.
 //!
 //! The screen is one scene with a node for each cell, the header and the
 //! gold; their retained nodes update when their gameplay inputs change.
 
-use bevy::picking::pointer::{PointerId, PointerLocation};
+mod info;
+mod item_info;
+mod pool_scroll;
+mod review;
+mod spells;
+
+use bevy::input_focus::tab_navigation::{TabGroup, TabIndex};
+use bevy::picking::{
+    hover::Hovered,
+    pointer::{PointerId, PointerLocation},
+};
 use bevy::prelude::*;
+use bevy::ui_widgets::{Activate, Button as UiButton};
 use bevy_enhanced_input::prelude::*;
 use enumset::EnumSet;
 
 use super::screen_art::{
-    BitmapText, Picture, absolute, centred, label, picture, screen, sprite, text,
+    BitmapText, Picture, absolute, centred, empty_hands, label, picture, rect, screen, sprite,
 };
 use crate::content::items::{ItemCatalog, QuantityKind};
-use crate::content::ui::SpriteSheet;
-use crate::game::characters::{Character, Gender, Race};
+use crate::content::ui::{SpriteSheet, TextTable};
+use crate::game::characters::{Character, Gender, Race, Vitals};
+use crate::game::combat::attack::armour;
 use crate::game::data::GameData;
 use crate::game::inventory::{
     BACKPACK_SLOTS, Carried, EquipSlot, ItemInstance, ItemLocation, PartyInventory, Quantity, Slot,
@@ -26,7 +38,6 @@ use crate::game::party::roster::PartyRoster;
 use crate::game::screen::Screen;
 
 const CELL: Vec2 = Vec2::new(46.0, 54.0);
-const FILL: Color = Color::srgb(0.16, 0.14, 0.11);
 /// Pool cells shown at once.
 const POOL_CELLS: usize = 8;
 
@@ -76,15 +87,33 @@ fn grid(left: f32, i: usize) -> Vec2 {
 #[derive(Component, Debug)]
 pub struct InventoryScreen {
     pub member: Entity,
-    /// The first pool entry shown; always even.
-    pub pool_scroll: usize,
 }
 
-#[derive(Resource)]
+#[derive(Resource, Default)]
 pub struct InventoryArt {
+    fill: Handle<Image>,
     corner: Handle<SpriteSheet>,
+    portrait_highlight: Handle<SpriteSheet>,
     page: Handle<SpriteSheet>,
     bottom_bar: Handle<SpriteSheet>,
+    page_buttons: Handle<SpriteSheet>,
+    item_buttons: Handle<SpriteSheet>,
+    stats_page: Handle<SpriteSheet>,
+    magic_page: Handle<SpriteSheet>,
+    skills_page: Handle<SpriteSheet>,
+    skills_icons: Handle<SpriteSheet>,
+    slider: Handle<SpriteSheet>,
+    combat_panel: Handle<SpriteSheet>,
+    combat_buttons: Handle<SpriteSheet>,
+    effect_filters: Handle<SpriteSheet>,
+    scroll: Handle<SpriteSheet>,
+    column: Handle<SpriteSheet>,
+    health: Handle<SpriteSheet>,
+    stamina: Handle<SpriteSheet>,
+    left_plug: Handle<SpriteSheet>,
+    right_plug: Handle<SpriteSheet>,
+    condition_rim: Handle<SpriteSheet>,
+    strings: Handle<TextTable>,
     gold_icon: Handle<SpriteSheet>,
     highlights: Handle<SpriteSheet>,
     unusable: Handle<SpriteSheet>,
@@ -92,14 +121,46 @@ pub struct InventoryArt {
     exit: Handle<SpriteSheet>,
     font: Handle<SpriteSheet>,
     bold: Handle<SpriteSheet>,
+    small_font: Handle<SpriteSheet>,
+    green: Handle<SpriteSheet>,
+    yellow: Handle<SpriteSheet>,
+    gray: Handle<SpriteSheet>,
+    beige: Handle<SpriteSheet>,
+    blue: Handle<SpriteSheet>,
+    bronze: Handle<SpriteSheet>,
+    red: Handle<SpriteSheet>,
+    leveling_bar: Handle<SpriteSheet>,
+    realms: [Handle<SpriteSheet>; 6],
+    info_dialog: Handle<SpriteSheet>,
+    info_buttons: Handle<SpriteSheet>,
 }
 
 pub fn load_inventory_art(mut commands: Commands, assets: Res<AssetServer>) {
     let load = |path: &str| assets.load(format!("retail://data/{path}"));
     commands.insert_resource(InventoryArt {
+        fill: assets.load("retail://data/main interface/basic_fill_texture.pcx"),
         corner: load("review/commoncorner.sti"),
+        portrait_highlight: load("review/smallportraithighlight.sti"),
         page: load("review/reviewitempage.sti"),
         bottom_bar: load("review/bottombuttonbar.sti"),
+        page_buttons: load("review/reviewpagebuttons.sti"),
+        item_buttons: load("review/reviewitembuttons.sti"),
+        stats_page: load("review/reviewstatspage.sti"),
+        magic_page: load("review/reviewmagicpage.sti"),
+        skills_page: load("review/reviewskillspage.sti"),
+        skills_icons: load("review/reviewskillsicons.sti"),
+        slider: load("review/reviewsliderbar.sti"),
+        combat_panel: load("review/commod_back.sti"),
+        combat_buttons: load("review/commod_buttons.sti"),
+        effect_filters: load("review/reviewfxfilters.sti"),
+        scroll: load("main interface/main_scroll.sti"),
+        column: load("main interface/main_column_info_normal.sti"),
+        health: load("main interface/healthbar.sti"),
+        stamina: load("main interface/staminabar.sti"),
+        left_plug: load("main interface/leftplug.sti"),
+        right_plug: load("main interface/rightplug.sti"),
+        condition_rim: load("main interface/condition_highlight.sti"),
+        strings: assets.load("retail://data/strings/stringdata.dat"),
         gold_icon: load("review/reviewgoldicon.sti"),
         highlights: load("review/reviewitemhighlights.sti"),
         unusable: load("review/itemusablebackground.sti"),
@@ -107,6 +168,19 @@ pub fn load_inventory_art(mut commands: Commands, assets: Res<AssetServer>) {
         exit: load("char generation/cg_bottombuttons.sti"),
         font: load("fonts/wiz_text_font.sti"),
         bold: load("fonts/wiz_text_font_bold.sti"),
+        small_font: load("fonts/smfnt.sti"),
+        green: load("fonts/palettegreen.sti"),
+        yellow: load("fonts/paletteyellow.sti"),
+        gray: load("fonts/palettegray.sti"),
+        beige: load("fonts/palettebeige.sti"),
+        blue: load("fonts/paletteblue.sti"),
+        bronze: load("fonts/palettebronze.sti"),
+        red: load("fonts/palettered.sti"),
+        leveling_bar: load("review/leveling_bar.sti"),
+        realms: ["fire", "water", "air", "earth", "mental", "divine"]
+            .map(|realm| load(&format!("spell casting/{realm}_realm.sti"))),
+        info_dialog: load("dialogs/popup_monsterinfo.sti"),
+        info_buttons: load("dialogs/popup_confirmationbuttons.sti"),
     });
 }
 
@@ -168,6 +242,7 @@ fn enter_inventory(
     commands.spawn_scene(bsn! {
         @centred()
         InventoryRoot
+        TabGroup::modal() bevy::ui_widgets::ModalDialog
         BackgroundColor(Color::BLACK)
         GlobalZIndex(10)
         ContextPriority::<InventoryRoot>::new(1)
@@ -177,7 +252,7 @@ fn enter_inventory(
             Bindings [ Binding(KeyCode::Escape) Binding(KeyCode::KeyI) ]
         ]
         on(|_: On<Start<CloseInventory>>, mut next: ResMut<NextState<Screen>>| { next.set(Screen::World); })
-    }).insert((InventoryScreen { member, pool_scroll: 0 }, DespawnOnExit(Screen::Inventory)));
+    }).insert((InventoryScreen { member }, DespawnOnExit(Screen::Inventory)));
 }
 
 /// This explicit exit consequence uses the same inventory operation as any
@@ -282,6 +357,7 @@ enum HeaderPart {
     Name,
     Race,
     Profession,
+    Level,
 }
 #[derive(Component)]
 struct HeaderDisplay(HeaderPart);
@@ -289,6 +365,29 @@ struct HeaderDisplay(HeaderPart);
 struct InventoryMemberButton(Entity);
 #[derive(Component, Clone, Default)]
 struct GoldLabel;
+#[derive(Component, Clone, Copy)]
+struct RetailLabel(usize);
+#[derive(Component, Clone, Default)]
+struct PortraitHighlight;
+#[derive(Component, Clone, Default)]
+struct VitalArt;
+#[derive(Component, Clone, Copy)]
+enum VitalShade {
+    Health,
+    Stamina,
+}
+#[derive(Component, Clone, Copy)]
+enum HeaderCondition {
+    Icon,
+    Rim,
+}
+#[derive(Component, Clone, Copy)]
+enum HeaderHand {
+    Background,
+    Hand(bool),
+    Count(bool),
+    Armour,
+}
 
 fn header(art: &InventoryArt) -> impl SceneList {
     let portraits: Vec<_> = (0..8)
@@ -296,10 +395,15 @@ fn header(art: &InventoryArt) -> impl SceneList {
             let at = Vec2::new(5.0 + (slot % 2) as f32 * 48.0, 4.0 + (slot / 2) as f32 * 39.0);
             bsn! {
                 @picture(default(),0,at)
-                Pickable::default()
+                UiButton TabIndex(0) Hovered::default() Pickable::default()
+                review::FocusControl Outline::new(px(1), px(1), Color::NONE)
                 template(move |_| Ok(HeaderDisplay(HeaderPart::Member(slot))))
                 InventoryMemberButton({Entity::PLACEHOLDER})
                 on(select_inventory_member)
+                Children [
+                    @picture(art.portrait_highlight.clone(),1,Vec2::ZERO)
+                    PortraitHighlight Visibility::Hidden
+                ]
             }
         })
         .collect();
@@ -307,15 +411,29 @@ fn header(art: &InventoryArt) -> impl SceneList {
         {portraits}
         -- @picture(default(),0,Vec2::new(164.0,12.0)) template(|_|Ok(HeaderDisplay(HeaderPart::Portrait)))
         -- @picture(art.corner.clone(),9,Vec2::new(164.0,12.0))
+        -- @picture(art.left_plug.clone(),0,Vec2::new(165.0,14.0)) template(|_|Ok(HeaderCondition::Icon))
+        -- @picture(art.condition_rim.clone(),0,Vec2::new(164.0,13.0)) template(|_|Ok(HeaderCondition::Rim)) Visibility::Hidden
+        -- @picture(art.right_plug.clone(),0,Vec2::new(238.0,14.0))
         -- @label(art.bold.clone(),Vec2::new(116.0,96.0),186.0) template(|_|Ok(HeaderDisplay(HeaderPart::Name)))
         -- @label(art.font.clone(),Vec2::new(116.0,111.0),186.0) template(|_|Ok(HeaderDisplay(HeaderPart::Race)))
         -- @label(art.font.clone(),Vec2::new(116.0,124.0),186.0) template(|_|Ok(HeaderDisplay(HeaderPart::Profession)))
-        -- @picture(default(),0,Vec2::new(194.0,165.0)) template(|_|Ok(HeaderDisplay(HeaderPart::Statue)))
+        -- @label(art.font.clone(),Vec2::new(116.0,137.0),186.0) template(|_|Ok(HeaderDisplay(HeaderPart::Level)))
+        -- @picture(art.column.clone(),0,Vec2::new(129.0,11.0)) template(|_|Ok(HeaderHand::Background))
+        -- @picture(default(),0,Vec2::new(133.0,34.0)) template(|_|Ok(HeaderHand::Hand(false)))
+        -- @picture(default(),0,Vec2::new(133.0,58.0)) template(|_|Ok(HeaderHand::Hand(true)))
+        -- @label(art.small_font.clone(),Vec2::new(129.0,49.0),16.0) template(|_|Ok(HeaderHand::Count(false)))
+        -- @label(art.small_font.clone(),Vec2::new(132.0,73.0),16.0) template(|_|Ok(HeaderHand::Count(true)))
+        -- @label(art.small_font.clone(),Vec2::new(132.0,14.0),13.0) template(|_|Ok(HeaderHand::Armour))
+        -- @picture(art.column.clone(),1,Vec2::new(268.0,11.0))
+        -- @picture(art.health.clone(),0,Vec2::new(274.0,34.0)) VitalArt
+        -- @picture(art.stamina.clone(),0,Vec2::new(278.0,34.0)) VitalArt
+        -- @rect(Vec2::new(274.0,34.0),Vec2::new(3.0,0.0),Color::BLACK) VitalArt template(|_|Ok(VitalShade::Health))
+        -- @rect(Vec2::new(278.0,34.0),Vec2::new(3.0,0.0),Color::BLACK) VitalArt template(|_|Ok(VitalShade::Stamina))
     }
 }
 
 fn select_inventory_member(
-    click: On<PointerClick>,
+    click: On<Activate>,
     buttons: Query<&InventoryMemberButton>,
     roster: Res<PartyRoster>,
     screen: Option<Single<&mut InventoryScreen>>,
@@ -325,6 +443,38 @@ fn select_inventory_member(
         && let Some(mut screen) = screen
     {
         screen.member = button.0;
+    }
+}
+
+fn draw_portrait_highlights(
+    screen: Option<Single<&InventoryScreen>>,
+    roster: Res<PartyRoster>,
+    buttons: Query<(&InventoryMemberButton, &Hovered, &Children)>,
+    mut highlights: Query<(&mut Picture, &mut Visibility), With<PortraitHighlight>>,
+) {
+    let Some(screen) = screen else { return };
+    for (button, hovered, children) in &buttons {
+        for child in children.iter() {
+            let Ok((mut picture, mut visibility)) = highlights.get_mut(child) else { continue };
+            let occupied = roster.0.contains(&button.0);
+            let frame = if hovered.0 {
+                Some(0)
+            } else if button.0 == screen.member {
+                Some(1)
+            } else {
+                None
+            };
+            visibility.set_if_neq(if occupied && frame.is_some() {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            });
+            if let Some(frame) = frame
+                && picture.frame != frame
+            {
+                picture.frame = frame;
+            }
+        }
     }
 }
 
@@ -338,18 +488,24 @@ fn cell_controls(cell: Cell, art: &InventoryArt) -> impl Scene {
         _ => (0, Vec2::ONE, Vec2::new(1.0, 40.0), 44.0),
     };
     let grid = !matches!(cell, Cell::Member(Slot::Equipment(_)));
-    let background = if grid { FILL } else { Color::NONE };
+    let fill = art.fill.clone();
     let node = absolute(area.min, size + 1.0);
     let rim = match cell {
         Cell::Member(Slot::Equipment(slot)) => equipment_rim(slot) + 3,
         _ => 0,
     };
     bsn! {
-        node BackgroundColor({background}) template(move |_|Ok(ItemCell{cell}))
-        Pickable::default()
+        node template(move |_|Ok(ItemCell{cell}))
+        UiButton TabIndex(0) Pickable::default()
+        review::FocusControl Outline::new(px(1), px(1), Color::NONE)
         on(click_cell)
+        on(pool_scroll::wheel)
         Children [
-            @picture(art.unusable.clone(),0,Vec2::ZERO)
+            template(move |_| Ok(ImageNode { image: fill.clone(), rect: Some(Rect::new(0.0, 0.0, 46.0, 54.0)), ..default() }))
+            Node { position_type: PositionType::Absolute, width: px(46), height: px(54) }
+            template(move |_| Ok(if grid { Visibility::Inherited } else { Visibility::Hidden }))
+            Pickable::IGNORE
+            -- @picture(art.unusable.clone(),0,Vec2::ZERO)
             template(move |_|Ok(CellDisplay{cell,part:CellPart::Unusable}))
             -- @picture(default(),frame,at)
             template(move |_|Ok(CellDisplay{cell,part:CellPart::Picture}))
@@ -370,55 +526,82 @@ pub fn spawn_inventory_screen(
     art: Res<InventoryArt>,
     assets: Res<AssetServer>,
     mut next: ResMut<NextState<Screen>>,
+    focus: Option<ResMut<bevy::input_focus::InputFocus>>,
     sheets: Res<Assets<SpriteSheet>>,
-    mut images: ResMut<Assets<Image>>,
     roots: Query<Entity, (With<InventoryRoot>, Without<InventoryBuilt>)>,
 ) {
     let Ok(root) = roots.single() else { return };
     if [
         &art.corner,
+        &art.portrait_highlight,
         &art.page,
         &art.bottom_bar,
+        &art.page_buttons,
+        &art.item_buttons,
+        &art.stats_page,
+        &art.magic_page,
+        &art.skills_page,
+        &art.skills_icons,
+        &art.slider,
+        &art.combat_panel,
+        &art.combat_buttons,
+        &art.effect_filters,
+        &art.scroll,
+        &art.column,
+        &art.health,
+        &art.stamina,
+        &art.left_plug,
+        &art.right_plug,
+        &art.condition_rim,
         &art.gold_icon,
         &art.exit,
         &art.bold,
+        &art.small_font,
+        &art.green,
+        &art.yellow,
+        &art.gray,
+        &art.beige,
+        &art.blue,
+        &art.bronze,
+        &art.red,
+        &art.leveling_bar,
+        &art.info_dialog,
+        &art.info_buttons,
         &art.highlights,
         &art.unusable,
         &art.unidentified,
         &art.font,
     ]
     .into_iter()
+    .chain(art.realms.iter())
     .any(|handle| matches!(assets.get_load_state(handle), Some(bevy::asset::LoadState::Failed(_))))
+        || matches!(assets.get_load_state(&art.strings), Some(bevy::asset::LoadState::Failed(_)))
+        || matches!(assets.get_load_state(&art.fill), Some(bevy::asset::LoadState::Failed(_)))
     {
         warn!("inventory artwork failed to load; returning to the world");
         next.set(Screen::World);
         return;
     }
     let get = |handle: &Handle<SpriteSheet>| sheets.get(handle);
-    let (Some(corner), Some(page), Some(bar), Some(gold), Some(exit), Some(bold)) = (
+    let (Some(corner), Some(page), Some(bar), Some(gold), Some(exit)) = (
         get(&art.corner),
         get(&art.page),
         get(&art.bottom_bar),
         get(&art.gold_icon),
         get(&art.exit),
-        get(&art.bold),
     ) else {
         return;
     };
     let fixed = vec![
-        sprite(corner, 0, Vec2::ZERO),
         sprite(page, 0, Vec2::new(310.0, 0.0)),
         sprite(page, 1, Vec2::new(0.0, 165.0)),
         sprite(page, 2, Vec2::new(113.0, 165.0)),
         sprite(page, 3, Vec2::new(478.0, 165.0)),
         sprite(gold, 0, Vec2::new(514.0, 422.0)),
-        sprite(bar, 0, Vec2::new(0.0, 450.0)),
-    ];
-    let titles = vec![
-        text(bold, &mut images, "Carried", Vec2::new(12.0, 174.0), 93.0),
-        text(bold, &mut images, "Party Items", Vec2::new(486.0, 174.0), 141.0),
     ];
     let exit = sprite(exit, 16, Vec2::new(596.0, 450.0));
+    let corner = sprite(corner, 0, Vec2::ZERO);
+    let bottom_bar = sprite(bar, 0, Vec2::new(0.0, 450.0));
     let cells: Vec<_> = EnumSet::<EquipSlot>::all()
         .iter()
         .map(|slot| Cell::Member(Slot::Equipment(slot)))
@@ -426,23 +609,227 @@ pub fn spawn_inventory_screen(
         .chain((0..POOL_CELLS).map(Cell::Pool))
         .map(|cell| cell_controls(cell, &art))
         .collect();
-    commands.entity(root).insert(InventoryBuilt).queue_spawn_related_scenes::<Children>(vec![bsn! {
-        Node { position_type: PositionType::Absolute }
+    commands.entity(root).insert(InventoryBuilt);
+    let content = commands.spawn_scene(bsn! {
+        @screen() ChildOf(root)
         Children [
-            @screen()
-            Children [
-                {fixed}
-                -- {titles}
-                -- @{exit}
-                    Pickable { should_block_lower: true, is_hoverable: true }
-                    on(|_: On<PointerClick>, mut next: ResMut<NextState<Screen>>| { next.set(Screen::World); })
-                // The header and statue lie under the cells.
-                -- {header(&art)}
-                -- @label(art.font.clone(),Vec2::new(553.0,425.0),48.0) GoldLabel
-                -- {cells}
-            ]
+            @{corner}
+            -- {header(&art)}
+            -- @screen() Pickable::IGNORE
+                template(|_| Ok(review::Page::Items))
+                Children [
+                    {fixed}
+                    -- @label(art.bold.clone(),Vec2::new(12.0,174.0),93.0) template(|_|Ok(RetailLabel(0x92b)))
+                    -- @label(art.bold.clone(),Vec2::new(486.0,174.0),141.0) template(|_|Ok(RetailLabel(0x92c)))
+                    -- @picture(default(),0,Vec2::new(194.0,165.0)) template(|_|Ok(HeaderDisplay(HeaderPart::Statue)))
+                    -- @label(art.font.clone(),Vec2::new(553.0,425.0),48.0) GoldLabel
+                    -- {cells}
+                ]
+            -- @{bottom_bar}
+            -- @{exit}
+                UiButton TabIndex(0) Pickable::default()
+                review::FocusControl Outline::new(px(1), px(1), Color::NONE)
+                on(|_: On<Activate>, mut next: ResMut<NextState<Screen>>| { next.set(Screen::World); })
         ]
-    }]);
+    }).id();
+    let initial_tab = review::build(&mut commands, content, &art);
+    if let Some(mut focus) = focus {
+        focus.set(initial_tab, bevy::input_focus::FocusCause::Navigated);
+    }
+    item_info::build(&mut commands, content, &art);
+    spells::build(&mut commands, content, &art);
+    pool_scroll::build(&mut commands, content, &art);
+}
+
+// Retail profession titles, indexed by profession and level band.
+fn profession_title(profile: &Character) -> usize {
+    const TITLES: [[usize; 9]; 15] = [
+        [0x3b6, 0x3b7, 0x3b8, 0x3b9, 0x3ba, 0x3bb, 0x3bc, 0x3bd, 0x3be],
+        [0x3b6, 0x3b7, 0x3bf, 0x3c0, 0x3c1, 0x3c2, 0x3c3, 0x3c4, 0x3c5],
+        [0x3b6, 0x3b7, 0x3c6, 0x3b9, 0x3c7, 0x3c2, 0x3c8, 0x3c9, 0x3ca],
+        [0x3b6, 0x3b7, 0x3cb, 0x3cc, 0x3cd, 0x3ce, 0x3cf, 0x3d0, 0x3d1],
+        [0x3b6, 0x3b7, 0x3d2, 0x3d3, 0x3d4, 0x3d5, 0x3d6, 0x3bd, 0x3d7],
+        [0x3b6, 0x3b7, 0x3d8, 0x3d9, 0x3da, 0x3db, 0x3dc, 0x3dd, 0x3de],
+        [0x3b6, 0x3b7, 0x3f9, 0x3df, 0x3e0, 0x3e1, 0x3dc, 0x3e2, 0x3e3],
+        [0x3b6, 0x3b7, 0x3e4, 0x3e5, 0x3e6, 0x3e7, 0x3e8, 0x3e9, 0x3ea],
+        [0x3b6, 0x3b7, 0x3eb, 0x3ec, 0x3ed, 0x3ee, 0x3ef, 0x3f0, 0x3f1],
+        [0x3b6, 0x3b7, 0x3f2, 0x3f3, 0x3f4, 0x3f5, 0x3f6, 0x3f7, 0x3f8],
+        [0x3b6, 0x3b7, 0x3f9, 0x3fa, 0x3fb, 0x3fc, 0x3fd, 0x3fe, 0x3ff],
+        [0x3b6, 0x3b7, 0x400, 0x401, 0x402, 0x403, 0x404, 0x405, 0x406],
+        [0x3b6, 0x3b7, 0x407, 0x408, 0x409, 0x40a, 0x40b, 0x40c, 0x40d],
+        [0x3b6, 0x3b7, 0x40e, 0x40f, 0x410, 0x411, 0x412, 0x413, 0x414],
+        [0x3b6, 0x3b7, 0x415, 0x416, 0x417, 0x418, 0x419, 0x41a, 0x41b],
+    ];
+    let level = profile.profession_levels[profile.profession];
+    let band = match level {
+        0 => 0,
+        1 => 1,
+        2..=3 => 2,
+        4..=6 => 3,
+        7..=10 => 4,
+        11..=15 => 5,
+        16..=21 => 6,
+        22..=27 => 7,
+        _ => 8,
+    };
+    TITLES[profile.profession as usize][band]
+}
+
+fn draw_vitals(
+    screen: Option<Single<Ref<InventoryScreen>>>,
+    members: Query<(Ref<Character>, Ref<Vitals>)>,
+    mut art: Query<(Ref<VitalArt>, Option<&VitalShade>, Option<&mut Node>, &mut Visibility)>,
+) {
+    let Some(screen) = screen else { return };
+    let Ok((profile, vitals)) = members.get(screen.member) else { return };
+    for (marker, shade, node, mut visibility) in &mut art {
+        if !marker.is_added()
+            && !screen.is_changed()
+            && !profile.is_changed()
+            && !vitals.is_changed()
+        {
+            continue;
+        }
+        visibility.set_if_neq(if vitals.is_dead() {
+            Visibility::Hidden
+        } else {
+            Visibility::Inherited
+        });
+        if let (Some(shade), Some(mut node)) = (shade, node) {
+            let (current, maximum) = match shade {
+                VitalShade::Health => (vitals.hp, profile.max_hp()),
+                VitalShade::Stamina => (vitals.stamina, profile.max_stamina()),
+            };
+            let filled = current.min(maximum).saturating_mul(45) / maximum.max(1);
+            let height = px((45 - filled) as f32);
+            if node.height != height {
+                node.height = height;
+            }
+        }
+    }
+}
+
+fn draw_header_condition(
+    screen: Option<Single<Ref<InventoryScreen>>>,
+    members: Query<Ref<Vitals>>,
+    assets: Res<AssetServer>,
+    art: Res<InventoryArt>,
+    mut displays: Query<(Ref<HeaderCondition>, &mut Picture, &mut Visibility)>,
+) {
+    let Some(screen) = screen else { return };
+    let Ok(vitals) = members.get(screen.member) else { return };
+    let condition = super::screen_art::condition_icon(&vitals);
+    for (display, mut picture, mut visibility) in &mut displays {
+        if !display.is_added() && !screen.is_changed() && !vitals.is_changed() {
+            continue;
+        }
+        match *display {
+            HeaderCondition::Icon => {
+                let sheet = condition
+                    .as_ref()
+                    .map(|name| assets.load(format!("retail://data/icons/conditions/{name}.sti")))
+                    .unwrap_or_else(|| art.left_plug.clone());
+                if picture.sheet != sheet {
+                    picture.sheet = sheet;
+                }
+            }
+            HeaderCondition::Rim => {
+                visibility.set_if_neq(if condition.is_some() {
+                    Visibility::Inherited
+                } else {
+                    Visibility::Hidden
+                });
+            }
+        };
+    }
+}
+
+fn draw_header_hands(
+    screen: Option<Single<Ref<InventoryScreen>>>,
+    assets: Res<AssetServer>,
+    data: Option<Res<GameData>>,
+    catalogs: Res<Assets<ItemCatalog>>,
+    members: Query<(Ref<Character>, Ref<Carried>)>,
+    art: Res<InventoryArt>,
+    mut parts: Query<(
+        Ref<HeaderHand>,
+        &mut Visibility,
+        Option<&mut Picture>,
+        Option<&mut BitmapText>,
+    )>,
+) {
+    let Some(screen) = screen else { return };
+    let Some(catalog) = data.and_then(|data| catalogs.get(&data.items)) else { return };
+    let Ok((profile, carried)) = members.get(screen.member) else { return };
+    let changed = screen.is_changed()
+        || profile.is_changed()
+        || carried.is_changed()
+        || catalogs.is_changed();
+    let two_handed = carried
+        .worn(EquipSlot::Primary)
+        .and_then(|item| catalog.get(item.item))
+        .is_some_and(|item| item.two_handed);
+    for (part, mut visibility, picture, text) in &mut parts {
+        if !part.is_added() && !changed {
+            continue;
+        }
+        let mut source = None;
+        let mut value = None;
+        let mut shown = true;
+        match *part {
+            HeaderHand::Background => {
+                source = Some(Picture {
+                    sheet: art.column.clone(),
+                    frame: if two_handed { 2 } else { 0 },
+                    at: Vec2::new(129.0, 11.0),
+                    ..default()
+                })
+            }
+            HeaderHand::Hand(off) => {
+                shown = !(off && two_handed);
+                let slot = if off { EquipSlot::Secondary } else { EquipSlot::Primary };
+                let item = carried.worn(slot).and_then(|item| catalog.get(item.item));
+                let (path, frame, x) = if let Some(item) = item {
+                    (item.image.clone(), 2, 132.0)
+                } else {
+                    (
+                        format!(
+                            "data/main interface/{}.sti",
+                            empty_hands(profile.race)[usize::from(off)]
+                        ),
+                        0,
+                        133.0,
+                    )
+                };
+                source = Some(Picture {
+                    sheet: assets.load(format!("retail://{path}")),
+                    frame,
+                    at: Vec2::new(x, if off { 58.0 } else { 34.0 }),
+                    ..default()
+                });
+            }
+            HeaderHand::Count(off) => {
+                shown = !(off && two_handed);
+                let slot = if off { EquipSlot::Secondary } else { EquipSlot::Primary };
+                value = Some(match carried.worn(slot).map(|item| item.quantity) {
+                    Some(Quantity::Stack(count)) if count > 0 => count.to_string(),
+                    _ => String::new(),
+                });
+            }
+            HeaderHand::Armour => {
+                value = Some(armour(&profile, &carried, catalog).average().to_string())
+            }
+        }
+        visibility.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
+        if let (Some(mut picture), Some(source)) = (picture, source) {
+            picture.set_if_neq(source);
+        }
+        if let (Some(mut text), Some(value)) = (text, value)
+            && text.value != value
+        {
+            text.value = value;
+        }
+    }
 }
 
 /// Update the existing header controls from their actual dependencies.
@@ -451,7 +838,8 @@ fn draw_header(
     art: Res<InventoryArt>,
     assets: Res<AssetServer>,
     roster: Res<PartyRoster>,
-    members: Query<Ref<Character>>,
+    members: Query<(Ref<Character>, Option<Ref<Vitals>>)>,
+    tables: Res<Assets<TextTable>>,
     mut displays: Query<(
         Ref<HeaderDisplay>,
         Option<&mut InventoryMemberButton>,
@@ -460,10 +848,13 @@ fn draw_header(
     )>,
 ) {
     let Some(screen) = screen else { return };
-    let Ok(profile) = members.get(screen.member) else { return };
+    let Ok((profile, vitals)) = members.get(screen.member) else { return };
     let changed = screen.is_changed()
         || roster.is_changed()
-        || members.iter_many(&roster.0).flatten().any(|c| c.is_changed());
+        || tables.is_changed()
+        || members.iter_many(&roster.0).flatten().any(|(character, vitals)| {
+            character.is_changed() || vitals.is_some_and(|vitals| vitals.is_changed())
+        });
     for (display, button, picture, label) in &mut displays {
         if !display.is_added() && !changed {
             continue;
@@ -489,14 +880,25 @@ fn draw_header(
                 );
                 anchor = Some(at);
                 source = Some(match member.and_then(|m| members.get(m).ok()) {
-                    Some(profile) => {
-                        image(format!("data/portraits/small/s{}.sti", profile.portrait), 0)
+                    Some((profile, vitals)) => {
+                        let path = if vitals.is_some_and(|v| v.is_dead()) {
+                            let skull = super::screen_art::skull(profile.race);
+                            format!("data/portraits/small/s{}.sti", &skull[1..])
+                        } else {
+                            format!("data/portraits/small/s{}.sti", profile.portrait)
+                        };
+                        image(path, 0)
                     }
                     None => Picture { sheet: art.corner.clone(), frame: slot + 1, ..default() },
                 });
             }
             HeaderPart::Portrait => {
-                source = Some(image(format!("data/portraits/medium/m{}.sti", profile.portrait), 0))
+                let portrait = if vitals.as_ref().is_some_and(|v| v.is_dead()) {
+                    super::screen_art::skull(profile.race).to_owned()
+                } else {
+                    format!("m{}", profile.portrait)
+                };
+                source = Some(image(format!("data/portraits/medium/{portrait}.sti"), 0))
             }
             HeaderPart::Statue => {
                 source = Some(image(
@@ -505,8 +907,28 @@ fn draw_header(
                 ))
             }
             HeaderPart::Name => value = Some(profile.name.clone()),
-            HeaderPart::Race => value = Some(format!("{:?}", profile.race)),
-            HeaderPart::Profession => value = Some(format!("{:?}", profile.profession)),
+            HeaderPart::Race => {
+                let gender = if profile.gender == Gender::Male { 0x2d1 } else { 0x2d2 };
+                let table = tables.get(&art.strings);
+                let gender = table.and_then(|t| t.get(gender)).unwrap_or("");
+                let race = table.and_then(|t| t.get(0x284 + profile.race as usize)).unwrap_or("");
+                value = Some(format!("{gender} {race}").trim().to_owned());
+            }
+            HeaderPart::Profession => {
+                value = Some(
+                    tables
+                        .get(&art.strings)
+                        .and_then(|t| t.get(0x2a4 + profile.profession as usize))
+                        .unwrap_or("")
+                        .to_owned(),
+                )
+            }
+            HeaderPart::Level => {
+                let table = tables.get(&art.strings);
+                let title = table.and_then(|t| t.get(profession_title(&profile))).unwrap_or("");
+                let level = table.and_then(|t| t.get(0x91a)).unwrap_or("");
+                value = Some(format!("{level} {} ({title})", profile.level));
+            }
         }
         if let Some(mut picture) = picture
             && let Some(mut source) = source
@@ -519,6 +941,20 @@ fn draw_header(
             && label.value != value
         {
             label.value = value;
+        }
+    }
+}
+
+fn draw_retail_labels(
+    art: Res<InventoryArt>,
+    tables: Res<Assets<TextTable>>,
+    mut labels: Query<(&RetailLabel, &mut BitmapText)>,
+) {
+    let Some(table) = tables.get(&art.strings) else { return };
+    for (label, mut text) in &mut labels {
+        let value = table.get(label.0).unwrap_or("");
+        if text.value != value {
+            text.value = value.to_owned();
         }
     }
 }
@@ -539,6 +975,7 @@ fn draw_cells(
     catalogs: Res<Assets<ItemCatalog>>,
     members: Query<(Ref<Character>, Ref<Carried>)>,
     party: Res<PartyInventory>,
+    pool_scroll: Option<Single<Ref<bevy::ui_widgets::SliderValue>, With<pool_scroll::PoolScroll>>>,
     mut displays: Query<(
         Ref<CellDisplay>,
         &mut Visibility,
@@ -553,6 +990,7 @@ fn draw_cells(
         || profile.is_changed()
         || carried.is_changed()
         || party.is_changed()
+        || pool_scroll.as_ref().is_some_and(|value| value.is_changed())
         || catalogs.is_changed();
     for (display, mut visible, picture, label) in &mut displays {
         if !display.is_added() && !changed {
@@ -561,7 +999,9 @@ fn draw_cells(
         let item = match display.cell {
             Cell::Member(Slot::Equipment(slot)) => carried.worn(slot),
             Cell::Member(Slot::Backpack(i)) => carried.backpack[i].as_ref(),
-            Cell::Pool(i) => party.pool.get(screen.pool_scroll + i),
+            Cell::Pool(i) => {
+                party.pool.get(pool_scroll.as_ref().map_or(0, |value| value.0 as usize * 2) + i)
+            }
         };
         let definition = item.and_then(|i| Some((i, catalog.get(i.item)?)));
         let grid = !matches!(display.cell, Cell::Member(Slot::Equipment(_)));
@@ -610,14 +1050,27 @@ fn draw_cells(
 /// Shift-clicking a single unit, pouring ammunition and stowing a weapon's
 /// partner are not done yet.
 fn click_cell(
-    click: On<PointerClick>,
+    click: On<Activate>,
     cells: Query<&ItemCell>,
     screen: Option<Single<&InventoryScreen>>,
     mut inventory: crate::game::inventory::operations::InventoryOperations,
+    selected: Option<Single<&bevy::ui_widgets::SelectedTab, With<review::PageTabs>>>,
+    tabs: Query<&review::PageButton>,
+    pool_scroll: Option<Single<&bevy::ui_widgets::SliderValue, With<pool_scroll::PoolScroll>>>,
 ) {
-    let (Ok(cell), Some(screen)) = (cells.get(click.entity), screen) else { return };
+    let (Ok(cell), Some(screen), Some(selected)) = (cells.get(click.entity), screen, selected)
+    else {
+        return;
+    };
+    if selected.0.and_then(|entity| tabs.get(entity).ok()).map(|tab| tab.0)
+        != Some(review::Page::Items)
+    {
+        return;
+    }
     let destination = match cell.cell {
-        Cell::Pool(row) => ItemLocation::Pool(screen.pool_scroll + row),
+        Cell::Pool(row) => {
+            ItemLocation::Pool(pool_scroll.as_ref().map_or(0, |value| value.0 as usize * 2) + row)
+        }
         Cell::Member(slot) => ItemLocation::Member(screen.member, slot),
     };
     if let Err(refusal) = inventory.activate(destination) {
@@ -678,12 +1131,28 @@ pub fn follow_held(
     visibility.set_if_neq(Visibility::Inherited);
 }
 
+// Bevy 0.20 clears a slider's pressed state on cancellation but leaves its
+// drag state set; a canceled pointer must not continue editing the value.
+fn cancel_slider_drag(
+    event: On<bevy::picking::events::PointerCancel>,
+    mut sliders: Query<&mut bevy::ui_widgets::SliderDragState>,
+    mut captures: ResMut<bevy::picking::hover::PointerCaptureMap>,
+) {
+    if let Ok(mut drag) = sliders.get_mut(event.entity)
+        && drag.dragging
+    {
+        drag.dragging = false;
+        captures.release(event.pointer.id);
+    }
+}
+
 pub struct InventoryPlugin;
 
 impl Plugin for InventoryPlugin {
     fn build(&self, app: &mut App) {
         app.add_input_context::<InventoryKey>()
             .add_input_context::<InventoryRoot>()
+            .add_input_context::<info::InfoDialog>()
             .add_systems(Startup, (load_inventory_art, spawn_inventory_key, spawn_held_picture))
             .add_systems(OnEnter(Screen::Inventory), enter_inventory)
             .add_systems(OnExit(Screen::Inventory), put_away_held)
@@ -694,7 +1163,42 @@ impl Plugin for InventoryPlugin {
             )
             .add_systems(
                 Update,
-                (spawn_inventory_screen, draw_header, draw_gold, draw_cells, follow_held).chain(),
+                (
+                    spawn_inventory_screen,
+                    (
+                        draw_header,
+                        draw_header_condition,
+                        draw_header_hands,
+                        draw_portrait_highlights.after(draw_header),
+                        draw_vitals,
+                        draw_retail_labels,
+                        draw_gold,
+                        draw_cells,
+                    )
+                        .after(spawn_inventory_screen),
+                    follow_held,
+                ),
+            )
+            .add_systems(
+                Update,
+                (
+                    review::show_pages,
+                    review::refresh,
+                    review::layout_skills,
+                    review::style_scroll.after(review::refresh),
+                    review::style_buttons,
+                    review::style_info_button,
+                    review::style_effect_buttons,
+                    review::focus_controls,
+                    info::update_scroll,
+                    info::style_close,
+                    info::initialize_focus,
+                    info::style_arrows,
+                    item_info::refresh,
+                    spells::refresh,
+                    pool_scroll::sync.before(draw_cells),
+                )
+                    .after(spawn_inventory_screen),
             );
     }
 }
@@ -734,6 +1238,7 @@ mod tests {
             ))
             .init_state::<Screen>()
             .init_asset::<SpriteSheet>()
+            .init_asset::<TextTable>()
             .init_asset::<Image>()
             .init_asset::<ItemCatalog>()
             .init_resource::<UiScale>()
@@ -808,5 +1313,197 @@ mod tests {
         assert_eq!(format_gold(950), "950");
         assert_eq!(format_gold(12345), "12,345");
         assert_eq!(format_gold(1234567), "1,234,567");
+    }
+}
+
+#[cfg(test)]
+mod keyboard_lifecycle_tests {
+    use super::*;
+    use crate::game::characters::{Gender, Profession, Race};
+    use bevy::input::{
+        ButtonState,
+        keyboard::{Key, KeyboardInput},
+    };
+    use bevy::input_focus::{
+        InputDispatchPlugin, InputFocus, InputFocusPlugin, tab_navigation::TabNavigationPlugin,
+    };
+    use bevy::picking::{
+        backend::HitData,
+        events::{Pointer, PointerClick, PointerPress},
+        pointer::{Location, PointerButton, PointerId},
+    };
+    use bevy::ui_widgets::{ButtonPlugin, ModalDialogPlugin, SelectedTab, SliderPlugin, TabPlugin};
+    use bevy::window::{PrimaryWindow, Window};
+
+    fn key(app: &mut App, window: Entity, code: KeyCode, pressed: bool) {
+        app.world_mut().write_message(KeyboardInput {
+            key_code: code,
+            logical_key: Key::Character("x".into()),
+            state: if pressed { ButtonState::Pressed } else { ButtonState::Released },
+            text: None,
+            repeat: false,
+            window,
+        });
+        app.update();
+    }
+    fn tap(app: &mut App, window: Entity, code: KeyCode) {
+        key(app, window, code, true);
+        key(app, window, code, false);
+    }
+
+    #[test]
+    fn review_and_information_dialog_keep_keyboard_navigation() {
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin::default(),
+            bevy::scene::ScenePlugin,
+            bevy::input::InputPlugin,
+            bevy::state::app::StatesPlugin,
+            EnhancedInputPlugin,
+            InputFocusPlugin,
+            InputDispatchPlugin,
+            TabNavigationPlugin,
+            bevy::input_focus::pointer_focus::PointerFocusPlugin,
+            TabPlugin,
+            SliderPlugin,
+            ButtonPlugin,
+            ModalDialogPlugin,
+            bevy::camera::visibility::VisibilityPlugin,
+        ))
+        .init_state::<Screen>()
+        .init_asset::<SpriteSheet>()
+        .init_asset::<TextTable>()
+        .init_asset::<Image>()
+        .init_asset::<ItemCatalog>()
+        .init_asset::<Mesh>()
+        .init_asset::<bevy::mesh::skinning::SkinnedMeshInverseBindposes>()
+        .init_resource::<UiScale>()
+        .init_resource::<PartyRoster>()
+        .init_resource::<PartyInventory>()
+        .init_resource::<super::super::main_screen::SelectedMember>()
+        .add_plugins(InventoryPlugin);
+        let window = app.world_mut().spawn((Window::default(), PrimaryWindow)).id();
+        let profile = Character::new("Test", Race::Human, Gender::Male, Profession::Fighter);
+        let member =
+            app.world_mut().spawn((Vitals::new(&profile), profile, Carried::default())).id();
+        app.world_mut().resource_mut::<PartyRoster>().0.insert(member);
+        app.world_mut().resource_mut::<super::super::main_screen::SelectedMember>().0 =
+            Some(member);
+        app.finish();
+        app.cleanup();
+        app.update();
+        let frame =
+            crate::content::ui::Frame { offset: [0, 0], width: 1, height: 1, rgba: vec![255; 4] };
+        let sheet = app.world_mut().resource_mut::<Assets<SpriteSheet>>().add(SpriteSheet {
+            frames: vec![frame; 100],
+            images: vec![Handle::default(); 100],
+            palette: None,
+        });
+        let strings = app.world_mut().resource_mut::<Assets<TextTable>>().add(TextTable(vec![
+            Some(
+                String::new()
+            );
+            0xa00
+        ]));
+        app.world_mut().insert_resource(InventoryArt {
+            corner: sheet.clone(),
+            page: sheet.clone(),
+            bottom_bar: sheet.clone(),
+            gold_icon: sheet.clone(),
+            exit: sheet.clone(),
+            font: sheet,
+            strings,
+            ..default()
+        });
+        tap(&mut app, window, KeyCode::KeyI);
+        for _ in 0..3 {
+            app.update();
+        }
+        assert_eq!(*app.world().resource::<State<Screen>>().get(), Screen::Inventory);
+        let initial =
+            app.world().resource::<InputFocus>().get().expect("opening review focuses a control");
+        tap(&mut app, window, KeyCode::Tab);
+        let next =
+            app.world().resource::<InputFocus>().get().expect("Tab keeps focus inside review");
+        assert_ne!(initial, next);
+        let skill_tab = app
+            .world_mut()
+            .query::<(Entity, &review::PageButton)>()
+            .iter(app.world())
+            .find_map(|(entity, tab)| (tab.0 == review::Page::Skills).then_some(entity))
+            .unwrap();
+        key(&mut app, window, KeyCode::ShiftLeft, true);
+        tap(&mut app, window, KeyCode::Tab);
+        key(&mut app, window, KeyCode::ShiftLeft, false);
+        assert_eq!(app.world().resource::<InputFocus>().get(), Some(initial));
+        tap(&mut app, window, KeyCode::ArrowRight);
+        tap(&mut app, window, KeyCode::ArrowRight);
+        assert_eq!(app.world().resource::<InputFocus>().get(), Some(skill_tab));
+        tap(&mut app, window, KeyCode::Enter);
+        let list = app
+            .world_mut()
+            .query_filtered::<&SelectedTab, With<review::PageTabs>>()
+            .single(app.world())
+            .unwrap();
+        assert_eq!(list.0, Some(skill_tab));
+        let target = app
+            .world_mut()
+            .query::<(Entity, &info::InfoTarget)>()
+            .iter(app.world())
+            .find_map(|(entity, target)| {
+                matches!(
+                    target.subject,
+                    info::Subject::Skill(crate::content::characters::Skill::Sword)
+                )
+                .then_some(entity)
+            })
+            .unwrap();
+        app.world_mut().trigger(PointerPress {
+            entity: target,
+            pointer: Pointer::new(
+                PointerId::Mouse,
+                Location {
+                    target: bevy::camera::NormalizedRenderTarget::None { width: 640, height: 480 },
+                    position: Vec2::ZERO,
+                },
+            ),
+            button: PointerButton::Secondary,
+            hit: HitData::new(Entity::PLACEHOLDER, 0.0, None, None),
+            count: 1,
+        });
+        app.world_mut().trigger(PointerClick {
+            entity: target,
+            pointer: Pointer::new(
+                PointerId::Mouse,
+                Location {
+                    target: bevy::camera::NormalizedRenderTarget::None { width: 640, height: 480 },
+                    position: Vec2::ZERO,
+                },
+            ),
+            button: PointerButton::Secondary,
+            hit: HitData::new(Entity::PLACEHOLDER, 0.0, None, None),
+            duration: std::time::Duration::ZERO,
+            count: 1,
+        });
+        app.update();
+        let dialog = app
+            .world_mut()
+            .query_filtered::<Entity, With<info::InfoDialog>>()
+            .single(app.world())
+            .unwrap();
+        let close = app.world().resource::<InputFocus>().get().expect("popup takes focus");
+        tap(&mut app, window, KeyCode::Tab);
+        let after_tab = app.world().resource::<InputFocus>().get().unwrap();
+        assert_ne!(close, after_tab);
+        key(&mut app, window, KeyCode::ShiftLeft, true);
+        tap(&mut app, window, KeyCode::Tab);
+        key(&mut app, window, KeyCode::ShiftLeft, false);
+        assert_eq!(app.world().resource::<InputFocus>().get(), Some(close));
+        tap(&mut app, window, KeyCode::Escape);
+        assert!(app.world().get_entity(dialog).is_err());
+        assert_eq!(app.world().resource::<InputFocus>().get(), Some(skill_tab));
+        tap(&mut app, window, KeyCode::Tab);
+        assert!(app.world().resource::<InputFocus>().get().is_some());
     }
 }
