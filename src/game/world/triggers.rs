@@ -13,7 +13,7 @@ use bevy::ecs::system::SystemParam;
 use bevy::ecs::world::EntityMut;
 use bevy::prelude::*;
 
-use super::level::{Departing, Level};
+use super::level::Level;
 use super::props::{Prop, PropMotion};
 use super::scripts::{BellButton, LevelScript};
 use crate::content::items::{Dice, ItemCatalog, LootTables};
@@ -472,9 +472,6 @@ pub fn activate(world: &mut World, entity: Entity, distance: Option<f32>) -> boo
     }
     let Some(device) = world.get::<Device>(entity) else { return false };
     let level = device.level;
-    if world.get::<Departing>(level).is_some() {
-        return false;
-    }
     let Some(level) = world.get::<Level>(level) else { return false };
     let handle = level.geometry.clone();
     // Borrow immutable definitions for the entire synchronous operation. Nested
@@ -774,7 +771,7 @@ fn contains(definition: &TriggerDefinition, eye: Vec3) -> bool {
 pub(crate) fn walk(
     In(sample): In<Option<(Entity, Vec3, Duration)>>,
     mut commands: Commands,
-    mut levels: Query<(&Level, &PositionedDevices, &mut LevelState), Without<Departing>>,
+    mut levels: Query<(&Level, &PositionedDevices, &mut LevelState)>,
     geometry: Res<Assets<LevelGeometry>>,
     mut devices: Query<(&Device, &TriggerState, Option<&mut ActiveDamageZone>)>,
     pending: Res<PendingPartyMove>,
@@ -819,9 +816,6 @@ fn walk_activation(
     elapsed: Duration,
     start: usize,
 ) {
-    if world.get::<Departing>(level).is_some() {
-        return;
-    }
     let Some(owner) = world.get::<Level>(level) else { return };
     let handle = owner.geometry.clone();
     world.resource_scope(|world, geometry: Mut<Assets<LevelGeometry>>| {
@@ -1609,9 +1603,9 @@ mod tests {
         );
         level.world.insert_resource(data);
         level.settle();
-        level.world.entity_mut(level.root).insert(Departing);
+        let live = level.world.entity_mut(level.root).take::<Level>().unwrap();
         assert!(!level.run("DOOR").0);
-        level.world.entity_mut(level.root).remove::<Departing>();
+        level.world.entity_mut(level.root).insert(live);
         assert!(level.run("DOOR").0);
         assert_eq!(level.motion("DOOR").target, 0.0);
     }

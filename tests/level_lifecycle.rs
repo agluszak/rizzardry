@@ -1,7 +1,7 @@
 //! Small headless scenarios at the level/party ownership boundary: a level
 //! becomes active in one step once its prerequisites exist, and travel
-//! suspends the party until the destination is playable, or leaves it where
-//! it was when the destination cannot be.
+//! keeps its source live until the destination is playable. Failed preparation
+//! has no source snapshot or suspension to roll back.
 
 use avian3d::prelude::{Collider, RigidBodyDisabled};
 use bevy::prelude::*;
@@ -11,10 +11,10 @@ use rizzardry::content::monster::MonsterBody;
 use rizzardry::content::species::{MonsterCatalog, Species};
 use rizzardry::game::data::GameData;
 use rizzardry::game::inventory::ItemIds;
-use rizzardry::game::party::body::{PartyBody, PartyMotionConfig, PartyStart};
+use rizzardry::game::party::body::{PartyBody, PartyMotionConfig};
 use rizzardry::game::rng::GameRng;
 use rizzardry::game::world::level::{
-    Departing, Destination, Level, LevelMemory, LevelReady, Travel, activate_level, travel,
+    Destination, Level, LevelMemory, LevelReady, Travel, activate_level, travel,
 };
 use rizzardry::game::world::population::{Monster, MonsterBodies};
 use rizzardry::game::world::triggers::PendingPartyMove;
@@ -35,7 +35,6 @@ fn app() -> App {
         .init_resource::<rizzardry::game::inventory::PartyInventory>()
         .init_resource::<ItemIds>()
         .init_resource::<GameRng>()
-        .init_resource::<PartyStart>()
         .init_resource::<PendingPartyMove>()
         .add_message::<LevelReady>()
         .add_message::<Travel>()
@@ -91,7 +90,7 @@ fn party_entities(app: &mut App) -> Vec<Entity> {
 }
 
 fn is_played(app: &App, level: Entity) -> bool {
-    app.world().get::<Level>(level).is_some() && app.world().get::<Departing>(level).is_none()
+    app.world().get::<Level>(level).is_some()
 }
 
 fn failed(app: &App, destination: Entity) -> bool {
@@ -195,15 +194,18 @@ fn a_destination_that_cannot_load_leaves_the_party_where_it_was() {
     // MO2's files are not there to load here: the destination fails.
     app.world_mut().write_message(Travel { entrance: "MO204".into() });
     app.world_mut().run_schedule(PreUpdate);
-    assert!(app.world().get::<Departing>(first_level).is_some());
-    assert!(app.world().get::<RigidBodyDisabled>(party).is_some());
+    assert!(is_played(&app, first_level));
+    assert!(app.world().get::<RigidBodyDisabled>(party).is_none());
     for _ in 0..20 {
         app.update();
     }
 
-    assert!(is_played(&app, first_level), "the party is back in the level it left");
+    assert!(is_played(&app, first_level), "the source never stopped being playable");
     assert!(app.world().get::<RigidBodyDisabled>(party).is_none());
-    assert!(app.world().resource::<LevelMemory>().is_empty(), "the stale record is gone");
+    assert!(
+        app.world().resource::<LevelMemory>().is_empty(),
+        "failed preparation never captured a record"
+    );
     assert_eq!(party_entities(&mut app), vec![party]);
 }
 
@@ -468,11 +470,11 @@ fn direct_damage_settles_death_once_and_rejection_leaves_the_target_unchanged() 
     ));
     world.get_mut::<TnuaMotor>(target).unwrap().lin.boost = Vec3::X;
     let before = world.resource::<GameRng>().clone();
-    world.entity_mut(level).insert(Departing);
+    let live = world.entity_mut(level).take::<Level>().unwrap();
     assert!(hit(world).is_err());
     assert_eq!(world.get::<Monster>(target).unwrap().hp, 10);
     assert_eq!(*world.resource::<GameRng>(), before);
-    world.entity_mut(level).remove::<Departing>();
+    world.entity_mut(level).insert(live);
     assert!(hit(world).unwrap().died);
     assert!(world.get::<Crossing>(target).is_none());
     assert!(world.get::<UsingAnimationLink>(target).is_none());
@@ -502,4 +504,91 @@ fn direct_damage_settles_death_once_and_rejection_leaves_the_target_unchanged() 
         .map(|i| i.units())
         .sum::<u32>();
     assert_eq!(units, 2, "death preserves every drop and cannot award it twice");
+}
+
+#[test]
+fn preparation_keeps_the_source_live_and_commit_captures_its_latest_state() {
+    use avian3d::prelude::Position;
+    use rizzardry::game::combat::Battle;
+    let mut app = app();
+    with_data(&mut app);
+    let source = spawn_level(&mut app, floor());
+    app.update();
+    let party = party_entities(&mut app)[0];
+    let at = app.world().get::<Position>(party).unwrap().0;
+    // Start through the real camera-path operation, not a hand-made marker.
+    use bevy::ecs::system::RunSystemOnce;
+    use rizzardry::game::party::walk_in::{PathFlight, move_party};
+    use rizzardry::game::world::triggers::PartyMove;
+    let handle = app.world().get::<Level>(source).unwrap().geometry.clone();
+    app.world_mut()
+        .resource_mut::<Assets<LevelGeometry>>()
+        .get_mut(&handle)
+        .unwrap()
+        .camera_paths
+        .push(rizzardry::content::level::CameraPathModel {
+            name: "travel flight".into(),
+            keys: vec![Transform::default()],
+            keys_per_second: 1.0,
+        });
+    app.world_mut().resource_mut::<PendingPartyMove>().0 = Some((source, PartyMove::Fly(0)));
+    app.world_mut().run_system_once(move_party).unwrap();
+    assert!(app.world().get::<PathFlight>(party).is_some());
+    let mut next = app.world().get::<Level>(source).unwrap().clone();
+    let geometry =
+        app.world().resource::<Assets<LevelGeometry>>().get(&next.geometry).unwrap().clone();
+    let loading = app.world_mut().resource_mut::<Assets<LevelGeometry>>().reserve_handle();
+    next.geometry = loading.clone();
+    let mut destination = Destination::new(next.clone());
+    destination.arrival.eye = Some(Vec3::new(9.0, 4.0, 2.0));
+    let destination = app.world_mut().spawn(destination).id();
+    app.update();
+    assert!(is_played(&app, source));
+    assert_eq!(app.world().get::<Position>(party).unwrap().0, at);
+    assert!(app.world().resource::<LevelMemory>().is_empty());
+    assert!(app.world().get::<PathFlight>(party).is_some());
+    assert!(app.world().get::<RigidBodyDisabled>(party).is_some());
+    // Damage while loading must survive same-path replacement. An early
+    // snapshot would resurrect this monster at the commit boundary.
+    let monster =
+        app.world_mut().query_filtered::<Entity, With<Monster>>().single(app.world()).unwrap();
+    app.world_mut().get_mut::<Monster>(monster).unwrap().hp = 0;
+    app.world_mut().resource_mut::<Assets<LevelGeometry>>().insert(&loading, geometry).unwrap();
+    app.update();
+    assert!(is_played(&app, destination));
+    assert!(app.world().get::<PathFlight>(party).is_none());
+    assert!(app.world().get::<RigidBodyDisabled>(party).is_none());
+    assert!(app.world().get_entity(source).is_err());
+    assert!(monsters(&mut app).is_empty());
+    assert_eq!(
+        app.world().get::<Position>(party).unwrap().0,
+        Vec3::new(9.0, 4.0, 2.0) - Vec3::Y * rizzardry::game::party::body::EYE_ABOVE_CENTRE
+    );
+    // Combat starting during preparation revokes permission to travel.
+    next.geometry = app.world_mut().resource_mut::<Assets<LevelGeometry>>().reserve_handle();
+    let refused = app.world_mut().spawn(Destination::new(next)).id();
+    app.insert_resource(Battle::default());
+    app.update();
+    assert!(app.world().get_entity(refused).is_err());
+    assert!(is_played(&app, destination));
+}
+
+#[test]
+fn failed_navigation_is_a_failed_destination_not_degraded_activation() {
+    let mut app = app();
+    with_data(&mut app);
+    let source = spawn_level(&mut app, floor());
+    app.update();
+    let mut next = test_level(&mut app, floor());
+    next.navmeshes.push(app.world().resource::<AssetServer>().load("missing.navmesh"));
+    let destination = app.world_mut().spawn(Destination::new(next)).id();
+    let started = std::time::Instant::now();
+    while !failed(&app, destination) {
+        app.update();
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        std::thread::yield_now();
+    }
+    assert!(is_played(&app, source));
+    assert!(!is_played(&app, destination));
+    assert!(app.world().resource::<LevelMemory>().is_empty());
 }

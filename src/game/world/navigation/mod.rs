@@ -88,34 +88,19 @@ pub fn feet(origin: Vec3, walker: Option<&Walker>) -> Vec3 {
     origin - Vec3::Y * walker.map_or(0.0, |w| w.float_height)
 }
 
-/// Whether a level's navmeshes have settled: all loaded, or one failed.
+/// Whether every mandatory navmesh has loaded successfully.
 /// They come from the asset processor's cache (baked on first use).
-pub fn navmeshes_settled(level: &Level, assets: &AssetServer) -> bool {
-    level.navmeshes.iter().all(|navmesh| {
-        matches!(assets.get_load_state(navmesh), Some(LoadState::Loaded | LoadState::Failed(_)))
-    })
+pub fn navmeshes_ready(level: &Level, assets: &AssetServer) -> bool {
+    level
+        .navmeshes
+        .iter()
+        .all(|navmesh| matches!(assets.get_load_state(navmesh), Some(LoadState::Loaded)))
 }
 
 /// Install a level's navigation under its root, as part of its activation:
-/// one archipelago and island per size class, and the level's links. A
-/// navmesh that failed to load leaves the level without navigation; nothing
-/// will path.
-pub fn install(
-    commands: &mut Commands,
-    root: Entity,
-    level: &Level,
-    geometry: &LevelGeometry,
-    assets: &AssetServer,
-) {
-    if let Some(Some(LoadState::Failed(error))) = level
-        .navmeshes
-        .iter()
-        .map(|h| assets.get_load_state(h))
-        .find(|s| matches!(s, Some(LoadState::Failed(_))))
-    {
-        error!("navmesh unavailable: {error}");
-        return;
-    }
+/// one archipelago and island per size class, and the level's links.
+/// Activation has already checked every required navmesh.
+pub fn install(commands: &mut Commands, root: Entity, level: &Level, geometry: &LevelGeometry) {
     let mut archipelagos = Vec::new();
     for (class, navmesh) in level.navmeshes.iter().enumerate() {
         let radius = bake::SIZE_CLASSES[class];

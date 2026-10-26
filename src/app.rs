@@ -255,7 +255,6 @@ pub fn build(options: &Options) -> Result<App, String> {
         app.insert_resource(crate::dev::RunFor(Timer::from_seconds(seconds, TimerMode::Once)))
             .add_systems(Update, crate::dev::exit_after_run);
     }
-    app.insert_resource(start);
     if let Some(path) = options.screenshot.clone() {
         let after = options.screenshot_after.unwrap_or(2.0);
         app.insert_resource(ScreenshotAndExit::new(path, after))
@@ -289,7 +288,8 @@ pub fn build(options: &Options) -> Result<App, String> {
         },
     );
     app.add_systems(Startup, move |mut commands: Commands, assets: Res<AssetServer>| {
-        let first = Destination::new(Level::load(&level, &assets));
+        let mut first = Destination::new(Level::load(&level, &assets));
+        first.arrival = start.clone();
         commands.spawn((Name::new(level.clone()), first));
     });
     Ok(app)

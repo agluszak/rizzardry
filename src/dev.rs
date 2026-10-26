@@ -7,7 +7,7 @@ use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 use bevy::time::Stopwatch;
 
 use crate::game::party::body::PartyBody;
-use crate::game::world::level::{Departing, Level};
+use crate::game::world::level::Level;
 
 /// Capture the window `after` seconds once the party is in the world, then
 /// exit. Used to check rendering from the command line.
@@ -131,7 +131,7 @@ pub struct RunFor(pub Timer);
 pub fn exit_after_run(
     time: Res<Time<Virtual>>,
     mut run_for: ResMut<RunFor>,
-    playing: Query<(), (With<Level>, Without<Departing>)>,
+    playing: Query<(), With<Level>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     if !playing.is_empty() {

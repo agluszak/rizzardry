@@ -5,7 +5,7 @@ use super::party_view::PartyCamera;
 use crate::game::inventory::PartyInventory;
 use crate::game::party::body::Interact;
 use crate::game::world::items::{CLEARANCE, THROW, WorldItem, drop_held, take_item};
-use crate::game::world::level::{Departing, Level};
+use crate::game::world::level::Level;
 use crate::game::world::population::Monster;
 use crate::game::world::props::Prop;
 use crate::game::world::triggers::{self, Device};
@@ -38,7 +38,7 @@ pub fn select_world_target(
     sky: Query<(), With<RenderLayers>>,
     parents: Query<&ChildOf>,
     owners: Query<(), Or<(With<Prop>, With<WorldItem>, With<Monster>)>>,
-    levels: Query<Entity, (With<Level>, Without<Departing>)>,
+    levels: Query<Entity, With<Level>>,
     mut selection: ResMut<WorldSelection>,
 ) {
     *selection = WorldSelection::default();

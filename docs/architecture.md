@@ -39,11 +39,13 @@ One level root owns its local entities and presentation children. An existing
 party entity survives travel. The root has one phase — loading, active or
 failed — and one operation (`activate_level`) makes it playable once its
 gameplay prerequisites exist: it builds the world, navigation and
-population, consumes what was remembered of the level, places and resumes
-the party, and only then announces `LevelReady`. Travel currently captures the
-source before preparation and marks it `Departing`; this gates some gameplay and
-suspends the party body, but does not freeze all source navigation/physics.
-Moving source capture to the successful activation commit remains outstanding.
+population, consumes what was remembered of the level and places the party.
+Travel preparation leaves the source live. Only successful activation captures
+its latest state, clears level-bound movement, retires the source and announces
+`LevelReady`. Arrival belongs to the destination, not a shared mutable setting.
+Required navigation failures reject preparation; there is no provisional source
+snapshot, `Departing` flag or rollback path. Combat during preparation cancels
+that request rather than allowing delayed travel to escape a fight.
 Cosmetic loading (the sky) proceeds on its own. Bevy parent/child relations and screen-scoped
 cleanup should eliminate manual ownership tables, not introduce a new global
 world manager.
@@ -236,9 +238,8 @@ silently succeed without its required effects.
 The intended boundary prepares the destination without modifying its gameplay state or
 destroying the source. At the transition boundary, settle/cancel outstanding
 source-owned actions, capture persistent local state, stop the source world's
-simulation, suspend the persistent party body, remove source entities, then
-construct and activate the destination exactly once. The game resumes the
-body and entry rules only for that activated map. Failed preparation keeps
+simulation and activate the destination exactly once at the same boundary.
+The party retains its entity and is placed using that destination's arrival. Failed preparation keeps
 the source playable, except for separately committed operations such as an
 accepted companion dismissal. Every pending callback or playback completion
 must still identify its original level/session.

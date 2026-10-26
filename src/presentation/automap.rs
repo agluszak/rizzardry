@@ -19,7 +19,7 @@ use crate::content::level::{CollisionMesh, LevelGeometry};
 use crate::content::ui::{SpriteSheet, ui_image};
 use crate::game::automap::{MapNote, MapNotes, NoteDraft};
 use crate::game::party::body::{FLOAT_HEIGHT, PartyBody};
-use crate::game::world::level::{Departing, Level};
+use crate::game::world::level::Level;
 use crate::presentation::screen_art::{SCREEN, absolute, centred, screen};
 
 const VIEWPORT_AT: Vec2 = Vec2::new(12.0, 32.0);
@@ -263,7 +263,7 @@ pub struct OpenAutomap;
 
 pub fn close_ended_map(
     map: Option<Single<&Automap>>,
-    levels: Query<(), (With<Level>, Without<Departing>)>,
+    levels: Query<(), With<Level>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
     if map.is_some_and(|map| !levels.contains(map.level)) {
@@ -283,7 +283,7 @@ pub fn request_automap(
 pub fn enter_automap(
     mut commands: Commands,
     party: Query<&Transform, With<PartyBody>>,
-    levels: Query<(Entity, &Level), Without<Departing>>,
+    levels: Query<(Entity, &Level)>,
     geometry: Res<Assets<LevelGeometry>>,
     mut next: ResMut<NextState<Screen>>,
 ) {

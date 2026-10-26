@@ -23,14 +23,13 @@ established by the implementation:
 
 1. Make destination preparation, failed loading and playable activation distinct.
    Require collision, local state, references and shared gameplay catalogs before
-   enabling triggers/AI/party physics. During travel, settle old sessions and
-   suspend the party body; failed preparation leaves the source playable.
-   *Status:* partial. A level being prepared is a `Destination` until one
-   `activate_level` operation makes it the `Level`; gameplay runs only on a
-   level being played. Travel refuses during a fight, ends camera flights and
-   pending moves, remembers the source and marks it `Departing` (not played)
-   and suspends the party body; activation lets the source go, and a failed
-   destination leaves the party playing on in the source.
+   enabling triggers/AI/party physics. Prepare without changing the source.
+   *Status:* implemented. `Destination` owns arrival and becomes `Level` only
+   after required assets, collision and navigation succeed. Activation captures
+   the latest source state, cancels its pending movement/flight, places the
+   existing party and retires the source. Failed preparation has nothing to
+   roll back. A fight starting during preparation cancels the request.
+
 2. Capture map-owned state on departure and restore it on revisit. A killed or
    wounded monster, opened container, trigger and map note must not reset or
    leak to another map. Persist domain state, not transient proximity/UI caches.
@@ -62,7 +61,7 @@ killed local monsters or move map notes; final-round recovery is correct;
 a non-roster `Character` is excluded from party effects. Use focused tests
 and representative retail checks, not a new harness. *Covered:* headless
 tests for failed collision, waiting for databases, one party across levels,
-a suspended party on a failed destination, a killed monster staying dead;
+an unchanged live source on a failed destination, a killed monster staying dead;
 rule tests for a combat round's recovery. Failed travel keeping the source is
 tested, and passing time healing the roster but not a non-roster
 `Character`.
@@ -84,16 +83,13 @@ Camp acceptance now follows battle acceptance and its deferred commits. World
 picking and activation now follow camera updates, transform propagation and
 visibility completion. Retain those production ordering boundaries.
 
-1. **Preserve every time consequence.** Battle recognition is now synchronous,
-   but `pass_time` emits one request whenever any aging ticks crossed, and the
-   Update reader coalesces requests. Recognition consumes gameplay RNG; each
-   required pass belongs to its ordered time operation. Keep notifications
-   separate from commands whose count matters.
-2. **Prepare travel before capturing the source.** Let the destination own its
-   arrival request. After required assets succeed, capture, activate, place and
-   retire in one commit. Delete provisional snapshots and `stay()` rollback.
-   Decide explicitly whether failed mandatory navigation rejects preparation;
-   it currently counts as settled and permits activation without navigation.
+1. **Preserve every time consequence.** Implemented: aging applies each tick's
+   conditions followed by its recognition rolls synchronously. The transient
+   requests and coalescing reader are deleted; fixed-step batching cannot lose
+   required recognition work.
+2. **Prepare travel before capturing the source.** Implemented: destination-owned
+   arrival and success-only capture/activation replace provisional snapshots,
+   `Departing` and `stay()` rollback. Failed mandatory navmeshes reject loading.
 3. **Give world actors their bodies and movement intent.** `embody_fighters`
    still creates bodies at battle entry and changes root-position meaning from
    feet to body centre. Monster death now cancels movement through its damage

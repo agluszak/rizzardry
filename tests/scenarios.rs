@@ -14,7 +14,7 @@ use rizzardry::app::{Options, build};
 use rizzardry::game::combat::Battle;
 use rizzardry::game::inventory::PartyInventory;
 use rizzardry::game::world::items::WorldItem;
-use rizzardry::game::world::level::{Departing, Level, Travel};
+use rizzardry::game::world::level::{Level, Travel};
 use rizzardry::game::world::population::Monster;
 
 /// One game at a time: they share the navmesh cache and the asset
@@ -47,7 +47,7 @@ fn step_until(app: &mut App, what: &str, done: impl Fn(&mut World) -> bool) {
 
 /// The level being played, by path.
 fn playing(world: &mut World) -> Option<String> {
-    let mut levels = world.query_filtered::<&Level, Without<Departing>>();
+    let mut levels = world.query_filtered::<&Level>();
     levels.iter(world).next().map(|level| level.path.clone())
 }
 

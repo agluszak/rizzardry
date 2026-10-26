@@ -6,14 +6,14 @@ use bevy::prelude::*;
 
 use super::body::{EYE_ABOVE_CENTRE, PartyBody};
 use crate::content::level::{Arrival, LevelGeometry};
-use crate::game::world::level::{Departing, Level, Travel, ask_travel};
+use crate::game::world::level::{Level, Travel, ask_travel};
 use crate::game::world::props::pose;
 use crate::game::world::triggers::{LevelState, PartyMove, PendingPartyMove};
 
 pub fn run_walk_in_triggers(
     time: Res<Time>,
     party: Query<&Position, With<PartyBody>>,
-    levels: Query<Entity, (With<Level>, Without<Departing>)>,
+    levels: Query<Entity, With<Level>>,
 ) -> Option<(Entity, Vec3, std::time::Duration)> {
     Some((levels.single().ok()?, PartyBody::eye(party.single().ok()?), time.delta()))
 }
@@ -31,7 +31,7 @@ pub struct PathFlight {
 pub fn move_party(
     mut commands: Commands,
     mut party: Query<(Entity, &mut PartyBody, &mut Position, &mut Transform, Has<PathFlight>)>,
-    mut levels: Query<(Entity, &Level, &mut LevelState), Without<Departing>>,
+    mut levels: Query<(Entity, &Level, &mut LevelState)>,
     geometry: Res<Assets<LevelGeometry>>,
     mut travel: MessageWriter<Travel>,
     mut pending: ResMut<PendingPartyMove>,

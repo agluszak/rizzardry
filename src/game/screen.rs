@@ -10,7 +10,7 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use crate::game::camp::Camp;
-use crate::game::world::level::{Departing, Level, TravelQuestion};
+use crate::game::world::level::{Level, TravelQuestion};
 
 /// The full screen that is up; they are mutually exclusive.
 #[derive(States, Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
@@ -24,7 +24,7 @@ pub enum Screen {
 /// What decides whether the party is free to act.
 #[derive(SystemParam)]
 pub struct Freedom<'w, 's> {
-    levels: Query<'w, 's, (), (With<Level>, Without<Departing>)>,
+    levels: Query<'w, 's, (), With<Level>>,
     screen: Res<'w, State<Screen>>,
     next: Res<'w, NextState<Screen>>,
     camp: Option<Res<'w, Camp>>,

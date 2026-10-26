@@ -189,19 +189,17 @@ pub struct PartyPlacement<'w, 's> {
             &'static mut LinearVelocity,
         ),
     >,
-    start: Option<Res<'w, PartyStart>>,
     motion_configs: ResMut<'w, Assets<PartyMotionConfig>>,
 }
 
 impl PartyPlacement<'_, '_> {
     /// Put the party in a level being activated: spawn it in the first,
-    /// move it into the next and resume its body, suspended for the trip.
+    /// move it into the next at the successful activation boundary.
     ///
     /// Retail enters a level at an entrance trigger (e.g. `MO100`) and falls
     /// back to an eye position of (0, 1000, 0) when there is none. Entrance
     /// triggers the party arrives inside do not fire until it leaves them.
-    pub fn place(&mut self, commands: &mut Commands, level: &LevelGeometry) {
-        let start = self.start.as_ref().map(|s| (**s).clone()).unwrap_or_default();
+    pub fn place(&mut self, commands: &mut Commands, level: &LevelGeometry, start: &PartyStart) {
         let entrance = start.entrance.as_deref().and_then(|name| {
             let found = level.entrances.iter().find(|e| e.name.eq_ignore_ascii_case(name));
             if found.is_none() {
@@ -222,18 +220,13 @@ impl PartyPlacement<'_, '_> {
             at.0 = position;
             transform.translation = position;
             velocity.0 = Vec3::ZERO;
-            commands.entity(entity).remove::<RigidBodyDisabled>();
+            body.pitch = start.pitch.clamp(-MAX_PITCH, MAX_PITCH);
+            commands
+                .entity(entity)
+                .remove::<(crate::game::party::walk_in::PathFlight, RigidBodyDisabled)>();
             return;
         }
-        spawn_party(commands, &start, yaw, position, &mut self.motion_configs);
-    }
-
-    /// Let the party's body move again where it stands (travel that did
-    /// not happen).
-    pub fn resume(&self, commands: &mut Commands) {
-        for (entity, ..) in &self.party {
-            commands.entity(entity).remove::<RigidBodyDisabled>();
-        }
+        spawn_party(commands, start, yaw, position, &mut self.motion_configs);
     }
 }
 
@@ -269,7 +262,7 @@ fn spawn_party(
 
 /// Where the party enters the next level that becomes ready: an entrance
 /// trigger, unless an explicit eye position (metres) or facing overrides it.
-#[derive(Resource, Debug, Clone, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct PartyStart {
     pub entrance: Option<String>,
     pub eye: Option<Vec3>,
