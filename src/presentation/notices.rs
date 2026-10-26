@@ -255,6 +255,7 @@ pub fn queue_notices(
     mut items: MessageReader<ItemNews>,
     mut search: MessageReader<SearchNews>,
     mut identified: MessageReader<Identified>,
+    names: super::names::ActorNames,
     art: Res<NoticeArt>,
     tables: Res<Assets<TextTable>>,
     levels: Query<&Level>,
@@ -345,25 +346,36 @@ pub fn queue_notices(
                 vec![string(COMBAT)]
             }
             CombatNews::Attack { attacker, target, how, swings } => {
-                vec![announce(&string, attacker, target, *how, *swings)]
+                match (names.name(*attacker), names.name(*target)) {
+                    (Some(attacker), Some(target)) => {
+                        vec![announce(&string, &attacker, &target, *how, *swings)]
+                    }
+                    _ => vec![],
+                }
             }
             // Retail's summary (`ReportCharacterAttackResult`).
-            CombatNews::Result { attacker, hits, damage } => vec![match (hits, damage) {
-                (0, _) => string(MISSED),
-                (_, 0) => string(NO_DAMAGE),
-                (1, damage) => {
-                    format!("{attacker} {}", string(HITS).replace("%ld", &damage.to_string()))
-                }
-                (hits, damage) => format!(
-                    "{attacker} {}",
-                    string(HITS_TIMES).replacen("%ld", &hits.to_string(), 1).replacen(
-                        "%ld",
-                        &damage.to_string(),
-                        1
-                    )
-                ),
-            }],
-            CombatNews::Killed { name } => vec![format!("{name} {}", string(DIES))],
+            CombatNews::Result { attacker, hits, damage, .. } => {
+                let Some(attacker) = names.name(*attacker) else { continue };
+                vec![match (hits, damage) {
+                    (0, _) => string(MISSED),
+                    (_, 0) => string(NO_DAMAGE),
+                    (1, damage) => {
+                        format!("{attacker} {}", string(HITS).replace("%ld", &damage.to_string()))
+                    }
+                    (hits, damage) => format!(
+                        "{attacker} {}",
+                        string(HITS_TIMES).replacen("%ld", &hits.to_string(), 1).replacen(
+                            "%ld",
+                            &damage.to_string(),
+                            1
+                        )
+                    ),
+                }]
+            }
+            CombatNews::Killed { actor } => names
+                .name(*actor)
+                .map(|name| vec![format!("{name} {}", string(DIES))])
+                .unwrap_or_default(),
             CombatNews::Won { experience_each, .. } => vec![
                 string(WON),
                 string(SURVIVORS_EARNED).replace("%d", &experience_each.to_string()),

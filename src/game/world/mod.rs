@@ -1,5 +1,6 @@
 //! The active level and its local objects.
 
+pub mod damage;
 pub mod identify;
 pub mod interaction;
 pub mod items;

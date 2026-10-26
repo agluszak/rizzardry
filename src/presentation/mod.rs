@@ -13,6 +13,7 @@ pub mod main_screen;
 pub mod mipmaps;
 pub mod monsters;
 pub mod music;
+pub mod names;
 pub mod notices;
 pub mod party_view;
 pub mod screen_art;

@@ -47,7 +47,18 @@ pub fn drop_loot(
         0 => return,
         1 => WorldItem { item: items.remove(0), hidden: false, contents: vec![] },
         _ => {
-            let Some(bag) = catalog.get(BAG_OF_ITEMS) else { return };
+            let Some(bag) = catalog.get(BAG_OF_ITEMS) else {
+                // Invalid/incomplete catalogs still preserve every owned drop.
+                for item in items {
+                    commands.spawn((
+                        Name::new("loot"),
+                        WorldItem { item, hidden: false, contents: vec![] },
+                        Transform::from_translation(feet + Vec3::Y * CLEARANCE),
+                        ChildOf(level),
+                    ));
+                }
+                return;
+            };
             let item = make_item(bag, ids, rng, false, false);
             WorldItem { item, hidden: false, contents: items }
         }

@@ -15,14 +15,11 @@ use enumset::EnumSet;
 use crate::content::items::AttackMode;
 use crate::content::species::AttackWord;
 
-use crate::content::items::{Dice, ItemCatalog, ItemId, LootTables};
+use crate::content::items::{Dice, ItemCatalog};
 use crate::content::species::{MonsterCatalog, Reach};
 use crate::game::characters::{Character, Condition};
 use crate::game::data::GameData;
-use crate::game::inventory::{
-    Carried, EquipSlot, ItemIds, ItemInstanceId, PartyInventory, make_item,
-};
-use crate::game::loot;
+use crate::game::inventory::{Carried, EquipSlot, ItemInstanceId};
 use crate::game::party::Order;
 use crate::game::party::body::PartyBody;
 use crate::game::party::formation::{self, Formation, Row};
@@ -30,8 +27,8 @@ use crate::game::party::recovery;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::time::GameClock;
-use crate::game::world::identify::{DetectGroups, GroupMember, MonsterGroup};
-use crate::game::world::items::drop_loot;
+use crate::game::world::damage::{DamageOutcome, MonsterDamage};
+use crate::game::world::identify::DetectGroups;
 use crate::game::world::population::Monster;
 use attack::{
     Swing, armour, character_initiative, character_swing, monster_swing, phase, primary_hand,
@@ -164,19 +161,20 @@ pub enum CombatNews {
     /// An attack begins (retail `StartCharacterAttack`,
     /// `AnnounceMonsterAttack`).
     Attack {
-        attacker: String,
-        target: String,
+        attacker: Entity,
+        target: Entity,
         how: Announcement,
         swings: u32,
     },
     /// What it did: hits (that landed, damage or not) and damage dealt.
     Result {
-        attacker: String,
+        attacker: Entity,
+        target: Entity,
         hits: u32,
         damage: u32,
     },
     Killed {
-        name: String,
+        actor: Entity,
     },
     Won {
         kills: u32,
@@ -361,33 +359,26 @@ pub fn run_battle(
     mut clock: ResMut<GameClock>,
     roster: Res<PartyRoster>,
     mut members: Query<(&mut Character, &Carried)>,
-    mut monsters: Query<(&mut Monster, &GlobalTransform, Option<&Walker>)>,
+    mut damage: MonsterDamage,
     party_body: Query<(&Position, &PartyBody)>,
     mut formation: ResMut<Formation>,
-    mut purse: ResMut<PartyInventory>,
     data: Option<Res<GameData>>,
-    (items, species, tables, mut ids): (
-        Res<Assets<ItemCatalog>>,
-        Res<Assets<MonsterCatalog>>,
-        Res<Assets<LootTables>>,
-        ResMut<ItemIds>,
-    ),
+    (items, species): (Res<Assets<ItemCatalog>>, Res<Assets<MonsterCatalog>>),
     mut news: MessageWriter<CombatNews>,
-    (mut starts, settings, orders, groups, memberships, mut detect, levels): (
+    (mut starts, settings, orders, mut detect): (
         MessageReader<StartRound>,
         Res<CombatSettings>,
         Query<&Order>,
-        Query<&MonsterGroup>,
-        Query<&GroupMember>,
         MessageWriter<DetectGroups>,
-        Query<Entity, With<crate::game::world::level::Level>>,
     ),
 ) {
     let Some(mut battle) = battle else { return };
-    let (Some(items), Some(species), Some(tables)) = (
+    if !damage.ready() {
+        return;
+    }
+    let (Some(items), Some(species)) = (
         data.as_ref().and_then(|d| items.get(&d.items)),
         data.as_ref().and_then(|d| species.get(&d.species)),
-        data.as_ref().and_then(|d| tables.get(&d.loot)),
     ) else {
         return;
     };
@@ -432,7 +423,7 @@ pub fn run_battle(
         }
         for index in 0..battle.monsters.len() {
             let entity = battle.monsters[index].0;
-            let Ok((monster, ..)) = monsters.get(entity) else { continue };
+            let Ok((monster, ..)) = damage.monsters.get(entity) else { continue };
             let Some(kind) = species.0.get(monster.species as usize) else { continue };
             battle.monsters[index].1 = if monster.is_dead() {
                 Turn::default()
@@ -457,7 +448,7 @@ pub fn run_battle(
                 &mut rng,
                 &roster,
                 &mut members,
-                &monsters,
+                &damage.monsters,
                 &mut news,
                 &mut detect,
             );
@@ -477,37 +468,35 @@ pub fn run_battle(
             let levels_sum: u32 =
                 members.iter_many(&roster.0).flatten().map(|(c, _)| u32::from(c.level)).sum();
             let party_level = levels_sum / roster.0.len().max(1) as u32;
-            let loot = member_acts(
+            let casualty = member_acts(
                 &mut battle,
                 index,
                 member,
                 &mut rng,
                 &mut members,
-                &mut monsters,
+                &mut damage,
                 &party,
                 &formation,
                 items,
                 species,
-                &groups,
-                &memberships,
-                (&mut purse, tables, party_level),
+                party_level,
                 &mut news,
             );
-            if let (Some(loot), Ok(level)) = (loot, levels.single()) {
-                let made = loot
-                    .items
-                    .into_iter()
-                    .filter_map(|id| items.get(id))
-                    .map(|definition| make_item(definition, &mut ids, &mut rng, false, false))
-                    .collect();
-                drop_loot(&mut commands, level, loot.feet, made, items, &mut ids, &mut rng);
+            if let Some((target, outcome)) = casualty {
+                battle.experience += outcome.experience;
+                battle.kills += 1;
+                if let Some((_, turn)) =
+                    battle.monsters.iter_mut().find(|(actor, _)| *actor == target)
+                {
+                    *turn = Turn::default();
+                }
             }
             battle.wait = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
             return;
         }
         if let Some(index) = battle.monsters.iter().position(|(_, t)| t.phase == step) {
             let entity = battle.monsters[index].0;
-            if !monsters.get(entity).is_ok_and(|(m, ..)| monster_can_attack(m)) {
+            if !damage.monsters.get(entity).is_ok_and(|(m, ..)| monster_can_attack(m)) {
                 battle.monsters[index].1 = Turn::default();
                 continue;
             }
@@ -517,13 +506,11 @@ pub fn run_battle(
                 &mut rng,
                 &roster,
                 &mut members,
-                &monsters,
+                &damage.monsters,
                 &party,
                 &mut formation,
                 items,
                 species,
-                &groups,
-                &memberships,
                 &mut news,
             );
             battle.wait = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
@@ -553,16 +540,14 @@ fn member_acts(
     member: Entity,
     rng: &mut GameRng,
     members: &mut Query<(&mut Character, &Carried)>,
-    monsters: &mut Query<(&mut Monster, &GlobalTransform, Option<&Walker>)>,
+    damage: &mut MonsterDamage,
     party: &PartyView,
     formation: &Formation,
     items: &ItemCatalog,
     species: &MonsterCatalog,
-    groups: &Query<&MonsterGroup>,
-    memberships: &Query<&GroupMember>,
-    (purse, tables, party_level): (&mut PartyInventory, &LootTables, u32),
+    party_level: u32,
     news: &mut MessageWriter<CombatNews>,
-) -> Option<Loot> {
+) -> Option<(Entity, DamageOutcome)> {
     let Ok((mut character, carried)) = members.get_mut(member) else { return None };
     let hand = primary_hand(&character, carried, items);
     // Retail `ChooseMonsterTarget`: among the monsters this hand reaches,
@@ -572,9 +557,11 @@ fn member_acts(
         .monsters
         .iter()
         .filter_map(|&(entity, _)| {
-            let (monster, at, walker) = monsters.get(entity).ok()?;
+            let (monster, at, walker, _) = damage.monsters.get(entity).ok()?;
             let distance = distance_to_party(party.eye, monster, feet(at.translation(), walker));
-            if monster.is_dead()
+            if !species.0.get(monster.species as usize).is_some_and(|kind| !kind.npc)
+                || !damage.active(entity)
+                || monster.is_dead()
                 || !party.reaches(formation, member, at.translation(), hand.reach, distance)
             {
                 return None;
@@ -599,49 +586,27 @@ fn member_acts(
     turn.attacks_left -= 1;
     turn.phase = next_phase(turn.phase, turn.attacks_left);
     battle.attacked_this_round = true;
-    let Ok((mut monster, at, walker)) = monsters.get_mut(target) else { return None };
-    let feet = feet(at.translation(), walker);
-    let kind = species.0.get(monster.species as usize)?;
-    let name = kind
-        .shown_name(
-            memberships
-                .get(target)
-                .ok()
-                .and_then(|m| groups.get(m.0).ok())
-                .is_some_and(|g| g.identified),
-            1,
-        )
-        .to_owned();
+    let kind = species.0.get(damage.monsters.get(target).ok()?.0.species as usize)?;
     // Retail draws the attack's mode, then its swings.
     let mode = attack::choose_mode(rng, hand.modes);
     let swings = rng.below(hand.swings) + 1;
     news.write(CombatNews::Attack {
-        attacker: character.name.clone(),
-        target: name.clone(),
+        attacker: member,
+        target,
         how: Announcement::Mode(mode),
         swings,
     });
-    let (mut hits, mut dealt, mut loot) = (0, 0, None);
+    let (mut hits, mut dealt, mut casualty) = (0, 0, None);
     for _ in 0..swings {
         match character_swing(rng, &character, &hand, mode, kind) {
-            Swing::Hit(damage) => {
+            Swing::Hit(damage_amount) => {
                 hits += 1;
-                dealt += damage.min(monster.hp);
-                monster.hp = monster.hp.saturating_sub(damage);
-                if monster.is_dead() {
-                    // Death bookkeeping at once: experience, what it leaves
-                    // (its gold to the party, its items to lay where it
-                    // fell), and out of the turn order. Retail drops them
-                    // with the dying animation; here they come at the blow.
-                    battle.experience += kind.experience;
-                    battle.kills += 1;
-                    let (items_left, gold) =
-                        loot::monster_loot(kind, tables, items, party_level, rng);
-                    purse.gold += gold;
-                    if let Some(entry) = battle.monsters.iter_mut().find(|(e, _)| *e == target) {
-                        entry.1 = Turn::default();
-                    }
-                    loot = Some(Loot { feet, items: items_left });
+                let outcome = damage
+                    .apply(target, damage_amount, party_level, rng)
+                    .expect("an active target and required catalogs were checked before attacking");
+                dealt += outcome.damage;
+                if outcome.died {
+                    casualty = Some((target, outcome));
                     break;
                 }
             }
@@ -650,9 +615,9 @@ fn member_acts(
         };
     }
     // The summary, then the casualty (retail `ReportCharacterAttackResult`).
-    news.write(CombatNews::Result { attacker: character.name.clone(), hits, damage: dealt });
-    if loot.is_some() {
-        news.write(CombatNews::Killed { name });
+    news.write(CombatNews::Result { attacker: member, target, hits, damage: dealt });
+    if casualty.is_some() {
+        news.write(CombatNews::Killed { actor: target });
     }
     // Swinging tires: weight/40 + 1 = b, then b + 1 + below(b).
     let weight = carried
@@ -662,14 +627,7 @@ fn member_acts(
     let b = weight / 40 + 1;
     let cost = rng.below(b) + 1 + b;
     character.spend_stamina(cost);
-    loot
-}
-
-/// What a slain monster left to lay on the ground: where its feet were and
-/// its items.
-struct Loot {
-    feet: Vec3,
-    items: Vec<ItemId>,
+    casualty
 }
 
 fn monster_acts(
@@ -678,28 +636,16 @@ fn monster_acts(
     rng: &mut GameRng,
     roster: &PartyRoster,
     members: &mut Query<(&mut Character, &Carried)>,
-    monsters: &Query<(&mut Monster, &GlobalTransform, Option<&Walker>)>,
+    monsters: &Query<(&mut Monster, &GlobalTransform, Option<&Walker>, &ChildOf)>,
     party: &PartyView,
     formation: &mut ResMut<Formation>,
     items: &ItemCatalog,
     species: &MonsterCatalog,
-    groups: &Query<&MonsterGroup>,
-    memberships: &Query<&GroupMember>,
     news: &mut MessageWriter<CombatNews>,
 ) {
     let (entity, turn) = battle.monsters[index];
-    let Ok((monster, at, walker)) = monsters.get(entity) else { return };
+    let Ok((monster, at, walker, _)) = monsters.get(entity) else { return };
     let Some(kind) = species.0.get(monster.species as usize) else { return };
-    let name = kind
-        .shown_name(
-            memberships
-                .get(entity)
-                .ok()
-                .and_then(|m| groups.get(m.0).ok())
-                .is_some_and(|g| g.identified),
-            1,
-        )
-        .to_owned();
     let distance = distance_to_party(party.eye, monster, feet(at.translation(), walker));
     // Every (attack, mode, member) that reaches is equally likely.
     let mut candidates = vec![];
@@ -734,8 +680,8 @@ fn monster_acts(
     }
     let swings = rng.below(u32::from(kind.swings_per_round.max(1))) + 1;
     news.write(CombatNews::Attack {
-        attacker: name.clone(),
-        target: character.name.clone(),
+        attacker: entity,
+        target: member,
         how: Announcement::Monster { word: attack.word, mode, named: attack.named },
         swings,
     });
@@ -754,9 +700,9 @@ fn monster_acts(
             Swing::Missed => {}
         };
     }
-    news.write(CombatNews::Result { attacker: name, hits, damage: dealt });
+    news.write(CombatNews::Result { attacker: entity, target: member, hits, damage: dealt });
     if character.is_dead() {
-        news.write(CombatNews::Killed { name: character.name.clone() });
+        news.write(CombatNews::Killed { actor: member });
     }
     battle.monsters[index].1 =
         Turn { phase: next_phase(turn.phase, turn_left), attacks_left: turn_left };
@@ -771,7 +717,7 @@ fn end_round(
     rng: &mut GameRng,
     roster: &PartyRoster,
     members: &mut Query<(&mut Character, &Carried)>,
-    monsters: &Query<(&mut Monster, &GlobalTransform, Option<&Walker>)>,
+    monsters: &Query<(&mut Monster, &GlobalTransform, Option<&Walker>, &ChildOf)>,
     news: &mut MessageWriter<CombatNews>,
     detect: &mut MessageWriter<DetectGroups>,
 ) {
@@ -834,6 +780,8 @@ fn end_round(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::content::items::{ItemId, LootTables};
+    use crate::game::inventory::{ItemIds, PartyInventory, make_item};
 
     #[test]
     fn sight_reaches_the_far_clip_ahead_and_less_from_behind() {
@@ -920,6 +868,17 @@ mod tests {
         let loot = app.world_mut().resource_mut::<Assets<LootTables>>().add(LootTables::default());
         app.insert_resource(GameData { items, species, loot });
         app.world_mut().spawn((PartyBody::default(), Position::default()));
+        let root = app
+            .world_mut()
+            .spawn(crate::game::world::level::Level {
+                path: "combat-test".into(),
+                geometry: default(),
+                navmeshes: vec![],
+                sky: None,
+                script: default(),
+                messages: None,
+            })
+            .id();
         let monster = app
             .world_mut()
             .spawn((
@@ -934,6 +893,7 @@ mod tests {
                     body: ScaledBody { scale: 1.0, radius: 1.0, eye_height: 1.0, speed: 0.0 },
                 },
                 GlobalTransform::from_translation(Vec3::NEG_Z),
+                ChildOf(root),
             ))
             .id();
         app.insert_resource(Battle { monsters: vec![(monster, Turn::default())], ..default() });
@@ -944,13 +904,18 @@ mod tests {
     }
 
     fn attacks(app: &mut App) -> Vec<String> {
-        app.world_mut()
+        let actors: Vec<_> = app
+            .world_mut()
             .resource_mut::<Messages<CombatNews>>()
             .drain()
             .filter_map(|n| match n {
                 CombatNews::Attack { attacker, .. } => Some(attacker),
                 _ => None,
             })
+            .collect();
+        actors
+            .into_iter()
+            .filter_map(|a| app.world().get::<Character>(a).map(|c| c.name.clone()))
             .collect()
     }
 
