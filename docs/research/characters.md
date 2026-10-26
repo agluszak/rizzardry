@@ -431,7 +431,11 @@ creation adds the point rules (`cg.cpp:889-946`, `cg.cpp:982-1056`).
    profession and gender are all set (`cd.cpp:52-56`).
 2. Attribute bases: race base (§3.1), then raise each to the profession
    minimum, then spend the rest of 60 points. One attribute may take at most
-   `(60 + 2) / 3 = 20` allocated points and may not pass 100 (`cg.cpp:219-256`).
+   `ceil(remaining pool after profession minimums / 3)` allocated points and
+   may not pass 100. Both current references confirm that profession minimums
+   reduce the pool before `RecomputeAttributeLimits` / `recomputeAttributeLimits`
+   computes the ceiling (`local_code/CharGeneration.cpp`). For pools below
+   seven, the ceiling is three or the entire remaining pool if smaller.
    A profession is choosable only if its minimums fit within the pool
    (`cg.cpp:398-420`). For a test party, `max(race base, profession minimum)`
    is valid.

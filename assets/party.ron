@@ -1,4 +1,4 @@
-// The party a new game starts with, until party creation exists.
+// The developer/headless party. Interactive new games use the creation menus.
 [
     (name: "Ragnar", race: Human, gender: Male, profession: Fighter, portrait: "hummf"),
     (name: "Saphra", race: Dracon, gender: Female, profession: Valkyrie, portrait: "dracff"),

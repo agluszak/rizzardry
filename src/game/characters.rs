@@ -3,6 +3,8 @@
 //! `docs/research/characters.md`). Spells, conditions, resistances, armour
 //! class and attacks are not modelled yet.
 
+pub mod creation;
+
 use bevy::prelude::*;
 use enum_map::EnumMap;
 
