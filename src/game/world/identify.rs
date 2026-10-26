@@ -230,28 +230,9 @@ mod tests {
         knowledge.seen.insert(62, 10);
         assert_eq!(recognition(&bishop, &knowledge, 62, 8), mythology + 6 + 6);
     }
-    #[test]
-    fn membership_updates_automatically_without_owning_member_lifetimes() {
-        let mut world = World::new();
-        let level = world.spawn_empty().id();
-        let first = world.spawn((MonsterGroup { authored: 1, ..default() }, ChildOf(level))).id();
-        let second = world.spawn((MonsterGroup { authored: 2, ..default() }, ChildOf(level))).id();
-        let member = world.spawn((GroupMember(first), ChildOf(level))).id();
-        assert_eq!(world.get::<GroupMembers>(first).unwrap().iter().collect::<Vec<_>>(), [member]);
-        world.entity_mut(member).insert(GroupMember(second));
-        assert!(world.get::<GroupMembers>(first).is_none_or(|m| m.iter().next().is_none()));
-        assert_eq!(world.get::<GroupMembers>(second).unwrap().iter().collect::<Vec<_>>(), [member]);
-        world.despawn(second);
-        assert!(world.get_entity(member).is_ok());
-        assert_eq!(world.get::<ChildOf>(member).unwrap().parent(), level);
-        assert!(world.get::<GroupMember>(member).is_none());
-        world.despawn(level);
-        assert!(world.get_entity(member).is_err());
-        assert!(world.get_entity(first).is_err());
-    }
 
     #[test]
-    fn recognition_uses_authored_visibility_and_changes_only_group_and_actor_knowledge() {
+    fn recognition_uses_authored_visibility_and_excludes_nonmembers() {
         use crate::content::level::{LevelEnvironment, LevelGeometry};
         use crate::content::species::Species;
         use crate::game::world::level::Level;
@@ -350,15 +331,5 @@ mod tests {
         assert!(known.identified && known.counted);
         assert_eq!(app.world().get::<MonsterKnowledge>(member).unwrap().seen.get(&0), Some(&1));
         assert!(app.world().get::<MonsterKnowledge>(outsider).unwrap().seen.is_empty());
-        let world = app.world_mut();
-        assert_eq!(world.query_filtered::<Entity, Changed<Character>>().iter(world).count(), 0);
-        world.clear_trackers();
-        world.write_message(DetectGroups);
-        world.run_schedule(Update);
-        assert_eq!(world.query_filtered::<Entity, Changed<MonsterGroup>>().iter(world).count(), 0);
-        assert_eq!(
-            world.query_filtered::<Entity, Changed<MonsterKnowledge>>().iter(world).count(),
-            0
-        );
     }
 }

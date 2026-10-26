@@ -8,7 +8,7 @@ use crate::game::world::items::{CLEARANCE, THROW, WorldItem, drop_held, take_ite
 use crate::game::world::level::{Departing, Level};
 use crate::game::world::population::Monster;
 use crate::game::world::props::Prop;
-use crate::game::world::triggers::{Device, DeviceOperations};
+use crate::game::world::triggers::{self, Device};
 use avian3d::prelude::{RigidBody, SpatialQuery, SpatialQueryFilter};
 use bevy::camera::visibility::RenderLayers;
 use bevy::picking::mesh_picking::ray_cast::{MeshRayCast, MeshRayCastSettings};
@@ -62,7 +62,7 @@ pub fn activate_selection(
     interact: Single<&ActionEvents, With<Action<Interact>>>,
     selection: Res<WorldSelection>,
     props: Query<Has<Device>, With<Prop>>,
-    mut acting: ParamSet<(DeviceOperations, Res<PartyInventory>)>,
+    held: Res<PartyInventory>,
     spatial: SpatialQuery,
     bodies: Query<&RigidBody>,
     mut commands: Commands,
@@ -74,11 +74,13 @@ pub fn activate_selection(
         && let Ok(device) = props.get(hit.entity)
     {
         if device {
-            acting.p0().use_device(hit.entity, hit.distance);
+            commands.queue(move |world: &mut World| {
+                triggers::activate(world, hit.entity, Some(hit.distance));
+            });
         }
         return;
     }
-    if acting.p1().held.is_some() {
+    if held.held.is_some() {
         let (Some(level), Some(ray)) = (selection.level, selection.ray) else { return };
         let solid = |entity| bodies.get(entity).is_ok_and(RigidBody::is_static);
         if let Some(at) = drop_point(&spatial, ray, &solid) {

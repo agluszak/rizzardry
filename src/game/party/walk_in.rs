@@ -6,18 +6,21 @@ use bevy::prelude::*;
 
 use super::body::{EYE_ABOVE_CENTRE, PartyBody};
 use crate::content::level::{Arrival, LevelGeometry};
-use crate::game::world::level::{Level, Travel, TravelQuestion};
+use crate::game::world::level::{Departing, Level, Travel, TravelQuestion};
 use crate::game::world::props::pose;
-use crate::game::world::triggers::{DeviceOperations, PartyMove};
+use crate::game::world::triggers::{
+    self, Device, DeviceProximity, PartyMove, PendingPartyMove, PositionedDevices,
+};
 
 pub fn run_walk_in_triggers(
     time: Res<Time>,
     party: Query<&Position, With<PartyBody>>,
-    mut triggers: DeviceOperations,
+    mut commands: Commands,
 ) {
     let Ok(position) = party.single() else { return };
     let eye = PartyBody::eye(position);
-    triggers.walk(eye, time.delta());
+    let elapsed = time.delta();
+    commands.queue(move |world: &mut World| triggers::walk(world, eye, elapsed));
 }
 
 /// The party's eye flying along a camera path; input and physics wait
@@ -33,12 +36,15 @@ pub struct PathFlight {
 pub fn move_party(
     mut commands: Commands,
     mut party: Query<(Entity, &mut PartyBody, &mut Position, &mut Transform, Has<PathFlight>)>,
-    levels: Query<&Level>,
+    levels: Query<(Entity, &Level, &PositionedDevices), Without<Departing>>,
     geometry: Res<Assets<LevelGeometry>>,
     mut travel: MessageWriter<Travel>,
-    mut triggers: DeviceOperations,
+    mut pending: ResMut<PendingPartyMove>,
+    devices: Query<&Device>,
+    mut proximity: Query<&mut DeviceProximity>,
 ) {
-    let Some((origin, party_move)) = triggers.take_party_move() else { return };
+    let Ok((origin, level, positioned)) = levels.single() else { return };
+    let Some(party_move) = pending.take_for(origin) else { return };
     let Ok((entity, mut body, mut position, mut transform, flying)) = party.single_mut() else {
         return;
     };
@@ -49,7 +55,9 @@ pub fn move_party(
             transform.translation = position.0;
             body.yaw = yaw;
             info!("teleport to {eye:.2}");
-            triggers.arrive(eye);
+            if let Some(geometry) = geometry.get(&level.geometry) {
+                triggers::arrive(eye, positioned, geometry, &devices, &mut proximity);
+            }
         }
         PartyMove::Teleport(Arrival::Entrance { entrance, ask: false }) => {
             travel.write(Travel { entrance });
@@ -62,8 +70,7 @@ pub fn move_party(
         // flying through its trigger runs it again.
         PartyMove::Fly(_) if flying => {}
         PartyMove::Fly(name) => {
-            let level = levels.iter().find_map(|level| geometry.get(&level.geometry));
-            let Some(path) = level.and_then(|level| {
+            let Some(path) = geometry.get(&level.geometry).and_then(|level| {
                 level.camera_paths.iter().position(|p| p.name.eq_ignore_ascii_case(&name))
             }) else {
                 warn!("no camera path {name}");

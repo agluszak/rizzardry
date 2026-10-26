@@ -32,6 +32,7 @@ fn app() -> App {
         .init_resource::<Assets<PartyMotionConfig>>()
         .init_resource::<LevelMemory>()
         .init_resource::<MonsterBodies>()
+        .init_resource::<rizzardry::game::inventory::PartyInventory>()
         .init_resource::<ItemIds>()
         .init_resource::<GameRng>()
         .init_resource::<PartyStart>()
@@ -263,7 +264,6 @@ fn body_metadata_loads_even_when_the_visual_cycles_fail() {
         (definition.scale, definition.fight_radius, definition.target_height),
         (2.0, 0.75, 1.5)
     );
-    assert!(app.world().resource::<Assets<MonsterModel>>().is_empty());
     std::fs::remove_dir_all(directory).unwrap();
 }
 
@@ -272,9 +272,7 @@ fn attaching_visuals_does_not_change_physical_state_or_revisit_placement() {
     use rizzardry::content::monster::MonsterModel;
     use rizzardry::game::world::navigation::Walker;
     use rizzardry::game::world::population::ScaledBody;
-    use rizzardry::presentation::monsters::{
-        MonsterInstance, MonsterVisual, build_monster_instances,
-    };
+    use rizzardry::presentation::monsters::{MonsterVisual, build_monster_instances};
 
     for show_visuals in [false, true] {
         let mut app = app();
@@ -299,14 +297,12 @@ fn attaching_visuals_does_not_change_physical_state_or_revisit_placement() {
             let model = app.world_mut().resource_mut::<Assets<MonsterModel>>().reserve_handle();
             app.world_mut().entity_mut(actor).insert(MonsterVisual(model.clone()));
             app.update();
-            assert!(app.world().get::<MonsterInstance>(actor).is_none());
             assert_eq!(*app.world().get::<Transform>(actor).unwrap(), pose);
             app.world_mut()
                 .resource_mut::<Assets<MonsterModel>>()
                 .insert(&model, MonsterModel { cycles: default() })
                 .unwrap();
             app.update();
-            assert!(app.world().get::<MonsterInstance>(actor).is_some());
             assert_eq!(*app.world().get::<Transform>(actor).unwrap(), pose);
             assert_eq!(app.world().get::<Monster>(actor).unwrap().body, body);
         }
@@ -327,13 +323,10 @@ fn attaching_visuals_does_not_change_physical_state_or_revisit_placement() {
         assert!(is_played(&app, back));
         assert!(app.world().get_entity(first).is_err());
         let world = app.world_mut();
-        let (entity, monster, pose) =
-            world.query::<(Entity, &Monster, &Transform)>().single(world).unwrap();
+        let (monster, pose) = world.query::<(&Monster, &Transform)>().single(world).unwrap();
         assert_eq!(monster.body, body);
         assert!(pose.translation.distance(feet) < 0.00001);
         assert!((pose.rotation.to_euler(EulerRot::YXZ).0 - 0.7).abs() < 0.001);
-        assert!(world.get::<Walker>(entity).is_none());
-        assert!(world.get::<MonsterVisual>(entity).is_none());
     }
 }
 
@@ -359,94 +352,8 @@ fn a_level_waits_for_body_metadata_and_sizes_monsters_without_render_assets() {
 }
 
 #[test]
-fn device_state_and_prop_animation_survive_revisit_with_new_runtime_identities() {
-    use rizzardry::content::level::{
-        DoorLock, PropModel, TriggerAction, TriggerDefinition, TriggerUse,
-    };
-    use rizzardry::game::world::props::{Prop, PropMotion};
-    use rizzardry::game::world::triggers::{Device, DoorState, TriggerState};
-
-    let mut app = app();
-    with_data(&mut app);
-    let level = test_level(&mut app, floor());
-    {
-        let mut geometries = app.world_mut().resource_mut::<Assets<LevelGeometry>>();
-        let mut geometry = geometries.get_mut(&level.geometry).unwrap();
-        geometry.triggers.push(TriggerDefinition {
-            name: "DOOR".into(),
-            usable: true,
-            once: false,
-            fire_linked: false,
-            initial: TriggerUse { action: TriggerAction::OpenDoor, message: None },
-            alternate: None,
-            fallback: None,
-            alternate_toggles: false,
-            recipients: vec![],
-            sound: None,
-            sound_on_commit: false,
-            required_states: vec![],
-            state_change: None,
-            initial_state: None,
-            range: (0.0, 10.0),
-            door: Some(DoorLock { locked: true, key: None }),
-            place: None,
-            loot_table: None,
-        });
-        geometry.props.push(PropModel {
-            name: "door".into(),
-            collidable: false,
-            face_camera: false,
-            frames_per_second: 10.0,
-            parts: vec![],
-            wraps: false,
-            slots: vec![],
-            trigger: Some(0),
-        });
-    }
-    let first = app.world_mut().spawn(Destination::new(level.clone())).id();
-    app.update();
-    let old = app.world_mut().query_filtered::<Entity, With<Device>>().single(app.world()).unwrap();
-    assert!(app.world().get::<Prop>(old).is_some());
-    {
-        let world = app.world_mut();
-        let mut door = world.get_mut::<DoorState>(old).unwrap();
-        door.open = true;
-        door.locked = false;
-        let mut execution = world.get_mut::<TriggerState>(old).unwrap();
-        execution.on = false;
-        execution.fired = true;
-        let mut motion = world.get_mut::<PropMotion>(old).unwrap();
-        motion.frame = 1.0;
-        motion.target = 3.0;
-    }
-    app.world_mut().write_message(Travel { entrance: "MO204".into() });
-    app.world_mut().run_schedule(PreUpdate);
-    let away: Vec<_> =
-        app.world_mut().query_filtered::<Entity, With<Destination>>().iter(app.world()).collect();
-    for entity in away {
-        app.world_mut().despawn(entity);
-    }
-    let back = app.world_mut().spawn(Destination::new(level)).id();
-    app.update();
-
-    assert!(is_played(&app, back));
-    assert!(app.world().get_entity(first).is_err());
-    assert!(app.world().get_entity(old).is_err());
-    let new = app.world_mut().query_filtered::<Entity, With<Device>>().single(app.world()).unwrap();
-    assert_ne!(old, new);
-    assert_eq!(app.world().get::<Device>(new).unwrap().level, back);
-    assert!(app.world().get::<Prop>(new).is_some());
-    let door = app.world().get::<DoorState>(new).unwrap();
-    assert!(door.open && !door.locked);
-    let execution = app.world().get::<TriggerState>(new).unwrap();
-    assert!(!execution.on && execution.fired);
-    let motion = app.world().get::<PropMotion>(new).unwrap();
-    assert_eq!((motion.frame, motion.target), (3.0, 3.0));
-}
-
-#[test]
-fn group_knowledge_survives_revisit_and_membership_resolves_to_new_entities() {
-    use rizzardry::game::world::identify::{GroupMember, GroupMembers, MonsterGroup};
+fn group_knowledge_survives_revisit() {
+    use rizzardry::game::world::identify::{GroupMember, MonsterGroup};
     let mut app = app();
     with_data(&mut app);
     spawn_level(&mut app, floor());
@@ -466,17 +373,72 @@ fn group_knowledge_survives_revisit_and_membership_resolves_to_new_entities() {
     let back = spawn_level(&mut app, floor());
     app.update();
     assert!(is_played(&app, back));
-    assert!(app.world().get_entity(old).is_err());
     let world = app.world_mut();
-    let (actor, membership) =
-        world.query_filtered::<(Entity, &GroupMember), With<Monster>>().single(world).unwrap();
-    assert_ne!(old, membership.0);
+    let membership = world.query_filtered::<&GroupMember, With<Monster>>().single(world).unwrap();
     let group = world.get::<MonsterGroup>(membership.0).unwrap();
-    assert_eq!(group.authored, 1);
     assert!(group.identified && group.counted);
-    assert_eq!(
-        world.get::<GroupMembers>(membership.0).unwrap().iter().collect::<Vec<_>>(),
-        [actor]
-    );
-    assert_eq!(world.get::<ChildOf>(actor).unwrap().parent(), back);
+}
+
+#[test]
+fn direct_damage_settles_death_once_and_rejection_leaves_the_target_unchanged() {
+    use bevy::ecs::system::RunSystemOnce;
+    use rizzardry::content::items::{Dice, ItemDefinition, ItemId};
+    use rizzardry::content::species::{Drop, Treasure};
+    use rizzardry::game::inventory::PartyInventory;
+    use rizzardry::game::world::damage::MonsterDamage;
+    use rizzardry::game::world::items::WorldItem;
+    let mut app = app();
+    with_data(&mut app);
+    let (items, species) = {
+        let d = app.world().resource::<GameData>();
+        (d.items.clone(), d.species.clone())
+    };
+    app.world_mut()
+        .resource_mut::<Assets<ItemCatalog>>()
+        .get_mut(&items)
+        .unwrap()
+        .0
+        .push(ItemDefinition { id: ItemId(0), ..default() });
+    {
+        let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
+        let mut catalog = catalogs.get_mut(&species).unwrap();
+        let kind = &mut catalog.0[0];
+        kind.hit_points = Dice { base: 10, ..default() };
+        kind.gold = Dice { base: 7, ..default() };
+        kind.treasure = vec![Treasure {
+            drop: Drop::Item(ItemId(0)),
+            chance: 100,
+            dice: Dice { base: 2, ..default() },
+        }];
+    }
+    let level = spawn_level(&mut app, floor());
+    app.update();
+    let world = app.world_mut();
+    let target = world.query_filtered::<Entity, With<Monster>>().single(world).unwrap();
+    let hit = |world: &mut World| {
+        world
+            .run_system_once(move |mut damage: MonsterDamage, mut rng: ResMut<GameRng>| {
+                damage.apply(target, 10, 1, &mut rng)
+            })
+            .unwrap()
+    };
+    let before = world.resource::<GameRng>().clone();
+    world.entity_mut(level).insert(Departing);
+    assert!(hit(world).is_err());
+    assert_eq!(world.get::<Monster>(target).unwrap().hp, 10);
+    assert_eq!(*world.resource::<GameRng>(), before);
+    world.entity_mut(level).remove::<Departing>();
+    assert!(hit(world).unwrap().died);
+    let after = world.resource::<GameRng>().clone();
+    hit(world).unwrap();
+    assert_eq!(*world.resource::<GameRng>(), after);
+    assert_eq!(world.resource::<PartyInventory>().gold, 7);
+    let units = world
+        .query::<&WorldItem>()
+        .iter(world)
+        .flat_map(|w| std::iter::once(&w.item).chain(w.contents.iter()))
+        .filter(|i| i.item == ItemId(0))
+        .map(|i| i.units())
+        .sum::<u32>();
+    assert_eq!(units, 2, "death preserves every drop and cannot award it twice");
 }

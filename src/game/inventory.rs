@@ -1062,36 +1062,74 @@ mod tests {
         assert_eq!(carried.backpack[0].as_ref().map(|i| i.id), Some(first));
     }
     #[test]
-    fn held_item_provenance_follows_its_actor_when_roster_positions_change() {
-        use crate::game::party::{formation::Formation, roster::PartyRoster};
+    fn inventory_activation_preserves_partial_stacks_and_rejects_nonmembers() {
+        use super::operations::InventoryOperations;
+        use crate::game::characters::{Gender, Profession, Race};
+        use crate::game::data::GameData;
+        use crate::game::party::roster::PartyRoster;
+        use bevy::ecs::system::RunSystemOnce;
         let mut world = World::new();
-        let first = world.spawn_empty().id();
-        let second = world.spawn_empty().id();
-        let replacement = world.spawn_empty().id();
-        let mut roster = PartyRoster([first, second].into_iter().collect());
-        let mut formation = Formation::default();
-        formation.seat(first);
-        formation.seat(second);
-        let (catalog, mut ids) = (catalog(), ItemIds::default());
-        let character = Character::new(
-            "First",
-            crate::game::characters::Race::Human,
-            crate::game::characters::Gender::Male,
-            crate::game::characters::Profession::Fighter,
-        );
+        let mut catalogs = Assets::<ItemCatalog>::default();
+        let items = catalogs.add(catalog());
+        world.insert_resource(catalogs);
+        world.insert_resource(GameData { items, loot: default(), species: default() });
+        world.init_resource::<PartyRoster>();
+        world.init_resource::<PartyInventory>();
+        let mut ids = ItemIds::default();
+        let source = item(&mut ids, 0, Quantity::Stack(7));
+        let id = source.id;
         let mut carried = Carried::default();
-        carried.backpack[0] = Some(item(&mut ids, 1, Quantity::One));
-        let mut inventory = PartyInventory::default();
-        let location = Slot::Backpack(0);
-        inventory.swap_with_hand(&character, &mut carried, first, location, &catalog).unwrap();
-        roster.0 = [second, first].into_iter().collect();
-        assert!(roster.remove(first, &mut formation));
-        roster.0.insert(replacement);
+        carried.backpack[0] = Some(source);
+        carried.backpack[1] = Some(item(&mut ids, 0, Quantity::Stack(18)));
+        let actor = world
+            .spawn((
+                Character::new("Archer", Race::Human, Gender::Male, Profession::Ranger),
+                carried,
+            ))
+            .id();
+        world.resource_mut::<PartyRoster>().0.insert(actor);
+        let activate = |world: &mut World, at| {
+            world.run_system_once(move |mut op: InventoryOperations| op.activate(at)).unwrap()
+        };
+        activate(&mut world, ItemLocation::Member(actor, Slot::Backpack(0))).unwrap();
         assert_eq!(
-            inventory.held.as_ref().unwrap().origin,
-            Some(ItemLocation::Member(first, location))
+            activate(&mut world, ItemLocation::Member(actor, Slot::Backpack(1))).unwrap(),
+            Some((id, Quantity::Stack(5)))
         );
-        assert_eq!(roster.0.get_index(1), Some(&replacement));
-        assert!(carried.backpack[0].is_none());
+        assert_eq!(
+            world.get::<Carried>(actor).unwrap().backpack[1].as_ref().unwrap().quantity,
+            Quantity::Stack(20)
+        );
+        assert_eq!(activate(&mut world, ItemLocation::Pool(0)).unwrap(), None);
+        assert_eq!(world.resource::<PartyInventory>().pool[0].quantity, Quantity::Stack(5));
+        let before = world.resource::<PartyInventory>().clone();
+        world.resource_mut::<PartyRoster>().0.clear();
+        assert!(activate(&mut world, ItemLocation::Member(actor, Slot::Backpack(1))).is_err());
+        assert_eq!(*world.resource::<PartyInventory>(), before);
+        assert_eq!(
+            world.get::<Carried>(actor).unwrap().backpack[1].as_ref().unwrap().quantity,
+            Quantity::Stack(20)
+        );
+    }
+
+    #[test]
+    fn full_pool_contents_transfer_conserves_every_unit_and_reports_only_what_moved() {
+        let mut ids = ItemIds::default();
+        let mut party = PartyInventory::default();
+        party.pool = (0..POOL_LIMIT).map(|_| item(&mut ids, 0, Quantity::Stack(20))).collect();
+        party.pool[17].quantity = Quantity::Stack(19);
+        let mut contents =
+            vec![item(&mut ids, 0, Quantity::Stack(5)), item(&mut ids, 0, Quantity::Stack(3))];
+        let taken = operations::transfer_contents(&mut contents, &mut party, &catalog());
+        assert_eq!(taken.iter().map(|(_, units)| units).sum::<u32>(), 1);
+        assert_eq!(contents.iter().map(ItemInstance::units).collect::<Vec<_>>(), [4, 3]);
+        assert_eq!(
+            party.pool.iter().map(ItemInstance::units).sum::<u32>()
+                + contents.iter().map(ItemInstance::units).sum::<u32>(),
+            POOL_LIMIT as u32 * 20 + 7
+        );
+        let before = (party.clone(), contents.clone());
+        assert!(operations::transfer_contents(&mut contents, &mut party, &catalog()).is_empty());
+        assert_eq!((party, contents), before);
     }
 }
