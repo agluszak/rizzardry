@@ -7,8 +7,8 @@ next to its feature when that feature changes.
 
 - Character review uses retail artwork, bitmap fonts, character portraits,
   statistics/skill layouts and page controls. Conditions and represented item
-  effects can be filtered and scrolled. Spell review, level-up editing, trait and
-  enchantment details, several combat/armor values, and the improved-skill palette
+  effects can be filtered and scrolled. Learned-spell review and level-up editing,
+  trait and enchantment details, several combat/armor values, and the improved-skill palette
   remain unported. See [source comparison](research/character-review.md).
 - Rendering and input no longer bootstrap gameplay: `LevelDefinition` and its
   collision/trigger/placement loader are separate from `LevelGeometry` and

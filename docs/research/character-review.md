@@ -33,8 +33,11 @@ from current profession levels; retail also has a separate band base for importe
 characters, which is not modelled.
 
 The bottom bar uses `ReviewPageButtons.sti` at x=420, 464, 508, and 552, with
-the retail normal, hover, selected and disabled frames. Spells is disabled until
-its gameplay and page exist. The skills screen uses `ReviewSkillsPage.sti`
+the retail normal, hover and selected frames. The magic page uses
+`ReviewMagicPage.sti`, realm icons and the retail resistance bars. It currently
+shows empty spell lists because learned spells and spell points are not modelled.
+Resistance includes racial, profession, attribute, skill and worn-item modifiers;
+ongoing spells and other unmodelled modifiers are not included. The skills screen uses `ReviewSkillsPage.sti`
 frame 2 at (0, 165), and frame 0 or 1 at (310, 0) depending on expert skills.
 The category origins are weapons (352, 173), miscellaneous (352, 369), combat
 (34, 174), magic (34, 299), and expert (352, 33). Category icons use
@@ -59,7 +62,7 @@ calculation as the main HUD.
 
 The following retail content is still missing or incomplete:
 
-- Learned spell/realm state, the spell review page, and level-up editing.
+- Learned spell/realm state, spell-list interactions, and level-up editing.
 - Trait and enchantment lists, most item modifiers, kill/death counts, and the
   full armor-component and secondary-hand calculations. Unavailable numbers are
   left blank instead of being fabricated.
@@ -74,3 +77,21 @@ exercise live character/condition updates, filter behavior and skill eligibility
 This is not a side-by-side run of the original executable. A final interactive
 comparison with the original game remains necessary before claiming pixel or
 behavioral equivalence.
+
+## Comparison with original-game images
+
+The rendered inventory and statistics pages were compared with published
+screenshots of the original game: [inventory](https://www.pcgames.de/screenshots/1280x1024/2002/01/Inventory.jpg),
+[statistics](https://blog-imgs-44-origin.fc2.com/w/i/z/wizardry8/RPC000039.jpg),
+and [skills](https://blog-imgs-44-origin.fc2.com/w/i/z/wizardry8/RPC000051.jpg).
+These references show the same page frames, portrait/header placement, inventory
+cell positions, and statistics and skills panel layout. They also expose missing
+behavior: the original item-action and filter controls are usable, equipment has
+additional overlays, the item page can switch its information panel, and the
+statistics page has more combat values and traits than the current game models.
+The currently unsupported item-action buttons use their disabled retail frames.
+
+An attempt to run the supplied `Wiz8.exe` under an isolated 32-bit Wine/QEMU
+setup reached game initialization but terminated with an illegal instruction
+before creating its game window. The published screenshots provide visual
+reference evidence; they do not establish interactive or pixel equivalence.

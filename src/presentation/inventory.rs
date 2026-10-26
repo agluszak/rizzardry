@@ -11,6 +11,7 @@ mod info;
 mod item_info;
 mod pool_scroll;
 mod review;
+mod spells;
 
 use bevy::input_focus::tab_navigation::{TabGroup, TabIndex};
 use bevy::picking::{
@@ -96,7 +97,9 @@ pub struct InventoryArt {
     page: Handle<SpriteSheet>,
     bottom_bar: Handle<SpriteSheet>,
     page_buttons: Handle<SpriteSheet>,
+    item_buttons: Handle<SpriteSheet>,
     stats_page: Handle<SpriteSheet>,
+    magic_page: Handle<SpriteSheet>,
     skills_page: Handle<SpriteSheet>,
     skills_icons: Handle<SpriteSheet>,
     slider: Handle<SpriteSheet>,
@@ -141,7 +144,9 @@ pub fn load_inventory_art(mut commands: Commands, assets: Res<AssetServer>) {
         page: load("review/reviewitempage.sti"),
         bottom_bar: load("review/bottombuttonbar.sti"),
         page_buttons: load("review/reviewpagebuttons.sti"),
+        item_buttons: load("review/reviewitembuttons.sti"),
         stats_page: load("review/reviewstatspage.sti"),
+        magic_page: load("review/reviewmagicpage.sti"),
         skills_page: load("review/reviewskillspage.sti"),
         skills_icons: load("review/reviewskillsicons.sti"),
         slider: load("review/reviewsliderbar.sti"),
@@ -532,7 +537,9 @@ pub fn spawn_inventory_screen(
         &art.page,
         &art.bottom_bar,
         &art.page_buttons,
+        &art.item_buttons,
         &art.stats_page,
+        &art.magic_page,
         &art.skills_page,
         &art.skills_icons,
         &art.slider,
@@ -630,6 +637,7 @@ pub fn spawn_inventory_screen(
         focus.set(initial_tab, bevy::input_focus::FocusCause::Navigated);
     }
     item_info::build(&mut commands, content, &art);
+    spells::build(&mut commands, content, &art);
     pool_scroll::build(&mut commands, content, &art);
 }
 
@@ -1187,6 +1195,7 @@ impl Plugin for InventoryPlugin {
                     info::initialize_focus,
                     info::style_arrows,
                     item_info::refresh,
+                    spells::refresh,
                     pool_scroll::sync.before(draw_cells),
                 )
                     .after(spawn_inventory_screen),
@@ -1428,6 +1437,7 @@ mod keyboard_lifecycle_tests {
         tap(&mut app, window, KeyCode::Tab);
         key(&mut app, window, KeyCode::ShiftLeft, false);
         assert_eq!(app.world().resource::<InputFocus>().get(), Some(initial));
+        tap(&mut app, window, KeyCode::ArrowRight);
         tap(&mut app, window, KeyCode::ArrowRight);
         assert_eq!(app.world().resource::<InputFocus>().get(), Some(skill_tab));
         tap(&mut app, window, KeyCode::Enter);
