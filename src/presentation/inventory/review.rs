@@ -29,6 +29,7 @@ pub(super) enum Page {
     Items,
     Statistics,
     Skills,
+    Spells,
 }
 #[derive(Component)]
 pub(super) struct PageButton(pub(super) Page);
@@ -158,6 +159,17 @@ fn panel(commands: &mut Commands, root: Entity, page: Page) -> Entity {
 }
 
 pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) -> Entity {
+    // These actions require their gameplay operations; show retail's disabled
+    // art until those operations are available.
+    for (i, base) in [0, 10, 5, 15, 20, 30, 35, 25].into_iter().enumerate() {
+        picture(
+            commands,
+            root,
+            art.item_buttons.clone(),
+            base + 3,
+            Vec2::new(i as f32 * 44.0, 450.0),
+        );
+    }
     let list = commands
         .spawn((
             PageTabs,
@@ -169,10 +181,14 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) -
         .observe(tablist_self_update)
         .id();
     let mut initial = Entity::PLACEHOLDER;
-    for (i, (page, base)) in
-        [(Some(Page::Items), 0), (None, 10), (Some(Page::Skills), 15), (Some(Page::Statistics), 5)]
-            .into_iter()
-            .enumerate()
+    for (i, (page, base)) in [
+        (Some(Page::Items), 0),
+        (Some(Page::Spells), 10),
+        (Some(Page::Skills), 15),
+        (Some(Page::Statistics), 5),
+    ]
+    .into_iter()
+    .enumerate()
     {
         let at = Vec2::new(i as f32 * 44.0, 0.0);
         let mut button = commands.spawn((
@@ -625,8 +641,13 @@ pub(super) fn refresh(
                     0
                 };
                 let cursed = definition.cursed && !item.curse_released;
-                let beneficial = definition.hit_bonus > 0 || armour > 0;
-                let detrimental = definition.hit_bonus < 0 || armour < 0 || cursed;
+                let beneficial = definition.hit_bonus > 0
+                    || armour > 0
+                    || definition.resistance_bonus.values().any(|&value| value > 0);
+                let detrimental = definition.hit_bonus < 0
+                    || armour < 0
+                    || cursed
+                    || definition.resistance_bonus.values().any(|&value| value < 0);
                 if !(beneficial || detrimental)
                     || (effect_filter == EffectFilter::Beneficial && !beneficial)
                     || (effect_filter == EffectFilter::Detrimental && !detrimental)
@@ -639,6 +660,19 @@ pub(super) fn refresh(
                 }
                 if armour != 0 {
                     effects.push((format!("{} {:+}", string(0x8df), armour), false));
+                }
+                for (realm, &bonus) in definition.resistance_bonus.iter() {
+                    if bonus != 0 {
+                        effects.push((
+                            format!(
+                                "{} {} {:+}%",
+                                string(0x30b + realm as usize),
+                                string(0x8e0),
+                                bonus
+                            ),
+                            false,
+                        ));
+                    }
                 }
                 if cursed {
                     effects.push((string(0x8e1).to_owned(), false));
@@ -953,6 +987,7 @@ pub(super) fn style_buttons(
         let base = match button.0 {
             Page::Items => 0,
             Page::Skills => 15,
+            Page::Spells => 10,
             Page::Statistics => 5,
         };
         let frame = base

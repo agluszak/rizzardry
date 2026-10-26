@@ -5,7 +5,7 @@ use enum_map::{Enum, EnumMap};
 use enumset::{EnumSet, EnumSetType};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
-use super::characters::{Attribute, Gender, Profession, Race, Skill};
+use super::characters::{Attribute, Gender, Profession, Race, Realm, Skill};
 use super::species::Reach;
 
 /// An item definition's stable number (retail's item number).
@@ -131,6 +131,8 @@ pub struct ItemDefinition {
     pub damage_bonus: i8,
     pub hit_bonus: i8,
     pub armor_class_bonus: i8,
+    /// Resistance modifiers while equipped, by magical realm.
+    pub resistance_bonus: EnumMap<Realm, i8>,
     pub quantity: QuantityKind,
     /// Rolled when the item is created.
     pub initial_quantity: Dice,
