@@ -47,6 +47,29 @@ pub fn choose_mode(rng: &mut GameRng, modes: EnumSet<AttackMode>) -> AttackMode 
     modes.iter().cycle().nth(wanted).unwrap_or(AttackMode::Swing)
 }
 
+/// Stamina spent by one executed swing of an ordinary Attack order.
+/// Berserk is a separate accepted order in retail, not merely a weapon mode.
+/// Load scaling belongs at the caller once shared party burden is supported.
+pub fn swing_stamina(
+    rng: &mut GameRng,
+    mode: AttackMode,
+    weight: Option<u16>,
+    diseased: bool,
+) -> u32 {
+    let cost = match mode {
+        AttackMode::Punch => rng.below(3) + 2,
+        AttackMode::Kick => rng.below(3) + 3,
+        _ => match weight {
+            None => rng.below(4) + 3,
+            Some(weight) => {
+                let band = u32::from(weight) / 40 + 1;
+                rng.below(band) + 1 + band
+            }
+        },
+    };
+    cost * if diseased { 2 } else { 1 }
+}
+
 /// The equipment slot whose armour covers a character's hit location.
 fn armour_slot(part: BodyPart) -> EquipSlot {
     match part {
@@ -327,6 +350,23 @@ pub fn character_initiative(c: &Character, hand: &Hand) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn swing_costs_follow_the_attack_and_disease_doubles_them() {
+        for (mode, weight, range) in [
+            (AttackMode::Punch, Some(800), 2..=4),
+            (AttackMode::Kick, Some(800), 3..=5),
+            (AttackMode::Swing, None, 3..=6),
+            (AttackMode::Swing, Some(0), 2..=2),
+            (AttackMode::Swing, Some(80), 4..=6),
+        ] {
+            for seed in 0..16 {
+                let cost = swing_stamina(&mut GameRng::seeded(seed), mode, weight, false);
+                assert!(range.contains(&cost));
+                assert_eq!(swing_stamina(&mut GameRng::seeded(seed), mode, weight, true), 2 * cost);
+            }
+        }
+    }
 
     #[test]
     fn modes_are_chosen_from_the_set_bits_round_robin() {

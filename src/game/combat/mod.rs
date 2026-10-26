@@ -605,7 +605,11 @@ fn member_acts(
         swings,
     });
     let (mut hits, mut dealt, mut casualty) = (0, 0, None);
+    let weight = carried.worn(EquipSlot::Primary).and_then(|i| items.get(i.item)).map(|d| d.weight);
     for _ in 0..swings {
+        if !able(&vitals) {
+            break;
+        }
         match character_swing(rng, &character, &vitals, &hand, mode, kind) {
             Swing::Hit(damage_amount) => {
                 hits += 1;
@@ -615,26 +619,22 @@ fn member_acts(
                 dealt += outcome.damage;
                 if outcome.died {
                     casualty = Some((target, outcome));
-                    break;
                 }
             }
             Swing::NoPenetration => hits += 1,
             Swing::Missed => {}
         };
+        let cost = attack::swing_stamina(rng, mode, weight, vitals.has(Condition::Diseased));
+        vitals.spend_stamina(cost);
+        if casualty.is_some() {
+            break;
+        }
     }
     // The summary, then the casualty (retail `ReportCharacterAttackResult`).
     news.write(CombatNews::Result { attacker: member, target, hits, damage: dealt });
     if casualty.is_some() {
         news.write(CombatNews::Killed { actor: target });
     }
-    // Swinging tires: weight/40 + 1 = b, then b + 1 + below(b).
-    let weight = carried
-        .worn(crate::game::inventory::EquipSlot::Primary)
-        .and_then(|i| items.get(i.item))
-        .map_or(0, |d| u32::from(d.weight));
-    let b = weight / 40 + 1;
-    let cost = rng.below(b) + 1 + b;
-    vitals.spend_stamina(cost);
     casualty
 }
 
@@ -983,6 +983,36 @@ mod tests {
             !app.world().get::<MonsterGroup>(outsider_group).unwrap().counted,
             "ending the battle cannot broaden its pending recognition to outsiders"
         );
+    }
+
+    #[test]
+    fn every_executed_swing_costs_stamina_and_exhaustion_stops_the_attack() {
+        let run = |stamina| {
+            let (mut app, [actor, _]) = round_app(false);
+            app.world_mut().get_mut::<Vitals>(actor).unwrap().stamina = stamina;
+            app.update();
+            let news: Vec<_> =
+                app.world_mut().resource_mut::<Messages<CombatNews>>().drain().collect();
+            let announced = news
+                .iter()
+                .find_map(|n| match n {
+                    CombatNews::Attack { attacker, swings, .. } if *attacker == actor => {
+                        Some(*swings)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            let target = app.world_mut().query::<&Monster>().single(app.world()).unwrap();
+            (announced, app.world().get::<Vitals>(actor).unwrap().clone(), target.hp)
+        };
+        // The fixture's weight-zero sword costs two points per swing.
+        let (swings, rested, _) = run(100);
+        assert!(swings > 1, "exercise a multi-swing attack");
+        assert_eq!(rested.stamina, 100 - 2 * swings);
+        let (_, exhausted, hp) = run(1);
+        assert_eq!(exhausted.stamina, 0);
+        assert!(exhausted.has(Condition::Unconscious));
+        assert!(hp >= 9999, "exhaustion allows at most one one-damage swing");
     }
 
     #[test]
