@@ -1,4 +1,5 @@
-//! The character review screen's item page (`docs/research/review-items.md`):
+//! Character review: equipment, statistics and skills. The item page follows
+//! `docs/research/review-items.md`:
 //! a member's equipment on their race's statue, their backpack, and the
 //! party's pool. Opened with I for the selected member; the header's portraits
 //! switch member, Esc, I or the Exit button closes it. Retail fills empty
@@ -7,8 +8,12 @@
 //! The screen is one scene with a node for each cell, the header and the
 //! gold; their retained nodes update when their gameplay inputs change.
 
+mod review;
+
+use bevy::input_focus::tab_navigation::{TabGroup, TabIndex};
 use bevy::picking::pointer::{PointerId, PointerLocation};
 use bevy::prelude::*;
+use bevy::ui_widgets::{Activate, Button as UiButton};
 use bevy_enhanced_input::prelude::*;
 use enumset::EnumSet;
 
@@ -78,6 +83,7 @@ pub struct InventoryScreen {
     pub member: Entity,
     /// The first pool entry shown; always even.
     pub pool_scroll: usize,
+    page: review::Page,
 }
 
 #[derive(Resource)]
@@ -168,6 +174,7 @@ fn enter_inventory(
     commands.spawn_scene(bsn! {
         @centred()
         InventoryRoot
+        TabGroup::modal()
         BackgroundColor(Color::BLACK)
         GlobalZIndex(10)
         ContextPriority::<InventoryRoot>::new(1)
@@ -177,7 +184,7 @@ fn enter_inventory(
             Bindings [ Binding(KeyCode::Escape) Binding(KeyCode::KeyI) ]
         ]
         on(|_: On<Start<CloseInventory>>, mut next: ResMut<NextState<Screen>>| { next.set(Screen::World); })
-    }).insert((InventoryScreen { member, pool_scroll: 0 }, DespawnOnExit(Screen::Inventory)));
+    }).insert((InventoryScreen { member, pool_scroll: 0, page: review::Page::Items }, DespawnOnExit(Screen::Inventory)));
 }
 
 /// This explicit exit consequence uses the same inventory operation as any
@@ -295,12 +302,13 @@ fn header(art: &InventoryArt) -> impl SceneList {
         .map(|slot| {
             let at = Vec2::new(5.0 + (slot % 2) as f32 * 48.0, 4.0 + (slot / 2) as f32 * 39.0);
             bsn! {
-                @picture(default(),0,at)
-                Pickable::default()
-                template(move |_| Ok(HeaderDisplay(HeaderPart::Member(slot))))
-                InventoryMemberButton({Entity::PLACEHOLDER})
-                on(select_inventory_member)
-            }
+                    @picture(default(),0,at)
+                    UiButton TabIndex(0) Pickable::default()
+            review::FocusControl Outline::new(px(1), px(1), Color::NONE)
+                    template(move |_| Ok(HeaderDisplay(HeaderPart::Member(slot))))
+                    InventoryMemberButton({Entity::PLACEHOLDER})
+                    on(select_inventory_member)
+                }
         })
         .collect();
     bsn_list! {
@@ -310,12 +318,11 @@ fn header(art: &InventoryArt) -> impl SceneList {
         -- @label(art.bold.clone(),Vec2::new(116.0,96.0),186.0) template(|_|Ok(HeaderDisplay(HeaderPart::Name)))
         -- @label(art.font.clone(),Vec2::new(116.0,111.0),186.0) template(|_|Ok(HeaderDisplay(HeaderPart::Race)))
         -- @label(art.font.clone(),Vec2::new(116.0,124.0),186.0) template(|_|Ok(HeaderDisplay(HeaderPart::Profession)))
-        -- @picture(default(),0,Vec2::new(194.0,165.0)) template(|_|Ok(HeaderDisplay(HeaderPart::Statue)))
     }
 }
 
 fn select_inventory_member(
-    click: On<PointerClick>,
+    click: On<Activate>,
     buttons: Query<&InventoryMemberButton>,
     roster: Res<PartyRoster>,
     screen: Option<Single<&mut InventoryScreen>>,
@@ -346,7 +353,8 @@ fn cell_controls(cell: Cell, art: &InventoryArt) -> impl Scene {
     };
     bsn! {
         node BackgroundColor({background}) template(move |_|Ok(ItemCell{cell}))
-        Pickable::default()
+        UiButton TabIndex(0) Pickable::default()
+        review::FocusControl Outline::new(px(1), px(1), Color::NONE)
         on(click_cell)
         Children [
             @picture(art.unusable.clone(),0,Vec2::ZERO)
@@ -406,7 +414,6 @@ pub fn spawn_inventory_screen(
         return;
     };
     let fixed = vec![
-        sprite(corner, 0, Vec2::ZERO),
         sprite(page, 0, Vec2::new(310.0, 0.0)),
         sprite(page, 1, Vec2::new(0.0, 165.0)),
         sprite(page, 2, Vec2::new(113.0, 165.0)),
@@ -419,6 +426,7 @@ pub fn spawn_inventory_screen(
         text(bold, &mut images, "Party Items", Vec2::new(486.0, 174.0), 141.0),
     ];
     let exit = sprite(exit, 16, Vec2::new(596.0, 450.0));
+    let corner = sprite(corner, 0, Vec2::ZERO);
     let cells: Vec<_> = EnumSet::<EquipSlot>::all()
         .iter()
         .map(|slot| Cell::Member(Slot::Equipment(slot)))
@@ -426,23 +434,28 @@ pub fn spawn_inventory_screen(
         .chain((0..POOL_CELLS).map(Cell::Pool))
         .map(|cell| cell_controls(cell, &art))
         .collect();
-    commands.entity(root).insert(InventoryBuilt).queue_spawn_related_scenes::<Children>(vec![bsn! {
-        Node { position_type: PositionType::Absolute }
+    commands.entity(root).insert(InventoryBuilt);
+    let content = commands.spawn_scene(bsn! {
+        @screen() ChildOf(root)
         Children [
-            @screen()
-            Children [
-                {fixed}
-                -- {titles}
-                -- @{exit}
-                    Pickable { should_block_lower: true, is_hoverable: true }
-                    on(|_: On<PointerClick>, mut next: ResMut<NextState<Screen>>| { next.set(Screen::World); })
-                // The header and statue lie under the cells.
-                -- {header(&art)}
-                -- @label(art.font.clone(),Vec2::new(553.0,425.0),48.0) GoldLabel
-                -- {cells}
-            ]
+            @{corner}
+            -- {header(&art)}
+            -- @screen() Pickable::IGNORE
+                template(|_| Ok(review::Page::Items))
+                Children [
+                    {fixed}
+                    -- {titles}
+                    -- @picture(default(),0,Vec2::new(194.0,165.0)) template(|_|Ok(HeaderDisplay(HeaderPart::Statue)))
+                    -- @label(art.font.clone(),Vec2::new(553.0,425.0),48.0) GoldLabel
+                    -- {cells}
+                ]
+            -- @{exit}
+                UiButton TabIndex(0) Pickable::default()
+                review::FocusControl Outline::new(px(1), px(1), Color::NONE)
+                on(|_: On<Activate>, mut next: ResMut<NextState<Screen>>| { next.set(Screen::World); })
         ]
-    }]);
+    }).id();
+    review::build(&mut commands, content);
 }
 
 /// Update the existing header controls from their actual dependencies.
@@ -610,12 +623,15 @@ fn draw_cells(
 /// Shift-clicking a single unit, pouring ammunition and stowing a weapon's
 /// partner are not done yet.
 fn click_cell(
-    click: On<PointerClick>,
+    click: On<Activate>,
     cells: Query<&ItemCell>,
     screen: Option<Single<&InventoryScreen>>,
     mut inventory: crate::game::inventory::operations::InventoryOperations,
 ) {
     let (Ok(cell), Some(screen)) = (cells.get(click.entity), screen) else { return };
+    if screen.page != review::Page::Items {
+        return;
+    }
     let destination = match cell.cell {
         Cell::Pool(row) => ItemLocation::Pool(screen.pool_scroll + row),
         Cell::Member(slot) => ItemLocation::Member(screen.member, slot),
@@ -695,6 +711,11 @@ impl Plugin for InventoryPlugin {
             .add_systems(
                 Update,
                 (spawn_inventory_screen, draw_header, draw_gold, draw_cells, follow_held).chain(),
+            )
+            .add_systems(
+                Update,
+                (review::refresh, review::style_buttons, review::focus_controls)
+                    .after(spawn_inventory_screen),
             );
     }
 }

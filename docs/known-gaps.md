@@ -5,6 +5,12 @@ departs from retail, in rough order of the
 [implementation plan](implementation-plan.md)'s first slice. Keep an entry
 next to its feature when that feature changes.
 
+- Character review now has Equipment, Statistics and Skills pages with shared
+  actor selection and native keyboard focus. Statistics tracks live health,
+  stamina, conditions, attributes and experience; skills distinguishes base and
+  effective values. All skills are shown because active-skill knowledge is not
+  modelled. Spell review, level-up editing, stat information dialogs and retail
+  statistics artwork remain unported. See [source comparison](research/character-review.md).
 - Rendering and input no longer bootstrap gameplay: `LevelDefinition` and its
   collision/trigger/placement loader are separate from `LevelGeometry` and
   presentation loaders. Headless play installs no renderer, render assets,
