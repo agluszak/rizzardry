@@ -13,7 +13,7 @@ use bevy_landmass::NavMesh3d;
 use bevy::asset::{LoadState, UntypedAssetId};
 use bevy::ecs::system::SystemParam;
 
-use super::identify::MonsterGroups;
+use super::identify::{GroupMember, MonsterGroup};
 use super::items::WorldItem;
 use super::navigation::Walker;
 use super::navigation::bake::SIZE_CLASSES;
@@ -174,7 +174,7 @@ pub struct LevelRecord {
     prop_frames: HashMap<usize, f32>,
     pub(super) monsters: Vec<KeptMonster>,
     pub(super) items: Vec<(WorldItem, Vec3)>,
-    pub(super) groups: MonsterGroups,
+    pub(super) groups: Vec<MonsterGroup>,
     notes: MapNotes,
 }
 
@@ -182,6 +182,7 @@ pub struct LevelRecord {
 /// faced.
 #[derive(Clone, Debug)]
 pub struct KeptMonster {
+    pub group: Option<i32>,
     pub monster: Monster,
     pub feet: Vec3,
     pub yaw: f32,
@@ -192,14 +193,24 @@ pub struct KeptMonster {
 pub struct LevelContents<'w, 's> {
     devices: DeviceRecords<'w, 's>,
     props: Query<'w, 's, (&'static Prop, &'static PropMotion)>,
-    monsters: Query<'w, 's, (&'static Monster, &'static Transform, Option<&'static Walker>)>,
+    monsters: Query<
+        'w,
+        's,
+        (
+            &'static Monster,
+            &'static Transform,
+            Option<&'static Walker>,
+            Option<&'static GroupMember>,
+        ),
+    >,
     items: Query<'w, 's, (&'static WorldItem, &'static Transform)>,
-    knowledge: Query<'w, 's, (Option<&'static MonsterGroups>, Option<&'static MapNotes>)>,
+    groups: Query<'w, 's, &'static MonsterGroup>,
+    notes: Query<'w, 's, &'static MapNotes>,
 }
 
 impl LevelContents<'_, '_> {
     fn remember(&self, root: Entity, state: &LevelState, children: &[Entity]) -> LevelRecord {
-        let (groups, notes) = self.knowledge.get(root).unwrap_or_default();
+        let notes = self.notes.get(root).ok();
         LevelRecord {
             triggers: self.devices.remember(root, state),
             prop_frames: children
@@ -210,7 +221,8 @@ impl LevelContents<'_, '_> {
             monsters: children
                 .iter()
                 .filter_map(|&c| self.monsters.get(c).ok())
-                .map(|(monster, at, walker)| KeptMonster {
+                .map(|(monster, at, walker, group)| KeptMonster {
+                    group: group.and_then(|m| self.groups.get(m.0).ok()).map(|g| g.authored),
                     monster: monster.clone(),
                     feet: super::navigation::feet(at.translation, walker),
                     yaw: at.rotation.to_euler(EulerRot::YXZ).0,
@@ -221,7 +233,7 @@ impl LevelContents<'_, '_> {
                 .filter_map(|&c| self.items.get(c).ok())
                 .map(|(item, at)| (item.clone(), at.translation))
                 .collect(),
-            groups: groups.cloned().unwrap_or_default(),
+            groups: children.iter().filter_map(|&c| self.groups.get(c).ok().copied()).collect(),
             notes: notes.cloned().unwrap_or_default(),
         }
     }

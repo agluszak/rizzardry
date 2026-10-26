@@ -252,6 +252,7 @@ fn load_band(weight: u32, capacity: u32) -> Load {
 
 /// One adventurer.
 #[derive(Component, Clone, Debug, PartialEq)]
+#[require(MonsterKnowledge)]
 pub struct Character {
     pub name: String,
     pub race: Race,
@@ -272,9 +273,13 @@ pub struct Character {
     pub stamina_fraction: f32,
     /// The portrait's file stem (e.g. `hummf` for `data/portraits/small/shummf.sti`).
     pub portrait: String,
-    /// How many of each species (by retail record) they have seen, at most
-    /// 255 (retail `monster_awareness`).
-    pub monster_awareness: std::collections::HashMap<u32, u8>,
+}
+
+/// Recognition history changes independently of profile, vitals or inventory.
+#[derive(Component, Clone, Debug, Default, PartialEq, Eq)]
+pub struct MonsterKnowledge {
+    /// How many of each species the actor has seen, capped at 255.
+    pub seen: std::collections::HashMap<u32, u8>,
 }
 
 impl Character {
@@ -305,7 +310,6 @@ impl Character {
             hp_fraction: 0.0,
             stamina_fraction: 0.0,
             portrait: String::new(),
-            monster_awareness: default(),
         };
         let share = 60 / (1 + row.skills.len() as u32);
         for &skill in row.skills.iter().chain(std::iter::once(&row.bonus_skill)) {

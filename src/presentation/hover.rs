@@ -13,7 +13,7 @@ use crate::content::ui::SpriteSheet;
 use crate::game::characters::Character;
 use crate::game::data::GameData;
 use crate::game::party::roster::PartyRoster;
-use crate::game::world::identify::{MonsterGroups, health_known};
+use crate::game::world::identify::{GroupMember, MonsterGroup, health_known};
 use crate::game::world::items::{REACH, WorldItem};
 use crate::game::world::population::Monster;
 use crate::presentation::party_view::PartyCamera;
@@ -80,10 +80,11 @@ pub struct Tooltip;
 pub fn show_tooltip(
     mut commands: Commands,
     hovered: Res<Hover>,
-    (items, monsters, groups, roster, members): (
+    (items, monsters, groups, memberships, roster, members): (
         Query<&WorldItem>,
         Query<&Monster>,
-        Query<&MonsterGroups>,
+        Query<&MonsterGroup>,
+        Query<&GroupMember>,
         Res<PartyRoster>,
         Query<&Character>,
     ),
@@ -127,7 +128,11 @@ pub fn show_tooltip(
         // "Crustacean (?/12)" (retail `SetCombatSelection`).
         let catalog = data.as_ref().and_then(|d| species.get(&d.species));
         let Some(kind) = catalog.and_then(|c| c.0.get(monster.species as usize)) else { return };
-        let identified = groups.single().is_ok_and(|g| g.identified(monster.group));
+        let identified = memberships
+            .get(entity)
+            .ok()
+            .and_then(|m| groups.get(m.0).ok())
+            .is_some_and(|g| g.identified);
         let party: Vec<&Character> = roster.0.iter().filter_map(|&m| members.get(m).ok()).collect();
         let health = health_known(&party, monster.hp, monster.max_hp, kind.display_level);
         format!("{} ({health})", kind.shown_name(identified, 1))

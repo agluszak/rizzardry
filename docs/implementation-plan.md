@@ -437,10 +437,10 @@ versus physical state, and the retail-specific decoding and animation math.
 | 2. Change detection | Implemented in device PR; extended in actor work | Assessment uses reads; only affected components change; nonlethal damage leaves formation unchanged. |
 | 3. Typed actions | Present in baseline; retained | Import decodes payloads/defaults/units; unsupported actions stay explicit; live locks remain on devices. |
 | 4. Gameplay body authority | Implemented in body PR | Metadata loads without meshes/cycles; visual failures and attachment do not change physical state or persistence. |
-| 5. Gameplay perception | Baseline uses party pose and level view distance | Add focused proof of authored visibility without a rendering camera. |
+| 5. Gameplay perception | Baseline separation verified in group work | Headless recognition follows authored view distance even when camera pose/far plane disagree. |
 | 6. Actor identity | Implemented in actor work | Entity-owned orders, accepted actor/weapon work, entity formation/selection/provenance; coherent membership/death transitions. |
 | 7. Combat responsibilities | Accepted work implemented; damage/death and loot extraction open | Synchronous reusable damage/death operations settle invariants outside weapon attack orchestration. |
-| 8. Group ownership | Open | Group entities own knowledge; native membership relationship supplies reverse membership; level lifetime remains separate. |
+| 8. Group ownership | Implemented in group work | Group entities own knowledge; Bevy maintains reverse membership without lifetime ownership; revisit restores authored identities onto fresh entities. |
 | 9. Picking and gameplay input | Click adapter partly shared; hover and drop boundary open | One selection policy; reusable device/take/drop operations validate gameplay inputs without pointers or render queries. |
 | 10. Gameplay completion | Pending moves scoped; travel answer and message scopes open | Identified gameplay-owned travel questions/answers complete headlessly; presentation observes session completion. |
 | 11. Screen lifecycle and focus | Open; enhanced-input HUD routing already present | Native screen states and scoped roots; session data on root; explicit held-item return; typing focus distinct from simulation. |
@@ -451,7 +451,7 @@ versus physical state, and the retail-specific decoding and animation math.
 | 16. Asset integration | Body boundary implemented; navigation importer moved to retail in baseline | Evaluate remaining synthetic navmesh packaging with dependency hashing/rebake evidence; keep cache correctness. |
 | 17. Snapshot ownership | Implemented in body/device work | Move owned revisit population, devices and notes into ECS; capture physical state without visuals. |
 | 18. Composition and ordering | Open | Campaign initialization belongs in composition; feature registrations match ownership; identification/combat RNG ordering is explicit. |
-| Rust modeling | Attribute/skill domains typed in baseline; component/eligibility review open | Check invalid imported requirements; split profile/vitals/knowledge where queries justify it; retain distinct role and eligibility rules. |
+| Rust modeling | Attribute/skill domains typed in baseline; recognition history split into its own component; vitals/eligibility review open | Check invalid imported requirements; split profile/vitals/knowledge where queries justify it; retain distinct role and eligibility rules. |
 
 Validation status and PR descriptions record what was actually run. Retail and
 visual scenarios requiring an external installation remain explicit unverified

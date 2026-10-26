@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
+use super::identify::{GroupMember, MonsterGroup};
 use super::level::{KeptMonster, LevelRecord};
 use crate::content::items::ItemCatalog;
 use crate::content::level::LevelGeometry;
@@ -19,8 +20,6 @@ use crate::game::world::items::{WorldItem, placed_item};
 #[derive(Component, Clone, Debug)]
 pub struct Monster {
     pub location: i32,
-    /// Its group, by the level's group id.
-    pub group: i32,
     pub species: u32,
     pub hp: u32,
     pub max_hp: u32,
@@ -129,7 +128,6 @@ pub fn populate(
                 Some(KeptMonster {
                     monster: Monster {
                         location: placed.location,
-                        group: placed.group,
                         species: placed.species,
                         hp: max_hp,
                         max_hp,
@@ -138,12 +136,17 @@ pub fn populate(
                         conditions: Vec::new(),
                         body,
                     },
+                    group: Some(placed.group),
                     feet: placed.position,
                     yaw: placed.yaw,
                 })
             })
             .collect(),
     };
+    let mut groups: HashMap<i32, Entity> = groups
+        .into_iter()
+        .map(|group| (group.authored, commands.spawn((group, ChildOf(root))).id()))
+        .collect();
     let monster_count = monsters.iter().filter(|m| !m.monster.is_dead()).count();
     for kept in monsters {
         let monster = kept.monster;
@@ -151,12 +154,20 @@ pub fn populate(
             continue;
         }
         let Some(kind) = species.0.get(monster.species as usize) else { continue };
-        commands.spawn((
+        let group = kept.group.map(|authored| {
+            *groups.entry(authored).or_insert_with(|| {
+                commands.spawn((MonsterGroup { authored, ..default() }, ChildOf(root))).id()
+            })
+        });
+        let mut entity = commands.spawn((
             Name::new(format!("{} #{}", kind.name, monster.location)),
             monster,
             Transform::from_translation(kept.feet).with_rotation(Quat::from_rotation_y(kept.yaw)),
             ChildOf(root),
         ));
+        if let Some(group) = group {
+            entity.insert(GroupMember(group));
+        }
     }
     let lying: Vec<(WorldItem, Vec3)> = match remembered_items {
         Some(items) => items,
@@ -176,5 +187,4 @@ pub fn populate(
         let name = items.get(item.item.item).map_or_else(String::new, |d| d.name.clone());
         commands.spawn((Name::new(name), item, Transform::from_translation(at), ChildOf(root)));
     }
-    commands.entity(root).insert(groups);
 }

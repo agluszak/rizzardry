@@ -443,3 +443,40 @@ fn device_state_and_prop_animation_survive_revisit_with_new_runtime_identities()
     let motion = app.world().get::<PropMotion>(new).unwrap();
     assert_eq!((motion.frame, motion.target), (3.0, 3.0));
 }
+
+#[test]
+fn group_knowledge_survives_revisit_and_membership_resolves_to_new_entities() {
+    use rizzardry::game::world::identify::{GroupMember, GroupMembers, MonsterGroup};
+    let mut app = app();
+    with_data(&mut app);
+    spawn_level(&mut app, floor());
+    app.update();
+    let old =
+        app.world_mut().query_filtered::<Entity, With<MonsterGroup>>().single(app.world()).unwrap();
+    let mut group = app.world_mut().get_mut::<MonsterGroup>(old).unwrap();
+    group.identified = true;
+    group.counted = true;
+    app.world_mut().write_message(Travel { entrance: "MO204".into() });
+    app.world_mut().run_schedule(PreUpdate);
+    let away: Vec<_> =
+        app.world_mut().query_filtered::<Entity, With<Destination>>().iter(app.world()).collect();
+    for entity in away {
+        app.world_mut().despawn(entity);
+    }
+    let back = spawn_level(&mut app, floor());
+    app.update();
+    assert!(is_played(&app, back));
+    assert!(app.world().get_entity(old).is_err());
+    let world = app.world_mut();
+    let (actor, membership) =
+        world.query_filtered::<(Entity, &GroupMember), With<Monster>>().single(world).unwrap();
+    assert_ne!(old, membership.0);
+    let group = world.get::<MonsterGroup>(membership.0).unwrap();
+    assert_eq!(group.authored, 1);
+    assert!(group.identified && group.counted);
+    assert_eq!(
+        world.get::<GroupMembers>(membership.0).unwrap().iter().collect::<Vec<_>>(),
+        [actor]
+    );
+    assert_eq!(world.get::<ChildOf>(actor).unwrap().parent(), back);
+}

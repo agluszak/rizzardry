@@ -30,7 +30,7 @@ use crate::game::party::recovery;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::time::GameClock;
-use crate::game::world::identify::{DetectGroups, MonsterGroups};
+use crate::game::world::identify::{DetectGroups, GroupMember, MonsterGroup};
 use crate::game::world::items::drop_loot;
 use crate::game::world::population::Monster;
 use attack::{
@@ -373,18 +373,17 @@ pub fn run_battle(
         ResMut<ItemIds>,
     ),
     mut news: MessageWriter<CombatNews>,
-    (mut starts, settings, orders, groups, mut detect, levels): (
+    (mut starts, settings, orders, groups, memberships, mut detect, levels): (
         MessageReader<StartRound>,
         Res<CombatSettings>,
         Query<&Order>,
-        Query<&MonsterGroups>,
+        Query<&MonsterGroup>,
+        Query<&GroupMember>,
         MessageWriter<DetectGroups>,
         Query<Entity, With<crate::game::world::level::Level>>,
     ),
 ) {
     let Some(mut battle) = battle else { return };
-    let unknown = MonsterGroups::default();
-    let groups = groups.single().unwrap_or(&unknown);
     let (Some(items), Some(species), Some(tables)) = (
         data.as_ref().and_then(|d| items.get(&d.items)),
         data.as_ref().and_then(|d| species.get(&d.species)),
@@ -489,7 +488,8 @@ pub fn run_battle(
                 &formation,
                 items,
                 species,
-                groups,
+                &groups,
+                &memberships,
                 (&mut purse, tables, party_level),
                 &mut news,
             );
@@ -522,7 +522,8 @@ pub fn run_battle(
                 &mut formation,
                 items,
                 species,
-                groups,
+                &groups,
+                &memberships,
                 &mut news,
             );
             battle.wait = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
@@ -557,7 +558,8 @@ fn member_acts(
     formation: &Formation,
     items: &ItemCatalog,
     species: &MonsterCatalog,
-    groups: &MonsterGroups,
+    groups: &Query<&MonsterGroup>,
+    memberships: &Query<&GroupMember>,
     (purse, tables, party_level): (&mut PartyInventory, &LootTables, u32),
     news: &mut MessageWriter<CombatNews>,
 ) -> Option<Loot> {
@@ -600,7 +602,16 @@ fn member_acts(
     let Ok((mut monster, at, walker)) = monsters.get_mut(target) else { return None };
     let feet = feet(at.translation(), walker);
     let kind = species.0.get(monster.species as usize)?;
-    let name = kind.shown_name(groups.identified(monster.group), 1).to_owned();
+    let name = kind
+        .shown_name(
+            memberships
+                .get(target)
+                .ok()
+                .and_then(|m| groups.get(m.0).ok())
+                .is_some_and(|g| g.identified),
+            1,
+        )
+        .to_owned();
     // Retail draws the attack's mode, then its swings.
     let mode = attack::choose_mode(rng, hand.modes);
     let swings = rng.below(hand.swings) + 1;
@@ -672,13 +683,23 @@ fn monster_acts(
     formation: &mut ResMut<Formation>,
     items: &ItemCatalog,
     species: &MonsterCatalog,
-    groups: &MonsterGroups,
+    groups: &Query<&MonsterGroup>,
+    memberships: &Query<&GroupMember>,
     news: &mut MessageWriter<CombatNews>,
 ) {
     let (entity, turn) = battle.monsters[index];
     let Ok((monster, at, walker)) = monsters.get(entity) else { return };
     let Some(kind) = species.0.get(monster.species as usize) else { return };
-    let name = kind.shown_name(groups.identified(monster.group), 1).to_owned();
+    let name = kind
+        .shown_name(
+            memberships
+                .get(entity)
+                .ok()
+                .and_then(|m| groups.get(m.0).ok())
+                .is_some_and(|g| g.identified),
+            1,
+        )
+        .to_owned();
     let distance = distance_to_party(party.eye, monster, feet(at.translation(), walker));
     // Every (attack, mode, member) that reaches is equally likely.
     let mut candidates = vec![];
@@ -904,7 +925,6 @@ mod tests {
             .spawn((
                 Monster {
                     location: 0,
-                    group: 0,
                     species: 0,
                     hp: 10000,
                     max_hp: 10000,

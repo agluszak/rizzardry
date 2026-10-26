@@ -115,6 +115,14 @@ stamina recovery. A removed actor's work is cancelled, never reassigned.
 Party movement during combat is one scheduled party action. Individual action
 budgets after it remain combat rules, not eight copies of a movement controller.
 
+Monster groups own their identification/counting knowledge on group entities.
+`GroupMember` is an immutable Bevy relationship; its reverse `GroupMembers`
+collection is maintained by the engine. Both groups and monsters are owned by
+the level independently, so deleting a group does not delete its members.
+Dormant records retain authored group IDs and knowledge, then rebind membership
+to fresh group entities. Character recognition history is a separate
+`MonsterKnowledge` component; recognition does not mutate profile/vitals data.
+
 ### NPC identity is not a promise of identical stats in both roles
 
 Named/story NPC actor entities can remain alive for the campaign while their map
