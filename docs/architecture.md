@@ -106,9 +106,10 @@ components after destination preparation succeeds.
 | Pending spell/projectile/continuing field | Source, target/payload, delivery state, placement if spatial | Independent lifetime that can outlast its source action or consumed item |
 | UI/render/audio node | Native Bevy presentation components | Presentation lifetime, not ownership of the represented gameplay item |
 
-`AdventurerState` is a coherent aggregate of progression, attributes, skills,
-learned spells, party-role vitals and conditions. The eventual component split
-can follow actual query/mutation patterns. Do not start with a component for
+The current adventurer profile is `Character` (identity, training, progression
+and portrait). `Vitals` owns health, stamina, conditions and their recovery
+fractions; `MonsterKnowledge` owns recognition history. Recovery/damage can
+change vitals without changing the profile. Their queries justified this split. Do not start with a component for
 each attribute, each backpack slot or each condition counter.
 
 ### Party geometry
@@ -374,3 +375,43 @@ placement, layer and text, and the expected old entry when editing. Enter submit
 it to the gameplay commit operation. Escape, changing tools, closing or leaving
 the level discard the draft. Persistent map notes never contain unfinished
 editing, and delayed confirmation cannot overwrite a changed vector entry.
+
+## Gameplay ordering and retained views
+
+The application composes common campaign resources, item notices, game-data
+loading and the screen state. Feature plugins register their own behavior.
+Within Update, equipment precedes level activation, then clock-requested
+perception, battle work and world input activation. Roster/authored ordering
+also defines random consumption within those operations. Cosmetic RNG remains
+independent.
+
+Battle start and round completion invoke group recognition synchronously with
+the actual battle participants and gameplay eye/facing. Clock requests carry
+the originating level entity; a departed level cannot redirect them. Required
+round recognition completes before a following action or battle removal takes
+effect. Damage makes actors ineligible for further attacks and navigation,
+including off-mesh links and a crossing already in progress.
+
+Main-screen and inventory controls persist through display changes. Concrete
+`Picture` and `BitmapText` components on actual UI entities describe their
+rendered sources, layout anchors and text alignment. Systems change their
+properties, visibility and bar geometry; font raster images remain cached.
+Tooltips read current health/knowledge even at a stationary pointer. Screen
+sessions still own lifecycle; these display sources are not gameplay copies.
+
+## Navigation importer and processor caching
+
+Retail's navigation loader converts OCT/PVL into typed `LevelCollision`.
+Gameplay navigation consumes those triangles and size class; it imports no
+retail sections, flags or byte cursor. Body metadata likewise loads independently
+of optional monster meshes, materials and animation cycles.
+
+The small synthetic navmesh input is retained for processor cache invalidation:
+its source bytes include both retail files and the size class. Replacing this
+with `LoadContext::read_asset_bytes` dependencies is not equivalent in the
+current source configuration. In Bevy 0.20, processor dependency reads require
+processed metadata with `ProcessedInfo.full_hash`; `retail://` deliberately
+serves raw assets through both readers and has no processed metadata. A direct
+substitution would fail to obtain that hash. Any later replacement must first
+prove invalidation/rebaking across both source files and bake settings. This is
+source-level evidence; a retail cache-rebake experiment has not been run.

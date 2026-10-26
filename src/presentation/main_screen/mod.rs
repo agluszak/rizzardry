@@ -6,7 +6,8 @@
 //! The frame holds what the layout alone decides and is built again when
 //! the layout changes. Each part showing game state (the party's slots, the
 //! text box, the radar, the formation board, the button bank) has its own
-//! node in the frame and redraws only that, when what it shows changes.
+//! node in the frame. Controls and markers persist; their source data and
+//! geometry change in place.
 
 mod bank;
 mod formation;

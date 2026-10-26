@@ -300,13 +300,17 @@ pub struct Departing;
 /// The level being played, and its geometry.
 #[derive(SystemParam)]
 pub struct PlayedLevel<'w, 's> {
-    levels: Query<'w, 's, &'static Level, Without<Departing>>,
+    levels: Query<'w, 's, (Entity, &'static Level), Without<Departing>>,
     geometry: Res<'w, Assets<LevelGeometry>>,
 }
 
 impl PlayedLevel<'_, '_> {
+    pub fn entity(&self) -> Option<Entity> {
+        self.levels.single().ok().map(|(entity, _)| entity)
+    }
+
     pub fn geometry(&self) -> Option<&LevelGeometry> {
-        self.geometry.get(&self.levels.single().ok()?.geometry)
+        self.geometry.get(&self.levels.single().ok()?.1.geometry)
     }
 
     pub fn view_distance(&self) -> Option<f32> {

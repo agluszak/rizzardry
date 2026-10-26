@@ -386,9 +386,11 @@ fn decode_action(
         0x03 => TriggerAction::Animate(Animation::Toggle),
         0x32 => TriggerAction::Animate(Animation::Start),
         0x33 => TriggerAction::Animate(Animation::Stop),
-        0x09 => first_recipient.map_or(TriggerAction::Unsupported(code), |path| {
-            TriggerAction::CameraPath(path.to_owned())
-        }),
+        0x09 => first_recipient
+            .and_then(|name| {
+                sections.cameras.iter().position(|camera| camera.name.eq_ignore_ascii_case(name))
+            })
+            .map_or(TriggerAction::Unsupported(code), TriggerAction::CameraPath),
         0x0f => TriggerAction::Relay,
         action::TELEPORT | action::RANDOM_TELEPORT => teleport_arrival(sections, item)
             .map_or(TriggerAction::Unsupported(code), TriggerAction::Teleport),

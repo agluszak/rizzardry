@@ -28,7 +28,7 @@ use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::time::GameClock;
 use crate::game::world::damage::{DamageOutcome, MonsterDamage};
-use crate::game::world::identify::DetectGroups;
+use crate::game::world::identify::GroupRecognition;
 use crate::game::world::population::Monster;
 use attack::{
     Swing, armour, character_initiative, character_swing, monster_swing, phase, primary_hand,
@@ -45,6 +45,7 @@ impl Plugin for CombatPlugin {
                 Update,
                 (start_battle, run_battle, approach::embody_fighters, approach::close_in)
                     .chain()
+                    .in_set(crate::game::GameplaySet::Combat)
                     .run_if(crate::game::world::level::level_active),
             );
     }
@@ -268,7 +269,8 @@ pub fn start_battle(
     species: Res<Assets<MonsterCatalog>>,
     roster: Res<PartyRoster>,
     mut news: MessageWriter<CombatNews>,
-    mut detect: MessageWriter<crate::game::world::identify::DetectGroups>,
+    mut recognition: GroupRecognition,
+    mut rng: ResMut<GameRng>,
 ) {
     if battle.is_some() || camp.is_some() {
         return;
@@ -342,12 +344,13 @@ pub fn start_battle(
     if let Some(nearest) = nearest {
         body.face(nearest - party_eye);
     }
-    commands.insert_resource(Battle {
+    let battle = Battle {
         monsters: joined.into_iter().map(|(_, e)| (e, Turn::default())).collect(),
         ..default()
-    });
+    };
+    recognition.detect(party_eye, body.forward(), Some(&battle), &mut rng);
+    commands.insert_resource(battle);
     news.write(CombatNews::Began);
-    detect.write(crate::game::world::identify::DetectGroups);
 }
 
 /// Advance the fight by one action when its pause is over.
@@ -358,21 +361,22 @@ pub fn run_battle(
     mut rng: ResMut<GameRng>,
     mut clock: ResMut<GameClock>,
     roster: Res<PartyRoster>,
-    mut members: Query<(&mut Character, &mut Vitals, &Carried)>,
-    mut damage: MonsterDamage,
+    mut actors: ParamSet<(
+        (Query<(&mut Character, &mut Vitals, &Carried)>, MonsterDamage),
+        GroupRecognition,
+    )>,
     party_body: Query<(&Position, &PartyBody)>,
     mut formation: ResMut<Formation>,
     data: Option<Res<GameData>>,
     (items, species): (Res<Assets<ItemCatalog>>, Res<Assets<MonsterCatalog>>),
     mut news: MessageWriter<CombatNews>,
-    (mut starts, settings, orders, mut detect): (
-        MessageReader<StartRound>,
-        Res<CombatSettings>,
-        Query<&Order>,
-        MessageWriter<DetectGroups>,
-    ),
+    (mut starts, settings, orders): (MessageReader<StartRound>, Res<CombatSettings>, Query<&Order>),
 ) {
-    let Some(mut battle) = battle else { return };
+    let Some(mut battle) = battle else {
+        starts.clear();
+        return;
+    };
+    let (mut members, mut damage) = actors.p0();
     if !damage.ready() {
         return;
     }
@@ -450,8 +454,12 @@ pub fn run_battle(
                 &mut members,
                 &damage.monsters,
                 &mut news,
-                &mut detect,
             );
+            // Recognition is a required part of this round, before the next
+            // accepted action or a removed battle can change its meaning.
+            drop(members);
+            drop(damage);
+            actors.p1().detect(party.eye, body.forward(), Some(&battle), &mut rng);
             return;
         }
         if let Some(index) = battle.party.iter().position(|p| p.turn.phase == step) {
@@ -718,7 +726,6 @@ fn end_round(
     members: &mut Query<(&mut Character, &mut Vitals, &Carried)>,
     monsters: &Query<(&mut Monster, &GlobalTransform, Option<&Walker>, &ChildOf)>,
     news: &mut MessageWriter<CombatNews>,
-    detect: &mut MessageWriter<DetectGroups>,
 ) {
     // The round's time passes now, with its meaning: conditions age and
     // nobody recovers (retail `AdvanceCombatRound`).
@@ -730,9 +737,6 @@ fn end_round(
             let (profile, mut vitals, _) = members.get_mut(member).unwrap();
             recovery::elapse(&profile, &mut vitals, ticks, recovery::Pace::Fighting);
         }
-    }
-    if ticks.aging > 0 {
-        detect.write(DetectGroups);
     }
     battle.step = 0;
     battle.executing = false;
@@ -837,7 +841,8 @@ mod tests {
             .init_resource::<CombatSettings>()
             .add_message::<CombatNews>()
             .add_message::<StartRound>()
-            .add_message::<DetectGroups>()
+            .init_resource::<Assets<crate::content::level::LevelGeometry>>()
+            .add_message::<crate::game::world::identify::Identified>()
             .add_systems(Update, run_battle);
         app.world_mut()
             .resource_mut::<Time<Virtual>>()
@@ -929,6 +934,55 @@ mod tests {
             .into_iter()
             .filter_map(|a| app.world().get::<Character>(a).map(|c| c.name.clone()))
             .collect()
+    }
+
+    #[test]
+    fn a_round_recognises_only_its_participants_before_the_session_ends() {
+        use crate::content::level::LevelGeometry;
+        use crate::game::characters::MonsterKnowledge;
+        use crate::game::world::identify::{GroupMember, MonsterGroup};
+        use crate::game::world::level::Level;
+        let (mut app, members) = round_app(true);
+        for member in members {
+            app.world_mut().entity_mut(member).insert(Order::Defend);
+        }
+        let level =
+            app.world_mut().query_filtered::<Entity, With<Level>>().single(app.world()).unwrap();
+        let geometry =
+            app.world_mut().resource_mut::<Assets<LevelGeometry>>().add(LevelGeometry::default());
+        app.world_mut().get_mut::<Level>(level).unwrap().geometry = geometry;
+        let monster = app.world_mut().query::<(Entity, &Monster)>().single(app.world()).unwrap().0;
+        let group =
+            app.world_mut().spawn((MonsterGroup { authored: 1, ..default() }, ChildOf(level))).id();
+        app.world_mut().entity_mut(monster).insert(GroupMember(group));
+        let outsider_group =
+            app.world_mut().spawn((MonsterGroup { authored: 2, ..default() }, ChildOf(level))).id();
+        let outsider = app.world().get::<Monster>(monster).unwrap().clone();
+        app.world_mut().spawn((
+            outsider,
+            GlobalTransform::from_translation(Vec3::NEG_Z),
+            GroupMember(outsider_group),
+            ChildOf(level),
+        ));
+        app.world_mut().resource_mut::<CombatSettings>().continuous = true;
+        for _ in 0..12 {
+            app.update();
+            if !app.world().contains_resource::<Battle>() {
+                break;
+            }
+        }
+        assert!(!app.world().contains_resource::<Battle>(), "a passive fight ends");
+        for member in members {
+            assert_eq!(
+                app.world().get::<MonsterKnowledge>(member).unwrap().seen.get(&0),
+                Some(&1),
+                "round recognition counts battle participants once"
+            );
+        }
+        assert!(
+            !app.world().get::<MonsterGroup>(outsider_group).unwrap().counted,
+            "ending the battle cannot broaden its pending recognition to outsiders"
+        );
     }
 
     #[test]

@@ -31,9 +31,6 @@ pub struct PartyPlugin;
 
 impl Plugin for PartyPlugin {
     fn build(&self, app: &mut App) {
-        if !app.is_plugin_added::<bevy::state::app::StatesPlugin>() {
-            app.add_plugins(bevy::state::app::StatesPlugin);
-        }
         app.add_plugins((
             TnuaControllerPlugin::<body::PartyMotion>::new(FixedUpdate),
             TnuaAvian3dPlugin::new(FixedUpdate),
@@ -41,7 +38,6 @@ impl Plugin for PartyPlugin {
         .insert_resource(Gravity(Vec3::NEG_Y * body::GRAVITY))
         .add_input_context::<body::Exploration>()
         .init_resource::<roster::PartyRoster>()
-        .init_state::<crate::game::screen::Screen>()
         .init_resource::<formation::Formation>()
         .add_message::<camp::CampNews>()
         .add_message::<camp::CampRequest>()
@@ -50,7 +46,7 @@ impl Plugin for PartyPlugin {
         .add_systems(
             Update,
             (
-                roster::give_starting_equipment,
+                roster::give_starting_equipment.in_set(crate::game::GameplaySet::Equipment),
                 (
                     body::look_around.run_if(party_free),
                     (

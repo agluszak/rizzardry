@@ -100,10 +100,13 @@ impl Plugin for PresentationPlugin {
                 (
                     automap::scale_ui,
                     screen_art::paint_hover_art,
-                    (party_view::attach_camera, party_view::aim_camera).chain(),
+                    (party_view::attach_camera, party_view::aim_camera)
+                        .chain()
+                        .after(crate::game::GameplaySet::Combat),
                     (selection::select_world_target, selection::activate_selection)
                         .chain()
-                        .after(party_view::aim_camera),
+                        .after(party_view::aim_camera)
+                        .in_set(crate::game::GameplaySet::Interaction),
                     camp::show_camp,
                     (
                         automap::close_ended_map,

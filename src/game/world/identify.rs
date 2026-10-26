@@ -4,6 +4,7 @@
 //! name ("Ironskin Crocodiles"). Every group seen adds its members to each
 //! seer's count of that kind, once.
 
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use super::population::Monster;
@@ -41,7 +42,9 @@ pub struct GroupMembers(Vec<Entity>);
 /// tick), when a fight begins and each round (retail
 /// `AdvanceTimedEffects`, `InitializeCombat`, `AdvanceCombatRound`).
 #[derive(Message, Debug, Clone, Copy)]
-pub struct DetectGroups;
+pub struct DetectGroups {
+    pub level: Entity,
+}
 
 /// "Ragnar identifies the Crocodiles:", "They're Ironskin Crocodiles!"
 #[derive(Message, Debug, Clone, PartialEq)]
@@ -108,89 +111,121 @@ pub fn health_known(
     format!("{current}/{most}")
 }
 
+/// The same recognition operation is used by clock ticks and battle boundaries.
+/// It borrows only actual affected group/knowledge components, in authored order.
+#[derive(SystemParam)]
+pub struct GroupRecognition<'w, 's> {
+    groups: Query<
+        'w,
+        's,
+        (Entity, &'static mut MonsterGroup, Option<&'static GroupMembers>, &'static ChildOf),
+    >,
+    monsters: Query<'w, 's, (&'static Monster, &'static GlobalTransform)>,
+    level: PlayedLevel<'w, 's>,
+    roster: Res<'w, PartyRoster>,
+    members: Query<'w, 's, (&'static Character, &'static Vitals, &'static mut MonsterKnowledge)>,
+    data: Option<Res<'w, GameData>>,
+    catalogs: Res<'w, Assets<MonsterCatalog>>,
+    news: MessageWriter<'w, Identified>,
+}
+
 pub fn detect_monster_groups(
     mut requests: MessageReader<DetectGroups>,
-    mut groups: Query<(Entity, &mut MonsterGroup, Option<&GroupMembers>)>,
-    monsters: Query<(&Monster, &GlobalTransform)>,
     party: Query<(&Position, &PartyBody)>,
-    level: PlayedLevel,
     battle: Option<Res<Battle>>,
-    roster: Res<PartyRoster>,
-    mut members: Query<(&Character, &Vitals, &mut MonsterKnowledge)>,
-    (data, catalogs, mut rng): (
-        Option<Res<GameData>>,
-        Res<Assets<MonsterCatalog>>,
-        ResMut<GameRng>,
-    ),
-    mut news: MessageWriter<Identified>,
+    mut recognition: GroupRecognition,
+    mut rng: ResMut<GameRng>,
 ) {
-    if requests.read().count() == 0 {
-        return;
+    let level = recognition.level.entity();
+    let requested = requests.read().filter(|request| Some(request.level) == level).count() > 0;
+    if requested && let Ok((position, body)) = party.single() {
+        recognition.detect(PartyBody::eye(position), body.forward(), battle.as_deref(), &mut rng);
     }
-    let (Ok((position, body)), Some(far)) = (party.single(), level.view_distance()) else { return };
-    let Some(catalog) = data.and_then(|d| catalogs.get(&d.species)) else { return };
-    let (from, forward) = (PartyBody::eye(position), body.forward());
-    // Authored group order determines gameplay RNG use. Membership itself is
-    // maintained by Bevy, without rebuilding a second population map.
-    let mut order: Vec<_> =
-        groups.iter().map(|(entity, group, _)| (group.authored, entity)).collect();
-    order.sort_unstable_by_key(|&(authored, _)| authored);
-    for (_, entity) in order {
-        let (_, group, Some(membership)) = groups.get(entity).unwrap() else { continue };
-        let (known, counted) = (group.identified, group.counted);
-        if known && counted {
-            continue;
-        }
-        let (mut species_id, mut count, mut in_view) = (None, 0usize, false);
-        for member in membership.iter() {
-            let Ok((monster, at)) = monsters.get(member) else { continue };
-            if monster.is_dead() || battle.as_ref().is_some_and(|b| !b.fights(member)) {
+}
+
+impl GroupRecognition<'_, '_> {
+    pub fn detect(
+        &mut self,
+        from: Vec3,
+        forward: Vec3,
+        battle: Option<&Battle>,
+        rng: &mut GameRng,
+    ) {
+        let (Some(level), Some(far)) = (self.level.entity(), self.level.view_distance()) else {
+            return;
+        };
+        let Some(catalog) = self.data.as_ref().and_then(|d| self.catalogs.get(&d.species)) else {
+            return;
+        };
+        let (groups, monsters, roster, members, news) =
+            (&mut self.groups, &self.monsters, &self.roster, &mut self.members, &mut self.news);
+        // Authored group order determines gameplay RNG use. Membership itself is
+        // maintained by Bevy, without rebuilding a second population map.
+        let mut order: Vec<_> = groups
+            .iter()
+            .filter(|(_, _, _, owner)| owner.parent() == level)
+            .map(|(entity, group, _, _)| (group.authored, entity))
+            .collect();
+        order.sort_unstable_by_key(|&(authored, _)| authored);
+        for (_, entity) in order {
+            let (_, group, Some(membership), _) = groups.get(entity).unwrap() else { continue };
+            let (known, counted) = (group.identified, group.counted);
+            if known && counted {
                 continue;
             }
-            species_id.get_or_insert(monster.species);
-            count += 1;
-            let to = at.translation() - from;
-            in_view |=
-                to.length() < far && forward.angle_between(to.with_y(0.0)).to_degrees() < HALF_VIEW;
-        }
-        if !in_view {
-            continue;
-        }
-        let Some(species_id) = species_id else { continue };
-        let Some(species) = catalog.0.get(species_id as usize) else { continue };
-        if !known {
-            let mut best: Option<(String, i32)> = None;
-            for &member in &roster.0 {
-                let Ok((profile, vitals, knowledge)) = members.get(member) else { continue };
-                if !can_look(vitals) {
+            let (mut species_id, mut count, mut in_view) = (None, 0usize, false);
+            for member in membership.iter() {
+                let Ok((monster, at)) = monsters.get(member) else { continue };
+                if monster.is_dead() || battle.as_ref().is_some_and(|b| !b.fights(member)) {
                     continue;
                 }
-                let score = recognition(profile, knowledge, species_id, species.level);
-                let roll = rng.below(100) as i32;
-                if roll < score && best.as_ref().is_none_or(|(_, margin)| score - roll > *margin) {
-                    best = Some((profile.name.clone(), score - roll));
+                species_id.get_or_insert(monster.species);
+                count += 1;
+                let to = at.translation() - from;
+                in_view |= to.length() < far
+                    && forward.angle_between(to.with_y(0.0)).to_degrees() < HALF_VIEW;
+            }
+            if !in_view {
+                continue;
+            }
+            let Some(species_id) = species_id else { continue };
+            let Some(species) = catalog.0.get(species_id as usize) else { continue };
+            if !known {
+                let mut best: Option<(String, i32)> = None;
+                for &member in &roster.0 {
+                    let Ok((profile, vitals, knowledge)) = members.get(member) else { continue };
+                    if !can_look(vitals) {
+                        continue;
+                    }
+                    let score = recognition(profile, knowledge, species_id, species.level);
+                    let roll = rng.below(100) as i32;
+                    if roll < score
+                        && best.as_ref().is_none_or(|(_, margin)| score - roll > *margin)
+                    {
+                        best = Some((profile.name.clone(), score - roll));
+                    }
+                }
+                if let Some((member, _)) = best {
+                    news.write(Identified {
+                        member,
+                        looks_like: species.shown_name(false, count).to_owned(),
+                        is: species.shown_name(true, count).to_owned(),
+                        count,
+                    });
+                    groups.get_mut(entity).unwrap().1.identified = true;
                 }
             }
-            if let Some((member, _)) = best {
-                news.write(Identified {
-                    member,
-                    looks_like: species.shown_name(false, count).to_owned(),
-                    is: species.shown_name(true, count).to_owned(),
-                    count,
-                });
-                groups.get_mut(entity).unwrap().1.identified = true;
-            }
-        }
-        if !counted {
-            groups.get_mut(entity).unwrap().1.counted = true;
-            for &member in &roster.0 {
-                let Ok((_, vitals, _)) = members.get(member) else { continue };
-                if !can_look(vitals) {
-                    continue;
+            if !counted {
+                groups.get_mut(entity).unwrap().1.counted = true;
+                for &member in &roster.0 {
+                    let Ok((_, vitals, _)) = members.get(member) else { continue };
+                    if !can_look(vitals) {
+                        continue;
+                    }
+                    let (_, _, mut knowledge) = members.get_mut(member).unwrap();
+                    let seen = knowledge.seen.entry(species_id).or_default();
+                    *seen = seen.saturating_add(count.min(255) as u8);
                 }
-                let (_, _, mut knowledge) = members.get_mut(member).unwrap();
-                let seen = knowledge.seen.entry(species_id).or_default();
-                *seen = seen.saturating_add(count.min(255) as u8);
             }
         }
     }
@@ -314,7 +349,7 @@ mod tests {
         app.cleanup();
         app.update();
         app.world_mut().clear_trackers();
-        app.world_mut().write_message(DetectGroups);
+        app.world_mut().write_message(DetectGroups { level: root });
         app.world_mut().run_schedule(Update);
         assert!(
             !app.world().get::<MonsterGroup>(group).unwrap().counted,
@@ -332,7 +367,7 @@ mod tests {
         app.world_mut()
             .entity_mut(camera)
             .insert(Projection::Perspective(PerspectiveProjection { far: 1.0, ..default() }));
-        app.world_mut().write_message(DetectGroups);
+        app.world_mut().write_message(DetectGroups { level: root });
         app.world_mut().run_schedule(Update);
         let known = app.world().get::<MonsterGroup>(group).unwrap();
         assert!(known.identified && known.counted);

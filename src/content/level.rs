@@ -324,7 +324,7 @@ pub enum TriggerAction {
     /// container also opens.
     Animate(Animation),
     /// Fly the party along the named camera path (9).
-    CameraPath(String),
+    CameraPath(usize),
     /// Run the recipients (0xf).
     Relay,
     /// Send the party elsewhere (0x34, and 0x4b, whose random choice is

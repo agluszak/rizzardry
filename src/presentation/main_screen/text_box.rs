@@ -1,28 +1,25 @@
-//! The text box: its channel tabs, the lines it shows, its scroll arrows and
-//! thumb (retail `RedrawTextBoxBody`, `RedrawTextBoxScrollChrome`,
-//! `TextBoxChannelTabRegionEvent`), and its keys.
+//! Retained channel tabs, text lines and scroll controls for the notice log.
 
+use super::{MainScreenArt, layer};
+use crate::presentation::notices::{TextLog, VISIBLE_LINES};
+use crate::presentation::screen_art::{BitmapText, Picture, absolute, label, picture};
+use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 
-use super::{MainScreenArt, button, layer, loaded};
-use crate::content::ui::SpriteSheet;
-use crate::presentation::notices::TextLog;
-use crate::presentation::screen_art::{absolute, hover_art, sprite, text};
-
-/// The text box's node, with what it last drew.
 #[derive(Component, Clone, Default)]
-pub struct TextBox {
-    drawn: Option<TextView>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct TextView {
-    channel: usize,
-    lines: Vec<String>,
-    /// Whether it scrolls up, and down.
-    scrolls: (bool, bool),
-    /// Where the thumb sits, when the text overflows.
-    thumb: Option<f32>,
+pub struct TextBox;
+#[derive(Component)]
+pub(super) struct TextBoxBuilt;
+#[derive(Component, Clone)]
+pub(super) struct Line(usize);
+#[derive(Component, Clone, Default)]
+pub(super) struct Tabs;
+#[derive(Component, Clone, Default)]
+pub(super) struct Thumb;
+#[derive(Component, Clone)]
+#[require(Hovered)]
+pub(super) struct Scroll {
+    down: bool,
 }
 
 pub fn panel() -> impl SceneList {
@@ -32,72 +29,104 @@ pub fn panel() -> impl SceneList {
 pub fn draw_text_box(
     mut commands: Commands,
     art: Res<MainScreenArt>,
-    sheets: Res<Assets<SpriteSheet>>,
-    mut images: ResMut<Assets<Image>>,
     log: Res<TextLog>,
-    mut boxes: Query<(Entity, &mut TextBox)>,
+    roots: Query<Entity, (With<TextBox>, Without<TextBoxBuilt>)>,
+    mut lines: Query<(&Line, &mut BitmapText, &mut Visibility), Without<Thumb>>,
+    mut pictures: Query<
+        (
+            &mut Picture,
+            &mut Visibility,
+            Option<&Tabs>,
+            Option<&Thumb>,
+            Option<(&Scroll, &Hovered, &mut Pickable)>,
+        ),
+        (Without<Line>, Or<(With<Tabs>, With<Thumb>, With<Scroll>)>),
+    >,
 ) {
-    let Ok((node, mut text_box)) = boxes.single_mut() else { return };
-    let view = TextView {
-        channel: log.selected(),
-        lines: log.visible().to_vec(),
-        scrolls: log.can_scroll(),
-        thumb: log.thumb(),
-    };
-    if text_box.drawn.as_ref() == Some(&view) {
-        return;
-    }
-    let tabs = sprite(loaded(&sheets, &art.textbox_tabs), view.channel, Vec2::new(138.0, 360.0));
-    // Its lines centred in the body, 11 pixels apart.
-    let font = loaded(&sheets, &art.font);
-    let lines: Vec<_> = view
-        .lines
-        .iter()
-        .enumerate()
-        .map(|(i, line)| {
-            text(font, &mut images, line, Vec2::new(166.0, 362.0 + 11.0 * i as f32), 290.0)
-        })
-        .collect();
-    // The arrows are grayed where it cannot scroll; the thumb shows when
-    // the text overflows.
-    let scroll = loaded(&sheets, &art.text_scroll);
-    let (up, down) = view.scrolls;
-    let (mut arrows, mut grayed) = (vec![], vec![]);
-    for (enabled, normal, gray, y, lines) in [(up, 0, 3, 363.0, -1_i32), (down, 8, 11, 429.0, 1)] {
-        let at = Vec2::new(461.0, y);
-        if !enabled {
-            grayed.push(sprite(scroll, gray, at));
-            continue;
-        }
-        arrows.push(bsn! {
-            @button(scroll, normal, at)
-            @hover_art(scroll, normal, normal + 1)
-            on(move |_: On<PointerClick>, mut log: ResMut<TextLog>| {
-                if lines < 0 {
-                    log.scroll_up(lines.unsigned_abs() as usize);
-                } else {
-                    log.scroll_down(lines as usize);
+    for root in &roots {
+        let text: Vec<_> = (0..VISIBLE_LINES)
+            .map(|i| {
+                bsn! {
+                    @label(art.font.clone(), Vec2::new(166.0, 362.0 + 11.0 * i as f32), 290.0)
+                    template(move |_| Ok(Line(i)))
                 }
             })
-        });
+            .collect();
+        let arrows: Vec<_> = [false, true]
+            .into_iter()
+            .map(|down| {
+                let at = Vec2::new(461.0, if down { 429.0 } else { 363.0 });
+                bsn! {
+                    @picture(art.text_scroll.clone(), if down { 8 } else { 0 }, at)
+                    template(move |_| Ok(Scroll { down })) Pickable::default()
+                    on(move |_: On<PointerClick>, mut log: ResMut<TextLog>| {
+                        if down && log.can_scroll().1 { log.scroll_down(1); }
+                        else if !down && log.can_scroll().0 { log.scroll_up(1); }
+                    })
+                }
+            })
+            .collect();
+        let channels: Vec<_> = [(0, 362.0), (1, 383.0), (2, 404.0)]
+            .into_iter()
+            .map(|(channel, y)| {
+                bsn! {
+                    template(move |_| Ok(absolute(Vec2::new(140.0, y), Vec2::new(24.0, 16.0))))
+                    on(move |_: On<PointerClick>, mut log: ResMut<TextLog>| log.select(channel))
+                }
+            })
+            .collect();
+        commands.entity(root).insert(TextBoxBuilt).queue_spawn_related_scenes::<Children>(
+            bsn_list! {
+                @picture(art.textbox_tabs.clone(), 0, Vec2::new(138.0, 360.0)) Tabs
+                -- {text} -- {arrows} -- {channels}
+                -- @picture(art.text_scroll.clone(), 4, Vec2::new(461.0, 379.0)) Thumb
+            },
+        );
     }
-    let thumb = view
-        .thumb
-        .and_then(|thumb| sprite(scroll, 4, Vec2::new(461.0, 379.0 + (thumb * 40.0).floor())));
-    let channels: Vec<_> = [(0, 362.0), (1, 383.0), (2, 404.0)]
-        .into_iter()
-        .map(|(channel, y)| {
-            let node = absolute(Vec2::new(140.0, y), Vec2::new(24.0, 16.0));
-            bsn! {
-                node
-                on(move |_: On<PointerClick>, mut log: ResMut<TextLog>| log.select(channel))
+    for (line, mut text, mut visibility) in &mut lines {
+        let value = log.visible().get(line.0);
+        visibility.set_if_neq(if value.is_some() {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        });
+        if let Some(value) = value
+            && text.value != *value
+        {
+            text.value.clone_from(value);
+        }
+    }
+    for (mut picture, mut visibility, tabs, thumb, scroll) in &mut pictures {
+        if tabs.is_some() {
+            picture.reborrow().map_unchanged(|p| &mut p.frame).set_if_neq(log.selected());
+        }
+        if thumb.is_some() {
+            visibility.set_if_neq(if log.thumb().is_some() {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            });
+            if let Some(thumb) = log.thumb() {
+                picture
+                    .reborrow()
+                    .map_unchanged(|p| &mut p.at)
+                    .set_if_neq(Vec2::new(461.0, 379.0 + (thumb * 40.0).floor()));
             }
-        })
-        .collect();
-    commands.entity(node).despawn_related::<Children>().queue_spawn_related_scenes::<Children>(
-        bsn_list! {
-            @{tabs} -- {lines} -- {arrows} -- {grayed} -- @{thumb} -- {channels}
-        },
-    );
-    text_box.drawn = Some(view);
+        }
+        if let Some((scroll, hovered, mut pickable)) = scroll {
+            let enabled = if scroll.down { log.can_scroll().1 } else { log.can_scroll().0 };
+            let normal = if scroll.down { 8 } else { 0 };
+            let frame = normal
+                + if !enabled {
+                    3
+                } else if hovered.get() {
+                    1
+                } else {
+                    0
+                };
+            let next = Picture { frame, bounds: Some(normal), ..picture.clone() };
+            picture.set_if_neq(next);
+            pickable.set_if_neq(if enabled { Pickable::default() } else { Pickable::IGNORE });
+        }
+    }
 }

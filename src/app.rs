@@ -207,6 +207,24 @@ pub fn build(options: &Options) -> Result<App, String> {
         }))
         .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.07)));
     }
+    // Shared campaign services are composed here, not owned by world loading.
+    app.init_resource::<crate::game::rng::GameRng>()
+        .init_resource::<crate::game::inventory::ItemIds>()
+        .init_resource::<crate::game::inventory::PartyInventory>()
+        .init_state::<crate::game::screen::Screen>()
+        .add_message::<crate::game::inventory::ItemNews>()
+        .add_systems(Startup, crate::game::data::load_game_data)
+        .configure_sets(
+            Update,
+            (
+                crate::game::GameplaySet::Equipment,
+                crate::game::GameplaySet::LevelActivation,
+                crate::game::GameplaySet::Perception,
+                crate::game::GameplaySet::Combat,
+                crate::game::GameplaySet::Interaction,
+            )
+                .chain(),
+        );
     app.add_plugins((
         EnhancedInputPlugin,
         PhysicsPlugins::default(),

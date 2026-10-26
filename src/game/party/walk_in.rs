@@ -69,14 +69,14 @@ pub fn move_party(
         // Retail ignores starting a path that is already playing; the eye
         // flying through its trigger runs it again.
         PartyMove::Fly(_) if flying => {}
-        PartyMove::Fly(name) => {
-            let Some(path) = geometry.get(&level.geometry).and_then(|level| {
-                level.camera_paths.iter().position(|p| p.name.eq_ignore_ascii_case(&name))
-            }) else {
-                warn!("no camera path {name}");
+        PartyMove::Fly(path) => {
+            let Some(camera) =
+                geometry.get(&level.geometry).and_then(|level| level.camera_paths.get(path))
+            else {
+                warn!("invalid camera path {path}");
                 return;
             };
-            info!("flying camera path {name}");
+            info!("flying camera path {}", camera.name);
             commands.entity(entity).insert((PathFlight { path, frame: 0.0 }, RigidBodyDisabled));
         }
     }

@@ -64,7 +64,9 @@ pub fn retail_source(files: Arc<RetailFiles>) -> AssetSourceBuilder {
 /// walker size class, whose bytes are the class and the level's collision
 /// (`.oct`) and placement (`.pvl`) files; see [`navmesh_input`]. The asset
 /// processor turns these into baked navmeshes, re-baking when either file
-/// changes.
+/// changes. Raw `retail://` assets have no processed metadata/full hashes,
+/// so processor `read_asset_bytes` dependencies cannot replace these source
+/// bytes without changing that source's hashing contract.
 struct NavmeshInputReader {
     files: Arc<RetailFiles>,
     classes: usize,

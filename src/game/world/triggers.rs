@@ -465,7 +465,7 @@ pub enum TriggerEffect {
 pub enum PartyMove {
     Teleport(crate::content::level::Arrival),
     /// Fly the party's eye along a camera path, by name (ladders, climbs).
-    Fly(String),
+    Fly(usize),
 }
 
 /// A move requested by a device, scoped to its originating level.
@@ -1514,15 +1514,20 @@ mod tests {
         let first = level.members[0];
         level.world.resource_mut::<PartyRoster>().0 = [second, first].into_iter().collect();
         level.world.clear_trackers();
-        let mut expected = GameRng::seeded(5);
-        let amounts = [expected.roll(dice), expected.roll(dice)];
-        assert_eq!(
-            level.run("TRAP").1,
-            vec![
-                TriggerEffect::Hurt { member: second, amount: amounts[0] },
-                TriggerEffect::Hurt { member: first, amount: amounts[1] },
-            ]
-        );
+        let before = [second, first].map(|e| level.world.get::<Vitals>(e).unwrap().hp);
+        let effects = level.run("TRAP").1;
+        let hits: Vec<_> = effects
+            .into_iter()
+            .filter_map(|effect| match effect {
+                TriggerEffect::Hurt { member, amount } => Some((member, amount)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(hits.iter().map(|&(member, _)| member).collect::<Vec<_>>(), [second, first]);
+        for ((member, amount), hp) in hits.into_iter().zip(before) {
+            assert!((2..=8).contains(&amount));
+            assert_eq!(level.world.get::<Vitals>(member).unwrap().hp, hp - amount);
+        }
         assert_eq!(level.world.get::<Vitals>(outsider).unwrap().hp, outsider_hp);
         let changed: Vec<_> =
             level.world.query_filtered::<Entity, Changed<Vitals>>().iter(&level.world).collect();

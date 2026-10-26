@@ -81,6 +81,10 @@ pub fn pass_time(
     mut members: Query<(&Character, &mut Vitals)>,
     mut clock: ResMut<GameClock>,
     mut detect: MessageWriter<DetectGroups>,
+    levels: Query<
+        Entity,
+        (With<crate::game::world::level::Level>, Without<crate::game::world::level::Departing>),
+    >,
 ) {
     if battle.is_some() {
         return;
@@ -111,8 +115,10 @@ pub fn pass_time(
         }
     }
     // Retail looks the monsters over at the end of each aging pass.
-    if ticks.aging > 0 {
-        detect.write(DetectGroups);
+    if ticks.aging > 0
+        && let Ok(level) = levels.single()
+    {
+        detect.write(DetectGroups { level });
     }
 }
 

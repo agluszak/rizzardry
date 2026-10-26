@@ -115,10 +115,12 @@ pub fn give_starting_equipment(
     catalogs: Res<Assets<ItemCatalog>>,
     mut ids: ResMut<ItemIds>,
     mut rng: ResMut<GameRng>,
-    members: Query<(Entity, &Character), With<NeedsEquipment>>,
+    members: Query<&Character, With<NeedsEquipment>>,
+    roster: Res<PartyRoster>,
 ) {
     let Some(catalog) = data.and_then(|d| catalogs.get(&d.items)) else { return };
-    for (entity, character) in &members {
+    for &entity in &roster.0 {
+        let Ok(character) = members.get(entity) else { continue };
         let mut carried = Carried::default();
         for id in starting_items(character) {
             let Some(definition) = catalog.get(id) else { continue };
