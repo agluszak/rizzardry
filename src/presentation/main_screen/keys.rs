@@ -140,8 +140,11 @@ pub fn hold_main_screen_keys(
     mut commands: Commands,
     screen: Res<State<Screen>>,
     keys: Query<(Entity, &ContextActivity<MainScreenKeys>)>,
+    focus: Res<bevy::input_focus::InputFocus>,
+    controls: Query<(), With<bevy::input_focus::tab_navigation::TabIndex>>,
 ) {
-    let active = *screen.get() == Screen::World;
+    let active = *screen.get() == Screen::World
+        && !focus.get().is_some_and(|entity| controls.contains(entity));
     for (entity, activity) in &keys {
         if **activity != active {
             commands.entity(entity).insert(ContextActivity::<MainScreenKeys>::new(active));

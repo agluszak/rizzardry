@@ -17,7 +17,12 @@ mod party;
 mod radar;
 mod text_box;
 
+use bevy::input_focus::{
+    InputFocus, InputFocusSystems,
+    tab_navigation::{TabGroup, TabIndex},
+};
 use bevy::prelude::*;
+use bevy::ui_widgets::Button;
 use bevy_enhanced_input::prelude::*;
 
 use super::screen_art::{SCREEN, absolute, centred, screen, sprite};
@@ -43,6 +48,7 @@ impl Plugin for MainScreenPlugin {
                 keys::hold_main_screen_keys
                     .before(bevy_enhanced_input::EnhancedInputSystems::Update),
             )
+            .add_systems(PreUpdate, route_hud_focus.before(InputFocusSystems::Dispatch))
             .add_systems(
                 Update,
                 (
@@ -53,7 +59,7 @@ impl Plugin for MainScreenPlugin {
                         party::bind_party_buttons,
                         party::draw_party,
                         (party::record_splats, party::play_splats).chain(),
-                        text_box::draw_text_box,
+                        (text_box::draw_text_box, text_box::sync_channels).chain(),
                         (radar::track_radar_items, radar::update_radar)
                             .chain()
                             .after(crate::game::GameplaySet::LevelActivation)
@@ -184,12 +190,36 @@ fn layer() -> impl Scene {
 
 /// A sheet's frame that is a button: it catches the pointer.
 fn button(sheet: &SpriteSheet, frame: usize, at: Vec2) -> impl Scene + use<> {
-    bsn! { @{sprite(sheet, frame, at)} Pickable { should_block_lower: true, is_hoverable: true } }
+    bsn! { @{sprite(sheet, frame, at)} Button TabIndex(0) Pickable::default() }
 }
 
 /// The screen's root, with the layout its frame was built for.
 #[derive(Component, Clone, Default)]
 pub struct MainScreen(ScreenLayout);
+
+/// Other screens own keyboard navigation while covering the HUD. A modal tab
+/// group is excluded from global navigation, without hiding the visible HUD.
+fn route_hud_focus(
+    screen: Res<State<crate::game::screen::Screen>>,
+    next: Res<NextState<crate::game::screen::Screen>>,
+    questions: Query<(), With<crate::game::world::level::TravelQuestion>>,
+    mut roots: Query<(Entity, &mut TabGroup), With<MainScreen>>,
+    parents: Query<&ChildOf>,
+    mut focus: ResMut<InputFocus>,
+) {
+    use crate::game::screen::Screen;
+    let active = *screen.get() == Screen::World
+        && matches!(*next, NextState::Unchanged | NextState::Pending(Screen::World))
+        && questions.is_empty();
+    for (root, mut group) in &mut roots {
+        if group.modal == active {
+            group.modal = !active;
+        }
+        if !active && focus.get().is_some_and(|e| parents.iter_ancestors(e).any(|p| p == root)) {
+            focus.clear();
+        }
+    }
+}
 
 /// Build the frame for the layout, once the art has loaded: black around
 /// the viewport, the roof, the columns, the bottom posts and panels, and a
@@ -267,6 +297,7 @@ fn build_frame(
     commands.spawn_scene(bsn! {
         @centred()
         MainScreen({layout.clone()})
+        TabGroup::default()
         GlobalZIndex(-5)
         Pickable::IGNORE
         Children [
