@@ -457,8 +457,6 @@ pub fn run_battle(
             );
             // Recognition is a required part of this round, before the next
             // accepted action or a removed battle can change its meaning.
-            drop(members);
-            drop(damage);
             actors.p1().detect(party.eye, body.forward(), Some(&battle), &mut rng);
             return;
         }

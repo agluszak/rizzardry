@@ -416,7 +416,7 @@ pub fn build_automap(
     let feet = party.translation - Vec3::Y * FLOAT_HEIGHT;
     let collision = level.get(automap.level).ok().and_then(|level| geometry.get(&level.geometry));
     let plan = collision
-        .map(|level| images.add(floor_plan(&level.collision, &level.map_layers, &automap)))
+        .map(|level| images.add(floor_plan(&level.collision, &level.map_layers, automap)))
         .map(|plan| {
             let node = absolute(Vec2::ZERO, VIEWPORT);
             bsn! { FloorPlan ImageNode { image: {plan} } node Pickable::IGNORE }

@@ -464,14 +464,14 @@ pub fn draw_party(
             }
         }
         visible.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
-        if let Some(mut picture) = picture {
-            if let Some(mut source) = source {
-                source.at = picture.at;
-                if let Some(x) = hand_x {
-                    source.at.x = x;
-                }
-                picture.set_if_neq(source);
+        if let Some(mut picture) = picture
+            && let Some(mut source) = source
+        {
+            source.at = picture.at;
+            if let Some(x) = hand_x {
+                source.at.x = x;
             }
+            picture.set_if_neq(source);
         }
         if let Some(mut label) = label
             && let Some(value) = value
@@ -539,10 +539,10 @@ fn press(
     }
     selected.0 = Some(member);
     let now = time.elapsed();
-    if last_click.0.is_some_and(|(s, at)| s == member && now - at < DOUBLE_CLICK) {
-        if *screen.get() == crate::game::screen::Screen::World {
-            next_screen.set(crate::game::screen::Screen::Inventory);
-        }
+    if last_click.0.is_some_and(|(s, at)| s == member && now - at < DOUBLE_CLICK)
+        && *screen.get() == crate::game::screen::Screen::World
+    {
+        next_screen.set(crate::game::screen::Screen::Inventory);
     }
     last_click.0 = Some((member, now));
 }

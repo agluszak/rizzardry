@@ -49,10 +49,18 @@ pub struct PositionedDevices(Vec<Entity>);
 #[derive(Component, Debug, Default)]
 pub struct LevelState {
     variables: HashMap<VariableName, bool>,
-    entered: bool,
+    previous_eye: Option<Vec3>,
 }
 
 impl LevelState {
+    /// Rebase walk-in detection after teleporting, without firing destination
+    /// triggers or treating an unobserved level as already visited.
+    pub(crate) fn arrive(&mut self, eye: Vec3) {
+        if self.previous_eye.is_some() {
+            self.previous_eye = Some(eye);
+        }
+    }
+
     fn variable(&self, name: &VariableName) -> bool {
         self.variables.get(name).copied().unwrap_or(false)
     }
@@ -109,11 +117,9 @@ struct FountainUses {
     refills_at: Option<u64>,
 }
 
-#[derive(Component, Debug, Default)]
-pub struct DeviceProximity {
-    inside: bool,
-    zone: Option<Timer>,
-}
+/// An activated hazard's remaining timing, independent of party occupancy.
+#[derive(Component, Debug)]
+struct ActiveDamageZone(Timer);
 
 /// Dormant records use authored indices, never runtime entity references.
 #[derive(Debug, Default)]
@@ -274,7 +280,6 @@ pub fn spawn_devices(
             });
         }
         if definition.place.is_some() {
-            entity.insert(DeviceProximity::default());
             positioned.0.push(devices[index]);
         }
     }
@@ -703,9 +708,11 @@ fn execute(world: &mut World, geometry: &LevelGeometry, entity: Entity, depth: u
             }
         }
         TriggerAction::DamageZone => {
-            if let Some(mut proximity) = world.get_mut::<DeviceProximity>(entity) {
-                proximity.zone =
-                    Some(Timer::from_seconds(DAMAGE_ZONE_PERIOD, TimerMode::Repeating));
+            if definition.place.is_some() {
+                world.entity_mut(entity).insert(ActiveDamageZone(Timer::from_seconds(
+                    DAMAGE_ZONE_PERIOD,
+                    TimerMode::Repeating,
+                )));
             }
         }
         TriggerAction::Shake { seconds, intensity, fade_out } => {
@@ -758,61 +765,41 @@ fn execute(world: &mut World, geometry: &LevelGeometry, entity: Entity, depth: u
     true
 }
 
-fn step_proximity(
-    mut proximity: Mut<DeviceProximity>,
-    definition: &TriggerDefinition,
-    eye: Vec3,
-    elapsed: Duration,
-) -> (bool, bool) {
-    let inside =
-        (definition.range.0..definition.range.1).contains(&eye.distance(definition.place.unwrap()));
-    let entering = inside && !proximity.inside;
-    if proximity.inside != inside {
-        proximity.inside = inside;
-    }
-    let hurt = if !inside {
-        if proximity.zone.is_some() {
-            proximity.zone = None;
-        }
-        false
-    } else if proximity.zone.is_some() {
-        proximity.zone.as_mut().unwrap().tick(elapsed).just_finished()
-    } else {
-        false
-    };
-    (entering, hurt)
-}
-
 pub fn walk(world: &mut World, level: Entity, eye: Vec3, elapsed: Duration) {
     if world.get::<Departing>(level).is_some() {
         return;
     }
     let Some(owner) = world.get::<Level>(level) else { return };
     let handle = owner.geometry.clone();
-    let mut state = world.get_mut::<LevelState>(level).unwrap();
-    let first = !state.entered;
-    if first {
-        state.entered = true;
-    }
+    let previous_eye = world.get_mut::<LevelState>(level).unwrap().previous_eye.replace(eye);
     world.resource_scope(|world, geometry: Mut<Assets<LevelGeometry>>| {
         let Some(geometry) = geometry.get(&handle) else { return };
         let count = world.get::<PositionedDevices>(level).unwrap().0.len();
         for index in 0..count {
             let entity = world.get::<PositionedDevices>(level).unwrap().0[index];
             let definition = &geometry.triggers[world.get::<Device>(entity).unwrap().definition];
-            let (entering, hurt) = step_proximity(
-                world.get_mut::<DeviceProximity>(entity).unwrap(),
-                definition,
-                eye,
-                elapsed,
-            );
+            let contains = |eye: Vec3| {
+                (definition.range.0..definition.range.1)
+                    .contains(&eye.distance(definition.place.unwrap()))
+            };
+            let inside = contains(eye);
+            let hurt = if let Some(mut zone) = world.get_mut::<ActiveDamageZone>(entity) {
+                if inside {
+                    zone.0.tick(elapsed).just_finished()
+                } else {
+                    world.entity_mut(entity).remove::<ActiveDamageZone>();
+                    false
+                }
+            } else {
+                false
+            };
             if hurt {
                 world
                     .run_system_cached_with(damage_party, Dice { count: 1, sides: 6, base: 2 })
                     .unwrap();
             }
-            if entering
-                && !first
+            if inside
+                && previous_eye.is_some_and(|previous| !contains(previous))
                 && world.resource::<PendingPartyMove>().0.is_none()
                 && usable(world, entity, definition)
             {
@@ -820,25 +807,6 @@ pub fn walk(world: &mut World, level: Entity, eye: Vec3, elapsed: Duration) {
             }
         }
     });
-}
-
-pub(crate) fn arrive(
-    eye: Vec3,
-    positioned: &PositionedDevices,
-    geometry: &LevelGeometry,
-    devices: &Query<&Device>,
-    proximity: &mut Query<&mut DeviceProximity>,
-) {
-    for &entity in &positioned.0 {
-        let definition = &geometry.triggers[devices.get(entity).unwrap().definition];
-        let inside = (definition.range.0..definition.range.1)
-            .contains(&eye.distance(definition.place.unwrap()));
-        if let Ok(mut proximity) = proximity.get_mut(entity)
-            && proximity.inside != inside
-        {
-            proximity.inside = inside;
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1313,6 +1281,7 @@ mod tests {
             teleport("OFF", 20.0, false),
         ];
         let mut level = Scenario::new(triggers, &[], LevelScript::None);
+        level.world.get_mut::<LevelState>(level.root).unwrap().arrive(Vec3::X * 5.0);
         let mut walk = |eye: Vec3| level.walk(eye, Duration::from_millis(100));
         // Standing in a trigger when the level is first seen does not fire it.
         assert!(walk(Vec3::ZERO).is_none());
@@ -1361,6 +1330,17 @@ mod tests {
         level.effects();
         level.walk(Vec3::new(5.0, 0.0, 0.0), Duration::from_secs(1));
         assert!(level.effects().is_empty());
+        for &member in &level.members {
+            level.world.get_mut::<Vitals>(member).unwrap().hp = full;
+        }
+        level.walk(Vec3::ZERO, tick);
+        assert!(level.effects().is_empty(), "reentry starts a fresh hazard interval");
+        level.walk(Vec3::ZERO, Duration::from_millis(500));
+        assert_eq!(
+            level.effects().iter().filter(|e| matches!(e, TriggerEffect::Hurt { .. })).count(),
+            2,
+            "the restarted hazard hurts each member once"
+        );
         assert!(level.members.iter().all(|&m| level.world.get::<Vitals>(m).unwrap().hp < full));
     }
 
@@ -1613,7 +1593,12 @@ mod tests {
         portal.usable = true;
         portal.place = Some(Vec3::ZERO);
         portal.range = (0.0, 2.0);
-        let geometry = LevelGeometry { triggers: vec![portal], ..default() };
+        let mut destination = portal.clone();
+        destination.name = "DESTINATION".into();
+        destination.place = Some(Vec3::X * 10.0);
+        destination.initial.action =
+            TriggerAction::Teleport(Arrival::Here { eye: Vec3::X * 20.0, yaw: 0.0 });
+        let geometry = LevelGeometry { triggers: vec![portal, destination], ..default() };
         let mut app = App::new();
         app.add_plugins((
             MinimalPlugins,
@@ -1663,6 +1648,23 @@ mod tests {
             Vec3::X * 10.0 - Vec3::Y * EYE_ABOVE_CENTRE
         );
         assert!(app.world().resource::<PendingPartyMove>().0.is_none());
+        app.world_mut().run_schedule(FixedPostUpdate);
+        assert_eq!(
+            PartyBody::eye(app.world().get::<Position>(party).unwrap()),
+            Vec3::X * 10.0,
+            "teleport arrival does not activate the destination portal"
+        );
+        app.world_mut().get_mut::<Position>(party).unwrap().0 =
+            Vec3::X * 5.0 - Vec3::Y * EYE_ABOVE_CENTRE;
+        app.world_mut().run_schedule(FixedPostUpdate);
+        app.world_mut().get_mut::<Position>(party).unwrap().0 =
+            Vec3::X * 10.0 - Vec3::Y * EYE_ABOVE_CENTRE;
+        app.world_mut().run_schedule(FixedPostUpdate);
+        assert_eq!(
+            PartyBody::eye(app.world().get::<Position>(party).unwrap()),
+            Vec3::X * 20.0,
+            "leaving and reentering activates the destination portal normally"
+        );
     }
 
     #[test]

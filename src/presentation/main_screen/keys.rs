@@ -171,12 +171,11 @@ fn set_order(
     mut orders: Query<&mut Order>,
     roster: Res<PartyRoster>,
 ) {
-    if let (Ok(OrderKey(order)), Some(_)) = (orders_by_key.get(key.action), battle) {
-        if let Some(member) = selected.member(&roster)
-            && let Ok(mut current) = orders.get_mut(member)
-        {
-            current.set_if_neq(*order);
-        }
+    if let (Ok(OrderKey(order)), Some(_)) = (orders_by_key.get(key.action), battle)
+        && let Some(member) = selected.member(&roster)
+        && let Ok(mut current) = orders.get_mut(member)
+    {
+        current.set_if_neq(*order);
     }
 }
 

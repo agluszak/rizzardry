@@ -1141,8 +1141,10 @@ mod tests {
     #[test]
     fn full_pool_contents_transfer_conserves_every_unit_and_reports_only_what_moved() {
         let mut ids = ItemIds::default();
-        let mut party = PartyInventory::default();
-        party.pool = (0..POOL_LIMIT).map(|_| item(&mut ids, 0, Quantity::Stack(20))).collect();
+        let mut party = PartyInventory {
+            pool: (0..POOL_LIMIT).map(|_| item(&mut ids, 0, Quantity::Stack(20))).collect(),
+            ..default()
+        };
         party.pool[17].quantity = Quantity::Stack(19);
         let mut contents =
             vec![item(&mut ids, 0, Quantity::Stack(5)), item(&mut ids, 0, Quantity::Stack(3))];
