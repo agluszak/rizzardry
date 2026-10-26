@@ -12,12 +12,12 @@ use bevy::time::Stopwatch;
 
 use avian3d::prelude::{SpatialQuery, SpatialQueryFilter};
 
+use super::environment::LevelAppearance;
 use crate::content::level::LevelGeometry;
 use crate::content::monster::MonsterModel;
 use crate::content::species::MonsterCatalog;
 use crate::game::data::GameData;
 use crate::game::time::GameClock;
-use crate::game::world::level::Level;
 use crate::game::world::navigation::Walker;
 use crate::game::world::population::Monster;
 
@@ -131,19 +131,6 @@ pub fn build_monster_instances(
     }
 }
 
-/// Keep the model's feet on the ground when a monster gains a walking body
-/// that floats over them.
-pub fn follow_float_height(
-    actors: Query<&Walker>,
-    mut roots: Query<(&ChildOf, &mut Transform), With<ModelRoot>>,
-) {
-    for (owner, mut transform) in &mut roots {
-        if let Ok(walker) = actors.get(owner.parent()) {
-            transform.translation = Vec3::NEG_Y * walker.float_height;
-        }
-    }
-}
-
 /// A monster that dies plays its death once and stays on its last frame.
 pub fn show_deaths(
     mut commands: Commands,
@@ -232,7 +219,7 @@ const SKY_SCALE_PER_SECOND: f32 = 2.0;
 pub fn light_monsters(
     time: Res<Time>,
     clock: Res<GameClock>,
-    levels: Query<(Entity, &Level)>,
+    levels: Query<(Entity, &LevelAppearance)>,
     geometry: Res<Assets<LevelGeometry>>,
     models: Res<Assets<MonsterModel>>,
     spatial: SpatialQuery,
@@ -243,7 +230,7 @@ pub fn light_monsters(
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let Some((level_entity, level)) =
-        levels.iter().find_map(|(e, l)| geometry.get(&l.geometry).map(|g| (e, g)))
+        levels.iter().find_map(|(e, l)| geometry.get(&l.0).map(|g| (e, g)))
     else {
         return;
     };

@@ -4,6 +4,7 @@
 //! name ("Ironskin Crocodiles"). Every group seen adds its members to each
 //! seer's count of that kind, once.
 
+use crate::game::world::ActorPose;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
@@ -13,11 +14,9 @@ use crate::content::species::MonsterCatalog;
 use crate::game::characters::{Character, Condition, MonsterKnowledge, Vitals};
 use crate::game::combat::Battle;
 use crate::game::data::GameData;
-use crate::game::party::body::PartyBody;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::world::level::PlayedLevel;
-use avian3d::prelude::Position;
 
 /// Knowledge belongs to the identifiable group, not to parallel level tables.
 #[derive(Component, Clone, Copy, Debug, Default)]
@@ -37,14 +36,6 @@ pub struct GroupMember(pub Entity);
 #[derive(Component, Debug)]
 #[relationship_target(relationship = GroupMember)]
 pub struct GroupMembers(Vec<Entity>);
-
-/// Look the monsters over: as game time passes (each 120-second aging
-/// tick), when a fight begins and each round (retail
-/// `AdvanceTimedEffects`, `InitializeCombat`, `AdvanceCombatRound`).
-#[derive(Message, Debug, Clone, Copy)]
-pub struct DetectGroups {
-    pub level: Entity,
-}
 
 /// "Ragnar identifies the Crocodiles:", "They're Ironskin Crocodiles!"
 #[derive(Message, Debug, Clone, PartialEq)]
@@ -120,27 +111,13 @@ pub struct GroupRecognition<'w, 's> {
         's,
         (Entity, &'static mut MonsterGroup, Option<&'static GroupMembers>, &'static ChildOf),
     >,
-    monsters: Query<'w, 's, (&'static Monster, &'static GlobalTransform)>,
+    monsters: Query<'w, 's, (&'static Monster, ActorPose)>,
     level: PlayedLevel<'w, 's>,
     roster: Res<'w, PartyRoster>,
     members: Query<'w, 's, (&'static Character, &'static Vitals, &'static mut MonsterKnowledge)>,
     data: Option<Res<'w, GameData>>,
     catalogs: Res<'w, Assets<MonsterCatalog>>,
     news: MessageWriter<'w, Identified>,
-}
-
-pub fn detect_monster_groups(
-    mut requests: MessageReader<DetectGroups>,
-    party: Query<(&Position, &PartyBody)>,
-    battle: Option<Res<Battle>>,
-    mut recognition: GroupRecognition,
-    mut rng: ResMut<GameRng>,
-) {
-    let level = recognition.level.entity();
-    let requested = requests.read().filter(|request| Some(request.level) == level).count() > 0;
-    if requested && let Ok((position, body)) = party.single() {
-        recognition.detect(PartyBody::eye(position), body.forward(), battle.as_deref(), &mut rng);
-    }
 }
 
 impl GroupRecognition<'_, '_> {
@@ -235,6 +212,8 @@ impl GroupRecognition<'_, '_> {
 mod tests {
     use super::*;
     use crate::game::characters::{Gender, Profession, Race};
+    use crate::game::party::body::PartyBody;
+    use avian3d::prelude::Position;
 
     #[test]
     fn mythology_tells_a_monsters_health() {
@@ -275,29 +254,30 @@ mod tests {
 
     #[test]
     fn recognition_uses_authored_visibility_and_excludes_nonmembers() {
-        use crate::content::level::{LevelEnvironment, LevelGeometry};
+        use crate::content::level::LevelDefinition;
         use crate::content::species::Species;
         use crate::game::world::level::Level;
         use crate::game::world::population::ScaledBody;
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
-            .init_resource::<Assets<LevelGeometry>>()
+            .init_resource::<Assets<LevelDefinition>>()
             .init_resource::<Assets<MonsterCatalog>>()
             .init_resource::<PartyRoster>()
             .insert_resource(GameRng::seeded(4))
-            .add_message::<DetectGroups>()
             .add_message::<Identified>()
-            .add_systems(Update, detect_monster_groups);
-        let geometry = app.world_mut().resource_mut::<Assets<LevelGeometry>>().add(LevelGeometry {
-            environment: Some(LevelEnvironment {
-                fog_range: (0.0, 1.0),
-                view_distance: 5.0,
-                intensity: 0.0,
-                fog_colours: vec![Vec3::ZERO; 256],
-                ambient_colours: vec![Vec3::ZERO; 256],
-            }),
-            ..default()
-        });
+            .add_systems(
+                Update,
+                |party: Query<(&Position, &PartyBody)>,
+                 mut recognition: GroupRecognition,
+                 mut rng: ResMut<GameRng>| {
+                    let (at, body) = party.single().unwrap();
+                    recognition.detect(PartyBody::eye(at), body.forward(), None, &mut rng);
+                },
+            );
+        let geometry = app
+            .world_mut()
+            .resource_mut::<Assets<LevelDefinition>>()
+            .add(LevelDefinition { sight_distance: Some(5.0), ..default() });
         let species =
             app.world_mut().resource_mut::<Assets<MonsterCatalog>>().add(MonsterCatalog(vec![
                 Species { name: "Crab".into(), generic_name: "Crustacean".into(), ..default() },
@@ -309,7 +289,6 @@ mod tests {
                 path: "test".into(),
                 geometry: geometry.clone(),
                 navmeshes: vec![],
-                sky: None,
                 script: default(),
                 messages: None,
             })
@@ -327,7 +306,9 @@ mod tests {
                 conditions: vec![],
                 body: ScaledBody { scale: 1.0, radius: 1.0, eye_height: 1.0, speed: 0.0 },
             },
-            GlobalTransform::from_translation(Vec3::new(0.0, 0.0, -10.0)),
+            Transform::from_translation(Vec3::splat(1000.0)),
+            GlobalTransform::from_translation(Vec3::splat(2000.0)),
+            Position(Vec3::new(0.0, 0.0, -10.0)),
             GroupMember(group),
             ChildOf(root),
         ));
@@ -342,14 +323,13 @@ mod tests {
             .spawn((
                 crate::presentation::party_view::PartyCamera,
                 Projection::Perspective(PerspectiveProjection { far: 1000.0, ..default() }),
-                GlobalTransform::from_translation(Vec3::splat(1000.0)),
+                Transform::from_translation(Vec3::splat(1000.0)),
             ))
             .id();
         app.finish();
         app.cleanup();
         app.update();
         app.world_mut().clear_trackers();
-        app.world_mut().write_message(DetectGroups { level: root });
         app.world_mut().run_schedule(Update);
         assert!(
             !app.world().get::<MonsterGroup>(group).unwrap().counted,
@@ -357,21 +337,40 @@ mod tests {
         );
         assert!(app.world().get::<MonsterKnowledge>(member).unwrap().seen.is_empty());
         app.world_mut()
-            .resource_mut::<Assets<LevelGeometry>>()
+            .resource_mut::<Assets<LevelDefinition>>()
             .get_mut(&geometry)
             .unwrap()
-            .environment
-            .as_mut()
-            .unwrap()
-            .view_distance = 20.0;
+            .sight_distance = Some(20.0);
         app.world_mut()
             .entity_mut(camera)
             .insert(Projection::Perspective(PerspectiveProjection { far: 1.0, ..default() }));
-        app.world_mut().write_message(DetectGroups { level: root });
         app.world_mut().run_schedule(Update);
         let known = app.world().get::<MonsterGroup>(group).unwrap();
         assert!(known.identified && known.counted);
         assert_eq!(app.world().get::<MonsterKnowledge>(member).unwrap().seen.get(&0), Some(&1));
         assert!(app.world().get::<MonsterKnowledge>(outsider).unwrap().seen.is_empty());
+        // Aging and recognition settle in the same operation: blindness
+        // expires during this interval and recognition can then succeed.
+        app.world_mut().get_mut::<MonsterGroup>(group).unwrap().identified = false;
+        let catalog = app.world().resource::<GameData>().species.clone();
+        app.world_mut().resource_mut::<Assets<MonsterCatalog>>().get_mut(&catalog).unwrap().0[0]
+            .level = 1;
+        app.world_mut()
+            .get_mut::<Vitals>(member)
+            .unwrap()
+            .inflict(Condition::Blind, crate::game::characters::Lasting::Rounds(2));
+        let body = app
+            .world_mut()
+            .query_filtered::<Entity, With<PartyBody>>()
+            .single(app.world())
+            .unwrap();
+        app.world_mut().entity_mut(body).insert(avian3d::prelude::LinearVelocity::ZERO);
+        app.init_resource::<crate::game::time::GameClock>();
+        app.add_message::<crate::game::camp::CampNews>();
+        app.world_mut().resource_mut::<Time>().advance_by(std::time::Duration::from_secs(30));
+        use bevy::ecs::system::RunSystemOnce;
+        app.world_mut().run_system_once(crate::game::time::pass_time).unwrap();
+        assert!(!app.world().get::<Vitals>(member).unwrap().has(Condition::Blind));
+        assert!(app.world().get::<MonsterGroup>(group).unwrap().identified);
     }
 }

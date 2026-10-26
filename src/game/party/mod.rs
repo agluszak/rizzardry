@@ -8,12 +8,9 @@ pub mod walk_in;
 
 use avian3d::prelude::{Gravity, PhysicsSystems};
 use bevy::prelude::*;
-use bevy_enhanced_input::prelude::*;
 use bevy_tnua::prelude::*;
 use bevy_tnua_avian3d::prelude::*;
 
-use crate::game::camp;
-use crate::game::screen::party_free;
 use crate::game::world::level::level_active;
 use crate::game::world::triggers::PendingPartyMove;
 
@@ -36,27 +33,18 @@ impl Plugin for PartyPlugin {
             TnuaAvian3dPlugin::new(FixedUpdate),
         ))
         .insert_resource(Gravity(Vec3::NEG_Y * body::GRAVITY))
-        .add_input_context::<body::Exploration>()
+        .init_resource::<body::PartyMovement>()
+        .add_message::<body::PartyLook>()
         .init_resource::<roster::PartyRoster>()
         .init_resource::<formation::Formation>()
-        .add_message::<camp::CampNews>()
-        .add_message::<camp::CampRequest>()
-        .add_message::<camp::LeaveCamp>()
-        .add_systems(Startup, body::spawn_exploration_controls)
+        .add_message::<DamageApplied>()
         .add_systems(
             Update,
             (
                 roster::give_starting_equipment.in_set(crate::game::GameplaySet::Equipment),
-                (
-                    body::look_around.run_if(party_free),
-                    (
-                        camp::request_camp.run_if(party_free),
-                        camp::force_camp,
-                        camp::leave_camp,
-                        camp::advance_camp,
-                    )
-                        .chain(),
-                )
+                body::look_around
+                    .after(crate::game::GameplaySet::LevelActivation)
+                    .before(crate::game::GameplaySet::Combat)
                     .run_if(level_active),
             ),
         )
@@ -65,20 +53,30 @@ impl Plugin for PartyPlugin {
         .init_resource::<PendingPartyMove>()
         .add_systems(
             FixedUpdate,
-            (
-                (body::drive_party.in_set(TnuaUserControlsSystems), walk_in::fly_party).chain(),
-                recovery::pass_time,
-            )
+            (body::drive_party.in_set(TnuaUserControlsSystems), walk_in::fly_party)
+                .chain()
                 .run_if(level_active),
         )
         .add_systems(
             FixedPostUpdate,
-            (walk_in::run_walk_in_triggers, walk_in::move_party)
+            (
+                walk_in::run_walk_in_triggers.pipe(crate::game::world::triggers::walk),
+                walk_in::move_party,
+            )
                 .chain()
                 .after(PhysicsSystems::Writeback)
                 .run_if(level_active),
         );
     }
+}
+
+/// Actual damage to an actor, after its gameplay consequences have settled.
+/// Presentation can retain this result even if healing follows before it draws.
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DamageApplied {
+    pub member: Entity,
+    pub amount: u32,
+    pub died: bool,
 }
 
 /// Apply party damage and settle the target's death invariants before another
@@ -89,10 +87,52 @@ pub fn damage_member(
     vitals: &mut crate::game::characters::Vitals,
     formation: &mut ResMut<formation::Formation>,
     amount: u32,
+    damage: &mut MessageWriter<DamageApplied>,
 ) -> u32 {
     let lost = vitals.damage(amount);
     if vitals.is_dead() && formation.row_of(member).is_some() {
         formation.unseat(member);
     }
+    if lost > 0 {
+        damage.write(DamageApplied { member, amount: lost, died: vitals.is_dead() });
+    }
     lost
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::characters::Vitals;
+    use bevy::ecs::system::SystemState;
+
+    #[test]
+    fn damage_reports_actual_loss_and_death_even_when_healing_follows() {
+        let mut world = World::new();
+        world.init_resource::<formation::Formation>();
+        world.init_resource::<Messages<DamageApplied>>();
+        let first = world.spawn(Vitals { hp: 10, stamina: 20, ..default() }).id();
+        world.resource_mut::<formation::Formation>().seat(first);
+        let mut operation = SystemState::<(
+            Query<&mut Vitals>,
+            ResMut<formation::Formation>,
+            MessageWriter<DamageApplied>,
+        )>::new(&mut world);
+        {
+            let (mut members, mut formation, mut damage) = operation.get_mut(&mut world).unwrap();
+            let mut vitals = members.get_mut(first).unwrap();
+            assert_eq!(damage_member(first, &mut vitals, &mut formation, 3, &mut damage), 3);
+            vitals.heal(3, 10);
+        }
+        let reported: Vec<_> = world.resource_mut::<Messages<DamageApplied>>().drain().collect();
+        assert_eq!(reported, [DamageApplied { member: first, amount: 3, died: false }]);
+        {
+            let (mut members, mut formation, mut damage) = operation.get_mut(&mut world).unwrap();
+            let mut vitals = members.get_mut(first).unwrap();
+            assert_eq!(damage_member(first, &mut vitals, &mut formation, 100, &mut damage), 10);
+            assert!(formation.row_of(first).is_none(), "death settles before another action");
+            assert_eq!(damage_member(first, &mut vitals, &mut formation, 1, &mut damage), 0);
+        }
+        let reported: Vec<_> = world.resource_mut::<Messages<DamageApplied>>().drain().collect();
+        assert_eq!(reported, [DamageApplied { member: first, amount: 10, died: true }]);
+    }
 }

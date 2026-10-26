@@ -16,7 +16,10 @@ pub enum Session {
 }
 
 #[derive(Resource)]
-pub struct NewGameDestination(pub String);
+pub struct NewGameDestination {
+    pub path: String,
+    pub start: super::party::body::PartyStart,
+}
 
 /// Validate the whole proposed party before creating any actors or requesting a
 /// level. Taking the drafts only on success makes retry and cancellation safe.
@@ -45,8 +48,8 @@ pub fn begin_adventure(
     }
     drafts.clear();
     commands.spawn((
-        Name::new(destination.0.clone()),
-        Destination::new(Level::load(&destination.0, assets)),
+        Name::new(destination.path.clone()),
+        Destination::new(Level::load(&destination.path, assets), destination.start.clone()),
     ));
     next.set(Session::Playing);
     Ok(())
@@ -57,7 +60,7 @@ mod tests {
     use super::*;
     use crate::content::{
         characters::{Attribute, Skill},
-        level::LevelGeometry,
+        level::LevelDefinition,
         ui::TextTable,
     };
     use crate::game::characters::{Character, Vitals};
@@ -68,7 +71,7 @@ mod tests {
     fn new_adventure_validates_all_members_before_committing_and_starts_only_once() {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default(), bevy::state::app::StatesPlugin))
-            .init_asset::<LevelGeometry>()
+            .init_asset::<LevelDefinition>()
             .init_asset::<NavMesh3d>()
             .init_asset::<TextTable>()
             .init_resource::<PartyRoster>()
@@ -79,7 +82,13 @@ mod tests {
         drafts[0].adjust_attribute(Attribute::Vitality, true);
         drafts[0].adjust_skill(Skill::Sword, true);
         let expected = drafts[0].preview();
-        let target = NewGameDestination("levels/monastery/monastery1.pvl".into());
+        let target = NewGameDestination {
+            path: "levels/monastery/monastery1.pvl".into(),
+            start: super::super::party::body::PartyStart {
+                entrance: Some("MO105".into()),
+                ..default()
+            },
+        };
         let mut operation = SystemState::<(
             Commands,
             ResMut<PartyRoster>,
@@ -143,6 +152,11 @@ mod tests {
         assert_eq!(members.len(), 2);
         assert_eq!(app.world().get::<Character>(members[0]), Some(&expected));
         assert_eq!(app.world().get::<Vitals>(members[0]).unwrap().hp, expected.max_hp());
-        assert_eq!(app.world_mut().query::<&Destination>().iter(app.world()).count(), 1);
+        let arrival = app.world_mut().query::<&Destination>().single(app.world()).unwrap();
+        assert_eq!(
+            arrival.start.entrance.as_deref(),
+            Some("MO105"),
+            "creation preserves the requested entrance"
+        );
     }
 }

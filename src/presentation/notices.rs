@@ -191,7 +191,6 @@ const GOLD_AFTER: usize = 0x160;
 const CAMPING_FOR: usize = 0x790;
 const CAMP_DONE: usize = 0x791;
 const CAMP_INTERRUPTED: usize = 0x792;
-const CAMP_CANCELLED: usize = 0x793;
 const FORCED_TO_CAMP: usize = 0x794;
 const RECOVERED: usize = 0x795;
 const MOVING: usize = 0x796;
@@ -275,15 +274,13 @@ pub fn queue_notices(
             TriggerEffect::NothingHappened => Some(string(NOTHING_HAPPENS)),
             // Whizzardry's notice for a locked door without its key.
             TriggerEffect::Locked => Some("Your party doesn't have required key.".to_owned()),
-            TriggerEffect::PartyTakes(item) => Some(string(PARTY_TAKES).replace("%s", item)),
             TriggerEffect::Gold(gold) => {
                 Some(format!("{} {gold} {}.", string(GOLD_BEFORE), string(GOLD_AFTER)))
             }
             TriggerEffect::Sound { .. }
             | TriggerEffect::FountainUsed { .. }
             | TriggerEffect::BellRang(_)
-            | TriggerEffect::Shake { .. }
-            | TriggerEffect::Hurt { .. } => None,
+            | TriggerEffect::Shake { .. } => None,
         };
         if let Some(text) = text.filter(|t| !t.trim().is_empty()) {
             log.push(channel, text.trim(), font);
@@ -309,7 +306,7 @@ pub fn queue_notices(
             SearchNews::On => string(SEARCH_ON),
             SearchNews::Off => string(SEARCH_OFF),
             SearchNews::NotInCombat => string(NOT_IN_COMBAT_SEARCH),
-            SearchNews::Spotted { member, item } => {
+            SearchNews::Spotted { member, item, .. } => {
                 format!("{member} {}", string(SPOTS_HIDDEN).replace("%s", item))
             }
         };
@@ -333,7 +330,6 @@ pub fn queue_notices(
             CampNews::InCombat => string(NOT_IN_COMBAT),
             CampNews::Done => string(CAMP_DONE),
             CampNews::Interrupted => string(CAMP_INTERRUPTED),
-            CampNews::Cancelled => string(CAMP_CANCELLED),
             CampNews::Recovered => string(RECOVERED),
         };
         log.push(channel, &text, font);

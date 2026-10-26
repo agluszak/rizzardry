@@ -1,6 +1,20 @@
 //! Simulation time.
 
+use crate::game::camp::{self, Camp, CampNews};
+use crate::game::characters::{Character, Vitals};
+use crate::game::party::{
+    body::{PartyBody, WALK_SPEED},
+    recovery::{self, Pace},
+    roster::PartyRoster,
+};
+use crate::game::rng::GameRng;
+use crate::game::world::{identify::GroupRecognition, level::level_active};
+use avian3d::prelude::LinearVelocity;
+use avian3d::prelude::Position;
 use bevy::prelude::*;
+
+const RESTING_BELOW: f32 = 0.05;
+const RUNNING_ABOVE: f32 = WALK_SPEED * 1.1;
 
 const DAY_MS: u64 = 86_400_000;
 
@@ -75,7 +89,24 @@ pub struct TimePlugin;
 
 impl Plugin for TimePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<GameClock>();
+        app.init_resource::<GameClock>()
+            .add_message::<CampNews>()
+            .add_message::<camp::CampRequest>()
+            .add_message::<camp::LeaveCamp>()
+            .add_systems(
+                Update,
+                (camp::request_camp, camp::force_camp, camp::leave_camp)
+                    .chain()
+                    .after(crate::game::GameplaySet::Combat)
+                    .run_if(level_active),
+            )
+            .add_systems(
+                FixedPostUpdate,
+                pass_time
+                    .after(crate::game::party::walk_in::move_party)
+                    .after(avian3d::prelude::PhysicsSystems::Writeback)
+                    .run_if(level_active),
+            );
     }
 }
 
@@ -104,5 +135,173 @@ mod tests {
         assert_eq!(clock.ms, 12_000);
         assert_eq!(ticks.stamina, 8);
         assert_eq!(clock.advance(AGING_TICK_MS).aging, 1);
+    }
+}
+
+/// Exploring and camping: the clock runs on the fixed step and the party
+/// recovers as it passes. In a fight only its rounds pass time.
+pub(crate) fn pass_time(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut camp: Option<ResMut<Camp>>,
+    mut news: MessageWriter<CampNews>,
+    battle: Option<Res<crate::game::combat::Battle>>,
+    party: Query<(&Position, &PartyBody, &LinearVelocity)>,
+    roster: Res<PartyRoster>,
+    mut affected: ParamSet<(Query<(&Character, &mut Vitals)>, GroupRecognition)>,
+    mut clock: ResMut<GameClock>,
+    mut rng: ResMut<GameRng>,
+) {
+    if battle.is_some() {
+        return;
+    }
+    let racing = camp.as_ref().is_some_and(|c| c.racing());
+    let ticks =
+        clock.advance_real(time.delta(), if racing { CAMPING_RATE } else { EXPLORATION_RATE });
+    // Retail tells running (fast movement) from walking; here the speed
+    // does, horizontally so that falling is not running.
+    let speed = party.single().map_or(0.0, |(_, _, v)| Vec2::new(v.x, v.z).length());
+    let pace = if camp.is_some() {
+        Pace::Camping
+    } else if speed < RESTING_BELOW {
+        Pace::Still
+    } else if speed <= RUNNING_ABOVE {
+        Pace::Walking
+    } else {
+        Pace::Running
+    };
+    // Each aging pass settles conditions before its recognition rolls. Do not
+    // collapse passes across fixed steps or inspect the final conditions for all
+    // of them: a blindness duration may expire partway through this interval.
+    for pass in 0..=ticks.aging {
+        let ticks = if pass == 0 {
+            Ticks { stamina: ticks.stamina, aging: 0 }
+        } else {
+            Ticks { stamina: 0, aging: 1 }
+        };
+        let mut members = affected.p0();
+        for &member in &roster.0 {
+            if members
+                .get(member)
+                .is_ok_and(|(profile, vitals)| recovery::has_work(profile, vitals, ticks, pace))
+            {
+                let (profile, mut vitals) = members.get_mut(member).unwrap();
+                recovery::elapse(profile, &mut vitals, ticks, pace);
+            }
+        }
+        if pass > 0
+            && let Ok((position, body, _)) = party.single()
+        {
+            affected.p1().detect(PartyBody::eye(position), body.forward(), None, &mut rng);
+        }
+    }
+    let anyone_able =
+        affected.p0().iter_many(&roster.0).flatten().any(|(_, vitals)| camp::can_act(vitals));
+    if let Some(camp) = camp.as_mut()
+        && let Some(outcome) = camp.advance(time.delta(), clock.ms, anyone_able)
+    {
+        news.write(outcome);
+        commands.remove_resource::<Camp>();
+    }
+}
+
+#[cfg(test)]
+mod roster_tests {
+    use super::*;
+    use crate::game::characters::{Gender, Profession, Race};
+    use crate::game::time::AGING_TICK_MS;
+    use bevy::time::TimeUpdateStrategy;
+
+    #[test]
+    fn passing_time_heals_the_party_not_every_character() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<GameClock>()
+            .init_resource::<PartyRoster>()
+            .init_resource::<GameRng>()
+            .init_resource::<Assets<crate::content::species::MonsterCatalog>>()
+            .init_resource::<Assets<crate::content::level::LevelDefinition>>()
+            .add_message::<crate::game::world::identify::Identified>()
+            .add_message::<CampNews>()
+            .add_systems(Update, pass_time);
+        let hurt = || {
+            let c = Character::new("Hurt", Race::Human, Gender::Male, Profession::Fighter);
+            let mut vitals = Vitals::new(&c);
+            vitals.hp = 1;
+            (c, vitals)
+        };
+        let member = app.world_mut().spawn(hurt()).id();
+        // An adventurer the party has not recruited.
+        let stranger = app.world_mut().spawn(hurt()).id();
+        app.world_mut().resource_mut::<PartyRoster>().0.insert(member);
+        // A long real step: at 12x, many aging ticks of standing still.
+        let step = std::time::Duration::from_millis(AGING_TICK_MS * 30 / EXPLORATION_RATE);
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(step));
+        app.world_mut().resource_mut::<Time<Virtual>>().set_max_delta(step);
+        for _ in 0..3 {
+            app.update();
+        }
+        assert!(app.world().get::<Vitals>(member).unwrap().hp > 1);
+        assert_eq!(app.world().get::<Vitals>(stranger).unwrap().hp, 1);
+    }
+}
+
+#[cfg(test)]
+mod camp_tests {
+    use super::*;
+    use crate::game::camp::RestGoal;
+    use crate::game::characters::{Condition, Gender, Lasting, Profession, Race};
+    use bevy::time::TimeUpdateStrategy;
+    use std::time::Duration;
+
+    fn fixed_app() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(250)))
+            .insert_resource(Time::<Fixed>::from_hz(64.0))
+            .insert_resource(GameClock::at(0))
+            .init_resource::<PartyRoster>()
+            .init_resource::<GameRng>()
+            .init_resource::<Assets<crate::content::species::MonsterCatalog>>()
+            .init_resource::<Assets<crate::content::level::LevelDefinition>>()
+            .add_message::<crate::game::world::identify::Identified>()
+            .add_message::<CampNews>()
+            .add_systems(FixedUpdate, pass_time);
+        app.update();
+        app
+    }
+
+    #[test]
+    fn a_batch_of_fixed_steps_stops_accelerating_at_the_rest_deadline() {
+        let mut app = fixed_app();
+        app.insert_resource(Camp::Resting(RestGoal::Until(180_000)));
+        app.update();
+        // Four accelerated steps, then twelve exploration-rate fade steps.
+        assert_eq!(app.world().resource::<GameClock>().ms, 180_000 + 2250);
+        assert!(!app.world().resource::<Camp>().racing());
+        for _ in 0..4 {
+            app.update();
+        }
+        assert!(!app.world().contains_resource::<Camp>());
+    }
+
+    #[test]
+    fn recovery_ends_forced_rest_in_the_same_fixed_step() {
+        let mut app = fixed_app();
+        let profile = Character::new("Sleeper", Race::Human, Gender::Male, Profession::Fighter);
+        let mut vitals = Vitals::new(&profile);
+        vitals.inflict(Condition::Asleep, Lasting::Rounds(1));
+        let member = app.world_mut().spawn((profile, vitals)).id();
+        app.world_mut().resource_mut::<PartyRoster>().0.insert(member);
+        app.insert_resource(Camp::Resting(RestGoal::UntilAble));
+        app.update();
+        // The third accelerated step crosses the aging tick and clears sleep;
+        // the other thirteen steps already use the ordinary rate.
+        assert_eq!(app.world().resource::<GameClock>().ms, 135_000 + 2437);
+        assert!(!app.world().get::<Vitals>(member).unwrap().has(Condition::Asleep));
+        assert!(matches!(
+            app.world().resource::<Camp>(),
+            Camp::FadingOut { outcome: CampNews::Recovered, .. }
+        ));
     }
 }

@@ -4,6 +4,7 @@ pub mod ambience;
 pub mod automap;
 pub mod billboards;
 pub mod camp;
+pub mod controls;
 pub mod dialog;
 pub mod effects;
 pub mod environment;
@@ -27,7 +28,7 @@ pub mod world_items;
 use bevy::prelude::*;
 use bevy_enhanced_input::prelude::*;
 
-use crate::game::party::body::Exploration;
+use controls::Exploration;
 
 pub struct PresentationPlugin;
 
@@ -66,6 +67,9 @@ impl Plugin for PresentationPlugin {
             inventory::InventoryPlugin,
             frontend::FrontendPlugin,
         ))
+        .add_input_context::<Exploration>()
+        .add_systems(Startup, controls::spawn_exploration_controls)
+        .add_systems(PreUpdate, controls::read_controls.after(EnhancedInputSystems::Apply))
         .add_message::<voice::SpeechFinished>()
         .add_message::<automap::OpenAutomap>()
         .init_resource::<effects::CameraShake>()
@@ -90,6 +94,23 @@ impl Plugin for PresentationPlugin {
                 .chain()
                 .before(bevy::ui::UiSystems::Content),
         )
+        // Pick the same propagated camera/meshes and visibility used for
+        // rendering, after fixed physics and Update animation/aiming. UI
+        // rasterization observes resulting text on its next presentation pass.
+        .add_systems(
+            PostUpdate,
+            (
+                (selection::select_world_target, selection::activate_selection).chain(),
+                (effects::play_trigger_effects, notices::queue_notices)
+                    .after(selection::activate_selection),
+                (hover::hover, hover::show_tooltip).chain().after(selection::activate_selection),
+            )
+                .after(bevy::transform::TransformSystems::Propagate)
+                .after(bevy::camera::CameraUpdateSystems)
+                .after(
+                    bevy::camera::visibility::VisibilitySystems::MarkNewlyHiddenEntitiesInvisible,
+                ),
+        )
         .add_systems(
             Startup,
             (
@@ -108,10 +129,6 @@ impl Plugin for PresentationPlugin {
                 (party_view::attach_camera, party_view::aim_camera)
                     .chain()
                     .after(crate::game::GameplaySet::Combat),
-                (selection::select_world_target, selection::activate_selection)
-                    .chain()
-                    .after(party_view::aim_camera)
-                    .in_set(crate::game::GameplaySet::Interaction),
                 camp::show_camp,
                 (
                     automap::close_ended_map,
@@ -129,27 +146,27 @@ impl Plugin for PresentationPlugin {
             ),
         )
         .add_systems(
+            PostUpdate,
+            sky::follow_with_sky_camera.before(bevy::transform::TransformSystems::Propagate),
+        )
+        .add_systems(
             Update,
             (
                 textures::animate_level_textures,
                 environment::apply_environment,
-                sky::follow_with_sky_camera.after(party_view::aim_camera),
                 sky::shade_clouds,
-                sky::build_sky,
-                environment::attach_level_visuals,
+                (sky::request_skies, sky::build_sky).chain(),
+                (environment::request_level_visuals, environment::attach_level_visuals).chain(),
                 billboards::face_camera.after(party_view::aim_camera),
-                effects::play_trigger_effects.after(selection::activate_selection),
                 music::play_music,
                 (ambience::place_ambient_sounds, ambience::play_ambient_sounds).chain(),
-                notices::queue_notices.after(selection::activate_selection),
-                (dialog::close_ended_questions, dialog::show_travel_question).chain(),
+                dialog::show_travel_question.after(crate::game::GameplaySet::LevelActivation),
                 effects::shake_camera.after(party_view::aim_camera),
                 sky::orbit_sun_and_moon,
                 voice::finish_speech,
                 (
                     monsters::choose_walker_cycles,
                     monsters::show_deaths,
-                    monsters::follow_float_height,
                     monsters::request_monster_visuals,
                     monsters::build_monster_instances,
                     monsters::animate_monsters,
@@ -157,8 +174,6 @@ impl Plugin for PresentationPlugin {
                 )
                     .chain(),
                 (
-                    hover::hover.after(selection::select_world_target),
-                    hover::show_tooltip,
                     world_items::show_world_items,
                     world_items::build_world_items,
                     world_items::turn_world_items,

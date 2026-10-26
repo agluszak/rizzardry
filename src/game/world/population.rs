@@ -2,12 +2,30 @@
 
 use std::collections::HashMap;
 
+use super::STEP_HEIGHT;
+use super::navigation::{LevelNavigation, Walker, WalkerMotion, WalkerMotionConfig};
+use avian3d::prelude::*;
 use bevy::prelude::*;
+use bevy_landmass::prelude::*;
+use bevy_tnua::builtins::TnuaBuiltinWalkConfig;
+use bevy_tnua::prelude::*;
+use bevy_tnua_avian3d::prelude::*;
+
+/// Half the height of a monster's body. Bodies are flat cylinders as wide
+/// as the model's walk radius, however tall the model.
+const HALF_HEIGHT: f32 = 0.5;
+/// The ground sensor's radius: the ground under the body's centre decides
+/// its height, not the highest point anywhere under a wide body.
+const SENSOR_RADIUS: f32 = 0.3;
+/// Wider monsters navigate the narrowest navmesh that still fits this much:
+/// the wider navmeshes lose narrow ground (beaches, ledges) to erosion, so
+/// big monsters may brush corners instead.
+const MAX_NAVIGATION_RADIUS: f32 = 1.0;
 
 use super::identify::{GroupMember, MonsterGroup};
 use super::level::{KeptMonster, LevelRecord};
 use crate::content::items::ItemCatalog;
-use crate::content::level::LevelGeometry;
+use crate::content::level::LevelDefinition;
 use crate::content::monster::MonsterBody;
 use crate::content::species::MonsterCatalog;
 use crate::game::characters::{Condition, Lasting};
@@ -72,7 +90,7 @@ impl MonsterBodies {
     /// requested.
     pub fn for_level(
         &mut self,
-        geometry: &LevelGeometry,
+        geometry: &LevelDefinition,
         species: &MonsterCatalog,
         assets: &AssetServer,
     ) -> Vec<Handle<MonsterBody>> {
@@ -99,10 +117,11 @@ impl MonsterBodies {
 pub fn populate(
     commands: &mut Commands,
     root: Entity,
-    geometry: &LevelGeometry,
+    geometry: &LevelDefinition,
     remembered: Option<LevelRecord>,
     (species, items): (&MonsterCatalog, &ItemCatalog),
     (handles, bodies): (&HashMap<u32, Handle<MonsterBody>>, &Assets<MonsterBody>),
+    (navigation, configs): (&LevelNavigation, &mut Assets<WalkerMotionConfig>),
     ids: &mut ItemIds,
     rng: &mut GameRng,
 ) {
@@ -159,14 +178,55 @@ pub fn populate(
                 commands.spawn((MonsterGroup { authored, ..default() }, ChildOf(root))).id()
             })
         });
+        let ScaledBody { radius, speed, .. } = monster.body;
+        let float_height = if speed > 0.0 { STEP_HEIGHT + HALF_HEIGHT } else { 0.0 };
         let mut entity = commands.spawn((
             Name::new(format!("{} #{}", kind.name, monster.location)),
             monster,
-            Transform::from_translation(kept.feet).with_rotation(Quat::from_rotation_y(kept.yaw)),
+            Transform::from_translation(kept.feet + Vec3::Y * float_height)
+                .with_rotation(Quat::from_rotation_y(kept.yaw)),
             ChildOf(root),
         ));
         if let Some(group) = group {
             entity.insert(GroupMember(group));
+        }
+        if speed > 0.0 {
+            let config = configs.add(WalkerMotionConfig {
+                basis: TnuaBuiltinWalkConfig {
+                    speed,
+                    float_height,
+                    max_slope: 50f32.to_radians(),
+                    ..default()
+                },
+            });
+            entity.insert((
+                RigidBody::Dynamic,
+                Position(kept.feet + Vec3::Y * float_height),
+                Rotation(Quat::from_rotation_y(kept.yaw)),
+                Collider::cylinder(radius, 2.0 * HALF_HEIGHT),
+                LockedAxes::ROTATION_LOCKED,
+                TnuaController::<WalkerMotion>::default(),
+                TnuaConfig::<WalkerMotion>(config),
+                TnuaAvian3dSensorShape(Collider::cylinder(SENSOR_RADIUS.min(radius), 0.0)),
+                Walker { speed, float_height },
+                AgentTarget3d::None,
+                Velocity3d::default(),
+            ));
+            // Synthetic worlds can omit navigation; production activation
+            // requires every requested navmesh before constructing actors.
+            if !navigation.archipelagos.is_empty() {
+                entity.insert(Agent3dBundle {
+                    agent: default(),
+                    settings: AgentSettings {
+                        radius: radius.min(MAX_NAVIGATION_RADIUS),
+                        desired_speed: speed * 0.8,
+                        max_speed: speed,
+                    },
+                    archipelago_ref: ArchipelagoRef3d::new(
+                        navigation.archipelago_for(radius.min(MAX_NAVIGATION_RADIUS)),
+                    ),
+                });
+            }
         }
     }
     let lying: Vec<(WorldItem, Vec3)> = match remembered_items {

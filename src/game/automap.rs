@@ -56,16 +56,15 @@ impl MapNote {
 /// Commit an identified map's draft. Departure/cancellation cannot capture
 /// unfinished editing in the campaign's notes or a dormant level record.
 pub fn commit_note(world: &mut World, draft: NoteDraft) -> Result<(), NoteRefusal> {
-    use crate::game::world::level::{Departing, Level};
-    if world.get::<Level>(draft.level).is_none() || world.get::<Departing>(draft.level).is_some() {
+    use crate::game::world::level::Level;
+    if world.get::<Level>(draft.level).is_none() {
         return Err(NoteRefusal::InactiveMap);
     }
-    if let Some((index, expected)) = &draft.original {
-        if world.get::<MapNotes>(draft.level).and_then(|notes| notes.notes.get(*index))
+    if let Some((index, expected)) = &draft.original
+        && world.get::<MapNotes>(draft.level).and_then(|notes| notes.notes.get(*index))
             != Some(expected)
-        {
-            return Err(NoteRefusal::MissingNote);
-        }
+    {
+        return Err(NoteRefusal::MissingNote);
     }
     world
         .get_mut::<MapNotes>(draft.level)

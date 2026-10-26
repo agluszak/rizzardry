@@ -5,6 +5,7 @@ use bevy::prelude::*;
 
 use crate::content::items::{ItemCatalog, ItemDefinition, ItemId, QuantityKind};
 use crate::content::level::ItemPlacement;
+use crate::game::inventory::operations::transfer_contents;
 use crate::game::inventory::{
     Held, ItemIds, ItemInstance, ItemNews, PartyInventory, Quantity, Refusal, make_item,
 };
@@ -12,7 +13,6 @@ use crate::game::rng::GameRng;
 
 /// An item lying in the level.
 #[derive(Component, Debug, Clone)]
-#[require(Visibility)]
 pub struct WorldItem {
     pub item: ItemInstance,
     /// Unseen, and out of reach, until found by searching.
@@ -117,10 +117,7 @@ pub fn take_item(world: &mut World, target: Entity, distance: f32) -> Result<(),
         .ok_or(Refusal::MissingContent)?;
     let item = world.get::<WorldItem>(target).ok_or(Refusal::Nothing)?;
     let owner = world.get::<ChildOf>(target).ok_or(Refusal::Nothing)?.parent();
-    if world.get::<super::level::Level>(owner).is_none()
-        || world.get::<super::level::Departing>(owner).is_some()
-        || item.hidden
-    {
+    if world.get::<super::level::Level>(owner).is_none() || item.hidden {
         return Err(Refusal::DoesNotFit);
     }
     let is_container = catalog.get(item.item.item).ok_or(Refusal::MissingContent)?.container;
@@ -128,27 +125,23 @@ pub fn take_item(world: &mut World, target: Entity, distance: f32) -> Result<(),
         return Err(Refusal::HandFull);
     }
     let mut item = world.entity_mut(target).take::<WorldItem>().unwrap();
-    let mut notices = Vec::new();
-    let empty = world.resource_scope(|world, mut party: Mut<PartyInventory>| {
-        if is_container {
+    if is_container {
+        let taken = world.resource_scope(|world, mut party: Mut<PartyInventory>| {
             let catalog = world.resource::<Assets<ItemCatalog>>().get(&handle).unwrap();
-            empty_into_pool(&mut item, &mut party, catalog, &mut |n| notices.push(n))
-        } else {
-            true
+            transfer_contents(&mut item.contents, &mut party, catalog)
+        });
+        for (name, _) in taken {
+            world.write_message(ItemNews::Takes { member: None, item: name });
         }
-    });
-    if is_container && !empty {
-        world.entity_mut(target).insert(item);
+        if !item.contents.is_empty() {
+            world.entity_mut(target).insert(item);
+            world.write_message(ItemNews::NoRoom);
+            return Ok(());
+        }
     } else {
-        if !is_container {
-            world.resource_mut::<PartyInventory>().held =
-                Some(Held { item: item.item, origin: None });
-        }
-        world.despawn(target);
+        world.resource_mut::<PartyInventory>().held = Some(Held { item: item.item, origin: None });
     }
-    for notice in notices {
-        world.write_message(notice);
-    }
+    world.despawn(target);
     Ok(())
 }
 
@@ -157,7 +150,6 @@ pub fn take_item(world: &mut World, target: Entity, distance: f32) -> Result<(),
 pub fn drop_held(world: &mut World, level: Entity, at: Vec3) -> Result<Entity, Refusal> {
     if !world.run_system_cached(crate::game::screen::party_free).unwrap_or(false)
         || world.get::<super::level::Level>(level).is_none()
-        || world.get::<super::level::Departing>(level).is_some()
         || !at.is_finite()
     {
         return Err(Refusal::DoesNotFit);
@@ -179,28 +171,6 @@ pub fn drop_held(world: &mut World, level: Entity, at: Vec3) -> Result<Entity, R
             ChildOf(level),
         ))
         .id())
-}
-
-/// Move what a container holds into the party's pool, telling of each item
-/// taken; what does not fit stays inside ("No room!"). Whether it is now
-/// empty.
-fn empty_into_pool(
-    container: &mut WorldItem,
-    inventory: &mut PartyInventory,
-    catalog: &ItemCatalog,
-    tell: &mut dyn FnMut(ItemNews),
-) -> bool {
-    for (name, _) in crate::game::inventory::operations::transfer_contents(
-        &mut container.contents,
-        inventory,
-        catalog,
-    ) {
-        tell(ItemNews::Takes { member: None, item: name });
-    }
-    if !container.contents.is_empty() {
-        tell(ItemNews::NoRoom);
-    }
-    container.contents.is_empty()
 }
 
 /// Retail throws a dropped item at most 2500 units, stops it 125 short of
@@ -254,19 +224,18 @@ mod tests {
             hidden: false,
             contents: vec![item(&mut ids, 2), item(&mut ids, 3)],
         };
-        let mut told = Vec::new();
         let mut party = PartyInventory::default();
-        assert!(empty_into_pool(&mut bag, &mut party, &catalog, &mut |n| told.push(n)));
+        let taken = transfer_contents(&mut bag.contents, &mut party, &catalog);
+        assert!(bag.contents.is_empty());
         assert_eq!(party.pool.len(), 2);
-        assert_eq!(told.len(), 2);
+        assert_eq!(taken.len(), 2);
         // A full pool keeps the rest in the bag.
         let mut full = PartyInventory {
             pool: vec![item(&mut ids, 1); crate::game::inventory::POOL_LIMIT],
             ..default()
         };
         bag.contents = vec![item(&mut ids, 2)];
-        assert!(!empty_into_pool(&mut bag, &mut full, &catalog, &mut |n| told.push(n)));
+        assert!(transfer_contents(&mut bag.contents, &mut full, &catalog).is_empty());
         assert_eq!(bag.contents.len(), 1);
-        assert_eq!(told.last(), Some(&ItemNews::NoRoom));
     }
 }

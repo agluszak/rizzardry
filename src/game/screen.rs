@@ -10,7 +10,7 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use crate::game::camp::Camp;
-use crate::game::world::level::{Departing, Level, TravelQuestion};
+use crate::game::world::level::{Level, TravelQuestion};
 
 /// The full screen that is up; they are mutually exclusive.
 #[derive(States, Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
@@ -24,22 +24,50 @@ pub enum Screen {
 /// What decides whether the party is free to act.
 #[derive(SystemParam)]
 pub struct Freedom<'w, 's> {
-    levels: Query<'w, 's, (), (With<Level>, Without<Departing>)>,
+    levels: Query<'w, 's, (), With<Level>>,
     screen: Res<'w, State<Screen>>,
+    next: Res<'w, NextState<Screen>>,
     camp: Option<Res<'w, Camp>>,
     questions: Query<'w, 's, (), With<TravelQuestion>>,
+    flights: Query<'w, 's, (), With<crate::game::party::walk_in::PathFlight>>,
 }
 
 impl Freedom<'_, '_> {
     pub fn free(&self) -> bool {
         !self.levels.is_empty()
             && *self.screen.get() == Screen::World
+            && matches!(*self.next, NextState::Unchanged | NextState::Pending(Screen::World))
             && self.camp.is_none()
             && self.questions.is_empty()
+            && self.flights.is_empty()
     }
 }
 
 /// Run condition: the party may move, use, take and rest.
 pub fn party_free(freedom: Freedom) -> bool {
     freedom.free()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+
+    #[test]
+    fn an_accepted_screen_change_blocks_world_input_before_state_transition() {
+        let mut world = World::new();
+        world.insert_resource(State::new(Screen::World));
+        world.init_resource::<NextState<Screen>>();
+        world.spawn(Level {
+            path: "test".into(),
+            geometry: default(),
+            navmeshes: vec![],
+            script: default(),
+            messages: None,
+        });
+        assert!(world.run_system_once(party_free).unwrap());
+        world.resource_mut::<NextState<Screen>>().set(Screen::Inventory);
+        assert_eq!(*world.resource::<State<Screen>>().get(), Screen::World);
+        assert!(!world.run_system_once(party_free).unwrap());
+    }
 }

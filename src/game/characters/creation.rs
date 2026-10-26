@@ -205,8 +205,7 @@ mod tests {
 
     #[test]
     fn creation_spends_the_pool_after_requirements_and_refunds_a_changed_recipe() {
-        let mut draft = CharacterDraft::default();
-        draft.name = "  Kestrel  ".into();
+        let mut draft = CharacterDraft { name: "  Kestrel  ".into(), ..default() };
         assert_eq!(draft.attribute_remaining(), 40); // Human Fighter pays 20 in minimums.
         for _ in 0..14 {
             assert!(draft.adjust_attribute(Attribute::Strength, true));
@@ -234,8 +233,7 @@ mod tests {
 
     #[test]
     fn training_respects_profession_and_per_skill_limits_without_losing_allocations() {
-        let mut draft = CharacterDraft::default();
-        draft.name = "Mira".into();
+        let mut draft = CharacterDraft { name: "Mira".into(), ..default() };
         let initial = draft.preview();
         assert!(!draft.adjust_skill(Skill::Wizardry, true));
         for skill in [Skill::Sword, Skill::CloseCombat, Skill::Shield] {

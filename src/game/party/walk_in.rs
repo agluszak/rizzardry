@@ -5,24 +5,17 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 
 use super::body::{EYE_ABOVE_CENTRE, PartyBody};
-use crate::content::level::{Arrival, LevelGeometry};
-use crate::game::world::level::{Departing, Level, Travel, TravelQuestion};
+use crate::content::level::{Arrival, LevelDefinition};
+use crate::game::world::level::{Level, Travel, ask_travel};
 use crate::game::world::props::pose;
-use crate::game::world::triggers::{
-    self, Device, DeviceProximity, PartyMove, PendingPartyMove, PositionedDevices,
-};
+use crate::game::world::triggers::{LevelState, PartyMove, PendingPartyMove};
 
 pub fn run_walk_in_triggers(
     time: Res<Time>,
     party: Query<&Position, With<PartyBody>>,
-    mut commands: Commands,
-    levels: Query<Entity, (With<Level>, Without<Departing>)>,
-) {
-    let Ok(level) = levels.single() else { return };
-    let Ok(position) = party.single() else { return };
-    let eye = PartyBody::eye(position);
-    let elapsed = time.delta();
-    commands.queue(move |world: &mut World| triggers::walk(world, level, eye, elapsed));
+    levels: Query<Entity, With<Level>>,
+) -> Option<(Entity, Vec3, std::time::Duration)> {
+    Some((levels.single().ok()?, PartyBody::eye(party.single().ok()?), time.delta()))
 }
 
 /// The party's eye flying along a camera path; input and physics wait
@@ -38,14 +31,12 @@ pub struct PathFlight {
 pub fn move_party(
     mut commands: Commands,
     mut party: Query<(Entity, &mut PartyBody, &mut Position, &mut Transform, Has<PathFlight>)>,
-    levels: Query<(Entity, &Level, &PositionedDevices), Without<Departing>>,
-    geometry: Res<Assets<LevelGeometry>>,
+    mut levels: Query<(Entity, &Level, &mut LevelState)>,
+    geometry: Res<Assets<LevelDefinition>>,
     mut travel: MessageWriter<Travel>,
     mut pending: ResMut<PendingPartyMove>,
-    devices: Query<&Device>,
-    mut proximity: Query<&mut DeviceProximity>,
 ) {
-    let Ok((origin, level, positioned)) = levels.single() else { return };
+    let Ok((origin, level, mut state)) = levels.single_mut() else { return };
     let Some(party_move) = pending.take_for(origin) else { return };
     let Ok((entity, mut body, mut position, mut transform, flying)) = party.single_mut() else {
         return;
@@ -57,16 +48,16 @@ pub fn move_party(
             transform.translation = position.0;
             body.yaw = yaw;
             info!("teleport to {eye:.2}");
-            if let Some(geometry) = geometry.get(&level.geometry) {
-                triggers::arrive(eye, positioned, geometry, &devices, &mut proximity);
-            }
+            state.arrive(eye);
         }
         PartyMove::Teleport(Arrival::Entrance { entrance, ask: false }) => {
             travel.write(Travel { entrance });
         }
         // Retail asks first; until answered the party stays where it is.
         PartyMove::Teleport(Arrival::Entrance { entrance, ask: true }) => {
-            commands.spawn((TravelQuestion { entrance }, ChildOf(origin)));
+            commands.queue(move |world: &mut World| {
+                ask_travel(world, origin, entrance);
+            });
         }
         // Retail ignores starting a path that is already playing; the eye
         // flying through its trigger runs it again.
@@ -98,7 +89,7 @@ pub fn fly_party(
         &mut LinearVelocity,
     )>,
     levels: Query<&Level>,
-    geometry: Res<Assets<LevelGeometry>>,
+    geometry: Res<Assets<LevelDefinition>>,
 ) {
     let Ok((entity, mut flight, mut body, mut position, mut transform, mut velocity)) =
         party.single_mut()
@@ -120,5 +111,71 @@ pub fn fly_party(
     if flight.frame >= last {
         body.pitch = 0.0;
         commands.entity(entity).remove::<(PathFlight, RigidBodyDisabled)>();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::content::level::CameraPathModel;
+    use crate::game::camp::{Camp, CampNews, CampRequest};
+    use crate::game::party::body::{PartyLook, look_around};
+    use crate::game::screen::Screen;
+
+    #[test]
+    fn path_flight_blocks_manual_actions_and_landing_releases_the_party() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(State::new(Screen::World))
+            .init_resource::<NextState<Screen>>()
+            .init_resource::<Assets<LevelDefinition>>()
+            .add_message::<PartyLook>()
+            .add_message::<CampRequest>()
+            .add_message::<CampNews>()
+            .add_systems(Update, (look_around, crate::game::camp::request_camp));
+        let geometry =
+            app.world_mut().resource_mut::<Assets<LevelDefinition>>().add(LevelDefinition {
+                camera_paths: vec![CameraPathModel {
+                    name: "test".into(),
+                    keys: vec![Transform::from_xyz(3.0, 4.0, 5.0)],
+                    keys_per_second: 1.0,
+                }],
+                ..default()
+            });
+        app.world_mut().spawn(Level {
+            path: "test".into(),
+            geometry,
+            navmeshes: vec![],
+            script: default(),
+            messages: None,
+        });
+        let body = app
+            .world_mut()
+            .spawn((
+                PartyBody::default(),
+                Position::default(),
+                Transform::default(),
+                LinearVelocity::ZERO,
+                PathFlight { path: 0, frame: 0.0 },
+                RigidBodyDisabled,
+            ))
+            .id();
+        app.world_mut().write_message(PartyLook(Vec2::ONE));
+        app.world_mut().write_message(CampRequest);
+        app.update();
+        assert!(!app.world().contains_resource::<Camp>());
+        assert_eq!(app.world().get::<PartyBody>(body).unwrap().yaw, 0.0);
+        // Finish the actual path operation, then submit a fresh request.
+        use bevy::ecs::system::RunSystemOnce;
+        app.world_mut().run_system_once(fly_party).unwrap();
+        assert!(app.world().get::<PathFlight>(body).is_none());
+        assert!(app.world().get::<RigidBodyDisabled>(body).is_none());
+        assert_eq!(
+            app.world().get::<Position>(body).unwrap().0,
+            Vec3::new(3.0, 4.0, 5.0) - Vec3::Y * EYE_ABOVE_CENTRE
+        );
+        app.world_mut().write_message(CampRequest);
+        app.update();
+        assert!(app.world().contains_resource::<Camp>());
     }
 }

@@ -17,6 +17,7 @@ use crate::game::characters::{Character, Race, Vitals};
 use crate::game::combat::attack::{Armour, armour};
 use crate::game::data::GameData;
 use crate::game::inventory::{Carried, EquipSlot, ItemNews};
+use crate::game::party::DamageApplied;
 use crate::game::party::roster::PartyRoster;
 use crate::presentation::PresentationRng;
 use crate::presentation::screen_art::{BitmapText, Picture, absolute, label, picture, rect};
@@ -277,7 +278,7 @@ pub fn build_party_parts(
             };
             let node = absolute(at, size);
             parts.push(Box::new(
-                bsn! { node PartyButton({slot}) SlotButton({Entity::PLACEHOLDER}) on(press) },
+                bsn! { node PartyButton({slot}) SlotButton { member: Entity::PLACEHOLDER, review_armed: false } on(press) },
             ));
         }
         commands
@@ -304,7 +305,6 @@ pub fn draw_party(
         Option<&mut BitmapText>,
         Option<&mut ImageNode>,
     )>,
-    mut buttons: Query<(&PartyButton, &mut SlotButton, &mut Visibility), Without<PartyPart>>,
 ) {
     let catalog = data.as_ref().and_then(|d| catalogs.get(&d.items));
     let closed = layout.mode == LayoutMode::Closed;
@@ -464,14 +464,14 @@ pub fn draw_party(
             }
         }
         visible.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
-        if let Some(mut picture) = picture {
-            if let Some(mut source) = source {
-                source.at = picture.at;
-                if let Some(x) = hand_x {
-                    source.at.x = x;
-                }
-                picture.set_if_neq(source);
+        if let Some(mut picture) = picture
+            && let Some(mut source) = source
+        {
+            source.at = picture.at;
+            if let Some(x) = hand_x {
+                source.at.x = x;
             }
+            picture.set_if_neq(source);
         }
         if let Some(mut label) = label
             && let Some(value) = value
@@ -488,63 +488,91 @@ pub fn draw_party(
             }
         }
     }
-    for (slot, mut button, mut visibility) in &mut buttons {
-        let member = roster.0.get_index(slot.0).copied().filter(|e| members.contains(*e));
-        button.set_if_neq(SlotButton(member.unwrap_or(Entity::PLACEHOLDER)));
-        visibility.set_if_neq(if member.is_some() {
-            Visibility::Inherited
+}
+
+/// A control keeps its identity across display changes, but never changes the
+/// actor it targets while a pointer press could be in flight.
+pub fn bind_party_buttons(
+    mut commands: Commands,
+    roster: Res<PartyRoster>,
+    members: Query<(), (With<Character>, With<Vitals>)>,
+    mut buttons: Query<(Entity, &PartyButton, &SlotButton, &Node, &ChildOf, &mut Visibility)>,
+) {
+    for (entity, slot, button, node, parent, mut visibility) in &mut buttons {
+        let member = roster
+            .0
+            .get_index(slot.0)
+            .copied()
+            .filter(|e| members.contains(*e))
+            .unwrap_or(Entity::PLACEHOLDER);
+        let shown =
+            if member == Entity::PLACEHOLDER { Visibility::Hidden } else { Visibility::Inherited };
+        if button.member != member {
+            commands.entity(entity).despawn();
+            commands
+                .spawn((
+                    PartyButton(slot.0),
+                    SlotButton { member, review_armed: false },
+                    node.clone(),
+                    ChildOf(parent.parent()),
+                    shown,
+                ))
+                .observe(press);
         } else {
-            Visibility::Hidden
-        });
+            visibility.set_if_neq(shown);
+        }
     }
 }
 
 #[derive(Component, Clone, Copy, PartialEq, Eq, FromTemplate)]
-pub struct SlotButton(Entity);
-
-const DOUBLE_CLICK: Duration = Duration::from_millis(400);
-
-/// The last actor clicked and when, for double clicks.
-#[derive(Resource, Default)]
-pub struct LastSlotClick(Option<(Entity, Duration)>);
+pub struct SlotButton {
+    member: Entity,
+    /// Giving an item or rebinding the control is not the first selection click
+    /// of a review gesture. Bevy owns pointer/button identity, counts and timing.
+    review_armed: bool,
+}
 
 /// With an item in hand, a click gives it to the member; otherwise it
 /// selects them, and a double click opens their review screen.
 fn press(
     click: On<PointerClick>,
-    buttons: Query<&SlotButton>,
+    mut buttons: Query<&mut SlotButton>,
     mut selected: ResMut<SelectedMember>,
     roster: Res<PartyRoster>,
-    time: Res<Time>,
-    mut last_click: ResMut<LastSlotClick>,
     mut inventory: crate::game::inventory::operations::InventoryOperations,
     mut news: MessageWriter<ItemNews>,
     screen: Res<State<crate::game::screen::Screen>>,
     mut next_screen: ResMut<NextState<crate::game::screen::Screen>>,
 ) {
-    let Ok(&SlotButton(member)) = buttons.get(click.entity) else { return };
+    let Ok(mut button) = buttons.get_mut(click.entity) else { return };
+    let member = button.member;
     if !roster.0.contains(&member) {
         return;
     }
     match inventory.give_to(member) {
         Ok(Some(outcome)) => {
+            button.review_armed = false;
             news.write(outcome);
             return;
         }
         Err(reason) => {
+            button.review_armed = false;
             info!("giving item refused: {reason:?}");
             return;
         }
         Ok(None) => {}
     }
+    let already_selected = selected.0 == Some(member);
     selected.0 = Some(member);
-    let now = time.elapsed();
-    if last_click.0.is_some_and(|(s, at)| s == member && now - at < DOUBLE_CLICK) {
-        if *screen.get() == crate::game::screen::Screen::World {
-            next_screen.set(crate::game::screen::Screen::Inventory);
-        }
+    if already_selected
+        && button.review_armed
+        && click.count > 1
+        && *screen.get() == crate::game::screen::Screen::World
+        && matches!(*next_screen, NextState::Unchanged)
+    {
+        next_screen.set(crate::game::screen::Screen::Inventory);
     }
-    last_click.0 = Some((member, now));
+    button.review_armed = true;
 }
 
 /// Presentation owns an accepted damage animation, keyed by actor rather
@@ -565,35 +593,30 @@ const SPLAT_FRAME: f32 = 0.1;
 
 pub fn record_splats(
     mut commands: Commands,
-    mut combat: MessageReader<crate::game::combat::CombatNews>,
-    mut devices: MessageReader<crate::game::world::triggers::TriggerEffect>,
+    mut damage: MessageReader<DamageApplied>,
     art: Res<MainScreenArt>,
-    members: Query<&Vitals>,
     layers: Query<Entity, With<Splats>>,
-    existing: Query<(Entity, &Splat)>,
+    mut existing: Query<&mut Splat>,
     mut rng: ResMut<PresentationRng>,
 ) {
-    use crate::game::combat::CombatNews;
-    use crate::game::world::triggers::TriggerEffect;
-    let mut damage = std::collections::BTreeMap::<Entity, u32>::new();
-    for news in combat.read() {
-        if let CombatNews::Result { target, damage: lost, .. } = news
-            && *lost > 0
-            && members.contains(*target)
-        {
-            *damage.entry(*target).or_default() += lost;
-        }
-    }
-    for news in devices.read() {
-        if let TriggerEffect::Hurt { member, amount } = news
-            && *amount > 0
-        {
-            *damage.entry(*member).or_default() += amount;
-        }
+    let mut hits = std::collections::BTreeMap::<Entity, (u32, bool)>::new();
+    for &DamageApplied { member, amount, died } in damage.read() {
+        let (lost, death) = hits.entry(member).or_default();
+        *lost += amount;
+        *death |= died;
     }
     let Ok(layer) = layers.single() else { return };
-    for (actor, damage) in damage {
-        let death = members.get(actor).is_ok_and(|v| v.is_dead());
+    for (actor, (damage, death)) in hits {
+        // RecordCharacterDamage accumulates hits while the splat is playing.
+        if let Some(mut splat) = existing.iter_mut().find(|s| s.actor == actor) {
+            splat.damage += damage;
+            splat.death |= death;
+            if splat.death {
+                splat.timer.set_duration(Duration::from_secs_f32(30.0 * SPLAT_FRAME));
+            }
+            splat.timer.reset();
+            continue;
+        }
         let second = rng.0.random_bool(0.5);
         let splat = Splat {
             actor,
@@ -605,20 +628,16 @@ pub fn record_splats(
                 TimerMode::Once,
             ),
         };
-        if let Some((root, _)) = existing.iter().find(|(_, s)| s.actor == actor) {
-            commands.entity(root).insert(splat);
-        } else {
-            let value = damage.to_string();
-            let font = art.bold_font.clone();
-            commands.spawn_scene(bsn!{
-                Node{position_type:PositionType::Absolute} Pickable::IGNORE
-                Children [
-                    template(|_|Ok(Picture::default())) Pickable::IGNORE
-                    -- Node{position_type:PositionType::Absolute} SplatNumber Pickable::IGNORE
-                    template(move |_|Ok(BitmapText{font:font.clone(),value:value.clone(),at:Vec2::new(0.0,4.0),width:82.0,justify:bevy::text::Justify::Center}))
-                ]
-            }).insert((splat,ChildOf(layer)));
-        }
+        let value = damage.to_string();
+        let font = art.bold_font.clone();
+        commands.spawn_scene(bsn!{
+            Node{position_type:PositionType::Absolute} Pickable::IGNORE
+            Children [
+                template(|_|Ok(Picture::default())) Pickable::IGNORE
+                -- Node{position_type:PositionType::Absolute} SplatNumber Pickable::IGNORE
+                template(move |_|Ok(BitmapText{font:font.clone(),value:value.clone(),at:Vec2::new(0.0,4.0),width:82.0,justify:bevy::text::Justify::Center}))
+            ]
+        }).insert((splat,ChildOf(layer)));
     }
 }
 
@@ -668,5 +687,131 @@ pub fn play_splats(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::{
+        characters::{Gender, Profession},
+        inventory::PartyInventory,
+        screen::Screen,
+    };
+    use bevy::picking::{
+        backend::HitData,
+        events::Pointer,
+        pointer::{Location, PointerButton, PointerId},
+    };
+
+    #[test]
+    fn new_damage_refreshes_the_existing_splat_before_playback_expires_it() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<SpriteSheet>()
+            .init_resource::<PartyRoster>()
+            .init_resource::<PresentationRng>()
+            .add_message::<DamageApplied>()
+            .add_systems(Startup, super::super::load_main_screen_art)
+            .add_systems(Update, (record_splats, play_splats).chain());
+        let actor = app.world_mut().spawn_empty().id();
+        app.world_mut().resource_mut::<PartyRoster>().0.insert(actor);
+        let layer = app.world_mut().spawn(Splats).id();
+        let mut timer = Timer::from_seconds(8.0 * SPLAT_FRAME, TimerMode::Once);
+        timer.set_elapsed(Duration::from_secs_f32(0.79));
+        let splat = app
+            .world_mut()
+            .spawn((
+                Splat { actor, timer, damage: 10, death: false, second: false },
+                Node::default(),
+                ChildOf(layer),
+            ))
+            .id();
+        app.world_mut().spawn((Picture::default(), ChildOf(splat)));
+        app.update();
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(Duration::from_millis(
+            100,
+        )));
+        app.world_mut().write_message(DamageApplied { member: actor, amount: 3, died: false });
+        app.world_mut().write_message(DamageApplied { member: actor, amount: 4, died: true });
+        app.update();
+        let retained =
+            app.world().get::<Splat>(splat).expect("refresh must retain the animation entity");
+        assert_eq!(retained.damage, 17);
+        assert!(retained.death);
+        assert!(retained.timer.elapsed_secs() < 0.2);
+        assert_eq!(retained.timer.duration(), Duration::from_secs(3));
+        assert_eq!(app.world_mut().query::<&Splat>().iter(app.world()).count(), 1);
+    }
+
+    #[test]
+    fn native_click_counts_review_only_the_current_selection_gesture() {
+        let mut world = World::new();
+        world.init_resource::<PartyRoster>();
+        world.init_resource::<PartyInventory>();
+        world.init_resource::<Assets<ItemCatalog>>();
+        world.init_resource::<SelectedMember>();
+        world.init_resource::<Messages<ItemNews>>();
+        world.insert_resource(State::new(Screen::World));
+        world.init_resource::<NextState<Screen>>();
+        let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
+        let actor = world.spawn((Vitals::new(&profile), profile, Carried::default())).id();
+        world.resource_mut::<PartyRoster>().0.insert(actor);
+        let root = world.spawn_empty().id();
+        let button = world
+            .spawn((
+                SlotButton { member: actor, review_armed: false },
+                PartyButton(0),
+                Node::default(),
+                Visibility::Inherited,
+                ChildOf(root),
+            ))
+            .observe(press)
+            .id();
+        let click = |world: &mut World, count| {
+            world.trigger(PointerClick {
+                entity: button,
+                pointer: Pointer::new(
+                    PointerId::Mouse,
+                    Location {
+                        target: bevy::camera::NormalizedRenderTarget::None {
+                            width: 640,
+                            height: 480,
+                        },
+                        position: Vec2::ZERO,
+                    },
+                ),
+                button: PointerButton::Primary,
+                hit: HitData::new(Entity::PLACEHOLDER, 0.0, None, None),
+                duration: std::time::Duration::ZERO,
+                count,
+            })
+        };
+        click(&mut world, 1);
+        assert_eq!(world.resource::<SelectedMember>().0, Some(actor));
+        world.get_mut::<Vitals>(actor).unwrap().hp -= 1;
+        use bevy::ecs::system::RunSystemOnce;
+        world.run_system_once(bind_party_buttons).unwrap();
+        assert!(world.get_entity(button).is_ok(), "health changes retain the click target");
+        click(&mut world, 2);
+        assert!(matches!(
+            world.resource::<NextState<Screen>>(),
+            NextState::Pending(Screen::Inventory)
+        ));
+        world.insert_resource(NextState::<Screen>::Unchanged);
+        // A new binding/gesture must select before review even if Bevy's
+        // pointer sequence still contains clicks on the previous binding.
+        world.entity_mut(button).insert(SlotButton { member: actor, review_armed: false });
+        click(&mut world, 3);
+        assert!(matches!(world.resource::<NextState<Screen>>(), NextState::Unchanged));
+        let replacement = Character::new("B", Race::Human, Gender::Male, Profession::Fighter);
+        let other = world.spawn((Vitals::new(&replacement), replacement, Carried::default())).id();
+        world.resource_mut::<PartyRoster>().0 = [other].into_iter().collect();
+        world.run_system_once(bind_party_buttons).unwrap();
+        assert!(
+            world.get_entity(button).is_err(),
+            "a rebind retires the pressed target instead of redirecting release"
+        );
+        assert_eq!(world.resource::<SelectedMember>().0, Some(actor));
     }
 }

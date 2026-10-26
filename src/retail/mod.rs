@@ -39,7 +39,7 @@ use std::sync::Arc;
 use bevy::asset::AssetApp;
 use bevy::prelude::*;
 
-use crate::content::level::LevelGeometry;
+use crate::content::level::{LevelDefinition, LevelGeometry};
 
 /// Registers the `retail://` and `navmesh://` asset sources and retail
 /// format loaders.
@@ -70,27 +70,37 @@ impl Plugin for RetailPlugin {
     fn finish(&self, app: &mut App) {
         app.init_asset::<crate::content::navmesh::LevelCollision>()
             .init_asset_loader::<navmesh::LevelCollisionLoader>()
-            .init_asset::<LevelGeometry>()
-            .init_asset_loader::<level_loader::PvlLoader>()
-            .init_asset_loader::<sky_loader::LvlLoader>()
+            .init_asset::<LevelDefinition>()
+            .init_asset_loader::<level_loader::PvlDefinitionLoader>()
             .init_asset::<crate::content::monster::MonsterBody>()
             .init_asset_loader::<monster_loader::MlsBodyLoader>()
-            .init_asset::<crate::content::monster::MonsterModel>()
-            .init_asset_loader::<monster_loader::MlsLoader>()
-            .init_asset::<crate::content::ui::SpriteSheet>()
-            .init_asset_loader::<sti_loader::StiLoader>()
             .init_asset::<crate::content::items::ItemCatalog>()
             .init_asset_loader::<items::ItemCatalogLoader>()
-            .init_asset::<crate::content::items::ItemModel>()
-            .init_asset_loader::<item_model_loader::ItmLoader>()
             .init_asset::<crate::content::items::LootTables>()
             .init_asset_loader::<items::LootTablesLoader>()
             .init_asset::<crate::content::species::MonsterCatalog>()
             .init_asset_loader::<species::MonsterCatalogLoader>()
+            .init_asset::<crate::content::ui::TextTable>()
+            .init_asset_loader::<text_loader::TextLoader>();
+    }
+}
+
+/// Render and audio content loaders, installed only by rendered app composition.
+pub struct RetailPresentationPlugin;
+
+impl Plugin for RetailPresentationPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_asset::<LevelGeometry>()
+            .init_asset_loader::<level_loader::PvlLoader>()
+            .init_asset_loader::<sky_loader::LvlLoader>()
+            .init_asset::<crate::content::monster::MonsterModel>()
+            .init_asset_loader::<monster_loader::MlsLoader>()
+            .init_asset::<crate::content::ui::SpriteSheet>()
+            .init_asset_loader::<sti_loader::StiLoader>()
+            .init_asset::<crate::content::items::ItemModel>()
+            .init_asset_loader::<item_model_loader::ItmLoader>()
             .init_asset::<crate::content::music::Playlist>()
             .init_asset_loader::<playlist::PlaylistLoader>()
-            .init_asset::<crate::content::ui::TextTable>()
-            .init_asset_loader::<text_loader::TextLoader>()
             .init_asset::<texture_loader::RetailTexture>()
             .init_asset_loader::<texture_loader::RetailTextureLoader>();
     }

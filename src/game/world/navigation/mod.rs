@@ -22,7 +22,7 @@ use bevy_tnua::builtins::TnuaBuiltinWalk;
 use bevy_tnua::prelude::*;
 
 use super::level::Level;
-use crate::content::level::LevelGeometry;
+use crate::content::level::LevelDefinition;
 use crate::game::party::body::{FLOAT_HEIGHT, PartyBody};
 
 pub struct NavigationPlugin;
@@ -36,7 +36,12 @@ impl Plugin for NavigationPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(Landmass3dPlugin::default())
             .add_plugins(TnuaControllerPlugin::<WalkerMotion>::new(FixedUpdate))
-            .add_systems(Update, links::sync_door_links.run_if(super::level::level_active))
+            .add_systems(
+                FixedPreUpdate,
+                links::sync_door_links
+                    .before(bevy_landmass::LandmassSystems::SyncExistence)
+                    .run_if(super::level::level_active),
+            )
             // Each fixed step: Landmass plans (FixedPreUpdate), walkers feed
             // Tnua (FixedUpdate), Avian moves them (FixedPostUpdate), and
             // the resulting velocities go back to Landmass.
@@ -88,34 +93,24 @@ pub fn feet(origin: Vec3, walker: Option<&Walker>) -> Vec3 {
     origin - Vec3::Y * walker.map_or(0.0, |w| w.float_height)
 }
 
-/// Whether a level's navmeshes have settled: all loaded, or one failed.
+/// Whether every mandatory navmesh has loaded successfully.
 /// They come from the asset processor's cache (baked on first use).
-pub fn navmeshes_settled(level: &Level, assets: &AssetServer) -> bool {
-    level.navmeshes.iter().all(|navmesh| {
-        matches!(assets.get_load_state(navmesh), Some(LoadState::Loaded | LoadState::Failed(_)))
-    })
+pub fn navmeshes_ready(level: &Level, assets: &AssetServer) -> bool {
+    level
+        .navmeshes
+        .iter()
+        .all(|navmesh| matches!(assets.get_load_state(navmesh), Some(LoadState::Loaded)))
 }
 
 /// Install a level's navigation under its root, as part of its activation:
-/// one archipelago and island per size class, and the level's links. A
-/// navmesh that failed to load leaves the level without navigation; nothing
-/// will path.
+/// one archipelago and island per size class, and the level's links.
+/// Activation has already checked every required navmesh.
 pub fn install(
     commands: &mut Commands,
     root: Entity,
     level: &Level,
-    geometry: &LevelGeometry,
-    assets: &AssetServer,
-) {
-    if let Some(Some(LoadState::Failed(error))) = level
-        .navmeshes
-        .iter()
-        .map(|h| assets.get_load_state(h))
-        .find(|s| matches!(s, Some(LoadState::Failed(_))))
-    {
-        error!("navmesh unavailable: {error}");
-        return;
-    }
+    geometry: &LevelDefinition,
+) -> LevelNavigation {
     let mut archipelagos = Vec::new();
     for (class, navmesh) in level.navmeshes.iter().enumerate() {
         let radius = bake::SIZE_CLASSES[class];
@@ -148,16 +143,14 @@ pub fn install(
         archipelagos.push(archipelago);
     }
     links::spawn_level_links(commands, root, geometry, &archipelagos);
-    commands.entity(root).insert(LevelNavigation { archipelagos });
     info!("navmeshes installed for {} size classes", level.navmeshes.len());
+    LevelNavigation { archipelagos }
 }
 
 /// The party as a Landmass character in one archipelago: a child of the
 /// party body, so walkers of every size class avoid it.
 #[derive(Component, Debug)]
-pub struct PartyCharacter {
-    archipelago: Entity,
-}
+pub struct PartyCharacter;
 
 /// Register the party in every archipelago of the current level and report
 /// its velocity. After travel the old archipelagos are gone; their
@@ -166,35 +159,32 @@ fn track_party_character(
     mut commands: Commands,
     navigation: Query<&LevelNavigation>,
     party: Query<(Entity, &LinearVelocity), With<PartyBody>>,
-    mut characters: Query<(Entity, &PartyCharacter, &mut Velocity3d)>,
+    mut characters: Query<(Entity, &ArchipelagoRef3d, &mut Velocity3d), With<PartyCharacter>>,
 ) {
     let (Ok(navigation), Ok((party, velocity))) = (navigation.single(), party.single()) else {
         return;
     };
-    let current =
-        characters.iter().all(|(_, c, _)| navigation.archipelagos.contains(&c.archipelago));
-    if !current {
-        for (character, _, _) in &characters {
+    for (character, archipelago, mut tracked) in &mut characters {
+        if navigation.archipelagos.contains(&archipelago.entity) {
+            tracked.velocity = velocity.0;
+        } else {
             commands.entity(character).despawn();
         }
     }
-    if characters.is_empty() || !current {
-        for &archipelago in &navigation.archipelagos {
+    for &archipelago in &navigation.archipelagos {
+        if !characters.iter().any(|(_, reference, _)| reference.entity == archipelago) {
             commands.spawn((
-                PartyCharacter { archipelago },
+                PartyCharacter,
                 Transform::default(),
                 Character3dBundle {
                     character: default(),
-                    settings: CharacterSettings { radius: 500.0 / crate::content::UNITS_PER_METRE },
+                    settings: CharacterSettings { radius: crate::game::party::body::RADIUS },
                     archipelago_ref: ArchipelagoRef3d::new(archipelago),
                 },
                 Velocity3d { velocity: velocity.0 },
                 ChildOf(party),
             ));
         }
-    }
-    for (_, _, mut tracked) in &mut characters {
-        tracked.velocity = velocity.0;
     }
 }
 
@@ -211,7 +201,7 @@ fn steer_walkers(
     mut walkers: Query<(
         &Walker,
         Option<&super::population::Monster>,
-        &AgentDesiredVelocity3d,
+        Option<&AgentDesiredVelocity3d>,
         Option<&links::Crossing>,
         &Transform,
         &mut TnuaController<WalkerMotion>,
@@ -227,7 +217,7 @@ fn steer_walkers(
                         * walker.speed
                         * 0.8
                 }
-                None => desired.velocity().with_y(0.0),
+                None => desired.map_or(Vec3::ZERO, |d| d.velocity().with_y(0.0)),
             }
         };
         controller.initiate_action_feeding();
@@ -235,5 +225,56 @@ fn steer_walkers(
             desired_motion: velocity / walker.speed,
             desired_forward: Dir3::new(velocity).ok(),
         };
+    }
+}
+
+#[cfg(test)]
+mod party_character_tests {
+    use super::*;
+
+    #[test]
+    fn avoidance_proxies_follow_velocity_repair_missing_classes_and_retire_on_travel() {
+        let mut app = App::new();
+        app.add_systems(Update, track_party_character);
+        let party = app.world_mut().spawn((PartyBody::default(), LinearVelocity(Vec3::X))).id();
+        let first = app.world_mut().spawn_empty().id();
+        let second = app.world_mut().spawn_empty().id();
+        let level =
+            app.world_mut().spawn(LevelNavigation { archipelagos: vec![first, second] }).id();
+        app.update();
+        let proxies = app.world().get::<Children>(party).unwrap().to_vec();
+        assert_eq!(proxies.len(), 2);
+        for &proxy in &proxies {
+            assert_eq!(app.world().get::<Velocity3d>(proxy).unwrap().velocity, Vec3::X);
+        }
+        app.world_mut().despawn(proxies[0]);
+        app.world_mut().entity_mut(party).insert(LinearVelocity(Vec3::Z));
+        app.update();
+        let repaired = app.world().get::<Children>(party).unwrap().to_vec();
+        assert_eq!(repaired.len(), 2);
+        assert!(repaired.contains(&proxies[1]), "retain the surviving avoidance proxy");
+        let mut references: Vec<_> = repaired
+            .iter()
+            .map(|&proxy| {
+                assert_eq!(app.world().get::<Velocity3d>(proxy).unwrap().velocity, Vec3::Z);
+                app.world().get::<ArchipelagoRef3d>(proxy).unwrap().entity
+            })
+            .collect();
+        references.sort();
+        let mut expected = vec![first, second];
+        expected.sort();
+        assert_eq!(references, expected);
+        let next = app.world_mut().spawn_empty().id();
+        app.world_mut().entity_mut(level).insert(LevelNavigation { archipelagos: vec![next] });
+        app.update();
+        for proxy in repaired {
+            assert!(app.world().get_entity(proxy).is_err());
+        }
+        let children = app.world().get::<Children>(party).unwrap();
+        assert_eq!(children.len(), 1);
+        let proxy = children[0];
+        assert_eq!(app.world().get::<ArchipelagoRef3d>(proxy).unwrap().entity, next);
+        app.world_mut().despawn(party);
+        assert!(app.world().get_entity(proxy).is_err());
     }
 }

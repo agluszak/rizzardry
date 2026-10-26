@@ -105,14 +105,12 @@ pub fn show_tooltip(
         let text = if let Ok(item) = items.get(entity) {
             // "Bullets (Unidentified) (16)".
             let catalog = data.as_ref().and_then(|d| catalogs.get(&d.items));
-            let Some(definition) = catalog.and_then(|c| c.get(item.item.item)) else { return None };
+            let definition = catalog.and_then(|c| c.get(item.item.item))?;
             item.item.display_name(definition, true)
         } else if let Ok(monster) = monsters.get(entity) {
             // "Crustacean (?/12)" (retail `SetCombatSelection`).
             let catalog = data.as_ref().and_then(|d| species.get(&d.species));
-            let Some(kind) = catalog.and_then(|c| c.0.get(monster.species as usize)) else {
-                return None;
-            };
+            let kind = catalog.and_then(|c| c.0.get(monster.species as usize))?;
             let identified = memberships
                 .get(entity)
                 .ok()

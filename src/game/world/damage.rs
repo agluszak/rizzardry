@@ -1,10 +1,15 @@
 //! Damage and mandatory monster-death consequences, independent of the cause.
 
+use super::navigation::{WalkerMotion, links::Crossing};
+use crate::game::world::ActorPose;
+use avian3d::prelude::LinearVelocity;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
+use bevy_landmass::{AgentTarget3d, UsingAnimationLink, Velocity3d};
+use bevy_tnua::{TnuaController, TnuaMotor};
 
 use super::items::drop_loot;
-use super::level::{Departing, Level};
+use super::level::Level;
 use super::navigation::{Walker, feet};
 use super::population::Monster;
 use crate::content::items::{ItemCatalog, LootTables};
@@ -35,12 +40,20 @@ pub enum DamageRefusal {
 /// it again on the corpse produces no second reward or drop.
 #[derive(SystemParam)]
 pub struct MonsterDamage<'w, 's> {
-    pub monsters: Query<
+    pub monsters:
+        Query<'w, 's, (&'static mut Monster, ActorPose, Option<&'static Walker>, &'static ChildOf)>,
+    motion: Query<
         'w,
         's,
-        (&'static mut Monster, &'static GlobalTransform, Option<&'static Walker>, &'static ChildOf),
+        (
+            Option<&'static mut AgentTarget3d>,
+            Option<&'static mut TnuaController<WalkerMotion>>,
+            Option<&'static mut TnuaMotor>,
+            Option<&'static mut LinearVelocity>,
+            Option<&'static mut Velocity3d>,
+        ),
     >,
-    levels: Query<'w, 's, (), (With<Level>, Without<Departing>)>,
+    levels: Query<'w, 's, (), With<Level>>,
     commands: Commands<'w, 's>,
     data: Option<Res<'w, GameData>>,
     catalogs: Res<'w, Assets<ItemCatalog>>,
@@ -98,6 +111,27 @@ impl MonsterDamage<'_, '_> {
         if !monster.is_dead() {
             return Ok(DamageOutcome { damage: lost, ..default() });
         }
+        // Stop autonomous work, not the body's geometry or vertical physics.
+        // Structural removal is applied with this operation's loot commands,
+        // before any following movement consumer can run.
+        let (targeting, controller, motor, velocity, navigation_velocity) =
+            self.motion.get_mut(target).unwrap();
+        if let Some(mut targeting) = targeting {
+            *targeting = AgentTarget3d::None;
+        }
+        if let Some(mut controller) = controller {
+            controller.basis = default();
+        }
+        if let Some(mut motor) = motor {
+            *motor = default();
+        }
+        if let Some(mut velocity) = velocity {
+            velocity.0 = Vec3::Y * velocity.y;
+        }
+        if let Some(mut velocity) = navigation_velocity {
+            velocity.velocity = Vec3::ZERO;
+        }
+        self.commands.entity(target).remove::<(Crossing, UsingAnimationLink)>();
         let (found, gold) =
             crate::game::loot::monster_loot(kind, tables, catalog, party_level, rng);
         if gold > 0 {

@@ -6,6 +6,7 @@
 pub mod approach;
 pub mod attack;
 
+use crate::game::world::ActorPose;
 use crate::game::world::level::PlayedLevel;
 use crate::game::world::navigation::{Walker, feet};
 use avian3d::prelude::{Position, RigidBody, SpatialQuery, SpatialQueryFilter};
@@ -20,11 +21,11 @@ use crate::content::species::{MonsterCatalog, Reach};
 use crate::game::characters::{Character, Condition, Vitals};
 use crate::game::data::GameData;
 use crate::game::inventory::{Carried, EquipSlot, ItemInstanceId};
-use crate::game::party::Order;
 use crate::game::party::body::PartyBody;
 use crate::game::party::formation::{self, Formation, Row};
 use crate::game::party::recovery;
 use crate::game::party::roster::PartyRoster;
+use crate::game::party::{DamageApplied, Order};
 use crate::game::rng::GameRng;
 use crate::game::time::GameClock;
 use crate::game::world::damage::{DamageOutcome, MonsterDamage};
@@ -43,7 +44,7 @@ impl Plugin for CombatPlugin {
             .init_resource::<CombatSettings>()
             .add_systems(
                 Update,
-                (start_battle, run_battle, approach::embody_fighters, approach::close_in)
+                (settle_defeat, start_battle, run_battle, settle_defeat, approach::close_in)
                     .chain()
                     .in_set(crate::game::GameplaySet::Combat)
                     .run_if(crate::game::world::level::level_active),
@@ -110,11 +111,7 @@ struct PartyTurn {
 #[derive(Resource, Debug, Default)]
 pub struct Battle {
     pub round: u32,
-    /// A round is being played out; between rounds a phased fight waits for
-    /// the player (retail `execution_active`).
-    pub executing: bool,
-    /// The phase being played, 1..=100; 0 between rounds.
-    step: u8,
+    phase: RoundPhase,
     party: Vec<PartyTurn>,
     /// The monsters in the fight, in a stable order (by location id).
     monsters: Vec<(Entity, Turn)>,
@@ -123,13 +120,26 @@ pub struct Battle {
     kills: u32,
     passive_rounds: u32,
     attacked_this_round: bool,
-    /// Monsters are walking up to the party: the round is not passive.
-    approaching: bool,
     /// Until the next action.
     wait: Timer,
 }
 
+/// Accepted work survives pacing/content waits without pretending the round
+/// has already initialized its actors. Waiting cannot retain an executing phase.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum RoundPhase {
+    #[default]
+    Waiting,
+    Accepted,
+    Executing(u8),
+}
+
 impl Battle {
+    /// A round is accepted or running, including its pacing delay.
+    pub fn executing(&self) -> bool {
+        self.phase != RoundPhase::Waiting
+    }
+
     fn defends(&self, actor: Entity) -> bool {
         self.party.iter().any(|p| p.actor == actor && matches!(p.action, AcceptedAction::Defend))
     }
@@ -142,7 +152,11 @@ impl Battle {
     /// How far through the round its play is, 0 to 1, while a round is
     /// being played.
     pub fn progress(&self) -> Option<f32> {
-        self.executing.then_some(f32::from(self.step.min(100)) / 100.0)
+        match self.phase {
+            RoundPhase::Waiting => None,
+            RoundPhase::Accepted => Some(0.0),
+            RoundPhase::Executing(step) => Some(f32::from(step.min(100)) / 100.0),
+        }
     }
 }
 
@@ -262,7 +276,7 @@ pub fn start_battle(
     mut party: Query<(&Position, &mut PartyBody)>,
     level: PlayedLevel,
     members: Query<(&Character, &Vitals)>,
-    monsters: Query<(Entity, &Monster, &GlobalTransform, Option<&Walker>)>,
+    monsters: Query<(Entity, &Monster, ActorPose, Option<&Walker>)>,
     spatial: SpatialQuery,
     bodies: Query<&RigidBody>,
     data: Option<Res<GameData>>,
@@ -272,7 +286,10 @@ pub fn start_battle(
     mut recognition: GroupRecognition,
     mut rng: ResMut<GameRng>,
 ) {
-    if battle.is_some() || camp.is_some() {
+    if battle.is_some()
+        || camp.is_some()
+        || !roster.0.iter().any(|&member| members.get(member).is_ok_and(|(_, v)| !v.is_dead()))
+    {
         return;
     }
     let (Ok((party_at, mut body)), Some(catalog)) =
@@ -353,6 +370,23 @@ pub fn start_battle(
     news.write(CombatNews::Began);
 }
 
+/// Terminal state is settled independently of whose action dealt the damage.
+/// Used before/after combat execution and at the end of environmental damage.
+pub fn settle_defeat(
+    mut commands: Commands,
+    battle: Option<Res<Battle>>,
+    roster: Res<PartyRoster>,
+    members: Query<&Vitals>,
+    mut news: MessageWriter<CombatNews>,
+) {
+    if battle.is_some()
+        && !roster.0.iter().any(|&member| members.get(member).is_ok_and(|v| !v.is_dead()))
+    {
+        news.write(CombatNews::Lost);
+        commands.remove_resource::<Battle>();
+    }
+}
+
 /// Advance the fight by one action when its pause is over.
 pub fn run_battle(
     mut commands: Commands,
@@ -369,13 +403,19 @@ pub fn run_battle(
     mut formation: ResMut<Formation>,
     data: Option<Res<GameData>>,
     (items, species): (Res<Assets<ItemCatalog>>, Res<Assets<MonsterCatalog>>),
-    mut news: MessageWriter<CombatNews>,
+    (mut news, mut party_damage): (MessageWriter<CombatNews>, MessageWriter<DamageApplied>),
     (mut starts, settings, orders): (MessageReader<StartRound>, Res<CombatSettings>, Query<&Order>),
 ) {
     let Some(mut battle) = battle else {
         starts.clear();
         return;
     };
+    // Accept input before any pacing/content early return. The existing round
+    // state owns the request; it must not wait in the transient message buffer.
+    let start = starts.read().count() > 0;
+    if start && !battle.executing() {
+        battle.phase = RoundPhase::Accepted;
+    }
     let (mut members, mut damage) = actors.p0();
     if !damage.ready() {
         return;
@@ -394,14 +434,13 @@ pub fn run_battle(
 
     // Between rounds a phased fight waits for the player; a continuous one
     // goes on (retail `UpdateCombat`, `BeginCombatExecution`).
-    let start = starts.read().count() > 0;
-    if !battle.executing {
-        if !(settings.continuous || start) {
+    if !battle.executing() {
+        if !settings.continuous {
             return;
         }
-        battle.executing = true;
+        battle.phase = RoundPhase::Accepted;
     }
-    if battle.step == 0 {
+    if battle.phase == RoundPhase::Accepted {
         // A new round: the party's phases, then the monsters'.
         battle.round += 1;
         battle.attacked_this_round = false;
@@ -438,12 +477,11 @@ pub fn run_battle(
                 }
             };
         }
-        battle.step = 1;
+        battle.phase = RoundPhase::Executing(1);
     }
 
     // The next actor due: accepted party order first, then monsters in order.
-    loop {
-        let step = battle.step;
+    while let RoundPhase::Executing(step) = battle.phase {
         if step > 100 {
             end_round(
                 &mut commands,
@@ -453,12 +491,12 @@ pub fn run_battle(
                 &roster,
                 &mut members,
                 &damage.monsters,
+                party.eye,
+                species,
                 &mut news,
             );
             // Recognition is a required part of this round, before the next
             // accepted action or a removed battle can change its meaning.
-            drop(members);
-            drop(damage);
             actors.p1().detect(party.eye, body.forward(), Some(&battle), &mut rng);
             return;
         }
@@ -520,15 +558,12 @@ pub fn run_battle(
                 items,
                 species,
                 &mut news,
+                &mut party_damage,
             );
             battle.wait = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
-            if !roster.0.iter().any(|&m| members.get(m).is_ok_and(|(_, v, _)| !v.is_dead())) {
-                news.write(CombatNews::Lost);
-                commands.remove_resource::<Battle>();
-            }
             return;
         }
-        battle.step += 1;
+        battle.phase = RoundPhase::Executing(step + 1);
     }
 }
 
@@ -644,12 +679,13 @@ fn monster_acts(
     rng: &mut GameRng,
     roster: &PartyRoster,
     members: &mut Query<(&mut Character, &mut Vitals, &Carried)>,
-    monsters: &Query<(&mut Monster, &GlobalTransform, Option<&Walker>, &ChildOf)>,
+    monsters: &Query<(&mut Monster, ActorPose, Option<&Walker>, &ChildOf)>,
     party: &PartyView,
     formation: &mut ResMut<Formation>,
     items: &ItemCatalog,
     species: &MonsterCatalog,
     news: &mut MessageWriter<CombatNews>,
+    damage: &mut MessageWriter<DamageApplied>,
 ) {
     let (entity, turn) = battle.monsters[index];
     let Ok((monster, at, walker, _)) = monsters.get(entity) else { return };
@@ -696,9 +732,15 @@ fn monster_acts(
     let (mut hits, mut dealt) = (0, 0);
     for _ in 0..swings {
         match monster_swing(rng, kind, attack, mode, &character, &armour) {
-            Swing::Hit(damage) => {
+            Swing::Hit(amount) => {
                 hits += 1;
-                dealt += crate::game::party::damage_member(member, &mut vitals, formation, damage);
+                dealt += crate::game::party::damage_member(
+                    member,
+                    &mut vitals,
+                    formation,
+                    amount,
+                    damage,
+                );
                 if vitals.is_dead() {
                     break;
                 }
@@ -724,7 +766,9 @@ fn end_round(
     rng: &mut GameRng,
     roster: &PartyRoster,
     members: &mut Query<(&mut Character, &mut Vitals, &Carried)>,
-    monsters: &Query<(&mut Monster, &GlobalTransform, Option<&Walker>, &ChildOf)>,
+    monsters: &Query<(&mut Monster, ActorPose, Option<&Walker>, &ChildOf)>,
+    party_eye: Vec3,
+    species: &MonsterCatalog,
     news: &mut MessageWriter<CombatNews>,
 ) {
     // The round's time passes now, with its meaning: conditions age and
@@ -738,10 +782,8 @@ fn end_round(
             recovery::elapse(&profile, &mut vitals, ticks, recovery::Pace::Fighting);
         }
     }
-    battle.step = 0;
-    battle.executing = false;
-    // Resting and incapacitated members recover after conditions have aged.
-    // Keep accepted actor order for RNG, even if the roster was rearranged.
+    battle.phase = RoundPhase::Waiting;
+    // Recover after aging conditions, in accepted actor order.
     for work in &battle.party {
         let member = work.actor;
         if !roster.0.contains(&member) {
@@ -766,7 +808,12 @@ fn end_round(
         }
     }
     battle.wait = Timer::from_seconds(ROUND_SECONDS, TimerMode::Once);
-    let active = battle.attacked_this_round || battle.approaching;
+    let approaching = battle.monsters.iter().any(|&(entity, _)| {
+        monsters.get(entity).is_ok_and(|(monster, at, walker, _)| {
+            approach::needs_approach(monster, at.translation(), walker, party_eye, species)
+        })
+    });
+    let active = battle.attacked_this_round || approaching;
     battle.passive_rounds = if active { 0 } else { battle.passive_rounds + 1 };
     let hostiles_left =
         battle.monsters.iter().any(|&(e, _)| monsters.get(e).is_ok_and(|(m, ..)| !m.is_dead()));
@@ -820,7 +867,7 @@ mod tests {
         assert_eq!(next_phase(55, 1), 77);
         assert_eq!(next_phase(100, 1), 100, "again at the same step");
     }
-    /// Real round execution without perception, movement, rendering or UI.
+    /// Real battle acceptance and round execution without movement, rendering or UI.
     fn round_app(defending: bool) -> (App, [Entity; 2]) {
         use crate::content::characters::Skill;
         use crate::content::items::{ItemDefinition, QuantityKind};
@@ -835,6 +882,7 @@ mod tests {
             .init_resource::<Assets<ItemCatalog>>()
             .init_resource::<Assets<MonsterCatalog>>()
             .init_resource::<Assets<LootTables>>()
+            .init_resource::<avian3d::collider_tree::ColliderTrees>()
             .init_resource::<PartyRoster>()
             .init_resource::<Formation>()
             .init_resource::<PartyInventory>()
@@ -843,10 +891,11 @@ mod tests {
             .insert_resource(GameRng::seeded(5))
             .init_resource::<CombatSettings>()
             .add_message::<CombatNews>()
+            .add_message::<DamageApplied>()
             .add_message::<StartRound>()
-            .init_resource::<Assets<crate::content::level::LevelGeometry>>()
+            .init_resource::<Assets<crate::content::level::LevelDefinition>>()
             .add_message::<crate::game::world::identify::Identified>()
-            .add_systems(Update, run_battle);
+            .add_systems(Update, (settle_defeat, start_battle, run_battle, settle_defeat).chain());
         app.world_mut()
             .resource_mut::<Time<Virtual>>()
             .set_max_delta(std::time::Duration::from_secs(2));
@@ -894,7 +943,6 @@ mod tests {
                 path: "combat-test".into(),
                 geometry: default(),
                 navmeshes: vec![],
-                sky: None,
                 script: default(),
                 messages: None,
             })
@@ -912,7 +960,7 @@ mod tests {
                     conditions: vec![],
                     body: ScaledBody { scale: 1.0, radius: 1.0, eye_height: 1.0, speed: 0.0 },
                 },
-                GlobalTransform::from_translation(Vec3::NEG_Z),
+                Transform::from_translation(Vec3::NEG_Z),
                 ChildOf(root),
             ))
             .id();
@@ -940,8 +988,35 @@ mod tests {
     }
 
     #[test]
+    fn passive_rounds_use_current_actor_reach_without_waiting_for_navigation() {
+        let (mut app, _) = round_app(true);
+        let actor = app.world().resource::<Battle>().monsters[0].0;
+        app.world_mut().entity_mut(actor).insert((
+            Walker { speed: 2.0, float_height: 1.0 },
+            Transform::from_translation(Vec3::NEG_Z * 20.0),
+        ));
+        {
+            let mut battle = app.world_mut().resource_mut::<Battle>();
+            battle.phase = RoundPhase::Executing(101);
+            battle.passive_rounds = 1;
+        }
+        app.update();
+        assert!(app.world().contains_resource::<Battle>(), "a living walker is still approaching");
+        assert_eq!(app.world().resource::<Battle>().passive_rounds, 0);
+        app.world_mut().get_mut::<Transform>(actor).unwrap().translation = Vec3::NEG_Z;
+        {
+            let mut battle = app.world_mut().resource_mut::<Battle>();
+            battle.phase = RoundPhase::Executing(101);
+            battle.passive_rounds = 1;
+            battle.wait = default();
+        }
+        app.update();
+        assert!(!app.world().contains_resource::<Battle>(), "the actor is now in reach and idle");
+    }
+
+    #[test]
     fn a_round_recognises_only_its_participants_before_the_session_ends() {
-        use crate::content::level::LevelGeometry;
+        use crate::content::level::LevelDefinition;
         use crate::game::characters::MonsterKnowledge;
         use crate::game::world::identify::{GroupMember, MonsterGroup};
         use crate::game::world::level::Level;
@@ -951,8 +1026,10 @@ mod tests {
         }
         let level =
             app.world_mut().query_filtered::<Entity, With<Level>>().single(app.world()).unwrap();
-        let geometry =
-            app.world_mut().resource_mut::<Assets<LevelGeometry>>().add(LevelGeometry::default());
+        let geometry = app
+            .world_mut()
+            .resource_mut::<Assets<LevelDefinition>>()
+            .add(LevelDefinition::default());
         app.world_mut().get_mut::<Level>(level).unwrap().geometry = geometry;
         let monster = app.world_mut().query::<(Entity, &Monster)>().single(app.world()).unwrap().0;
         let group =
@@ -963,7 +1040,7 @@ mod tests {
         let outsider = app.world().get::<Monster>(monster).unwrap().clone();
         app.world_mut().spawn((
             outsider,
-            GlobalTransform::from_translation(Vec3::NEG_Z),
+            Transform::from_translation(Vec3::NEG_Z),
             GroupMember(outsider_group),
             ChildOf(level),
         ));
@@ -1032,11 +1109,11 @@ mod tests {
             app.update();
             for _ in 0..8 {
                 app.update();
-                if !app.world().resource::<Battle>().executing {
+                if !app.world().resource::<Battle>().executing() {
                     break;
                 }
             }
-            assert!(!app.world().resource::<Battle>().executing);
+            assert!(!app.world().resource::<Battle>().executing());
             let after = app.world().get::<Vitals>(actor).unwrap();
             if condition == Condition::Paralyzed {
                 assert_eq!(after.stamina, before);
@@ -1100,20 +1177,87 @@ mod tests {
         app.update();
         assert!(attacks(&mut app).is_empty());
         for _ in 0..4 {
-            if !app.world().resource::<Battle>().executing {
+            if !app.world().resource::<Battle>().executing() {
                 break;
             }
             app.update();
         }
         assert!(attacks(&mut app).is_empty());
         assert!(app.world().get::<Vitals>(b).unwrap().stamina > before);
-        assert!(!app.world().resource::<Battle>().executing);
+        assert!(!app.world().resource::<Battle>().executing());
         app.world_mut().write_message(StartRound);
         app.update();
         assert_eq!(attacks(&mut app), ["A"]);
         app.update();
         assert_eq!(attacks(&mut app), ["B"]);
     }
+    #[test]
+    fn a_round_request_survives_its_pacing_delay() {
+        let (mut app, _) = round_app(false);
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_millis(100),
+        ));
+        app.world_mut().resource_mut::<Battle>().wait = Timer::from_seconds(1.0, TimerMode::Once);
+        app.update();
+        assert!(app.world().resource::<Battle>().executing());
+        let mut announced = Vec::new();
+        for _ in 0..12 {
+            app.update();
+            announced.extend(attacks(&mut app));
+        }
+        assert_eq!(app.world().resource::<Battle>().round, 1);
+        assert_eq!(announced, ["A"]);
+    }
+
+    #[test]
+    fn defeat_settles_without_round_input_content_or_an_expired_timer() {
+        let (mut app, members) = round_app(false);
+        app.world_mut().resource_mut::<Battle>().wait = Timer::from_seconds(60.0, TimerMode::Once);
+        app.world_mut().resource_mut::<Messages<StartRound>>().clear();
+        let data = app.world_mut().remove_resource::<GameData>().unwrap();
+        for member in members {
+            app.world_mut().get_mut::<Vitals>(member).unwrap().hp = 0;
+        }
+        app.update();
+        assert!(!app.world().contains_resource::<Battle>());
+        assert_eq!(
+            app.world_mut().resource_mut::<Messages<CombatNews>>().drain().collect::<Vec<_>>(),
+            [CombatNews::Lost]
+        );
+        app.update();
+        assert!(app.world().resource::<Messages<CombatNews>>().is_empty());
+
+        // A visible hostile must not restart combat once content is ready again.
+        {
+            let world = app.world_mut();
+            let geometry = world
+                .resource_mut::<Assets<crate::content::level::LevelDefinition>>()
+                .add(crate::content::level::LevelDefinition::default());
+            world
+                .query::<&mut crate::game::world::level::Level>()
+                .single_mut(world)
+                .unwrap()
+                .geometry = geometry;
+            world.resource_mut::<Assets<MonsterCatalog>>().get_mut(&data.species).unwrap().0[0]
+                .attacks
+                .push(crate::content::species::MonsterAttack {
+                    word: AttackWord::Verb,
+                    named: false,
+                    reach: Reach::Touch,
+                    score: 0,
+                    modes: EnumSet::only(AttackMode::Swing),
+                    damage: Dice::default(),
+                });
+            world.insert_resource(data);
+        }
+        app.update();
+        assert!(!app.world().contains_resource::<Battle>());
+        assert!(app.world().resource::<Messages<CombatNews>>().is_empty());
+        app.world_mut().get_mut::<Vitals>(members[0]).unwrap().hp = 1;
+        app.update();
+        assert!(app.world().contains_resource::<Battle>(), "the hostile can engage a live party");
+    }
+
     #[test]
     fn a_despawned_monster_cannot_leave_the_battle_stuck_on_its_turn() {
         let (mut app, _) = round_app(false);

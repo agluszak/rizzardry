@@ -163,54 +163,52 @@ pub fn build(options: &Options) -> Result<App, String> {
         navmesh_cache: "imported_assets/navmesh".into(),
         navmesh_classes: SIZE_CLASSES.len(),
     });
-    // Navmeshes are baked once by the asset processor and cached.
-    let plugins = DefaultPlugins.set(AssetPlugin { mode: AssetMode::Processed, ..default() });
-    if options.headless {
-        // No window, event loop or audio device. Updates run back to back,
-        // each one fixed step of game time, so the simulation runs as fast
-        // as the machine allows and every run steps alike.
-        let plugins = plugins
-            .set(WindowPlugin {
-                primary_window: None,
-                exit_condition: bevy::window::ExitCondition::DontExit,
-                ..default()
-            })
-            .disable::<bevy::winit::WinitPlugin>();
-        if options.screenshot.is_some() {
-            // Rendering without a window: the game and its interface draw
-            // into an offscreen image, which the screenshot captures.
-            // Presentation's sounds load but play silently.
-            app.add_plugins(plugins.set(bevy::audio::AudioPlugin {
-                global_volume: bevy::audio::GlobalVolume::new(bevy::audio::Volume::SILENT),
-                ..default()
-            }))
+    let asset_plugin = AssetPlugin { mode: AssetMode::Processed, ..default() };
+    let rendered = !options.headless || options.screenshot.is_some();
+    if rendered {
+        let plugins = DefaultPlugins.set(asset_plugin);
+        if options.headless {
+            app.add_plugins(
+                plugins
+                    .set(WindowPlugin {
+                        primary_window: None,
+                        exit_condition: bevy::window::ExitCondition::DontExit,
+                        ..default()
+                    })
+                    .disable::<bevy::winit::WinitPlugin>()
+                    .set(bevy::audio::AudioPlugin {
+                        global_volume: bevy::audio::GlobalVolume::new(bevy::audio::Volume::SILENT),
+                        ..default()
+                    }),
+            )
             .add_systems(Startup, crate::dev::create_offscreen)
             .add_systems(
                 First,
                 crate::dev::draw_offscreen.run_if(resource_exists::<crate::dev::Offscreen>),
             );
         } else {
-            // No rendering at all (Bevy's headless setup): a renderer with no
-            // GPU backend, so meshes and images still load as assets but
-            // nothing is drawn, and no presentation; gameplay news goes to
-            // the log.
-            app.add_plugins(plugins.disable::<bevy::audio::AudioPlugin>().set(
-                bevy::render::RenderPlugin {
-                    render_creation:
-                        bevy::render::settings::WgpuSettings { backends: None, ..default() }.into(),
-                    ..default()
-                },
-            ));
+            app.add_plugins(plugins.set(WindowPlugin {
+                primary_window: Some(Window { title: "Rizzardry".into(), ..default() }),
+                ..default()
+            }));
         }
-        app.add_plugins(bevy::app::ScheduleRunnerPlugin::run_loop(std::time::Duration::ZERO))
-            .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(FIXED_STEP))
-            .add_systems(Update, crate::dev::log_news);
+        app.insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.07)));
     } else {
-        app.add_plugins(plugins.set(WindowPlugin {
-            primary_window: Some(Window { title: "Rizzardry".into(), ..default() }),
-            ..default()
-        }))
-        .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.07)));
+        // Gameplay has no renderer, window, image/mesh assets, UI or audio.
+        app.add_plugins((
+            MinimalPlugins,
+            bevy::log::LogPlugin::default(),
+            asset_plugin,
+            TransformPlugin,
+            bevy::state::app::StatesPlugin,
+        ));
+    }
+    if options.headless {
+        if rendered {
+            app.add_plugins(bevy::app::ScheduleRunnerPlugin::run_loop(std::time::Duration::ZERO));
+        }
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(FIXED_STEP))
+            .add_systems(Update, crate::dev::log_news);
     }
     // Shared campaign services are composed here, not owned by world loading.
     app.init_resource::<crate::game::rng::GameRng>()
@@ -224,14 +222,11 @@ pub fn build(options: &Options) -> Result<App, String> {
             (
                 crate::game::GameplaySet::Equipment,
                 crate::game::GameplaySet::LevelActivation,
-                crate::game::GameplaySet::Perception,
                 crate::game::GameplaySet::Combat,
-                crate::game::GameplaySet::Interaction,
             )
                 .chain(),
         );
     app.add_plugins((
-        EnhancedInputPlugin,
         PhysicsPlugins::default(),
         WorldPlugin,
         PartyPlugin,
@@ -253,7 +248,11 @@ pub fn build(options: &Options) -> Result<App, String> {
     // headless screenshot. After the gameplay plugins, whose input and
     // messages it uses.
     if !options.headless || options.screenshot.is_some() {
-        app.add_plugins(PresentationPlugin);
+        app.add_plugins((
+            EnhancedInputPlugin,
+            crate::retail::RetailPresentationPlugin,
+            PresentationPlugin,
+        ));
     }
     if options.continuous {
         app.insert_resource(crate::game::combat::CombatSettings { continuous: true });
@@ -262,13 +261,15 @@ pub fn build(options: &Options) -> Result<App, String> {
         app.insert_resource(crate::dev::RunFor(Timer::from_seconds(seconds, TimerMode::Once)))
             .add_systems(Update, crate::dev::exit_after_run);
     }
-    app.insert_resource(start);
     app.insert_state(if quick_start {
         crate::game::session::Session::Playing
     } else {
         crate::game::session::Session::MainMenu
     });
-    app.insert_resource(crate::game::session::NewGameDestination(level.clone()));
+    app.insert_resource(crate::game::session::NewGameDestination {
+        path: level.clone(),
+        start: start.clone(),
+    });
     if let Some(path) = options.screenshot.clone() {
         let after = options.screenshot_after.unwrap_or(2.0);
         app.insert_resource(ScreenshotAndExit::new(path, after))
@@ -287,8 +288,12 @@ pub fn build(options: &Options) -> Result<App, String> {
         app.add_plugins(bevy_landmass::debug::Landmass3dDebugPlugin::default());
     }
     if let Some(height) = options.overhead {
-        app.insert_resource(OverheadView { height })
-            .add_systems(PostUpdate, overhead_view.before(TransformSystems::Propagate));
+        app.insert_resource(OverheadView { height }).add_systems(
+            PostUpdate,
+            overhead_view
+                .before(crate::presentation::sky::follow_with_sky_camera)
+                .before(TransformSystems::Propagate),
+        );
     }
     // Explicit developer/headless bootstrap. Interactive play commits from the creation flow.
     if quick_start {
@@ -303,7 +308,7 @@ pub fn build(options: &Options) -> Result<App, String> {
             },
         );
         app.add_systems(Startup, move |mut commands: Commands, assets: Res<AssetServer>| {
-            let first = Destination::new(Level::load(&level, &assets));
+            let first = Destination::new(Level::load(&level, &assets), start.clone());
             commands.spawn((Name::new(level.clone()), first));
         });
     }

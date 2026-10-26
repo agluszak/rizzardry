@@ -6,7 +6,7 @@ use bevy::prelude::*;
 use bevy_enhanced_input::prelude::*;
 
 use crate::content::ui::SpriteSheet;
-use crate::game::camp::{Camp, CampPhase, FADE_SECONDS, LeaveCamp};
+use crate::game::camp::{Camp, FADE_SECONDS, LeaveCamp};
 
 #[derive(Resource)]
 pub struct CampArt(Handle<SpriteSheet>);
@@ -33,15 +33,15 @@ struct Leave;
 /// How dark the fade is, and whether the camping screen is behind it: each
 /// fade darkens for its first half and clears for its second, swapping the
 /// world and the camping screen while black.
-fn look(phase: &CampPhase) -> (f32, bool) {
+fn look(phase: &Camp) -> (f32, bool) {
     let half = FADE_SECONDS / 2.0;
     let ramp = |elapsed: f32| {
         if elapsed < half { elapsed / half } else { 1.0 - (elapsed - half) / half }
     };
     match phase {
-        CampPhase::FadingIn(fade) => (ramp(fade.elapsed_secs()), fade.elapsed_secs() >= half),
-        CampPhase::Resting => (0.0, true),
-        CampPhase::FadingOut(fade) => (ramp(fade.elapsed_secs()), fade.elapsed_secs() < half),
+        Camp::FadingIn { fade, .. } => (ramp(fade.elapsed_secs()), fade.elapsed_secs() >= half),
+        Camp::Resting(_) => (0.0, true),
+        Camp::FadingOut { fade, .. } => (ramp(fade.elapsed_secs()), fade.elapsed_secs() < half),
     }
 }
 
@@ -91,7 +91,7 @@ pub fn show_camp(
         });
         return;
     }
-    let (darkness, picture_shown) = look(&camp.phase);
+    let (darkness, picture_shown) = look(&camp);
     for mut fade in &mut fades {
         fade.0 = Color::BLACK.with_alpha(darkness);
     }
@@ -115,11 +115,17 @@ mod tests {
             fade.set_elapsed(std::time::Duration::from_secs_f32(seconds));
             fade
         };
-        assert_eq!(look(&CampPhase::FadingIn(fade(0.0))), (0.0, false));
-        assert_eq!(look(&CampPhase::FadingIn(fade(0.5))), (1.0, true));
-        assert_eq!(look(&CampPhase::FadingIn(fade(0.75))), (0.5, true));
-        assert_eq!(look(&CampPhase::Resting), (0.0, true));
-        assert_eq!(look(&CampPhase::FadingOut(fade(0.25))), (0.5, true));
-        assert_eq!(look(&CampPhase::FadingOut(fade(0.5))), (1.0, false));
+        assert_eq!(look(&Camp::FadingIn { fade: fade(0.0), forced: false }), (0.0, false));
+        assert_eq!(look(&Camp::FadingIn { fade: fade(0.5), forced: false }), (1.0, true));
+        assert_eq!(look(&Camp::FadingIn { fade: fade(0.75), forced: false }), (0.5, true));
+        assert_eq!(look(&Camp::Resting(crate::game::camp::RestGoal::Until(0))), (0.0, true));
+        assert_eq!(
+            look(&Camp::FadingOut { fade: fade(0.25), outcome: crate::game::camp::CampNews::Done }),
+            (0.5, true)
+        );
+        assert_eq!(
+            look(&Camp::FadingOut { fade: fade(0.5), outcome: crate::game::camp::CampNews::Done }),
+            (1.0, false)
+        );
     }
 }

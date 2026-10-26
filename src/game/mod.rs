@@ -19,9 +19,7 @@ pub mod world;
 pub enum GameplaySet {
     Equipment,
     LevelActivation,
-    Perception,
     Combat,
-    Interaction,
 }
 
 pub mod session;

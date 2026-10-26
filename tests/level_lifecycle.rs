@@ -1,20 +1,20 @@
 //! Small headless scenarios at the level/party ownership boundary: a level
 //! becomes active in one step once its prerequisites exist, and travel
-//! suspends the party until the destination is playable, or leaves it where
-//! it was when the destination cannot be.
+//! keeps the source authoritative until the destination can commit, or
+//! leaves it untouched when destination preparation fails.
 
 use avian3d::prelude::{Collider, RigidBodyDisabled};
 use bevy::prelude::*;
 use rizzardry::content::items::{ItemCatalog, LootTables};
-use rizzardry::content::level::{CollisionMesh, LevelGeometry, MonsterPlacement};
+use rizzardry::content::level::{CollisionMesh, LevelDefinition, MonsterPlacement};
 use rizzardry::content::monster::MonsterBody;
 use rizzardry::content::species::{MonsterCatalog, Species};
 use rizzardry::game::data::GameData;
 use rizzardry::game::inventory::ItemIds;
-use rizzardry::game::party::body::{PartyBody, PartyMotionConfig, PartyStart};
+use rizzardry::game::party::body::{PartyBody, PartyMotionConfig};
 use rizzardry::game::rng::GameRng;
 use rizzardry::game::world::level::{
-    Departing, Destination, Level, LevelMemory, LevelReady, Travel, activate_level, travel,
+    Destination, Level, LevelMemory, LevelReady, Travel, activate_level, travel,
 };
 use rizzardry::game::world::population::{Monster, MonsterBodies};
 use rizzardry::game::world::triggers::PendingPartyMove;
@@ -22,7 +22,7 @@ use rizzardry::game::world::triggers::PendingPartyMove;
 fn app() -> App {
     let mut app = App::new();
     app.add_plugins((MinimalPlugins, AssetPlugin::default()))
-        .init_asset::<LevelGeometry>()
+        .init_asset::<LevelDefinition>()
         .init_asset::<ItemCatalog>()
         .init_asset::<LootTables>()
         .init_asset::<MonsterCatalog>()
@@ -30,12 +30,12 @@ fn app() -> App {
         .init_asset::<MonsterBody>()
         .init_asset::<rizzardry::content::ui::TextTable>()
         .init_resource::<Assets<PartyMotionConfig>>()
+        .init_resource::<Assets<rizzardry::game::world::navigation::WalkerMotionConfig>>()
         .init_resource::<LevelMemory>()
         .init_resource::<MonsterBodies>()
         .init_resource::<rizzardry::game::inventory::PartyInventory>()
         .init_resource::<ItemIds>()
         .init_resource::<GameRng>()
-        .init_resource::<PartyStart>()
         .init_resource::<PendingPartyMove>()
         .add_message::<LevelReady>()
         .add_message::<Travel>()
@@ -63,7 +63,7 @@ fn with_data(app: &mut App) {
 fn test_level(app: &mut App, collision: CollisionMesh) -> Level {
     let crab =
         MonsterPlacement { location: 7, group: 1, species: 0, position: Vec3::ZERO, yaw: 0.0 };
-    let geometry = app.world_mut().resource_mut::<Assets<LevelGeometry>>().add(LevelGeometry {
+    let geometry = app.world_mut().resource_mut::<Assets<LevelDefinition>>().add(LevelDefinition {
         collision,
         monsters: vec![crab],
         ..default()
@@ -72,7 +72,6 @@ fn test_level(app: &mut App, collision: CollisionMesh) -> Level {
         path: "levels/test/test.pvl".into(),
         geometry,
         navmeshes: vec![],
-        sky: None,
         script: default(),
         messages: None,
     }
@@ -81,7 +80,7 @@ fn test_level(app: &mut App, collision: CollisionMesh) -> Level {
 /// The test level, to be activated.
 fn spawn_level(app: &mut App, collision: CollisionMesh) -> Entity {
     let level = test_level(app, collision);
-    app.world_mut().spawn(Destination::new(level)).id()
+    app.world_mut().spawn(Destination::new(level, default())).id()
 }
 
 fn party_entities(app: &mut App) -> Vec<Entity> {
@@ -91,7 +90,7 @@ fn party_entities(app: &mut App) -> Vec<Entity> {
 }
 
 fn is_played(app: &App, level: Entity) -> bool {
-    app.world().get::<Level>(level).is_some() && app.world().get::<Departing>(level).is_none()
+    app.world().get::<Level>(level).is_some()
 }
 
 fn failed(app: &App, destination: Entity) -> bool {
@@ -104,6 +103,34 @@ fn floor() -> CollisionMesh {
         triangles: vec![[0, 1, 2]],
         walkable: vec![true],
     }
+}
+
+#[test]
+fn travel_dialogs_end_with_their_question_without_a_cleanup_system() {
+    use rizzardry::game::world::level::{TravelAnswer, answer_travel_questions, ask_travel};
+    use rizzardry::presentation::dialog::QuestionDialog;
+
+    let mut app = app();
+    app.add_message::<TravelAnswer>().add_systems(Update, answer_travel_questions);
+    let level = test_level(&mut app, floor());
+    let level = app.world_mut().spawn(level).id();
+    let old = ask_travel(app.world_mut(), level, "first".into()).unwrap();
+    let old_dialog = app.world_mut().spawn(QuestionDialog(old)).id();
+    let current = ask_travel(app.world_mut(), level, "second".into()).unwrap();
+    assert!(app.world().get_entity(old_dialog).is_err());
+
+    let dialog = app.world_mut().spawn(QuestionDialog(current)).id();
+    app.world_mut().write_message(TravelAnswer { question: old, accept: true });
+    app.update();
+    assert!(app.world().get_entity(dialog).is_ok(), "a stale answer cannot close the new view");
+    app.world_mut().write_message(TravelAnswer { question: current, accept: false });
+    app.update();
+    assert!(app.world().get_entity(dialog).is_err());
+
+    let question = ask_travel(app.world_mut(), level, "third".into()).unwrap();
+    let dialog = app.world_mut().spawn(QuestionDialog(question)).id();
+    app.world_mut().despawn(level);
+    assert!(app.world().get_entity(dialog).is_err(), "leaving ends the pending view");
 }
 
 #[test]
@@ -167,15 +194,19 @@ fn a_destination_that_cannot_load_leaves_the_party_where_it_was() {
     // MO2's files are not there to load here: the destination fails.
     app.world_mut().write_message(Travel { entrance: "MO204".into() });
     app.world_mut().run_schedule(PreUpdate);
-    assert!(app.world().get::<Departing>(first_level).is_some());
-    assert!(app.world().get::<RigidBodyDisabled>(party).is_some());
+    assert!(is_played(&app, first_level));
+    assert!(app.world().get::<RigidBodyDisabled>(party).is_none());
+    assert!(app.world().resource::<LevelMemory>().is_empty(), "no snapshot before departure");
     for _ in 0..20 {
         app.update();
     }
 
-    assert!(is_played(&app, first_level), "the party is back in the level it left");
+    assert!(is_played(&app, first_level), "the source remains playable");
     assert!(app.world().get::<RigidBodyDisabled>(party).is_none());
-    assert!(app.world().resource::<LevelMemory>().is_empty(), "the stale record is gone");
+    assert!(
+        app.world().resource::<LevelMemory>().is_empty(),
+        "failure never creates a dormant record"
+    );
     assert_eq!(party_entities(&mut app), vec![party]);
 }
 
@@ -198,9 +229,8 @@ fn a_killed_monster_stays_dead_when_the_party_returns() {
         query.single_mut(world).unwrap().hp = 0;
     }
 
-    // Leave, then come straight back: the travel step remembers the level,
-    // and its destination (which cannot load here) gives way to the same
-    // level, as returning would.
+    // Prepare travel, then replace its destination with this map. Activation
+    // captures the current source before restoring the same map.
     app.world_mut().write_message(Travel { entrance: "MO204".into() });
     app.world_mut().run_schedule(PreUpdate);
     let mut destinations = app.world_mut().query_filtered::<Entity, With<Destination>>();
@@ -287,9 +317,12 @@ fn attaching_visuals_does_not_change_physical_state_or_revisit_placement() {
         let pose = Transform::from_translation(feet + Vec3::Y * float_height)
             .with_rotation(Quat::from_rotation_y(0.7));
         app.world_mut().get_mut::<Monster>(actor).unwrap().body = body;
-        app.world_mut()
-            .entity_mut(actor)
-            .insert((Walker { speed: body.speed, float_height }, pose));
+        app.world_mut().entity_mut(actor).insert((
+            Walker { speed: body.speed, float_height },
+            pose,
+            avian3d::prelude::Position(pose.translation),
+            avian3d::prelude::Rotation(pose.rotation),
+        ));
         if show_visuals {
             app.init_resource::<Assets<MonsterModel>>()
                 .init_resource::<Assets<Mesh>>()
@@ -323,9 +356,13 @@ fn attaching_visuals_does_not_change_physical_state_or_revisit_placement() {
         assert!(is_played(&app, back));
         assert!(app.world().get_entity(first).is_err());
         let world = app.world_mut();
-        let (monster, pose) = world.query::<(&Monster, &Transform)>().single(world).unwrap();
+        let (monster, pose, walker) =
+            world.query::<(&Monster, &Transform, &Walker)>().single(world).unwrap();
         assert_eq!(monster.body, body);
-        assert!(pose.translation.distance(feet) < 0.00001);
+        assert!(
+            rizzardry::game::world::navigation::feet(pose.translation, Some(walker)).distance(feet)
+                < 0.00001
+        );
         assert!((pose.rotation.to_euler(EulerRot::YXZ).0 - 0.7).abs() < 0.001);
     }
 }
@@ -342,13 +379,25 @@ fn a_level_waits_for_body_metadata_and_sizes_monsters_without_render_assets() {
     app.update();
     assert!(!is_played(&app, root) && !failed(&app, root));
 
-    let body = MonsterBody { fight_radius: 0.5, scale: 2.0, ..default() };
+    let body = MonsterBody { fight_radius: 0.5, scale: 2.0, movement_rate: 1.5, ..default() };
     app.world_mut().resource_mut::<Assets<MonsterBody>>().insert(&loading, body).unwrap();
     app.update();
     assert!(is_played(&app, root));
     let world = app.world_mut();
     let crab = world.query::<&Monster>().single(world).unwrap();
     assert_eq!((crab.body.scale, crab.body.radius), (2.0, 1.0), "its body at its size");
+    use bevy_tnua::TnuaController;
+    use rizzardry::game::world::navigation::{Walker, WalkerMotion, feet};
+    let (at, walker, _) = world
+        .query_filtered::<(&Transform, &Walker, &TnuaController<WalkerMotion>), With<Monster>>()
+        .single(world)
+        .unwrap();
+    assert_eq!(walker.speed, 3.0);
+    assert_eq!(feet(at.translation, Some(walker)), Vec3::ZERO);
+    assert!(
+        !world.contains_resource::<rizzardry::game::combat::Battle>(),
+        "walking bodies exist before combat, without visual assets"
+    );
 }
 
 #[test]
@@ -422,13 +471,46 @@ fn direct_damage_settles_death_once_and_rejection_leaves_the_target_unchanged() 
             })
             .unwrap()
     };
+    use avian3d::prelude::{LinearVelocity, Position};
+    use bevy_landmass::{AgentTarget3d, UsingAnimationLink};
+    use bevy_tnua::{TnuaController, TnuaMotor};
+    use rizzardry::game::world::navigation::{Walker, WalkerMotion, links::Crossing};
+    let physical = Vec3::new(20.0, 3.0, 40.0);
+    let mut controller = TnuaController::<WalkerMotion>::default();
+    controller.basis.desired_motion = Vec3::X;
+    world.entity_mut(target).insert((
+        Position(physical),
+        LinearVelocity(Vec3::new(2.0, -1.0, 3.0)),
+        Walker { speed: 2.0, float_height: 1.0 },
+        Crossing { to: Vec3::splat(100.0) },
+        UsingAnimationLink,
+        AgentTarget3d::Point(Vec3::splat(100.0)),
+        controller,
+    ));
+    world.get_mut::<TnuaMotor>(target).unwrap().lin.boost = Vec3::X;
     let before = world.resource::<GameRng>().clone();
-    world.entity_mut(level).insert(Departing);
+    let source = world.entity_mut(level).take::<Level>().unwrap();
     assert!(hit(world).is_err());
     assert_eq!(world.get::<Monster>(target).unwrap().hp, 10);
     assert_eq!(*world.resource::<GameRng>(), before);
-    world.entity_mut(level).remove::<Departing>();
+    world.entity_mut(level).insert(source);
     assert!(hit(world).unwrap().died);
+    assert!(world.get::<Crossing>(target).is_none());
+    assert!(world.get::<UsingAnimationLink>(target).is_none());
+    assert!(matches!(world.get::<AgentTarget3d>(target), Some(AgentTarget3d::None)));
+    assert_eq!(
+        world.get::<TnuaController<WalkerMotion>>(target).unwrap().basis.desired_motion,
+        Vec3::ZERO
+    );
+    assert_eq!(world.get::<LinearVelocity>(target).unwrap().0, Vec3::NEG_Y);
+    assert_eq!(world.get::<TnuaMotor>(target).unwrap().lin.boost, Vec3::ZERO);
+    assert_eq!(world.get::<Walker>(target).unwrap().float_height, 1.0);
+    assert!(
+        world
+            .query_filtered::<&Transform, With<WorldItem>>()
+            .iter(world)
+            .all(|at| { at.translation == physical - Vec3::Y + Vec3::Y * 0.25 })
+    );
     let after = world.resource::<GameRng>().clone();
     hit(world).unwrap();
     assert_eq!(*world.resource::<GameRng>(), after);
@@ -441,4 +523,184 @@ fn direct_damage_settles_death_once_and_rejection_leaves_the_target_unchanged() 
         .map(|i| i.units())
         .sum::<u32>();
     assert_eq!(units, 2, "death preserves every drop and cannot award it twice");
+}
+
+#[test]
+fn departure_captures_live_changes_after_loading_and_waits_for_combat_to_end() {
+    let mut app = app();
+    with_data(&mut app);
+    let source = spawn_level(&mut app, floor());
+    app.update();
+    let party = party_entities(&mut app)[0];
+    let loading = app.world_mut().resource_mut::<Assets<LevelDefinition>>().reserve_handle();
+    let mut destination = test_level(&mut app, floor());
+    destination.path = "destination".into();
+    destination.geometry = loading.clone();
+    let target = app.world_mut().spawn(Destination::new(destination, default())).id();
+    app.update();
+    assert!(is_played(&app, source));
+    assert!(!is_played(&app, target));
+    assert!(app.world().get::<RigidBodyDisabled>(party).is_none());
+    assert!(app.world().resource::<LevelMemory>().is_empty());
+
+    // The source remains authoritative while the destination loads.
+    let world = app.world_mut();
+    world.query::<&mut Monster>().single_mut(world).unwrap().hp = 0;
+    world
+        .resource_mut::<Assets<LevelDefinition>>()
+        .insert(&loading, LevelDefinition { collision: floor(), ..default() })
+        .unwrap();
+    world.insert_resource(rizzardry::game::combat::Battle::default());
+    app.update();
+    assert!(is_played(&app, source), "loading cannot bypass a newly started fight");
+    app.world_mut().remove_resource::<rizzardry::game::combat::Battle>();
+    app.update();
+    assert!(is_played(&app, target));
+    assert!(app.world().get_entity(source).is_err());
+    assert!(!app.world().resource::<LevelMemory>().is_empty());
+
+    let returned = spawn_level(&mut app, floor());
+    app.update();
+    assert!(is_played(&app, returned));
+    assert!(monsters(&mut app).is_empty(), "departure must remember the late kill");
+    assert_eq!(party_entities(&mut app), [party]);
+}
+
+#[test]
+fn preparation_keeps_the_source_live_and_commit_captures_its_latest_state() {
+    use avian3d::prelude::Position;
+    let mut app = app();
+    with_data(&mut app);
+    let source = spawn_level(&mut app, floor());
+    app.update();
+    let party = party_entities(&mut app)[0];
+    let at = app.world().get::<Position>(party).unwrap().0;
+    // Start through the real camera-path operation, not a hand-made marker.
+    use bevy::ecs::system::RunSystemOnce;
+    use rizzardry::game::party::walk_in::{PathFlight, move_party};
+    use rizzardry::game::world::triggers::PartyMove;
+    let handle = app.world().get::<Level>(source).unwrap().geometry.clone();
+    app.world_mut()
+        .resource_mut::<Assets<LevelDefinition>>()
+        .get_mut(&handle)
+        .unwrap()
+        .camera_paths
+        .push(rizzardry::content::level::CameraPathModel {
+            name: "travel flight".into(),
+            keys: vec![Transform::default()],
+            keys_per_second: 1.0,
+        });
+    app.world_mut().resource_mut::<PendingPartyMove>().0 = Some((source, PartyMove::Fly(0)));
+    app.world_mut().run_system_once(move_party).unwrap();
+    assert!(app.world().get::<PathFlight>(party).is_some());
+    let mut next = app.world().get::<Level>(source).unwrap().clone();
+    let geometry =
+        app.world().resource::<Assets<LevelDefinition>>().get(&next.geometry).unwrap().clone();
+    let loading = app.world_mut().resource_mut::<Assets<LevelDefinition>>().reserve_handle();
+    next.geometry = loading.clone();
+    let mut destination = Destination::new(next.clone(), default());
+    destination.start.eye = Some(Vec3::new(9.0, 4.0, 2.0));
+    let destination = app.world_mut().spawn(destination).id();
+    app.update();
+    assert!(is_played(&app, source));
+    assert_eq!(app.world().get::<Position>(party).unwrap().0, at);
+    assert!(app.world().resource::<LevelMemory>().is_empty());
+    assert!(app.world().get::<PathFlight>(party).is_some());
+    assert!(app.world().get::<RigidBodyDisabled>(party).is_some());
+    // Damage while loading must survive same-path replacement. An early
+    // snapshot would resurrect this monster at the commit boundary.
+    let monster =
+        app.world_mut().query_filtered::<Entity, With<Monster>>().single(app.world()).unwrap();
+    app.world_mut().get_mut::<Monster>(monster).unwrap().hp = 0;
+    app.world_mut().resource_mut::<Assets<LevelDefinition>>().insert(&loading, geometry).unwrap();
+    app.update();
+    assert!(is_played(&app, destination));
+    assert!(app.world().get::<PathFlight>(party).is_none());
+    assert!(app.world().get::<RigidBodyDisabled>(party).is_none());
+    assert!(app.world().get_entity(source).is_err());
+    assert!(monsters(&mut app).is_empty());
+    assert_eq!(
+        app.world().get::<Position>(party).unwrap().0,
+        Vec3::new(9.0, 4.0, 2.0) - Vec3::Y * rizzardry::game::party::body::EYE_ABOVE_CENTRE
+    );
+}
+
+#[test]
+fn failed_navigation_is_a_failed_destination_not_degraded_activation() {
+    let mut app = app();
+    with_data(&mut app);
+    let source = spawn_level(&mut app, floor());
+    app.update();
+    let mut next = test_level(&mut app, floor());
+    next.navmeshes.push(app.world().resource::<AssetServer>().load("missing.navmesh"));
+    let destination = app.world_mut().spawn(Destination::new(next, default())).id();
+    let started = std::time::Instant::now();
+    while !failed(&app, destination) {
+        app.update();
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        std::thread::yield_now();
+    }
+    assert!(is_played(&app, source));
+    assert!(!is_played(&app, destination));
+    assert!(app.world().resource::<LevelMemory>().is_empty());
+}
+
+#[test]
+fn retail_level_definitions_load_without_render_asset_resources() {
+    use rizzardry::content::level::LevelGeometry;
+    use rizzardry::retail::level_loader::{PvlDefinitionLoader, PvlLoader};
+    // An empty compiled level with one material. Even this material would need
+    // StandardMaterial registration if gameplay still ran the visual loader.
+    let mut pvl = vec![0; 8]; // mesh/root counts
+    pvl.extend(1i16.to_le_bytes());
+    pvl.extend([0; 0x11a]);
+    pvl.extend([-1i32, -1].into_iter().flat_map(i32::to_le_bytes));
+    pvl.extend(0i16.to_le_bytes()); // lights
+    pvl.extend((-1i32).to_le_bytes());
+    for _ in 0..8 {
+        // paths, items, missiles, props, billboards, cameras, environment, triggers
+        pvl.extend([0i32, -1].into_iter().flat_map(i32::to_le_bytes));
+    }
+    pvl.extend([0i32, 0, -1].into_iter().flat_map(i32::to_le_bytes)); // sway, map cuts
+    pvl.extend([0i32, 0, 0, 0, -1].into_iter().flat_map(i32::to_le_bytes)); // offset, particles
+    pvl.extend([0i32, -1, 0, 0, -1].into_iter().flat_map(i32::to_le_bytes)); // names, map
+    let mut oct = vec![0; 0xf5];
+    oct[..2].copy_from_slice(&0x22u16.to_le_bytes());
+    oct[0x86..0x8a].copy_from_slice(&1u32.to_le_bytes()); // collision stream present
+    oct.extend([-1i32, 0, -1, -1, -1, 1].into_iter().flat_map(i32::to_le_bytes));
+    oct.extend([0; 100]); // empty collision tables and bounds
+    oct.extend((-1i32).to_le_bytes());
+    let directory =
+        std::env::temp_dir().join(format!("rizzardry-level-loader-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join("empty.pvl"), pvl).unwrap();
+    std::fs::write(directory.join("empty.oct"), oct).unwrap();
+    let files =
+        std::sync::Arc::new(rizzardry::retail::files::RetailFiles::open(&directory).unwrap());
+    let mut app = App::new();
+    app.register_asset_source("retail", rizzardry::retail::source::retail_source(files))
+        .add_plugins((MinimalPlugins, AssetPlugin::default()))
+        .init_asset::<LevelDefinition>()
+        .init_asset::<LevelGeometry>()
+        .init_asset_loader::<PvlDefinitionLoader>()
+        .init_asset_loader::<PvlLoader>();
+    app.finish();
+    app.cleanup();
+    let definition =
+        app.world().resource::<AssetServer>().load::<LevelDefinition>("retail://empty.pvl");
+    let started = std::time::Instant::now();
+    loop {
+        app.update();
+        match app.world().resource::<AssetServer>().get_load_state(&definition) {
+            Some(bevy::asset::LoadState::Loaded) => break,
+            Some(bevy::asset::LoadState::Failed(error)) => panic!("definition failed: {error}"),
+            _ => assert!(started.elapsed() < std::time::Duration::from_secs(5)),
+        }
+        std::thread::yield_now();
+    }
+    assert!(app.world().resource::<Assets<LevelDefinition>>().contains(&definition));
+    assert!(!app.world().contains_resource::<Assets<Mesh>>());
+    assert!(!app.world().contains_resource::<Assets<StandardMaterial>>());
+    assert!(app.world().resource::<Assets<LevelGeometry>>().is_empty());
+    std::fs::remove_dir_all(directory).unwrap();
 }

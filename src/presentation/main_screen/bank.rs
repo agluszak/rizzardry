@@ -139,7 +139,7 @@ pub fn draw_bank(
                 && !(combat_only && !fighting)
         });
         let pressed = match face.kind {
-            Some(Bank::Search) => search.on,
+            Some(Bank::Search) => search.on(),
             Some(Bank::Formation) => layout.shows(Panel::Formation),
             Some(Bank::Order(wanted)) => wanted == order,
             _ => false,
@@ -156,7 +156,7 @@ pub fn draw_bank(
         };
         let sheet = match face.kind {
             Some(Bank::Round) => {
-                match (settings.continuous, battle.as_ref().is_some_and(|b| b.executing)) {
+                match (settings.continuous, battle.as_ref().is_some_and(|b| b.executing())) {
                     (false, false) => &art.attack_confirm,
                     (false, true) => &art.cont_toggle,
                     (true, true) => &art.combat_stop,
@@ -212,7 +212,7 @@ fn press(
             }
         }
         Some(Bank::Round) if battle.is_some() => {
-            if battle.is_some_and(|b| b.executing) {
+            if battle.is_some_and(|b| b.executing()) {
                 settings.continuous = !settings.continuous;
             } else {
                 round.write(StartRound);
@@ -290,7 +290,7 @@ pub fn draw_caption(
                     })
                     .unwrap_or_default()
             };
-            if battle.as_ref().is_some_and(|b| b.executing) && !second.is_empty() {
+            if battle.as_ref().is_some_and(|b| b.executing()) && !second.is_empty() {
                 second = format!("Next: {second}");
             }
             (first, second)

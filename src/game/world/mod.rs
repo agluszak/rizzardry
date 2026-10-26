@@ -13,6 +13,30 @@ pub mod triggers;
 
 use bevy::prelude::*;
 
+/// A borrowed gameplay pose, never a second position cache. Physics owns an
+/// embodied actor's pose; before embodiment its level-local placement is current.
+/// Gameplay level roots have identity transforms.
+#[derive(bevy::ecs::query::QueryData)]
+pub struct ActorPose {
+    transform: &'static Transform,
+    position: Option<&'static avian3d::prelude::Position>,
+    rotation: Option<&'static avian3d::prelude::Rotation>,
+}
+
+impl ActorPoseItem<'_, '_> {
+    pub fn translation(&self) -> Vec3 {
+        self.position.map_or(self.transform.translation, |position| position.0)
+    }
+
+    pub fn rotation(&self) -> Quat {
+        self.rotation.map_or(self.transform.rotation, |rotation| rotation.0)
+    }
+
+    pub fn forward(&self) -> Vec3 {
+        self.rotation() * Vec3::NEG_Z
+    }
+}
+
 /// The highest step the party and walking monsters climb: 300 retail units
 /// (0.6 m).
 ///
@@ -32,33 +56,29 @@ impl Plugin for WorldPlugin {
             .add_message::<level::Travel>()
             .add_message::<level::TravelAnswer>()
             .add_message::<search::ToggleSearch>()
-            .add_message::<identify::DetectGroups>()
             .add_message::<identify::Identified>()
             .add_message::<search::SearchNews>()
             .init_resource::<search::Search>()
             .init_resource::<level::LevelMemory>()
             .init_resource::<population::MonsterBodies>()
             .add_message::<triggers::TriggerEffect>()
-            // The level is swapped before anything builds on it this frame.
+            // Resolve travel intent early; activation owns the later level swap.
             .add_systems(PreUpdate, (level::answer_travel_questions, level::travel).chain())
             .add_systems(
                 Update,
                 (
                     level::activate_level.in_set(crate::game::GameplaySet::LevelActivation),
-                    (
-                        (
-                            search::search_key.run_if(crate::game::screen::party_free),
-                            search::toggle_search,
-                            search::search_pulse,
-                        )
-                            .chain(),
-                        identify::detect_monster_groups
-                            .in_set(crate::game::GameplaySet::Perception),
-                    )
+                    (search::toggle_search, search::search_pulse)
+                        .chain()
                         .run_if(level::level_active)
                         .after(level::activate_level),
                 ),
             )
-            .add_systems(FixedUpdate, props::animate_props.run_if(level::level_active));
+            .add_systems(
+                FixedPreUpdate,
+                props::animate_props
+                    .before(navigation::links::sync_door_links)
+                    .run_if(level::level_active),
+            );
     }
 }

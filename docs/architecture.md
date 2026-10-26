@@ -41,11 +41,35 @@ failed — and one operation (`activate_level`) makes it playable once its
 gameplay prerequisites exist: it builds the world, navigation and
 population, consumes what was remembered of the level, places and resumes
 the party, and only then announces `LevelReady`. Gameplay systems run only
-while a level is active; travel captures the level it leaves, ends work that
-cannot cross levels and suspends the party's body until the destination is
-active. Cosmetic loading (the sky) proceeds on its own. Bevy parent/child relations and screen-scoped
+while a level is active. Travel keeps the source active during preparation;
+activation captures its latest state, cancels source-owned movement, removes
+its entities and places the persistent party in one operation. The pending
+destination owns its entrance/placement, rather than a separate global resource.
+There is no partially frozen source or speculative dormant snapshot to repair
+after loading fails. Combat or camping that starts during loading delays the
+commit until it ends. Presentation requests and retains sky assets on the active
+level; gameplay never requests them. Presentation also installs visibility on the ancestors of
+its meshes and cameras. Billboard rotation belongs to a visual child, leaving
+the authored prop-part pose under gameplay ownership. Cosmetic loading proceeds
+on its own. Bevy parent/child relations and screen-scoped
 cleanup should eliminate manual ownership tables, not introduce a new global
 world manager.
+
+Level assets have two independent typed loaders for the retail source:
+`LevelDefinition` contains collision, triggers, placements, movement paths and
+sight distance; `LevelGeometry` contains meshes, materials, lighting and ambient
+sounds. Presentation owns the geometry and sky handles on live level entities.
+Gameplay activation never requests textures or waits for visual content.
+`app` composes gameplay asset loaders separately from presentation loaders;
+headless play uses `MinimalPlugins` plus assets, transforms and states, with no
+render sub-app or input plugin. Avian constructs colliders from collision data,
+so its optional mesh/scene collider constructors are disabled.
+
+Device bindings live in presentation and translate into `PartyMovement`,
+`PartyLook`, `CampRequest` and `ToggleSearch`. The owning game systems validate
+activity before applying them; neither a keyboard action entity nor an active
+input context is a prerequisite for gameplay. Headless callers use those same
+boundaries. Movement intent is a request, not a second copy of physical position.
 
 ## Three kinds of data
 
@@ -75,9 +99,12 @@ created. A derived ID-to-entity lookup is an index, not another actor database.
 A prop-backed device is the prop entity, not a second object linked back to it.
 Duplicate authored names do not merge identities; only named links select the
 last registered matching record. Activation resolves entity links and the level's
-ordered positioned-device index. Location variables remain one named map on the
-level, moved directly to/from dormant records. Content canonicalizes variable
-names once; execution uses those names without a second numeric binding table.
+ordered positioned-device index. Walk-in detection keeps one previous party-eye
+sample on the level, not an occupancy flag on every device. Teleportation rebases
+that sample without walking the device population. Only activated damage zones
+own a timer; their timing is not inferred from occupancy. Location variables
+remain one named map on the level, moved directly to/from dormant records.
+Content canonicalizes names once; execution needs no second numeric binding table.
 Dial-position names are formed on use, rather than maintaining another key cache.
 
 Trigger requests enter through Bevy's command boundary. Entity-local operations
@@ -89,7 +116,13 @@ level definitions, runs the selected operation, follows links and commits in
 order. Commands are exclusive by design; this favors a visible, complete
 operation over parallelizing the parts of one player action.
 
-Movement and arrival consume their level-bound request and proximity data without
+Quiet fixed steps scan proximity and hazard timers through ordinary queries.
+At the first entry activation, its remaining authored suffix stays in the
+synchronous operation: an earlier link may start or reset a later hazard before
+that hazard ticks. Pre-ticking every hazard would change timing and random draws.
+No activation candidate means no exclusive whole-level command.
+
+Movement consumes its level-bound request and rebases walk-in detection without
 entering trigger execution. Presentation follows completed click commands and
 interprets outcomes such as a fountain use or a bell ringing; it does not complete
 required mutations. Dormant device contents and variables move back into live
@@ -131,6 +164,14 @@ initial placement, round acceptance and deterministic tie breaking. Standing
 `Order` components, held-item provenance and explicit UI selection refer to
 actors, so roster edits cannot transfer those facts to another occupant.
 
+Whether monsters still need to approach is derived from their live positions,
+health, movement capability and attack reach by the same rule navigation uses.
+Combat does not consume a flag written by navigation on a previous frame.
+The party's path flight is also part of action legality: movement, mouse look,
+manual camping and world interactions remain blocked until the flight ends.
+
+Combat round progress is one enum: waiting, accepted (including pacing/content
+waits), or executing a phase. There is no separate executing flag to synchronize.
 The weapon-attack slice accepts an ordered entity-keyed queue at round start.
 It locks the order, weapon identity, initiative and attack count. Execution
 revalidates membership, current ability to act, that weapon's presence and
@@ -225,10 +266,9 @@ silently succeed without its required effects.
 
 Travel prepares the destination without modifying its gameplay state or
 destroying the source. At the transition boundary, settle/cancel outstanding
-source-owned actions, capture persistent local state, stop the source world's
-simulation, suspend the persistent party body, remove source entities, then
-construct and activate the destination exactly once. The game resumes the
-body and entry rules only for that activated map. Failed preparation keeps
+source-owned actions, capture persistent local state, remove source entities, then
+construct and activate the destination exactly once. The game places the
+body and runs entry rules only for that activated map. Failed preparation keeps
 the source playable, except for separately committed operations such as an
 accepted companion dismissal. Every pending callback or playback completion
 must still identify its original level/session.
@@ -236,6 +276,10 @@ must still identify its original level/session.
 This is one ordinary transition, not a new generic lifecycle framework or
 a second simultaneously mutable world. Its detailed failure and revisit
 semantics are in [persistence and travel](systems/persistence-and-travel.md).
+
+The current implementation treats failed navmesh loading as settled and can
+activate without navigation. Navigation failure policy remains unresolved;
+readiness tests do not establish mandatory navigation availability.
 
 ## Operations, systems and observation
 
@@ -270,6 +314,22 @@ Only order systems whose dependencies require it. Mandatory consequences within
 an operation are direct calls: lethal damage performs death bookkeeping before
 another action can use the actor. UI repaint and sound are observations after
 that mutation.
+
+`DamageApplied` reports the actor, actual HP loss and death result from the party
+damage operation. Retained portrait splats consume that fact directly; recording
+and playback are ordered so a new hit refreshes its animation before expiry.
+Chest and bag transfers report through `ItemNews`, sharing the inventory rule
+and its notification path.
+
+A gameplay question owns its dialog through a native linked relationship. This
+preserves a UI root without parenting it under the non-UI level. Replacing or
+ending the question removes the view without a per-frame reconciliation system.
+Ambient emitters carry their own `AudioPlayer`: its presence represents pending
+or active playback, while `AudioSink` indicates that playback is ready. One-shot
+completion uses `PlaybackSettings::REMOVE`, retaining the emitter and its timer.
+Each emitter resolves sound definitions through its owning level's `ChildOf`.
+Party avoidance proxies likewise use Landmass's `ArchipelagoRef3d` as their only
+archipelago reference; registering missing proxies retains those already present.
 
 Bevy's [observer documentation](https://docs.rs/bevy/0.20.0/bevy/ecs/observer/struct.Observer.html)
 does not promise a convenient gameplay order between independent observers of
@@ -369,9 +429,12 @@ because identification, curses and continuing effects also run outside a battle.
 
 Mutually exclusive screen state uses Bevy states. Entry creates a scoped root
 with its local selection, scroll/view data and input context; art can attach
-later without controlling whether the session exists. Explicit inventory exit
+later without controlling whether the session exists. An accepted NextState
+already blocks world input before StateTransition; another opening request cannot
+overwrite that accepted choice. Explicit inventory exit
 returns the held item through the normal inventory operation before scoped
-cleanup. The held cursor overlay remains session-wide, including the world view.
+cleanup. A required inventory-art failure returns to the world through that same
+exit operation. The held cursor overlay remains session-wide, including the world view.
 
 Automap typing is a separate input context. A draft carries its source level,
 placement, layer and text, and the expected old entry when editing. Enter submits
@@ -383,24 +446,48 @@ editing, and delayed confirmation cannot overwrite a changed vector entry.
 
 The application composes common campaign resources, item notices, game-data
 loading and the screen state. Feature plugins register their own behavior.
-Within Update, equipment precedes level activation, then clock-requested
-perception, battle work and world input activation. Roster/authored ordering
-also defines random consumption within those operations. Cosmetic RNG remains
-independent.
+Within Update, equipment precedes level activation, then facing input,
+clock-requested perception and battle work. Gameplay reads physics Position and
+Rotation when present, otherwise current authored Transform, never a propagated
+render pose. ActorPose is a borrowed query, not another position cache.
+
+World selection/activation runs in PostUpdate after camera updates, transform
+propagation and visibility completion, so the ray and candidate meshes describe
+the same rendered snapshot. Outcome consumers follow activation; UI text is
+rasterized on its next presentation pass. Roster/authored order defines random
+consumption within operations; cosmetic RNG remains independent.
 
 Battle start and round completion invoke group recognition synchronously with
 the actual battle participants and gameplay eye/facing. Clock requests carry
 the originating level entity; a departed level cannot redirect them. Required
 round recognition completes before a following action or battle removal takes
 effect. Damage makes actors ineligible for further attacks and navigation,
-including off-mesh links and a crossing already in progress.
+including off-mesh links and a crossing already in progress. Death clears drive
+outputs and queues crossing removal at the same command boundary as loot; body
+geometry and vertical velocity remain intact. Defeat is settled before/after
+combat execution and after environmental damage, independent of pacing or input.
+Round-start intent is accepted before waiting in Battle's existing execution
+state; it does not remain in a transient message buffer. Asking for travel
+replaces the previous question with a fresh identity, rejecting stale answers.
 
 Main-screen and inventory controls persist through display changes. Concrete
 `Picture` and `BitmapText` components on actual UI entities describe their
 rendered sources, layout anchors and text alignment. Systems change their
 properties, visibility and bar geometry; font raster images remain cached.
-Tooltips read current health/knowledge even at a stationary pointer. Screen
+Tooltips read current health/knowledge even at a stationary pointer. Bevy counts
+portrait clicks with the retained 400 ms policy. The control only remembers
+whether the previous click selected this actor: giving an item disarms review,
+without maintaining a second pointer/timestamp tracker. Rebinding a slot retires
+only its hit target, so a press cannot release onto a different actor; ordinary
+health, selection and inventory display changes retain that target. Screen
 sessions still own lifecycle; these display sources are not gameplay copies.
+
+The fixed time operation follows physical movement and trigger settlement. Each
+aging pass updates conditions and performs recognition before the next pass;
+no transient request coalesces RNG-consuming work. Camp progression settles in
+that same fixed operation. World activation creates walking bodies before battle,
+so neither combat nor presentation repairs their coordinate convention afterward.
+Mandatory navigation failures reject destination preparation.
 
 ## Navigation importer and processor caching
 

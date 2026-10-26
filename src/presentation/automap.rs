@@ -15,11 +15,11 @@ use bevy::prelude::*;
 use crate::game::screen::Screen;
 use bevy_enhanced_input::prelude::*;
 
-use crate::content::level::{CollisionMesh, LevelGeometry};
+use crate::content::level::{CollisionMesh, LevelDefinition};
 use crate::content::ui::{SpriteSheet, ui_image};
 use crate::game::automap::{MapNote, MapNotes, NoteDraft};
 use crate::game::party::body::{FLOAT_HEIGHT, PartyBody};
-use crate::game::world::level::{Departing, Level};
+use crate::game::world::level::Level;
 use crate::presentation::screen_art::{SCREEN, absolute, centred, screen};
 
 const VIEWPORT_AT: Vec2 = Vec2::new(12.0, 32.0);
@@ -263,7 +263,7 @@ pub struct OpenAutomap;
 
 pub fn close_ended_map(
     map: Option<Single<&Automap>>,
-    levels: Query<(), (With<Level>, Without<Departing>)>,
+    levels: Query<(), With<Level>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
     if map.is_some_and(|map| !levels.contains(map.level)) {
@@ -273,19 +273,18 @@ pub fn close_ended_map(
 
 pub fn request_automap(
     mut open: MessageReader<OpenAutomap>,
-    freedom: crate::game::screen::Freedom,
-    mut next: ResMut<NextState<Screen>>,
+    mut screen: ParamSet<(crate::game::screen::Freedom, ResMut<NextState<Screen>>)>,
 ) {
-    if open.read().count() > 0 && freedom.free() {
-        next.set(Screen::Automap);
+    if open.read().count() > 0 && screen.p0().free() {
+        screen.p1().set(Screen::Automap);
     }
 }
 
 pub fn enter_automap(
     mut commands: Commands,
     party: Query<&Transform, With<PartyBody>>,
-    levels: Query<(Entity, &Level), Without<Departing>>,
-    geometry: Res<Assets<LevelGeometry>>,
+    levels: Query<(Entity, &Level)>,
+    geometry: Res<Assets<LevelDefinition>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
     let (Ok(party), Ok((level, definition))) = (party.single(), levels.single()) else {
@@ -389,7 +388,7 @@ pub fn build_automap(
     mut images: ResMut<Assets<Image>>,
     party: Query<&Transform, With<PartyBody>>,
     level: Query<&Level>,
-    geometry: Res<Assets<LevelGeometry>>,
+    geometry: Res<Assets<LevelDefinition>>,
     roots: Query<(Entity, &Automap), Without<AutomapBuilt>>,
 ) {
     let Ok((root, automap)) = roots.single() else { return };
@@ -416,7 +415,7 @@ pub fn build_automap(
     let feet = party.translation - Vec3::Y * FLOAT_HEIGHT;
     let collision = level.get(automap.level).ok().and_then(|level| geometry.get(&level.geometry));
     let plan = collision
-        .map(|level| images.add(floor_plan(&level.collision, &level.map_layers, &automap)))
+        .map(|level| images.add(floor_plan(&level.collision, &level.map_layers, automap)))
         .map(|plan| {
             let node = absolute(Vec2::ZERO, VIEWPORT);
             bsn! { FloorPlan ImageNode { image: {plan} } node Pickable::IGNORE }
@@ -544,7 +543,7 @@ fn press_button(
     click: On<PointerClick>,
     buttons: Query<&SheetButton>,
     level: Query<&Level>,
-    geometry: Res<Assets<LevelGeometry>>,
+    geometry: Res<Assets<LevelDefinition>>,
     party: Query<&Transform, With<PartyBody>>,
     automap: Option<Single<&mut Automap>>,
     mut next: ResMut<NextState<Screen>>,
@@ -588,7 +587,7 @@ fn press_button(
 /// Off, highlighted while hovered, on while its tool is selected.
 pub fn paint_buttons(
     level: Query<&Level>,
-    geometry: Res<Assets<LevelGeometry>>,
+    geometry: Res<Assets<LevelDefinition>>,
     mut buttons: Query<(&Hovered, &SheetButton, &mut ImageNode)>,
     automap: Option<Single<Ref<Automap>>>,
     sheets: Res<Assets<SpriteSheet>>,
@@ -690,22 +689,26 @@ pub fn type_note(mut keys: MessageReader<KeyboardInput>, map: Option<Single<&mut
 
 pub fn draw_notes(
     mut commands: Commands,
-    layer: Query<Entity, With<NotesLayer>>,
+    layer: Query<(Entity, Ref<NotesLayer>)>,
     automap: Option<Single<Ref<Automap>>>,
     notes: Query<Ref<MapNotes>>,
     art: Option<Res<AutomapArt>>,
     sheets: Res<Assets<SpriteSheet>>,
     mut images: ResMut<Assets<Image>>,
-    mut drawn: Local<Option<Entity>>,
 ) {
-    let (Some(automap), Some(art), Ok(layer)) = (automap, art, layer.single()) else { return };
+    let (Some(automap), Some(art), Ok((layer, layer_state))) = (automap, art, layer.single())
+    else {
+        return;
+    };
     let Ok(notes) = notes.get(automap.level) else { return };
-    let fresh = *drawn != Some(layer);
-    if !fresh && !notes.is_changed() && !automap.is_changed() {
+    if !layer_state.is_added()
+        && !notes.is_changed()
+        && !automap.is_changed()
+        && !sheets.is_changed()
+    {
         return;
     }
     let Some(font) = sheets.get(&art.font) else { return };
-    *drawn = Some(layer);
     let mut parts: Vec<Box<dyn Scene>> = vec![];
     // The draft replaces only its displayed label; persistent notes remain
     // untouched until the explicit confirm operation succeeds.
@@ -780,7 +783,7 @@ pub fn glow_note_markers(time: Res<Time>, mut markers: Query<&mut ImageNode, Wit
 pub fn update_map_view(
     automap: Option<Single<Ref<Automap>>>,
     level: Query<&Level>,
-    geometry: Res<Assets<LevelGeometry>>,
+    geometry: Res<Assets<LevelDefinition>>,
     mut plans: Query<(Entity, &mut ImageNode), With<FloorPlan>>,
     mut images: ResMut<Assets<Image>>,
     party: Query<&Transform, With<PartyBody>>,
@@ -814,7 +817,7 @@ pub fn draw_layer_label(
     art: Option<Res<AutomapArt>>,
     sheets: Res<Assets<SpriteSheet>>,
     level: Query<&Level>,
-    geometry: Res<Assets<LevelGeometry>>,
+    geometry: Res<Assets<LevelDefinition>>,
     mut labels: Query<(Entity, &mut ImageNode, &mut Node), With<LayerLabel>>,
     mut images: ResMut<Assets<Image>>,
     mut previous: Local<Option<(Entity, usize)>>,

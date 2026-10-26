@@ -5,10 +5,13 @@ departs from retail, in rough order of the
 [implementation plan](implementation-plan.md)'s first slice. Keep an entry
 next to its feature when that feature changes.
 
-- The architecture reviews are addressed. The navmesh cache keeps its
-  small hand-written codec, which a standard codec would not make
-  simpler. A headless run without rendering logs Bevy's harmless
-  "Sub app did not exist" error for `ClearColor`'s extraction.
+- Rendering and input no longer bootstrap gameplay: `LevelDefinition` and its
+  collision/trigger/placement loader are separate from `LevelGeometry` and
+  presentation loaders. Headless play installs no renderer, render assets,
+  input bindings, UI or audio. Visuals still share the same compiled package;
+  this is a runtime/dependency ownership boundary, not a Cargo feature split.
+- The navmesh cache keeps its small hand-written codec, which a standard codec
+  would not make simpler.
 - Doors: a locked door with a key opens for that key in hand (unlocking
   it for good, kept with the level) and otherwise runs its fallback, as
   retail's `SelectAction` does; a door locked without a key stays shut,
@@ -261,3 +264,27 @@ keyboard input, accepted its draft into the party, and left/re-entered creation
 without spawning a campaign. Screenshots were inspected; unsupported default-font
 glyphs were replaced. The harness was not added as a widget-layout regression
 test. Retail portrait loading and playable level entry were not exercised.
+
+## October 26 merge review
+
+The world-preparation, ambient-lifetime, combat-fatigue, combat-rest and frontend
+changes were reconciled with main's newer gameplay lifecycle. Round completion
+keeps `RoundPhase`; menu acceptance carries the selected entrance/placement on
+its destination, without restoring the removed global `PartyStart` resource.
+The acceptance contract now checks that the requested entrance is preserved.
+The current-frame picking/sky ordering, headless asset boundary and fixed-step
+camp progression are retained.
+
+Pending looping audio now updates its initial volume when the listener moves
+before decoding completes. The audio-boundary check covers the requested gain;
+it does not claim audible verification. Recognition coverage checks that aging
+removes blindness and permits identification in the same operation, instead of
+replaying private RNG draws. Character-creation test setup was tightened to pass
+strict Clippy without warning suppressions.
+
+Integrated validation: 151 library and 15 lifecycle tests passed. The 20
+retail-dependent library tests and four retail scenarios remain ignored; the
+scenario target compiles. Strict Clippy across all targets, package formatting
+and whitespace checks pass. No retail gameplay, graphical or audible validation
+was repeated on this integrated tree; earlier frontend screenshots are evidence
+for that earlier revision only. These are local checks, not CI results.
