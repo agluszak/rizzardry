@@ -116,10 +116,11 @@ impl Plugin for PresentationPlugin {
                     sky::build_sky,
                     environment::attach_level_visuals,
                     billboards::face_camera.after(party_view::aim_camera),
-                    effects::play_trigger_effects,
+                    effects::play_trigger_effects
+                        .after(crate::game::world::interaction::act_on_click),
                     music::play_music,
                     (ambience::place_ambient_sounds, ambience::play_ambient_sounds).chain(),
-                    notices::queue_notices,
+                    notices::queue_notices.after(crate::game::world::interaction::act_on_click),
                     (dialog::show_travel_question, dialog::settle_travel_question).chain(),
                     effects::shake_camera.after(party_view::aim_camera),
                     sky::orbit_sun_and_moon,

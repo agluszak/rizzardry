@@ -78,13 +78,19 @@ last registered matching record. Activation resolves entity links, the level's
 ordered positioned-device index and location-variable keys. Values remain on the
 level; names are needed for activation and dormant records, not each action.
 
-Trigger execution sequences local door/animation, container and party operations
-and linked commits synchronously. Those operations accept only the state they
-change and the definitions they need, not the entire execution parameter. Bevy's
-outer system access is still the union needed by arbitrary linked actions.
-Presentation interprets outcomes such as a fountain use or a bell ringing; it does
-not complete required mutations. Dormant device contents and variables move back
-into live components after destination preparation succeeds.
+Trigger requests enter through Bevy's command boundary. A plain synchronous
+coordinator borrows the immutable level definitions and invokes bounded native
+systems for door/animation, container, party and dial operations. Each system
+declares only its own queries/resources; Bevy caches it, with no application
+registry or service object. Linked actions recurse directly and finish before
+the sender commits. Commands are exclusive by design; this favors a visible,
+complete operation over parallelizing the parts of one player action.
+
+Movement and arrival consume their level-bound request and proximity data without
+entering trigger execution. Presentation follows completed click commands and
+interprets outcomes such as a fountain use or a bell ringing; it does not complete
+required mutations. Dormant device contents and variables move back into live
+components after destination preparation succeeds.
 
 ## Entities and components
 
