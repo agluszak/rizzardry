@@ -10,12 +10,20 @@ and artwork were checked against the extracted retail installation.
 
 The screen has a shared portrait header and equipment, skills, statistics, and
 spells pages. The implemented pages are state-scoped retained Bevy UI: the root
-owns the selected character and page, and the statistics panel owns its filter,
-scroll position and combat/armor selection. Widgets read the live character,
-vitals and inventory; they do not retain copied gameplay snapshots. Native
-buttons and focus handle pointer and keyboard activation. Page visibility also
-controls inherited visibility, which Bevy tab navigation uses to skip hidden
+owns the selected character, the native tab list owns page selection, and the
+statistics panel owns its filter and combat/armor selection. Native sliders own
+scroll positions. Widgets read live character, vitals and inventory; they do not
+retain copied gameplay snapshots. Modal focus is initialized on opening and
+returns to the selected page tab when its information dialog closes. Page
+visibility also controls inherited visibility, so tab navigation skips hidden
 controls. Changing pages does not transfer the cursor-held item.
+
+The item page also shows experience, health, stamina, carrying load, armor and
+attributes in the retail panel, with the retail realm icons and right-click
+attribute and secondary-stat information dialogs. Load includes the party pool
+share. The item pool scrolls in rows using the retail arrows, thumb and wheel.
+The experience bar is available at level one; the previous threshold for
+characters who change profession is not yet stored.
 
 The shared header uses the retail corner, portrait and selection rim, condition
 and empty sockets, hand graphics, column art, and health/stamina strips. Text
@@ -56,7 +64,7 @@ The following retail content is still missing or incomplete:
   full armor-component and secondary-hand calculations. Unavailable numbers are
   left blank instead of being fabricated.
 - The improved-skill palette (the improvement flag is not yet modelled),
-  attribute information dialogs, and some portrait interactions and status details.
+  and some portrait interactions and status details.
 - The game currently models neither imported-character level-band bases nor all
   skill eligibility restrictions (such as traits that prevent learning).
 

@@ -8,8 +8,8 @@ next to its feature when that feature changes.
 - Character review uses retail artwork, bitmap fonts, character portraits,
   statistics/skill layouts and page controls. Conditions and represented item
   effects can be filtered and scrolled. Spell review, level-up editing, trait and
-  enchantment details, several combat/armor values, the improved-skill palette and
-  attribute information dialogs remain unported. See [source comparison](research/character-review.md).
+  enchantment details, several combat/armor values, and the improved-skill palette
+  remain unported. See [source comparison](research/character-review.md).
 - Rendering and input no longer bootstrap gameplay: `LevelDefinition` and its
   collision/trigger/placement loader are separate from `LevelGeometry` and
   presentation loaders. Headless play installs no renderer, render assets,
@@ -110,7 +110,7 @@ next to its feature when that feature changes.
   and puts them down (swap, merge into a stack, deposit in the pool); the
   held item follows the pointer and is put away on closing. Shift-click
   splitting, ammunition pouring, stowing a weapon's partner, the info
-  panel, buttons, scrolling and the PCX cell texture are still to come.
+  remaining item-action buttons and filtering are still to come.
   Plane-shaped triggers (falls) are not decoded as places yet.
 - Monsters go by their look ("Crustacean") until the party identifies
   their group (`game::world::identify`, retail `DetectMonsterGroups`): on

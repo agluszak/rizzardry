@@ -16,6 +16,7 @@ pub mod monster_loader;
 pub mod navmesh;
 pub mod oct;
 pub mod path;
+pub mod pcx_loader;
 pub mod playlist;
 pub mod population;
 pub mod prop;
@@ -97,6 +98,7 @@ impl Plugin for RetailPresentationPlugin {
             .init_asset_loader::<monster_loader::MlsLoader>()
             .init_asset::<crate::content::ui::SpriteSheet>()
             .init_asset_loader::<sti_loader::StiLoader>()
+            .init_asset_loader::<pcx_loader::PcxLoader>()
             .init_asset::<crate::content::items::ItemModel>()
             .init_asset_loader::<item_model_loader::ItmLoader>()
             .init_asset::<crate::content::music::Playlist>()

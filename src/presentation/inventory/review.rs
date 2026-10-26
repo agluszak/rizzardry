@@ -10,13 +10,16 @@ use crate::game::data::GameData;
 use crate::game::inventory::{Carried, EquipSlot};
 use crate::game::party::roster::PartyRoster;
 use bevy::input_focus::{InputFocus, tab_navigation::TabIndex};
-use bevy::picking::{
-    events::{PointerDrag, PointerDragStart, PointerScroll},
-    hover::Hovered,
-};
+use bevy::picking::{events::PointerScroll, hover::Hovered};
 use bevy::prelude::*;
-use bevy::ui::{InteractionDisabled, Pressed};
-use bevy::ui_widgets::{Activate, Button as UiButton};
+use bevy::ui::{InteractionDisabled, Pressed, Selected};
+use bevy::ui_widgets::{
+    Activate, Button as UiButton, SelectedTab, Tab, TabList, tablist_self_update,
+};
+use bevy::ui_widgets::{
+    SetSliderValue, Slider, SliderOrientation, SliderPrecision, SliderRange, SliderStep,
+    SliderThumb, SliderValue, SliderValueChange, slider_self_update,
+};
 use enumset::EnumSet;
 
 const GOLD: Color = Color::srgb(0.83, 0.68, 0.40);
@@ -28,7 +31,9 @@ pub(super) enum Page {
     Skills,
 }
 #[derive(Component)]
-pub(super) struct PageButton(Page);
+pub(super) struct PageButton(pub(super) Page);
+#[derive(Component)]
+pub(super) struct PageTabs;
 
 #[derive(Component)]
 pub(super) enum Field {
@@ -47,9 +52,6 @@ pub(super) struct StatsInfo {
     armour: bool,
     filter: EffectFilter,
     items: bool,
-    scroll: usize,
-    max_scroll: usize,
-    drag_start: usize,
 }
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum EffectFilter {
@@ -64,6 +66,8 @@ pub(super) struct EffectButton(usize);
 pub(super) struct ScrollButton(bool);
 #[derive(Component)]
 pub(super) struct ScrollThumb;
+#[derive(Component)]
+pub(super) struct StatsScroll;
 #[derive(Component)]
 pub(super) struct InfoToggle;
 #[derive(Component)]
@@ -153,26 +157,39 @@ fn panel(commands: &mut Commands, root: Entity, page: Page) -> Entity {
         .id()
 }
 
-pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) {
+pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) -> Entity {
+    let list = commands
+        .spawn((
+            PageTabs,
+            TabList::default(),
+            absolute(Vec2::new(420.0, 450.0), Vec2::new(176.0, 30.0)),
+            Pickable::IGNORE,
+            ChildOf(root),
+        ))
+        .observe(tablist_self_update)
+        .id();
+    let mut initial = Entity::PLACEHOLDER;
     for (i, (page, base)) in
         [(Some(Page::Items), 0), (None, 10), (Some(Page::Skills), 15), (Some(Page::Statistics), 5)]
             .into_iter()
             .enumerate()
     {
-        let at = Vec2::new(420.0 + i as f32 * 44.0, 450.0);
+        let at = Vec2::new(i as f32 * 44.0, 0.0);
         let mut button = commands.spawn((
-            UiButton,
-            TabIndex(0),
+            Tab,
             Hovered::default(),
             Picture { sheet: art.page_buttons.clone(), frame: base, bounds: Some(base), at },
             absolute(at, Vec2::new(44.0, 30.0)),
             Pickable::default(),
             FocusControl,
             Outline::new(px(1), px(1), Color::NONE),
-            ChildOf(root),
+            ChildOf(list),
         ));
         if let Some(page) = page {
-            button.insert(PageButton(page)).observe(select_page);
+            button.insert(PageButton(page));
+            if page == Page::Items {
+                initial = button.id();
+            }
         } else {
             button.insert((
                 InteractionDisabled,
@@ -185,6 +202,7 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) {
             ));
         }
     }
+    commands.entity(list).insert(SelectedTab(Some(initial)));
     let stats = panel(commands, root, Page::Statistics);
     commands.entity(stats).insert(StatsInfo::default());
     picture(commands, stats, art.stats_page.clone(), 1, Vec2::ZERO);
@@ -333,26 +351,31 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) {
             ))
             .observe(scroll_button);
     }
-    commands.spawn((
-        absolute(Vec2::new(612.0, 41.0), Vec2::new(16.0, 215.0)),
-        BackgroundColor(Color::BLACK),
-        Pickable::IGNORE,
-        ChildOf(stats),
-    ));
-    let thumb_at = Vec2::new(612.0, 41.0);
-    commands
+    let track = commands
         .spawn((
-            UiButton,
-            ScrollThumb,
-            Hovered::default(),
-            Picture { sheet: art.scroll.clone(), frame: 4, bounds: Some(4), at: thumb_at },
-            absolute(thumb_at, Vec2::new(16.0, 10.0)),
+            StatsScroll,
+            Slider { orientation: SliderOrientation::Vertical, ..default() },
+            SliderRange::new(0.0, 0.0),
+            SliderStep(1.0),
+            SliderPrecision(0),
+            absolute(Vec2::new(612.0, 41.0), Vec2::new(16.0, 215.0)),
+            BackgroundColor(Color::BLACK),
             Pickable::default(),
-            Visibility::Hidden,
             ChildOf(stats),
         ))
-        .observe(start_drag)
-        .observe(drag_thumb);
+        .observe(slider_self_update)
+        .observe(super::cancel_slider_drag)
+        .id();
+    commands.spawn((
+        SliderThumb,
+        ScrollThumb,
+        Hovered::default(),
+        Picture { sheet: art.scroll.clone(), frame: 4, bounds: Some(4), at: Vec2::ZERO },
+        absolute(Vec2::ZERO, Vec2::new(16.0, 10.0)),
+        Pickable::default(),
+        Visibility::Hidden,
+        ChildOf(track),
+    ));
     commands
         .spawn((
             absolute(Vec2::new(349.0, 25.0), Vec2::new(259.0, 247.0)),
@@ -403,17 +426,18 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) {
         picture(commands, row, art.skills_page.clone(), 3, Vec2::ZERO);
         commands
             .spawn((
-                super::info::SkillTarget { skill, root },
+                super::info::InfoTarget { subject: super::info::Subject::Skill(skill), root },
                 absolute(Vec2::ZERO, Vec2::new(109.0, 14.0)),
                 Pickable::default(),
                 ChildOf(row),
             ))
-            .observe(super::info::open_skill);
+            .observe(super::info::open_info);
         label(commands, row, art.font.clone(), Vec2::new(2.0, 1.0), 107.0, Field::SkillName(skill));
         label(commands, row, art.font.clone(), Vec2::new(238.0, 1.0), 36.0, Field::Skill(skill));
         bar(commands, row, art.slider.clone(), Vec2::new(111.0, 2.0), Bar::SkillBase(skill), 0);
         bar(commands, row, art.slider.clone(), Vec2::new(111.0, 2.0), Bar::SkillBonus(skill), 1);
     }
+    initial
 }
 #[derive(Component)]
 pub(super) struct CategoryIcon(usize);
@@ -424,6 +448,8 @@ fn select_filter(
     click: On<Activate>,
     buttons: Query<&EffectButton>,
     mut info: Single<&mut StatsInfo>,
+    slider: Single<Entity, With<StatsScroll>>,
+    mut commands: Commands,
 ) {
     if let Ok(button) = buttons.get(click.entity) {
         match button.0 {
@@ -443,60 +469,39 @@ fn select_filter(
             }
             _ => info.items = !info.items,
         }
-        info.scroll = 0;
+        commands
+            .trigger(SetSliderValue { entity: *slider, change: SliderValueChange::Absolute(0.0) });
     }
 }
 fn scroll_button(
     click: On<Activate>,
     buttons: Query<&ScrollButton>,
-    mut info: Single<&mut StatsInfo>,
+    slider: Single<Entity, With<StatsScroll>>,
+    mut commands: Commands,
 ) {
     if let Ok(button) = buttons.get(click.entity) {
-        info.scroll = if button.0 {
-            info.scroll.saturating_add(1).min(info.max_scroll)
-        } else {
-            info.scroll.saturating_sub(1)
-        };
+        commands.trigger(SetSliderValue {
+            entity: *slider,
+            change: SliderValueChange::RelativeStep(if button.0 { 1.0 } else { -1.0 }),
+        });
     }
 }
-fn scroll_effects(event: On<PointerScroll>, mut info: Single<&mut StatsInfo>) {
-    if event.y > 0.0 {
-        info.scroll = info.scroll.saturating_sub(1);
-    } else if event.y < 0.0 {
-        info.scroll = info.scroll.saturating_add(1).min(info.max_scroll);
-    }
-}
-fn start_drag(event: On<PointerDragStart>, mut info: Single<&mut StatsInfo>) {
-    if event.button == bevy::picking::pointer::PointerButton::Primary {
-        info.drag_start = info.scroll;
-    }
-}
-fn drag_thumb(event: On<PointerDrag>, scale: Res<UiScale>, mut info: Single<&mut StatsInfo>) {
-    if event.button != bevy::picking::pointer::PointerButton::Primary || info.max_scroll == 0 {
-        return;
-    }
-    let delta = event.distance.y / scale.0 / 205.0 * info.max_scroll as f32;
-    let position =
-        (info.drag_start as f32 + delta).round().clamp(0.0, info.max_scroll as f32) as usize;
-    if info.scroll != position {
-        info.scroll = position;
+fn scroll_effects(
+    event: On<PointerScroll>,
+    slider: Single<Entity, With<StatsScroll>>,
+    mut commands: Commands,
+) {
+    if event.y != 0.0 {
+        commands.trigger(SetSliderValue {
+            entity: *slider,
+            change: SliderValueChange::RelativeStep(if event.y < 0.0 { 1.0 } else { -1.0 }),
+        });
     }
 }
 fn toggle_info(_: On<Activate>, mut info: Single<&mut StatsInfo>) {
     info.armour = !info.armour;
 }
 
-fn select_page(
-    click: On<Activate>,
-    buttons: Query<&PageButton>,
-    mut screen: Single<&mut InventoryScreen>,
-) {
-    if let Ok(button) = buttons.get(click.entity)
-        && screen.page != button.0
-    {
-        screen.page = button.0;
-    }
-}
 fn skill_category(skill: Skill) -> usize {
     use Skill::*;
     match skill {
@@ -522,12 +527,14 @@ fn words(value: impl std::fmt::Debug) -> String {
     result
 }
 pub(super) fn show_pages(
-    screen: Option<Single<&InventoryScreen>>,
+    selected: Option<Single<&SelectedTab, With<PageTabs>>>,
+    buttons: Query<&PageButton>,
     mut pages: Query<(&Page, &mut Node, &mut Visibility)>,
 ) {
-    let Some(screen) = screen else { return };
+    let Some(selected) = selected else { return };
+    let current = selected.0.and_then(|entity| buttons.get(entity).ok()).map(|button| button.0);
     for (page, mut node, mut visibility) in &mut pages {
-        let shown = *page == screen.page;
+        let shown = Some(*page) == current;
         let display = if shown { Display::Flex } else { Display::None };
         if node.display != display {
             node.display = display;
@@ -541,7 +548,9 @@ pub(super) fn refresh(
     characters: Query<(Ref<Character>, Ref<Vitals>, Option<Ref<Carried>>)>,
     roster: Option<Res<PartyRoster>>,
     profiles: Query<Ref<Character>>,
-    mut info: Option<Single<&mut StatsInfo>>,
+    info: Option<Single<Ref<StatsInfo>>>,
+    slider: Option<Single<(Entity, Ref<SliderValue>, &SliderRange), With<StatsScroll>>>,
+    mut commands: Commands,
     data: Option<Res<GameData>>,
     catalogs: Option<Res<Assets<ItemCatalog>>>,
     art: Option<Res<InventoryArt>>,
@@ -580,6 +589,7 @@ pub(super) fn refresh(
         && !profile.is_changed()
         && !vitals.is_changed()
         && !info_changed
+        && !slider.as_ref().is_some_and(|slider| slider.1.is_changed())
         && !table_changed
         && !party_changed
         && !carried.as_ref().is_some_and(|carried| carried.is_changed())
@@ -661,16 +671,16 @@ pub(super) fn refresh(
             }
         }
     }
-    if let Some(info) = info.as_mut() {
-        let maximum = effects.len().saturating_sub(17);
-        if info.max_scroll != maximum {
-            info.max_scroll = maximum;
+    let maximum = effects.len().saturating_sub(17);
+    let offset = slider.as_deref().map_or(0, |(_, value, _)| (value.0 as usize).min(maximum));
+    if let Some((entity, value, range)) = slider.as_deref() {
+        if range.end() != maximum as f32 {
+            commands.entity(*entity).insert(SliderRange::new(0.0, maximum as f32));
         }
-        if info.scroll > maximum {
-            info.scroll = maximum;
+        if value.0 > maximum as f32 {
+            commands.entity(*entity).insert(SliderValue(maximum as f32));
         }
     }
-    let offset = info.as_ref().map_or(0, |info| info.scroll);
     for (field, mut text) in &mut fields {
         if !field.is_added()
             && !screen.is_changed()
@@ -679,6 +689,7 @@ pub(super) fn refresh(
             && !table_changed
             && !party_changed
             && !info_changed
+            && !slider.as_ref().is_some_and(|slider| slider.1.is_changed())
             && !carried.as_ref().is_some_and(|carried| carried.is_changed())
             && !catalogs.as_ref().is_some_and(|catalogs| catalogs.is_changed())
         {
@@ -782,7 +793,7 @@ pub(super) fn refresh(
 }
 
 pub(super) fn style_scroll(
-    info: Option<Single<&StatsInfo>>,
+    slider: Option<Single<(&SliderValue, &SliderRange), With<StatsScroll>>>,
     mut commands: Commands,
     mut buttons: Query<
         (Entity, &ScrollButton, &Hovered, Has<Pressed>, Has<InteractionDisabled>, &mut Picture),
@@ -793,9 +804,9 @@ pub(super) fn style_scroll(
         (With<ScrollThumb>, Without<ScrollButton>),
     >,
 ) {
-    let Some(info) = info else { return };
-    let offset = info.scroll;
-    let maximum = info.max_scroll;
+    let Some((value, range)) = slider.as_deref() else { return };
+    let offset = value.0 as usize;
+    let maximum = range.end() as usize;
     for (entity, button, hovered, pressed, disabled, mut picture) in &mut buttons {
         let enabled = maximum > 0;
         if enabled == disabled {
@@ -823,8 +834,7 @@ pub(super) fn style_scroll(
     }
     for (mut visibility, hovered, mut picture) in &mut thumbs {
         visibility.set_if_neq(if maximum > 0 { Visibility::Inherited } else { Visibility::Hidden });
-        let top =
-            41.0 + if maximum > 0 { (offset as f32 / maximum as f32 * 205.0).floor() } else { 0.0 };
+        let top = if maximum > 0 { (offset as f32 / maximum as f32 * 205.0).floor() } else { 0.0 };
         let frame = if hovered.0 { 5 } else { 4 };
         {
             if picture.at.y != top {
@@ -937,18 +947,16 @@ pub(super) fn layout_skills(
 }
 
 pub(super) fn style_buttons(
-    screen: Option<Single<&InventoryScreen>>,
-    mut buttons: Query<(&PageButton, &Hovered, Has<Pressed>, &mut Picture)>,
+    mut buttons: Query<(&PageButton, &Hovered, Has<Pressed>, Has<Selected>, &mut Picture)>,
 ) {
-    let Some(screen) = screen else { return };
-    for (button, hovered, pressed, mut picture) in &mut buttons {
+    for (button, hovered, pressed, selected, mut picture) in &mut buttons {
         let base = match button.0 {
             Page::Items => 0,
             Page::Skills => 15,
             Page::Statistics => 5,
         };
         let frame = base
-            + if screen.page == button.0 || pressed {
+            + if selected || pressed {
                 if hovered.0 { 2 } else { 4 }
             } else if hovered.0 {
                 1
@@ -1020,9 +1028,12 @@ pub(super) struct FocusControl;
 /// Retail images keep their existing dimensions; focus is painted outside them.
 pub(super) fn focus_controls(
     focus: Option<Res<InputFocus>>,
+    visible: Option<Res<bevy::input_focus::InputFocusVisible>>,
     mut controls: Query<(Entity, &mut Outline), With<FocusControl>>,
 ) {
-    let focused = focus.as_ref().and_then(|f| f.get());
+    let focused = visible
+        .filter(|visible| visible.0)
+        .and_then(|_| focus.as_ref().and_then(|focus| focus.get()));
     for (entity, mut outline) in &mut controls {
         let colour = if focused == Some(entity) { GOLD } else { Color::NONE };
         if outline.color != colour {
@@ -1035,6 +1046,22 @@ pub(super) fn focus_controls(
 mod tests {
     use super::*;
     use crate::game::characters::{Condition, Gender, Lasting, Profession, Race};
+
+    #[test]
+    fn changing_the_effect_filter_returns_to_the_first_line() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::ui_widgets::SliderPlugin));
+        app.world_mut().spawn(StatsInfo::default());
+        let slider = app
+            .world_mut()
+            .spawn((StatsScroll, Slider::default(), SliderRange::new(0.0, 10.0), SliderValue(6.0)))
+            .observe(slider_self_update)
+            .id();
+        let button = app.world_mut().spawn(EffectButton(0)).observe(select_filter).id();
+        app.world_mut().trigger(Activate { entity: button });
+        app.update();
+        assert_eq!(app.world().get::<SliderValue>(slider).unwrap().0, 0.0);
+    }
 
     #[test]
     fn review_tracks_character_and_condition_changes() {
@@ -1054,10 +1081,7 @@ mod tests {
         );
         let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
         let actor = app.world_mut().spawn((Vitals::new(&profile), profile)).id();
-        let root = app
-            .world_mut()
-            .spawn(InventoryScreen { member: actor, pool_scroll: 0, page: Page::Statistics })
-            .id();
+        let root = app.world_mut().spawn(InventoryScreen { member: actor }).id();
         app.world_mut().commands().queue(move |world: &mut World| {
             let mut commands = world.commands();
             build(&mut commands, root, &InventoryArt::default());

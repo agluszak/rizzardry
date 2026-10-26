@@ -2,13 +2,14 @@
 //! `docs/research/review-items.md`:
 //! a member's equipment on their race's statue, their backpack, and the
 //! party's pool. Opened with I for the selected member; the header's portraits
-//! switch member, Esc, I or the Exit button closes it. Retail fills empty
-//! cells with a PCX texture; a flat colour stands in for it.
+//! switch member, Esc, I or the Exit button closes it.
 //!
 //! The screen is one scene with a node for each cell, the header and the
 //! gold; their retained nodes update when their gameplay inputs change.
 
 mod info;
+mod item_info;
+mod pool_scroll;
 mod review;
 
 use bevy::input_focus::tab_navigation::{TabGroup, TabIndex};
@@ -36,7 +37,6 @@ use crate::game::party::roster::PartyRoster;
 use crate::game::screen::Screen;
 
 const CELL: Vec2 = Vec2::new(46.0, 54.0);
-const FILL: Color = Color::srgb(0.16, 0.14, 0.11);
 /// Pool cells shown at once.
 const POOL_CELLS: usize = 8;
 
@@ -86,13 +86,11 @@ fn grid(left: f32, i: usize) -> Vec2 {
 #[derive(Component, Debug)]
 pub struct InventoryScreen {
     pub member: Entity,
-    /// The first pool entry shown; always even.
-    pub pool_scroll: usize,
-    page: review::Page,
 }
 
 #[derive(Resource, Default)]
 pub struct InventoryArt {
+    fill: Handle<Image>,
     corner: Handle<SpriteSheet>,
     portrait_highlight: Handle<SpriteSheet>,
     page: Handle<SpriteSheet>,
@@ -127,6 +125,9 @@ pub struct InventoryArt {
     beige: Handle<SpriteSheet>,
     blue: Handle<SpriteSheet>,
     bronze: Handle<SpriteSheet>,
+    red: Handle<SpriteSheet>,
+    leveling_bar: Handle<SpriteSheet>,
+    realms: [Handle<SpriteSheet>; 6],
     info_dialog: Handle<SpriteSheet>,
     info_buttons: Handle<SpriteSheet>,
 }
@@ -134,6 +135,7 @@ pub struct InventoryArt {
 pub fn load_inventory_art(mut commands: Commands, assets: Res<AssetServer>) {
     let load = |path: &str| assets.load(format!("retail://data/{path}"));
     commands.insert_resource(InventoryArt {
+        fill: assets.load("retail://data/main interface/basic_fill_texture.pcx"),
         corner: load("review/commoncorner.sti"),
         portrait_highlight: load("review/smallportraithighlight.sti"),
         page: load("review/reviewitempage.sti"),
@@ -168,6 +170,10 @@ pub fn load_inventory_art(mut commands: Commands, assets: Res<AssetServer>) {
         beige: load("fonts/palettebeige.sti"),
         blue: load("fonts/paletteblue.sti"),
         bronze: load("fonts/palettebronze.sti"),
+        red: load("fonts/palettered.sti"),
+        leveling_bar: load("review/leveling_bar.sti"),
+        realms: ["fire", "water", "air", "earth", "mental", "divine"]
+            .map(|realm| load(&format!("spell casting/{realm}_realm.sti"))),
         info_dialog: load("dialogs/popup_monsterinfo.sti"),
         info_buttons: load("dialogs/popup_confirmationbuttons.sti"),
     });
@@ -231,7 +237,7 @@ fn enter_inventory(
     commands.spawn_scene(bsn! {
         @centred()
         InventoryRoot
-        TabGroup::modal()
+        TabGroup::modal() bevy::ui_widgets::ModalDialog
         BackgroundColor(Color::BLACK)
         GlobalZIndex(10)
         ContextPriority::<InventoryRoot>::new(1)
@@ -241,7 +247,7 @@ fn enter_inventory(
             Bindings [ Binding(KeyCode::Escape) Binding(KeyCode::KeyI) ]
         ]
         on(|_: On<Start<CloseInventory>>, mut next: ResMut<NextState<Screen>>| { next.set(Screen::World); })
-    }).insert((InventoryScreen { member, pool_scroll: 0, page: review::Page::Items }, DespawnOnExit(Screen::Inventory)));
+    }).insert((InventoryScreen { member }, DespawnOnExit(Screen::Inventory)));
 }
 
 /// This explicit exit consequence uses the same inventory operation as any
@@ -477,19 +483,24 @@ fn cell_controls(cell: Cell, art: &InventoryArt) -> impl Scene {
         _ => (0, Vec2::ONE, Vec2::new(1.0, 40.0), 44.0),
     };
     let grid = !matches!(cell, Cell::Member(Slot::Equipment(_)));
-    let background = if grid { FILL } else { Color::NONE };
+    let fill = art.fill.clone();
     let node = absolute(area.min, size + 1.0);
     let rim = match cell {
         Cell::Member(Slot::Equipment(slot)) => equipment_rim(slot) + 3,
         _ => 0,
     };
     bsn! {
-        node BackgroundColor({background}) template(move |_|Ok(ItemCell{cell}))
+        node template(move |_|Ok(ItemCell{cell}))
         UiButton TabIndex(0) Pickable::default()
         review::FocusControl Outline::new(px(1), px(1), Color::NONE)
         on(click_cell)
+        on(pool_scroll::wheel)
         Children [
-            @picture(art.unusable.clone(),0,Vec2::ZERO)
+            template(move |_| Ok(ImageNode { image: fill.clone(), rect: Some(Rect::new(0.0, 0.0, 46.0, 54.0)), ..default() }))
+            Node { position_type: PositionType::Absolute, width: px(46), height: px(54) }
+            template(move |_| Ok(if grid { Visibility::Inherited } else { Visibility::Hidden }))
+            Pickable::IGNORE
+            -- @picture(art.unusable.clone(),0,Vec2::ZERO)
             template(move |_|Ok(CellDisplay{cell,part:CellPart::Unusable}))
             -- @picture(default(),frame,at)
             template(move |_|Ok(CellDisplay{cell,part:CellPart::Picture}))
@@ -510,6 +521,7 @@ pub fn spawn_inventory_screen(
     art: Res<InventoryArt>,
     assets: Res<AssetServer>,
     mut next: ResMut<NextState<Screen>>,
+    focus: Option<ResMut<bevy::input_focus::InputFocus>>,
     sheets: Res<Assets<SpriteSheet>>,
     roots: Query<Entity, (With<InventoryRoot>, Without<InventoryBuilt>)>,
 ) {
@@ -544,6 +556,8 @@ pub fn spawn_inventory_screen(
         &art.beige,
         &art.blue,
         &art.bronze,
+        &art.red,
+        &art.leveling_bar,
         &art.info_dialog,
         &art.info_buttons,
         &art.highlights,
@@ -552,8 +566,10 @@ pub fn spawn_inventory_screen(
         &art.font,
     ]
     .into_iter()
+    .chain(art.realms.iter())
     .any(|handle| matches!(assets.get_load_state(handle), Some(bevy::asset::LoadState::Failed(_))))
         || matches!(assets.get_load_state(&art.strings), Some(bevy::asset::LoadState::Failed(_)))
+        || matches!(assets.get_load_state(&art.fill), Some(bevy::asset::LoadState::Failed(_)))
     {
         warn!("inventory artwork failed to load; returning to the world");
         next.set(Screen::World);
@@ -609,7 +625,12 @@ pub fn spawn_inventory_screen(
                 on(|_: On<Activate>, mut next: ResMut<NextState<Screen>>| { next.set(Screen::World); })
         ]
     }).id();
-    review::build(&mut commands, content, &art);
+    let initial_tab = review::build(&mut commands, content, &art);
+    if let Some(mut focus) = focus {
+        focus.set(initial_tab, bevy::input_focus::FocusCause::Navigated);
+    }
+    item_info::build(&mut commands, content, &art);
+    pool_scroll::build(&mut commands, content, &art);
 }
 
 // Retail profession titles, indexed by profession and level band.
@@ -946,6 +967,7 @@ fn draw_cells(
     catalogs: Res<Assets<ItemCatalog>>,
     members: Query<(Ref<Character>, Ref<Carried>)>,
     party: Res<PartyInventory>,
+    pool_scroll: Option<Single<Ref<bevy::ui_widgets::SliderValue>, With<pool_scroll::PoolScroll>>>,
     mut displays: Query<(
         Ref<CellDisplay>,
         &mut Visibility,
@@ -960,6 +982,7 @@ fn draw_cells(
         || profile.is_changed()
         || carried.is_changed()
         || party.is_changed()
+        || pool_scroll.as_ref().is_some_and(|value| value.is_changed())
         || catalogs.is_changed();
     for (display, mut visible, picture, label) in &mut displays {
         if !display.is_added() && !changed {
@@ -968,7 +991,9 @@ fn draw_cells(
         let item = match display.cell {
             Cell::Member(Slot::Equipment(slot)) => carried.worn(slot),
             Cell::Member(Slot::Backpack(i)) => carried.backpack[i].as_ref(),
-            Cell::Pool(i) => party.pool.get(screen.pool_scroll + i),
+            Cell::Pool(i) => {
+                party.pool.get(pool_scroll.as_ref().map_or(0, |value| value.0 as usize * 2) + i)
+            }
         };
         let definition = item.and_then(|i| Some((i, catalog.get(i.item)?)));
         let grid = !matches!(display.cell, Cell::Member(Slot::Equipment(_)));
@@ -1021,13 +1046,23 @@ fn click_cell(
     cells: Query<&ItemCell>,
     screen: Option<Single<&InventoryScreen>>,
     mut inventory: crate::game::inventory::operations::InventoryOperations,
+    selected: Option<Single<&bevy::ui_widgets::SelectedTab, With<review::PageTabs>>>,
+    tabs: Query<&review::PageButton>,
+    pool_scroll: Option<Single<&bevy::ui_widgets::SliderValue, With<pool_scroll::PoolScroll>>>,
 ) {
-    let (Ok(cell), Some(screen)) = (cells.get(click.entity), screen) else { return };
-    if screen.page != review::Page::Items {
+    let (Ok(cell), Some(screen), Some(selected)) = (cells.get(click.entity), screen, selected)
+    else {
+        return;
+    };
+    if selected.0.and_then(|entity| tabs.get(entity).ok()).map(|tab| tab.0)
+        != Some(review::Page::Items)
+    {
         return;
     }
     let destination = match cell.cell {
-        Cell::Pool(row) => ItemLocation::Pool(screen.pool_scroll + row),
+        Cell::Pool(row) => {
+            ItemLocation::Pool(pool_scroll.as_ref().map_or(0, |value| value.0 as usize * 2) + row)
+        }
         Cell::Member(slot) => ItemLocation::Member(screen.member, slot),
     };
     if let Err(refusal) = inventory.activate(destination) {
@@ -1088,13 +1123,28 @@ pub fn follow_held(
     visibility.set_if_neq(Visibility::Inherited);
 }
 
+// Bevy 0.20 clears a slider's pressed state on cancellation but leaves its
+// drag state set; a canceled pointer must not continue editing the value.
+fn cancel_slider_drag(
+    event: On<bevy::picking::events::PointerCancel>,
+    mut sliders: Query<&mut bevy::ui_widgets::SliderDragState>,
+    mut captures: ResMut<bevy::picking::hover::PointerCaptureMap>,
+) {
+    if let Ok(mut drag) = sliders.get_mut(event.entity)
+        && drag.dragging
+    {
+        drag.dragging = false;
+        captures.release(event.pointer.id);
+    }
+}
+
 pub struct InventoryPlugin;
 
 impl Plugin for InventoryPlugin {
     fn build(&self, app: &mut App) {
         app.add_input_context::<InventoryKey>()
             .add_input_context::<InventoryRoot>()
-            .add_input_context::<info::SkillDialog>()
+            .add_input_context::<info::InfoDialog>()
             .add_systems(Startup, (load_inventory_art, spawn_inventory_key, spawn_held_picture))
             .add_systems(OnEnter(Screen::Inventory), enter_inventory)
             .add_systems(OnExit(Screen::Inventory), put_away_held)
@@ -1107,17 +1157,19 @@ impl Plugin for InventoryPlugin {
                 Update,
                 (
                     spawn_inventory_screen,
-                    draw_header,
-                    draw_header_condition,
-                    draw_header_hands,
-                    draw_portrait_highlights,
-                    draw_vitals,
-                    draw_retail_labels,
-                    draw_gold,
-                    draw_cells,
+                    (
+                        draw_header,
+                        draw_header_condition,
+                        draw_header_hands,
+                        draw_portrait_highlights.after(draw_header),
+                        draw_vitals,
+                        draw_retail_labels,
+                        draw_gold,
+                        draw_cells,
+                    )
+                        .after(spawn_inventory_screen),
                     follow_held,
-                )
-                    .chain(),
+                ),
             )
             .add_systems(
                 Update,
@@ -1132,7 +1184,10 @@ impl Plugin for InventoryPlugin {
                     review::focus_controls,
                     info::update_scroll,
                     info::style_close,
+                    info::initialize_focus,
                     info::style_arrows,
+                    item_info::refresh,
+                    pool_scroll::sync.before(draw_cells),
                 )
                     .after(spawn_inventory_screen),
             );
@@ -1249,5 +1304,196 @@ mod tests {
         assert_eq!(format_gold(950), "950");
         assert_eq!(format_gold(12345), "12,345");
         assert_eq!(format_gold(1234567), "1,234,567");
+    }
+}
+
+#[cfg(test)]
+mod keyboard_lifecycle_tests {
+    use super::*;
+    use crate::game::characters::{Gender, Profession, Race};
+    use bevy::input::{
+        ButtonState,
+        keyboard::{Key, KeyboardInput},
+    };
+    use bevy::input_focus::{
+        InputDispatchPlugin, InputFocus, InputFocusPlugin, tab_navigation::TabNavigationPlugin,
+    };
+    use bevy::picking::{
+        backend::HitData,
+        events::{Pointer, PointerClick, PointerPress},
+        pointer::{Location, PointerButton, PointerId},
+    };
+    use bevy::ui_widgets::{ButtonPlugin, ModalDialogPlugin, SelectedTab, SliderPlugin, TabPlugin};
+    use bevy::window::{PrimaryWindow, Window};
+
+    fn key(app: &mut App, window: Entity, code: KeyCode, pressed: bool) {
+        app.world_mut().write_message(KeyboardInput {
+            key_code: code,
+            logical_key: Key::Character("x".into()),
+            state: if pressed { ButtonState::Pressed } else { ButtonState::Released },
+            text: None,
+            repeat: false,
+            window,
+        });
+        app.update();
+    }
+    fn tap(app: &mut App, window: Entity, code: KeyCode) {
+        key(app, window, code, true);
+        key(app, window, code, false);
+    }
+
+    #[test]
+    fn review_and_information_dialog_keep_keyboard_navigation() {
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin::default(),
+            bevy::scene::ScenePlugin,
+            bevy::input::InputPlugin,
+            bevy::state::app::StatesPlugin,
+            EnhancedInputPlugin,
+            InputFocusPlugin,
+            InputDispatchPlugin,
+            TabNavigationPlugin,
+            bevy::input_focus::pointer_focus::PointerFocusPlugin,
+            TabPlugin,
+            SliderPlugin,
+            ButtonPlugin,
+            ModalDialogPlugin,
+            bevy::camera::visibility::VisibilityPlugin,
+        ))
+        .init_state::<Screen>()
+        .init_asset::<SpriteSheet>()
+        .init_asset::<TextTable>()
+        .init_asset::<Image>()
+        .init_asset::<ItemCatalog>()
+        .init_asset::<Mesh>()
+        .init_asset::<bevy::mesh::skinning::SkinnedMeshInverseBindposes>()
+        .init_resource::<UiScale>()
+        .init_resource::<PartyRoster>()
+        .init_resource::<PartyInventory>()
+        .init_resource::<super::super::main_screen::SelectedMember>()
+        .add_plugins(InventoryPlugin);
+        let window = app.world_mut().spawn((Window::default(), PrimaryWindow)).id();
+        let profile = Character::new("Test", Race::Human, Gender::Male, Profession::Fighter);
+        let member =
+            app.world_mut().spawn((Vitals::new(&profile), profile, Carried::default())).id();
+        app.world_mut().resource_mut::<PartyRoster>().0.insert(member);
+        app.world_mut().resource_mut::<super::super::main_screen::SelectedMember>().0 =
+            Some(member);
+        app.finish();
+        app.cleanup();
+        app.update();
+        let frame =
+            crate::content::ui::Frame { offset: [0, 0], width: 1, height: 1, rgba: vec![255; 4] };
+        let sheet = app.world_mut().resource_mut::<Assets<SpriteSheet>>().add(SpriteSheet {
+            frames: vec![frame; 100],
+            images: vec![Handle::default(); 100],
+            palette: None,
+        });
+        let strings = app.world_mut().resource_mut::<Assets<TextTable>>().add(TextTable(vec![
+            Some(
+                String::new()
+            );
+            0xa00
+        ]));
+        app.world_mut().insert_resource(InventoryArt {
+            corner: sheet.clone(),
+            page: sheet.clone(),
+            bottom_bar: sheet.clone(),
+            gold_icon: sheet.clone(),
+            exit: sheet.clone(),
+            font: sheet,
+            strings,
+            ..default()
+        });
+        tap(&mut app, window, KeyCode::KeyI);
+        for _ in 0..3 {
+            app.update();
+        }
+        assert_eq!(*app.world().resource::<State<Screen>>().get(), Screen::Inventory);
+        let initial =
+            app.world().resource::<InputFocus>().get().expect("opening review focuses a control");
+        tap(&mut app, window, KeyCode::Tab);
+        let next =
+            app.world().resource::<InputFocus>().get().expect("Tab keeps focus inside review");
+        assert_ne!(initial, next);
+        let skill_tab = app
+            .world_mut()
+            .query::<(Entity, &review::PageButton)>()
+            .iter(app.world())
+            .find_map(|(entity, tab)| (tab.0 == review::Page::Skills).then_some(entity))
+            .unwrap();
+        key(&mut app, window, KeyCode::ShiftLeft, true);
+        tap(&mut app, window, KeyCode::Tab);
+        key(&mut app, window, KeyCode::ShiftLeft, false);
+        assert_eq!(app.world().resource::<InputFocus>().get(), Some(initial));
+        tap(&mut app, window, KeyCode::ArrowRight);
+        assert_eq!(app.world().resource::<InputFocus>().get(), Some(skill_tab));
+        tap(&mut app, window, KeyCode::Enter);
+        let list = app
+            .world_mut()
+            .query_filtered::<&SelectedTab, With<review::PageTabs>>()
+            .single(app.world())
+            .unwrap();
+        assert_eq!(list.0, Some(skill_tab));
+        let target = app
+            .world_mut()
+            .query::<(Entity, &info::InfoTarget)>()
+            .iter(app.world())
+            .find_map(|(entity, target)| {
+                matches!(
+                    target.subject,
+                    info::Subject::Skill(crate::content::characters::Skill::Sword)
+                )
+                .then_some(entity)
+            })
+            .unwrap();
+        app.world_mut().trigger(PointerPress {
+            entity: target,
+            pointer: Pointer::new(
+                PointerId::Mouse,
+                Location {
+                    target: bevy::camera::NormalizedRenderTarget::None { width: 640, height: 480 },
+                    position: Vec2::ZERO,
+                },
+            ),
+            button: PointerButton::Secondary,
+            hit: HitData::new(Entity::PLACEHOLDER, 0.0, None, None),
+            count: 1,
+        });
+        app.world_mut().trigger(PointerClick {
+            entity: target,
+            pointer: Pointer::new(
+                PointerId::Mouse,
+                Location {
+                    target: bevy::camera::NormalizedRenderTarget::None { width: 640, height: 480 },
+                    position: Vec2::ZERO,
+                },
+            ),
+            button: PointerButton::Secondary,
+            hit: HitData::new(Entity::PLACEHOLDER, 0.0, None, None),
+            duration: std::time::Duration::ZERO,
+            count: 1,
+        });
+        app.update();
+        let dialog = app
+            .world_mut()
+            .query_filtered::<Entity, With<info::InfoDialog>>()
+            .single(app.world())
+            .unwrap();
+        let close = app.world().resource::<InputFocus>().get().expect("popup takes focus");
+        tap(&mut app, window, KeyCode::Tab);
+        let after_tab = app.world().resource::<InputFocus>().get().unwrap();
+        assert_ne!(close, after_tab);
+        key(&mut app, window, KeyCode::ShiftLeft, true);
+        tap(&mut app, window, KeyCode::Tab);
+        key(&mut app, window, KeyCode::ShiftLeft, false);
+        assert_eq!(app.world().resource::<InputFocus>().get(), Some(close));
+        tap(&mut app, window, KeyCode::Escape);
+        assert!(app.world().get_entity(dialog).is_err());
+        assert_eq!(app.world().resource::<InputFocus>().get(), Some(skill_tab));
+        tap(&mut app, window, KeyCode::Tab);
+        assert!(app.world().resource::<InputFocus>().get().is_some());
     }
 }
