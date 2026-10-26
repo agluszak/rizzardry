@@ -90,12 +90,12 @@ impl Plugin for PartyPlugin {
 /// death actually changes a seat.
 pub fn damage_member(
     member: Entity,
-    character: &mut crate::game::characters::Character,
+    vitals: &mut crate::game::characters::Vitals,
     formation: &mut ResMut<formation::Formation>,
     amount: u32,
 ) -> u32 {
-    let lost = character.damage(amount);
-    if character.is_dead() && formation.row_of(member).is_some() {
+    let lost = vitals.damage(amount);
+    if vitals.is_dead() && formation.row_of(member).is_some() {
         formation.unseat(member);
     }
     lost

@@ -10,7 +10,7 @@ use bevy_enhanced_input::prelude::*;
 use crate::content::characters::{Attribute, Skill};
 use crate::content::items::ItemCatalog;
 use crate::game::camp::can_act;
-use crate::game::characters::{Character, Profession};
+use crate::game::characters::{Character, Profession, Vitals};
 use crate::game::combat::Battle;
 use crate::game::data::GameData;
 use avian3d::prelude::Position;
@@ -146,7 +146,7 @@ pub fn search_pulse(
     run: Single<&Action<Run>>,
     party: Query<(&Position, &PartyBody)>,
     roster: Res<PartyRoster>,
-    members: Query<&Character>,
+    members: Query<(&Character, &Vitals)>,
     mut items: Query<(&mut WorldItem, &GlobalTransform)>,
     (spatial, bodies): (SpatialQuery, Query<&RigidBody>),
     (data, catalogs): (Option<Res<GameData>>, Res<Assets<ItemCatalog>>),
@@ -165,8 +165,8 @@ pub fn search_pulse(
         .0
         .iter()
         .filter_map(|&m| members.get(m).ok())
-        .filter(|m| can_act(m))
-        .map(|m| (search_score(m, search.on, running), m))
+        .filter(|(_, vitals)| can_act(vitals))
+        .map(|(m, _)| (search_score(m, search.on, running), m))
         .filter(|&(score, _)| score > 0)
         // The first of equals, as retail keeps the earlier slot.
         .reduce(|a, b| if b.0 > a.0 { b } else { a });

@@ -17,7 +17,7 @@ use crate::content::species::AttackWord;
 
 use crate::content::items::{Dice, ItemCatalog};
 use crate::content::species::{MonsterCatalog, Reach};
-use crate::game::characters::{Character, Condition};
+use crate::game::characters::{Character, Condition, Vitals};
 use crate::game::data::GameData;
 use crate::game::inventory::{Carried, EquipSlot, ItemInstanceId};
 use crate::game::party::Order;
@@ -187,7 +187,7 @@ pub enum CombatNews {
 
 /// Whether a member can act or be targeted: alive and nothing worse than
 /// webbed.
-fn able(member: &Character) -> bool {
+fn able(member: &Vitals) -> bool {
     !member.is_dead() && member.worst_condition().is_none_or(|c| c < Condition::Asleep)
 }
 
@@ -260,7 +260,7 @@ pub fn start_battle(
     camp: Option<Res<crate::game::camp::Camp>>,
     mut party: Query<(&Position, &mut PartyBody)>,
     level: PlayedLevel,
-    members: Query<&Character>,
+    members: Query<(&Character, &Vitals)>,
     monsters: Query<(Entity, &Monster, &GlobalTransform, Option<&Walker>)>,
     spatial: SpatialQuery,
     bodies: Query<&RigidBody>,
@@ -286,8 +286,8 @@ pub fn start_battle(
         .0
         .iter()
         .filter_map(|&m| members.get(m).ok())
-        .filter(|c| !c.is_dead() && c.worst_condition().is_none_or(|w| w < Condition::Asleep))
-        .map(|c| i32::from(c.level))
+        .filter(|(_, v)| able(v))
+        .map(|(c, _)| i32::from(c.level))
         .min()
         .unwrap_or(0);
     // Only the level's static geometry blocks sight.
@@ -358,7 +358,7 @@ pub fn run_battle(
     mut rng: ResMut<GameRng>,
     mut clock: ResMut<GameClock>,
     roster: Res<PartyRoster>,
-    mut members: Query<(&mut Character, &Carried)>,
+    mut members: Query<(&mut Character, &mut Vitals, &Carried)>,
     mut damage: MonsterDamage,
     party_body: Query<(&Position, &PartyBody)>,
     mut formation: ResMut<Formation>,
@@ -403,14 +403,14 @@ pub fn run_battle(
         battle.attacked_this_round = false;
         battle.party.clear();
         for &member in &roster.0 {
-            let Ok((character, carried)) = members.get(member) else { continue };
+            let Ok((character, vitals, carried)) = members.get(member) else { continue };
             let action = match orders.get(member).copied().unwrap_or_default() {
                 Order::Attack => AcceptedAction::Attack {
                     weapon: carried.worn(EquipSlot::Primary).map(|i| i.id),
                 },
                 Order::Defend => AcceptedAction::Defend,
             };
-            let turn = if matches!(action, AcceptedAction::Attack { .. }) && able(character) {
+            let turn = if matches!(action, AcceptedAction::Attack { .. }) && able(vitals) {
                 let hand = primary_hand(character, carried, items);
                 Turn {
                     phase: phase(&mut rng, character_initiative(character, &hand)),
@@ -457,8 +457,8 @@ pub fn run_battle(
         if let Some(index) = battle.party.iter().position(|p| p.turn.phase == step) {
             let work = battle.party[index];
             let member = work.actor;
-            let able_now = roster.0.contains(&member) && members.get(member).is_ok_and(|(c, carried)| {
-                able(c) && matches!(work.action, AcceptedAction::Attack { weapon } if weapon == carried.worn(EquipSlot::Primary).map(|i| i.id))
+            let able_now = roster.0.contains(&member) && members.get(member).is_ok_and(|(_, vitals, carried)| {
+                able(vitals) && matches!(work.action, AcceptedAction::Attack { weapon } if weapon == carried.worn(EquipSlot::Primary).map(|i| i.id))
             });
             if !able_now {
                 battle.party[index].turn = Turn::default();
@@ -466,7 +466,7 @@ pub fn run_battle(
             }
             // Retail `GetAveragePartyLevel`: what loot tables scale by.
             let levels_sum: u32 =
-                members.iter_many(&roster.0).flatten().map(|(c, _)| u32::from(c.level)).sum();
+                members.iter_many(&roster.0).flatten().map(|(c, _, _)| u32::from(c.level)).sum();
             let party_level = levels_sum / roster.0.len().max(1) as u32;
             let casualty = member_acts(
                 &mut battle,
@@ -514,7 +514,7 @@ pub fn run_battle(
                 &mut news,
             );
             battle.wait = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
-            if !roster.0.iter().any(|&m| members.get(m).is_ok_and(|(c, _)| !c.is_dead())) {
+            if !roster.0.iter().any(|&m| members.get(m).is_ok_and(|(_, v, _)| !v.is_dead())) {
                 news.write(CombatNews::Lost);
                 commands.remove_resource::<Battle>();
             }
@@ -539,7 +539,7 @@ fn member_acts(
     index: usize,
     member: Entity,
     rng: &mut GameRng,
-    members: &mut Query<(&mut Character, &Carried)>,
+    members: &mut Query<(&mut Character, &mut Vitals, &Carried)>,
     damage: &mut MonsterDamage,
     party: &PartyView,
     formation: &Formation,
@@ -548,7 +548,7 @@ fn member_acts(
     party_level: u32,
     news: &mut MessageWriter<CombatNews>,
 ) -> Option<(Entity, DamageOutcome)> {
-    let Ok((mut character, carried)) = members.get_mut(member) else { return None };
+    let Ok((character, mut vitals, carried)) = members.get_mut(member) else { return None };
     let hand = primary_hand(&character, carried, items);
     // Retail `ChooseMonsterTarget`: among the monsters this hand reaches,
     // the least afflicted, then those "in reach" of the party, then the
@@ -598,7 +598,7 @@ fn member_acts(
     });
     let (mut hits, mut dealt, mut casualty) = (0, 0, None);
     for _ in 0..swings {
-        match character_swing(rng, &character, &hand, mode, kind) {
+        match character_swing(rng, &character, &vitals, &hand, mode, kind) {
             Swing::Hit(damage_amount) => {
                 hits += 1;
                 let outcome = damage
@@ -626,7 +626,7 @@ fn member_acts(
         .map_or(0, |d| u32::from(d.weight));
     let b = weight / 40 + 1;
     let cost = rng.below(b) + 1 + b;
-    character.spend_stamina(cost);
+    vitals.spend_stamina(cost);
     casualty
 }
 
@@ -635,7 +635,7 @@ fn monster_acts(
     index: usize,
     rng: &mut GameRng,
     roster: &PartyRoster,
-    members: &mut Query<(&mut Character, &Carried)>,
+    members: &mut Query<(&mut Character, &mut Vitals, &Carried)>,
     monsters: &Query<(&mut Monster, &GlobalTransform, Option<&Walker>, &ChildOf)>,
     party: &PartyView,
     formation: &mut ResMut<Formation>,
@@ -651,8 +651,8 @@ fn monster_acts(
     let mut candidates = vec![];
     for (a, attack) in kind.attacks.iter().enumerate() {
         for &member in &roster.0 {
-            let Ok((character, _)) = members.get(member) else { continue };
-            if able(character)
+            let Ok((_, vitals, _)) = members.get(member) else { continue };
+            if able(vitals)
                 && party.reaches(formation, member, at.translation(), attack.reach, distance)
             {
                 for mode in attack.modes {
@@ -671,7 +671,7 @@ fn monster_acts(
     let attack = &kind.attacks[a];
     // Retail draws for the mode again, from just the one chosen.
     let mode = attack::choose_mode(rng, EnumSet::only(mode));
-    let Ok((mut character, carried)) = members.get_mut(member) else { return };
+    let Ok((character, mut vitals, carried)) = members.get_mut(member) else { return };
     let mut armour = armour(&character, carried, items);
     // Defending is worth 2 (`characters.md` §4.8, component 10).
     if battle.defends(member) {
@@ -690,9 +690,8 @@ fn monster_acts(
         match monster_swing(rng, kind, attack, mode, &character, &armour) {
             Swing::Hit(damage) => {
                 hits += 1;
-                dealt +=
-                    crate::game::party::damage_member(member, &mut character, formation, damage);
-                if character.is_dead() {
+                dealt += crate::game::party::damage_member(member, &mut vitals, formation, damage);
+                if vitals.is_dead() {
                     break;
                 }
             }
@@ -701,7 +700,7 @@ fn monster_acts(
         };
     }
     news.write(CombatNews::Result { attacker: entity, target: member, hits, damage: dealt });
-    if character.is_dead() {
+    if vitals.is_dead() {
         news.write(CombatNews::Killed { actor: member });
     }
     battle.monsters[index].1 =
@@ -716,7 +715,7 @@ fn end_round(
     clock: &mut GameClock,
     rng: &mut GameRng,
     roster: &PartyRoster,
-    members: &mut Query<(&mut Character, &Carried)>,
+    members: &mut Query<(&mut Character, &mut Vitals, &Carried)>,
     monsters: &Query<(&mut Monster, &GlobalTransform, Option<&Walker>, &ChildOf)>,
     news: &mut MessageWriter<CombatNews>,
     detect: &mut MessageWriter<DetectGroups>,
@@ -725,8 +724,11 @@ fn end_round(
     // nobody recovers (retail `AdvanceCombatRound`).
     let ticks = clock.advance(ROUND_MS);
     for &member in &roster.0 {
-        if let Ok((mut character, _)) = members.get_mut(member) {
-            recovery::elapse(&mut character, ticks, recovery::Pace::Fighting);
+        if members.get(member).is_ok_and(|(profile, vitals, _)| {
+            recovery::has_work(profile, vitals, ticks, recovery::Pace::Fighting)
+        }) {
+            let (profile, mut vitals, _) = members.get_mut(member).unwrap();
+            recovery::elapse(&profile, &mut vitals, ticks, recovery::Pace::Fighting);
         }
     }
     if ticks.aging > 0 {
@@ -741,12 +743,19 @@ fn end_round(
         let member = work.actor;
         if matches!(work.action, AcceptedAction::Defend)
             && roster.0.contains(&member)
-            && let Ok((mut character, _)) = members.get_mut(member)
-            && !character.is_dead()
+            && let Ok((character, mut vitals, _)) = members.get_mut(member)
+            && !vitals.is_dead()
         {
             let sides = (character.max_stamina() / 20).saturating_sub(1).max(1);
             let gained = rng.roll(Dice { count: 2, sides: sides.min(255) as u8, base: 0 });
-            character.restore_stamina(gained);
+            if vitals.stamina < character.max_stamina()
+                || vitals.conditions.contains(&(
+                    Condition::Unconscious,
+                    crate::game::characters::Lasting::Indefinite,
+                ))
+            {
+                vitals.restore_stamina(gained, character.max_stamina());
+            }
         }
     }
     battle.wait = Timer::from_seconds(ROUND_SECONDS, TimerMode::Once);
@@ -759,14 +768,16 @@ fn end_round(
     }
     // Experience is shared among the living, the unconscious included.
     let living =
-        roster.0.iter().filter(|&&m| members.get(m).is_ok_and(|(c, _)| !c.is_dead())).count()
+        roster.0.iter().filter(|&&m| members.get(m).is_ok_and(|(_, v, _)| !v.is_dead())).count()
             as u32;
     let each = battle.experience / living.max(1);
-    for &member in &roster.0 {
-        if let Ok((mut character, _)) = members.get_mut(member)
-            && !character.is_dead()
-        {
-            character.experience += each;
+    if each > 0 {
+        for &member in &roster.0 {
+            if let Ok((mut character, vitals, _)) = members.get_mut(member)
+                && !vitals.is_dead()
+            {
+                character.experience += each;
+            }
         }
     }
     news.write(if battle.kills > 0 {
@@ -855,7 +866,8 @@ mod tests {
             carried.equipment[EquipSlot::Primary] =
                 Some(make_item(weapon, &mut ids, &mut equipment_rng, false, true));
             let order = if name == "B" && defending { Order::Defend } else { Order::Attack };
-            let entity = app.world_mut().spawn((character, carried, order)).id();
+            let entity =
+                app.world_mut().spawn((Vitals::new(&character), character, carried, order)).id();
             app.world_mut().resource_mut::<PartyRoster>().0.insert(entity);
             app.world_mut().resource_mut::<Formation>().seat(entity);
             members.push(entity);
@@ -940,13 +952,10 @@ mod tests {
         let (mut app, [_, b]) = round_app(false);
         app.update();
         assert_eq!(attacks(&mut app), ["A"]);
+        let profile = Character::new("Replacement", Race::Human, Gender::Male, Profession::Fighter);
         let replacement = app
             .world_mut()
-            .spawn((
-                Character::new("Replacement", Race::Human, Gender::Male, Profession::Fighter),
-                Carried::default(),
-                Order::Attack,
-            ))
+            .spawn((Vitals::new(&profile), profile, Carried::default(), Order::Attack))
             .id();
         let mut params =
             bevy::ecs::system::SystemState::<(ResMut<PartyRoster>, ResMut<Formation>)>::new(
@@ -968,8 +977,8 @@ mod tests {
     #[test]
     fn accepted_defense_recovers_stamina_and_an_edit_only_changes_the_next_round() {
         let (mut app, [_, b]) = round_app(true);
-        app.world_mut().get_mut::<Character>(b).unwrap().stamina -= 10;
-        let before = app.world().get::<Character>(b).unwrap().stamina;
+        app.world_mut().get_mut::<Vitals>(b).unwrap().stamina -= 10;
+        let before = app.world().get::<Vitals>(b).unwrap().stamina;
         app.update();
         assert_eq!(attacks(&mut app), ["A"]);
         app.world_mut().entity_mut(b).insert(Order::Attack);
@@ -982,7 +991,7 @@ mod tests {
             app.update();
         }
         assert!(attacks(&mut app).is_empty());
-        assert!(app.world().get::<Character>(b).unwrap().stamina > before);
+        assert!(app.world().get::<Vitals>(b).unwrap().stamina > before);
         assert!(!app.world().resource::<Battle>().executing);
         app.world_mut().write_message(StartRound);
         app.update();
@@ -1013,7 +1022,7 @@ mod tests {
         app.update();
         assert_eq!(attacks(&mut app), ["A"]);
         app.world_mut()
-            .get_mut::<Character>(b)
+            .get_mut::<Vitals>(b)
             .unwrap()
             .inflict(Condition::Asleep, crate::game::characters::Lasting::Rounds(2));
         app.update();
@@ -1024,12 +1033,14 @@ mod tests {
         use crate::game::characters::{Gender, Profession, Race};
         let run = |reorder| {
             let (mut app, [a, b]) = round_app(true);
-            let mut character = Character::new("C", Race::Human, Gender::Male, Profession::Fighter);
-            character.stamina = 1;
-            let c = app.world_mut().spawn((character, Carried::default(), Order::Defend)).id();
+            let character = Character::new("C", Race::Human, Gender::Male, Profession::Fighter);
+            let mut vitals = Vitals::new(&character);
+            vitals.stamina = 1;
+            let c =
+                app.world_mut().spawn((character, vitals, Carried::default(), Order::Defend)).id();
             app.world_mut().resource_mut::<PartyRoster>().0.insert(c);
             app.world_mut().resource_mut::<Formation>().seat(c);
-            app.world_mut().get_mut::<Character>(b).unwrap().stamina = 1;
+            app.world_mut().get_mut::<Vitals>(b).unwrap().stamina = 1;
             app.update();
             if reorder {
                 app.world_mut().resource_mut::<PartyRoster>().0 = [c, a, b].into_iter().collect();
@@ -1037,7 +1048,7 @@ mod tests {
             for _ in 0..4 {
                 app.update();
             }
-            [b, c].map(|actor| app.world().get::<Character>(actor).unwrap().stamina)
+            [b, c].map(|actor| app.world().get::<Vitals>(actor).unwrap().stamina)
         };
         let unchanged = run(false);
         assert!(unchanged.into_iter().all(|stamina| stamina > 1));

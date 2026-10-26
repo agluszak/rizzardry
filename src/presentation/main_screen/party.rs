@@ -13,7 +13,7 @@ use super::{LayoutMode, MainScreenArt, ScreenLayout, SelectedMember, layer, load
 use crate::content::characters::BodyPart;
 use crate::content::items::ItemCatalog;
 use crate::content::ui::SpriteSheet;
-use crate::game::characters::{Character, Race};
+use crate::game::characters::{Character, Race, Vitals};
 use crate::game::combat::attack::{Armour, armour};
 use crate::game::data::GameData;
 use crate::game::inventory::{Carried, EquipSlot, Given, ItemNews, PartyInventory};
@@ -87,6 +87,7 @@ impl SlotView {
     fn of(
         member: Entity,
         character: &Character,
+        vitals: &Vitals,
         carried: Option<&Carried>,
         catalog: Option<&ItemCatalog>,
         selected: bool,
@@ -104,13 +105,13 @@ impl SlotView {
             member,
             portrait: character.portrait.clone(),
             race: character.race,
-            dead: character.is_dead(),
-            hp: character.hp,
-            hp_fill: fill(character.hp, character.max_hp()),
-            stamina_fill: fill(character.stamina, character.max_stamina()),
+            dead: vitals.is_dead(),
+            hp: vitals.hp,
+            hp_fill: fill(vitals.hp, character.max_hp()),
+            stamina_fill: fill(vitals.stamina, character.max_stamina()),
             name: character.name.clone(),
             armour,
-            condition: condition_icon(character),
+            condition: condition_icon(vitals),
             two_handed: main.as_ref().is_some_and(|m| m.1),
             hands: [main.map(|m| m.0), off.map(|o| o.0)],
             selected,
@@ -119,7 +120,7 @@ impl SlotView {
 }
 
 /// The worst condition's icon name, `dead` for the dead.
-pub fn condition_icon(character: &Character) -> Option<String> {
+pub fn condition_icon(character: &Vitals) -> Option<String> {
     if character.is_dead() {
         Some("dead".into())
     } else {
@@ -187,7 +188,7 @@ pub fn draw_party(
     sheets: Res<Assets<SpriteSheet>>,
     mut images: ResMut<Assets<Image>>,
     roster: Res<PartyRoster>,
-    members: Query<(&Character, Option<&Carried>)>,
+    members: Query<(&Character, &Vitals, Option<&Carried>)>,
     data: Option<Res<GameData>>,
     catalogs: Res<Assets<ItemCatalog>>,
     mut slots: Query<(Entity, &mut PartySlot)>,
@@ -206,8 +207,15 @@ pub fn draw_party(
     for (overlay, mut party_slot) in &mut slots {
         let slot = party_slot.slot;
         let view = roster.0.get_index(slot).and_then(|&member| {
-            members.get(member).ok().map(|(c, carried)| {
-                SlotView::of(member, c, carried, catalog, selected.member(&roster) == Some(member))
+            members.get(member).ok().map(|(c, vitals, carried)| {
+                SlotView::of(
+                    member,
+                    c,
+                    vitals,
+                    carried,
+                    catalog,
+                    selected.member(&roster) == Some(member),
+                )
             })
         });
         if party_slot.drawn.as_ref() == Some(&view) {
@@ -385,7 +393,7 @@ fn press(
     mut last_click: ResMut<LastSlotClick>,
     (mut party, mut members, data, catalogs, battle, mut news): (
         ResMut<PartyInventory>,
-        Query<(&Character, &mut Carried)>,
+        Query<(&Character, &Vitals, &mut Carried)>,
         Option<Res<GameData>>,
         Res<Assets<ItemCatalog>>,
         Option<Res<crate::game::combat::Battle>>,
@@ -400,7 +408,7 @@ fn press(
     }
     if party.held.is_some() {
         let Some(catalog) = data.and_then(|d| catalogs.get(&d.items)) else { return };
-        let Ok((character, mut carried)) = members.get_mut(member) else {
+        let Ok((character, vitals, mut carried)) = members.get_mut(member) else {
             return;
         };
         let item = party
@@ -408,7 +416,7 @@ fn press(
             .as_ref()
             .and_then(|h| catalog.get(h.item.item).map(|d| h.item.display_name(d, false)))
             .unwrap_or_default();
-        let eligible = crate::game::camp::can_act(character);
+        let eligible = crate::game::camp::can_act(vitals);
         let member = eligible.then_some(&mut *carried);
         match party.give_held(member, !eligible || battle.is_some(), catalog) {
             Some(Given::Member) => {
@@ -468,7 +476,7 @@ pub fn play_splats(
     sheets: Res<Assets<SpriteSheet>>,
     mut images: ResMut<Assets<Image>>,
     roster: Res<PartyRoster>,
-    members: Query<&Character>,
+    members: Query<&Vitals>,
     layers: Query<Entity, With<Splats>>,
     mut rng: ResMut<PresentationRng>,
     mut state: Local<SplatState>,

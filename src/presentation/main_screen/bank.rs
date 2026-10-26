@@ -10,7 +10,7 @@ use super::{MainScreenArt, Panel, ScreenLayout, SelectedMember, button, layer, l
 use crate::content::items::ItemCatalog;
 use crate::content::ui::SpriteSheet;
 use crate::game::camp::CampRequest;
-use crate::game::characters::Character;
+use crate::game::characters::{Character, Vitals};
 use crate::game::combat::{Battle, CombatSettings, StartRound};
 use crate::game::data::GameData;
 use crate::game::inventory::{Carried, EquipSlot};
@@ -325,7 +325,7 @@ pub fn draw_caption(
     mut images: ResMut<Assets<Image>>,
     selected: Res<SelectedMember>,
     roster: Res<PartyRoster>,
-    members: Query<(&Character, Option<&Carried>)>,
+    members: Query<(&Character, &Vitals, Option<&Carried>)>,
     (data, catalogs, battle, orders): (
         Option<Res<GameData>>,
         Res<Assets<ItemCatalog>>,
@@ -338,7 +338,7 @@ pub fn draw_caption(
     let catalog = data.and_then(|d| catalogs.get(&d.items));
     let lines = match selected.member(&roster).and_then(|m| members.get(m).ok()) {
         None => vec![],
-        Some((character, carried)) => {
+        Some((character, vitals, carried)) => {
             let first = format!("{} - {:?}", character.name, character.profession);
             let second = if battle.is_some() {
                 match selected
@@ -357,7 +357,7 @@ pub fn draw_caption(
                     }
                 }
             } else {
-                super::party::condition_icon(character).map(|mut c| {
+                super::party::condition_icon(vitals).map(|mut c| {
                     c[..1].make_ascii_uppercase();
                     c
                 })

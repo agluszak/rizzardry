@@ -9,7 +9,7 @@ use avian3d::prelude::LinearVelocity;
 use bevy::prelude::*;
 
 use crate::game::camp::Camp;
-use crate::game::characters::Character;
+use crate::game::characters::{Character, Vitals};
 use crate::game::party::body::{PartyBody, WALK_SPEED};
 use crate::game::party::roster::PartyRoster;
 use crate::game::time::{CAMPING_RATE, EXPLORATION_RATE, GameClock, Ticks};
@@ -43,14 +43,29 @@ impl Pace {
     }
 }
 
+/// A read-only assessment keeps full, unaffected members out of the write
+/// query path while still clearing recovery fractions when the policy changes.
+pub fn has_work(profile: &Character, member: &Vitals, ticks: Ticks, pace: Pace) -> bool {
+    let (stamina, health) = pace.scales();
+    (ticks.stamina > 0
+        && (member.stamina_fraction != 0.0
+            || (!member.is_dead() && stamina > 0.0 && member.stamina < profile.max_stamina())))
+        || (ticks.aging > 0
+            && (member.hp_fraction != 0.0
+                || (!member.is_dead() && health > 0.0 && member.hp < profile.max_hp())
+                || member.conditions.iter().any(|(_, lasting)| {
+                    matches!(lasting, crate::game::characters::Lasting::Rounds(_))
+                })))
+}
+
 /// What the ticks passed at `pace` do to one member.
-pub fn elapse(member: &mut Character, ticks: Ticks, pace: Pace) {
+pub fn elapse(profile: &Character, member: &mut Vitals, ticks: Ticks, pace: Pace) {
     let (stamina, health) = pace.scales();
     if ticks.stamina > 0 {
-        member.recover_stamina(ticks.stamina, stamina);
+        member.recover_stamina(ticks.stamina, stamina, profile.max_stamina());
     }
     if ticks.aging > 0 {
-        member.recover_health(ticks.aging, health);
+        member.recover_health(ticks.aging, health, profile.max_hp());
         member.age_conditions(ticks.aging);
     }
 }
@@ -63,7 +78,7 @@ pub fn pass_time(
     battle: Option<Res<crate::game::combat::Battle>>,
     party: Query<&LinearVelocity, With<PartyBody>>,
     roster: Res<PartyRoster>,
-    mut members: Query<&mut Character>,
+    mut members: Query<(&Character, &mut Vitals)>,
     mut clock: ResMut<GameClock>,
     mut detect: MessageWriter<DetectGroups>,
 ) {
@@ -73,6 +88,9 @@ pub fn pass_time(
     let racing = camp.as_ref().is_some_and(|c| c.racing());
     let ticks =
         clock.advance_real(time.delta(), if racing { CAMPING_RATE } else { EXPLORATION_RATE });
+    if ticks.stamina == 0 && ticks.aging == 0 {
+        return;
+    }
     // Retail tells running (fast movement) from walking; here the speed
     // does, horizontally so that falling is not running.
     let speed = party.single().map_or(0.0, |v| Vec2::new(v.x, v.z).length());
@@ -86,8 +104,10 @@ pub fn pass_time(
         Pace::Running
     };
     for &member in &roster.0 {
-        if let Ok(mut member) = members.get_mut(member) {
-            elapse(&mut member, ticks, pace);
+        if members.get(member).is_ok_and(|(profile, vitals)| has_work(profile, vitals, ticks, pace))
+        {
+            let (profile, mut vitals) = members.get_mut(member).unwrap();
+            elapse(profile, &mut vitals, ticks, pace);
         }
     }
     // Retail looks the monsters over at the end of each aging pass.
@@ -103,16 +123,17 @@ mod tests {
 
     #[test]
     fn a_combat_round_ages_conditions_but_recovers_nothing() {
-        let mut fighter = Character::new("Brute", Race::Human, Gender::Male, Profession::Fighter);
+        let profile = Character::new("Brute", Race::Human, Gender::Male, Profession::Fighter);
+        let mut fighter = Vitals::new(&profile);
         fighter.hp -= 5;
         fighter.stamina -= 5;
         fighter.inflict(Condition::Afraid, Lasting::Rounds(1));
         let (hp, stamina) = (fighter.hp, fighter.stamina);
-        elapse(&mut fighter, Ticks { stamina: 85, aging: 1 }, Pace::Fighting);
+        elapse(&profile, &mut fighter, Ticks { stamina: 85, aging: 1 }, Pace::Fighting);
         assert_eq!((fighter.hp, fighter.stamina), (hp, stamina));
         assert!(!fighter.has(Condition::Afraid));
         // Standing still for two hours heals.
-        elapse(&mut fighter, Ticks { stamina: 85, aging: 60 }, Pace::Still);
+        elapse(&profile, &mut fighter, Ticks { stamina: 85, aging: 60 }, Pace::Still);
         assert!(fighter.hp > hp && fighter.stamina > stamina);
     }
 }
@@ -133,9 +154,10 @@ mod roster_tests {
             .add_message::<DetectGroups>()
             .add_systems(Update, pass_time);
         let hurt = || {
-            let mut c = Character::new("Hurt", Race::Human, Gender::Male, Profession::Fighter);
-            c.hp = 1;
-            c
+            let c = Character::new("Hurt", Race::Human, Gender::Male, Profession::Fighter);
+            let mut vitals = Vitals::new(&c);
+            vitals.hp = 1;
+            (c, vitals)
         };
         let member = app.world_mut().spawn(hurt()).id();
         // An adventurer the party has not recruited.
@@ -148,7 +170,7 @@ mod roster_tests {
         for _ in 0..3 {
             app.update();
         }
-        assert!(app.world().get::<Character>(member).unwrap().hp > 1);
-        assert_eq!(app.world().get::<Character>(stranger).unwrap().hp, 1);
+        assert!(app.world().get::<Vitals>(member).unwrap().hp > 1);
+        assert_eq!(app.world().get::<Vitals>(stranger).unwrap().hp, 1);
     }
 }

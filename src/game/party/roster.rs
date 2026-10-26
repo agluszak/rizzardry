@@ -51,8 +51,15 @@ pub fn recruit(
     let mut character =
         Character::new(&recruit.name, recruit.race, recruit.gender, recruit.profession);
     character.portrait = recruit.portrait.clone();
+    let vitals = crate::game::characters::Vitals::new(&character);
     let member = commands
-        .spawn((Name::new(recruit.name.clone()), character, super::Order::Attack, NeedsEquipment))
+        .spawn((
+            Name::new(recruit.name.clone()),
+            character,
+            vitals,
+            super::Order::Attack,
+            NeedsEquipment,
+        ))
         .id();
     roster.0.insert(member);
     formation.seat(member);

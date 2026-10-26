@@ -11,7 +11,7 @@ use crate::game::party::roster::PartyRoster;
 pub struct InventoryOperations<'w, 's> {
     party: ResMut<'w, PartyInventory>,
     roster: Res<'w, PartyRoster>,
-    members: Query<'w, 's, (&'static Character, &'static mut Carried)>,
+    members: Query<'w, 's, (&'static Character, &'static Vitals, &'static mut Carried)>,
     data: Option<Res<'w, GameData>>,
     catalogs: Res<'w, Assets<ItemCatalog>>,
 }
@@ -29,7 +29,7 @@ impl InventoryOperations<'_, '_> {
             .and_then(|d| self.catalogs.get(&d.items))
             .ok_or(Refusal::MissingContent)?;
         if self.roster.0.contains(&member)
-            && let Ok((_, mut carried)) = self.members.get_mut(member)
+            && let Ok((_, _, mut carried)) = self.members.get_mut(member)
         {
             self.party.put_away_held(&mut carried, catalog);
         } else {
@@ -68,7 +68,7 @@ impl InventoryOperations<'_, '_> {
                 if !self.roster.0.contains(&member) {
                     return Err(Refusal::NotMember);
                 }
-                let (character, carried) =
+                let (character, vitals, carried) =
                     self.members.get(member).map_err(|_| Refusal::NotMember)?;
                 let target = carried.slot(slot).ok_or(Refusal::Nothing)?;
                 let merge =
@@ -88,12 +88,19 @@ impl InventoryOperations<'_, '_> {
                     {
                         return Err(Refusal::DoesNotFit);
                     }
-                    let (_, mut carried) = self.members.get_mut(member).unwrap();
+                    let (_, _, mut carried) = self.members.get_mut(member).unwrap();
                     self.party.merge_held(Some(&mut carried), destination, catalog);
                 } else {
-                    self.party.check_swap(character, carried, slot, catalog)?;
-                    let (character, mut carried) = self.members.get_mut(member).unwrap();
-                    self.party.swap_with_hand(character, &mut carried, member, slot, catalog)?;
+                    self.party.check_swap(character, vitals, carried, slot, catalog)?;
+                    let (character, vitals, mut carried) = self.members.get_mut(member).unwrap();
+                    self.party.swap_with_hand(
+                        character,
+                        vitals,
+                        &mut carried,
+                        member,
+                        slot,
+                        catalog,
+                    )?;
                 }
             }
         }

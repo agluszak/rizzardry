@@ -710,12 +710,10 @@ mod tests {
             .resource_mut::<Assets<ItemCatalog>>()
             .add(ItemCatalog(vec![definition]));
         app.insert_resource(GameData { items, loot: default(), species: default() });
+        let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
         let member = app
             .world_mut()
-            .spawn((
-                Character::new("A", Race::Human, Gender::Male, Profession::Fighter),
-                Carried::default(),
-            ))
+            .spawn((crate::game::characters::Vitals::new(&profile), profile, Carried::default()))
             .id();
         app.world_mut().resource_mut::<PartyRoster>().0.insert(member);
         app.world_mut().resource_mut::<PartyInventory>().held = Some(Held { item, origin: None });

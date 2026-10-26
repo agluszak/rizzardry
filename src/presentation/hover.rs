@@ -8,7 +8,7 @@ use bevy::time::Stopwatch;
 use crate::content::items::ItemCatalog;
 use crate::content::species::MonsterCatalog;
 use crate::content::ui::SpriteSheet;
-use crate::game::characters::Character;
+use crate::game::characters::{Character, Vitals};
 use crate::game::data::GameData;
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::identify::{GroupMember, MonsterGroup, health_known};
@@ -75,7 +75,7 @@ pub fn show_tooltip(
         Query<&MonsterGroup>,
         Query<&GroupMember>,
         Res<PartyRoster>,
-        Query<&Character>,
+        Query<(&Character, &Vitals)>,
     ),
     pointers: Query<(&PointerId, &PointerLocation)>,
     scale: Res<UiScale>,
@@ -122,7 +122,8 @@ pub fn show_tooltip(
             .ok()
             .and_then(|m| groups.get(m.0).ok())
             .is_some_and(|g| g.identified);
-        let party: Vec<&Character> = roster.0.iter().filter_map(|&m| members.get(m).ok()).collect();
+        let party: Vec<(&Character, &Vitals)> =
+            roster.0.iter().filter_map(|&m| members.get(m).ok()).collect();
         let health = health_known(&party, monster.hp, monster.max_hp, kind.display_level);
         format!("{} ({health})", kind.shown_name(identified, 1))
     } else {

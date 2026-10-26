@@ -11,7 +11,7 @@ use bevy::prelude::*;
 use enum_map::{Enum, EnumMap};
 use enumset::EnumSetType;
 
-use super::characters::Character;
+use super::characters::{Character, Vitals};
 use super::rng::GameRng;
 use crate::content::characters::Skill;
 use crate::content::items::{EquipClass, ItemCatalog, ItemDefinition, ItemId, QuantityKind};
@@ -580,7 +580,7 @@ impl PartyInventory {
     /// part taken is a new item unless the whole stack is.
     pub fn pick_up(
         &mut self,
-        member: Option<(&Character, &mut Carried)>,
+        member: Option<(&Vitals, &mut Carried)>,
         location: ItemLocation,
         amount: u8,
         ids: &mut ItemIds,
@@ -653,12 +653,13 @@ impl PartyInventory {
     pub fn swap_with_hand(
         &mut self,
         character: &Character,
+        vitals: &Vitals,
         carried: &mut Carried,
         member: Entity,
         slot: Slot,
         catalog: &ItemCatalog,
     ) -> Result<(), Refusal> {
-        self.check_swap(character, carried, slot, catalog)?;
+        self.check_swap(character, vitals, carried, slot, catalog)?;
         let current = carried.slot_mut(slot).unwrap().take();
         let location = ItemLocation::Member(member, slot);
         let put = self.held.take().map(|held| held.item.moved());
@@ -670,6 +671,7 @@ impl PartyInventory {
     fn check_swap(
         &self,
         character: &Character,
+        vitals: &Vitals,
         carried: &Carried,
         slot: Slot,
         catalog: &ItemCatalog,
@@ -681,7 +683,7 @@ impl PartyInventory {
         if let Slot::Equipment(equip) = slot {
             if let Some(item) = current
                 && let Some(definition) = catalog.get(item.item)
-                && !can_take_off(equip, item, definition, character.is_dead())
+                && !can_take_off(equip, item, definition, vitals.is_dead())
             {
                 return Err(Refusal::Cursed);
             }
@@ -984,38 +986,66 @@ mod tests {
     #[test]
     fn a_worn_curse_holds_until_released_and_moving_loses_the_release() {
         let (catalog, mut ids) = (catalog(), ItemIds::default());
-        let mut wearer = Character::new(
+        let wearer = Character::new(
             "Wearer",
             crate::game::characters::Race::Human,
             crate::game::characters::Gender::Male,
             crate::game::characters::Profession::Fighter,
         );
+        let mut vitals = Vitals::new(&wearer);
         let head = Slot::Equipment(EquipSlot::Head);
         let mut carried = Carried::default();
         let mut party = PartyInventory {
             held: Some(Held { item: item(&mut ids, 4, Quantity::One), origin: None }),
             ..default()
         };
-        party.swap_with_hand(&wearer, &mut carried, Entity::PLACEHOLDER, head, &catalog).unwrap();
+        party
+            .swap_with_hand(&wearer, &vitals, &mut carried, Entity::PLACEHOLDER, head, &catalog)
+            .unwrap();
         assert!(party.held.is_none());
         assert_eq!(
-            party.swap_with_hand(&wearer, &mut carried, Entity::PLACEHOLDER, head, &catalog),
+            party.swap_with_hand(
+                &wearer,
+                &vitals,
+                &mut carried,
+                Entity::PLACEHOLDER,
+                head,
+                &catalog
+            ),
             Err(Refusal::Cursed)
         );
         carried.equipment[EquipSlot::Head].as_mut().unwrap().curse_released = true;
-        party.swap_with_hand(&wearer, &mut carried, Entity::PLACEHOLDER, head, &catalog).unwrap();
+        party
+            .swap_with_hand(&wearer, &vitals, &mut carried, Entity::PLACEHOLDER, head, &catalog)
+            .unwrap();
         assert!(!party.held.as_ref().unwrap().item.curse_released, "moving loses the release");
         // Something that does not belong there is refused.
         let feet = Slot::Equipment(EquipSlot::Feet);
         assert_eq!(
-            party.swap_with_hand(&wearer, &mut carried, Entity::PLACEHOLDER, feet, &catalog),
+            party.swap_with_hand(
+                &wearer,
+                &vitals,
+                &mut carried,
+                Entity::PLACEHOLDER,
+                feet,
+                &catalog
+            ),
             Err(Refusal::DoesNotFit)
         );
         // Put it back on: the curse holds again, but not on the dead.
-        party.swap_with_hand(&wearer, &mut carried, Entity::PLACEHOLDER, head, &catalog).unwrap();
-        wearer.hp = 0;
+        party
+            .swap_with_hand(&wearer, &vitals, &mut carried, Entity::PLACEHOLDER, head, &catalog)
+            .unwrap();
+        vitals.hp = 0;
         assert_eq!(
-            party.swap_with_hand(&wearer, &mut carried, Entity::PLACEHOLDER, head, &catalog),
+            party.swap_with_hand(
+                &wearer,
+                &vitals,
+                &mut carried,
+                Entity::PLACEHOLDER,
+                head,
+                &catalog
+            ),
             Ok(())
         );
     }
@@ -1081,12 +1111,8 @@ mod tests {
         let mut carried = Carried::default();
         carried.backpack[0] = Some(source);
         carried.backpack[1] = Some(item(&mut ids, 0, Quantity::Stack(18)));
-        let actor = world
-            .spawn((
-                Character::new("Archer", Race::Human, Gender::Male, Profession::Ranger),
-                carried,
-            ))
-            .id();
+        let profile = Character::new("Archer", Race::Human, Gender::Male, Profession::Ranger);
+        let actor = world.spawn((Vitals::new(&profile), profile, carried)).id();
         world.resource_mut::<PartyRoster>().0.insert(actor);
         let activate = |world: &mut World, at| {
             world.run_system_once(move |mut op: InventoryOperations| op.activate(at)).unwrap()

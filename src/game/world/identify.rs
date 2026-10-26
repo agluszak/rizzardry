@@ -9,7 +9,7 @@ use bevy::prelude::*;
 use super::population::Monster;
 use crate::content::characters::{Attribute, Skill};
 use crate::content::species::MonsterCatalog;
-use crate::game::characters::{Character, Condition, MonsterKnowledge};
+use crate::game::characters::{Character, Condition, MonsterKnowledge, Vitals};
 use crate::game::combat::Battle;
 use crate::game::data::GameData;
 use crate::game::party::body::PartyBody;
@@ -58,7 +58,7 @@ const HALF_VIEW: f32 = 85.0 / 2.0;
 
 /// Whether a member can look (retail: alive, not insane or worse, not
 /// blind).
-fn can_look(member: &Character) -> bool {
+fn can_look(member: &Vitals) -> bool {
     !member.is_dead()
         && member.worst_condition().is_none_or(|c| c < Condition::Insane)
         && !member.has(Condition::Blind)
@@ -83,14 +83,20 @@ pub fn recognition(
 /// `FormatMonsterHealth`): its best Mythology, less three for each level the
 /// monster shows above the party's average, tells the current health from
 /// 10 and the most from 5; otherwise "?" ("12/20", "?/20", "?/?").
-pub fn health_known(party: &[&Character], hp: u32, max_hp: u32, display_level: u8) -> String {
+pub fn health_known(
+    party: &[(&Character, &Vitals)],
+    hp: u32,
+    max_hp: u32,
+    display_level: u8,
+) -> String {
     let mythology = party
         .iter()
-        .filter(|m| crate::game::camp::can_act(m))
-        .map(|m| m.skill(Skill::Mythology))
+        .filter(|(_, v)| crate::game::camp::can_act(v))
+        .map(|(m, _)| m.skill(Skill::Mythology))
         .max()
         .unwrap_or(0);
-    let average = party.iter().map(|m| f32::from(m.level)).sum::<f32>() / party.len().max(1) as f32;
+    let average =
+        party.iter().map(|(m, _)| f32::from(m.level)).sum::<f32>() / party.len().max(1) as f32;
     let level = i32::from(display_level);
     let knowledge = if (average as i32) < level {
         (mythology as f32 - (level as f32 - average) * 3.0 + 0.5).max(0.0) as u32
@@ -110,7 +116,7 @@ pub fn detect_monster_groups(
     level: PlayedLevel,
     battle: Option<Res<Battle>>,
     roster: Res<PartyRoster>,
-    mut members: Query<(&Character, &mut MonsterKnowledge)>,
+    mut members: Query<(&Character, &Vitals, &mut MonsterKnowledge)>,
     (data, catalogs, mut rng): (
         Option<Res<GameData>>,
         Res<Assets<MonsterCatalog>>,
@@ -155,8 +161,8 @@ pub fn detect_monster_groups(
         if !known {
             let mut best: Option<(String, i32)> = None;
             for &member in &roster.0 {
-                let Ok((profile, knowledge)) = members.get(member) else { continue };
-                if !can_look(profile) {
+                let Ok((profile, vitals, knowledge)) = members.get(member) else { continue };
+                if !can_look(vitals) {
                     continue;
                 }
                 let score = recognition(profile, knowledge, species_id, species.level);
@@ -178,11 +184,11 @@ pub fn detect_monster_groups(
         if !counted {
             groups.get_mut(entity).unwrap().1.counted = true;
             for &member in &roster.0 {
-                let Ok((profile, _)) = members.get(member) else { continue };
-                if !can_look(profile) {
+                let Ok((_, vitals, _)) = members.get(member) else { continue };
+                if !can_look(vitals) {
                     continue;
                 }
-                let (_, mut knowledge) = members.get_mut(member).unwrap();
+                let (_, _, mut knowledge) = members.get_mut(member).unwrap();
                 let seen = knowledge.seen.entry(species_id).or_default();
                 *seen = seen.saturating_add(count.min(255) as u8);
             }
@@ -198,14 +204,15 @@ mod tests {
     #[test]
     fn mythology_tells_a_monsters_health() {
         let mut sage = Character::new("Sage", Race::Human, Gender::Male, Profession::Bishop);
+        let vitals = Vitals::new(&sage);
         sage.skill_points[Skill::Mythology] = 0;
-        assert_eq!(health_known(&[&sage], 7, 20, 1), "?/?");
+        assert_eq!(health_known(&[(&sage, &vitals)], 7, 20, 1), "?/?");
         sage.skill_points[Skill::Mythology] = 6;
         let known = sage.skill(Skill::Mythology);
         assert!(known > 4 && known < 10, "{known}");
-        assert_eq!(health_known(&[&sage], 7, 20, 1), "?/20");
+        assert_eq!(health_known(&[(&sage, &vitals)], 7, 20, 1), "?/20");
         sage.skill_points[Skill::Mythology] = 12;
-        assert_eq!(health_known(&[&sage], 7, 20, 1), "7/20");
+        assert_eq!(health_known(&[(&sage, &vitals)], 7, 20, 1), "7/20");
         // Three levels above the party's average cost nine points.
         let left = sage.skill(Skill::Mythology) - 9;
         let expected = if left >= 10 {
@@ -215,7 +222,7 @@ mod tests {
         } else {
             "?/?"
         };
-        assert_eq!(health_known(&[&sage], 7, 20, 4), expected);
+        assert_eq!(health_known(&[(&sage, &vitals)], 7, 20, 4), expected);
     }
 
     #[test]
@@ -292,8 +299,8 @@ mod tests {
         app.world_mut().spawn((PartyBody::default(), Position::default()));
         let mut sage = Character::new("Sage", Race::Human, Gender::Male, Profession::Bishop);
         sage.skill_points[Skill::Mythology] = 125;
-        let member = app.world_mut().spawn(sage.clone()).id();
-        let outsider = app.world_mut().spawn(sage).id();
+        let member = app.world_mut().spawn((Vitals::new(&sage), sage.clone())).id();
+        let outsider = app.world_mut().spawn((Vitals::new(&sage), sage)).id();
         app.world_mut().resource_mut::<PartyRoster>().0.insert(member);
         let camera = app
             .world_mut()

@@ -10,7 +10,7 @@ use enumset::EnumSet;
 use crate::content::characters::{Attribute, BodyPart, Skill};
 use crate::content::items::{AttackMode, Dice, EquipClass, ItemCatalog, ItemDefinition};
 use crate::content::species::{MonsterAttack, Reach, Species};
-use crate::game::characters::{Character, Load, Race};
+use crate::game::characters::{Character, Load, Race, Vitals};
 use crate::game::inventory::{Carried, EquipSlot};
 use crate::game::rng::GameRng;
 
@@ -92,8 +92,8 @@ fn species_ssdi(s: &Species) -> i32 {
 }
 
 /// To-hit penalty by the share of stamina spent.
-fn fatigue_penalty(c: &Character) -> i32 {
-    match c.stamina_spent() {
+fn fatigue_penalty(c: &Character, vitals: &Vitals) -> i32 {
+    match vitals.stamina_spent(c.max_stamina()) {
         0..50 => 0,
         50..70 => 5,
         70..85 => 10,
@@ -262,12 +262,14 @@ fn resolve(roll: u32, to_hit: i32, penetration: i32) -> Option<bool> {
 pub fn character_swing(
     rng: &mut GameRng,
     attacker: &Character,
+    vitals: &Vitals,
     hand: &Hand,
     mode: AttackMode,
     species: &Species,
 ) -> Swing {
     let attributes = (character_ssdi(attacker) - species_ssdi(species)) / 10;
-    let base = hand.attack_rating + 5 * hand.to_hit - fatigue_penalty(attacker) + attributes;
+    let base =
+        hand.attack_rating + 5 * hand.to_hit - fatigue_penalty(attacker, vitals) + attributes;
     let to_hit = base + mode_to_hit(mode) - 5 * (10 - i32::from(species.evasion));
     let roll = rng.below(100) + 1;
     let location = location(rng, species.hit_locations.into_iter().enumerate(), MONSTER_BODY);
@@ -398,7 +400,16 @@ mod retail_tests {
         };
         let ours = tally(
             (0..1000)
-                .map(|_| character_swing(&mut rng, &fighter, &hand, AttackMode::Swing, crab))
+                .map(|_| {
+                    character_swing(
+                        &mut rng,
+                        &fighter,
+                        &Vitals::new(&fighter),
+                        &hand,
+                        AttackMode::Swing,
+                        crab,
+                    )
+                })
                 .collect(),
         );
         let attack = &crab.attacks[0];

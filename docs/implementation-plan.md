@@ -434,7 +434,7 @@ versus physical state, and the retail-specific decoding and animation math.
 | Review item | Current state | Required outcome / remaining verification |
 | --- | --- | --- |
 | 1. Devices and scripts | Implemented in device PR | Live device entities, resolved relay/script/variable references, no reconstructed trigger world. |
-| 2. Change detection | Implemented in device PR; extended in actor work | Assessment uses reads; only affected components change; nonlethal damage leaves formation unchanged. |
+| 2. Change detection | Implemented across bounded devices, actor transitions and vitals | Assessment uses reads; only affected components change. Zero-tick/full recovery, zero damage and zero XP avoid unrelated writes; nonlethal damage leaves formation unchanged. |
 | 3. Typed actions | Present in baseline; retained | Import decodes payloads/defaults/units; unsupported actions stay explicit; live locks remain on devices. |
 | 4. Gameplay body authority | Implemented in body PR | Metadata loads without meshes/cycles; visual failures and attachment do not change physical state or persistence. |
 | 5. Gameplay perception | Baseline separation verified in group work | Headless recognition follows authored view distance even when camera pose/far plane disagree. |
@@ -451,7 +451,7 @@ versus physical state, and the retail-specific decoding and animation math.
 | 16. Asset integration | Body boundary implemented; navigation importer moved to retail in baseline | Evaluate remaining synthetic navmesh packaging with dependency hashing/rebake evidence; keep cache correctness. |
 | 17. Snapshot ownership | Implemented in body/device work | Move owned revisit population, devices and notes into ECS; capture physical state without visuals. |
 | 18. Composition and ordering | Open | Campaign initialization belongs in composition; feature registrations match ownership; identification/combat RNG ordering is explicit. |
-| Rust modeling | Attribute/skill domains typed in baseline; recognition history split into its own component; vitals/eligibility review open | Check invalid imported requirements; split profile/vitals/knowledge where queries justify it; retain distinct role and eligibility rules. |
+| Rust modeling | Typed domains retained and invalid imported constraints rejected; profile, vitals and recognition split | Health/fatigue/conditions and fractions live on Vitals; recovery assesses work before mutation and does not dirty full actors or profile data. Attribute/skill requirements reject invalid IDs except the documented absence sentinel. Camp, combat and recognition retain their distinct eligibility predicates; monster roles remain separate. |
 
 Validation status and PR descriptions record what was actually run. Retail and
 visual scenarios requiring an external installation remain explicit unverified

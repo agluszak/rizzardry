@@ -19,7 +19,7 @@ use crate::content::items::{Dice, ItemCatalog, LootTables};
 use crate::content::level::{
     Fountain, LevelGeometry, Restores, StateChange, TriggerAction, TriggerDefinition, TriggerUse,
 };
-use crate::game::characters::Character;
+use crate::game::characters::{Character, Vitals};
 use crate::game::data::GameData;
 use crate::game::inventory::{ItemIds, ItemInstance, PartyInventory, make_item};
 use crate::game::loot::roll_loot;
@@ -350,20 +350,25 @@ fn open_container(
 fn damage_party(
     In(dice): In<Dice>,
     roster: Res<PartyRoster>,
-    mut members: Query<&mut Character>,
+    mut members: Query<(&Character, &mut Vitals)>,
     mut rng: ResMut<GameRng>,
     mut formation: ResMut<crate::game::party::formation::Formation>,
     mut outcomes: MessageWriter<TriggerEffect>,
 ) {
     for entity in roster.0.iter() {
-        let Ok(member) = members.get(*entity) else { continue };
+        let Ok((_, member)) = members.get(*entity) else { continue };
         if member.is_dead() {
             continue;
         }
-        let mut member = members.get_mut(*entity).unwrap();
-        let amount =
-            crate::game::party::damage_member(*entity, &mut member, &mut formation, rng.roll(dice));
-        outcomes.write(TriggerEffect::Hurt { member: member.name.clone(), amount });
+        let rolled = rng.roll(dice);
+        let amount = if rolled > 0 {
+            let (_, mut member) = members.get_mut(*entity).unwrap();
+            crate::game::party::damage_member(*entity, &mut member, &mut formation, rolled)
+        } else {
+            0
+        };
+        let name = members.get(*entity).unwrap().0.name.clone();
+        outcomes.write(TriggerEffect::Hurt { member: name, amount });
     }
 }
 
@@ -372,7 +377,7 @@ fn drink_fountain(
     mut fountains: Query<&mut FountainState>,
     clock: Res<GameClock>,
     roster: Res<PartyRoster>,
-    mut members: Query<&mut Character>,
+    mut members: Query<(&Character, &mut Vitals)>,
     mut outcomes: MessageWriter<TriggerEffect>,
 ) -> bool {
     let mut state = fountains.get_mut(entity).unwrap();
@@ -395,13 +400,25 @@ fn drink_fountain(
         }
     }
     for entity in roster.0.iter() {
-        if !members.get(*entity).is_ok_and(|m| !m.is_dead()) {
+        let Ok((profile, member)) = members.get(*entity) else { continue };
+        if member.is_dead()
+            || match fountain.restores {
+                Restores::Health => member.hp >= profile.max_hp(),
+                Restores::Stamina => {
+                    member.stamina >= profile.max_stamina()
+                        && !member.conditions.contains(&(
+                            crate::game::characters::Condition::Unconscious,
+                            crate::game::characters::Lasting::Indefinite,
+                        ))
+                }
+            }
+        {
             continue;
         }
-        let mut member = members.get_mut(*entity).unwrap();
+        let (profile, mut member) = members.get_mut(*entity).unwrap();
         match fountain.restores {
-            Restores::Health => member.heal(fountain.amount),
-            Restores::Stamina => member.restore_stamina(fountain.amount),
+            Restores::Health => member.heal(fountain.amount, profile.max_hp()),
+            Restores::Stamina => member.restore_stamina(fountain.amount, profile.max_stamina()),
         }
     }
     outcomes.write(TriggerEffect::FountainUsed { at });
@@ -1018,10 +1035,8 @@ mod tests {
         }
 
         fn add_member(&mut self, name: &str) -> Entity {
-            let member = self
-                .world
-                .spawn(Character::new(name, Race::Human, Gender::Male, Profession::Fighter))
-                .id();
+            let profile = Character::new(name, Race::Human, Gender::Male, Profession::Fighter);
+            let member = self.world.spawn((Vitals::new(&profile), profile)).id();
             self.world.resource_mut::<PartyRoster>().0.insert(member);
             self.world.resource_mut::<crate::game::party::formation::Formation>().seat(member);
             self.members.push(member);
@@ -1346,7 +1361,7 @@ mod tests {
         zone.range = (0.0, 2.0);
         let mut level = Scenario::new(vec![trap, zone], &[], LevelScript::None);
         level.add_member("B");
-        let full = level.world.get::<Character>(level.members[0]).unwrap().hp;
+        let full = level.world.get::<Vitals>(level.members[0]).unwrap().hp;
         let tick = Duration::from_millis(100);
         let (committed, effects) = level.run("TRAP");
         assert!(committed);
@@ -1371,7 +1386,7 @@ mod tests {
         level.effects();
         level.walk(Vec3::new(5.0, 0.0, 0.0), Duration::from_secs(1));
         assert!(level.effects().is_empty());
-        assert!(level.members.iter().all(|&m| level.world.get::<Character>(m).unwrap().hp < full));
+        assert!(level.members.iter().all(|&m| level.world.get::<Vitals>(m).unwrap().hp < full));
     }
 
     #[test]
@@ -1387,8 +1402,8 @@ mod tests {
             &[],
             LevelScript::None,
         );
-        let full = level.world.get::<Character>(level.members[0]).unwrap().hp;
-        level.world.get_mut::<Character>(level.members[0]).unwrap().hp = 1;
+        let full = level.world.get::<Vitals>(level.members[0]).unwrap().hp;
+        level.world.get_mut::<Vitals>(level.members[0]).unwrap().hp = 1;
         assert!(level.run("WELL").0);
         assert!(!level.run("WELL").0, "dry after its one use");
         let memory = level.remember();
@@ -1396,7 +1411,7 @@ mod tests {
         assert!(!level.run("WELL").0, "still dry after returning");
         level.world.resource_mut::<GameClock>().ms = 2 * 720 * 1000;
         assert!(level.run("WELL").0);
-        assert_eq!(level.world.get::<Character>(level.members[0]).unwrap().hp, 11.min(full));
+        assert_eq!(level.world.get::<Vitals>(level.members[0]).unwrap().hp, 11.min(full));
     }
 
     #[test]
@@ -1425,7 +1440,7 @@ mod tests {
             0
         );
         assert_eq!(
-            level.world.query_filtered::<Entity, Changed<Character>>().iter(&level.world).count(),
+            level.world.query_filtered::<Entity, Changed<Vitals>>().iter(&level.world).count(),
             0
         );
         assert!(activate(&mut level.world, door, Some(1.0)));
@@ -1437,7 +1452,7 @@ mod tests {
         assert_eq!(changed, [door]);
         assert!(!changed.contains(&other));
         assert_eq!(
-            level.world.query_filtered::<Entity, Changed<Character>>().iter(&level.world).count(),
+            level.world.query_filtered::<Entity, Changed<Vitals>>().iter(&level.world).count(),
             0
         );
         assert_eq!(
@@ -1493,11 +1508,9 @@ mod tests {
             &[],
             LevelScript::None,
         );
-        let outsider = level
-            .world
-            .spawn(Character::new("NPC", Race::Human, Gender::Male, Profession::Fighter))
-            .id();
-        let outsider_hp = level.world.get::<Character>(outsider).unwrap().hp;
+        let profile = Character::new("NPC", Race::Human, Gender::Male, Profession::Fighter);
+        let outsider = level.world.spawn((Vitals::new(&profile), profile)).id();
+        let outsider_hp = level.world.get::<Vitals>(outsider).unwrap().hp;
         let second = level.add_member("B");
         let first = level.members[0];
         level.world.resource_mut::<PartyRoster>().0 = [second, first].into_iter().collect();
@@ -1511,9 +1524,9 @@ mod tests {
                 TriggerEffect::Hurt { member: "A".into(), amount: amounts[1] },
             ]
         );
-        assert_eq!(level.world.get::<Character>(outsider).unwrap().hp, outsider_hp);
+        assert_eq!(level.world.get::<Vitals>(outsider).unwrap().hp, outsider_hp);
         let changed: Vec<_> =
-            level.world.query_filtered::<Entity, Changed<Character>>().iter(&level.world).collect();
+            level.world.query_filtered::<Entity, Changed<Vitals>>().iter(&level.world).collect();
         assert!(!changed.contains(&outsider));
     }
 
@@ -1656,7 +1669,7 @@ mod tests {
         let member = level.members[0];
         assert!(level.world.resource::<Formation>().row_of(member).is_some());
         assert!(level.run("TRAP").0);
-        assert!(level.world.get::<Character>(member).unwrap().is_dead());
+        assert!(level.world.get::<Vitals>(member).unwrap().is_dead());
         assert!(level.world.resource::<Formation>().row_of(member).is_none());
     }
     #[test]
