@@ -8,7 +8,7 @@
 //! tool, typed in the retail text font, and erased with Erase note.
 
 mod note_input;
-pub use note_input::{draw_note_input, submit_note, sync_note_input};
+pub(crate) use note_input::{draw_note_input, submit_note, sync_note_input};
 
 #[cfg(test)]
 use bevy::input::ButtonState;

@@ -10,19 +10,19 @@ use bevy::text::{
 use bevy::ui_widgets::TextInput;
 
 #[derive(Component)]
-pub(super) struct NoteInput;
+pub(crate) struct NoteInput;
 #[derive(Component)]
-struct HitBox;
+pub(crate) struct HitBox;
 #[derive(Component)]
-struct Selection;
+pub(crate) struct Selection;
 #[derive(Component)]
-struct Caret;
+pub(crate) struct Caret;
 #[derive(Component)]
-struct InputLabel;
+pub(crate) struct InputLabel;
 #[derive(Component)]
-struct SubmitNote;
+pub(crate) struct SubmitNote;
 
-pub fn sync_note_input(
+pub(crate) fn sync_note_input(
     mut commands: Commands,
     map: Option<Single<&Automap>>,
     viewport: Query<Entity, With<MapViewport>>,
@@ -154,7 +154,7 @@ fn finish(
 
 /// Native edits (including same-frame text/IME and asynchronous paste) settle
 /// before Enter commits. A cancelled or replaced editor cannot commit later.
-pub fn submit_note(
+pub(crate) fn submit_note(
     inputs: Query<(Entity, &EditableText), With<SubmitNote>>,
     map: Option<Single<&mut Automap>>,
     mut commands: Commands,
@@ -268,7 +268,7 @@ fn drag(
     input.editor.driver(&mut fonts, &mut layouts.0).extend_selection_to_byte(index);
 }
 
-pub fn draw_note_input(
+pub(crate) fn draw_note_input(
     map: Option<Single<&Automap>>,
     art: Res<AutomapArt>,
     sheets: Res<Assets<SpriteSheet>>,
