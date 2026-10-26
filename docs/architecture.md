@@ -324,8 +324,12 @@ and its notification path.
 A gameplay question owns its dialog through a native linked relationship. This
 preserves a UI root without parenting it under the non-UI level. Replacing or
 ending the question removes the view without a per-frame reconciliation system.
-Likewise, an ambient emitter's sound child represents pending or active playback;
-the presence of an `AudioSink` only indicates that playback is ready.
+Ambient emitters carry their own `AudioPlayer`: its presence represents pending
+or active playback, while `AudioSink` indicates that playback is ready. One-shot
+completion uses `PlaybackSettings::REMOVE`, retaining the emitter and its timer.
+Each emitter resolves sound definitions through its owning level's `ChildOf`.
+Party avoidance proxies likewise use Landmass's `ArchipelagoRef3d` as their only
+archipelago reference; registering missing proxies retains those already present.
 
 Bevy's [observer documentation](https://docs.rs/bevy/0.20.0/bevy/ecs/observer/struct.Observer.html)
 does not promise a convenient gameplay order between independent observers of
