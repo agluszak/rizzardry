@@ -15,6 +15,19 @@ use crate::game::party::roster::PartyRoster;
 use crate::game::time::{CAMPING_RATE, EXPLORATION_RATE, GameClock, Ticks};
 use crate::game::world::identify::DetectGroups;
 
+/// Apply the Fighter's combat-rest trait to an already rolled recovery amount.
+/// It follows the current profession's level, capped at twenty, and truncates
+/// only after scaling the roll (retail ScaleValueByProfessionLevel).
+pub fn combat_rest_amount(profile: &Character, rolled: u32) -> u32 {
+    use crate::game::characters::Profession;
+    if profile.profession != Profession::Fighter {
+        return rolled;
+    }
+    let level = profile.profession_levels[profile.profession];
+    let factor = if level > 20 { 3.3 } else { (f32::from(level) * 2.0 + 60.0) * 3.3 * 0.01 };
+    (factor * rolled as f32) as u32
+}
+
 /// Slower than this, in metres a second, the party is resting.
 const RESTING_BELOW: f32 = 0.05;
 /// Faster than walking: running.
@@ -126,6 +139,27 @@ pub fn pass_time(
 mod tests {
     use super::*;
     use crate::game::characters::{Condition, Gender, Lasting, Profession, Race};
+
+    #[test]
+    fn fighter_rest_uses_current_profession_level_and_stops_scaling_at_twenty() {
+        let mut profile = Character::new("Fighter", Race::Human, Gender::Male, Profession::Fighter);
+        profile.level = 40;
+        assert_eq!(
+            combat_rest_amount(&profile, 10),
+            20,
+            "total level does not grant the trait's full strength"
+        );
+        profile.profession_levels[Profession::Fighter] = 20;
+        assert_eq!(combat_rest_amount(&profile, 10), 33);
+        profile.profession_levels[Profession::Fighter] = 40;
+        assert_eq!(combat_rest_amount(&profile, 10), 33);
+        profile.profession = Profession::Lord;
+        assert_eq!(
+            combat_rest_amount(&profile, 10),
+            10,
+            "past Fighter levels do not retain its current-class trait"
+        );
+    }
 
     #[test]
     fn a_combat_round_ages_conditions_but_recovers_nothing() {

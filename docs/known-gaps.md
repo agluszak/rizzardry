@@ -69,7 +69,9 @@ next to its feature when that feature changes.
   round waits for Enter or the round button; backslash switches to
   continuous. Actor-owned orders and weapon choices are accepted at round
   start; edits affect the next round. Defending gives +2 armour and stamina
-  back at the round's end, in accepted actor order. Not yet: party movement,
+  back at the round's end, in accepted actor order. Sleeping and unconscious
+  members also recover; Fighters receive their current-profession-level-scaled
+  regeneration bonus. Not yet: party movement,
   additional orders, spells, fumbles, criticals, effects, the off hand, monster
   movement and fleeing, factions, levelling. A slain monster leaves its
   treasure (retail `DropMonsterLoot`: each slot's chance and count, table
@@ -177,3 +179,28 @@ Both sources agree: `wizardry-8-decomp` at
 `src/wiz8/combat/attack.cpp` around line 3835. Both charge before decrementing
 remaining swings and stop when the attacker is incapacitated. Tests exercise
 cost ranges/disease and the actual round's stamina and exhaustion outcomes.
+
+## Combat rest follow-up
+
+Round completion ages conditions first, then restores stamina to accepted
+participants who defended or whose worst remaining condition is sleep or
+unconsciousness. Paralysis alone does not qualify. Death and departure from the
+roster prevent recovery. Eligibility is assessed read-only; only actual vitals
+changes borrow mutably. Accepted actor order still determines RNG consumption.
+
+The Fighter bonus scales the rolled recovery by 3.3 times (60 + twice current
+profession level) percent through level twenty, then stays at 3.3. Conversion to
+an integer truncates after multiplication. Total character level and former
+Fighter levels do not activate or strengthen another current profession's trait.
+The existing Vitals operation caps stamina and wakes exhaustion above nine;
+sleep itself is not cured by receiving stamina.
+
+Evidence at the source revisions recorded above: decomp `local_code/Combat.cpp`
+lines 1890–1910 and `character_skills.cpp::ScaleValueByProfessionLevel`;
+Whizzardry `combat/fight.cpp` lines 1283–1304 and
+`rules/character_derivation.cpp::ScaleValueByProfessionLevel`. Both agree.
+This stays within the existing synchronous round operation and profile/vitals
+ownership; no recovery queue or additional lifecycle state is needed.
+
+Monster fatigue remains deferred until its recovery lifecycle is implemented:
+merely charging attacks could strand an exhausted monster after a fight ends.
