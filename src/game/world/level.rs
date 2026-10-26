@@ -73,6 +73,7 @@ impl Level {
 /// The party is being asked whether to leave for another level's entrance;
 /// it waits until the player answers (retail `RequestLevelTransition`).
 #[derive(Component, Debug, Clone)]
+#[component(immutable)]
 pub struct TravelQuestion {
     pub entrance: String,
 }
@@ -80,9 +81,7 @@ pub struct TravelQuestion {
 /// Replace the one pending question. The new identity rejects answers from
 /// the dismissed dialog, including two asks before presentation has run.
 pub fn ask_travel(world: &mut World, level: Entity, entrance: String) -> Option<Entity> {
-    if world.get::<Level>(level).is_none() {
-        return None;
-    }
+    world.get::<Level>(level)?;
     let pending: Vec<_> =
         world.query_filtered::<Entity, With<TravelQuestion>>().iter(world).collect();
     for question in pending {

@@ -34,15 +34,12 @@ pub fn load_dialog_art(mut commands: Commands, assets: Res<AssetServer>) {
 /// The travel question on screen, with its keys: Enter accepts and Escape
 /// declines, like its buttons. They come before every other screen's keys,
 /// which do not see them while it is up.
-#[derive(Component, Clone, Default)]
-pub struct QuestionDialog;
-
-#[derive(Component, Clone, FromTemplate)]
+#[derive(Component, Clone)]
 #[relationship(relationship_target = QuestionView)]
-pub struct QuestionSession(pub Entity);
+pub struct QuestionDialog(pub Entity);
 
 #[derive(Component)]
-#[relationship_target(relationship = QuestionSession, linked_spawn)]
+#[relationship_target(relationship = QuestionDialog, linked_spawn)]
 pub struct QuestionView(Entity);
 
 #[derive(InputAction)]
@@ -94,10 +91,10 @@ pub fn show_travel_question(
             })
         })
         .collect();
+    let dialog = QuestionDialog(question_id);
     commands.spawn_scene(bsn! {
         @centred()
-        QuestionDialog
-        QuestionSession({question_id})
+        dialog
         ContextPriority::<QuestionDialog>::new(1)
         Actions<QuestionDialog> [
             Action::<Accept>::new()
@@ -147,7 +144,7 @@ mod tests {
         let level = world.spawn_empty().id();
         let question =
             world.spawn((TravelQuestion { entrance: "MO204".into() }, ChildOf(level))).id();
-        let dialog = world.spawn((QuestionDialog, QuestionSession(question))).id();
+        let dialog = world.spawn(QuestionDialog(question)).id();
         let button = world.spawn(ChildOf(dialog)).id();
         assert_eq!(world.get::<QuestionView>(question).unwrap().0, dialog);
         world.despawn(level);
@@ -160,12 +157,12 @@ mod tests {
     fn rebuilding_a_dialog_keeps_the_question_and_allows_a_new_view() {
         let mut world = World::new();
         let question = world.spawn(TravelQuestion { entrance: "MO204".into() }).id();
-        let dialog = world.spawn((QuestionDialog, QuestionSession(question))).id();
+        let dialog = world.spawn(QuestionDialog(question)).id();
         world.despawn(dialog);
         world.flush();
         assert!(world.get::<TravelQuestion>(question).is_some());
         assert!(world.get::<QuestionView>(question).is_none());
-        let replacement = world.spawn((QuestionDialog, QuestionSession(question))).id();
+        let replacement = world.spawn(QuestionDialog(question)).id();
         assert_eq!(world.get::<QuestionView>(question).unwrap().0, replacement);
     }
 }

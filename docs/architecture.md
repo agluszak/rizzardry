@@ -278,6 +278,10 @@ This is one ordinary transition, not a new generic lifecycle framework or
 a second simultaneously mutable world. Its detailed failure and revisit
 semantics are in [persistence and travel](systems/persistence-and-travel.md).
 
+The current implementation treats failed navmesh loading as settled and can
+activate without navigation. Navigation failure policy remains unresolved;
+readiness tests do not establish mandatory navigation availability.
+
 ## Operations, systems and observation
 
 An operation restores its own invariants before returning. Examples are
@@ -311,6 +315,18 @@ Only order systems whose dependencies require it. Mandatory consequences within
 an operation are direct calls: lethal damage performs death bookkeeping before
 another action can use the actor. UI repaint and sound are observations after
 that mutation.
+
+`DamageApplied` reports the actor, actual HP loss and death result from the party
+damage operation. Retained portrait splats consume that fact directly; recording
+and playback are ordered so a new hit refreshes its animation before expiry.
+Chest and bag transfers report through `ItemNews`, sharing the inventory rule
+and its notification path.
+
+A gameplay question owns its dialog through a native linked relationship. This
+preserves a UI root without parenting it under the non-UI level. Replacing or
+ending the question removes the view without a per-frame reconciliation system.
+Likewise, an ambient emitter's sound child represents pending or active playback;
+the presence of an `AudioSink` only indicates that playback is ready.
 
 Bevy's [observer documentation](https://docs.rs/bevy/0.20.0/bevy/ecs/observer/struct.Observer.html)
 does not promise a convenient gameplay order between independent observers of

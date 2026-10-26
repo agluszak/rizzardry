@@ -274,15 +274,13 @@ pub fn queue_notices(
             TriggerEffect::NothingHappened => Some(string(NOTHING_HAPPENS)),
             // Whizzardry's notice for a locked door without its key.
             TriggerEffect::Locked => Some("Your party doesn't have required key.".to_owned()),
-            TriggerEffect::PartyTakes(item) => Some(string(PARTY_TAKES).replace("%s", item)),
             TriggerEffect::Gold(gold) => {
                 Some(format!("{} {gold} {}.", string(GOLD_BEFORE), string(GOLD_AFTER)))
             }
             TriggerEffect::Sound { .. }
             | TriggerEffect::FountainUsed { .. }
             | TriggerEffect::BellRang(_)
-            | TriggerEffect::Shake { .. }
-            | TriggerEffect::Hurt { .. } => None,
+            | TriggerEffect::Shake { .. } => None,
         };
         if let Some(text) = text.filter(|t| !t.trim().is_empty()) {
             log.push(channel, text.trim(), font);
