@@ -14,9 +14,41 @@ pub struct InventoryOperations<'w, 's> {
     members: Query<'w, 's, (&'static Character, &'static Vitals, &'static mut Carried)>,
     data: Option<Res<'w, GameData>>,
     catalogs: Res<'w, Assets<ItemCatalog>>,
+    battle: Option<Res<'w, crate::game::combat::Battle>>,
 }
 
 impl InventoryOperations<'_, '_> {
+    /// Give the held item to an identified actor. Eligibility and battle pool
+    /// precedence are rules here; the clicked portrait only supplies its target.
+    pub fn give_to(&mut self, member: Entity) -> Result<Option<ItemNews>, Refusal> {
+        let Some(held) = self.party.held.as_ref() else { return Ok(None) };
+        if !self.roster.0.contains(&member) {
+            return Err(Refusal::NotMember);
+        }
+        let catalog = self
+            .data
+            .as_ref()
+            .and_then(|d| self.catalogs.get(&d.items))
+            .ok_or(Refusal::MissingContent)?;
+        let (profile, vitals, _) = self.members.get(member).map_err(|_| Refusal::NotMember)?;
+        let definition = catalog.get(held.item.item).ok_or(Refusal::MissingContent)?;
+        let item = held.item.display_name(definition, false);
+        let name = profile.name.clone();
+        let eligible = crate::game::camp::can_act(vitals);
+        let pool_first = !eligible || self.battle.is_some();
+        // Try the pool before borrowing carried items when that is the rule.
+        let mut result = if pool_first { self.party.give_held(None, true, catalog) } else { None };
+        if eligible && (result.is_none() || result == Some(Given::NoRoom)) {
+            let (_, _, mut carried) = self.members.get_mut(member).unwrap();
+            result = self.party.give_held(Some(&mut carried), false, catalog);
+        }
+        Ok(result.map(|given| match given {
+            Given::Member => ItemNews::Takes { member: Some(name), item },
+            Given::Pool => ItemNews::Takes { member: None, item },
+            Given::NoRoom => ItemNews::NoRoom,
+        }))
+    }
+
     /// Return the hand to the reviewed member, falling back to the pool. A
     /// departed member cannot receive it; overflow remains owned by the hand.
     pub fn put_away(&mut self, member: Entity) -> Result<(), Refusal> {

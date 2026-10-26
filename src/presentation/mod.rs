@@ -80,6 +80,12 @@ impl Plugin for PresentationPlugin {
             .add_input_context::<dialog::QuestionDialog>()
             .add_input_context::<camp::CampScreen>()
             .add_systems(
+                PostUpdate,
+                (screen_art::render_pictures, screen_art::render_text)
+                    .chain()
+                    .before(bevy::ui::UiSystems::Content),
+            )
+            .add_systems(
                 Startup,
                 (
                     automap::spawn_map_key,

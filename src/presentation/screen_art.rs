@@ -95,3 +95,138 @@ pub fn paint_hover_art(
         image.image = if hovered.get() { art.hovered.clone() } else { art.normal.clone() };
     }
 }
+
+/// The source frame of a retained retail picture. The ImageNode owns the
+/// displayed image; this keeps its source sheet alive while it loads/changes.
+#[derive(Component, Clone, Default, PartialEq)]
+#[require(ImageNode)]
+pub struct Picture {
+    pub sheet: Handle<SpriteSheet>,
+    pub frame: usize,
+    /// Hover frames keep the button's resting hit rectangle.
+    pub bounds: Option<usize>,
+    pub at: Vec2,
+}
+
+/// A retained bitmap-font label. Only its rasterized image is cached.
+#[derive(Component, Clone, Default, PartialEq)]
+#[require(ImageNode)]
+pub struct BitmapText {
+    pub font: Handle<SpriteSheet>,
+    pub value: String,
+    pub at: Vec2,
+    pub width: f32,
+    pub justify: bevy::text::Justify,
+}
+
+pub fn picture(sheet: Handle<SpriteSheet>, frame: usize, at: Vec2) -> impl Scene {
+    bsn! {
+        template(move |_| Ok(Picture { sheet: sheet.clone(), frame, at, bounds: None }))
+        Node { position_type: PositionType::Absolute }
+        Pickable::IGNORE
+    }
+}
+
+pub fn label(font: Handle<SpriteSheet>, at: Vec2, width: f32) -> impl Scene {
+    bsn! {
+        template(move |_| Ok(BitmapText { font: font.clone(), value: String::new(), at, width, justify: bevy::text::Justify::Center }))
+        Node { position_type: PositionType::Absolute }
+        Pickable::IGNORE
+    }
+}
+
+pub fn render_pictures(
+    sheets: Res<Assets<SpriteSheet>>,
+    mut events: MessageReader<AssetEvent<SpriteSheet>>,
+    mut pictures: Query<(Ref<Picture>, &mut ImageNode, &mut Node)>,
+) {
+    let changed: std::collections::HashSet<_> = events
+        .read()
+        .filter_map(|event| match event {
+            AssetEvent::Added { id }
+            | AssetEvent::Modified { id }
+            | AssetEvent::Removed { id }
+            | AssetEvent::LoadedWithDependencies { id } => Some(*id),
+            AssetEvent::Unused { .. } => None,
+        })
+        .collect();
+    for (source, mut image, mut node) in &mut pictures {
+        if !source.is_changed() && !changed.contains(&source.sheet.id()) {
+            continue;
+        }
+        let frame = sheets.get(&source.sheet).and_then(|sheet| {
+            Some((
+                sheet.images.get(source.frame)?,
+                sheet.frames.get(source.bounds.unwrap_or(source.frame))?,
+            ))
+        });
+        let Some((handle, frame)) = frame else {
+            image.color.set_alpha(0.0);
+            continue;
+        };
+        if image.image != *handle {
+            image.image = handle.clone();
+        }
+        image.color.set_alpha(1.0);
+        let desired = (
+            px(source.at.x + f32::from(frame.offset[0])),
+            px(source.at.y + f32::from(frame.offset[1])),
+            px(frame.width),
+            px(frame.height),
+        );
+        if node.left != desired.0 {
+            node.left = desired.0;
+        }
+        if node.top != desired.1 {
+            node.top = desired.1;
+        }
+        if node.width != desired.2 {
+            node.width = desired.2;
+        }
+        if node.height != desired.3 {
+            node.height = desired.3;
+        }
+    }
+}
+
+pub fn render_text(
+    sheets: Res<Assets<SpriteSheet>>,
+    mut events: MessageReader<AssetEvent<SpriteSheet>>,
+    mut images: ResMut<Assets<Image>>,
+    mut labels: Query<(Ref<BitmapText>, &mut ImageNode, &mut Node), Without<Picture>>,
+) {
+    let changed: std::collections::HashSet<_> = events
+        .read()
+        .filter_map(|event| match event {
+            AssetEvent::Added { id }
+            | AssetEvent::Modified { id }
+            | AssetEvent::Removed { id }
+            | AssetEvent::LoadedWithDependencies { id } => Some(*id),
+            AssetEvent::Unused { .. } => None,
+        })
+        .collect();
+    for (text, mut image, mut node) in &mut labels {
+        if !text.is_changed() && !changed.contains(&text.font.id()) {
+            continue;
+        }
+        let Some(font) = sheets.get(&text.font) else {
+            image.color.set_alpha(0.0);
+            continue;
+        };
+        let raster = font.text_image(&text.value);
+        let size = raster.size_f32();
+        image.image = images.add(raster);
+        image.color.set_alpha(1.0);
+        let x = match text.justify {
+            bevy::text::Justify::Right if text.width > 0.0 => text.at.x + text.width - size.x,
+            bevy::text::Justify::Center if text.width > 0.0 => {
+                text.at.x + ((text.width - size.x) / 2.0).floor()
+            }
+            _ => text.at.x,
+        };
+        node.left = px(x);
+        node.top = px(text.at.y);
+        node.width = px(size.x);
+        node.height = px(size.y);
+    }
+}

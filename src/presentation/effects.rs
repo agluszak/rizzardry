@@ -25,6 +25,7 @@ pub fn play_trigger_effects(
     assets: Res<AssetServer>,
     mut effects: MessageReader<TriggerEffect>,
     mut shake: ResMut<CameraShake>,
+    members: Query<&crate::game::characters::Character>,
 ) {
     for effect in effects.read() {
         let sound = match effect {
@@ -54,7 +55,8 @@ pub fn play_trigger_effects(
             }
             // Shown as notices.
             TriggerEffect::Hurt { member, amount } => {
-                info!("{member} takes {amount} damage");
+                let name = members.get(*member).map_or("Adventurer", |c| c.name.as_str());
+                info!("{name} takes {amount} damage");
                 None
             }
             TriggerEffect::Message { .. }

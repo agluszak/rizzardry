@@ -46,7 +46,9 @@ impl Plugin for MainScreenPlugin {
                     layout::fit_viewport,
                     build_frame,
                     (
+                        party::build_party_parts,
                         party::draw_party,
+                        party::record_splats,
                         party::play_splats,
                         text_box::draw_text_box,
                         radar::update_radar,

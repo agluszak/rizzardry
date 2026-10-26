@@ -350,25 +350,24 @@ fn open_container(
 fn damage_party(
     In(dice): In<Dice>,
     roster: Res<PartyRoster>,
-    mut members: Query<(&Character, &mut Vitals)>,
+    mut members: Query<&mut Vitals>,
     mut rng: ResMut<GameRng>,
     mut formation: ResMut<crate::game::party::formation::Formation>,
     mut outcomes: MessageWriter<TriggerEffect>,
 ) {
     for entity in roster.0.iter() {
-        let Ok((_, member)) = members.get(*entity) else { continue };
+        let Ok(member) = members.get(*entity) else { continue };
         if member.is_dead() {
             continue;
         }
         let rolled = rng.roll(dice);
         let amount = if rolled > 0 {
-            let (_, mut member) = members.get_mut(*entity).unwrap();
+            let mut member = members.get_mut(*entity).unwrap();
             crate::game::party::damage_member(*entity, &mut member, &mut formation, rolled)
         } else {
             0
         };
-        let name = members.get(*entity).unwrap().0.name.clone();
-        outcomes.write(TriggerEffect::Hurt { member: name, amount });
+        outcomes.write(TriggerEffect::Hurt { member: *entity, amount });
     }
 }
 
@@ -448,7 +447,7 @@ pub enum TriggerEffect {
     NothingHappened,
     /// A member was hurt.
     Hurt {
-        member: String,
+        member: Entity,
         amount: u32,
     },
     /// An item went to the party ("Party takes %s").
@@ -1520,8 +1519,8 @@ mod tests {
         assert_eq!(
             level.run("TRAP").1,
             vec![
-                TriggerEffect::Hurt { member: "B".into(), amount: amounts[0] },
-                TriggerEffect::Hurt { member: "A".into(), amount: amounts[1] },
+                TriggerEffect::Hurt { member: second, amount: amounts[0] },
+                TriggerEffect::Hurt { member: first, amount: amounts[1] },
             ]
         );
         assert_eq!(level.world.get::<Vitals>(outsider).unwrap().hp, outsider_hp);
