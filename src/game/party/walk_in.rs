@@ -8,9 +8,7 @@ use super::body::{EYE_ABOVE_CENTRE, PartyBody};
 use crate::content::level::{Arrival, LevelGeometry};
 use crate::game::world::level::{Departing, Level, Travel, TravelQuestion};
 use crate::game::world::props::pose;
-use crate::game::world::triggers::{
-    self, Device, DeviceProximity, PartyMove, PendingPartyMove, PositionedDevices,
-};
+use crate::game::world::triggers::{self, LevelState, PartyMove, PendingPartyMove};
 
 pub fn run_walk_in_triggers(
     time: Res<Time>,
@@ -38,14 +36,12 @@ pub struct PathFlight {
 pub fn move_party(
     mut commands: Commands,
     mut party: Query<(Entity, &mut PartyBody, &mut Position, &mut Transform, Has<PathFlight>)>,
-    levels: Query<(Entity, &Level, &PositionedDevices), Without<Departing>>,
+    mut levels: Query<(Entity, &Level, &mut LevelState), Without<Departing>>,
     geometry: Res<Assets<LevelGeometry>>,
     mut travel: MessageWriter<Travel>,
     mut pending: ResMut<PendingPartyMove>,
-    devices: Query<&Device>,
-    mut proximity: Query<&mut DeviceProximity>,
 ) {
-    let Ok((origin, level, positioned)) = levels.single() else { return };
+    let Ok((origin, level, mut state)) = levels.single_mut() else { return };
     let Some(party_move) = pending.take_for(origin) else { return };
     let Ok((entity, mut body, mut position, mut transform, flying)) = party.single_mut() else {
         return;
@@ -57,9 +53,7 @@ pub fn move_party(
             transform.translation = position.0;
             body.yaw = yaw;
             info!("teleport to {eye:.2}");
-            if let Some(geometry) = geometry.get(&level.geometry) {
-                triggers::arrive(eye, positioned, geometry, &devices, &mut proximity);
-            }
+            state.arrive(eye);
         }
         PartyMove::Teleport(Arrival::Entrance { entrance, ask: false }) => {
             travel.write(Travel { entrance });

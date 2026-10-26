@@ -75,8 +75,11 @@ created. A derived ID-to-entity lookup is an index, not another actor database.
 A prop-backed device is the prop entity, not a second object linked back to it.
 Duplicate authored names do not merge identities; only named links select the
 last registered matching record. Activation resolves entity links and the level's
-ordered positioned-device index. Location variables remain one named map on the
-level, moved directly to/from dormant records. Content canonicalizes variable
+ordered positioned-device index. Walk-in detection keeps one previous party-eye
+sample on the level, not an occupancy flag on every device. Teleportation rebases
+that sample without walking the device population. Only activated damage zones
+own a timer; their timing is not inferred from occupancy. Location variables
+remain one named map on the level, moved directly to/from dormant records. Content canonicalizes variable
 names once; execution uses those names without a second numeric binding table.
 Dial-position names are formed on use, rather than maintaining another key cache.
 
@@ -89,7 +92,7 @@ level definitions, runs the selected operation, follows links and commits in
 order. Commands are exclusive by design; this favors a visible, complete
 operation over parallelizing the parts of one player action.
 
-Movement and arrival consume their level-bound request and proximity data without
+Movement consumes its level-bound request and rebases walk-in detection without
 entering trigger execution. Presentation follows completed click commands and
 interprets outcomes such as a fountain use or a bell ringing; it does not complete
 required mutations. Dormant device contents and variables move back into live
