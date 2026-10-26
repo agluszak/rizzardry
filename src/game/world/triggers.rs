@@ -951,6 +951,7 @@ mod tests {
             world.init_resource::<PartyInventory>();
             world.init_resource::<crate::game::party::formation::Formation>();
             world.init_resource::<State<crate::game::screen::Screen>>();
+            world.init_resource::<NextState<crate::game::screen::Screen>>();
             world.init_resource::<Messages<crate::game::inventory::ItemNews>>();
             world.init_resource::<ItemIds>();
             world.init_resource::<PartyRoster>();
