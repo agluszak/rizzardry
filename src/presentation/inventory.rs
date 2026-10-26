@@ -18,8 +18,7 @@ use crate::content::ui::SpriteSheet;
 use crate::game::characters::{Character, Gender, Race};
 use crate::game::data::GameData;
 use crate::game::inventory::{
-    BACKPACK_SLOTS, Carried, EquipSlot, ItemInstance, ItemLocation, PartyInventory, Quantity,
-    Refusal, Slot,
+    BACKPACK_SLOTS, Carried, EquipSlot, ItemInstance, ItemLocation, PartyInventory, Quantity, Slot,
 };
 use crate::game::party::roster::PartyRoster;
 use crate::game::screen::Screen;
@@ -589,49 +588,14 @@ fn click_cell(
     click: On<PointerClick>,
     cells: Query<&ItemCell>,
     screen: Option<Res<InventoryScreen>>,
-    roster: Res<PartyRoster>,
-    mut members: Query<(&Character, &mut Carried)>,
-    mut party: ResMut<PartyInventory>,
-    data: Option<Res<GameData>>,
-    catalogs: Res<Assets<ItemCatalog>>,
+    mut inventory: crate::game::inventory::operations::InventoryOperations,
 ) {
     let (Ok(cell), Some(screen)) = (cells.get(click.entity), screen) else { return };
-    let Some(catalog) = data.and_then(|d| catalogs.get(&d.items)) else { return };
-    let held = party.held.as_ref().map(|h| h.item.clone());
-    let result = match cell.cell {
-        Cell::Pool(i) => {
-            let row = screen.pool_scroll + i;
-            if held.is_some() {
-                let row = row.min(party.pool.len());
-                party.deposit_held(row, catalog)
-            } else {
-                party.take_from_pool(row)
-            }
-        }
-        Cell::Member(slot) => {
-            if !roster.0.contains(&screen.member) {
-                return;
-            }
-            let Ok((character, mut carried)) = members.get_mut(screen.member) else { return };
-            let target = match slot {
-                Slot::Equipment(equip) => carried.worn(equip).cloned(),
-                Slot::Backpack(i) => carried.backpack[i].clone(),
-            };
-            match (&held, &target) {
-                (Some(held), Some(target))
-                    if held.item == target.item && matches!(held.quantity, Quantity::Stack(_)) =>
-                {
-                    let location = ItemLocation::Member(screen.member, slot);
-                    match party.merge_held(Some(&mut carried), location, catalog) {
-                        0 => Err(Refusal::DoesNotFit),
-                        _ => Ok(()),
-                    }
-                }
-                _ => party.swap_with_hand(character, &mut carried, screen.member, slot, catalog),
-            }
-        }
+    let destination = match cell.cell {
+        Cell::Pool(row) => ItemLocation::Pool(screen.pool_scroll + row),
+        Cell::Member(slot) => ItemLocation::Member(screen.member, slot),
     };
-    if let Err(refusal) = result {
+    if let Err(refusal) = inventory.activate(destination) {
         info!("inventory: {:?} refused: {refusal:?}", cell.cell);
     }
 }

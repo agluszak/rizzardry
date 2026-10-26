@@ -3,8 +3,9 @@
 //!
 //! Items are owned values, not entities; each move returns what happened.
 //! Rules follow retail as reconstructed by Whizzardry (see
-//! `docs/research/inventory.md`). Whether a member can use an item needs
-//! character rules that do not exist yet; callers pass it in.
+//! `docs/research/inventory.md`). Equipment moves validate the actual wearer.
+
+pub mod operations;
 
 use bevy::prelude::*;
 use enum_map::{Enum, EnumMap};
@@ -208,6 +209,13 @@ impl Carried {
         self.equipment[slot].as_ref()
     }
 
+    pub fn slot(&self, location: Slot) -> Option<&Option<ItemInstance>> {
+        match location {
+            Slot::Equipment(slot) => Some(&self.equipment[slot]),
+            Slot::Backpack(index) => self.backpack.get(index),
+        }
+    }
+
     fn slot_mut(&mut self, location: Slot) -> Option<&mut Option<ItemInstance>> {
         match location {
             Slot::Equipment(slot) => Some(&mut self.equipment[slot]),
@@ -268,6 +276,8 @@ pub enum Given {
 /// Why a move did not happen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
+    MissingContent,
+    NotMember,
     Nothing,
     /// The item cannot be split or thrown away.
     Crucial,
@@ -648,12 +658,28 @@ impl PartyInventory {
         slot: Slot,
         catalog: &ItemCatalog,
     ) -> Result<(), Refusal> {
-        let current = carried.slot_mut(slot).ok_or(Refusal::Nothing)?.clone();
+        self.check_swap(character, carried, slot, catalog)?;
+        let current = carried.slot_mut(slot).unwrap().take();
+        let location = ItemLocation::Member(member, slot);
+        let put = self.held.take().map(|held| held.item.moved());
+        *carried.slot_mut(slot).ok_or(Refusal::Nothing)? = put;
+        self.held = current.map(|item| Held { item: item.moved(), origin: Some(location) });
+        Ok(())
+    }
+
+    fn check_swap(
+        &self,
+        character: &Character,
+        carried: &Carried,
+        slot: Slot,
+        catalog: &ItemCatalog,
+    ) -> Result<(), Refusal> {
+        let current = carried.slot(slot).ok_or(Refusal::Nothing)?;
         if current.is_none() && self.held.is_none() {
             return Err(Refusal::Nothing);
         }
         if let Slot::Equipment(equip) = slot {
-            if let Some(item) = &current
+            if let Some(item) = current
                 && let Some(definition) = catalog.get(item.item)
                 && !can_take_off(equip, item, definition, character.is_dead())
             {
@@ -669,10 +695,6 @@ impl PartyInventory {
                 }
             }
         }
-        let location = ItemLocation::Member(member, slot);
-        let put = self.held.take().map(|held| held.item.moved());
-        *carried.slot_mut(slot).ok_or(Refusal::Nothing)? = put;
-        self.held = current.map(|item| Held { item: item.moved(), origin: Some(location) });
         Ok(())
     }
 

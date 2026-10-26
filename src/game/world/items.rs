@@ -157,18 +157,16 @@ fn empty_into_pool(
     catalog: &ItemCatalog,
     tell: &mut dyn FnMut(ItemNews),
 ) -> bool {
-    let mut kept = Vec::new();
-    for inside in container.contents.drain(..) {
-        let name = catalog.get(inside.item).map(|d| inside.display_name(d, false));
-        match inventory.place_in_pool(inside, catalog) {
-            Ok(()) => tell(ItemNews::Takes { member: None, item: name.unwrap_or_default() }),
-            Err(back) => kept.push(back),
-        }
+    for (name, _) in crate::game::inventory::operations::transfer_contents(
+        &mut container.contents,
+        inventory,
+        catalog,
+    ) {
+        tell(ItemNews::Takes { member: None, item: name });
     }
-    if !kept.is_empty() {
+    if !container.contents.is_empty() {
         tell(ItemNews::NoRoom);
     }
-    container.contents = kept;
     container.contents.is_empty()
 }
 

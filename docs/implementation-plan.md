@@ -444,7 +444,7 @@ versus physical state, and the retail-specific decoding and animation math.
 | 9. Picking and gameplay input | Click adapter partly shared; hover and drop boundary open | One selection policy; reusable device/take/drop operations validate gameplay inputs without pointers or render queries. |
 | 10. Gameplay completion | Implemented in gameplay request work | Question entities are level-owned, answers identify their question and gameplay validates/settles them headlessly; dialogs observe session completion. Trigger notices retain their originating immutable message asset. |
 | 11. Screen lifecycle and focus | Open; enhanced-input HUD routing already present | Native screen states and scoped roots; session data on root; explicit held-item return; typing focus distinct from simulation. |
-| 12. Inventory operations | Open | One resolved transfer operation chooses merge/swap/deposit; shared container transfer retains overflow and reports actual results. |
+| 12. Inventory operations | Implemented in inventory operation work | Cells submit resolved destinations; gameplay chooses merge/swap/deposit, validates membership/equipment and reports actual held remainder. Chest/bag transfers share partial-merge and overflow handling. |
 | 13. Retained UI | Open | Stable health/order/caption/inventory nodes respond to actual dependencies; stationary tooltips refresh; retain text raster caching. |
 | 14. Annotation drafts | Open | Session-owned drafts; explicit commit/cancel; no unfinished notes in campaign state or snapshots. |
 | 15. Render hierarchy | Open | Parts/cycles identify themselves in ECS; delete mirrored mesh/entity registries; item spin stays on visual children. |

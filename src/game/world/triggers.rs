@@ -368,6 +368,7 @@ pub struct DeviceOperations<'w, 's> {
     bells: Query<'w, 's, &'static BellButton>,
     props: Query<'w, 's, (&'static Prop, &'static mut PropMotion)>,
     effects: MessageWriter<'w, TriggerEffect>,
+    item_news: MessageWriter<'w, crate::game::inventory::ItemNews>,
     party_move: ResMut<'w, PendingPartyMove>,
     data: Option<Res<'w, GameData>>,
     catalogs: Res<'w, Assets<ItemCatalog>>,
@@ -783,17 +784,16 @@ impl<'w, 's> DeviceOperations<'w, 's> {
             self.effects.write(TriggerEffect::Gold(contents.gold));
             contents.gold = 0;
         }
-        let mut kept = Vec::new();
-        for item in contents.items.drain(..) {
-            let name = catalog.get(item.item).map(|d| d.name.clone()).unwrap_or_default();
-            match self.party.place_in_pool(item, catalog) {
-                Ok(()) => {
-                    self.effects.write(TriggerEffect::PartyTakes(name));
-                }
-                Err(item) => kept.push(item),
-            }
+        for (name, _) in crate::game::inventory::operations::transfer_contents(
+            &mut contents.items,
+            &mut self.party,
+            catalog,
+        ) {
+            self.effects.write(TriggerEffect::PartyTakes(name));
         }
-        contents.items = kept;
+        if !contents.items.is_empty() {
+            self.item_news.write(crate::game::inventory::ItemNews::NoRoom);
+        }
     }
 }
 
@@ -884,6 +884,7 @@ mod tests {
             world.init_resource::<Assets<ItemCatalog>>();
             world.init_resource::<Assets<LootTables>>();
             world.init_resource::<Messages<TriggerEffect>>();
+            world.init_resource::<Messages<crate::game::inventory::ItemNews>>();
             world.init_resource::<PendingPartyMove>();
             world.init_resource::<PartyInventory>();
             world.init_resource::<ItemIds>();
