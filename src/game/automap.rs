@@ -25,24 +25,76 @@ pub struct MapNotes {
     pub notes: Vec<MapNote>,
 }
 
-impl MapNotes {
-    /// Pin an empty note; none when the map is full.
-    pub fn add(&mut self, position: Vec2, layer: usize) -> Option<usize> {
-        if self.notes.len() >= MAX_NOTES {
-            return None;
-        }
-        self.notes.push(MapNote { position, layer, text: String::new() });
-        Some(self.notes.len() - 1)
-    }
+/// A draft belongs to one editing session and map. The index is bounded by
+/// that session. The expected committed value prevents delayed confirmation
+/// from retargeting an entry that was removed or changed in the meantime.
+#[derive(Debug)]
+pub struct NoteDraft {
+    pub level: Entity,
+    pub original: Option<(usize, MapNote)>,
+    pub note: MapNote,
+}
 
-    /// Type a character into a note, within retail's length and its font.
-    pub fn type_char(&mut self, note: usize, c: char) {
-        if let Some(note) = self.notes.get_mut(note)
-            && note.text.encode_utf16().count() < MAX_NOTE_LENGTH
+#[derive(Debug, PartialEq, Eq)]
+pub enum NoteRefusal {
+    InactiveMap,
+    MissingNote,
+    Full,
+    InvalidText,
+}
+
+impl MapNote {
+    pub fn type_char(&mut self, c: char) {
+        if self.text.encode_utf16().count() + c.len_utf16() <= MAX_NOTE_LENGTH
             && crate::content::ui::glyph_index(c).is_some()
         {
-            note.text.push(c);
+            self.text.push(c);
         }
+    }
+}
+
+/// Commit an identified map's draft. Departure/cancellation cannot capture
+/// unfinished editing in the campaign's notes or a dormant level record.
+pub fn commit_note(world: &mut World, draft: NoteDraft) -> Result<(), NoteRefusal> {
+    use crate::game::world::level::{Departing, Level};
+    if world.get::<Level>(draft.level).is_none() || world.get::<Departing>(draft.level).is_some() {
+        return Err(NoteRefusal::InactiveMap);
+    }
+    if let Some((index, expected)) = &draft.original {
+        if world.get::<MapNotes>(draft.level).and_then(|notes| notes.notes.get(*index))
+            != Some(expected)
+        {
+            return Err(NoteRefusal::MissingNote);
+        }
+    }
+    world
+        .get_mut::<MapNotes>(draft.level)
+        .ok_or(NoteRefusal::InactiveMap)?
+        .commit(draft.original.map(|(index, _)| index), draft.note)
+}
+
+impl MapNotes {
+    pub fn commit(&mut self, original: Option<usize>, note: MapNote) -> Result<(), NoteRefusal> {
+        if note.text.encode_utf16().count() > MAX_NOTE_LENGTH
+            || note.text.chars().any(|c| crate::content::ui::glyph_index(c).is_none())
+            || !note.position.is_finite()
+        {
+            return Err(NoteRefusal::InvalidText);
+        }
+        if let Some(index) = original {
+            let current = self.notes.get_mut(index).ok_or(NoteRefusal::MissingNote)?;
+            if note.text.is_empty() {
+                self.notes.remove(index);
+            } else {
+                *current = note;
+            }
+        } else if !note.text.is_empty() {
+            if self.notes.len() >= MAX_NOTES {
+                return Err(NoteRefusal::Full);
+            }
+            self.notes.push(note);
+        }
+        Ok(())
     }
 
     /// The note nearest a point, within `reach` metres.
@@ -65,10 +117,9 @@ mod tests {
     #[test]
     fn notes_on_overlapping_floors_do_not_select_or_erase_each_other() {
         let mut notes = MapNotes::default();
-        let upstairs = notes.add(Vec2::ZERO, 0).unwrap();
-        let downstairs = notes.add(Vec2::ZERO, 1).unwrap();
-        notes.type_char(upstairs, 'U');
-        notes.type_char(downstairs, 'D');
+        notes.commit(None, MapNote { position: Vec2::ZERO, layer: 0, text: "U".into() }).unwrap();
+        notes.commit(None, MapNote { position: Vec2::ZERO, layer: 1, text: "D".into() }).unwrap();
+        let (upstairs, downstairs) = (0, 1);
         assert_eq!(notes.nearest(Vec2::ZERO, 1.0, 0), Some(upstairs));
         assert_eq!(notes.nearest(Vec2::ZERO, 1.0, 1), Some(downstairs));
         assert_eq!(notes.nearest(Vec2::ZERO, 1.0, 2), None);
@@ -81,19 +132,24 @@ mod tests {
     #[test]
     fn notes_keep_retail_limits() {
         let mut notes = MapNotes::default();
-        let note = notes.add(Vec2::ZERO, 0).unwrap();
+        let mut draft = MapNote { position: Vec2::ZERO, layer: 0, text: String::new() };
         for _ in 0..50 {
-            notes.type_char(note, 'a');
+            draft.type_char('a');
         }
-        notes.type_char(note, '\u{1f600}');
-        assert_eq!(notes.notes[note].text.len(), MAX_NOTE_LENGTH);
-        notes.notes[note].text.clear();
-        notes.type_char(note, '\u{1f600}');
-        assert!(notes.notes[note].text.is_empty());
+        draft.type_char('\u{1f600}');
+        assert_eq!(draft.text.len(), MAX_NOTE_LENGTH);
+        assert!(notes.notes.is_empty(), "editing is not a committed note");
+        notes.commit(None, draft).unwrap();
         for i in 1..MAX_NOTES {
-            notes.add(Vec2::splat(i as f32), 0).unwrap();
+            notes
+                .commit(
+                    None,
+                    MapNote { position: Vec2::splat(i as f32), layer: 0, text: "N".into() },
+                )
+                .unwrap();
         }
-        assert!(notes.add(Vec2::ZERO, 0).is_none());
+        let extra = MapNote { position: Vec2::ZERO, layer: 0, text: "N".into() };
+        assert_eq!(notes.commit(None, extra), Err(NoteRefusal::Full));
         assert_eq!(notes.nearest(Vec2::new(3.2, 3.0), 1.0, 0), Some(3));
         assert_eq!(notes.nearest(Vec2::new(-5.0, 0.0), 1.0, 0), None);
     }

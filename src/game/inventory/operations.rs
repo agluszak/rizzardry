@@ -17,6 +17,27 @@ pub struct InventoryOperations<'w, 's> {
 }
 
 impl InventoryOperations<'_, '_> {
+    /// Return the hand to the reviewed member, falling back to the pool. A
+    /// departed member cannot receive it; overflow remains owned by the hand.
+    pub fn put_away(&mut self, member: Entity) -> Result<(), Refusal> {
+        if self.party.held.is_none() {
+            return Ok(());
+        }
+        let catalog = self
+            .data
+            .as_ref()
+            .and_then(|d| self.catalogs.get(&d.items))
+            .ok_or(Refusal::MissingContent)?;
+        if self.roster.0.contains(&member)
+            && let Ok((_, mut carried)) = self.members.get_mut(member)
+        {
+            self.party.put_away_held(&mut carried, catalog);
+        } else {
+            self.party.give_held(None, false, catalog);
+        }
+        Ok(())
+    }
+
     /// Activate a resolved destination against the authoritative held item.
     /// Slot choice, merge/swap/deposit rules and all validation belong here.
     /// Returns the actual item and quantity left in hand after the transfer.

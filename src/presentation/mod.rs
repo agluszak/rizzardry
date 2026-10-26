@@ -71,6 +71,12 @@ impl Plugin for PresentationPlugin {
             .init_resource::<PresentationRng>()
             .add_input_context::<automap::MapKey>()
             .add_input_context::<automap::AutomapScreen>()
+            .add_input_context::<automap::NoteEditing>()
+            .add_systems(OnEnter(crate::game::screen::Screen::Automap), automap::enter_automap)
+            .add_systems(
+                PreUpdate,
+                (hold_exploration, automap::route_map_keys).before(EnhancedInputSystems::Update),
+            )
             .add_input_context::<dialog::QuestionDialog>()
             .add_input_context::<camp::CampScreen>()
             .add_systems(
@@ -87,7 +93,6 @@ impl Plugin for PresentationPlugin {
                 Update,
                 (
                     automap::scale_ui,
-                    hold_exploration,
                     screen_art::paint_hover_art,
                     (party_view::attach_camera, party_view::aim_camera).chain(),
                     (selection::select_world_target, selection::activate_selection)
@@ -95,8 +100,9 @@ impl Plugin for PresentationPlugin {
                         .after(party_view::aim_camera),
                     camp::show_camp,
                     (
-                        automap::close_automap,
-                        automap::open_automap,
+                        automap::close_ended_map,
+                        automap::request_automap,
+                        automap::build_automap,
                         automap::type_note,
                         automap::paint_buttons,
                         automap::update_map_view,

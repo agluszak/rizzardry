@@ -138,10 +138,10 @@ pub fn spawn_main_screen_keys(mut commands: Commands) {
 /// The keys act while the party is in the world, under no other screen.
 pub fn hold_main_screen_keys(
     mut commands: Commands,
-    screen: Res<Screen>,
+    screen: Res<State<Screen>>,
     keys: Query<(Entity, &ContextActivity<MainScreenKeys>)>,
 ) {
-    let active = *screen == Screen::World;
+    let active = *screen.get() == Screen::World;
     for (entity, activity) in &keys {
         if **activity != active {
             commands.entity(entity).insert(ContextActivity::<MainScreenKeys>::new(active));
@@ -204,6 +204,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins((
             MinimalPlugins,
+            bevy::state::app::StatesPlugin,
             bevy::input::InputPlugin,
             AssetPlugin::default(),
             bevy::scene::ScenePlugin,
@@ -212,7 +213,7 @@ mod tests {
         .add_input_context::<MainScreenKeys>()
         .init_resource::<ScreenLayout>()
         .init_resource::<SelectedMember>()
-        .init_resource::<Screen>()
+        .init_state::<Screen>()
         .init_resource::<PartyRoster>()
         .add_systems(Startup, spawn_main_screen_keys)
         .add_systems(PreUpdate, hold_main_screen_keys);
@@ -259,7 +260,7 @@ mod tests {
             Some(members[2]),
             "nobody in slot 6"
         );
-        *app.world_mut().resource_mut::<Screen>() = Screen::Inventory;
+        app.world_mut().resource_mut::<NextState<Screen>>().set(Screen::Inventory);
         app.update();
         tap(&mut app, &[KeyCode::Digit1]);
         assert_eq!(

@@ -71,7 +71,7 @@ fn grid(left: f32, i: usize) -> Vec2 {
 }
 
 /// The open screen, reviewing one member. Absent while exploring.
-#[derive(Resource, Debug)]
+#[derive(Component, Debug)]
 pub struct InventoryScreen {
     pub member: Entity,
     /// The first pool entry shown; always even.
@@ -139,45 +139,55 @@ pub fn spawn_inventory_key(mut commands: Commands) {
 /// Retail opens the selected character.
 fn open_with_key(
     _: On<Start<OpenInventory>>,
-    mut commands: Commands,
-    mut screen: ResMut<Screen>,
+    screen: Res<State<Screen>>,
+    mut next: ResMut<NextState<Screen>>,
     roster: Res<PartyRoster>,
     selected: Res<super::main_screen::SelectedMember>,
 ) {
-    if let Some(member) = selected.member(&roster) {
-        open(&mut commands, &mut screen, member);
+    if *screen.get() == Screen::World && selected.member(&roster).is_some() {
+        next.set(Screen::Inventory);
     }
 }
 
-/// Bring up a member's inventory, unless another screen is up.
-pub fn open(commands: &mut Commands, screen: &mut Screen, member: Entity) {
-    if screen.open(Screen::Inventory) {
-        commands.insert_resource(InventoryScreen { member, pool_scroll: 0 });
-    }
-}
-
-/// Close the screen, first putting away whatever is in hand.
-fn close(mut commands: Commands, mut screen: ResMut<Screen>) {
-    commands.run_system_cached(put_away_held);
-    commands.remove_resource::<InventoryScreen>();
-    screen.close(Screen::Inventory);
-}
-
-/// The held item goes back to the reviewed member, or the pool.
-fn put_away_held(
-    screen: Option<Res<InventoryScreen>>,
-    mut party: ResMut<PartyInventory>,
-    mut members: Query<&mut Carried>,
-    data: Option<Res<GameData>>,
-    catalogs: Res<Assets<ItemCatalog>>,
+/// Screen state owns existence; the root owns its local selection and input.
+fn enter_inventory(
+    mut commands: Commands,
+    roster: Res<PartyRoster>,
+    selected: Res<super::main_screen::SelectedMember>,
+    mut next: ResMut<NextState<Screen>>,
 ) {
-    let (Some(screen), Some(catalog)) = (screen, data.and_then(|d| catalogs.get(&d.items))) else {
+    let Some(member) = selected.member(&roster) else {
+        next.set(Screen::World);
         return;
     };
-    if let Ok(mut carried) = members.get_mut(screen.member) {
-        party.put_away_held(&mut carried, catalog);
+    commands.spawn_scene(bsn! {
+        @centred()
+        InventoryRoot
+        BackgroundColor(Color::BLACK)
+        GlobalZIndex(10)
+        ContextPriority::<InventoryRoot>::new(1)
+        Actions<InventoryRoot> [
+            Action::<CloseInventory>::new()
+            ActionSettings { consume_input: true }
+            Bindings [ Binding(KeyCode::Escape) Binding(KeyCode::KeyI) ]
+        ]
+        on(|_: On<Start<CloseInventory>>, mut next: ResMut<NextState<Screen>>| { next.set(Screen::World); })
+    }).insert((InventoryScreen { member, pool_scroll: 0 }, DespawnOnExit(Screen::Inventory)));
+}
+
+/// This explicit exit consequence uses the same inventory operation as any
+/// other caller, before Bevy removes the state-scoped root.
+fn put_away_held(
+    screen: Option<Single<&InventoryScreen>>,
+    mut inventory: crate::game::inventory::operations::InventoryOperations,
+) {
+    if let Some(screen) = screen {
+        let _ = inventory.put_away(screen.member);
     }
 }
+
+#[derive(Component)]
+pub struct InventoryBuilt;
 
 /// The race's statue on the item page (`statue_<race>_<m|f>.sti`).
 fn statue(race: Race, gender: Gender) -> String {
@@ -297,21 +307,12 @@ struct GoldLabel {
 /// it when it closes.
 pub fn spawn_inventory_screen(
     mut commands: Commands,
-    open: Option<Res<InventoryScreen>>,
     art: Res<InventoryArt>,
     sheets: Res<Assets<SpriteSheet>>,
     mut images: ResMut<Assets<Image>>,
-    roots: Query<Entity, With<InventoryRoot>>,
+    roots: Query<Entity, (With<InventoryRoot>, Without<InventoryBuilt>)>,
 ) {
-    if open.is_none() {
-        for root in &roots {
-            commands.entity(root).despawn();
-        }
-        return;
-    }
-    if !roots.is_empty() {
-        return;
-    }
+    let Ok(root) = roots.single() else { return };
     let get = |handle: &Handle<SpriteSheet>| sheets.get(handle);
     let (Some(corner), Some(page), Some(bar), Some(gold), Some(exit), Some(bold)) = (
         get(&art.corner),
@@ -352,20 +353,8 @@ pub fn spawn_inventory_screen(
             }
         })
         .collect();
-    commands.spawn_scene(bsn! {
-        @centred()
-        InventoryRoot
-        BackgroundColor(Color::BLACK)
-        GlobalZIndex(10)
-        ContextPriority::<InventoryRoot>::new(1)
-        Actions<InventoryRoot> [
-            Action::<CloseInventory>::new()
-            ActionSettings { consume_input: true }
-            Bindings [ Binding(KeyCode::Escape) Binding(KeyCode::KeyI) ]
-        ]
-        on(|_: On<Start<CloseInventory>>, mut commands: Commands| {
-            commands.run_system_cached(close);
-        })
+    commands.entity(root).insert(InventoryBuilt).queue_spawn_related_scenes::<Children>(vec![bsn! {
+        Node { position_type: PositionType::Absolute }
         Children [
             @screen()
             Children [
@@ -373,23 +362,21 @@ pub fn spawn_inventory_screen(
                 -- {titles}
                 -- @{exit}
                     Pickable { should_block_lower: true, is_hoverable: true }
-                    on(|_: On<PointerClick>, mut commands: Commands| {
-                        commands.run_system_cached(close);
-                    })
+                    on(|_: On<PointerClick>, mut next: ResMut<NextState<Screen>>| { next.set(Screen::World); })
                 // The header and statue lie under the cells.
                 -- Node { position_type: PositionType::Absolute } Header
                 -- Node { position_type: PositionType::Absolute } GoldLabel
                 -- {cells}
             ]
         ]
-    });
+    }]);
 }
 
 /// Draw the header and statue again when the reviewed member or the party
 /// changes.
 fn draw_header(
     mut commands: Commands,
-    screen: Option<Res<InventoryScreen>>,
+    screen: Option<Single<&InventoryScreen>>,
     art: Res<InventoryArt>,
     assets: Res<AssetServer>,
     sheets: Res<Assets<SpriteSheet>>,
@@ -439,7 +426,7 @@ fn draw_header(
         parts.push(Box::new(bsn! {
             @{picture.and_then(|s| sprite(s, 0, at))}
             Pickable { should_block_lower: true, is_hoverable: true }
-            on(move |_: On<PointerClick>, screen: Option<ResMut<InventoryScreen>>| {
+            on(move |_: On<PointerClick>, screen: Option<Single<&mut InventoryScreen>>| {
                 if let Some(mut screen) = screen {
                     screen.member = member;
                 }
@@ -493,7 +480,7 @@ fn draw_gold(
 /// and identification, and whether the reviewed member can use it.
 fn draw_cells(
     mut commands: Commands,
-    screen: Option<Res<InventoryScreen>>,
+    screen: Option<Single<&InventoryScreen>>,
     art: Res<InventoryArt>,
     assets: Res<AssetServer>,
     sheets: Res<Assets<SpriteSheet>>,
@@ -587,7 +574,7 @@ fn draw_cells(
 fn click_cell(
     click: On<PointerClick>,
     cells: Query<&ItemCell>,
-    screen: Option<Res<InventoryScreen>>,
+    screen: Option<Single<&InventoryScreen>>,
     mut inventory: crate::game::inventory::operations::InventoryOperations,
 ) {
     let (Ok(cell), Some(screen)) = (cells.get(click.entity), screen) else { return };
@@ -660,6 +647,13 @@ impl Plugin for InventoryPlugin {
         app.add_input_context::<InventoryKey>()
             .add_input_context::<InventoryRoot>()
             .add_systems(Startup, (load_inventory_art, spawn_inventory_key, spawn_held_picture))
+            .add_systems(OnEnter(Screen::Inventory), enter_inventory)
+            .add_systems(OnExit(Screen::Inventory), put_away_held)
+            .configure_sets(
+                StateTransition,
+                bevy::state::state::ExitSchedules::<Screen>::default()
+                    .before(bevy::state::state_scoped::despawn_entities_on_exit_state::<Screen>),
+            )
             .add_systems(
                 Update,
                 (spawn_inventory_screen, draw_header, draw_gold, draw_cells, follow_held).chain(),
@@ -683,6 +677,69 @@ fn format_gold(gold: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn closing_inventory_returns_the_held_item_even_before_art_is_ready() {
+        use crate::game::characters::{Gender, Profession, Race};
+        use crate::game::inventory::{Held, ItemIds, make_item};
+        use crate::game::rng::GameRng;
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin::default(),
+            bevy::scene::ScenePlugin,
+            bevy::input::InputPlugin,
+            bevy::state::app::StatesPlugin,
+            EnhancedInputPlugin,
+        ))
+        .init_state::<Screen>()
+        .init_asset::<SpriteSheet>()
+        .init_asset::<Image>()
+        .init_asset::<ItemCatalog>()
+        .init_resource::<UiScale>()
+        .init_resource::<PartyRoster>()
+        .init_resource::<PartyInventory>()
+        .init_resource::<super::super::main_screen::SelectedMember>()
+        .add_plugins(InventoryPlugin);
+        let definition = ItemDefinition { ..default() };
+        let item =
+            make_item(&definition, &mut ItemIds::default(), &mut GameRng::seeded(1), false, true);
+        let id = item.id;
+        let items = app
+            .world_mut()
+            .resource_mut::<Assets<ItemCatalog>>()
+            .add(ItemCatalog(vec![definition]));
+        app.insert_resource(GameData { items, loot: default(), species: default() });
+        let member = app
+            .world_mut()
+            .spawn((
+                Character::new("A", Race::Human, Gender::Male, Profession::Fighter),
+                Carried::default(),
+            ))
+            .id();
+        app.world_mut().resource_mut::<PartyRoster>().0.insert(member);
+        app.world_mut().resource_mut::<PartyInventory>().held = Some(Held { item, origin: None });
+        app.world_mut().resource_mut::<super::super::main_screen::SelectedMember>().0 =
+            Some(member);
+        app.world_mut().resource_mut::<NextState<Screen>>().set(Screen::Inventory);
+        app.finish();
+        app.cleanup();
+        app.update();
+        app.world_mut().resource_mut::<NextState<Screen>>().set(Screen::World);
+        app.update();
+        assert!(app.world().resource::<PartyInventory>().held.is_none());
+        assert_eq!(
+            app.world()
+                .get::<Carried>(member)
+                .unwrap()
+                .backpack
+                .iter()
+                .flatten()
+                .map(|i| i.id)
+                .collect::<Vec<_>>(),
+            [id]
+        );
+    }
 
     #[test]
     fn gold_is_grouped_in_thousands() {

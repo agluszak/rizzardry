@@ -36,9 +36,13 @@ impl Plugin for MainScreenPlugin {
                 (load_main_screen_art, layout::spawn_screen_cameras, keys::spawn_main_screen_keys),
             )
             .add_systems(
+                PreUpdate,
+                keys::hold_main_screen_keys
+                    .before(bevy_enhanced_input::EnhancedInputSystems::Update),
+            )
+            .add_systems(
                 Update,
                 (
-                    keys::hold_main_screen_keys,
                     layout::fit_viewport,
                     build_frame,
                     (

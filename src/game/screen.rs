@@ -13,7 +13,7 @@ use crate::game::camp::Camp;
 use crate::game::world::level::{Departing, Level, TravelQuestion};
 
 /// The full screen that is up; they are mutually exclusive.
-#[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(States, Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Screen {
     #[default]
     World,
@@ -21,27 +21,11 @@ pub enum Screen {
     Inventory,
 }
 
-impl Screen {
-    /// Bring up `screen` if none is; whether it is now up.
-    pub fn open(&mut self, screen: Screen) -> bool {
-        if *self == Screen::World {
-            *self = screen;
-        }
-        *self == screen
-    }
-
-    pub fn close(&mut self, screen: Screen) {
-        if *self == screen {
-            *self = Screen::World;
-        }
-    }
-}
-
 /// What decides whether the party is free to act.
 #[derive(SystemParam)]
 pub struct Freedom<'w, 's> {
     levels: Query<'w, 's, (), (With<Level>, Without<Departing>)>,
-    screen: Res<'w, Screen>,
+    screen: Res<'w, State<Screen>>,
     camp: Option<Res<'w, Camp>>,
     questions: Query<'w, 's, (), With<TravelQuestion>>,
 }
@@ -49,7 +33,7 @@ pub struct Freedom<'w, 's> {
 impl Freedom<'_, '_> {
     pub fn free(&self) -> bool {
         !self.levels.is_empty()
-            && *self.screen == Screen::World
+            && *self.screen.get() == Screen::World
             && self.camp.is_none()
             && self.questions.is_empty()
     }

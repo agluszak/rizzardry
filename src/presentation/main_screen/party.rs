@@ -380,7 +380,6 @@ fn press(
     click: On<PointerClick>,
     buttons: Query<&SlotButton>,
     mut selected: ResMut<SelectedMember>,
-    mut commands: Commands,
     roster: Res<PartyRoster>,
     time: Res<Time>,
     mut last_click: ResMut<LastSlotClick>,
@@ -392,7 +391,8 @@ fn press(
         Option<Res<crate::game::combat::Battle>>,
         MessageWriter<ItemNews>,
     ),
-    mut screen: ResMut<crate::game::screen::Screen>,
+    screen: Res<State<crate::game::screen::Screen>>,
+    mut next_screen: ResMut<NextState<crate::game::screen::Screen>>,
 ) {
     let Ok(&SlotButton(member)) = buttons.get(click.entity) else { return };
     if !roster.0.contains(&member) {
@@ -427,7 +427,9 @@ fn press(
     selected.0 = Some(member);
     let now = time.elapsed();
     if last_click.0.is_some_and(|(s, at)| s == member && now - at < DOUBLE_CLICK) {
-        crate::presentation::inventory::open(&mut commands, &mut screen, member);
+        if *screen.get() == crate::game::screen::Screen::World {
+            next_screen.set(crate::game::screen::Screen::Inventory);
+        }
     }
     last_click.0 = Some((member, now));
 }

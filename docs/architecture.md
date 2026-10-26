@@ -360,3 +360,17 @@ because identification, curses and continuing effects also run outside a battle.
   has a direct representation.
 - New abstractions must eliminate a demonstrated problem. Prefer small enums and
   ordinary functions to a framework for hypothetical future mods.
+
+## Screen sessions and drafts
+
+Mutually exclusive screen state uses Bevy states. Entry creates a scoped root
+with its local selection, scroll/view data and input context; art can attach
+later without controlling whether the session exists. Explicit inventory exit
+returns the held item through the normal inventory operation before scoped
+cleanup. The held cursor overlay remains session-wide, including the world view.
+
+Automap typing is a separate input context. A draft carries its source level,
+placement, layer and text, and the expected old entry when editing. Enter submits
+it to the gameplay commit operation. Escape, changing tools, closing or leaving
+the level discard the draft. Persistent map notes never contain unfinished
+editing, and delayed confirmation cannot overwrite a changed vector entry.
