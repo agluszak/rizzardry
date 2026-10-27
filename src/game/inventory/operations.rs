@@ -14,7 +14,7 @@ pub struct InventoryOperations<'w, 's> {
     members: Query<'w, 's, (&'static Character, &'static Vitals, &'static mut Carried)>,
     data: Option<Res<'w, GameData>>,
     catalogs: Res<'w, Assets<ItemCatalog>>,
-    battle: Option<Res<'w, crate::game::combat::Battle>>,
+    battle: Option<Single<'w, 's, &'static crate::game::combat::Battle>>,
 }
 
 impl InventoryOperations<'_, '_> {

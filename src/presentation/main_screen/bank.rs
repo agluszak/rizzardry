@@ -104,7 +104,7 @@ pub fn draw_bank(
     layout: Res<ScreenLayout>,
     selected: Res<SelectedMember>,
     roster: Single<&PartyRoster>,
-    battle: Option<Res<Battle>>,
+    battle: Option<Single<&Battle>>,
     orders: Query<&Order>,
     settings: Res<CombatSettings>,
     search: Res<Search>,
@@ -200,7 +200,7 @@ fn press(
     selected: Res<SelectedMember>,
     mut round: MessageWriter<StartRound>,
     mut settings: ResMut<CombatSettings>,
-    battle: Option<Res<Battle>>,
+    battle: Option<Single<&Battle>>,
 ) {
     match buttons.get(click.entity).ok().and_then(|face| face.kind) {
         Some(Bank::Order(order)) if battle.is_some() => {
@@ -231,7 +231,7 @@ fn press(
 
 /// Show the round's progress along the roof while one plays.
 pub fn show_round_progress(
-    battle: Option<Res<Battle>>,
+    battle: Option<Single<&Battle>>,
     mut bars: Query<(&mut PictureCrop, &mut Visibility), With<RoundProgress>>,
 ) {
     let progress = battle.and_then(|b| b.progress());
@@ -255,7 +255,7 @@ pub fn draw_caption(
     members: Query<(&Character, &Vitals, Option<&Carried>)>,
     data: Option<Res<GameData>>,
     catalogs: Res<Assets<ItemCatalog>>,
-    battle: Option<Res<Battle>>,
+    battle: Option<Single<&Battle>>,
     orders: Query<&Order>,
     mut captions: Query<(&CaptionLine, &mut BitmapText)>,
 ) {

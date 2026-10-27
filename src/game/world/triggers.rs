@@ -1424,14 +1424,16 @@ mod tests {
             &[],
             LevelScript::None,
         );
-        level.world.insert_resource(crate::game::combat::Battle::default());
+        level.world.spawn(crate::game::combat::Battle::default());
         let member = level.members[0];
         assert!(level.formation().row_of(member).is_some());
         assert!(level.run("LETHAL").0);
         // Death bookkeeping is synchronous: the seat is gone at once.
         assert!(level.world.get::<Vitals>(member).unwrap().is_dead());
         assert!(level.formation().row_of(member).is_none());
-        assert!(!level.world.contains_resource::<crate::game::combat::Battle>());
+        assert!(
+            level.world.query::<&crate::game::combat::Battle>().iter(&level.world).next().is_none()
+        );
         assert_eq!(
             level
                 .world

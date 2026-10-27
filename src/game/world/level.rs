@@ -140,7 +140,7 @@ pub fn answer_travel_questions(
     mut answers: MessageReader<TravelAnswer>,
     questions: Query<(Entity, &TravelQuestion, &LevelOwned)>,
     levels: Query<(), With<Level>>,
-    battle: Option<Res<crate::game::combat::Battle>>,
+    battle: Option<Single<&crate::game::combat::Battle>>,
     mut travel: MessageWriter<Travel>,
 ) {
     let answers: Vec<_> = answers.read().copied().collect();
@@ -174,7 +174,7 @@ pub fn travel(
     entering: Query<(), With<Destination>>,
     questions: Query<Entity, With<TravelQuestion>>,
     assets: Res<AssetServer>,
-    battle: Option<Res<crate::game::combat::Battle>>,
+    battle: Option<Single<&crate::game::combat::Battle>>,
     camp: Option<Res<crate::game::camp::Camp>>,
     mut movement: ResMut<crate::game::party::body::PartyMovement>,
 ) {
@@ -702,7 +702,7 @@ mod travel_question_tests {
         assert!(app.world().get_entity(question).is_err());
         assert!(app.world().resource::<Messages<Travel>>().is_empty());
         app.world_mut().entity_mut(level).insert(source);
-        app.insert_resource(crate::game::combat::Battle::default());
+        app.world_mut().spawn(crate::game::combat::Battle::default());
         let question = ask(&mut app, level, "fighting");
         app.world_mut().write_message(TravelAnswer { question, accept: true });
         app.update();

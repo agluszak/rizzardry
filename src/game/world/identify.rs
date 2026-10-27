@@ -13,7 +13,6 @@ use super::population::Monster;
 use crate::content::characters::{Attribute, Skill};
 use crate::content::species::MonsterCatalog;
 use crate::game::characters::{Character, Condition, MonsterKnowledge, Vitals};
-use crate::game::combat::Battle;
 use crate::game::data::GameData;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
@@ -126,7 +125,7 @@ impl GroupRecognition<'_, '_> {
         &mut self,
         from: Vec3,
         forward: Vec3,
-        battle: Option<&Battle>,
+        combatants: Option<&[Entity]>,
         rng: &mut GameRng,
     ) {
         let (Some(level), Some(far)) = (self.level.entity(), self.level.view_distance()) else {
@@ -156,7 +155,7 @@ impl GroupRecognition<'_, '_> {
             let (mut species_id, mut count, mut in_view) = (None, 0usize, false);
             for member in membership.iter() {
                 let Ok((monster, at)) = monsters.get(member) else { continue };
-                if monster.is_dead() || battle.as_ref().is_some_and(|b| !b.fights(member)) {
+                if monster.is_dead() || combatants.is_some_and(|c| !c.contains(&member)) {
                     continue;
                 }
                 species_id.get_or_insert(monster.species);

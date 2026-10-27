@@ -126,7 +126,7 @@ pub fn request_camp(
     mut commands: Commands,
     freedom: crate::game::screen::Freedom,
     mut button: MessageReader<CampRequest>,
-    battle: Option<Res<crate::game::combat::Battle>>,
+    battle: Option<Single<&crate::game::combat::Battle>>,
     party: Query<&LinearVelocity, With<PartyBody>>,
     mut news: MessageWriter<CampNews>,
 ) {
@@ -150,7 +150,7 @@ pub fn request_camp(
 pub fn force_camp(
     mut commands: Commands,
     camp: Option<Res<Camp>>,
-    battle: Option<Res<crate::game::combat::Battle>>,
+    battle: Option<Single<&crate::game::combat::Battle>>,
     roster: Single<&PartyRoster>,
     members: Query<&Vitals>,
     mut news: MessageWriter<CampNews>,

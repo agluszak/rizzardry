@@ -256,7 +256,7 @@ pub fn queue_notices(
     names: super::names::ActorNames,
     art: Res<NoticeArt>,
     tables: Res<Assets<TextTable>>,
-    battle: Option<Res<crate::game::combat::Battle>>,
+    battle: Option<Single<&crate::game::combat::Battle>>,
     sheets: Res<Assets<SpriteSheet>>,
     mut log: ResMut<TextLog>,
 ) {

@@ -137,7 +137,7 @@ pub(crate) fn pass_time(
     time: Res<Time>,
     mut camp: Option<ResMut<Camp>>,
     mut news: MessageWriter<CampNews>,
-    battle: Option<Res<crate::game::combat::Battle>>,
+    battle: Option<Single<&crate::game::combat::Battle>>,
     party: Query<(&Position, &PartyBody, &LinearVelocity)>,
     roster: Single<&PartyRoster>,
     mut affected: ParamSet<(Query<(&Character, &mut Vitals)>, GroupRecognition)>,

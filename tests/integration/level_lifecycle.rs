@@ -383,7 +383,7 @@ fn a_level_waits_for_body_metadata_and_sizes_monsters_without_render_assets() {
     assert_eq!(walker.speed, 3.0);
     assert_eq!(feet(at.translation, Some(walker)), Vec3::ZERO);
     assert!(
-        !world.contains_resource::<rizzardry::game::combat::Battle>(),
+        world.query::<&rizzardry::game::combat::Battle>().iter(world).next().is_none(),
         "walking bodies exist before combat, without visual assets"
     );
 }

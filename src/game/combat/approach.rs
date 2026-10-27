@@ -10,7 +10,7 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy_landmass::prelude::*;
 
-use super::Battle;
+use super::Combatant;
 use crate::content::species::{MonsterCatalog, Reach};
 use crate::game::data::GameData;
 use crate::game::party::body::PartyBody;
@@ -39,25 +39,21 @@ pub(super) fn needs_approach(
     super::distance_to_party(party_eye, monster, feet) > reach.metres() - REACH_MARGIN
 }
 
-/// Head for the party while no attack reaches it; stand otherwise, when
-/// dead, and when there is no fight.
+/// Head for the party while no attack reaches it; stand otherwise and when
+/// dead. Only combatants: the fight owns their movement while it lasts and
+/// stops it when it ends; others are none of its business.
 pub fn close_in(
-    battle: Option<Res<Battle>>,
     party: Query<(Entity, &Position), With<PartyBody>>,
-    mut walkers: Query<(Entity, &Monster, ActorPose, &Walker, &mut AgentTarget3d)>,
+    mut combatants: Query<(&Monster, ActorPose, &Walker, &mut AgentTarget3d), With<Combatant>>,
     data: Option<Res<GameData>>,
     species: Res<Assets<MonsterCatalog>>,
 ) {
-    let catalog = data.and_then(|d| species.get(&d.species));
+    let Some(catalog) = data.and_then(|d| species.get(&d.species)) else { return };
     let Ok((party, party_at)) = party.single() else { return };
     let party_eye = PartyBody::eye(party_at);
-    for (entity, monster, at, walker, mut target) in &mut walkers {
-        let fighting =
-            battle.as_ref().is_some_and(|b| b.monsters.iter().any(|&(e, _)| e == entity));
-        let wanted = if fighting
-            && catalog.is_some_and(|species| {
-                needs_approach(monster, at.translation(), Some(walker), party_eye, species)
-            }) {
+    for (monster, at, walker, mut target) in &mut combatants {
+        let wanted = if needs_approach(monster, at.translation(), Some(walker), party_eye, catalog)
+        {
             AgentTarget3d::Entity(party)
         } else {
             AgentTarget3d::None

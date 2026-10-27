@@ -150,7 +150,7 @@ fn spawn_main_screen_keys(mut commands: Commands) {
             }
         })
         on(select_member)
-        on(|_: On<Start<BeginRound>>, battle: Option<Res<Battle>>, mut round: MessageWriter<StartRound>| {
+        on(|_: On<Start<BeginRound>>, battle: Option<Single<&Battle>>, mut round: MessageWriter<StartRound>| {
             if battle.is_some() {
                 round.write(StartRound);
             }
@@ -199,7 +199,7 @@ fn select_member(
 fn set_order(
     key: On<Start<SetOrder>>,
     orders_by_key: Query<&OrderKey>,
-    battle: Option<Res<Battle>>,
+    battle: Option<Single<&Battle>>,
     selected: Res<SelectedMember>,
     mut orders: Query<&mut Order>,
     roster: Single<&PartyRoster>,

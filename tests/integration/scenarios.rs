@@ -59,11 +59,15 @@ fn lying_items(world: &mut World) -> usize {
     world.query::<&WorldItem>().iter(world).count()
 }
 
+fn fighting(world: &World) -> bool {
+    world.try_query::<&Battle>().is_some_and(|mut q| q.iter(world).next().is_some())
+}
+
 /// Fight the beach crabs by the Monastery's door to the end.
 fn crab_fight(app: &mut App) {
     step_until(app, "the Monastery becoming active", |w| playing(w).is_some());
-    step_until(app, "a fight on the beach", |w| w.contains_resource::<Battle>());
-    step_until(app, "the fight's end", |w| !w.contains_resource::<Battle>());
+    step_until(app, "a fight on the beach", |w| fighting(w));
+    step_until(app, "the fight's end", |w| !fighting(w));
 }
 
 #[test]
@@ -73,8 +77,8 @@ fn a_green_slime_leaves_treasure() {
     let mut app = game(&["--continuous", "--seed", "4", "--start=69.5,10,-24", "--yaw", "0"]);
     step_until(&mut app, "the Monastery becoming active", |w| playing(w).is_some());
     let before = lying_items(app.world_mut());
-    step_until(&mut app, "a fight with the slimes", |w| w.contains_resource::<Battle>());
-    step_until(&mut app, "the fight's end", |w| !w.contains_resource::<Battle>());
+    step_until(&mut app, "a fight with the slimes", |w| fighting(w));
+    step_until(&mut app, "the fight's end", |w| !fighting(w));
     assert_eq!(lying_items(app.world_mut()), before + 1);
 
     // Taking the resolved treasure, within reach, uses the same gameplay
