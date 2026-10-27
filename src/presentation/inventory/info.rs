@@ -204,7 +204,6 @@ pub(super) fn open_info(
             absolute(at, Vec2::splat(30.0)),
             ChildOf(root),
         ))
-        .observe(crate::presentation::retail_controls::primary_press)
         .observe(
             move |_: On<Activate>,
                   mut commands: Commands,

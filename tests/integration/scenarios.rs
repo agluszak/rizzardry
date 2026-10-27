@@ -88,7 +88,7 @@ fn a_green_slime_leaves_treasure() {
     let (loot, _) = loot.expect("the treasure lies in the world");
     rizzardry::game::world::items::take_item(world, loot, 1.0).unwrap();
     step_until(&mut app, "taking the treasure", |w| {
-        w.try_query::<&PartyInventory>().unwrap().single(w).is_ok_and(|p| p.held.is_some())
+        w.try_query::<&PartyInventory>().unwrap().single(w).is_ok_and(|p| p.hand.held.is_some())
     });
     assert_eq!(lying_items(app.world_mut()), before);
 }

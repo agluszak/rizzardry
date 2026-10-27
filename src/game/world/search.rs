@@ -187,7 +187,7 @@ pub fn search_pulse(
         }
         item.hidden = false;
         let name =
-            catalog.and_then(|c| c.get(item.item.item)).map(|d| item.item.display_name(d, false));
+            catalog.and_then(|c| c.get(item.appearance())).map(|d| item.display_name(d, false));
         news.write(SearchNews::Spotted {
             target,
             member: searcher.name.clone(),

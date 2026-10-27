@@ -158,13 +158,10 @@ pub fn draw_bank(
                 }
             }
             Some(Bank::EndCombat) => {
-                commands.entity(entity).insert(ControlSkin::new(
-                    0,
-                    0,
-                    0,
-                    0,
-                    if fighting { 7 } else { 3 },
-                ));
+                let end_skin = ControlSkin::new(0, 0, 0, 0, if fighting { 7 } else { 3 });
+                if *skin != end_skin {
+                    commands.entity(entity).insert(end_skin);
+                }
                 if picture.at.x != if fighting { 200.0 } else { 199.0 } {
                     picture.at.x = if fighting { 200.0 } else { 199.0 };
                 }

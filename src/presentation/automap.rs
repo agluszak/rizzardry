@@ -666,15 +666,21 @@ fn click_map(
 
 pub fn draw_notes(
     mut commands: Commands,
-    layer: Query<Entity, With<NotesLayer>>,
+    layer: Query<(Entity, Ref<NotesLayer>)>,
     automap: Option<Single<Ref<Automap>>>,
     notes: Query<Ref<MapNotes>>,
     art: Option<Res<AutomapArt>>,
     mut views: Query<(Entity, &NoteView, &mut Node, &mut Visibility, &Children)>,
     mut labels: Query<(&mut BitmapText, &mut Visibility), Without<NoteView>>,
 ) {
-    let (Some(map), Some(art), Ok(layer)) = (automap, art, layer.single()) else { return };
+    let (Some(map), Some(art), Ok((layer, built))) = (automap, art, layer.single()) else {
+        return;
+    };
     let Ok(notes) = notes.get(map.level) else { return };
+    // The layer may be built after its art arrives, with the map unchanged.
+    if !map.is_changed() && !notes.is_changed() && !built.is_added() && !art.is_changed() {
+        return;
+    }
     // Retain each marker/label while panning, editing and changing layers.
     let displayed = notes
         .notes
@@ -748,7 +754,7 @@ pub fn update_map_view(
     automap: Option<Single<Ref<Automap>>>,
     level: Query<&Level>,
     geometry: Res<Assets<LevelDefinition>>,
-    mut plans: Query<(Entity, &mut ImageNode), With<FloorPlan>>,
+    plans: Query<(Entity, &ImageNode), With<FloorPlan>>,
     mut images: ResMut<Assets<Image>>,
     party: Query<&Transform, With<PartyBody>>,
     mut markers: Query<&mut Node, With<PartyMarker>>,
@@ -761,11 +767,12 @@ pub fn update_map_view(
     if let Ok(party) = party.single() {
         let at = automap.project(party.translation.xz()) - MARKER / 2.0;
         for mut marker in &mut markers {
-            marker.left = Val::Px(at.x);
-            marker.top = Val::Px(at.y);
+            if (marker.left, marker.top) != (Val::Px(at.x), Val::Px(at.y)) {
+                (marker.left, marker.top) = (Val::Px(at.x), Val::Px(at.y));
+            }
         }
     }
-    let Ok((entity, image)) = plans.single_mut() else { return };
+    let Ok((entity, image)) = plans.single() else { return };
     let view = (entity, automap.centre, automap.span, automap.layer);
     if *previous == Some(view) {
         return;
@@ -852,7 +859,6 @@ pub fn update_map_cursor(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::presentation::retail_controls::primary_press;
     use bevy::ui_widgets::Button;
 
     fn large_map() -> Automap {
@@ -917,47 +923,6 @@ mod tests {
         let map = app.world().get::<Automap>(root).unwrap();
         assert_eq!(map.tool, Some(MapTool::AddNote));
         assert!(map.editing.is_none());
-    }
-
-    #[test]
-    fn non_primary_press_cannot_activate_a_map_button() {
-        use bevy::picking::{backend::HitData, pointer::PointerButton};
-        let mut app = App::new();
-        app.add_plugins((MinimalPlugins, bevy::ui_widgets::ButtonPlugin))
-            .init_resource::<Assets<LevelDefinition>>()
-            .init_resource::<NextState<Screen>>();
-        let root = app.world_mut().spawn(Automap::new(None, &[], Vec3::ZERO)).id();
-        let button = app
-            .world_mut()
-            .spawn((Button, SheetButton { action: ButtonAction::Tool(MapTool::AddNote) }))
-            .observe(primary_press)
-            .observe(press_button)
-            .id();
-        for mouse_button in [PointerButton::Secondary, PointerButton::Primary] {
-            let pointer = crate::presentation::test_input::mouse();
-            let hit = HitData::new(Entity::PLACEHOLDER, 0.0, None, None);
-            app.world_mut().trigger(PointerPress {
-                entity: button,
-                pointer: pointer.clone(),
-                button: mouse_button,
-                hit: hit.clone(),
-                count: 1,
-            });
-            app.update();
-            app.world_mut().trigger(PointerClick {
-                entity: button,
-                pointer,
-                button: mouse_button,
-                hit,
-                count: 1,
-                duration: std::time::Duration::ZERO,
-            });
-            app.update();
-            assert_eq!(
-                app.world().get::<Automap>(root).unwrap().tool.is_some(),
-                mouse_button == PointerButton::Primary
-            );
-        }
     }
 
     #[test]

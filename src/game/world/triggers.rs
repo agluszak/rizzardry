@@ -23,7 +23,7 @@ use crate::content::level::{
 };
 use crate::game::characters::{Character, Vitals};
 use crate::game::data::GameData;
-use crate::game::inventory::{ItemIds, ItemInstance, PartyInventory, make_item};
+use crate::game::inventory::{ItemIds, ItemStack, PartyInventory, make_item};
 use crate::game::loot::roll_loot;
 use crate::game::party::DamageApplied;
 use crate::game::party::roster::PartyRoster;
@@ -141,7 +141,7 @@ struct KeptDevice {
 
 #[derive(Clone, Debug, Default)]
 pub struct Contents {
-    pub items: Vec<ItemInstance>,
+    pub items: Vec<ItemStack>,
     pub gold: u32,
 }
 
@@ -321,11 +321,7 @@ fn open_container(
         outcomes.write(TriggerEffect::Gold(contents.gold));
         contents.gold = 0;
     }
-    for (name, _) in crate::game::inventory::operations::transfer_contents(
-        &mut contents.items,
-        &mut party,
-        catalog,
-    ) {
+    for (name, _) in party.pool.collect(&mut contents.items, catalog) {
         item_news.write(crate::game::inventory::ItemNews::Takes { member: None, item: name });
     }
     if !contents.items.is_empty() {
@@ -637,8 +633,8 @@ fn execute(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth:
     let party = crate::game::party::roster::the_party(world);
     let offered = party
         .and_then(|party| world.get::<PartyInventory>(party))
-        .and_then(|p| p.held.as_ref())
-        .map(|h| h.item.item);
+        .and_then(|p| p.hand.held.as_ref())
+        .map(|h| h.item);
     let chosen = {
         let [actor, owner] = world.get_entity_mut([entity, level]).unwrap();
         select_use(actor, owner.get::<LevelState>().unwrap(), definition, offered)
@@ -852,7 +848,6 @@ mod tests {
     use crate::content::items::{ItemDefinition, ItemId, LootTable};
     use crate::content::level::{Animation, Arrival, DoorLock, PropModel, TriggerSound};
     use crate::game::characters::{Gender, Profession, Race};
-    use crate::game::inventory::Held;
 
     fn act(action: TriggerAction) -> TriggerUse {
         TriggerUse { action, message: None }
@@ -1123,7 +1118,7 @@ mod tests {
         let definition = ItemDefinition { id: key, ..default() };
         let item =
             make_item(&definition, &mut ItemIds::default(), &mut GameRng::seeded(5), false, true);
-        level.inventory().held = Some(Held { item, origin: None });
+        level.inventory().hand.held = Some(item);
         assert!(level.run("DOOR").0);
         assert_eq!(level.motion("DOOR").target, 15.0);
         // Unlocked for good: kept while the party is away.

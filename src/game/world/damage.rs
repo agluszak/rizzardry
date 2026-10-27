@@ -145,7 +145,7 @@ impl MonsterDamage<'_, '_> {
             .filter_map(|id| catalog.get(id))
             .map(|definition| make_item(definition, &mut self.ids, rng, false, false))
             .collect();
-        drop_loot(&mut self.commands, level, position, items, catalog, &mut self.ids, rng);
+        drop_loot(&mut self.commands, level, position, items, catalog);
         Ok(DamageOutcome { damage: lost, died: true, experience: kind.experience })
     }
 }

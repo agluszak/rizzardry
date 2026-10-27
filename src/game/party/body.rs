@@ -76,7 +76,7 @@ impl PartyBody {
 /// On the party: continuous movement intent, supplied by input or a
 /// headless caller. The controller validates whether the party may move on
 /// every fixed step.
-#[derive(Component, Debug, Default)]
+#[derive(Component, Debug, Default, PartialEq)]
 pub struct PartyMovement {
     pub walk: Vec2,
     pub turn: f32,
@@ -181,12 +181,15 @@ pub fn look_around(
     mut party: Query<&mut PartyBody>,
 ) {
     let delta: Vec2 = requests.read().map(|request| request.0).sum();
-    if !freedom.free() || !delta.is_finite() {
+    if !freedom.free() || !delta.is_finite() || delta == Vec2::ZERO {
         return;
     }
     let Ok(mut body) = party.single_mut() else { return };
-    body.yaw += delta.x;
-    body.pitch = (body.pitch + delta.y).clamp(-MAX_PITCH, MAX_PITCH);
+    let yaw = body.yaw + delta.x;
+    let pitch = (body.pitch + delta.y).clamp(-MAX_PITCH, MAX_PITCH);
+    if (body.yaw, body.pitch) != (yaw, pitch) {
+        (body.yaw, body.pitch) = (yaw, pitch);
+    }
 }
 
 /// Turn and walk on the fixed simulation step, feeding Tnua.
@@ -198,8 +201,9 @@ pub fn drive_party(
     let Ok((mut body, mut controller, movement)) = party.single_mut() else { return };
     // A party held by a screen, a camp or a question stands still.
     let free = freedom.free();
-    if free {
-        body.yaw -= movement.turn.clamp(-1.0, 1.0) * TURN_SPEED * time.delta_secs();
+    let turn = movement.turn.clamp(-1.0, 1.0) * TURN_SPEED * time.delta_secs();
+    if free && turn != 0.0 {
+        body.yaw -= turn;
     }
     // The walk config's speed is the run speed; walking scales the input.
     let input = if free { movement.walk.clamp_length_max(1.0) } else { Vec2::ZERO };

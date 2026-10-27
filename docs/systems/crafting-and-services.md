@@ -30,9 +30,9 @@ Retail item and NPC script records are not present in these repositories. We can
 | Data | Rust owner | Notes |
 |---|---|---|
 | CombineRecipe | Immutable content value | Two ItemKindIds, output ItemKindId, optional SkillRequirement. Input order is interchangeable. |
-| ItemInstance | Existing inventory values | Keep quantity, charges, identification, and stable instance identity; do not create ingredient entities. |
+| ItemStack | Existing inventory values | Keep quantity, charges, identification, and stable instance identity; do not create ingredient entities. |
 | Actor skill/profession and brew cooldown | Existing character components/values | Manual merge reads the required skill; automatic brewing reads alchemist profession level and stores its cooldown in AgingTicks. |
-| Pending combine input | UI selection | ActorId and two ItemInstanceIds, plus requested locations/revisions if necessary. Revalidate on submit. |
+| Pending combine input | UI selection | ActorId and two StackIds, plus requested locations/revisions if necessary. Revalidate on submit. |
 | Commission definition | Content value referenced by its named NPC | Accepted ingredient requirements, output, delay, dialogue/fact effects, repeat rules once decoded. |
 | Commission progress | Component/value on the campaign-lived NPC actor | Materials already accepted and the link to its resulting stock entry. This outlives the NPC's active world body. |
 | MerchantStock | Component on that same NPC actor | Each row owns its item value, quantity, stable stock ID, and optional ready_at. Pending output is stored exactly once here. |

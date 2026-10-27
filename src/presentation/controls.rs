@@ -126,7 +126,7 @@ pub fn read_controls(
     mut camps: MessageWriter<CampRequest>,
     mut searches: MessageWriter<ToggleSearch>,
 ) {
-    **movement = PartyMovement { walk: ***walk, turn: ***turn, running: ***run };
+    movement.set_if_neq(PartyMovement { walk: ***walk, turn: ***turn, running: ***run });
     if ***free_look {
         looks.write(PartyLook(-***look * 0.003));
     }

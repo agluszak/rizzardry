@@ -79,7 +79,7 @@ pub fn activate_selection(
         }
         return;
     }
-    if held.held.is_some() {
+    if held.hand.held.is_some() {
         let (Some(level), Some(ray)) = (selection.level, selection.ray) else { return };
         if let Some(at) = drop_point(&obstacles, ray) {
             commands.queue(move |world: &mut World| {

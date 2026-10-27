@@ -62,23 +62,25 @@ pub fn prepare_appearance(
     }
 }
 
-/// Show an active level: with the appearance its entry prepared, or (for
-/// a level entered without a renderer's preparation) loading it now.
+/// Request an active level's render payload as it becomes active: the
+/// appearance its entry prepared, or (for a level entered without a
+/// renderer's preparation) loading it now. Building it waits for the asset
+/// ([`attach_level_visuals`]).
 pub fn request_level_visuals(
+    add: On<Add<Level>>,
     mut commands: Commands,
-    levels: Query<(Entity, &Level, Option<&PreparedAppearance>), Without<LevelAppearance>>,
+    levels: Query<(&Level, Option<&PreparedAppearance>)>,
     assets: Res<AssetServer>,
 ) {
-    for (entity, level, prepared) in &levels {
-        let handle = prepared.map_or_else(
-            || assets.load(format!("retail://{}", level.path)),
-            |prepared| prepared.0.clone(),
-        );
-        commands
-            .entity(entity)
-            .remove::<PreparedAppearance>()
-            .insert((LevelAppearance(handle), Visibility::default()));
-    }
+    let Ok((level, prepared)) = levels.get(add.entity) else { return };
+    let handle = prepared.map_or_else(
+        || assets.load(format!("retail://{}", level.path)),
+        |prepared| prepared.0.clone(),
+    );
+    commands
+        .entity(add.entity)
+        .remove::<PreparedAppearance>()
+        .insert((LevelAppearance(handle), Visibility::default()));
 }
 
 /// The render inputs applied to this camera. A replacement camera needs its

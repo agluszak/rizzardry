@@ -22,7 +22,7 @@ use crate::content::items::{Dice, ItemCatalog};
 use crate::content::species::{MonsterCatalog, Reach};
 use crate::game::characters::{Character, Condition, Vitals};
 use crate::game::data::GameData;
-use crate::game::inventory::{Carried, EquipSlot, ItemInstanceId};
+use crate::game::inventory::{Carried, EquipSlot, StackId};
 use crate::game::party::body::PartyBody;
 use crate::game::party::formation::{self, Formation, Row};
 use crate::game::party::recovery;
@@ -98,7 +98,7 @@ struct Turn {
 /// damage profiles and fatigue use the actor's live stats and accepted weapon.
 #[derive(Clone, Copy, Debug)]
 enum AcceptedAction {
-    Attack { weapon: Option<ItemInstanceId> },
+    Attack { weapon: Option<StackId> },
     Defend,
 }
 
@@ -522,7 +522,9 @@ pub fn run_battle(
         );
     }
     let party = PartyView { eye: PartyBody::eye(position), yaw: body.yaw };
-    if !battle.wait.tick(time.delta()).is_finished() {
+    // A finished pause is not ticked again: a fight waiting for the player
+    // stays unchanged.
+    if !battle.wait.is_finished() && !battle.wait.tick(time.delta()).is_finished() {
         return;
     }
 
@@ -979,8 +981,9 @@ mod tests {
         for (name, weapon) in ["A", "B"].into_iter().zip(&weapons) {
             let character = Character::new(name, Race::Human, Gender::Male, Profession::Fighter);
             let mut carried = Carried::default();
-            carried.equipment[EquipSlot::Primary] =
-                Some(make_item(weapon, &mut ids, &mut equipment_rng, false, true));
+            carried.equipment[EquipSlot::Primary] = Some(crate::game::inventory::Equipped::new(
+                make_item(weapon, &mut ids, &mut equipment_rng, false, true),
+            ));
             let order = if name == "B" && defending { Order::Defend } else { Order::Attack };
             let entity =
                 app.world_mut().spawn((Vitals::new(&character), character, carried, order)).id();

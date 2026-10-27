@@ -547,7 +547,8 @@ pub fn activate_level(
     (mut ready, mut failures): (MessageWriter<LevelReady>, MessageWriter<LevelEntryFailed>),
 ) {
     for (root, mut destination, presentation) in &mut destinations {
-        let destination = &mut *destination;
+        // Polling reads the destination; the commit consumes it.
+        let destination = destination.bypass_change_detection();
         let level = &destination.level;
         let mut fail = |why: &str| {
             error!("{}: {why}", level.path);
