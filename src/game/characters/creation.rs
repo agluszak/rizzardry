@@ -1,5 +1,6 @@
 //! New-character drafts. No live actor exists until the party is accepted.
 use super::*;
+use crate::content::spells::{SpellDefinition, SpellId};
 use enumset::EnumSet;
 
 pub const PLAYABLE_RACES: [Race; 11] = [
@@ -25,6 +26,8 @@ pub struct CharacterDraft {
     profession: Profession,
     attributes: EnumMap<Attribute, u8>,
     skills: EnumMap<Skill, u8>,
+    /// The first spells picked (retail state 2 until the character is made).
+    spells: std::collections::BTreeSet<SpellId>,
 }
 
 impl Default for CharacterDraft {
@@ -37,6 +40,7 @@ impl Default for CharacterDraft {
             profession: Profession::Fighter,
             attributes: EnumMap::default(),
             skills: EnumMap::default(),
+            spells: default(),
         }
     }
 }
@@ -66,6 +70,7 @@ impl CharacterDraft {
         self.profession = profession;
         self.attributes = EnumMap::default();
         self.skills = EnumMap::default();
+        self.spells.clear();
         Ok(())
     }
 
@@ -176,6 +181,25 @@ impl CharacterDraft {
         character
     }
 
+    pub fn spells(&self) -> &std::collections::BTreeSet<SpellId> {
+        &self.spells
+    }
+
+    /// Pick or unpick a first spell (retail `CharGeneration.cpp`): the
+    /// profession's casters pick two they could learn now.
+    pub fn toggle_spell(&mut self, spell: &SpellDefinition) -> bool {
+        if self.spells.remove(&spell.id) {
+            return true;
+        }
+        let profile = self.preview();
+        if self.spells.len() >= crate::game::magic::starting_picks(&profile)
+            || !crate::game::magic::can_learn(&profile, spell)
+        {
+            return false;
+        }
+        self.spells.insert(spell.id)
+    }
+
     pub fn finish(&self) -> Result<Character, &'static str> {
         Self::budget(self.race, self.gender, self.profession)?;
         if self.name.trim().is_empty()
@@ -187,7 +211,11 @@ impl CharacterDraft {
         if self.portrait.is_empty() || !self.portrait.bytes().all(|c| c.is_ascii_alphanumeric()) {
             return Err("Choose a portrait.");
         }
-        Ok(self.preview())
+        let preview = self.preview();
+        if self.spells.len() != crate::game::magic::starting_picks(&preview) {
+            return Err("Choose your first spells.");
+        }
+        Ok(preview)
     }
 }
 

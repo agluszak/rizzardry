@@ -68,6 +68,7 @@ pub fn recruit_character(
             character,
             vitals,
             super::Order::Attack,
+            crate::game::magic::LearnedSpells::default(),
             NeedsEquipment,
         ))
         .id();

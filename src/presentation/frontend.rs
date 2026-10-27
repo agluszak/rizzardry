@@ -1,8 +1,10 @@
 //! Retained frontend screens. Drafts belong to the creation root, never the campaign.
 use super::screen_art::{BitmapText, Picture, absolute, spawn_picture};
 use crate::content::characters::{Attribute, Gender, Profession, Skill};
+use crate::content::spells::SpellCatalog;
 use crate::content::ui::SpriteSheet;
 use crate::game::characters::creation::{CharacterDraft, PLAYABLE_RACES};
+use crate::game::data::GameData;
 use crate::game::party::{formation::Formation, roster::PartyRoster};
 use crate::game::session::{NewGameDestination, Session, begin_adventure};
 use bevy::input::keyboard::{Key, KeyboardInput};
@@ -107,6 +109,7 @@ enum Page {
     Identity,
     Attributes,
     Skills,
+    Spells,
     Review,
 }
 #[derive(Component)]
@@ -141,6 +144,8 @@ enum Action {
     Portrait(i32),
     Attribute(Attribute, bool),
     Skill(Skill, bool),
+    /// Pick or unpick the spell shown in this slot.
+    Spell(usize),
 }
 #[derive(Component)]
 enum Field {
@@ -153,6 +158,7 @@ enum Field {
     Skill(Skill),
     Review,
     Message,
+    SpellSlot(usize),
 }
 #[derive(Component)]
 struct PreviewPortrait;
@@ -479,7 +485,7 @@ fn creation(mut commands: Commands, assets: Res<AssetServer>) {
     );
     let message = text(&mut commands, editor, (205., 402.), 410., 10., "");
     commands.entity(message).insert(Field::Message);
-    for page in [Page::Identity, Page::Attributes, Page::Skills, Page::Review] {
+    for page in [Page::Identity, Page::Attributes, Page::Skills, Page::Spells, Page::Review] {
         let panel =
             commands.spawn((absolute(Vec2::new(205., 80.), Vec2::new(413., 310.)), page)).id();
         commands.entity(editor).add_child(panel);
@@ -628,12 +634,43 @@ fn creation(mut commands: Commands, assets: Res<AssetServer>) {
                     panel,
                     (225., 275.),
                     175.,
+                    "SPELLS  >",
+                    Action::Page(Page::Spells),
+                );
+            }
+            Page::Spells => {
+                text(&mut commands, panel, (0., 0.), 300., 20., "04 / Spells");
+                let value = text(&mut commands, panel, (0., 31.), 395., 11., "");
+                commands.entity(value).insert(Field::Points);
+                for i in 0..SPELL_SLOTS {
+                    let at = ((i / 8) as f32 * 137., 55. + (i % 8) as f32 * 27.);
+                    let label = button(&mut commands, panel, at, 132., "", Action::Spell(i));
+                    commands.entity(label).insert(Field::SpellSlot(i));
+                    commands.queue(move |world: &mut World| {
+                        if let Some(&ChildOf(slot)) = world.get::<ChildOf>(label) {
+                            world.entity_mut(slot).insert(SpellSlotButton(i));
+                        }
+                    });
+                }
+                button(
+                    &mut commands,
+                    panel,
+                    (0., 275.),
+                    100.,
+                    "<  SKILLS",
+                    Action::Page(Page::Skills),
+                );
+                button(
+                    &mut commands,
+                    panel,
+                    (225., 275.),
+                    175.,
                     "REVIEW  >",
                     Action::Page(Page::Review),
                 );
             }
             Page::Review => {
-                text(&mut commands, panel, (0., 0.), 300., 20., "04 / Review adventurer");
+                text(&mut commands, panel, (0., 0.), 300., 20., "05 / Review adventurer");
                 let value = text(&mut commands, panel, (0., 45.), 395., 13., "");
                 commands.entity(value).insert(Field::Review);
                 text(
@@ -642,15 +679,15 @@ fn creation(mut commands: Commands, assets: Res<AssetServer>) {
                     (0., 205.),
                     395.,
                     11.,
-                    "Spell selection and personality voices are not implemented.\nThis adventurer will begin without learned spells.\nUnspent creation points are discarded when the adventure begins.",
+                    "Personality voices are not implemented.\nUnspent creation points are discarded when the adventure begins.",
                 );
                 button(
                     &mut commands,
                     panel,
                     (0., 275.),
                     100.,
-                    "<  SKILLS",
-                    Action::Page(Page::Skills),
+                    "<  SPELLS",
+                    Action::Page(Page::Spells),
                 );
                 button(
                     &mut commands,
@@ -666,6 +703,24 @@ fn creation(mut commands: Commands, assets: Res<AssetServer>) {
 }
 #[derive(Component)]
 struct SkillRow(Skill);
+/// One of the spell page's buttons; refresh shows the spell it offers.
+#[derive(Component)]
+struct SpellSlotButton(usize);
+const SPELL_SLOTS: usize = 24;
+
+/// The first-level spells the draft could pick, in spell order.
+fn eligible_spells<'a>(
+    draft: &CharacterDraft,
+    spells: Option<&'a SpellCatalog>,
+) -> Vec<&'a crate::content::spells::SpellDefinition> {
+    let profile = draft.preview();
+    if crate::game::magic::starting_picks(&profile) == 0 {
+        return Vec::new();
+    }
+    spells.map_or_else(Vec::new, |catalog| {
+        catalog.0.iter().filter(|s| crate::game::magic::can_learn(&profile, s)).collect()
+    })
+}
 fn words(name: &str) -> String {
     let mut result = String::new();
     for (i, c) in name.chars().enumerate() {
@@ -692,7 +747,10 @@ fn activate(
     assets: Res<AssetServer>,
     destination: Res<NewGameDestination>,
     mut names: Query<&mut EditableText, With<NameInput>>,
-    dialogs: Query<(), With<confirmation::DeleteDialog>>,
+    (dialogs, magic_data): (
+        Query<(), With<confirmation::DeleteDialog>>,
+        (Option<Res<GameData>>, Res<Assets<SpellCatalog>>),
+    ),
 ) {
     if !dialogs.is_empty() {
         return;
@@ -885,6 +943,14 @@ fn activate(
                         Err("Skills allow five allocated points each, within a pool of fifteen.")
                     }
                 }
+                Action::Spell(slot) => {
+                    let catalog = magic_data.0.as_ref().and_then(|d| magic_data.1.get(&d.spells));
+                    match eligible_spells(draft, catalog).get(slot) {
+                        Some(spell) if draft.toggle_spell(spell) => Ok(()),
+                        Some(_) => Err("Unpick a spell first."),
+                        None => Ok(()),
+                    }
+                }
                 _ => Ok(()),
             };
             if let Err(message) = result {
@@ -952,12 +1018,21 @@ fn refresh(
     focus: Res<InputFocus>,
     mut commands: Commands,
     buttons: Query<(Entity, &Action, Has<InteractionDisabled>), Without<party::Control>>,
-    mut pages: Query<(&Page, &mut Node, &mut Visibility), Without<SkillRow>>,
+    mut pages: Query<
+        (&Page, &mut Node, &mut Visibility),
+        (Without<SkillRow>, Without<SpellSlotButton>),
+    >,
     mut fields: Query<(&Field, &mut Text)>,
-    mut rows: Query<(&SkillRow, &mut Node, &mut Visibility), Without<Page>>,
+    mut rows: Query<
+        (&SkillRow, &mut Node, &mut Visibility),
+        (Without<Page>, Without<SpellSlotButton>),
+    >,
     mut portraits: Query<&mut Picture, With<PreviewPortrait>>,
     assets: Res<AssetServer>,
+    mut spell_slots: Query<(&SpellSlotButton, &mut Visibility), (Without<Page>, Without<SkillRow>)>,
+    magic_data: (Option<Res<GameData>>, Res<Assets<SpellCatalog>>),
 ) {
+    let spell_catalog = magic_data.0.as_ref().and_then(|d| magic_data.1.get(&d.spells));
     let Ok(session) = sessions.single() else { return };
     if !session.is_changed() && !focus.is_changed() {
         return;
@@ -1012,6 +1087,21 @@ fn refresh(
                     Field::Race => format!("{:?}", draft.race()),
                     Field::Gender => format!("{:?}", draft.gender()),
                     Field::Profession => format!("{:?}", draft.profession()),
+                    Field::Points if session.page == Page::Spells => {
+                        let picks = crate::game::magic::starting_picks(profile);
+                        if picks == 0 {
+                            format!("A {:?} learns no spells yet.", profile.profession)
+                        } else {
+                            format!("Choose {picks} first spells ({} chosen)", draft.spells().len())
+                        }
+                    }
+                    Field::SpellSlot(i) => eligible_spells(draft, spell_catalog)
+                        .get(*i)
+                        .map(|spell| {
+                            let mark = if draft.spells().contains(&spell.id) { "* " } else { "" };
+                            format!("{mark}{}", spell.name)
+                        })
+                        .unwrap_or_default(),
                     Field::Points => {
                         if session.page == Page::Attributes {
                             format!(
@@ -1044,6 +1134,16 @@ fn refresh(
         };
         if text.0 != value {
             text.0 = value;
+        }
+    }
+    if let Some(draft) = draft {
+        let offered = eligible_spells(draft, spell_catalog).len();
+        for (slot, mut visibility) in &mut spell_slots {
+            visibility.set_if_neq(if slot.0 < offered {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            });
         }
     }
     if let Some(draft) = draft {
@@ -1216,6 +1316,7 @@ mod keyboard_tests {
         ))
         .init_asset::<crate::content::ui::Credits>()
         .init_asset::<crate::content::ui::TextTable>()
+        .init_asset::<SpellCatalog>()
         .init_asset::<Image>()
         .init_state::<Session>()
         .init_asset::<crate::content::ui::SpriteSheet>()

@@ -12,7 +12,8 @@ use enumset::EnumSet;
 
 use crate::content::items::{Dice, ItemId};
 use crate::content::species::{
-    AttackWord, Drop, MonsterAttack, MonsterAttributes, MonsterCatalog, Reach, Species, Treasure,
+    AttackWord, Disposition, Drop, MonsterAttack, MonsterAttributes, MonsterCatalog, Reach,
+    Species, Treasure,
 };
 
 const RECORD: usize = 0x297;
@@ -116,7 +117,18 @@ fn species(record: &[u8]) -> Species {
                 }
             })
             .collect(),
+        resistances: EnumMap::from_array(bytes(0x176, 6).try_into().unwrap()),
+        disposition: match i32_at(record, 0x25b) {
+            -1 => Disposition::Neutral,
+            0 => Disposition::Hostile,
+            radius => Disposition::HostileWithin(radius as f32 / crate::content::UNITS_PER_METRE),
+        },
+        faction: i32_at(record, 0x25f),
     }
+}
+
+fn i32_at(record: &[u8], at: usize) -> i32 {
+    i32::from_le_bytes(record[at..at + 4].try_into().unwrap())
 }
 
 /// Every species record.

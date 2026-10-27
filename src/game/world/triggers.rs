@@ -948,7 +948,7 @@ mod tests {
             world.insert_resource(GameRng::seeded(5));
             let items = world.resource_mut::<Assets<ItemCatalog>>().add(ItemCatalog::default());
             let loot = world.resource_mut::<Assets<LootTables>>().add(LootTables::default());
-            world.insert_resource(GameData { items, loot, species: default() });
+            world.insert_resource(GameData { items, loot, species: default(), spells: default() });
             let root = world.spawn_empty().id();
             let mut scenario = Self {
                 world,

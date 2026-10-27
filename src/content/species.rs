@@ -115,6 +115,24 @@ pub struct Species {
     pub gold: Dice,
     /// What it may leave behind, in retail's slot order.
     pub treasure: Vec<Treasure>,
+    /// Its own resistance per realm (%).
+    pub resistances: EnumMap<super::characters::Realm, u8>,
+    /// Authored disposition (retail `hostility_radius`): hostile on sight,
+    /// neutral, or neutral until the party comes within this many metres.
+    pub disposition: Disposition,
+    /// Retail faction (0 is unaligned); only unaligned species use the
+    /// hostility radius.
+    pub faction: i32,
+}
+
+/// How a species meets the party before anything provokes it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Disposition {
+    #[default]
+    Hostile,
+    Neutral,
+    /// Neutral until the party is within this many metres.
+    HostileWithin(f32),
 }
 
 impl Species {

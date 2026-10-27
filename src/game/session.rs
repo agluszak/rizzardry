@@ -43,8 +43,9 @@ pub fn begin_adventure(
         return Err("Create between one and six adventurers.");
     }
     let characters = drafts.iter().map(CharacterDraft::finish).collect::<Result<Vec<_>, _>>()?;
-    for character in characters {
-        recruit_character(commands, roster, formation, character);
+    for (character, draft) in characters.into_iter().zip(drafts.iter()) {
+        let member = recruit_character(commands, roster, formation, character);
+        commands.entity(member).insert(super::magic::LearnedSpells(draft.spells().clone()));
     }
     drafts.clear();
     commands.spawn((

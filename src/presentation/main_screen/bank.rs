@@ -42,6 +42,10 @@ enum Bank {
     Order(Order),
     Round,
     EndCombat,
+    /// Use Item / Cast Spell: open the magic menu.
+    Magic {
+        items: bool,
+    },
 }
 
 #[derive(Component)]
@@ -82,8 +86,8 @@ pub fn row(art: &MainScreenArt, _sheets: &Assets<SpriteSheet>) -> impl SceneList
         -- @icon(40.0,[0x2b,0x28,0x29,0x2a,0x2c],None)
         -- @icon(70.0,[3,0,1,2,4],Some(Bank::Camp))
         -- @icon(100.0,[8,5,6,7,9],Some(Bank::Search))
-        -- @icon(130.0,[0x17,0x14,0x15,0x16,0x18],None)
-        -- @icon(160.0,[0x1c,0x19,0x1a,0x1b,0x1d],None)
+        -- @icon(130.0,[0x17,0x14,0x15,0x16,0x18],Some(Bank::Magic { items: true }))
+        -- @icon(160.0,[0x1c,0x19,0x1a,0x1b,0x1d],Some(Bank::Magic { items: false }))
         -- @icon(571.0,[0x26,0x23,0x24,0x25,0x27],Some(Bank::Formation))
         -- @bank_button(art.combat_toggle.clone(),Vec2::new(199.0,452.0),[3,0,1,2,2],Some(Bank::EndCombat))
         -- @icon(232.0,[0x12,0xf,0x10,0x11,0x13],Some(Bank::Order(Order::Defend)))
@@ -132,6 +136,8 @@ pub fn draw_bank(
         let enabled = face.kind.is_some_and(|kind| {
             !matches!(kind, Bank::EndCombat)
                 && !(fighting && matches!(kind, Bank::Camp | Bank::Search))
+                // Choices are made between rounds.
+                && !(matches!(kind, Bank::Magic { .. }) && battle.as_ref().is_some_and(|b| b.executing()))
                 && !(combat_only && !fighting)
         });
         set_enabled(&mut commands, entity, enabled, disabled);
@@ -201,6 +207,8 @@ fn press(
     mut round: MessageWriter<StartRound>,
     mut settings: ResMut<CombatSettings>,
     battle: Option<Res<Battle>>,
+    mut commands: Commands,
+    menus: Query<Entity, With<super::magic_menu::MagicMenu>>,
 ) {
     match buttons.get(click.entity).ok().and_then(|face| face.kind) {
         Some(Bank::Order(order)) if battle.is_some() => {
@@ -225,6 +233,14 @@ fn press(
         }
         // The Party Formation button opens and closes the formation panel.
         Some(Bank::Formation) => layout.toggle(Panel::Formation),
+        Some(Bank::Magic { items }) => {
+            for menu in &menus {
+                commands.entity(menu).despawn();
+            }
+            if let Some(member) = selected.member(&roster) {
+                commands.spawn(super::magic_menu::MagicMenu::open(member, items));
+            }
+        }
         _ => {}
     }
 }
@@ -258,7 +274,9 @@ pub fn draw_caption(
     battle: Option<Res<Battle>>,
     orders: Query<&Order>,
     mut captions: Query<(&CaptionLine, &mut BitmapText)>,
+    spells: Res<Assets<crate::content::spells::SpellCatalog>>,
 ) {
+    let spells = data.as_ref().and_then(|d| spells.get(&d.spells));
     let catalog = data.and_then(|d| catalogs.get(&d.items));
     let (first, second) = match selected.member(&roster).and_then(|m| members.get(m).ok()) {
         None => (String::new(), String::new()),
@@ -279,6 +297,25 @@ pub fn draw_caption(
                             .map_or("Unarmed", |d| d.name.as_str());
                         format!("Attack - {weapon}")
                     }
+                    Order::Magic(choice) => match choice.source {
+                        crate::game::magic::casting::Source::Spell { spell, power } => {
+                            let name = spells.and_then(|s| s.get(spell)).map_or("", |s| &s.name);
+                            format!("Cast {name} ({power})")
+                        }
+                        crate::game::magic::casting::Source::Item(id) => {
+                            let name = carried
+                                .and_then(|c| {
+                                    c.equipment
+                                        .values()
+                                        .chain(c.backpack.iter())
+                                        .flatten()
+                                        .find(|i| i.id == id)
+                                })
+                                .and_then(|i| catalog?.get(i.item))
+                                .map_or("", |d| d.name.as_str());
+                            format!("Use {name}")
+                        }
+                    },
                 }
             } else {
                 crate::presentation::screen_art::condition_icon(vitals)

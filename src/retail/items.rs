@@ -454,7 +454,12 @@ fn read_item(
     let attack_modes = EnumSet::from_repr_truncated(bytes.u16()?);
     bytes.take(16 + 1 + 1)?; // effect chances, magnitude, slays
     let armor_class_bonus = bytes.i8()?;
-    bytes.take(3)?; // spell, its power, and one more
+    let (spell, power) = (bytes.u8()?, bytes.u8()?);
+    bytes.u8()?; // not established
+    let spell = (spell != 0 && power != 0).then_some(crate::content::spells::ItemSpell {
+        spell: crate::content::spells::SpellId(spell),
+        power: power.min(crate::content::spells::MAX_POWER),
+    });
     let quantity_kind = bytes.u8()?;
     let initial_quantity = dice(&mut bytes)?;
     let maximum_quantity = bytes.u8()?;
@@ -497,6 +502,7 @@ fn read_item(
         damage_bonus,
         hit_bonus,
         armor_class_bonus,
+        spell,
         resistance_bonus,
         quantity: match quantity_kind {
             0 => QuantityKind::None,

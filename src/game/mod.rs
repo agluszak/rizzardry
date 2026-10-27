@@ -7,6 +7,7 @@ pub mod combat;
 pub mod data;
 pub mod inventory;
 pub mod loot;
+pub mod magic;
 pub mod party;
 pub mod rng;
 pub mod screen;

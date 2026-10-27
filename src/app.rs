@@ -239,6 +239,7 @@ pub fn build(options: &Options) -> Result<App, String> {
         PartyPlugin,
         TimePlugin,
         crate::game::combat::CombatPlugin,
+        crate::game::magic::MagicPlugin,
     ));
     // Navmeshes: retail decodes a level's collision, navigation bakes it
     // and saves the result to the processor's cache.

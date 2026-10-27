@@ -1092,7 +1092,12 @@ mod tests {
         let mut catalogs = Assets::<ItemCatalog>::default();
         let items = catalogs.add(catalog());
         world.insert_resource(catalogs);
-        world.insert_resource(GameData { items, loot: default(), species: default() });
+        world.insert_resource(GameData {
+            items,
+            loot: default(),
+            species: default(),
+            spells: default(),
+        });
         world.init_resource::<PartyRoster>();
         world.init_resource::<PartyInventory>();
         let mut ids = ItemIds::default();

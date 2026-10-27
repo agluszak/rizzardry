@@ -108,6 +108,11 @@ impl MonsterDamage<'_, '_> {
         let lost = amount.min(monster.hp);
         monster.hp -= lost;
         if !monster.is_dead() {
+            crate::game::characters::wake_on_hit(
+                &mut monster.conditions,
+                u32::from(kind.attributes.senses),
+                rng,
+            );
             return Ok(DamageOutcome { damage: lost, ..default() });
         }
         // Stop autonomous work, not the body's geometry or vertical physics.

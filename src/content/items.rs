@@ -131,6 +131,8 @@ pub struct ItemDefinition {
     pub damage_bonus: i8,
     pub hit_bonus: i8,
     pub armor_class_bonus: i8,
+    /// The spell it casts when used, at its own power.
+    pub spell: Option<super::spells::ItemSpell>,
     /// Resistance modifiers while equipped, by magical realm.
     pub resistance_bonus: EnumMap<Realm, i8>,
     pub quantity: QuantityKind,

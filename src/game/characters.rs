@@ -38,6 +38,56 @@ pub enum Condition {
     Unconscious,
 }
 
+/// Inflict a condition on a party member or a monster (retail
+/// `InflictCharacterCondition`, `InflictMonsterCondition`): a longer
+/// duration replaces a shorter one, never the reverse.
+pub fn inflict(conditions: &mut Vec<(Condition, Lasting)>, condition: Condition, lasting: Lasting) {
+    match conditions.iter_mut().find(|(c, _)| *c == condition) {
+        Some((_, existing)) => {
+            *existing = match (*existing, lasting) {
+                (Lasting::Rounds(a), Lasting::Rounds(b)) => Lasting::Rounds(a.max(b)),
+                _ => Lasting::Indefinite,
+            }
+        }
+        None => conditions.push((condition, lasting)),
+    }
+}
+
+/// Count timed conditions down by aging ticks, lifting those that run out
+/// (retail `TickCharacterCondition`, `TickMonsterCondition`).
+pub fn age(conditions: &mut Vec<(Condition, Lasting)>, ticks: u32) {
+    conditions.retain_mut(|(_, lasting)| match lasting {
+        Lasting::Rounds(left) if u32::from(*left) <= ticks => false,
+        Lasting::Rounds(left) => {
+            *left -= ticks as u16;
+            true
+        }
+        Lasting::Indefinite => true,
+    });
+}
+
+/// Whether any condition is timed, so that aging has work to do.
+pub fn any_timed(conditions: &[(Condition, Lasting)]) -> bool {
+    conditions.iter().any(|(_, lasting)| matches!(lasting, Lasting::Rounds(_)))
+}
+
+/// A hit that is not quiet may wake a sleeper: `SEN/2 + 50` percent (retail
+/// `damageCharacter`, `MonsterReactsToBeingStruck`). Returns whether it woke.
+pub fn wake_on_hit(
+    conditions: &mut Vec<(Condition, Lasting)>,
+    senses: u32,
+    rng: &mut crate::game::rng::GameRng,
+) -> bool {
+    if !conditions.iter().any(|&(c, _)| c == Condition::Asleep) {
+        return false;
+    }
+    if rng.below(100) < senses / 2 + 50 {
+        conditions.retain(|&(c, _)| c != Condition::Asleep);
+        return true;
+    }
+    false
+}
+
 /// How long a condition lasts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lasting {
@@ -511,15 +561,7 @@ impl Vitals {
 
     /// Inflict a condition, keeping the longer duration if already afflicted.
     pub fn inflict(&mut self, condition: Condition, lasting: Lasting) {
-        match self.conditions.iter_mut().find(|(c, _)| *c == condition) {
-            Some((_, existing)) => {
-                *existing = match (*existing, lasting) {
-                    (Lasting::Rounds(a), Lasting::Rounds(b)) => Lasting::Rounds(a.max(b)),
-                    _ => Lasting::Indefinite,
-                }
-            }
-            None => self.conditions.push((condition, lasting)),
-        }
+        inflict(&mut self.conditions, condition, lasting);
     }
 
     pub fn lift(&mut self, condition: Condition) {
@@ -529,14 +571,7 @@ impl Vitals {
     /// Count timed conditions down, lifting those that run out (retail
     /// `AgeCondition`). Poison's weakening is not modelled yet.
     pub fn age_conditions(&mut self, ticks: u32) {
-        self.conditions.retain_mut(|(_, lasting)| match lasting {
-            Lasting::Rounds(left) if u32::from(*left) <= ticks => false,
-            Lasting::Rounds(left) => {
-                *left -= ticks as u16;
-                true
-            }
-            Lasting::Indefinite => true,
-        });
+        age(&mut self.conditions, ticks);
     }
 
     /// Take damage (retail `damageCharacter`): two thirds of it also drain
