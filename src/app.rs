@@ -15,7 +15,7 @@ use crate::dev::{
 };
 use crate::game::party::PartyPlugin;
 use crate::game::party::body::PartyStart;
-use crate::game::party::roster::{PartyRoster, Recruit, recruit};
+use crate::game::party::roster::Recruit;
 use crate::game::time::{GameClock, TimePlugin};
 use crate::game::world::WorldPlugin;
 use crate::game::world::level::{Destination, Level};
@@ -220,7 +220,6 @@ pub fn build(options: &Options) -> Result<App, String> {
     // Shared campaign services are composed here, not owned by world loading.
     app.init_resource::<crate::game::rng::GameRng>()
         .init_resource::<crate::game::inventory::ItemIds>()
-        .init_resource::<crate::game::inventory::PartyInventory>()
         .init_state::<crate::game::screen::Screen>()
         .add_message::<crate::game::inventory::ItemNews>()
         .add_systems(Startup, crate::game::data::load_game_data)
@@ -302,20 +301,16 @@ pub fn build(options: &Options) -> Result<App, String> {
                 .before(TransformSystems::Propagate),
         );
     }
-    // Explicit developer/headless bootstrap. Interactive play commits from the creation flow.
+    // Explicit developer/headless bootstrap: a new campaign with the party
+    // file's members. Interactive play commits from the creation flow.
     if quick_start {
-        app.add_systems(
-            Startup,
-            move |mut commands: Commands,
-                  mut roster: ResMut<PartyRoster>,
-                  mut formation: ResMut<crate::game::party::formation::Formation>| {
-                for member in &party {
-                    recruit(&mut commands, &mut roster, &mut formation, member);
-                }
-            },
-        );
         app.add_systems(Startup, move |mut commands: Commands, assets: Res<AssetServer>| {
-            let first = Destination::new(Level::load(&level, &assets), start.clone());
+            let characters = party.iter().map(Recruit::character).collect();
+            let first = Destination::new(
+                Level::load(&level, &assets),
+                start.clone(),
+                crate::game::world::level::Entry::NewGame(characters),
+            );
             commands.spawn((Name::new(level.clone()), first));
         });
     }

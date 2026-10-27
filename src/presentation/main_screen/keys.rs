@@ -186,13 +186,13 @@ fn hold_main_screen_keys(
 fn select_member(
     key: On<Start<SelectMember>>,
     slots: Query<&MemberKey>,
-    roster: Res<PartyRoster>,
+    roster: Single<&PartyRoster>,
     mut selected: ResMut<SelectedMember>,
 ) {
     if let Ok(MemberKey(slot)) = slots.get(key.action)
-        && *slot < roster.0.len()
+        && *slot < roster.len()
     {
-        selected.0 = roster.0.get_index(*slot).copied();
+        selected.0 = roster.get_index(*slot).copied();
     }
 }
 
@@ -202,7 +202,7 @@ fn set_order(
     battle: Option<Res<Battle>>,
     selected: Res<SelectedMember>,
     mut orders: Query<&mut Order>,
-    roster: Res<PartyRoster>,
+    roster: Single<&PartyRoster>,
 ) {
     if let (Ok(OrderKey(order)), Some(_)) = (orders_by_key.get(key.action), battle)
         && let Some(member) = selected.member(&roster)
@@ -237,7 +237,6 @@ mod tests {
         app.init_resource::<ScreenLayout>()
             .init_resource::<SelectedMember>()
             .init_state::<Screen>()
-            .init_resource::<PartyRoster>()
             .add_plugins(plugin);
         app.finish();
         app.cleanup();
@@ -267,12 +266,14 @@ mod tests {
     fn number_keys_select_members_only_while_no_other_screen_is_up() {
         let mut app = app();
         let members: Vec<Entity> = (0..3).map(|_| app.world_mut().spawn_empty().id()).collect();
-        app.world_mut().resource_mut::<PartyRoster>().0.extend(members.iter().copied());
+        let party = crate::game::party::roster::test_party(app.world_mut(), &members);
         tap(&mut app, &[KeyCode::Digit3]);
         assert_eq!(app.world().resource::<SelectedMember>().0, Some(members[2]));
-        app.world_mut().resource_mut::<PartyRoster>().0 = members.iter().rev().copied().collect();
+        let reversed: Vec<_> = members.iter().rev().copied().collect();
+        crate::game::party::roster::test_reorder(app.world_mut(), &reversed);
+        let roster = app.world().get::<PartyRoster>(party).unwrap();
         assert_eq!(
-            app.world().resource::<SelectedMember>().member(app.world().resource::<PartyRoster>()),
+            app.world().resource::<SelectedMember>().member(roster),
             Some(members[2]),
             "selection follows the actor after reordering"
         );

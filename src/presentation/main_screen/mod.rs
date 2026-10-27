@@ -72,7 +72,7 @@ impl SelectedMember {
     /// An explicit selection follows its actor through roster reordering.
     /// With no current selection, display the first remaining member.
     pub fn member(&self, roster: &crate::game::party::roster::PartyRoster) -> Option<Entity> {
-        self.0.filter(|m| roster.0.contains(m)).or_else(|| roster.0.first().copied())
+        self.0.filter(|m| roster.contains(m)).or_else(|| roster.first().copied())
     }
 }
 
@@ -340,7 +340,6 @@ mod keyboard_tests {
             .init_state::<crate::game::screen::Screen>()
             .init_resource::<ScreenLayout>()
             .init_resource::<SelectedMember>()
-            .init_resource::<crate::game::party::roster::PartyRoster>()
             .init_resource::<crate::game::combat::CombatSettings>()
             .init_resource::<TextLog>()
             .add_message::<crate::game::combat::StartRound>()

@@ -149,8 +149,8 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) {
 
 pub(super) fn refresh(
     screen: Option<Single<Ref<InventoryScreen>>>,
-    party: Option<Res<PartyRoster>>,
-    inventory: Option<Res<PartyInventory>>,
+    party: Option<Single<Ref<PartyRoster>>>,
+    inventory: Option<Single<Ref<PartyInventory>>>,
     data: Option<Res<GameData>>,
     catalogs: Option<Res<Assets<ItemCatalog>>>,
     members: Query<CharacterView>,
@@ -166,8 +166,8 @@ pub(super) fn refresh(
     let CharacterViewItem { profile: character, vitals, carried } = view;
     let party_changed = party.as_ref().is_some_and(|roster| {
         roster.is_changed()
-            || removed.iter().any(|e| roster.0.contains(e))
-            || members.iter_many(&roster.0).matched().any(|view| view.is_changed())
+            || removed.iter().any(|e| roster.contains(e))
+            || members.iter_many(roster.iter()).matched().any(|view| view.is_changed())
     });
     if !screen.is_changed()
         && !actor_changed
@@ -186,10 +186,9 @@ pub(super) fn refresh(
     let weight = party.as_ref().zip(inventory.as_ref()).zip(catalog).and_then(
         |((roster, inventory), catalog)| {
             let member_data: Vec<_> = roster
-                .0
                 .iter()
                 .map(|entity| {
-                    members.get(*entity).ok().and_then(
+                    members.get(entity).ok().and_then(
                         |CharacterViewItem { profile, vitals, carried }| {
                             if vitals.is_dead() {
                                 None
@@ -207,7 +206,7 @@ pub(super) fn refresh(
                 .collect();
             let pool = inventory.pool.iter().map(|item| item_weight(item, catalog)).sum();
             let shares = pool_shares(pool, &member_data);
-            let index = roster.0.get_index_of(&screen.member)?;
+            let index = roster.get_index_of(&screen.member)?;
             let own = carried.as_deref().map_or(0, |carried| carried_weight(carried, catalog));
             Some(own + shares[index])
         },

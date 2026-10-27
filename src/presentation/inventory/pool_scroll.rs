@@ -51,7 +51,7 @@ pub(super) fn wheel(
 
 pub(super) fn sync(
     slider: Option<Single<(Entity, &SliderValue, &SliderRange), With<PoolScroll>>>,
-    party: Option<Res<PartyInventory>>,
+    party: Option<Single<&PartyInventory>>,
     mut commands: Commands,
 ) {
     let (Some((slider, value, range)), Some(party)) = (slider.as_deref(), party) else { return };
@@ -98,7 +98,10 @@ mod tests {
                 remarked: false,
             })
             .collect();
-        app.insert_resource(PartyInventory { pool: items, ..default() });
+        let party = app
+            .world_mut()
+            .spawn((crate::game::party::roster::Party, PartyInventory { pool: items, ..default() }))
+            .id();
         let slider = app
             .world_mut()
             .spawn((PoolScroll, Slider::default(), SliderStep(1.0)))
@@ -122,7 +125,10 @@ mod tests {
         }
         assert_eq!(app.world().get::<SliderValue>(slider).unwrap().0, 2.0);
         let shown = app.world().get::<SliderValue>(slider).unwrap().0 as usize * 2;
-        assert_eq!(app.world().resource::<PartyInventory>().pool[shown].id, ItemInstanceId(4));
+        assert_eq!(
+            app.world().get::<PartyInventory>(party).unwrap().pool[shown].id,
+            ItemInstanceId(4)
+        );
         app.world_mut().trigger(PointerDragStart {
             entity: slider,
             pointer: pointer.clone(),
@@ -137,7 +143,7 @@ mod tests {
         });
         assert!(!app.world().get::<SliderDragState>(slider).unwrap().dragging);
         assert!(!app.world().resource::<PointerCaptureMap>().0.contains_key(&pointer.id));
-        app.world_mut().resource_mut::<PartyInventory>().pool.truncate(8);
+        app.world_mut().get_mut::<PartyInventory>(party).unwrap().pool.truncate(8);
         app.update();
         assert_eq!(app.world().get::<SliderValue>(slider).unwrap().0, 0.0);
         assert_eq!(app.world().get::<SliderRange>(slider).unwrap().end(), 0.0);

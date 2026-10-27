@@ -217,7 +217,7 @@ fn open_with_key(
     _: On<Start<OpenInventory>>,
     screen: Res<State<Screen>>,
     mut next: ResMut<NextState<Screen>>,
-    roster: Res<PartyRoster>,
+    roster: Single<Ref<PartyRoster>>,
     selected: Res<super::main_screen::SelectedMember>,
 ) {
     if *screen.get() == Screen::World
@@ -231,7 +231,7 @@ fn open_with_key(
 /// Screen state owns existence; the root owns its local selection and input.
 fn enter_inventory(
     mut commands: Commands,
-    roster: Res<PartyRoster>,
+    roster: Single<Ref<PartyRoster>>,
     selected: Res<super::main_screen::SelectedMember>,
     mut next: ResMut<NextState<Screen>>,
 ) {
@@ -436,11 +436,11 @@ fn header(art: &InventoryArt) -> impl SceneList {
 fn select_inventory_member(
     click: On<Activate>,
     buttons: Query<&InventoryMemberButton>,
-    roster: Res<PartyRoster>,
+    roster: Single<Ref<PartyRoster>>,
     screen: Option<Single<&mut InventoryScreen>>,
 ) {
     if let Ok(button) = buttons.get(click.entity)
-        && roster.0.contains(&button.0)
+        && roster.contains(&button.0)
         && let Some(mut screen) = screen
     {
         screen.member = button.0;
@@ -449,7 +449,7 @@ fn select_inventory_member(
 
 fn draw_portrait_highlights(
     screen: Option<Single<&InventoryScreen>>,
-    roster: Res<PartyRoster>,
+    roster: Single<Ref<PartyRoster>>,
     buttons: Query<(&InventoryMemberButton, &Hovered, &Children)>,
     mut highlights: Query<(&mut Picture, &mut Visibility), With<PortraitHighlight>>,
 ) {
@@ -457,7 +457,7 @@ fn draw_portrait_highlights(
     for (button, hovered, children) in &buttons {
         for child in children.iter() {
             let Ok((mut picture, mut visibility)) = highlights.get_mut(child) else { continue };
-            let occupied = roster.0.contains(&button.0);
+            let occupied = roster.contains(&button.0);
             let frame = if hovered.0 {
                 Some(0)
             } else if button.0 == screen.member {
@@ -840,7 +840,7 @@ fn draw_header(
     screen: Option<Single<Ref<InventoryScreen>>>,
     art: Res<InventoryArt>,
     assets: Res<AssetServer>,
-    roster: Res<PartyRoster>,
+    roster: Single<Ref<PartyRoster>>,
     members: Query<(Ref<Character>, Option<Ref<Vitals>>)>,
     tables: Res<Assets<TextTable>>,
     mut displays: Query<(
@@ -855,7 +855,7 @@ fn draw_header(
     let changed = screen.is_changed()
         || roster.is_changed()
         || tables.is_changed()
-        || members.iter_many(&roster.0).matched().any(|(character, vitals)| {
+        || members.iter_many(roster.iter()).matched().any(|(character, vitals)| {
             character.is_changed() || vitals.is_some_and(|vitals| vitals.is_changed())
         });
     for (display, button, picture, label) in &mut displays {
@@ -872,7 +872,7 @@ fn draw_header(
         };
         match display.0 {
             HeaderPart::Member(slot) => {
-                let member = roster.0.get_index(slot).copied().filter(|m| members.contains(*m));
+                let member = roster.get_index(slot).copied().filter(|m| members.contains(*m));
                 if let Some(mut button) = button {
                     button.set_if_neq(InventoryMemberButton(member.unwrap_or(Entity::PLACEHOLDER)));
                 }
@@ -962,7 +962,10 @@ fn draw_retail_labels(
     }
 }
 
-fn draw_gold(party: Res<PartyInventory>, mut labels: Query<&mut BitmapText, With<GoldLabel>>) {
+fn draw_gold(
+    party: Single<Ref<PartyInventory>>,
+    mut labels: Query<&mut BitmapText, With<GoldLabel>>,
+) {
     let value = format_gold(party.gold);
     for mut label in &mut labels {
         if label.value != value {
@@ -977,7 +980,7 @@ fn draw_cells(
     data: Option<Res<GameData>>,
     catalogs: Res<Assets<ItemCatalog>>,
     members: Query<(Ref<Character>, Ref<Carried>)>,
-    party: Res<PartyInventory>,
+    party: Single<Ref<PartyInventory>>,
     pool_scroll: Option<Single<Ref<bevy::ui_widgets::SliderValue>, With<pool_scroll::PoolScroll>>>,
     mut displays: Query<(
         Ref<CellDisplay>,
@@ -1099,7 +1102,7 @@ pub fn spawn_held_picture(mut commands: Commands) {
 }
 
 pub fn follow_held(
-    party: Res<PartyInventory>,
+    party: Single<Ref<PartyInventory>>,
     pointers: Query<(&PointerId, &PointerLocation)>,
     scale: Res<UiScale>,
     assets: Res<AssetServer>,
@@ -1213,8 +1216,6 @@ mod tests {
             .init_asset::<Image>()
             .init_asset::<ItemCatalog>()
             .init_resource::<UiScale>()
-            .init_resource::<PartyRoster>()
-            .init_resource::<PartyInventory>()
             .init_resource::<super::super::main_screen::SelectedMember>()
             .add_plugins(InventoryPlugin)
             .add_systems(PostUpdate, crate::presentation::retail_controls::sync_button_navigation);
@@ -1251,8 +1252,16 @@ mod tests {
                     Carried::default(),
                 ))
                 .id();
-            app.world_mut().resource_mut::<PartyRoster>().0.insert(member);
-            app.world_mut().resource_mut::<PartyInventory>().held =
+            // Someone else stays when the selected member leaves.
+            let other = app.world_mut().spawn(Character::new(
+                "B",
+                Race::Human,
+                Gender::Male,
+                Profession::Fighter,
+            ));
+            let other = other.id();
+            let party = crate::game::party::roster::test_party(app.world_mut(), &[member, other]);
+            app.world_mut().get_mut::<PartyInventory>(party).unwrap().held =
                 Some(Held { item, origin: None });
             app.world_mut().resource_mut::<super::super::main_screen::SelectedMember>().0 =
                 Some(member);
@@ -1261,11 +1270,13 @@ mod tests {
             app.cleanup();
             app.update();
             if !still_a_member {
-                app.world_mut().resource_mut::<PartyRoster>().0.shift_remove(&member);
+                app.world_mut()
+                    .entity_mut(member)
+                    .remove::<crate::game::party::roster::PartyMember>();
             }
             app.world_mut().resource_mut::<NextState<Screen>>().set(Screen::World);
             app.update();
-            assert!(app.world().resource::<PartyInventory>().held.is_none());
+            assert!(app.world().get::<PartyInventory>(party).unwrap().held.is_none());
             assert_eq!(
                 app.world()
                     .get::<Carried>(member)
@@ -1279,7 +1290,8 @@ mod tests {
             );
             assert_eq!(
                 app.world()
-                    .resource::<PartyInventory>()
+                    .get::<PartyInventory>(party)
+                    .unwrap()
                     .pool
                     .iter()
                     .map(|item| item.id)
@@ -1322,7 +1334,7 @@ mod tests {
         let profile = Character::new("Test", Race::Human, Gender::Male, Profession::Fighter);
         let member =
             app.world_mut().spawn((Vitals::new(&profile), profile, Carried::default())).id();
-        app.world_mut().resource_mut::<PartyRoster>().0.insert(member);
+        crate::game::party::roster::test_party(app.world_mut(), &[member]);
         app.world_mut().resource_mut::<super::super::main_screen::SelectedMember>().0 =
             Some(member);
         app.finish();

@@ -93,7 +93,6 @@ pub struct PartyPlacement<'w, 's> {
         'w,
         's,
         (
-            Entity,
             &'static mut PartyBody,
             &'static mut Position,
             &'static mut Transform,
@@ -113,9 +112,10 @@ impl PartyPlacement<'_, '_> {
     pub fn place(
         &mut self,
         commands: &mut Commands,
+        party: Entity,
         level: &LevelDefinition,
         start: &PartyStart,
-    ) -> Entity {
+    ) {
         let entrance = start.entrance.as_deref().and_then(|name| {
             let found = level.entrances.iter().find(|e| e.name.eq_ignore_ascii_case(name));
             if found.is_none() {
@@ -130,30 +130,17 @@ impl PartyPlacement<'_, '_> {
         ));
         let yaw = start.yaw.or(entrance.map(|e| e.yaw)).unwrap_or_default();
         let position = eye - Vec3::Y * EYE_ABOVE_CENTRE;
-        if let Ok((entity, mut body, mut at, mut transform, mut velocity)) = self.party.single_mut()
-        {
+        if let Ok((mut body, mut at, mut transform, mut velocity)) = self.party.get_mut(party) {
             body.yaw = yaw;
             body.pitch = start.pitch.clamp(-MAX_PITCH, MAX_PITCH);
             at.0 = position;
             transform.translation = position;
             velocity.0 = Vec3::ZERO;
-            commands.entity(entity).remove::<(super::walk_in::PathFlight, RigidBodyDisabled)>();
-            return entity;
+            commands.entity(party).remove::<(super::walk_in::PathFlight, RigidBodyDisabled)>();
+            return;
         }
-        spawn_party(commands, start, yaw, position, &mut self.motion_configs)
-    }
-}
-
-fn spawn_party(
-    commands: &mut Commands,
-    start: &PartyStart,
-    yaw: f32,
-    position: Vec3,
-    motion_configs: &mut Assets<PartyMotionConfig>,
-) -> Entity {
-    commands
-        .spawn((
-            Name::new("Party"),
+        // Entering its first level, the party gets its body.
+        commands.entity(party).insert((
             PartyBody { yaw, pitch: start.pitch.clamp(-MAX_PITCH, MAX_PITCH) },
             Transform::from_translation(position),
             RigidBody::Dynamic,
@@ -162,7 +149,7 @@ fn spawn_party(
             LockedAxes::ROTATION_LOCKED,
             MaxLinearSpeed(MAX_SPEED),
             TnuaController::<PartyMotion>::default(),
-            TnuaConfig::<PartyMotion>(motion_configs.add(PartyMotionConfig {
+            TnuaConfig::<PartyMotion>(self.motion_configs.add(PartyMotionConfig {
                 basis: TnuaBuiltinWalkConfig {
                     speed: RUN_SPEED,
                     float_height: FLOAT_HEIGHT,
@@ -172,8 +159,8 @@ fn spawn_party(
                 },
             })),
             TnuaAvian3dSensorShape(Collider::cylinder(RADIUS * 0.9, 0.0)),
-        ))
-        .id()
+        ));
+    }
 }
 
 /// Where the party enters the next level that becomes ready: an entrance

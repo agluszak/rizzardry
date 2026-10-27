@@ -246,7 +246,7 @@ pub struct Held {
 }
 
 /// What the party shares: the pool, the item in hand and the purse.
-#[derive(Resource, Clone, Debug, Default, PartialEq)]
+#[derive(Component, Clone, Debug, Default, PartialEq)]
 pub struct PartyInventory {
     pub pool: Vec<ItemInstance>,
     pub held: Option<Held>,
@@ -1086,15 +1086,12 @@ mod tests {
         use super::operations::InventoryOperations;
         use crate::game::characters::{Gender, Profession, Race};
         use crate::game::data::GameData;
-        use crate::game::party::roster::PartyRoster;
         use bevy::ecs::system::RunSystemOnce;
         let mut world = World::new();
         let mut catalogs = Assets::<ItemCatalog>::default();
         let items = catalogs.add(catalog());
         world.insert_resource(catalogs);
         world.insert_resource(GameData { items, loot: default(), species: default() });
-        world.init_resource::<PartyRoster>();
-        world.init_resource::<PartyInventory>();
         let mut ids = ItemIds::default();
         let source = item(&mut ids, 0, Quantity::Stack(7));
         let id = source.id;
@@ -1102,8 +1099,10 @@ mod tests {
         carried.backpack[0] = Some(source);
         carried.backpack[1] = Some(item(&mut ids, 0, Quantity::Stack(18)));
         let profile = Character::new("Archer", Race::Human, Gender::Male, Profession::Ranger);
-        let actor = world.spawn((Vitals::new(&profile), profile, carried)).id();
-        world.resource_mut::<PartyRoster>().0.insert(actor);
+        let actor = world.spawn((Vitals::new(&profile), profile.clone(), carried.clone())).id();
+        let party = crate::game::party::roster::test_party(&mut world, &[actor]);
+        // A character who is not a member, carrying the same.
+        let outsider = world.spawn((Vitals::new(&profile), profile, carried)).id();
         let activate = |world: &mut World, at| {
             world.run_system_once(move |mut op: InventoryOperations| op.activate(at)).unwrap()
         };
@@ -1117,14 +1116,16 @@ mod tests {
             Quantity::Stack(20)
         );
         assert_eq!(activate(&mut world, ItemLocation::Pool(0)).unwrap(), None);
-        assert_eq!(world.resource::<PartyInventory>().pool[0].quantity, Quantity::Stack(5));
-        let before = world.resource::<PartyInventory>().clone();
-        world.resource_mut::<PartyRoster>().0.clear();
-        assert!(activate(&mut world, ItemLocation::Member(actor, Slot::Backpack(1))).is_err());
-        assert_eq!(*world.resource::<PartyInventory>(), before);
         assert_eq!(
-            world.get::<Carried>(actor).unwrap().backpack[1].as_ref().unwrap().quantity,
-            Quantity::Stack(20)
+            world.get::<PartyInventory>(party).unwrap().pool[0].quantity,
+            Quantity::Stack(5)
+        );
+        let before = world.get::<PartyInventory>(party).unwrap().clone();
+        assert!(activate(&mut world, ItemLocation::Member(outsider, Slot::Backpack(1))).is_err());
+        assert_eq!(*world.get::<PartyInventory>(party).unwrap(), before);
+        assert_eq!(
+            world.get::<Carried>(outsider).unwrap().backpack[1].as_ref().unwrap().quantity,
+            Quantity::Stack(18)
         );
     }
 

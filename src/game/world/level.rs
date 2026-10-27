@@ -34,6 +34,7 @@ use crate::game::automap::MapNotes;
 use crate::game::data::GameData;
 use crate::game::inventory::ItemIds;
 use crate::game::party::body::{PartyPlacement, PartyStart};
+use crate::game::party::roster::Party;
 use crate::game::rng::GameRng;
 
 /// The root of the level being played, including during travel preparation. A level
@@ -164,18 +165,21 @@ pub struct Travel {
     pub entrance: String,
 }
 
-/// Prepare a destination without freezing or snapshotting the source world.
-/// Activation owns the departure commit; loading failure changes no live state.
+/// Accept travel: from here until the destination commits or fails, the
+/// level being left is suspended, not snapshotted. Its questions close and
+/// the party's movement intent clears; activation owns the departure.
 pub fn travel(
     mut commands: Commands,
     mut requests: MessageReader<Travel>,
-    destinations: Query<Entity, With<Destination>>,
+    entering: Query<(), With<Destination>>,
+    questions: Query<Entity, With<TravelQuestion>>,
     assets: Res<AssetServer>,
     battle: Option<Res<crate::game::combat::Battle>>,
     camp: Option<Res<crate::game::camp::Camp>>,
+    mut movement: ResMut<crate::game::party::body::PartyMovement>,
 ) {
     let Some(request) = requests.read().last() else { return };
-    if battle.is_some() || camp.is_some() {
+    if battle.is_some() || camp.is_some() || !entering.is_empty() {
         warn!("travel to {} refused: the party is occupied", request.entrance);
         return;
     }
@@ -183,12 +187,16 @@ pub fn travel(
         warn!("no level has entrance {}", request.entrance);
         return;
     };
-    for entity in &destinations {
-        commands.entity(entity).despawn();
+    for question in &questions {
+        commands.entity(question).despawn();
     }
+    *movement = default();
     let path = info.path();
     let start = PartyStart { entrance: Some(request.entrance.clone()), ..default() };
-    commands.spawn((Name::new(path.clone()), Destination::new(Level::load(&path, &assets), start)));
+    commands.spawn((
+        Name::new(path.clone()),
+        Destination::new(Level::load(&path, &assets), start, Entry::Travel),
+    ));
 }
 
 /// Levels the party has left, by path, as they will be on its return.
@@ -277,24 +285,43 @@ impl LevelContents<'_, '_> {
     }
 }
 
-/// A level being prepared to be played: the first, or travel's
-/// destination. It loads until its gameplay prerequisites exist (geometry
-/// and collision, the shared databases, its monsters' models, its navmeshes
-/// loaded or failed); then [`activate_level`] makes it the [`Level`]. Its
-/// sky and other visuals load on their own once it is played.
+/// An accepted level entry being prepared (retail's please-wait load). While
+/// one exists, gameplay and physics are suspended; the level being left, if
+/// any, stays intact. It loads until its gameplay prerequisites exist
+/// (geometry and collision, the shared databases, its monsters' bodies, its
+/// navmeshes); then [`activate_level`] commits the entry in one step and
+/// makes it the [`Level`]. If any of them fails, the entry is discarded and
+/// play resumes where it was. Its sky and other visuals load on their own
+/// once it is played.
 #[derive(Component, Debug)]
 #[require(Transform)]
 pub struct Destination {
     pub level: Level,
     pub start: PartyStart,
-    /// It cannot be played: an asset failed or its collision is unusable.
-    pub failed: bool,
+    pub entry: Entry,
 }
 
 impl Destination {
-    pub fn new(level: Level, start: PartyStart) -> Self {
-        Destination { level, start, failed: false }
+    pub fn new(level: Level, start: PartyStart, entry: Entry) -> Self {
+        Destination { level, start, entry }
     }
+}
+
+/// Why a level is entered. Retail also restores saved games, whose entry
+/// effects differ; Rizzardry cannot save yet.
+#[derive(Debug)]
+pub enum Entry {
+    /// A new campaign: the accepted party, which joins only when the level
+    /// commits, so a failed first load leaves no campaign behind.
+    NewGame(Vec<crate::game::characters::Character>),
+    /// The party travels on from the level it is in.
+    Travel,
+}
+
+/// An entry could not be prepared and was discarded.
+#[derive(Message, Debug, Clone)]
+pub struct LevelEntryFailed {
+    pub path: String,
 }
 
 /// The level being played, and its geometry.
@@ -318,9 +345,26 @@ impl PlayedLevel<'_, '_> {
     }
 }
 
-/// Run condition: a level is being played.
-pub fn level_active(levels: Query<(), With<Level>>) -> bool {
-    !levels.is_empty()
+/// Run condition: a level is being played, not suspended by an entry in
+/// preparation.
+pub fn level_active(
+    levels: Query<(), With<Level>>,
+    entering: Query<(), With<Destination>>,
+) -> bool {
+    !levels.is_empty() && entering.is_empty()
+}
+
+/// Physics stands still while an entry is prepared, like the rest of
+/// gameplay (whose systems [`level_active`] gates).
+pub fn suspend_physics_while_entering(
+    entering: Query<(), With<Destination>>,
+    mut time: ResMut<Time<Physics>>,
+) {
+    match (entering.is_empty(), time.is_paused()) {
+        (false, false) => time.pause(),
+        (true, true) => time.unpause(),
+        _ => {}
+    }
 }
 
 /// One rigid part of a placed prop, with its animation poses.
@@ -467,32 +511,35 @@ pub struct SharedData<'w> {
     motion_configs: ResMut<'w, Assets<navigation::WalkerMotionConfig>>,
 }
 
-/// Make a destination playable once its gameplay prerequisites exist, in
-/// one step: build its world, navigation and population (consuming what was
-/// remembered of it), make it the [`Level`], place the party and resume its
-/// body, let the departed level go, and announce it. A destination whose
-/// geometry, databases or collision fail is marked failed, and the party
-/// plays on where it was.
+/// Commit an entry once its gameplay prerequisites exist, in one step:
+/// capture and retire the level being left, build the destination's world,
+/// navigation and population (consuming what was remembered of it), create
+/// a new campaign's party, place the party, make the destination the
+/// [`Level`] and announce it. Gameplay is suspended until then, so nothing
+/// can begin in the meantime. An entry whose geometry, databases or
+/// collision fail is discarded and the party plays on where it was.
 pub fn activate_level(
     mut commands: Commands,
     mut destinations: Query<(Entity, &mut Destination)>,
     current: Query<(Entity, &Level, &LevelState, Option<&LevelEntities>)>,
-    battle: Option<Res<crate::game::combat::Battle>>,
-    camp: Option<Res<crate::game::camp::Camp>>,
+    parties: Query<Entity, With<Party>>,
     geometry: Res<Assets<LevelDefinition>>,
     assets: Res<AssetServer>,
     mut shared: SharedData,
     mut memory: ResMut<LevelMemory>,
     (mut ids, mut rng): (ResMut<ItemIds>, ResMut<GameRng>),
     mut transition: ParamSet<(LevelContents, PartyPlacement)>,
-    mut ready: MessageWriter<LevelReady>,
+    mut session: Option<ResMut<NextState<crate::game::session::Session>>>,
+    (mut ready, mut failures): (MessageWriter<LevelReady>, MessageWriter<LevelEntryFailed>),
 ) {
     for (root, mut destination) in &mut destinations {
         let destination = &mut *destination;
-        if destination.failed {
-            continue;
-        }
         let level = &destination.level;
+        let mut fail = |why: &str| {
+            error!("{}: {why}", level.path);
+            failures.write(LevelEntryFailed { path: level.path.clone() });
+            commands.entity(root).despawn();
+        };
         let failed = |handle: UntypedAssetId| {
             matches!(assets.get_load_state(handle), Some(LoadState::Failed(_)))
         };
@@ -503,8 +550,7 @@ pub fn activate_level(
             || failed(data.loot.id().untyped())
             || failed(data.species.id().untyped())
         {
-            error!("{}: an asset it needs failed to load", level.path);
-            destination.failed = true;
+            fail("an asset it needs failed to load");
             continue;
         }
         let (Some(geometry), Some(items), Some(loot), Some(species)) = (
@@ -517,8 +563,7 @@ pub fn activate_level(
         };
         let bodies = shared.monster_bodies.for_level(geometry, species, &assets);
         if bodies.iter().any(|body| failed(body.id().untyped())) {
-            error!("{}: a monster's body definition failed to load", level.path);
-            destination.failed = true;
+            fail("a monster's body definition failed to load");
             continue;
         }
         if !bodies.iter().all(|body| shared.bodies.contains(body))
@@ -526,23 +571,23 @@ pub fn activate_level(
         {
             continue;
         }
-        // Revalidate at commit: combat or camping may have begun while loading.
-        if battle.is_some() || camp.is_some() {
-            continue;
-        }
         let collider = match level_collider(geometry) {
             Ok(collider) => collider,
             Err(error) => {
-                error!("{}: {error}", level.path);
-                destination.failed = true;
+                fail(&error);
                 continue;
             }
         };
-        // One authority until now: capture the source's latest state exactly at
-        // departure, including changes made while the destination was loading.
-        for (entity, source, state, children) in &current {
-            let children = children.map_or(&[][..], LevelEntities::entities);
-            memory.0.insert(source.path.clone(), transition.p0().remember(entity, state, children));
+        let traveller = parties.single().ok();
+        if matches!(destination.entry, Entry::Travel) && traveller.is_none() {
+            fail("there is no party to travel");
+            continue;
+        }
+        // Capture the source's state exactly at departure; it has not
+        // changed since travel was accepted.
+        for (entity, source, state, owned) in &current {
+            let owned = owned.map_or(&[][..], LevelEntities::entities);
+            memory.0.insert(source.path.clone(), transition.p0().remember(entity, state, owned));
             commands.entity(entity).despawn();
         }
         let mut remembered = memory.0.remove(&level.path);
@@ -567,13 +612,36 @@ pub fn activate_level(
             &mut ids,
             &mut rng,
         );
-        let party = transition.p1().place(&mut commands, geometry, &destination.start);
+        let party = match std::mem::replace(&mut destination.entry, Entry::Travel) {
+            Entry::Travel => traveller.unwrap(),
+            Entry::NewGame(characters) => {
+                if let Some(session) = session.as_mut() {
+                    session.set(crate::game::session::Session::Playing);
+                }
+                found_party(&mut commands, characters)
+            }
+        };
+        transition.p1().place(&mut commands, party, geometry, &destination.start);
         navigation::add_party_characters(&mut commands, root, party, &navigation);
         info!("{} is active", level.path);
         commands.entity(root).remove::<Destination>().insert((level.clone(), navigation));
         ready.write(LevelReady { level: root });
         break;
     }
+}
+
+/// A new campaign's party, its members joining in order.
+fn found_party(
+    commands: &mut Commands,
+    characters: Vec<crate::game::characters::Character>,
+) -> Entity {
+    let party = commands.spawn((Name::new("Party"), Party)).id();
+    let mut formation = crate::game::party::formation::Formation::default();
+    for character in characters {
+        crate::game::party::roster::recruit_character(commands, party, &mut formation, character);
+    }
+    commands.entity(party).insert(formation);
+    party
 }
 
 #[cfg(test)]

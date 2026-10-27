@@ -63,7 +63,7 @@ pub struct MonsterDamage<'w, 's> {
     catalogs: Res<'w, Assets<ItemCatalog>>,
     species: Res<'w, Assets<MonsterCatalog>>,
     tables: Res<'w, Assets<LootTables>>,
-    inventory: ResMut<'w, PartyInventory>,
+    inventory: Single<'w, 's, &'static mut PartyInventory>,
     ids: ResMut<'w, ItemIds>,
 }
 

@@ -9,12 +9,15 @@ use rizzardry::content::items::{ItemCatalog, LootTables};
 use rizzardry::content::level::{CollisionMesh, LevelDefinition, MonsterPlacement};
 use rizzardry::content::monster::MonsterBody;
 use rizzardry::content::species::{MonsterCatalog, Species};
+use rizzardry::game::characters::{Character, Gender, Profession, Race};
 use rizzardry::game::data::GameData;
 use rizzardry::game::inventory::ItemIds;
 use rizzardry::game::party::body::{PartyBody, PartyMotionConfig};
+use rizzardry::game::party::roster::Party;
 use rizzardry::game::rng::GameRng;
 use rizzardry::game::world::level::{
-    Destination, Level, LevelMemory, LevelReady, Travel, activate_level, travel,
+    Destination, Entry, Level, LevelEntryFailed, LevelMemory, LevelReady, Travel, activate_level,
+    travel,
 };
 use rizzardry::game::world::population::{Monster, MonsterBodies};
 use rizzardry::game::world::triggers::PendingPartyMove;
@@ -33,10 +36,11 @@ fn app() -> App {
         .init_resource::<Assets<rizzardry::game::world::navigation::WalkerMotionConfig>>()
         .init_resource::<LevelMemory>()
         .init_resource::<MonsterBodies>()
-        .init_resource::<rizzardry::game::inventory::PartyInventory>()
+        .init_resource::<rizzardry::game::party::body::PartyMovement>()
         .init_resource::<ItemIds>()
         .init_resource::<GameRng>()
         .add_message::<LevelReady>()
+        .add_message::<LevelEntryFailed>()
         .add_message::<Travel>()
         .add_systems(PreUpdate, travel)
         .add_systems(Update, activate_level);
@@ -76,10 +80,17 @@ fn test_level(app: &mut App, collision: CollisionMesh) -> Level {
     }
 }
 
-/// The test level, to be activated.
+/// The test level, to be entered: a new game's first, or by travel once
+/// there is a party.
 fn spawn_level(app: &mut App, collision: CollisionMesh) -> Entity {
     let level = test_level(app, collision);
-    app.world_mut().spawn(Destination::new(level, default())).id()
+    let world = app.world_mut();
+    let entry = if world.query::<&Party>().iter(world).next().is_some() {
+        Entry::Travel
+    } else {
+        Entry::NewGame(vec![Character::new("A", Race::Human, Gender::Male, Profession::Fighter)])
+    };
+    world.spawn(Destination::new(level, default(), entry)).id()
 }
 
 fn party_entities(app: &mut App) -> Vec<Entity> {
@@ -92,8 +103,10 @@ fn is_played(app: &App, level: Entity) -> bool {
     app.world().get::<Level>(level).is_some()
 }
 
+/// The entry was discarded and its failure announced.
 fn failed(app: &App, destination: Entity) -> bool {
-    app.world().get::<Destination>(destination).is_some_and(|d| d.failed)
+    app.world().get_entity(destination).is_err()
+        && !app.world().resource::<Messages<LevelEntryFailed>>().is_empty()
 }
 
 fn floor() -> CollisionMesh {
@@ -478,7 +491,7 @@ fn direct_damage_settles_death_once_and_rejection_leaves_the_target_unchanged() 
     let after = world.resource::<GameRng>().clone();
     hit(world).unwrap();
     assert_eq!(*world.resource::<GameRng>(), after);
-    assert_eq!(world.resource::<PartyInventory>().gold, 7);
+    assert_eq!(world.query::<&PartyInventory>().single(world).unwrap().gold, 7);
     let units = world
         .query::<&WorldItem>()
         .iter(world)
@@ -490,40 +503,41 @@ fn direct_damage_settles_death_once_and_rejection_leaves_the_target_unchanged() 
 }
 
 #[test]
-fn departure_captures_live_changes_after_loading_and_waits_for_combat_to_end() {
+fn entry_suspends_gameplay_and_departure_captures_the_source_at_commit() {
+    use bevy::ecs::system::RunSystemOnce;
+    use rizzardry::game::world::level::level_active;
     let (mut app, source) = playing();
     let party = party_entities(&mut app)[0];
     let loading = app.world_mut().resource_mut::<Assets<LevelDefinition>>().reserve_handle();
     let mut destination = test_level(&mut app, floor());
     destination.path = "destination".into();
     destination.geometry = loading.clone();
-    let target = app.world_mut().spawn(Destination::new(destination, default())).id();
+    let target =
+        app.world_mut().spawn(Destination::new(destination, default(), Entry::Travel)).id();
     app.update();
-    assert!(is_played(&app, source));
+    assert!(is_played(&app, source), "the source stays intact while the entry loads");
     assert!(!is_played(&app, target));
+    assert!(!app.world_mut().run_system_once(level_active).unwrap(), "gameplay is suspended");
     assert!(app.world().get::<RigidBodyDisabled>(party).is_none());
     assert!(app.world().resource::<LevelMemory>().is_empty());
 
-    // The source remains authoritative while the destination loads.
+    // What the source holds at the commit is what is remembered.
     let world = app.world_mut();
     world.query::<&mut Monster>().single_mut(world).unwrap().hp = 0;
     world
         .resource_mut::<Assets<LevelDefinition>>()
         .insert(&loading, LevelDefinition { collision: floor(), ..default() })
         .unwrap();
-    world.insert_resource(rizzardry::game::combat::Battle::default());
-    app.update();
-    assert!(is_played(&app, source), "loading cannot bypass a newly started fight");
-    app.world_mut().remove_resource::<rizzardry::game::combat::Battle>();
     app.update();
     assert!(is_played(&app, target));
+    assert!(app.world_mut().run_system_once(level_active).unwrap(), "gameplay resumes");
     assert!(app.world().get_entity(source).is_err());
     assert!(!app.world().resource::<LevelMemory>().is_empty());
 
     let returned = spawn_level(&mut app, floor());
     app.update();
     assert!(is_played(&app, returned));
-    assert!(monsters(&mut app).is_empty(), "departure must remember the late kill");
+    assert!(monsters(&mut app).is_empty(), "departure must remember the kill");
     assert_eq!(party_entities(&mut app), [party]);
 }
 
@@ -556,7 +570,7 @@ fn preparation_keeps_the_source_live_and_commit_captures_its_latest_state() {
         app.world().resource::<Assets<LevelDefinition>>().get(&next.geometry).unwrap().clone();
     let loading = app.world_mut().resource_mut::<Assets<LevelDefinition>>().reserve_handle();
     next.geometry = loading.clone();
-    let mut destination = Destination::new(next.clone(), default());
+    let mut destination = Destination::new(next.clone(), default(), Entry::Travel);
     destination.start.eye = Some(Vec3::new(9.0, 4.0, 2.0));
     let destination = app.world_mut().spawn(destination).id();
     app.update();
@@ -588,10 +602,11 @@ fn failed_navigation_is_a_failed_destination_not_degraded_activation() {
     let (mut app, source) = playing();
     let mut next = test_level(&mut app, floor());
     next.navmeshes.push(app.world().resource::<AssetServer>().load("missing.navmesh"));
-    let destination = app.world_mut().spawn(Destination::new(next, default())).id();
+    let destination = app.world_mut().spawn(Destination::new(next, default(), Entry::Travel)).id();
     update_until(&mut app, "the destination failing", |world| {
-        world.get::<Destination>(destination).is_some_and(|d| d.failed)
+        world.get_entity(destination).is_err()
     });
+    assert!(failed(&app, destination));
     assert!(is_played(&app, source));
     assert!(!is_played(&app, destination));
     assert!(app.world().resource::<LevelMemory>().is_empty());

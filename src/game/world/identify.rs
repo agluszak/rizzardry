@@ -114,7 +114,7 @@ pub struct GroupRecognition<'w, 's> {
     >,
     monsters: Query<'w, 's, (&'static Monster, ActorPose)>,
     level: PlayedLevel<'w, 's>,
-    roster: Res<'w, PartyRoster>,
+    roster: Single<'w, 's, &'static PartyRoster>,
     members: Query<'w, 's, (&'static Character, &'static Vitals, &'static mut MonsterKnowledge)>,
     data: Option<Res<'w, GameData>>,
     catalogs: Res<'w, Assets<MonsterCatalog>>,
@@ -172,7 +172,7 @@ impl GroupRecognition<'_, '_> {
             let Some(species) = catalog.0.get(species_id as usize) else { continue };
             if !known {
                 let mut best: Option<(String, i32)> = None;
-                for (profile, vitals, knowledge) in members.iter_many(&roster.0).matched() {
+                for (profile, vitals, knowledge) in members.iter_many(roster.iter()).matched() {
                     if !can_look(vitals) {
                         continue;
                     }
@@ -196,7 +196,8 @@ impl GroupRecognition<'_, '_> {
             }
             if !counted {
                 group.counted = true;
-                for (_, vitals, mut knowledge) in members.iter_many_unique_mut(&roster.0).matched()
+                for (_, vitals, mut knowledge) in
+                    members.iter_many_unique_mut(roster.iter()).matched()
                 {
                     if !can_look(vitals) {
                         continue;
@@ -263,7 +264,6 @@ mod tests {
         app.add_plugins(MinimalPlugins)
             .init_resource::<Assets<LevelDefinition>>()
             .init_resource::<Assets<MonsterCatalog>>()
-            .init_resource::<PartyRoster>()
             .insert_resource(GameRng::seeded(4))
             .add_message::<Identified>()
             .add_systems(
@@ -311,7 +311,7 @@ mod tests {
         sage.skill_points[Skill::Mythology] = 125;
         let member = app.world_mut().spawn((Vitals::new(&sage), sage.clone())).id();
         let outsider = app.world_mut().spawn((Vitals::new(&sage), sage)).id();
-        app.world_mut().resource_mut::<PartyRoster>().0.insert(member);
+        crate::game::party::roster::test_party(app.world_mut(), &[member]);
         let camera = app
             .world_mut()
             .spawn((

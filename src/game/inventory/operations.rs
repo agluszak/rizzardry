@@ -9,8 +9,8 @@ use crate::game::party::roster::PartyRoster;
 
 #[derive(SystemParam)]
 pub struct InventoryOperations<'w, 's> {
-    party: ResMut<'w, PartyInventory>,
-    roster: Res<'w, PartyRoster>,
+    party: Single<'w, 's, &'static mut PartyInventory>,
+    roster: Single<'w, 's, &'static PartyRoster>,
     members: Query<'w, 's, (&'static Character, &'static Vitals, &'static mut Carried)>,
     data: Option<Res<'w, GameData>>,
     catalogs: Res<'w, Assets<ItemCatalog>>,
@@ -22,7 +22,7 @@ impl InventoryOperations<'_, '_> {
     /// precedence are rules here; the clicked portrait only supplies its target.
     pub fn give_to(&mut self, member: Entity) -> Result<Option<ItemNews>, Refusal> {
         let Some(held) = self.party.held.as_ref() else { return Ok(None) };
-        if !self.roster.0.contains(&member) {
+        if !self.roster.contains(&member) {
             return Err(Refusal::NotMember);
         }
         let catalog = self
@@ -60,7 +60,7 @@ impl InventoryOperations<'_, '_> {
             .as_ref()
             .and_then(|d| self.catalogs.get(&d.items))
             .ok_or(Refusal::MissingContent)?;
-        if self.roster.0.contains(&member)
+        if self.roster.contains(&member)
             && let Ok((_, _, mut carried)) = self.members.get_mut(member)
         {
             self.party.put_away_held(&mut carried, catalog);
@@ -97,7 +97,7 @@ impl InventoryOperations<'_, '_> {
                 }
             }
             ItemLocation::Member(member, slot) => {
-                if !self.roster.0.contains(&member) {
+                if !self.roster.contains(&member) {
                     return Err(Refusal::NotMember);
                 }
                 let (character, vitals, mut carried) =

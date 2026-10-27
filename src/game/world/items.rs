@@ -1,6 +1,7 @@
 //! Items lying in the world. Each is an entity owning one item until the
 //! party takes it (retail `W8WorldItem`, `ItemManager.cpp`).
 
+use crate::game::party::roster::the_party;
 use crate::game::world::level::LevelOwned;
 use bevy::prelude::*;
 
@@ -122,14 +123,16 @@ pub fn take_item(world: &mut World, target: Entity, distance: f32) -> Result<(),
         return Err(Refusal::DoesNotFit);
     }
     let is_container = catalog.get(item.item.item).ok_or(Refusal::MissingContent)?.container;
-    if world.resource::<PartyInventory>().held.is_some() {
+    let party = the_party(world).ok_or(Refusal::Nothing)?;
+    if world.get::<PartyInventory>(party).unwrap().held.is_some() {
         return Err(Refusal::HandFull);
     }
     let mut item = world.entity_mut(target).take::<WorldItem>().unwrap();
     if is_container {
-        let taken = world.resource_scope(|world, mut party: Mut<PartyInventory>| {
-            let catalog = world.resource::<Assets<ItemCatalog>>().get(&handle).unwrap();
-            transfer_contents(&mut item.contents, &mut party, catalog)
+        let taken = world.resource_scope(|world, catalogs: Mut<Assets<ItemCatalog>>| {
+            let catalog = catalogs.get(&handle).unwrap();
+            let mut inventory = world.get_mut::<PartyInventory>(party).unwrap();
+            transfer_contents(&mut item.contents, &mut inventory, catalog)
         });
         for (name, _) in taken {
             world.write_message(ItemNews::Takes { member: None, item: name });
@@ -140,7 +143,8 @@ pub fn take_item(world: &mut World, target: Entity, distance: f32) -> Result<(),
             return Ok(());
         }
     } else {
-        world.resource_mut::<PartyInventory>().held = Some(Held { item: item.item, origin: None });
+        world.get_mut::<PartyInventory>(party).unwrap().held =
+            Some(Held { item: item.item, origin: None });
     }
     world.despawn(target);
     Ok(())
@@ -163,7 +167,9 @@ pub fn drop_held(world: &mut World, level: Entity, at: Vec3) -> Result<Entity, R
     if eye.xz().distance(at.xz()) > THROW + CLEARANCE {
         return Err(Refusal::DoesNotFit);
     }
-    let held = world.resource_mut::<PartyInventory>().held.take().ok_or(Refusal::Nothing)?;
+    let party = the_party(world).ok_or(Refusal::Nothing)?;
+    let held =
+        world.get_mut::<PartyInventory>(party).unwrap().held.take().ok_or(Refusal::Nothing)?;
     Ok(world
         .spawn((
             Name::new("dropped item"),

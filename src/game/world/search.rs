@@ -145,7 +145,7 @@ pub fn search_pulse(
     battle: Option<Res<Battle>>,
     movement: Res<PartyMovement>,
     party: Query<(&Position, &PartyBody)>,
-    roster: Res<PartyRoster>,
+    roster: Single<&PartyRoster>,
     members: Query<(&Character, &Vitals)>,
     mut items: Query<(Entity, &mut WorldItem, &Transform)>,
     obstacles: WorldObstacles,
@@ -162,7 +162,7 @@ pub fn search_pulse(
     let (from, forward) = (PartyBody::eye(position), body.forward());
     let running = movement.running;
     let best = members
-        .iter_many(&roster.0)
+        .iter_many(roster.iter())
         .matched()
         .filter(|(_, vitals)| can_act(vitals))
         .map(|(m, _)| (search_score(m, search.on(), running), m))

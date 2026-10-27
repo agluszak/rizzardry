@@ -294,7 +294,7 @@ fn open_container(
     data: Res<GameData>,
     catalogs: Res<Assets<ItemCatalog>>,
     tables: Res<Assets<LootTables>>,
-    mut party: ResMut<PartyInventory>,
+    mut party: Single<&mut PartyInventory>,
     mut ids: ResMut<ItemIds>,
     mut rng: ResMut<GameRng>,
     mut outcomes: MessageWriter<TriggerEffect>,
@@ -333,21 +333,21 @@ fn open_container(
 fn damage_party(
     In(dice): In<Dice>,
     mut commands: Commands,
-    roster: Res<PartyRoster>,
+    roster: Single<&PartyRoster>,
     mut members: Query<&mut Vitals>,
     mut rng: ResMut<GameRng>,
-    mut formation: ResMut<crate::game::party::formation::Formation>,
+    mut formation: Single<&mut crate::game::party::formation::Formation>,
     mut damage: MessageWriter<DamageApplied>,
 ) {
-    for entity in roster.0.iter() {
-        let Ok(mut member) = members.get_mut(*entity) else { continue };
+    for entity in roster.iter() {
+        let Ok(mut member) = members.get_mut(entity) else { continue };
         if member.is_dead() {
             continue;
         }
         let rolled = rng.roll(dice);
         if rolled > 0 {
             crate::game::party::damage_member(
-                *entity,
+                entity,
                 &mut member,
                 &mut formation,
                 rolled,
@@ -362,7 +362,7 @@ fn drink_fountain(
     In((entity, fountain, at)): In<(Entity, Fountain, Option<Vec3>)>,
     mut fountains: Query<&mut FountainState>,
     clock: Res<GameClock>,
-    roster: Res<PartyRoster>,
+    roster: Single<&PartyRoster>,
     mut members: Query<(&Character, &mut Vitals)>,
     mut outcomes: MessageWriter<TriggerEffect>,
 ) -> bool {
@@ -385,7 +385,7 @@ fn drink_fountain(
             state.refills_at = fountain.refills_after.map(|after| now + after);
         }
     }
-    for (profile, mut member) in members.iter_many_unique_mut(&roster.0).matched() {
+    for (profile, mut member) in members.iter_many_unique_mut(roster.iter()).matched() {
         if member.is_dead()
             || match fountain.restores {
                 Restores::Health => member.hp >= profile.max_hp(),
@@ -631,8 +631,11 @@ fn execute(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth:
         warn!("trigger {} recurses too deeply", definition.name);
         return false;
     }
-    let offered =
-        world.get_resource::<PartyInventory>().and_then(|p| p.held.as_ref()).map(|h| h.item.item);
+    let party = crate::game::party::roster::the_party(world);
+    let offered = party
+        .and_then(|party| world.get::<PartyInventory>(party))
+        .and_then(|p| p.held.as_ref())
+        .map(|h| h.item.item);
     let chosen = {
         let [actor, owner] = world.get_entity_mut([entity, level]).unwrap();
         select_use(actor, owner.get::<LevelState>().unwrap(), definition, offered)
@@ -928,13 +931,11 @@ mod tests {
             world.init_resource::<Messages<TriggerEffect>>();
             world.init_resource::<Messages<DamageApplied>>();
             world.init_resource::<Messages<crate::game::combat::CombatNews>>();
-            world.init_resource::<PartyInventory>();
-            world.init_resource::<crate::game::party::formation::Formation>();
             world.init_resource::<State<crate::game::screen::Screen>>();
             world.init_resource::<NextState<crate::game::screen::Screen>>();
             world.init_resource::<Messages<crate::game::inventory::ItemNews>>();
             world.init_resource::<ItemIds>();
-            world.init_resource::<PartyRoster>();
+            crate::game::party::roster::test_party(&mut world, &[]);
             world.insert_resource(GameClock::at(0));
             world.insert_resource(GameRng::seeded(5));
             let items = world.resource_mut::<Assets<ItemCatalog>>().add(ItemCatalog::default());
@@ -1002,6 +1003,16 @@ mod tests {
             state.apply(&mut self.world);
         }
 
+        fn inventory(&mut self) -> Mut<'_, PartyInventory> {
+            let party = crate::game::party::roster::the_party(&mut self.world).unwrap();
+            self.world.get_mut::<PartyInventory>(party).unwrap()
+        }
+
+        fn formation(&mut self) -> &crate::game::party::formation::Formation {
+            let party = crate::game::party::roster::the_party(&mut self.world).unwrap();
+            self.world.get::<crate::game::party::formation::Formation>(party).unwrap()
+        }
+
         fn device(&self, name: &str) -> Entity {
             self.devices[self.geometry.triggers.iter().position(|t| t.name == name).unwrap()]
         }
@@ -1009,8 +1020,7 @@ mod tests {
         fn add_member(&mut self, name: &str) -> Entity {
             let profile = Character::new(name, Race::Human, Gender::Male, Profession::Fighter);
             let member = self.world.spawn((Vitals::new(&profile), profile)).id();
-            self.world.resource_mut::<PartyRoster>().0.insert(member);
-            self.world.resource_mut::<crate::game::party::formation::Formation>().seat(member);
+            crate::game::party::roster::test_join(&mut self.world, member);
             self.members.push(member);
             member
         }
@@ -1110,7 +1120,7 @@ mod tests {
         let definition = ItemDefinition { id: key, ..default() };
         let item =
             make_item(&definition, &mut ItemIds::default(), &mut GameRng::seeded(5), false, true);
-        level.world.resource_mut::<PartyInventory>().held = Some(Held { item, origin: None });
+        level.inventory().held = Some(Held { item, origin: None });
         assert!(level.run("DOOR").0);
         assert_eq!(level.motion("DOOR").target, 15.0);
         // Unlocked for good: kept while the party is away.
@@ -1154,7 +1164,7 @@ mod tests {
             level.world.get::<Container>(lost).unwrap().contents.is_none(),
             "no contents are made up"
         );
-        assert_eq!(level.world.resource::<PartyInventory>().gold, 5);
+        assert_eq!(level.inventory().gold, 5);
         let memory = level.remember();
         level.visit(Some(memory));
         assert!(level.run("CHEST").1.is_empty(), "returning never rolls the gold again");
@@ -1163,7 +1173,7 @@ mod tests {
         level.world.entity_mut(chest).remove::<PropMotion>();
         assert!(!level.run("CHEST").0, "a missing prop cannot open a container");
         assert!(level.world.get::<Container>(chest).unwrap().contents.is_none());
-        assert_eq!(level.world.resource::<PartyInventory>().gold, 5);
+        assert_eq!(level.inventory().gold, 5);
     }
 
     #[test]
@@ -1406,7 +1416,6 @@ mod tests {
 
     #[test]
     fn environmental_damage_finishes_a_waiting_battle_before_returning() {
-        use crate::game::party::formation::Formation;
         let mut level = Scenario::new(
             vec![trigger("LETHAL", TriggerAction::HurtParty(Dice { base: 10000, ..default() }))],
             &[],
@@ -1414,11 +1423,11 @@ mod tests {
         );
         level.world.insert_resource(crate::game::combat::Battle::default());
         let member = level.members[0];
-        assert!(level.world.resource::<Formation>().row_of(member).is_some());
+        assert!(level.formation().row_of(member).is_some());
         assert!(level.run("LETHAL").0);
         // Death bookkeeping is synchronous: the seat is gone at once.
         assert!(level.world.get::<Vitals>(member).unwrap().is_dead());
-        assert!(level.world.resource::<Formation>().row_of(member).is_none());
+        assert!(level.formation().row_of(member).is_none());
         assert!(!level.world.contains_resource::<crate::game::combat::Battle>());
         assert_eq!(
             level
@@ -1496,7 +1505,7 @@ mod tests {
         let outsider_hp = level.world.get::<Vitals>(outsider).unwrap().hp;
         let second = level.add_member("B");
         let first = level.members[0];
-        level.world.resource_mut::<PartyRoster>().0 = [second, first].into_iter().collect();
+        crate::game::party::roster::test_reorder(&mut level.world, &[second, first]);
         let before = [second, first].map(|e| level.world.get::<Vitals>(e).unwrap().hp);
         level.run("TRAP");
         let hits: Vec<_> = level.damage().into_iter().map(|hit| (hit.member, hit.amount)).collect();

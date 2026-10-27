@@ -282,14 +282,14 @@ pub fn start_battle(
     obstacles: WorldObstacles,
     data: Option<Res<GameData>>,
     species: Res<Assets<MonsterCatalog>>,
-    roster: Res<PartyRoster>,
+    roster: Single<&PartyRoster>,
     mut news: MessageWriter<CombatNews>,
     mut recognition: GroupRecognition,
     mut rng: ResMut<GameRng>,
 ) {
     if battle.is_some()
         || camp.is_some()
-        || !members.iter_many(&roster.0).matched().any(|(_, v)| !v.is_dead())
+        || !members.iter_many(roster.iter()).matched().any(|(_, v)| !v.is_dead())
     {
         return;
     }
@@ -303,7 +303,7 @@ pub fn start_battle(
     // The party's lowest level among those who can act weakens sight
     // from behind.
     let lowest_level = members
-        .iter_many(&roster.0)
+        .iter_many(roster.iter())
         .matched()
         .filter(|(_, v)| able(v))
         .map(|(c, _)| i32::from(c.level))
@@ -371,11 +371,11 @@ pub fn start_battle(
 pub fn settle_defeat(
     mut commands: Commands,
     battle: Option<Res<Battle>>,
-    roster: Res<PartyRoster>,
+    roster: Single<&PartyRoster>,
     members: Query<&Vitals>,
     mut news: MessageWriter<CombatNews>,
 ) {
-    if battle.is_some() && !members.iter_many(&roster.0).matched().any(|v| !v.is_dead()) {
+    if battle.is_some() && !members.iter_many(roster.iter()).matched().any(|v| !v.is_dead()) {
         news.write(CombatNews::Lost);
         commands.remove_resource::<Battle>();
     }
@@ -388,13 +388,13 @@ pub fn run_battle(
     battle: Option<ResMut<Battle>>,
     mut rng: ResMut<GameRng>,
     mut clock: ResMut<GameClock>,
-    roster: Res<PartyRoster>,
+    roster: Single<&PartyRoster>,
     mut actors: ParamSet<(
         (Query<(&mut Character, &mut Vitals, &Carried)>, MonsterDamage),
         GroupRecognition,
     )>,
     party_body: Query<(&Position, &PartyBody)>,
-    mut formation: ResMut<Formation>,
+    mut formation: Single<&mut Formation>,
     data: Option<Res<GameData>>,
     (items, species): (Res<Assets<ItemCatalog>>, Res<Assets<MonsterCatalog>>),
     (mut news, mut party_damage): (MessageWriter<CombatNews>, MessageWriter<DamageApplied>),
@@ -439,7 +439,7 @@ pub fn run_battle(
         battle.round += 1;
         battle.attacked_this_round = false;
         battle.party.clear();
-        for &member in &roster.0 {
+        for member in roster.iter() {
             let Ok((character, vitals, carried)) = members.get(member) else { continue };
             let action = match orders.get(member).copied().unwrap_or_default() {
                 Order::Attack => AcceptedAction::Attack {
@@ -497,7 +497,7 @@ pub fn run_battle(
         if let Some(index) = battle.party.iter().position(|p| p.turn.phase == step) {
             let work = battle.party[index];
             let member = work.actor;
-            let able_now = roster.0.contains(&member) && members.get(member).is_ok_and(|(_, vitals, carried)| {
+            let able_now = roster.contains(&member) && members.get(member).is_ok_and(|(_, vitals, carried)| {
                 able(vitals) && matches!(work.action, AcceptedAction::Attack { weapon } if weapon == carried.worn(EquipSlot::Primary).map(|i| i.id))
             });
             if !able_now {
@@ -505,9 +505,12 @@ pub fn run_battle(
                 continue;
             }
             // Retail `GetAveragePartyLevel`: what loot tables scale by.
-            let levels_sum: u32 =
-                members.iter_many(&roster.0).matched().map(|(c, _, _)| u32::from(c.level)).sum();
-            let party_level = levels_sum / roster.0.len().max(1) as u32;
+            let levels_sum: u32 = members
+                .iter_many(roster.iter())
+                .matched()
+                .map(|(c, _, _)| u32::from(c.level))
+                .sum();
+            let party_level = levels_sum / roster.len().max(1) as u32;
             let casualty = member_acts(
                 &mut battle,
                 index,
@@ -675,7 +678,7 @@ fn monster_acts(
     members: &mut Query<(&mut Character, &mut Vitals, &Carried)>,
     monsters: &Query<(&mut Monster, ActorPose, Option<&Walker>, &LevelOwned)>,
     party: &PartyView,
-    formation: &mut ResMut<Formation>,
+    formation: &mut Mut<Formation>,
     items: &ItemCatalog,
     species: &MonsterCatalog,
     news: &mut MessageWriter<CombatNews>,
@@ -688,7 +691,7 @@ fn monster_acts(
     // Every (attack, mode, member) that reaches is equally likely.
     let mut candidates = vec![];
     for (a, attack) in kind.attacks.iter().enumerate() {
-        for &member in &roster.0 {
+        for member in roster.iter() {
             let Ok((_, vitals, _)) = members.get(member) else { continue };
             if able(vitals)
                 && party.reaches(formation, member, at.translation(), attack.reach, distance)
@@ -768,7 +771,7 @@ fn end_round(
     // The round's time passes now, with its meaning: conditions age and
     // nobody recovers (retail `AdvanceCombatRound`).
     let ticks = clock.advance(ROUND_MS);
-    for (profile, mut vitals, _) in members.iter_many_unique_mut(&roster.0).matched() {
+    for (profile, mut vitals, _) in members.iter_many_unique_mut(roster.iter()).matched() {
         if recovery::has_work(&profile, &vitals, ticks, recovery::Pace::Fighting) {
             recovery::elapse(&profile, &mut vitals, ticks, recovery::Pace::Fighting);
         }
@@ -777,7 +780,7 @@ fn end_round(
     // Recover after aging conditions, in accepted actor order.
     for work in &battle.party {
         let member = work.actor;
-        if !roster.0.contains(&member) {
+        if !roster.contains(&member) {
             continue;
         }
         let Ok((character, mut vitals, _)) = members.get_mut(member) else { continue };
@@ -812,10 +815,10 @@ fn end_round(
     }
     // Experience is shared among the living, the unconscious included.
     let living =
-        members.iter_many(&roster.0).matched().filter(|(_, v, _)| !v.is_dead()).count() as u32;
+        members.iter_many(roster.iter()).matched().filter(|(_, v, _)| !v.is_dead()).count() as u32;
     let each = battle.experience / living.max(1);
     if each > 0 {
-        for (mut character, vitals, _) in members.iter_many_unique_mut(&roster.0).matched() {
+        for (mut character, vitals, _) in members.iter_many_unique_mut(roster.iter()).matched() {
             if !vitals.is_dead() {
                 character.experience += each;
             }
@@ -833,7 +836,7 @@ fn end_round(
 mod tests {
     use super::*;
     use crate::content::items::{ItemId, LootTables};
-    use crate::game::inventory::{ItemIds, PartyInventory, make_item};
+    use crate::game::inventory::{ItemIds, make_item};
 
     #[test]
     fn sight_reaches_the_far_clip_ahead_and_less_from_behind() {
@@ -870,9 +873,6 @@ mod tests {
             .init_resource::<Assets<MonsterCatalog>>()
             .init_resource::<Assets<LootTables>>()
             .init_resource::<avian3d::collider_tree::ColliderTrees>()
-            .init_resource::<PartyRoster>()
-            .init_resource::<Formation>()
-            .init_resource::<PartyInventory>()
             .init_resource::<ItemIds>()
             .init_resource::<GameClock>()
             .insert_resource(GameRng::seeded(5))
@@ -909,8 +909,6 @@ mod tests {
             let order = if name == "B" && defending { Order::Defend } else { Order::Attack };
             let entity =
                 app.world_mut().spawn((Vitals::new(&character), character, carried, order)).id();
-            app.world_mut().resource_mut::<PartyRoster>().0.insert(entity);
-            app.world_mut().resource_mut::<Formation>().seat(entity);
             members.push(entity);
         }
         let items = app.world_mut().resource_mut::<Assets<ItemCatalog>>().add(ItemCatalog(weapons));
@@ -920,7 +918,8 @@ mod tests {
             ]));
         let loot = app.world_mut().resource_mut::<Assets<LootTables>>().add(LootTables::default());
         app.insert_resource(GameData { items, species, loot });
-        app.world_mut().spawn((PartyBody::default(), Position::default()));
+        let party = crate::game::party::roster::test_party(app.world_mut(), &members);
+        app.world_mut().entity_mut(party).insert((PartyBody::default(), Position::default()));
         let root = app.world_mut().spawn(crate::game::world::level::Level::test(default())).id();
         let monster = app
             .world_mut()
@@ -1107,7 +1106,7 @@ mod tests {
         let (mut app, [a, b]) = round_app(false);
         app.update();
         assert_eq!(attacks(&mut app), ["A"]);
-        app.world_mut().resource_mut::<PartyRoster>().0 = [b, a].into_iter().collect();
+        crate::game::party::roster::test_reorder(app.world_mut(), &[b, a]);
         app.world_mut().entity_mut(b).insert(Order::Defend);
         app.update();
         assert_eq!(
@@ -1128,21 +1127,21 @@ mod tests {
             .world_mut()
             .spawn((Vitals::new(&profile), profile, Carried::default(), Order::Attack))
             .id();
-        let mut params =
-            bevy::ecs::system::SystemState::<(ResMut<PartyRoster>, ResMut<Formation>)>::new(
-                app.world_mut(),
-            );
-        let (mut roster, mut formation) = params.get_mut(app.world_mut()).unwrap();
-        assert!(roster.remove(b, &mut formation));
-        roster.0.insert(replacement);
-        formation.seat(replacement);
+        let mut params = bevy::ecs::system::SystemState::<(Commands, Single<&mut Formation>)>::new(
+            app.world_mut(),
+        );
+        let (mut commands, mut formation) = params.get_mut(app.world_mut()).unwrap();
+        crate::game::party::roster::leave(&mut commands, b, &mut formation);
+        params.apply(app.world_mut());
+        crate::game::party::roster::test_join(app.world_mut(), replacement);
         app.update();
         assert!(attacks(&mut app).is_empty());
         assert!(
             app.world().get::<Character>(b).is_some(),
             "a retained profile is no longer a member"
         );
-        assert!(app.world().resource::<Formation>().place_of(b).is_none());
+        let formation = app.world_mut().query::<&Formation>().single(app.world()).unwrap();
+        assert!(formation.place_of(b).is_none());
     }
 
     #[test]
@@ -1276,12 +1275,11 @@ mod tests {
             vitals.stamina = 1;
             let c =
                 app.world_mut().spawn((character, vitals, Carried::default(), Order::Defend)).id();
-            app.world_mut().resource_mut::<PartyRoster>().0.insert(c);
-            app.world_mut().resource_mut::<Formation>().seat(c);
+            crate::game::party::roster::test_join(app.world_mut(), c);
             app.world_mut().get_mut::<Vitals>(b).unwrap().stamina = 1;
             app.update();
             if reorder {
-                app.world_mut().resource_mut::<PartyRoster>().0 = [c, a, b].into_iter().collect();
+                crate::game::party::roster::test_reorder(app.world_mut(), &[c, a, b]);
             }
             for _ in 0..4 {
                 app.update();

@@ -74,7 +74,7 @@ pub fn show_tooltip(
         Query<&Monster>,
         Query<&MonsterGroup>,
         Query<&GroupMember>,
-        Res<PartyRoster>,
+        Single<&PartyRoster>,
         Query<(&Character, &Vitals)>,
     ),
     pointers: Query<(&PointerId, &PointerLocation)>,
@@ -119,7 +119,7 @@ pub fn show_tooltip(
                 .and_then(|m| groups.get(m.0).ok())
                 .is_some_and(|g| g.identified);
             let party: Vec<(&Character, &Vitals)> =
-                members.iter_many(&roster.0).matched().collect();
+                members.iter_many(roster.iter()).matched().collect();
             let health = health_known(&party, monster.hp, monster.max_hp, kind.display_level);
             format!("{} ({health})", kind.shown_name(identified, 1))
         } else {

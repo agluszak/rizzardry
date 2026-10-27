@@ -245,7 +245,7 @@ pub fn draw_party(
     selected: Res<SelectedMember>,
     art: Res<MainScreenArt>,
     assets: Res<AssetServer>,
-    roster: Res<PartyRoster>,
+    roster: Single<Ref<PartyRoster>>,
     members: Query<CharacterView>,
     mut removed_carried: RemovedComponents<Carried>,
     data: Option<Res<GameData>>,
@@ -263,7 +263,7 @@ pub fn draw_party(
     let catalog = data.as_ref().and_then(|d| catalogs.get(&d.items));
     let closed = layout.mode == LayoutMode::Closed;
     for (part, mut node, mut visible, picture, label, image_node) in &mut parts {
-        let member = roster.0.get_index(part.slot).copied();
+        let member = roster.get_index(part.slot).copied();
         let actor = member.and_then(|entity| members.get(entity).ok());
         if !part.is_added()
             && !roster.is_changed()
@@ -448,13 +448,12 @@ pub fn draw_party(
 /// actor it targets while a pointer press could be in flight.
 pub fn bind_party_buttons(
     mut commands: Commands,
-    roster: Res<PartyRoster>,
+    roster: Single<Ref<PartyRoster>>,
     members: Query<(), (With<Character>, With<Vitals>)>,
     mut buttons: Query<(Entity, &PartyButton, &SlotButton, &Node, &ChildOf, &mut Visibility)>,
 ) {
     for (entity, slot, button, node, parent, mut visibility) in &mut buttons {
         let member = roster
-            .0
             .get_index(slot.0)
             .copied()
             .filter(|e| members.contains(*e))
@@ -492,7 +491,7 @@ fn press(
     click: On<PointerClick>,
     mut buttons: Query<&mut SlotButton>,
     mut selected: ResMut<SelectedMember>,
-    roster: Res<PartyRoster>,
+    roster: Single<Ref<PartyRoster>>,
     mut inventory: crate::game::inventory::operations::InventoryOperations,
     mut news: MessageWriter<ItemNews>,
     screen: Res<State<crate::game::screen::Screen>>,
@@ -500,7 +499,7 @@ fn press(
 ) {
     let Ok(mut button) = buttons.get_mut(click.entity) else { return };
     let member = button.member;
-    if !roster.0.contains(&member) {
+    if !roster.contains(&member) {
         return;
     }
     match inventory.give_to(member) {
@@ -599,14 +598,14 @@ pub fn play_splats(
     mut commands: Commands,
     time: Res<Time>,
     art: Res<MainScreenArt>,
-    roster: Res<PartyRoster>,
+    roster: Single<Ref<PartyRoster>>,
     mut splats: Query<(Entity, &mut Splat, &mut Node, &Children)>,
     mut pictures: Query<&mut Picture>,
     mut numbers: Query<(&mut Visibility, &mut BitmapText), With<SplatNumber>>,
 ) {
     for (entity, mut splat, mut node, parts) in &mut splats {
         splat.timer.tick(time.delta());
-        let Some(slot) = roster.0.get_index_of(&splat.actor).filter(|_| !splat.timer.is_finished())
+        let Some(slot) = roster.get_index_of(&splat.actor).filter(|_| !splat.timer.is_finished())
         else {
             commands.entity(entity).despawn();
             continue;
@@ -649,7 +648,6 @@ mod tests {
     use super::*;
     use crate::game::{
         characters::{Gender, Profession},
-        inventory::PartyInventory,
         screen::Screen,
     };
     use bevy::picking::{backend::HitData, pointer::PointerButton};
@@ -659,13 +657,12 @@ mod tests {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
             .init_asset::<SpriteSheet>()
-            .init_resource::<PartyRoster>()
             .init_resource::<PresentationRng>()
             .add_message::<DamageApplied>()
             .add_systems(Startup, super::super::load_main_screen_art)
             .add_systems(Update, (record_splats, play_splats).chain());
         let actor = app.world_mut().spawn_empty().id();
-        app.world_mut().resource_mut::<PartyRoster>().0.insert(actor);
+        crate::game::party::roster::test_party(app.world_mut(), &[actor]);
         let layer = app.world_mut().spawn(Splats).id();
         let mut timer = Timer::from_seconds(8.0 * SPLAT_FRAME, TimerMode::Once);
         timer.set_elapsed(Duration::from_secs_f32(0.79));
@@ -697,8 +694,6 @@ mod tests {
     #[test]
     fn native_click_counts_review_only_the_current_selection_gesture() {
         let mut world = World::new();
-        world.init_resource::<PartyRoster>();
-        world.init_resource::<PartyInventory>();
         world.init_resource::<Assets<ItemCatalog>>();
         world.init_resource::<SelectedMember>();
         world.init_resource::<Messages<ItemNews>>();
@@ -706,7 +701,7 @@ mod tests {
         world.init_resource::<NextState<Screen>>();
         let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
         let actor = world.spawn((Vitals::new(&profile), profile, Carried::default())).id();
-        world.resource_mut::<PartyRoster>().0.insert(actor);
+        crate::game::party::roster::test_party(&mut world, &[actor]);
         let root = world.spawn_empty().id();
         let button = world
             .spawn((
@@ -747,7 +742,8 @@ mod tests {
         assert!(matches!(world.resource::<NextState<Screen>>(), NextState::Unchanged));
         let replacement = Character::new("B", Race::Human, Gender::Male, Profession::Fighter);
         let other = world.spawn((Vitals::new(&replacement), replacement, Carried::default())).id();
-        world.resource_mut::<PartyRoster>().0 = [other].into_iter().collect();
+        world.entity_mut(actor).remove::<crate::game::party::roster::PartyMember>();
+        crate::game::party::roster::test_join(&mut world, other);
         world.run_system_once(bind_party_buttons).unwrap();
         assert!(
             world.get_entity(button).is_err(),

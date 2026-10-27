@@ -483,7 +483,7 @@ pub(super) fn refresh(
     screen: Option<Single<Ref<InventoryScreen>>>,
     characters: Query<CharacterView>,
     mut removed_carried: RemovedComponents<Carried>,
-    roster: Option<Res<PartyRoster>>,
+    roster: Option<Single<Ref<PartyRoster>>>,
     profiles: Query<Ref<Character>>,
     info: Option<Single<Ref<StatsInfo>>>,
     slider: Option<Single<(Entity, Ref<SliderValue>, &SliderRange), With<StatsScroll>>>,
@@ -520,7 +520,7 @@ pub(super) fn refresh(
     let table_changed = tables.as_ref().is_some_and(|tables| tables.is_changed());
     let party_changed = roster.as_ref().is_some_and(|roster| {
         roster.is_changed()
-            || profiles.iter_many(&roster.0).matched().any(|profile| profile.is_changed())
+            || profiles.iter_many(roster.iter()).matched().any(|profile| profile.is_changed())
     });
     if !screen.is_changed()
         && !actor_changed
@@ -659,7 +659,7 @@ pub(super) fn refresh(
                 let best = level > 0
                     && roster.as_ref().is_some_and(|roster| {
                         profiles
-                            .iter_many(&roster.0)
+                            .iter_many(roster.iter())
                             .matched()
                             .all(|other| other.skill(skill) <= level)
                     });

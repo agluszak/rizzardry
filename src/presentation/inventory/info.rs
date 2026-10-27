@@ -60,7 +60,7 @@ pub(super) fn open_info(
     targets: Query<&InfoTarget>,
     screen: Single<&InventoryScreen>,
     profiles: Query<&Character>,
-    roster: Res<PartyRoster>,
+    roster: Single<&PartyRoster>,
     existing: Query<(), With<InfoDialog>>,
     art: Res<InventoryArt>,
     sheets: Res<Assets<SpriteSheet>>,
@@ -105,7 +105,7 @@ pub(super) fn open_info(
         let (first_attribute, second_attribute) = governing(skill);
         let level = profile.skill(skill);
         let best = level > 0
-            && profiles.iter_many(&roster.0).matched().all(|other| other.skill(skill) <= level);
+            && profiles.iter_many(roster.iter()).matched().all(|other| other.skill(skill) <= level);
         entries.push((format!("{}: ", string(0x156)), Some(art.bronze.clone())));
         entries.push((string(0x274 + first_attribute as usize).to_owned(), None));
         if first_attribute != second_attribute {
