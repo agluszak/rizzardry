@@ -651,13 +651,8 @@ pub(super) fn refresh_quote(
     let Some(draft) = session.mode.draft() else { return };
     let key = (draft.gender(), draft.personality, draft.voice);
     if source.key != Some(key) {
-        let gender = if key.0 == crate::content::characters::Gender::Male { "m" } else { "f" };
-        let personality =
-            ["aggr", "intell", "burly", "chaos", "cun", "ecc", "kind", "laid", "loner"]
-                [key.1 as usize];
-        let voice = if key.2 == Voice::First { 1 } else { 2 };
-        source.table =
-            assets.load(format!("retail://data/quotes/pcs/{gender}_{personality}{voice}0.msg"));
+        let stem = crate::presentation::voice::pc_voice_stem(key.0, key.1, key.2);
+        source.table = assets.load(format!("retail://data/quotes/pcs/{stem}.msg"));
         source.key = Some(key);
     }
     let quote = tables.get(&source.table).and_then(|table| table.get(0)).unwrap_or("").trim_end();
@@ -699,17 +694,14 @@ fn open_summary(
         return;
     }
     let Some(draft) = session.mode.draft() else { return };
-    let gender = if draft.gender() == crate::content::characters::Gender::Male { "m" } else { "f" };
-    let personality = ["aggr", "intell", "burly", "chaos", "cun", "ecc", "kind", "laid", "loner"]
-        [draft.personality as usize];
-    let voice = if draft.voice == Voice::First { 1 } else { 2 };
-    let stem = format!("{gender}_{personality}{voice}0");
+    let stem =
+        crate::presentation::voice::pc_voice_stem(draft.gender(), draft.personality, draft.voice);
     let previous_focus = focus.get();
     let dialog = commands
         .spawn((
             Summary {
                 previous_focus,
-                voice_path: format!("retail://data/sound/pcs/{stem}/{stem}_000.mp3"),
+                voice_path: crate::presentation::voice::pc_voice_path(&stem, 0),
                 timer: Timer::from_seconds(0.75, TimerMode::Once),
                 started: false,
             },
