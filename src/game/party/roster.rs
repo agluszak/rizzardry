@@ -151,9 +151,7 @@ mod tests {
     #[test]
     #[ignore = "requires a retail installation"]
     fn starting_equipment_is_worn() {
-        let root =
-            std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL to run this test");
-        let files = crate::retail::files::RetailFiles::open(root).unwrap();
+        let files = crate::retail::files::retail_files();
         let catalog = crate::retail::items::retail_catalog(&files);
         let (mut ids, mut rng) = (ItemIds::default(), GameRng::seeded(1));
         let professions = [
@@ -174,18 +172,6 @@ mod tests {
             for id in starting_items(&character) {
                 let item = make_item(catalog.get(id).unwrap(), &mut ids, &mut rng, true, true);
                 place_at_creation(&mut carried, item, &catalog, &character).unwrap();
-            }
-            let name = |i: &Option<crate::game::inventory::ItemInstance>| {
-                i.as_ref().map(|i| catalog.get(i.item).unwrap().name.clone())
-            };
-            println!("{race:?} {profession:?}");
-            for (slot, item) in &carried.equipment {
-                if let Some(name) = name(item) {
-                    println!("  {slot:?}: {name}");
-                }
-            }
-            for item in carried.backpack.iter().filter(|i| i.is_some()) {
-                println!("  pack: {}", name(item).unwrap());
             }
             assert!(carried.worn(EquipSlot::Primary).is_some(), "{profession:?} holds a weapon");
         }

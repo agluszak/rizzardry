@@ -58,13 +58,7 @@ mod tests {
         let mut world = World::new();
         world.insert_resource(State::new(Screen::World));
         world.init_resource::<NextState<Screen>>();
-        world.spawn(Level {
-            path: "test".into(),
-            geometry: default(),
-            navmeshes: vec![],
-            script: default(),
-            messages: None,
-        });
+        world.spawn(Level::test(default()));
         assert!(world.run_system_once(party_free).unwrap());
         world.resource_mut::<NextState<Screen>>().set(Screen::Inventory);
         assert_eq!(*world.resource::<State<Screen>>().get(), Screen::World);

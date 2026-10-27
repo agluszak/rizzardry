@@ -129,9 +129,7 @@ mod tests {
     #[test]
     #[ignore = "requires a retail installation"]
     fn every_retail_image_decodes() {
-        let root =
-            std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL to run this test");
-        let files = crate::retail::files::RetailFiles::open(root).unwrap();
+        let files = crate::retail::files::retail_files();
         let mut decoded = 0;
         for name in files.names().filter(|n| n.ends_with(".sti")) {
             let data = files.read(name).unwrap().unwrap();

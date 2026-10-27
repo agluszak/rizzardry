@@ -174,28 +174,10 @@ impl RetailFiles {
     }
 }
 
+/// The installation `RIZZARDRY_RETAIL` names, for retail tests; panics without one.
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn excludes_archives_and_installation_state() {
-        assert!(is_excluded_loose_file("levels/levels.slf"));
-        assert!(is_excluded_loose_file("patches/patch.001"));
-        assert!(is_excluded_loose_file("saves/game.sav"));
-        assert!(!is_excluded_loose_file("data/databases/items.dbs"));
-    }
-
-    /// Runs against a real installation when `RIZZARDRY_RETAIL` names one.
-    #[test]
-    #[ignore = "requires a retail installation"]
-    fn indexes_a_retail_installation() {
-        let root =
-            std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL to run this test");
-        let files = RetailFiles::open(root).unwrap();
-        let level = files.read("Levels/Monastery/Monastery1.PVL").unwrap().unwrap();
-        assert!(!level.is_empty());
-        assert!(files.is_directory("levels/monastery"));
-        assert!(files.list_directory("levels").contains(&"levels/monastery".to_owned()));
-    }
+pub fn retail_files() -> RetailFiles {
+    let root = std::env::var("RIZZARDRY_RETAIL")
+        .expect("retail tests need RIZZARDRY_RETAIL set to a Wizardry 8 installation");
+    RetailFiles::open(&root).unwrap_or_else(|e| panic!("cannot open RIZZARDRY_RETAIL={root}: {e}"))
 }

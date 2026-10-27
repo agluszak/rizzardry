@@ -5,8 +5,6 @@ use crate::content::ui::SpriteSheet;
 use crate::game::characters::creation::{CharacterDraft, PLAYABLE_RACES};
 use crate::game::party::{formation::Formation, roster::PartyRoster};
 use crate::game::session::{NewGameDestination, Session, begin_adventure};
-#[cfg(test)]
-use bevy::input::ButtonState;
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::input_focus::{
     InputFocus,
@@ -35,7 +33,7 @@ impl Plugin for FrontendPlugin {
             .add_input_context::<confirmation::DeleteDialog>()
             .add_systems(
                 PreUpdate,
-                arm_menu_input
+                arm_confirmation_input
                     .after(bevy::input::InputSystems)
                     .before(EnhancedInputSystems::Update),
             )
@@ -62,26 +60,18 @@ impl Plugin for FrontendPlugin {
     }
 }
 
-// A key that opened a screen must be released before that screen handles input.
-fn arm_menu_input(
+// Native buttons also receive raw keyboard events, so the confirmation waits
+// for the opening key to be released before accepting either input path.
+fn arm_confirmation_input(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
-    menu: Query<(Entity, &ContextActivity<MenuInput>)>,
-    credits: Query<(Entity, &ContextActivity<credits::CreditsInput>)>,
     confirmation: Query<(Entity, &ContextActivity<confirmation::DeleteDialog>)>,
 ) {
-    if keys.get_pressed().next().is_some() {
+    if [KeyCode::Enter, KeyCode::Space]
+        .into_iter()
+        .any(|key| keys.pressed(key) || keys.just_pressed(key))
+    {
         return;
-    }
-    for (entity, active) in &menu {
-        if !**active {
-            commands.entity(entity).insert(ContextActivity::<MenuInput>::ACTIVE);
-        }
-    }
-    for (entity, active) in &credits {
-        if !**active {
-            commands.entity(entity).insert(ContextActivity::<credits::CreditsInput>::ACTIVE);
-        }
     }
     for (entity, active) in &confirmation {
         if !**active {
@@ -350,12 +340,11 @@ fn main_menu(mut commands: Commands, assets: Res<AssetServer>, mut focus: ResMut
         MenuInput
         ChildOf({root})
         ContextPriority::<MenuInput>::new(1)
-        ContextActivity::<MenuInput>::INACTIVE
         Actions<MenuInput> [
-            InputBindingAction::<MenuUp>::new() ActionSettings { consume_input: true } Bindings [ Binding(KeyCode::ArrowUp) ]
-            -- InputBindingAction::<MenuDown>::new() ActionSettings { consume_input: true } Bindings [ Binding(KeyCode::ArrowDown) ]
-            -- InputBindingAction::<MenuStart>::new() ActionSettings { consume_input: true } Bindings [ Binding(KeyCode::KeyS) ]
-            -- InputBindingAction::<MenuExit>::new() ActionSettings { consume_input: true } Bindings [ Binding(KeyCode::Escape) Binding(KeyCode::KeyX) Binding(KeyCode::KeyE) ]
+            InputBindingAction::<MenuUp>::new() ActionSettings { consume_input: true, require_reset: true } Bindings [ Binding(KeyCode::ArrowUp) ]
+            -- InputBindingAction::<MenuDown>::new() ActionSettings { consume_input: true, require_reset: true } Bindings [ Binding(KeyCode::ArrowDown) ]
+            -- InputBindingAction::<MenuStart>::new() ActionSettings { consume_input: true, require_reset: true } Bindings [ Binding(KeyCode::KeyS) ]
+            -- InputBindingAction::<MenuExit>::new() ActionSettings { consume_input: true, require_reset: true } Bindings [ Binding(KeyCode::Escape) Binding(KeyCode::KeyX) Binding(KeyCode::KeyE) ]
         ]
         on(menu_up)
         on(menu_down)
@@ -1120,23 +1109,11 @@ const PORTRAITS: &[&str] = &[
 #[cfg(test)]
 mod keyboard_tests {
     use super::*;
-    use bevy::input_focus::{InputDispatchPlugin, InputFocusPlugin};
+    use crate::presentation::test_input::{key, tap};
+    use bevy::input::ButtonState;
+    use bevy::input_focus::InputDispatchPlugin;
     use bevy::ui_widgets::ButtonPlugin;
     use bevy::window::PrimaryWindow;
-
-    fn tap(app: &mut App, window: Entity, key_code: KeyCode) {
-        for state in [ButtonState::Pressed, ButtonState::Released] {
-            app.world_mut().write_message(KeyboardInput {
-                key_code,
-                logical_key: Key::Unidentified(bevy::input::keyboard::NativeKey::Unidentified),
-                state,
-                text: None,
-                repeat: false,
-                window,
-            });
-            app.update();
-        }
-    }
 
     #[test]
     fn native_name_edits_update_only_the_working_draft() {
@@ -1220,15 +1197,8 @@ mod keyboard_tests {
 
     #[test]
     fn frontend_can_reenter_tab_navigation_after_page_and_name_changes() {
-        let mut app = App::new();
+        let mut app = crate::presentation::test_input::input_app();
         app.add_plugins((
-            MinimalPlugins,
-            AssetPlugin::default(),
-            bevy::scene::ScenePlugin,
-            EnhancedInputPlugin,
-            bevy::input::InputPlugin,
-            bevy::state::app::StatesPlugin,
-            InputFocusPlugin,
             InputDispatchPlugin,
             ButtonPlugin,
             bevy::ui_widgets::ModalDialogPlugin,
@@ -1262,50 +1232,25 @@ mod keyboard_tests {
             .iter(app.world())
             .find_map(|(entity, action)| matches!(action, Action::Credits).then_some(entity))
             .unwrap();
-        app.world_mut().trigger(Activate { entity: credits });
+        app.world_mut()
+            .resource_mut::<InputFocus>()
+            .set(credits, bevy::input_focus::FocusCause::Navigated);
+        key(&mut app, window, KeyCode::Enter, true);
         app.update();
         assert_eq!(*app.world().resource::<State<MenuPage>>().get(), MenuPage::Credits);
         app.update();
-        app.world_mut().write_message(KeyboardInput {
-            key_code: KeyCode::Escape,
-            logical_key: Key::Escape,
-            state: ButtonState::Pressed,
-            text: None,
-            repeat: false,
-            window,
-        });
-        app.update();
+        assert_eq!(*app.world().resource::<State<MenuPage>>().get(), MenuPage::Credits);
+        key(&mut app, window, KeyCode::Enter, false);
+        key(&mut app, window, KeyCode::Escape, true);
         app.update();
         assert_eq!(*app.world().resource::<State<MenuPage>>().get(), MenuPage::Main);
-        app.world_mut().write_message(KeyboardInput {
-            key_code: KeyCode::Escape,
-            logical_key: Key::Escape,
-            state: ButtonState::Released,
-            text: None,
-            repeat: false,
-            window,
-        });
         app.update();
-        app.world_mut().write_message(KeyboardInput {
-            key_code: KeyCode::KeyS,
-            logical_key: Key::Character("s".into()),
-            state: ButtonState::Pressed,
-            text: Some("s".into()),
-            repeat: false,
-            window,
-        });
-        app.update();
+        assert!(app.world().resource::<Messages<AppExit>>().is_empty());
+        key(&mut app, window, KeyCode::Escape, false);
+        key(&mut app, window, KeyCode::KeyS, true);
         app.update();
         assert_eq!(*app.world().resource::<State<Session>>().get(), Session::Creation);
-        app.world_mut().write_message(KeyboardInput {
-            key_code: KeyCode::KeyS,
-            logical_key: Key::Character("s".into()),
-            state: ButtonState::Released,
-            text: None,
-            repeat: false,
-            window,
-        });
-        app.update();
+        key(&mut app, window, KeyCode::KeyS, false);
         tap(&mut app, window, KeyCode::Tab);
         let focused = app.world().resource::<InputFocus>().get().unwrap();
         assert!(matches!(app.world().get::<Action>(focused), Some(Action::Add)));
@@ -1353,6 +1298,7 @@ mod keyboard_tests {
                 matches!(action, Action::DeleteCandidate).then_some(entity)
             })
             .unwrap();
+        key(&mut app, window, KeyCode::ShiftLeft, true);
         app.world_mut().write_message(KeyboardInput {
             key_code: KeyCode::Enter,
             logical_key: Key::Enter,
@@ -1365,15 +1311,7 @@ mod keyboard_tests {
         app.update();
         app.update();
         assert_eq!(app.world().get::<Creation>(owner).unwrap().party, [7]);
-        app.world_mut().write_message(KeyboardInput {
-            key_code: KeyCode::Enter,
-            logical_key: Key::Enter,
-            state: ButtonState::Released,
-            text: None,
-            repeat: false,
-            window,
-        });
-        app.update();
+        key(&mut app, window, KeyCode::Enter, false);
         tap(&mut app, window, KeyCode::Escape);
         assert_eq!(app.world().get::<Creation>(owner).unwrap().party, [7]);
         app.world_mut().trigger(Activate { entity: delete });
@@ -1382,5 +1320,21 @@ mod keyboard_tests {
         let session = app.world().get::<Creation>(owner).unwrap();
         assert!(session.candidates.is_empty());
         assert!(session.party.is_empty());
+
+        let back = app
+            .world_mut()
+            .query::<(Entity, &Action, Has<party::Control>)>()
+            .iter(app.world())
+            .find_map(|(entity, action, party)| {
+                (party && matches!(action, Action::Menu)).then_some(entity)
+            })
+            .unwrap();
+        app.world_mut().trigger(Activate { entity: back });
+        app.update();
+        app.update();
+        assert_eq!(*app.world().resource::<State<Session>>().get(), Session::MainMenu);
+        key(&mut app, window, KeyCode::KeyS, true);
+        app.update();
+        assert_eq!(*app.world().resource::<State<Session>>().get(), Session::Creation);
     }
 }

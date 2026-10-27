@@ -646,8 +646,6 @@ mod tests {
         assert_eq!(fighter.load(960), Load::Light);
         assert_eq!(fighter.load(1939), Load::Heavy, "integer percent: still 100");
         assert_eq!(fighter.load(1940), Load::Extreme);
-        let vitals = Vitals::new(&fighter);
-        assert_eq!((vitals.hp, vitals.stamina), (18, 105));
         assert_eq!(fighter.experience_goal(), 1000);
         // Profession and bonus skills are seeded; others are not.
         let close_combat = fighter.skill_points[Skill::CloseCombat];

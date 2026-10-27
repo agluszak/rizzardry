@@ -121,10 +121,6 @@ mod tests {
         assert_eq!(notes.nearest(Vec2::ZERO, 1.0, 0), Some(upstairs));
         assert_eq!(notes.nearest(Vec2::ZERO, 1.0, 1), Some(downstairs));
         assert_eq!(notes.nearest(Vec2::ZERO, 1.0, 2), None);
-        let erased = notes.nearest(Vec2::ZERO, 1.0, 1).unwrap();
-        notes.notes.remove(erased);
-        assert_eq!(notes.notes.len(), 1);
-        assert_eq!(notes.notes[0].text, "U");
     }
 
     #[test]

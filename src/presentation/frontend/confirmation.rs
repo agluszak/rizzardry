@@ -61,8 +61,8 @@ pub(super) fn open(
         ContextPriority::<DeleteDialog>::new(10)
         ContextActivity::<DeleteDialog>::INACTIVE
         Actions<DeleteDialog> [
-            Action::<Accept>::new() ActionSettings { consume_input: true } Bindings [ Binding(KeyCode::Enter) ]
-            -- Action::<Cancel>::new() ActionSettings { consume_input: true } Bindings [ Binding(KeyCode::Escape) ]
+            Action::<Accept>::new() ActionSettings { consume_input: true, require_reset: true } Bindings [ Binding(KeyCode::Enter) ]
+            -- Action::<Cancel>::new() ActionSettings { consume_input: true, require_reset: true } Bindings [ Binding(KeyCode::Escape) ]
         ]
         on(|event: On<Start<Accept>>, mut commands: Commands| { commands.trigger(Answer { dialog: event.context, accepted: true }); })
         on(|event: On<Start<Cancel>>, mut commands: Commands| { commands.trigger(Answer { dialog: event.context, accepted: false }); })

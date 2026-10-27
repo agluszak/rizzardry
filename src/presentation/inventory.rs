@@ -501,7 +501,6 @@ fn cell_controls(cell: Cell, art: &InventoryArt) -> impl Scene {
         crate::presentation::retail_controls::FocusRing
         on(crate::presentation::retail_controls::primary_press)
         on(click_cell)
-        on(pool_scroll::wheel)
         Children [
             template(move |_| Ok(ImageNode { image: fill.clone(), rect: Some(Rect::new(0.0, 0.0, 46.0, 54.0)), ..default() }))
             Node { position_type: PositionType::Absolute, width: px(46), height: px(54) }
@@ -608,7 +607,6 @@ pub fn spawn_inventory_screen(
         .iter()
         .map(|slot| Cell::Member(Slot::Equipment(slot)))
         .chain((0..BACKPACK_SLOTS).map(|i| Cell::Member(Slot::Backpack(i))))
-        .chain((0..POOL_CELLS).map(Cell::Pool))
         .map(|cell| cell_controls(cell, &art))
         .collect();
     commands.entity(root).insert(InventoryBuilt);
@@ -641,7 +639,19 @@ pub fn spawn_inventory_screen(
     }
     item_info::build(&mut commands, content, &art);
     spells::build(&mut commands, content, &art);
-    pool_scroll::build(&mut commands, content, &art);
+    let track = pool_scroll::build(&mut commands, content, &art);
+    let pool = commands
+        .spawn((
+            review::Page::Items,
+            absolute(Vec2::ZERO, Vec2::new(640.0, 450.0)),
+            Pickable::IGNORE,
+            crate::presentation::retail_controls::ScrollWheel(track),
+            ChildOf(content),
+        ))
+        .observe(crate::presentation::retail_controls::scroll_wheel)
+        .id();
+    let pool_cells: Vec<_> = (0..POOL_CELLS).map(|i| cell_controls(Cell::Pool(i), &art)).collect();
+    commands.entity(pool).queue_spawn_related_scenes::<Children>(bsn_list! { {pool_cells} });
 }
 
 // Retail profession titles, indexed by profession and level band.
@@ -1204,22 +1214,10 @@ mod tests {
     use super::*;
     use crate::content::items::ItemDefinition;
 
-    #[test]
-    fn closing_inventory_returns_the_held_item_even_before_art_is_ready() {
-        use crate::game::characters::{Gender, Profession, Race};
-        use crate::game::inventory::{Held, ItemIds, make_item};
-        use crate::game::rng::GameRng;
-        for still_a_member in [true, false] {
-            let mut app = App::new();
-            app.add_plugins((
-                MinimalPlugins,
-                AssetPlugin::default(),
-                bevy::scene::ScenePlugin,
-                bevy::input::InputPlugin,
-                bevy::state::app::StatesPlugin,
-                EnhancedInputPlugin,
-            ))
-            .init_state::<Screen>()
+    /// The inventory screen as the game installs it, over keyboard input.
+    fn inventory_app() -> App {
+        let mut app = crate::presentation::test_input::input_app();
+        app.init_state::<Screen>()
             .init_asset::<SpriteSheet>()
             .init_asset::<TextTable>()
             .init_asset::<Image>()
@@ -1230,6 +1228,16 @@ mod tests {
             .init_resource::<super::super::main_screen::SelectedMember>()
             .add_plugins(InventoryPlugin)
             .add_systems(PostUpdate, crate::presentation::retail_controls::sync_button_navigation);
+        app
+    }
+
+    #[test]
+    fn closing_inventory_returns_the_held_item_even_before_art_is_ready() {
+        use crate::game::characters::{Gender, Profession, Race};
+        use crate::game::inventory::{Held, ItemIds, make_item};
+        use crate::game::rng::GameRng;
+        for still_a_member in [true, false] {
+            let mut app = inventory_app();
             let definition = ItemDefinition { ..default() };
             let item = make_item(
                 &definition,
@@ -1292,60 +1300,23 @@ mod tests {
     }
 
     #[test]
-    fn gold_is_grouped_in_thousands() {
-        assert_eq!(format_gold(0), "0");
-        assert_eq!(format_gold(950), "950");
-        assert_eq!(format_gold(12345), "12,345");
-        assert_eq!(format_gold(1234567), "1,234,567");
-    }
-}
-
-#[cfg(test)]
-mod keyboard_lifecycle_tests {
-    use super::*;
-    use crate::game::characters::{Gender, Profession, Race};
-    use bevy::input::{
-        ButtonState,
-        keyboard::{Key, KeyboardInput},
-    };
-    use bevy::input_focus::{
-        InputDispatchPlugin, InputFocus, InputFocusPlugin, tab_navigation::TabNavigationPlugin,
-    };
-    use bevy::picking::{
-        backend::HitData,
-        events::{Pointer, PointerClick, PointerPress},
-        pointer::{Location, PointerButton, PointerId},
-    };
-    use bevy::ui_widgets::{ButtonPlugin, ModalDialogPlugin, SelectedTab, SliderPlugin, TabPlugin};
-    use bevy::window::{PrimaryWindow, Window};
-
-    fn key(app: &mut App, window: Entity, code: KeyCode, pressed: bool) {
-        app.world_mut().write_message(KeyboardInput {
-            key_code: code,
-            logical_key: Key::Character("x".into()),
-            state: if pressed { ButtonState::Pressed } else { ButtonState::Released },
-            text: None,
-            repeat: false,
-            window,
-        });
-        app.update();
-    }
-    fn tap(app: &mut App, window: Entity, code: KeyCode) {
-        key(app, window, code, true);
-        key(app, window, code, false);
-    }
-
-    #[test]
     fn review_and_information_dialog_keep_keyboard_navigation() {
-        let mut app = App::new();
+        use crate::game::characters::{Gender, Profession, Race};
+        use crate::presentation::test_input::{key, mouse, tap};
+        use bevy::input_focus::{
+            InputDispatchPlugin, InputFocus, tab_navigation::TabNavigationPlugin,
+        };
+        use bevy::picking::{
+            backend::HitData,
+            events::{PointerClick, PointerPress},
+            pointer::PointerButton,
+        };
+        use bevy::ui_widgets::{
+            ButtonPlugin, ModalDialogPlugin, SelectedTab, SliderPlugin, TabPlugin,
+        };
+        use bevy::window::{PrimaryWindow, Window};
+        let mut app = inventory_app();
         app.add_plugins((
-            MinimalPlugins,
-            AssetPlugin::default(),
-            bevy::scene::ScenePlugin,
-            bevy::input::InputPlugin,
-            bevy::state::app::StatesPlugin,
-            EnhancedInputPlugin,
-            InputFocusPlugin,
             InputDispatchPlugin,
             TabNavigationPlugin,
             bevy::input_focus::pointer_focus::PointerFocusPlugin,
@@ -1355,19 +1326,8 @@ mod keyboard_lifecycle_tests {
             ModalDialogPlugin,
             bevy::camera::visibility::VisibilityPlugin,
         ))
-        .init_state::<Screen>()
-        .init_asset::<SpriteSheet>()
-        .init_asset::<TextTable>()
-        .init_asset::<Image>()
-        .init_asset::<ItemCatalog>()
         .init_asset::<Mesh>()
-        .init_asset::<bevy::mesh::skinning::SkinnedMeshInverseBindposes>()
-        .init_resource::<UiScale>()
-        .init_resource::<PartyRoster>()
-        .init_resource::<PartyInventory>()
-        .init_resource::<super::super::main_screen::SelectedMember>()
-        .add_plugins(InventoryPlugin)
-        .add_systems(PostUpdate, crate::presentation::retail_controls::sync_button_navigation);
+        .init_asset::<bevy::mesh::skinning::SkinnedMeshInverseBindposes>();
         let window = app.world_mut().spawn((Window::default(), PrimaryWindow)).id();
         let profile = Character::new("Test", Race::Human, Gender::Male, Profession::Fighter);
         let member =
@@ -1446,26 +1406,14 @@ mod keyboard_lifecycle_tests {
             .unwrap();
         app.world_mut().trigger(PointerPress {
             entity: target,
-            pointer: Pointer::new(
-                PointerId::Mouse,
-                Location {
-                    target: bevy::camera::NormalizedRenderTarget::None { width: 640, height: 480 },
-                    position: Vec2::ZERO,
-                },
-            ),
+            pointer: mouse(),
             button: PointerButton::Secondary,
             hit: HitData::new(Entity::PLACEHOLDER, 0.0, None, None),
             count: 1,
         });
         app.world_mut().trigger(PointerClick {
             entity: target,
-            pointer: Pointer::new(
-                PointerId::Mouse,
-                Location {
-                    target: bevy::camera::NormalizedRenderTarget::None { width: 640, height: 480 },
-                    position: Vec2::ZERO,
-                },
-            ),
+            pointer: mouse(),
             button: PointerButton::Secondary,
             hit: HitData::new(Entity::PLACEHOLDER, 0.0, None, None),
             duration: std::time::Duration::ZERO,

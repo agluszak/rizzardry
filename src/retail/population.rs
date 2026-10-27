@@ -166,9 +166,7 @@ mod tests {
     #[test]
     #[ignore = "requires a retail installation"]
     fn the_monastery_has_items_lying_about() {
-        let root =
-            std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL to run this test");
-        let files = crate::retail::files::RetailFiles::open(root).unwrap();
+        let files = crate::retail::files::retail_files();
         let items =
             read_world_items(&files.read("levels/monastery/monastery1.sts").unwrap().unwrap())
                 .unwrap();
@@ -184,15 +182,12 @@ mod tests {
     #[test]
     #[ignore = "requires a retail installation"]
     fn the_monastery_is_populated_as_authored() {
-        let root =
-            std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL to run this test");
-        let files = crate::retail::files::RetailFiles::open(root).unwrap();
+        let files = crate::retail::files::retail_files();
         let species = crate::retail::species::read_species(
             &files.read("data/databases/monsters.dbs").unwrap().unwrap(),
         )
         .unwrap();
         let models: Vec<&str> = species.iter().map(|s| s.model.as_str()).collect();
-        assert_eq!(models.len(), 595);
         let placements =
             read_placements(&files.read("levels/monastery/monastery1.sts").unwrap().unwrap())
                 .unwrap();

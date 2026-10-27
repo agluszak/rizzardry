@@ -30,8 +30,17 @@ enumset = "1.1.15"
 ron = "0.12"
 
 # Dependencies compile with optimisations so the game stays playable in debug.
+# The binary has no unit tests; don't link a test harness for it.
+[[bin]]
+name = "rizzardry"
+path = "src/main.rs"
+test = false
+
 [profile.dev.package."*"]
 opt-level = 3
+# Full dependency debuginfo made every test binary ~2.4 GB and dominated
+# link time; line tables still give usable backtraces.
+debug = "line-tables-only"
 
 [profile.dev]
 opt-level = 1

@@ -349,41 +349,25 @@ mod tests {
     use super::*;
     #[test]
     fn escape_cancels_the_editor_before_a_second_escape_closes_the_map() {
-        use bevy::input::{ButtonState, InputPlugin};
-        use bevy::input_focus::{InputDispatchPlugin, InputFocusPlugin, InputFocusSystems};
+        use crate::presentation::test_input::{input_app, tap};
+        use bevy::input_focus::{InputDispatchPlugin, InputFocusSystems};
         use bevy::window::PrimaryWindow;
-        let mut app = App::new();
-        app.add_plugins((
-            MinimalPlugins,
-            AssetPlugin::default(),
-            bevy::scene::ScenePlugin,
-            InputPlugin,
-            bevy::state::app::StatesPlugin,
-            EnhancedInputPlugin,
-            InputFocusPlugin,
-            InputDispatchPlugin,
-        ))
-        .init_state::<Screen>()
-        .init_asset::<LevelDefinition>()
-        .add_input_context::<AutomapScreen>()
-        .add_systems(OnEnter(Screen::Automap), enter_automap)
-        .add_systems(
-            PreUpdate,
-            route_map_keys.after(InputFocusSystems::Dispatch).before(EnhancedInputSystems::Update),
-        )
-        .add_systems(PostUpdate, finish_note_input);
+        let mut app = input_app();
+        app.add_plugins(InputDispatchPlugin)
+            .init_state::<Screen>()
+            .init_asset::<LevelDefinition>()
+            .add_input_context::<AutomapScreen>()
+            .add_systems(OnEnter(Screen::Automap), enter_automap)
+            .add_systems(
+                PreUpdate,
+                route_map_keys
+                    .after(InputFocusSystems::Dispatch)
+                    .before(EnhancedInputSystems::Update),
+            )
+            .add_systems(PostUpdate, finish_note_input);
         let window = app.world_mut().spawn((Window::default(), PrimaryWindow)).id();
         app.world_mut().spawn((PartyBody::default(), Transform::default()));
-        let level = app
-            .world_mut()
-            .spawn(Level {
-                path: "test".into(),
-                geometry: default(),
-                navmeshes: vec![],
-                script: default(),
-                messages: None,
-            })
-            .id();
+        let level = app.world_mut().spawn(Level::test(default())).id();
         app.world_mut().resource_mut::<NextState<Screen>>().set(Screen::Automap);
         app.finish();
         app.cleanup();
@@ -402,24 +386,11 @@ mod tests {
             .observe(finish)
             .id();
         app.insert_resource(InputFocus::from_entity(input));
-        let tap = |app: &mut App| {
-            for state in [ButtonState::Pressed, ButtonState::Released] {
-                app.world_mut().write_message(KeyboardInput {
-                    key_code: KeyCode::Escape,
-                    logical_key: Key::Escape,
-                    state,
-                    text: None,
-                    repeat: false,
-                    window,
-                });
-                app.update();
-            }
-        };
-        tap(&mut app);
+        tap(&mut app, window, KeyCode::Escape);
         assert_eq!(*app.world().resource::<State<Screen>>().get(), Screen::Automap);
         assert!(app.world().get::<Automap>(root).unwrap().editing.is_none());
         assert!(app.world().get_entity(input).is_err());
-        tap(&mut app);
+        tap(&mut app, window, KeyCode::Escape);
         assert_eq!(*app.world().resource::<State<Screen>>().get(), Screen::World);
     }
 
@@ -436,19 +407,7 @@ mod tests {
                 bevy::text::Font::from_bytes(bevy::text::DEFAULT_FONT_DATA.to_vec()).data,
                 None,
             );
-            let level = app
-                .world_mut()
-                .spawn((
-                    Level {
-                        path: "test".into(),
-                        geometry: default(),
-                        navmeshes: vec![],
-                        script: default(),
-                        messages: None,
-                    },
-                    MapNotes::default(),
-                ))
-                .id();
+            let level = app.world_mut().spawn((Level::test(default()), MapNotes::default())).id();
             let mut map = Automap::new(None, &[], Vec3::ZERO);
             map.level = level;
             map.editing = Some(NoteDraft {

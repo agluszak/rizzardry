@@ -165,15 +165,12 @@ mod tests {
     #[test]
     #[ignore = "requires a retail installation"]
     fn retail_species_decode() {
-        let root =
-            std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL to run this test");
-        let files = crate::retail::files::RetailFiles::open(root).unwrap();
+        let files = crate::retail::files::retail_files();
         let species =
             read_species(&files.read("data/databases/monsters.dbs").unwrap().unwrap()).unwrap();
         assert_eq!(species.len(), 595);
         // Checked in combat.md: the Slime lashes for 2+1d6 at score 130.
         let slime = &species[1];
-        println!("{slime:#?}");
         assert_eq!(slime.attacks[0].score, 130);
         assert_eq!(slime.attacks[0].damage, Dice { base: 2, count: 1, sides: 6 });
         assert_eq!(slime.evasion, 7);

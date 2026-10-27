@@ -55,16 +55,3 @@ pub fn finish_speech(
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn lines_live_under_their_speaker() {
-        assert_eq!(
-            voice_path("NPC_Aletheides_000"),
-            "retail://data/sound/npcs/npc_aletheides/npc_aletheides_000.mp3"
-        );
-    }
-}

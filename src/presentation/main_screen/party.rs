@@ -652,11 +652,7 @@ mod tests {
         inventory::PartyInventory,
         screen::Screen,
     };
-    use bevy::picking::{
-        backend::HitData,
-        events::Pointer,
-        pointer::{Location, PointerButton, PointerId},
-    };
+    use bevy::picking::{backend::HitData, pointer::PointerButton};
 
     #[test]
     fn new_damage_refreshes_the_existing_splat_before_playback_expires_it() {
@@ -725,16 +721,7 @@ mod tests {
         let click = |world: &mut World, count| {
             world.trigger(PointerClick {
                 entity: button,
-                pointer: Pointer::new(
-                    PointerId::Mouse,
-                    Location {
-                        target: bevy::camera::NormalizedRenderTarget::None {
-                            width: 640,
-                            height: 480,
-                        },
-                        position: Vec2::ZERO,
-                    },
-                ),
+                pointer: crate::presentation::test_input::mouse(),
                 button: PointerButton::Primary,
                 hit: HitData::new(Entity::PLACEHOLDER, 0.0, None, None),
                 duration: std::time::Duration::ZERO,

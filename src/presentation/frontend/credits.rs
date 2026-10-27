@@ -36,9 +36,8 @@ pub(super) fn enter(mut commands: Commands, assets: Res<AssetServer>) {
         GlobalZIndex(50)
         CreditsInput
         ContextPriority::<CreditsInput>::new(1)
-        ContextActivity::<CreditsInput>::INACTIVE
         Actions<CreditsInput> [
-            Action::<LeaveCredits>::new() ActionSettings { consume_input: true } Bindings [ Binding(Binding::AnyKey) ]
+            Action::<LeaveCredits>::new() ActionSettings { consume_input: true, require_reset: true } Bindings [ Binding(Binding::AnyKey) ]
         ]
         on(|_: On<Start<LeaveCredits>>, mut next: ResMut<NextState<MenuPage>>| { next.set(MenuPage::Main); })
         on(|_: On<PointerClick>, mut next: ResMut<NextState<MenuPage>>| { next.set(MenuPage::Main); })

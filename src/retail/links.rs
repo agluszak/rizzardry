@@ -117,13 +117,10 @@ mod tests {
     use crate::retail::pvl::read_level_geometry;
     use crate::retail::sections::read_sections;
 
-    /// Runs against a real installation when `RIZZARDRY_RETAIL` names one.
     #[test]
     #[ignore = "requires a retail installation"]
     fn retail_levels_have_teleports_and_climbs() {
-        let root =
-            std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL to run this test");
-        let files = crate::retail::files::RetailFiles::open(root).unwrap();
+        let files = crate::retail::files::retail_files();
         let (mut teleports, mut climbs) = (0, 0);
         let mut entrances = std::collections::HashMap::new();
         let mut travel = Vec::new();

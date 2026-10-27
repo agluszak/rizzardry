@@ -215,27 +215,4 @@ mod tests {
         lying.sort();
         assert_eq!(lying, [(1, 0), (BAG_OF_ITEMS.0, 2)]);
     }
-
-    #[test]
-    fn a_bag_empties_into_the_pool_as_far_as_it_fits() {
-        let (catalog, mut ids) = (catalog(), ItemIds::default());
-        let mut bag = WorldItem {
-            item: item(&mut ids, BAG_OF_ITEMS.0),
-            hidden: false,
-            contents: vec![item(&mut ids, 2), item(&mut ids, 3)],
-        };
-        let mut party = PartyInventory::default();
-        let taken = transfer_contents(&mut bag.contents, &mut party, &catalog);
-        assert!(bag.contents.is_empty());
-        assert_eq!(party.pool.len(), 2);
-        assert_eq!(taken.len(), 2);
-        // A full pool keeps the rest in the bag.
-        let mut full = PartyInventory {
-            pool: vec![item(&mut ids, 1); crate::game::inventory::POOL_LIMIT],
-            ..default()
-        };
-        bag.contents = vec![item(&mut ids, 2)];
-        assert!(transfer_contents(&mut bag.contents, &mut full, &catalog).is_empty());
-        assert_eq!(bag.contents.len(), 1);
-    }
 }

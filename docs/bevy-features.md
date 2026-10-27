@@ -131,6 +131,9 @@ native `SliderValue`; widgets own interaction, not a parallel state model. `Pict
 layout/picking defaults, and `PictureCrop` clips source pixels without extra
 bar hierarchies. Keep true content viewports as clipping nodes. HUD log scroll
 remains a projection of `TextLog`, not another writable slider position.
+Pool cells bubble wheel input to their pool's shared scrollbar. Menu actions use
+enhanced input's per-binding reset for held keys; confirmation also guards native
+button activation until Enter and Space have been released.
 
 ## Assets, sharing and mipmaps
 
