@@ -26,8 +26,6 @@ const LOCK_NOT_FORCED: usize = 0x7ad;
 const LOCK_FORCED: usize = 0x7ae;
 const TRAP_NAMES: usize = 0x542;
 const TRAP_DISARMED: usize = 0x7b2;
-const TRAP_SPENT: usize = 0x7b3;
-const TRAP_SPRUNG: usize = 0x7b4;
 /// Retail's "Nothing happens." in the game's string table.
 const NOTHING_HAPPENS: usize = 0x964;
 /// Lines a channel keeps.
@@ -443,11 +441,9 @@ pub fn queue_notices(
             LockNews::Disarmed { trap: kind } => {
                 format!("{} {}", trap(kind), string(TRAP_DISARMED))
             }
-            LockNews::Sprung { trap: kind, destroyed } => format!(
-                "{} {}",
-                trap(kind),
-                string(if *destroyed { TRAP_SPENT } else { TRAP_SPRUNG })
-            ),
+            LockNews::UnsupportedTrap => {
+                "Trap effects are not implemented yet; the device remains guarded.".to_owned()
+            }
             LockNews::Locked
             | LockNews::Trapped { .. }
             | LockNews::NotInCombat

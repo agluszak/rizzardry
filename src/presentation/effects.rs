@@ -91,7 +91,7 @@ pub fn play_lock_sounds(
             LockNews::ComponentDisarmed { component, .. } => {
                 &[TRAP_COMPONENT_SOUNDS[(*component).min(TRAP_COMPONENT_SOUNDS.len() - 1)]]
             }
-            LockNews::Sprung { .. } => &["trap sprung"],
+            LockNews::UnsupportedTrap => &[],
             LockNews::Disarmed { .. } => &[],
         };
         for name in names {

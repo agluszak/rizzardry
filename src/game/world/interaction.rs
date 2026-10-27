@@ -13,7 +13,8 @@
 //!
 //! Not ported yet: skill practice from picking and disarming, the Knock-Knock
 //! and Divine Trap spells and tools used on a device, and what a sprung
-//! trap's spell does ([`TrapDischarge`] names it for the spell resolver).
+//! trap's spell does. Attempts that could spring a trap are refused before
+//! spending RNG or changing the device until those consequences are implemented.
 
 use bevy::prelude::*;
 
@@ -22,12 +23,10 @@ use super::triggers::{Device, DoorState};
 use crate::content::characters::{Attribute, Skill};
 use crate::content::level::{Lock, TRAP_TYPES};
 use crate::game::characters::{Character, Vitals};
+use crate::game::difficulty::Difficulty;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::time::GameClock;
-
-/// Retail's game difficulty is Normal until the setting exists.
-const DIFFICULTY: i32 = 1;
 
 /// The parts a trap is built from; each type uses a few of them.
 pub const COMPONENTS: usize = 8;
@@ -58,11 +57,8 @@ pub const TRAP_COMPONENTS: [[bool; COMPONENTS]; TRAP_TYPES] = {
     ]
 };
 
-/// The skill a trap of each authored grade asks for, and the spell each
-/// trap type casts when sprung (the two halves of retail `g_table2`).
+/// The skill a trap of each authored grade asks for (retail `g_table2`).
 const GRADE_SKILL: [i32; 11] = [10, 25, 35, 40, 50, 60, 70, 80, 90, 100, 110];
-pub const TRAP_SPELLS: [u16; TRAP_TYPES] =
-    [121, 122, 123, 24, 47, 36, 37, 60, 70, 124, 125, 126, 86, 127, 91];
 
 /// The party remarks on a trap again once this much game time has passed
 /// since it last faced it (retail: 0x3840 seconds).
@@ -186,22 +182,8 @@ pub enum LockNews {
     Disarmed {
         trap: u8,
     },
-    /// The trap went off; when `destroyed` it is gone for good.
-    Sprung {
-        trap: u8,
-        destroyed: bool,
-    },
-}
-
-/// A sprung trap's spell, cast from the device at the party (retail
-/// `DischargeTrapSpell`): `targets` members at most, the selected one
-/// always among them. The spell resolver this belongs to is not ported.
-#[derive(Message, Clone, Debug, PartialEq)]
-pub struct TrapDischarge {
-    pub spell: u16,
-    pub power: u8,
-    pub targets: u8,
-    pub at: Vec3,
+    /// The device stays guarded because discharge cannot yet be resolved.
+    UnsupportedTrap,
 }
 
 /// Why an attempt was not made.
@@ -216,6 +198,7 @@ pub enum Unable {
     TooWeak,
     /// That tumbler or component is already done.
     Done,
+    UnsupportedTrap,
 }
 
 /// A member's Locks & Traps level, if they can use it now (retail
@@ -229,14 +212,19 @@ pub fn lock_skill(character: &Character, vitals: &Vitals) -> Option<u32> {
 
 /// A member's chance in 100 to inspect a trap, or to disarm one of its
 /// components before squaring (retail `GetTrapInteractionChance`).
-pub fn trap_chance(skill: Option<u32>, difficulty: u8) -> i32 {
+pub fn trap_chance(skill: Option<u32>, difficulty: u8, setting: Difficulty) -> i32 {
     let skill = skill.map_or(-1, |s| s as i32) - GRADE_SKILL[usize::from(difficulty.min(10))];
-    (skill * 3 / 2 + (11 - DIFFICULTY) * 10).clamp(0, 99)
+    (skill * 3 / 2 + (11 - setting as i32) * 10).clamp(0, 99)
 }
 
 /// A member's chance in 100 to force a lock with this many tumblers, if
 /// they may try (retail `W8LockInteraction::AttemptForce`).
-pub fn force_chance(character: &Character, vitals: &Vitals, tumblers: usize) -> Option<u32> {
+pub fn force_chance(
+    character: &Character,
+    vitals: &Vitals,
+    tumblers: usize,
+    setting: Difficulty,
+) -> Option<u32> {
     let strength = character.attribute(Attribute::Strength);
     if !crate::game::camp::can_act(vitals)
         || vitals.stamina < FORCE_STAMINA
@@ -244,7 +232,7 @@ pub fn force_chance(character: &Character, vitals: &Vitals, tumblers: usize) -> 
     {
         return None;
     }
-    let divisor = (DIFFICULTY - 1 + tumblers as i32).clamp(2, 8);
+    let divisor = (setting as i32 - 1 + tumblers as i32).clamp(2, 8);
     Some((strength - FORCE_STRENGTH) >> (divisor - 2))
 }
 
@@ -341,7 +329,7 @@ pub fn pick_tumbler(world: &mut World, actor: Entity, tumbler: usize) -> Result<
         }
         picking.picker = Some(actor);
     }
-    let chance = (skill as i32 + 5 - 5 * DIFFICULTY).max(0) as u32;
+    let chance = (skill as i32 + 5 - 5 * *world.resource::<Difficulty>() as i32).max(0) as u32;
     let mut dropped = false;
     for held in &mut picking.tumblers {
         if *held == Some(actor) && chance <= rng(world).below(100) {
@@ -370,7 +358,9 @@ pub fn force_lock(world: &mut World, actor: Entity) -> Result<(), Unable> {
     else {
         return Err(Unable::NotNow);
     };
-    let chance = force_chance(character, vitals, picking.tumblers.len()).ok_or(Unable::TooWeak)?;
+    let chance =
+        force_chance(character, vitals, picking.tumblers.len(), *world.resource::<Difficulty>())
+            .ok_or(Unable::TooWeak)?;
     world.get_mut::<Vitals>(actor).unwrap().spend_stamina(FORCE_STAMINA);
     if rng(world).below(100) < chance {
         world.write_message(LockNews::Forced { member: actor });
@@ -388,108 +378,28 @@ fn disarming(world: &World) -> Result<&Disarming, Unable> {
     }
 }
 
-fn disarming_mut(world: &mut World) -> Mut<'_, Disarming> {
-    world.resource_mut::<DeviceInteraction>().map_unchanged(|i| match &mut i.work {
-        Work::Disarming(disarming) => disarming,
-        _ => unreachable!("checked by the caller"),
-    })
-}
-
-/// Inspect the trap (retail `W8MainGameScreen::OnPrimary`,
-/// `ApplyInspectSuccess`): a success shows the actor each component as it
-/// is, or leaves it unknown; a failure springs the trap.
+/// Inspecting or disarming can discharge a trap. Until that consequence is
+/// implemented, none of these routes may roll an attempt or open the device.
 pub fn inspect_trap(world: &mut World, actor: Entity) -> Result<(), Unable> {
-    let (character, vitals) = member(world, actor)?;
-    let skill = lock_skill(character, vitals).ok_or(Unable::Unskilled)?;
-    let disarming = disarming(world)?;
-    let chance = trap_chance(Some(skill), disarming.difficulty);
-    let components = *disarming.components();
-    if rng(world).below(100) as i32 >= chance {
-        spring(world);
-        return Ok(());
-    }
-    let mut seen = [Observation::Unknown; COMPONENTS];
-    for (seen, present) in seen.iter_mut().zip(components) {
-        if (rng(world).below(100) as i32) < chance {
-            *seen = if present { Observation::Present } else { Observation::Absent };
-        }
-    }
-    let mut disarming = disarming_mut(world);
-    disarming.observations.retain(|(member, _)| *member != actor);
-    disarming.observations.push((actor, seen));
-    world.write_message(LockNews::Inspected { member: actor });
-    Ok(())
+    member(world, actor)?;
+    disarming(world)?;
+    unsupported_trap(world)
 }
 
-/// Disarm one component (retail `SelectTextEntry`). One the trap is not
-/// built from springs it; otherwise the chance is squared. With every part
-/// disarmed the device opens.
-pub fn disarm_component(world: &mut World, actor: Entity, component: usize) -> Result<(), Unable> {
-    let (character, vitals) = member(world, actor)?;
-    let skill = lock_skill(character, vitals).ok_or(Unable::Unskilled)?;
-    let disarming = disarming(world)?;
-    if disarming.disarmed.get(component).is_none_or(|&done| done) {
-        return Err(Unable::Done);
-    }
-    let chance = trap_chance(Some(skill), disarming.difficulty);
-    let present = disarming.components()[component];
-    if !present || rng(world).below(100) as i32 >= chance * chance / 100 {
-        spring(world);
-        return Ok(());
-    }
-    let mut disarming = disarming_mut(world);
-    disarming.disarmed[component] = true;
-    let trap = disarming.trap;
-    let done = disarming.components().iter().zip(disarming.disarmed).all(|(&p, d)| !p || d);
-    world.write_message(LockNews::ComponentDisarmed { member: actor, component });
-    if done {
-        world.write_message(LockNews::Disarmed { trap });
-        complete(world);
-    }
-    Ok(())
+pub fn disarm_component(world: &mut World, actor: Entity, _component: usize) -> Result<(), Unable> {
+    member(world, actor)?;
+    disarming(world)?;
+    unsupported_trap(world)
 }
 
-/// Open the device regardless, springing its trap.
 pub fn spring_trap(world: &mut World) -> Result<(), Unable> {
     disarming(world)?;
-    spring(world);
-    Ok(())
+    unsupported_trap(world)
 }
 
-/// Retail `ResolveSprungTrap`: half the time the trap is spent and the
-/// device opens. The trap's spell grows with how far its authored grade
-/// exceeds its type's.
-fn spring(world: &mut World) {
-    let interaction = world.remove_resource::<DeviceInteraction>().unwrap();
-    let Work::Disarming(disarming) = interaction.work else { unreachable!() };
-    let trap = usize::from(disarming.trap);
-    let (destroyed, power, targets) = {
-        let mut rng = rng(world);
-        let mut devices = i32::from(disarming.difficulty).clamp(1, 7);
-        let destroyed = rng.below(2) == 0;
-        let mut targets = devices - rng.below((devices / 2) as u32) as i32;
-        let mut power = 4;
-        if devices > TRAP_GRADE[trap] {
-            devices -= TRAP_GRADE[trap];
-            power = devices + 4;
-            if power > 7 {
-                targets += rng.below((devices - 3) as u32) as i32;
-                power = 7;
-            }
-        }
-        (destroyed, power, targets)
-    };
-    let at = world.get::<Prop>(interaction.device).map_or(Vec3::ZERO, |prop| prop.centre);
-    world.write_message(LockNews::Sprung { trap: disarming.trap, destroyed });
-    world.write_message(TrapDischarge {
-        spell: TRAP_SPELLS[trap],
-        power: power as u8,
-        targets: targets as u8,
-        at,
-    });
-    if destroyed {
-        finish(world, interaction.device);
-    }
+fn unsupported_trap(world: &mut World) -> Result<(), Unable> {
+    world.write_message(LockNews::UnsupportedTrap);
+    Err(Unable::UnsupportedTrap)
 }
 
 /// The lock or trap is overcome: the interaction ends and the device runs.
@@ -522,5 +432,27 @@ pub(crate) fn end_lost_interaction(
 ) {
     if interaction.is_some_and(|i| !devices.contains(i.device) || battle.is_some()) {
         commands.remove_resource::<DeviceInteraction>();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::characters::{Gender, Profession, Race};
+
+    #[test]
+    fn difficulty_changes_both_displayed_and_authoritative_lock_chances() {
+        let mut character =
+            Character::new("Fighter", Race::Human, Gender::Male, Profession::Fighter);
+        character.attributes[Attribute::Strength] = 85;
+        let vitals = Vitals::new(&character);
+        assert!(
+            force_chance(&character, &vitals, 4, Difficulty::Novice)
+                > force_chance(&character, &vitals, 4, Difficulty::Expert)
+        );
+        assert!(
+            trap_chance(Some(25), 8, Difficulty::Novice)
+                > trap_chance(Some(25), 8, Difficulty::Expert)
+        );
     }
 }

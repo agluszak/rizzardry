@@ -4,6 +4,8 @@
 //! splats over the portraits. Clicking a slot selects the member, gives
 //! them the held item, or (double click) opens their review screen.
 
+#[cfg(test)]
+use crate::game::inventory::Carried;
 use crate::presentation::character_view::{CharacterView, CharacterViewItem};
 use std::time::Duration;
 
@@ -20,7 +22,7 @@ use crate::game::characters::Race;
 use crate::game::characters::{Character, Vitals};
 use crate::game::combat::attack::armour;
 use crate::game::data::GameData;
-use crate::game::inventory::{Carried, EquipSlot, ItemNews};
+use crate::game::inventory::{EquipSlot, ItemNews};
 use crate::game::party::DamageApplied;
 use crate::game::party::roster::PartyRoster;
 use crate::presentation::PresentationRng;
@@ -51,14 +53,19 @@ pub struct PartySlot {
 #[derive(Component)]
 pub struct PartyWidgetsBuilt;
 
-#[derive(Component, Clone, Default)]
-pub struct PartyButton(usize);
+#[derive(Component)]
+pub struct PartyMemberView {
+    member: Entity,
+    portrait: bool,
+}
+
+#[derive(Component)]
+pub struct EmptySlot(usize);
 
 #[derive(Clone, Copy, Default)]
 enum Part {
     #[default]
     Portrait,
-    EmptyDragon,
     Bars,
     Health,
     Stamina,
@@ -73,28 +80,28 @@ enum Part {
     HitPoints,
     Condition,
     Enchantment,
-    ConditionRim,
+    ConditionRim(bool),
     Selection,
 }
 
-#[derive(Component, Clone, Default)]
+#[derive(Component, Clone)]
 pub struct PartyPart {
-    slot: usize,
+    member: Entity,
     kind: Part,
 }
 
-fn part_picture(slot: usize, kind: Part, at: Vec2) -> impl Scene {
-    bsn! { @picture(default(), 0, at) template(move |_| Ok(PartyPart { slot, kind })) }
+fn part_picture(member: Entity, kind: Part, at: Vec2) -> impl Scene {
+    bsn! { @picture(default(), 0, at) template(move |_| Ok(PartyPart { member, kind })) }
 }
 
 fn part_label(
-    slot: usize,
+    member: Entity,
     kind: Part,
     font: Handle<SpriteSheet>,
     at: Vec2,
     width: f32,
 ) -> impl Scene {
-    bsn! { @label(font, at, width) template(move |_| Ok(PartyPart { slot, kind })) }
+    bsn! { @label(font, at, width) template(move |_| Ok(PartyPart { member, kind })) }
 }
 
 /// Holds the portraits' damage splats.
@@ -122,126 +129,151 @@ pub fn build_party_parts(
     mut commands: Commands,
     layout: Res<ScreenLayout>,
     art: Res<MainScreenArt>,
+    assets: Res<AssetServer>,
+    roster: Res<PartyRoster>,
+    members: Query<(), (With<Character>, With<Vitals>)>,
+    views: Query<(Entity, &PartyMemberView, &ChildOf)>,
     roots: Query<
-        (Entity, Option<&PartySlot>, Option<&SlotPortrait>),
-        (Or<(With<PartySlot>, With<SlotPortrait>)>, Without<PartyWidgetsBuilt>),
+        (Entity, Option<&PartySlot>, Option<&SlotPortrait>, Has<PartyWidgetsBuilt>),
+        Or<(With<PartySlot>, With<SlotPortrait>)>,
     >,
 ) {
     let closed = layout.mode == LayoutMode::Closed;
-    for (root, overlay, portrait) in &roots {
+    for (entity, view, _) in &views {
+        if !roster.0.contains(&view.member) || !members.contains(view.member) {
+            commands.entity(entity).despawn();
+        }
+    }
+    for (root, overlay, portrait, built) in &roots {
         let slot = overlay.map_or_else(|| portrait.unwrap().0, |slot| slot.slot);
-        let (y, left) = (row_y(slot), slot % 2 == 0);
+        if portrait.is_some() && !built {
+            commands.entity(root).insert(PartyWidgetsBuilt);
+            let back = assets.load("retail://data/main interface/pback.sti");
+            let dragon = assets.load("retail://data/main interface/dragons.sti");
+            commands
+                .spawn_scene(bsn! { @layer() template(move |_| Ok(EmptySlot(slot))) Children [
+                    @picture(back,0,Vec2::new(menu_x(slot)+20.,row_y(slot)))
+                    -- @picture(dragon,0,Vec2::new(menu_x(slot)+23.,row_y(slot)))
+                ] })
+                .insert(ChildOf(root));
+        }
+        let Some(member) = roster.0.get_index(slot).copied().filter(|e| members.contains(*e))
+        else {
+            continue;
+        };
+        if let Some((entity, _, parent)) = views
+            .iter()
+            .find(|(_, view, _)| view.member == member && view.portrait == portrait.is_some())
+        {
+            if parent.parent() != root {
+                commands.entity(entity).insert(ChildOf(root));
+            }
+            continue;
+        }
+        let view = commands
+            .spawn((
+                absolute(Vec2::ZERO, Vec2::ZERO),
+                Pickable::IGNORE,
+                PartyMemberView { member, portrait: portrait.is_some() },
+                ChildOf(root),
+            ))
+            .id();
         let mut parts: Vec<Box<dyn Scene>> = vec![];
-        if portrait.is_some() {
-            parts.push(Box::new(part_picture(
-                slot,
-                Part::Portrait,
-                Vec2::new(menu_x(slot) + 20.0, y),
-            )));
-            parts.push(Box::new(part_picture(
-                slot,
-                Part::EmptyDragon,
-                Vec2::new(menu_x(slot) + 23.0, y),
-            )));
+        let pictures = if portrait.is_some() {
+            vec![Part::Portrait]
+        } else if closed {
+            vec![
+                Part::Bars,
+                Part::Health,
+                Part::Stamina,
+                Part::Hands,
+                Part::MainHand,
+                Part::OffHand,
+                Part::Condition,
+                Part::Enchantment,
+                Part::ConditionRim(false),
+                Part::ConditionRim(true),
+            ]
         } else {
-            let bars = match (closed, left) {
-                (true, true) => 105.0,
-                (true, false) => 512.0,
-                (false, true) => 0.0,
-                (false, false) => 617.0,
-            };
-            parts.push(Box::new(part_picture(slot, Part::Bars, Vec2::new(bars, y))));
-            for (kind, mask, dx) in
-                [(Part::Health, Part::HealthEmpty, 3.0), (Part::Stamina, Part::StaminaEmpty, 9.0)]
+            vec![Part::Bars, Part::Health, Part::Stamina]
+        };
+        for kind in pictures {
+            parts.push(Box::new(part_picture(member, kind, kind.at(slot, closed))));
+        }
+        if portrait.is_none() {
+            for (kind, size, colour) in [
+                (Part::HealthEmpty, Vec2::new(5., 45.), Color::srgb_u8(1, 1, 1)),
+                (Part::StaminaEmpty, Vec2::new(5., 45.), Color::srgb_u8(1, 1, 1)),
+                (Part::Alive, Vec2::new(19., 9.), Color::BLACK),
+            ] {
+                let at = kind.at(slot, closed);
+                parts.push(Box::new(bsn! { @rect(at,size,colour) template(move |_| Ok(PartyPart { member, kind })) }));
+            }
+            for (kind, font, width) in [(Part::HitPoints, art.small_font.clone(), 19.)]
+                .into_iter()
+                .chain(closed.then_some((Part::Armour, art.small_font.clone(), 13.)))
+                .chain(closed.then_some((Part::Name, art.font.clone(), 84.)))
             {
-                let at = Vec2::new(bars + dx, y + 17.0);
-                parts.push(Box::new(part_picture(slot, kind, at)));
-                parts.push(Box::new(bsn! { @rect(at, Vec2::new(5.0, 45.0), Color::srgb_u8(1,1,1))
-                template(move |_| Ok(PartyPart { slot, kind: mask })) }));
+                parts.push(Box::new(part_label(member, kind, font, kind.at(slot, closed), width)));
             }
-            let at = Vec2::new(bars + 2.0, y + 62.0);
-            parts.push(Box::new(bsn! { @rect(at, Vec2::new(19.0,9.0), Color::BLACK)
-            template(move |_| Ok(PartyPart { slot, kind: Part::Alive })) }));
-            parts.push(Box::new(part_label(
-                slot,
-                Part::HitPoints,
-                art.small_font.clone(),
-                at,
-                19.0,
+            parts.push(Box::new(part_picture(
+                member,
+                Part::Selection,
+                Part::Selection.at(slot, closed),
             )));
-            let selected_at = if closed {
-                Vec2::new(menu_x(slot) + 23.0, y)
-            } else {
-                Vec2::new(bars + 1.0, y + 2.0)
-            };
-            parts.push(Box::new(part_picture(slot, Part::Selection, selected_at)));
-            if closed {
-                let hands = if left { 2.0 } else { 619.0 };
-                parts.push(Box::new(part_picture(slot, Part::Hands, Vec2::new(hands, y))));
-                parts.push(Box::new(part_picture(
-                    slot,
-                    Part::MainHand,
-                    Vec2::new(hands + 3.0, y + 23.0),
-                )));
-                parts.push(Box::new(part_picture(
-                    slot,
-                    Part::OffHand,
-                    Vec2::new(hands + 3.0, y + 47.0),
-                )));
-                parts.push(Box::new(part_label(
-                    slot,
-                    Part::Armour,
-                    art.small_font.clone(),
-                    Vec2::new(hands + 3.0, y + 3.0),
-                    13.0,
-                )));
-                parts.push(Box::new(part_label(
-                    slot,
-                    Part::Name,
-                    art.font.clone(),
-                    Vec2::new(menu_x(slot) + 21.0, y + 73.0),
-                    84.0,
-                )));
-                let (condition, enchantment) = if left {
-                    (menu_x(slot) + 25.0, menu_x(slot) + 88.0)
+            let at = Vec2::new(
+                if closed {
+                    menu_x(slot) + 23.
+                } else if slot.is_multiple_of(2) {
+                    0.
                 } else {
-                    (menu_x(slot) + 88.0, menu_x(slot) + 25.0)
-                };
-                parts.push(Box::new(part_picture(
-                    slot,
-                    Part::Condition,
-                    Vec2::new(condition, y + 3.0),
-                )));
-                parts.push(Box::new(part_picture(
-                    slot,
-                    Part::Enchantment,
-                    Vec2::new(enchantment, y + 3.0),
-                )));
-                for x in [condition, enchantment] {
-                    parts.push(Box::new(part_picture(
-                        slot,
-                        Part::ConditionRim,
-                        Vec2::new(x - 1.0, y + 2.0),
-                    )));
-                }
-            }
-            let (at, size) = if closed {
-                (Vec2::new(menu_x(slot) + 23.0, y), Vec2::new(82.0, 72.0))
-            } else {
-                (Vec2::new(if left { 0.0 } else { 617.0 }, y), Vec2::new(22.0, 85.0))
-            };
-            let node = absolute(at, size);
-            parts.push(Box::new(
-                bsn! {
-                    node PartyButton({slot}) SlotButton { member: Entity::PLACEHOLDER, review_armed: false }
-                    on(press) on(press_right) on(release_right) on(leave)
+                    617.
                 },
+                row_y(slot),
+            );
+            let node = absolute(at, if closed { Vec2::new(82., 72.) } else { Vec2::new(22., 85.) });
+            parts.push(Box::new(
+                bsn! { node SlotButton { member: {member}, review_armed: false } on(press) on(press_right) on(release_right) on(leave) },
             ));
         }
-        commands
-            .entity(root)
-            .insert(PartyWidgetsBuilt)
-            .queue_spawn_related_scenes::<Children>(parts);
+        for part in parts {
+            commands.spawn_scene(part).insert(ChildOf(view));
+        }
+    }
+}
+
+impl Part {
+    fn at(self, slot: usize, closed: bool) -> Vec2 {
+        let y = row_y(slot);
+        let left = slot.is_multiple_of(2);
+        let bars = match (closed, left) {
+            (true, true) => 105.,
+            (true, false) => 512.,
+            (false, true) => 0.,
+            (false, false) => 617.,
+        };
+        let hands = if left { 2. } else { 619. };
+        let condition = menu_x(slot) + if left { 25. } else { 88. };
+        let enchantment = menu_x(slot) + if left { 88. } else { 25. };
+        match self {
+            Self::Portrait => Vec2::new(menu_x(slot) + 20., y),
+            Self::Bars => Vec2::new(bars, y),
+            Self::Health | Self::HealthEmpty => Vec2::new(bars + 3., y + 17.),
+            Self::Stamina | Self::StaminaEmpty => Vec2::new(bars + 9., y + 17.),
+            Self::Alive | Self::HitPoints => Vec2::new(bars + 2., y + 62.),
+            Self::Hands => Vec2::new(hands, y),
+            Self::MainHand => Vec2::new(hands + 3., y + 23.),
+            Self::OffHand => Vec2::new(hands + 3., y + 47.),
+            Self::Armour => Vec2::new(hands + 3., y + 3.),
+            Self::Name => Vec2::new(menu_x(slot) + 21., y + 73.),
+            Self::Condition => Vec2::new(condition, y + 3.),
+            Self::Enchantment => Vec2::new(enchantment, y + 3.),
+            Self::ConditionRim(other) => {
+                Vec2::new(if other { enchantment - 1. } else { condition - 1. }, y + 2.)
+            }
+            Self::Selection if closed => Vec2::new(menu_x(slot) + 23., y),
+            Self::Selection => Vec2::new(bars + 1., y + 2.),
+        }
     }
 }
 
@@ -252,11 +284,10 @@ pub fn draw_party(
     assets: Res<AssetServer>,
     roster: Res<PartyRoster>,
     members: Query<CharacterView>,
-    mut removed_carried: RemovedComponents<Carried>,
     data: Option<Res<GameData>>,
     catalogs: Res<Assets<ItemCatalog>>,
     mut parts: Query<(
-        Ref<PartyPart>,
+        &PartyPart,
         &mut Node,
         &mut Visibility,
         Option<&mut Picture>,
@@ -264,21 +295,13 @@ pub fn draw_party(
         Option<&mut ImageNode>,
     )>,
 ) {
-    let removed: Vec<_> = removed_carried.read().collect();
     let catalog = data.as_ref().and_then(|d| catalogs.get(&d.items));
     let closed = layout.mode == LayoutMode::Closed;
     for (part, mut node, mut visible, picture, label, image_node) in &mut parts {
-        let member = roster.0.get_index(part.slot).copied();
-        let actor = member.and_then(|entity| members.get(entity).ok());
-        if !part.is_added()
-            && !roster.is_changed()
-            && !selected.is_changed()
-            && !catalogs.is_changed()
-            && !member.is_some_and(|m| removed.contains(&m))
-            && actor.as_ref().is_none_or(|view| !view.is_changed())
-        {
-            continue;
-        }
+        let Some(slot) = roster.0.get_index_of(&part.member) else { continue };
+        let member = Some(part.member);
+        let actor = members.get(part.member).ok();
+        let at = part.kind.at(slot, closed);
         let mut shown = actor.is_some();
         let mut source = None;
         let mut value = None;
@@ -294,7 +317,7 @@ pub fn draw_party(
                 carried.as_ref().and_then(|c| c.worn(slot)).and_then(|i| catalog?.get(i.item))
             };
             let two_handed = worn(EquipSlot::Primary).is_some_and(|d| d.two_handed);
-            let condition = condition_icon(&vitals);
+            let condition = condition_icon(vitals);
             match part.kind {
                 Part::Portrait => {
                     source = Some(image(
@@ -306,7 +329,6 @@ pub fn draw_party(
                         0,
                     ))
                 }
-                Part::EmptyDragon => shown = false,
                 Part::Bars => {
                     source = Some(Picture { sheet: art.column_info.clone(), frame: 3, ..default() })
                 }
@@ -358,7 +380,7 @@ pub fn draw_party(
                         ),
                     });
                     hand_x = Some(
-                        (if part.slot % 2 == 0 { 2.0 } else { 619.0 })
+                        (if slot.is_multiple_of(2) { 2.0 } else { 619.0 })
                             + if item.is_some() { 3.0 } else { 4.0 },
                     );
                 }
@@ -366,7 +388,7 @@ pub fn draw_party(
                     shown = !dead;
                     value = Some(
                         match (carried.as_ref(), catalog) {
-                            (Some(c), Some(catalog)) => armour(&profile, c, catalog).average(),
+                            (Some(c), Some(catalog)) => armour(profile, c, catalog).average(),
                             _ => 0,
                         }
                         .to_string(),
@@ -378,7 +400,7 @@ pub fn draw_party(
                     value = Some(vitals.hp.to_string());
                 }
                 Part::Condition | Part::Enchantment => {
-                    let plug = if part.slot % 2 == 0 { "leftplug" } else { "rightplug" };
+                    let plug = if slot.is_multiple_of(2) { "leftplug" } else { "rightplug" };
                     source = Some(image(
                         &if matches!(part.kind, Part::Condition) {
                             condition
@@ -391,7 +413,7 @@ pub fn draw_party(
                         0,
                     ));
                 }
-                Part::ConditionRim => {
+                Part::ConditionRim(_) => {
                     shown = condition.is_some();
                     source = Some(image("data/main interface/condition_highlight.sti", 0));
                 }
@@ -407,38 +429,38 @@ pub fn draw_party(
                     ));
                 }
             }
-        } else {
-            match part.kind {
-                Part::Portrait => {
-                    shown = true;
-                    source = Some(image("data/main interface/pback.sti", 0));
-                }
-                Part::EmptyDragon => {
-                    shown = true;
-                    source = Some(image("data/main interface/dragons.sti", 0));
-                }
-                _ => {}
-            }
         }
         visible.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
         if let Some(mut picture) = picture
             && let Some(mut source) = source
         {
-            source.at = picture.at;
+            source.at = at;
             if let Some(x) = hand_x {
                 source.at.x = x;
             }
             picture.set_if_neq(source);
         }
-        if let Some(mut label) = label
-            && let Some(value) = value
-            && label.value != value
-        {
-            label.value = value;
+        if let Some(mut label) = label {
+            if label.at != at {
+                label.at = at;
+            }
+            if let Some(value) = value
+                && label.value != value
+            {
+                label.value = value;
+            }
+        }
+        if matches!(part.kind, Part::HealthEmpty | Part::StaminaEmpty | Part::Alive) {
+            if node.left != px(at.x) {
+                node.left = px(at.x);
+            }
+            if node.top != px(at.y) {
+                node.top = px(at.y);
+            }
         }
         if let Some(mut image) = image_node {
             let flip = matches!(part.kind, Part::Portrait)
-                && part.slot % 2 == 1
+                && slot % 2 == 1
                 && member
                     .and_then(|e| members.get(e).ok())
                     .is_some_and(|view| view.vitals.is_dead());
@@ -449,39 +471,35 @@ pub fn draw_party(
     }
 }
 
-/// A control keeps its identity across display changes, but never changes the
-/// actor it targets while a pointer press could be in flight.
-pub fn bind_party_buttons(
-    mut commands: Commands,
+/// Move retained controls; never change which actor a press means.
+pub fn place_party_buttons(
     roster: Res<PartyRoster>,
+    layout: Res<ScreenLayout>,
     members: Query<(), (With<Character>, With<Vitals>)>,
-    mut buttons: Query<(Entity, &PartyButton, &SlotButton, &Node, &ChildOf, &mut Visibility)>,
+    mut buttons: Query<(&SlotButton, &mut Node)>,
+    mut empty: Query<(&EmptySlot, &mut Visibility)>,
 ) {
-    for (entity, slot, button, node, parent, mut visibility) in &mut buttons {
-        let member = roster
-            .0
-            .get_index(slot.0)
-            .copied()
-            .filter(|e| members.contains(*e))
-            .unwrap_or(Entity::PLACEHOLDER);
-        let shown =
-            if member == Entity::PLACEHOLDER { Visibility::Hidden } else { Visibility::Inherited };
-        if button.member != member {
-            commands.entity(entity).despawn();
-            commands
-                .spawn((
-                    PartyButton(slot.0),
-                    SlotButton { member, review_armed: false },
-                    node.clone(),
-                    ChildOf(parent.parent()),
-                    shown,
-                ))
-                .observe(press)
-                .observe(press_right)
-                .observe(release_right)
-                .observe(leave);
+    for (slot, mut visible) in &mut empty {
+        visible.set_if_neq(if roster.0.get_index(slot.0).is_none_or(|e| !members.contains(*e)) {
+            Visibility::Inherited
         } else {
-            visibility.set_if_neq(shown);
+            Visibility::Hidden
+        });
+    }
+    for (button, mut node) in &mut buttons {
+        let Some(slot) = roster.0.get_index_of(&button.member) else { continue };
+        let x = if layout.mode == LayoutMode::Closed {
+            menu_x(slot) + 23.
+        } else if slot.is_multiple_of(2) {
+            0.
+        } else {
+            617.
+        };
+        if node.left != px(x) {
+            node.left = px(x);
+        }
+        if node.top != px(row_y(slot)) {
+            node.top = px(row_y(slot));
         }
     }
 }
@@ -716,7 +734,7 @@ pub fn play_splats(
             commands.entity(entity).despawn();
             continue;
         };
-        let at = Vec2::new(if slot % 2 == 0 { 22.0 } else { 533.0 }, row_y(slot));
+        let at = Vec2::new(if slot.is_multiple_of(2) { 22.0 } else { 533.0 }, row_y(slot));
         if node.left != px(at.x) {
             node.left = px(at.x);
         }
@@ -902,6 +920,7 @@ mod tests {
     fn native_click_counts_review_only_the_current_selection_gesture() {
         let mut world = World::new();
         world.init_resource::<PartyRoster>();
+        world.init_resource::<ScreenLayout>();
         world.init_resource::<PartyInventory>();
         world.init_resource::<Assets<ItemCatalog>>();
         world.init_resource::<SelectedMember>();
@@ -915,7 +934,6 @@ mod tests {
         let button = world
             .spawn((
                 SlotButton { member: actor, review_armed: false },
-                PartyButton(0),
                 Node::default(),
                 Visibility::Inherited,
                 ChildOf(root),
@@ -936,7 +954,7 @@ mod tests {
         assert_eq!(world.resource::<SelectedMember>().0, Some(actor));
         world.get_mut::<Vitals>(actor).unwrap().hp -= 1;
         use bevy::ecs::system::RunSystemOnce;
-        world.run_system_once(bind_party_buttons).unwrap();
+        world.run_system_once(place_party_buttons).unwrap();
         assert!(world.get_entity(button).is_ok(), "health changes retain the click target");
         click(&mut world, 2);
         assert!(matches!(
@@ -951,12 +969,19 @@ mod tests {
         assert!(matches!(world.resource::<NextState<Screen>>(), NextState::Unchanged));
         let replacement = Character::new("B", Race::Human, Gender::Male, Profession::Fighter);
         let other = world.spawn((Vitals::new(&replacement), replacement, Carried::default())).id();
-        world.resource_mut::<PartyRoster>().0 = [other].into_iter().collect();
-        world.run_system_once(bind_party_buttons).unwrap();
-        assert!(
-            world.get_entity(button).is_err(),
-            "a rebind retires the pressed target instead of redirecting release"
-        );
+        world.resource_mut::<PartyRoster>().0 = [other, actor].into_iter().collect();
+        world.run_system_once(place_party_buttons).unwrap();
+        assert_eq!(world.get::<SlotButton>(button).unwrap().member, actor);
+        assert_eq!(world.get::<Node>(button).unwrap().left, px(617.));
+        click(&mut world, 1);
         assert_eq!(world.resource::<SelectedMember>().0, Some(actor));
+        world.resource_mut::<PartyRoster>().0.shift_remove(&actor);
+        world.resource_mut::<SelectedMember>().0 = Some(other);
+        click(&mut world, 2);
+        assert_eq!(
+            world.resource::<SelectedMember>().0,
+            Some(other),
+            "an in-flight release cannot select a departed actor"
+        );
     }
 }

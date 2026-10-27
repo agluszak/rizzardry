@@ -2,9 +2,10 @@
 use crate::content::characters::{Attribute, Realm, Skill};
 use crate::content::items::ItemCatalog;
 use crate::game::characters::{Character, Profession, Race};
-use crate::game::inventory::{Carried, EquipSlot};
+use crate::game::inventory::Carried;
+#[cfg(test)]
+use crate::game::inventory::EquipSlot;
 use enum_map::{EnumMap, enum_map};
-use enumset::EnumSet;
 
 /// Base resistance and its current value, before unmodelled spell effects.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,12 +70,9 @@ pub fn resistances(
             + racial[realm]
             + mental
             + divine;
-        let equipment: i32 = EnumSet::<EquipSlot>::all()
-            .iter()
-            .filter(|slot| {
-                !matches!(slot, EquipSlot::AlternatePrimary | EquipSlot::AlternateSecondary)
-            })
-            .filter_map(|slot| carried.worn(slot))
+        let equipment: i32 = carried
+            .active_equipment()
+            .map(|(_, equipped)| &equipped.stack)
             .filter_map(|item| items.get(item.item))
             .map(|item| i32::from(item.resistance_bonus[realm]))
             .sum::<i32>()

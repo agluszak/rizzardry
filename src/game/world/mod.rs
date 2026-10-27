@@ -66,7 +66,6 @@ impl Plugin for WorldPlugin {
             .init_resource::<population::MonsterBodies>()
             .add_message::<triggers::TriggerEffect>()
             .add_message::<interaction::LockNews>()
-            .add_message::<interaction::TrapDischarge>()
             // Resolve travel intent early; activation owns the later level swap.
             .add_systems(PreUpdate, (level::answer_travel_questions, level::travel).chain())
             .add_systems(

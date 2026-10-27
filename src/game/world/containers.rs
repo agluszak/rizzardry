@@ -57,12 +57,17 @@ pub fn take_from_container(
         for &(id, amount) in picks {
             let Some(index) = items.iter().position(|s| s.id == id) else { continue };
             let Some(definition) = catalog.get(items[index].item) else { continue };
-            let split = world.resource_scope(|_, mut ids: Mut<ItemIds>| {
-                items[index].split_off(amount, &mut ids)
-            });
-            let (taking, whole) = match split {
-                Some(part) => (part, false),
-                None => (items.remove(index), true),
+            let count = items[index].count();
+            if amount == 0 || amount > count {
+                continue;
+            }
+            let (taking, whole) = if amount == count {
+                (items.remove(index), true)
+            } else {
+                let part = world.resource_scope(|_, mut ids: Mut<ItemIds>| {
+                    items[index].split_off(amount, &mut ids).expect("validated strict partial")
+                });
+                (part, false)
             };
             let name = taking.display_name(definition, false);
             let before = taking.units();

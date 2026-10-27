@@ -294,6 +294,7 @@ fn sync_loot_rows(
 /// Bring every caption and button up to date with the interaction, the
 /// selected member and the drafts.
 fn draw_device_panel(
+    difficulty: Res<crate::game::difficulty::Difficulty>,
     mut commands: Commands,
     interaction: Option<Res<DeviceInteraction>>,
     panels: Query<&DevicePanel>,
@@ -329,7 +330,7 @@ fn draw_device_panel(
             (Caption::Title, Work::Looting) => "Contents".to_owned(),
             (Caption::Status, Work::Picking(picking)) => {
                 let force = member.and_then(|(_, (c, v))| {
-                    interaction::force_chance(c, v, picking.tumblers.len())
+                    interaction::force_chance(c, v, picking.tumblers.len(), *difficulty)
                 });
                 format!(
                     "{name}: Locks & Traps {}, Force {}",
@@ -340,7 +341,7 @@ fn draw_device_panel(
             (Caption::Status, Work::Disarming(disarming)) => format!(
                 "{name}: Disarm {}",
                 percent(skill.map(|s| {
-                    i64::from(interaction::trap_chance(Some(s), disarming.difficulty))
+                    i64::from(interaction::trap_chance(Some(s), disarming.difficulty, *difficulty))
                 }))
             ),
             (Caption::Status, Work::Looting) => name.clone(),
@@ -408,7 +409,7 @@ fn draw_device_panel(
                 skill.is_some() && picking.tumblers.get(index).is_some_and(Option::is_none)
             }
             (Control::Force, Work::Picking(picking)) => member.is_some_and(|(_, (c, v))| {
-                interaction::force_chance(c, v, picking.tumblers.len()).is_some()
+                interaction::force_chance(c, v, picking.tumblers.len(), *difficulty).is_some()
             }),
             (Control::Component(index), Work::Disarming(disarming)) => {
                 skill.is_some() && TRAP_COMPONENTS[panel.guess][index] && !disarming.disarmed[index]

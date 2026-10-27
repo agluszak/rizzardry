@@ -313,7 +313,7 @@ fn attaching_visuals_does_not_change_physical_state_or_revisit_placement() {
         ));
         if show_visuals {
             app.init_resource::<Assets<MonsterModel>>()
-                .init_resource::<Assets<Mesh>>()
+                .init_resource::<Assets<StandardMaterial>>()
                 .add_systems(Update, build_monster_instances);
             let model = app.world_mut().resource_mut::<Assets<MonsterModel>>().reserve_handle();
             app.world_mut().entity_mut(actor).insert(MonsterVisual(model.clone()));

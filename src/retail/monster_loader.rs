@@ -5,7 +5,11 @@
 use std::collections::HashMap;
 
 use bevy::asset::{AssetLoader, LoadContext, RenderAssetUsages, io::Reader};
-use bevy::mesh::{Indices, PrimitiveTopology};
+use bevy::camera::primitives::Aabb;
+use bevy::mesh::{
+    Indices, PrimitiveTopology,
+    morph::{MAX_MORPH_WEIGHTS, MorphAttributes},
+};
 use bevy::prelude::*;
 use bevy::reflect::TypePath;
 
@@ -54,7 +58,7 @@ fn cycle_meshes(cycle: &MonsterCycle, frame0: &[Vec3]) -> Vec<(usize, Mesh, Vec<
             }
         }
         let count = positions.len();
-        // Kept in the main world: instances animate copies of it.
+        // Shared by all instances; CPU access is retained for morph-aware picking.
         let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
         mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
         mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 1.0, 0.0]; count]);
@@ -64,6 +68,24 @@ fn cycle_meshes(cycle: &MonsterCycle, frame0: &[Vec3]) -> Vec<(usize, Mesh, Vec<
         meshes.push((material, mesh, source));
     }
     meshes
+}
+
+/// Expand the source mapping once, in target-major render-vertex order.
+fn morph_targets(mesh: &mut Mesh, frames: &[Vec<Vec3>], source: &[u32]) -> Aabb {
+    let mut low = Vec3::splat(f32::INFINITY);
+    let mut high = Vec3::splat(f32::NEG_INFINITY);
+    let mut targets = Vec::with_capacity(frames.len() * source.len());
+    for frame in frames {
+        for &vertex in source {
+            let v = vertex as usize;
+            let position = frame[v];
+            low = low.min(position);
+            high = high.max(position);
+            targets.push(MorphAttributes::new(position - frames[0][v], Vec3::ZERO, Vec3::ZERO));
+        }
+    }
+    mesh.set_morph_targets(targets);
+    Aabb::from_min_max(low, high)
 }
 
 impl AssetLoader for MlsLoader {
@@ -91,6 +113,9 @@ impl AssetLoader for MlsLoader {
                     continue;
                 }
             };
+            if cycle.frames.len() > MAX_MORPH_WEIGHTS {
+                return Err(PvlLoadError::MorphTargets(cycle.frames.len()));
+            }
             let frames: Vec<Vec<Vec3>> = cycle
                 .frames
                 .iter()
@@ -104,18 +129,16 @@ impl AssetLoader for MlsLoader {
                 );
             }
             let mut parts = Vec::new();
-            for (material, mesh, source) in cycle_meshes(&cycle, &frames[0]) {
+            for (material, mut mesh, source) in cycle_meshes(&cycle, &frames[0]) {
+                let bounds = morph_targets(&mut mesh, &frames, &source);
                 let mesh = context.add_labeled_asset(format!("{name}/mesh/{material}"), mesh);
-                parts.push(MonsterPart {
-                    mesh,
-                    material: materials[material].handle.clone(),
-                    ambient: materials[material].ambient,
-                    emission: materials[material].emission,
-                    source,
-                });
+                parts.push(MonsterPart { mesh, surface: materials[material].clone(), bounds });
             }
             let frames_per_second = fps.unwrap_or(cycle.frames_per_second);
-            cycles.insert(name.clone(), MonsterCycleModel { frames_per_second, parts, frames });
+            cycles.insert(
+                name.clone(),
+                MonsterCycleModel { frames_per_second, parts, frame_count: frames.len() },
+            );
         }
         if !cycles.contains_key("IDLE") {
             warn!("{}: no IDLE cycle", context.path());
@@ -152,5 +175,65 @@ impl AssetLoader for MlsBodyLoader {
 
     fn extensions(&self) -> &[&str] {
         &["mls"]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires a retail installation"]
+    fn retail_morphs_reconstruct_cycle_poses_with_conservative_bounds() {
+        let files = crate::retail::files::retail_files();
+        for species in ["savant_trooper", "dark_savant", "baruta_fish"] {
+            let bytes = files.read(&format!("data/monsters/{species}.mls")).unwrap().unwrap();
+            let definition = read_species(&String::from_utf8_lossy(&bytes));
+            for (name, file, fps) in definition.cycles {
+                let bytes = files.read(&format!("data/monsters/{file}.mon")).unwrap().unwrap();
+                let cycle = read_cycle(&bytes).unwrap();
+                let frames: Vec<Vec<Vec3>> = cycle
+                    .frames
+                    .iter()
+                    .map(|f| f.iter().map(|&v| retail_position(v)).collect())
+                    .collect();
+                assert!(frames.len() <= MAX_MORPH_WEIGHTS);
+                let model = MonsterCycleModel {
+                    frame_count: frames.len(),
+                    frames_per_second: fps.unwrap_or(cycle.frames_per_second),
+                    parts: vec![],
+                };
+                if species == "baruta_fish" && name == "WALK" {
+                    assert_eq!((cycle.frames_per_second, model.frames_per_second), (30., 60.));
+                }
+                let mut weights = vec![0.; frames.len()];
+                for (_, mut mesh, source) in cycle_meshes(&cycle, &frames[0]) {
+                    let bounds = morph_targets(&mut mesh, &frames, &source);
+                    let targets = mesh.get_morph_targets().unwrap();
+                    for index in 0..frames.len() {
+                        let frame = index as f32 + 0.375;
+                        model.write_weights(frame, &mut weights);
+                        for (render, &vertex) in source.iter().enumerate() {
+                            let v = vertex as usize;
+                            let expected = frames[index][v]
+                                .lerp(frames[(index + 1).min(frames.len() - 1)][v], 0.375);
+                            let actual = weights.iter().enumerate().fold(
+                                frames[0][v],
+                                |position, (target, &w)| {
+                                    position + targets[target * source.len() + render].position * w
+                                },
+                            );
+                            assert!(actual.abs_diff_eq(expected, 1e-5), "{species} {name} {frame}");
+                            assert!(
+                                (actual - Vec3::from(bounds.center))
+                                    .abs()
+                                    .cmple(Vec3::from(bounds.half_extents) + Vec3::splat(1e-5))
+                                    .all()
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 }

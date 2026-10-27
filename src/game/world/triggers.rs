@@ -1040,7 +1040,7 @@ mod tests {
             world.init_resource::<NextState<crate::game::screen::Screen>>();
             world.init_resource::<Messages<crate::game::inventory::ItemNews>>();
             world.init_resource::<Messages<super::super::interaction::LockNews>>();
-            world.init_resource::<Messages<super::super::interaction::TrapDischarge>>();
+            world.init_resource::<crate::game::difficulty::Difficulty>();
             world.init_resource::<ItemIds>();
             world.init_resource::<PartyRoster>();
             world.insert_resource(GameClock::at(0));
@@ -1232,7 +1232,7 @@ mod tests {
     #[test]
     fn a_trap_keeps_its_type_and_a_wrong_component_springs_it() {
         use super::super::interaction::{
-            LockNews, TRAP_COMPONENTS, TRAP_SPELLS, TrapDischarge, disarm_component, leave,
+            LockNews, TRAP_COMPONENTS, Unable, disarm_component, inspect_trap, leave, spring_trap,
         };
         let lock = crate::content::level::Lock::Trap { difficulty: 5, kind: None };
         let mut level = chest_level(Some(lock), 0);
@@ -1252,18 +1252,14 @@ mod tests {
         assert!(!level.run("CHEST").0);
         assert_eq!(level.world.get::<Guarded>(chest).unwrap().trap, Some(trap));
         let wrong = TRAP_COMPONENTS[usize::from(trap)].iter().position(|&p| !p).unwrap();
-        disarm_component(&mut level.world, member, wrong).unwrap();
-        assert!(work(&level).is_none());
+        assert_eq!(disarm_component(&mut level.world, member, wrong), Err(Unable::UnsupportedTrap));
+        assert_eq!(inspect_trap(&mut level.world, member), Err(Unable::UnsupportedTrap));
+        assert_eq!(spring_trap(&mut level.world), Err(Unable::UnsupportedTrap));
+        assert!(matches!(work(&level), Some(Work::Disarming(_))));
+        assert_eq!(level.world.get::<Guarded>(chest).unwrap().trap, Some(trap));
+        assert_eq!(level.motion("CHEST").target, 0.0);
         let news: Vec<_> = level.world.resource_mut::<Messages<LockNews>>().drain().collect();
-        let Some(&LockNews::Sprung { destroyed, .. }) = news.last() else { panic!("{news:?}") };
-        let discharge: Vec<_> =
-            level.world.resource_mut::<Messages<TrapDischarge>>().drain().collect();
-        assert_eq!(discharge.len(), 1);
-        assert_eq!(discharge[0].spell, TRAP_SPELLS[usize::from(trap)]);
-        assert!((4..=7).contains(&discharge[0].power) && discharge[0].targets > 0);
-        // A spent trap lets the chest open; a live one stands.
-        assert_eq!(level.world.get::<Guarded>(chest).is_none(), destroyed);
-        assert_eq!(level.motion("CHEST").target > 0.0, destroyed);
+        assert_eq!(news.iter().filter(|n| matches!(n, LockNews::UnsupportedTrap)).count(), 3);
     }
 
     #[test]
@@ -1294,6 +1290,15 @@ mod tests {
         assert!(level.run("CHEST").0);
         assert!(matches!(work(&level), Some(Work::Looting)));
         level.settle();
+        let before = level.world.get::<Container>(chest).unwrap().contents.items.clone();
+        take_from_container(
+            &mut level.world,
+            &[(quiver, 0), (quiver, 11), (knife, 2)],
+            Recipient::Party,
+        )
+        .unwrap();
+        assert_eq!(level.world.get::<Container>(chest).unwrap().contents.items, before);
+        assert!(level.world.resource::<PartyInventory>().pool.stacks.is_empty());
         take_from_container(&mut level.world, &[(quiver, 4)], Recipient::Party).unwrap();
         let pool = &level.world.resource::<PartyInventory>().pool.stacks;
         assert_eq!(pool.iter().map(ItemStack::count).collect::<Vec<_>>(), [4]);
