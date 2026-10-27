@@ -304,6 +304,25 @@ impl AssetLoader for FactCatalogLoader {
 mod tests {
     use super::*;
     #[test]
+    fn reads_interleaved_strings_conditions_and_preserves_unknown_operations() {
+        // Synthetic NSF fixture; no retail dialogue/assets are redistributed.
+        let bytes = include_bytes!("../../tests/fixtures/dialogue.nsf");
+        let script = read_dialogue(bytes).unwrap();
+        assert_eq!(script.quotes[0].text, ["FIRST"]);
+        assert_eq!(script.topic("shop"), Some(1));
+        assert_eq!(
+            script.quotes[0].operations[0],
+            DialogueOp::Conditional { facts: vec![(FactId(91), 1)], response: Response::Fixed(1) }
+        );
+        assert!(matches!(
+            &script.quotes[1].operations[1],
+            DialogueOp::Unsupported { opcode: 99, operands: [17, -7, 0], .. }
+        ));
+        let mut invalid = bytes.to_vec();
+        invalid[40..44].copy_from_slice(&2i32.to_le_bytes());
+        assert!(read_dialogue(&invalid).is_err(), "out-of-range authored continuation is rejected");
+    }
+    #[test]
     fn refuses_truncation() {
         assert!(read_npcs(&[1, 0, 0, 0]).is_err());
         assert!(read_dialogue(&[0; 13]).is_err());
