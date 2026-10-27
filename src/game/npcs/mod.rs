@@ -81,6 +81,7 @@ pub struct NpcPopulation<'w, 's> {
             Option<&'static crate::game::world::identify::GroupMember>,
             Option<&'static Children>,
         ),
+        Without<crate::game::party::body::PartyBody>,
     >,
     groups: Query<'w, 's, &'static crate::game::world::identify::MonsterGroup>,
     pub clock: Res<'w, crate::game::time::GameClock>,
