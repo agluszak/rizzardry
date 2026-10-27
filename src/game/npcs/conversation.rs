@@ -626,6 +626,9 @@ pub fn quote_trade(
     source: TradeSource,
     quantity: u32,
 ) -> Result<TradeQuote, TradeError> {
+    if !world.query::<&crate::game::world::level::Destination>().is_empty(world) {
+        return Err(TradeError::Busy);
+    }
     let c = world.get::<Conversation>(conversation).ok_or(TradeError::StaleSelection)?;
     if !c.ready() {
         return Err(TradeError::Busy);
@@ -770,6 +773,14 @@ fn execute_trade(
     Ok(())
 }
 pub fn update_conversation(world: &mut World) {
+    if !world.query::<&crate::game::world::level::Destination>().is_empty(world) {
+        // An accepted entry ends presentation-only dialogue before any queued
+        // payment, trade or authored effect can alter the departing campaign.
+        close(world);
+        world.resource_mut::<Messages<ConversationRequest>>().clear();
+        world.resource_mut::<Messages<LinePlayback>>().clear();
+        return;
+    }
     let requests: Vec<_> = world.resource_mut::<Messages<ConversationRequest>>().drain().collect();
     for request in requests {
         if let ConversationRequest::Begin { actor } = request {
@@ -1027,10 +1038,17 @@ mod tests {
         app.world_mut().write_message(LinePlayback { speech, event: PlaybackEvent::Finished });
         app.update();
         assert_eq!(app.world().get::<Conversation>(session).unwrap().current, Some((1, 0)));
-        app.world_mut().write_message(ConversationRequest::Close { conversation: session });
+        use crate::game::world::level::{Destination, Entry};
+        let entering = app
+            .world_mut()
+            .spawn(Destination::new(Level::test(default()), default(), Entry::Travel))
+            .id();
+        app.world_mut()
+            .write_message(ConversationRequest::Advance { conversation: session, speech });
         app.update();
         assert!(app.world().get_entity(session).is_err());
         assert!(app.world().get::<Npc>(actor).is_some());
+        app.world_mut().despawn(entering);
         // A delayed request for a closed session is harmless.
         app.world_mut()
             .write_message(ConversationRequest::Advance { conversation: session, speech });
