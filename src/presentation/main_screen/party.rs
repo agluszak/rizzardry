@@ -756,7 +756,7 @@ mod tests {
     #[test]
     fn right_button_gives_or_opens_review_like_retail() {
         use crate::content::items::ItemDefinition;
-        use crate::game::inventory::{Held, ItemIds, make_item};
+        use crate::game::inventory::{ItemIds, make_item};
         use crate::game::rng::GameRng;
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
@@ -825,10 +825,10 @@ mod tests {
             opened
         };
         // Holding an item: a quick release gives it.
-        app.world_mut().resource_mut::<PartyInventory>().held = Some(Held { item, origin: None });
+        app.world_mut().resource_mut::<PartyInventory>().hand.held = Some(item);
         right(&mut app, true);
         right(&mut app, false);
-        assert!(app.world().resource::<PartyInventory>().held.is_none());
+        assert!(app.world().resource::<PartyInventory>().hand.held.is_none());
         assert!(!opened(&mut app));
         // Nothing held: a quick release opens the review for that member.
         right(&mut app, true);

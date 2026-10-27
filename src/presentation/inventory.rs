@@ -1,5 +1,4 @@
-//! Character review: equipment, statistics and skills. The item page follows
-//! `docs/research/review-items.md`:
+//! Character review: equipment, statistics and skills. The item page shows
 //! a member's equipment on their race's statue, their backpack, and the
 //! party's pool. Opened with I for the selected member; the header's portraits
 //! switch member, Esc, I or the Exit button closes it.
