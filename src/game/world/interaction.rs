@@ -357,15 +357,15 @@ pub fn pick_tumbler(world: &mut World, actor: Entity, tumbler: usize) -> Result<
 /// Force the lock (retail `AttemptForce`): it costs stamina whatever comes
 /// of it.
 pub fn force_lock(world: &mut World, actor: Entity) -> Result<(), Unable> {
-    let (character, vitals) = member(world, actor)?;
     let Some(DeviceInteraction { work: Work::Picking(picking), .. }) =
         world.get_resource::<DeviceInteraction>()
     else {
         return Err(Unable::NotNow);
     };
-    let chance =
-        force_chance(character, vitals, picking.tumblers.len(), *world.resource::<Difficulty>())
-            .ok_or(Unable::TooWeak)?;
+    let tumblers = picking.tumblers.len();
+    let setting = *world.resource::<Difficulty>();
+    let (character, vitals) = member(world, actor)?;
+    let chance = force_chance(character, vitals, tumblers, setting).ok_or(Unable::TooWeak)?;
     world.get_mut::<Vitals>(actor).unwrap().spend_stamina(FORCE_STAMINA);
     if rng(world).below(100) < chance {
         world.write_message(LockNews::Forced { member: actor });
