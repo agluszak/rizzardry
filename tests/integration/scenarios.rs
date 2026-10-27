@@ -3,10 +3,8 @@
 //! checked on its state. They need `RIZZARDRY_RETAIL` and fail without it.
 //!
 //! ```sh
-//! RIZZARDRY_RETAIL=/path/to/wizardry8 cargo test --test integration -- --ignored scenarios::
+//! RIZZARDRY_RETAIL=/path/to/wizardry8 cargo nextest run --run-ignored only -E 'test(/^scenarios::/)'
 //! ```
-
-use std::sync::Mutex;
 
 use bevy::prelude::*;
 use clap::Parser;
@@ -16,10 +14,6 @@ use rizzardry::game::inventory::PartyInventory;
 use rizzardry::game::world::items::WorldItem;
 use rizzardry::game::world::level::{Level, Travel};
 use rizzardry::game::world::population::Monster;
-
-/// One game at a time: they share the navmesh cache and the asset
-/// processor's output.
-static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
 /// Plenty of fixed steps (each 1/64 s of game time) for anything here.
 const STEPS: usize = 64 * 120;
@@ -75,7 +69,6 @@ fn crab_fight(app: &mut App) {
 #[test]
 #[ignore = "requires a retail installation"]
 fn a_green_slime_leaves_treasure() {
-    let _one = ONE_AT_A_TIME.lock();
     // With this seed one of the three Green Slimes drops from its table.
     let mut app = game(&["--continuous", "--seed", "4", "--start=69.5,10,-24", "--yaw", "0"]);
     step_until(&mut app, "the Monastery becoming active", |w| playing(w).is_some());
@@ -97,7 +90,6 @@ fn a_green_slime_leaves_treasure() {
 #[test]
 #[ignore = "requires a retail installation"]
 fn the_dead_stay_dead_across_travel() {
-    let _one = ONE_AT_A_TIME.lock();
     let mut app = game(&["--continuous", "--start=108,2.5,-96"]);
     crab_fight(&mut app);
     let (count, dead) = monsters(app.world_mut());
@@ -122,7 +114,6 @@ fn the_party_rests_eight_hours_and_wakes() {
     use rizzardry::game::camp::{Camp, CampNews, CampRequest};
     use rizzardry::game::party::body::PartyBody;
     use rizzardry::game::time::GameClock;
-    let _one = ONE_AT_A_TIME.lock();
     // After beating the beach crabs, with the beach quiet.
     let mut app = game(&["--continuous", "--start=108,2.5,-96"]);
     crab_fight(&mut app);

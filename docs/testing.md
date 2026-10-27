@@ -22,13 +22,15 @@ second gameplay model or distort production architecture merely for testing.
 ```sh
 cargo fmt --package rizzardry --check
 cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked
-RIZZARDRY_RETAIL=/path/to/wizardry8 cargo test --locked -- --ignored
-RIZZARDRY_RETAIL=/path/to/wizardry8 cargo test --locked --test integration -- --ignored scenarios::
+cargo nextest run --locked
+RIZZARDRY_RETAIL=/path/to/wizardry8 cargo nextest run --locked --run-ignored all
+RIZZARDRY_RETAIL=/path/to/wizardry8 cargo nextest run --locked --run-ignored only -E 'test(/^scenarios::/)'
 ```
 
-Retail tests are ignored by default and must fail if explicitly invoked without
-valid assets. Retail scenarios share the navmesh cache and run serially. See
+Tests run under [nextest](https://nexte.st). Retail tests are ignored by
+default and must fail if explicitly invoked without valid assets. Retail
+scenarios share the navmesh cache, so `.config/nextest.toml` runs them one at
+a time; plain `cargo test` would let them race. See
 [the README](../README.md) for headless runs and offscreen screenshots; neither
 all-map baking nor GPU screenshots are required for every PR.
 
