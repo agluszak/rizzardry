@@ -222,7 +222,7 @@ pub fn populate(
                         provoked.insert(entity);
                     }
                     role.body
-                },
+                }
                 other => {
                     npc.dormant = other;
                     continue;

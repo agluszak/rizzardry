@@ -448,5 +448,4 @@ mod tests {
         }
         panic!("the open gate must allow replenishment with the seeded rolls");
     }
-
 }

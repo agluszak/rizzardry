@@ -40,11 +40,8 @@ pub enum DamageRefusal {
 /// it again on the corpse produces no second reward or drop.
 #[derive(SystemParam)]
 pub struct MonsterDamage<'w, 's> {
-    pub monsters: Query<
-        'w,
-        's,
-        (&'static mut Monster, ActorPose, Option<&'static Walker>, &'static ChildOf),
-    >,
+    pub monsters:
+        Query<'w, 's, (&'static mut Monster, ActorPose, Option<&'static Walker>, &'static ChildOf)>,
     motion: Query<
         'w,
         's,
@@ -77,9 +74,7 @@ impl MonsterDamage<'_, '_> {
     }
 
     pub fn active(&self, target: Entity) -> bool {
-        self.monsters.get(target).is_ok_and(|(_, _, _, owner)| {
-            self.levels.contains(owner.parent())
-        })
+        self.monsters.get(target).is_ok_and(|(_, _, _, owner)| self.levels.contains(owner.parent()))
     }
 
     pub fn apply(

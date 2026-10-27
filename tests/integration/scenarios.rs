@@ -144,12 +144,12 @@ fn the_party_rests_eight_hours_and_wakes() {
 #[ignore = "requires a retail installation"]
 fn burz_conversation_trade_and_revisit_keep_one_actor() {
     use rizzardry::content::npcs::{DialogueScript, NpcCatalog};
+    use rizzardry::game::inventory::{ItemOwner, ItemRef};
     use rizzardry::game::npcs::conversation::{
         self, Conversation, ConversationRequest, ConversationWait,
     };
     use rizzardry::game::npcs::trade::TradeSource;
     use rizzardry::game::npcs::{Npc, NpcAssets, NpcBodies};
-    use rizzardry::game::inventory::{ItemOwner, ItemRef};
     let mut app = game(&["--seed", "8", "--start=225,36.7,-68.6"]);
     step_until(&mut app, "the Monastery becoming active", |w| playing(w).is_some());
     let assets = app.world().resource::<NpcAssets>();
@@ -243,8 +243,13 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
         "duplicate confirmation settles once"
     );
     let bought = app.world().resource::<PartyInventory>().pool.stacks[0].id;
-    let sale =
-        conversation::quote_trade(app.world_mut(), session, TradeSource::Party(ItemRef { owner: ItemOwner::Pool, id: bought }), 1).unwrap();
+    let sale = conversation::quote_trade(
+        app.world_mut(),
+        session,
+        TradeSource::Party(ItemRef { owner: ItemOwner::Pool, id: bought }),
+        1,
+    )
+    .unwrap();
     app.world_mut().write_message(ConversationRequest::Trade(sale));
     app.update();
     assert_eq!(app.world().resource::<PartyInventory>().gold, gold - quote.gold + sale.gold);

@@ -53,7 +53,9 @@ impl StoryFacts {
         }
     }
     fn can_set(id: FactId, catalog: &FactCatalog) -> bool {
-        catalog.get(id).is_some_and(|f| matches!(f.symbol.as_str(), "FACT_BURZ_SAID130" | "FACT_TEMPLAR"))
+        catalog
+            .get(id)
+            .is_some_and(|f| matches!(f.symbol.as_str(), "FACT_BURZ_SAID130" | "FACT_TEMPLAR"))
     }
     fn set(&mut self, id: FactId, value: u8, catalog: &FactCatalog) -> Result<(), String> {
         if !Self::can_set(id, catalog) {
@@ -195,14 +197,16 @@ fn average_level(world: &World) -> u32 {
 }
 fn active_body(world: &World, actor: Entity) -> Option<Entity> {
     world.get::<super::NpcBodies>(actor)?.0.iter().copied().find(|body| {
-        world.get::<ChildOf>(*body).is_some_and(|parent| world.get::<Level>(parent.parent()).is_some())
+        world
+            .get::<ChildOf>(*body)
+            .is_some_and(|parent| world.get::<Level>(parent.parent()).is_some())
             && world.get::<Monster>(*body).is_some_and(|m| !m.is_dead())
     })
 }
 fn available(world: &World, actor: Entity) -> bool {
-    active_body(world, actor).is_some_and(|body| {
-        world.get::<crate::game::world::population::Provoked>(body).is_none()
-    }) && world.get::<Npc>(actor).is_some_and(|n| n.disposition >= 0x42)
+    active_body(world, actor)
+        .is_some_and(|body| world.get::<crate::game::world::population::Provoked>(body).is_none())
+        && world.get::<Npc>(actor).is_some_and(|n| n.disposition >= 0x42)
 }
 /// Shared gameplay permission, also used to derive the trade controls.
 pub fn trade_allowed(world: &World, actor: Entity) -> bool {
@@ -262,11 +266,18 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
         let stock = &world.get::<Npc>(actor).unwrap().stock;
         let gated = stock.initialized
             && now.saturating_sub(stock.maintenance_at) >= 86_400_000
-            && def.stock.iter().any(|r| !r.persistent && r.item == crate::content::items::ItemId(0x1fc));
+            && def
+                .stock
+                .iter()
+                .any(|r| !r.persistent && r.item == crate::content::items::ItemId(0x1fc));
         let templar = if gated {
             let catalog = fact_catalog(world).ok_or(TradeError::MissingContent)?;
-            let id = catalog.0.iter().find(|f| f.symbol == "FACT_TEMPLAR")
-                .ok_or(TradeError::MissingContent)?.id;
+            let id = catalog
+                .0
+                .iter()
+                .find(|f| f.symbol == "FACT_TEMPLAR")
+                .ok_or(TradeError::MissingContent)?
+                .id;
             fact(world, id).map_err(|_| TradeError::MissingContent)? != 0
         } else {
             false
@@ -435,7 +446,8 @@ fn run(world: &mut World, entity: Entity, c: &mut Conversation) {
                                 break;
                             }
                             DialogueOp::Conditional { facts, response }
-                                if conditions_match(world, facts).expect("preflighted conditions") =>
+                                if conditions_match(world, facts)
+                                    .expect("preflighted conditions") =>
                             {
                                 following = Some(Step::Quote {
                                     quote: select_response(
@@ -648,7 +660,10 @@ pub fn quote_trade(
     })?;
     Ok(TradeQuote { conversation, revision, source, quantity, gold })
 }
-fn sale_item(world: &World, source: TradeSource) -> Result<&crate::game::inventory::ItemStack, TradeError> {
+fn sale_item(
+    world: &World,
+    source: TradeSource,
+) -> Result<&crate::game::inventory::ItemStack, TradeError> {
     let TradeSource::Party(source) = source else { return Err(TradeError::StaleSelection) };
     match source.owner {
         ItemOwner::Pool => {
@@ -715,11 +730,16 @@ fn execute_trade(
                 let mut stock = world.get::<Npc>(c.actor).unwrap().stock.clone();
                 stock.add(item.item, quote.quantity, catalog, false)?;
                 match source.owner {
-                    ItemOwner::Pool => world.resource_mut::<PartyInventory>()
-                        .pool.consume_units(source.id, quote.quantity as u16),
-                    ItemOwner::Member(member) => world.get_mut::<Carried>(member).unwrap()
+                    ItemOwner::Pool => world
+                        .resource_mut::<PartyInventory>()
+                        .pool
+                        .consume_units(source.id, quote.quantity as u16),
+                    ItemOwner::Member(member) => world
+                        .get_mut::<Carried>(member)
+                        .unwrap()
                         .consume_backpack_units(source.id, quote.quantity as u16),
-                }.map_err(|_| TradeError::StaleSelection)?;
+                }
+                .map_err(|_| TradeError::StaleSelection)?;
                 world.get_mut::<Npc>(c.actor).unwrap().stock = stock;
                 world.resource_mut::<PartyInventory>().gold = gold;
                 Ok(())
@@ -852,8 +872,8 @@ pub fn update_conversation(world: &mut World) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game::world::population::ScaledBody;
     use crate::game::inventory::ItemRef;
+    use crate::game::world::population::ScaledBody;
     fn app(script: DialogueScript) -> (App, Entity, Entity) {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
@@ -884,31 +904,29 @@ mod tests {
         w.insert_resource(NpcAssets { catalog, facts, scripts: default() });
         let level = w.spawn(Level::test(default())).id();
         let actor = w
-            .spawn((
-                Npc {
-                    definition: NpcId(0),
-                    disposition: 80,
-                    greeting_pending: true,
-                    paid_topics: vec![],
-                    dormant: None,
-                    stock: default(),
-                },
-            ))
+            .spawn((Npc {
+                definition: NpcId(0),
+                disposition: 80,
+                greeting_pending: true,
+                paid_topics: vec![],
+                dormant: None,
+                stock: default(),
+            },))
             .id();
         w.spawn((
-                super::super::NpcBody(actor),
-                ChildOf(level),
-                Monster {
-                    location: 1,
-                    species: 0,
-                    hp: 5,
-                    max_hp: 5,
-                    stamina: 5,
-                    max_stamina: 5,
-                    conditions: vec![],
-                    body: ScaledBody { scale: 1., radius: 0.5, eye_height: 1., speed: 0. },
-                },
-            ));
+            super::super::NpcBody(actor),
+            ChildOf(level),
+            Monster {
+                location: 1,
+                species: 0,
+                hp: 5,
+                max_hp: 5,
+                stamina: 5,
+                max_stamina: 5,
+                conditions: vec![],
+                body: ScaledBody { scale: 1., radius: 0.5, eye_height: 1., speed: 0. },
+            },
+        ));
         let entity = w
             .spawn(Conversation {
                 actor,
@@ -1142,12 +1160,21 @@ mod tests {
         world.entity_mut(session).insert(c);
         for source in [
             TradeSource::Stock(trade::StockLotId(1)),
-            TradeSource::Party(ItemRef { owner: ItemOwner::Pool, id: crate::game::inventory::StackId(1) }),
+            TradeSource::Party(ItemRef {
+                owner: ItemOwner::Pool,
+                id: crate::game::inventory::StackId(1),
+            }),
         ] {
             assert!(!trade_allowed(world, actor));
             assert_eq!(quote_trade(world, session, source, 1), Err(TradeError::Unavailable));
             let mut c = world.entity_mut(session).take::<Conversation>().unwrap();
-            let quote = TradeQuote { conversation: session, revision: c.revision, source, quantity: 1, gold: 1 };
+            let quote = TradeQuote {
+                conversation: session,
+                revision: c.revision,
+                source,
+                quantity: 1,
+                gold: 1,
+            };
             assert_eq!(execute_trade(world, &mut c, quote), Err(TradeError::Unavailable));
             world.entity_mut(session).insert(c);
         }
@@ -1174,5 +1201,4 @@ mod tests {
         world.resource_mut::<PartyRoster>().0.clear();
         assert!(matches!(sale_item(world, source), Err(TradeError::StaleSelection)));
     }
-
 }

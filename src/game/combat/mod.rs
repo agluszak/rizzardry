@@ -1187,12 +1187,7 @@ fn end_round(
     rng: &mut GameRng,
     roster: &PartyRoster,
     members: &mut crate::game::magic::Members,
-    monsters: &mut Query<(
-        &mut Monster,
-        ActorPose,
-        Option<&Walker>,
-        &ChildOf,
-    )>,
+    monsters: &mut Query<(&mut Monster, ActorPose, Option<&Walker>, &ChildOf)>,
     party_eye: Vec3,
     species: &MonsterCatalog,
     news: &mut MessageWriter<CombatNews>,

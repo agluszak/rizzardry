@@ -230,9 +230,12 @@ fn build(world: &mut World, session: Entity) -> Entity {
         );
     }
     world.spawn((Choices, Node { column_gap: px(5), ..default() }, ChildOf(root)));
-    let offer = world.spawn((Offer, TradeControls, Node { min_height: px(18), ..default() }, ChildOf(root))).id();
+    let offer = world
+        .spawn((Offer, TradeControls, Node { min_height: px(18), ..default() }, ChildOf(root)))
+        .id();
     bitmap(world, offer, "Select merchandise or an item to sell.".into(), 510.0);
-    let controls = world.spawn((TradeControls, Node { column_gap: px(5), ..default() }, ChildOf(root))).id();
+    let controls =
+        world.spawn((TradeControls, Node { column_gap: px(5), ..default() }, ChildOf(root))).id();
     for (label, change) in [("-", -1), ("+", 1), ("Confirm trade", 0)] {
         let e = button(world, controls, label);
         world.entity_mut(e).observe(move |_: On<Activate>, mut commands: Commands| {
@@ -446,7 +449,10 @@ fn sync_view(world: &mut World) {
             for item in carried.backpack.iter().flatten() {
                 if let Some(d) = items.get(item.item) {
                     rows.push((
-                        TradeSource::Party(ItemRef { owner: ItemOwner::Member(*member), id: item.id }),
+                        TradeSource::Party(ItemRef {
+                            owner: ItemOwner::Member(*member),
+                            id: item.id,
+                        }),
                         format!(
                             "Sell from {}: {}",
                             world

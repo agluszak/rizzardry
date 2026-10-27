@@ -307,7 +307,7 @@ fn attaching_visuals_does_not_change_physical_state_or_revisit_placement() {
         let float_height = 1.1;
         let pose = Transform::from_translation(feet + Vec3::Y * float_height)
             .with_rotation(Quat::from_rotation_y(0.7));
-        app.world_mut().get_mut::<Monster>(body).unwrap().body = body;
+        app.world_mut().get_mut::<Monster>(actor).unwrap().body = body;
         app.world_mut().entity_mut(actor).insert((
             Walker { speed: body.speed, float_height },
             pose,
@@ -708,7 +708,7 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
         npc.stock.lots[0].units = 2;
     }
     {
-        let mut body = app.world_mut().get_mut::<Monster>(actor).unwrap();
+        let mut body = app.world_mut().get_mut::<Monster>(body).unwrap();
         body.hp = 4;
         body.max_hp = 9;
     }
@@ -754,7 +754,9 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     assert_ne!(returned_body, body);
     assert_eq!(app.world().get::<ChildOf>(returned_body).unwrap().parent(), back);
     assert_eq!(app.world().get::<Monster>(returned_body).unwrap().hp, 4);
-    assert!(app.world().get::<rizzardry::game::world::population::Provoked>(returned_body).is_some());
+    assert!(
+        app.world().get::<rizzardry::game::world::population::Provoked>(returned_body).is_some()
+    );
     let npc = app.world().get::<Npc>(actor).unwrap();
     assert_eq!(npc.stock, stock);
     assert_eq!(npc.paid_topics, [7]);

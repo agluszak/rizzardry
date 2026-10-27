@@ -71,7 +71,8 @@ pub struct NpcPopulation<'w, 's> {
     pub definitions: Res<'w, Assets<NpcCatalog>>,
     pub facts: Res<'w, Assets<FactCatalog>>,
     pub scripts: Res<'w, Assets<DialogueScript>>,
-    pub npcs: Query<'w, 's, (Entity, &'static ActorId, &'static mut Npc, Option<&'static NpcBodies>)>,
+    pub npcs:
+        Query<'w, 's, (Entity, &'static ActorId, &'static mut Npc, Option<&'static NpcBodies>)>,
     bodies: Query<
         'w,
         's,

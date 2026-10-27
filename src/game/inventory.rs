@@ -313,7 +313,10 @@ impl Carried {
         self.backpack.iter().flatten().find(|stack| stack.id == id)
     }
     pub fn consume_backpack_units(&mut self, id: StackId, amount: u16) -> Result<(), Refusal> {
-        let at = self.backpack.iter().position(|s| s.as_ref().is_some_and(|s| s.id == id))
+        let at = self
+            .backpack
+            .iter()
+            .position(|s| s.as_ref().is_some_and(|s| s.id == id))
             .ok_or(Refusal::Nothing)?;
         let stack = self.backpack[at].as_ref().unwrap();
         if amount == 0 || amount > stack.count() {
@@ -1233,5 +1236,4 @@ mod tests {
         carried.consume_backpack_units(id, 3).unwrap();
         assert!(carried.backpack[3].is_none());
     }
-
 }
