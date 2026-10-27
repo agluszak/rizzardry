@@ -2,9 +2,7 @@
 
 A from-scratch Rust and Bevy rewrite of Wizardry 8.
 
-The [design documentation](docs/README.md) describes the architecture,
-dependency choices, gameplay flows and open questions. See [implementation priorities](docs/implementation-plan.md) and
-[known gaps](docs/known-gaps.md) for its current scope. The game loads a retail level directly from your installation with its props,
+The game loads a retail level directly from your installation with its props,
 doors, sky, fog and time of day; the party walks it, uses doors and
 teleporters, and is chased over baked navmeshes by animated retail monsters;
 a voice line plays; and the automap takes notes.
@@ -71,8 +69,6 @@ by default; run them explicitly against your installation:
 ```sh
 RIZZARDRY_RETAIL=/path/to/wizardry8 cargo nextest run --locked --run-ignored only
 ```
-
-See [testing](docs/testing.md) for the lightweight Bevy testing approach.
 
 Behavioral research compares
 [Wizardry 8 Decomp](https://github.com/agluszak/wizardry-8-decomp) and

@@ -13,11 +13,8 @@ avian3d = { version = "0.8.0", default-features = false, features = ["3d", "parr
 bevy-tnua = "0.33.0"
 bevy-tnua-avian3d = "0.13.0"
 bevy_enhanced_input = "0.27.0"
-# Bevy 0.20 support is not released yet. Landmass pins its upgrade branch
-# (andriyDev/landmass PR #195). Rerecast is vendored from its upgrade branch
-# (janhohenheim/rerecast PR #63) with one fix; see third_party/README.md.
-# Move both to crates.io releases once they are published.
-bevy_landmass = { git = "https://github.com/andriyDev/landmass", rev = "945b31cf1e" }
+bevy_landmass = "0.13.0"
+# Rerecast 0.5.0 still lacks our contour fixes; see third_party/README.md.
 rerecast = { path = "third_party/rerecast" }
 thiserror = "2"
 clap = { version = "4.6.7", features = ["derive", "env"] }

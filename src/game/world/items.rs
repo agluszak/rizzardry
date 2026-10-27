@@ -81,7 +81,7 @@ pub fn drop_loot(
                     Name::new("loot"),
                     WorldItem::loose(item, false),
                     Transform::from_translation(feet + Vec3::Y * CLEARANCE),
-                    ChildOf(level),
+                    LevelOwned(level),
                 ));
             }
             return;
@@ -254,5 +254,25 @@ mod tests {
             .collect();
         lying.sort();
         assert_eq!(lying, [(1, 0), (BAG_OF_ITEMS.0, 2)]);
+        // Missing container art/definition must not lose gameplay ownership.
+        drop_loot(
+            &mut world.commands(),
+            level,
+            Vec3::Z,
+            vec![item(&mut ids, 4), item(&mut ids, 5)],
+            &ItemCatalog::default(),
+        );
+        world.flush();
+        assert_eq!(world.query::<&WorldItem>().iter(&world).count(), 4);
+        assert!(
+            world
+                .query_filtered::<&LevelOwned, With<WorldItem>>()
+                .iter(&world)
+                .all(|owner| owner.0 == level)
+        );
+        assert_eq!(
+            world.get::<crate::game::world::level::LevelEntities>(level).unwrap().entities().len(),
+            4
+        );
     }
 }

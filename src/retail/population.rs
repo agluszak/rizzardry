@@ -1,5 +1,4 @@
 //! Who stands where in a level: the monster placements of its `.sts` file.
-//! See `docs/research/level-population.md`.
 
 use super::pvl::{PvlError, invalid};
 use crate::bytes::Bytes;

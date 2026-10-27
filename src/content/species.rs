@@ -1,5 +1,4 @@
-//! Monster species: what the combat rules read from `monsters.dbs`
-//! (`docs/research/combat.md` §6).
+//! Monster species read from `monsters.dbs`.
 
 use bevy::prelude::*;
 use enum_map::EnumMap;

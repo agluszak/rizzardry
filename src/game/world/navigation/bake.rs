@@ -143,7 +143,7 @@ pub fn bake(
 /// Rerecast's polygon and detail meshes as an unvalidated Landmass navmesh.
 ///
 /// Adapted from `landmass_rerecast::convert_rerecast_navmesh_to_landmass_navmesh`
-/// (MIT OR Apache-2.0), which is not yet ported to Bevy 0.20.
+/// (MIT OR Apache-2.0).
 fn to_landmass(polygon: &PolygonNavmesh, detail: &DetailNavmesh) -> NavigationMesh3d {
     let origin = polygon.aabb.min;
     let to_world = Vec3::new(polygon.cell_size, polygon.cell_height, polygon.cell_size);
