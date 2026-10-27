@@ -12,16 +12,18 @@ struct ItemKnowledge { identity: bool, spell: bool, curse: bool }
 struct ItemInstance {
     id: ItemInstanceId,
     definition: ItemDefId,
-    quantity: u16,
-    charges: u16,
+    count: NonZeroU16,
+    uses: Option<u16>,
     knowledge: ItemKnowledge,
-    curse_released: bool,
 }
+struct Equipped { item: ItemInstance, curse_released: bool }
 struct ItemRef { owner: ItemOwner, id: ItemInstanceId }
 ```
 
-This sketch does not prescribe integer widths or the final quantity encoding.
-Definitions specify stacking/use rules; constructors validate the instance.
+The nonempty stack representation is the intended next step; the current code
+still uses `Quantity` and zero-count transfer sentinels. Equipment release has
+already moved to the placement. Definitions specify stacking/use rules;
+constructors must validate the instance without silently losing excess items.
 An identity is useful for queued uses and item-targeted spells without making
 each item an entity. Splits create a new identity; merges retain the destination
 identity and retire the source. Any choice referring to a retired source is
@@ -65,6 +67,11 @@ direct calls are sufficient; no generic transaction engine is needed.
 5. Any remainder stays held. Closing a screen cannot delete it.
 6. Cancellation tries the permitted return/receipt path; it does not recreate a
    source slot that another completed operation now owns.
+
+The original held-split path tries the former character slot, then the
+character, then the party pool; if none accepts the remainder, it attempts a
+world drop and retains it in hand if that fails. This is not yet implemented by
+the current held-origin field. See [split return](https://github.com/agluszak/wizardry-8-decomp/blob/075cbd0b853c4670e94f6ae4fe48d53b52b5e819/src/wiz8/local_screens/RCSItemsPage.cpp#L447).
 
 Targeting an item for combat is different: selection leaves it in inventory
 until an accepted execution consumes it. See [combat items](combat-items-and-magic.md).
@@ -234,11 +241,24 @@ Remove Curse resolves through shared magic:
 3. Set release on qualifying values and report none/partial/all release.
 4. Charge through normal casting, not per item released.
 
-Equipment release has no countdown in this implementation. The normal move
-clears it, so removing and re-equipping the item restores the restriction. The
+Equipment release has no countdown. Taking the whole item discards the old
+placement, so re-equipping it restores the restriction; splitting or merging
+part of a stack retains the existing placement. The
 definition remains cursed. Release does not itself need to identify the item.
 Sources: [release](https://github.com/agluszak/wizardry-8-decomp/blob/075cbd0b853c4670e94f6ae4fe48d53b52b5e819/src/wiz8/local_code/PC%20Item.cpp#L2132-L2156),
 [move reset](https://github.com/agluszak/wizardry-8-decomp/blob/075cbd0b853c4670e94f6ae4fe48d53b52b5e819/src/wiz8/local_code/PC%20Item.cpp#L2770-L2806).
+
+The original Shift-taking path can empty cursed equipment without the normal
+removal check. The current implementation deliberately retains that check. The
+original merge also clamps an already-overfull destination; the current code
+preserves its contents and accepts no more. See [Shift-taking](https://github.com/agluszak/wizardry-8-decomp/blob/075cbd0b853c4670e94f6ae4fe48d53b52b5e819/src/wiz8/local_screens/ReviewCharacterScreen.cpp#L2337)
+and [merge](https://github.com/agluszak/wizardry-8-decomp/blob/075cbd0b853c4670e94f6ae4fe48d53b52b5e819/src/wiz8/local_code/PC%20Item.cpp#L2727).
+
+For consumption, retail separately checks whether an already-empty charged
+item may be removed and whether an item that just reached zero has hidden
+properties. The current `keep_empty` argument does not model both decisions;
+the quantity rewrite needs the definition's hidden-property data and explicit
+exhaustion policy. See [consumption](https://github.com/agluszak/wizardry-8-decomp/blob/075cbd0b853c4670e94f6ae4fe48d53b52b5e819/src/wiz8/local_code/PC%20Item.cpp#L3607).
 
 Hex applies an actor condition through resistance/chance/duration rules. Remove
 Curse can address it and can apply Hexed on backfire. This is not a mutation of

@@ -94,7 +94,6 @@ mod tests {
                 identified: true,
                 spell_known: false,
                 curse_known: false,
-                curse_released: false,
                 remarked: false,
             })
             .collect();

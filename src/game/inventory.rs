@@ -53,8 +53,6 @@ pub struct ItemInstance {
     pub spell_known: bool,
     /// Whether it is cursed is known.
     pub curse_known: bool,
-    /// Remove Curse let it go; lost whenever it moves.
-    pub curse_released: bool,
     /// Its one-time "exceptional item" remark has been made.
     pub remarked: bool,
 }
@@ -77,12 +75,6 @@ impl ItemInstance {
             Quantity::Stack(n) if count && n > 1 => format!("{name} ({n})"),
             _ => name.clone(),
         }
-    }
-
-    /// Every move goes through here: moving an item loses a released curse.
-    fn moved(mut self) -> Self {
-        self.curse_released = false;
-        self
     }
 }
 
@@ -115,7 +107,6 @@ pub fn make_item(
         identified: identify || definition.auto_identify,
         spell_known: false,
         curse_known: false,
-        curse_released: false,
         remarked: false,
     }
 }
@@ -125,19 +116,24 @@ pub fn make_item(
 /// units moved; the rest stays in `source`.
 pub fn merge_stack(
     into: &mut ItemInstance,
-    source: &mut ItemInstance,
+    source: &mut Option<ItemInstance>,
     definition: &ItemDefinition,
 ) -> u8 {
-    let (Quantity::Stack(have), Quantity::Stack(more)) = (&mut into.quantity, &mut source.quantity)
+    let Some(item) = source.as_mut() else { return 0 };
+    let (Quantity::Stack(have), Quantity::Stack(more)) = (&mut into.quantity, &mut item.quantity)
     else {
         return 0;
     };
-    if into.item != source.item || into.identified != source.identified {
+    if into.item != item.item || into.identified != item.identified {
         return 0;
     }
     let moved = (*more).min(definition.maximum_quantity.saturating_sub(*have));
     *have += moved;
-    *more -= moved;
+    if moved == *more {
+        *source = None;
+    } else {
+        *more -= moved;
+    }
     moved
 }
 
@@ -145,19 +141,28 @@ pub fn merge_stack(
 /// up and gone. An emptied item with lasting properties is kept: those are
 /// not decoded yet, so emptied items with uses are kept only when
 /// `keep_empty`.
-pub fn spend_use(item: &mut ItemInstance, keep_empty: bool) -> bool {
-    match &mut item.quantity {
+pub fn spend_use(slot: &mut Option<ItemInstance>, keep_empty: bool) -> bool {
+    let Some(item) = slot.as_mut() else { return false };
+    let exhausted = match &mut item.quantity {
         Quantity::One => false,
         Quantity::Stack(n) => {
-            *n = n.saturating_sub(1);
-            *n == 0
+            if *n <= 1 {
+                true
+            } else {
+                *n -= 1;
+                false
+            }
         }
         Quantity::Uses(0) => !keep_empty,
         Quantity::Uses(n) => {
             *n -= 1;
             *n == 0 && !keep_empty
         }
+    };
+    if exhausted {
+        *slot = None;
     }
+    exhausted
 }
 
 /// Where an item is worn, in retail's slot order.
@@ -197,29 +202,56 @@ pub const BACKPACK_SLOTS: usize = 8;
 /// The most rows the shared pool holds.
 pub const POOL_LIMIT: usize = 500;
 
+/// State belonging to one equipment placement, not to the carried item.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Equipped {
+    pub item: ItemInstance,
+    pub curse_released: bool,
+}
+
+impl From<ItemInstance> for Equipped {
+    fn from(item: ItemInstance) -> Self {
+        Self { item, curse_released: false }
+    }
+}
+
 /// What one party member carries: worn equipment and a backpack.
 #[derive(Component, Clone, Debug, Default, PartialEq)]
 pub struct Carried {
-    pub equipment: EnumMap<EquipSlot, Option<ItemInstance>>,
+    pub equipment: EnumMap<EquipSlot, Option<Equipped>>,
     pub backpack: [Option<ItemInstance>; BACKPACK_SLOTS],
 }
 
 impl Carried {
     pub fn worn(&self, slot: EquipSlot) -> Option<&ItemInstance> {
-        self.equipment[slot].as_ref()
+        self.equipment[slot].as_ref().map(|placement| &placement.item)
     }
 
-    pub fn slot(&self, location: Slot) -> Option<&Option<ItemInstance>> {
+    pub fn slot(&self, location: Slot) -> Option<Option<&ItemInstance>> {
         match location {
-            Slot::Equipment(slot) => Some(&self.equipment[slot]),
-            Slot::Backpack(index) => self.backpack.get(index),
+            Slot::Equipment(slot) => Some(self.worn(slot)),
+            Slot::Backpack(index) => self.backpack.get(index).map(Option::as_ref),
         }
     }
 
-    fn slot_mut(&mut self, location: Slot) -> Option<&mut Option<ItemInstance>> {
+    fn item_mut(&mut self, location: Slot) -> Option<&mut ItemInstance> {
         match location {
-            Slot::Equipment(slot) => Some(&mut self.equipment[slot]),
-            Slot::Backpack(index) => self.backpack.get_mut(index),
+            Slot::Equipment(slot) => self.equipment[slot].as_mut().map(|p| &mut p.item),
+            Slot::Backpack(index) => self.backpack.get_mut(index).and_then(Option::as_mut),
+        }
+    }
+
+    fn take(&mut self, location: Slot) -> Option<ItemInstance> {
+        match location {
+            Slot::Equipment(slot) => self.equipment[slot].take().map(|p| p.item),
+            Slot::Backpack(index) => self.backpack.get_mut(index)?.take(),
+        }
+    }
+
+    fn put(&mut self, location: Slot, item: Option<ItemInstance>) {
+        match location {
+            Slot::Equipment(slot) => self.equipment[slot] = item.map(Equipped::from),
+            Slot::Backpack(index) => self.backpack[index] = item,
         }
     }
 }
@@ -381,12 +413,12 @@ pub fn can_hold_together(a: &ItemDefinition, b: &ItemDefinition) -> bool {
 /// curse holds worn items until released, unless the wearer is dead.
 pub fn can_take_off(
     slot: EquipSlot,
-    item: &ItemInstance,
+    curse_released: bool,
     definition: &ItemDefinition,
     dead: bool,
 ) -> bool {
     !definition.cursed
-        || item.curse_released
+        || curse_released
         || matches!(slot, EquipSlot::AlternatePrimary | EquipSlot::AlternateSecondary)
         || dead
 }
@@ -399,15 +431,23 @@ pub fn place_with_member(
     item: ItemInstance,
     catalog: &ItemCatalog,
 ) -> Result<(), ItemInstance> {
-    let mut item = item.moved();
-    if let (Some(definition), Quantity::Stack(_)) = (catalog.get(item.item), item.quantity) {
-        for slot in carried.equipment.values_mut().chain(carried.backpack.iter_mut()).flatten() {
-            merge_stack(slot, &mut item, definition);
-            if item.quantity == Quantity::Stack(0) {
+    let definition = catalog.get(item.item);
+    let mut incoming = Some(item);
+    if let Some(definition) = definition {
+        for slot in carried
+            .equipment
+            .values_mut()
+            .flatten()
+            .map(|p| &mut p.item)
+            .chain(carried.backpack.iter_mut().flatten())
+        {
+            merge_stack(slot, &mut incoming, definition);
+            if incoming.is_none() {
                 return Ok(());
             }
         }
     }
+    let item = incoming.unwrap();
     match carried.backpack.iter_mut().find(|slot| slot.is_none()) {
         Some(empty) => {
             *empty = Some(item);
@@ -427,21 +467,21 @@ pub fn place_at_creation(
     catalog: &ItemCatalog,
     member: &Character,
 ) -> Result<(), ItemInstance> {
-    let mut item = item.moved();
+    let mut item = item;
     if let Some(definition) = catalog.get(item.item).filter(|d| member.can_use(d))
         && let Some(slot) = creation_slot(definition, carried, catalog, member)
         && allowed_slots(definition, carried, catalog, None).contains(&slot)
     {
         match &mut carried.equipment[slot] {
             empty @ None => {
-                *empty = Some(item);
+                *empty = Some(item.into());
                 return Ok(());
             }
             Some(worn) => {
-                merge_stack(worn, &mut item, definition);
-                if item.quantity == Quantity::Stack(0) {
-                    return Ok(());
-                }
+                let mut incoming = Some(item);
+                merge_stack(&mut worn.item, &mut incoming, definition);
+                let Some(rest) = incoming else { return Ok(()) };
+                item = rest;
             }
         }
     }
@@ -506,8 +546,9 @@ pub fn carried_weight(carried: &Carried, catalog: &ItemCatalog) -> u32 {
     carried
         .equipment
         .values()
-        .chain(&carried.backpack)
         .flatten()
+        .map(|p| &p.item)
+        .chain(carried.backpack.iter().flatten())
         .map(|i| item_weight(i, catalog))
         .sum()
 }
@@ -547,15 +588,17 @@ impl PartyInventory {
         item: ItemInstance,
         catalog: &ItemCatalog,
     ) -> Result<(), ItemInstance> {
-        let mut item = item.moved();
-        if let (Some(definition), Quantity::Stack(_)) = (catalog.get(item.item), item.quantity) {
+        let definition = catalog.get(item.item);
+        let mut incoming = Some(item);
+        if let Some(definition) = definition {
             for row in &mut self.pool {
-                merge_stack(row, &mut item, definition);
-                if item.quantity == Quantity::Stack(0) {
+                merge_stack(row, &mut incoming, definition);
+                if incoming.is_none() {
                     return Ok(());
                 }
             }
         }
+        let item = incoming.unwrap();
         if self.pool.len() >= POOL_LIMIT {
             return Err(item);
         }
@@ -589,48 +632,58 @@ impl PartyInventory {
         let held = self.held.as_ref().map(|h| (h.item.item, h.item.units()));
         let dead = member.as_ref().is_some_and(|(character, _)| character.is_dead());
         // Split `amount` off `source`; true when that is all of it.
-        let mut split = |source: &mut ItemInstance| -> Result<(bool, ItemInstance), Refusal> {
-            let definition = catalog.get(source.item).ok_or(Refusal::Nothing)?;
-            let Quantity::Stack(count) = source.quantity else { return Err(Refusal::Nothing) };
-            if amount == 0 || amount > count {
-                return Err(Refusal::Nothing);
-            }
-            if definition.crucial {
-                return Err(Refusal::Crucial);
-            }
-            if let Some((item, units)) = held
-                && (item != source.item
-                    || units + u32::from(amount) > u32::from(definition.maximum_quantity))
-            {
-                return Err(Refusal::HandFull);
-            }
-            if let ItemLocation::Member(_, Slot::Equipment(slot)) = location
-                && amount == count
-                && !can_take_off(slot, source, definition, dead)
-            {
-                return Err(Refusal::Cursed);
-            }
-            let mut taken = source.clone();
-            taken.quantity = Quantity::Stack(amount);
-            if amount < count {
-                taken.id = ids.allocate();
-                source.quantity = Quantity::Stack(count - amount);
-            }
-            Ok((amount == count, taken.moved()))
-        };
+        let mut split =
+            |source: &mut ItemInstance, released: bool| -> Result<(bool, ItemInstance), Refusal> {
+                let definition = catalog.get(source.item).ok_or(Refusal::Nothing)?;
+                let Quantity::Stack(count) = source.quantity else { return Err(Refusal::Nothing) };
+                if amount == 0 || amount > count {
+                    return Err(Refusal::Nothing);
+                }
+                if definition.crucial {
+                    return Err(Refusal::Crucial);
+                }
+                if let Some((item, units)) = held
+                    && (item != source.item
+                        || units + u32::from(amount) > u32::from(definition.maximum_quantity))
+                {
+                    return Err(Refusal::HandFull);
+                }
+                if let ItemLocation::Member(_, Slot::Equipment(slot)) = location
+                    && amount == count
+                    && !can_take_off(slot, released, definition, dead)
+                {
+                    return Err(Refusal::Cursed);
+                }
+                let mut taken = source.clone();
+                taken.quantity = Quantity::Stack(amount);
+                if amount < count {
+                    if held.is_none() {
+                        taken.id = ids.allocate();
+                    }
+                    source.quantity = Quantity::Stack(count - amount);
+                }
+                Ok((amount == count, taken))
+            };
         let taken = match location {
             ItemLocation::Pool(row) => {
-                let (whole, taken) = split(self.pool.get_mut(row).ok_or(Refusal::Nothing)?)?;
+                let (whole, taken) = split(self.pool.get_mut(row).ok_or(Refusal::Nothing)?, false)?;
                 if whole {
                     self.pool.remove(row);
                 }
                 taken
             }
             ItemLocation::Member(_, slot) => {
-                let place = member.and_then(|(_, m)| m.slot_mut(slot)).ok_or(Refusal::Nothing)?;
-                let (whole, taken) = split(place.as_mut().ok_or(Refusal::Nothing)?)?;
+                let carried = member.map(|(_, m)| m).ok_or(Refusal::Nothing)?;
+                let released = match slot {
+                    Slot::Equipment(s) => {
+                        carried.equipment[s].as_ref().is_some_and(|p| p.curse_released)
+                    }
+                    Slot::Backpack(_) => false,
+                };
+                let (whole, taken) =
+                    split(carried.item_mut(slot).ok_or(Refusal::Nothing)?, released)?;
                 if whole {
-                    *place = None;
+                    carried.take(slot);
                 }
                 taken
             }
@@ -660,11 +713,11 @@ impl PartyInventory {
         catalog: &ItemCatalog,
     ) -> Result<(), Refusal> {
         self.check_swap(character, vitals, carried, slot, catalog)?;
-        let current = carried.slot_mut(slot).unwrap().take();
+        let current = carried.take(slot);
         let location = ItemLocation::Member(member, slot);
-        let put = self.held.take().map(|held| held.item.moved());
-        *carried.slot_mut(slot).ok_or(Refusal::Nothing)? = put;
-        self.held = current.map(|item| Held { item: item.moved(), origin: Some(location) });
+        let put = self.held.take().map(|held| held.item);
+        carried.put(slot, put);
+        self.held = current.map(|item| Held { item, origin: Some(location) });
         Ok(())
     }
 
@@ -683,7 +736,12 @@ impl PartyInventory {
         if let Slot::Equipment(equip) = slot {
             if let Some(item) = current
                 && let Some(definition) = catalog.get(item.item)
-                && !can_take_off(equip, item, definition, vitals.is_dead())
+                && !can_take_off(
+                    equip,
+                    carried.equipment[equip].as_ref().unwrap().curse_released,
+                    definition,
+                    vitals.is_dead(),
+                )
             {
                 return Err(Refusal::Cursed);
             }
@@ -706,7 +764,7 @@ impl PartyInventory {
         if self.held.is_some() || row >= self.pool.len() {
             return Err(Refusal::Nothing);
         }
-        let item = self.pool.remove(row).moved();
+        let item = self.pool.remove(row);
         self.held = Some(Held { item, origin: Some(ItemLocation::Pool(row)) });
         Ok(())
     }
@@ -762,22 +820,17 @@ impl PartyInventory {
         location: ItemLocation,
         catalog: &ItemCatalog,
     ) -> u8 {
-        let Some(mut held) = self.held.take() else { return 0 };
-        let moved = {
-            let target = match location {
-                ItemLocation::Pool(row) => self.pool.get_mut(row),
-                ItemLocation::Member(_, slot) => {
-                    carried.and_then(|c| c.slot_mut(slot)).and_then(Option::as_mut)
-                }
-            };
-            match (target, catalog.get(held.item.item)) {
-                (Some(target), Some(definition)) => merge_stack(target, &mut held.item, definition),
-                _ => 0,
-            }
+        let Some(held) = self.held.take() else { return 0 };
+        let mut incoming = Some(held.item);
+        let target = match location {
+            ItemLocation::Pool(row) => self.pool.get_mut(row),
+            ItemLocation::Member(_, slot) => carried.and_then(|c| c.item_mut(slot)),
         };
-        if held.item.quantity != Quantity::Stack(0) {
-            self.held = Some(held);
-        }
+        let moved = match (target, catalog.get(incoming.as_ref().unwrap().item)) {
+            (Some(target), Some(definition)) => merge_stack(target, &mut incoming, definition),
+            _ => 0,
+        };
+        self.held = incoming.map(|item| Held { item, origin: held.origin });
         moved
     }
 
@@ -785,28 +838,29 @@ impl PartyInventory {
     /// stack merges into that row, then every pool stack; the rest goes in
     /// at `row`.
     pub fn deposit_held(&mut self, row: usize, catalog: &ItemCatalog) -> Result<(), Refusal> {
-        let Some(mut held) = self.held.take() else { return Err(Refusal::Nothing) };
+        let Some(held) = self.held.take() else { return Err(Refusal::Nothing) };
         if row > self.pool.len() {
             self.held = Some(held);
             return Err(Refusal::Nothing);
         }
-        if let (Some(definition), Quantity::Stack(_)) =
-            (catalog.get(held.item.item), held.item.quantity)
-        {
+        let definition = catalog.get(held.item.item);
+        let mut incoming = Some(held.item);
+        if let Some(definition) = definition {
             let rows = self.pool.len();
             let order = std::iter::once(row).chain((0..rows).filter(|&r| r != row));
             for r in order.filter(|&r| r < rows) {
-                merge_stack(&mut self.pool[r], &mut held.item, definition);
-                if held.item.quantity == Quantity::Stack(0) {
+                merge_stack(&mut self.pool[r], &mut incoming, definition);
+                if incoming.is_none() {
                     return Ok(());
                 }
             }
         }
+        let item = incoming.unwrap();
         if self.pool.len() >= POOL_LIMIT {
-            self.held = Some(held);
+            self.held = Some(Held { item, origin: held.origin });
             return Err(Refusal::NoRoom);
         }
-        self.pool.insert(row, held.item.moved());
+        self.pool.insert(row, item);
         Ok(())
     }
 }
@@ -860,7 +914,6 @@ mod tests {
             identified: true,
             spell_known: false,
             curse_known: false,
-            curse_released: false,
             remarked: false,
         }
     }
@@ -889,13 +942,21 @@ mod tests {
     fn stacks_merge_up_to_their_maximum_and_only_alike() {
         let (catalog, mut ids) = (catalog(), ItemIds::default());
         let mut a = item(&mut ids, 0, Quantity::Stack(15));
-        let mut b = item(&mut ids, 0, Quantity::Stack(8));
+        let mut b = Some(item(&mut ids, 0, Quantity::Stack(8)));
         assert_eq!(merge_stack(&mut a, &mut b, &catalog.0[0]), 5);
-        assert_eq!((a.quantity, b.quantity), (Quantity::Stack(20), Quantity::Stack(3)));
+        assert_eq!(
+            (a.quantity, b.as_ref().unwrap().quantity),
+            (Quantity::Stack(20), Quantity::Stack(3))
+        );
         let mut unknown = item(&mut ids, 0, Quantity::Stack(3));
         unknown.identified = false;
+        let mut unknown = Some(unknown);
         let mut c = item(&mut ids, 0, Quantity::Stack(1));
         assert_eq!(merge_stack(&mut c, &mut unknown, &catalog.0[0]), 0);
+        let source_id = b.as_ref().unwrap().id;
+        assert_eq!(merge_stack(&mut c, &mut b, &catalog.0[0]), 3);
+        assert!(b.is_none());
+        assert_ne!(c.id, source_id);
     }
 
     #[test]
@@ -914,7 +975,8 @@ mod tests {
     fn members_merge_stacks_then_fill_the_backpack_and_the_pool_takes_the_rest() {
         let (catalog, mut ids) = (catalog(), ItemIds::default());
         let mut carried = Carried::default();
-        carried.equipment[EquipSlot::Secondary] = Some(item(&mut ids, 0, Quantity::Stack(18)));
+        carried.equipment[EquipSlot::Secondary] =
+            Some(item(&mut ids, 0, Quantity::Stack(18)).into());
         let mut party = PartyInventory::default();
         party.receive(&mut carried, item(&mut ids, 0, Quantity::Stack(5)), &catalog).unwrap();
         // Two topped up the worn stack; three took a backpack slot.
@@ -937,10 +999,10 @@ mod tests {
             (&catalog.0[1], &catalog.0[2], &catalog.0[3], &catalog.0[0]);
         let mut carried = Carried::default();
         assert!(allowed_slots(axe, &carried, &catalog, None).contains(&EquipSlot::Primary));
-        carried.equipment[EquipSlot::Secondary] = Some(item(&mut ids, 3, Quantity::One));
+        carried.equipment[EquipSlot::Secondary] = Some(item(&mut ids, 3, Quantity::One).into());
         // A shield in the off hand bars a two-handed weapon from that set.
         assert_eq!(allowed_slots(axe, &carried, &catalog, None), [EquipSlot::AlternatePrimary]);
-        carried.equipment[EquipSlot::Primary] = Some(item(&mut ids, 2, Quantity::One));
+        carried.equipment[EquipSlot::Primary] = Some(item(&mut ids, 2, Quantity::One).into());
         assert!(!allowed_slots(shield, &carried, &catalog, None).contains(&EquipSlot::Secondary));
         assert!(!can_hold_together(axe, shield));
         assert!(can_hold_together(sword, shield));
@@ -1008,7 +1070,7 @@ mod tests {
         party
             .swap_with_hand(&wearer, &vitals, &mut carried, Entity::PLACEHOLDER, head, &catalog)
             .unwrap();
-        assert!(!party.held.as_ref().unwrap().item.curse_released, "moving loses the release");
+        assert!(carried.equipment[EquipSlot::Head].is_none());
         // Something that does not belong there is refused.
         let feet = Slot::Equipment(EquipSlot::Feet);
         assert_eq!(
@@ -1026,6 +1088,18 @@ mod tests {
         party
             .swap_with_hand(&wearer, &vitals, &mut carried, Entity::PLACEHOLDER, head, &catalog)
             .unwrap();
+        assert!(!carried.equipment[EquipSlot::Head].as_ref().unwrap().curse_released);
+        assert_eq!(
+            party.swap_with_hand(
+                &wearer,
+                &vitals,
+                &mut carried,
+                Entity::PLACEHOLDER,
+                head,
+                &catalog
+            ),
+            Err(Refusal::Cursed)
+        );
         vitals.hp = 0;
         assert_eq!(
             party.swap_with_hand(
@@ -1041,14 +1115,38 @@ mod tests {
     }
 
     #[test]
+    fn partial_changes_keep_the_equipment_placement() {
+        let (catalog, mut ids) = (catalog(), ItemIds::default());
+        let wearer = Character::new(
+            "Wearer",
+            crate::game::characters::Race::Human,
+            crate::game::characters::Gender::Male,
+            crate::game::characters::Profession::Fighter,
+        );
+        let vitals = Vitals::new(&wearer);
+        let slot = EquipSlot::Secondary;
+        let mut carried = Carried::default();
+        carried.equipment[slot] = Some(item(&mut ids, 0, Quantity::Stack(10)).into());
+        carried.equipment[slot].as_mut().unwrap().curse_released = true;
+        let mut party = PartyInventory::default();
+        let location = ItemLocation::Member(Entity::PLACEHOLDER, Slot::Equipment(slot));
+        party.pick_up(Some((&vitals, &mut carried)), location, 3, &mut ids, &catalog).unwrap();
+        assert!(carried.equipment[slot].as_ref().unwrap().curse_released);
+        assert_eq!(party.merge_held(Some(&mut carried), location, &catalog), 3);
+        assert!(carried.equipment[slot].as_ref().unwrap().curse_released);
+        assert_eq!(carried.worn(slot).unwrap().quantity, Quantity::Stack(10));
+    }
+
+    #[test]
     fn using_spends_stacks_and_uses() {
         let mut ids = ItemIds::default();
-        let mut stack = item(&mut ids, 0, Quantity::Stack(1));
+        let mut stack = Some(item(&mut ids, 0, Quantity::Stack(1)));
         assert!(spend_use(&mut stack, false));
-        let mut wand = item(&mut ids, 1, Quantity::Uses(1));
+        assert!(stack.is_none());
+        let mut wand = Some(item(&mut ids, 1, Quantity::Uses(1)));
         assert!(!spend_use(&mut wand, true));
-        assert_eq!(wand.quantity, Quantity::Uses(0));
-        assert!(spend_use(&mut item(&mut ids, 1, Quantity::Uses(1)), false));
+        assert_eq!(wand.as_ref().unwrap().quantity, Quantity::Uses(0));
+        assert!(spend_use(&mut Some(item(&mut ids, 1, Quantity::Uses(1))), false));
     }
 
     #[test]

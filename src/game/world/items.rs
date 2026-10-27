@@ -92,7 +92,6 @@ pub fn placed_item(
         identified: placement.identified || definition.auto_identify,
         spell_known: false,
         curse_known: false,
-        curse_released: false,
         remarked: false,
     }
 }

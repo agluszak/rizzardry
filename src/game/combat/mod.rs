@@ -904,7 +904,7 @@ mod tests {
             let character = Character::new(name, Race::Human, Gender::Male, Profession::Fighter);
             let mut carried = Carried::default();
             carried.equipment[EquipSlot::Primary] =
-                Some(make_item(weapon, &mut ids, &mut equipment_rng, false, true));
+                Some(make_item(weapon, &mut ids, &mut equipment_rng, false, true).into());
             let order = if name == "B" && defending { Order::Defend } else { Order::Attack };
             let entity =
                 app.world_mut().spawn((Vitals::new(&character), character, carried, order)).id();

@@ -104,15 +104,14 @@ mod tests {
             identified: false,
             spell_known: false,
             curse_known: false,
-            curse_released: false,
             remarked: false,
         };
         let mut carried = Carried::default();
-        carried.equipment[EquipSlot::AlternatePrimary] = Some(item.clone());
+        carried.equipment[EquipSlot::AlternatePrimary] = Some(item.clone().into());
         let base = resistances(&elf, &carried, &items);
         assert_eq!(base[Realm::Air], Resistance { base: 40, total: 40 });
         assert_eq!(base[Realm::Mental], Resistance { base: 50, total: 50 });
-        carried.equipment[EquipSlot::Primary] = Some(item);
+        carried.equipment[EquipSlot::Primary] = Some(item.into());
         let worn = resistances(&elf, &carried, &items);
         assert_eq!(worn[Realm::Air], Resistance { base: 40, total: 52 });
         assert_eq!(worn[Realm::Fire], Resistance { base: 30, total: 23 });
