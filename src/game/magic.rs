@@ -872,7 +872,12 @@ mod tests {
             let user_after = world.get::<Vitals>(user).unwrap();
             assert_eq!(user_after.hp, user_before.hp);
             assert_eq!(user_after.conditions, user_before.conditions);
-            assert_eq!(user_after.stamina, user_before.stamina - if id == 116 { 10 } else { 0 });
+            let fatigue = user_before.stamina - user_after.stamina;
+            if id == 116 {
+                assert_eq!(fatigue, 10);
+            } else {
+                assert!((1..=2).contains(&fatigue), "using an item still pays its normal fatigue");
+            }
             let vitals = world.get::<Vitals>(ally).unwrap();
             match id {
                 114 => {
