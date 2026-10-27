@@ -282,7 +282,12 @@ mod tests {
             app.world_mut().resource_mut::<Assets<MonsterCatalog>>().add(MonsterCatalog(vec![
                 Species { name: "Crab".into(), generic_name: "Crustacean".into(), ..default() },
             ]));
-        app.insert_resource(GameData { items: default(), loot: default(), species });
+        app.insert_resource(GameData {
+            items: default(),
+            loot: default(),
+            species,
+            spells: default(),
+        });
         let root = app.world_mut().spawn(Level::test(geometry.clone())).id();
         let group =
             app.world_mut().spawn((MonsterGroup { authored: 7, ..default() }, ChildOf(root))).id();
@@ -357,6 +362,7 @@ mod tests {
             .unwrap();
         app.world_mut().entity_mut(body).insert(avian3d::prelude::LinearVelocity::ZERO);
         app.init_resource::<crate::game::time::GameClock>();
+        app.init_resource::<Assets<crate::content::spells::SpellCatalog>>();
         app.add_message::<crate::game::camp::CampNews>();
         app.world_mut().resource_mut::<Time>().advance_by(std::time::Duration::from_secs(30));
         use bevy::ecs::system::RunSystemOnce;

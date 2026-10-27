@@ -203,6 +203,7 @@ pub fn drive_party(
     movement: Res<PartyMovement>,
     mut party: Query<(&mut PartyBody, &mut TnuaController<PartyMotion>)>,
     freedom: crate::game::screen::Freedom,
+    battle: Option<Res<crate::game::combat::Battle>>,
 ) {
     let Ok((mut body, mut controller)) = party.single_mut() else { return };
     // A party held by a screen, a camp or a question stands still.
@@ -211,9 +212,13 @@ pub fn drive_party(
     if free && turn != 0.0 {
         body.yaw -= turn;
     }
+    // In a fight the party walks only during its own move, and a Run runs
+    // (retail `MOVEMENT_STOPPED`, `FAST_MOVEMENT`).
+    let walks = free && battle.as_ref().is_none_or(|b| b.party_may_move());
+    let running = movement.running || battle.as_ref().is_some_and(|b| b.party_running());
     // The walk config's speed is the run speed; walking scales the input.
-    let input = if free { movement.walk.clamp_length_max(1.0) } else { Vec2::ZERO };
-    let fraction = if movement.running { 1.0 } else { WALK_SPEED / RUN_SPEED };
+    let input = if walks { movement.walk.clamp_length_max(1.0) } else { Vec2::ZERO };
+    let fraction = if running { 1.0 } else { WALK_SPEED / RUN_SPEED };
     controller.initiate_action_feeding();
     controller.basis = TnuaBuiltinWalk {
         desired_motion: Quat::from_rotation_y(body.yaw)

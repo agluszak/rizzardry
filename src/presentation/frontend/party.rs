@@ -1,12 +1,12 @@
 //! Retail party assembly: the candidate list and the ordered party are separate.
 use super::{Action, CharacterDraft, Creation, CreationPage, absolute};
 use crate::content::ui::SpriteSheet;
-use crate::presentation::retail_controls::set_enabled;
+use crate::presentation::retail_controls::{ControlSkin, FocusHighlight, set_enabled};
 use crate::presentation::screen_art::{BitmapText, Picture, spawn_picture as picture};
-use bevy::input_focus::{InputFocus, tab_navigation::TabIndex};
+use bevy::input_focus::tab_navigation::TabIndex;
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
-use bevy::ui::{InteractionDisabled, Pressed};
+use bevy::ui::InteractionDisabled;
 use bevy::ui_widgets::Button;
 
 #[derive(Component)]
@@ -18,10 +18,6 @@ pub(super) struct CandidateView {
 }
 #[derive(Component)]
 pub(super) struct AssemblyPage;
-#[derive(Component)]
-pub(super) struct ButtonArt {
-    normal: usize,
-}
 #[derive(Component)]
 pub(super) struct ToggleLabel;
 #[derive(Component)]
@@ -88,8 +84,9 @@ fn action_button(
         Control,
         Button,
         TabIndex(0),
-        Hovered::default(),
-        ButtonArt { normal: frame },
+        FocusHighlight,
+        ControlSkin::new(frame, frame + 1, frame + 2, frame + 2, frame + 3),
+        Picture { sheet, frame, at, bounds: Some(frame) },
         absolute(at, size),
         Pickable::default(),
         ChildOf(parent),
@@ -100,7 +97,6 @@ fn action_button(
         button.insert((InteractionDisabled, TabIndex(-1)));
     }
     let button = button.id();
-    picture(commands, button, sheet, frame, Vec2::ZERO);
     if !text.is_empty() {
         label(commands, button, font, text, Vec2::new(0., 7.), size.x);
     }
@@ -462,39 +458,15 @@ pub(super) fn refresh(
     }
 }
 
-pub(super) fn paint(
-    focus: Res<InputFocus>,
+pub(super) fn paint_labels(
     assets: Res<AssetServer>,
     mut gray: Local<Option<Handle<SpriteSheet>>>,
-    buttons: Query<(
-        Entity,
-        &ButtonArt,
-        &Hovered,
-        Has<Pressed>,
-        Has<InteractionDisabled>,
-        &Children,
-    )>,
-    mut pictures: Query<&mut Picture>,
+    buttons: Query<(Has<InteractionDisabled>, &Children), (With<Control>, With<ControlSkin>)>,
     mut text: Query<&mut BitmapText>,
 ) {
     let gray = gray.get_or_insert_with(|| assets.load("retail://data/fonts/palettegray.sti"));
-    for (entity, art, hovered, pressed, disabled, children) in &buttons {
-        let frame = art.normal
-            + if disabled {
-                3
-            } else if pressed {
-                2
-            } else if hovered.get() || focus.get() == Some(entity) {
-                1
-            } else {
-                0
-            };
+    for (disabled, children) in &buttons {
         for child in children.iter() {
-            if let Ok(mut picture) = pictures.get_mut(child)
-                && picture.frame != frame
-            {
-                picture.frame = frame;
-            }
             if let Ok(mut label) = text.get_mut(child) {
                 let palette = disabled.then(|| gray.clone());
                 if label.palette != palette {

@@ -1,5 +1,6 @@
 //! New-character drafts. No live actor exists until the party is accepted.
 use super::*;
+use crate::content::spells::{SpellDefinition, SpellId};
 use enumset::EnumSet;
 
 pub const PLAYABLE_RACES: [Race; 11] = [
@@ -25,6 +26,8 @@ pub struct CharacterDraft {
     profession: Profession,
     attributes: EnumMap<Attribute, u8>,
     skills: EnumMap<Skill, u8>,
+    /// The first spells picked (retail state 2 until the character is made).
+    spells: std::collections::BTreeSet<SpellId>,
 }
 
 impl Default for CharacterDraft {
@@ -37,6 +40,7 @@ impl Default for CharacterDraft {
             profession: Profession::Fighter,
             attributes: EnumMap::default(),
             skills: EnumMap::default(),
+            spells: default(),
         }
     }
 }
@@ -66,6 +70,7 @@ impl CharacterDraft {
         self.profession = profession;
         self.attributes = EnumMap::default();
         self.skills = EnumMap::default();
+        self.spells.clear();
         Ok(())
     }
 
@@ -149,6 +154,25 @@ impl CharacterDraft {
         character
     }
 
+    pub fn spells(&self) -> &std::collections::BTreeSet<SpellId> {
+        &self.spells
+    }
+
+    /// Pick or unpick a first spell (retail `CharGeneration.cpp`): the
+    /// profession's casters pick two they could learn now.
+    pub fn toggle_spell(&mut self, spell: &SpellDefinition) -> bool {
+        if self.spells.remove(&spell.id) {
+            return true;
+        }
+        let profile = self.preview();
+        if self.spells.len() >= crate::game::magic::starting_picks(&profile)
+            || !crate::game::magic::can_learn(&profile, spell)
+        {
+            return false;
+        }
+        self.spells.insert(spell.id)
+    }
+
     pub fn finish(&self) -> Result<Character, &'static str> {
         Self::budget(self.race, self.gender, self.profession)?;
         if self.name.trim().is_empty()
@@ -160,7 +184,11 @@ impl CharacterDraft {
         if self.portrait.is_empty() || !self.portrait.bytes().all(|c| c.is_ascii_alphanumeric()) {
             return Err("Choose a portrait.");
         }
-        Ok(self.preview())
+        let preview = self.preview();
+        if self.spells.len() != crate::game::magic::starting_picks(&preview) {
+            return Err("Choose your first spells.");
+        }
+        Ok(preview)
     }
 }
 
@@ -217,6 +245,37 @@ mod tests {
         let before = draft.preview();
         assert!(draft.choose(Race::Human, Gender::Male, Profession::Valkyrie).is_err());
         assert_eq!(draft.preview(), before, "rejected identity choices do not erase training");
+    }
+
+    /// A pure caster must pick their two first spells from their own book;
+    /// changing profession clears the picks.
+    #[test]
+    fn a_mage_picks_two_first_spells_from_their_book() {
+        use crate::content::spells::{SpellDefinition, Spellbook};
+        let spell = |id, books| SpellDefinition {
+            id: SpellId(id),
+            level: 1,
+            books,
+            realm: Some(crate::content::characters::Realm::Fire),
+            ..default()
+        };
+        let (blast, frost, missile, heal) = (
+            spell(5, Spellbook::Wizardry.into()),
+            spell(4, Spellbook::Wizardry.into()),
+            spell(25, Spellbook::Wizardry.into()),
+            spell(6, Spellbook::Divinity.into()),
+        );
+        let mut draft = CharacterDraft { name: "Merlin".into(), ..default() };
+        draft.choose(Race::Human, Gender::Male, Profession::Mage).unwrap();
+        assert_eq!(draft.finish().unwrap_err(), "Choose your first spells.");
+        assert!(!draft.toggle_spell(&heal), "not in the Mage's book");
+        assert!(draft.toggle_spell(&blast) && draft.toggle_spell(&frost));
+        assert!(!draft.toggle_spell(&missile), "two picks only");
+        assert!(draft.finish().is_ok());
+        assert!(draft.toggle_spell(&frost), "a pick can be taken back");
+        draft.choose(Race::Human, Gender::Male, Profession::Fighter).unwrap();
+        assert!(draft.spells().is_empty());
+        assert!(draft.finish().is_ok(), "fighters pick none");
     }
 
     #[test]

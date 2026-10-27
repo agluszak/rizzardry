@@ -1,5 +1,5 @@
 //! The character values on the retail item page.
-use super::{InventoryArt, InventoryScreen, RetailLabel, absolute, format_gold, info, review};
+use super::{InventoryArt, InventoryScreen, RetailLabel, absolute, format_gold, info};
 use crate::content::characters::Attribute;
 use crate::content::items::ItemCatalog;
 use crate::game::characters::Load;
@@ -72,15 +72,7 @@ fn caption(
     commands.entity(label).insert(RetailLabel(id));
 }
 
-pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) {
-    let panel = commands
-        .spawn((
-            review::Page::Items,
-            absolute(Vec2::ZERO, Vec2::new(640.0, 165.0)),
-            Pickable::IGNORE,
-            ChildOf(root),
-        ))
-        .id();
+pub(super) fn build(commands: &mut Commands, panel: Entity, root: Entity, art: &InventoryArt) {
     commands.spawn((
         ExperienceBar,
         Picture {
@@ -251,7 +243,12 @@ mod tests {
             .insert_resource(InventoryArt::default())
             .add_systems(Update, refresh);
         let items = app.world_mut().resource_mut::<Assets<ItemCatalog>>().add(ItemCatalog(vec![]));
-        app.insert_resource(GameData { items, loot: default(), species: default() });
+        app.insert_resource(GameData {
+            items,
+            loot: default(),
+            species: default(),
+            spells: default(),
+        });
         let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
         let actor =
             app.world_mut().spawn((Vitals::new(&profile), profile, Carried::default())).id();

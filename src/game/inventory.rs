@@ -298,6 +298,23 @@ impl Carried {
                     .map(Slot::Backpack)
             })
     }
+    /// A carried stack by identity, worn or in the backpack.
+    pub fn find_stack(&self, id: StackId) -> Option<&ItemStack> {
+        self.slot(self.find(id)?)
+    }
+    /// Spend one use of a carried stack (retail `RemoveCharacterItem`): an
+    /// exhausted stack leaves its slot unless `keep_empty`. Returns whether
+    /// the stack was there.
+    pub fn consume_use(
+        &mut self,
+        id: StackId,
+        definition: &ItemDefinition,
+        keep_empty: bool,
+    ) -> bool {
+        let Some(slot) = self.find(id) else { return false };
+        self.offer_slot(slot, |stack| stack.consume_use(definition, keep_empty));
+        true
+    }
     pub fn stacks(&self) -> impl Iterator<Item = &ItemStack> {
         self.equipment.values().flatten().map(|e| &e.stack).chain(self.backpack.iter().flatten())
     }
@@ -1120,7 +1137,12 @@ mod tests {
         let mut catalogs = Assets::<ItemCatalog>::default();
         let items = catalogs.add(c);
         world.insert_resource(catalogs);
-        world.insert_resource(GameData { items, loot: default(), species: default() });
+        world.insert_resource(GameData {
+            items,
+            loot: default(),
+            species: default(),
+            spells: default(),
+        });
         world.init_resource::<PartyRoster>();
         world.init_resource::<PartyInventory>();
         let character = wearer();

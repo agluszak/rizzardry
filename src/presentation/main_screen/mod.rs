@@ -13,6 +13,7 @@ mod bank;
 mod formation;
 pub(crate) mod keys;
 mod layout;
+mod magic_view;
 mod party;
 mod radar;
 mod text_box;
@@ -34,7 +35,14 @@ impl Plugin for MainScreenPlugin {
         app.init_resource::<ScreenLayout>()
             .init_resource::<SelectedMember>()
             .add_plugins(keys::plugin)
-            .add_systems(Startup, (load_main_screen_art, layout::spawn_screen_cameras))
+            .add_systems(
+                Startup,
+                (
+                    load_main_screen_art,
+                    magic_view::load_magic_view_art,
+                    layout::spawn_screen_cameras,
+                ),
+            )
             .add_systems(PreUpdate, route_hud_focus.before(InputFocusSystems::Dispatch))
             .add_systems(
                 Update,
@@ -50,7 +58,8 @@ impl Plugin for MainScreenPlugin {
                         )
                             .chain(),
                         (party::record_splats, party::play_splats).chain(),
-                        (text_box::draw_text_box, text_box::sync_channels).chain(),
+                        (text_box::draw_text_box, text_box::sync_channels, text_box::repeat_arrows)
+                            .chain(),
                         (radar::track_radar_items, radar::update_radar)
                             .chain()
                             .after(crate::game::GameplaySet::LevelActivation)
@@ -59,6 +68,7 @@ impl Plugin for MainScreenPlugin {
                         bank::draw_bank,
                         bank::draw_caption,
                         bank::show_round_progress,
+                        magic_view::refresh_magic_view,
                     ),
                 )
                     .chain()
