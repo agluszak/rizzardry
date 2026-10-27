@@ -25,6 +25,7 @@ mod creator_spells;
 mod creator_stats;
 mod credits;
 mod party;
+mod spell_info;
 
 pub struct FrontendPlugin;
 impl Plugin for FrontendPlugin {
@@ -54,6 +55,9 @@ impl Plugin for FrontendPlugin {
                     creator_stats::refresh,
                     creator_skills::refresh,
                     creator_spells::refresh,
+                    spell_info::populate,
+                    spell_info::scroll,
+                    spell_info::animate,
                     creator_identity::refresh,
                     creator_identity::refresh_quote,
                     creator_identity::play_summary_voice,
@@ -1064,6 +1068,7 @@ mod keyboard_tests {
         .init_asset::<crate::content::ui::Credits>()
         .init_asset::<crate::content::ui::TextTable>()
         .init_asset::<crate::content::spells::SpellCatalog>()
+        .init_asset::<crate::content::spells::SpellText>()
         .init_asset::<Image>()
         .init_state::<Session>()
         .add_message::<crate::game::world::level::LevelEntryFailed>()

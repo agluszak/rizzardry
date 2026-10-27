@@ -74,7 +74,8 @@ fn read_spell(index: usize, record: &[u8]) -> Result<SpellDefinition, PvlError> 
             4 => Usable::OnLockOrTrap,
             _ => Usable::Always,
         },
-        dice: (dice.count > 0 && dice.sides > 0).then_some(dice),
+        dice: (dice.base != 0 || (dice.count > 0 && dice.sides > 0)).then_some(dice),
+        show_effect_dice: i32_at(0x147) != 0,
         // The header names these two the other way round; retail's own use
         // (`CastSpellFromSource`, `SpellAffectedTarget`) multiplies 0x44 by
         // power and adds 0x4d.
@@ -158,5 +159,28 @@ mod tests {
             (Some(Realm::Air), Targeting::EnemyGroup, 1, 0)
         );
         assert!(sleep.books.contains(Spellbook::Wizardry));
+    }
+}
+
+#[derive(Default, TypePath)]
+pub struct SpellTextLoader;
+impl AssetLoader for SpellTextLoader {
+    type Asset = crate::content::spells::SpellText;
+    type Settings = ();
+    type Error = super::text_loader::TextLoadError;
+    async fn load(
+        &self,
+        reader: &mut dyn Reader,
+        _: &(),
+        _: &mut LoadContext<'_>,
+    ) -> Result<crate::content::spells::SpellText, super::text_loader::TextLoadError> {
+        let mut data = Vec::new();
+        reader.read_to_end(&mut data).await?;
+        crate::retail::strings::read_messages(&data)
+            .map(crate::content::spells::SpellText)
+            .ok_or(super::text_loader::TextLoadError::Messages)
+    }
+    fn extensions(&self) -> &[&str] {
+        &["dbs"]
     }
 }
