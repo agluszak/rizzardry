@@ -819,7 +819,7 @@ mod tests {
     use super::*;
     use crate::game::characters::Vitals;
     use crate::game::characters::{Condition, Gender, Lasting, Profession, Race};
-    use crate::game::inventory::{Carried, Equipped};
+    use crate::game::inventory::Carried;
 
     #[test]
     fn review_tracks_character_and_condition_changes() {
