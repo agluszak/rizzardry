@@ -578,6 +578,8 @@ fn release_right(
     let control =
         keys.is_some_and(|keys| keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]));
     if !control && time.elapsed() - hold.since < REVIEW_HOLD {
+        // Retail's right-release give always offers the party pool first
+        // (`force_to_party`); this uses the left click's pool rule.
         match inventory.give_to(member) {
             Ok(Some(outcome)) => {
                 news.write(outcome);

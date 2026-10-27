@@ -270,15 +270,24 @@ pub fn image_button(sheet: Handle<SpriteSheet>, at: Vec2, skin: ControlSkin) -> 
 }
 
 /// Bevy 0.20's native button presses, and so activates, with any pointer
-/// button; retail buttons answer the primary one only. Every native button
-/// gets that policy here, once. Gestures that use other buttons (portraits,
-/// item cells) read raw pointer events, which this leaves alone.
+/// button, and stops every click it sees; retail buttons answer the primary
+/// button only, and other clicks reach their ancestors as if the button were
+/// not there (a popup's right-click dismissal). Every native button gets
+/// that policy here, once. Gestures that use other buttons (portraits, item
+/// cells) read raw pointer events, which this leaves alone.
 ///
-/// The removal is queued after the native insertion only because global
-/// observers run before entity-scoped ones in 0.20. Delete this when the
-/// native button accepts a pointer-button policy.
+/// Both work only because global observers (the native ones) run before
+/// entity-scoped ones in 0.20, and propagation is decided after all of a
+/// target's observers. Delete this when the native button accepts a
+/// pointer-button policy.
 pub fn primary_buttons_only(add: On<Add<bevy::ui_widgets::Button>>, mut commands: Commands) {
-    commands.entity(add.entity).observe(primary_press);
+    commands.entity(add.entity).observe(primary_press).observe(pass_other_clicks);
+}
+
+fn pass_other_clicks(mut click: On<bevy::picking::events::PointerClick>) {
+    if click.button != bevy::picking::pointer::PointerButton::Primary {
+        click.propagate(true);
+    }
 }
 
 fn primary_press(event: On<bevy::picking::events::PointerPress>, mut commands: Commands) {
@@ -292,8 +301,9 @@ mod tests {
     use super::*;
     use bevy::ui_widgets::{ButtonPlugin, SliderPlugin, Tab};
 
-    /// Secondary and middle clicks cannot activate an ordinary button; the
-    /// primary button and the keyboard can.
+    /// Secondary and middle clicks cannot activate an ordinary button and
+    /// reach its ancestors instead; the primary button and the keyboard
+    /// activate it.
     #[test]
     fn only_the_primary_pointer_button_activates_buttons() {
         use bevy::input::{
@@ -308,14 +318,26 @@ mod tests {
         };
         #[derive(Resource, Default)]
         struct Activations(usize);
+        #[derive(Resource, Default)]
+        struct Passed(Vec<PointerButton>);
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, ButtonPlugin))
             .init_resource::<InputFocus>()
             .init_resource::<Activations>()
+            .init_resource::<Passed>()
             .add_observer(primary_buttons_only);
+        // Pointer events bubble through a query that includes windows.
+        app.world_mut().register_component::<bevy::window::Window>();
+        let parent = app
+            .world_mut()
+            .spawn_empty()
+            .observe(|click: On<PointerClick>, mut passed: ResMut<Passed>| {
+                passed.0.push(click.button);
+            })
+            .id();
         let button = app
             .world_mut()
-            .spawn(bevy::ui_widgets::Button)
+            .spawn((bevy::ui_widgets::Button, ChildOf(parent)))
             .observe(|_: On<Activate>, mut activations: ResMut<Activations>| activations.0 += 1)
             .id();
         app.world_mut().flush();
@@ -343,6 +365,10 @@ mod tests {
             app.update();
             assert_eq!(app.world().resource::<Activations>().0, activations, "{pointer_button:?}");
         }
+        assert_eq!(
+            app.world().resource::<Passed>().0,
+            [PointerButton::Secondary, PointerButton::Middle]
+        );
         app.world_mut().trigger(FocusedInput::new(
             button,
             KeyboardInput {

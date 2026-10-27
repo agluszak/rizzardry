@@ -125,17 +125,19 @@ pub fn orbit_sun_and_moon(clock: Res<GameClock>, mut bodies: Query<(&Celestial, 
 #[derive(Component, Debug)]
 pub struct LevelSky(pub Option<Handle<LevelGeometry>>);
 
+/// Request an active level's sky as it becomes active; [`build_sky`] waits
+/// for it.
 pub fn request_skies(
+    add: On<Add<Level>>,
     mut commands: Commands,
-    levels: Query<(Entity, &Level), Without<LevelSky>>,
+    levels: Query<&Level>,
     assets: Res<AssetServer>,
 ) {
-    for (entity, level) in &levels {
-        let sky = crate::content::levels::LevelInfo::for_path(&level.path)
-            .and_then(crate::content::levels::LevelInfo::sky_path)
-            .map(|path| assets.load(format!("retail://{path}")));
-        commands.entity(entity).insert(LevelSky(sky));
-    }
+    let Ok(level) = levels.get(add.entity) else { return };
+    let sky = crate::content::levels::LevelInfo::for_path(&level.path)
+        .and_then(crate::content::levels::LevelInfo::sky_path)
+        .map(|path| assets.load(format!("retail://{path}")));
+    commands.entity(add.entity).insert(LevelSky(sky));
 }
 
 /// The level's sky has been built (or it has none).
