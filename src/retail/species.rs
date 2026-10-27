@@ -1,5 +1,4 @@
-//! `data/databases/monsters.dbs`: a count, then 0x297-byte species records
-//! (layout in `docs/research/monsters-db.md` and `combat.md` §6).
+//! `data/databases/monsters.dbs`: a count followed by 0x297-byte species records.
 
 use bevy::asset::{AssetLoader, LoadContext, io::Reader};
 use bevy::reflect::TypePath;
@@ -185,7 +184,7 @@ mod tests {
         let species =
             read_species(&files.read("data/databases/monsters.dbs").unwrap().unwrap()).unwrap();
         assert_eq!(species.len(), 595);
-        // Checked in combat.md: the Slime lashes for 2+1d6 at score 130.
+        // The Slime lashes for 2+1d6 at score 130.
         let slime = &species[1];
         assert_eq!(slime.attacks[0].score, 130);
         assert_eq!(slime.attacks[0].damage, Dice { base: 2, count: 1, sides: 6 });

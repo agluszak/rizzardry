@@ -902,7 +902,7 @@ mod tests {
     #[test]
     fn statistics_follow_equipment_only_changes() {
         use crate::content::items::ItemDefinition;
-        use crate::game::inventory::{ItemIds, make_item};
+        use crate::game::inventory::{Equipped, ItemIds, make_item};
         use crate::game::rng::GameRng;
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
@@ -937,7 +937,7 @@ mod tests {
         };
         assert!(!unknown(app.world_mut()));
         app.world_mut().get_mut::<Carried>(actor).unwrap().equipment[EquipSlot::Primary] =
-            Some(crate::game::inventory::Equipped::new(weapon));
+            Some(Equipped::new(weapon));
         app.update();
         assert!(unknown(app.world_mut()), "an unidentified weapon hides its combat values");
     }

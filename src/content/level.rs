@@ -338,8 +338,7 @@ pub struct TriggerUse {
     pub message: Option<i32>,
 }
 
-/// What a trigger does when it runs: retail's action codes, decoded with
-/// their parameters (`docs/research/trigger-actions.md`).
+/// Retail trigger action codes and their parameters.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TriggerAction {
     /// Commit, doing nothing else (0).

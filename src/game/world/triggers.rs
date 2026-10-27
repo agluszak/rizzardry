@@ -4,7 +4,6 @@
 //! An action commits its sound, ordered recipients, location variable, message
 //! and fired flag synchronously. A relay also runs its recipients as its action,
 //! preserving retail's double execution when it is marked to fire on commit.
-//! See `docs/research/trigger-actions.md`.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -1187,7 +1186,7 @@ mod tests {
         assert_eq!(level.run("ONLY"), (false, vec![click]), "plays without committing");
     }
 
-    /// The upper monastery's bells, as authored (`docs/research/trigger-actions.md`).
+    /// The upper monastery's bells, as authored.
     fn bells() -> Scenario {
         let toggle = || TriggerAction::Animate(Animation::Toggle);
         let mut dial = trigger("BELLRINGSWITCH", TriggerAction::Dial);

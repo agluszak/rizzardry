@@ -1,6 +1,5 @@
 //! Retail's spell casting and item use views over the bottom of the main
-//! screen (`MGSSpellCasting.cpp`, `MGSUseItemSelect.cpp`, layout in
-//! `docs/research/main-game-screen.md`): realms, the realm's spells, their
+//! screen (`MGSSpellCasting.cpp`, `MGSUseItemSelect.cpp`): realms, the realm's spells, their
 //! power pips and the cast's cost; or the member's usable items. The view
 //! holds only the unconfirmed choice. It commits as soon as a source, a power
 //! and a target are chosen, sending a [`MagicRequest`] gameplay accepts or

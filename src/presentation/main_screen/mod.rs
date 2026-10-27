@@ -1,6 +1,6 @@
-//! The main game screen around the 3D view (`docs/research/main-game-screen.md`,
-//! decomp `MainGameScreen.cpp` and `MGS*.cpp`): the roof, the party columns,
-//! the bottom panels and the button row, in retail's three layout modes.
+//! Main game screen around the 3D view, based on the decomp's
+//! `MainGameScreen.cpp` and `MGS*.cpp`: roof, party columns, bottom panels
+//! and button row, in retail's three layout modes.
 //! The 3D view renders into the viewport the layout leaves open.
 //!
 //! The frame holds what the layout alone decides and is built again when
