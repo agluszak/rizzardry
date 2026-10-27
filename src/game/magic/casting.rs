@@ -572,7 +572,7 @@ pub fn perform(
             }
             Vec::new()
         } else {
-            effects::resolve(spell, strength, &victims, rng, world)
+            effects::resolve(spell, strength, &victims, rng, world, (spells, &mut *points))
         };
         // Practice follows what the cast did; a missile on its way counts.
         if outcome != Outcome::Fizzled && (flies || effects::affected(&landed)) {
