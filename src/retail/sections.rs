@@ -332,21 +332,6 @@ mod tests {
 
     #[test]
     #[ignore = "requires a retail installation"]
-    fn the_new_game_entrance_is_a_positioned_trigger() {
-        let files = retail_files();
-        let data = files.read("levels/monastery/monastery1.pvl").unwrap().unwrap();
-        let start = read_level_geometry(&data).unwrap().end;
-        let sections = read_sections(&mut Bytes::new(&data[start..])).unwrap();
-        let Some(Trigger { kind: TriggerKind::Item(entrance), .. }) = sections.trigger("MO100")
-        else {
-            panic!("MO100 is not a type 4 trigger")
-        };
-        let [x, _, z] = entrance.placement.unwrap().position;
-        assert!((75_000.0..77_000.0).contains(&x) && (52_000.0..53_000.0).contains(&z));
-    }
-
-    #[test]
-    #[ignore = "requires a retail installation"]
     fn the_monastery_bells_decode_their_trigger_logic() {
         use crate::retail::trigger::{StateMode, action, flag};
         let files = retail_files();

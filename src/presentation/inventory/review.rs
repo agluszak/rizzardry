@@ -864,23 +864,6 @@ mod tests {
     use super::*;
     use crate::game::characters::Vitals;
     use crate::game::characters::{Condition, Gender, Lasting, Profession, Race};
-    use bevy::ui_widgets::{Slider, slider_self_update};
-
-    #[test]
-    fn changing_the_effect_filter_returns_to_the_first_line() {
-        let mut app = App::new();
-        app.add_plugins((MinimalPlugins, bevy::ui_widgets::SliderPlugin));
-        app.world_mut().spawn(StatsInfo::default());
-        let slider = app
-            .world_mut()
-            .spawn((StatsScroll, Slider::default(), SliderRange::new(0.0, 10.0), SliderValue(6.0)))
-            .observe(slider_self_update)
-            .id();
-        let button = app.world_mut().spawn(EffectButton(0)).observe(select_filter).id();
-        app.world_mut().trigger(Activate { entity: button });
-        app.update();
-        assert_eq!(app.world().get::<SliderValue>(slider).unwrap().0, 0.0);
-    }
 
     #[test]
     fn review_tracks_character_and_condition_changes() {

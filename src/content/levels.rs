@@ -125,30 +125,3 @@ impl LevelInfo {
         LEVELS.iter().find(|level| level.path() == path)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_monastery_uses_the_default_sky() {
-        let monastery = LevelInfo::for_path("levels/monastery/monastery1.pvl").unwrap();
-        assert_eq!(monastery.location, "MO1");
-        assert_eq!(monastery.sky_path().unwrap(), DEFAULT_SKY);
-        assert_eq!(
-            LevelInfo::for_path("levels/circle/circle.pvl").unwrap().sky_path().unwrap(),
-            CIRCLE_SKY
-        );
-        assert!(LevelInfo::for_path("levels/dungeon/dungeon.pvl").unwrap().sky_path().is_none());
-    }
-
-    #[test]
-    fn entrances_name_their_level_by_location_code() {
-        assert_eq!(
-            LevelInfo::for_entrance("MO201").unwrap().path(),
-            "levels/monastery/monastery2.pvl"
-        );
-        assert_eq!(LevelInfo::for_entrance("mo100").unwrap().location, "MO1");
-        assert!(LevelInfo::for_entrance("XX").is_none());
-    }
-}

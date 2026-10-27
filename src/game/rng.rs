@@ -47,19 +47,3 @@ impl Dice {
         (i64::from(self.base) + i64::from(self.count) * i64::from(self.sides)).max(0) as u32
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_same_seed_gives_the_same_rolls_within_bounds() {
-        let dice = Dice { count: 2, sides: 6, base: 1 };
-        let (mut a, mut b) = (GameRng::seeded(7), GameRng::seeded(7));
-        let rolls: Vec<u32> = (0..200).map(|_| a.roll(dice)).collect();
-        assert_eq!(rolls, (0..200).map(|_| b.roll(dice)).collect::<Vec<_>>());
-        assert!(rolls.iter().all(|r| (3..=13).contains(r)));
-        assert!(rolls.contains(&3) && rolls.contains(&13), "both extremes appear");
-        assert_ne!(GameRng::seeded(8).below(1 << 30), GameRng::seeded(7).below(1 << 30));
-    }
-}

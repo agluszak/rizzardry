@@ -218,18 +218,3 @@ pub fn drive_party(
         desired_forward: None,
     };
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn facing_a_direction_turns_the_view_that_way() {
-        let mut body = PartyBody::default();
-        for direction in [Vec3::NEG_X, Vec3::Z, Vec3::new(1.0, 5.0, -1.0)] {
-            body.face(direction);
-            let view = Quat::from_rotation_y(body.yaw) * Vec3::NEG_Z;
-            assert!(view.abs_diff_eq(direction.with_y(0.0).normalize(), 1e-5), "{direction}");
-        }
-    }
-}

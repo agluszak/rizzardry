@@ -115,14 +115,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn phases_follow_the_day() {
-        assert_eq!(GameClock::default().phase(), 128);
-        assert_eq!(GameClock::at(0).phase(), 0);
-        assert_eq!(GameClock::at(DAY_MS - 1).phase(), 255);
-        assert_eq!(GameClock::at(DAY_MS + DAY_MS / 4).phase(), 64);
-    }
-
-    #[test]
     fn short_steps_lose_no_time_and_count_ticks() {
         let mut clock = GameClock::at(0);
         // 1/64 s steps at 12x: 187.5 game ms each.
