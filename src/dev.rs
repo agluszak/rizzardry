@@ -31,9 +31,10 @@ pub fn screenshot_and_exit(
     mut request: ResMut<ScreenshotAndExit>,
     party: Query<(), With<PartyBody>>,
     offscreen: Option<Res<Offscreen>>,
+    dialogue: Option<Res<TalkTo>>,
     mut exit: MessageWriter<AppExit>,
 ) {
-    if party.is_empty() {
+    if party.is_empty() || dialogue.is_some() {
         return;
     }
     if !request.wait.tick(time.delta()).is_finished() {
@@ -183,5 +184,45 @@ pub fn log_news(
     }
     for news in ready.read() {
         info!("level ready: {news:?}");
+    }
+}
+
+/// A command-line request, not a second conversation or teleport authority.
+#[derive(Resource)]
+pub struct TalkTo(pub String);
+
+pub fn talk_to_npc(world: &mut World) {
+    use crate::content::npcs::NpcCatalog;
+    use crate::game::npcs::{Npc, NpcAssets, NpcBodies, conversation};
+    let Some(request) = world.get_resource::<TalkTo>() else { return };
+    let name = request.0.clone();
+    if world.query::<&Level>().iter(world).next().is_none() {
+        return;
+    }
+    let assets = world.resource::<NpcAssets>();
+    let Some(catalog) = world.resource::<Assets<NpcCatalog>>().get(&assets.catalog) else { return };
+    let definition = catalog.0.iter().position(|npc| npc.source_name.eq_ignore_ascii_case(&name));
+    let Some(definition) = definition else {
+        error!("unknown NPC for --talk-to: {name}");
+        world.write_message(AppExit::error());
+        world.remove_resource::<TalkTo>();
+        return;
+    };
+    let actor = world
+        .query::<(Entity, &Npc, &NpcBodies)>()
+        .iter(world)
+        .find(|(_, npc, bodies)| npc.definition.0 as usize == definition && !bodies.is_empty())
+        .map(|(entity, _, _)| entity);
+    let Some(actor) = actor else { return };
+    match conversation::begin(world, actor) {
+        Ok(_) => {
+            world.remove_resource::<TalkTo>();
+        }
+        Err(crate::game::npcs::trade::TradeError::Busy) => {}
+        Err(error) => {
+            error!("cannot start --talk-to {name}: {error:?}; choose a nearby --start position");
+            world.write_message(AppExit::error());
+            world.remove_resource::<TalkTo>();
+        }
     }
 }

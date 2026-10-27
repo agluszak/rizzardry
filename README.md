@@ -39,6 +39,8 @@ Developer options:
   that much play, `--seed <n>` fixes gameplay's random numbers.
 - `--screenshot <file.png>` (with `--screenshot-after <s>`): capture the view
   after entering, then exit; with `--headless`, rendered offscreen.
+- `--talk-to <name>`: open a nearby NPC conversation through normal gameplay validation.
+  Combine with `--start` and `--screenshot`; it does not bypass distance or payment checks.
 - `--say <line>`: speak a retail voice line, e.g. `npc_aletheides_000`.
 - `--nav-debug`: draw the navmeshes, paths and avoidance.
 - `--overhead <metres>`: view the party from straight above.
