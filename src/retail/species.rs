@@ -75,8 +75,9 @@ fn species(record: &[u8]) -> Species {
         generic_plural: name(bytes(0x90, 48)),
         model: String::from_utf8_lossy(&model[..model_end]).to_lowercase(),
         level_sight: record[0xcb] == 4,
+        npc: (record[0xd0] & 1 != 0)
+            .then_some(crate::content::npcs::NpcId(u16::from(record[0xcd]))),
         kind: record[0xcb],
-        npc: record[0xd0] & 1 != 0,
         damage_reduction: record[0xcf],
         attributes: MonsterAttributes {
             strength: record[0xd1],

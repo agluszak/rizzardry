@@ -522,8 +522,9 @@ fn press(
     mut news: MessageWriter<ItemNews>,
     mut review: crate::presentation::inventory::OpenReview,
     mut views: Query<&mut super::magic_view::MagicView>,
+    conversations: Query<(), With<crate::game::npcs::conversation::Conversation>>,
 ) {
-    if click.button != PointerButton::Primary {
+    if click.button != PointerButton::Primary || !conversations.is_empty() {
         return;
     }
     let Ok(mut button) = buttons.get_mut(click.entity) else { return };
@@ -594,8 +595,9 @@ fn release_right(
     mut review: crate::presentation::inventory::OpenReview,
     mut selected: ResMut<SelectedMember>,
     mut commands: Commands,
+    conversations: Query<(), With<crate::game::npcs::conversation::Conversation>>,
 ) {
-    if release.button != PointerButton::Secondary {
+    if release.button != PointerButton::Secondary || !conversations.is_empty() {
         return;
     }
     let Ok((button, hold)) = buttons.get(release.entity) else { return };

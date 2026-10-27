@@ -87,7 +87,7 @@ pub struct Species {
     /// 22 are immune to some conditions.
     pub kind: u8,
     /// An NPC's record: its loot is its NPC's, not the treasure table.
-    pub npc: bool,
+    pub npc: Option<super::npcs::NpcId>,
     /// Percent taken off every hit.
     pub damage_reduction: u8,
     pub attributes: MonsterAttributes,

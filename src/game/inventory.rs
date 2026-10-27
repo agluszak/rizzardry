@@ -15,7 +15,7 @@ use std::num::NonZeroU16;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct StackId(pub u64);
 
-#[derive(Resource, Debug, Default)]
+#[derive(Resource, Clone, Debug, Default)]
 pub struct ItemIds {
     next: u64,
 }
@@ -88,6 +88,12 @@ impl ItemStack {
         split.count = NonZeroU16::new(amount).unwrap();
         self.count = NonZeroU16::new(self.count() - amount).unwrap();
         Some(split)
+    }
+    /// Consume up to `amount` physical units, retaining the remainder's identity
+    /// and metadata. Callers that settle payment validate the exact quantity first.
+    pub(crate) fn remove_units(mut self, amount: u16) -> Option<Self> {
+        self.count = NonZeroU16::new(self.count().saturating_sub(amount))?;
+        Some(self)
     }
     /// Ordinary absorption retains destination metadata and source remainder identity.
     pub fn absorb(&mut self, mut source: Self, definition: &ItemDefinition) -> Option<Self> {
@@ -302,6 +308,23 @@ impl Carried {
     pub fn find_stack(&self, id: StackId) -> Option<&ItemStack> {
         self.slot(self.find(id)?)
     }
+    /// Trade and other unworn-item operations cannot extract equipment.
+    pub fn backpack_stack(&self, id: StackId) -> Option<&ItemStack> {
+        self.backpack.iter().flatten().find(|stack| stack.id == id)
+    }
+    pub fn consume_backpack_units(&mut self, id: StackId, amount: u16) -> Result<(), Refusal> {
+        let at = self
+            .backpack
+            .iter()
+            .position(|s| s.as_ref().is_some_and(|s| s.id == id))
+            .ok_or(Refusal::Nothing)?;
+        let stack = self.backpack[at].as_ref().unwrap();
+        if amount == 0 || amount > stack.count() {
+            return Err(Refusal::Nothing);
+        }
+        self.backpack[at] = self.backpack[at].take().unwrap().remove_units(amount);
+        Ok(())
+    }
     /// Spend one use of a carried stack (retail `RemoveCharacterItem`): an
     /// exhausted stack leaves its slot unless `keep_empty`. Returns whether
     /// the stack was there.
@@ -441,6 +464,17 @@ impl ItemPool {
         taken
     }
 
+    /// Consume physical units while preserving the remainder's identity and row.
+    pub fn consume_units(&mut self, id: StackId, amount: u16) -> Result<(), Refusal> {
+        let at = self.stacks.iter().position(|s| s.id == id).ok_or(Refusal::Nothing)?;
+        if amount == 0 || amount > self.stacks[at].count() {
+            return Err(Refusal::Nothing);
+        }
+        if let Some(rest) = self.stacks.remove(at).remove_units(amount) {
+            self.stacks.insert(at, rest);
+        }
+        Ok(())
+    }
     pub fn take(&mut self, id: StackId) -> Option<ItemStack> {
         let index = self.stacks.iter().position(|s| s.id == id)?;
         Some(self.stacks.remove(index))
@@ -1180,5 +1214,29 @@ mod tests {
             Err(Refusal::NoRoom)
         );
         assert_eq!(*world.get::<PartyInventory>(party).unwrap(), before);
+    }
+    #[test]
+    fn owner_consumption_keeps_nonempty_remainders_and_rejects_equipment() {
+        let definition = ItemDefinition { quantity: QuantityKind::Stack, ..default() };
+        let mut ids = ItemIds::default();
+        let stack = ItemStack::new(&definition, &mut ids, 5, true);
+        let id = stack.id;
+        let mut pool = ItemPool { stacks: vec![stack.clone()] };
+        assert_eq!(pool.consume_units(id, 6), Err(Refusal::Nothing));
+        assert_eq!(pool.stacks[0], stack);
+        pool.consume_units(id, 2).unwrap();
+        assert_eq!((pool.stacks[0].id, pool.stacks[0].count()), (id, 3));
+        pool.consume_units(id, 3).unwrap();
+        assert!(pool.stacks.is_empty());
+        let mut carried = Carried::default();
+        carried.equipment[EquipSlot::Primary] = Some(Equipped::new(stack.clone()));
+        assert_eq!(carried.consume_backpack_units(id, 1), Err(Refusal::Nothing));
+        carried.equipment[EquipSlot::Primary] = None;
+        carried.backpack[3] = Some(stack);
+        carried.consume_backpack_units(id, 2).unwrap();
+        let rest = carried.backpack_stack(id).unwrap();
+        assert_eq!((rest.id, rest.count()), (id, 3));
+        carried.consume_backpack_units(id, 3).unwrap();
+        assert!(carried.backpack[3].is_none());
     }
 }

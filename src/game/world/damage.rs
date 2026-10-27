@@ -106,7 +106,7 @@ impl MonsterDamage<'_, '_> {
         if monster.is_dead() || amount == 0 {
             return Ok(DamageOutcome::default());
         }
-        if amount >= monster.hp && kind.npc {
+        if amount >= monster.hp && kind.npc.is_some() {
             return Err(DamageRefusal::UnsupportedNpcDeath);
         }
         let position = feet(at.translation(), walker);
@@ -143,7 +143,7 @@ impl MonsterDamage<'_, '_> {
         }
         self.commands.entity(target).remove::<(Crossing, UsingAnimationLink)>();
         // The kill counts against its faction (retail `RecordFactionOffense`).
-        self.factions.record_offence(kind.faction, kind.npc);
+        self.factions.record_offence(kind.faction, kind.npc.is_some());
         let (found, gold) =
             crate::game::loot::monster_loot(kind, tables, catalog, party_level, rng);
         if gold > 0 {

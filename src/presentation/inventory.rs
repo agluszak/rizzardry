@@ -236,6 +236,7 @@ pub(crate) struct OpenReview<'w, 's> {
     screen: Res<'w, State<Screen>>,
     next: ResMut<'w, NextState<Screen>>,
     questions: Query<'w, 's, (), With<crate::game::world::level::TravelQuestion>>,
+    conversations: Query<'w, 's, (), With<crate::game::npcs::conversation::Conversation>>,
     roster: Single<'w, 's, &'static PartyRoster>,
 }
 
@@ -245,6 +246,7 @@ impl OpenReview<'_, '_> {
         if *self.screen.get() != Screen::World
             || !matches!(*self.next, NextState::Unchanged)
             || !self.questions.is_empty()
+            || !self.conversations.is_empty()
             || !self.roster.contains(&member)
         {
             return false;
@@ -1118,7 +1120,11 @@ fn click_cell(
     selected: Option<Single<&bevy::ui_widgets::SelectedTab, With<review::PageTabs>>>,
     tabs: Query<&review::PageButton>,
     pool_scroll: Option<Single<&bevy::ui_widgets::SliderValue, With<pool_scroll::PoolScroll>>>,
+    conversations: Query<(), With<crate::game::npcs::conversation::Conversation>>,
 ) {
+    if !conversations.is_empty() {
+        return;
+    }
     let (Ok(cell), Some(screen), Some(selected)) = (cells.get(click.entity), screen, selected)
     else {
         return;

@@ -144,3 +144,199 @@ fn the_party_rests_eight_hours_and_wakes() {
     let rested = app.world().resource::<GameClock>().ms - before;
     assert!(rested >= 8 * 3_600_000, "rested {} game hours", rested / 3_600_000);
 }
+
+#[test]
+#[ignore = "requires a retail installation"]
+fn burz_conversation_trade_and_revisit_keep_one_actor() {
+    use rizzardry::content::npcs::{DialogueScript, NpcCatalog};
+    use rizzardry::game::inventory::{ItemOwner, ItemRef};
+    use rizzardry::game::npcs::conversation::{
+        self, Conversation, ConversationRequest, ConversationWait,
+    };
+    use rizzardry::game::npcs::trade::TradeSource;
+    use rizzardry::game::npcs::{Npc, NpcAssets, NpcBodies};
+    let mut app = game(&["--seed", "8", "--start=225,36.7,-68.6"]);
+    step_until(&mut app, "the Monastery becoming active", |w| playing(w).is_some());
+    let assets = app.world().resource::<NpcAssets>();
+    let catalog = app.world().resource::<Assets<NpcCatalog>>().get(&assets.catalog).unwrap();
+    let burz_id = rizzardry::content::npcs::NpcId(
+        catalog.0.iter().position(|d| d.source_name == "Burz").unwrap() as u16,
+    );
+    let actor = app
+        .world_mut()
+        .query::<(Entity, &Npc)>()
+        .iter(app.world())
+        .find(|(_, n)| n.definition == burz_id)
+        .unwrap()
+        .0;
+    assert!(
+        app.world().get::<ChildOf>(actor).is_none(),
+        "map lifetime does not own the named actor"
+    );
+    let body = app.world().get::<NpcBodies>(actor).unwrap()[0];
+    let position = app.world().get::<avian3d::prelude::Position>(body).unwrap().0;
+    for mut p in app.world_mut().query_filtered::<&mut avian3d::prelude::Position,With<rizzardry::game::party::body::PartyBody>>().iter_mut(app.world_mut()){p.0=position+Vec3::X*2.0;}
+    let party = rizzardry::game::party::roster::the_party(app.world_mut()).unwrap();
+    app.world_mut().get_mut::<PartyInventory>(party).unwrap().gold = 10000;
+    let session = conversation::begin(app.world_mut(), actor).unwrap();
+    fn finish(app: &mut App, session: Entity) {
+        for _ in 0..40 {
+            app.update();
+            let c = app.world().get::<Conversation>(session).expect("conversation remains open");
+            match c.wait {
+                ConversationWait::Line { speech, .. } => {
+                    app.world_mut().write_message(ConversationRequest::Advance {
+                        conversation: session,
+                        speech,
+                    });
+                }
+                ConversationWait::Blocked { ref reason, .. } => {
+                    panic!("unexpected content gap: {reason}")
+                }
+                _ => return,
+            }
+        }
+        panic!("conversation did not reach input");
+    }
+    finish(&mut app, session);
+    assert_eq!(app.world().get::<Conversation>(session).unwrap().current, Some((121, 0)));
+    let script = app.world().get::<Conversation>(session).unwrap().script.clone();
+    let topic = app
+        .world()
+        .resource::<Assets<DialogueScript>>()
+        .get(&script)
+        .unwrap()
+        .topic("MONASTERY")
+        .unwrap();
+    let revision = app.world().get::<Conversation>(session).unwrap().revision;
+    app.world_mut().write_message(ConversationRequest::Topic {
+        conversation: session,
+        revision,
+        text: "MONASTERY".into(),
+    });
+    finish(&mut app, session);
+    let c = app.world().get::<Conversation>(session).unwrap();
+    assert!(matches!(c.wait, ConversationWait::Price { .. }));
+    let revision = c.revision;
+    app.world_mut().write_message(ConversationRequest::PriceAnswer {
+        conversation: session,
+        revision,
+        accept: true,
+    });
+    finish(&mut app, session);
+    let c = app.world().get::<Conversation>(session).unwrap();
+    assert!(matches!(c.wait, ConversationWait::Options { .. }));
+    let revision = c.revision;
+    app.world_mut().write_message(ConversationRequest::Reply {
+        conversation: session,
+        revision,
+        text: "NO".into(),
+    });
+    finish(&mut app, session);
+    assert!(app.world().get::<Conversation>(session).unwrap().ready());
+    assert!(app.world().get::<Npc>(actor).unwrap().paid_topics.contains(&topic));
+    let lot =
+        app.world().get::<Npc>(actor).unwrap().stock.lots.iter().find(|l| l.units > 0).unwrap().id;
+    let quote =
+        conversation::quote_trade(app.world_mut(), session, TradeSource::Stock(lot), 1).unwrap();
+    let gold = app.world().get::<PartyInventory>(party).unwrap().gold;
+    app.world_mut().write_message(ConversationRequest::Trade(quote));
+    app.world_mut().write_message(ConversationRequest::Trade(quote));
+    app.update();
+    assert_eq!(
+        app.world().get::<PartyInventory>(party).unwrap().gold,
+        gold - quote.gold,
+        "duplicate confirmation settles once"
+    );
+    let bought = app.world().get::<PartyInventory>(party).unwrap().pool.stacks[0].id;
+    let sale = conversation::quote_trade(
+        app.world_mut(),
+        session,
+        TradeSource::Party(ItemRef { owner: ItemOwner::Pool, id: bought }),
+        1,
+    )
+    .unwrap();
+    app.world_mut().write_message(ConversationRequest::Trade(sale));
+    app.update();
+    assert_eq!(
+        app.world().get::<PartyInventory>(party).unwrap().gold,
+        gold - quote.gold + sale.gold
+    );
+    let current = app.world().get::<Conversation>(session).unwrap().current.unwrap().0;
+    let fact = app.world().resource::<Assets<DialogueScript>>().get(&script).unwrap().quotes
+        [current as usize]
+        .operations
+        .iter()
+        .find_map(|op| match op {
+            rizzardry::content::npcs::DialogueOp::SetFact(id, _) => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    let stock = app.world().get::<Npc>(actor).unwrap().stock.clone();
+    let invalid = {
+        let server = app.world().resource::<AssetServer>();
+        rizzardry::game::world::level::Level::load("levels/missing/missing.pvl", server)
+    };
+    let invalid = app
+        .world_mut()
+        .spawn(rizzardry::game::world::level::Destination::new(
+            invalid,
+            default(),
+            rizzardry::game::world::level::Entry::Travel,
+        ))
+        .id();
+    step_until(&mut app, "failed preparation", |w| w.get_entity(invalid).is_err());
+    assert!(app.world().get::<Conversation>(session).is_none());
+    assert!(playing(app.world_mut()).is_some_and(|p| p.ends_with("monastery1.pvl")));
+    assert_eq!(app.world().get::<Npc>(actor).unwrap().stock, stock);
+
+    app.world_mut().write_message(ConversationRequest::Close { conversation: session });
+    app.update();
+    assert!(app.world().get_entity(session).is_err());
+    app.world_mut().write_message(Travel { entrance: "MO204".into() });
+    step_until(&mut app, "leaving Burz's level", |w| {
+        playing(w).is_some_and(|p| p.ends_with("monastery2.pvl"))
+    });
+    assert!(app.world().get::<Monster>(actor).is_none());
+    assert!(app.world().get::<Npc>(actor).unwrap().dormant.is_some());
+    let stock_offmap = app.world().get::<Npc>(actor).unwrap().stock.clone();
+    for _ in 0..10 {
+        app.update();
+    }
+    assert_eq!(app.world().get::<Npc>(actor).unwrap().stock, stock_offmap);
+    app.world_mut().write_message(Travel { entrance: "MO105".into() });
+    step_until(&mut app, "returning to Burz", |w| {
+        playing(w).is_some_and(|p| p.ends_with("monastery1.pvl"))
+    });
+    let returned_body = app.world().get::<NpcBodies>(actor).unwrap()[0];
+    assert!(app.world().get::<Monster>(returned_body).is_some());
+    assert!(app.world().get_entity(body).is_err());
+    let npc = app.world().get::<Npc>(actor).unwrap();
+    assert_eq!(npc.stock, stock);
+    assert!(npc.paid_topics.contains(&topic));
+    assert!(!npc.greeting_pending);
+    let facts = app
+        .world()
+        .resource::<Assets<rizzardry::content::npcs::FactCatalog>>()
+        .get(&app.world().resource::<NpcAssets>().facts)
+        .unwrap();
+    assert_eq!(app.world().resource::<conversation::StoryFacts>().get(fact, facts), Ok(1));
+    assert!(app.world().get::<rizzardry::game::party::roster::NeedsEquipment>(actor).is_none());
+    assert_eq!(
+        app.world_mut()
+            .query::<&Npc>()
+            .iter(app.world())
+            .filter(|n| n.definition == burz_id)
+            .count(),
+        1
+    );
+    let position = app.world().get::<avian3d::prelude::Position>(returned_body).unwrap().0;
+    for mut p in app.world_mut().query_filtered::<&mut avian3d::prelude::Position, With<rizzardry::game::party::body::PartyBody>>().iter_mut(app.world_mut()) {
+        p.0 = position + Vec3::X * 2.0;
+    }
+    let reopened = conversation::begin(app.world_mut(), actor).unwrap();
+    app.update();
+    assert_eq!(app.world().get::<Conversation>(reopened).unwrap().current, Some((121, 0)));
+    finish(&mut app, reopened);
+    assert!(app.world().get::<Conversation>(reopened).unwrap().ready());
+}

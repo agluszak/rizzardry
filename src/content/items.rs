@@ -114,6 +114,8 @@ pub struct ItemDefinition {
     pub auto_identify: bool,
     /// A quest item the party may not throw away.
     pub crucial: bool,
+    pub merchant_cannot_sell: bool,
+    pub identify_difficulty: u8,
     pub two_handed: bool,
     /// May be wielded in the off hand.
     pub off_hand: bool,
