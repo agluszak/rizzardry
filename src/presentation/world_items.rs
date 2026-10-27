@@ -137,7 +137,7 @@ pub fn light_world_items(
         });
         let fixed = level.lighting.at(at, None);
         let Some(model) = models.get(&shown.model) else { continue };
-        for visual in children.iter().filter_map(|e| visuals.get(e).ok()) {
+        for visual in visuals.iter_many(children).matched() {
             for child in visual.iter() {
                 let Ok((index, copy)) = parts.get(child) else { continue };
                 let Some(part) = model.parts.get(index.0) else { continue };

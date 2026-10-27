@@ -3,7 +3,7 @@
 //! party's best searcher. Rangers always search; everyone else only in
 //! search mode, which a fight suspends.
 
-use avian3d::prelude::{RigidBody, SpatialQuery, SpatialQueryFilter};
+use crate::game::world::obstacles::WorldObstacles;
 use bevy::prelude::*;
 
 use crate::content::characters::{Attribute, Skill};
@@ -148,7 +148,7 @@ pub fn search_pulse(
     roster: Res<PartyRoster>,
     members: Query<(&Character, &Vitals)>,
     mut items: Query<(Entity, &mut WorldItem, &Transform)>,
-    (spatial, bodies): (SpatialQuery, Query<&RigidBody>),
+    obstacles: WorldObstacles,
     (data, catalogs): (Option<Res<GameData>>, Res<Assets<ItemCatalog>>),
     mut news: MessageWriter<SearchNews>,
 ) {
@@ -161,17 +161,15 @@ pub fn search_pulse(
     let Ok((position, body)) = party.single() else { return };
     let (from, forward) = (PartyBody::eye(position), body.forward());
     let running = movement.running;
-    let best = roster
-        .0
-        .iter()
-        .filter_map(|&m| members.get(m).ok())
+    let best = members
+        .iter_many(&roster.0)
+        .matched()
         .filter(|(_, vitals)| can_act(vitals))
         .map(|(m, _)| (search_score(m, search.on(), running), m))
         .filter(|&(score, _)| score > 0)
         // The first of equals, as retail keeps the earlier slot.
         .reduce(|a, b| if b.0 > a.0 { b } else { a });
     let Some((score, searcher)) = best else { return };
-    let solid = |entity| bodies.get(entity).is_ok_and(RigidBody::is_static);
     let catalog = data.and_then(|d| catalogs.get(&d.items));
     for (target, mut item, at) in &mut items {
         if !item.hidden {
@@ -184,8 +182,7 @@ pub fn search_pulse(
             continue;
         }
         let Ok(direction) = Dir3::new(to - from) else { continue };
-        let filter = SpatialQueryFilter::default();
-        if spatial.cast_ray_predicate(from, direction, distance, true, &filter, &solid).is_some() {
+        if obstacles.first_hit(from, direction, distance).is_some() {
             continue;
         }
         item.hidden = false;

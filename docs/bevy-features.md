@@ -124,6 +124,13 @@ navigation. Use retail images/fonts for appearance, not Feathers' editor styling
 external `.bsn` scene files are **not** a shipped requirement of Bevy 0.20.
 [BSN example](https://github.com/bevyengine/bevy/blob/v0.20.0/examples/scene/bsn.rs) .
 
+Retail controls share `ControlSkin`, `FocusRing` and one discrete `step_scrollbar`
+composition. Screens set availability/selection and consume native `SliderValue`;
+widgets own interaction, not a parallel state model. `Picture`/`BitmapText` own
+layout/picking defaults, and `PictureCrop` clips source pixels without extra
+bar hierarchies. Keep true content viewports as clipping nodes. HUD log scroll
+remains a projection of `TextLog`, not another writable slider position.
+
 ## Assets, sharing and mipmaps
 
 `retail://` and `navmesh://` plus Bevy's asset processor are good boundaries. Keep the retail files

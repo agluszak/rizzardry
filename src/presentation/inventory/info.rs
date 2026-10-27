@@ -4,21 +4,17 @@ use crate::content::characters::{Attribute, Skill};
 use crate::content::ui::{SpriteSheet, TextTable};
 use crate::game::characters::{Character, governing};
 use crate::game::party::roster::PartyRoster;
+use crate::presentation::screen_art::spawn_picture as image;
 use crate::presentation::screen_art::{BitmapText, Picture};
 use bevy::input_focus::{
     FocusCause, InputFocus,
     tab_navigation::{TabGroup, TabIndex},
 };
-use bevy::picking::events::{PointerClick, PointerScroll};
+use bevy::picking::events::PointerClick;
 use bevy::picking::hover::Hovered;
 use bevy::picking::pointer::PointerButton;
 use bevy::prelude::*;
-use bevy::ui::Pressed;
-use bevy::ui_widgets::{
-    Activate, Button, ModalDialog, SelectedTab, SetSliderValue, Slider, SliderOrientation,
-    SliderPrecision, SliderRange, SliderStep, SliderThumb, SliderValue, SliderValueChange,
-    slider_self_update,
-};
+use bevy::ui_widgets::{Activate, Button, ModalDialog, SelectedTab, SliderValue};
 use bevy_enhanced_input::prelude::*;
 
 #[derive(Clone, Copy)]
@@ -41,13 +37,9 @@ pub(super) struct InfoDialog {
 #[derive(Component)]
 pub(super) struct Lines;
 #[derive(Component)]
-pub(super) struct Thumb;
-#[derive(Component)]
 pub(super) struct InfoScroll;
 #[derive(Component)]
 pub(super) struct CloseButton;
-#[derive(Component)]
-pub(super) struct ScrollArrow(bool);
 #[derive(InputAction)]
 #[action_output(bool)]
 struct Close;
@@ -113,9 +105,7 @@ pub(super) fn open_info(
         let (first_attribute, second_attribute) = governing(skill);
         let level = profile.skill(skill);
         let best = level > 0
-            && roster.0.iter().all(|member| {
-                profiles.get(*member).map_or(true, |other| other.skill(skill) <= level)
-            });
+            && profiles.iter_many(&roster.0).matched().all(|other| other.skill(skill) <= level);
         entries.push((format!("{}: ", string(0x156)), Some(art.bronze.clone())));
         entries.push((string(0x274 + first_attribute as usize).to_owned(), None));
         if first_attribute != second_attribute {
@@ -152,7 +142,7 @@ pub(super) fn open_info(
             -- Action::<BlockInventoryKey>::new() ActionSettings { consume_input: true } Bindings [ Binding(KeyCode::KeyI) ]
         ]
         on(close_keyboard)
-    }).insert((absolute(Vec2::ZERO, Vec2::new(640.0, 480.0)), GlobalZIndex(20), TabGroup::modal(), ModalDialog, Pickable::default(), ChildOf(target.root))).observe(scroll).observe(dismiss_right).id();
+    }).insert((absolute(Vec2::ZERO, Vec2::new(640.0, 480.0)), GlobalZIndex(20), TabGroup::modal(), ModalDialog, Pickable::default(), ChildOf(target.root))).observe(crate::presentation::retail_controls::scroll_wheel).observe(dismiss_right).id();
     image(&mut commands, root, art.info_dialog.clone(), 0, Vec2::new(156.0, 105.0));
     text(
         &mut commands,
@@ -190,52 +180,16 @@ pub(super) fn open_info(
         text(&mut commands, lines, art.font.clone(), palette, value, Vec2::new(x, y), 0.0);
     }
     image(&mut commands, root, art.info_dialog.clone(), 1, Vec2::new(455.0, 143.0));
-    for (down, frame, y) in [(false, 0, 143.0), (true, 8, 314.0)] {
-        let at = Vec2::new(456.0, y);
-        commands
-            .spawn((
-                Button,
-                TabIndex(0),
-                Hovered::default(),
-                ScrollArrow(down),
-                Picture { sheet: art.scroll.clone(), frame, at, bounds: None },
-                absolute(at, Vec2::splat(16.0)),
-                ChildOf(root),
-            ))
-            .observe(
-                move |_: On<Activate>,
-                      slider: Single<Entity, With<InfoScroll>>,
-                      mut commands: Commands| {
-                    commands.trigger(SetSliderValue {
-                        entity: *slider,
-                        change: SliderValueChange::RelativeStep(if down { 1.0 } else { -1.0 }),
-                    });
-                },
-            );
-    }
-    let track = commands
-        .spawn((
-            InfoScroll,
-            Slider { orientation: SliderOrientation::Vertical, ..default() },
-            SliderRange::new(0.0, maximum as f32),
-            SliderStep(1.0),
-            SliderPrecision(0),
-            absolute(Vec2::new(456.0, 159.0), Vec2::new(16.0, 155.0)),
-            Pickable::default(),
-            ChildOf(root),
-        ))
-        .observe(slider_self_update)
-        .observe(super::cancel_slider_drag)
-        .id();
-    commands.spawn((
-        SliderThumb,
-        Thumb,
-        Hovered::default(),
-        Picture { sheet: art.scroll.clone(), frame: 4, at: Vec2::ZERO, bounds: None },
-        absolute(Vec2::ZERO, Vec2::new(16.0, 10.0)),
-        Pickable::default(),
-        ChildOf(track),
-    ));
+    let track = crate::presentation::retail_controls::step_scrollbar(
+        &mut commands,
+        root,
+        art.scroll.clone(),
+        Vec2::new(456.0, 143.0),
+        155.0,
+        maximum as f32,
+    );
+    commands.entity(track).insert(InfoScroll);
+    commands.entity(root).insert(crate::presentation::retail_controls::ScrollWheel(track));
     let at = Vec2::new(438.0, 335.0);
     let close_button = commands
         .spawn((
@@ -243,10 +197,14 @@ pub(super) fn open_info(
             TabIndex(0),
             Hovered::default(),
             CloseButton,
-            Picture { sheet: art.info_buttons.clone(), frame: 0, at, bounds: None },
+            crate::presentation::retail_controls::FocusRing,
+            crate::presentation::retail_controls::ControlSkin::new(0, 1, 4, 4, 0),
+            Pickable::default(),
+            Picture { sheet: art.info_buttons.clone(), frame: 0, at, bounds: Some(0) },
             absolute(at, Vec2::splat(30.0)),
             ChildOf(root),
         ))
+        .observe(crate::presentation::retail_controls::primary_press)
         .observe(
             move |_: On<Activate>,
                   mut commands: Commands,
@@ -262,20 +220,6 @@ pub(super) fn open_info(
     }
 }
 
-fn image(
-    commands: &mut Commands,
-    parent: Entity,
-    sheet: Handle<SpriteSheet>,
-    frame: usize,
-    at: Vec2,
-) {
-    commands.spawn((
-        Picture { sheet, frame, at, bounds: None },
-        Node { position_type: PositionType::Absolute, ..default() },
-        Pickable::IGNORE,
-        ChildOf(parent),
-    ));
-}
 fn text(
     commands: &mut Commands,
     parent: Entity,
@@ -285,7 +229,9 @@ fn text(
     at: Vec2,
     width: f32,
 ) {
-    commands.spawn((
+    crate::presentation::screen_art::spawn_label(
+        commands,
+        parent,
         BitmapText {
             font,
             palette,
@@ -298,45 +244,18 @@ fn text(
                 bevy::text::Justify::Left
             },
         },
-        Node { position_type: PositionType::Absolute, ..default() },
-        Pickable::IGNORE,
-        ChildOf(parent),
-    ));
-}
-fn scroll(
-    event: On<PointerScroll>,
-    slider: Single<Entity, With<InfoScroll>>,
-    mut commands: Commands,
-) {
-    if event.y != 0.0 {
-        commands.trigger(SetSliderValue {
-            entity: *slider,
-            change: SliderValueChange::RelativeStep(if event.y < 0.0 { 1.0 } else { -1.0 }),
-        });
-    }
+    );
 }
 pub(super) fn update_scroll(
     dialog: Option<Single<&InfoDialog>>,
-    slider: Option<Single<(Ref<SliderValue>, &SliderRange), With<InfoScroll>>>,
-    mut lines: Query<&mut Node, (With<Lines>, Without<Thumb>)>,
-    mut thumbs: Query<(&mut Picture, &mut Visibility), With<Thumb>>,
+    slider: Option<Single<&SliderValue, With<InfoScroll>>>,
+    mut lines: Query<&mut Node, With<Lines>>,
 ) {
-    let (Some(dialog), Some((value, range))) = (dialog, slider.as_deref()) else { return };
+    let (Some(dialog), Some(value)) = (dialog, slider) else { return };
     for mut node in &mut lines {
         let top = px(-value.0 * dialog.line_height);
         if node.top != top {
             node.top = top;
-        }
-    }
-    for (mut picture, mut visible) in &mut thumbs {
-        visible.set_if_neq(if range.end() > 0.0 {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        });
-        let y = if range.end() > 0.0 { 145.0 * value.0 / range.end() } else { 0.0 };
-        if picture.at.y != y {
-            picture.at.y = y;
         }
     }
 }
@@ -370,46 +289,6 @@ fn dismiss_right(
     if event.button == PointerButton::Secondary {
         restore_focus(selected, focus.as_deref_mut());
         commands.entity(*dialog).despawn();
-    }
-}
-
-pub(super) fn style_close(
-    mut buttons: Query<(&Hovered, Has<Pressed>, &mut Picture), With<CloseButton>>,
-) {
-    for (hover, pressed, mut picture) in &mut buttons {
-        let frame = if pressed {
-            4
-        } else if hover.get() {
-            1
-        } else {
-            0
-        };
-        if picture.frame != frame {
-            picture.frame = frame;
-        }
-    }
-}
-
-pub(super) fn style_arrows(
-    slider: Option<Single<&SliderRange, With<InfoScroll>>>,
-    mut arrows: Query<(&ScrollArrow, &Hovered, Has<Pressed>, &mut Picture)>,
-) {
-    let Some(slider) = slider else { return };
-    for (arrow, hover, pressed, mut picture) in &mut arrows {
-        let base = if arrow.0 { 8 } else { 0 };
-        let frame = base
-            + if slider.end() == 0.0 {
-                3
-            } else if pressed {
-                2
-            } else if hover.get() {
-                1
-            } else {
-                0
-            };
-        if picture.frame != frame {
-            picture.frame = frame;
-        }
     }
 }
 

@@ -140,6 +140,7 @@ fn button(
             BackgroundColor(PANEL),
             BorderColor::all(GOLD),
         ))
+        .observe(crate::presentation::retail_controls::primary_press)
         .id();
     let label = commands
         .spawn((
@@ -662,7 +663,7 @@ fn refresh(
     sessions: Query<Ref<Creation>>,
     focus: Res<InputFocus>,
     mut commands: Commands,
-    mut buttons: Query<(Entity, &Action, Has<InteractionDisabled>, &mut TabIndex)>,
+    mut buttons: Query<(Entity, &Action, Has<InteractionDisabled>)>,
     mut pages: Query<(&Page, &mut Node, &mut Visibility), Without<SkillRow>>,
     mut fields: Query<(&Field, &mut Text)>,
     mut rows: Query<(&SkillRow, &mut Node, &mut Visibility), Without<Page>>,
@@ -687,7 +688,7 @@ fn refresh(
     }
     let draft = session.editing.as_ref().map(|(_, d)| d);
     let profile = draft.map(CharacterDraft::preview);
-    for (entity, action, disabled, mut tab) in &mut buttons {
+    for (entity, action, disabled) in &mut buttons {
         let enabled = match *action {
             Action::Add => session.editing.is_none() && session.party.len() < 6,
             Action::Edit(i) | Action::Remove(i) => {
@@ -696,14 +697,7 @@ fn refresh(
             Action::Begin => session.editing.is_none() && !session.party.is_empty(),
             _ => true,
         };
-        tab.set_if_neq(TabIndex(if enabled { 0 } else { -1 }));
-        if enabled == disabled {
-            if enabled {
-                commands.entity(entity).remove::<InteractionDisabled>();
-            } else {
-                commands.entity(entity).insert(InteractionDisabled);
-            }
-        }
+        crate::presentation::retail_controls::set_enabled(&mut commands, entity, enabled, disabled);
     }
 
     for (field, mut text) in &mut fields {
@@ -955,7 +949,8 @@ mod keyboard_tests {
         .init_resource::<Formation>()
         .insert_resource(NewGameDestination { path: String::new(), start: default() })
         .add_message::<AppExit>()
-        .add_plugins(FrontendPlugin);
+        .add_plugins(FrontendPlugin)
+        .add_systems(PostUpdate, crate::presentation::retail_controls::sync_button_navigation);
         let window = app.world_mut().spawn((Window::default(), PrimaryWindow)).id();
         app.finish();
         app.cleanup();

@@ -83,8 +83,8 @@ impl MonsterDamage<'_, '_> {
         party_level: u32,
         rng: &mut GameRng,
     ) -> Result<DamageOutcome, DamageRefusal> {
-        let (monster, at, walker, owner) =
-            self.monsters.get(target).map_err(|_| DamageRefusal::MissingTarget)?;
+        let (mut monster, at, walker, owner) =
+            self.monsters.get_mut(target).map_err(|_| DamageRefusal::MissingTarget)?;
         let level = owner.parent();
         if !self.levels.contains(level) {
             return Err(DamageRefusal::InactiveLevel);
@@ -106,7 +106,6 @@ impl MonsterDamage<'_, '_> {
         }
         let position = feet(at.translation(), walker);
         let lost = amount.min(monster.hp);
-        let (mut monster, ..) = self.monsters.get_mut(target).unwrap();
         monster.hp -= lost;
         if !monster.is_dead() {
             return Ok(DamageOutcome { damage: lost, ..default() });

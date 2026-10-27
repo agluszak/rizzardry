@@ -5,7 +5,8 @@ use crate::content::items::ItemCatalog;
 use crate::game::characters::{Character, resistance::resistances};
 use crate::game::data::GameData;
 use crate::game::inventory::Carried;
-use crate::presentation::screen_art::{BitmapText, Picture};
+use crate::presentation::screen_art::spawn_picture as picture;
+use crate::presentation::screen_art::{BitmapText, Picture, PictureCrop};
 use bevy::prelude::*;
 use enumset::EnumSet;
 
@@ -15,25 +16,6 @@ pub(super) struct Value(Realm);
 pub(super) struct Segment {
     realm: Realm,
     bonus: bool,
-}
-#[derive(Component)]
-pub(super) struct SegmentImage;
-
-fn picture(
-    commands: &mut Commands,
-    parent: Entity,
-    sheet: Handle<crate::content::ui::SpriteSheet>,
-    frame: usize,
-    at: Vec2,
-) -> Entity {
-    commands
-        .spawn((
-            Picture { sheet, frame, at, bounds: None },
-            Node { position_type: PositionType::Absolute, ..default() },
-            Pickable::IGNORE,
-            ChildOf(parent),
-        ))
-        .id()
 }
 
 pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) {
@@ -56,8 +38,6 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) {
             ..default()
         },
         RetailLabel(0x8ca),
-        Node { position_type: PositionType::Absolute, ..default() },
-        Pickable::IGNORE,
         ChildOf(page),
     ));
     for (i, realm) in EnumSet::<Realm>::all().iter().enumerate() {
@@ -66,19 +46,17 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) {
         let frame = [3, 8, 8, 1, 14, 11][i];
         picture(commands, page, art.realms[i].clone(), frame, Vec2::new(left, top));
         for bonus in [false, true] {
-            let clip = commands
-                .spawn((
-                    Segment { realm, bonus },
-                    Node {
-                        overflow: Overflow::clip_x(),
-                        ..absolute(Vec2::new(left + 24.0, top + 4.0), Vec2::new(0.0, 10.0))
-                    },
-                    Pickable::IGNORE,
-                    ChildOf(page),
-                ))
-                .id();
-            let image = picture(commands, clip, art.slider.clone(), usize::from(bonus), Vec2::ZERO);
-            commands.entity(image).insert(SegmentImage);
+            commands.spawn((
+                Segment { realm, bonus },
+                Picture {
+                    sheet: art.slider.clone(),
+                    frame: usize::from(bonus),
+                    at: Vec2::new(left + 24.0, top + 4.0),
+                    bounds: None,
+                },
+                PictureCrop::horizontal(0.0, 0.0),
+                ChildOf(page),
+            ));
         }
         commands.spawn((
             Value(realm),
@@ -89,8 +67,6 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) {
                 justify: bevy::text::Justify::Right,
                 ..default()
             },
-            Node { position_type: PositionType::Absolute, ..default() },
-            Pickable::IGNORE,
             ChildOf(page),
         ));
         let icon = Vec2::new(5.0 + (i % 3) as f32 * 213.0, 172.0 + (i / 3) as f32 * 140.0);
@@ -116,8 +92,7 @@ pub(super) fn refresh(
     data: Option<Res<GameData>>,
     catalogs: Option<Res<Assets<ItemCatalog>>>,
     mut values: Query<(Ref<Value>, &mut BitmapText)>,
-    mut segments: Query<(Ref<Segment>, &mut Node, &Children)>,
-    mut pictures: Query<&mut Picture, With<SegmentImage>>,
+    mut segments: Query<(Ref<Segment>, &mut PictureCrop, &mut Picture)>,
 ) {
     let Some(screen) = screen else { return };
     let Ok((character, carried)) = characters.get(screen.member) else { return };
@@ -144,34 +119,17 @@ pub(super) fn refresh(
             text.value = desired;
         }
     }
-    for (segment, mut node, children) in &mut segments {
+    for (segment, mut crop, mut picture) in &mut segments {
         let value = scores[segment.realm];
         let filled = value.base.min(value.total).clamp(0, 125) as f32;
         let extra = (value.total - value.base).max(0).min(125 - filled as i32) as f32;
         let missing = (value.base - value.total).max(0).min(125 - filled as i32) as f32;
-        let left = 324.0
-            + (segment.realm as usize % 2) as f32 * 156.0
-            + 24.0
-            + if segment.bonus { filled } else { 0.0 };
+        let start = if segment.bonus { filled } else { 0.0 };
         let width = if segment.bonus { extra.max(missing) } else { filled };
-        if node.left != px(left) {
-            node.left = px(left);
-        }
-        if node.width != px(width) {
-            node.width = px(width);
-        }
-        for child in children.iter() {
-            if let Ok(mut picture) = pictures.get_mut(child) {
-                let x = if segment.bonus { -filled } else { 0.0 };
-                let frame =
-                    if segment.bonus && missing > 0.0 { 2 } else { usize::from(segment.bonus) };
-                if picture.at.x != x {
-                    picture.at.x = x;
-                }
-                if picture.frame != frame {
-                    picture.frame = frame;
-                }
-            }
+        crop.set_if_neq(PictureCrop::horizontal(start, start + width));
+        let frame = if segment.bonus && missing > 0.0 { 2 } else { usize::from(segment.bonus) };
+        if picture.frame != frame {
+            picture.frame = frame;
         }
     }
 }

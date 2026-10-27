@@ -2,12 +2,13 @@
 use super::{InventoryArt, InventoryScreen, RetailLabel, absolute, format_gold, info, review};
 use crate::content::characters::Attribute;
 use crate::content::items::ItemCatalog;
-use crate::game::characters::{Character, Load, Vitals};
+use crate::game::characters::Load;
 use crate::game::combat::attack::armour;
 use crate::game::data::GameData;
 use crate::game::inventory::{Carried, PartyInventory, carried_weight, item_weight, pool_shares};
 use crate::game::party::roster::PartyRoster;
-use crate::presentation::screen_art::{BitmapText, Picture};
+use crate::presentation::character_view::{CharacterView, CharacterViewItem};
+use crate::presentation::screen_art::{BitmapText, Picture, PictureCrop};
 use bevy::prelude::*;
 use enumset::EnumSet;
 
@@ -33,7 +34,9 @@ fn label(
     width: f32,
     value: Value,
 ) {
-    commands.spawn((
+    let label = crate::presentation::screen_art::spawn_label(
+        commands,
+        parent,
         BitmapText {
             font: art.font.clone(),
             at,
@@ -41,11 +44,8 @@ fn label(
             justify: bevy::text::Justify::Center,
             ..default()
         },
-        Node { position_type: PositionType::Absolute, ..default() },
-        value,
-        Pickable::IGNORE,
-        ChildOf(parent),
-    ));
+    );
+    commands.entity(label).insert(value);
 }
 fn caption(
     commands: &mut Commands,
@@ -56,7 +56,9 @@ fn caption(
     width: f32,
     centred: bool,
 ) {
-    commands.spawn((
+    let label = crate::presentation::screen_art::spawn_label(
+        commands,
+        parent,
         BitmapText {
             font: art.font.clone(),
             at,
@@ -64,11 +66,8 @@ fn caption(
             justify: if centred { bevy::text::Justify::Center } else { bevy::text::Justify::Left },
             ..default()
         },
-        Node { position_type: PositionType::Absolute, ..default() },
-        RetailLabel(id),
-        Pickable::IGNORE,
-        ChildOf(parent),
-    ));
+    );
+    commands.entity(label).insert(RetailLabel(id));
 }
 
 pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) {
@@ -80,22 +79,16 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) {
             ChildOf(root),
         ))
         .id();
-    let clip = commands
-        .spawn((
-            ExperienceBar,
-            Node {
-                overflow: Overflow::clip_x(),
-                ..absolute(Vec2::new(448.0, 38.0), Vec2::new(0.0, 12.0))
-            },
-            Pickable::IGNORE,
-            ChildOf(panel),
-        ))
-        .id();
     commands.spawn((
-        Picture { sheet: art.leveling_bar.clone(), frame: 0, at: Vec2::ZERO, bounds: None },
-        Node { position_type: PositionType::Absolute, ..default() },
-        Pickable::IGNORE,
-        ChildOf(clip),
+        ExperienceBar,
+        Picture {
+            sheet: art.leveling_bar.clone(),
+            frame: 0,
+            at: Vec2::new(448.0, 38.0),
+            bounds: None,
+        },
+        PictureCrop::horizontal(0.0, 0.0),
+        ChildOf(panel),
     ));
     for (id, x, y, width, center) in [
         (0x91b, 345., 10., 206., true),
@@ -149,8 +142,6 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) {
         let at = Vec2::new(557.0, 13.0 + 24.0 * i as f32);
         commands.spawn((
             Picture { sheet: art.realms[i].clone(), frame, at, bounds: None },
-            Node { position_type: PositionType::Absolute, ..default() },
-            Pickable::IGNORE,
             ChildOf(panel),
         ));
     }
@@ -162,27 +153,24 @@ pub(super) fn refresh(
     inventory: Option<Res<PartyInventory>>,
     data: Option<Res<GameData>>,
     catalogs: Option<Res<Assets<ItemCatalog>>>,
-    members: Query<(Ref<Character>, Ref<Vitals>, Option<Ref<Carried>>)>,
+    members: Query<CharacterView>,
+    mut removed_carried: RemovedComponents<Carried>,
     art: Option<Res<InventoryArt>>,
     mut values: Query<(Ref<Value>, &mut BitmapText)>,
-    mut bars: Query<&mut Node, With<ExperienceBar>>,
+    mut bars: Query<&mut PictureCrop, With<ExperienceBar>>,
 ) {
+    let removed: Vec<_> = removed_carried.read().collect();
     let (Some(screen), Some(art)) = (screen, art) else { return };
-    let Ok((character, vitals, carried)) = members.get(screen.member) else { return };
+    let Ok(view) = members.get(screen.member) else { return };
+    let actor_changed = view.is_changed() || removed.contains(&screen.member);
+    let CharacterViewItem { profile: character, vitals, carried } = view;
     let party_changed = party.as_ref().is_some_and(|roster| {
         roster.is_changed()
-            || roster.0.iter().any(|entity| {
-                members.get(*entity).is_ok_and(|(profile, vitals, carried)| {
-                    profile.is_changed()
-                        || vitals.is_changed()
-                        || carried.is_some_and(|carried| carried.is_changed())
-                })
-            })
+            || removed.iter().any(|e| roster.0.contains(e))
+            || members.iter_many(&roster.0).matched().any(|view| view.is_changed())
     });
     if !screen.is_changed()
-        && !character.is_changed()
-        && !vitals.is_changed()
-        && !carried.as_ref().is_some_and(|carried| carried.is_changed())
+        && !actor_changed
         && !party_changed
         && !inventory.as_ref().is_some_and(|inventory| inventory.is_changed())
         && !data.as_ref().is_some_and(|data| data.is_changed())
@@ -201,18 +189,20 @@ pub(super) fn refresh(
                 .0
                 .iter()
                 .map(|entity| {
-                    members.get(*entity).ok().and_then(|(profile, vitals, carried)| {
-                        if vitals.is_dead() {
-                            None
-                        } else {
-                            Some((
-                                carried
-                                    .as_deref()
-                                    .map_or(0, |carried| carried_weight(carried, catalog)),
-                                profile.capacity(),
-                            ))
-                        }
-                    })
+                    members.get(*entity).ok().and_then(
+                        |CharacterViewItem { profile, vitals, carried }| {
+                            if vitals.is_dead() {
+                                None
+                            } else {
+                                Some((
+                                    carried
+                                        .as_deref()
+                                        .map_or(0, |carried| carried_weight(carried, catalog)),
+                                    profile.capacity(),
+                                ))
+                            }
+                        },
+                    )
                 })
                 .collect();
             let pool = inventory.pool.iter().map(|item| item_weight(item, catalog)).sum();
@@ -265,9 +255,37 @@ pub(super) fn refresh(
         0.0
     };
     for mut bar in &mut bars {
-        let width = px((103.0 * progress.clamp(0.0, 1.0)).floor());
-        if bar.width != width {
-            bar.width = width;
-        }
+        bar.set_if_neq(PictureCrop::horizontal(0.0, (103.0 * progress.clamp(0.0, 1.0)).floor()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::characters::{Character, Gender, Profession, Race, Vitals};
+
+    #[test]
+    fn removing_carried_items_clears_all_equipment_derived_labels() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<Assets<ItemCatalog>>()
+            .insert_resource(InventoryArt::default())
+            .add_systems(Update, refresh);
+        let items = app.world_mut().resource_mut::<Assets<ItemCatalog>>().add(ItemCatalog(vec![]));
+        app.insert_resource(GameData { items, loot: default(), species: default() });
+        let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
+        let actor =
+            app.world_mut().spawn((Vitals::new(&profile), profile, Carried::default())).id();
+        app.world_mut().spawn(InventoryScreen { member: actor });
+        let base = app.world_mut().spawn((Value::BaseArmour, BitmapText::default())).id();
+        let average = app.world_mut().spawn((Value::AverageArmour, BitmapText::default())).id();
+        app.update();
+        assert!(!app.world().get::<BitmapText>(base).unwrap().value.is_empty());
+        assert!(!app.world().get::<BitmapText>(average).unwrap().value.is_empty());
+        app.update();
+        app.world_mut().entity_mut(actor).remove::<Carried>();
+        app.update();
+        assert!(app.world().get::<BitmapText>(base).unwrap().value.is_empty());
+        assert!(app.world().get::<BitmapText>(average).unwrap().value.is_empty());
     }
 }

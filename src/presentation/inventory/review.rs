@@ -1,28 +1,26 @@
 //! Retail character statistics and skills review pages.
-use super::super::screen_art::{BitmapText, Picture};
+use super::super::screen_art::{BitmapText, Picture, PictureCrop};
 use super::{InventoryArt, InventoryScreen, absolute};
 use crate::content::characters::{Attribute, Skill};
 use crate::content::items::{EquipClass, ItemCatalog};
 use crate::content::ui::{SpriteSheet, TextTable};
-use crate::game::characters::{Character, Vitals};
+use crate::game::characters::Character;
 use crate::game::combat::attack::{character_initiative, primary_hand};
 use crate::game::data::GameData;
 use crate::game::inventory::{Carried, EquipSlot};
 use crate::game::party::roster::PartyRoster;
-use bevy::input_focus::{InputFocus, tab_navigation::TabIndex};
-use bevy::picking::{events::PointerScroll, hover::Hovered};
+use crate::presentation::character_view::{CharacterView, CharacterViewItem};
+use crate::presentation::retail_controls::ControlSkin;
+use crate::presentation::screen_art::spawn_picture as picture;
+use bevy::input_focus::tab_navigation::TabIndex;
+use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
-use bevy::ui::{InteractionDisabled, Pressed, Selected};
+use bevy::ui::{InteractionDisabled, Selected};
 use bevy::ui_widgets::{
     Activate, Button as UiButton, SelectedTab, Tab, TabList, tablist_self_update,
 };
-use bevy::ui_widgets::{
-    SetSliderValue, Slider, SliderOrientation, SliderPrecision, SliderRange, SliderStep,
-    SliderThumb, SliderValue, SliderValueChange, slider_self_update,
-};
+use bevy::ui_widgets::{SetSliderValue, SliderRange, SliderValue, SliderValueChange};
 use enumset::EnumSet;
-
-const GOLD: Color = Color::srgb(0.83, 0.68, 0.40);
 
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Page {
@@ -64,10 +62,6 @@ enum EffectFilter {
 #[derive(Component)]
 pub(super) struct EffectButton(usize);
 #[derive(Component)]
-pub(super) struct ScrollButton(bool);
-#[derive(Component)]
-pub(super) struct ScrollThumb;
-#[derive(Component)]
 pub(super) struct StatsScroll;
 #[derive(Component)]
 pub(super) struct InfoToggle;
@@ -76,30 +70,12 @@ pub(super) struct InfoBackground;
 #[derive(Component)]
 pub(super) struct SkillRow(Skill);
 #[derive(Component)]
-pub(super) struct BarGraphic;
-#[derive(Component)]
 pub(super) enum Bar {
     Attribute(Attribute),
     SkillBase(Skill),
     SkillBonus(Skill),
 }
 
-fn picture(
-    commands: &mut Commands,
-    parent: Entity,
-    sheet: Handle<SpriteSheet>,
-    frame: usize,
-    at: Vec2,
-) -> Entity {
-    commands
-        .spawn((
-            Picture { sheet, frame, at, bounds: None },
-            Node { position_type: PositionType::Absolute, ..default() },
-            Pickable::IGNORE,
-            ChildOf(parent),
-        ))
-        .id()
-}
 fn label(
     commands: &mut Commands,
     parent: Entity,
@@ -108,7 +84,9 @@ fn label(
     width: f32,
     field: Field,
 ) {
-    commands.spawn((
+    let label = crate::presentation::screen_art::spawn_label(
+        commands,
+        parent,
         BitmapText {
             font,
             at,
@@ -120,11 +98,8 @@ fn label(
             },
             ..default()
         },
-        Node { position_type: PositionType::Absolute, ..default() },
-        field,
-        Pickable::IGNORE,
-        ChildOf(parent),
-    ));
+    );
+    commands.entity(label).insert(field);
 }
 fn bar(
     commands: &mut Commands,
@@ -134,16 +109,12 @@ fn bar(
     kind: Bar,
     frame: usize,
 ) {
-    let clip = commands
-        .spawn((
-            Node { overflow: Overflow::clip_x(), ..absolute(at, Vec2::new(0.0, 10.0)) },
-            kind,
-            Pickable::IGNORE,
-            ChildOf(parent),
-        ))
-        .id();
-    let graphic = picture(commands, clip, sheet, frame, Vec2::ZERO);
-    commands.entity(graphic).insert(BarGraphic);
+    commands.spawn((
+        kind,
+        Picture { sheet, frame, at, bounds: None },
+        PictureCrop::horizontal(0.0, 0.0),
+        ChildOf(parent),
+    ));
 }
 fn panel(commands: &mut Commands, root: Entity, page: Page) -> Entity {
     commands
@@ -193,12 +164,12 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) -
         let at = Vec2::new(i as f32 * 44.0, 0.0);
         let mut button = commands.spawn((
             Tab,
+            ControlSkin::new(base, base + 1, base + 4, base + 2, base + 3),
             Hovered::default(),
             Picture { sheet: art.page_buttons.clone(), frame: base, bounds: Some(base), at },
             absolute(at, Vec2::new(44.0, 30.0)),
             Pickable::default(),
-            FocusControl,
-            Outline::new(px(1), px(1), Color::NONE),
+            crate::presentation::retail_controls::FocusRing,
             ChildOf(list),
         ));
         if let Some(page) = page {
@@ -232,13 +203,14 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) -
             TabIndex(0),
             Hovered::default(),
             InfoToggle,
+            ControlSkin::new(15, 17, 16, 19, 15),
             Picture { sheet: art.combat_buttons.clone(), frame: 15, bounds: Some(15), at },
             absolute(at, Vec2::splat(20.0)),
             Pickable::default(),
-            FocusControl,
-            Outline::new(px(1), px(1), Color::NONE),
+            crate::presentation::retail_controls::FocusRing,
             ChildOf(stats),
         ))
+        .observe(crate::presentation::retail_controls::primary_press)
         .observe(toggle_info);
     label(
         commands,
@@ -336,6 +308,13 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) -
                 TabIndex(0),
                 Hovered::default(),
                 EffectButton(i),
+                ControlSkin::new(
+                    i * 5,
+                    i * 5 + 2,
+                    if i == 2 { 15 } else { i * 5 + 1 },
+                    if i == 2 { 17 } else { i * 5 + 4 },
+                    i * 5 + 3,
+                ),
                 Picture {
                     sheet: art.effect_filters.clone(),
                     frame: i * 5,
@@ -344,61 +323,29 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) -
                 },
                 absolute(at, Vec2::splat(24.0)),
                 Pickable::default(),
-                FocusControl,
-                Outline::new(px(1), px(1), Color::NONE),
+                crate::presentation::retail_controls::FocusRing,
                 ChildOf(stats),
             ))
+            .observe(crate::presentation::retail_controls::primary_press)
             .observe(select_filter);
     }
-    for (down, y, frame) in [(false, 25.0, 0), (true, 256.0, 8)] {
-        let at = Vec2::new(612.0, y);
-        commands
-            .spawn((
-                UiButton,
-                TabIndex(0),
-                Hovered::default(),
-                ScrollButton(down),
-                Picture { sheet: art.scroll.clone(), frame, bounds: Some(frame), at },
-                absolute(at, Vec2::splat(16.0)),
-                Pickable::default(),
-                FocusControl,
-                Outline::new(px(1), px(1), Color::NONE),
-                ChildOf(stats),
-            ))
-            .observe(scroll_button);
-    }
-    let track = commands
-        .spawn((
-            StatsScroll,
-            Slider { orientation: SliderOrientation::Vertical, ..default() },
-            SliderRange::new(0.0, 0.0),
-            SliderStep(1.0),
-            SliderPrecision(0),
-            absolute(Vec2::new(612.0, 41.0), Vec2::new(16.0, 215.0)),
-            BackgroundColor(Color::BLACK),
-            Pickable::default(),
-            ChildOf(stats),
-        ))
-        .observe(slider_self_update)
-        .observe(super::cancel_slider_drag)
-        .id();
-    commands.spawn((
-        SliderThumb,
-        ScrollThumb,
-        Hovered::default(),
-        Picture { sheet: art.scroll.clone(), frame: 4, bounds: Some(4), at: Vec2::ZERO },
-        absolute(Vec2::ZERO, Vec2::new(16.0, 10.0)),
-        Pickable::default(),
-        Visibility::Hidden,
-        ChildOf(track),
-    ));
+    let track = crate::presentation::retail_controls::step_scrollbar(
+        commands,
+        stats,
+        art.scroll.clone(),
+        Vec2::new(612.0, 25.0),
+        215.0,
+        0.0,
+    );
+    commands.entity(track).insert(StatsScroll);
     commands
         .spawn((
+            crate::presentation::retail_controls::ScrollWheel(track),
             absolute(Vec2::new(349.0, 25.0), Vec2::new(259.0, 247.0)),
             Pickable::default(),
             ChildOf(stats),
         ))
-        .observe(scroll_effects);
+        .observe(crate::presentation::retail_controls::scroll_wheel);
     for i in 0..17 {
         label(
             commands,
@@ -427,9 +374,7 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) -
                     at: Vec2::new(x - 22.0, y - 3.0),
                     bounds: None,
                 },
-                Node { position_type: PositionType::Absolute, ..default() },
                 CategoryIcon(i),
-                Pickable::IGNORE,
                 ChildOf(skills),
             ))
             .id();
@@ -489,31 +434,6 @@ fn select_filter(
             .trigger(SetSliderValue { entity: *slider, change: SliderValueChange::Absolute(0.0) });
     }
 }
-fn scroll_button(
-    click: On<Activate>,
-    buttons: Query<&ScrollButton>,
-    slider: Single<Entity, With<StatsScroll>>,
-    mut commands: Commands,
-) {
-    if let Ok(button) = buttons.get(click.entity) {
-        commands.trigger(SetSliderValue {
-            entity: *slider,
-            change: SliderValueChange::RelativeStep(if button.0 { 1.0 } else { -1.0 }),
-        });
-    }
-}
-fn scroll_effects(
-    event: On<PointerScroll>,
-    slider: Single<Entity, With<StatsScroll>>,
-    mut commands: Commands,
-) {
-    if event.y != 0.0 {
-        commands.trigger(SetSliderValue {
-            entity: *slider,
-            change: SliderValueChange::RelativeStep(if event.y < 0.0 { 1.0 } else { -1.0 }),
-        });
-    }
-}
 fn toggle_info(_: On<Activate>, mut info: Single<&mut StatsInfo>) {
     info.armour = !info.armour;
 }
@@ -561,7 +481,8 @@ pub(super) fn show_pages(
 
 pub(super) fn refresh(
     screen: Option<Single<Ref<InventoryScreen>>>,
-    characters: Query<(Ref<Character>, Ref<Vitals>, Option<Ref<Carried>>)>,
+    characters: Query<CharacterView>,
+    mut removed_carried: RemovedComponents<Carried>,
     roster: Option<Res<PartyRoster>>,
     profiles: Query<Ref<Character>>,
     info: Option<Single<Ref<StatsInfo>>>,
@@ -574,8 +495,11 @@ pub(super) fn refresh(
     mut fields: Query<(Ref<Field>, &mut BitmapText)>,
     mut info_background: Query<&mut Picture, With<InfoBackground>>,
 ) {
+    let removed: Vec<_> = removed_carried.read().collect();
     let Some(screen) = screen else { return };
-    let Ok((profile, vitals, carried)) = characters.get(screen.member) else { return };
+    let Ok(view) = characters.get(screen.member) else { return };
+    let actor_changed = view.is_changed() || removed.contains(&screen.member);
+    let CharacterViewItem { profile, vitals, carried } = view;
     let armour_view = info.as_ref().is_some_and(|info| info.armour);
     let effect_filter = info.as_ref().map_or(EffectFilter::All, |info| info.filter);
     let show_items = info.as_ref().is_some_and(|info| info.items);
@@ -596,19 +520,14 @@ pub(super) fn refresh(
     let table_changed = tables.as_ref().is_some_and(|tables| tables.is_changed());
     let party_changed = roster.as_ref().is_some_and(|roster| {
         roster.is_changed()
-            || roster
-                .0
-                .iter()
-                .any(|entity| profiles.get(*entity).is_ok_and(|profile| profile.is_changed()))
+            || profiles.iter_many(&roster.0).matched().any(|profile| profile.is_changed())
     });
     if !screen.is_changed()
-        && !profile.is_changed()
-        && !vitals.is_changed()
+        && !actor_changed
         && !info_changed
         && !slider.as_ref().is_some_and(|slider| slider.1.is_changed())
         && !table_changed
         && !party_changed
-        && !carried.as_ref().is_some_and(|carried| carried.is_changed())
         && !catalogs.as_ref().is_some_and(|catalogs| catalogs.is_changed())
         && !fields.iter().any(|(field, _)| field.is_added())
     {
@@ -724,7 +643,6 @@ pub(super) fn refresh(
             && !party_changed
             && !info_changed
             && !slider.as_ref().is_some_and(|slider| slider.1.is_changed())
-            && !carried.as_ref().is_some_and(|carried| carried.is_changed())
             && !catalogs.as_ref().is_some_and(|catalogs| catalogs.is_changed())
         {
             continue;
@@ -740,9 +658,10 @@ pub(super) fn refresh(
                 let level = profile.skill(skill);
                 let best = level > 0
                     && roster.as_ref().is_some_and(|roster| {
-                        roster.0.iter().all(|entity| {
-                            profiles.get(*entity).map_or(true, |other| other.skill(skill) <= level)
-                        })
+                        profiles
+                            .iter_many(&roster.0)
+                            .matched()
+                            .all(|other| other.skill(skill) <= level)
                     });
                 art.as_ref().and_then(|art| match (best, active) {
                     (true, true) => Some(art.yellow.clone()),
@@ -826,61 +745,6 @@ pub(super) fn refresh(
     }
 }
 
-pub(super) fn style_scroll(
-    slider: Option<Single<(&SliderValue, &SliderRange), With<StatsScroll>>>,
-    mut commands: Commands,
-    mut buttons: Query<
-        (Entity, &ScrollButton, &Hovered, Has<Pressed>, Has<InteractionDisabled>, &mut Picture),
-        Without<ScrollThumb>,
-    >,
-    mut thumbs: Query<
-        (&mut Visibility, &Hovered, &mut Picture),
-        (With<ScrollThumb>, Without<ScrollButton>),
-    >,
-) {
-    let Some((value, range)) = slider.as_deref() else { return };
-    let offset = value.0 as usize;
-    let maximum = range.end() as usize;
-    for (entity, button, hovered, pressed, disabled, mut picture) in &mut buttons {
-        let enabled = maximum > 0;
-        if enabled == disabled {
-            if enabled {
-                commands.entity(entity).remove::<InteractionDisabled>();
-            } else {
-                commands.entity(entity).insert(InteractionDisabled);
-            }
-        }
-        {
-            let frame = if button.0 { 8 } else { 0 }
-                + if !enabled {
-                    3
-                } else if pressed {
-                    2
-                } else if hovered.0 {
-                    1
-                } else {
-                    0
-                };
-            if picture.frame != frame {
-                picture.frame = frame;
-            }
-        }
-    }
-    for (mut visibility, hovered, mut picture) in &mut thumbs {
-        visibility.set_if_neq(if maximum > 0 { Visibility::Inherited } else { Visibility::Hidden });
-        let top = if maximum > 0 { (offset as f32 / maximum as f32 * 205.0).floor() } else { 0.0 };
-        let frame = if hovered.0 { 5 } else { 4 };
-        {
-            if picture.at.y != top {
-                picture.at.y = top;
-            }
-            if picture.frame != frame {
-                picture.frame = frame;
-            }
-        }
-    }
-}
-
 pub(super) fn layout_skills(
     screen: Option<Single<Ref<InventoryScreen>>>,
     characters: Query<Ref<Character>>,
@@ -888,9 +752,8 @@ pub(super) fn layout_skills(
         (Entity, Ref<SkillRow>, &mut Node, &mut Visibility),
         (Without<Bar>, Without<CategoryIcon>),
     >,
-    mut bars: Query<(&Bar, &mut Node, Option<&Children>), Without<SkillRow>>,
-    mut pictures: Query<&mut Picture, (With<BarGraphic>, Without<ExpertBackdrop>)>,
-    mut backdrop: Query<&mut Picture, (With<ExpertBackdrop>, Without<BarGraphic>)>,
+    mut bars: Query<(&Bar, &mut PictureCrop), Without<SkillRow>>,
+    mut backdrop: Query<&mut Picture, With<ExpertBackdrop>>,
     mut icons: Query<(&CategoryIcon, &mut Visibility), Without<SkillRow>>,
 ) {
     let Some(screen) = screen else { return };
@@ -944,83 +807,31 @@ pub(super) fn layout_skills(
             Visibility::Hidden
         });
     }
-    for (bar, mut node, children) in &mut bars {
-        let (left, width, shift) = match *bar {
-            Bar::Attribute(attribute) => (136.0, profile.attribute(attribute).min(125) as f32, 0.0),
+    for (bar, mut crop) in &mut bars {
+        let (start, end) = match *bar {
+            Bar::Attribute(attribute) => (0.0, profile.attribute(attribute).min(125) as f32),
             Bar::SkillBase(skill) => (
-                111.0,
-                u32::from(profile.skill_points[skill]).min(profile.skill(skill)).min(125) as f32,
                 0.0,
+                u32::from(profile.skill_points[skill]).min(profile.skill(skill)).min(125) as f32,
             ),
-            Bar::SkillBonus(skill) => {
-                let base =
-                    u32::from(profile.skill_points[skill]).min(profile.skill(skill)).min(125);
-                (
-                    111.0 + base as f32,
-                    profile.skill(skill).min(125).saturating_sub(base) as f32,
-                    -(base as f32),
-                )
-            }
+            Bar::SkillBonus(skill) => (
+                u32::from(profile.skill_points[skill]).min(profile.skill(skill)).min(125) as f32,
+                profile.skill(skill).min(125) as f32,
+            ),
         };
-        if node.left != px(left) {
-            node.left = px(left);
-        }
-        if node.width != px(width) {
-            node.width = px(width);
-        }
-        if let Some(children) = children {
-            for child in children.iter() {
-                if let Ok(mut picture) = pictures.get_mut(child)
-                    && picture.at.x != shift
-                {
-                    picture.at.x = shift;
-                }
-            }
-        }
-    }
-}
-
-pub(super) fn style_buttons(
-    mut buttons: Query<(&PageButton, &Hovered, Has<Pressed>, Has<Selected>, &mut Picture)>,
-) {
-    for (button, hovered, pressed, selected, mut picture) in &mut buttons {
-        let base = match button.0 {
-            Page::Items => 0,
-            Page::Skills => 15,
-            Page::Spells => 10,
-            Page::Statistics => 5,
-        };
-        let frame = base
-            + if selected || pressed {
-                if hovered.0 { 2 } else { 4 }
-            } else if hovered.0 {
-                1
-            } else {
-                0
-            };
-        if picture.frame != frame {
-            picture.frame = frame;
-        }
+        crop.set_if_neq(PictureCrop::horizontal(start, end));
     }
 }
 
 pub(super) fn style_info_button(
     info: Option<Single<&StatsInfo>>,
-    mut buttons: Query<(&Hovered, Has<Pressed>, &mut Picture), With<InfoToggle>>,
+    mut buttons: Query<(&mut ControlSkin, &mut Picture), With<InfoToggle>>,
 ) {
     let Some(info) = info else { return };
-    for (hovered, pressed, mut picture) in &mut buttons {
-        let base = if info.armour { 10 } else { 15 };
-        let frame = base
-            + if pressed {
-                if hovered.0 { 4 } else { 1 }
-            } else if hovered.0 {
-                2
-            } else {
-                0
-            };
-        if picture.frame != frame {
-            picture.frame = frame;
+    let base = if info.armour { 10 } else { 15 };
+    for (mut skin, mut picture) in &mut buttons {
+        skin.set_if_neq(ControlSkin::new(base, base + 2, base + 1, base + 4, base));
+        if picture.bounds != Some(base) {
             picture.bounds = Some(base);
         }
     }
@@ -1028,51 +839,22 @@ pub(super) fn style_info_button(
 
 pub(super) fn style_effect_buttons(
     info: Option<Single<&StatsInfo>>,
-    mut buttons: Query<(&EffectButton, &Hovered, Has<Pressed>, &mut Picture)>,
+    mut commands: Commands,
+    buttons: Query<(Entity, &EffectButton, Has<Selected>)>,
 ) {
     let Some(info) = info else { return };
-    for (button, hovered, pressed, mut picture) in &mut buttons {
-        let selected = match button.0 {
+    for (entity, button, selected) in &buttons {
+        let active = match button.0 {
             0 => info.filter == EffectFilter::Beneficial,
             1 => info.filter == EffectFilter::Detrimental,
             _ => info.items,
         };
-        let base = button.0 * 5;
-        let frame = if selected || pressed {
-            if button.0 == 2 {
-                if hovered.0 { 17 } else { 15 }
-            } else if hovered.0 {
-                base + 4
+        if active != selected {
+            if active {
+                commands.entity(entity).insert(Selected);
             } else {
-                base + 1
+                commands.entity(entity).remove::<Selected>();
             }
-        } else if hovered.0 {
-            base + 2
-        } else {
-            base
-        };
-        if picture.frame != frame {
-            picture.frame = frame;
-        }
-    }
-}
-
-#[derive(Component, Clone, Default)]
-pub(super) struct FocusControl;
-
-/// Retail images keep their existing dimensions; focus is painted outside them.
-pub(super) fn focus_controls(
-    focus: Option<Res<InputFocus>>,
-    visible: Option<Res<bevy::input_focus::InputFocusVisible>>,
-    mut controls: Query<(Entity, &mut Outline), With<FocusControl>>,
-) {
-    let focused = visible
-        .filter(|visible| visible.0)
-        .and_then(|_| focus.as_ref().and_then(|focus| focus.get()));
-    for (entity, mut outline) in &mut controls {
-        let colour = if focused == Some(entity) { GOLD } else { Color::NONE };
-        if outline.color != colour {
-            outline.color = colour;
         }
     }
 }
@@ -1080,7 +862,9 @@ pub(super) fn focus_controls(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::characters::Vitals;
     use crate::game::characters::{Condition, Gender, Lasting, Profession, Race};
+    use bevy::ui_widgets::{Slider, slider_self_update};
 
     #[test]
     fn changing_the_effect_filter_returns_to_the_first_line() {
@@ -1103,16 +887,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins).insert_resource(InventoryArt::default()).add_systems(
             Update,
-            (
-                show_pages,
-                refresh,
-                layout_skills,
-                style_scroll,
-                style_buttons,
-                style_info_button,
-                style_effect_buttons,
-            )
-                .chain(),
+            (show_pages, refresh, layout_skills, style_info_button, style_effect_buttons).chain(),
         );
         let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
         let actor = app.world_mut().spawn((Vitals::new(&profile), profile)).id();
