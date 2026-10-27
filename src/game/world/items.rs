@@ -1,6 +1,7 @@
 //! Items lying in the world. Each is an entity owning one item until the
 //! party takes it (retail `W8WorldItem`, `ItemManager.cpp`).
 
+use crate::game::world::level::LevelOwned;
 use bevy::prelude::*;
 
 use crate::content::items::{ItemCatalog, ItemDefinition, ItemId, QuantityKind};
@@ -53,7 +54,7 @@ pub fn drop_loot(
                         Name::new("loot"),
                         WorldItem { item, hidden: false, contents: vec![] },
                         Transform::from_translation(feet + Vec3::Y * CLEARANCE),
-                        ChildOf(level),
+                        LevelOwned(level),
                     ));
                 }
                 return;
@@ -66,7 +67,7 @@ pub fn drop_loot(
         Name::new("loot"),
         lying,
         Transform::from_translation(feet + Vec3::Y * CLEARANCE),
-        ChildOf(level),
+        LevelOwned(level),
     ));
 }
 
@@ -116,7 +117,7 @@ pub fn take_item(world: &mut World, target: Entity, distance: f32) -> Result<(),
         .and_then(|c| c.get(&handle))
         .ok_or(Refusal::MissingContent)?;
     let item = world.get::<WorldItem>(target).ok_or(Refusal::Nothing)?;
-    let owner = world.get::<ChildOf>(target).ok_or(Refusal::Nothing)?.parent();
+    let owner = world.get::<LevelOwned>(target).ok_or(Refusal::Nothing)?.0;
     if world.get::<super::level::Level>(owner).is_none() || item.hidden {
         return Err(Refusal::DoesNotFit);
     }
@@ -168,7 +169,7 @@ pub fn drop_held(world: &mut World, level: Entity, at: Vec3) -> Result<Entity, R
             Name::new("dropped item"),
             WorldItem { item: held.item, hidden: false, contents: vec![] },
             Transform::from_translation(at),
-            ChildOf(level),
+            LevelOwned(level),
         ))
         .id())
 }

@@ -12,7 +12,6 @@ use bevy_tnua::prelude::*;
 use bevy_tnua_avian3d::prelude::*;
 
 use crate::game::world::level::level_active;
-use crate::game::world::triggers::PendingPartyMove;
 
 /// A member's standing choice for the next round. Recruitment starts on
 /// Attack (retail `ResetPartySlotRow`).
@@ -50,7 +49,6 @@ impl Plugin for PartyPlugin {
         )
         // Tnua and Avian step on the fixed timestep; movement input feeds
         // them on the same step.
-        .init_resource::<PendingPartyMove>()
         .add_systems(
             FixedUpdate,
             (body::drive_party.in_set(TnuaUserControlsSystems), walk_in::fly_party)

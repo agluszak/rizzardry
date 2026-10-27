@@ -5,7 +5,7 @@ use bevy::prelude::*;
 
 use crate::content::level::LevelGeometry;
 use crate::game::time::GameClock;
-use crate::game::world::level::{Level, PropPart};
+use crate::game::world::level::{Level, LevelEntities, PropPart};
 use crate::game::world::props::Prop;
 use crate::presentation::billboards::FaceCamera;
 use crate::presentation::party_view::PartyCamera;
@@ -95,7 +95,7 @@ pub struct LevelVisuals;
 /// prop part's meshes under the part, and sprites turning to the view.
 pub fn attach_level_visuals(
     mut commands: Commands,
-    levels: Query<(Entity, &LevelAppearance, Option<&Children>), Without<LevelVisuals>>,
+    levels: Query<(Entity, &LevelAppearance, Option<&LevelEntities>), Without<LevelVisuals>>,
     geometry: Res<Assets<LevelGeometry>>,
     props: Query<(&Prop, &Children)>,
     parts: Query<&PropPart>,
@@ -110,7 +110,7 @@ pub fn attach_level_visuals(
                 ChildOf(root),
             ));
         }
-        for &child in children.into_iter().flatten() {
+        for &child in children.into_iter().flat_map(LevelEntities::entities) {
             let Ok((prop, prop_parts)) = props.get(child) else { continue };
             let Some(model) = geometry.props.get(prop.definition) else { continue };
             commands.entity(child).insert(Visibility::default());
@@ -227,7 +227,7 @@ mod tests {
                 },
                 PropMotion::default(),
                 Transform::default(),
-                ChildOf(root),
+                crate::game::world::level::LevelOwned(root),
             ))
             .id();
         let part = app

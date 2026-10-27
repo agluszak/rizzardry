@@ -36,7 +36,6 @@ fn app() -> App {
         .init_resource::<rizzardry::game::inventory::PartyInventory>()
         .init_resource::<ItemIds>()
         .init_resource::<GameRng>()
-        .init_resource::<PendingPartyMove>()
         .add_message::<LevelReady>()
         .add_message::<Travel>()
         .add_systems(PreUpdate, travel)
@@ -549,7 +548,7 @@ fn preparation_keeps_the_source_live_and_commit_captures_its_latest_state() {
             keys: vec![Transform::default()],
             keys_per_second: 1.0,
         });
-    app.world_mut().resource_mut::<PendingPartyMove>().0 = Some((source, PartyMove::Fly(0)));
+    app.world_mut().entity_mut(source).insert(PendingPartyMove(PartyMove::Fly(0)));
     app.world_mut().run_system_once(move_party).unwrap();
     assert!(app.world().get::<PathFlight>(party).is_some());
     let mut next = app.world().get::<Level>(source).unwrap().clone();

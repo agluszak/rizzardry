@@ -5,6 +5,7 @@
 //! seer's count of that kind, once.
 
 use crate::game::world::ActorPose;
+use crate::game::world::level::LevelOwned;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
@@ -109,7 +110,7 @@ pub struct GroupRecognition<'w, 's> {
     groups: Query<
         'w,
         's,
-        (Entity, &'static mut MonsterGroup, Option<&'static GroupMembers>, &'static ChildOf),
+        (Entity, &'static mut MonsterGroup, Option<&'static GroupMembers>, &'static LevelOwned),
     >,
     monsters: Query<'w, 's, (&'static Monster, ActorPose)>,
     level: PlayedLevel<'w, 's>,
@@ -140,7 +141,7 @@ impl GroupRecognition<'_, '_> {
         // maintained by Bevy, without rebuilding a second population map.
         let mut order: Vec<_> = groups
             .iter()
-            .filter(|(_, _, _, owner)| owner.parent() == level)
+            .filter(|(_, _, _, owner)| owner.0 == level)
             .map(|(entity, group, _, _)| (group.authored, entity))
             .collect();
         order.sort_unstable_by_key(|&(authored, _)| authored);
@@ -284,8 +285,10 @@ mod tests {
             ]));
         app.insert_resource(GameData { items: default(), loot: default(), species });
         let root = app.world_mut().spawn(Level::test(geometry.clone())).id();
-        let group =
-            app.world_mut().spawn((MonsterGroup { authored: 7, ..default() }, ChildOf(root))).id();
+        let group = app
+            .world_mut()
+            .spawn((MonsterGroup { authored: 7, ..default() }, LevelOwned(root)))
+            .id();
         app.world_mut().spawn((
             Monster {
                 location: 1,
@@ -301,7 +304,7 @@ mod tests {
             GlobalTransform::from_translation(Vec3::splat(2000.0)),
             Position(Vec3::new(0.0, 0.0, -10.0)),
             GroupMember(group),
-            ChildOf(root),
+            LevelOwned(root),
         ));
         app.world_mut().spawn((PartyBody::default(), Position::default()));
         let mut sage = Character::new("Sage", Race::Human, Gender::Male, Profession::Bishop);

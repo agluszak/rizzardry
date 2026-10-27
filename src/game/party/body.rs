@@ -110,7 +110,12 @@ impl PartyPlacement<'_, '_> {
     /// Retail enters a level at an entrance trigger (e.g. `MO100`) and falls
     /// back to an eye position of (0, 1000, 0) when there is none. Entrance
     /// triggers the party arrives inside do not fire until it leaves them.
-    pub fn place(&mut self, commands: &mut Commands, level: &LevelDefinition, start: &PartyStart) {
+    pub fn place(
+        &mut self,
+        commands: &mut Commands,
+        level: &LevelDefinition,
+        start: &PartyStart,
+    ) -> Entity {
         let entrance = start.entrance.as_deref().and_then(|name| {
             let found = level.entrances.iter().find(|e| e.name.eq_ignore_ascii_case(name));
             if found.is_none() {
@@ -133,9 +138,9 @@ impl PartyPlacement<'_, '_> {
             transform.translation = position;
             velocity.0 = Vec3::ZERO;
             commands.entity(entity).remove::<(super::walk_in::PathFlight, RigidBodyDisabled)>();
-            return;
+            return entity;
         }
-        spawn_party(commands, start, yaw, position, &mut self.motion_configs);
+        spawn_party(commands, start, yaw, position, &mut self.motion_configs)
     }
 }
 
@@ -145,28 +150,30 @@ fn spawn_party(
     yaw: f32,
     position: Vec3,
     motion_configs: &mut Assets<PartyMotionConfig>,
-) {
-    commands.spawn((
-        Name::new("Party"),
-        PartyBody { yaw, pitch: start.pitch.clamp(-MAX_PITCH, MAX_PITCH) },
-        Transform::from_translation(position),
-        RigidBody::Dynamic,
-        Position(position),
-        Collider::sphere(RADIUS - 0.08),
-        LockedAxes::ROTATION_LOCKED,
-        MaxLinearSpeed(MAX_SPEED),
-        TnuaController::<PartyMotion>::default(),
-        TnuaConfig::<PartyMotion>(motion_configs.add(PartyMotionConfig {
-            basis: TnuaBuiltinWalkConfig {
-                speed: RUN_SPEED,
-                float_height: FLOAT_HEIGHT,
-                max_slope: 50f32.to_radians(),
-                free_fall_extra_gravity: 0.0,
-                ..default()
-            },
-        })),
-        TnuaAvian3dSensorShape(Collider::cylinder(RADIUS * 0.9, 0.0)),
-    ));
+) -> Entity {
+    commands
+        .spawn((
+            Name::new("Party"),
+            PartyBody { yaw, pitch: start.pitch.clamp(-MAX_PITCH, MAX_PITCH) },
+            Transform::from_translation(position),
+            RigidBody::Dynamic,
+            Position(position),
+            Collider::sphere(RADIUS - 0.08),
+            LockedAxes::ROTATION_LOCKED,
+            MaxLinearSpeed(MAX_SPEED),
+            TnuaController::<PartyMotion>::default(),
+            TnuaConfig::<PartyMotion>(motion_configs.add(PartyMotionConfig {
+                basis: TnuaBuiltinWalkConfig {
+                    speed: RUN_SPEED,
+                    float_height: FLOAT_HEIGHT,
+                    max_slope: 50f32.to_radians(),
+                    free_fall_extra_gravity: 0.0,
+                    ..default()
+                },
+            })),
+            TnuaAvian3dSensorShape(Collider::cylinder(RADIUS * 0.9, 0.0)),
+        ))
+        .id()
 }
 
 /// Where the party enters the next level that becomes ready: an entrance

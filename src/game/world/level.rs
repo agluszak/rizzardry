@@ -85,6 +85,25 @@ impl Level {
     }
 }
 
+/// Belongs to a level for its lifetime: its local monsters, items, groups,
+/// props, devices and navigation. This, not the transform hierarchy, is what
+/// persistence, damage and pickup mean by "in the level"; despawning the
+/// level despawns them. Spatial parts keep their own `ChildOf`.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+#[relationship(relationship_target = LevelEntities)]
+pub struct LevelOwned(pub Entity);
+
+/// What a level owns, maintained by Bevy from [`LevelOwned`].
+#[derive(Component, Debug, Default)]
+#[relationship_target(relationship = LevelOwned, linked_spawn)]
+pub struct LevelEntities(Vec<Entity>);
+
+impl LevelEntities {
+    pub fn entities(&self) -> &[Entity] {
+        &self.0
+    }
+}
+
 /// The party is being asked whether to leave for another level's entrance;
 /// it waits until the player answers (retail `RequestLevelTransition`).
 #[derive(Component, Debug, Clone)]
@@ -102,7 +121,7 @@ pub fn ask_travel(world: &mut World, level: Entity, entrance: String) -> Option<
     for question in pending {
         world.despawn(question);
     }
-    Some(world.spawn((TravelQuestion { entrance }, ChildOf(level))).id())
+    Some(world.spawn((TravelQuestion { entrance }, LevelOwned(level))).id())
 }
 
 /// An answer addresses the particular question that was displayed. It cannot
@@ -118,14 +137,14 @@ pub struct TravelAnswer {
 pub fn answer_travel_questions(
     mut commands: Commands,
     mut answers: MessageReader<TravelAnswer>,
-    questions: Query<(Entity, &TravelQuestion, &ChildOf)>,
+    questions: Query<(Entity, &TravelQuestion, &LevelOwned)>,
     levels: Query<(), With<Level>>,
     battle: Option<Res<crate::game::combat::Battle>>,
     mut travel: MessageWriter<Travel>,
 ) {
     let answers: Vec<_> = answers.read().copied().collect();
     for (entity, question, owner) in &questions {
-        if !levels.contains(owner.parent()) {
+        if !levels.contains(owner.0) {
             commands.entity(entity).despawn();
             continue;
         }
@@ -228,7 +247,7 @@ impl LevelContents<'_, '_> {
     fn remember(&self, root: Entity, state: &LevelState, children: &[Entity]) -> LevelRecord {
         let notes = self.notes.get(root).ok();
         LevelRecord {
-            triggers: self.devices.remember(root, state),
+            triggers: self.devices.remember(children, state),
             prop_frames: self
                 .props
                 .iter_many(children)
@@ -344,7 +363,8 @@ fn build_world(
     tables: &LootTables,
     mut remembered: Option<&mut LevelRecord>,
 ) {
-    let props: Vec<_> = geometry.props.iter().map(|_| commands.spawn(ChildOf(root)).id()).collect();
+    let props: Vec<_> =
+        geometry.props.iter().map(|_| commands.spawn(LevelOwned(root)).id()).collect();
     spawn_devices(
         commands,
         root,
@@ -456,10 +476,9 @@ pub struct SharedData<'w> {
 pub fn activate_level(
     mut commands: Commands,
     mut destinations: Query<(Entity, &mut Destination)>,
-    current: Query<(Entity, &Level, &LevelState, Option<&Children>)>,
+    current: Query<(Entity, &Level, &LevelState, Option<&LevelEntities>)>,
     battle: Option<Res<crate::game::combat::Battle>>,
     camp: Option<Res<crate::game::camp::Camp>>,
-    mut pending: ResMut<super::triggers::PendingPartyMove>,
     geometry: Res<Assets<LevelDefinition>>,
     assets: Res<AssetServer>,
     mut shared: SharedData,
@@ -522,11 +541,10 @@ pub fn activate_level(
         // One authority until now: capture the source's latest state exactly at
         // departure, including changes made while the destination was loading.
         for (entity, source, state, children) in &current {
-            let children = children.map_or(&[][..], |c| &c[..]);
+            let children = children.map_or(&[][..], LevelEntities::entities);
             memory.0.insert(source.path.clone(), transition.p0().remember(entity, state, children));
             commands.entity(entity).despawn();
         }
-        pending.0 = None;
         let mut remembered = memory.0.remove(&level.path);
         build_world(
             &mut commands,
@@ -549,7 +567,8 @@ pub fn activate_level(
             &mut ids,
             &mut rng,
         );
-        transition.p1().place(&mut commands, geometry, &destination.start);
+        let party = transition.p1().place(&mut commands, geometry, &destination.start);
+        navigation::add_party_characters(&mut commands, root, party, &navigation);
         info!("{} is active", level.path);
         commands.entity(root).remove::<Destination>().insert((level.clone(), navigation));
         ready.write(LevelReady { level: root });

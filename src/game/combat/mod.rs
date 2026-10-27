@@ -7,6 +7,7 @@ pub mod approach;
 pub mod attack;
 
 use crate::game::world::ActorPose;
+use crate::game::world::level::LevelOwned;
 use crate::game::world::level::PlayedLevel;
 use crate::game::world::navigation::{Walker, feet};
 use crate::game::world::obstacles::WorldObstacles;
@@ -672,7 +673,7 @@ fn monster_acts(
     rng: &mut GameRng,
     roster: &PartyRoster,
     members: &mut Query<(&mut Character, &mut Vitals, &Carried)>,
-    monsters: &Query<(&mut Monster, ActorPose, Option<&Walker>, &ChildOf)>,
+    monsters: &Query<(&mut Monster, ActorPose, Option<&Walker>, &LevelOwned)>,
     party: &PartyView,
     formation: &mut ResMut<Formation>,
     items: &ItemCatalog,
@@ -759,7 +760,7 @@ fn end_round(
     rng: &mut GameRng,
     roster: &PartyRoster,
     members: &mut Query<(&mut Character, &mut Vitals, &Carried)>,
-    monsters: &Query<(&mut Monster, ActorPose, Option<&Walker>, &ChildOf)>,
+    monsters: &Query<(&mut Monster, ActorPose, Option<&Walker>, &LevelOwned)>,
     party_eye: Vec3,
     species: &MonsterCatalog,
     news: &mut MessageWriter<CombatNews>,
@@ -935,7 +936,7 @@ mod tests {
                     body: ScaledBody { scale: 1.0, radius: 1.0, eye_height: 1.0, speed: 0.0 },
                 },
                 Transform::from_translation(Vec3::NEG_Z),
-                ChildOf(root),
+                LevelOwned(root),
             ))
             .id();
         app.insert_resource(Battle { monsters: vec![(monster, Turn::default())], ..default() });
@@ -1006,17 +1007,21 @@ mod tests {
             .add(LevelDefinition::default());
         app.world_mut().get_mut::<Level>(level).unwrap().geometry = geometry;
         let monster = app.world_mut().query::<(Entity, &Monster)>().single(app.world()).unwrap().0;
-        let group =
-            app.world_mut().spawn((MonsterGroup { authored: 1, ..default() }, ChildOf(level))).id();
+        let group = app
+            .world_mut()
+            .spawn((MonsterGroup { authored: 1, ..default() }, LevelOwned(level)))
+            .id();
         app.world_mut().entity_mut(monster).insert(GroupMember(group));
-        let outsider_group =
-            app.world_mut().spawn((MonsterGroup { authored: 2, ..default() }, ChildOf(level))).id();
+        let outsider_group = app
+            .world_mut()
+            .spawn((MonsterGroup { authored: 2, ..default() }, LevelOwned(level)))
+            .id();
         let outsider = app.world().get::<Monster>(monster).unwrap().clone();
         app.world_mut().spawn((
             outsider,
             Transform::from_translation(Vec3::NEG_Z),
             GroupMember(outsider_group),
-            ChildOf(level),
+            LevelOwned(level),
         ));
         app.world_mut().resource_mut::<CombatSettings>().continuous = true;
         for _ in 0..12 {

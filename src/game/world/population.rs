@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use super::STEP_HEIGHT;
 use super::navigation::{LevelNavigation, Walker, WalkerMotion, WalkerMotionConfig};
+use crate::game::world::level::LevelOwned;
 use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy_landmass::prelude::*;
@@ -164,7 +165,7 @@ pub fn populate(
     };
     let mut groups: HashMap<i32, Entity> = groups
         .into_iter()
-        .map(|group| (group.authored, commands.spawn((group, ChildOf(root))).id()))
+        .map(|group| (group.authored, commands.spawn((group, LevelOwned(root))).id()))
         .collect();
     let monster_count = monsters.iter().filter(|m| !m.monster.is_dead()).count();
     for kept in monsters {
@@ -175,7 +176,7 @@ pub fn populate(
         let Some(kind) = species.0.get(monster.species as usize) else { continue };
         let group = kept.group.map(|authored| {
             *groups.entry(authored).or_insert_with(|| {
-                commands.spawn((MonsterGroup { authored, ..default() }, ChildOf(root))).id()
+                commands.spawn((MonsterGroup { authored, ..default() }, LevelOwned(root))).id()
             })
         });
         let ScaledBody { radius, speed, .. } = monster.body;
@@ -185,7 +186,7 @@ pub fn populate(
             monster,
             Transform::from_translation(kept.feet + Vec3::Y * float_height)
                 .with_rotation(Quat::from_rotation_y(kept.yaw)),
-            ChildOf(root),
+            LevelOwned(root),
         ));
         if let Some(group) = group {
             entity.insert(GroupMember(group));
@@ -245,6 +246,6 @@ pub fn populate(
     info!("placed {monster_count} monsters and {} items", lying.len());
     for (item, at) in lying {
         let name = items.get(item.item.item).map_or_else(String::new, |d| d.name.clone());
-        commands.spawn((Name::new(name), item, Transform::from_translation(at), ChildOf(root)));
+        commands.spawn((Name::new(name), item, Transform::from_translation(at), LevelOwned(root)));
     }
 }
