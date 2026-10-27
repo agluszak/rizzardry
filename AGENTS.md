@@ -50,4 +50,4 @@ character, not its C++ architecture.
 - Do not claim checks you did not run or visual parity from headless tests.
 - Keep usage instructions in README and development rules here. Put research,
   plans and temporary decisions in issues/PRs, not a growing docs archive.
-- Create non-draft PRs only. Merge only when the user requests it.
+- Always open a non-draft PR for completed changes. Merge only when the user requests it.
