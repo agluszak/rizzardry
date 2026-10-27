@@ -437,6 +437,9 @@ pub fn queue_notices(
     for news in locks.read() {
         let text = match news {
             LockNews::Picked => string(LOCK_PICKED),
+            LockNews::SkillImproved { member: who } => {
+                format!("{}'s Locks & Traps improves.", member(who))
+            }
             LockNews::Forced { member: who } => format!("{} {}", member(who), string(LOCK_FORCED)),
             LockNews::NotForced { member: who } => {
                 format!("{} {}", member(who), string(LOCK_NOT_FORCED))

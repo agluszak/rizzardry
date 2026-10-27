@@ -11,7 +11,7 @@
 //! consequences at once; retail's progress bars and tumbler animations are
 //! presentation and do not delay the outcome.
 //!
-//! Not ported yet: skill practice from picking and disarming, the Knock-Knock
+//! Not ported yet: trap disarming, the Knock-Knock
 //! and Divine Trap spells and tools used on a device, and what a sprung
 //! trap's spell does. Attempts that could spring a trap are refused before
 //! spending RNG or changing the device until those consequences are implemented.
@@ -78,13 +78,17 @@ pub struct Guarded {
     pub trap: Option<u8>,
     /// Game time the party last faced it.
     pub faced_at: Option<u64>,
+    /// Remaining practice opportunities; leaving the panel does not reset them.
+    pub practice_left: u8,
 }
 
 impl Guarded {
     pub fn new(lock: Lock) -> Self {
         match lock {
-            Lock::Trap { kind, .. } => Guarded { trap: kind, faced_at: None },
-            Lock::Pickable { .. } => Guarded::default(),
+            Lock::Trap { kind, .. } => Guarded { trap: kind, ..default() },
+            Lock::Pickable { difficulty } => {
+                Guarded { practice_left: difficulty.clamp(2, 8) * 3, ..default() }
+            }
         }
     }
 }
@@ -179,6 +183,9 @@ pub enum LockNews {
     },
     /// The device stays guarded because discharge cannot yet be resolved.
     UnsupportedTrap,
+    SkillImproved {
+        member: Entity,
+    },
 }
 
 /// Why an attempt was not made.
@@ -343,6 +350,25 @@ pub fn pick_tumbler(world: &mut World, actor: Entity, tumbler: usize) -> Result<
         }
     }
     picking.tumblers[tumbler] = Some(actor);
+    // Retail rolls even when the device's finite practice budget is exhausted.
+    if rng(world).below(5) == 0 {
+        let device = world.resource::<DeviceInteraction>().device;
+        if let Some(mut guarded) = world.get_mut::<Guarded>(device)
+            && guarded.practice_left > 0
+        {
+            guarded.practice_left -= 1;
+            let improved = world.resource_scope(|world, mut rng: Mut<GameRng>| {
+                world.get_mut::<Character>(actor).unwrap().practise(
+                    Skill::LocksAndTraps,
+                    1,
+                    &mut rng,
+                )
+            });
+            if improved {
+                world.write_message(LockNews::SkillImproved { member: actor });
+            }
+        }
+    }
     world.write_message(LockNews::Tumbler { dropped });
     let open = picking.tumblers.iter().all(Option::is_some);
     let mut interaction = world.resource_mut::<DeviceInteraction>();
