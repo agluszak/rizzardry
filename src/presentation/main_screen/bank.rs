@@ -76,10 +76,10 @@ pub fn row(art: &MainScreenArt, _sheets: &Assets<SpriteSheet>) -> impl SceneList
     let progress = picture(art.progress.clone(), 0, Vec2::new(177.0, 2.0));
     let steps:Vec<_>=[(0,300.0,-1_i32),(4,323.0,1)].into_iter().map(|(frame,x,step)|bsn!{
         @crate::presentation::retail_controls::image_button(art.scroll_arrows.clone(),Vec2::new(x,456.0),ControlSkin::new(frame,frame+1,frame+2,frame+2,frame+3))
-        on(move |_:On<Activate>,roster:Res<PartyRoster>,mut selected:ResMut<SelectedMember>|{
-            let members=roster.0.len() as i32;
-            if members>0{let current=selected.member(&roster).and_then(|m|roster.0.get_index_of(&m)).unwrap_or(0);
-                selected.0=roster.0.get_index((current as i32+step).rem_euclid(members) as usize).copied();}
+        on(move |_:On<Activate>,roster:Single<&PartyRoster>,mut selected:ResMut<SelectedMember>|{
+            let members=roster.len() as i32;
+            if members>0{let current=selected.member(&roster).and_then(|m|roster.get_index_of(&m)).unwrap_or(0);
+                selected.0=roster.get_index((current as i32+step).rem_euclid(members) as usize).copied();}
         })
     }).collect();
     let icon = |x, frames, kind| bank_button(art.icons.clone(), Vec2::new(x, 452.0), frames, kind);
@@ -110,8 +110,8 @@ pub fn draw_bank(
     art: Res<MainScreenArt>,
     layout: Res<ScreenLayout>,
     selected: Res<SelectedMember>,
-    roster: Res<PartyRoster>,
-    battle: Option<Res<Battle>>,
+    roster: Single<&PartyRoster>,
+    battle: Option<Single<&Battle>>,
     orders: Query<&Order>,
     settings: Res<CombatSettings>,
     search: Res<Search>,
@@ -203,11 +203,11 @@ fn press(
     mut search: MessageWriter<ToggleSearch>,
     mut layout: ResMut<ScreenLayout>,
     mut orders: Query<&mut Order>,
-    roster: Res<PartyRoster>,
+    roster: Single<&PartyRoster>,
     selected: Res<SelectedMember>,
     mut round: MessageWriter<StartRound>,
     mut settings: ResMut<CombatSettings>,
-    battle: Option<Res<Battle>>,
+    battle: Option<Single<&Battle>>,
     mut commands: Commands,
     views: Query<Entity, With<super::magic_view::MagicView>>,
     magic_art: Res<super::magic_view::MagicViewArt>,
@@ -261,7 +261,7 @@ fn press(
 
 /// Show the round's progress along the roof while one plays.
 pub fn show_round_progress(
-    battle: Option<Res<Battle>>,
+    battle: Option<Single<&Battle>>,
     mut bars: Query<(&mut PictureCrop, &mut Visibility), With<RoundProgress>>,
 ) {
     let progress = battle.and_then(|b| b.progress());
@@ -281,11 +281,11 @@ pub fn show_round_progress(
 /// Captions are two stable text controls, independent of button input.
 pub fn draw_caption(
     selected: Res<SelectedMember>,
-    roster: Res<PartyRoster>,
+    roster: Single<&PartyRoster>,
     members: Query<(&Character, &Vitals, Option<&Carried>)>,
     data: Option<Res<GameData>>,
     catalogs: Res<Assets<ItemCatalog>>,
-    battle: Option<Res<Battle>>,
+    battle: Option<Single<&Battle>>,
     orders: Query<&Order>,
     mut captions: Query<(&CaptionLine, &mut BitmapText)>,
     spells: Res<Assets<crate::content::spells::SpellCatalog>>,

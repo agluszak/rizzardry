@@ -25,7 +25,7 @@ pub fn navmesh_path(level: &str, class: usize) -> AssetPath<'static> {
 /// A level's collision, as walkers of one size class meet it: its solid
 /// surfaces and its collidable props at rest (doorways closed by doors are
 /// gaps, joined by links while the doors are open).
-#[derive(Asset, TypePath, Debug)]
+#[derive(Debug)]
 pub struct LevelCollision {
     pub collision: CollisionMesh,
     pub class: usize,

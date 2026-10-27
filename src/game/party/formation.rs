@@ -31,7 +31,7 @@ impl Row {
 }
 
 /// Who sits where, by member entity: three seats a row.
-#[derive(Resource, Debug, Default, Clone, PartialEq)]
+#[derive(Component, Debug, Default, Clone, PartialEq)]
 pub struct Formation {
     seats: EnumMap<Row, [Option<Entity>; 3]>,
 }

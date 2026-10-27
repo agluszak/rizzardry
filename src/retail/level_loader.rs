@@ -610,14 +610,17 @@ impl AssetLoader for PvlDefinitionLoader {
         let collision = read_collision(&octree)?.solid_mesh();
 
         // Who stands where and what lies about; levels without a state file
-        // are empty.
+        // are empty, but one that cannot be read fails the level.
         let (monsters, items) = match sibling(context, ".", &format!("{stem}.sts")) {
             Some(path) => match context.read_asset_bytes(path).await {
                 Ok(state) => {
                     let items = read_world_items(&state)?.iter().map(item_placement).collect();
                     (monster_placements(&read_placements(&state)?), items)
                 }
-                Err(_) => (vec![], vec![]),
+                Err(bevy::asset::ReadAssetBytesError::AssetReaderError(
+                    bevy::asset::io::AssetReaderError::NotFound(_),
+                )) => (vec![], vec![]),
+                Err(error) => return Err(error.into()),
             },
             None => (vec![], vec![]),
         };

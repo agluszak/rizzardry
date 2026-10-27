@@ -1,6 +1,8 @@
 //! Items lying in the world. Each is an entity owning one item until the
 //! party takes it (retail `W8WorldItem`, `ItemManager.cpp`).
 
+use crate::game::party::roster::the_party;
+use crate::game::world::level::LevelOwned;
 use bevy::prelude::*;
 
 use crate::content::items::{ItemCatalog, ItemDefinition, ItemId, QuantityKind};
@@ -79,7 +81,7 @@ pub fn drop_loot(
                     Name::new("loot"),
                     WorldItem::loose(item, false),
                     Transform::from_translation(feet + Vec3::Y * CLEARANCE),
-                    ChildOf(level),
+                    LevelOwned(level),
                 ));
             }
             return;
@@ -89,7 +91,7 @@ pub fn drop_loot(
         Name::new("loot"),
         lying,
         Transform::from_translation(feet + Vec3::Y * CLEARANCE),
-        ChildOf(level),
+        LevelOwned(level),
     ));
 }
 
@@ -130,19 +132,20 @@ pub fn take_item(world: &mut World, target: Entity, distance: f32) -> Result<(),
         .and_then(|c| c.get(&handle))
         .ok_or(Refusal::MissingContent)?;
     let item = world.get::<WorldItem>(target).ok_or(Refusal::Nothing)?;
-    let owner = world.get::<ChildOf>(target).ok_or(Refusal::Nothing)?.parent();
+    let owner = world.get::<LevelOwned>(target).ok_or(Refusal::Nothing)?.0;
     if world.get::<super::level::Level>(owner).is_none() || item.hidden {
         return Err(Refusal::DoesNotFit);
     }
     catalog.get(item.appearance()).ok_or(Refusal::MissingContent)?;
-    if world.resource::<PartyInventory>().hand.held.is_some() {
+    let party = the_party(world).ok_or(Refusal::Nothing)?;
+    if world.get::<PartyInventory>(party).unwrap().hand.held.is_some() {
         return Err(Refusal::HandFull);
     }
     let mut item = world.entity_mut(target).take::<WorldItem>().unwrap();
     if let GroundLoot::Pile { contents, .. } = &mut item.loot {
-        let taken = world.resource_scope(|world, mut party: Mut<PartyInventory>| {
-            let catalog = world.resource::<Assets<ItemCatalog>>().get(&handle).unwrap();
-            party.pool.collect(contents, catalog)
+        let taken = world.resource_scope(|world, catalogs: Mut<Assets<ItemCatalog>>| {
+            let catalog = catalogs.get(&handle).unwrap();
+            world.get_mut::<PartyInventory>(party).unwrap().pool.collect(contents, catalog)
         });
         for (name, _) in taken {
             world.write_message(ItemNews::Takes { member: None, item: name });
@@ -153,7 +156,7 @@ pub fn take_item(world: &mut World, target: Entity, distance: f32) -> Result<(),
             return Ok(());
         }
     } else if let GroundLoot::Loose(stack) = item.loot {
-        world.resource_mut::<PartyInventory>().hand.held = Some(stack);
+        world.get_mut::<PartyInventory>(party).unwrap().hand.held = Some(stack);
     }
     world.despawn(target);
     Ok(())
@@ -176,7 +179,9 @@ pub fn drop_held(world: &mut World, level: Entity, at: Vec3) -> Result<Entity, R
     if eye.xz().distance(at.xz()) > THROW + CLEARANCE {
         return Err(Refusal::DoesNotFit);
     }
-    let held = world.resource::<PartyInventory>().hand.held.as_ref().ok_or(Refusal::Nothing)?;
+    let party = the_party(world).ok_or(Refusal::Nothing)?;
+    let held =
+        world.get::<PartyInventory>(party).unwrap().hand.held.as_ref().ok_or(Refusal::Nothing)?;
     let data =
         world.get_resource::<crate::game::data::GameData>().ok_or(Refusal::MissingContent)?;
     let definition = world
@@ -187,13 +192,14 @@ pub fn drop_held(world: &mut World, level: Entity, at: Vec3) -> Result<Entity, R
     if definition.crucial {
         return Err(Refusal::Crucial);
     }
-    let held = world.resource_mut::<PartyInventory>().hand.held.take().ok_or(Refusal::Nothing)?;
+    let held =
+        world.get_mut::<PartyInventory>(party).unwrap().hand.held.take().ok_or(Refusal::Nothing)?;
     Ok(world
         .spawn((
             Name::new("dropped item"),
             WorldItem::loose(held, false),
             Transform::from_translation(at),
-            ChildOf(level),
+            LevelOwned(level),
         ))
         .id())
 }
@@ -248,5 +254,25 @@ mod tests {
             .collect();
         lying.sort();
         assert_eq!(lying, [(1, 0), (BAG_OF_ITEMS.0, 2)]);
+        // Missing container art/definition must not lose gameplay ownership.
+        drop_loot(
+            &mut world.commands(),
+            level,
+            Vec3::Z,
+            vec![item(&mut ids, 4), item(&mut ids, 5)],
+            &ItemCatalog::default(),
+        );
+        world.flush();
+        assert_eq!(world.query::<&WorldItem>().iter(&world).count(), 4);
+        assert!(
+            world
+                .query_filtered::<&LevelOwned, With<WorldItem>>()
+                .iter(&world)
+                .all(|owner| owner.0 == level)
+        );
+        assert_eq!(
+            world.get::<crate::game::world::level::LevelEntities>(level).unwrap().entities().len(),
+            4
+        );
     }
 }

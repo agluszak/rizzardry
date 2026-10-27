@@ -1,10 +1,7 @@
 //! The frontend and the one-time boundary that starts a campaign.
 use super::characters::creation::CharacterDraft;
-use super::party::{
-    formation::Formation,
-    roster::{PartyRoster, recruit_character},
-};
-use super::world::level::{Destination, Level};
+use super::party::roster::Party;
+use super::world::level::{Destination, Entry, Level};
 use bevy::prelude::*;
 
 #[derive(States, Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -21,38 +18,55 @@ pub struct NewGameDestination {
     pub start: super::party::body::PartyStart,
 }
 
-/// Validate the whole proposed party before creating any actors or requesting a
-/// level. Taking the drafts only on success makes retry and cancellation safe.
+/// Whether a campaign has begun or is entering its first level; a new one
+/// may not start alongside it.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct Campaign<'w, 's> {
+    begun: Query<'w, 's, (), Or<(With<Party>, With<Destination>)>>,
+}
+
+impl Campaign<'_, '_> {
+    pub fn begun(&self) -> bool {
+        !self.begun.is_empty()
+    }
+}
+
+/// Validate the whole proposed party and request its first level. Nothing
+/// joins until that level commits ([`Entry::NewGame`]), so a failed load
+/// leaves the drafts to retry and no half-started campaign.
 pub fn begin_adventure(
-    drafts: &mut Vec<CharacterDraft>,
+    drafts: &[CharacterDraft],
     session: &State<Session>,
+    campaign: &Campaign,
     commands: &mut Commands,
-    roster: &mut PartyRoster,
-    formation: &mut Formation,
     assets: &AssetServer,
     destination: &NewGameDestination,
-    next: &mut NextState<Session>,
 ) -> Result<(), &'static str> {
     if *session.get() != Session::Creation {
         return Err("Start a new party from the main menu.");
     }
-    if !roster.0.is_empty() {
+    if campaign.begun() {
         return Err("A campaign has already begun.");
     }
     if !(1..=6).contains(&drafts.len()) {
         return Err("Create between one and six adventurers.");
     }
-    let characters = drafts.iter().map(CharacterDraft::finish).collect::<Result<Vec<_>, _>>()?;
-    for (character, draft) in characters.into_iter().zip(drafts.iter()) {
-        let member = recruit_character(commands, roster, formation, character);
-        commands.entity(member).insert(super::magic::LearnedSpells(draft.spells().clone()));
-    }
-    drafts.clear();
+    let characters = drafts
+        .iter()
+        .map(|draft| {
+            draft.finish().map(|character| {
+                (character, crate::game::magic::LearnedSpells(draft.spells().clone()))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     commands.spawn((
         Name::new(destination.path.clone()),
-        Destination::new(Level::load(&destination.path, assets), destination.start.clone()),
+        Destination::new(
+            Level::load(&destination.path, assets),
+            destination.start.clone(),
+            Entry::NewGame(characters),
+        ),
     ));
-    next.set(Session::Playing);
     Ok(())
 }
 
@@ -64,19 +78,16 @@ mod tests {
         level::LevelDefinition,
         ui::TextTable,
     };
-    use crate::game::characters::{Character, Vitals};
     use bevy::ecs::system::SystemState;
     use bevy_landmass::NavMesh3d;
 
     #[test]
-    fn new_adventure_validates_all_members_before_committing_and_starts_only_once() {
+    fn new_adventure_validates_all_members_and_requests_its_level_only_once() {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default(), bevy::state::app::StatesPlugin))
             .init_asset::<LevelDefinition>()
             .init_asset::<NavMesh3d>()
             .init_asset::<TextTable>()
-            .init_resource::<PartyRoster>()
-            .init_resource::<Formation>()
             .insert_state(Session::Creation);
         let mut drafts = vec![CharacterDraft::default(), CharacterDraft::default()];
         drafts[0].name = "First".into();
@@ -90,74 +101,37 @@ mod tests {
                 ..default()
             },
         };
-        let mut operation = SystemState::<(
-            Commands,
-            ResMut<PartyRoster>,
-            ResMut<Formation>,
-            Res<AssetServer>,
-            ResMut<NextState<Session>>,
-            Res<State<Session>>,
-        )>::new(app.world_mut());
-        {
-            let (mut commands, mut roster, mut formation, assets, mut next, state) =
-                operation.get_mut(app.world_mut()).unwrap();
-            assert!(
-                begin_adventure(
-                    &mut drafts,
-                    &state,
-                    &mut commands,
-                    &mut roster,
-                    &mut formation,
-                    &assets,
-                    &target,
-                    &mut next
-                )
-                .is_err()
+        let mut operation =
+            SystemState::<(Commands, Campaign, Res<AssetServer>, Res<State<Session>>)>::new(
+                app.world_mut(),
             );
-        }
-        operation.apply(app.world_mut());
-        assert!(app.world().resource::<PartyRoster>().0.is_empty());
+        let mut begin = |app: &mut App, drafts: &[CharacterDraft]| {
+            let (mut commands, campaign, assets, state) =
+                operation.get_mut(app.world_mut()).unwrap();
+            let result =
+                begin_adventure(drafts, &state, &campaign, &mut commands, &assets, &target);
+            operation.apply(app.world_mut());
+            result
+        };
+        // The second draft has no name.
+        assert!(begin(&mut app, &drafts).is_err());
         assert_eq!(app.world_mut().query::<&Destination>().iter(app.world()).count(), 0);
         drafts[1].name = "Second".into();
-        {
-            let (mut commands, mut roster, mut formation, assets, mut next, state) =
-                operation.get_mut(app.world_mut()).unwrap();
-            begin_adventure(
-                &mut drafts,
-                &state,
-                &mut commands,
-                &mut roster,
-                &mut formation,
-                &assets,
-                &target,
-                &mut next,
-            )
-            .unwrap();
-            assert!(
-                begin_adventure(
-                    &mut drafts,
-                    &state,
-                    &mut commands,
-                    &mut roster,
-                    &mut formation,
-                    &assets,
-                    &target,
-                    &mut next
-                )
-                .is_err()
-            );
-        }
-        operation.apply(app.world_mut());
-        assert!(drafts.is_empty());
-        let members: Vec<_> = app.world().resource::<PartyRoster>().0.iter().copied().collect();
-        assert_eq!(members.len(), 2);
-        assert_eq!(app.world().get::<Character>(members[0]), Some(&expected));
-        assert_eq!(app.world().get::<Vitals>(members[0]).unwrap().hp, expected.max_hp());
+        begin(&mut app, &drafts).unwrap();
+        assert!(begin(&mut app, &drafts).is_err(), "one campaign at a time");
         let arrival = app.world_mut().query::<&Destination>().single(app.world()).unwrap();
         assert_eq!(
             arrival.start.entrance.as_deref(),
             Some("MO105"),
             "creation preserves the requested entrance"
+        );
+        let Entry::NewGame(party) = &arrival.entry else { panic!("a new game") };
+        assert_eq!(party.len(), 2);
+        assert_eq!(party[0].0, expected);
+        assert_eq!(party[0].1.0, drafts[0].spells().clone());
+        assert!(
+            app.world_mut().query::<&Party>().iter(app.world()).next().is_none(),
+            "nobody joins before the level commits"
         );
     }
 }

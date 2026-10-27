@@ -5,6 +5,7 @@
 //! seer's count of that kind, once.
 
 use crate::game::world::ActorPose;
+use crate::game::world::level::LevelOwned;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
@@ -12,7 +13,6 @@ use super::population::Monster;
 use crate::content::characters::{Attribute, Skill};
 use crate::content::species::MonsterCatalog;
 use crate::game::characters::{Character, Condition, MonsterKnowledge, Vitals};
-use crate::game::combat::Battle;
 use crate::game::data::GameData;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
@@ -109,11 +109,11 @@ pub struct GroupRecognition<'w, 's> {
     groups: Query<
         'w,
         's,
-        (Entity, &'static mut MonsterGroup, Option<&'static GroupMembers>, &'static ChildOf),
+        (Entity, &'static mut MonsterGroup, Option<&'static GroupMembers>, &'static LevelOwned),
     >,
     monsters: Query<'w, 's, (&'static Monster, ActorPose)>,
     level: PlayedLevel<'w, 's>,
-    roster: Res<'w, PartyRoster>,
+    roster: Single<'w, 's, &'static PartyRoster>,
     members: Query<'w, 's, (&'static Character, &'static Vitals, &'static mut MonsterKnowledge)>,
     data: Option<Res<'w, GameData>>,
     catalogs: Res<'w, Assets<MonsterCatalog>>,
@@ -125,7 +125,7 @@ impl GroupRecognition<'_, '_> {
         &mut self,
         from: Vec3,
         forward: Vec3,
-        battle: Option<&Battle>,
+        combatants: Option<&[Entity]>,
         rng: &mut GameRng,
     ) {
         let (Some(level), Some(far)) = (self.level.entity(), self.level.view_distance()) else {
@@ -140,7 +140,7 @@ impl GroupRecognition<'_, '_> {
         // maintained by Bevy, without rebuilding a second population map.
         let mut order: Vec<_> = groups
             .iter()
-            .filter(|(_, _, _, owner)| owner.parent() == level)
+            .filter(|(_, _, _, owner)| owner.0 == level)
             .map(|(entity, group, _, _)| (group.authored, entity))
             .collect();
         order.sort_unstable_by_key(|&(authored, _)| authored);
@@ -155,7 +155,7 @@ impl GroupRecognition<'_, '_> {
             let (mut species_id, mut count, mut in_view) = (None, 0usize, false);
             for member in membership.iter() {
                 let Ok((monster, at)) = monsters.get(member) else { continue };
-                if monster.is_dead() || battle.as_ref().is_some_and(|b| !b.fights(member)) {
+                if monster.is_dead() || combatants.is_some_and(|c| !c.contains(&member)) {
                     continue;
                 }
                 species_id.get_or_insert(monster.species);
@@ -171,7 +171,7 @@ impl GroupRecognition<'_, '_> {
             let Some(species) = catalog.0.get(species_id as usize) else { continue };
             if !known {
                 let mut best: Option<(String, i32)> = None;
-                for (profile, vitals, knowledge) in members.iter_many(&roster.0).matched() {
+                for (profile, vitals, knowledge) in members.iter_many(roster.iter()).matched() {
                     if !can_look(vitals) {
                         continue;
                     }
@@ -195,7 +195,8 @@ impl GroupRecognition<'_, '_> {
             }
             if !counted {
                 group.counted = true;
-                for (_, vitals, mut knowledge) in members.iter_many_unique_mut(&roster.0).matched()
+                for (_, vitals, mut knowledge) in
+                    members.iter_many_unique_mut(roster.iter()).matched()
                 {
                     if !can_look(vitals) {
                         continue;
@@ -262,7 +263,6 @@ mod tests {
         app.add_plugins(MinimalPlugins)
             .init_resource::<Assets<LevelDefinition>>()
             .init_resource::<Assets<MonsterCatalog>>()
-            .init_resource::<PartyRoster>()
             .insert_resource(GameRng::seeded(4))
             .add_message::<Identified>()
             .add_systems(
@@ -289,8 +289,10 @@ mod tests {
             spells: default(),
         });
         let root = app.world_mut().spawn(Level::test(geometry.clone())).id();
-        let group =
-            app.world_mut().spawn((MonsterGroup { authored: 7, ..default() }, ChildOf(root))).id();
+        let group = app
+            .world_mut()
+            .spawn((MonsterGroup { authored: 7, ..default() }, LevelOwned(root)))
+            .id();
         app.world_mut().spawn((
             Monster {
                 location: 1,
@@ -306,14 +308,14 @@ mod tests {
             GlobalTransform::from_translation(Vec3::splat(2000.0)),
             Position(Vec3::new(0.0, 0.0, -10.0)),
             GroupMember(group),
-            ChildOf(root),
+            LevelOwned(root),
         ));
         app.world_mut().spawn((PartyBody::default(), Position::default()));
         let mut sage = Character::new("Sage", Race::Human, Gender::Male, Profession::Bishop);
         sage.skill_points[Skill::Mythology] = 125;
         let member = app.world_mut().spawn((Vitals::new(&sage), sage.clone())).id();
         let outsider = app.world_mut().spawn((Vitals::new(&sage), sage)).id();
-        app.world_mut().resource_mut::<PartyRoster>().0.insert(member);
+        crate::game::party::roster::test_party(app.world_mut(), &[member]);
         let camera = app
             .world_mut()
             .spawn((

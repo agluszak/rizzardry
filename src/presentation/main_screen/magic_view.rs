@@ -407,11 +407,11 @@ fn rating(chance: u32) -> usize {
 pub(super) fn refresh_magic_view(
     mut commands: Commands,
     mut views: Query<(Entity, &mut MagicView)>,
-    (selected, roster): (Res<super::SelectedMember>, Res<PartyRoster>),
+    (selected, roster): (Res<super::SelectedMember>, Single<&PartyRoster>),
     members: Query<(&Character, &Vitals, Option<&Carried>)>,
     casters: Query<(&LearnedSpells, Option<&SpellPoints>)>,
     (battle, monsters, party): (
-        Option<Res<Battle>>,
+        Option<Single<(&Battle, Option<&crate::game::combat::Combatants>)>>,
         Query<(Entity, &Monster, &GlobalTransform)>,
         Query<&GlobalTransform, With<crate::game::party::body::PartyBody>>,
     ),
@@ -671,12 +671,16 @@ pub(super) fn refresh_magic_view(
             // Retail's auto-targeting: the nearest fighting monster ahead.
             let Ok(eye) = party.single() else { return };
             let ahead = eye.forward().with_y(0.0);
-            let target = battle.iter().flat_map(|b| b.monster_entities()).filter_map(|m| {
-                let (_, monster, at) = monsters.get(m).ok()?;
-                let to = (at.translation() - eye.translation()).with_y(0.0);
-                (!monster.is_dead() && to.length() <= spell.reach.metres() + monster.body.radius)
-                    .then_some((m, to.angle_between(ahead), to.length()))
-            });
+            let target = battle
+                .iter()
+                .flat_map(|b| b.1.into_iter().flat_map(|c| c.entities().iter().copied()))
+                .filter_map(|m| {
+                    let (_, monster, at) = monsters.get(m).ok()?;
+                    let to = (at.translation() - eye.translation()).with_y(0.0);
+                    (!monster.is_dead()
+                        && to.length() <= spell.reach.metres() + monster.body.radius)
+                        .then_some((m, to.angle_between(ahead), to.length()))
+                });
             let nearest = target.min_by(|a, b| a.1.total_cmp(&b.1).then(a.2.total_cmp(&b.2)));
             match nearest {
                 Some((monster, ..)) => Aim::Monster(monster),
@@ -714,7 +718,7 @@ fn choose_row(
     mut views: Query<&mut MagicView>,
     members: Query<(&Character, &Vitals, Option<&Carried>)>,
     casters: Query<(&LearnedSpells, Option<&SpellPoints>)>,
-    battle: Option<Res<Battle>>,
+    battle: Option<Single<&Battle>>,
     data: Option<Res<GameData>>,
     (spells, items): (Res<Assets<SpellCatalog>>, Res<Assets<ItemCatalog>>),
 ) {

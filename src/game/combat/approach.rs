@@ -12,7 +12,7 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy_landmass::prelude::*;
 
-use super::Battle;
+use super::{Battle, Combatant};
 use crate::content::species::{MonsterCatalog, Reach};
 use crate::game::data::GameData;
 use crate::game::party::body::PartyBody;
@@ -55,20 +55,16 @@ pub(super) fn needs_approach(
 pub fn close_in(
     mut commands: Commands,
     time: Res<Time>,
-    battle: Option<Res<Battle>>,
+    battle: Option<Single<&Battle>>,
     party: Query<(Entity, &Position), With<PartyBody>>,
-    mut walkers: Query<(
-        Entity,
-        &Monster,
-        ActorPose,
-        &Walker,
-        &mut AgentTarget3d,
-        Option<&mut CombatMove>,
-    )>,
+    mut walkers: Query<
+        (Entity, &Monster, ActorPose, &Walker, &mut AgentTarget3d, Option<&mut CombatMove>),
+        With<Combatant>,
+    >,
     data: Option<Res<GameData>>,
     species: Res<Assets<MonsterCatalog>>,
 ) {
-    let catalog = data.and_then(|d| species.get(&d.species));
+    let Some(catalog) = data.and_then(|d| species.get(&d.species)) else { return };
     let Ok((party, party_at)) = party.single() else { return };
     let party_eye = PartyBody::eye(party_at);
     for (entity, monster, at, walker, mut target, movement) in &mut walkers {
@@ -79,9 +75,7 @@ pub fn close_in(
                 let continues = battle.is_some()
                     && super::monster_can_attack(monster)
                     && movement.moved < movement.budget
-                    && catalog.is_some_and(|species| {
-                        needs_approach(monster, here, Some(walker), party_eye, species)
-                    });
+                    && needs_approach(monster, here, Some(walker), party_eye, catalog);
                 if !continues {
                     commands.entity(entity).remove::<CombatMove>();
                 }
