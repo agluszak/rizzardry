@@ -10,7 +10,7 @@ See [research](research/README.md) for recovered mechanics and
   details, several combat/armor values and the improved-skill palette. See the
   [original-game comparison](research/character-review.md) for exact limits.
 - The main menu and party assembly use retail artwork; the character editor still
-  has a custom layout. Candidate review, delete confirmation and persistence are
+  has a custom layout. Candidate review and persistence are
   absent. Saved-game loading, character import/export, difficulty/gameplay options,
   intro movie, menu music, personality/voice and learned-spell selection are also
   absent. Casters start without spells; candidates remain session-local.

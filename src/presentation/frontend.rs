@@ -21,6 +21,7 @@ use bevy_enhanced_input::prelude::Action as InputBindingAction;
 use bevy_enhanced_input::prelude::*;
 use enumset::EnumSet;
 
+mod confirmation;
 mod credits;
 mod party;
 
@@ -31,8 +32,15 @@ impl Plugin for FrontendPlugin {
             .add_sub_state::<MenuPage>()
             .add_input_context::<MenuInput>()
             .add_input_context::<credits::CreditsInput>()
-            .add_systems(PreUpdate, arm_menu_input.before(EnhancedInputSystems::Update))
+            .add_input_context::<confirmation::DeleteDialog>()
+            .add_systems(
+                PreUpdate,
+                arm_menu_input
+                    .after(bevy::input::InputSystems)
+                    .before(EnhancedInputSystems::Update),
+            )
             .add_observer(activate)
+            .add_observer(confirmation::resolve)
             .add_systems(OnEnter(MenuPage::Main), main_menu)
             .add_systems(OnEnter(MenuPage::Credits), credits::enter)
             .add_systems(OnEnter(Session::Creation), creation)
@@ -45,6 +53,7 @@ impl Plugin for FrontendPlugin {
                     button_colours,
                     paint_menu,
                     party::paint,
+                    confirmation::show_text,
                     credits::populate,
                     credits::scroll,
                 )
@@ -59,6 +68,7 @@ fn arm_menu_input(
     keys: Res<ButtonInput<KeyCode>>,
     menu: Query<(Entity, &ContextActivity<MenuInput>)>,
     credits: Query<(Entity, &ContextActivity<credits::CreditsInput>)>,
+    confirmation: Query<(Entity, &ContextActivity<confirmation::DeleteDialog>)>,
 ) {
     if keys.get_pressed().next().is_some() {
         return;
@@ -71,6 +81,11 @@ fn arm_menu_input(
     for (entity, active) in &credits {
         if !**active {
             commands.entity(entity).insert(ContextActivity::<credits::CreditsInput>::ACTIVE);
+        }
+    }
+    for (entity, active) in &confirmation {
+        if !**active {
+            commands.entity(entity).insert(ContextActivity::<confirmation::DeleteDialog>::ACTIVE);
         }
     }
 }
@@ -687,7 +702,11 @@ fn activate(
     assets: Res<AssetServer>,
     destination: Res<NewGameDestination>,
     mut names: Query<&mut EditableText, With<NameInput>>,
+    dialogs: Query<(), With<confirmation::DeleteDialog>>,
 ) {
+    if !dialogs.is_empty() {
+        return;
+    }
     let Ok(action) = buttons.get(click.entity) else { return };
     if matches!(
         action,
@@ -758,10 +777,11 @@ fn activate(
             }
         }
         Action::DeleteCandidate => {
-            if let Some(id) = session.selected.take() {
-                session.candidates.retain(|(candidate, _)| *candidate != id);
-                session.party.retain(|member| *member != id);
-                session.selected = session.candidates.first().map(|(id, _)| *id);
+            if let Some((id, draft)) = session
+                .selected
+                .and_then(|id| session.candidates.iter().find(|(candidate, _)| *candidate == id))
+            {
+                confirmation::open(&mut commands, &assets, *id, &draft.name, &mut focus);
             }
         }
         Action::Cancel => {
@@ -1233,6 +1253,7 @@ mod keyboard_tests {
             bevy::camera::visibility::VisibilityPlugin,
         ))
         .init_asset::<crate::content::ui::Credits>()
+        .init_asset::<crate::content::ui::TextTable>()
         .init_asset::<Image>()
         .init_state::<Session>()
         .init_asset::<crate::content::ui::SpriteSheet>()
@@ -1292,6 +1313,15 @@ mod keyboard_tests {
         app.update();
         app.update();
         assert_eq!(*app.world().resource::<State<Session>>().get(), Session::Creation);
+        app.world_mut().write_message(KeyboardInput {
+            key_code: KeyCode::KeyS,
+            logical_key: Key::Character("s".into()),
+            state: ButtonState::Released,
+            text: None,
+            repeat: false,
+            window,
+        });
+        app.update();
         tap(&mut app, window, KeyCode::Tab);
         let focused = app.world().resource::<InputFocus>().get().unwrap();
         assert!(matches!(app.world().get::<Action>(focused), Some(Action::Add)));
@@ -1321,5 +1351,52 @@ mod keyboard_tests {
                 .and_then(|e| app.world().get::<Action>(e))
                 .is_some()
         );
+
+        let owner =
+            app.world_mut().query_filtered::<Entity, With<Creation>>().single(app.world()).unwrap();
+        let mut session = app.world_mut().get_mut::<Creation>(owner).unwrap();
+        session.editing = None;
+        session.page = Page::Party;
+        session.candidates.push((7, CharacterDraft::default()));
+        session.party.push(7);
+        session.selected = Some(7);
+        app.update();
+        let delete = app
+            .world_mut()
+            .query::<(Entity, &Action)>()
+            .iter(app.world())
+            .find_map(|(entity, action)| {
+                matches!(action, Action::DeleteCandidate).then_some(entity)
+            })
+            .unwrap();
+        app.world_mut().write_message(KeyboardInput {
+            key_code: KeyCode::Enter,
+            logical_key: Key::Enter,
+            state: ButtonState::Pressed,
+            text: None,
+            repeat: false,
+            window,
+        });
+        app.world_mut().trigger(Activate { entity: delete });
+        app.update();
+        app.update();
+        assert_eq!(app.world().get::<Creation>(owner).unwrap().party, [7]);
+        app.world_mut().write_message(KeyboardInput {
+            key_code: KeyCode::Enter,
+            logical_key: Key::Enter,
+            state: ButtonState::Released,
+            text: None,
+            repeat: false,
+            window,
+        });
+        app.update();
+        tap(&mut app, window, KeyCode::Escape);
+        assert_eq!(app.world().get::<Creation>(owner).unwrap().party, [7]);
+        app.world_mut().trigger(Activate { entity: delete });
+        app.update();
+        tap(&mut app, window, KeyCode::Enter);
+        let session = app.world().get::<Creation>(owner).unwrap();
+        assert!(session.candidates.is_empty());
+        assert!(session.party.is_empty());
     }
 }
