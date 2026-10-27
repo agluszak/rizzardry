@@ -430,6 +430,9 @@ pub fn queue_notices(
                 log.selected = 1;
                 vec![string(COMBAT)]
             }
+            // Retail notices 0x21b and 0x21c: the party moves, and stops.
+            CombatNews::PartyMoves => vec![string(0x21b)],
+            CombatNews::PartyStops => vec![string(0x21c)],
             // Retail strings 0x236 ("advances") and 0x237 ("charges").
             CombatNews::Moves { monster, charge } => names
                 .name(*monster)

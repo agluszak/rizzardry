@@ -46,11 +46,19 @@ impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<CombatNews>()
             .add_message::<MagicNews>()
+            .add_message::<ChoosePartyMove>()
             .add_message::<StartRound>()
             .init_resource::<CombatSettings>()
             .add_systems(
                 Update,
-                (settle_defeat, start_battle, run_battle, settle_defeat, approach::close_in)
+                (
+                    settle_defeat,
+                    start_battle,
+                    track_party_move,
+                    run_battle,
+                    settle_defeat,
+                    approach::close_in,
+                )
                     .chain()
                     .in_set(crate::game::GameplaySet::Combat)
                     .run_if(crate::game::world::level::level_active),
@@ -82,6 +90,29 @@ const PASSIVE_ROUNDS: u32 = 2;
 #[derive(Resource, Debug, Default)]
 pub struct CombatSettings {
     pub continuous: bool,
+}
+
+/// How the party moves in a fight (retail Walk and Run party actions).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PartyPace {
+    Walk,
+    Run,
+}
+
+/// Choose, between rounds, whether the party moves in the next ones.
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChoosePartyMove(pub Option<PartyPace>);
+
+/// The party's move this round.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+enum PartyMove {
+    #[default]
+    None,
+    /// Waiting for its phase; members do not act before it.
+    Pending { pace: PartyPace, phase: u8 },
+    /// Under way: metres allowed and covered (retail `GetPartyMovementSpeed`:
+    /// 10000 units walking, 15000 running).
+    Moving { pace: PartyPace, budget: f32, moved: f32, last: Option<Vec3> },
 }
 
 /// Start the next round (Enter, or the round button).
@@ -132,6 +163,9 @@ pub struct Battle {
     attacked_this_round: bool,
     /// Monsters that have moved this round: one move each.
     moved: Vec<Entity>,
+    /// The party's standing choice to walk or run in the next rounds.
+    pub party_pace: Option<PartyPace>,
+    party_move: PartyMove,
     /// Until the next action.
     wait: Timer,
 }
@@ -154,6 +188,16 @@ impl Battle {
 
     fn defends(&self, actor: Entity) -> bool {
         self.party.iter().any(|p| p.actor == actor && matches!(p.action, AcceptedAction::Defend))
+    }
+
+    /// Whether the party may walk: in a fight, only during its own move.
+    pub fn party_may_move(&self) -> bool {
+        matches!(self.party_move, PartyMove::Moving { .. })
+    }
+
+    /// Whether the party's move is a run.
+    pub fn party_running(&self) -> bool {
+        matches!(self.party_move, PartyMove::Moving { pace: PartyPace::Run, .. })
     }
 
     /// A monster died to the party: its experience is shared at the end and
@@ -230,6 +274,9 @@ pub enum CombatNews {
         monster: Entity,
         charge: bool,
     },
+    /// The party's move begins; it ends when spent or stopped.
+    PartyMoves,
+    PartyStops,
 }
 
 /// Whether a member can act or be targeted: alive and nothing worse than
@@ -439,6 +486,7 @@ pub fn run_battle(
     (mut news, mut party_damage): (MessageWriter<CombatNews>, MessageWriter<DamageApplied>),
     (mut starts, settings, orders): (MessageReader<StartRound>, Res<CombatSettings>, Query<&Order>),
     (mut magic, mut magic_news): (BattleMagic, MessageWriter<MagicNews>),
+    mut moves: MessageReader<ChoosePartyMove>,
 ) {
     let Some(mut battle) = battle else {
         starts.clear();
@@ -447,7 +495,23 @@ pub fn run_battle(
     // Accept input before any pacing/content early return. The existing round
     // state owns the request; it must not wait in the transient message buffer.
     let start = starts.read().count() > 0;
-    if start && !battle.executing() {
+    for &ChoosePartyMove(pace) in moves.read() {
+        if !battle.executing() {
+            battle.party_pace = pace;
+        }
+    }
+    // Starting the round while the party moves ends its move (retail
+    // `MGSKeyboard.cpp:568-573`).
+    if start && matches!(battle.party_move, PartyMove::Moving { .. }) {
+        let step = match battle.phase {
+            RoundPhase::Executing(step) => step,
+            _ => 1,
+        };
+        let (mut members, _) = actors.p0();
+        let items = data.as_ref().and_then(|d| items.get(&d.items));
+        finish_party_move(&mut battle, step, &mut rng, &mut members, items);
+        news.write(CombatNews::PartyStops);
+    } else if start && !battle.executing() {
         battle.phase = RoundPhase::Accepted;
     }
     let (mut members, mut damage) = actors.p0();
@@ -530,11 +594,47 @@ pub fn run_battle(
                 }
             };
         }
+        // The party's own move takes the phase its slowest member allows,
+        // on a step of ten (retail `InitializePartyMovementPhase`).
+        battle.party_move = match battle.party_pace {
+            Some(pace) => {
+                let slowest = roster
+                    .0
+                    .iter()
+                    .filter_map(|&m| members.get(m).ok())
+                    .filter(|(_, vitals, _)| able(vitals))
+                    .map(|(c, _, _)| {
+                        c.initiative(crate::game::characters::Load::None) + rng.below(4) as i32
+                    })
+                    .min()
+                    .unwrap_or(0)
+                    .clamp(-10, 89);
+                let phase = (90 - slowest) as u8;
+                let phase = (phase + 5) - (phase + 5) % 10;
+                PartyMove::Pending { pace, phase: phase.clamp(10, 100) }
+            }
+            None => PartyMove::None,
+        };
         battle.phase = RoundPhase::Executing(1);
     }
 
     // The next actor due: accepted party order first, then monsters in order.
     while let RoundPhase::Executing(step) = battle.phase {
+        if matches!(battle.party_move, PartyMove::Moving { .. }) {
+            return;
+        }
+        if let PartyMove::Pending { pace, phase } = battle.party_move
+            && phase <= step
+        {
+            battle.party_move = PartyMove::Moving {
+                pace,
+                budget: if pace == PartyPace::Run { 30.0 } else { 20.0 },
+                moved: 0.0,
+                last: None,
+            };
+            news.write(CombatNews::PartyMoves);
+            return;
+        }
         if step > 100 {
             end_round(
                 &mut commands,
@@ -554,7 +654,11 @@ pub fn run_battle(
             actors.p1().detect(party.eye, body.forward(), Some(&battle), &mut rng);
             return;
         }
-        if let Some(index) = battle.party.iter().position(|p| p.turn.phase == step) {
+        // Nobody in the party acts while its move is still to come.
+        let party_waits = matches!(battle.party_move, PartyMove::Pending { .. });
+        if let Some(index) =
+            battle.party.iter().position(|p| p.turn.phase == step).filter(|_| !party_waits)
+        {
             let work = battle.party[index];
             let member = work.actor;
             let able_now = roster.0.contains(&member)
@@ -707,6 +811,91 @@ pub fn run_battle(
             return;
         }
         battle.phase = RoundPhase::Executing(step + 1);
+    }
+}
+
+/// Count the ground the party covers while it moves in a fight, and end the
+/// move when it is spent.
+pub fn track_party_move(
+    battle: Option<ResMut<Battle>>,
+    party: Query<&Position, With<PartyBody>>,
+    mut rng: ResMut<GameRng>,
+    mut members: crate::game::magic::Members,
+    data: Option<Res<GameData>>,
+    items: Res<Assets<ItemCatalog>>,
+    mut news: MessageWriter<CombatNews>,
+) {
+    let Some(mut battle) = battle else { return };
+    let Ok(position) = party.single() else { return };
+    let spent = {
+        let PartyMove::Moving { budget, moved, last, .. } = &mut battle.party_move else {
+            return;
+        };
+        if let Some(last) = *last {
+            *moved += last.with_y(0.0).distance(position.0.with_y(0.0));
+        }
+        *last = Some(position.0);
+        *moved >= *budget
+    };
+    if spent {
+        let step = match battle.phase {
+            RoundPhase::Executing(step) => step,
+            _ => 1,
+        };
+        let items = data.as_ref().and_then(|d| items.get(&d.items));
+        finish_party_move(&mut battle, step, &mut rng, &mut members, items);
+        news.write(CombatNews::PartyStops);
+    }
+}
+
+/// The move is over (retail `CompletePartyMovementTurns`, `HandlePartyMovement`):
+/// each member keeps their action with the chance the unspent share gives
+/// (spent counting half again when running), and pays stamina for the
+/// ground covered, by load.
+fn finish_party_move(
+    battle: &mut Battle,
+    step: u8,
+    rng: &mut GameRng,
+    members: &mut crate::game::magic::Members,
+    items: Option<&ItemCatalog>,
+) {
+    let PartyMove::Moving { pace, budget, moved, .. } = battle.party_move else { return };
+    battle.party_move = PartyMove::None;
+    let mut spent = (moved / budget.max(0.01) * 100.0).min(100.0);
+    if pace == PartyPace::Run {
+        spent *= 1.5;
+    }
+    let keep = 100u32.saturating_sub(spent as u32);
+    for work in &mut battle.party {
+        if work.turn.phase == 0 {
+            continue;
+        }
+        if rng.below(100) < keep {
+            work.turn.phase = work.turn.phase.max(step);
+        } else {
+            work.turn = Turn::default();
+        }
+    }
+    // Retail charges `distance × load × 2 (combat) × 1.5 (diseased)` units
+    // at one stamina per 2500 (`MGSPartyMovement.cpp:302-358`): 0.2 a metre
+    // walking unencumbered, 0.4 running.
+    let per_metre = if pace == PartyPace::Run { 0.4 } else { 0.2 };
+    for work in &battle.party {
+        let Ok((character, mut vitals, carried)) = members.get_mut(work.actor) else { continue };
+        if vitals.is_dead() {
+            continue;
+        }
+        let weight =
+            items.map_or(0, |items| crate::game::inventory::carried_weight(&carried, items));
+        let load = match character.load(weight) {
+            crate::game::characters::Load::None => 1.0,
+            crate::game::characters::Load::Light => 1.25,
+            crate::game::characters::Load::Medium => 1.5,
+            crate::game::characters::Load::Heavy => 2.0,
+            crate::game::characters::Load::Extreme => 3.0,
+        };
+        let disease = if vitals.has(Condition::Diseased) { 1.5 } else { 1.0 };
+        vitals.spend_stamina((moved * per_metre * load * disease).round() as u32);
     }
 }
 
@@ -1377,6 +1566,39 @@ mod tests {
         let phase = app.world().resource::<Battle>().phase;
         app.update();
         assert_eq!(app.world().resource::<Battle>().phase, phase, "the round waits for the move");
+    }
+
+    /// A party move holds the members until its phase, lets the party walk
+    /// its budget, and a move spent in full costs the members their actions
+    /// (retail `CompletePartyMovementTurns`).
+    #[test]
+    fn a_spent_party_move_costs_the_members_their_actions() {
+        let (mut app, _) = round_app(false);
+        app.world_mut().write_message(ChoosePartyMove(Some(PartyPace::Walk)));
+        let mut news = Vec::new();
+        for _ in 0..12 {
+            app.update();
+            news.extend(app.world_mut().resource_mut::<Messages<CombatNews>>().drain());
+            if news.contains(&CombatNews::PartyMoves) {
+                break;
+            }
+        }
+        assert!(news.contains(&CombatNews::PartyMoves), "{news:?}");
+        assert!(app.world().resource::<Battle>().party_may_move());
+        let body = app
+            .world_mut()
+            .query_filtered::<Entity, With<PartyBody>>()
+            .single(app.world())
+            .unwrap();
+        app.update();
+        app.world_mut().get_mut::<Position>(body).unwrap().0 += Vec3::X * 21.0;
+        app.update();
+        news.extend(app.world_mut().resource_mut::<Messages<CombatNews>>().drain());
+        assert!(news.contains(&CombatNews::PartyStops));
+        assert!(!app.world().resource::<Battle>().party_may_move());
+        let pending =
+            app.world().resource::<Battle>().party.iter().filter(|p| p.turn.phase > 0).count();
+        assert_eq!(pending, 0, "a move spent in full keeps nobody's action");
     }
 
     /// A monster put to sleep loses its actions until the condition runs out
