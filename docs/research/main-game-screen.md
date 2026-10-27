@@ -477,8 +477,9 @@ three bottom panels shown (`Gameplay Init.cpp:483-490`).
 - PgUp, PgDn, Home, End and Del (500-504) scroll or clear the box.
 - The mouse wheel over the body scrolls by its line delta; right-clicking an
   arrow scrolls seven lines (`TextBoxBodyRegionEvent`, `TextBoxScrollUpRegionEvent`,
-  `TextBoxScrollDownRegionEvent`). Dragging the thumb and repeated arrow presses
-  are still unimplemented.
+  `TextBoxScrollDownRegionEvent`). Thumb dragging maps the pointer to the
+  channel's line using retail's 47-step track. Held arrows repeat after 250 ms
+  and then every 50 ms (`sgp/input.cpp`).
 - **Uncertain**: `GetTextBoxVisibleLineCount` returns 1 outside spell, item, camp and
   dialogue modes, which makes the thumb range "lines - 1" there.
 

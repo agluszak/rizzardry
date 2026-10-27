@@ -4,11 +4,14 @@ use super::{MainScreenArt, layer};
 use crate::presentation::notices::{TextLog, VISIBLE_LINES};
 use crate::presentation::screen_art::{BitmapText, Picture, absolute, label, picture};
 use bevy::input::mouse::MouseScrollUnit;
-use bevy::picking::events::{PointerClick, PointerScroll};
+use bevy::picking::events::{
+    PointerCancel, PointerClick, PointerDrag, PointerDragEnd, PointerLeave, PointerPress,
+    PointerRelease, PointerScroll,
+};
 use bevy::picking::hover::Hovered;
 use bevy::picking::pointer::PointerButton;
 use bevy::prelude::*;
-use bevy::ui::InteractionDisabled;
+use bevy::ui::{ComputedUiRenderTargetInfo, InteractionDisabled, UiGlobalTransform};
 use bevy::ui_widgets::{Activate, SelectedTab, Tab, TabList, ValueChange};
 
 #[derive(Component, Clone, Default)]
@@ -50,10 +53,26 @@ pub(super) struct Line(usize);
 pub(super) struct Tabs;
 #[derive(Component, Clone, Default)]
 pub(super) struct Thumb;
+#[derive(Component, Clone, Default)]
+pub(super) struct ThumbTrack;
 #[derive(Component, Clone)]
 #[require(Hovered)]
 pub(super) struct Scroll {
     down: bool,
+}
+impl Scroll {
+    fn apply(&self, log: &mut TextLog, lines: usize) {
+        if self.down && log.can_scroll().1 {
+            log.scroll_down(lines);
+        } else if !self.down && log.can_scroll().0 {
+            log.scroll_up(lines);
+        }
+    }
+}
+#[derive(Component)]
+pub(super) struct ScrollHold {
+    button: PointerButton,
+    timer: Timer,
 }
 
 fn scroll_body(mut event: On<PointerScroll>, mut log: ResMut<TextLog>) {
@@ -76,11 +95,117 @@ fn scroll_page(event: On<PointerClick>, arrows: Query<&Scroll>, mut log: ResMut<
         return;
     }
     if let Ok(arrow) = arrows.get(event.entity) {
-        if arrow.down {
-            log.scroll_down(VISIBLE_LINES);
-        } else {
-            log.scroll_up(VISIBLE_LINES);
+        arrow.apply(&mut log, VISIBLE_LINES);
+    }
+}
+
+fn scroll_line(
+    event: On<Activate>,
+    arrows: Query<&Scroll, Without<InteractionDisabled>>,
+    mut log: ResMut<TextLog>,
+) {
+    if let Ok(arrow) = arrows.get(event.entity) {
+        arrow.apply(&mut log, 1);
+    }
+}
+
+fn hold_arrow(
+    event: On<PointerPress>,
+    arrows: Query<(), (With<Scroll>, Without<InteractionDisabled>)>,
+    mut commands: Commands,
+) {
+    if matches!(event.button, PointerButton::Primary | PointerButton::Secondary)
+        && arrows.contains(event.entity)
+    {
+        commands.entity(event.entity).insert(ScrollHold {
+            button: event.button,
+            timer: Timer::new(std::time::Duration::from_millis(250), TimerMode::Once),
+        });
+    }
+}
+
+fn release_arrow(event: On<PointerRelease>, held: Query<&ScrollHold>, mut commands: Commands) {
+    if held.get(event.entity).is_ok_and(|hold| hold.button == event.button) {
+        commands.entity(event.entity).remove::<ScrollHold>();
+    }
+}
+
+fn leave_arrow(event: On<PointerLeave>, mut commands: Commands) {
+    if event.was_in_bounds {
+        commands.entity(event.entity).remove::<ScrollHold>();
+    }
+}
+
+fn cancel_arrow(event: On<PointerCancel>, mut commands: Commands) {
+    commands.entity(event.entity).remove::<ScrollHold>();
+}
+
+fn end_arrow_drag(event: On<PointerDragEnd>, mut commands: Commands) {
+    commands.entity(event.entity).remove::<ScrollHold>();
+}
+
+pub(super) fn repeat_arrows(
+    time: Res<Time<Real>>,
+    mut held: Query<(&Scroll, &mut ScrollHold), Without<InteractionDisabled>>,
+    mut log: ResMut<TextLog>,
+) {
+    for (arrow, mut hold) in &mut held {
+        if hold.timer.tick(time.delta()).just_finished() {
+            let lines = if hold.button == PointerButton::Secondary { VISIBLE_LINES } else { 1 };
+            arrow.apply(&mut log, lines);
+            hold.timer = Timer::new(std::time::Duration::from_millis(50), TimerMode::Once);
         }
+    }
+}
+
+fn move_thumb(
+    entity: Entity,
+    pointer: Vec2,
+    tracks: &Query<
+        (&ComputedNode, &ComputedUiRenderTargetInfo, &UiGlobalTransform),
+        With<ThumbTrack>,
+    >,
+    scale: f32,
+    log: &mut TextLog,
+) {
+    let Ok((node, target, transform)) = tracks.get(entity) else { return };
+    let Some(point) = node.normalize_point(*transform, pointer * target.scale_factor() / scale)
+    else {
+        return;
+    };
+    if point.x.abs() > 0.5 || point.y.abs() > 0.5 || log.thumb().is_none() {
+        return;
+    }
+    let y = ((point.y + 0.5) * 50.0).floor() as i32 - 1;
+    let position = if y < 0 { 0 } else { (y + 2).min(46) };
+    log.scroll_thumb(position as u32);
+}
+
+fn press_thumb(
+    event: On<PointerPress>,
+    tracks: Query<
+        (&ComputedNode, &ComputedUiRenderTargetInfo, &UiGlobalTransform),
+        With<ThumbTrack>,
+    >,
+    scale: Res<UiScale>,
+    mut log: ResMut<TextLog>,
+) {
+    if event.button == PointerButton::Primary {
+        move_thumb(event.entity, event.pointer.position, &tracks, scale.0, &mut log);
+    }
+}
+
+fn drag_thumb(
+    event: On<PointerDrag>,
+    tracks: Query<
+        (&ComputedNode, &ComputedUiRenderTargetInfo, &UiGlobalTransform),
+        With<ThumbTrack>,
+    >,
+    scale: Res<UiScale>,
+    mut log: ResMut<TextLog>,
+) {
+    if event.button == PointerButton::Primary {
+        move_thumb(event.entity, event.pointer.position, &tracks, scale.0, &mut log);
     }
 }
 
@@ -122,11 +247,8 @@ pub fn draw_text_box(
                 bsn! {
                     @crate::presentation::retail_controls::image_button(art.text_scroll.clone(), at, { let base = if down { 8 } else { 0 }; crate::presentation::retail_controls::ControlSkin::new(base, base+1, base+2, base+2, base+3) })
                     template(move |_| Ok(Scroll { down }))
-                    on(scroll_page)
-                    on(move |_: On<Activate>, mut log: ResMut<TextLog>| {
-                        if down && log.can_scroll().1 { log.scroll_down(1); }
-                        else if !down && log.can_scroll().0 { log.scroll_up(1); }
-                    })
+                    on(hold_arrow) on(release_arrow) on(leave_arrow) on(cancel_arrow) on(end_arrow_drag)
+                    on(scroll_page) on(scroll_line)
                 }
             })
             .collect();
@@ -146,6 +268,7 @@ pub fn draw_text_box(
                 -- template(|_| Ok(absolute(Vec2::new(166.0, 362.0), Vec2::new(290.0, 83.0)))) Pickable::default() on(scroll_body)
                 -- {text} -- {arrows}
                 -- @layer() TabList { orientation: bevy::ui_widgets::ControlOrientation::Vertical, activation: bevy::ui_widgets::TabActivation::Manual } Channels on(select_channel) Children [ {channels} ]
+                -- ThumbTrack template(|_| Ok(absolute(Vec2::new(461.0, 379.0), Vec2::new(8.0, 50.0)))) Pickable::default() on(press_thumb) on(drag_thumb)
                 -- @picture(art.text_scroll.clone(), 4, Vec2::new(461.0, 379.0)) Thumb
             },
         );
@@ -215,21 +338,29 @@ mod tests {
     use bevy::picking::backend::HitData;
 
     #[test]
-    fn notice_body_wheel_and_secondary_arrows_scroll_the_log() {
+    fn notice_scrolling_follows_pointer_and_held_arrows() {
         let mut app = App::new();
-        app.add_plugins((MinimalPlugins, AssetPlugin::default(), bevy::scene::ScenePlugin))
-            .init_asset::<SpriteSheet>()
-            .init_asset::<TextTable>()
-            .init_asset::<MonsterCatalog>()
-            .init_resource::<TextLog>()
-            .add_message::<TriggerEffect>()
-            .add_message::<CampNews>()
-            .add_message::<CombatNews>()
-            .add_message::<ItemNews>()
-            .add_message::<SearchNews>()
-            .add_message::<Identified>()
-            .add_systems(Startup, (super::super::load_main_screen_art, load_notice_art))
-            .add_systems(Update, (queue_notices, draw_text_box).chain());
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin::default(),
+            bevy::scene::ScenePlugin,
+            bevy::ui_widgets::ButtonPlugin,
+        ))
+        .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_millis(50),
+        ))
+        .init_asset::<SpriteSheet>()
+        .init_asset::<TextTable>()
+        .init_asset::<MonsterCatalog>()
+        .init_resource::<TextLog>()
+        .add_message::<TriggerEffect>()
+        .add_message::<CampNews>()
+        .add_message::<CombatNews>()
+        .add_message::<ItemNews>()
+        .add_message::<SearchNews>()
+        .add_message::<Identified>()
+        .add_systems(Startup, (super::super::load_main_screen_art, load_notice_art))
+        .add_systems(Update, (queue_notices, draw_text_box, repeat_arrows).chain());
         app.world_mut().register_component::<Window>();
         app.world_mut().spawn(TextBox);
         app.update();
@@ -276,6 +407,38 @@ mod tests {
             count: 1,
         });
         assert!(app.world().resource::<TextLog>().visible()[0].contains("10"));
+        app.update();
+        let up = app
+            .world_mut()
+            .query::<(Entity, &Scroll)>()
+            .iter(app.world())
+            .find_map(|(entity, arrow)| (!arrow.down).then_some(entity))
+            .unwrap();
+        app.world_mut().trigger(PointerPress {
+            entity: up,
+            pointer: crate::presentation::test_input::mouse(),
+            button: PointerButton::Primary,
+            hit: hit(),
+            count: 1,
+        });
+        for _ in 0..4 {
+            app.update();
+        }
+        assert!(app.world().resource::<TextLog>().visible()[0].contains("10"));
+        app.update();
+        assert!(app.world().resource::<TextLog>().visible()[0].contains('9'));
+        app.update();
+        assert!(app.world().resource::<TextLog>().visible()[0].contains('8'));
+        app.world_mut().trigger(PointerRelease {
+            entity: up,
+            pointer: crate::presentation::test_input::mouse(),
+            button: PointerButton::Primary,
+            hit: hit(),
+        });
+        for _ in 0..5 {
+            app.update();
+        }
+        assert!(app.world().resource::<TextLog>().visible()[0].contains('8'));
         app.world_mut().resource_mut::<TextLog>().select(2);
         app.update();
         assert!(
