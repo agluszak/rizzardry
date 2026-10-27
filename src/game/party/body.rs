@@ -73,9 +73,10 @@ impl PartyBody {
     }
 }
 
-/// Continuous movement intent, supplied by input or a headless caller.
-/// The controller validates whether the party may move on every fixed step.
-#[derive(Resource, Debug, Default)]
+/// On the party: continuous movement intent, supplied by input or a
+/// headless caller. The controller validates whether the party may move on
+/// every fixed step.
+#[derive(Component, Debug, Default)]
 pub struct PartyMovement {
     pub walk: Vec2,
     pub turn: f32,
@@ -191,11 +192,10 @@ pub fn look_around(
 /// Turn and walk on the fixed simulation step, feeding Tnua.
 pub fn drive_party(
     time: Res<Time>,
-    movement: Res<PartyMovement>,
-    mut party: Query<(&mut PartyBody, &mut TnuaController<PartyMotion>)>,
+    mut party: Query<(&mut PartyBody, &mut TnuaController<PartyMotion>, &PartyMovement)>,
     freedom: crate::game::screen::Freedom,
 ) {
-    let Ok((mut body, mut controller)) = party.single_mut() else { return };
+    let Ok((mut body, mut controller, movement)) = party.single_mut() else { return };
     // A party held by a screen, a camp or a question stands still.
     let free = freedom.free();
     if free {

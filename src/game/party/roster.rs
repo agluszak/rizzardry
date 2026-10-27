@@ -15,7 +15,11 @@ use crate::game::rng::GameRng;
 /// A campaign creates it when it enters its first level, where it also gets
 /// its body ([`super::body::PartyBody`]).
 #[derive(Component, Debug, Default)]
-#[require(super::formation::Formation, crate::game::inventory::PartyInventory)]
+#[require(
+    super::formation::Formation,
+    crate::game::inventory::PartyInventory,
+    super::body::PartyMovement
+)]
 pub struct Party;
 
 /// Membership of a party. It does not own the character: a member who

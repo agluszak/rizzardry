@@ -36,7 +36,6 @@ fn app() -> App {
         .init_resource::<Assets<rizzardry::game::world::navigation::WalkerMotionConfig>>()
         .init_resource::<LevelMemory>()
         .init_resource::<MonsterBodies>()
-        .init_resource::<rizzardry::game::party::body::PartyMovement>()
         .init_resource::<ItemIds>()
         .init_resource::<GameRng>()
         .add_message::<LevelReady>()

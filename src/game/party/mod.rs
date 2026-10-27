@@ -32,7 +32,6 @@ impl Plugin for PartyPlugin {
             TnuaAvian3dPlugin::new(FixedUpdate),
         ))
         .insert_resource(Gravity(Vec3::NEG_Y * body::GRAVITY))
-        .init_resource::<body::PartyMovement>()
         .add_message::<body::PartyLook>()
         .add_message::<DamageApplied>()
         .add_systems(

@@ -176,7 +176,7 @@ pub fn travel(
     assets: Res<AssetServer>,
     battle: Option<Single<&crate::game::combat::Battle>>,
     camp: Option<Res<crate::game::camp::Camp>>,
-    mut movement: ResMut<crate::game::party::body::PartyMovement>,
+    mut movement: Query<&mut crate::game::party::body::PartyMovement>,
 ) {
     let Some(request) = requests.read().last() else { return };
     if battle.is_some() || camp.is_some() || !entering.is_empty() {
@@ -190,7 +190,9 @@ pub fn travel(
     for question in &questions {
         commands.entity(question).despawn();
     }
-    *movement = default();
+    for mut movement in &mut movement {
+        *movement = default();
+    }
     let path = info.path();
     let start = PartyStart { entrance: Some(request.entrance.clone()), ..default() };
     commands.spawn((

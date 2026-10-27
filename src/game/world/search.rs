@@ -143,7 +143,7 @@ pub fn search_pulse(
     time: Res<Time>,
     mut search: ResMut<Search>,
     battle: Option<Single<&Battle>>,
-    movement: Res<PartyMovement>,
+    movement: Single<&PartyMovement>,
     party: Query<(&Position, &PartyBody)>,
     roster: Single<&PartyRoster>,
     members: Query<(&Character, &Vitals)>,
