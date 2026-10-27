@@ -5,7 +5,9 @@ use crate::content::items::ItemCatalog;
 use crate::game::characters::Load;
 use crate::game::combat::attack::armour;
 use crate::game::data::GameData;
-use crate::game::inventory::{Carried, PartyInventory, carried_weight, item_weight, pool_shares};
+#[cfg(test)]
+use crate::game::inventory::Carried;
+use crate::game::inventory::{PartyInventory, carried_weight, item_weight, pool_shares};
 use crate::game::party::roster::PartyRoster;
 use crate::presentation::character_view::{CharacterView, CharacterViewItem};
 use crate::presentation::screen_art::{BitmapText, Picture, PictureCrop};
@@ -140,37 +142,19 @@ pub(super) fn build(commands: &mut Commands, panel: Entity, root: Entity, art: &
 }
 
 pub(super) fn refresh(
-    screen: Option<Single<Ref<InventoryScreen>>>,
+    screen: Option<Single<&InventoryScreen>>,
     party: Option<Res<PartyRoster>>,
     inventory: Option<Res<PartyInventory>>,
     data: Option<Res<GameData>>,
     catalogs: Option<Res<Assets<ItemCatalog>>>,
     members: Query<CharacterView>,
-    mut removed_carried: RemovedComponents<Carried>,
     art: Option<Res<InventoryArt>>,
-    mut values: Query<(Ref<Value>, &mut BitmapText)>,
+    mut values: Query<(&Value, &mut BitmapText)>,
     mut bars: Query<&mut PictureCrop, With<ExperienceBar>>,
 ) {
-    let removed: Vec<_> = removed_carried.read().collect();
     let (Some(screen), Some(art)) = (screen, art) else { return };
     let Ok(view) = members.get(screen.member) else { return };
-    let actor_changed = view.is_changed() || removed.contains(&screen.member);
     let CharacterViewItem { profile: character, vitals, carried } = view;
-    let party_changed = party.as_ref().is_some_and(|roster| {
-        roster.is_changed()
-            || removed.iter().any(|e| roster.0.contains(e))
-            || members.iter_many(&roster.0).matched().any(|view| view.is_changed())
-    });
-    if !screen.is_changed()
-        && !actor_changed
-        && !party_changed
-        && !inventory.as_ref().is_some_and(|inventory| inventory.is_changed())
-        && !data.as_ref().is_some_and(|data| data.is_changed())
-        && !catalogs.as_ref().is_some_and(|catalogs| catalogs.is_changed())
-        && !values.iter().any(|(value, _)| value.is_added())
-    {
-        return;
-    }
 
     let catalog = data
         .as_ref()
@@ -187,9 +171,7 @@ pub(super) fn refresh(
                                 None
                             } else {
                                 Some((
-                                    carried
-                                        .as_deref()
-                                        .map_or(0, |carried| carried_weight(carried, catalog)),
+                                    carried.map_or(0, |carried| carried_weight(carried, catalog)),
                                     profile.capacity(),
                                 ))
                             }
@@ -200,14 +182,11 @@ pub(super) fn refresh(
             let pool = inventory.pool.stacks.iter().map(|item| item_weight(item, catalog)).sum();
             let shares = pool_shares(pool, &member_data);
             let index = roster.0.get_index_of(&screen.member)?;
-            let own = carried.as_deref().map_or(0, |carried| carried_weight(carried, catalog));
+            let own = carried.map_or(0, |carried| carried_weight(carried, catalog));
             Some(own + shares[index])
         },
     );
-    let armour = carried
-        .as_deref()
-        .zip(catalog)
-        .map(|(carried, catalog)| armour(&character, carried, catalog));
+    let armour = carried.zip(catalog).map(|(carried, catalog)| armour(character, carried, catalog));
     for (kind, mut text) in &mut values {
         let (value, palette) = match *kind {
             Value::Experience => (format_gold(character.experience), None),

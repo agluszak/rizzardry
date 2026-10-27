@@ -1180,7 +1180,7 @@ mod tests {
         let mut carried = Carried::default();
         carried.equipment[EquipSlot::Primary] = Some(Equipped::new(item.clone()));
         let member = world.spawn(carried).id();
-        world.insert_resource(PartyRoster(vec![member]));
+        world.insert_resource(PartyRoster([member].into_iter().collect()));
         let source = TradeSource::Party(ItemRef { owner: ItemOwner::Member(member), id: item.id });
         assert!(matches!(sale_item(world, source), Err(TradeError::StaleSelection)));
         world.get_mut::<Carried>(member).unwrap().equipment[EquipSlot::Primary] = None;

@@ -1,6 +1,8 @@
 //! Showing items lying in the world: their models turning in place, lit as
 //! retail lights them (`ActivateItem`, `W8Item::UpdateAnimation`).
 
+use super::surfaces::ActorLight;
+use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 
 use avian3d::prelude::SpatialQuery;
@@ -11,7 +13,7 @@ use crate::content::level::LevelGeometry;
 use crate::game::data::GameData;
 use crate::game::time::GameClock;
 use crate::game::world::items::WorldItem;
-use crate::presentation::monsters::{paint, sunlit};
+use crate::presentation::monsters::sunlit;
 
 /// Retail turns a lying item a sixteenth of a turn every 50 ms (the main
 /// screen's world update); here it turns smoothly at that rate.
@@ -59,26 +61,19 @@ pub fn show_world_items(
 #[derive(Component, Debug)]
 pub struct ItemVisual;
 
-#[derive(Component, Debug)]
-pub struct ItemPart {
-    index: usize,
-    /// The vertex colour last written to its mesh.
-    colour: Option<[f32; 4]>,
-}
-
 pub fn build_world_items(
     mut commands: Commands,
     items: Query<(Entity, &ItemShown, Option<&Children>), With<WorldItem>>,
     visuals: Query<(), With<ItemVisual>>,
     models: Res<Assets<ItemModel>>,
-    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     for (entity, shown, children) in &items {
         if children.is_some_and(|c| c.iter().any(|e| visuals.contains(e))) {
             continue;
         }
         let Some(model) = models.get(&shown.model) else { continue };
-        commands.entity(entity).insert(Visibility::default());
+        commands.entity(entity).insert((Visibility::default(), ActorLight::default()));
         let root = commands
             .spawn((
                 ItemVisual,
@@ -89,15 +84,13 @@ pub fn build_world_items(
                 ChildOf(entity),
             ))
             .id();
-        for (index, part) in model.parts.iter().enumerate() {
-            let Some(mesh) = meshes.get(&part.mesh).cloned() else { continue };
-            let copy = meshes.add(mesh);
-            commands.spawn((
-                ItemPart { index, colour: None },
-                Mesh3d(copy),
-                MeshMaterial3d(part.material.clone()),
-                ChildOf(root),
-            ));
+        let mut instances = HashMap::new();
+        for part in &model.parts {
+            let Some(surface) = part.surface.lit_instance(entity, &mut instances, &mut materials)
+            else {
+                continue;
+            };
+            commands.spawn((Mesh3d(part.mesh.clone()), surface, ChildOf(root)));
         }
     }
 }
@@ -117,12 +110,8 @@ pub fn light_world_items(
     clock: Res<GameClock>,
     levels: Query<(Entity, &LevelAppearance)>,
     geometry: Res<Assets<LevelGeometry>>,
-    models: Res<Assets<ItemModel>>,
     spatial: SpatialQuery,
-    mut items: Query<(Entity, &GlobalTransform, &mut ItemShown, &Children)>,
-    visuals: Query<&Children, With<ItemVisual>>,
-    mut parts: Query<(&mut ItemPart, &Mesh3d)>,
-    mut meshes: ResMut<Assets<Mesh>>,
+    mut items: Query<(Entity, &GlobalTransform, &mut ItemShown, &mut ActorLight)>,
 ) {
     let Some((level_entity, level)) =
         levels.iter().find_map(|(e, l)| geometry.get(&l.0).map(|g| (e, g)))
@@ -135,11 +124,12 @@ pub fn light_world_items(
     // highlight in is not recovered; here it adds green light.
     let phase = (time.elapsed_secs() / PULSE_SECONDS).fract();
     let pulse = 0.25 + 0.75 * (1.0 - (2.0 * phase - 1.0).abs());
-    for (entity, transform, mut shown, children) in &mut items {
-        let Some(model) = models.get(&shown.model) else { continue };
+    for (entity, transform, mut shown, mut light) in &mut items {
         let at = transform.translation();
         let (sky_scale, fixed) = match shown.lit_at {
-            Some((lit, sky_scale, fixed)) if lit == at => (sky_scale, fixed),
+            Some((lit, sky_scale, fixed)) if lit == at && !geometry.is_changed() => {
+                (sky_scale, fixed)
+            }
             _ => {
                 let sky_scale = if sunlit(&spatial, level_entity, level, at) { 1.0 } else { 0.0 };
                 let fixed = level.lighting.at(at, None);
@@ -147,21 +137,8 @@ pub fn light_world_items(
                 (sky_scale, fixed)
             }
         };
-        // Only the hovered item's colour moves on its own; the one left
-        // behind is repainted once because its colour differs again.
         let highlight = if hovered.entity() == Some(entity) { Vec3::Y * pulse } else { Vec3::ZERO };
-        for visual in visuals.iter_many(children).matched() {
-            for child in visual.iter() {
-                let Ok((mut applied, copy)) = parts.get_mut(child) else { continue };
-                let Some(part) = model.parts.get(applied.index) else { continue };
-                let light =
-                    sky * sky_scale * part.ambient + fixed + Vec3::splat(part.emission) + highlight;
-                let colour = light.extend(1.0).to_array();
-                if applied.colour != Some(colour) && paint(&mut meshes, &copy.0, colour) {
-                    applied.colour = Some(colour);
-                }
-            }
-        }
+        light.set_if_neq(ActorLight { sky: sky * sky_scale, fixed: fixed + highlight });
     }
 }
 

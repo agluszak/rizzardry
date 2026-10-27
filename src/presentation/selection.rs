@@ -2,6 +2,7 @@
 //! only to find a dropped item's landing point, never to replace mesh picking.
 
 use super::controls::Interact;
+use super::morph_picking::MorphRayCast;
 use super::party_view::PartyCamera;
 use crate::game::inventory::PartyInventory;
 use crate::game::world::items::{CLEARANCE, THROW, WorldItem, drop_held, take_item};
@@ -35,6 +36,7 @@ pub fn select_world_target(
     pointers: Query<(&PointerId, &PointerLocation)>,
     camera: Query<(&Camera, &GlobalTransform), With<PartyCamera>>,
     mut meshes: MeshRayCast,
+    mut morphs: MorphRayCast,
     sky: Query<(), With<RenderLayers>>,
     parents: Query<&ChildOf>,
     owners: Query<(), Or<(With<Prop>, With<WorldItem>, With<Monster>)>>,
@@ -49,13 +51,14 @@ pub fn select_world_target(
     let Some(ray) = ray_under_pointer(&pointers, camera, transform) else { return };
     selection.level = levels.single().ok();
     selection.ray = Some(ray);
-    selection.hit = drawn_under_ray(ray, &mut meshes, &sky).and_then(|(hit, distance)| {
-        Some(WorldHit {
-            entity: owner(hit, |e| owners.contains(e), &parents)?,
-            distance,
-            position: ray.get_point(distance),
-        })
-    });
+    selection.hit =
+        drawn_under_ray(ray, &mut meshes, &sky, &mut morphs).and_then(|(hit, distance)| {
+            Some(WorldHit {
+                entity: owner(hit, |e| owners.contains(e), &parents)?,
+                distance,
+                position: ray.get_point(distance),
+            })
+        });
 }
 
 pub fn activate_selection(
@@ -153,10 +156,12 @@ pub fn drawn_under_ray(
     ray: Ray3d,
     meshes: &mut MeshRayCast,
     sky: &Query<(), With<RenderLayers>>,
+    morphs: &mut MorphRayCast,
 ) -> Option<(Entity, f32)> {
     // The sky world is drawn by its own camera, around the world origin.
-    let not_sky = |entity| !sky.contains(entity);
+    let not_sky = |entity| !sky.contains(entity) && !morphs.contains(entity);
     let settings = MeshRayCastSettings::default().with_filter(&not_sky);
-    let &(entity, ref hit) = meshes.cast_ray(ray, &settings).first()?;
-    Some((entity, hit.distance))
+    let nearest =
+        meshes.cast_ray(ray, &settings).first().map(|(entity, hit)| (*entity, hit.distance));
+    morphs.nearest(ray, nearest)
 }

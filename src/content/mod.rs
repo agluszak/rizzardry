@@ -10,6 +10,7 @@ pub mod navmesh;
 pub mod npcs;
 pub mod species;
 pub mod spells;
+pub mod surface;
 pub mod ui;
 
 /// Retail length units in one metre: retail's own `kWorldScale`. Authored
