@@ -1,8 +1,8 @@
 # Agent guidelines
 
 Rizzardry rewrites Wizardry 8 in Rust and Bevy. Preserve its gameplay and
-character, not its C++ architecture. [Docs](docs/README.md) record evidence and
-ownership decisions, not a mandatory inventory of abstractions.
+character, not its C++ architecture. [Retail research](docs/research/README.md)
+records evidence, not an implementation blueprint.
 
 ## Design
 
@@ -47,8 +47,9 @@ ownership decisions, not a mandatory inventory of abstractions.
   change good production architecture merely to test it.
 - Pick the cheapest convincing evidence: a pure rule test, a small real-schedule
   Bevy scenario, or an actual game check. Focus checks on the change; docs-only
-  changes do not need an engine rebuild. See [testing](docs/testing.md).
+  changes do not need an engine rebuild.
 - Do not claim checks you did not run or visual parity from headless tests.
-- Keep documentation concise: decisions, evidence, unresolved gaps and commands.
-  Remove superseded plans and implementation diaries instead of appending to them.
+- Keep docs for durable retail research; keep working rules here. Put plans,
+  task lists and temporary decisions in issues/PRs, not permanent Markdown.
+  Delete stale notes instead of accumulating revisions.
 - Create non-draft PRs only. Merge only when the user requests it.

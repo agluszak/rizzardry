@@ -491,12 +491,3 @@ Attempt rule (`pci.cpp:455-475`, `pci.cpp:568-596`):
   (`rinv.cpp:76-79`). **Uncertain** whether any quest check depends on it.
 - `placeHeld` into a backpack slot draws gameplay RNG (`inv.cpp:1046`). Pool
   receipt picks a random member for the reaction (`inv.cpp:399`).
-
-## 8. Rust ownership decision
-
-The implemented model uses nonempty owned `ItemStack` values, independent
-physical counts and use reservoirs, and release on `Equipped` placements.
-Concrete containers consume incoming values and return remainders. Stable stack
-IDs select items; member slots and pool insertion anchors select destinations.
-See [inventory ownership](../systems/inventory-trade-and-curses.md) for operation
-contracts, original-source corrections to this reconstruction and remaining gaps.

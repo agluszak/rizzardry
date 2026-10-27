@@ -454,8 +454,7 @@ creation adds the point rules (`cg.cpp:889-946`, `cg.cpp:982-1056`).
    their own set), plus one extra item for Fighter, Priest, Gadgeteer and Bard
    (`cg.cpp:1060-1117`).
 
-A party is six regular members plus up to two RPCs
-([party and RPCs](../systems/party-and-rpcs.md)).
+A party is six regular members plus up to two RPCs.
 
 Worked check, from the formulas only (not compared with retail): a male Human
 Fighter with STR 55, VIT 50, DEX 50 and 45 elsewhere has HP
