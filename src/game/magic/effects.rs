@@ -5,11 +5,11 @@
 
 use bevy::prelude::*;
 
-use super::Strength;
+use super::{LearnedSpells, SpellPoints, Strength};
 use crate::content::characters::{Attribute, Realm, Skill};
 use crate::content::items::{Dice, ItemCatalog};
 use crate::content::species::MonsterCatalog;
-use crate::content::spells::{SpellDefinition, SpellId};
+use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId};
 use crate::game::characters::{
     Character, Condition, Lasting, Vitals, inflict, resistance::resistances, wake_on_hit,
 };
@@ -31,6 +31,9 @@ enum Kind {
     },
     Heal,
     Stamina,
+    /// Healing followed by stamina with twice the dice count.
+    RestoreHealth,
+    RestoreMagic,
     /// Heal, restore stamina and lift conditions 2..17 but infatuation.
     Restoration,
     /// `InflictConditionAttack` at a percent chance.
@@ -94,6 +97,9 @@ fn kind(spell: SpellId) -> Option<Kind> {
         74 => Kind::Cure(&[Insane, Turncoat]),
         88 => Kind::Resurrect,
         82 => Kind::Lifesteal,
+        114 => Kind::RestoreHealth,
+        115 => Kind::RestoreMagic,
+        116 => Kind::Cure(&[Unconscious, Asleep]),
         _ => return None,
     })
 }
@@ -122,6 +128,7 @@ pub enum Victim {
 pub enum Effect {
     Healed { victim: Victim, amount: u32 },
     Refreshed { victim: Victim, amount: u32 },
+    Replenished { victim: Victim, amount: u32 },
     Damaged { victim: Victim, amount: u32, outcome: DamageOutcome },
     Inflicted { victim: Victim, condition: Condition },
     Cured { victim: Victim, condition: Condition },
@@ -452,6 +459,7 @@ pub fn resolve(
     victims: &[Victim],
     rng: &mut GameRng,
     world: &mut Field,
+    (spells, points): (&SpellCatalog, &mut Query<(&LearnedSpells, &mut SpellPoints)>),
 ) -> Vec<Effect> {
     let (Some(kind), Some(realm)) = (kind(spell.id), spell.realm) else { return Vec::new() };
     let mut effects = Vec::new();
@@ -463,6 +471,58 @@ pub fn resolve(
         }
     };
     match kind {
+        Kind::RestoreMagic => each(&mut |v, rng, world| {
+            let Victim::Member(member) = v else { return None };
+            let (character, vitals, _) = world.members.get(member).ok()?;
+            if vitals.is_dead() {
+                return None;
+            }
+            // Retail rolls even when every realm is already full.
+            let amount = magnitude(rng, spell.dice, strength);
+            let Ok((learned, mut pool)) = points.get_mut(member) else {
+                return Some(Effect::Nothing { victim: v });
+            };
+            let maximum = super::max_points(character, learned, spells);
+            let amount = pool.restore_evenly(&maximum, amount);
+            Some(if amount == 0 {
+                Effect::Nothing { victim: v }
+            } else {
+                Effect::Replenished { victim: v, amount }
+            })
+        }),
+        Kind::RestoreHealth => {
+            // Separate passes preserve retail target and RNG order.
+            each(&mut |v, rng, world| {
+                let Victim::Member(member) = v else { return None };
+                let (character, mut vitals, _) = world.members.get_mut(member).ok()?;
+                if vitals.is_dead() {
+                    return None;
+                }
+                let missing = character.max_hp().saturating_sub(vitals.hp);
+                if missing == 0 {
+                    return None;
+                }
+                let amount = magnitude(rng, spell.dice, strength).min(missing);
+                vitals.heal(amount, character.max_hp());
+                Some(Effect::Healed { victim: v, amount })
+            });
+            each(&mut |v, rng, world| {
+                let Victim::Member(member) = v else { return None };
+                let (character, mut vitals, _) = world.members.get_mut(member).ok()?;
+                if vitals.is_dead() {
+                    return None;
+                }
+                let missing = character.max_stamina().saturating_sub(vitals.stamina);
+                if missing == 0 {
+                    return None;
+                }
+                let dice =
+                    spell.dice.map(|dice| Dice { count: dice.count.saturating_mul(2), ..dice });
+                let amount = magnitude(rng, dice, strength).min(missing);
+                vitals.restore_stamina(amount, character.max_stamina());
+                Some(Effect::Refreshed { victim: v, amount })
+            });
+        }
         Kind::Damage => each(&mut |v, rng, world| {
             let rolled = magnitude(rng, spell.dice, strength);
             damage(rng, world, v, realm, rolled, strength.against)

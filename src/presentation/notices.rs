@@ -282,6 +282,9 @@ fn magic_lines(
         Effect::Refreshed { victim: v, amount } => {
             format!("{} regains {amount} stamina.", victim(v))
         }
+        Effect::Replenished { victim: v, amount } => {
+            format!("{} regains {amount} spell points.", victim(v))
+        }
         Effect::Cured { victim: v, condition } => {
             format!("{} is no longer {}.", victim(v), condition_word(condition))
         }
