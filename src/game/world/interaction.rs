@@ -292,8 +292,8 @@ fn roll_trap(difficulty: u8, rng: &mut GameRng) -> u8 {
 
 /// The member's character and vitals, if they are in the party.
 fn member(world: &mut World, actor: Entity) -> Result<(&Character, &Vitals), Unable> {
-    if !world.query::<&super::level::Destination>().is_empty(world)
-        || !world.query::<&crate::game::combat::Battle>().is_empty(world)
+    if world.query::<&super::level::Destination>().iter(world).next().is_some()
+        || world.query::<&crate::game::combat::Battle>().iter(world).next().is_some()
     {
         return Err(Unable::NotNow);
     }

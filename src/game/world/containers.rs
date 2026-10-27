@@ -37,8 +37,8 @@ pub fn take_from_container(
     picks: &[(StackId, u16)],
     to: Recipient,
 ) -> Result<(), Refusal> {
-    if !world.query::<&super::level::Destination>().is_empty(world)
-        || !world.query::<&crate::game::combat::Battle>().is_empty(world)
+    if world.query::<&super::level::Destination>().iter(world).next().is_some()
+        || world.query::<&crate::game::combat::Battle>().iter(world).next().is_some()
     {
         return Err(Refusal::Nothing);
     }
