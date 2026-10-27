@@ -950,7 +950,8 @@ mod tests {
 
     #[test]
     fn failure_and_backfire_share_one_roll_and_guaranteed_casts_draw_none() {
-        let spell = SpellDefinition { id: SpellId::ENERGY_BLAST, ..default() };
+        let spell =
+            SpellDefinition { id: SpellId::ENERGY_BLAST, targeting: Targeting::Enemy, ..default() };
         let mut rng = GameRng::seeded(17);
         let mut expected = rng.clone();
         let rolled = expected.below(100);
