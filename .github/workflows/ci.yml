@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Full debuginfo makes every Bevy test binary gigabytes; CI only needs
+  # line tables for backtraces.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Bevy's system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: rui314/setup-mold@v1
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Only main writes the cache; pull requests restore it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo fmt --package rizzardry --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      # Retail tests are ignored: CI has no Wizardry 8 installation.
+      - run: cargo nextest run --locked --no-fail-fast
