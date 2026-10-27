@@ -1,5 +1,5 @@
 //! Retail party assembly: the candidate list and the ordered party are separate.
-use super::{Action, CharacterDraft, Creation, CreationPage, absolute};
+use super::{Action, CharacterDraft, Creation, Page, absolute};
 use crate::content::ui::SpriteSheet;
 use crate::presentation::retail_controls::{ControlSkin, FocusHighlight, set_enabled};
 use crate::presentation::screen_art::{BitmapText, Picture, spawn_picture as picture};
@@ -114,7 +114,7 @@ pub(super) fn build(commands: &mut Commands, root: Entity, assets: &AssetServer)
     let scroll = load("main interface/main_scroll");
     let page = commands
         .spawn((
-            CreationPage(None),
+            Page::Party,
             AssemblyPage,
             absolute(Vec2::ZERO, Vec2::new(640., 480.)),
             Pickable::IGNORE,
@@ -400,7 +400,7 @@ pub(super) fn refresh(
     for (field, mut text) in &mut labels {
         let value = match field {
             Label::CandidateName(id) | Label::Member(id) => {
-                candidate(&session, *id).map(|draft| draft.name.clone())
+                candidate(&session, *id).map(|draft| draft.display_name().to_owned())
             }
             Label::CandidateClass(id) => {
                 candidate(&session, *id).map(|draft| format!("Level 1 {:?}", draft.profession()))
@@ -492,6 +492,7 @@ mod identity_tests {
                 selected: Some(2),
                 next_id: 3,
                 mode: super::super::CreationMode::Party,
+                choices: default(),
                 message: String::new(),
             })
             .id();

@@ -1,5 +1,5 @@
-//! Confirmation for removing a character from the pre-game party list.
-use super::{Creation, Session};
+//! Confirm consequential choices in the character creator.
+use super::{Creation, Page, Session};
 use crate::content::ui::{SpriteSheet, TextTable};
 use crate::presentation::retail_controls::ControlSkin;
 use crate::presentation::screen_art::{BitmapText, Picture};
@@ -11,14 +11,21 @@ use bevy::prelude::*;
 use bevy::ui_widgets::{Activate, Button, ModalDialog};
 use bevy_enhanced_input::prelude::*;
 
+#[derive(Clone)]
+enum Purpose {
+    Delete { candidate: u32, name: String },
+    KeepSpells,
+}
+
 #[derive(Component, Clone)]
-pub(super) struct DeleteDialog {
-    candidate: u32,
+pub(super) struct ConfirmDialog {
+    purpose: Purpose,
     previous_focus: Option<Entity>,
 }
 #[derive(Component)]
 pub(super) struct QuestionText {
-    name: String,
+    purpose: Purpose,
+    line: usize,
     strings: Handle<TextTable>,
 }
 #[derive(Component)]
@@ -51,6 +58,23 @@ pub(super) fn open(
     name: &str,
     focus: &mut InputFocus,
 ) {
+    open_dialog(commands, assets, Purpose::Delete { candidate, name: name.to_owned() }, focus);
+}
+
+pub(super) fn confirm_remaining_spells(
+    commands: &mut Commands,
+    assets: &AssetServer,
+    focus: &mut InputFocus,
+) {
+    open_dialog(commands, assets, Purpose::KeepSpells, focus);
+}
+
+fn open_dialog(
+    commands: &mut Commands,
+    assets: &AssetServer,
+    purpose: Purpose,
+    focus: &mut InputFocus,
+) {
     let previous_focus = focus.get();
     let dialog = commands.spawn_scene(bsn! {
         Node { width: percent(100), height: percent(100), justify_content: JustifyContent::Center, align_items: AlignItems::Center }
@@ -58,15 +82,15 @@ pub(super) fn open(
         Pickable::default()
         TabGroup::modal()
         ModalDialog
-        ContextPriority::<DeleteDialog>::new(10)
-        ContextActivity::<DeleteDialog>::INACTIVE
-        Actions<DeleteDialog> [
+        ContextPriority::<ConfirmDialog>::new(10)
+        ContextActivity::<ConfirmDialog>::INACTIVE
+        Actions<ConfirmDialog> [
             Action::<Accept>::new() ActionSettings { consume_input: true, require_reset: true } Bindings [ Binding(KeyCode::Enter) ]
             -- Action::<Cancel>::new() ActionSettings { consume_input: true, require_reset: true } Bindings [ Binding(KeyCode::Escape) ]
         ]
         on(|event: On<Start<Accept>>, mut commands: Commands| { commands.trigger(Answer { dialog: event.context, accepted: true }); })
         on(|event: On<Start<Cancel>>, mut commands: Commands| { commands.trigger(Answer { dialog: event.context, accepted: false }); })
-    }).insert((DeleteDialog { candidate, previous_focus }, DespawnOnExit(Session::Creation))).id();
+    }).insert((ConfirmDialog { purpose: purpose.clone(), previous_focus }, DespawnOnExit(Session::Creation))).id();
     let panel = commands
         .spawn((
             Panel,
@@ -156,21 +180,23 @@ pub(super) fn open(
             ));
         }
     }
-    commands.spawn((
-        QuestionText {
-            name: name.to_owned(),
-            strings: assets.load("retail://data/strings/stringdata.dat"),
-        },
-        BitmapText {
-            font: assets.load("retail://data/fonts/wiz_text_font.sti"),
-            value: format!("Erase {name} Permanently?"),
-            at: Vec2::new(4., 20.),
-            width: 202.,
-            justify: bevy::text::Justify::Center,
-            ..default()
-        },
-        ChildOf(panel),
-    ));
+    for line in 0..3 {
+        commands.spawn((
+            QuestionText {
+                purpose: purpose.clone(),
+                line,
+                strings: assets.load("retail://data/strings/stringdata.dat"),
+            },
+            BitmapText {
+                font: assets.load("retail://data/fonts/wiz_text_font.sti"),
+                at: Vec2::new(4., 20. + line as f32 * 11.),
+                width: 202.,
+                justify: bevy::text::Justify::Center,
+                ..default()
+            },
+            ChildOf(panel),
+        ));
+    }
     let sheet: Handle<SpriteSheet> = assets.load("retail://data/dialogs/dialogconfirmation.sti");
     for (x, frame, accepted) in [(68., 0, true), (117., 4, false)] {
         let button = commands
@@ -195,7 +221,7 @@ pub(super) fn open(
 
 pub(super) fn resolve(
     answer: On<Answer>,
-    dialogs: Query<(&DeleteDialog, &ContextActivity<DeleteDialog>)>,
+    dialogs: Query<(&ConfirmDialog, &ContextActivity<ConfirmDialog>)>,
     mut sessions: Query<&mut Creation>,
     mut commands: Commands,
     mut focus: ResMut<InputFocus>,
@@ -206,15 +232,30 @@ pub(super) fn resolve(
     }
     if answer.accepted
         && let Ok(mut session) = sessions.single_mut()
-        && let Some(index) = session.candidates.iter().position(|(id, _)| *id == dialog.candidate)
     {
-        session.candidates.remove(index);
-        session.party.retain(|id| *id != dialog.candidate);
-        session.selected = index
-            .checked_sub(1)
-            .and_then(|i| session.candidates.get(i))
-            .or_else(|| session.candidates.first())
-            .map(|(id, _)| *id);
+        match &dialog.purpose {
+            Purpose::Delete { candidate, .. } => {
+                if let Some(index) = session.candidates.iter().position(|(id, _)| id == candidate) {
+                    session.candidates.remove(index);
+                    session.party.retain(|id| id != candidate);
+                    session.selected = index
+                        .checked_sub(1)
+                        .and_then(|i| session.candidates.get(i))
+                        .or_else(|| session.candidates.first())
+                        .map(|(id, _)| *id);
+                }
+            }
+            Purpose::KeepSpells => {
+                if session.mode.page() == Page::Magic
+                    && session
+                        .mode
+                        .draft()
+                        .is_some_and(|draft| draft.spell_remaining() < draft.spell_points_total())
+                {
+                    session.mode.set_page(Page::Skills);
+                }
+            }
+        }
     }
     commands.entity(answer.dialog).despawn();
     if let Some(previous) = dialog.previous_focus {
@@ -236,27 +277,35 @@ pub(super) fn show_text(
     let mut size = None;
     for (entity, question, mut text) in &mut texts {
         let Some(table) = tables.get(&question.strings) else { continue };
-        let value = format!(
-            "{} {} {}?",
-            table.get(0x6d4).unwrap_or("Erase"),
-            question.name,
-            table.get(0x6d5).unwrap_or("Permanently")
-        );
-        if text.value != value {
-            text.value = value;
-        }
+        let message = match &question.purpose {
+            Purpose::Delete { name, .. } => format!(
+                "{} {} {}?",
+                table.get(0x6d4).unwrap_or("Erase"),
+                name,
+                table.get(0x6d5).unwrap_or("Permanently")
+            ),
+            Purpose::KeepSpells => table
+                .get(0xc4)
+                .unwrap_or("You still have some spell picks. Save them and proceed?")
+                .to_owned(),
+        };
         if let Some(font) = sheets.get(&text.font) {
-            let image = font.text_image(&text.value);
-            let height = image.height() as f32;
-            let width = (image.width() as f32 * 1.25).max(170.).floor();
-            let panel_height = (height + 63.).max(height * 7.);
-            if text.width != width {
-                text.width = width;
+            let lines =
+                crate::presentation::notices::wrap(&message, 220, |line| font.text_width(line));
+            let value = lines.get(question.line).cloned().unwrap_or_default();
+            if text.value != value {
+                text.value = value;
             }
-            let at = Vec2::new(0., ((panel_height - 33. - height) / 2.).floor());
-            if text.at != at {
-                text.at = at;
-            }
+            let width = lines.iter().map(|line| font.text_width(line)).max().unwrap_or(0) as f32;
+            let width = (width * 1.25).max(170.).floor();
+            let height = font.text_image("A").height() as f32;
+            let text_height = height * lines.len() as f32;
+            let panel_height = (text_height + 63.).max(text_height * 7.);
+            text.width = width;
+            text.at = Vec2::new(
+                0.,
+                ((panel_height - 33. - text_height) / 2.).floor() + question.line as f32 * height,
+            );
             size = Some((width, panel_height));
             commands.entity(entity).insert(Measured);
         }

@@ -54,9 +54,9 @@ pub fn begin_adventure(
     let characters = drafts
         .iter()
         .map(|draft| {
-            draft.finish().map(|character| {
-                (character, crate::game::magic::LearnedSpells(draft.spells().clone()))
-            })
+            draft
+                .finish()
+                .map(|character| (character, crate::game::magic::LearnedSpells(draft.spells())))
         })
         .collect::<Result<Vec<_>, _>>()?;
     commands.spawn((
@@ -93,6 +93,9 @@ mod tests {
         drafts[0].name = "First".into();
         drafts[0].adjust_attribute(Attribute::Vitality, true);
         drafts[0].adjust_skill(Skill::Sword, true);
+        for draft in &mut drafts {
+            crate::game::characters::creation::complete_allocations(draft);
+        }
         let expected = drafts[0].preview();
         let target = NewGameDestination {
             path: "levels/monastery/monastery1.pvl".into(),
