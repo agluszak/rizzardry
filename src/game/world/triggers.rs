@@ -1304,6 +1304,21 @@ mod tests {
         .unwrap();
         assert_eq!(level.world.get::<Container>(chest).unwrap().contents.items, before);
         assert!(level.inventory().pool.stacks.is_empty());
+        let entering = level
+            .world
+            .spawn(super::super::level::Destination::new(
+                Level::test(default()),
+                default(),
+                super::super::level::Entry::Travel,
+            ))
+            .id();
+        assert_eq!(
+            take_from_container(&mut level.world, &[(quiver, 4)], Recipient::Party),
+            Err(crate::game::inventory::Refusal::Nothing)
+        );
+        assert_eq!(level.world.get::<Container>(chest).unwrap().contents.items, before);
+        assert!(level.inventory().pool.stacks.is_empty());
+        level.world.despawn(entering);
         take_from_container(&mut level.world, &[(quiver, 4)], Recipient::Party).unwrap();
         let pool = &level.inventory().pool.stacks;
         assert_eq!(pool.iter().map(ItemStack::count).collect::<Vec<_>>(), [4]);

@@ -291,7 +291,12 @@ fn roll_trap(difficulty: u8, rng: &mut GameRng) -> u8 {
 }
 
 /// The member's character and vitals, if they are in the party.
-fn member(world: &World, actor: Entity) -> Result<(&Character, &Vitals), Unable> {
+fn member(world: &mut World, actor: Entity) -> Result<(&Character, &Vitals), Unable> {
+    if !world.query::<&super::level::Destination>().is_empty(world)
+        || !world.query::<&crate::game::combat::Battle>().is_empty(world)
+    {
+        return Err(Unable::NotNow);
+    }
     if world.get::<PartyMember>(actor).is_none() {
         return Err(Unable::NotMember);
     }
@@ -423,14 +428,17 @@ pub fn leave(world: &mut World) {
     world.remove_resource::<DeviceInteraction>();
 }
 
-/// An interaction ends with its device, or when a fight begins.
+/// An interaction ends with its device, an accepted entry, or a fight.
 pub(crate) fn end_lost_interaction(
     mut commands: Commands,
     interaction: Option<Res<DeviceInteraction>>,
     devices: Query<(), With<Device>>,
+    entering: Query<(), With<super::level::Destination>>,
     battle: Query<(), With<crate::game::combat::Battle>>,
 ) {
-    if interaction.is_some_and(|i| !devices.contains(i.device) || !battle.is_empty()) {
+    if interaction
+        .is_some_and(|i| !devices.contains(i.device) || !battle.is_empty() || !entering.is_empty())
+    {
         commands.remove_resource::<DeviceInteraction>();
     }
 }

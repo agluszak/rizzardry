@@ -37,6 +37,11 @@ pub fn take_from_container(
     picks: &[(StackId, u16)],
     to: Recipient,
 ) -> Result<(), Refusal> {
+    if !world.query::<&super::level::Destination>().is_empty(world)
+        || !world.query::<&crate::game::combat::Battle>().is_empty(world)
+    {
+        return Err(Refusal::Nothing);
+    }
     let device = looting(world).ok_or(Refusal::Nothing)?;
     let party = the_party(world).ok_or(Refusal::NotMember)?;
     if let Recipient::Member(member) = to {
