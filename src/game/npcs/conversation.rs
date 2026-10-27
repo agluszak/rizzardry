@@ -191,7 +191,7 @@ fn average_level(world: &World) -> u32 {
         .iter()
         .filter_map(|e| world.get::<Character>(*e))
         .fold((0, 0), |(s, n), c| (s + u32::from(c.level), n + 1));
-    if count == 0 { 1 } else { sum / count }
+    sum.checked_div(count).unwrap_or(1)
 }
 fn actor_level(world: &World, actor: Entity) -> Option<Entity> {
     world

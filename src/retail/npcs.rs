@@ -122,7 +122,9 @@ fn operation(
         },
         3 if subs.len().is_multiple_of(2) && args[2] != 4 => {
             let facts = subs
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|p| {
                     Ok((
                         FactId(id(p[0].0)?),

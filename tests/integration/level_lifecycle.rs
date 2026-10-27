@@ -657,3 +657,84 @@ fn retail_level_definitions_load_without_render_asset_resources() {
     assert!(app.world().resource::<Assets<LevelGeometry>>().is_empty());
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
+    use rizzardry::content::{
+        items::{ItemDefinition, ItemId},
+        npcs::{DialogueScript, FactCatalog, NpcCatalog, NpcDefinition, NpcId, Quote, StockRule},
+    };
+    use rizzardry::game::npcs::{ActorId, Npc, NpcAssets, NpcPresence};
+    let mut app = app();
+    with_data(&mut app);
+    let data = app.world().resource::<GameData>();
+    let items = data.items.clone();
+    let species = data.species.clone();
+    app.world_mut()
+        .resource_mut::<Assets<ItemCatalog>>()
+        .get_mut(&items)
+        .unwrap()
+        .0
+        .push(ItemDefinition { id: ItemId(0), ..default() });
+    app.world_mut().resource_mut::<Assets<MonsterCatalog>>().get_mut(&species).unwrap().0[0].npc =
+        Some(NpcId(0));
+    let catalog =
+        app.world_mut().resource_mut::<Assets<NpcCatalog>>().add(NpcCatalog(vec![NpcDefinition {
+            source_name: "Fixture".into(),
+            disposition: 80,
+            owns_stock: true,
+            stock: vec![StockRule { item: ItemId(0), quantity: 3, persistent: true }],
+            ..default()
+        }]));
+    let facts = app.world_mut().resource_mut::<Assets<FactCatalog>>().add(FactCatalog::default());
+    let script = app.world_mut().resource_mut::<Assets<DialogueScript>>().add(DialogueScript {
+        quotes: vec![Quote { text: vec!["Greeting".into()], ..default() }],
+        ..default()
+    });
+    app.insert_resource(NpcAssets { catalog, facts, scripts: [(NpcId(0), script)].into() });
+    let source = spawn_level(&mut app, floor());
+    app.update();
+    assert!(is_played(&app, source));
+    let actor = app.world_mut().query::<(Entity, &Npc)>().single(app.world()).unwrap().0;
+    assert!(app.world().get::<ChildOf>(actor).is_none());
+    assert_eq!(app.world().get::<NpcPresence>(actor).unwrap().0, source);
+    {
+        let mut npc = app.world_mut().get_mut::<Npc>(actor).unwrap();
+        npc.greeting_pending = false;
+        npc.paid_topics.push(7);
+        npc.stock.lots[0].units = 2;
+    }
+    {
+        let mut body = app.world_mut().get_mut::<Monster>(actor).unwrap();
+        body.hp = 4;
+        body.max_hp = 9;
+    }
+    let stock = app.world().get::<Npc>(actor).unwrap().stock.clone();
+    let mut away = test_level(&mut app, floor());
+    away.path = "levels/away/away.pvl".into();
+    app.world_mut()
+        .resource_mut::<Assets<LevelDefinition>>()
+        .get_mut(&away.geometry)
+        .unwrap()
+        .monsters
+        .clear();
+    let away = app.world_mut().spawn(Destination::new(away, default())).id();
+    app.update();
+    assert!(is_played(&app, away));
+    assert!(app.world().get_entity(source).is_err());
+    assert!(app.world().get::<Monster>(actor).is_none());
+    assert!(app.world().get::<NpcPresence>(actor).is_none());
+    assert_eq!(app.world().get::<Npc>(actor).unwrap().dormant.as_ref().unwrap().1.monster.hp, 4);
+    app.update();
+    assert_eq!(app.world().get::<Npc>(actor).unwrap().stock, stock);
+    let back = spawn_level(&mut app, floor());
+    app.update();
+    assert!(is_played(&app, back));
+    assert_eq!(app.world().get::<Monster>(actor).unwrap().hp, 4);
+    let npc = app.world().get::<Npc>(actor).unwrap();
+    assert_eq!(npc.stock, stock);
+    assert_eq!(npc.paid_topics, [7]);
+    assert!(!npc.greeting_pending);
+    assert_eq!(app.world_mut().query::<&Npc>().iter(app.world()).count(), 1);
+    assert_eq!(app.world().get::<ActorId>(actor), Some(&ActorId::Named(NpcId(0))));
+}
