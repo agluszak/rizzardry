@@ -4,8 +4,6 @@ use crate::content::characters::{Attribute, Gender, Profession, Skill};
 use crate::game::characters::creation::{CharacterDraft, PLAYABLE_RACES};
 use crate::game::party::{formation::Formation, roster::PartyRoster};
 use crate::game::session::{NewGameDestination, Session, begin_adventure};
-#[cfg(test)]
-use bevy::input::ButtonState;
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::input_focus::{
     InputFocus,
