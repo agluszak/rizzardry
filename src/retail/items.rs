@@ -461,14 +461,20 @@ fn read_item(
     let armor_class_bonus = bytes.i8()?;
     let (spell, power) = (bytes.u8()?, bytes.u8()?);
     bytes.u8()?; // not established
-    let spell = (spell != 0 && power != 0).then_some(crate::content::spells::ItemSpell {
+    let spell = (spell != 0
+        && (power != 0
+            || matches!(
+                use_type,
+                crate::content::items::UseType::Instrument | crate::content::items::UseType::Gadget
+            )))
+    .then_some(crate::content::spells::ItemSpell {
         spell: crate::content::spells::SpellId(spell),
         power: power.min(crate::content::spells::MAX_POWER),
     });
     let quantity_kind = bytes.u8()?;
     let initial_quantity = dice(&mut bytes)?;
     let stack_limit = bytes.u8()?;
-    bytes.take(3)?; // regeneration
+    let regeneration = bytes.array::<3>()?.map(|value| value as i8);
     let resistance_bonus =
         enum_map::EnumMap::from_array(bytes.array::<6>()?.map(|value| value as i8));
     bytes.take(1)?; // property
@@ -511,6 +517,8 @@ fn read_item(
         armor_class_bonus,
         spell,
         use_type,
+        must_equip_to_use: has(0x40),
+        regeneration,
         resistance_bonus,
         quantity: match quantity_kind {
             0 => QuantityKind::None,
@@ -646,6 +654,29 @@ pub fn retail_catalog(files: &crate::retail::files::RetailFiles) -> ItemCatalog 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn activation_flags_and_residual_regeneration_are_decoded() {
+        let mut data = vec![0; 4 + RECORD];
+        data[..4].copy_from_slice(&1_u32.to_le_bytes());
+        data[4 + 0x41] = 0x40;
+        data[4 + 0x6c..4 + 0x6f].copy_from_slice(&[1, 0xff, 2]);
+        let catalog = read_item_catalog(&data, &[]).unwrap();
+        assert!(catalog.0[0].must_equip_to_use);
+        assert_eq!(catalog.0[0].regeneration, [1, -1, 2]);
+        assert!(catalog.0[0].keeps_empty());
+        data[4 + 0x42] = 6; // Instrument power comes from the player, not this byte.
+        data[4 + 0x63] = 39;
+        data[4 + 0x64] = 0;
+        let catalog = read_item_catalog(&data, &[]).unwrap();
+        assert_eq!(
+            catalog.0[0].spell,
+            Some(crate::content::spells::ItemSpell {
+                spell: crate::content::spells::SpellId(39),
+                power: 0
+            })
+        );
+    }
 
     #[test]
     fn invalid_requirement_ids_cannot_import_as_unrestricted_items() {

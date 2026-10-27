@@ -7,6 +7,7 @@
 //! item spends a use (see `game::magic::casting`).
 
 pub mod casting;
+pub(crate) mod devices;
 pub mod effects;
 pub(crate) mod traps;
 
@@ -476,6 +477,8 @@ impl MagicContext<'_, '_> {
 pub fn accept_magic(
     mut requests: MessageReader<MagicRequest>,
     battle: Option<Single<&crate::game::combat::Battle>>,
+    camp: Option<Res<crate::game::camp::Camp>>,
+    interaction: Option<Res<crate::game::world::interaction::DeviceInteraction>>,
     mut orders: Query<&mut crate::game::party::Order>,
     (mut members, mut monsters): (Members, MonsterDamage),
     mut points: Query<(&LearnedSpells, &mut SpellPoints)>,
@@ -485,6 +488,26 @@ pub fn accept_magic(
 ) {
     for &MagicRequest { caster, choice } in requests.read() {
         if !context.roster.contains(&caster) {
+            continue;
+        }
+        if let casting::Aim::Device(device) = choice.aim {
+            commands.queue(move |world: &mut World| {
+                if let Err(refusal) = crate::game::world::interaction::cast_device(
+                    world,
+                    caster,
+                    device,
+                    choice.source,
+                ) {
+                    world.write_message(casting::MagicNews::Refused { caster, refusal });
+                }
+            });
+            continue;
+        }
+        if interaction.is_some() {
+            context.news.write(casting::MagicNews::Refused {
+                caster,
+                refusal: casting::Refusal::WrongTime,
+            });
             continue;
         }
         if battle.is_some() {
@@ -522,7 +545,11 @@ pub fn accept_magic(
         // Outside a fight no monster is a target: the hostile spells are
         // combat spells.
         let situation = casting::Situation {
-            in_combat: false,
+            context: if camp.is_some() {
+                casting::UseContext::Camp
+            } else {
+                casting::UseContext::World
+            },
             party: &roster.iter().collect::<Vec<_>>(),
             party_at,
             monsters: &[],
@@ -711,6 +738,7 @@ mod tests {
         let wand = ItemDefinition {
             id: ItemId(1),
             name: "Healing Wand".into(),
+            armor_class_bonus: 1,
             class: EquipClass::MiscMagic,
             use_type: UseType::Charged,
             quantity: QuantityKind::Charges,

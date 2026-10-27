@@ -1469,6 +1469,238 @@ mod tests {
     }
 
     #[test]
+    fn device_casts_revalidate_targets_and_pay_from_the_selected_item_owner() {
+        use super::super::interaction::{Tumbler, cast_device, prepare_device_magic};
+        use crate::content::{
+            characters::{Realm, Skill},
+            items::{EquipClass, QuantityKind, UseType},
+            spells::{ItemSpell, SpellDefinition, SpellId, Spellbook, Targeting, Usable},
+        };
+        use crate::game::{
+            inventory::{Carried, EquipSlot, Equipped},
+            magic::{
+                LearnedSpells, SpellPoints,
+                casting::{Refusal, Source},
+            },
+        };
+        let mut level =
+            chest_level(Some(crate::content::level::Lock::Pickable { difficulty: 8 }), 0);
+        let spell = SpellDefinition {
+            id: SpellId(39),
+            realm: Some(Realm::Earth),
+            cost: 1,
+            targeting: Targeting::LockOrTrap,
+            usable: Usable::OnLockOrTrap,
+            books: Spellbook::Wizardry.into(),
+            ..default()
+        };
+        with_trap_spell(&mut level, spell);
+        let actor = level.members[0];
+        let mut profile = Character::new("Caster", Race::Human, Gender::Male, Profession::Mage);
+        for skill in [Skill::Wizardry, Skill::EarthMagic, Skill::Artifacts] {
+            profile.skill_points[skill] = 100;
+        }
+        let mut points = SpellPoints::default();
+        points.current[Realm::Earth] = 20;
+        level.world.entity_mut(actor).insert((
+            Vitals::new(&profile),
+            profile,
+            LearnedSpells([SpellId(39)].into()),
+            points,
+        ));
+        let pool_tool = ItemDefinition {
+            id: ItemId(0),
+            class: EquipClass::MiscMagic,
+            use_type: UseType::Charged,
+            quantity: QuantityKind::Charges,
+            professions: enumset::EnumSet::all(),
+            races: enumset::EnumSet::all(),
+            genders: enumset::EnumSet::all(),
+            spell: Some(ItemSpell { spell: SpellId(39), power: 1 }),
+            ..default()
+        };
+        let worn_tool = ItemDefinition {
+            id: ItemId(1),
+            must_equip_to_use: true,
+            armor_class_bonus: 1,
+            ..pool_tool.clone()
+        };
+        let handle = level.world.resource::<GameData>().items.clone();
+        level
+            .world
+            .resource_mut::<Assets<ItemCatalog>>()
+            .insert(&handle, ItemCatalog(vec![pool_tool.clone(), worn_tool.clone()]))
+            .unwrap();
+        let mut ids = ItemIds::default();
+        let pooled = ItemStack::new(&pool_tool, &mut ids, 1, true);
+        let worn = ItemStack::new(&worn_tool, &mut ids, 1, true);
+        let (pool_id, worn_id) = (pooled.id, worn.id);
+        level.inventory().pool.stacks.push(pooled);
+        level.world.get_mut::<Carried>(actor).unwrap().backpack[0] = Some(worn);
+        level.run("CHEST");
+        let device = level.device("CHEST");
+        let other = level.world.spawn_empty().id();
+        let rng = level.world.resource::<GameRng>().clone();
+        assert_eq!(
+            cast_device(
+                &mut level.world,
+                actor,
+                other,
+                Source::Spell { spell: SpellId(39), power: 1 }
+            ),
+            Err(Refusal::NoTarget)
+        );
+        assert_eq!(*level.world.resource::<GameRng>(), rng);
+        level.world.get_mut::<Vitals>(actor).unwrap().inflict(
+            crate::game::characters::Condition::Webbed,
+            crate::game::characters::Lasting::Rounds(3),
+        );
+        assert_eq!(
+            cast_device(
+                &mut level.world,
+                actor,
+                device,
+                Source::Spell { spell: SpellId(39), power: 1 }
+            ),
+            Err(Refusal::CannotAct)
+        );
+        assert_eq!(*level.world.resource::<GameRng>(), rng);
+        assert_eq!(level.world.get::<SpellPoints>(actor).unwrap().current[Realm::Earth], 20);
+        level
+            .world
+            .get_mut::<Vitals>(actor)
+            .unwrap()
+            .lift(crate::game::characters::Condition::Webbed);
+        assert_eq!(
+            cast_device(&mut level.world, actor, device, Source::Item(worn_id)),
+            Err(Refusal::CannotUse)
+        );
+        assert_eq!(*level.world.resource::<GameRng>(), rng);
+        cast_device(
+            &mut level.world,
+            actor,
+            device,
+            Source::Spell { spell: SpellId(39), power: 1 },
+        )
+        .unwrap();
+        assert_eq!(level.world.get::<SpellPoints>(actor).unwrap().current[Realm::Earth], 19);
+        cast_device(&mut level.world, actor, device, Source::PoolItem(pool_id)).unwrap();
+        assert!(
+            level.inventory().pool.stacks.is_empty(),
+            "a plain exhausted charged tool is consumed"
+        );
+        assert!(level.world.get::<Carried>(actor).unwrap().find_stack(worn_id).is_some());
+        assert_eq!(
+            cast_device(&mut level.world, actor, device, Source::PoolItem(pool_id)),
+            Err(Refusal::NoItem)
+        );
+        let mut carried = level.world.get_mut::<Carried>(actor).unwrap();
+        let worn = carried.backpack[0].take().unwrap();
+        carried.equipment[EquipSlot::AlternatePrimary] = Some(Equipped::new(worn));
+        assert_eq!(
+            cast_device(&mut level.world, actor, device, Source::Item(worn_id)),
+            Err(Refusal::CannotUse)
+        );
+        let mut carried = level.world.get_mut::<Carried>(actor).unwrap();
+        carried.equipment[EquipSlot::Primary] =
+            carried.equipment[EquipSlot::AlternatePrimary].take();
+        cast_device(&mut level.world, actor, device, Source::Item(worn_id)).unwrap();
+        assert_eq!(
+            level
+                .world
+                .get::<Carried>(actor)
+                .unwrap()
+                .find_stack(worn_id)
+                .unwrap()
+                .remaining_uses(),
+            Some(0),
+            "a residual AC effect keeps the exhausted item"
+        );
+        // Cancelling a newly opened selector drops only this actor's magic holds.
+        let mut interaction = level.world.resource_mut::<DeviceInteraction>();
+        let Work::Picking(picking) = &mut interaction.work else { panic!("picking") };
+        picking.tumblers[0] = Tumbler::Sealed(actor);
+        picking.tumblers[1] = Tumbler::Held(actor);
+        prepare_device_magic(&mut level.world, actor, device).unwrap();
+        let Some(Work::Picking(picking)) = work(&level) else { panic!("picking") };
+        assert_eq!(picking.tumblers[0], Tumbler::Down);
+        assert_eq!(picking.tumblers[1], Tumbler::Held(actor));
+    }
+
+    #[test]
+    fn divine_trap_replaces_its_session_bonus_and_uses_shared_spell_payment() {
+        use super::super::interaction::{cast_device, leave};
+        use crate::content::{
+            characters::{Realm, Skill},
+            spells::{SpellCatalog, SpellDefinition, SpellId, Spellbook, Targeting, Usable},
+        };
+        use crate::game::magic::{LearnedSpells, SpellPoints, casting::Source};
+        let mut level = chest_level(
+            Some(crate::content::level::Lock::Trap { difficulty: 7, kind: Some(10) }),
+            0,
+        );
+        with_trap_spell(
+            &mut level,
+            SpellDefinition { id: SpellId(125), realm: Some(Realm::Divine), ..default() },
+        );
+        let handle = level.world.resource::<GameData>().spells.clone();
+        level.world.resource_mut::<Assets<SpellCatalog>>().get_mut(&handle).unwrap().0[18] =
+            SpellDefinition {
+                id: SpellId(18),
+                realm: Some(Realm::Mental),
+                cost: 1,
+                books: Spellbook::Wizardry.into(),
+                targeting: Targeting::LockOrTrap,
+                usable: Usable::OnLockOrTrap,
+                ..default()
+            };
+        let actor = level.members[0];
+        let mut profile = Character::new("Caster", Race::Human, Gender::Male, Profession::Mage);
+        profile.skill_points[Skill::Wizardry] = 100;
+        profile.skill_points[Skill::MentalMagic] = 100;
+        let mut points = SpellPoints::default();
+        points.current[Realm::Mental] = 10;
+        level.world.entity_mut(actor).insert((
+            Vitals::new(&profile),
+            profile,
+            LearnedSpells([SpellId(18)].into()),
+            points,
+        ));
+        level.run("CHEST");
+        let device = level.device("CHEST");
+        cast_device(
+            &mut level.world,
+            actor,
+            device,
+            Source::Spell { spell: SpellId(18), power: 2 },
+        )
+        .unwrap();
+        let Some(Work::Disarming(trap)) = work(&level) else { panic!("disarming") };
+        assert_eq!(trap.divine_power, 2);
+        let stronger =
+            trap.inspection_chance(Some(25), crate::game::difficulty::Difficulty::Normal);
+        cast_device(
+            &mut level.world,
+            actor,
+            device,
+            Source::Spell { spell: SpellId(18), power: 1 },
+        )
+        .unwrap();
+        let Some(Work::Disarming(trap)) = work(&level) else { panic!("disarming") };
+        assert_eq!(trap.divine_power, 1);
+        assert!(
+            trap.inspection_chance(Some(25), crate::game::difficulty::Difficulty::Normal)
+                < stronger
+        );
+        assert_eq!(level.world.get::<SpellPoints>(actor).unwrap().current[Realm::Mental], 7);
+        leave(&mut level.world);
+        level.run("CHEST");
+        let Some(Work::Disarming(trap)) = work(&level) else { panic!("disarming") };
+        assert_eq!(trap.divine_power, 0);
+        assert!(level.world.get::<Guarded>(device).is_some());
+    }
+
+    #[test]
     fn an_unsupported_trap_keeps_its_type_and_refuses_every_discharge_path() {
         use super::super::interaction::{
             LockNews, TRAP_COMPONENTS, Unable, disarm_component, inspect_trap, leave, spring_trap,

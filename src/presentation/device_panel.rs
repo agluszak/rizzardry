@@ -87,6 +87,8 @@ struct DevicePanel {
 enum Control {
     Tumbler(usize),
     Force,
+    Cast,
+    UseItem,
     PreviousTrap,
     NextTrap,
     Component(usize),
@@ -120,7 +122,8 @@ struct LootRows(Vec<StackId>);
 fn sync_device_panel(
     mut commands: Commands,
     interaction: Option<Res<DeviceInteraction>>,
-    panels: Query<(Entity, &DevicePanel)>,
+    mut panels: Query<(Entity, &DevicePanel, &mut Visibility)>,
+    magic_views: Query<&super::main_screen::magic_view::MagicView>,
     motions: Query<&PropMotion>,
     art: Res<DevicePanelArt>,
 ) {
@@ -128,13 +131,20 @@ fn sync_device_panel(
         interaction.as_ref().map(|i| (i.device, kind(&i.work))).filter(|(device, kind)| {
             *kind != Kind::Loot || motions.get(*device).is_ok_and(|m| m.frame == m.target)
         });
-    for (entity, panel) in &panels {
+    for (entity, panel, mut visibility) in &mut panels {
+        visibility.set_if_neq(
+            if magic_views.iter().any(|view| view.device == Some(panel.device)) {
+                Visibility::Hidden
+            } else {
+                Visibility::Inherited
+            },
+        );
         if wanted != Some((panel.device, panel.kind)) {
             commands.entity(entity).despawn();
         }
     }
     let Some((device, kind)) = wanted else { return };
-    if panels.iter().any(|(_, p)| (p.device, p.kind) == (device, kind)) {
+    if panels.iter().any(|(_, p, _)| (p.device, p.kind) == (device, kind)) {
         return;
     }
     let font = art.font.clone();
@@ -198,6 +208,8 @@ fn sync_device_panel(
             }
             let actions = row(&mut commands);
             button(&mut commands, actions, &font, Control::Force);
+            button(&mut commands, actions, &font, Control::Cast);
+            button(&mut commands, actions, &font, Control::UseItem);
             button(&mut commands, actions, &font, Control::Leave);
         }
         Kind::Trap => {
@@ -211,6 +223,8 @@ fn sync_device_panel(
             }
             let actions = row(&mut commands);
             button(&mut commands, actions, &font, Control::Inspect);
+            button(&mut commands, actions, &font, Control::Cast);
+            button(&mut commands, actions, &font, Control::UseItem);
             button(&mut commands, actions, &font, Control::Spring);
             button(&mut commands, actions, &font, Control::Leave);
         }
@@ -339,17 +353,18 @@ fn draw_device_panel(
                 )
             }
             (Caption::Status, Work::Disarming(disarming)) => format!(
-                "{name}: Disarm {}",
-                percent(skill.map(|s| {
-                    i64::from(interaction::trap_chance(Some(s), disarming.difficulty, *difficulty))
-                }))
+                "{name}: Inspect {} / Disarm {}",
+                percent(
+                    skill.map(|s| i64::from(disarming.inspection_chance(Some(s), *difficulty)))
+                ),
+                percent(skill.map(|s| i64::from(disarming.disarm_chance(Some(s), *difficulty))))
             ),
             (Caption::Status, Work::Looting) => name.clone(),
             (Caption::Guess, _) => trap_name(panel.guess),
             (Caption::Control(control), work) => match (control, work) {
                 (Control::Tumbler(index), Work::Picking(picking)) => {
                     match picking.tumblers.get(index) {
-                        Some(Some(_)) => format!("{} up", index + 1),
+                        Some(pin) if pin.raised() => format!("{} up", index + 1),
                         _ => format!("{}", index + 1),
                     }
                 }
@@ -387,6 +402,8 @@ fn draw_device_panel(
                 (Control::PreviousTrap, _) => "<".to_owned(),
                 (Control::NextTrap, _) => ">".to_owned(),
                 (Control::Inspect, _) => "Inspect".to_owned(),
+                (Control::Cast, _) => "Spell".to_owned(),
+                (Control::UseItem, _) => "Use item".to_owned(),
                 (Control::Spring, _) => "Open".to_owned(),
                 (Control::All, _) => "All".to_owned(),
                 (Control::TakeToParty, _) => "Take".to_owned(),
@@ -406,7 +423,7 @@ fn draw_device_panel(
     let enabled = |control: Control| -> bool {
         match (control, &interaction.work) {
             (Control::Tumbler(index), Work::Picking(picking)) => {
-                skill.is_some() && picking.tumblers.get(index).is_some_and(Option::is_none)
+                skill.is_some() && picking.tumblers.get(index).is_some_and(|pin| !pin.raised())
             }
             (Control::Force, Work::Picking(picking)) => member.is_some_and(|(_, (c, v))| {
                 interaction::force_chance(c, v, picking.tumblers.len(), *difficulty).is_some()
@@ -415,6 +432,9 @@ fn draw_device_panel(
                 skill.is_some() && TRAP_COMPONENTS[panel.guess][index] && !disarming.disarmed[index]
             }
             (Control::Inspect, _) => skill.is_some(),
+            (Control::Cast | Control::UseItem, _) => {
+                member.is_some_and(|(_, (_, vitals))| crate::game::camp::can_act(vitals))
+            }
             (Control::Less(id) | Control::More(id), _) => {
                 stacks.iter().find(|s| s.id == id).is_some_and(|s| s.count() > 1)
             }
@@ -446,6 +466,7 @@ fn draw_device_panel(
 
 fn press(
     click: On<Activate>,
+    magic_art: Option<Res<super::main_screen::magic_view::MagicViewArt>>,
     controls: Query<&Control, Without<InteractionDisabled>>,
     mut panels: Query<&mut DevicePanel>,
     containers: Query<&Container>,
@@ -474,6 +495,18 @@ fn press(
         }
     };
     match control {
+        Control::Cast | Control::UseItem => {
+            if let (Some(actor), Some(art)) = (actor, magic_art.as_deref()) {
+                let device = panel.device;
+                super::main_screen::magic_view::open(
+                    &mut commands,
+                    art,
+                    actor,
+                    control == Control::UseItem,
+                    Some(device),
+                );
+            }
+        }
         Control::Tumbler(index) => {
             if let Some(actor) = actor {
                 commands.queue(move |world: &mut World| {
@@ -597,7 +630,10 @@ mod tests {
         else {
             panic!("still picking")
         };
-        assert_eq!(picking.tumblers.iter().filter(|t| **t == Some(member)).count(), 1);
+        assert_eq!(
+            picking.tumblers.iter().filter(|t| **t == interaction::Tumbler::Held(member)).count(),
+            1
+        );
         app.world_mut().trigger(Activate { entity: tumblers[1].0 });
         app.update();
         app.update();
