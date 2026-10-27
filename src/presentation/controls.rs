@@ -121,7 +121,7 @@ pub fn read_controls(
     free_look: Single<&Action<FreeLook>>,
     rest: Single<&ActionEvents, With<Action<Rest>>>,
     search: Single<&ActionEvents, With<Action<SearchKey>>>,
-    mut movement: ResMut<PartyMovement>,
+    mut movement: Single<&mut PartyMovement>,
     mut looks: MessageWriter<PartyLook>,
     mut camps: MessageWriter<CampRequest>,
     mut searches: MessageWriter<ToggleSearch>,
@@ -146,12 +146,12 @@ mod tests {
     fn bindings_produce_gameplay_requests_and_clear_movement_when_disabled() {
         let mut app = crate::presentation::test_input::input_app();
         app.add_input_context::<Exploration>()
-            .init_resource::<PartyMovement>()
             .add_message::<PartyLook>()
             .add_message::<CampRequest>()
             .add_message::<ToggleSearch>()
             .add_systems(Startup, spawn_exploration_controls)
             .add_systems(PreUpdate, read_controls.after(EnhancedInputSystems::Apply));
+        let party = app.world_mut().spawn(crate::game::party::roster::Party).id();
         app.finish();
         app.cleanup();
         app.update();
@@ -162,7 +162,7 @@ mod tests {
             }
         }
         app.update();
-        let movement = app.world().resource::<PartyMovement>();
+        let movement = app.world().get::<PartyMovement>(party).unwrap();
         assert_eq!(movement.walk, Vec2::Y);
         assert!(movement.running);
         assert_eq!(app.world().resource::<Messages<CampRequest>>().len(), 1);
@@ -174,7 +174,7 @@ mod tests {
             .unwrap();
         app.world_mut().entity_mut(controls).insert(ContextActivity::<Exploration>::new(false));
         app.update();
-        let movement = app.world().resource::<PartyMovement>();
+        let movement = app.world().get::<PartyMovement>(party).unwrap();
         assert_eq!(movement.walk, Vec2::ZERO);
         assert!(!movement.running);
     }

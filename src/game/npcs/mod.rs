@@ -39,7 +39,6 @@ pub struct NpcBodies(Vec<Entity>);
 pub struct NpcWorldRole {
     pub map: String,
     pub body: KeptMonster,
-    pub provoked: bool,
 }
 #[derive(Component, Debug)]
 pub struct Npc {
@@ -82,20 +81,24 @@ pub struct NpcPopulation<'w, 's> {
             ActorPose,
             Option<&'static Walker>,
             Option<&'static crate::game::world::identify::GroupMember>,
-            &'static ChildOf,
+            &'static crate::game::world::level::LevelOwned,
             Has<crate::game::world::population::Provoked>,
         ),
         Without<crate::game::party::body::PartyBody>,
     >,
     groups: Query<'w, 's, &'static crate::game::world::identify::MonsterGroup>,
     pub clock: Res<'w, crate::game::time::GameClock>,
-    roster: Res<'w, PartyRoster>,
+    roster: Query<'w, 's, &'static PartyRoster>,
     profiles: Query<'w, 's, &'static Character>,
 }
 impl NpcPopulation<'_, '_> {
     pub fn average_level(&self) -> u32 {
-        let levels: Vec<_> =
-            self.profiles.iter_many(&self.roster.0).matched().map(|c| u32::from(c.level)).collect();
+        let levels: Vec<_> = self
+            .profiles
+            .iter_many(self.roster.iter().flat_map(|r| r.iter()))
+            .matched()
+            .map(|c| u32::from(c.level))
+            .collect();
         if levels.is_empty() { 1 } else { levels.iter().sum::<u32>() / levels.len() as u32 }
     }
     /// Preparation changes only asset requests. Missing mandatory NPC content
@@ -150,19 +153,19 @@ impl NpcPopulation<'_, '_> {
     }
     pub fn depart(&mut self, root: Entity, map: &str) {
         for (body, monster, pose, walker, group, parent, provoked) in &self.bodies {
-            if parent.parent() != root {
+            if parent.0 != root {
                 continue;
             }
             let Ok((_, _, mut npc, _)) = self.npcs.get_mut(body.0) else { continue };
             npc.dormant = Some(NpcWorldRole {
                 map: map.into(),
                 body: KeptMonster {
+                    provoked,
                     monster: monster.clone(),
                     group: group.and_then(|g| self.groups.get(g.0).ok()).map(|g| g.authored),
                     feet: crate::game::world::navigation::feet(pose.translation(), walker),
                     yaw: pose.rotation().to_euler(EulerRot::YXZ).0,
                 },
-                provoked,
             });
         }
     }

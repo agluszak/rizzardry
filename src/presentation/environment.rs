@@ -5,7 +5,11 @@ use bevy::prelude::*;
 
 use crate::content::level::LevelGeometry;
 use crate::game::time::GameClock;
-use crate::game::world::level::{Level, PropPart};
+use bevy::asset::{LoadState, RecursiveDependencyLoadState};
+
+use crate::game::world::level::{
+    Destination, Level, LevelEntities, PresentationReadiness, PropPart,
+};
 use crate::game::world::props::Prop;
 use crate::presentation::billboards::FaceCamera;
 use crate::presentation::party_view::PartyCamera;
@@ -14,19 +18,69 @@ use crate::presentation::party_view::PartyCamera;
 #[derive(Component, Debug)]
 pub struct LevelAppearance(pub Handle<LevelGeometry>);
 
-/// Request an active level's render payload as it becomes active; building
-/// it waits for the asset ([`attach_level_visuals`]).
+/// On an entry being prepared: its appearance, loading before it commits.
+#[derive(Component, Debug)]
+pub struct PreparedAppearance(Handle<LevelGeometry>);
+
+/// Load an entry's appearance as part of its preparation, holding its
+/// commit until the appearance and what it uses have loaded. If the level
+/// itself cannot be shown the entry fails; a missing texture or model only
+/// shows as missing, as before.
+pub fn prepare_appearance(
+    mut commands: Commands,
+    entries: Query<(Entity, &Destination, Option<&PreparedAppearance>)>,
+    assets: Res<AssetServer>,
+) {
+    for (entity, destination, prepared) in &entries {
+        let Some(PreparedAppearance(handle)) = prepared else {
+            let handle = assets.load(format!("retail://{}", destination.level.path));
+            commands
+                .entity(entity)
+                .insert((PreparedAppearance(handle), PresentationReadiness::Waiting));
+            continue;
+        };
+        let readiness = match assets.get_load_states(handle) {
+            Some((LoadState::Failed(error), ..)) => {
+                Some(PresentationReadiness::Failed(format!("its appearance failed: {error}")))
+            }
+            Some((
+                LoadState::Loaded,
+                _,
+                RecursiveDependencyLoadState::Loaded | RecursiveDependencyLoadState::Failed(_),
+            )) => None,
+            _ => Some(PresentationReadiness::Waiting),
+        };
+        match readiness {
+            Some(PresentationReadiness::Waiting) => {}
+            Some(failed) => {
+                commands.entity(entity).insert(failed);
+            }
+            None => {
+                commands.entity(entity).remove::<PresentationReadiness>();
+            }
+        }
+    }
+}
+
+/// Request an active level's render payload as it becomes active: the
+/// appearance its entry prepared, or (for a level entered without a
+/// renderer's preparation) loading it now. Building it waits for the asset
+/// ([`attach_level_visuals`]).
 pub fn request_level_visuals(
     add: On<Add<Level>>,
     mut commands: Commands,
-    levels: Query<&Level>,
+    levels: Query<(&Level, Option<&PreparedAppearance>)>,
     assets: Res<AssetServer>,
 ) {
-    let Ok(level) = levels.get(add.entity) else { return };
-    commands.entity(add.entity).insert((
-        LevelAppearance(assets.load(format!("retail://{}", level.path))),
-        Visibility::default(),
-    ));
+    let Ok((level, prepared)) = levels.get(add.entity) else { return };
+    let handle = prepared.map_or_else(
+        || assets.load(format!("retail://{}", level.path)),
+        |prepared| prepared.0.clone(),
+    );
+    commands
+        .entity(add.entity)
+        .remove::<PreparedAppearance>()
+        .insert((LevelAppearance(handle), Visibility::default()));
 }
 
 /// The render inputs applied to this camera. A replacement camera needs its
@@ -97,7 +151,7 @@ pub struct LevelVisuals;
 /// prop part's meshes under the part, and sprites turning to the view.
 pub fn attach_level_visuals(
     mut commands: Commands,
-    levels: Query<(Entity, &LevelAppearance, Option<&Children>), Without<LevelVisuals>>,
+    levels: Query<(Entity, &LevelAppearance, Option<&LevelEntities>), Without<LevelVisuals>>,
     geometry: Res<Assets<LevelGeometry>>,
     props: Query<(&Prop, &Children)>,
     parts: Query<&PropPart>,
@@ -108,7 +162,7 @@ pub fn attach_level_visuals(
         for part in &geometry.parts {
             commands.spawn((Mesh3d(part.mesh.clone()), part.surface.render(), ChildOf(root)));
         }
-        for &child in children.into_iter().flatten() {
+        for &child in children.into_iter().flat_map(LevelEntities::entities) {
             let Ok((prop, prop_parts)) = props.get(child) else { continue };
             let Some(model) = geometry.props.get(prop.definition) else { continue };
             commands.entity(child).insert(Visibility::default());
@@ -225,7 +279,7 @@ mod tests {
                 },
                 PropMotion::default(),
                 Transform::default(),
-                ChildOf(root),
+                crate::game::world::level::LevelOwned(root),
             ))
             .id();
         let part = app

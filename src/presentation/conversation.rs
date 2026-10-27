@@ -312,6 +312,7 @@ fn sync_view(world: &mut World) {
         .iter(world)
         .next()
         .unwrap_or_else(|| build(world, session));
+    let Some(party) = crate::game::party::roster::the_party(world) else { return };
     let c = world.get::<Conversation>(session).unwrap();
     let revision = c.revision;
     let answers: Vec<(String, Answer)> = match &c.wait {
@@ -345,7 +346,7 @@ fn sync_view(world: &mut World) {
     let lines = c.transcript.last().cloned().unwrap_or_default();
     let text = format!(
         "{name} - {} gold\n{lines}\n{state}\n{}",
-        world.resource::<PartyInventory>().gold,
+        world.get::<PartyInventory>(party).unwrap().gold,
         c.result.as_deref().unwrap_or("")
     );
     let font = world
@@ -435,7 +436,7 @@ fn sync_view(world: &mut World) {
             }
         }
     }
-    for item in &world.resource::<PartyInventory>().pool.stacks {
+    for item in &world.get::<PartyInventory>(party).unwrap().pool.stacks {
         if let Some(d) = items.get(item.item) {
             rows.push((
                 TradeSource::Party(ItemRef { owner: ItemOwner::Pool, id: item.id }),
@@ -444,7 +445,7 @@ fn sync_view(world: &mut World) {
             ));
         }
     }
-    for member in &world.resource::<PartyRoster>().0 {
+    for member in world.get::<PartyRoster>(party).into_iter().flat_map(|r| r.iter()) {
         if let Some(carried) = world.get::<Carried>(*member) {
             for item in carried.backpack.iter().flatten() {
                 if let Some(d) = items.get(item.item) {

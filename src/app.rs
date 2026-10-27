@@ -4,27 +4,23 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use avian3d::prelude::*;
-use bevy::asset::io::{AssetSourceBuilder, AssetSourceId};
-use bevy::asset::processor::LoadTransformAndSave;
 use bevy::prelude::*;
 use bevy_enhanced_input::EnhancedInputPlugin;
 
-use crate::content::navmesh::NAVMESH_EXTENSION;
 use crate::dev::{
     OverheadView, SayLine, ScreenshotAndExit, overhead_view, say_line, screenshot_and_exit,
 };
 use crate::game::party::PartyPlugin;
 use crate::game::party::body::PartyStart;
-use crate::game::party::roster::{PartyRoster, Recruit, recruit};
+use crate::game::party::roster::Recruit;
 use crate::game::time::{GameClock, TimePlugin};
 use crate::game::world::WorldPlugin;
 use crate::game::world::level::{Destination, Level};
-use crate::game::world::navigation::asset::{BakeNavmesh, NavmeshSaver};
+use crate::game::world::navigation::asset::NavmeshLoader;
 use crate::game::world::navigation::bake::SIZE_CLASSES;
 use crate::presentation::PresentationPlugin;
 use crate::retail::RetailPlugin;
 use crate::retail::files::RetailFiles;
-use crate::retail::navmesh::LevelCollisionLoader;
 use crate::retail::path::normalize;
 
 pub const DEFAULT_LEVEL: &str = "levels/monastery/monastery1.pvl";
@@ -166,18 +162,8 @@ pub fn build(options: &Options) -> Result<App, String> {
     };
 
     let mut app = App::new();
-    app.add_plugins(RetailPlugin {
-        files,
-        navmesh_cache: "imported_assets/navmesh".into(),
-        navmesh_classes: SIZE_CLASSES.len(),
-    })
-    // AssetPlugin's default source, but sharing imported_assets safely.
-    .register_asset_source(
-        AssetSourceId::Default,
-        AssetSourceBuilder::platform_default("assets", Some("imported_assets/Default"))
-            .with_processed_writer(crate::asset_cache::processed_writer("imported_assets/Default")),
-    );
-    let asset_plugin = AssetPlugin { mode: AssetMode::Processed, ..default() };
+    app.add_plugins(RetailPlugin { files, navmesh_classes: SIZE_CLASSES.len() });
+    let asset_plugin = AssetPlugin::default();
     let rendered = !options.headless || options.screenshot.is_some();
     if rendered {
         // Bevy #25966: GPU instance-buffer construction can retain a missing
@@ -242,7 +228,6 @@ pub fn build(options: &Options) -> Result<App, String> {
     // Shared campaign services are composed here, not owned by world loading.
     app.init_resource::<crate::game::rng::GameRng>()
         .init_resource::<crate::game::inventory::ItemIds>()
-        .init_resource::<crate::game::inventory::PartyInventory>()
         .init_resource::<crate::game::factions::Factions>()
         .init_resource::<crate::game::difficulty::Difficulty>()
         .init_state::<crate::game::screen::Screen>()
@@ -266,17 +251,13 @@ pub fn build(options: &Options) -> Result<App, String> {
         crate::game::combat::CombatPlugin,
         crate::game::magic::MagicPlugin,
     ));
-    // Navmeshes: retail decodes a level's collision, navigation bakes it
-    // and saves the result to the processor's cache.
-    app.register_asset_processor(
-        LoadTransformAndSave::<LevelCollisionLoader, BakeNavmesh, NavmeshSaver>::new(
-            BakeNavmesh,
-            NavmeshSaver,
-        ),
-    )
-    .set_default_asset_processor::<LoadTransformAndSave<LevelCollisionLoader, BakeNavmesh, NavmeshSaver>>(
-        NAVMESH_EXTENSION,
-    );
+    // Navmeshes: retail decodes a level's collision, navigation bakes it on
+    // request and caches the result.
+    app.register_asset_loader(NavmeshLoader {
+        cache: bevy::asset::io::file::FileAssetReader::get_base_path()
+            .join(crate::game::world::navigation::asset::CACHE),
+        decode: crate::retail::navmesh::decode_input,
+    });
     // What the player sees and hears: with the window, or offscreen for a
     // headless screenshot. After the gameplay plugins, whose input and
     // messages it uses.
@@ -328,20 +309,18 @@ pub fn build(options: &Options) -> Result<App, String> {
                 .before(TransformSystems::Propagate),
         );
     }
-    // Explicit developer/headless bootstrap. Interactive play commits from the creation flow.
+    // Explicit developer/headless bootstrap: a new campaign with the party
+    // file's members. Interactive play commits from the creation flow.
     if quick_start {
-        app.add_systems(
-            Startup,
-            move |mut commands: Commands,
-                  mut roster: ResMut<PartyRoster>,
-                  mut formation: ResMut<crate::game::party::formation::Formation>| {
-                for member in &party {
-                    recruit(&mut commands, &mut roster, &mut formation, member);
-                }
-            },
-        );
         app.add_systems(Startup, move |mut commands: Commands, assets: Res<AssetServer>| {
-            let first = Destination::new(Level::load(&level, &assets), start.clone());
+            let characters: Vec<_> = party.iter().map(Recruit::character).collect();
+            let first = Destination::new(
+                Level::load(&level, &assets),
+                start.clone(),
+                crate::game::world::level::Entry::NewGame(
+                    characters.into_iter().map(|c| (c, default())).collect(),
+                ),
+            );
             commands.spawn((Name::new(level.clone()), first));
         });
     }

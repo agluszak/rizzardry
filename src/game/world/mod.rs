@@ -54,6 +54,7 @@ impl Plugin for WorldPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(navigation::NavigationPlugin)
             .add_message::<level::LevelReady>()
+            .add_message::<level::LevelEntryFailed>()
             .add_message::<level::Travel>()
             .add_message::<level::TravelAnswer>()
             .add_message::<search::ToggleSearch>()
@@ -65,6 +66,7 @@ impl Plugin for WorldPlugin {
             .add_message::<triggers::TriggerEffect>()
             // Resolve travel intent early; activation owns the later level swap.
             .add_systems(PreUpdate, (level::answer_travel_questions, level::travel).chain())
+            .add_systems(First, level::suspend_physics_while_entering)
             .add_systems(
                 Update,
                 (

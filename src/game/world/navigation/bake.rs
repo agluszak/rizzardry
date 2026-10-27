@@ -1,8 +1,8 @@
 //! Baking a level's navmesh: the Recast pipeline over the level's solid
 //! triangles, converted to a Landmass navigation mesh.
 //!
-//! This is pure computation; the asset pipeline (`super::asset`) runs it at
-//! import time and caches the result.
+//! This is pure computation; the navmesh loader (`super::asset`) runs it
+//! when a level is entered and caches the result.
 
 use bevy::math::{Vec2, Vec3, Vec3A};
 use bevy::prelude::UVec3;
@@ -15,18 +15,20 @@ use rerecast::{
 use serde::{Deserialize, Serialize};
 
 /// Walker radius classes, in metres: each level gets one navmesh per class,
-/// and a walker uses the smallest class that fits it. From the retail
-/// monster table: effective radii fall at up to 0.6 m (41 records), 1.0
-/// (150), 1.6 (254) and 3.0 (100); the 39 larger bosses use the largest.
-pub const SIZE_CLASSES: [f32; 4] = [0.6, 1.0, 1.6, 3.0];
+/// and a walker uses the smallest class that fits it. Wider walkers navigate
+/// the 1 m class (`population::MAX_NAVIGATION_RADIUS`: wider navmeshes erode
+/// away narrow ground), so only these two are baked. In the retail monster
+/// table effective radii fall at up to 0.6 m (41 records), 1.0 (150), 1.6
+/// (254) and 3.0 (100), and beyond for 39 bosses.
+pub const SIZE_CLASSES: [f32; 2] = [0.6, 1.0];
 
 /// The size class for a walker of `radius` metres.
 pub fn size_class(radius: f32) -> usize {
     SIZE_CLASSES.iter().position(|&class| radius <= class).unwrap_or(SIZE_CLASSES.len() - 1)
 }
 
-/// Parameters of one navmesh bake. Part of the processed asset's metadata, so
-/// changing a default re-bakes cached navmeshes.
+/// Parameters of one navmesh bake. Part of the cache key, so changing a
+/// default re-bakes cached navmeshes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NavmeshBakeSettings {
     /// Walkers are kept this far from walls. The bake of each size class

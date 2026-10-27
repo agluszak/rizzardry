@@ -5,8 +5,7 @@ use crate::content::spells::SpellCatalog;
 use crate::content::ui::SpriteSheet;
 use crate::game::characters::creation::{CharacterDraft, PLAYABLE_RACES};
 use crate::game::data::GameData;
-use crate::game::party::{formation::Formation, roster::PartyRoster};
-use crate::game::session::{NewGameDestination, Session, begin_adventure};
+use crate::game::session::{Campaign, NewGameDestination, Session, begin_adventure};
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::input_focus::{
     InputFocus,
@@ -48,6 +47,7 @@ impl Plugin for FrontendPlugin {
             .add_systems(
                 Update,
                 (
+                    report_entry_failure,
                     refresh,
                     show_editor,
                     party::sync_views,
@@ -61,6 +61,19 @@ impl Plugin for FrontendPlugin {
                 )
                     .chain(),
             );
+    }
+}
+
+/// The first level could not be prepared: the party stays in creation to
+/// try again.
+fn report_entry_failure(
+    mut failures: MessageReader<crate::game::world::level::LevelEntryFailed>,
+    mut sessions: Query<&mut Creation>,
+) {
+    for failure in failures.read() {
+        for mut session in &mut sessions {
+            session.message = format!("{} could not be loaded.", failure.path);
+        }
     }
 }
 
@@ -737,8 +750,7 @@ fn activate(
     mut focus: ResMut<InputFocus>,
     mut exit: MessageWriter<AppExit>,
     mut commands: Commands,
-    mut roster: ResMut<PartyRoster>,
-    mut formation: ResMut<Formation>,
+    campaign: Campaign,
     assets: Res<AssetServer>,
     destination: Res<NewGameDestination>,
     mut names: Query<&mut EditableText, With<NameInput>>,
@@ -861,20 +873,13 @@ fn activate(
                         .map(|(_, draft)| draft.clone())
                 })
                 .collect();
-            let Some(mut drafts) = drafts else {
+            let Some(drafts) = drafts else {
                 session.message = "A party member is no longer available.".into();
                 return;
             };
-            if let Err(message) = begin_adventure(
-                &mut drafts,
-                &state,
-                &mut commands,
-                &mut roster,
-                &mut formation,
-                &assets,
-                &destination,
-                &mut next,
-            ) {
+            if let Err(message) =
+                begin_adventure(&drafts, &state, &campaign, &mut commands, &assets, &destination)
+            {
                 session.message = message.into();
             }
         }
@@ -1324,6 +1329,7 @@ mod keyboard_tests {
         .init_asset::<SpellCatalog>()
         .init_asset::<Image>()
         .init_state::<Session>()
+        .add_message::<crate::game::world::level::LevelEntryFailed>()
         .init_asset::<crate::content::ui::SpriteSheet>()
         .init_asset::<Mesh>()
         .init_asset::<bevy::mesh::skinning::SkinnedMeshInverseBindposes>()
@@ -1331,8 +1337,6 @@ mod keyboard_tests {
         .add_message::<bevy::picking::events::PointerRelease>()
         .init_resource::<bevy::picking::events::PointerState>()
         .init_resource::<UiScale>()
-        .init_resource::<PartyRoster>()
-        .init_resource::<Formation>()
         .insert_resource(NewGameDestination { path: String::new(), start: default() })
         .add_message::<AppExit>()
         .add_plugins(FrontendPlugin)

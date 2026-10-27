@@ -26,7 +26,7 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) -
 
 pub(super) fn sync(
     slider: Option<Single<(Entity, &SliderValue, &SliderRange), With<PoolScroll>>>,
-    party: Option<Res<PartyInventory>>,
+    party: Option<Single<&PartyInventory>>,
     mut commands: Commands,
 ) {
     let (Some((slider, value, range)), Some(party)) = (slider.as_deref(), party) else { return };
@@ -74,7 +74,13 @@ mod tests {
                 )
             })
             .collect();
-        app.insert_resource(PartyInventory { pool: ItemPool { stacks: items }, ..default() });
+        let party = app
+            .world_mut()
+            .spawn((
+                crate::game::party::roster::Party,
+                PartyInventory { pool: ItemPool { stacks: items }, ..default() },
+            ))
+            .id();
         let slider = app
             .world_mut()
             .spawn((PoolScroll, Slider::default(), SliderStep(1.0)))
@@ -115,7 +121,10 @@ mod tests {
         }
         assert_eq!(app.world().get::<SliderValue>(slider).unwrap().0, 2.0);
         let shown = app.world().get::<SliderValue>(slider).unwrap().0 as usize * 2;
-        assert_eq!(app.world().resource::<PartyInventory>().pool.stacks[shown].id, StackId(5));
+        assert_eq!(
+            app.world().get::<PartyInventory>(party).unwrap().pool.stacks[shown].id,
+            StackId(5)
+        );
         app.world_mut().trigger(PointerDragStart {
             entity: slider,
             pointer: pointer.clone(),
@@ -130,7 +139,7 @@ mod tests {
         });
         assert!(!app.world().get::<SliderDragState>(slider).unwrap().dragging);
         assert!(!app.world().resource::<PointerCaptureMap>().0.contains_key(&pointer.id));
-        app.world_mut().resource_mut::<PartyInventory>().pool.stacks.truncate(8);
+        app.world_mut().get_mut::<PartyInventory>(party).unwrap().pool.stacks.truncate(8);
         app.update();
         assert_eq!(app.world().get::<SliderValue>(slider).unwrap().0, 0.0);
         assert_eq!(app.world().get::<SliderRange>(slider).unwrap().end(), 0.0);

@@ -78,7 +78,7 @@ pub enum SearchNews {
 pub fn toggle_search(
     mut requests: MessageReader<ToggleSearch>,
     freedom: crate::game::screen::Freedom,
-    battle: Option<Res<Battle>>,
+    battle: Option<Single<&Battle>>,
     mut search: ResMut<Search>,
     mut news: MessageWriter<SearchNews>,
 ) {
@@ -142,10 +142,10 @@ pub fn search_score(member: &Character, search_mode: bool, running: bool) -> u32
 pub fn search_pulse(
     time: Res<Time>,
     mut search: ResMut<Search>,
-    battle: Option<Res<Battle>>,
-    movement: Res<PartyMovement>,
+    battle: Option<Single<&Battle>>,
+    movement: Single<&PartyMovement>,
     party: Query<(&Position, &PartyBody)>,
-    roster: Res<PartyRoster>,
+    roster: Single<&PartyRoster>,
     members: Query<(&Character, &Vitals)>,
     mut items: Query<(Entity, &mut WorldItem, &Transform)>,
     obstacles: WorldObstacles,
@@ -162,7 +162,7 @@ pub fn search_pulse(
     let (from, forward) = (PartyBody::eye(position), body.forward());
     let running = movement.running;
     let best = members
-        .iter_many(&roster.0)
+        .iter_many(roster.iter())
         .matched()
         .filter(|(_, vitals)| can_act(vitals))
         .map(|(m, _)| (search_score(m, search.on(), running), m))
@@ -216,13 +216,13 @@ mod tests {
         app.world_mut().write_message(ToggleSearch);
         app.update();
         assert!(app.world().resource::<Search>().on());
-        app.insert_resource(Battle::default());
+        let battle = app.world_mut().spawn(Battle::default()).id();
         app.update();
         assert!(!app.world().resource::<Search>().on());
         app.world_mut().write_message(ToggleSearch);
         app.update();
         assert!(!app.world().resource::<Search>().on());
-        app.world_mut().remove_resource::<Battle>();
+        app.world_mut().despawn(battle);
         app.update();
         assert!(app.world().resource::<Search>().on());
         app.world_mut().resource_mut::<NextState<Screen>>().set(Screen::Inventory);

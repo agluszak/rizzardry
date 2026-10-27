@@ -12,7 +12,6 @@ use bevy_tnua::prelude::*;
 use bevy_tnua_avian3d::prelude::*;
 
 use crate::game::world::level::level_active;
-use crate::game::world::triggers::PendingPartyMove;
 
 /// A member's standing choice for the next round. Recruitment starts on
 /// Attack (retail `ResetPartySlotRow`).
@@ -35,10 +34,7 @@ impl Plugin for PartyPlugin {
             TnuaAvian3dPlugin::new(FixedUpdate),
         ))
         .insert_resource(Gravity(Vec3::NEG_Y * body::GRAVITY))
-        .init_resource::<body::PartyMovement>()
         .add_message::<body::PartyLook>()
-        .init_resource::<roster::PartyRoster>()
-        .init_resource::<formation::Formation>()
         .add_message::<DamageApplied>()
         .add_systems(
             Update,
@@ -52,7 +48,6 @@ impl Plugin for PartyPlugin {
         )
         // Tnua and Avian step on the fixed timestep; movement input feeds
         // them on the same step.
-        .init_resource::<PendingPartyMove>()
         .add_systems(
             FixedUpdate,
             (body::drive_party.in_set(TnuaUserControlsSystems), walk_in::fly_party)
@@ -82,12 +77,12 @@ pub struct DamageApplied {
 }
 
 /// Apply party damage and settle the target's death invariants before another
-/// operation can use its formation seat. Retain resource change tracking until
-/// death actually changes a seat.
+/// operation can use its formation seat. Retain change tracking until death
+/// actually changes a seat.
 pub fn damage_member(
     member: Entity,
     vitals: &mut crate::game::characters::Vitals,
-    formation: &mut ResMut<formation::Formation>,
+    formation: &mut Mut<formation::Formation>,
     amount: u32,
     damage: &mut MessageWriter<DamageApplied>,
 ) -> u32 {
@@ -110,13 +105,12 @@ mod tests {
     #[test]
     fn damage_reports_actual_loss_and_death_even_when_healing_follows() {
         let mut world = World::new();
-        world.init_resource::<formation::Formation>();
         world.init_resource::<Messages<DamageApplied>>();
         let first = world.spawn(Vitals { hp: 10, stamina: 20, ..default() }).id();
-        world.resource_mut::<formation::Formation>().seat(first);
+        roster::test_party(&mut world, &[first]);
         let mut operation = SystemState::<(
             Query<&mut Vitals>,
-            ResMut<formation::Formation>,
+            Single<&mut formation::Formation>,
             MessageWriter<DamageApplied>,
         )>::new(&mut world);
         {

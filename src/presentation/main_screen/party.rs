@@ -130,7 +130,7 @@ pub fn build_party_parts(
     layout: Res<ScreenLayout>,
     art: Res<MainScreenArt>,
     assets: Res<AssetServer>,
-    roster: Res<PartyRoster>,
+    roster: Single<&PartyRoster>,
     members: Query<(), (With<Character>, With<Vitals>)>,
     views: Query<(Entity, &PartyMemberView, &ChildOf)>,
     roots: Query<
@@ -140,7 +140,7 @@ pub fn build_party_parts(
 ) {
     let closed = layout.mode == LayoutMode::Closed;
     for (entity, view, _) in &views {
-        if !roster.0.contains(&view.member) || !members.contains(view.member) {
+        if !roster.contains(&view.member) || !members.contains(view.member) {
             commands.entity(entity).despawn();
         }
     }
@@ -157,8 +157,7 @@ pub fn build_party_parts(
                 ] })
                 .insert(ChildOf(root));
         }
-        let Some(member) = roster.0.get_index(slot).copied().filter(|e| members.contains(*e))
-        else {
+        let Some(member) = roster.get_index(slot).copied().filter(|e| members.contains(*e)) else {
             continue;
         };
         if let Some((entity, _, parent)) = views
@@ -282,7 +281,7 @@ pub fn draw_party(
     selected: Res<SelectedMember>,
     art: Res<MainScreenArt>,
     assets: Res<AssetServer>,
-    roster: Res<PartyRoster>,
+    roster: Single<Ref<PartyRoster>>,
     members: Query<CharacterView>,
     data: Option<Res<GameData>>,
     catalogs: Res<Assets<ItemCatalog>>,
@@ -298,7 +297,7 @@ pub fn draw_party(
     let catalog = data.as_ref().and_then(|d| catalogs.get(&d.items));
     let closed = layout.mode == LayoutMode::Closed;
     for (part, mut node, mut visible, picture, label, image_node) in &mut parts {
-        let Some(slot) = roster.0.get_index_of(&part.member) else { continue };
+        let Some(slot) = roster.get_index_of(&part.member) else { continue };
         let member = Some(part.member);
         let actor = members.get(part.member).ok();
         let at = part.kind.at(slot, closed);
@@ -473,21 +472,21 @@ pub fn draw_party(
 
 /// Move retained controls; never change which actor a press means.
 pub fn place_party_buttons(
-    roster: Res<PartyRoster>,
+    roster: Single<&PartyRoster>,
     layout: Res<ScreenLayout>,
     members: Query<(), (With<Character>, With<Vitals>)>,
     mut buttons: Query<(&SlotButton, &mut Node)>,
     mut empty: Query<(&EmptySlot, &mut Visibility)>,
 ) {
     for (slot, mut visible) in &mut empty {
-        visible.set_if_neq(if roster.0.get_index(slot.0).is_none_or(|e| !members.contains(*e)) {
+        visible.set_if_neq(if roster.get_index(slot.0).is_none_or(|e| !members.contains(*e)) {
             Visibility::Inherited
         } else {
             Visibility::Hidden
         });
     }
     for (button, mut node) in &mut buttons {
-        let Some(slot) = roster.0.get_index_of(&button.member) else { continue };
+        let Some(slot) = roster.get_index_of(&button.member) else { continue };
         let x = if layout.mode == LayoutMode::Closed {
             menu_x(slot) + 23.
         } else if slot.is_multiple_of(2) {
@@ -518,7 +517,7 @@ fn press(
     click: On<PointerClick>,
     mut buttons: Query<&mut SlotButton>,
     mut selected: ResMut<SelectedMember>,
-    roster: Res<PartyRoster>,
+    roster: Single<Ref<PartyRoster>>,
     mut inventory: crate::game::inventory::operations::InventoryOperations,
     mut news: MessageWriter<ItemNews>,
     mut review: crate::presentation::inventory::OpenReview,
@@ -530,7 +529,7 @@ fn press(
     }
     let Ok(mut button) = buttons.get_mut(click.entity) else { return };
     let member = button.member;
-    if !roster.0.contains(&member) {
+    if !roster.contains(&member) {
         return;
     }
     // A spell for one party member is aimed by clicking their portrait
@@ -724,14 +723,14 @@ pub fn play_splats(
     mut commands: Commands,
     time: Res<Time>,
     art: Res<MainScreenArt>,
-    roster: Res<PartyRoster>,
+    roster: Single<Ref<PartyRoster>>,
     mut splats: Query<(Entity, &mut Splat, &mut Node, &Children)>,
     mut pictures: Query<&mut Picture>,
     mut numbers: Query<(&mut Visibility, &mut BitmapText), With<SplatNumber>>,
 ) {
     for (entity, mut splat, mut node, parts) in &mut splats {
         splat.timer.tick(time.delta());
-        let Some(slot) = roster.0.get_index_of(&splat.actor).filter(|_| !splat.timer.is_finished())
+        let Some(slot) = roster.get_index_of(&splat.actor).filter(|_| !splat.timer.is_finished())
         else {
             commands.entity(entity).despawn();
             continue;
@@ -774,7 +773,6 @@ mod tests {
     use super::*;
     use crate::game::{
         characters::{Gender, Profession},
-        inventory::PartyInventory,
         screen::Screen,
     };
     use bevy::picking::backend::HitData;
@@ -785,13 +783,11 @@ mod tests {
     #[test]
     fn right_button_gives_or_opens_review_like_retail() {
         use crate::content::items::ItemDefinition;
-        use crate::game::inventory::{ItemIds, make_item};
+        use crate::game::inventory::{ItemIds, PartyInventory, make_item};
         use crate::game::rng::GameRng;
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
             .init_asset::<ItemCatalog>()
-            .init_resource::<PartyRoster>()
-            .init_resource::<PartyInventory>()
             .init_resource::<SelectedMember>()
             .init_resource::<ButtonInput<MouseButton>>()
             .add_message::<ItemNews>()
@@ -817,7 +813,7 @@ mod tests {
         let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
         let actor =
             app.world_mut().spawn((Vitals::new(&profile), profile, Carried::default())).id();
-        app.world_mut().resource_mut::<PartyRoster>().0.insert(actor);
+        let party = crate::game::party::roster::test_party(app.world_mut(), &[actor]);
         let button = app
             .world_mut()
             .spawn(SlotButton { member: actor, review_armed: false })
@@ -859,10 +855,10 @@ mod tests {
             opened
         };
         // Holding an item: a quick release gives it.
-        app.world_mut().resource_mut::<PartyInventory>().hand.held = Some(item);
+        app.world_mut().get_mut::<PartyInventory>(party).unwrap().hand.held = Some(item);
         right(&mut app, true);
         right(&mut app, false);
-        assert!(app.world().resource::<PartyInventory>().hand.held.is_none());
+        assert!(app.world().get::<PartyInventory>(party).unwrap().hand.held.is_none());
         assert!(!opened(&mut app));
         // Nothing held: a quick release opens the review for that member.
         right(&mut app, true);
@@ -883,13 +879,12 @@ mod tests {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
             .init_asset::<SpriteSheet>()
-            .init_resource::<PartyRoster>()
             .init_resource::<PresentationRng>()
             .add_message::<DamageApplied>()
             .add_systems(Startup, super::super::load_main_screen_art)
             .add_systems(Update, (record_splats, play_splats).chain());
         let actor = app.world_mut().spawn_empty().id();
-        app.world_mut().resource_mut::<PartyRoster>().0.insert(actor);
+        crate::game::party::roster::test_party(app.world_mut(), &[actor]);
         let layer = app.world_mut().spawn(Splats).id();
         let mut timer = Timer::from_seconds(8.0 * SPLAT_FRAME, TimerMode::Once);
         timer.set_elapsed(Duration::from_secs_f32(0.79));
@@ -921,9 +916,7 @@ mod tests {
     #[test]
     fn native_click_counts_review_only_the_current_selection_gesture() {
         let mut world = World::new();
-        world.init_resource::<PartyRoster>();
         world.init_resource::<ScreenLayout>();
-        world.init_resource::<PartyInventory>();
         world.init_resource::<Assets<ItemCatalog>>();
         world.init_resource::<SelectedMember>();
         world.init_resource::<Messages<ItemNews>>();
@@ -931,7 +924,7 @@ mod tests {
         world.init_resource::<NextState<Screen>>();
         let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
         let actor = world.spawn((Vitals::new(&profile), profile, Carried::default())).id();
-        world.resource_mut::<PartyRoster>().0.insert(actor);
+        crate::game::party::roster::test_party(&mut world, &[actor]);
         let root = world.spawn_empty().id();
         let button = world
             .spawn((
@@ -971,13 +964,14 @@ mod tests {
         assert!(matches!(world.resource::<NextState<Screen>>(), NextState::Unchanged));
         let replacement = Character::new("B", Race::Human, Gender::Male, Profession::Fighter);
         let other = world.spawn((Vitals::new(&replacement), replacement, Carried::default())).id();
-        world.resource_mut::<PartyRoster>().0 = [other, actor].into_iter().collect();
+        crate::game::party::roster::test_join(&mut world, other);
+        crate::game::party::roster::test_reorder(&mut world, &[other, actor]);
         world.run_system_once(place_party_buttons).unwrap();
         assert_eq!(world.get::<SlotButton>(button).unwrap().member, actor);
         assert_eq!(world.get::<Node>(button).unwrap().left, px(617.));
         click(&mut world, 1);
         assert_eq!(world.resource::<SelectedMember>().0, Some(actor));
-        world.resource_mut::<PartyRoster>().0.shift_remove(&actor);
+        world.entity_mut(actor).remove::<crate::game::party::roster::PartyMember>();
         world.resource_mut::<SelectedMember>().0 = Some(other);
         click(&mut world, 2);
         assert_eq!(

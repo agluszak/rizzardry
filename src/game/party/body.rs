@@ -73,9 +73,10 @@ impl PartyBody {
     }
 }
 
-/// Continuous movement intent, supplied by input or a headless caller.
-/// The controller validates whether the party may move on every fixed step.
-#[derive(Resource, Debug, Default, PartialEq)]
+/// On the party: continuous movement intent, supplied by input or a
+/// headless caller. The controller validates whether the party may move on
+/// every fixed step.
+#[derive(Component, Debug, Default, PartialEq)]
 pub struct PartyMovement {
     pub walk: Vec2,
     pub turn: f32,
@@ -93,7 +94,6 @@ pub struct PartyPlacement<'w, 's> {
         'w,
         's,
         (
-            Entity,
             &'static mut PartyBody,
             &'static mut Position,
             &'static mut Transform,
@@ -110,7 +110,13 @@ impl PartyPlacement<'_, '_> {
     /// Retail enters a level at an entrance trigger (e.g. `MO100`) and falls
     /// back to an eye position of (0, 1000, 0) when there is none. Entrance
     /// triggers the party arrives inside do not fire until it leaves them.
-    pub fn place(&mut self, commands: &mut Commands, level: &LevelDefinition, start: &PartyStart) {
+    pub fn place(
+        &mut self,
+        commands: &mut Commands,
+        party: Entity,
+        level: &LevelDefinition,
+        start: &PartyStart,
+    ) {
         let entrance = start.entrance.as_deref().and_then(|name| {
             let found = level.entrances.iter().find(|e| e.name.eq_ignore_ascii_case(name));
             if found.is_none() {
@@ -125,48 +131,37 @@ impl PartyPlacement<'_, '_> {
         ));
         let yaw = start.yaw.or(entrance.map(|e| e.yaw)).unwrap_or_default();
         let position = eye - Vec3::Y * EYE_ABOVE_CENTRE;
-        if let Ok((entity, mut body, mut at, mut transform, mut velocity)) = self.party.single_mut()
-        {
+        if let Ok((mut body, mut at, mut transform, mut velocity)) = self.party.get_mut(party) {
             body.yaw = yaw;
             body.pitch = start.pitch.clamp(-MAX_PITCH, MAX_PITCH);
             at.0 = position;
             transform.translation = position;
             velocity.0 = Vec3::ZERO;
-            commands.entity(entity).remove::<(super::walk_in::PathFlight, RigidBodyDisabled)>();
+            commands.entity(party).remove::<(super::walk_in::PathFlight, RigidBodyDisabled)>();
             return;
         }
-        spawn_party(commands, start, yaw, position, &mut self.motion_configs);
+        // Entering its first level, the party gets its body.
+        commands.entity(party).insert((
+            PartyBody { yaw, pitch: start.pitch.clamp(-MAX_PITCH, MAX_PITCH) },
+            Transform::from_translation(position),
+            RigidBody::Dynamic,
+            Position(position),
+            Collider::sphere(RADIUS - 0.08),
+            LockedAxes::ROTATION_LOCKED,
+            MaxLinearSpeed(MAX_SPEED),
+            TnuaController::<PartyMotion>::default(),
+            TnuaConfig::<PartyMotion>(self.motion_configs.add(PartyMotionConfig {
+                basis: TnuaBuiltinWalkConfig {
+                    speed: RUN_SPEED,
+                    float_height: FLOAT_HEIGHT,
+                    max_slope: 50f32.to_radians(),
+                    free_fall_extra_gravity: 0.0,
+                    ..default()
+                },
+            })),
+            TnuaAvian3dSensorShape(Collider::cylinder(RADIUS * 0.9, 0.0)),
+        ));
     }
-}
-
-fn spawn_party(
-    commands: &mut Commands,
-    start: &PartyStart,
-    yaw: f32,
-    position: Vec3,
-    motion_configs: &mut Assets<PartyMotionConfig>,
-) {
-    commands.spawn((
-        Name::new("Party"),
-        PartyBody { yaw, pitch: start.pitch.clamp(-MAX_PITCH, MAX_PITCH) },
-        Transform::from_translation(position),
-        RigidBody::Dynamic,
-        Position(position),
-        Collider::sphere(RADIUS - 0.08),
-        LockedAxes::ROTATION_LOCKED,
-        MaxLinearSpeed(MAX_SPEED),
-        TnuaController::<PartyMotion>::default(),
-        TnuaConfig::<PartyMotion>(motion_configs.add(PartyMotionConfig {
-            basis: TnuaBuiltinWalkConfig {
-                speed: RUN_SPEED,
-                float_height: FLOAT_HEIGHT,
-                max_slope: 50f32.to_radians(),
-                free_fall_extra_gravity: 0.0,
-                ..default()
-            },
-        })),
-        TnuaAvian3dSensorShape(Collider::cylinder(RADIUS * 0.9, 0.0)),
-    ));
 }
 
 /// Where the party enters the next level that becomes ready: an entrance
@@ -200,12 +195,11 @@ pub fn look_around(
 /// Turn and walk on the fixed simulation step, feeding Tnua.
 pub fn drive_party(
     time: Res<Time>,
-    movement: Res<PartyMovement>,
-    mut party: Query<(&mut PartyBody, &mut TnuaController<PartyMotion>)>,
+    mut party: Query<(&mut PartyBody, &mut TnuaController<PartyMotion>, &PartyMovement)>,
     freedom: crate::game::screen::Freedom,
-    battle: Option<Res<crate::game::combat::Battle>>,
+    battle: Option<Single<&crate::game::combat::Battle>>,
 ) {
-    let Ok((mut body, mut controller)) = party.single_mut() else { return };
+    let Ok((mut body, mut controller, movement)) = party.single_mut() else { return };
     // A party held by a screen, a camp or a question stands still.
     let free = freedom.free();
     let turn = movement.turn.clamp(-1.0, 1.0) * TURN_SPEED * time.delta_secs();

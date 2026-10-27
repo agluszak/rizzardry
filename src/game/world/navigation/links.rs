@@ -1,5 +1,6 @@
 //! Off-mesh links: teleports, climbs and doorways, and how walkers use them.
 
+use crate::game::world::level::LevelOwned;
 use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy_landmass::UsingAnimationLink;
@@ -44,7 +45,7 @@ pub fn spawn_level_links(
             commands.spawn((
                 Name::new(format!("{:?} link", link.kind)),
                 link_bundle(link, archipelago, SIZE_CLASSES[class]),
-                ChildOf(root),
+                LevelOwned(root),
             ));
         }
     }
@@ -215,7 +216,7 @@ mod tests {
                 },
                 PropMotion { frame: 0.0, target: 10.0 },
                 DoorLink::around([Vec3::new(-1.0, 0.0, -0.1), Vec3::new(1.0, 2.0, 0.1)]).unwrap(),
-                ChildOf(level),
+                LevelOwned(level),
             ))
             .id();
         // An authored part is a sibling of the navigation links and must survive closing.

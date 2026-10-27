@@ -70,10 +70,15 @@ fn lying_items(world: &mut World) -> usize {
     world.query::<&WorldItem>().iter(world).count()
 }
 
+fn fighting(world: &World) -> bool {
+    world.try_query::<&Battle>().is_some_and(|mut q| q.iter(world).next().is_some())
+}
+
 /// Fight the beach crabs by the Monastery's door to the end.
 fn crab_fight(app: &mut App) {
-    step_until(app, "a fight on the beach", |w| w.contains_resource::<Battle>());
-    step_until(app, "the fight's end", |w| !w.contains_resource::<Battle>());
+    step_until(app, "the Monastery becoming active", |w| playing(w).is_some());
+    step_until(app, "a fight on the beach", |w| fighting(w));
+    step_until(app, "the fight's end", |w| !fighting(w));
 }
 
 #[test]
@@ -83,8 +88,8 @@ fn a_green_slime_leaves_treasure() {
     let mut app = game(&["--continuous", "--seed", "5", "--start=69.5,10,-24", "--yaw", "0"]);
     step_until(&mut app, "the Monastery becoming active", |w| playing(w).is_some());
     let before = lying_items(app.world_mut());
-    step_until(&mut app, "a fight with the slimes", |w| w.contains_resource::<Battle>());
-    step_until(&mut app, "the fight's end", |w| !w.contains_resource::<Battle>());
+    step_until(&mut app, "a fight with the slimes", |w| fighting(w));
+    step_until(&mut app, "the fight's end", |w| !fighting(w));
     assert_eq!(lying_items(app.world_mut()), before + 1);
 
     // Taking the resolved treasure, within reach, uses the same gameplay
@@ -94,7 +99,7 @@ fn a_green_slime_leaves_treasure() {
     let (loot, _) = loot.expect("the treasure lies in the world");
     rizzardry::game::world::items::take_item(world, loot, 1.0).unwrap();
     step_until(&mut app, "taking the treasure", |w| {
-        w.resource::<PartyInventory>().hand.held.is_some()
+        w.try_query::<&PartyInventory>().unwrap().single(w).is_ok_and(|p| p.hand.held.is_some())
     });
     assert_eq!(lying_items(app.world_mut()), before);
 }
@@ -171,7 +176,8 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     let body = app.world().get::<NpcBodies>(actor).unwrap()[0];
     let position = app.world().get::<avian3d::prelude::Position>(body).unwrap().0;
     for mut p in app.world_mut().query_filtered::<&mut avian3d::prelude::Position,With<rizzardry::game::party::body::PartyBody>>().iter_mut(app.world_mut()){p.0=position+Vec3::X*2.0;}
-    app.world_mut().resource_mut::<PartyInventory>().gold = 10000;
+    let party = rizzardry::game::party::roster::the_party(app.world_mut()).unwrap();
+    app.world_mut().get_mut::<PartyInventory>(party).unwrap().gold = 10000;
     let session = conversation::begin(app.world_mut(), actor).unwrap();
     fn finish(app: &mut App, session: Entity) {
         for _ in 0..40 {
@@ -233,16 +239,16 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
         app.world().get::<Npc>(actor).unwrap().stock.lots.iter().find(|l| l.units > 0).unwrap().id;
     let quote =
         conversation::quote_trade(app.world_mut(), session, TradeSource::Stock(lot), 1).unwrap();
-    let gold = app.world().resource::<PartyInventory>().gold;
+    let gold = app.world().get::<PartyInventory>(party).unwrap().gold;
     app.world_mut().write_message(ConversationRequest::Trade(quote));
     app.world_mut().write_message(ConversationRequest::Trade(quote));
     app.update();
     assert_eq!(
-        app.world().resource::<PartyInventory>().gold,
+        app.world().get::<PartyInventory>(party).unwrap().gold,
         gold - quote.gold,
         "duplicate confirmation settles once"
     );
-    let bought = app.world().resource::<PartyInventory>().pool.stacks[0].id;
+    let bought = app.world().get::<PartyInventory>(party).unwrap().pool.stacks[0].id;
     let sale = conversation::quote_trade(
         app.world_mut(),
         session,
@@ -252,7 +258,10 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     .unwrap();
     app.world_mut().write_message(ConversationRequest::Trade(sale));
     app.update();
-    assert_eq!(app.world().resource::<PartyInventory>().gold, gold - quote.gold + sale.gold);
+    assert_eq!(
+        app.world().get::<PartyInventory>(party).unwrap().gold,
+        gold - quote.gold + sale.gold
+    );
     let current = app.world().get::<Conversation>(session).unwrap().current.unwrap().0;
     let fact = app.world().resource::<Assets<DialogueScript>>().get(&script).unwrap().quotes
         [current as usize]
