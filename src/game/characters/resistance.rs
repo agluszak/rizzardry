@@ -72,7 +72,7 @@ pub fn resistances(
             + divine;
         let equipment: i32 = carried
             .active_equipment()
-            .map(|(_, item)| item)
+            .map(|(_, equipped)| &equipped.stack)
             .filter_map(|item| items.get(item.item))
             .map(|item| i32::from(item.resistance_bonus[realm]))
             .sum::<i32>()
@@ -85,8 +85,8 @@ pub fn resistances(
 mod tests {
     use super::*;
     use crate::content::characters::{Gender, Profession};
-    use crate::content::items::{ItemDefinition, ItemId};
-    use crate::game::inventory::{ItemInstance, ItemInstanceId, Quantity};
+    use crate::content::items::ItemDefinition;
+    use crate::game::inventory::{Equipped, ItemIds, ItemStack};
 
     #[test]
     fn racial_and_worn_item_resistances_apply_without_alternate_weapons() {
@@ -95,22 +95,13 @@ mod tests {
             resistance_bonus: enum_map! { Realm::Air => 12, Realm::Fire => -7, _ => 0 },
             ..Default::default()
         }]);
-        let item = ItemInstance {
-            id: ItemInstanceId(1),
-            item: ItemId(0),
-            quantity: Quantity::One,
-            identified: false,
-            spell_known: false,
-            curse_known: false,
-            curse_released: false,
-            remarked: false,
-        };
+        let item = ItemStack::new(&items.0[0], &mut ItemIds::default(), 1, false);
         let mut carried = Carried::default();
-        carried.equipment[EquipSlot::AlternatePrimary] = Some(item.clone());
+        carried.equipment[EquipSlot::AlternatePrimary] = Some(Equipped::new(item.clone()));
         let base = resistances(&elf, &carried, &items);
         assert_eq!(base[Realm::Air], Resistance { base: 40, total: 40 });
         assert_eq!(base[Realm::Mental], Resistance { base: 50, total: 50 });
-        carried.equipment[EquipSlot::Primary] = Some(item);
+        carried.equipment[EquipSlot::Primary] = Some(Equipped::new(item));
         let worn = resistances(&elf, &carried, &items);
         assert_eq!(worn[Realm::Air], Resistance { base: 40, total: 52 });
         assert_eq!(worn[Realm::Fire], Resistance { base: 30, total: 23 });

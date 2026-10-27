@@ -55,7 +55,7 @@ pub(super) fn sync(
     mut commands: Commands,
 ) {
     let (Some((slider, value, range)), Some(party)) = (slider.as_deref(), party) else { return };
-    let max = maximum(party.pool.len()) as f32;
+    let max = maximum(party.pool.stacks.len()) as f32;
     if range.end() != max {
         commands.entity(*slider).insert(SliderRange::new(0.0, max));
     }
@@ -68,7 +68,7 @@ pub(super) fn sync(
 mod tests {
     use super::*;
     use crate::content::items::ItemId;
-    use crate::game::inventory::{ItemInstance, ItemInstanceId, Quantity};
+    use crate::game::inventory::{ItemIds, ItemPool, ItemStack, StackId};
     use bevy::input::{mouse::MouseScrollUnit, touch::TouchPhase};
     use bevy::picking::{
         backend::HitData,
@@ -86,19 +86,18 @@ mod tests {
             .init_resource::<PointerCaptureMap>()
             .init_resource::<UiScale>()
             .add_systems(Update, sync);
+        let mut ids = ItemIds::default();
         let items = (0..11)
-            .map(|id| ItemInstance {
-                id: ItemInstanceId(id),
-                item: ItemId(id as u16),
-                quantity: Quantity::One,
-                identified: true,
-                spell_known: false,
-                curse_known: false,
-                curse_released: false,
-                remarked: false,
+            .map(|id| {
+                ItemStack::new(
+                    &crate::content::items::ItemDefinition { id: ItemId(id), ..default() },
+                    &mut ids,
+                    1,
+                    true,
+                )
             })
             .collect();
-        app.insert_resource(PartyInventory { pool: items, ..default() });
+        app.insert_resource(PartyInventory { pool: ItemPool { stacks: items }, ..default() });
         let slider = app
             .world_mut()
             .spawn((PoolScroll, Slider::default(), SliderStep(1.0)))
@@ -122,7 +121,7 @@ mod tests {
         }
         assert_eq!(app.world().get::<SliderValue>(slider).unwrap().0, 2.0);
         let shown = app.world().get::<SliderValue>(slider).unwrap().0 as usize * 2;
-        assert_eq!(app.world().resource::<PartyInventory>().pool[shown].id, ItemInstanceId(4));
+        assert_eq!(app.world().resource::<PartyInventory>().pool.stacks[shown].id, StackId(5));
         app.world_mut().trigger(PointerDragStart {
             entity: slider,
             pointer: pointer.clone(),
@@ -137,7 +136,7 @@ mod tests {
         });
         assert!(!app.world().get::<SliderDragState>(slider).unwrap().dragging);
         assert!(!app.world().resource::<PointerCaptureMap>().0.contains_key(&pointer.id));
-        app.world_mut().resource_mut::<PartyInventory>().pool.truncate(8);
+        app.world_mut().resource_mut::<PartyInventory>().pool.stacks.truncate(8);
         app.update();
         assert_eq!(app.world().get::<SliderValue>(slider).unwrap().0, 0.0);
         assert_eq!(app.world().get::<SliderRange>(slider).unwrap().end(), 0.0);

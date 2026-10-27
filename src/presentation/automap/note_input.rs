@@ -4,9 +4,7 @@ use super::*;
 use crate::presentation::screen_art::BitmapText;
 use bevy::input::keyboard::Key;
 use bevy::input_focus::{FocusCause, FocusedInput, InputFocus};
-use bevy::text::{
-    EditableText, EditableTextFilter, FontCx, LayoutCx, TextCursorStyle, TextEditChange,
-};
+use bevy::text::{EditableText, EditableTextFilter, FontCx, LayoutCx, TextCursorStyle};
 use bevy::ui_widgets::TextInput;
 
 #[derive(Component)]
@@ -70,7 +68,6 @@ pub(crate) fn sync_note_input(
             Pickable::IGNORE,
             ChildOf(parent),
         ))
-        .observe(changed)
         .observe(finish)
         .id();
     let hit = commands
@@ -117,20 +114,6 @@ pub(crate) fn sync_note_input(
     focus.set(entity, FocusCause::Navigated);
 }
 
-fn changed(
-    event: On<TextEditChange>,
-    inputs: Query<&EditableText, With<NoteInput>>,
-    map: Option<Single<&mut Automap>>,
-) {
-    let (Ok(input), Some(mut map)) = (inputs.get(event.event_target()), map) else { return };
-    if let Some(draft) = map.editing.as_mut() {
-        let value = input.value().to_string();
-        if draft.note.text != value {
-            draft.note.text = value;
-        }
-    }
-}
-
 fn finish(
     mut event: On<FocusedInput<KeyboardInput>>,
     inputs: Query<&EditableText, With<NoteInput>>,
@@ -165,8 +148,9 @@ pub(super) fn cancel_from_controls(
     }
 }
 
-/// Native edits (including same-frame text/IME and asynchronous paste) settle
-/// before Enter commits. Cancellation also waits until after input dispatch,
+/// The editor owns the text until then: the draft keeps the text it started
+/// with. Native edits (including same-frame text/IME and asynchronous paste)
+/// settle before Enter commits. Cancellation also waits until after input dispatch,
 /// so the same raw Escape cannot re-enable and close the underlying map.
 /// A cancelled or replaced editor cannot commit later.
 pub(crate) fn finish_note_input(

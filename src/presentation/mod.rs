@@ -76,6 +76,11 @@ impl Plugin for PresentationPlugin {
             frontend::FrontendPlugin,
         ))
         .add_input_context::<Exploration>()
+        .add_observer(retail_controls::primary_buttons_only)
+        .add_observer(party_view::attach_camera)
+        .add_observer(environment::request_level_visuals)
+        .add_observer(sky::request_skies)
+        .add_observer(dialog::open_travel_question)
         .add_systems(Startup, controls::spawn_exploration_controls)
         .add_systems(PreUpdate, controls::read_controls.after(EnhancedInputSystems::Apply))
         .add_message::<voice::SpeechFinished>()
@@ -142,9 +147,7 @@ impl Plugin for PresentationPlugin {
             Update,
             (
                 automap::scale_ui,
-                (party_view::attach_camera, party_view::aim_camera)
-                    .chain()
-                    .after(crate::game::GameplaySet::Combat),
+                party_view::aim_camera.after(crate::game::GameplaySet::Combat),
                 camp::show_camp,
                 (
                     automap::close_ended_map,
@@ -179,16 +182,12 @@ impl Plugin for PresentationPlugin {
                     .after(world_items::light_world_items),
                 environment::apply_environment,
                 sky::shade_clouds,
-                (sky::request_skies, sky::build_sky).chain(),
-                (environment::request_level_visuals, environment::attach_level_visuals).chain(),
+                sky::build_sky,
+                environment::attach_level_visuals,
                 billboards::face_camera.after(party_view::aim_camera),
                 music::play_music,
                 (ambience::place_ambient_sounds, ambience::play_ambient_sounds).chain(),
-                (
-                    dialog::open_travel_question,
-                    dialog::show_travel_question,
-                    dialog::focus_ready_question,
-                )
+                (dialog::show_travel_question, dialog::focus_ready_question)
                     .chain()
                     .after(crate::game::GameplaySet::LevelActivation),
                 effects::shake_camera.after(party_view::aim_camera),
@@ -202,7 +201,9 @@ impl Plugin for PresentationPlugin {
                     monsters::animate_monsters,
                     monsters::light_monsters,
                 )
-                    .chain(),
+                    .chain()
+                    // A monster killed this frame starts dying this frame.
+                    .after(crate::game::GameplaySet::Combat),
                 (
                     world_items::show_world_items,
                     world_items::build_world_items,

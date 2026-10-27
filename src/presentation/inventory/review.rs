@@ -210,7 +210,6 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) -
             crate::presentation::retail_controls::FocusRing,
             ChildOf(stats),
         ))
-        .observe(crate::presentation::retail_controls::primary_press)
         .observe(toggle_info);
     label(
         commands,
@@ -326,7 +325,6 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) -
                 crate::presentation::retail_controls::FocusRing,
                 ChildOf(stats),
             ))
-            .observe(crate::presentation::retail_controls::primary_press)
             .observe(select_filter);
     }
     let track = crate::presentation::retail_controls::step_scrollbar(
@@ -517,7 +515,8 @@ pub(super) fn refresh(
     let mut effects = Vec::new();
     if show_items {
         if let (Some(carried), Some(catalog)) = (carried.as_ref(), catalog) {
-            for (slot, item) in carried.active_equipment().filter(|(_, item)| item.identified) {
+            for (slot, equipped) in carried.active_equipment().filter(|(_, e)| e.stack.identified) {
+                let item = &equipped.stack;
                 let Some(definition) = catalog.get(item.item) else { continue };
                 let armour = if definition.armor_class_bonus < 0
                     || (!matches!(
@@ -533,7 +532,7 @@ pub(super) fn refresh(
                 } else {
                     0
                 };
-                let cursed = definition.cursed && !item.curse_released;
+                let cursed = definition.cursed && !equipped.curse_released;
                 let beneficial = definition.hit_bonus > 0
                     || armour > 0
                     || definition.resistance_bonus.values().any(|&value| value > 0);
@@ -820,6 +819,7 @@ mod tests {
     use super::*;
     use crate::game::characters::Vitals;
     use crate::game::characters::{Condition, Gender, Lasting, Profession, Race};
+    use crate::game::inventory::{Carried, Equipped};
 
     #[test]
     fn review_tracks_character_and_condition_changes() {
@@ -865,5 +865,44 @@ mod tests {
         app.world_mut().get_mut::<Vitals>(actor).unwrap().age_conditions(1);
         app.update();
         assert!(!text(app.world_mut(), "Blind"));
+    }
+
+    /// Equipping changes only `Carried`; existing Statistics labels follow it.
+    #[test]
+    fn statistics_follow_equipment_only_changes() {
+        use crate::content::items::ItemDefinition;
+        use crate::game::inventory::{ItemIds, make_item};
+        use crate::game::rng::GameRng;
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<ItemCatalog>()
+            .init_asset::<TextTable>()
+            .insert_resource(InventoryArt::default())
+            .add_systems(Update, refresh);
+        let definition = ItemDefinition::default();
+        let weapon =
+            make_item(&definition, &mut ItemIds::default(), &mut GameRng::seeded(1), false, false);
+        let items = app
+            .world_mut()
+            .resource_mut::<Assets<ItemCatalog>>()
+            .add(ItemCatalog(vec![definition]));
+        app.insert_resource(GameData { items, loot: default(), species: default() });
+        let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
+        let actor =
+            app.world_mut().spawn((Vitals::new(&profile), profile, Carried::default())).id();
+        let root = app.world_mut().spawn(InventoryScreen { member: actor }).id();
+        app.world_mut().commands().queue(move |world: &mut World| {
+            build(&mut world.commands(), root, &InventoryArt::default());
+        });
+        app.update();
+        app.update();
+        let unknown = |world: &mut World| {
+            world.query::<&BitmapText>().iter(world).any(|text| text.value == "?")
+        };
+        assert!(!unknown(app.world_mut()));
+        app.world_mut().get_mut::<Carried>(actor).unwrap().equipment[EquipSlot::Primary] =
+            Some(Equipped::new(weapon));
+        app.update();
+        assert!(unknown(app.world_mut()), "an unidentified weapon hides its combat values");
     }
 }

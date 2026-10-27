@@ -30,8 +30,8 @@ fn first_phase(monster: &Monster) -> f32 {
     (monster.location.unsigned_abs() % 97) as f32 * 0.37
 }
 
-/// The cycle an actor should play. Gameplay sets it; a changed request
-/// restarts playback.
+/// The cycle an actor should play. Gameplay sets it; a different request
+/// restarts playback, an identical one continues it.
 #[derive(Component, Debug, Clone, PartialEq)]
 pub struct CycleRequest {
     pub cycle: String,
@@ -65,14 +65,23 @@ pub fn request_monster_visuals(
     }
 }
 
-/// The built model of one actor.
+/// The playback of one actor's built model.
 #[derive(Component, Debug)]
-pub struct MonsterInstance {
+pub struct MonsterPlayback {
     /// The cycle shown, and how long it has played.
     playing: Option<(CycleRequest, Stopwatch)>,
+}
+
+/// The lighting of one actor's built model, independent of its playback: a
+/// settled corpse is still relit.
+#[derive(Component, Debug)]
+pub struct MonsterLight {
     /// How much sky light reaches the actor: retail fades it between 0.75
     /// in sight of the level's `SUN` light and 0 out of it.
     sky_scale: f32,
+    /// Where the sunlight target and fixed light were last decided, and
+    /// their values; only moving re-decides them.
+    lit_at: Option<(Vec3, f32, Vec3)>,
 }
 
 /// The hierarchy itself records which visual entities were successfully built.
@@ -84,7 +93,7 @@ pub struct ModelCycle(String);
 
 pub fn build_monster_instances(
     mut commands: Commands,
-    actors: Query<(Entity, &Monster, &MonsterVisual, Option<&Walker>), Without<MonsterInstance>>,
+    actors: Query<(Entity, &Monster, &MonsterVisual, Option<&Walker>), Without<MonsterPlayback>>,
     models: Res<Assets<MonsterModel>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
@@ -137,7 +146,8 @@ pub fn build_monster_instances(
             }
         }
         commands.entity(actor).insert((
-            MonsterInstance { playing: None, sky_scale: SUNLIT },
+            MonsterPlayback { playing: None },
+            MonsterLight { sky_scale: SUNLIT, lit_at: None },
             ActorLight::default(),
             Visibility::default(),
         ));
@@ -162,7 +172,7 @@ pub fn animate_monsters(
     mut actors: Query<(
         &Monster,
         &MonsterVisual,
-        &mut MonsterInstance,
+        &mut MonsterPlayback,
         Option<&CycleRequest>,
         &Children,
     )>,
@@ -170,20 +180,31 @@ pub fn animate_monsters(
     roots: Query<&Children, With<ModelRoot>>,
     mut cycles: Query<(&ModelCycle, &mut MorphWeights, &mut Visibility)>,
 ) {
-    for (monster, visual, mut instance, request, children) in &mut actors {
+    for (monster, visual, mut playback, request, children) in &mut actors {
         let Some(model) = models.get(&visual.0) else { continue };
         let request = request.cloned().unwrap_or_else(|| CycleRequest::looping("IDLE"));
+        let current = playback.playing.as_ref().is_some_and(|(playing, _)| *playing == request);
         let name = if model.cycles.contains_key(&request.cycle) { &request.cycle } else { "IDLE" };
         let Some(cycle) = model.cycles.get(name) else { continue };
-        if instance.playing.as_ref().is_none_or(|(playing, _)| *playing != request) {
+        // The previous tick already applied a completed one-shot's final pose.
+        // Derive this from its clock rather than storing another completion flag.
+        if current
+            && request.once
+            && playback.playing.as_ref().is_some_and(|(_, played)| {
+                played.elapsed_secs() * cycle.frames_per_second >= cycle.frame_count as f32 - 1.0
+            })
+        {
+            continue;
+        }
+        if !current {
             // The first cycle starts part-way in.
             let mut played = Stopwatch::new();
-            if instance.playing.is_none() {
+            if playback.playing.is_none() {
                 played.set_elapsed(Duration::from_secs_f32(first_phase(monster)));
             }
-            instance.playing = Some((request.clone(), played));
+            playback.playing = Some((request.clone(), played));
         }
-        let Some((_, played)) = &mut instance.playing else { continue };
+        let Some((_, played)) = &mut playback.playing else { continue };
         let frames = cycle.frame_count as f32;
         let elapsed = played.tick(time.delta()).elapsed_secs() * cycle.frames_per_second;
         let frame = if request.once { elapsed.min(frames - 1.0) } else { elapsed % frames };
@@ -224,7 +245,7 @@ pub fn light_monsters(
     levels: Query<(Entity, &LevelAppearance)>,
     geometry: Res<Assets<LevelGeometry>>,
     spatial: SpatialQuery,
-    mut actors: Query<(&GlobalTransform, &mut MonsterInstance, &mut ActorLight)>,
+    mut actors: Query<(&GlobalTransform, &mut MonsterLight, &mut ActorLight)>,
 ) {
     let Some((level_entity, level)) =
         levels.iter().find_map(|(e, l)| geometry.get(&l.0).map(|g| (e, g)))
@@ -232,13 +253,23 @@ pub fn light_monsters(
         return;
     };
     let sky = level.environment.as_ref().map_or(Vec3::ZERO, |e| e.sky_light(clock.phase()));
-    for (transform, mut instance, mut light) in &mut actors {
+    for (transform, mut sampled, mut light) in &mut actors {
         let centre = transform.translation();
-        let target = if sunlit(&spatial, level_entity, level, centre) { SUNLIT } else { 0.0 };
-        let step = SKY_SCALE_PER_SECOND * time.delta_secs();
-        instance.sky_scale += (target - instance.sky_scale).clamp(-step, step);
-        light.sky = sky * instance.sky_scale;
-        light.fixed = level.lighting.at(centre, None);
+        let (target, fixed) = match sampled.lit_at {
+            Some((at, target, fixed)) if at == centre && !geometry.is_changed() => (target, fixed),
+            _ => {
+                let target =
+                    if sunlit(&spatial, level_entity, level, centre) { SUNLIT } else { 0.0 };
+                let fixed = level.lighting.at(centre, None);
+                sampled.lit_at = Some((centre, target, fixed));
+                (target, fixed)
+            }
+        };
+        if sampled.sky_scale != target {
+            let step = SKY_SCALE_PER_SECOND * time.delta_secs();
+            sampled.sky_scale += (target - sampled.sky_scale).clamp(-step, step);
+        }
+        light.set_if_neq(ActorLight { sky: sky * sampled.sky_scale, fixed });
     }
 }
 
@@ -390,5 +421,16 @@ mod tests {
         app.world_mut().resource_mut::<Time<Virtual>>().advance_by(Duration::from_secs(2));
         app.update();
         assert_eq!(app.world().get::<MorphWeights>(death).unwrap().weights(), &[0., 0., 1.]);
+        let changed_at = |world: &mut World| {
+            world.query::<Ref<MorphWeights>>().get(world, death).unwrap().last_changed()
+        };
+        let held_at = changed_at(app.world_mut());
+        app.world_mut().resource_mut::<Time<Virtual>>().advance_by(Duration::from_secs(1));
+        app.update();
+        assert_eq!(
+            changed_at(app.world_mut()),
+            held_at,
+            "held poses must not upload weights again"
+        );
     }
 }

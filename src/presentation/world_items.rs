@@ -23,9 +23,10 @@ const TURN_PER_SECOND: f32 = std::f32::consts::PI / 16.0 / 0.05;
 #[derive(Component, Debug)]
 pub struct ItemShown {
     model: Handle<ItemModel>,
-    /// The sky light it gets: all in sight of the `SUN` light, none out of
-    /// it, decided where it lies (retail `light_scale`).
-    sky_scale: Option<f32>,
+    /// Where it was lit, the sky light it gets there (all in sight of the
+    /// `SUN` light, none out of it: retail `light_scale`) and the level's
+    /// fixed light there.
+    lit_at: Option<(Vec3, f32, Vec3)>,
 }
 
 /// Start loading each visible item's model; a model that fails to load
@@ -41,7 +42,7 @@ pub fn show_world_items(
     for (entity, item, shown) in &items {
         let model = match shown {
             _ if item.hidden => continue,
-            None => catalog.get(item.item.item).map(|d| d.model.as_str()),
+            None => catalog.get(item.appearance()).map(|d| d.model.as_str()),
             Some(shown) if assets.get_load_state(&shown.model).is_some_and(|s| s.is_failed()) => {
                 Some("data/items3d/questionmark.itm")
             }
@@ -50,7 +51,7 @@ pub fn show_world_items(
         if let Some(model) = model {
             commands.entity(entity).insert(ItemShown {
                 model: assets.load(format!("retail://{model}")),
-                sky_scale: None,
+                lit_at: None,
             });
         }
     }
@@ -62,12 +63,12 @@ pub struct ItemVisual;
 
 pub fn build_world_items(
     mut commands: Commands,
-    items: Query<(Entity, &WorldItem, &ItemShown, Option<&Children>)>,
+    items: Query<(Entity, &ItemShown, Option<&Children>), With<WorldItem>>,
     visuals: Query<(), With<ItemVisual>>,
     models: Res<Assets<ItemModel>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    for (entity, item, shown, children) in &items {
+    for (entity, shown, children) in &items {
         if children.is_some_and(|c| c.iter().any(|e| visuals.contains(e))) {
             continue;
         }
@@ -77,7 +78,7 @@ pub fn build_world_items(
             .spawn((
                 ItemVisual,
                 Transform::from_rotation(Quat::from_rotation_y(
-                    ((item.item.id.0 % 360) as f32).to_radians(),
+                    ((entity.to_bits() % 360) as f32).to_radians(),
                 )),
                 Visibility::default(),
                 ChildOf(entity),
@@ -125,14 +126,19 @@ pub fn light_world_items(
     let pulse = 0.25 + 0.75 * (1.0 - (2.0 * phase - 1.0).abs());
     for (entity, transform, mut shown, mut light) in &mut items {
         let at = transform.translation();
-        let sky_scale = *shown.sky_scale.get_or_insert_with(|| {
-            if sunlit(&spatial, level_entity, level, at) { 1.0 } else { 0.0 }
-        });
-        light.sky = sky * sky_scale;
-        light.fixed = level.lighting.at(at, None);
-        if hovered.entity() == Some(entity) {
-            light.fixed += Vec3::Y * pulse;
-        }
+        let (sky_scale, fixed) = match shown.lit_at {
+            Some((lit, sky_scale, fixed)) if lit == at && !geometry.is_changed() => {
+                (sky_scale, fixed)
+            }
+            _ => {
+                let sky_scale = if sunlit(&spatial, level_entity, level, at) { 1.0 } else { 0.0 };
+                let fixed = level.lighting.at(at, None);
+                shown.lit_at = Some((at, sky_scale, fixed));
+                (sky_scale, fixed)
+            }
+        };
+        let highlight = if hovered.entity() == Some(entity) { Vec3::Y * pulse } else { Vec3::ZERO };
+        light.set_if_neq(ActorLight { sky: sky * sky_scale, fixed: fixed + highlight });
     }
 }
 

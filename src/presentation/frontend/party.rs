@@ -99,7 +99,6 @@ fn action_button(
     } else {
         button.insert((InteractionDisabled, TabIndex(-1)));
     }
-    button.observe(crate::presentation::retail_controls::primary_press);
     let button = button.id();
     picture(commands, button, sheet, frame, Vec2::ZERO);
     if !text.is_empty() {
@@ -266,7 +265,6 @@ pub(super) fn sync_views(
                     Pickable::default(),
                     ChildOf(page),
                 ))
-                .observe(crate::presentation::retail_controls::primary_press)
                 .id();
             if joined {
                 let portrait = picture(&mut commands, root, default(), 0, Vec2::ZERO);

@@ -48,7 +48,7 @@ pub struct SurfaceResponse {
 }
 
 /// Sampled at the actor by its own sunlight/hover policy.
-#[derive(Component, Default)]
+#[derive(Component, Default, PartialEq)]
 pub struct ActorLight {
     pub sky: Vec3,
     pub fixed: Vec3,

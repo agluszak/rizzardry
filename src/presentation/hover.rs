@@ -107,8 +107,8 @@ pub fn show_tooltip(
         let text = if let Ok(item) = items.get(entity) {
             // "Bullets (Unidentified) (16)".
             let catalog = data.as_ref().and_then(|d| catalogs.get(&d.items));
-            let definition = catalog.and_then(|c| c.get(item.item.item))?;
-            item.item.display_name(definition, true)
+            let definition = catalog.and_then(|c| c.get(item.appearance()))?;
+            item.display_name(definition, true)
         } else if let Ok(monster) = monsters.get(entity) {
             // "Crustacean (?/12)" (retail `SetCombatSelection`).
             let catalog = data.as_ref().and_then(|d| species.get(&d.species));

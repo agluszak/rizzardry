@@ -86,7 +86,7 @@ two simultaneously authoritative levels.
 
 ## Stable identities and save records
 
-Bevy Entity values are runtime handles. Neither their numeric parts nor vector positions are campaign identity. Use typed stable ActorId, ItemInstanceId, MapId, and authored-object keys where a reference must survive save/load or an ownership move. Dynamic IDs can use a campaign counter; persist its next value. A UUID dependency is not required merely to allocate local single-player identities.
+Bevy Entity values are runtime handles. Neither their numeric parts nor vector positions are campaign identity. Use typed stable ActorId, StackId, MapId, and authored-object keys where a reference must survive save/load or an ownership move. Dynamic IDs can use a campaign counter; persist its next value. A UUID dependency is not required merely to allocate local single-player identities.
 
 Do not use display names, party slot numbers, a monster species, or a sorted inventory row as identity. Two monsters can share a species; a party slot can be vacated and reused; identifying, sorting, or consuming an item can move its row.
 

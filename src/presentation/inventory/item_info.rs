@@ -187,7 +187,7 @@ pub(super) fn refresh(
                     )
                 })
                 .collect();
-            let pool = inventory.pool.iter().map(|item| item_weight(item, catalog)).sum();
+            let pool = inventory.pool.stacks.iter().map(|item| item_weight(item, catalog)).sum();
             let shares = pool_shares(pool, &member_data);
             let index = roster.0.get_index_of(&screen.member)?;
             let own = carried.map_or(0, |carried| carried_weight(carried, catalog));
