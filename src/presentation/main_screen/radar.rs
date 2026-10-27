@@ -266,8 +266,7 @@ mod tests {
             .add_systems(Update, track_radar_items);
         let item =
             make_item(&default(), &mut ItemIds::default(), &mut GameRng::default(), true, true);
-        let target =
-            app.world_mut().spawn(WorldItem { item, hidden: false, contents: vec![] }).id();
+        let target = app.world_mut().spawn(WorldItem::loose(item, false)).id();
         app.world_mut().write_message(SearchNews::Spotted {
             target,
             member: "Finder".into(),

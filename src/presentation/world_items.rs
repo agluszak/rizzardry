@@ -39,7 +39,7 @@ pub fn show_world_items(
     for (entity, item, shown) in &items {
         let model = match shown {
             _ if item.hidden => continue,
-            None => catalog.get(item.item.item).map(|d| d.model.as_str()),
+            None => catalog.get(item.appearance()).map(|d| d.model.as_str()),
             Some(shown) if assets.get_load_state(&shown.model).is_some_and(|s| s.is_failed()) => {
                 Some("data/items3d/questionmark.itm")
             }
@@ -63,12 +63,12 @@ pub struct ItemPart(usize);
 
 pub fn build_world_items(
     mut commands: Commands,
-    items: Query<(Entity, &WorldItem, &ItemShown, Option<&Children>)>,
+    items: Query<(Entity, &ItemShown, Option<&Children>), With<WorldItem>>,
     visuals: Query<(), With<ItemVisual>>,
     models: Res<Assets<ItemModel>>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
-    for (entity, item, shown, children) in &items {
+    for (entity, shown, children) in &items {
         if children.is_some_and(|c| c.iter().any(|e| visuals.contains(e))) {
             continue;
         }
@@ -78,7 +78,7 @@ pub fn build_world_items(
             .spawn((
                 ItemVisual,
                 Transform::from_rotation(Quat::from_rotation_y(
-                    ((item.item.id.0 % 360) as f32).to_radians(),
+                    ((entity.to_bits() % 360) as f32).to_radians(),
                 )),
                 Visibility::default(),
                 ChildOf(entity),

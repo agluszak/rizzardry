@@ -144,7 +144,7 @@ Native saves capture each named actor once, including its retained adventurer pr
 
 A dormant map stores ordinary local actors and map state. It may refer to a named actor in a trigger/script, but never stores an old copy of that actor's progression, gear, stock, or role state. When the map is visited, resolve the existing actor and attach a body only if its current placement and life/story state permit it.
 
-Queued actions use ActorId, ItemInstanceId, and interaction/session identity where required. An old "dismiss companion in slot zero" callback must not dismiss the new occupant of that slot after a different NPC joined. On consumption, validate that the intended actor is still in the required role and that the operation belongs to the current interaction. Cancellation deletes the pending choice; completion changes ownership once.
+Queued actions use ActorId, StackId, and interaction/session identity where required. An old "dismiss companion in slot zero" callback must not dismiss the new occupant of that slot after a different NPC joined. On consumption, validate that the intended actor is still in the required role and that the operation belongs to the current interaction. Cancellation deletes the pending choice; completion changes ownership once.
 
 Role changes are complete domain operations. Avoid a chain of independent observers for "remove world monster," "add party character," "return gear," and "update story"; a missing or reordered observer could leave two active roles or lose possessions. Optional notifications follow the completed operation.
 

@@ -38,8 +38,8 @@ A lock's eight persisted pin bytes are randomized configuration, not the current
 A compact contents value removes the separate items_generated flag:
 
     enum ContainerContents {
-        Unrolled { table: LootTableId, seed: LootSeed, stored: Vec<ItemInstance> },
-        Rolled { items: Vec<ItemInstance>, gold: Gold },
+        Unrolled { table: LootTableId, seed: LootSeed, stored: Vec<ItemStack> },
+        Rolled { items: Vec<ItemStack>, gold: Gold },
     }
 
 An empty Rolled value remains rolled. The stored values in Unrolled are player deposits made before first opening. At materialization, append generated loot to those existing values. Do not overwrite a pending table with the player's deposit or generate it early: the party's level may change before opening.
@@ -128,7 +128,7 @@ Solving a device and materializing its contents are different operations. The or
 | Activate unlocked object | activate_unlocked_object | Validate access and authored linked action. Record open/closed target state separately from animation progress. |
 | Materialize authored loot | materialize_container | Resolve table, current party-level inputs, and saved seed. Build a local item-value vector and gold total; assign Rolled only after successful generation. Missing table is a content error, not an empty chest. |
 | Apply opening effects | resolve_container_open | Run identification through item rules. Credit gold once and set container gold to zero in the same operation. |
-| Display contents | open_container_view | UI reads the current contents by WorldObjectId and ItemInstanceId. It does not remove them from the component. |
+| Display contents | open_container_view | UI reads the current contents by WorldObjectId and StackId. It does not remove them from the component. |
 | Take selected values | take_container_items | Revalidate each selected item and destination. Transfer only units that fit; leave remaining units in the container. Report partial success without duplicating the source stack. |
 | Deposit | put_item_in_container | Validate source and destination; move the selected value once, preserving any pending authored loot table and its later generation boundary. |
 | Close | close_container_view | Discard selection/scroll state. Items already taken and remaining contents retain their current owners. |
