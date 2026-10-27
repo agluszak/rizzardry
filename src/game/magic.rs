@@ -851,6 +851,7 @@ mod tests {
                 ))
                 .id();
             crate::game::party::roster::test_party(world, &[user, ally]);
+            world.spawn(crate::game::world::level::Level::test(default()));
             let user_before = world.get::<Vitals>(user).unwrap().clone();
             world.write_message(MagicRequest {
                 caster: user,
