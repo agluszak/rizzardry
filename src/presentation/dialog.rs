@@ -245,10 +245,11 @@ mod tests {
             keyboard::{Key, KeyboardInput},
         };
         let mut app = input_app();
+        let window = app.world_mut().spawn((Window::default(), bevy::window::PrimaryWindow)).id();
         let question = app.world_mut().spawn(TravelQuestion { entrance: "MO204".into() }).id();
         app.update();
         app.update();
-        assert!(app.world().resource::<InputFocus>().get().is_none());
+        assert!(app.world_mut().query::<&DialogButton>().iter(app.world()).next().is_none());
         let sheet = app.world_mut().resource_mut::<Assets<SpriteSheet>>().add(SpriteSheet {
             frames: vec![crate::content::ui::Frame {
                 offset: [0, 0],
@@ -266,8 +267,20 @@ mod tests {
             font: sheet,
             strings,
         });
-        app.update();
-        let focused = app.world().resource::<InputFocus>().get().unwrap();
+        // Scene spawning is deferred; wait for that actual readiness boundary.
+        for _ in 0..4 {
+            app.update();
+            if app
+                .world()
+                .resource::<InputFocus>()
+                .get()
+                .is_some_and(|e| app.world().get::<DialogButton>(e).is_some())
+            {
+                break;
+            }
+        }
+        let focused =
+            app.world().resource::<InputFocus>().get().expect("built question focuses OK");
         assert!(app.world().get::<DialogButton>(focused).unwrap().0);
         let cancel = app
             .world_mut()
@@ -284,7 +297,7 @@ mod tests {
             state: ButtonState::Pressed,
             text: None,
             repeat: false,
-            window: Entity::PLACEHOLDER,
+            window,
         });
         app.update();
         let answers: Vec<_> =
