@@ -35,6 +35,12 @@ pub struct NpcBody(pub Entity);
 #[derive(Component, Debug)]
 #[relationship_target(relationship=NpcBody)]
 pub struct NpcBodies(pub Vec<Entity>);
+#[derive(Debug)]
+pub struct NpcWorldRole {
+    pub map: String,
+    pub body: KeptMonster,
+    pub provoked: bool,
+}
 #[derive(Component, Debug)]
 pub struct Npc {
     pub definition: NpcId,
@@ -42,7 +48,7 @@ pub struct Npc {
     pub greeting_pending: bool,
     pub paid_topics: Vec<u16>,
     /// Durable world role captured when the active body leaves its map.
-    pub dormant: Option<(String, KeptMonster)>,
+    pub dormant: Option<NpcWorldRole>,
     pub stock: trade::MerchantStock,
 }
 #[derive(Resource, Default)]
@@ -76,6 +82,7 @@ pub struct NpcPopulation<'w, 's> {
             Option<&'static Walker>,
             Option<&'static crate::game::world::identify::GroupMember>,
             &'static ChildOf,
+            Has<crate::game::world::population::Provoked>,
         ),
         Without<crate::game::party::body::PartyBody>,
     >,
@@ -141,20 +148,21 @@ impl NpcPopulation<'_, '_> {
         Ok(ready)
     }
     pub fn depart(&mut self, root: Entity, map: &str) {
-        for (body, monster, pose, walker, group, parent) in &self.bodies {
+        for (body, monster, pose, walker, group, parent, provoked) in &self.bodies {
             if parent.parent() != root {
                 continue;
             }
             let Ok((_, _, mut npc, _)) = self.npcs.get_mut(body.0) else { continue };
-            npc.dormant = Some((
-                map.into(),
-                KeptMonster {
+            npc.dormant = Some(NpcWorldRole {
+                map: map.into(),
+                body: KeptMonster {
                     monster: monster.clone(),
                     group: group.and_then(|g| self.groups.get(g.0).ok()).map(|g| g.authored),
                     feet: crate::game::world::navigation::feet(pose.translation(), walker),
                     yaw: pose.rotation().to_euler(EulerRot::YXZ).0,
                 },
-            ));
+                provoked,
+            });
         }
     }
 }

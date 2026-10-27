@@ -711,6 +711,7 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
         body.hp = 4;
         body.max_hp = 9;
     }
+    app.world_mut().entity_mut(body).insert(rizzardry::game::world::population::Provoked);
     let stock = app.world().get::<Npc>(actor).unwrap().stock.clone();
     let mut away = test_level(&mut app, floor());
     away.path = "levels/away/away.pvl".into();
@@ -727,7 +728,7 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     assert!(app.world().get::<Monster>(actor).is_none());
     assert!(app.world().get_entity(body).is_err());
     assert!(app.world().get::<NpcBodies>(actor).is_none_or(|b| b.0.is_empty()));
-    assert_eq!(app.world().get::<Npc>(actor).unwrap().dormant.as_ref().unwrap().1.monster.hp, 4);
+    assert_eq!(app.world().get::<Npc>(actor).unwrap().dormant.as_ref().unwrap().body.monster.hp, 4);
     app.update();
     assert_eq!(app.world().get::<Npc>(actor).unwrap().stock, stock);
     let back = spawn_level(&mut app, floor());
@@ -737,6 +738,7 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     assert_ne!(returned_body, body);
     assert_eq!(app.world().get::<ChildOf>(returned_body).unwrap().parent(), back);
     assert_eq!(app.world().get::<Monster>(returned_body).unwrap().hp, 4);
+    assert!(app.world().get::<rizzardry::game::world::population::Provoked>(returned_body).is_some());
     let npc = app.world().get::<Npc>(actor).unwrap();
     assert_eq!(npc.stock, stock);
     assert_eq!(npc.paid_topics, [7]);

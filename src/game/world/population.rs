@@ -173,7 +173,8 @@ pub fn populate(
     };
     let average = npcs.average_level();
     let mut identities = HashMap::new();
-    let mut placed_actors = HashMap::new();
+    let mut placed_actors = std::collections::HashSet::new();
+    let mut provoked = std::collections::HashSet::new();
     for placed in &geometry.monsters {
         let Some(kind) = species.0.get(placed.species as usize) else { continue };
         let Some(id) = kind.npc else { continue };
@@ -183,8 +184,11 @@ pub fn populate(
             .and_then(|c| c.get(id))
             .expect("NPC preparation validated definition");
         let key = crate::game::npcs::ActorId::for_placement(id, definition, map, placed.location);
+        if !placed_actors.insert(key.clone()) {
+            continue;
+        }
         let existing = npcs.npcs.iter().find(|(_, identity, _, _)| **identity == key).map(|v| v.0);
-        let entity = if let Some(entity) = existing.or_else(|| placed_actors.get(&key).copied()) {
+        let entity = if let Some(entity) = existing {
             entity
         } else {
             let mut stock = crate::game::npcs::trade::MerchantStock::default();
@@ -206,7 +210,6 @@ pub fn populate(
                     },
                 ))
                 .id();
-            placed_actors.insert(key, entity);
             entity
         };
         let kept = if let Ok((_, _, mut npc, active)) = npcs.npcs.get_mut(entity) {
@@ -214,7 +217,12 @@ pub fn populate(
                 continue;
             }
             match npc.dormant.take() {
-                Some((location, kept)) if location == map => kept,
+                Some(role) if role.map == map => {
+                    if role.provoked {
+                        provoked.insert(entity);
+                    }
+                    role.body
+                },
                 other => {
                     npc.dormant = other;
                     continue;
@@ -274,6 +282,9 @@ pub fn populate(
         ));
         if let Some(actor) = actor {
             entity.insert(crate::game::npcs::NpcBody(actor));
+            if provoked.contains(&actor) {
+                entity.insert(Provoked);
+            }
         }
         if let Some(group) = group {
             entity.insert(GroupMember(group));
