@@ -356,9 +356,8 @@ fn validate_line(world: &World, q: &Quote) -> Result<(), (usize, String)> {
             }
             _ => {}
         }
-        match op {
-            DialogueOp::Next(_) | DialogueOp::Options(_) => break,
-            _ => {}
+        if matches!(op, DialogueOp::Next(_) | DialogueOp::Options(_)) {
+            break;
         }
     }
     Ok(())
@@ -1133,20 +1132,6 @@ mod tests {
             assert_eq!(matches!(c.wait, ConversationWait::Blocked { .. }), blocked);
             assert_eq!(c.transcript.is_empty(), blocked);
         }
-    }
-    #[test]
-    fn merchant_reentry_uses_quote_zero_after_greeting_memory_is_retained() {
-        let npc = Npc {
-            definition: NpcId(0),
-            disposition: 80,
-            greeting_pending: false,
-            paid_topics: vec![],
-            dormant: None,
-            stock: default(),
-        };
-        let merchant = NpcDefinition { merchant: true, ..default() };
-        assert_eq!(entry_quote(&merchant, &npc), 0);
-        assert_eq!(entry_quote(&NpcDefinition::default(), &npc), 1);
     }
     #[test]
     fn an_npc_without_stock_ownership_cannot_quote_or_settle_a_trade() {

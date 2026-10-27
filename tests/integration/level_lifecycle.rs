@@ -681,6 +681,7 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     let catalog =
         app.world_mut().resource_mut::<Assets<NpcCatalog>>().add(NpcCatalog(vec![NpcDefinition {
             source_name: "Fixture".into(),
+            merchant: true,
             disposition: 80,
             owns_stock: true,
             stock: vec![StockRule { item: ItemId(0), quantity: 3, persistent: true }],
@@ -710,6 +711,21 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
         let mut body = app.world_mut().get_mut::<Monster>(actor).unwrap();
         body.hp = 4;
         body.max_hp = 9;
+    }
+    // A merchant re-enters at authored quote zero even after its greeting was remembered.
+    use rizzardry::game::npcs::conversation::{self, Conversation, ConversationRequest};
+    use rizzardry::game::screen::Screen;
+    app.insert_resource(State::new(Screen::World)).init_resource::<NextState<Screen>>();
+    let at = app.world().get::<Transform>(body).unwrap().translation;
+    let party = party_entities(&mut app)[0];
+    app.world_mut().get_mut::<avian3d::prelude::Position>(party).unwrap().0 = at + Vec3::X;
+    for _ in 0..2 {
+        let session = conversation::begin(app.world_mut(), actor).unwrap();
+        app.update();
+        assert_eq!(app.world().get::<Conversation>(session).unwrap().current, Some((0, 0)));
+        app.world_mut().write_message(ConversationRequest::Close { conversation: session });
+        app.update();
+        assert!(app.world().get_entity(session).is_err());
     }
     app.world_mut().entity_mut(body).insert(rizzardry::game::world::population::Provoked);
     let stock = app.world().get::<Npc>(actor).unwrap().stock.clone();
