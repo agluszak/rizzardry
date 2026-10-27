@@ -104,7 +104,7 @@ pub fn play_ambient_sounds(
             if !playing {
                 debug!("ambience: {} at {loudness:.2}", sound.path);
                 commands.entity(entity).insert((
-                    AudioPlayer::new(assets.load(format!("retail://{}", sound.path))),
+                    AudioPlayer::new(assets.load(crate::content::paths::retail(&sound.path))),
                     PlaybackSettings::LOOP
                         .with_volume(Volume::Linear(sound.volume.end() * loudness)),
                 ));
@@ -123,7 +123,7 @@ pub fn play_ambient_sounds(
         if due && !playing {
             let volume = rng.0.random_range(sound.volume.clone()) * loudness;
             commands.entity(entity).insert((
-                AudioPlayer::new(assets.load(format!("retail://{}", sound.path))),
+                AudioPlayer::new(assets.load(crate::content::paths::retail(&sound.path))),
                 PlaybackSettings::REMOVE.with_volume(Volume::Linear(volume)),
             ));
             emitter.wait =

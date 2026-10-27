@@ -1789,7 +1789,7 @@ mod tests {
             .world_mut()
             .resource_mut::<Assets<LevelDefinition>>()
             .add(LevelDefinition::default());
-        app.world_mut().get_mut::<Level>(level).unwrap().geometry = geometry;
+        app.world_mut().get_mut::<Level>(level).unwrap().definition = geometry;
         let monster = app.world_mut().query::<(Entity, &Monster)>().single(app.world()).unwrap().0;
         let group = app
             .world_mut()
@@ -2012,7 +2012,7 @@ mod tests {
                 .query::<&mut crate::game::world::level::Level>()
                 .single_mut(world)
                 .unwrap()
-                .geometry = geometry;
+                .definition = geometry;
             world.resource_mut::<Assets<MonsterCatalog>>().get_mut(&data.species).unwrap().0[0]
                 .attacks
                 .push(crate::content::species::MonsterAttack {

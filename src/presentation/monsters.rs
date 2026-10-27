@@ -60,7 +60,7 @@ pub fn request_monster_visuals(
     let Some(catalog) = data.and_then(|d| species.get(&d.species)) else { return };
     for (entity, monster) in &actors {
         let Some(kind) = catalog.0.get(monster.species as usize) else { continue };
-        let model = assets.load(format!("retail://data/monsters/{}.mls", kind.model));
+        let model = assets.load(crate::content::paths::monster(&kind.model));
         commands.entity(entity).insert(MonsterVisual(model));
     }
 }

@@ -2,10 +2,11 @@
 //! `ReadAnimatedMesh`): placed scenery, doors, levers, lifts and billboards.
 
 use super::keyframes::{PathKey, read_path};
-use super::mesh_record::{MeshRecord, MeshVertices, RECORD_SCALE, read_mesh_record};
+use super::mesh_record::{MeshRecord, MeshVertices, read_mesh_record};
 use super::pvl::text;
 use super::trigger::{Trigger, read_trigger};
 use crate::bytes::{Bytes, DecodeError};
+use crate::content::UNITS_PER_METRE;
 
 /// Prop flag: the party and monsters collide with the prop.
 pub const PROP_COLLIDABLE: u32 = 1;
@@ -205,7 +206,7 @@ pub fn read_prop(bytes: &mut Bytes) -> Result<Prop, DecodeError> {
         bytes.u8()?; // frame count
         if version > 4 {
             prop.face_camera = bytes.u8()? != 0;
-            prop.location = bytes.f32s::<3>()?.map(|v| v * RECORD_SCALE);
+            prop.location = bytes.f32s::<3>()?.map(|v| v * UNITS_PER_METRE);
         }
         if version > 5 {
             prop.flags = bytes.u32()?;

@@ -64,7 +64,7 @@ pub fn move_party(
         PartyMove::Fly(_) if flying => {}
         PartyMove::Fly(path) => {
             let Some(camera) =
-                geometry.get(&level.geometry).and_then(|level| level.camera_paths.get(path))
+                geometry.get(&level.definition).and_then(|level| level.camera_paths.get(path))
             else {
                 warn!("invalid camera path {path}");
                 return;
@@ -95,7 +95,8 @@ pub fn fly_party(
     else {
         return;
     };
-    let Some(path) = level.geometry().and_then(|level| level.camera_paths.get(flight.path)) else {
+    let Some(path) = level.definition().and_then(|level| level.camera_paths.get(flight.path))
+    else {
         commands.entity(entity).remove::<(PathFlight, RigidBodyDisabled)>();
         return;
     };

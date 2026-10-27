@@ -2,8 +2,8 @@
 //!
 //! Layout (after Whizzardry's `ReadMultipleLevelMeshes` and
 //! `CompiledMesh::Read`): mesh and root counts, the material table, `-1`,
-//! one compiled mesh per octree mesh, `-1`. Later sections (lights, monsters,
-//! props, triggers, named points, automap) are not decoded yet.
+//! one compiled mesh per octree mesh, `-1`. The sections after it are
+//! [`super::sections`].
 
 use crate::bytes::{Bytes, DecodeError, c_string};
 
@@ -22,15 +22,12 @@ pub struct MaterialRecord {
     pub ambient: [f32; 3],
     pub diffuse: [f32; 3],
     pub emissive: [f32; 3],
-    pub specular: [f32; 3],
-    pub shininess: f32,
     pub opacity: f32,
     pub emission: f32,
     pub animation_mode: u8,
     pub animation_frame: i32,
     pub animation_rate: f32,
     pub surface_flags: u32,
-    pub texture_modes: [f32; 4],
 }
 
 impl MaterialRecord {
@@ -74,7 +71,7 @@ pub struct Polygon {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct LevelGeometry {
+pub struct CompiledLevel {
     /// Index 0 is the engine's default material, not the record on disk.
     pub materials: Vec<MaterialRecord>,
     pub meshes: Vec<CompiledMesh>,
@@ -95,8 +92,7 @@ fn material(bytes: &mut Bytes, with_modes: bool) -> Result<MaterialRecord, Decod
     let ambient = bytes.f32s()?;
     let diffuse = bytes.f32s()?;
     let emissive = bytes.f32s()?;
-    let specular = bytes.f32s()?;
-    let shininess = bytes.f32()?;
+    bytes.take(12 + 4)?; // specular, shininess
     let opacity = bytes.f32()?;
     let emission = bytes.f32()?;
     bytes.take(8)?;
@@ -104,22 +100,21 @@ fn material(bytes: &mut Bytes, with_modes: bool) -> Result<MaterialRecord, Decod
     let animation_frame = bytes.i32()?;
     let animation_rate = bytes.f32()?;
     let surface_flags = bytes.u32()?;
-    let texture_modes = if with_modes { bytes.f32s()? } else { [0.0; 4] };
+    if with_modes {
+        bytes.take(16)?; // texture modes
+    }
     Ok(MaterialRecord {
         version,
         textures,
         ambient,
         diffuse,
         emissive,
-        specular,
-        shininess,
         opacity,
         emission,
         animation_mode,
         animation_frame,
         animation_rate,
         surface_flags,
-        texture_modes,
     })
 }
 
@@ -136,9 +131,8 @@ pub fn read_materials(bytes: &mut Bytes) -> Result<Vec<MaterialRecord>, DecodeEr
     }
     let first = material(bytes, false)?;
     let with_modes = first.version >= 4;
-    let mut first = first;
     if with_modes {
-        first.texture_modes = bytes.f32s()?;
+        bytes.take(16)?; // the first record's texture modes
     }
     let mut materials = vec![first];
     for _ in 1..count {
@@ -229,7 +223,7 @@ fn compiled_mesh(
     })
 }
 
-pub fn read_level_geometry(data: &[u8]) -> Result<LevelGeometry, DecodeError> {
+pub fn read_compiled_level(data: &[u8]) -> Result<CompiledLevel, DecodeError> {
     let mut bytes = Bytes::new(data);
     let mesh_count = bytes.u32()? as usize;
     let root_count = bytes.u32()? as usize;
@@ -247,5 +241,41 @@ pub fn read_level_geometry(data: &[u8]) -> Result<LevelGeometry, DecodeError> {
     if bytes.i32()? != TERMINATOR {
         return Err(bytes.invalid("mesh table has the wrong length"));
     }
-    Ok(LevelGeometry { materials, meshes, root_count, end: bytes.offset() })
+    Ok(CompiledLevel { materials, meshes, root_count, end: bytes.offset() })
+}
+
+/// Where the compiled geometry ends and the sections begin, without
+/// decoding the meshes.
+pub fn compiled_level_end(data: &[u8]) -> Result<usize, DecodeError> {
+    let mut bytes = Bytes::new(data);
+    let mesh_count = bytes.u32()? as usize;
+    bytes.u32()?; // roots
+    if mesh_count > bytes.remaining() {
+        return Err(bytes.invalid("invalid mesh count"));
+    }
+    read_materials(&mut bytes)?;
+    if bytes.i32()? != TERMINATOR {
+        return Err(bytes.invalid("material table has the wrong length"));
+    }
+    for _ in 0..mesh_count {
+        let packed = bytes.u32()?;
+        let [vertices, uvs, polygons, _link, _next_link, material] = bytes.i32s()?;
+        let [Ok(vertices), Ok(uvs), Ok(polygons)] = [vertices, uvs, polygons].map(usize::try_from)
+        else {
+            return Err(bytes.invalid("negative mesh counts"));
+        };
+        let vertex_materials = if material < 0 { 4 } else { 0 };
+        let sunlight = if (packed >> 8) as u8 != 0 { 4 } else { 0 };
+        let per_vertex = 12 + vertex_materials + 12 + 12 + sunlight;
+        bytes.take(vertices.saturating_mul(per_vertex))?;
+        bytes.take(uvs.saturating_mul(8))?;
+        bytes.take(polygons.saturating_mul(12 + 12 + 4 + 16))?;
+        if bytes.i32()? != TERMINATOR {
+            return Err(bytes.invalid("mesh record has the wrong length"));
+        }
+    }
+    if bytes.i32()? != TERMINATOR {
+        return Err(bytes.invalid("mesh table has the wrong length"));
+    }
+    Ok(bytes.offset())
 }

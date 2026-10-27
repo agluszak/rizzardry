@@ -52,7 +52,7 @@ struct DevicePanelArt {
 fn load_device_panel_art(mut commands: Commands, assets: Res<AssetServer>) {
     commands.insert_resource(DevicePanelArt {
         font: assets.load("retail://data/fonts/wiz_text_font.sti"),
-        strings: assets.load("retail://data/strings/stringdata.dat"),
+        strings: assets.load(crate::content::paths::STRINGS),
     });
 }
 

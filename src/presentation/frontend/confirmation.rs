@@ -185,7 +185,7 @@ fn open_dialog(
             QuestionText {
                 purpose: purpose.clone(),
                 line,
-                strings: assets.load("retail://data/strings/stringdata.dat"),
+                strings: assets.load(crate::content::paths::STRINGS),
             },
             BitmapText {
                 font: assets.load("retail://data/fonts/wiz_text_font.sti"),

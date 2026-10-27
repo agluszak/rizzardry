@@ -3,9 +3,10 @@
 
 use super::pvl::{MaterialRecord, read_materials};
 use crate::bytes::{Bytes, DecodeError};
+use crate::content::UNITS_PER_METRE;
 
-/// Retail stores most record lengths divided by 500.
-pub const RECORD_SCALE: f32 = 500.0;
+// Records store lengths in metres; `UNITS_PER_METRE` scales them to retail
+// units.
 
 /// Vertex positions, in retail units.
 #[derive(Clone, Debug, PartialEq)]
@@ -47,8 +48,6 @@ pub struct MeshPlacement {
 #[derive(Clone, Debug, PartialEq)]
 pub struct MeshRecord {
     pub placement: Option<MeshPlacement>,
-    /// Marker key to vertex index, e.g. a missile launch point.
-    pub mapped_vertices: Vec<(i16, u32)>,
     pub vertices: MeshVertices,
     pub faces: Vec<MeshFace>,
     /// Index 0 is replaced by the engine's default material.
@@ -72,31 +71,30 @@ pub fn read_mesh_record(bytes: &mut Bytes) -> Result<MeshRecord, DecodeError> {
         let [x, y, z, angle, ax, ay, az, _sx, _sy, _sz] = bytes.f32s::<10>()?;
         // Retail reads the authored scale but does not apply it.
         Some(MeshPlacement {
-            location: [x, y, z].map(|v| v * RECORD_SCALE),
+            location: [x, y, z].map(|v| v * UNITS_PER_METRE),
             angle,
             axis: [ax, ay, az],
         })
     } else {
         None
     };
-    let mut mapped_vertices = Vec::new();
+    // Marker keys to vertex indices, e.g. a missile launch point.
     if version > 3 {
         let count = bytes.i8()?;
         if count < 0 {
             return Err(bytes.invalid("negative vertex mapping count"));
         }
         for _ in 0..count {
-            let key = bytes.i16()?;
+            bytes.i16()?; // key
             let vertex = bytes.i16()?;
             if vertex < 0 || vertex as usize >= vertex_count {
                 return Err(bytes.invalid("vertex mapping out of range"));
             }
-            mapped_vertices.push((key, vertex as u32));
         }
     }
     let vertices = if flags & FLAG_VERTEX_FRAMES == 0 {
         let raw = bytes.records(vertex_count, 12, |b| b.f32s::<3>())?;
-        MeshVertices::Static(raw.into_iter().map(|v| v.map(|c| c * RECORD_SCALE)).collect())
+        MeshVertices::Static(raw.into_iter().map(|v| v.map(|c| c * UNITS_PER_METRE)).collect())
     } else {
         let compression = bytes.u8()?;
         let frames = bytes.i16()?;
@@ -107,7 +105,7 @@ pub fn read_mesh_record(bytes: &mut Bytes) -> Result<MeshRecord, DecodeError> {
         let mut all = Vec::with_capacity(frames as usize);
         for _ in 0..frames {
             if flags & FLAG_SHORT_FRAMES != 0 {
-                let scale = RECORD_SCALE / compression_scale;
+                let scale = UNITS_PER_METRE / compression_scale;
                 let raw = bytes.records(vertex_count, 6, |b| {
                     Ok([b.i16()?, b.i16()?, b.i16()?].map(|c| f32::from(c) * scale))
                 })?;
@@ -115,7 +113,7 @@ pub fn read_mesh_record(bytes: &mut Bytes) -> Result<MeshRecord, DecodeError> {
             } else {
                 // Historical float frames; retail cannot render them either.
                 let raw = bytes.records(vertex_count, 12, |b| b.f32s::<3>())?;
-                all.push(raw.into_iter().map(|v| v.map(|c| c * RECORD_SCALE)).collect());
+                all.push(raw.into_iter().map(|v| v.map(|c| c * UNITS_PER_METRE)).collect());
             }
         }
         if all.len() == 1 {
@@ -143,5 +141,5 @@ pub fn read_mesh_record(bytes: &mut Bytes) -> Result<MeshRecord, DecodeError> {
             return Err(bytes.invalid("mesh face index out of range"));
         }
     }
-    Ok(MeshRecord { placement, mapped_vertices, vertices, faces, materials })
+    Ok(MeshRecord { placement, vertices, faces, materials })
 }

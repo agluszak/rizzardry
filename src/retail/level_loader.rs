@@ -19,7 +19,7 @@ use super::prop::{PROP_COLLIDABLE, Prop};
 use super::prop_loader::{
     PropLighting, key_transform, level_lighting, part_transforms, record_collision, record_meshes,
 };
-use super::pvl::{CompiledMesh, MaterialRecord, read_level_geometry};
+use super::pvl::{CompiledMesh, MaterialRecord, compiled_level_end, read_compiled_level};
 use super::sections::LevelSections;
 use super::sections::{Environment, read_sections};
 use super::space::{retail_direction, retail_position, retail_yaw};
@@ -216,6 +216,12 @@ fn ordered(a: f32, b: f32) -> std::ops::RangeInclusive<f32> {
     a.min(b)..=a.max(b)
 }
 
+/// A sound file named relative to `data/sound`; an unusable name loads
+/// nothing.
+fn sound_path(name: &str) -> String {
+    super::path::normalize(&format!("data/sound/{name}")).unwrap_or_default()
+}
+
 /// A level's ambient sound, with Whizzardry `AddAmbientSound`'s defaults:
 /// unset volumes are full (127 of 127), unset times 5 to 20 seconds.
 fn ambient_sound(sound: &AmbientSound) -> AmbientSoundModel {
@@ -223,7 +229,7 @@ fn ambient_sound(sound: &AmbientSound) -> AmbientSoundModel {
     let volume = |v: i32| or(v, 127).clamp(0, 127) as f32 / 127.0;
     let seconds = |ms: i32| ms.max(0) as f32 / 1000.0;
     AmbientSoundModel {
-        path: format!("data/sound/{}", sound.wave.replace('\\', "/")).to_lowercase(),
+        path: sound_path(&sound.wave),
         position: retail_position(sound.position),
         radius: sound.radius / UNITS_PER_METRE,
         looping: sound.looping,
@@ -299,7 +305,7 @@ fn trigger_definition(
     index: &HashMap<String, usize>,
 ) -> TriggerDefinition {
     let sound = (!item.sound.is_empty()).then(|| TriggerSound {
-        path: format!("data/sound/{}", item.sound.replace('\\', "/")).to_lowercase(),
+        path: sound_path(&item.sound),
         volume: f32::from(item.sound_volume) / 100.0,
     });
     let state_change = match item.state_mode {
@@ -309,8 +315,7 @@ fn trigger_definition(
         StateMode::Clear => Some(StateChange::Clear),
         StateMode::Toggle => Some(StateChange::Toggle),
     };
-    let recipients: Vec<&str> =
-        item.recipients.split(',').map(str::trim).filter(|r| !r.is_empty()).collect();
+    let recipients: Vec<&str> = item.recipients().collect();
     // The message a commit shows is the data word of the use that ran.
     let shows_message = item.flags & flag::SHOW_MESSAGE != 0;
     let using = |code: u32, slot: usize| TriggerUse {
@@ -531,7 +536,7 @@ impl AssetLoader for PvlLoader {
     ) -> Result<LevelGeometry, LoadError> {
         let mut data = Vec::new();
         reader.read_to_end(&mut data).await?;
-        let geometry = read_level_geometry(&data)?;
+        let geometry = read_compiled_level(&data)?;
         let sections = read_sections(&mut Bytes::new(&data[geometry.end..]))?;
         let directory = "bitmaps";
         let environment = sections.environment.as_ref().map(level_environment);
@@ -603,8 +608,7 @@ impl AssetLoader for PvlDefinitionLoader {
     ) -> Result<LevelDefinition, LoadError> {
         let mut data = Vec::new();
         reader.read_to_end(&mut data).await?;
-        let geometry = read_level_geometry(&data)?;
-        let sections = read_sections(&mut Bytes::new(&data[geometry.end..]))?;
+        let sections = read_sections(&mut Bytes::new(&data[compiled_level_end(&data)?..]))?;
         let level_path = context.path().path().to_string_lossy();
         let level_index =
             crate::content::levels::LEVELS.iter().position(|level| level.path() == level_path);
@@ -752,13 +756,8 @@ mod tests {
             cameras: vec![],
             environment: None,
             triggers: vec![],
-            camera_sway: false,
             clip_planes: vec![],
             environment_offset: [0.0; 3],
-            particles: vec![],
-            named_positions: vec![],
-            automap_cell_size: 0.0,
-            automap_cells: vec![],
         };
         let (definitions, props) = level_triggers(&sections);
         assert_eq!(props, [Some(0), Some(1), Some(2)]);
@@ -799,7 +798,7 @@ mod tests {
         let (mut containers, mut missing) = (0, vec![]);
         for level in &levels {
             let data = files.read(level).unwrap().unwrap();
-            let geometry = read_level_geometry(&data).unwrap();
+            let geometry = read_compiled_level(&data).unwrap();
             let sections = read_sections(&mut Bytes::new(&data[geometry.end..])).unwrap();
             for trigger in level_triggers(&sections).0 {
                 let Some(name) = &trigger.loot_table else { continue };

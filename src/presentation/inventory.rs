@@ -159,7 +159,7 @@ pub fn load_inventory_art(mut commands: Commands, assets: Res<AssetServer>) {
         left_plug: load("main interface/leftplug.sti"),
         right_plug: load("main interface/rightplug.sti"),
         condition_rim: load("main interface/condition_highlight.sti"),
-        strings: assets.load("retail://data/strings/stringdata.dat"),
+        strings: assets.load(crate::content::paths::STRINGS),
         gold_icon: load("review/reviewgoldicon.sti"),
         highlights: load("review/reviewitemhighlights.sti"),
         unusable: load("review/itemusablebackground.sti"),
@@ -828,7 +828,7 @@ fn draw_header_hands(
                     )
                 };
                 source = Some(Picture {
-                    sheet: assets.load(format!("retail://{path}")),
+                    sheet: assets.load(crate::content::paths::retail(&path)),
                     frame,
                     at: Vec2::new(x, if off { 58.0 } else { 34.0 }),
                     ..default()
@@ -905,7 +905,7 @@ fn sync_member_portraits(
             format!("data/portraits/small/s{}.sti", profile.portrait)
         };
         let source = Picture {
-            sheet: assets.load(format!("retail://{path}")),
+            sheet: assets.load(crate::content::paths::retail(&path)),
             at: member_position(slot) + Vec2::ONE,
             ..default()
         };
@@ -944,7 +944,7 @@ fn draw_header(
         let mut source = None;
         let mut value = None;
         let image = |path: String, frame| Picture {
-            sheet: assets.load(format!("retail://{path}")),
+            sheet: assets.load(crate::content::paths::retail(&path)),
             frame,
             ..default()
         };
@@ -1084,7 +1084,7 @@ fn draw_cells(
                     {
                         let at = picture.at;
                         picture.set_if_neq(Picture {
-                            sheet: assets.load(format!("retail://{}", definition.image)),
+                            sheet: assets.load(crate::content::paths::retail(&definition.image)),
                             frame: if grid { 0 } else { 1 },
                             at,
                             bounds: None,
@@ -1187,7 +1187,7 @@ pub fn follow_held(
         return;
     };
     if loading.as_ref().is_none_or(|(path, _)| *path != definition.image) {
-        let handle = assets.load(format!("retail://{}", definition.image));
+        let handle = assets.load(crate::content::paths::retail(&definition.image));
         *loading = Some((definition.image.clone(), handle));
     }
     let Some((_, handle)) = &*loading else { return };

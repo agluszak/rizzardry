@@ -295,10 +295,9 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{name}: {e}"));
             let level = name.replace(".sts", ".pvl");
             let Some(Ok(data)) = files.read(&level) else { continue };
-            let geometry = super::super::pvl::read_level_geometry(&data).unwrap();
+            let start = super::super::pvl::compiled_level_end(&data).unwrap();
             let sections =
-                super::super::sections::read_sections(&mut Bytes::new(&data[geometry.end..]))
-                    .unwrap();
+                super::super::sections::read_sections(&mut Bytes::new(&data[start..])).unwrap();
             for lock in &locks {
                 assert!(sections.trigger(&lock.trigger).is_some(), "{name}: {lock:?}");
                 if name.contains("monastery") {

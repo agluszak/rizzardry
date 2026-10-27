@@ -1,8 +1,8 @@
 //! Keyframe paths (Whizzardry `LoadPathAI`): camera moves, animated prop
 //! parts, animated lights.
 
-use super::mesh_record::RECORD_SCALE;
 use crate::bytes::{Bytes, DecodeError};
+use crate::content::UNITS_PER_METRE;
 
 /// One key: a position in retail units and a rotation of `angle` radians
 /// about `axis`.
@@ -28,7 +28,7 @@ pub fn read_path(bytes: &mut Bytes) -> Result<Vec<PathKey>, DecodeError> {
     let size = if version == 2 { 40 } else { 28 };
     Ok(bytes.records(count as usize, size, |b| {
         Ok(PathKey {
-            position: b.f32s::<3>()?.map(|v| v * RECORD_SCALE),
+            position: b.f32s::<3>()?.map(|v| v * UNITS_PER_METRE),
             angle: b.f32()?,
             axis: b.f32s()?,
             scale: if version == 2 { Some(b.f32s()?) } else { None },

@@ -251,12 +251,11 @@ pub fn build(options: &Options) -> Result<App, String> {
         crate::game::combat::CombatPlugin,
         crate::game::magic::MagicPlugin,
     ));
-    // Navmeshes: retail decodes a level's collision, navigation bakes it on
+    // Navmeshes: retail serves a level's collision, navigation bakes it on
     // request and caches the result.
     app.register_asset_loader(NavmeshLoader {
         cache: bevy::asset::io::file::FileAssetReader::get_base_path()
             .join(crate::game::world::navigation::asset::CACHE),
-        decode: crate::retail::navmesh::decode_input,
     });
     // What the player sees and hears: with the window, or offscreen for a
     // headless screenshot. After the gameplay plugins, whose input and

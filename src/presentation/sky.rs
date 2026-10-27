@@ -136,7 +136,7 @@ pub fn request_skies(
     let Ok(level) = levels.get(add.entity) else { return };
     let sky = crate::content::levels::LevelInfo::for_path(&level.path)
         .and_then(crate::content::levels::LevelInfo::sky_path)
-        .map(|path| assets.load(format!("retail://{path}")));
+        .map(|path| assets.load(crate::content::paths::retail(&path)));
     commands.entity(add.entity).insert(LevelSky(sky));
 }
 

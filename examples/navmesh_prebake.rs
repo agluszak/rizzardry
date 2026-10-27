@@ -26,7 +26,6 @@ fn main() {
     let files = RetailFiles::open(&args.retail).expect("a Wizardry 8 installation");
     let loader = NavmeshLoader {
         cache: bevy::asset::io::file::FileAssetReader::get_base_path().join(CACHE),
-        decode: rizzardry::retail::navmesh::decode_input,
     };
     let work: Vec<(String, usize)> = files
         .names()

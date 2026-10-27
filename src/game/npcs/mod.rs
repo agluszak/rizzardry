@@ -58,10 +58,10 @@ pub struct NpcAssets {
 }
 fn load_npcs(mut content: ResMut<NpcAssets>, assets: Res<AssetServer>) {
     if content.catalog == Handle::default() {
-        content.catalog = assets.load("retail://data/databases/npc.dbs");
+        content.catalog = assets.load(crate::content::paths::NPCS);
     }
     if content.facts == Handle::default() {
-        content.facts = assets.load("retail://data/databases/fact.dbs");
+        content.facts = assets.load(crate::content::paths::FACTS);
     }
 }
 #[derive(SystemParam)]
@@ -139,11 +139,10 @@ impl NpcPopulation<'_, '_> {
             if def.stock.iter().any(|r| items.get(r.item).is_none()) {
                 return Err(format!("missing stock item for {id:?}"));
             }
-            let script = self
-                .assets
-                .scripts
-                .entry(id)
-                .or_insert_with(|| server.load(format!("retail://{}", def.script_path())));
+            let script =
+                self.assets.scripts.entry(id).or_insert_with(|| {
+                    server.load(crate::content::paths::retail(&def.script_path()))
+                });
             if matches!(server.get_load_state(&*script), Some(bevy::asset::LoadState::Failed(_))) {
                 return Err(format!("NPC script failed: {}", def.script_path()));
             }

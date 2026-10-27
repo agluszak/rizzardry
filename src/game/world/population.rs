@@ -109,9 +109,10 @@ impl MonsterBodies {
             .iter()
             .filter_map(|placed| {
                 let kind = species.0.get(placed.species as usize)?;
-                let body = self.0.entry(placed.species).or_insert_with(|| {
-                    assets.load(format!("retail://data/monsters/{}.mls", kind.model))
-                });
+                let body = self
+                    .0
+                    .entry(placed.species)
+                    .or_insert_with(|| assets.load(crate::content::paths::monster(&kind.model)));
                 Some(body.clone())
             })
             .collect()

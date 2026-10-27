@@ -55,9 +55,9 @@ pub(super) fn open(
             SpellInfo {
                 id: option.0,
                 catalog: page.1.catalog.clone(),
-                strings: assets.load("retail://data/strings/stringdata.dat"),
-                effects: assets.load("retail://data/databases/spelleffect.dbs"),
-                descriptions: assets.load("retail://data/databases/spelldesc.dbs"),
+                strings: assets.load(crate::content::paths::STRINGS),
+                effects: assets.load(crate::content::paths::SPELL_EFFECTS),
+                descriptions: assets.load(crate::content::paths::SPELL_DESCRIPTIONS),
                 font: assets.load("retail://data/fonts/wiz_text_font.sti"),
                 previous_focus: focus.get(),
                 populated: false,

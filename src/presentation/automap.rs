@@ -304,7 +304,7 @@ pub fn enter_automap(
         next.set(Screen::World);
         return;
     };
-    let collision = played.geometry();
+    let collision = played.definition();
     let layers = collision.map_or(&[][..], |g| g.map_layers.as_slice());
     let mut map = Automap::new(
         collision.map(|g| &g.collision),
@@ -389,7 +389,7 @@ pub fn build_automap(
         return;
     };
     let feet = party.translation - Vec3::Y * FLOAT_HEIGHT;
-    let collision = level.get(automap.level).ok().and_then(|level| geometry.get(&level.geometry));
+    let collision = level.get(automap.level).ok().and_then(|level| geometry.get(&level.definition));
     let plan = collision
         .map(|level| images.add(floor_plan(&level.collision, &level.map_layers, automap)))
         .map(|plan| {
@@ -541,7 +541,7 @@ fn press_button(
     let layers = level
         .get(automap.level)
         .ok()
-        .and_then(|l| geometry.get(&l.geometry))
+        .and_then(|l| geometry.get(&l.definition))
         .map(|g| g.map_layers.len());
     if !action_enabled(button.action, &automap, layers) {
         return;
@@ -569,7 +569,7 @@ fn press_button(
         ButtonAction::LayerPrevious => automap.layer = automap.layer.saturating_sub(1),
         ButtonAction::LayerNext => {
             if let Some(level) =
-                level.get(automap.level).ok().and_then(|level| geometry.get(&level.geometry))
+                level.get(automap.level).ok().and_then(|level| geometry.get(&level.definition))
             {
                 automap.layer = (automap.layer + 1).min(level.map_layers.len());
             }
@@ -590,7 +590,7 @@ pub fn paint_buttons(
     let layers = level
         .get(automap.level)
         .ok()
-        .and_then(|l| geometry.get(&l.geometry))
+        .and_then(|l| geometry.get(&l.definition))
         .map(|g| g.map_layers.len());
     for (entity, button, disabled, selected) in &buttons {
         let on = matches!(button.action, ButtonAction::Tool(tool) if automap.tool == Some(tool));
@@ -761,7 +761,8 @@ pub fn update_map_view(
     mut previous: Local<Option<(Entity, Vec2, f32, usize)>>,
 ) {
     let Some(automap) = automap else { return };
-    let Some(level) = level.get(automap.level).ok().and_then(|l| geometry.get(&l.geometry)) else {
+    let Some(level) = level.get(automap.level).ok().and_then(|l| geometry.get(&l.definition))
+    else {
         return;
     };
     if let Ok(party) = party.single() {
@@ -790,7 +791,7 @@ pub fn draw_layer_label(
     mut labels: Query<&mut BitmapText, With<LayerLabel>>,
 ) {
     let Some(map) = automap else { return };
-    let Some(level) = level.get(map.level).ok().and_then(|l| geometry.get(&l.geometry)) else {
+    let Some(level) = level.get(map.level).ok().and_then(|l| geometry.get(&l.definition)) else {
         return;
     };
     let value = format!("Layer {}/{}", map.layer + 1, level.map_layers.len() + 1);

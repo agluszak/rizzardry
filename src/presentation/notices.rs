@@ -49,7 +49,7 @@ pub struct NoticeArt {
 pub fn load_notice_art(mut commands: Commands, assets: Res<AssetServer>) {
     commands.insert_resource(NoticeArt {
         font: assets.load("retail://data/fonts/wiz_text_font.sti"),
-        strings: assets.load("retail://data/strings/stringdata.dat"),
+        strings: assets.load(crate::content::paths::STRINGS),
     });
 }
 

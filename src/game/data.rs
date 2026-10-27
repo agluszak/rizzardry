@@ -16,9 +16,9 @@ pub struct GameData {
 
 pub fn load_game_data(mut commands: Commands, assets: Res<AssetServer>) {
     commands.insert_resource(GameData {
-        items: assets.load("retail://data/databases/items.dbs"),
-        loot: assets.load("retail://data/databases/itemtables.dbs"),
-        species: assets.load("retail://data/databases/monsters.dbs"),
-        spells: assets.load("retail://data/databases/spelltables.dbs"),
+        items: assets.load(crate::content::paths::ITEMS),
+        loot: assets.load(crate::content::paths::LOOT_TABLES),
+        species: assets.load(crate::content::paths::SPECIES),
+        spells: assets.load(crate::content::paths::SPELLS),
     });
 }

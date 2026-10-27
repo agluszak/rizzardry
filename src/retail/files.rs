@@ -141,7 +141,8 @@ impl RetailFiles {
             Err(_) => String::new(),
         };
         let mut children: Vec<String> = Vec::new();
-        for key in self.files.keys().filter(|key| key.starts_with(&prefix)) {
+        let keys = self.files.range(prefix.clone()..).map(|(key, _)| key);
+        for key in keys.take_while(|key| key.starts_with(&prefix)) {
             let rest = &key[prefix.len()..];
             let child = match rest.find('/') {
                 Some(end) => &key[..prefix.len() + end],

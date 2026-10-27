@@ -71,7 +71,7 @@ pub(super) fn load_magic_view_art(mut commands: Commands, assets: Res<AssetServe
         orange: sheet("fonts/paletteorange"),
         blue: sheet("fonts/paletteblue"),
         yellow: sheet("fonts/paletteyellow"),
-        strings: assets.load("retail://data/strings/stringdata.dat"),
+        strings: assets.load(crate::content::paths::STRINGS),
     });
 }
 
@@ -799,7 +799,7 @@ pub(super) fn refresh_magic_view(
                 Visibility::Hidden
             });
             if let Some(definition) = icon {
-                let sheet = assets.load(format!("retail://{}", definition.image));
+                let sheet = assets.load(crate::content::paths::retail(&definition.image));
                 if picture.sheet != sheet {
                     picture.sheet = sheet;
                 }

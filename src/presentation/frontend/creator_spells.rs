@@ -34,10 +34,9 @@ pub(super) fn build(commands: &mut Commands, root: Entity, assets: &AssetServer)
     let bottom: Handle<SpriteSheet> = load("char generation/cg_bottombuttons");
     let font: Handle<SpriteSheet> = load("fonts/wiz_text_font");
     let blue: Handle<SpriteSheet> = load("fonts/paletteblue");
-    commands.entity(root).insert(SpellArt {
-        catalog: assets.load("retail://data/databases/spelltables.dbs"),
-        selected: blue,
-    });
+    commands
+        .entity(root)
+        .insert(SpellArt { catalog: assets.load(crate::content::paths::SPELLS), selected: blue });
     spawn_picture(commands, root, background, 0, Vec2::new(195., 43.));
     let pieces: Handle<SpriteSheet> = load("char generation/cg_pieces");
     spawn_picture(commands, root, pieces, 5, Vec2::new(143., 371.));

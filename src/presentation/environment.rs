@@ -33,7 +33,7 @@ pub fn prepare_appearance(
 ) {
     for (entity, destination, prepared) in &entries {
         let Some(PreparedAppearance(handle)) = prepared else {
-            let handle = assets.load(format!("retail://{}", destination.level.path));
+            let handle = assets.load(crate::content::paths::retail(&destination.level.path));
             commands
                 .entity(entity)
                 .insert((PreparedAppearance(handle), PresentationReadiness::Waiting));
@@ -74,7 +74,7 @@ pub fn request_level_visuals(
 ) {
     let Ok((level, prepared)) = levels.get(add.entity) else { return };
     let handle = prepared.map_or_else(
-        || assets.load(format!("retail://{}", level.path)),
+        || assets.load(crate::content::paths::retail(&level.path)),
         |prepared| prepared.0.clone(),
     );
     commands

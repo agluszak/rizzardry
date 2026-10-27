@@ -211,8 +211,8 @@ pub(super) fn build(commands: &mut Commands, parent: Entity, assets: &AssetServe
     let race_icons = load("char generation/cg_icons_race");
     let gender_icons = load("char generation/cg_icons_gender");
     commands.entity(parent).insert(StatsAssets {
-        strings: assets.load("retail://data/strings/stringdata.dat"),
-        spells: assets.load("retail://data/databases/spelltables.dbs"),
+        strings: assets.load(crate::content::paths::STRINGS),
+        spells: assets.load(crate::content::paths::SPELLS),
         font: font.clone(),
         base_icons: base_icons.clone(),
         profession_icons: profession_icons.clone(),

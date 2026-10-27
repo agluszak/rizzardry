@@ -509,7 +509,7 @@ pub fn activate(world: &mut World, entity: Entity, distance: Option<f32>) -> boo
     }
     let Some(&LevelOwned(level)) = world.get::<LevelOwned>(entity) else { return false };
     let Some(level) = world.get::<Level>(level) else { return false };
-    let handle = level.geometry.clone();
+    let handle = level.definition.clone();
     // Borrow immutable definitions for the entire synchronous operation. Nested
     // links use these same definitions, without cloning a graph or a definition.
     world.resource_scope(|world, geometry: Mut<Assets<LevelDefinition>>| {
@@ -872,7 +872,7 @@ pub(crate) fn walk(
 ) {
     let Some((level, eye, elapsed)) = sample else { return };
     let Ok((owner, positioned, mut state, pending)) = levels.get_mut(level) else { return };
-    let Some(geometry) = geometry.get(&owner.geometry) else { return };
+    let Some(geometry) = geometry.get(&owner.definition) else { return };
     let previous_eye = state.previous_eye;
     if previous_eye != Some(eye) {
         state.previous_eye = Some(eye);
@@ -911,7 +911,7 @@ fn walk_activation(
     start: usize,
 ) {
     let Some(owner) = world.get::<Level>(level) else { return };
-    let handle = owner.geometry.clone();
+    let handle = owner.definition.clone();
     world.resource_scope(|world, geometry: Mut<Assets<LevelDefinition>>| {
         let Some(geometry) = geometry.get(&handle) else { return };
         let count = world.get::<PositionedDevices>(level).unwrap().0.len();

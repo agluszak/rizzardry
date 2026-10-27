@@ -306,7 +306,7 @@ pub fn draw_party(
         let mut value = None;
         let mut hand_x = None;
         let image = |path: &str, frame| Picture {
-            sheet: assets.load(format!("retail://{path}")),
+            sheet: assets.load(crate::content::paths::retail(&path)),
             frame,
             ..default()
         };

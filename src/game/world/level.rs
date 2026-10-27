@@ -45,7 +45,7 @@ use crate::game::rng::GameRng;
 pub struct Level {
     /// The retail path of its `.pvl`, which identifies it.
     pub path: String,
-    pub geometry: Handle<LevelDefinition>,
+    pub definition: Handle<LevelDefinition>,
     /// One navmesh per walker size class (`navigation::bake::SIZE_CLASSES`).
     pub navmeshes: Vec<Handle<NavMesh3d>>,
     pub script: LevelScript,
@@ -56,17 +56,17 @@ pub struct Level {
 impl Level {
     /// The level at a retail `.pvl` path, with its gameplay prerequisites.
     pub fn load(path: &str, assets: &AssetServer) -> Self {
+        let info = LevelInfo::for_path(path);
         Level {
             path: path.to_owned(),
-            geometry: assets.load(format!("retail://{path}")),
+            definition: assets.load(crate::content::paths::retail(path)),
             navmeshes: (0..SIZE_CLASSES.len())
                 .map(|class| assets.load(navmesh_path(path, class)))
                 .collect(),
-            script: LevelInfo::for_path(path)
+            script: info
                 .map_or_else(LevelScript::default, |info| LevelScript::for_location(info.location)),
-            messages: LevelInfo::for_path(path).map(|info| {
-                assets.load(format!("retail://data/messages/{}.msg", info.folder.to_lowercase()))
-            }),
+            messages: info
+                .map(|info| assets.load(crate::content::paths::level_messages(info.folder))),
         }
     }
 }
@@ -75,10 +75,10 @@ impl Level {
 /// `Default`: a `Level` exists only once [`activate_level`] says so.
 #[cfg(test)]
 impl Level {
-    pub fn test(geometry: Handle<LevelDefinition>) -> Self {
+    pub fn test(definition: Handle<LevelDefinition>) -> Self {
         Level {
             path: "test".into(),
-            geometry,
+            definition,
             navmeshes: vec![],
             script: default(),
             messages: None,
@@ -351,7 +351,7 @@ pub struct LevelEntryFailed {
 #[derive(SystemParam)]
 pub struct PlayedLevel<'w, 's> {
     levels: Query<'w, 's, (Entity, &'static Level)>,
-    geometry: Res<'w, Assets<LevelDefinition>>,
+    definitions: Res<'w, Assets<LevelDefinition>>,
 }
 
 impl PlayedLevel<'_, '_> {
@@ -359,12 +359,12 @@ impl PlayedLevel<'_, '_> {
         self.levels.single().ok().map(|(entity, _)| entity)
     }
 
-    pub fn geometry(&self) -> Option<&LevelDefinition> {
-        self.geometry.get(&self.levels.single().ok()?.1.geometry)
+    pub fn definition(&self) -> Option<&LevelDefinition> {
+        self.definitions.get(&self.levels.single().ok()?.1.definition)
     }
 
     pub fn view_distance(&self) -> Option<f32> {
-        self.geometry().map(LevelDefinition::view_distance)
+        self.definition().map(LevelDefinition::view_distance)
     }
 }
 
@@ -570,7 +570,7 @@ pub fn activate_level(
             matches!(assets.get_load_state(handle), Some(LoadState::Failed(_)))
         };
         let Some(data) = shared.data.as_ref() else { continue };
-        if failed(level.geometry.id().untyped())
+        if failed(level.definition.id().untyped())
             || level.navmeshes.iter().any(|h| failed(h.id().untyped()))
             || failed(data.items.id().untyped())
             || failed(data.loot.id().untyped())
@@ -581,7 +581,7 @@ pub fn activate_level(
             continue;
         }
         let (Some(geometry), Some(items), Some(loot), Some(species)) = (
-            geometry.get(&level.geometry),
+            geometry.get(&level.definition),
             shared.items.get(&data.items),
             shared.loot.get(&data.loot),
             shared.species.get(&data.species),

@@ -31,7 +31,7 @@ pub fn load_dialog_art(mut commands: Commands, assets: Res<AssetServer>) {
         ok: art("ok.sti"),
         cancel: art("cancel.sti"),
         font: assets.load("retail://data/fonts/wiz_text_font.sti"),
-        strings: assets.load("retail://data/strings/stringdata.dat"),
+        strings: assets.load(crate::content::paths::STRINGS),
     });
 }
 
