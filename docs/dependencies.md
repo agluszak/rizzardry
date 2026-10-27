@@ -81,8 +81,9 @@ Integration choices:
   class, and the party joins every class's archipelago). The navmesh loader
   decodes its collision triangles, bakes them off the main thread (0.1 to 2 s
   each) and caches a small binary file under `imported_assets/navmesh`, keyed
-  by the input, the bake settings and the format version. Only levels entered
-  are baked; later entries only load.
+  by the input, the bake settings and the format version, removing the input's
+  superseded files. Only levels entered are baked; later entries only load.
+  The `navmesh_prebake` example bakes all 34 levels ahead of play.
 - The bake input is the level's `.oct` collision mesh (the same one the
   Avian collider uses), compacted to referenced vertices, plus collidable
   props in their rest pose as obstacles. Walkable area comes from the

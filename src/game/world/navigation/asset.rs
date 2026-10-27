@@ -9,7 +9,7 @@
 //! the cache. Only the levels entered are baked.
 
 use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use bevy::asset::io::Reader;
@@ -125,6 +125,9 @@ fn decode(data: &[u8]) -> Result<NavigationMesh3d, NavmeshAssetError> {
     Ok(NavigationMesh3d { vertices, polygons, polygon_type_indices, height_mesh })
 }
 
+/// Where baked navmeshes are cached, under the asset base path.
+pub const CACHE: &str = "imported_assets/navmesh";
+
 /// Loads a level's navmesh for one size class from its input, baking and
 /// caching it on a miss, validated for Landmass.
 #[derive(TypePath)]
@@ -138,7 +141,29 @@ pub struct NavmeshLoader {
 impl NavmeshLoader {
     /// The cached file for an input: a re-bake follows any change to the
     /// level, the settings or the format. (A changed hasher only re-bakes.)
-    fn cached(&self, input_path: &std::path::Path, input: &[u8]) -> PathBuf {
+    /// The navmesh of an input (at `input_path` under `navmesh://`): from
+    /// the cache, or baked and cached, replacing what the input's earlier
+    /// versions left there.
+    pub fn navmesh(
+        &self,
+        input_path: &Path,
+        input: &[u8],
+    ) -> Result<NavigationMesh3d, NavmeshAssetError> {
+        let cached = self.cached(input_path, input);
+        if let Some(mesh) = std::fs::read(&cached).ok().and_then(|bytes| decode(&bytes).ok()) {
+            return Ok(mesh);
+        }
+        let mesh = self.bake(input)?;
+        match publish(&cached, &encode(&mesh)) {
+            Ok(()) => remove_superseded(&cached),
+            Err(error) => warn!("could not cache {}: {error}", cached.display()),
+        }
+        Ok(mesh)
+    }
+
+    /// The cached file for an input: a re-bake follows any change to the
+    /// level, the settings or the format. (A changed hasher only re-bakes.)
+    fn cached(&self, input_path: &Path, input: &[u8]) -> PathBuf {
         let mut hasher = std::hash::DefaultHasher::new();
         (input, format!("{:?}", NavmeshBakeSettings::default()), VERSION).hash(&mut hasher);
         self.cache
@@ -161,12 +186,33 @@ impl NavmeshLoader {
 }
 
 /// Write `bytes` to `path` whole: to a temporary file, then renamed over it.
-fn publish(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+fn publish(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::create_dir_all(path.parent().expect("a cached file lies in a directory"))?;
     let mut temp = path.as_os_str().to_owned();
     temp.push(format!(".{}.tmp", std::process::id()));
     std::fs::write(&temp, bytes)?;
     std::fs::rename(&temp, path)
+}
+
+/// Remove the same input's files under other keys (`<input>.<key>.navmesh`).
+/// Another game still using an old key only re-bakes.
+fn remove_superseded(current: &Path) {
+    let (Some(dir), Some(name)) = (current.parent(), current.file_name().and_then(|n| n.to_str()))
+    else {
+        return;
+    };
+    let Some((input, _)) = name.split_once('.') else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let other = entry.file_name();
+        let Some(other) = other.to_str() else { continue };
+        if other != name
+            && other.strip_prefix(input).is_some_and(|rest| rest.starts_with('.'))
+            && other.ends_with(&format!(".{NAVMESH_EXTENSION}"))
+        {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 impl AssetLoader for NavmeshLoader {
@@ -182,17 +228,7 @@ impl AssetLoader for NavmeshLoader {
     ) -> Result<NavMesh3d, NavmeshAssetError> {
         let mut input = Vec::new();
         reader.read_to_end(&mut input).await?;
-        let cached = self.cached(context.path().path(), &input);
-        let mesh = match std::fs::read(&cached).ok().and_then(|bytes| decode(&bytes).ok()) {
-            Some(mesh) => mesh,
-            None => {
-                let mesh = self.bake(&input)?;
-                if let Err(error) = publish(&cached, &encode(&mesh)) {
-                    warn!("could not cache {}: {error}", cached.display());
-                }
-                mesh
-            }
-        };
+        let mesh = self.navmesh(context.path().path(), &input)?;
         let valid = mesh.validate().map_err(|e| NavmeshAssetError::Invalid(format!("{e:?}")))?;
         Ok(NavMesh3d { nav_mesh: Arc::new(valid) })
     }

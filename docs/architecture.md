@@ -114,4 +114,5 @@ A level's navmeshes are baked when it is entered, never at startup. The
 `navmesh://` input of a size class is the class plus the level's `.oct` and
 `.pvl` bytes; the cache key hashes that input, the bake settings and the file
 format version, so a change to any of them re-bakes. A toolchain whose hasher
-changes only re-bakes too. Superseded cache files are not removed.
+changes only re-bakes too. Writing a navmesh removes that input's files under
+other keys. The `navmesh_prebake` example bakes every level the same way.

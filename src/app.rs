@@ -229,7 +229,7 @@ pub fn build(options: &Options) -> Result<App, String> {
     // request and caches the result.
     app.register_asset_loader(NavmeshLoader {
         cache: bevy::asset::io::file::FileAssetReader::get_base_path()
-            .join("imported_assets/navmesh"),
+            .join(crate::game::world::navigation::asset::CACHE),
         decode: crate::retail::navmesh::decode_input,
     });
     // What the player sees and hears: with the window, or offscreen for a

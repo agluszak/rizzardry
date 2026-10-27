@@ -49,6 +49,7 @@ Run with `--help` for the full list.
 
 Entering a level the first time bakes its navmeshes, one per monster size
 class (up to a few seconds); results are cached in `imported_assets/`.
+`cargo run --release --example navmesh_prebake` bakes every level ahead of play.
 
 Controls: WASD or arrow keys to walk, Q/E or Left/Right to turn, hold Shift to
 run, hold the right mouse button to look around, Space or left click to use

@@ -89,6 +89,27 @@ pub fn navmesh_input(bytes: &[u8]) -> Option<(u8, &[u8], &[u8])> {
     })
 }
 
+/// The navmesh input of a level (`levels/x/y.pvl`) for a size class, or
+/// `None` if the level or its collision is missing.
+pub fn navmesh_input_bytes(
+    files: &RetailFiles,
+    level: &str,
+    class: u8,
+) -> Option<std::io::Result<Vec<u8>>> {
+    let stem = level.strip_suffix(".pvl").unwrap_or(level);
+    let read = |extension: &str| files.read(&format!("{stem}.{extension}"));
+    let (octree, level) = match (read("oct")?, read("pvl")?) {
+        (Ok(octree), Ok(level)) => (octree, level),
+        (Err(error), _) | (_, Err(error)) => return Some(Err(error)),
+    };
+    let mut bytes = NAVMESH_INPUT_MAGIC.to_vec();
+    bytes.push(class);
+    bytes.extend((octree.len() as u32).to_le_bytes());
+    bytes.extend(octree);
+    bytes.extend(level);
+    Some(Ok(bytes))
+}
+
 impl AssetReader for NavmeshInputReader {
     async fn read<'a>(&'a self, path: &'a Path) -> Result<impl Reader + 'a, AssetReaderError> {
         let not_found = || AssetReaderError::NotFound(path.to_owned());
@@ -96,18 +117,11 @@ impl AssetReader for NavmeshInputReader {
         if class as usize >= self.classes {
             return Err(not_found());
         }
-        let read = |extension: &str| match self.files.read(&format!("{stem}.{extension}")) {
-            Some(Ok(bytes)) => Ok(bytes),
+        match navmesh_input_bytes(&self.files, &stem, class) {
+            Some(Ok(bytes)) => Ok(VecReader::new(bytes)),
             Some(Err(error)) => Err(AssetReaderError::Io(Arc::new(error))),
             None => Err(not_found()),
-        };
-        let (octree, level) = (read("oct")?, read("pvl")?);
-        let mut bytes = NAVMESH_INPUT_MAGIC.to_vec();
-        bytes.push(class);
-        bytes.extend((octree.len() as u32).to_le_bytes());
-        bytes.extend(octree);
-        bytes.extend(level);
-        Ok(VecReader::new(bytes))
+        }
     }
 
     async fn read_meta<'a>(&'a self, path: &'a Path) -> Result<impl Reader + 'a, AssetReaderError> {
