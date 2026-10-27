@@ -918,7 +918,12 @@ mod tests {
             .world_mut()
             .resource_mut::<Assets<ItemCatalog>>()
             .add(ItemCatalog(vec![definition]));
-        app.insert_resource(GameData { items, loot: default(), species: default() });
+        app.insert_resource(GameData {
+            items,
+            loot: default(),
+            species: default(),
+            spells: default(),
+        });
         let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
         let actor =
             app.world_mut().spawn((Vitals::new(&profile), profile, Carried::default())).id();

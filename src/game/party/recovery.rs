@@ -33,6 +33,11 @@ pub enum Pace {
 }
 
 impl Pace {
+    /// The share of health recovered, which spell points follow.
+    pub fn health_scale(self) -> f32 {
+        self.scales().1
+    }
+
     /// The share of stamina and of health recovered.
     fn scales(self) -> (f32, f32) {
         match self {
