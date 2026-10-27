@@ -341,13 +341,12 @@ fn damage_party(
     mut damage: MessageWriter<DamageApplied>,
 ) {
     for entity in roster.0.iter() {
-        let Ok(member) = members.get(*entity) else { continue };
+        let Ok(mut member) = members.get_mut(*entity) else { continue };
         if member.is_dead() {
             continue;
         }
         let rolled = rng.roll(dice);
         if rolled > 0 {
-            let mut member = members.get_mut(*entity).unwrap();
             crate::game::party::damage_member(
                 *entity,
                 &mut member,
@@ -387,8 +386,7 @@ fn drink_fountain(
             state.refills_at = fountain.refills_after.map(|after| now + after);
         }
     }
-    for entity in roster.0.iter() {
-        let Ok((profile, member)) = members.get(*entity) else { continue };
+    for (profile, mut member) in members.iter_many_unique_mut(&roster.0).matched() {
         if member.is_dead()
             || match fountain.restores {
                 Restores::Health => member.hp >= profile.max_hp(),
@@ -403,7 +401,6 @@ fn drink_fountain(
         {
             continue;
         }
-        let (profile, mut member) = members.get_mut(*entity).unwrap();
         match fountain.restores {
             Restores::Health => member.heal(fountain.amount, profile.max_hp()),
             Restores::Stamina => member.restore_stamina(fountain.amount, profile.max_stamina()),

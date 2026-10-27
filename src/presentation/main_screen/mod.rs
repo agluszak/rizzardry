@@ -17,12 +17,8 @@ mod party;
 mod radar;
 mod text_box;
 
-use bevy::input_focus::{
-    InputFocus, InputFocusSystems,
-    tab_navigation::{TabGroup, TabIndex},
-};
+use bevy::input_focus::{InputFocus, InputFocusSystems, tab_navigation::TabGroup};
 use bevy::prelude::*;
-use bevy::ui_widgets::Button;
 use bevy_enhanced_input::prelude::*;
 
 use super::screen_art::{SCREEN, absolute, centred, screen, sprite};
@@ -67,7 +63,6 @@ impl Plugin for MainScreenPlugin {
                             .after(crate::game::world::search::search_pulse),
                         formation::draw_formation,
                         bank::draw_bank,
-                        paint_focus,
                         bank::draw_caption,
                         bank::show_round_progress,
                     ),
@@ -191,33 +186,17 @@ fn layer() -> impl Scene {
 }
 
 /// A sheet's frame that is a button: it catches the pointer.
-fn button(sheet: &SpriteSheet, frame: usize, at: Vec2) -> impl Scene + use<> {
-    bsn! { @{sprite(sheet, frame, at)} Button TabIndex(0) HudFocus Outline::new(px(1),px(1),Color::NONE) Pickable::default() }
+fn button(sheet: Handle<SpriteSheet>, frame: usize, at: Vec2) -> impl Scene {
+    crate::presentation::retail_controls::image_button(
+        sheet,
+        at,
+        crate::presentation::retail_controls::ControlSkin::new(frame, frame, frame, frame, frame),
+    )
 }
 
 /// The screen's root, with the layout its frame was built for.
 #[derive(Component, Clone, Default)]
 pub struct MainScreen(ScreenLayout);
-
-#[derive(Component, Clone, Default)]
-pub(super) struct HudFocus;
-
-fn paint_focus(
-    focus: Res<InputFocus>,
-    visible: Res<bevy::input_focus::InputFocusVisible>,
-    mut controls: Query<(Entity, &mut Outline), With<HudFocus>>,
-) {
-    for (entity, mut outline) in &mut controls {
-        let color = if visible.0 && focus.get() == Some(entity) {
-            Color::srgb(0.83, 0.68, 0.4)
-        } else {
-            Color::NONE
-        };
-        if outline.color != color {
-            outline.color = color;
-        }
-    }
-}
 
 fn leave_hud_focus(
     mut event: On<bevy::input_focus::FocusedInput<bevy::input::keyboard::KeyboardInput>>,
@@ -356,9 +335,11 @@ mod keyboard_tests {
         ButtonState,
         keyboard::{Key, KeyboardInput},
     };
+    use bevy::input_focus::tab_navigation::TabIndex;
     use bevy::input_focus::{
         InputDispatchPlugin, InputFocusPlugin, tab_navigation::TabNavigationPlugin,
     };
+    use bevy::ui_widgets::Button;
     use bevy::ui_widgets::ButtonPlugin;
     use bevy::window::PrimaryWindow;
 

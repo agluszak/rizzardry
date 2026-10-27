@@ -177,7 +177,7 @@ pub fn animate_monsters(
         let elapsed = played.tick(time.delta()).elapsed_secs() * cycle.frames_per_second;
         let frame = if request.once { elapsed.min(frames - 1.0) } else { elapsed % frames };
         let positions = cycle.positions_at(frame);
-        for root in children.iter().filter_map(|e| roots.get(e).ok()) {
+        for root in roots.iter_many(children).matched() {
             for child in root.iter() {
                 let Ok((cycle_name, children, mut visibility)) = cycles.get_mut(child) else {
                     continue;
@@ -242,7 +242,7 @@ pub fn light_monsters(
         let step = SKY_SCALE_PER_SECOND * time.delta_secs();
         instance.sky_scale += (target - instance.sky_scale).clamp(-step, step);
         let fixed = level.lighting.at(centre, None);
-        for root in children.iter().filter_map(|e| roots.get(e).ok()) {
+        for root in roots.iter_many(children).matched() {
             for child in root.iter() {
                 let Ok((cycle_name, children, visibility)) = cycles.get(child) else { continue };
                 if *visibility == Visibility::Hidden {

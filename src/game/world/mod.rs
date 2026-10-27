@@ -5,6 +5,7 @@ pub mod identify;
 pub mod items;
 pub mod level;
 pub mod navigation;
+pub mod obstacles;
 pub mod population;
 pub mod props;
 pub mod scripts;

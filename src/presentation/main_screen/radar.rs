@@ -3,6 +3,7 @@
 //! compass rim on top, turned with the party. Clicking it opens the
 //! automap.
 
+use crate::game::world::obstacles::WorldObstacles;
 use bevy::prelude::*;
 use bevy::ui_widgets::Activate;
 
@@ -29,8 +30,9 @@ pub fn panel(art: &MainScreenArt, sheets: &Assets<SpriteSheet>) -> impl SceneLis
         -- @{cone}
         -- @layer() RadarBlips
         -- @{rim} RadarRim UiTransform
-        -- disc_area bevy::ui_widgets::Button bevy::input_focus::tab_navigation::TabIndex(0) super::HudFocus Outline::new(px(1),px(1),Color::NONE)
-            on(|_: On<Activate>, mut open: MessageWriter<OpenAutomap>| {
+        -- disc_area bevy::ui_widgets::Button bevy::input_focus::tab_navigation::TabIndex(0) crate::presentation::retail_controls::FocusRing
+            on(crate::presentation::retail_controls::primary_press)
+        on(|_: On<Activate>, mut open: MessageWriter<OpenAutomap>| {
                 open.write(OpenAutomap);
             })
     }
@@ -170,10 +172,9 @@ pub fn update_radar(
     monsters: Query<(Entity, &crate::game::world::population::Monster, &GlobalTransform)>,
     views: Query<&RadarView>,
     mut blips: Query<(&mut Node, &mut BackgroundColor, &mut Visibility), With<RadarBlip>>,
-    (mut items, spatial, bodies): (
+    (mut items, obstacles): (
         Query<(Entity, &crate::game::world::items::WorldItem, &GlobalTransform, &mut RadarItem)>,
-        avian3d::prelude::SpatialQuery,
-        Query<&avian3d::prelude::RigidBody>,
+        WorldObstacles,
     ),
     data: Option<Res<GameData>>,
     species: Res<Assets<crate::content::species::MonsterCatalog>>,
@@ -221,8 +222,6 @@ pub fn update_radar(
         show(entity, at, class.at(delta.y));
     }
     // Items: once the eye has had them in sight, within the far clip.
-    let level = |entity| bodies.get(entity).is_ok_and(avian3d::prelude::RigidBody::is_static);
-    let filter = avian3d::prelude::SpatialQueryFilter::default();
     for (entity, item, at, mut known) in &mut items {
         if item.hidden {
             continue;
@@ -234,9 +233,7 @@ pub fn update_radar(
         if !known.seen {
             let to = at.translation();
             let in_sight = Dir3::new(to - eye).is_ok_and(|direction| {
-                spatial
-                    .cast_ray_predicate(eye, direction, eye.distance(to), true, &filter, &level)
-                    .is_none()
+                obstacles.first_hit(eye, direction, eye.distance(to)).is_none()
             });
             if !in_sight {
                 continue;
