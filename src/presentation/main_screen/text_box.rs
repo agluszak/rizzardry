@@ -230,6 +230,7 @@ pub fn draw_text_box(
         ),
         (Without<Line>, Or<(With<Tabs>, With<Thumb>, With<Scroll>)>),
     >,
+    added: Query<(), Or<(Added<Line>, Added<Tabs>, Added<Thumb>, Added<Scroll>)>>,
 ) {
     for root in &roots {
         let text: Vec<_> = (0..VISIBLE_LINES)
@@ -272,6 +273,10 @@ pub fn draw_text_box(
                 -- @picture(art.text_scroll.clone(), 4, Vec2::new(461.0, 379.0)) Thumb
             },
         );
+    }
+    // The parts built above arrive later; they are projected once they exist.
+    if !log.is_changed() && added.is_empty() {
+        return;
     }
     for (line, mut text, mut visibility) in &mut lines {
         let justify = if log.selected() == 2 {
@@ -349,6 +354,7 @@ mod tests {
         .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
             std::time::Duration::from_millis(50),
         ))
+        .add_observer(crate::presentation::retail_controls::primary_buttons_only)
         .init_asset::<SpriteSheet>()
         .init_asset::<TextTable>()
         .init_asset::<MonsterCatalog>()

@@ -1,7 +1,7 @@
 //! Confirmation for removing a character from the pre-game party list.
 use super::{Creation, Session};
 use crate::content::ui::{SpriteSheet, TextTable};
-use crate::presentation::retail_controls::{ControlSkin, primary_press};
+use crate::presentation::retail_controls::ControlSkin;
 use crate::presentation::screen_art::{BitmapText, Picture};
 use bevy::input_focus::{
     FocusCause, InputFocus,
@@ -183,7 +183,6 @@ pub(super) fn open(
                 Pickable::default(),
                 ChildOf(panel),
             ))
-            .observe(primary_press)
             .observe(move |_: On<Activate>, mut commands: Commands| {
                 commands.trigger(Answer { dialog, accepted });
             })

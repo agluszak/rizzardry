@@ -140,7 +140,9 @@ pub(super) fn scroll(
     for (mut roll, mut node) in &mut rolls {
         roll.elapsed += time.delta_secs();
         let offset = (roll.elapsed / 0.035).floor();
-        node.top = px(479. - offset);
+        if node.top != px(479. - offset) {
+            node.top = px(479. - offset);
+        }
         if offset > 479. + roll.height {
             next.set(MenuPage::Main);
         }

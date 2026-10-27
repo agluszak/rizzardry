@@ -31,7 +31,6 @@ pub fn panel(art: &MainScreenArt, sheets: &Assets<SpriteSheet>) -> impl SceneLis
         -- @layer() RadarBlips
         -- @{rim} RadarRim UiTransform
         -- disc_area bevy::ui_widgets::Button bevy::input_focus::tab_navigation::TabIndex(0) crate::presentation::retail_controls::FocusRing
-            on(crate::presentation::retail_controls::primary_press)
         on(|_: On<Activate>, mut open: MessageWriter<OpenAutomap>| {
                 open.write(OpenAutomap);
             })
@@ -174,7 +173,7 @@ pub fn update_radar(
     layers: Query<Entity, With<RadarBlips>>,
     monsters: Query<(Entity, &crate::game::world::population::Monster, &GlobalTransform)>,
     views: Query<&RadarView>,
-    mut blips: Query<(&mut Node, &mut BackgroundColor, &mut Visibility), With<RadarBlip>>,
+    mut blips: Query<(Entity, &mut Node, &mut BackgroundColor, &mut Visibility), With<RadarBlip>>,
     (mut items, obstacles): (
         Query<(Entity, &crate::game::world::items::WorldItem, &GlobalTransform, &mut RadarItem)>,
         WorldObstacles,
@@ -185,24 +184,29 @@ pub fn update_radar(
     let (Ok((position, body)), Ok(layer)) = (party.single(), layers.single()) else { return };
     for mut rim in &mut rims {
         // North stays put while the view turns.
-        rim.rotation = Rot2::radians(body.yaw);
+        let rotation = Rot2::radians(body.yaw);
+        if rim.rotation != rotation {
+            rim.rotation = rotation;
+        }
     }
     let (far, eye) = match camera.single() {
         Ok((Projection::Perspective(p), eye)) => (p.far, eye.translation()),
         _ => (0.0, position.0),
     };
     let catalog = data.and_then(|d| species.get(&d.species));
-    for (_, _, mut visible) in &mut blips {
-        visible.set_if_neq(Visibility::Hidden);
-    }
+    // Each blip's visibility is decided once, so one that stays in view
+    // stays clean.
+    let mut shown = bevy::ecs::entity::EntityHashSet::default();
     let mut show = |target: Entity, at: Vec2, colour: Color| {
         if let Ok(view) = views.get(target)
-            && let Ok((mut node, mut color, mut visibility)) = blips.get_mut(view.0)
+            && let Ok((_, mut node, mut color, mut visibility)) = blips.get_mut(view.0)
         {
-            node.left = px(at.x);
-            node.top = px(at.y);
+            if (node.left, node.top) != (px(at.x), px(at.y)) {
+                (node.left, node.top) = (px(at.x), px(at.y));
+            }
             color.set_if_neq(BackgroundColor(colour));
             visibility.set_if_neq(Visibility::Inherited);
+            shown.insert(view.0);
         } else {
             commands.spawn((
                 RadarBlip(target),
@@ -249,6 +253,11 @@ pub fn update_radar(
         let at = blip_position(delta, body.yaw, true) - Vec2::ONE;
         show(entity, at, colour);
     }
+    for (blip, _, _, mut visible) in &mut blips {
+        if !shown.contains(&blip) {
+            visible.set_if_neq(Visibility::Hidden);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -266,8 +275,7 @@ mod tests {
             .add_systems(Update, track_radar_items);
         let item =
             make_item(&default(), &mut ItemIds::default(), &mut GameRng::default(), true, true);
-        let target =
-            app.world_mut().spawn(WorldItem { item, hidden: false, contents: vec![] }).id();
+        let target = app.world_mut().spawn(WorldItem::loose(item, false)).id();
         app.world_mut().write_message(SearchNews::Spotted {
             target,
             member: "Finder".into(),

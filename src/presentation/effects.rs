@@ -80,11 +80,14 @@ pub fn shake_camera(
 ) {
     let Ok(mut camera) = camera.single_mut() else { return };
     let rest = Vec3::Y * EYE_ABOVE_CENTRE;
-    let (amplitude, fade_out) = (shake.amplitude, shake.fade_out);
-    let Some(timer) = shake.timer.as_mut().filter(|t| !t.is_finished()) else {
-        camera.translation = rest;
+    if shake.timer.as_ref().is_none_or(Timer::is_finished) {
+        if camera.translation != rest {
+            camera.translation = rest;
+        }
         return;
-    };
+    }
+    let (amplitude, fade_out) = (shake.amplitude, shake.fade_out);
+    let Some(timer) = shake.timer.as_mut() else { return };
     let strength = if fade_out { timer.fraction_remaining() } else { 1.0 };
     let offset = Vec3::from_array(std::array::from_fn(|_| rng.0.random_range(-1.0..1.0)));
     camera.translation = rest + offset * amplitude * strength;

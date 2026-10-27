@@ -1,9 +1,7 @@
 //! Retail party assembly: the candidate list and the ordered party are separate.
 use super::{Action, CharacterDraft, Creation, Page, absolute};
 use crate::content::ui::SpriteSheet;
-use crate::presentation::retail_controls::{
-    ControlSkin, FocusHighlight, primary_press, set_enabled,
-};
+use crate::presentation::retail_controls::{ControlSkin, FocusHighlight, set_enabled};
 use crate::presentation::screen_art::{BitmapText, Picture, spawn_picture as picture};
 use bevy::input_focus::tab_navigation::TabIndex;
 use bevy::picking::hover::Hovered;
@@ -90,7 +88,6 @@ fn action_button(
         Pickable::default(),
         ChildOf(parent),
     ));
-    button.observe(primary_press);
     if let Some(action) = action {
         button.insert(action);
     } else {
@@ -298,9 +295,11 @@ pub(super) fn refresh(
     }
     for (entity, mut action, row, slot, disabled) in &mut controls {
         if let Some(row) = row {
-            *action = Action::SelectCandidate(session.candidates.get(row.0).map(|(id, _)| *id));
+            action.set_if_neq(Action::SelectCandidate(
+                session.candidates.get(row.0).map(|(id, _)| *id),
+            ));
         } else if let Some(slot) = slot {
-            *action = Action::SelectCandidate(session.party.get(slot.0).copied());
+            action.set_if_neq(Action::SelectCandidate(session.party.get(slot.0).copied()));
         }
         let enabled = match *action {
             Action::Add => session.candidates.len() < 6,
@@ -331,16 +330,22 @@ pub(super) fn refresh(
                 Portrait::Member(_) => ("medium", "m"),
                 Portrait::Selected => ("large", "l"),
             };
-            picture.sheet = assets.load(format!(
+            let sheet = assets.load(format!(
                 "retail://data/portraits/{directory}/{prefix}{}.sti",
                 draft.portrait
             ));
+            if picture.sheet != sheet {
+                picture.sheet = sheet;
+            }
         }
     }
     for (row, mut picture, mut visible) in &mut rows {
         let id = session.candidates.get(row.0).map(|(id, _)| *id);
         visible.set_if_neq(if id.is_some() { Visibility::Inherited } else { Visibility::Hidden });
-        picture.frame = usize::from(id.is_some() && id == session.selected);
+        let frame = usize::from(id.is_some() && id == session.selected);
+        if picture.frame != frame {
+            picture.frame = frame;
+        }
     }
     for mut visible in &mut details {
         visible.set_if_neq(if session.selected.is_some() {

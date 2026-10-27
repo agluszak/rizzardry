@@ -1,7 +1,4 @@
 //! Monster species (`.mls`, text) and animation cycles (`.mon`, binary).
-//!
-//! After Whizzardry `LoadMonsterDefinition` and `CyclePlayer`; see
-//! `docs/research/monster-anim.md`.
 
 use super::keyframes::read_path;
 use super::mesh_record::{MeshRecord, MeshVertices};

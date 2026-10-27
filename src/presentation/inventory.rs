@@ -1,5 +1,4 @@
-//! Character review: equipment, statistics and skills. The item page follows
-//! `docs/research/review-items.md`:
+//! Character review: equipment, statistics and skills. The item page shows
 //! a member's equipment on their race's statue, their backpack, and the
 //! party's pool. Opened with I for the selected member; the header's portraits
 //! switch member, Esc, I or the Exit button closes it.
@@ -32,7 +31,7 @@ use crate::game::characters::{Character, Gender, Race, Vitals};
 use crate::game::combat::attack::armour;
 use crate::game::data::GameData;
 use crate::game::inventory::{
-    BACKPACK_SLOTS, Carried, EquipSlot, ItemInstance, ItemLocation, PartyInventory, Quantity, Slot,
+    BACKPACK_SLOTS, Carried, EquipSlot, ItemStack, MemberSlot, PartyInventory, Slot,
 };
 use crate::game::party::roster::PartyRoster;
 use crate::game::screen::Screen;
@@ -208,23 +207,62 @@ pub fn spawn_inventory_key(mut commands: Commands) {
             Action::<OpenInventory>::new()
             Bindings [ Binding(KeyCode::KeyI) ]
         ]
+        ContextActivity::<InventoryKey>::INACTIVE
         on(open_with_key)
     });
+}
+
+/// The key is held by the same rule as the other world shortcuts, so a
+/// question or a focused control owns the keyboard instead.
+fn hold_inventory_key(
+    mut commands: Commands,
+    world_keys: super::main_screen::keys::WorldKeys,
+    keys: Query<(Entity, &ContextActivity<InventoryKey>)>,
+) {
+    let active = world_keys.active();
+    for (entity, activity) in &keys {
+        if **activity != active {
+            commands.entity(entity).insert(ContextActivity::<InventoryKey>::new(active));
+        }
+    }
+}
+
+/// The one acceptance rule for opening a member's review, however it was
+/// asked for: the party is in the world, under no question and no pending
+/// screen change, and the member is in the party. The review shows the
+/// selected member, so the caller selects the member it opened.
+#[derive(bevy::ecs::system::SystemParam)]
+pub(crate) struct OpenReview<'w, 's> {
+    screen: Res<'w, State<Screen>>,
+    next: ResMut<'w, NextState<Screen>>,
+    questions: Query<'w, 's, (), With<crate::game::world::level::TravelQuestion>>,
+    roster: Res<'w, PartyRoster>,
+}
+
+impl OpenReview<'_, '_> {
+    /// Open `member`'s review; whether it opens.
+    pub(crate) fn open(&mut self, member: Entity) -> bool {
+        if *self.screen.get() != Screen::World
+            || !matches!(*self.next, NextState::Unchanged)
+            || !self.questions.is_empty()
+            || !self.roster.0.contains(&member)
+        {
+            return false;
+        }
+        self.next.set(Screen::Inventory);
+        true
+    }
 }
 
 /// Retail opens the selected character.
 fn open_with_key(
     _: On<Start<OpenInventory>>,
-    screen: Res<State<Screen>>,
-    mut next: ResMut<NextState<Screen>>,
+    mut review: OpenReview,
     roster: Res<PartyRoster>,
     selected: Res<super::main_screen::SelectedMember>,
 ) {
-    if *screen.get() == Screen::World
-        && matches!(*next, NextState::Unchanged)
-        && selected.member(&roster).is_some()
-    {
-        next.set(Screen::Inventory);
+    if let Some(member) = selected.member(&roster) {
+        review.open(member);
     }
 }
 
@@ -336,11 +374,8 @@ struct CellDisplay {
 
 /// A cell's count: a stack above one, charges or shots; `?` for charges
 /// not yet identified.
-fn count_label(item: &ItemInstance, kind: QuantityKind) -> Option<String> {
-    let count = match item.quantity {
-        Quantity::One => return None,
-        Quantity::Stack(n) | Quantity::Uses(n) => n,
-    };
+fn count_label(item: &ItemStack, kind: QuantityKind) -> Option<String> {
+    let count = item.remaining_uses().unwrap_or(item.count());
     match kind {
         QuantityKind::None | QuantityKind::Unlabelled => None,
         QuantityKind::Stack if count <= 1 => None,
@@ -399,7 +434,6 @@ fn header(art: &InventoryArt) -> impl SceneList {
                 crate::presentation::retail_controls::FocusRing
                 template(move |_| Ok(HeaderDisplay(HeaderPart::Member(slot))))
                 InventoryMemberButton({Entity::PLACEHOLDER})
-                on(crate::presentation::retail_controls::primary_press)
                 on(select_inventory_member)
                 Children [
                     @picture(art.portrait_highlight.clone(),1,Vec2::ZERO)
@@ -499,7 +533,6 @@ fn cell_controls(cell: Cell, art: &InventoryArt) -> impl Scene {
         node template(move |_|Ok(ItemCell{cell}))
         UiButton TabIndex(0) Pickable::default()
         crate::presentation::retail_controls::FocusRing
-        on(crate::presentation::retail_controls::primary_press)
         on(click_cell)
         Children [
             template(move |_| Ok(ImageNode { image: fill.clone(), rect: Some(Rect::new(0.0, 0.0, 46.0, 54.0)), ..default() }))
@@ -636,7 +669,6 @@ pub fn spawn_inventory_screen(
         @{exit} ChildOf(content)
             UiButton TabIndex(0) Pickable::default()
             crate::presentation::retail_controls::FocusRing
-            on(crate::presentation::retail_controls::primary_press)
             on(|_: On<Activate>, mut next: ResMut<NextState<Screen>>| { next.set(Screen::World); })
     });
     let initial_tab = review::build(&mut commands, content, &art);
@@ -825,10 +857,20 @@ fn draw_header_hands(
             HeaderHand::Count(off) => {
                 shown = !(off && two_handed);
                 let slot = if off { EquipSlot::Secondary } else { EquipSlot::Primary };
-                value = Some(match carried.worn(slot).map(|item| item.quantity) {
-                    Some(Quantity::Stack(count)) if count > 0 => count.to_string(),
-                    _ => String::new(),
-                });
+                value = Some(
+                    match carried
+                        .worn(slot)
+                        .filter(|item| {
+                            catalog
+                                .get(item.item)
+                                .is_some_and(|d| d.quantity == QuantityKind::Stack)
+                        })
+                        .map(ItemStack::count)
+                    {
+                        Some(count) => count.to_string(),
+                        _ => String::new(),
+                    },
+                );
             }
             HeaderHand::Armour => {
                 value = Some(armour(&profile, &carried, catalog).average().to_string())
@@ -962,8 +1004,14 @@ fn draw_header(
 fn draw_retail_labels(
     art: Res<InventoryArt>,
     tables: Res<Assets<TextTable>>,
-    mut labels: Query<(&RetailLabel, &mut BitmapText)>,
+    mut labels: Query<(Ref<RetailLabel>, &mut BitmapText)>,
 ) {
+    if !art.is_changed()
+        && !tables.is_changed()
+        && !labels.iter().any(|(label, _)| label.is_added())
+    {
+        return;
+    }
     let Some(table) = tables.get(&art.strings) else { return };
     for (label, mut text) in &mut labels {
         let value = table.get(label.0).unwrap_or("");
@@ -973,9 +1021,12 @@ fn draw_retail_labels(
     }
 }
 
-fn draw_gold(party: Res<PartyInventory>, mut labels: Query<&mut BitmapText, With<GoldLabel>>) {
+fn draw_gold(party: Res<PartyInventory>, mut labels: Query<(Ref<GoldLabel>, &mut BitmapText)>) {
+    if !party.is_changed() && !labels.iter().any(|(label, _)| label.is_added()) {
+        return;
+    }
     let value = format_gold(party.gold);
-    for mut label in &mut labels {
+    for (_, mut label) in &mut labels {
         if label.value != value {
             label.value = value.clone();
         }
@@ -1013,9 +1064,10 @@ fn draw_cells(
         let item = match display.cell {
             Cell::Member(Slot::Equipment(slot)) => carried.worn(slot),
             Cell::Member(Slot::Backpack(i)) => carried.backpack[i].as_ref(),
-            Cell::Pool(i) => {
-                party.pool.get(pool_scroll.as_ref().map_or(0, |value| value.0 as usize * 2) + i)
-            }
+            Cell::Pool(i) => party
+                .pool
+                .stacks
+                .get(pool_scroll.as_ref().map_or(0, |value| value.0 as usize * 2) + i),
         };
         let definition = item.and_then(|i| Some((i, catalog.get(i.item)?)));
         let grid = !matches!(display.cell, Cell::Member(Slot::Equipment(_)));
@@ -1061,8 +1113,7 @@ fn draw_cells(
 /// Click a cell (retail's item-page click, `rcs.cpp:1459-1742`): with an
 /// empty hand, pick the item up; holding one, a pool cell takes it in, a
 /// stack of the same item takes what it can, anything else swaps.
-/// Shift-clicking a single unit, pouring ammunition and stowing a weapon's
-/// partner are not done yet.
+/// Shift-clicking a single unit and manual reloading are not wired to UI yet.
 fn click_cell(
     click: On<Activate>,
     cells: Query<&ItemCell>,
@@ -1081,13 +1132,13 @@ fn click_cell(
     {
         return;
     }
-    let destination = match cell.cell {
+    let result = match cell.cell {
         Cell::Pool(row) => {
-            ItemLocation::Pool(pool_scroll.as_ref().map_or(0, |value| value.0 as usize * 2) + row)
+            inventory.click_pool(pool_scroll.as_ref().map_or(0, |value| value.0 as usize * 2) + row)
         }
-        Cell::Member(slot) => ItemLocation::Member(screen.member, slot),
+        Cell::Member(slot) => inventory.interact_slot(MemberSlot { member: screen.member, slot }),
     };
-    if let Err(refusal) = inventory.activate(destination) {
+    if let Err(refusal) = result {
         info!("inventory: {:?} refused: {refusal:?}", cell.cell);
     }
 }
@@ -1118,11 +1169,11 @@ pub fn follow_held(
     data: Option<Res<GameData>>,
     catalogs: Res<Assets<ItemCatalog>>,
     mut picture: Single<(&mut ImageNode, &mut Node, &mut Visibility), With<HeldPicture>>,
-    mut loading: Local<Option<Handle<SpriteSheet>>>,
+    mut loading: Local<Option<(String, Handle<SpriteSheet>)>>,
 ) {
     let (image, node, visibility) = &mut *picture;
     let catalog = data.and_then(|d| catalogs.get(&d.items));
-    let definition = party.held.as_ref().zip(catalog).and_then(|(h, c)| c.get(h.item.item));
+    let definition = party.hand.held.as_ref().zip(catalog).and_then(|(h, c)| c.get(h.item));
     let cursor = pointers
         .iter()
         .find(|(id, _)| **id == PointerId::Mouse)
@@ -1132,16 +1183,22 @@ pub fn follow_held(
         visibility.set_if_neq(Visibility::Hidden);
         return;
     };
-    let handle = loading.insert(assets.load(format!("retail://{}", definition.image)));
+    if loading.as_ref().is_none_or(|(path, _)| *path != definition.image) {
+        let handle = assets.load(format!("retail://{}", definition.image));
+        *loading = Some((definition.image.clone(), handle));
+    }
+    let Some((_, handle)) = &*loading else { return };
     let Some((picture, frame)) =
-        sheets.get(&*handle).and_then(|s| Some((s.images.first()?, s.frames.first()?)))
+        sheets.get(handle).and_then(|s| Some((s.images.first()?, s.frames.first()?)))
     else {
         return;
     };
     // Retail makes the picture the cursor, its corner at the hotspot with
     // the arrow drawn over it (`UpdateHeldItemCursor`).
-    image.image = picture.clone();
-    **node = absolute(cursor / scale.0, Vec2::new(frame.width as f32, frame.height as f32));
+    if image.image != *picture {
+        image.image = picture.clone();
+    }
+    node.set_if_neq(absolute(cursor / scale.0, Vec2::new(frame.width as f32, frame.height as f32)));
     visibility.set_if_neq(Visibility::Inherited);
 }
 
@@ -1153,6 +1210,12 @@ impl Plugin for InventoryPlugin {
             .add_input_context::<InventoryRoot>()
             .add_input_context::<info::InfoDialog>()
             .add_systems(Startup, (load_inventory_art, spawn_inventory_key, spawn_held_picture))
+            .add_systems(
+                PreUpdate,
+                hold_inventory_key
+                    .after(bevy::input_focus::InputFocusSystems::Dispatch)
+                    .before(EnhancedInputSystems::Update),
+            )
             .add_systems(OnEnter(Screen::Inventory), enter_inventory)
             .add_systems(OnExit(Screen::Inventory), put_away_held)
             .configure_sets(
@@ -1228,6 +1291,7 @@ mod tests {
             .init_resource::<PartyInventory>()
             .init_resource::<super::super::main_screen::SelectedMember>()
             .add_plugins(InventoryPlugin)
+            .add_observer(crate::presentation::retail_controls::primary_buttons_only)
             .add_systems(PostUpdate, crate::presentation::retail_controls::sync_button_navigation);
         app
     }
@@ -1235,7 +1299,7 @@ mod tests {
     #[test]
     fn closing_inventory_returns_the_held_item_even_before_art_is_ready() {
         use crate::game::characters::{Gender, Profession, Race};
-        use crate::game::inventory::{Held, ItemIds, make_item};
+        use crate::game::inventory::{ItemIds, make_item};
         use crate::game::rng::GameRng;
         for still_a_member in [true, false] {
             let mut app = inventory_app();
@@ -1263,8 +1327,7 @@ mod tests {
                 ))
                 .id();
             app.world_mut().resource_mut::<PartyRoster>().0.insert(member);
-            app.world_mut().resource_mut::<PartyInventory>().held =
-                Some(Held { item, origin: None });
+            app.world_mut().resource_mut::<PartyInventory>().hand.held = Some(item);
             app.world_mut().resource_mut::<super::super::main_screen::SelectedMember>().0 =
                 Some(member);
             app.world_mut().resource_mut::<NextState<Screen>>().set(Screen::Inventory);
@@ -1276,7 +1339,7 @@ mod tests {
             }
             app.world_mut().resource_mut::<NextState<Screen>>().set(Screen::World);
             app.update();
-            assert!(app.world().resource::<PartyInventory>().held.is_none());
+            assert!(app.world().resource::<PartyInventory>().hand.held.is_none());
             assert_eq!(
                 app.world()
                     .get::<Carried>(member)
@@ -1292,12 +1355,48 @@ mod tests {
                 app.world()
                     .resource::<PartyInventory>()
                     .pool
+                    .stacks
                     .iter()
                     .map(|item| item.id)
                     .collect::<Vec<_>>(),
                 if still_a_member { vec![] } else { vec![id] }
             );
         }
+    }
+
+    /// A travel question owns the keyboard: I cannot open the review under it.
+    #[test]
+    fn inventory_key_waits_for_an_open_travel_question() {
+        use crate::game::characters::{Gender, Profession, Race};
+        use crate::game::world::level::TravelQuestion;
+        use crate::presentation::test_input::key;
+        let mut app = inventory_app();
+        let window = app
+            .world_mut()
+            .spawn((bevy::window::Window::default(), bevy::window::PrimaryWindow))
+            .id();
+        let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
+        let member =
+            app.world_mut().spawn((Vitals::new(&profile), profile, Carried::default())).id();
+        app.world_mut().resource_mut::<PartyRoster>().0.insert(member);
+        app.finish();
+        app.cleanup();
+        app.update();
+        // Without artwork the screen returns to the world, so look at it as
+        // the key goes down.
+        let opens = |app: &mut App| {
+            key(app, window, KeyCode::KeyI, true);
+            let opened = *app.world().resource::<State<Screen>>().get() == Screen::Inventory;
+            key(app, window, KeyCode::KeyI, false);
+            app.update();
+            opened
+        };
+        let question = app.world_mut().spawn(TravelQuestion { entrance: "gate".into() }).id();
+        app.update();
+        assert!(!opens(&mut app));
+        app.world_mut().despawn(question);
+        app.update();
+        assert!(opens(&mut app));
     }
 
     #[test]

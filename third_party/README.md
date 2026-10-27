@@ -23,4 +23,6 @@ Two behavioral changes restore recastnavigation's behaviour:
    `InvalidContour`; Recast keeps the triangles found so far and warns.
    Since holes are merged, no retail level reaches this path.
 
-Drop this copy once an upstream release contains equivalent fixes.
+Rerecast 0.5.0 (26 October 2026) supports Bevy 0.20, but its source still
+omits both fixes. Drop this copy once an upstream release contains equivalent
+fixes.

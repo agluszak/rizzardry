@@ -57,36 +57,33 @@ struct Decline;
 #[derive(Component)]
 pub struct DialogBuilt;
 
-/// Input belongs to the question, not to the availability of its artwork.
-pub fn open_travel_question(
-    mut commands: Commands,
-    questions: Query<Entity, (With<TravelQuestion>, Without<QuestionView>)>,
-) {
-    for question_id in &questions {
-        let dialog = QuestionDialog(question_id);
-        commands.spawn_scene(bsn! {
-        @centred()
-        dialog TabGroup::modal() bevy::ui_widgets::ModalDialog
-        ContextPriority::<QuestionDialog>::new(1)
-        Actions<QuestionDialog> [
-            Action::<Accept>::new()
-            ActionSettings { consume_input: true }
-            Bindings [ Binding(KeyCode::Enter) ]
-            --
-            Action::<Decline>::new()
-            ActionSettings { consume_input: true }
-            Bindings [ Binding(KeyCode::Escape) ]
-        ]
-        on(move |event: On<Start<Accept>>, built: Query<(), With<DialogBuilt>>, buttons: Query<(), With<DialogButton>>, focus: Option<Res<InputFocus>>, mut answers: MessageWriter<TravelAnswer>| {
-            if built.contains(event.context) && !focus.as_ref().and_then(|f| f.get()).is_some_and(|e| buttons.contains(e)) {
-                answers.write(TravelAnswer { question: question_id, accept: true });
-            }
-        })
-        on(move |_: On<Start<Decline>>, mut answers: MessageWriter<TravelAnswer>| {
-            answers.write(TravelAnswer { question: question_id, accept: false });
-        })
+/// Input belongs to the question as soon as it is asked, not to the
+/// availability of its artwork ([`show_travel_question`] waits for that).
+pub fn open_travel_question(add: On<Add<TravelQuestion>>, mut commands: Commands) {
+    let question_id = add.entity;
+    let dialog = QuestionDialog(question_id);
+    commands.spawn_scene(bsn! {
+    @centred()
+    dialog TabGroup::modal() bevy::ui_widgets::ModalDialog
+    ContextPriority::<QuestionDialog>::new(1)
+    Actions<QuestionDialog> [
+        Action::<Accept>::new()
+        ActionSettings { consume_input: true }
+        Bindings [ Binding(KeyCode::Enter) ]
+        --
+        Action::<Decline>::new()
+        ActionSettings { consume_input: true }
+        Bindings [ Binding(KeyCode::Escape) ]
+    ]
+    on(move |event: On<Start<Accept>>, built: Query<(), With<DialogBuilt>>, buttons: Query<(), With<DialogButton>>, focus: Option<Res<InputFocus>>, mut answers: MessageWriter<TravelAnswer>| {
+        if built.contains(event.context) && !focus.as_ref().and_then(|f| f.get()).is_some_and(|e| buttons.contains(e)) {
+            answers.write(TravelAnswer { question: question_id, accept: true });
+        }
+    })
+    on(move |_: On<Start<Decline>>, mut answers: MessageWriter<TravelAnswer>| {
+        answers.write(TravelAnswer { question: question_id, accept: false });
+    })
     });
-    }
 }
 
 /// Attach the visuals when ready; a failed asset must not strand the question.
@@ -196,10 +193,8 @@ mod tests {
             font: default(),
             strings: default(),
         })
-        .add_systems(
-            Update,
-            (open_travel_question, show_travel_question, focus_ready_question).chain(),
-        );
+        .add_systems(Update, (show_travel_question, focus_ready_question).chain())
+        .add_observer(open_travel_question);
         app.finish();
         app.cleanup();
         app
