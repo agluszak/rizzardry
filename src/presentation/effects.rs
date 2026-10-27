@@ -84,6 +84,7 @@ pub fn play_lock_sounds(
             LockNews::Trapped { .. } => &["trap detect"],
             LockNews::Tumbler { dropped: false } => &["lock_pin_rising"],
             LockNews::Tumbler { dropped: true } => &["lock_pin_rising", "lock_pin_falling"],
+            LockNews::Sprung { .. } => &["trap sprung"],
             LockNews::Picked => &["lock_picking_success"],
             LockNews::Forced { .. } => &["lock_forcing_successful"],
             LockNews::NotForced { .. } => &["lock_forcing_fail"],

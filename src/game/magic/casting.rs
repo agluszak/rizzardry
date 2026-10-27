@@ -84,6 +84,12 @@ pub enum Refusal {
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum MagicNews {
     Done(Report),
+    /// An indirect trap source has no character caster or payment.
+    Triggered {
+        spell: SpellId,
+        effects: Vec<Effect>,
+        improved: Vec<(Entity, Skill)>,
+    },
     /// A missile reached its victims.
     Landed {
         caster: Entity,

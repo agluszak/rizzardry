@@ -1279,12 +1279,201 @@ mod tests {
         assert!(work(&level).is_none());
     }
 
+    fn with_trap_spell(level: &mut Scenario, spell: crate::content::spells::SpellDefinition) {
+        use crate::content::{species::MonsterCatalog, spells::SpellCatalog};
+        level.world.init_resource::<Assets<MonsterCatalog>>();
+        level.world.init_resource::<Assets<SpellCatalog>>();
+        level.world.init_resource::<crate::game::factions::Factions>();
+        level.world.init_resource::<Messages<crate::game::magic::casting::MagicNews>>();
+        let species =
+            level.world.resource_mut::<Assets<MonsterCatalog>>().add(MonsterCatalog::default());
+        let mut spells = vec![crate::content::spells::SpellDefinition::default(); 128];
+        let id = usize::from(spell.id.0);
+        spells[id] = spell;
+        let spells = level.world.resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(spells));
+        level.world.resource_mut::<GameData>().species = species;
+        level.world.resource_mut::<GameData>().spells = spells;
+        for &member in &level.members {
+            level.world.entity_mut(member).insert(crate::game::inventory::Carried::default());
+        }
+    }
+
     #[test]
-    fn a_trap_keeps_its_type_and_a_wrong_component_springs_it() {
+    fn a_sprung_trap_pays_its_effect_before_opening_and_retains_the_selected_victim() {
+        use super::super::interaction::spring_trap;
+        use crate::content::{
+            characters::Realm,
+            spells::{SpellDefinition, SpellId},
+        };
+        use crate::game::{
+            characters::{Condition, Lasting},
+            inventory::Carried,
+            magic::casting::MagicNews,
+        };
+        for destroyed in [false, true] {
+            let mut level = chest_level(
+                Some(crate::content::level::Lock::Trap { difficulty: 1, kind: Some(10) }),
+                0,
+            );
+            with_trap_spell(
+                &mut level,
+                SpellDefinition {
+                    id: SpellId(125),
+                    realm: Some(Realm::Divine),
+                    dice: Some(Dice { count: 0, sides: 0, base: 20 }),
+                    ..default()
+                },
+            );
+            let first = level.members[0];
+            let selected = level.add_member("Selected");
+            level.world.entity_mut(first).insert(Carried::default());
+            level.world.entity_mut(selected).insert(Carried::default());
+            level
+                .world
+                .get_mut::<Vitals>(selected)
+                .unwrap()
+                .inflict(Condition::Unconscious, Lasting::Rounds(8));
+            let hp = level.world.get::<Vitals>(first).unwrap().hp;
+            let selected_hp = level.world.get::<Vitals>(selected).unwrap().hp;
+            level.run("CHEST");
+            let seed =
+                (0..).find(|&seed| (GameRng::seeded(seed).below(2) == 0) == destroyed).unwrap();
+            level.world.insert_resource(GameRng::seeded(seed));
+            spring_trap(&mut level.world, Some(selected)).unwrap();
+            let chest = level.device("CHEST");
+            assert_eq!(level.world.get::<Vitals>(first).unwrap().hp, hp);
+            assert!(
+                level.world.get::<Vitals>(selected).unwrap().hp < selected_hp,
+                "unconscious selected member still pays the spell"
+            );
+            assert_eq!(level.world.get::<Guarded>(chest).is_none(), destroyed);
+            assert_eq!(level.motion("CHEST").target > 0.0, destroyed);
+            assert!(
+                work(&level).is_none(),
+                "a surviving trap ends the interaction, not a free retry"
+            );
+            assert!(matches!(
+                level
+                    .world
+                    .resource_mut::<Messages<MagicNews>>()
+                    .drain()
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+                [MagicNews::Triggered { .. }]
+            ));
+        }
+    }
+
+    #[test]
+    fn trap_losses_use_existing_purse_items_and_all_party_spell_points() {
+        use super::super::interaction::spring_trap;
+        use crate::content::{
+            characters::Realm,
+            items::{EquipClass, QuantityKind},
+            spells::{SpellDefinition, SpellId},
+        };
+        use crate::game::{
+            inventory::{Carried, EquipSlot, Equipped},
+            magic::{LearnedSpells, SpellPoints},
+        };
+        for (kind, spell) in [(9, 124), (11, 126), (13, 127)] {
+            let mut level = chest_level(
+                Some(crate::content::level::Lock::Trap { difficulty: 1, kind: Some(kind) }),
+                0,
+            );
+            with_trap_spell(
+                &mut level,
+                SpellDefinition {
+                    id: SpellId(spell),
+                    realm: Some(Realm::Divine),
+                    dice: Some(Dice { count: 1, sides: 10, base: 0 }),
+                    ..default()
+                },
+            );
+            let selected = level.members[0];
+            let other = level.add_member("Other");
+            level.world.entity_mut(other).insert(Carried::default());
+            for member in [selected, other] {
+                let mut points = SpellPoints::default();
+                points.current[Realm::Divine] = 10;
+                points.fraction[Realm::Divine] = 0.5;
+                level.world.entity_mut(member).insert((LearnedSpells::default(), points));
+            }
+            let potion = ItemDefinition {
+                id: ItemId(0),
+                class: EquipClass::Potion,
+                quantity: QuantityKind::Stack,
+                ..default()
+            };
+            let scroll = ItemDefinition {
+                id: ItemId(1),
+                class: EquipClass::Scroll,
+                quantity: QuantityKind::Stack,
+                ..default()
+            };
+            let handle = level.world.resource::<GameData>().items.clone();
+            level
+                .world
+                .resource_mut::<Assets<ItemCatalog>>()
+                .insert(&handle, ItemCatalog(vec![potion.clone(), scroll.clone()]))
+                .unwrap();
+            let mut ids = ItemIds::default();
+            let potions = ItemStack::new(&potion, &mut ids, 30, true);
+            let scrolls = ItemStack::new(&scroll, &mut ids, 30, true);
+            let (potion_id, scroll_id) = (potions.id, scrolls.id);
+            level.inventory().pool.stacks.push(potions);
+            level.inventory().gold = 1000;
+            level.world.get_mut::<Carried>(selected).unwrap().equipment
+                [EquipSlot::AlternatePrimary] =
+                Some(Equipped { stack: scrolls, curse_released: true });
+            level.run("CHEST");
+            level.world.insert_resource(GameRng::seeded(3));
+            if spell == 127 {
+                let points = level.world.entity_mut(other).take::<SpellPoints>().unwrap();
+                let before_rng = level.world.resource::<GameRng>().clone();
+                assert_eq!(
+                    spring_trap(&mut level.world, Some(selected)),
+                    Err(super::super::interaction::Unable::MissingContent)
+                );
+                assert_eq!(*level.world.resource::<GameRng>(), before_rng);
+                assert!(level.world.get::<Guarded>(level.device("CHEST")).is_some());
+                assert_eq!(level.inventory().gold, 1000);
+                level.world.entity_mut(other).insert(points);
+            }
+            spring_trap(&mut level.world, Some(selected)).unwrap();
+            match spell {
+                124 => assert!((600..1000).contains(&level.inventory().gold)),
+                126 => {
+                    let carried = level.world.get::<Carried>(selected).unwrap();
+                    let scrolls = carried.equipment[EquipSlot::AlternatePrimary].as_ref().unwrap();
+                    assert_eq!(scrolls.stack.id, scroll_id);
+                    assert!(scrolls.curse_released && scrolls.stack.count() < 30);
+                    let inventory = level.inventory();
+                    assert_eq!(inventory.pool.stacks[0].id, potion_id);
+                    assert!(inventory.pool.stacks[0].count() < 30);
+                }
+                127 => {
+                    for member in [selected, other] {
+                        let points = level.world.get::<SpellPoints>(member).unwrap();
+                        assert_eq!(
+                            points.current[Realm::Divine],
+                            0,
+                            "even the unselected living member loses mana"
+                        );
+                        assert_eq!(points.fraction[Realm::Divine], 0.5);
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn an_unsupported_trap_keeps_its_type_and_refuses_every_discharge_path() {
         use super::super::interaction::{
             LockNews, TRAP_COMPONENTS, Unable, disarm_component, inspect_trap, leave, spring_trap,
         };
-        let lock = crate::content::level::Lock::Trap { difficulty: 5, kind: None };
+        let lock = crate::content::level::Lock::Trap { difficulty: 5, kind: Some(0) };
         let mut level = chest_level(Some(lock), 0);
         let member = level.members[0];
         level.world.get_mut::<Character>(member).unwrap().skill_points
@@ -1302,9 +1491,11 @@ mod tests {
         assert!(!level.run("CHEST").0);
         assert_eq!(level.world.get::<Guarded>(chest).unwrap().trap, Some(trap));
         let wrong = TRAP_COMPONENTS[usize::from(trap)].iter().position(|&p| !p).unwrap();
+        let before_rng = level.world.resource::<GameRng>().clone();
         assert_eq!(disarm_component(&mut level.world, member, wrong), Err(Unable::UnsupportedTrap));
         assert_eq!(inspect_trap(&mut level.world, member), Err(Unable::UnsupportedTrap));
-        assert_eq!(spring_trap(&mut level.world), Err(Unable::UnsupportedTrap));
+        assert_eq!(spring_trap(&mut level.world, Some(member)), Err(Unable::UnsupportedTrap));
+        assert_eq!(*level.world.resource::<GameRng>(), before_rng);
         assert!(matches!(work(&level), Some(Work::Disarming(_))));
         assert_eq!(level.world.get::<Guarded>(chest).unwrap().trap, Some(trap));
         assert_eq!(level.motion("CHEST").target, 0.0);
