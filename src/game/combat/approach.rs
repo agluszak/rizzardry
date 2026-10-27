@@ -2,8 +2,10 @@
 //! uses its existing world-owned walking body to head for the party
 //! through the navmesh until one of its attacks reaches; the dead and those
 //! in reach stand. Retail moves monsters as a scheduled action within the
-//! round (advance and charge); here they close in continuously, a
-//! deliberate simplification until those actions exist.
+//! round (advance and charge); here they move only while a round plays, so
+//! a phased fight waiting for the player stands still. Those held by Webbed
+//! or worse do not move (retail sets them motionless). Per-actor advance
+//! and charge phases are not modelled yet.
 
 use crate::game::world::ActorPose;
 use avian3d::prelude::*;
@@ -39,8 +41,8 @@ pub(super) fn needs_approach(
     super::distance_to_party(party_eye, monster, feet) > reach.metres() - REACH_MARGIN
 }
 
-/// Head for the party while no attack reaches it; stand otherwise, when
-/// dead, and when there is no fight.
+/// Head for the party while a round plays and no attack reaches it; stand
+/// otherwise: between rounds, when held or dead, and when there is no fight.
 pub fn close_in(
     battle: Option<Res<Battle>>,
     party: Query<(Entity, &Position), With<PartyBody>>,
@@ -52,8 +54,10 @@ pub fn close_in(
     let Ok((party, party_at)) = party.single() else { return };
     let party_eye = PartyBody::eye(party_at);
     for (entity, monster, at, walker, mut target) in &mut walkers {
-        let fighting =
-            battle.as_ref().is_some_and(|b| b.monsters.iter().any(|&(e, _)| e == entity));
+        let fighting = battle
+            .as_ref()
+            .is_some_and(|b| b.executing() && b.monsters.iter().any(|&(e, _)| e == entity))
+            && super::monster_can_attack(monster);
         let wanted = if fighting
             && catalog.is_some_and(|species| {
                 needs_approach(monster, at.translation(), Some(walker), party_eye, species)

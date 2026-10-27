@@ -118,10 +118,12 @@ fn species(record: &[u8]) -> Species {
             })
             .collect(),
         resistances: EnumMap::from_array(bytes(0x176, 6).try_into().unwrap()),
+        // Metres (retail scales it by its world scale). Unused records hold
+        // 0xcdcdcdcd filler, read as hostile.
         disposition: match i32_at(record, 0x25b) {
             -1 => Disposition::Neutral,
-            0 => Disposition::Hostile,
-            radius => Disposition::HostileWithin(radius as f32 / crate::content::UNITS_PER_METRE),
+            radius if radius > 0 => Disposition::HostileWithin(radius as f32),
+            _ => Disposition::Hostile,
         },
         faction: i32_at(record, 0x25f),
     }
@@ -188,6 +190,10 @@ mod tests {
         assert_eq!(slime.evasion, 7);
         let crocodile = &species[62];
         assert_eq!(crocodile.name, "Ironskin Crocodile");
+        assert_eq!(crocodile.disposition, Disposition::HostileWithin(15.0));
+        assert_eq!(species[253].name, "Crab");
+        assert_eq!(species[253].disposition, Disposition::HostileWithin(15.0));
+        assert_eq!(slime.disposition, Disposition::Hostile);
         // A Venom Crab may leave item 0x27e, one in four.
         let venom = &species[310];
         assert_eq!(venom.treasure[0].drop, Drop::Item(ItemId(0x27e)));

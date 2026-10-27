@@ -125,6 +125,23 @@ pub struct Species {
     pub faction: i32,
 }
 
+impl Species {
+    /// Whether it fights the party at `distance` metres before anything has
+    /// provoked it (retail `MonsterGroup.cpp`). Factions other than the
+    /// unaligned follow retail's faction table, not decoded yet: they stay
+    /// hostile as before.
+    pub fn hostile_at(&self, distance: f32) -> bool {
+        if self.faction != 0 {
+            return true;
+        }
+        match self.disposition {
+            Disposition::Hostile => true,
+            Disposition::Neutral => false,
+            Disposition::HostileWithin(radius) => distance <= radius,
+        }
+    }
+}
+
 /// How a species meets the party before anything provokes it.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Disposition {
@@ -171,3 +188,18 @@ pub enum Drop {
 /// Every species, by retail record number.
 #[derive(Asset, TypePath, Debug, Default)]
 pub struct MonsterCatalog(pub Vec<Species>);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Retail's crabs keep to themselves until the party comes within their
+    /// fifteen metres; aligned species follow their faction instead.
+    #[test]
+    fn a_hostility_radius_makes_an_unaligned_species_hostile_only_up_close() {
+        let crab = Species { disposition: Disposition::HostileWithin(15.0), ..default() };
+        assert!(!crab.hostile_at(20.0) && crab.hostile_at(10.0));
+        assert!(!Species { disposition: Disposition::Neutral, ..default() }.hostile_at(0.0));
+        assert!(Species { faction: 1, ..crab }.hostile_at(20.0));
+    }
+}

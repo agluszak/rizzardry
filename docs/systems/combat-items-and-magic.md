@@ -1,5 +1,42 @@
 # Combat items and magic
 
+## Implemented slice
+
+`game::magic` owns casting; `game::magic::casting::perform` is the one
+operation for a learned spell and an item's spell. It revalidates the actor,
+source and target when it runs, captures victims once, rolls, pays and resolves
+together. Decoded evidence (decomp paths under `src/wiz8/local_code/`):
+
+- `spelltables.dbs`: count, version, then 0x2c0 records whose first 0x101 bytes
+  the game skips. The header's two duration fields are swapped: 0x44 is per
+  power, 0x4d the base (`Magic.cpp:2917-2918`). Item records carry the spell at
+  0x63 and its power at 0x64.
+- Spell points per realm: `RecalculateRealmSpellPoints`
+  (`Health Stamina Mana.cpp:1309-1363`), recovering at `(0.65·max + 20)/240` a
+  tick, never under half rate (`GameplayTime.cpp:416-447, 782-851`).
+- Failure: `ExecuteCharacterSpellCast` (`Magic.cpp:2602-2653`); backfire is a
+  third of a failure chance of at least 6, for spells that can backfire
+  (`Magic.cpp:2768-2809`, `Spells.cpp:1483-1531`).
+- Payment: spell points are spent for any accepted cast, fizzles included
+  (`Magic.cpp:2680-2681`); an item spends a use for any nonzero item-cast result
+  (`PC Item.cpp:1271-1276`). A refusal spends nothing. Exhausted charged items
+  stay; a used-up stack or potion is gone, and its effect still applies.
+- Effects: Heal Wounds `(4·power)d4` with no save; Energy Blast `power d7` less
+  `ReduceMagnitudeByResistance`; Sleep's save `(level − strength)·3 + 20 +
+  resistance` within 5..95 and its duration (`Magic Effects.cpp:268-585`).
+  Sleepers lose their actions, age out by round and may wake when hit
+  (`SEN/2 + 50`%).
+- First spells: two picks for the pure casters, from their books, of levels
+  their caster level and training allow (`CharGeneration.cpp:594-711`,
+  `Magic.cpp:1042-1095`).
+- Disposition: unaligned species with a hostility radius (metres) join a fight
+  only when the party is that close or something has hurt them.
+
+In combat a choice is the member's `Order::Magic`, accepted with the round and
+executed at the member's initiative; a refused one falls back to defending.
+Outside combat it runs at once. See [known gaps](../known-gaps.md) for what
+this slice does not do.
+
 ## Scope and comparison
 
 Worked example: an actor uses a stackable bomb whose definition carries a radius

@@ -107,6 +107,7 @@ impl MonsterDamage<'_, '_> {
         let position = feet(at.translation(), walker);
         let lost = amount.min(monster.hp);
         monster.hp -= lost;
+        self.commands.entity(target).insert(super::population::Provoked);
         if !monster.is_dead() {
             crate::game::characters::wake_on_hit(
                 &mut monster.conditions,

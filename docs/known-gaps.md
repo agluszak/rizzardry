@@ -6,14 +6,14 @@ See [research](research/README.md) for recovered mechanics and
 
 ## UI and character creation
 
-- Character review lacks learned spells, level-up editing, trait/enchantment
+- Character review lacks the learned-spell list, level-up editing, trait/enchantment
   details, several combat/armor values and the improved-skill palette. See the
   [original-game comparison](research/character-review.md) for exact limits.
 - The main menu and party assembly use retail artwork; the character editor still
   has a custom layout. Candidate review and persistence are
   absent. Saved-game loading, character import/export, difficulty/gameplay options,
-  intro movie, menu music, personality/voice and learned-spell selection are also
-  absent. Casters start without spells; candidates remain session-local.
+  intro movie, menu music and personality/voice are also absent. First-spell
+  picks use a plain list; candidates remain session-local.
 - Several HUD bank actions remain unimplemented. Inventory lacks stack splitting,
   ammunition pouring, weapon-partner stowing, remaining item actions and filtering.
   Containers/bags currently transfer contents directly instead of opening a picker.
@@ -27,10 +27,16 @@ See [research](research/README.md) for recovered mechanics and
 
 ## Combat and progression
 
-- Additional orders, spells, criticals/fumbles, continuing effects, off-hand attacks,
-  factions, levelling and complete party/monster movement and fleeing remain.
-  Monsters currently close in continuously rather than scheduling retail advance
-  and charge actions within rounds.
+- Additional orders, criticals/fumbles, continuing effects, off-hand attacks,
+  the faction table, levelling and complete party/monster movement and fleeing
+  remain. Monsters close in only while a round plays, not as retail's per-actor
+  advance and charge actions; the party has no combat movement budget.
+- Magic: only Heal Wounds, Energy Blast and Sleep resolve; other spells and item
+  spells are refused before anything is spent. Spell and item views are plain
+  popups, not retail's overlays. Effects apply at the action rather than after
+  missile flight or visuals; backfires turn on the caster instead of retail's
+  re-aim; item-use difficulty, skill practice, the repeat-heal pip, combat pace,
+  difficulty scaling and condition immunities by monster kind are not modelled.
 - Party swing fatigue/rest are implemented; shared-load fatigue scaling, Berserk
   order and monster fatigue/recovery are not. Charging monster fatigue alone could
   leave exhausted monsters stranded after combat.

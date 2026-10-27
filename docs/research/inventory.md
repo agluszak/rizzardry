@@ -415,7 +415,7 @@ All of these are in `inv.cpp`. "Refuse" means nothing changes.
 | **removeById(id, all)** `788-819` | Search order is hand, then each member (equipment then backpack), then the pool. With `all = false` it stops at the first hit. With `all = true` it still clears **only one copy per member** but every matching pool row | None |
 | **removeQuantity(loc, n)** `821-831` | Subtracts `n` from the stack. If `n >= max(1, count)` the whole item is removed | Empty slot or `n == 0` |
 | take(loc) `176-184` | Removes and returns the item | Empty slot |
-| **use(actor, use)** `1740-1747`, `1567-1738` | Checks usability, then whether the item can be activated (`ir.cpp:653-687`: must be worn if equippable or must-equip, has a spell, has charges). Casts the item's spell, and spends a use **only if the cast succeeded** | Stale location (a different item is there now); not usable; spent charges/shots |
+| **use(actor, use)** `1740-1747`, `1567-1738` | Checks usability, then whether the item can be activated (`ir.cpp:653-687`: must be worn if equippable or must-equip, has a spell, has charges). Casts the item's spell, and spends a use for any accepted cast: normal, fizzle or backfire (`PC Item.cpp:1271-1276`); a refused cast spends nothing | Stale location (a different item is there now); not usable; spent charges/shots |
 | **sortPool()** `1206-1212` | Explicit only: the sort button or the `P` key (`rcs.cpp:501-507`, `ReviewCharacterScreen.cpp:706-709`). Never automatic | Before play |
 | stashDeparting(member) `630-657` | A member leaving moves every item to the pool, except worn items whose curse holds (cursed, not released, on the paper doll, wearer alive). Overflow is dropped ("The %s has been dropped." 0x7d3) or held | None |
 

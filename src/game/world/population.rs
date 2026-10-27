@@ -47,6 +47,11 @@ pub struct Monster {
     pub body: ScaledBody,
 }
 
+/// A monster something has hurt: it fights whatever its authored
+/// disposition (retail `MakeTargetGroupHostile`).
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct Provoked;
+
 impl Monster {
     pub fn is_dead(&self) -> bool {
         self.hp == 0

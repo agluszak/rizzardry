@@ -291,7 +291,13 @@ pub fn start_battle(
     mut party: Query<(&Position, &mut PartyBody)>,
     level: PlayedLevel,
     members: Query<(&Character, &Vitals)>,
-    monsters: Query<(Entity, &Monster, ActorPose, Option<&Walker>)>,
+    monsters: Query<(
+        Entity,
+        &Monster,
+        ActorPose,
+        Option<&Walker>,
+        Has<crate::game::world::population::Provoked>,
+    )>,
     obstacles: WorldObstacles,
     data: Option<Res<GameData>>,
     species: Res<Assets<MonsterCatalog>>,
@@ -329,13 +335,18 @@ pub fn start_battle(
     };
     let mut joined: Vec<(i32, Entity)> = monsters
         .iter()
-        .filter(|(_, monster, at, walker)| {
+        .filter(|(_, monster, at, walker, provoked)| {
             let Some(kind) = catalog.0.get(monster.species as usize) else { return false };
             if kind.npc || !monster_can_attack(monster) {
                 return false;
             }
             let feet = feet(at.translation(), *walker);
             let distance = distance_to_party(party_eye, monster, feet);
+            // Authored disposition: some keep to themselves until the party
+            // comes close or hurts them.
+            if !provoked && !kind.hostile_at(distance) {
+                return false;
+            }
             let eye = feet + Vec3::Y * monster.body.eye_height;
             if distance > far || !clear(eye, party_eye) {
                 return false;
@@ -365,7 +376,7 @@ pub fn start_battle(
     let nearest = monsters
         .iter_many(joined.iter().map(|&(_, e)| e))
         .matched()
-        .map(|(_, _, at, _)| at.translation())
+        .map(|(_, _, at, ..)| at.translation())
         .min_by(|a, b| a.distance(party_eye).total_cmp(&b.distance(party_eye)));
     if let Some(nearest) = nearest {
         body.face(nearest - party_eye);
