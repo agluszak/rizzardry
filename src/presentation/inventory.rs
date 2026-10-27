@@ -534,7 +534,6 @@ fn cell_controls(cell: Cell, art: &InventoryArt) -> impl Scene {
         UiButton TabIndex(0) Pickable::default()
         crate::presentation::retail_controls::FocusRing
         on(click_cell)
-        on(pool_scroll::wheel)
         Children [
             template(move |_| Ok(ImageNode { image: fill.clone(), rect: Some(Rect::new(0.0, 0.0, 46.0, 54.0)), ..default() }))
             Node { position_type: PositionType::Absolute, width: px(46), height: px(54) }
@@ -641,39 +640,51 @@ pub fn spawn_inventory_screen(
         .iter()
         .map(|slot| Cell::Member(Slot::Equipment(slot)))
         .chain((0..BACKPACK_SLOTS).map(|i| Cell::Member(Slot::Backpack(i))))
-        .chain((0..POOL_CELLS).map(Cell::Pool))
         .map(|cell| cell_controls(cell, &art))
         .collect();
     commands.entity(root).insert(InventoryBuilt);
-    let content = commands.spawn_scene(bsn! {
-        @screen() ChildOf(root)
+    let content = commands
+        .spawn_scene(bsn! {
+            @screen() ChildOf(root)
+            Children [
+                @{corner}
+                -- {header(&art)}
+            ]
+        })
+        .id();
+    let items = commands.spawn_scene(bsn! {
+        @screen() Pickable::IGNORE ChildOf(content)
+        template(|_| Ok(review::Page::Items))
         Children [
-            @{corner}
-            -- {header(&art)}
-            -- @screen() Pickable::IGNORE
-                template(|_| Ok(review::Page::Items))
-                Children [
-                    {fixed}
-                    -- @label(art.bold.clone(),Vec2::new(12.0,174.0),93.0) template(|_|Ok(RetailLabel(0x92b)))
-                    -- @label(art.bold.clone(),Vec2::new(486.0,174.0),141.0) template(|_|Ok(RetailLabel(0x92c)))
-                    -- @picture(default(),0,Vec2::new(194.0,165.0)) template(|_|Ok(HeaderDisplay(HeaderPart::Statue)))
-                    -- @label(art.font.clone(),Vec2::new(553.0,425.0),48.0) GoldLabel
-                    -- {cells}
-                ]
-            -- @{bottom_bar}
-            -- @{exit}
-                UiButton TabIndex(0) Pickable::default()
-                crate::presentation::retail_controls::FocusRing
-                on(|_: On<Activate>, mut next: ResMut<NextState<Screen>>| { next.set(Screen::World); })
+            {fixed}
+            -- @label(art.bold.clone(),Vec2::new(12.0,174.0),93.0) template(|_|Ok(RetailLabel(0x92b)))
+            -- @label(art.bold.clone(),Vec2::new(486.0,174.0),141.0) template(|_|Ok(RetailLabel(0x92c)))
+            -- @picture(default(),0,Vec2::new(194.0,165.0)) template(|_|Ok(HeaderDisplay(HeaderPart::Statue)))
+            -- @label(art.font.clone(),Vec2::new(553.0,425.0),48.0) GoldLabel
+            -- {cells}
         ]
     }).id();
+    commands.spawn_scene(bsn! { @{bottom_bar} ChildOf(content) });
+    commands.spawn_scene(bsn! {
+        @{exit} ChildOf(content)
+            UiButton TabIndex(0) Pickable::default()
+            crate::presentation::retail_controls::FocusRing
+            on(|_: On<Activate>, mut next: ResMut<NextState<Screen>>| { next.set(Screen::World); })
+    });
     let initial_tab = review::build(&mut commands, content, &art);
     if let Some(mut focus) = focus {
         focus.set(initial_tab, bevy::input_focus::FocusCause::Navigated);
     }
-    item_info::build(&mut commands, content, &art);
+    item_info::build(&mut commands, items, content, &art);
     spells::build(&mut commands, content, &art);
-    pool_scroll::build(&mut commands, content, &art);
+    let pool = commands
+        .spawn((absolute(Vec2::ZERO, Vec2::new(640.0, 450.0)), Pickable::IGNORE, ChildOf(items)))
+        .observe(crate::presentation::retail_controls::scroll_wheel)
+        .id();
+    let track = pool_scroll::build(&mut commands, pool, &art);
+    commands.entity(pool).insert(crate::presentation::retail_controls::ScrollWheel(track));
+    let pool_cells: Vec<_> = (0..POOL_CELLS).map(|i| cell_controls(Cell::Pool(i), &art)).collect();
+    commands.entity(pool).queue_spawn_related_scenes::<Children>(bsn_list! { {pool_cells} });
 }
 
 // Retail profession titles, indexed by profession and level band.
@@ -1305,7 +1316,12 @@ mod tests {
                 .world_mut()
                 .resource_mut::<Assets<ItemCatalog>>()
                 .add(ItemCatalog(vec![definition]));
-            app.insert_resource(GameData { items, loot: default(), species: default() });
+            app.insert_resource(GameData {
+                items,
+                loot: default(),
+                species: default(),
+                spells: default(),
+            });
             let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
             let member = app
                 .world_mut()
@@ -1455,6 +1471,23 @@ mod tests {
             app.update();
         }
         assert_eq!(*app.world().resource::<State<Screen>>().get(), Screen::Inventory);
+        let pool_cell = app
+            .world_mut()
+            .query::<(Entity, &ItemCell)>()
+            .iter(app.world())
+            .find_map(|(entity, cell)| matches!(cell.cell, Cell::Pool(0)).then_some(entity))
+            .unwrap();
+        let item_detail = app
+            .world_mut()
+            .query::<(Entity, &info::InfoTarget)>()
+            .iter(app.world())
+            .find_map(|(entity, target)| {
+                matches!(target.subject, info::Subject::Secondary(_)).then_some(entity)
+            })
+            .unwrap();
+        for entity in [pool_cell, item_detail] {
+            assert!(app.world().get::<InheritedVisibility>(entity).unwrap().get());
+        }
         let initial =
             app.world().resource::<InputFocus>().get().expect("opening review focuses a control");
         tap(&mut app, window, KeyCode::Tab);
@@ -1481,6 +1514,9 @@ mod tests {
             .single(app.world())
             .unwrap();
         assert_eq!(list.0, Some(skill_tab));
+        for entity in [pool_cell, item_detail] {
+            assert!(!app.world().get::<InheritedVisibility>(entity).unwrap().get());
+        }
         let target = app
             .world_mut()
             .query::<(Entity, &info::InfoTarget)>()

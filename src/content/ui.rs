@@ -71,6 +71,9 @@ pub fn glyph_index(c: char) -> Option<usize> {
         '0'..='9' => Some(52 + c as usize - '0' as usize),
         '¿' => Some(250),
         '¡' => Some(251),
+        // Retail's spell-target glyphs (`Font.cpp:1230-1244`): point, cone,
+        // single, group and none.
+        '\u{fff0}'..='\u{fff4}' => Some(149 + c as usize - 0xfff0),
         _ => PUNCTUATION
             .chars()
             .position(|p| p == c)
