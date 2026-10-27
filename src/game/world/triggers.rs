@@ -1203,6 +1203,51 @@ mod tests {
     }
 
     #[test]
+    fn lock_practice_is_bounded_by_the_device_across_reopening_and_revisit() {
+        use super::super::interaction::{leave, pick_tumbler};
+        let mut level =
+            chest_level(Some(crate::content::level::Lock::Pickable { difficulty: 2 }), 0);
+        let picker = level.members[0];
+        let mut character = Character::new(
+            "Picker",
+            crate::game::characters::Race::Human,
+            crate::game::characters::Gender::Male,
+            crate::game::characters::Profession::Rogue,
+        );
+        character.skill_points[crate::content::characters::Skill::LocksAndTraps] = 1;
+        level.world.entity_mut(picker).insert(character);
+        // Arrange a practice opportunity on the first (no held pins) pick.
+        let mut opportunity = GameRng::seeded(1);
+        while opportunity.clone().below(5) != 0 {
+            opportunity.below(5);
+        }
+        for remaining in (0..6).rev() {
+            level.run("CHEST");
+            level.world.insert_resource(opportunity.clone());
+            pick_tumbler(&mut level.world, picker, 0).unwrap();
+            assert_eq!(
+                level.world.get::<Guarded>(level.device("CHEST")).unwrap().practice_left,
+                remaining
+            );
+            leave(&mut level.world);
+            if remaining == 3 {
+                let memory = level.remember();
+                level.visit(Some(memory));
+                assert_eq!(
+                    level.world.get::<Guarded>(level.device("CHEST")).unwrap().practice_left,
+                    3
+                );
+            }
+        }
+        let before = level.world.get::<Character>(picker).unwrap().skill_practice;
+        level.run("CHEST");
+        level.world.insert_resource(opportunity);
+        pick_tumbler(&mut level.world, picker, 0).unwrap();
+        assert_eq!(level.world.get::<Character>(picker).unwrap().skill_practice, before);
+        assert_eq!(level.world.get::<Guarded>(level.device("CHEST")).unwrap().practice_left, 0);
+    }
+
+    #[test]
     fn a_locked_chest_opens_once_picked_and_stays_unlocked() {
         use super::super::interaction::pick_tumbler;
         let lock = crate::content::level::Lock::Pickable { difficulty: 3 };

@@ -373,10 +373,14 @@ pub enum Outcome {
 }
 
 /// Roll a cast against its failure chance (retail `CastSpellFromSource`): a
-/// failure backfires a third of the time it could, never under 6%; a quiet
-/// (thrown) use backfires whenever it fails and can.
+/// the same roll decides failure and backfire. Ordinary failure chances below
+/// 6% cannot backfire; quiet (thrown) uses backfire whenever they fail and can.
 pub fn roll(rng: &mut GameRng, chance: u32, spell: &SpellDefinition, quiet: bool) -> Outcome {
-    if chance == 0 || rng.below(100) >= chance {
+    if chance == 0 {
+        return Outcome::Cast;
+    }
+    let rolled = rng.below(100);
+    if rolled >= chance {
         return Outcome::Cast;
     }
     let backfire = match () {
@@ -385,7 +389,7 @@ pub fn roll(rng: &mut GameRng, chance: u32, spell: &SpellDefinition, quiet: bool
         _ if chance < 6 => 0,
         _ => chance / 3,
     };
-    if rng.below(100) < backfire { Outcome::Backfired } else { Outcome::Fizzled }
+    if rolled < backfire { Outcome::Backfired } else { Outcome::Fizzled }
 }
 
 /// Retail fatigue for a learned cast: the spell's level plus its power.
@@ -942,6 +946,22 @@ mod tests {
         assert_eq!(points.affordable_power(&heal_wounds()), 3);
         points.current[Realm::Divine] = 100;
         assert_eq!(points.affordable_power(&heal_wounds()), 7);
+    }
+
+    #[test]
+    fn failure_and_backfire_share_one_roll_and_guaranteed_casts_draw_none() {
+        let spell = SpellDefinition { id: SpellId::ENERGY_BLAST, ..default() };
+        let mut rng = GameRng::seeded(17);
+        let mut expected = rng.clone();
+        let rolled = expected.below(100);
+        let outcome = if rolled < 33 { Outcome::Backfired } else { Outcome::Fizzled };
+        assert_eq!(roll(&mut rng, 100, &spell, false), outcome);
+        assert_eq!(rng, expected, "backfire must not consume a second random draw");
+        assert_eq!(roll(&mut rng, 0, &spell, false), Outcome::Cast);
+        assert_eq!(rng, expected, "a guaranteed cast consumes no failure draw");
+        expected.below(100);
+        assert_eq!(roll(&mut rng, 100, &spell, true), Outcome::Backfired);
+        assert_eq!(rng, expected);
     }
 
     #[test]
