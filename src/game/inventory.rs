@@ -128,6 +128,9 @@ pub fn merge_stack(
         return 0;
     }
     let moved = (*more).min(definition.maximum_quantity.saturating_sub(*have));
+    if moved == 0 {
+        return 0;
+    }
     *have += moved;
     if moved == *more {
         *source = None;
