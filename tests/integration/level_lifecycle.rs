@@ -409,6 +409,14 @@ fn group_knowledge_survives_revisit() {
     group.counted = true;
     let back = revisit(&mut app);
     assert!(is_played(&app, back));
+    assert_eq!(
+        app.world_mut()
+            .query_filtered::<Entity, With<rizzardry::game::world::population::Provoked>>()
+            .iter(app.world())
+            .count(),
+        1,
+        "revisiting does not forgive provoked aggression",
+    );
     let world = app.world_mut();
     let membership = world.query_filtered::<&GroupMember, With<Monster>>().single(world).unwrap();
     let group = world.get::<MonsterGroup>(membership.0).unwrap();
