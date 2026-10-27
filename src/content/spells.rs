@@ -108,6 +108,8 @@ pub struct SpellDefinition {
     pub usable: Usable,
     /// Magnitude dice at power 1; power multiplies their count.
     pub dice: Option<Dice>,
+    /// Retail info-panel flag (record 0x147), independent of having effect dice.
+    pub show_effect_dice: bool,
     /// Rounds an inflicted condition lasts: `base + per_power × power`.
     pub duration_base: i32,
     pub duration_per_power: i32,
@@ -173,3 +175,7 @@ pub struct ItemSpell {
     pub spell: SpellId,
     pub power: u8,
 }
+
+/// Localized spell effect and description text, loaded independently of rules.
+#[derive(Asset, TypePath, Debug)]
+pub struct SpellText(pub Vec<Option<String>>);

@@ -211,10 +211,21 @@ pub fn can_learn(character: &Character, spell: &SpellDefinition) -> bool {
     if spell.id.0 == 0 || spell.id.0 >= SpellId::LEARNABLE || (spell.books & books).is_empty() {
         return false;
     }
-    let caster = total_caster_level(character, books);
+    if character.traits().contains(crate::content::characters::Trait::CannotLearn)
+        || caster_level(character, character.profession) <= 0
+        || spell.realm.is_none()
+    {
+        return false;
+    }
+    let caster = total_caster_level(character, spell.books);
     let by_level = (1..=7u8).filter(|&l| min_caster_level(l) <= caster).max().unwrap_or(0);
     let realm_points = spell.realm.map_or(0, |r| u32::from(character.skill_points[realm_skill(r)]));
-    let by_skill = (realm_points / 10 + best_book_skill(character, spell)) / 15 + 1;
+    let book = [Spellbook::Wizardry, Spellbook::Divinity, Spellbook::Alchemy, Spellbook::Psionics]
+        .into_iter()
+        .filter(|book| spell.books.contains(*book))
+        .max_by_key(|book| character.skill_points[book_skill(*book)]);
+    let best = book.map_or(0, |book| character.skill(book_skill(book)));
+    let by_skill = (realm_points / 10 + best) / 15 + 1;
     u32::from(spell.level) <= u32::from(by_level).min(by_skill)
 }
 

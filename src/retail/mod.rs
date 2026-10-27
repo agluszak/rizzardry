@@ -82,6 +82,8 @@ impl Plugin for RetailPlugin {
             .init_asset_loader::<npcs::DialogueLoader>()
             .init_asset::<crate::content::spells::SpellCatalog>()
             .init_asset_loader::<spells::SpellCatalogLoader>()
+            .init_asset::<crate::content::spells::SpellText>()
+            .init_asset_loader::<spells::SpellTextLoader>()
             .init_asset::<crate::content::species::MonsterCatalog>()
             .init_asset_loader::<species::MonsterCatalogLoader>()
             .init_asset::<crate::content::ui::TextTable>()

@@ -12,11 +12,11 @@ use bevy::ui_widgets::{Activate, Button};
 
 #[derive(Component)]
 pub(super) struct SpellArt {
-    catalog: Handle<SpellCatalog>,
+    pub(super) catalog: Handle<SpellCatalog>,
     selected: Handle<SpriteSheet>,
 }
 #[derive(Component)]
-pub(super) struct SpellOption(SpellId);
+pub(super) struct SpellOption(pub(super) SpellId);
 #[derive(Component)]
 pub(super) struct RealmValue(Realm, bool);
 #[derive(Component)]
@@ -116,6 +116,7 @@ pub(super) fn build(commands: &mut Commands, root: Entity, assets: &AssetServer)
                 ChildOf(root),
             ))
             .observe(select_spell)
+            .observe(super::spell_info::open)
             .with_children(|parent| {
                 parent.spawn((
                     SpellText::Name,
