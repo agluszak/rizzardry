@@ -4,6 +4,7 @@
 //! them into typed records and native Bevy assets.
 
 pub mod automap;
+pub mod credits;
 pub mod files;
 pub mod item_model_loader;
 pub mod items;
@@ -96,6 +97,8 @@ impl Plugin for RetailPresentationPlugin {
             .init_asset_loader::<sky_loader::LvlLoader>()
             .init_asset::<crate::content::monster::MonsterModel>()
             .init_asset_loader::<monster_loader::MlsLoader>()
+            .init_asset::<crate::content::ui::Credits>()
+            .init_asset_loader::<credits::CreditsLoader>()
             .init_asset::<crate::content::ui::SpriteSheet>()
             .init_asset_loader::<sti_loader::StiLoader>()
             .init_asset_loader::<pcx_loader::PcxLoader>()

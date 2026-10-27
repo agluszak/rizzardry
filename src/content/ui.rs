@@ -137,6 +137,18 @@ pub fn ui_image(width: u32, height: u32, rgba: Vec<u8>) -> Image {
 #[derive(Asset, TypePath, Debug, Default)]
 pub struct TextTable(pub Vec<Option<String>>);
 
+/// Lines in the retail credits roll, decoded from the installation's UTF-16 file.
+#[derive(Asset, TypePath, Debug)]
+pub struct Credits(pub Vec<CreditLine>);
+
+#[derive(Debug)]
+pub enum CreditLine {
+    Heading(String),
+    Centred(String),
+    Pair(String, String),
+    Blank,
+}
+
 impl TextTable {
     pub fn get(&self, index: usize) -> Option<&str> {
         self.0.get(index)?.as_deref()
