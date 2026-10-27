@@ -18,7 +18,6 @@
 
 use bevy::prelude::*;
 
-use super::props::Prop;
 use super::triggers::{Device, DoorState};
 use crate::content::characters::{Attribute, Skill};
 use crate::content::level::{Lock, TRAP_TYPES};
