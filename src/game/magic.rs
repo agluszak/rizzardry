@@ -30,12 +30,12 @@ use crate::game::rng::GameRng;
 use crate::game::world::damage::MonsterDamage;
 
 /// The spells a character has learned. Creation picks the first ones.
-#[derive(Component, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Component, Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LearnedSpells(pub BTreeSet<SpellId>);
 
 /// Spell points left per realm, and recovery not yet whole points. The
 /// maximum is derived from the profile and learned spells ([`max_points`]).
-#[derive(Component, Clone, Debug, Default, PartialEq)]
+#[derive(Component, Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SpellPoints {
     pub current: EnumMap<Realm, u32>,
     pub fraction: EnumMap<Realm, f32>,

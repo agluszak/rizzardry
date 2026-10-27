@@ -16,7 +16,9 @@ const COMES_ROUND_ABOVE: u32 = 9;
 
 /// Retail's conditions, mildest first. Death is not one of them here: a
 /// member is dead exactly when their health is 0.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum Condition {
     Drained,
     Diseased,
@@ -88,7 +90,7 @@ pub fn wake_on_hit(
 }
 
 /// How long a condition lasts.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Lasting {
     /// Combat rounds, which are also the 120-second aging ticks outside it.
     Rounds(u16),
@@ -309,7 +311,7 @@ fn load_band(weight: u32, capacity: u32) -> Load {
 }
 
 /// An adventurer's identity, training and progression.
-#[derive(Component, Clone, Debug, PartialEq)]
+#[derive(Component, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[require(MonsterKnowledge)]
 pub struct Character {
     pub name: String,
@@ -331,7 +333,7 @@ pub struct Character {
 }
 
 /// Recognition history changes independently of profile, vitals or inventory.
-#[derive(Component, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Component, Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MonsterKnowledge {
     /// How many of each species the actor has seen, capped at 255.
     pub seen: std::collections::HashMap<u32, u8>,
@@ -576,7 +578,7 @@ impl Character {
 
 /// Health, fatigue and conditions change independently of identity, training
 /// and recognition. Recruitment initializes these from the actual profile.
-#[derive(Component, Clone, Debug, Default, PartialEq)]
+#[derive(Component, Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Vitals {
     pub hp: u32,
     pub stamina: u32,

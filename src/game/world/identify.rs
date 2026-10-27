@@ -19,7 +19,7 @@ use crate::game::rng::GameRng;
 use crate::game::world::level::PlayedLevel;
 
 /// Knowledge belongs to the identifiable group, not to parallel level tables.
-#[derive(Component, Clone, Copy, Debug, Default)]
+#[derive(Component, Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct MonsterGroup {
     pub authored: i32,
     pub identified: bool,

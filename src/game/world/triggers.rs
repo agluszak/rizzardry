@@ -88,13 +88,13 @@ impl Default for TriggerState {
 }
 
 /// Logical door state is independent of its prop's animation progress.
-#[derive(Component, Clone, Debug)]
+#[derive(Component, Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct DoorState {
     pub open: bool,
     pub locked: bool,
 }
 
-#[derive(Component, Clone, Debug, Default)]
+#[derive(Component, Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct DialState {
     pub position: usize,
 }
@@ -105,12 +105,12 @@ pub struct Container {
     pub contents: Option<Contents>,
 }
 
-#[derive(Component, Clone, Debug, Default)]
+#[derive(Component, Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct FountainState {
     used: Option<FountainUses>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 struct FountainUses {
     left: Option<u32>,
     refills_at: Option<u64>,
@@ -121,13 +121,13 @@ struct FountainUses {
 pub(crate) struct ActiveDamageZone(Timer);
 
 /// Dormant records use authored indices, never runtime entity references.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct TriggerMemory {
     devices: HashMap<usize, KeptDevice>,
     variables: HashMap<VariableName, bool>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct KeptDevice {
     on: bool,
     fired: bool,
@@ -138,7 +138,7 @@ struct KeptDevice {
     fountain: Option<FountainState>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Contents {
     pub items: Vec<ItemStack>,
     pub gold: u32,

@@ -12,10 +12,10 @@ use enumset::EnumSetType;
 use std::num::NonZeroU16;
 
 /// Identifies a surviving stack, not each physical object within it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct StackId(pub u64);
 
-#[derive(Resource, Debug, Default)]
+#[derive(Clone, Resource, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ItemIds {
     next: u64,
 }
@@ -26,7 +26,7 @@ impl ItemIds {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ItemStack {
     pub id: StackId,
     pub item: ItemId,
@@ -151,7 +151,7 @@ fn fill<'a>(
 }
 
 /// Where an item is worn, in retail's slot order.
-#[derive(Debug, Hash, Enum, EnumSetType)]
+#[derive(Debug, Hash, Enum, EnumSetType, serde::Serialize, serde::Deserialize)]
 pub enum EquipSlot {
     Head,
     Misc1,
@@ -190,7 +190,7 @@ impl EquipSlot {
 pub const BACKPACK_SLOTS: usize = 8;
 pub const POOL_LIMIT: usize = 500;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Equipped {
     pub stack: ItemStack,
     pub curse_released: bool,
@@ -228,7 +228,7 @@ pub enum PoolPosition {
     End,
 }
 
-#[derive(Component, Clone, Debug, Default, PartialEq)]
+#[derive(Component, Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Carried {
     pub equipment: EnumMap<EquipSlot, Option<Equipped>>,
     pub backpack: [Option<ItemStack>; BACKPACK_SLOTS],

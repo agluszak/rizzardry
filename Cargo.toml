@@ -7,7 +7,7 @@ description = "A Rust and Bevy rewrite of Wizardry 8"
 publish = false
 
 [dependencies]
-bevy = { version = "0.20.0", features = ["system_clipboard", "mp3", "tga", "wav", "wayland"] }
+bevy = { version = "0.20.0", features = ["serialize", "system_clipboard", "mp3", "tga", "wav", "wayland"] }
 # Colliders come from gameplay collision data, never render meshes or scenes.
 avian3d = { version = "0.8.0", default-features = false, features = ["3d", "parry-f32", "parallel", "xpbd_joints"] }
 bevy-tnua = "0.33.0"
@@ -21,10 +21,10 @@ clap = { version = "4.6.7", features = ["derive", "env"] }
 serde = { version = "1.0.229", features = ["derive"] }
 num_enum = "0.7.6"
 rand = { version = "0.9", features = ["small_rng", "os_rng"] }
-rand_chacha = "0.9"
-enum-map = "3.1.0"
-enumset = "1.1.15"
-ron = "0.12"
+rand_chacha = { version = "0.9", features = ["serde"] }
+enum-map = { version = "3.1.0", features = ["serde"] }
+enumset = { version = "1.1.15", features = ["serde"] }
+ron = { version = "0.12", features = ["integer128"] }
 
 # Dependencies compile with optimisations so the game stays playable in debug.
 # The binary has no unit tests; don't link a test harness for it.

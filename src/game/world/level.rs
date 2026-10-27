@@ -211,13 +211,20 @@ impl LevelMemory {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+
+    /// The remembered levels, for a save, in a stable order.
+    pub fn records(&self) -> Vec<(String, LevelRecord)> {
+        let mut records: Vec<_> = self.0.iter().map(|(p, r)| (p.clone(), r.clone())).collect();
+        records.sort_by(|a, b| a.0.cmp(&b.0));
+        records
+    }
 }
 
 /// A level the party has left (retail keeps it in the level's state image):
 /// what its triggers keep, where its props were heading, its monsters (the
 /// dead too, so they stay dead), the items lying about, what the party
 /// knows of its groups, and its map notes. Activation consumes it.
-#[derive(Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct LevelRecord {
     triggers: TriggerMemory,
     /// By prop definition index.
@@ -230,7 +237,7 @@ pub struct LevelRecord {
 
 /// A monster as the party left it: where its feet were and which way it
 /// faced.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct KeptMonster {
     pub group: Option<i32>,
     pub provoked: bool,
@@ -261,7 +268,12 @@ pub struct LevelContents<'w, 's> {
 }
 
 impl LevelContents<'_, '_> {
-    fn remember(&self, root: Entity, state: &LevelState, children: &[Entity]) -> LevelRecord {
+    pub(crate) fn remember(
+        &self,
+        root: Entity,
+        state: &LevelState,
+        children: &[Entity],
+    ) -> LevelRecord {
         let notes = self.notes.get(root).ok();
         LevelRecord {
             triggers: self.devices.remember(children, state),
@@ -317,8 +329,9 @@ impl Destination {
     }
 }
 
-/// Why a level is entered. Retail also restores saved games, whose entry
-/// effects differ; Rizzardry cannot save yet.
+/// Why a level is entered: each commits differently. A new game creates
+/// the party (and the level's first population); travel remembers the
+/// level left; a restore reinstates saved values and creates nothing anew.
 #[derive(Debug)]
 pub enum Entry {
     /// A new campaign: the accepted party, which joins only when the level
@@ -326,6 +339,8 @@ pub enum Entry {
     NewGame(Vec<(crate::game::characters::Character, crate::game::magic::LearnedSpells)>),
     /// The party travels on from the level it is in.
     Travel,
+    /// A saved game replaces the campaign, in its saved level.
+    Restore(Box<crate::game::save::SaveRecord>),
 }
 
 /// On an entry: the rendered app is still preparing to show it (its
@@ -545,7 +560,7 @@ pub fn activate_level(
     mut commands: Commands,
     mut destinations: Query<(Entity, &mut Destination, Option<&PresentationReadiness>)>,
     current: Query<(Entity, &Level, &LevelState, Option<&LevelEntities>)>,
-    parties: Query<Entity, With<Party>>,
+    parties: Query<(Entity, Option<&crate::game::party::roster::PartyRoster>), With<Party>>,
     geometry: Res<Assets<LevelDefinition>>,
     assets: Res<AssetServer>,
     mut shared: SharedData,
@@ -623,14 +638,40 @@ pub fn activate_level(
             fail("there is no party to travel");
             continue;
         }
-        // Capture the source's state exactly at departure; it has not
-        // changed since travel was accepted.
-        for (entity, source, state, owned) in &current {
-            let owned = owned.map_or(&[][..], LevelEntities::entities);
-            memory.0.insert(source.path.clone(), transition.p0().remember(entity, state, owned));
-            commands.entity(entity).despawn();
-        }
-        let mut remembered = memory.0.remove(&level.path);
+        let entry = std::mem::replace(&mut destination.entry, Entry::Travel);
+        let (mut remembered, entry) = match entry {
+            // A restore replaces the campaign: what was played and the
+            // party that played it go unremembered.
+            Entry::Restore(save) => {
+                for (entity, ..) in &current {
+                    commands.entity(entity).despawn();
+                }
+                if let Some((party, roster)) = traveller {
+                    for member in roster.into_iter().flat_map(|roster| roster.iter()) {
+                        commands.entity(member).despawn();
+                    }
+                    commands.entity(party).despawn();
+                }
+                let (played, dormant, restored) = save.into_levels();
+                memory.0 = dormant.into_iter().collect();
+                (Some(played), Commit::Restore(Box::new(restored)))
+            }
+            entry => {
+                // Capture the source's state exactly at departure; it has
+                // not changed since travel was accepted.
+                for (entity, source, state, owned) in &current {
+                    let owned = owned.map_or(&[][..], LevelEntities::entities);
+                    let record = transition.p0().remember(entity, state, owned);
+                    memory.0.insert(source.path.clone(), record);
+                    commands.entity(entity).despawn();
+                }
+                let commit = match entry {
+                    Entry::NewGame(characters) => Commit::NewGame(characters),
+                    _ => Commit::Travel,
+                };
+                (memory.0.remove(&level.path), commit)
+            }
+        };
         build_world(
             &mut commands,
             root,
@@ -641,7 +682,7 @@ pub fn activate_level(
             remembered.as_mut(),
         );
         let navigation = navigation::install(&mut commands, root, level, geometry);
-        population::populate(
+        let monsters = population::populate(
             &mut commands,
             root,
             geometry,
@@ -652,15 +693,14 @@ pub fn activate_level(
             &mut ids,
             &mut rng,
         );
-        let party = match std::mem::replace(&mut destination.entry, Entry::Travel) {
-            Entry::Travel => traveller.unwrap(),
-            Entry::NewGame(characters) => {
-                if let Some(session) = session.as_mut() {
-                    session.set(crate::game::session::Session::Playing);
-                }
-                found_party(&mut commands, characters)
-            }
+        let party = match entry {
+            Commit::Travel => traveller.unwrap().0,
+            Commit::NewGame(characters) => found_party(&mut commands, characters),
+            Commit::Restore(restored) => restored.apply(&mut commands, &monsters),
         };
+        if let Some(session) = session.as_mut() {
+            session.set(crate::game::session::Session::Playing);
+        }
         transition.p1().place(&mut commands, party, geometry, &destination.start);
         navigation::add_party_characters(&mut commands, root, party, &navigation);
         info!("{} is active", level.path);
@@ -668,6 +708,13 @@ pub fn activate_level(
         ready.write(LevelReady { level: root });
         break;
     }
+}
+
+/// What an entry's commit does with the party, once the levels are settled.
+enum Commit {
+    Travel,
+    NewGame(Vec<(crate::game::characters::Character, crate::game::magic::LearnedSpells)>),
+    Restore(Box<crate::game::save::Restored>),
 }
 
 /// A new campaign's party, its members joining in order.

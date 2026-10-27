@@ -10,7 +10,7 @@ pub const MAX_NOTES: usize = 200;
 /// Characters, not counting the terminator retail stores.
 pub const MAX_NOTE_LENGTH: usize = 39;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MapNote {
     /// World x and z, in metres.
     pub position: Vec2,
@@ -20,7 +20,7 @@ pub struct MapNote {
 
 /// The notes pinned on a level's map, on its root (retail saves them in
 /// each level's state, the `AUTO` chunk).
-#[derive(Component, Clone, Debug, Default)]
+#[derive(Component, Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct MapNotes {
     pub notes: Vec<MapNote>,
 }

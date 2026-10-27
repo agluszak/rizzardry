@@ -10,12 +10,12 @@ use crate::content::level::ItemPlacement;
 use crate::game::inventory::{ItemIds, ItemNews, ItemStack, PartyInventory, Refusal};
 
 /// An item lying in the level.
-#[derive(Component, Debug, Clone)]
+#[derive(Component, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WorldItem {
     pub loot: GroundLoot,
     pub hidden: bool,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum GroundLoot {
     Loose(ItemStack),
     Pile { appearance: ItemId, identified: bool, contents: Vec<ItemStack> },

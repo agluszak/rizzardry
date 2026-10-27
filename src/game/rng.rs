@@ -10,7 +10,7 @@ use rand_chacha::ChaCha8Rng;
 
 use crate::content::items::Dice;
 
-#[derive(Resource, Clone, Debug, PartialEq, Eq)]
+#[derive(Resource, Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GameRng(ChaCha8Rng);
 
 impl GameRng {

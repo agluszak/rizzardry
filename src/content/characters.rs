@@ -7,7 +7,7 @@ use enumset::EnumSetType;
 use num_enum::TryFromPrimitive;
 use serde::Deserialize;
 
-#[derive(Debug, Enum, EnumSetType, Deserialize)]
+#[derive(Debug, Enum, EnumSetType, Deserialize, serde::Serialize)]
 #[enumset(repr = "u32")]
 pub enum Race {
     Human,
@@ -28,7 +28,7 @@ pub enum Race {
     Android,
 }
 
-#[derive(Debug, Enum, EnumSetType, Deserialize)]
+#[derive(Debug, Enum, EnumSetType, Deserialize, serde::Serialize)]
 #[enumset(repr = "u16")]
 pub enum Profession {
     Fighter,
@@ -48,14 +48,14 @@ pub enum Profession {
     Mage,
 }
 
-#[derive(Debug, Enum, EnumSetType, Deserialize)]
+#[derive(Debug, Enum, EnumSetType, Deserialize, serde::Serialize)]
 #[enumset(repr = "u8")]
 pub enum Gender {
     Male,
     Female,
 }
 
-#[derive(Debug, Enum, EnumSetType, TryFromPrimitive)]
+#[derive(Debug, Enum, EnumSetType, TryFromPrimitive, serde::Serialize, serde::Deserialize)]
 #[repr(u8)]
 pub enum Attribute {
     Strength,
@@ -68,7 +68,7 @@ pub enum Attribute {
 }
 
 /// Retail's 41 skills.
-#[derive(Debug, Enum, EnumSetType, TryFromPrimitive)]
+#[derive(Debug, Enum, EnumSetType, TryFromPrimitive, serde::Serialize, serde::Deserialize)]
 #[repr(u8)]
 pub enum Skill {
     Sword,
@@ -115,7 +115,7 @@ pub enum Skill {
 }
 
 /// The six magical realms, in retail's resistance and spell order.
-#[derive(Debug, Enum, EnumSetType, TryFromPrimitive)]
+#[derive(Debug, Enum, EnumSetType, TryFromPrimitive, serde::Serialize, serde::Deserialize)]
 #[repr(u8)]
 pub enum Realm {
     Fire,

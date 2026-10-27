@@ -35,7 +35,7 @@ pub const AUTO_POWER: u8 = MAX_POWER + 1;
 const MISSILE_SPEED: f32 = 15.0;
 
 /// What pays for a cast.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Source {
     /// A learned spell at the chosen power, or [`AUTO_POWER`]; it is
     /// clamped to what the caster can afford when it runs.
@@ -48,6 +48,8 @@ pub enum Source {
 /// replace it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Aim {
+    /// The previous target no longer exists; execution must choose no substitute.
+    Unavailable,
     Member(Entity),
     Monster(Entity),
 }
@@ -168,7 +170,7 @@ fn capture(
     }
     let aimed = || match aim {
         Aim::Monster(m) => situation.candidate(m, spell).copied().ok_or(Refusal::NoTarget),
-        Aim::Member(_) => Err(Refusal::NoTarget),
+        Aim::Member(_) | Aim::Unavailable => Err(Refusal::NoTarget),
     };
     let reach = spell.reach.metres();
     Ok(match spell.targeting {
@@ -497,7 +499,7 @@ pub fn perform(
                 if auto {
                     let victim = match choice.aim {
                         Aim::Member(m) => world.members.get(m).ok(),
-                        Aim::Monster(_) => None,
+                        Aim::Monster(_) | Aim::Unavailable => None,
                     };
                     auto_power(&character, spell, victim.map(|(c, v, _)| (c, v)), affordable)
                 } else {

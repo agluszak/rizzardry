@@ -1,6 +1,7 @@
 //! Device bindings translate input into gameplay requests and movement intent.
 use crate::game::camp::CampRequest;
 use crate::game::party::body::{PartyLook, PartyMovement};
+use crate::game::save::{LoadGame, SaveGame};
 use crate::game::world::search::ToggleSearch;
 use bevy::prelude::*;
 use bevy_enhanced_input::prelude::*;
@@ -101,6 +102,12 @@ pub fn spawn_exploration_controls(mut commands: Commands) {
             Bindings [
                 Binding(KeyCode::KeyS)
             ]
+            --
+            // Q quick-saves, Shift+Q quick-loads.
+            Action::<QuickSave>::new()
+            Bindings [
+                Binding(KeyCode::KeyQ)
+            ]
         ]
     });
 }
@@ -113,6 +120,13 @@ pub struct Rest;
 #[action_output(bool)]
 pub struct SearchKey;
 
+#[derive(InputAction)]
+#[action_output(bool)]
+pub struct QuickSave;
+
+/// Where quick save and quick load keep their game.
+const QUICK_SAVE: &str = "saves/quick.ron";
+
 pub fn read_controls(
     walk: Single<&Action<Walk>>,
     turn: Single<&Action<Turn>>,
@@ -121,10 +135,12 @@ pub fn read_controls(
     free_look: Single<&Action<FreeLook>>,
     rest: Single<&ActionEvents, With<Action<Rest>>>,
     search: Single<&ActionEvents, With<Action<SearchKey>>>,
+    quick: Single<&ActionEvents, With<Action<QuickSave>>>,
     mut movement: Single<&mut PartyMovement>,
     mut looks: MessageWriter<PartyLook>,
     mut camps: MessageWriter<CampRequest>,
     mut searches: MessageWriter<ToggleSearch>,
+    (mut saves, mut loads): (MessageWriter<SaveGame>, MessageWriter<LoadGame>),
 ) {
     movement.set_if_neq(PartyMovement { walk: ***walk, turn: ***turn, running: ***run });
     if ***free_look {
@@ -135,6 +151,13 @@ pub fn read_controls(
     }
     if search.contains(ActionEvents::START) {
         searches.write(ToggleSearch);
+    }
+    if quick.contains(ActionEvents::START) {
+        if ***run {
+            loads.write(LoadGame(QUICK_SAVE.into()));
+        } else {
+            saves.write(SaveGame(QUICK_SAVE.into()));
+        }
     }
 }
 
@@ -149,6 +172,8 @@ mod tests {
             .add_message::<PartyLook>()
             .add_message::<CampRequest>()
             .add_message::<ToggleSearch>()
+            .add_message::<SaveGame>()
+            .add_message::<LoadGame>()
             .add_systems(Startup, spawn_exploration_controls)
             .add_systems(PreUpdate, read_controls.after(EnhancedInputSystems::Apply));
         let party = app.world_mut().spawn(crate::game::party::roster::Party).id();

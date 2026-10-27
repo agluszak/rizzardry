@@ -9,7 +9,19 @@ use super::characters::{Attribute, Gender, Profession, Race, Realm, Skill};
 use super::species::Reach;
 
 /// An item definition's stable number (retail's item number).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct ItemId(pub u16);
 
 /// `count` d `sides` + `base`.

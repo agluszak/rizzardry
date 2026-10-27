@@ -18,7 +18,7 @@ pub enum Band {
 }
 
 /// Scores 0..99 per faction, and how often the party has offended them.
-#[derive(Resource, Clone, Debug, PartialEq, Eq)]
+#[derive(Resource, Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Factions {
     scores: [u8; 21],
     offences: [u8; 21],

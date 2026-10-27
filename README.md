@@ -49,8 +49,8 @@ Entering a level the first time bakes its navmeshes, one per monster size
 class (up to a few seconds); results are cached in `imported_assets/`.
 `cargo run --release --example navmesh_prebake` bakes every level ahead of play.
 
-Controls: WASD or arrow keys to walk, Q/E or Left/Right to turn, hold Shift to
-run, hold the right mouse button to look around, Space or left click to use
+Controls: arrow keys to walk and turn, hold Shift to run, Q to quick-save and
+Shift+Q to quick-load (`saves/quick.ron`; `--load <file>` starts from a save), hold the right mouse button to look around, Space or left click to use
 the prop in front of you, Tab to open the automap (Escape closes it; Tab navigates its controls).
 On the map, use the magnifying glasses to zoom, arrows to pan, and the centre
 button to recenter on the party. Keyboard arrows also pan; clicking empty map

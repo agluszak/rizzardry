@@ -144,3 +144,101 @@ fn the_party_rests_eight_hours_and_wakes() {
     let rested = app.world().resource::<GameClock>().ms - before;
     assert!(rested >= 8 * 3_600_000, "rested {} game hours", rested / 3_600_000);
 }
+
+/// A device of the level being played, by its authored trigger name.
+fn device(world: &mut World, name: &str) -> Entity {
+    use rizzardry::content::level::LevelDefinition;
+    use rizzardry::game::world::triggers::Device;
+    let handle = world.query::<&Level>().single(world).unwrap().geometry.clone();
+    let geometry = world.resource::<Assets<LevelDefinition>>().get(&handle).unwrap();
+    let names: Vec<String> = geometry.triggers.iter().map(|t| t.name.clone()).collect();
+    let mut devices = world.query::<(Entity, &Device)>();
+    devices.iter(world).find(|(_, d)| names[d.definition] == name).expect(name).0
+}
+
+fn dial(world: &mut World) -> usize {
+    use rizzardry::game::world::triggers::DialState;
+    let dial = device(world, "BELLRINGSWITCH");
+    world.get::<DialState>(dial).unwrap().position
+}
+
+/// Each member, in roster order, with the item instances they carry.
+fn party(world: &mut World) -> Vec<(String, Vec<u64>)> {
+    use rizzardry::game::characters::Character;
+    use rizzardry::game::inventory::Carried;
+    use rizzardry::game::party::roster::PartyRoster;
+    let roster: Vec<Entity> = world.query::<&PartyRoster>().single(world).unwrap().iter().collect();
+    roster
+        .into_iter()
+        .map(|member| {
+            let name = world.get::<Character>(member).unwrap().name.clone();
+            let carried = world.get::<Carried>(member).expect("equipped");
+            let mut items: Vec<u64> = carried
+                .equipment
+                .values()
+                .flatten()
+                .map(|equipped| &equipped.stack)
+                .chain(carried.backpack.iter().flatten())
+                .map(|item| item.id.0)
+                .collect();
+            items.sort();
+            (name, items)
+        })
+        .collect()
+}
+
+#[test]
+#[ignore = "requires a retail installation"]
+fn a_saved_game_keeps_both_changed_maps_after_a_restart() {
+    use rizzardry::game::save::{SaveGame, SaveNews};
+    let save = std::env::temp_dir().join(format!("rizzardry-save-{}.ron", std::process::id()));
+    let _ = std::fs::remove_file(&save);
+
+    // Change two maps: beat Monastery 1's beach crabs, turn Monastery 2's
+    // bell dial.
+    let mut app = game(&["--continuous", "--start=108,2.5,-96"]);
+    crab_fight(&mut app);
+    let (count, dead) = monsters(app.world_mut());
+    assert_eq!(dead, 3);
+    app.world_mut().write_message(Travel { entrance: "MO204".into() });
+    step_until(&mut app, "arriving in Monastery 2", |w| {
+        playing(w).as_deref() == Some("levels/monastery/monastery2.pvl")
+    });
+    let untouched = dial(app.world_mut());
+    let switch = device(app.world_mut(), "BELLRINGSWITCH");
+    assert!(rizzardry::game::world::triggers::activate(app.world_mut(), switch, None));
+    let turned = dial(app.world_mut());
+    assert_ne!(turned, untouched, "the dial turned");
+    let members = party(app.world_mut());
+    let gold = app.world_mut().query::<&PartyInventory>().single(app.world()).unwrap().gold;
+    let clock = app.world().resource::<rizzardry::game::time::GameClock>().ms;
+    app.world_mut().write_message(SaveGame(save.clone()));
+    app.update();
+    let news: Vec<_> = app.world_mut().resource_mut::<Messages<SaveNews>>().drain().collect();
+    assert!(matches!(news[..], [SaveNews::Saved]), "{news:?}");
+    drop(app);
+
+    // Restart and load: the party stands in Monastery 2 again, its dial
+    // as it was left.
+    let mut app = game(&["--load", save.to_str().unwrap()]);
+    step_until(&mut app, "the save's Monastery 2 becoming active", |w| {
+        playing(w).as_deref() == Some("levels/monastery/monastery2.pvl")
+    });
+    assert_eq!(dial(app.world_mut()), turned);
+    assert_eq!(party(app.world_mut()), members, "the same members, carrying the same items");
+    assert_eq!(app.world_mut().query::<&PartyInventory>().single(app.world()).unwrap().gold, gold);
+    assert!(app.world().resource::<rizzardry::game::time::GameClock>().ms >= clock);
+
+    // Revisit both.
+    app.world_mut().write_message(Travel { entrance: "MO102".into() });
+    step_until(&mut app, "returning to Monastery 1", |w| {
+        playing(w).as_deref() == Some("levels/monastery/monastery1.pvl")
+    });
+    assert_eq!(monsters(app.world_mut()), (count - dead, 0), "the crabs stayed dead");
+    app.world_mut().write_message(Travel { entrance: "MO204".into() });
+    step_until(&mut app, "returning to Monastery 2", |w| {
+        playing(w).as_deref() == Some("levels/monastery/monastery2.pvl")
+    });
+    assert_eq!(dial(app.world_mut()), turned, "the dial stayed turned");
+    let _ = std::fs::remove_file(&save);
+}

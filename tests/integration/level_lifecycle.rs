@@ -38,11 +38,15 @@ fn app() -> App {
         .init_resource::<LevelMemory>()
         .init_resource::<MonsterBodies>()
         .init_resource::<rizzardry::game::factions::Factions>()
+        .init_resource::<rizzardry::game::difficulty::Difficulty>()
         .init_resource::<ItemIds>()
         .init_resource::<GameRng>()
         .add_message::<LevelReady>()
         .add_message::<LevelEntryFailed>()
         .add_message::<Travel>()
+        .add_plugins(bevy::state::app::StatesPlugin)
+        .init_state::<rizzardry::game::screen::Screen>()
+        .init_resource::<rizzardry::game::time::GameClock>()
         .add_systems(PreUpdate, travel)
         .add_systems(Update, activate_level);
     app.finish();
@@ -542,6 +546,7 @@ fn entry_suspends_gameplay_and_departure_captures_the_source_at_commit() {
     // What the source holds at the commit is what is remembered.
     let world = app.world_mut();
     world.query::<&mut Monster>().single_mut(world).unwrap().hp = 0;
+
     world
         .resource_mut::<Assets<LevelDefinition>>()
         .insert(&loading, LevelDefinition { collision: floor(), ..default() })
@@ -714,4 +719,171 @@ fn a_rendered_entry_waits_for_its_looks_and_fails_without_them() {
     app.update();
     assert!(failed(&app, unshowable));
     assert!(is_played(&app, shown), "a failed appearance leaves the level being played");
+}
+
+#[test]
+fn a_restore_reinstates_the_saved_campaign_and_creates_nothing_anew() {
+    use rizzardry::game::characters::{Character, Vitals};
+    use rizzardry::game::inventory::{Carried, EquipSlot, Equipped, ItemStack, PartyInventory};
+    use rizzardry::game::party::roster::{NeedsEquipment, PartyRoster};
+    use rizzardry::game::save;
+    use rizzardry::game::time::GameClock;
+    use rizzardry::game::world::level::LevelOwned;
+    let (mut app, source_level) = playing();
+    let world = app.world_mut();
+    let (party, member) = {
+        let (party, roster) = world.query::<(Entity, &PartyRoster)>().single(world).unwrap();
+        (party, roster.iter().next().unwrap())
+    };
+    let item = ItemStack::new(
+        &rizzardry::content::items::ItemDefinition {
+            id: rizzardry::content::items::ItemId(3),
+            ..default()
+        },
+        &mut world.resource_mut::<ItemIds>(),
+        1,
+        true,
+    );
+    let mut carried = Carried::default();
+    carried.backpack[0] = Some(item.clone());
+    let charged = ItemStack::new(
+        &rizzardry::content::items::ItemDefinition {
+            id: rizzardry::content::items::ItemId(4),
+            quantity: rizzardry::content::items::QuantityKind::Charges,
+            ..default()
+        },
+        &mut world.resource_mut::<ItemIds>(),
+        7,
+        true,
+    );
+    let equipped = Equipped { stack: charged, curse_released: true };
+    carried.equipment[EquipSlot::Primary] = Some(equipped.clone());
+    let stack = ItemStack::new(
+        &rizzardry::content::items::ItemDefinition {
+            id: rizzardry::content::items::ItemId(5),
+            quantity: rizzardry::content::items::QuantityKind::Stack,
+            ..default()
+        },
+        &mut world.resource_mut::<ItemIds>(),
+        12,
+        true,
+    );
+    world.get_mut::<PartyInventory>(party).unwrap().pool.stacks.push(stack.clone());
+
+    world.entity_mut(member).remove::<NeedsEquipment>().insert(carried);
+    world.get_mut::<PartyInventory>(party).unwrap().gold = 9;
+    let mut survivor = world.query::<&Monster>().single(world).unwrap().clone();
+    survivor.location = 8;
+    let survivor = world
+        .spawn((
+            survivor,
+            Transform::default(),
+            LevelOwned(source_level),
+            rizzardry::game::world::population::Provoked,
+        ))
+        .id();
+    world.query::<&mut Monster>().iter_mut(world).find(|m| m.location == 7).unwrap().hp = 0;
+    use rizzardry::content::characters::{Realm, Skill};
+    use rizzardry::content::spells::SpellId;
+    use rizzardry::game::magic::casting::{Aim, MagicChoice, Source, SpellInFlight};
+    use rizzardry::game::magic::{LearnedSpells, SpellPoints, Strength, Victim};
+    use rizzardry::game::party::Order;
+    let learned = LearnedSpells([SpellId::HEAL_WOUNDS].into());
+    let mut points = SpellPoints::default();
+    points.current[Realm::Divine] = 2;
+    points.fraction[Realm::Divine] = 0.375;
+    world.get_mut::<Character>(member).unwrap().skill_practice[Skill::Divinity] = 3;
+    world.entity_mut(member).insert((
+        learned.clone(),
+        points.clone(),
+        Order::Magic(MagicChoice {
+            source: Source::Spell { spell: SpellId::HEAL_WOUNDS, power: 2 },
+            aim: Aim::Member(member),
+        }),
+    ));
+    let second_profile = Character::new("B", Race::Human, Gender::Male, Profession::Mage);
+    world.spawn((
+        Vitals::new(&second_profile),
+        second_profile,
+        Carried::default(),
+        rizzardry::game::party::roster::PartyMember(party),
+        Order::Magic(MagicChoice {
+            source: Source::Spell { spell: SpellId::ENERGY_BLAST, power: 3 },
+            aim: Aim::Monster(survivor),
+        }),
+    ));
+    world.resource_mut::<rizzardry::game::factions::Factions>().record_offence(4, false);
+    let factions = world.resource::<rizzardry::game::factions::Factions>().clone();
+    world.insert_resource(rizzardry::game::difficulty::Difficulty::Expert);
+    let flight = world
+        .spawn(SpellInFlight {
+            caster: member,
+            spell: SpellId::HEAL_WOUNDS,
+            strength: Strength::default(),
+            victims: vec![Victim::Member(member)],
+            arrives: Timer::default(),
+        })
+        .id();
+    assert!(save::capture(world).is_err(), "paid magic must land before a settled save");
+    world.despawn(flight);
+    world.insert_resource(GameClock::at(5000));
+    let fight = world.spawn(rizzardry::game::combat::Battle::default()).id();
+    assert!(save::capture(world).is_err(), "only settled play saves");
+    world.despawn(fight);
+    let record = save::capture(world).expect("play is settled");
+    let file = std::env::temp_dir().join(format!("rizzardry-restore-{}.ron", std::process::id()));
+    save::write(&file, &record).unwrap();
+    let record = save::read(&file).unwrap();
+    std::fs::remove_file(&file).unwrap();
+
+    // Play goes on after the save, then the save is restored.
+    world.insert_resource(GameClock::at(9000));
+    world.resource_mut::<rizzardry::game::factions::Factions>().record_offence(4, false);
+    world.insert_resource(rizzardry::game::difficulty::Difficulty::Normal);
+    world.get_mut::<PartyInventory>(party).unwrap().gold = 0;
+    let start = record.start();
+    let level = test_level(&mut app, floor());
+    let restored = app
+        .world_mut()
+        .spawn(Destination::new(level, start, Entry::Restore(Box::new(record))))
+        .id();
+    app.update();
+    assert!(is_played(&app, restored));
+    let remaining = monsters(&mut app);
+    assert_eq!(remaining.len(), 1, "the saved kill holds; only the survivor returns");
+    let world = app.world_mut();
+    assert!(world.get_entity(party).is_err() && world.get_entity(member).is_err());
+    let (party, roster) = world.query::<(Entity, &PartyRoster)>().single(world).unwrap();
+    let member = roster.iter().next().unwrap();
+    let second = roster.iter().nth(1).unwrap();
+    assert_eq!(world.get::<Character>(member).unwrap().name, "A");
+    assert_eq!(world.get::<Character>(member).unwrap().skill_practice[Skill::Divinity], 3);
+    assert_eq!(world.get::<LearnedSpells>(member), Some(&learned));
+    assert_eq!(world.get::<SpellPoints>(member), Some(&points));
+    assert_eq!(world.resource::<rizzardry::game::factions::Factions>(), &factions);
+    assert_eq!(
+        *world.resource::<rizzardry::game::difficulty::Difficulty>(),
+        rizzardry::game::difficulty::Difficulty::Expert
+    );
+    assert!(
+        matches!(world.get::<Order>(member), Some(Order::Magic(MagicChoice { aim: Aim::Member(target), .. })) if *target == member)
+    );
+    let restored_monster = world.query_filtered::<Entity, With<Monster>>().single(world).unwrap();
+    assert_ne!(restored_monster, survivor);
+    assert!(world.get::<rizzardry::game::world::population::Provoked>(restored_monster).is_some());
+    assert!(
+        matches!(world.get::<Order>(second), Some(Order::Magic(MagicChoice { aim: Aim::Monster(target), .. })) if *target == restored_monster)
+    );
+    assert!(world.get::<NeedsEquipment>(member).is_none(), "no second starting equipment");
+    assert_eq!(world.get::<Carried>(member).unwrap().backpack[0], Some(item));
+    assert_eq!(world.get::<PartyInventory>(party).unwrap().gold, 9);
+    assert_eq!(world.get::<Carried>(member).unwrap().equipment[EquipSlot::Primary], Some(equipped));
+    assert_eq!(
+        world.get::<PartyInventory>(party).unwrap().pool.stacks.as_slice(),
+        std::slice::from_ref(&stack)
+    );
+    assert!(world.resource_mut::<ItemIds>().allocate().0 > stack.id.0);
+
+    assert_eq!(world.resource::<GameClock>().ms, 5000);
+    assert_eq!(party_entities(&mut app), [party], "the restored party is the one body");
 }

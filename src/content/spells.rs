@@ -8,7 +8,19 @@ use super::characters::Realm;
 use super::items::Dice;
 
 /// A retail spell number (`W8SpellId`); 0 is none.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct SpellId(pub u8);
 
 impl SpellId {

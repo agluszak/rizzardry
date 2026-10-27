@@ -183,6 +183,9 @@ const PARTY_TAKES: usize = 0x1e9;
 const TAKES: usize = 0x1e8;
 const NO_ROOM: usize = 0x90c;
 const SEARCH_ON: usize = 0x78e;
+/// Retail's quick-save notices (`MGSKeyboard` quick save).
+const GAME_SAVED: usize = 0x6f5;
+const SAVE_FAILED: usize = 0x6f6;
 const SEARCH_OFF: usize = 0x78f;
 const NOT_IN_COMBAT_SEARCH: usize = 0x774;
 const SPOTS_HIDDEN: usize = 0x772;
@@ -336,6 +339,7 @@ pub fn queue_notices(
     mut items: MessageReader<ItemNews>,
     mut search: MessageReader<SearchNews>,
     mut identified: MessageReader<Identified>,
+    mut saves: MessageReader<crate::game::save::SaveNews>,
     names: super::names::ActorNames,
     art: Res<NoticeArt>,
     tables: Res<Assets<TextTable>>,
@@ -413,6 +417,14 @@ pub fn queue_notices(
             }
             ItemNews::Takes { member: None, item } => string(PARTY_TAKES).replace("%s", item),
             ItemNews::NoRoom => string(NO_ROOM),
+        };
+        log.push(channel, &text, font);
+    }
+    for news in saves.read() {
+        let text = match news {
+            crate::game::save::SaveNews::Saved => string(GAME_SAVED),
+            crate::game::save::SaveNews::Failed(_) => string(SAVE_FAILED),
+            crate::game::save::SaveNews::Loading => continue,
         };
         log.push(channel, &text, font);
     }

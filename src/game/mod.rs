@@ -12,6 +12,7 @@ pub mod loot;
 pub mod magic;
 pub mod party;
 pub mod rng;
+pub mod save;
 pub mod screen;
 pub mod time;
 pub mod world;

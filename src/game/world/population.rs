@@ -36,7 +36,7 @@ use crate::game::world::items::{WorldItem, placed_item};
 
 /// A monster in the level: which one (its level-unique location id), what
 /// it is, its body, and its health and stamina.
-#[derive(Component, Clone, Debug)]
+#[derive(Component, Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Monster {
     pub location: i32,
     pub species: u32,
@@ -60,7 +60,7 @@ impl Monster {
 }
 
 /// A monster's effective gameplay body at the size it was rolled.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ScaledBody {
     pub scale: f32,
     /// Reach is measured from this far out from its centre (its scaled
@@ -152,7 +152,7 @@ pub fn populate(
     (navigation, configs): (&LevelNavigation, &mut Assets<WalkerMotionConfig>),
     ids: &mut ItemIds,
     rng: &mut GameRng,
-) {
+) -> HashMap<i32, Entity> {
     let (remembered_monsters, remembered_items, groups) = match remembered {
         Some(record) => (Some(record.monsters), Some(record.items), record.groups),
         None => (None, None, default()),
@@ -197,6 +197,7 @@ pub fn populate(
         .map(|group| (group.authored, commands.spawn((group, LevelOwned(root))).id()))
         .collect();
     let monster_count = monsters.iter().filter(|m| !m.monster.is_dead()).count();
+    let mut spawned = HashMap::new();
     for kept in monsters {
         let monster = kept.monster;
         if monster.is_dead() {
@@ -210,6 +211,7 @@ pub fn populate(
         });
         let ScaledBody { radius, speed, .. } = monster.body;
         let float_height = if speed > 0.0 { STEP_HEIGHT + HALF_HEIGHT } else { 0.0 };
+        let location = monster.location;
         let mut entity = commands.spawn((
             Name::new(format!("{} #{}", kind.name, monster.location)),
             monster,
@@ -217,6 +219,7 @@ pub fn populate(
                 .with_rotation(Quat::from_rotation_y(kept.yaw)),
             LevelOwned(root),
         ));
+        spawned.insert(location, entity.id());
         if kept.provoked {
             entity.insert(Provoked);
         }
@@ -287,4 +290,5 @@ pub fn populate(
         let name = items.get(item.appearance()).map_or_else(String::new, |d| d.name.clone());
         commands.spawn((Name::new(name), item, Transform::from_translation(at), LevelOwned(root)));
     }
+    spawned
 }

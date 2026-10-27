@@ -273,7 +273,7 @@ pub struct PropModel {
 }
 
 /// A case-insensitive location-variable name, canonicalized at the content boundary.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct VariableName(String);
 
 impl From<&str> for VariableName {

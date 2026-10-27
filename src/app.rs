@@ -59,6 +59,9 @@ pub struct Options {
     /// Skip the menus and start with a party file. Headless runs default to assets/party.ron.
     #[arg(long, value_name = "FILE.ron")]
     pub party: Option<PathBuf>,
+    /// Skip the menus and continue a saved game.
+    #[arg(long, value_name = "SAVE.ron")]
+    pub load: Option<PathBuf>,
     /// Start at this hour of the day (0-24) instead of a new game's noon.
     #[arg(long, value_name = "HOUR")]
     pub hour: Option<f32>,
@@ -145,8 +148,12 @@ pub fn build(options: &Options) -> Result<App, String> {
         Ok(level) if files.contains(&level) => level,
         _ => return Err(format!("{} is not in the retail installation", options.level)),
     };
-    let quick_start = options.headless || options.party.is_some() || options.screenshot.is_some();
-    let party = if quick_start {
+    let quick_start = options.headless
+        || options.party.is_some()
+        || options.screenshot.is_some()
+        || options.load.is_some();
+    let new_game = quick_start && options.load.is_none();
+    let party = if new_game {
         let path = options.party.clone().unwrap_or_else(|| "assets/party.ron".into());
         let text = std::fs::read_to_string(&path)
             .map_err(|error| format!("cannot read the party {}: {error}", path.display()))?;
@@ -248,6 +255,7 @@ pub fn build(options: &Options) -> Result<App, String> {
         PartyPlugin,
         TimePlugin,
         crate::game::combat::CombatPlugin,
+        crate::game::save::SavePlugin,
         crate::game::magic::MagicPlugin,
     ));
     // Navmeshes: retail decodes a level's collision, navigation bakes it on
@@ -308,9 +316,14 @@ pub fn build(options: &Options) -> Result<App, String> {
                 .before(TransformSystems::Propagate),
         );
     }
-    // Explicit developer/headless bootstrap: a new campaign with the party
-    // file's members. Interactive play commits from the creation flow.
-    if quick_start {
+    // Explicit developer/headless bootstrap: a saved game, or a new campaign
+    // with the party file's members. Interactive play commits from the
+    // creation flow.
+    if let Some(path) = options.load.clone() {
+        app.add_systems(Startup, move |mut loads: MessageWriter<crate::game::save::LoadGame>| {
+            loads.write(crate::game::save::LoadGame(path.clone()));
+        });
+    } else if new_game {
         app.add_systems(Startup, move |mut commands: Commands, assets: Res<AssetServer>| {
             let characters: Vec<_> = party.iter().map(Recruit::character).collect();
             let first = Destination::new(

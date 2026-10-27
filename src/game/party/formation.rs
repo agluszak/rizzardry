@@ -8,7 +8,7 @@ use enum_map::{Enum, EnumMap};
 use crate::content::species::Reach;
 
 /// A formation row: the side of the party it faces, or its center.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Enum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Enum, serde::Serialize, serde::Deserialize)]
 pub enum Row {
     Front,
     Right,
@@ -82,6 +82,14 @@ impl Formation {
     }
 
     /// The dead hold no place.
+    /// Seat `member` at a given place, as a save records it.
+    pub fn put(&mut self, member: Entity, row: Row, seat: usize) {
+        self.unseat(member);
+        if let Some(place) = self.seats[row].get_mut(seat) {
+            *place = Some(member);
+        }
+    }
+
     pub fn unseat(&mut self, member: Entity) {
         for seat in self.seats.values_mut().flatten() {
             if *seat == Some(member) {

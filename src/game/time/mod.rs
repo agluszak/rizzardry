@@ -25,7 +25,7 @@ const DAY_MS: u64 = 86_400_000;
 ///
 /// Time passes only through [`GameClock::advance`], whose caller applies
 /// what that time means for the party at once (`recovery::elapse`).
-#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GameClock {
     /// Milliseconds since midnight of the first day.
     pub ms: u64,
