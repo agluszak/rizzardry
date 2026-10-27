@@ -17,7 +17,7 @@ not verified; `serde` is present but native saves/definitions are not built.
 | Collision and physics | Avian 0.8 | Level and prop trimeshes, party and walker bodies |
 | Grounded movement | Tnua 0.33 + `bevy-tnua-avian3d` 0.13 | Party and walkers; walk basis only, no actions |
 | Navmesh generation | `rerecast` (core), vendored from PR #63 | Baked from the level's collision triangles |
-| Pathfinding, steering, avoidance | `bevy_landmass`, PR #195 branch pinned by git rev | Party is a `Character3d`, walkers are `Agent3d` |
+| Pathfinding, steering, avoidance | `bevy_landmass` 0.13 from crates.io | Party is a `Character3d`, walkers are `Agent3d` |
 | Command line | `clap` 4 | Game and examples |
 | Definition/save serialization | `serde` + `ron` | Not yet needed |
 | Retail binary parsing | Small bounds-checked cursor; optional `binrw` | Existing cursor is working; no library needed without a reduction in code |
@@ -28,10 +28,9 @@ Primary references:
 - [Bevy 0.20 release](https://bevy.org/news/bevy-0-20/) (8 October 2026).
 - [Enhanced Input compatibility table](https://github.com/simgine/bevy_enhanced_input#bevy-compatibility).
 - [Avian](https://github.com/Jondolf/avian), [Tnua](https://github.com/idanarye/bevy-tnua).
-- [Rerecast PR #63](https://github.com/janhohenheim/rerecast/pull/63) (Bevy 0.20,
-  Avian 0.8; all CI checks passing, still open).
-- [Landmass PR #195](https://github.com/andriyDev/landmass/pull/195) (draft, Bevy
-  `0.20.0-rc.1`, which Cargo resolves to 0.20.0; `landmass_rerecast` excluded).
+- [Rerecast 0.5.0](https://docs.rs/crate/rerecast/0.5.0) (Bevy 0.20;
+  still missing the local contour fixes described below).
+- [Landmass 0.13.0](https://docs.rs/crate/bevy_landmass/0.13.0) (Bevy 0.20).
 - [Inspector package and Bevy 0.20 dependencies](https://docs.rs/crate/bevy-inspector-egui/0.38.0).
 - [Serde](https://serde.rs/), [RON](https://docs.rs/ron/0.12.2/ron/),
   [binrw](https://docs.rs/binrw/0.15.2/binrw/).
@@ -65,15 +64,14 @@ Integration choices:
 
 - `bevy_rerecast` and `avian_rerecast` are not used. The navmesh is baked with
   the `rerecast` core pipeline directly from the same triangles as the level
-  collider, which are already in hand. `landmass_rerecast` is not ported to
-  Bevy 0.20; its 65-line mesh conversion is adapted in
-  `game::world::navigation`.
+  collider, which are already in hand. The small mesh conversion from
+  `landmass_rerecast` is adapted in `game::world::navigation`.
 - `rerecast` is vendored in `third_party/` with two fixes restoring
   recastnavigation behaviour: region holes are merged into their outlines
   (upstream omits Recast's `mergeRegionHoles`, so obstacles inside a region
   were either a failed bake or covered by walkable polygons), and a failed
   contour triangulation keeps its partial result instead of failing the
-  bake. See `third_party/README.md`.
+  bake. Rerecast 0.5.0 still lacks both fixes; see `third_party/README.md`.
 - Navmeshes go through Bevy's asset processor (`AssetMode::Processed`,
   `asset_processor` feature). A virtual `navmesh://` source exposes every
   retail `<level>.pvl` as `<level>_class<n>.navmesh`, one per walker size
