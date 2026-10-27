@@ -23,6 +23,9 @@ pub fn face_camera(
     let Ok(camera) = camera.single() else { return };
     for (parent, mut sprite) in &mut sprites {
         let Ok(parent) = parents.get(parent.parent()) else { continue };
-        sprite.rotation = parent.rotation.inverse() * camera.rotation;
+        let rotation = parent.rotation.inverse() * camera.rotation;
+        if sprite.rotation != rotation {
+            sprite.rotation = rotation;
+        }
     }
 }

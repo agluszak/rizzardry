@@ -210,7 +210,6 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) -
             crate::presentation::retail_controls::FocusRing,
             ChildOf(stats),
         ))
-        .observe(crate::presentation::retail_controls::primary_press)
         .observe(toggle_info);
     label(
         commands,
@@ -326,7 +325,6 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) -
                 crate::presentation::retail_controls::FocusRing,
                 ChildOf(stats),
             ))
-            .observe(crate::presentation::retail_controls::primary_press)
             .observe(select_filter);
     }
     let track = crate::presentation::retail_controls::step_scrollbar(
@@ -636,18 +634,6 @@ pub(super) fn refresh(
         }
     }
     for (field, mut text) in &mut fields {
-        if !field.is_added()
-            && !screen.is_changed()
-            && !profile.is_changed()
-            && !vitals.is_changed()
-            && !table_changed
-            && !party_changed
-            && !info_changed
-            && !slider.as_ref().is_some_and(|slider| slider.1.is_changed())
-            && !catalogs.as_ref().is_some_and(|catalogs| catalogs.is_changed())
-        {
-            continue;
-        }
         let palette = match *field {
             Field::Effect(index)
                 if effects.get(index + offset).is_some_and(|(_, heading)| *heading) =>
@@ -910,5 +896,44 @@ mod tests {
         app.world_mut().get_mut::<Vitals>(actor).unwrap().age_conditions(1);
         app.update();
         assert!(!text(app.world_mut(), "Blind"));
+    }
+
+    /// Equipping changes only `Carried`; existing Statistics labels follow it.
+    #[test]
+    fn statistics_follow_equipment_only_changes() {
+        use crate::content::items::ItemDefinition;
+        use crate::game::inventory::{ItemIds, make_item};
+        use crate::game::rng::GameRng;
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<ItemCatalog>()
+            .init_asset::<TextTable>()
+            .insert_resource(InventoryArt::default())
+            .add_systems(Update, refresh);
+        let definition = ItemDefinition::default();
+        let weapon =
+            make_item(&definition, &mut ItemIds::default(), &mut GameRng::seeded(1), false, false);
+        let items = app
+            .world_mut()
+            .resource_mut::<Assets<ItemCatalog>>()
+            .add(ItemCatalog(vec![definition]));
+        app.insert_resource(GameData { items, loot: default(), species: default() });
+        let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
+        let actor =
+            app.world_mut().spawn((Vitals::new(&profile), profile, Carried::default())).id();
+        let root = app.world_mut().spawn(InventoryScreen { member: actor }).id();
+        app.world_mut().commands().queue(move |world: &mut World| {
+            build(&mut world.commands(), root, &InventoryArt::default());
+        });
+        app.update();
+        app.update();
+        let unknown = |world: &mut World| {
+            world.query::<&BitmapText>().iter(world).any(|text| text.value == "?")
+        };
+        assert!(!unknown(app.world_mut()));
+        app.world_mut().get_mut::<Carried>(actor).unwrap().equipment[EquipSlot::Primary] =
+            Some(weapon);
+        app.update();
+        assert!(unknown(app.world_mut()), "an unidentified weapon hides its combat values");
     }
 }

@@ -208,23 +208,62 @@ pub fn spawn_inventory_key(mut commands: Commands) {
             Action::<OpenInventory>::new()
             Bindings [ Binding(KeyCode::KeyI) ]
         ]
+        ContextActivity::<InventoryKey>::INACTIVE
         on(open_with_key)
     });
+}
+
+/// The key is held by the same rule as the other world shortcuts, so a
+/// question or a focused control owns the keyboard instead.
+fn hold_inventory_key(
+    mut commands: Commands,
+    world_keys: super::main_screen::keys::WorldKeys,
+    keys: Query<(Entity, &ContextActivity<InventoryKey>)>,
+) {
+    let active = world_keys.active();
+    for (entity, activity) in &keys {
+        if **activity != active {
+            commands.entity(entity).insert(ContextActivity::<InventoryKey>::new(active));
+        }
+    }
+}
+
+/// The one acceptance rule for opening a member's review, however it was
+/// asked for: the party is in the world, under no question and no pending
+/// screen change, and the member is in the party. The review shows the
+/// selected member, so the caller selects the member it opened.
+#[derive(bevy::ecs::system::SystemParam)]
+pub(crate) struct OpenReview<'w, 's> {
+    screen: Res<'w, State<Screen>>,
+    next: ResMut<'w, NextState<Screen>>,
+    questions: Query<'w, 's, (), With<crate::game::world::level::TravelQuestion>>,
+    roster: Res<'w, PartyRoster>,
+}
+
+impl OpenReview<'_, '_> {
+    /// Open `member`'s review; whether it opens.
+    pub(crate) fn open(&mut self, member: Entity) -> bool {
+        if *self.screen.get() != Screen::World
+            || !matches!(*self.next, NextState::Unchanged)
+            || !self.questions.is_empty()
+            || !self.roster.0.contains(&member)
+        {
+            return false;
+        }
+        self.next.set(Screen::Inventory);
+        true
+    }
 }
 
 /// Retail opens the selected character.
 fn open_with_key(
     _: On<Start<OpenInventory>>,
-    screen: Res<State<Screen>>,
-    mut next: ResMut<NextState<Screen>>,
+    mut review: OpenReview,
     roster: Res<PartyRoster>,
     selected: Res<super::main_screen::SelectedMember>,
 ) {
-    if *screen.get() == Screen::World
-        && matches!(*next, NextState::Unchanged)
-        && selected.member(&roster).is_some()
-    {
-        next.set(Screen::Inventory);
+    if let Some(member) = selected.member(&roster) {
+        review.open(member);
     }
 }
 
@@ -396,7 +435,6 @@ fn header(art: &InventoryArt) -> impl SceneList {
                 crate::presentation::retail_controls::FocusRing
                 template(move |_| Ok(HeaderDisplay(HeaderPart::Member(slot))))
                 InventoryMemberButton({Entity::PLACEHOLDER})
-                on(crate::presentation::retail_controls::primary_press)
                 on(select_inventory_member)
                 Children [
                     @picture(art.portrait_highlight.clone(),1,Vec2::ZERO)
@@ -496,7 +534,6 @@ fn cell_controls(cell: Cell, art: &InventoryArt) -> impl Scene {
         node template(move |_|Ok(ItemCell{cell}))
         UiButton TabIndex(0) Pickable::default()
         crate::presentation::retail_controls::FocusRing
-        on(crate::presentation::retail_controls::primary_press)
         on(click_cell)
         on(pool_scroll::wheel)
         Children [
@@ -628,7 +665,6 @@ pub fn spawn_inventory_screen(
             -- @{exit}
                 UiButton TabIndex(0) Pickable::default()
                 crate::presentation::retail_controls::FocusRing
-                on(crate::presentation::retail_controls::primary_press)
                 on(|_: On<Activate>, mut next: ResMut<NextState<Screen>>| { next.set(Screen::World); })
         ]
     }).id();
@@ -958,8 +994,14 @@ fn draw_header(
 fn draw_retail_labels(
     art: Res<InventoryArt>,
     tables: Res<Assets<TextTable>>,
-    mut labels: Query<(&RetailLabel, &mut BitmapText)>,
+    mut labels: Query<(Ref<RetailLabel>, &mut BitmapText)>,
 ) {
+    if !art.is_changed()
+        && !tables.is_changed()
+        && !labels.iter().any(|(label, _)| label.is_added())
+    {
+        return;
+    }
     let Some(table) = tables.get(&art.strings) else { return };
     for (label, mut text) in &mut labels {
         let value = table.get(label.0).unwrap_or("");
@@ -969,9 +1011,12 @@ fn draw_retail_labels(
     }
 }
 
-fn draw_gold(party: Res<PartyInventory>, mut labels: Query<&mut BitmapText, With<GoldLabel>>) {
+fn draw_gold(party: Res<PartyInventory>, mut labels: Query<(Ref<GoldLabel>, &mut BitmapText)>) {
+    if !party.is_changed() && !labels.iter().any(|(label, _)| label.is_added()) {
+        return;
+    }
     let value = format_gold(party.gold);
-    for mut label in &mut labels {
+    for (_, mut label) in &mut labels {
         if label.value != value {
             label.value = value.clone();
         }
@@ -1114,7 +1159,7 @@ pub fn follow_held(
     data: Option<Res<GameData>>,
     catalogs: Res<Assets<ItemCatalog>>,
     mut picture: Single<(&mut ImageNode, &mut Node, &mut Visibility), With<HeldPicture>>,
-    mut loading: Local<Option<Handle<SpriteSheet>>>,
+    mut loading: Local<Option<(String, Handle<SpriteSheet>)>>,
 ) {
     let (image, node, visibility) = &mut *picture;
     let catalog = data.and_then(|d| catalogs.get(&d.items));
@@ -1128,16 +1173,22 @@ pub fn follow_held(
         visibility.set_if_neq(Visibility::Hidden);
         return;
     };
-    let handle = loading.insert(assets.load(format!("retail://{}", definition.image)));
+    if loading.as_ref().is_none_or(|(path, _)| *path != definition.image) {
+        let handle = assets.load(format!("retail://{}", definition.image));
+        *loading = Some((definition.image.clone(), handle));
+    }
+    let Some((_, handle)) = &*loading else { return };
     let Some((picture, frame)) =
-        sheets.get(&*handle).and_then(|s| Some((s.images.first()?, s.frames.first()?)))
+        sheets.get(handle).and_then(|s| Some((s.images.first()?, s.frames.first()?)))
     else {
         return;
     };
     // Retail makes the picture the cursor, its corner at the hotspot with
     // the arrow drawn over it (`UpdateHeldItemCursor`).
-    image.image = picture.clone();
-    **node = absolute(cursor / scale.0, Vec2::new(frame.width as f32, frame.height as f32));
+    if image.image != *picture {
+        image.image = picture.clone();
+    }
+    node.set_if_neq(absolute(cursor / scale.0, Vec2::new(frame.width as f32, frame.height as f32)));
     visibility.set_if_neq(Visibility::Inherited);
 }
 
@@ -1149,6 +1200,12 @@ impl Plugin for InventoryPlugin {
             .add_input_context::<InventoryRoot>()
             .add_input_context::<info::InfoDialog>()
             .add_systems(Startup, (load_inventory_art, spawn_inventory_key, spawn_held_picture))
+            .add_systems(
+                PreUpdate,
+                hold_inventory_key
+                    .after(bevy::input_focus::InputFocusSystems::Dispatch)
+                    .before(EnhancedInputSystems::Update),
+            )
             .add_systems(OnEnter(Screen::Inventory), enter_inventory)
             .add_systems(OnExit(Screen::Inventory), put_away_held)
             .configure_sets(
@@ -1224,6 +1281,7 @@ mod tests {
             .init_resource::<PartyInventory>()
             .init_resource::<super::super::main_screen::SelectedMember>()
             .add_plugins(InventoryPlugin)
+            .add_observer(crate::presentation::retail_controls::primary_buttons_only)
             .add_systems(PostUpdate, crate::presentation::retail_controls::sync_button_navigation);
         app
     }
@@ -1294,6 +1352,41 @@ mod tests {
                 if still_a_member { vec![] } else { vec![id] }
             );
         }
+    }
+
+    /// A travel question owns the keyboard: I cannot open the review under it.
+    #[test]
+    fn inventory_key_waits_for_an_open_travel_question() {
+        use crate::game::characters::{Gender, Profession, Race};
+        use crate::game::world::level::TravelQuestion;
+        use crate::presentation::test_input::key;
+        let mut app = inventory_app();
+        let window = app
+            .world_mut()
+            .spawn((bevy::window::Window::default(), bevy::window::PrimaryWindow))
+            .id();
+        let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
+        let member =
+            app.world_mut().spawn((Vitals::new(&profile), profile, Carried::default())).id();
+        app.world_mut().resource_mut::<PartyRoster>().0.insert(member);
+        app.finish();
+        app.cleanup();
+        app.update();
+        // Without artwork the screen returns to the world, so look at it as
+        // the key goes down.
+        let opens = |app: &mut App| {
+            key(app, window, KeyCode::KeyI, true);
+            let opened = *app.world().resource::<State<Screen>>().get() == Screen::Inventory;
+            key(app, window, KeyCode::KeyI, false);
+            app.update();
+            opened
+        };
+        let question = app.world_mut().spawn(TravelQuestion { entrance: "gate".into() }).id();
+        app.update();
+        assert!(!opens(&mut app));
+        app.world_mut().despawn(question);
+        app.update();
+        assert!(opens(&mut app));
     }
 
     #[test]

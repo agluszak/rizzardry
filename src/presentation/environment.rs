@@ -14,17 +14,19 @@ use crate::presentation::party_view::PartyCamera;
 #[derive(Component, Debug)]
 pub struct LevelAppearance(pub Handle<LevelGeometry>);
 
+/// Request an active level's render payload as it becomes active; building
+/// it waits for the asset ([`attach_level_visuals`]).
 pub fn request_level_visuals(
+    add: On<Add<Level>>,
     mut commands: Commands,
-    levels: Query<(Entity, &Level), Without<LevelAppearance>>,
+    levels: Query<&Level>,
     assets: Res<AssetServer>,
 ) {
-    for (entity, level) in &levels {
-        commands.entity(entity).insert((
-            LevelAppearance(assets.load(format!("retail://{}", level.path))),
-            Visibility::default(),
-        ));
-    }
+    let Ok(level) = levels.get(add.entity) else { return };
+    commands.entity(add.entity).insert((
+        LevelAppearance(assets.load(format!("retail://{}", level.path))),
+        Visibility::default(),
+    ));
 }
 
 /// The render inputs applied to this camera. A replacement camera needs its
