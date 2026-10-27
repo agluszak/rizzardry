@@ -28,9 +28,9 @@ RIZZARDRY_RETAIL=/path/to/wizardry8 cargo nextest run --locked --run-ignored onl
 ```
 
 Tests run under [nextest](https://nexte.st). Retail tests are ignored by
-default and must fail if explicitly invoked without valid assets. Retail
-scenarios share the navmesh cache, so `.config/nextest.toml` runs them one at
-a time; plain `cargo test` would let them race. See
+default and must fail if explicitly invoked without valid assets. Scenarios
+share the navmesh cache; its files are published whole (`src/asset_cache.rs`),
+so they can run in parallel and alongside the game. See
 [the README](../README.md) for headless runs and offscreen screenshots; neither
 all-map baking nor GPU screenshots are required for every PR.
 

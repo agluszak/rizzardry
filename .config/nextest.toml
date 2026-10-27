@@ -1,7 +1,0 @@
-# Retail scenarios share the navmesh cache and the asset processor's output.
-[test-groups]
-retail-game = { max-threads = 1 }
-
-[[profile.default.overrides]]
-filter = "binary(integration) & test(/^scenarios::/)"
-test-group = "retail-game"

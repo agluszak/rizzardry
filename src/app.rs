@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use avian3d::prelude::*;
+use bevy::asset::io::{AssetSourceBuilder, AssetSourceId};
 use bevy::asset::processor::LoadTransformAndSave;
 use bevy::prelude::*;
 use bevy_enhanced_input::EnhancedInputPlugin;
@@ -162,7 +163,13 @@ pub fn build(options: &Options) -> Result<App, String> {
         files,
         navmesh_cache: "imported_assets/navmesh".into(),
         navmesh_classes: SIZE_CLASSES.len(),
-    });
+    })
+    // AssetPlugin's default source, but sharing imported_assets safely.
+    .register_asset_source(
+        AssetSourceId::Default,
+        AssetSourceBuilder::platform_default("assets", Some("imported_assets/Default"))
+            .with_processed_writer(crate::asset_cache::processed_writer("imported_assets/Default")),
+    );
     let asset_plugin = AssetPlugin { mode: AssetMode::Processed, ..default() };
     let rendered = !options.headless || options.screenshot.is_some();
     if rendered {
