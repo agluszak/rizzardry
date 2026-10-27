@@ -4,10 +4,10 @@
 use super::oct::read_collision;
 use super::prop::PROP_COLLIDABLE;
 use super::prop_loader::{part_transforms, record_collision};
-use super::pvl::{PvlError, read_level_geometry};
+use super::pvl::read_level_geometry;
 use super::sections::read_sections;
 use super::source::navmesh_input;
-use crate::bytes::Bytes;
+use crate::bytes::{Bytes, DecodeError};
 use crate::content::level::CollisionMesh;
 use crate::content::navmesh::LevelCollision;
 
@@ -20,7 +20,7 @@ pub fn decode_input(data: &[u8]) -> Result<LevelCollision, String> {
 
 /// The level's solid collision surfaces, plus its collidable props in their
 /// rest pose, as the level importer converts them.
-pub fn level_collision(octree: &[u8], level: &[u8]) -> Result<CollisionMesh, PvlError> {
+pub fn level_collision(octree: &[u8], level: &[u8]) -> Result<CollisionMesh, DecodeError> {
     let mut collision = read_collision(octree)?.solid_mesh();
     let geometry = read_level_geometry(level)?;
     let sections = read_sections(&mut Bytes::new(&level[geometry.end..]))?;

@@ -85,7 +85,7 @@ pub fn health_known(
 ) -> String {
     let mythology = party
         .iter()
-        .filter(|(_, v)| crate::game::camp::can_act(v))
+        .filter(|(_, v)| v.can_act())
         .map(|(m, _)| m.skill(Skill::Mythology))
         .max()
         .unwrap_or(0);

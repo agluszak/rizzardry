@@ -4,8 +4,7 @@
 //! After Whizzardry `ReadStringTable` and `GetStringFromStringDatabase`.
 //! Text is UTF-16LE, each unit stored as `!unit + 0x9697`.
 
-use super::pvl::{PvlError, invalid};
-use crate::bytes::Bytes;
+use crate::bytes::{Bytes, DecodeError};
 
 fn decode(units: &[u8], encoded: bool) -> String {
     let units: Vec<u16> = units
@@ -20,17 +19,17 @@ fn decode(units: &[u8], encoded: bool) -> String {
 }
 
 /// The game's strings, by index.
-pub fn read_string_table(data: &[u8]) -> Result<Vec<String>, PvlError> {
+pub fn read_string_table(data: &[u8]) -> Result<Vec<String>, DecodeError> {
     let mut bytes = Bytes::new(data);
     let count = bytes.i32()?;
     if !(0..=100_000).contains(&count) {
-        return Err(invalid("string table count out of range", &bytes));
+        return Err(bytes.invalid("string table count out of range"));
     }
     (0..count)
         .map(|_| {
             let length = bytes.i32()?;
             if length < 0 || length % 2 != 0 {
-                return Err(invalid("string length out of range", &bytes));
+                return Err(bytes.invalid("string length out of range"));
             }
             Ok(decode(bytes.take(length as usize)?, true))
         })

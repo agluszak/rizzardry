@@ -728,6 +728,8 @@ fn execute(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth:
             chosen
         }
     };
+    // A level callback runs once the action is selected, before it executes
+    // (retail `Trigger::Run`).
     if let Some(bell) = world.get::<BellButton>(entity).copied() {
         let [button, dial] = world.get_entity_mut([entity, bell.dial]).unwrap();
         let outcome = super::scripts::ring_bell(button, dial);

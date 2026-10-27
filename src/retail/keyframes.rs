@@ -2,8 +2,7 @@
 //! parts, animated lights.
 
 use super::mesh_record::RECORD_SCALE;
-use super::pvl::{PvlError, invalid};
-use crate::bytes::Bytes;
+use crate::bytes::{Bytes, DecodeError};
 
 /// One key: a position in retail units and a rotation of `angle` radians
 /// about `axis`.
@@ -15,16 +14,16 @@ pub struct PathKey {
     pub scale: Option<[f32; 3]>,
 }
 
-pub fn read_path(bytes: &mut Bytes) -> Result<Vec<PathKey>, PvlError> {
+pub fn read_path(bytes: &mut Bytes) -> Result<Vec<PathKey>, DecodeError> {
     if bytes.u8()? != 0 {
-        return Err(invalid("unknown path kind", bytes));
+        return Err(bytes.invalid("unknown path kind"));
     }
     let version = bytes.u8()?;
     let _position = bytes.f32()?;
     let _unknown = bytes.u32()?;
     let count = bytes.i32()?;
     if count < 0 {
-        return Err(invalid("negative path key count", bytes));
+        return Err(bytes.invalid("negative path key count"));
     }
     let size = if version == 2 { 40 } else { 28 };
     Ok(bytes.records(count as usize, size, |b| {

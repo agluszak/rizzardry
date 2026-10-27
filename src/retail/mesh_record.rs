@@ -1,8 +1,8 @@
 //! Single mesh records (Whizzardry `ReadSingleLevelMeshRecord`): the meshes of
 //! props, animated props, items and uncompiled levels.
 
-use super::pvl::{MaterialRecord, PvlError, invalid, read_materials};
-use crate::bytes::Bytes;
+use super::pvl::{MaterialRecord, read_materials};
+use crate::bytes::{Bytes, DecodeError};
 
 /// Retail stores most record lengths divided by 500.
 pub const RECORD_SCALE: f32 = 500.0;
@@ -59,12 +59,12 @@ const FLAG_VERTEX_FRAMES: u8 = 1;
 const FLAG_SHORT_FRAMES: u8 = 2;
 const FLAG_COMPACT_FACES: u8 = 4;
 
-pub fn read_mesh_record(bytes: &mut Bytes) -> Result<MeshRecord, PvlError> {
+pub fn read_mesh_record(bytes: &mut Bytes) -> Result<MeshRecord, DecodeError> {
     let version = bytes.i32()?;
     let vertex_count = bytes.i32()?;
     let face_count = bytes.i32()?;
     if !(1..=100_000).contains(&vertex_count) || !(1..=200_000).contains(&face_count) {
-        return Err(invalid("invalid mesh record counts", bytes));
+        return Err(bytes.invalid("invalid mesh record counts"));
     }
     let (vertex_count, face_count) = (vertex_count as usize, face_count as usize);
     let flags = if version > 2 { bytes.u8()? } else { 0 };
@@ -83,13 +83,13 @@ pub fn read_mesh_record(bytes: &mut Bytes) -> Result<MeshRecord, PvlError> {
     if version > 3 {
         let count = bytes.i8()?;
         if count < 0 {
-            return Err(invalid("negative vertex mapping count", bytes));
+            return Err(bytes.invalid("negative vertex mapping count"));
         }
         for _ in 0..count {
             let key = bytes.i16()?;
             let vertex = bytes.i16()?;
             if vertex < 0 || vertex as usize >= vertex_count {
-                return Err(invalid("vertex mapping out of range", bytes));
+                return Err(bytes.invalid("vertex mapping out of range"));
             }
             mapped_vertices.push((key, vertex as u32));
         }
@@ -102,7 +102,7 @@ pub fn read_mesh_record(bytes: &mut Bytes) -> Result<MeshRecord, PvlError> {
         let frames = bytes.i16()?;
         let compression_scale = if compression == 2 { bytes.f32()? } else { 1000.0 };
         if frames <= 0 || !compression_scale.is_finite() || compression_scale <= 0.0 {
-            return Err(invalid("invalid vertex frames", bytes));
+            return Err(bytes.invalid("invalid vertex frames"));
         }
         let mut all = Vec::with_capacity(frames as usize);
         for _ in 0..frames {
@@ -140,7 +140,7 @@ pub fn read_mesh_record(bytes: &mut Bytes) -> Result<MeshRecord, PvlError> {
         if face.material as usize >= materials.len()
             || face.vertices.iter().any(|&v| v as usize >= vertex_count)
         {
-            return Err(invalid("mesh face index out of range", bytes));
+            return Err(bytes.invalid("mesh face index out of range"));
         }
     }
     Ok(MeshRecord { placement, mapped_vertices, vertices, faces, materials })

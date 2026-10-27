@@ -215,7 +215,7 @@ pub(crate) fn pass_time(
         }
     }
     let anyone_able =
-        affected.p0().iter_many(roster.iter()).matched().any(|(_, vitals)| camp::can_act(vitals));
+        affected.p0().iter_many(roster.iter()).matched().any(|(_, vitals)| vitals.can_act());
     if let Some(camp) = camp.as_mut()
         && let Some(outcome) = camp.advance(time.delta(), clock.ms, anyone_able)
     {

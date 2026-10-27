@@ -808,6 +808,7 @@ pub fn resolve(
                 >> 2;
             vitals.hp = (character.max_hp() * share / 100).max(1);
             vitals.stamina = (character.max_stamina() * share / 100).max(1);
+            world.formation.update_seat(member, false);
             Some(Effect::Raised { victim: v })
         }),
         Kind::Lifesteal => each(&mut |v, rng, world| {

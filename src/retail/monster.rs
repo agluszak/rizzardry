@@ -3,8 +3,7 @@
 use super::keyframes::read_path;
 use super::mesh_record::{MeshRecord, MeshVertices};
 use super::prop::read_animation;
-use super::pvl::{PvlError, invalid};
-use crate::bytes::Bytes;
+use crate::bytes::{Bytes, DecodeError};
 use crate::content::monster::MonsterBody;
 
 /// One animation cycle: a mesh whose vertices move frame by frame.
@@ -19,10 +18,10 @@ pub struct MonsterCycle {
 
 const PARTICLE_RECORD: [usize; 4] = [0x216, 0x218, 0x21d, 0x225];
 
-pub fn read_cycle(data: &[u8]) -> Result<MonsterCycle, PvlError> {
+pub fn read_cycle(data: &[u8]) -> Result<MonsterCycle, DecodeError> {
     let mut bytes = Bytes::new(data);
     if bytes.u8()? != 1 {
-        return Err(invalid("unsupported monster cycle version", &bytes));
+        return Err(bytes.invalid("unsupported monster cycle version"));
     }
     if bytes.u8()? != 0 {
         read_path(&mut bytes)?;
@@ -32,7 +31,7 @@ pub fn read_cycle(data: &[u8]) -> Result<MonsterCycle, PvlError> {
             let version = bytes.u8()? as usize;
             let size = *PARTICLE_RECORD
                 .get(version.wrapping_sub(1))
-                .ok_or_else(|| invalid("unknown particle version", &bytes))?;
+                .ok_or_else(|| bytes.invalid("unknown particle version"))?;
             bytes.take(size)?;
         }
     }
@@ -43,7 +42,7 @@ pub fn read_cycle(data: &[u8]) -> Result<MonsterCycle, PvlError> {
         .iter()
         .rev()
         .find_map(|channel| channel.first())
-        .ok_or_else(|| invalid("monster cycle has no mesh", &bytes))?;
+        .ok_or_else(|| bytes.invalid("monster cycle has no mesh"))?;
     let records = &part.mesh.frames;
     let mesh = records[0].clone();
     let frames = match &mesh.vertices {
@@ -52,7 +51,7 @@ pub fn read_cycle(data: &[u8]) -> Result<MonsterCycle, PvlError> {
         MeshVertices::Static(_) => records.iter().map(|r| r.vertices.first().to_vec()).collect(),
     };
     if frames.iter().any(|frame| frame.len() != frames[0].len()) {
-        return Err(invalid("monster cycle frames differ in vertex count", &bytes));
+        return Err(bytes.invalid("monster cycle frames differ in vertex count"));
     }
     Ok(MonsterCycle { frames_per_second: animation.frames_per_second, mesh, frames })
 }

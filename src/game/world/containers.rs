@@ -48,8 +48,9 @@ pub fn take_from_container(
         if !world.get::<PartyMember>(member).is_some_and(|m| m.0 == party) {
             return Err(Refusal::NotMember);
         }
-        let vitals = world.get(member).ok_or(Refusal::NotMember)?;
-        if !crate::game::camp::can_act(vitals) || world.get::<Carried>(member).is_none() {
+        let vitals =
+            world.get::<crate::game::characters::Vitals>(member).ok_or(Refusal::NotMember)?;
+        if !vitals.can_act() || world.get::<Carried>(member).is_none() {
             return Err(Refusal::DoesNotFit);
         }
     }

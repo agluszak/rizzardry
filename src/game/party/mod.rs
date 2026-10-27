@@ -88,7 +88,7 @@ pub fn damage_member(
 ) -> u32 {
     let lost = vitals.damage(amount);
     if vitals.is_dead() && formation.row_of(member).is_some() {
-        formation.unseat(member);
+        formation.update_seat(member, true);
     }
     if lost > 0 {
         damage.write(DamageApplied { member, amount: lost, died: vitals.is_dead() });

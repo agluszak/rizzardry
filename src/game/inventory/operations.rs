@@ -35,7 +35,7 @@ impl InventoryOperations<'_, '_> {
         let definition = catalog.get(held.item).ok_or(Refusal::MissingContent)?;
         let item = held.display_name(definition, false);
         let name = profile.name.clone();
-        let eligible = crate::game::camp::can_act(vitals);
+        let eligible = vitals.can_act();
         let pool_first = !eligible || self.battle.is_some();
         let result = self.party.give_held(eligible.then_some(&mut *carried), pool_first, catalog);
         Ok(result.map(|given| match given {

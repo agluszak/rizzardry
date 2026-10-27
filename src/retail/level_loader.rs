@@ -9,6 +9,7 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::reflect::TypePath;
 
+use super::LoadError;
 use super::links::{level_entrances, level_links, teleport_arrival};
 use super::oct::read_collision;
 use super::population::{
@@ -18,7 +19,7 @@ use super::prop::{PROP_COLLIDABLE, Prop};
 use super::prop_loader::{
     PropLighting, key_transform, level_lighting, part_transforms, record_collision, record_meshes,
 };
-use super::pvl::{CompiledMesh, MaterialRecord, PvlError, read_level_geometry};
+use super::pvl::{CompiledMesh, MaterialRecord, read_level_geometry};
 use super::sections::LevelSections;
 use super::sections::{Environment, read_sections};
 use super::space::{retail_direction, retail_position, retail_yaw};
@@ -58,22 +59,6 @@ fn level_environment(environment: &Environment) -> LevelEnvironment {
 
 #[derive(Default, TypePath)]
 pub struct PvlLoader;
-
-#[derive(Debug, thiserror::Error)]
-pub enum PvlLoadError {
-    #[error("monster cycle has {0} frames, exceeding native morph target capacity")]
-    MorphTargets(usize),
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-    #[error(transparent)]
-    Pvl(#[from] PvlError),
-    #[error(transparent)]
-    Read(#[from] bevy::asset::ReadAssetBytesError),
-    #[error("cannot name the level's octree file")]
-    Path,
-    #[error("invalid automap layers: {0}")]
-    MapLayers(String),
-}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Blend {
@@ -403,40 +388,44 @@ fn decode_action(
     // -1 stands for retail's default.
     let or = |value: i32, default: i32| if value < 0 { default } else { value };
     match code {
-        0x00 => TriggerAction::Nothing,
-        0x01 => TriggerAction::OpenDoor,
-        0x02 | 0x2c => TriggerAction::ToggleDoor,
-        0x03 => TriggerAction::Animate(Animation::Toggle),
-        0x32 => TriggerAction::Animate(Animation::Start),
-        0x33 => TriggerAction::Animate(Animation::Stop),
-        0x09 => first_recipient
+        action::NOTHING => TriggerAction::Nothing,
+        action::OPEN_DOOR => TriggerAction::OpenDoor,
+        action::TOGGLE_DOOR | action::TOGGLE_DOOR_2 => TriggerAction::ToggleDoor,
+        action::TOGGLE => TriggerAction::Animate(Animation::Toggle),
+        action::START_ANIMATION => TriggerAction::Animate(Animation::Start),
+        action::STOP_ANIMATION => TriggerAction::Animate(Animation::Stop),
+        action::CAMERA_PATH => first_recipient
             .and_then(|name| {
                 sections.cameras.iter().position(|camera| camera.name.eq_ignore_ascii_case(name))
             })
             .map_or(TriggerAction::Unsupported(code), TriggerAction::CameraPath),
-        0x0f => TriggerAction::Relay,
+        action::RELAY => TriggerAction::Relay,
         action::TELEPORT | action::RANDOM_TELEPORT => teleport_arrival(sections, item)
             .map_or(TriggerAction::Unsupported(code), TriggerAction::Teleport),
-        0x24 => TriggerAction::HurtParty(Dice {
+        action::HURT_PARTY => TriggerAction::HurtParty(Dice {
             count: or(first, 1) as u8,
             sides: or(second, 6) as u8,
             base: or(third, 2) as i16,
         }),
-        0x23 => TriggerAction::DamageZone,
-        0x25 | 0x26 => TriggerAction::Fountain(Fountain {
-            restores: if code == 0x26 { Restores::Health } else { Restores::Stamina },
+        action::DAMAGE_ZONE => TriggerAction::DamageZone,
+        action::STAMINA_FOUNTAIN | action::HEALTH_FOUNTAIN => TriggerAction::Fountain(Fountain {
+            restores: if code == action::HEALTH_FOUNTAIN {
+                Restores::Health
+            } else {
+                Restores::Stamina
+            },
             amount: third.max(0) as u32,
             uses: (first != -1).then_some(first.max(0) as u32),
             // Its second word counts retail's 720-second game hours.
             refills_after: (second > 0).then(|| second as u64 * 720 * 1000),
         }),
-        0x39 => TriggerAction::Shake {
+        action::SHAKE => TriggerAction::Shake {
             seconds: if third == -1 { 1.0 } else { third.unsigned_abs() as f32 / 1000.0 },
             intensity: if first == -1 { 800.0 } else { first as f32 },
             fade_out: third < -1,
         },
-        0x40 => TriggerAction::Dial,
-        0x36 => TriggerAction::Sound,
+        action::DIAL => TriggerAction::Dial,
+        action::SOUND => TriggerAction::Sound,
         other => TriggerAction::Unsupported(other),
     }
 }
@@ -532,14 +521,14 @@ pub(super) async fn build_props(
 impl AssetLoader for PvlLoader {
     type Asset = LevelGeometry;
     type Settings = ();
-    type Error = PvlLoadError;
+    type Error = LoadError;
 
     async fn load(
         &self,
         reader: &mut dyn Reader,
         _settings: &(),
         context: &mut LoadContext<'_>,
-    ) -> Result<LevelGeometry, PvlLoadError> {
+    ) -> Result<LevelGeometry, LoadError> {
         let mut data = Vec::new();
         reader.read_to_end(&mut data).await?;
         let geometry = read_level_geometry(&data)?;
@@ -604,14 +593,14 @@ pub struct PvlDefinitionLoader;
 impl AssetLoader for PvlDefinitionLoader {
     type Asset = LevelDefinition;
     type Settings = ();
-    type Error = PvlLoadError;
+    type Error = LoadError;
 
     async fn load(
         &self,
         reader: &mut dyn Reader,
         _: &(),
         context: &mut LoadContext<'_>,
-    ) -> Result<LevelDefinition, PvlLoadError> {
+    ) -> Result<LevelDefinition, LoadError> {
         let mut data = Vec::new();
         reader.read_to_end(&mut data).await?;
         let geometry = read_level_geometry(&data)?;
@@ -620,6 +609,8 @@ impl AssetLoader for PvlDefinitionLoader {
         let level_index =
             crate::content::levels::LEVELS.iter().position(|level| level.path() == level_path);
         let filter_path = AssetPath::from("retail://data/automap/mapfilters.txt");
+        // Retail draws every layer when the filter file is missing
+        // (`AutomapScreen.cpp`).
         let filters = match context.read_asset_bytes(filter_path).await {
             Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
             Err(bevy::asset::ReadAssetBytesError::AssetReaderError(
@@ -629,11 +620,13 @@ impl AssetLoader for PvlDefinitionLoader {
         };
         let map_layers =
             super::automap::layer_heights(&sections.clip_planes, &filters, level_index)
-                .map_err(PvlLoadError::MapLayers)?;
+                .map_err(|e| LoadError::Invalid(format!("invalid automap layers: {e}")))?;
         // Collision comes from the level's octree file, not render polygons.
         let stem =
             context.path().path().file_stem().unwrap_or_default().to_string_lossy().into_owned();
-        let octree = sibling(context, ".", &format!("{stem}.oct")).ok_or(PvlLoadError::Path)?;
+        let octree = sibling(context, ".", &format!("{stem}.oct")).ok_or_else(|| {
+            LoadError::Invalid(format!("cannot name a file beside {}", context.path()))
+        })?;
         let octree = context.read_asset_bytes(octree).await?;
         let collision = read_collision(&octree)?.solid_mesh();
 

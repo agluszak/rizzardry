@@ -433,7 +433,7 @@ fn draw_device_panel(
             }
             (Control::Inspect, _) => skill.is_some(),
             (Control::Cast | Control::UseItem, _) => {
-                member.is_some_and(|(_, (_, vitals))| crate::game::camp::can_act(vitals))
+                member.is_some_and(|(_, (_, vitals))| vitals.can_act())
             }
             (Control::Less(id) | Control::More(id), _) => {
                 stacks.iter().find(|s| s.id == id).is_some_and(|s| s.count() > 1)

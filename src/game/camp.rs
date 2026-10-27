@@ -7,7 +7,7 @@
 use avian3d::prelude::LinearVelocity;
 use bevy::prelude::*;
 
-use crate::game::characters::{Condition, Vitals};
+use crate::game::characters::Vitals;
 use crate::game::party::body::PartyBody;
 use crate::game::party::roster::PartyRoster;
 use std::time::Duration;
@@ -113,11 +113,6 @@ pub enum CampNews {
     Recovered,
 }
 
-/// Whether a member can act: alive and nothing worse than webbed.
-pub fn can_act(member: &Vitals) -> bool {
-    !member.is_dead() && member.worst_condition().is_none_or(|c| c < Condition::Turncoat)
-}
-
 /// The Camp button (retail `RequestCamp`, as the key does).
 #[derive(Message, Debug, Clone, Copy)]
 pub struct CampRequest;
@@ -156,7 +151,7 @@ pub fn force_camp(
     mut news: MessageWriter<CampNews>,
 ) {
     let anyone_alive = members.iter_many(roster.iter()).matched().any(|m| !m.is_dead());
-    let anyone_able = members.iter_many(roster.iter()).matched().any(can_act);
+    let anyone_able = members.iter_many(roster.iter()).matched().any(Vitals::can_act);
     if camp.is_some() || battle.is_some() || !anyone_alive || anyone_able {
         return;
     }

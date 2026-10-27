@@ -5,26 +5,42 @@
 //! decoded from the reference code only.
 
 use super::mesh_record::RECORD_SCALE;
-use super::pvl::{PvlError, invalid, text};
-use crate::bytes::{Bytes, lenient_string};
+use super::pvl::text;
+use crate::bytes::{Bytes, DecodeError, lenient_string};
 
 const NAME: usize = 0x80;
 const LONG_TEXT: usize = 0x100;
 
-/// Retail trigger action codes used so far.
+/// The retail trigger action codes the game decodes.
 pub mod action {
-    /// Move the party to the recipients: a local trigger or named position,
-    /// or `<3-letter location><2-digit entrance>` on another level.
-    pub const TELEPORT: u32 = 0x34;
-    /// Like [`TELEPORT`] to a randomly chosen recipient.
-    pub const RANDOM_TELEPORT: u32 = 0x4b;
+    pub const NOTHING: u32 = 0x00;
+    pub const OPEN_DOOR: u32 = 0x01;
+    pub const TOGGLE_DOOR: u32 = 0x02;
+    /// Toggle a prop's animation; with a loot table, a container.
+    pub const TOGGLE: u32 = 0x03;
     /// Play the named camera path; the party ends at its last key (ladders,
     /// ropes).
     pub const CAMERA_PATH: u32 = 0x09;
     /// Fire the recipients.
     pub const RELAY: u32 = 0x0f;
-    /// Toggle a prop's animation; with a loot table, a container.
-    pub const TOGGLE: u32 = 0x03;
+    /// Hurt whoever stands in it, every few seconds.
+    pub const DAMAGE_ZONE: u32 = 0x23;
+    /// Hurt the party once by dice in the trigger's data words.
+    pub const HURT_PARTY: u32 = 0x24;
+    pub const STAMINA_FOUNTAIN: u32 = 0x25;
+    pub const HEALTH_FOUNTAIN: u32 = 0x26;
+    /// A second door toggle.
+    pub const TOGGLE_DOOR_2: u32 = 0x2c;
+    pub const START_ANIMATION: u32 = 0x32;
+    pub const STOP_ANIMATION: u32 = 0x33;
+    /// Move the party to the recipients: a local trigger or named position,
+    /// or `<3-letter location><2-digit entrance>` on another level.
+    pub const TELEPORT: u32 = 0x34;
+    pub const SOUND: u32 = 0x36;
+    pub const SHAKE: u32 = 0x39;
+    pub const DIAL: u32 = 0x40;
+    /// Like [`TELEPORT`] to a randomly chosen recipient.
+    pub const RANDOM_TELEPORT: u32 = 0x4b;
 }
 
 /// A position in retail units with a rotation of `angle` radians about
@@ -129,7 +145,7 @@ pub enum StateMode {
     Toggle,
 }
 
-fn read_door(bytes: &mut Bytes) -> Result<DoorData, PvlError> {
+fn read_door(bytes: &mut Bytes) -> Result<DoorData, DecodeError> {
     let _version = bytes.u8()?;
     let mut flags = [false; 9];
     for flag in &mut flags {
@@ -156,12 +172,12 @@ fn read_door(bytes: &mut Bytes) -> Result<DoorData, PvlError> {
 }
 
 /// Older records can carry a 36-vertex blocking shape; retail discards it.
-fn skip_legacy_geometry(bytes: &mut Bytes) -> Result<(), PvlError> {
+fn skip_legacy_geometry(bytes: &mut Bytes) -> Result<(), DecodeError> {
     bytes.take(1 + 36 * 12 + 2)?;
     Ok(())
 }
 
-fn placement(bytes: &mut Bytes) -> Result<TriggerPlacement, PvlError> {
+fn placement(bytes: &mut Bytes) -> Result<TriggerPlacement, DecodeError> {
     Ok(TriggerPlacement {
         position: bytes.f32s::<3>()?.map(|v| v * RECORD_SCALE),
         angle: bytes.f32()?,
@@ -169,18 +185,18 @@ fn placement(bytes: &mut Bytes) -> Result<TriggerPlacement, PvlError> {
     })
 }
 
-pub fn read_trigger(bytes: &mut Bytes) -> Result<Trigger, PvlError> {
+pub fn read_trigger(bytes: &mut Bytes) -> Result<Trigger, DecodeError> {
     let _record_version = bytes.u8()?;
     match bytes.u8()? {
         1 => read_switch(bytes),
         2 => read_prop_trigger(bytes),
         3 => read_ambient_sound(bytes),
         4 => read_item_trigger(bytes),
-        _ => Err(invalid("invalid trigger type", bytes)),
+        _ => Err(bytes.invalid("invalid trigger type")),
     }
 }
 
-fn read_switch(bytes: &mut Bytes) -> Result<Trigger, PvlError> {
+fn read_switch(bytes: &mut Bytes) -> Result<Trigger, DecodeError> {
     let version = bytes.u8()?;
     // Cycle bounce, state count, animate states, range.
     bytes.take(16)?;
@@ -204,7 +220,7 @@ fn read_switch(bytes: &mut Bytes) -> Result<Trigger, PvlError> {
     Ok(Trigger { name, kind: TriggerKind::Switch { action, recipients, door } })
 }
 
-fn read_prop_trigger(bytes: &mut Bytes) -> Result<Trigger, PvlError> {
+fn read_prop_trigger(bytes: &mut Bytes) -> Result<Trigger, DecodeError> {
     let version = bytes.u8()?;
     let _range = bytes.f32()?;
     let position = bytes.f32s::<3>()?.map(|v| v * RECORD_SCALE);
@@ -248,7 +264,7 @@ pub struct AmbientSound {
     pub interval: [i32; 2],
 }
 
-fn read_ambient_sound(bytes: &mut Bytes) -> Result<Trigger, PvlError> {
+fn read_ambient_sound(bytes: &mut Bytes) -> Result<Trigger, DecodeError> {
     let version = bytes.u8()?;
     let volume = bytes.i32s::<2>()?;
     let speed = bytes.i32s::<2>()?;
@@ -286,7 +302,7 @@ fn read_ambient_sound(bytes: &mut Bytes) -> Result<Trigger, PvlError> {
     })
 }
 
-fn read_item_trigger(bytes: &mut Bytes) -> Result<Trigger, PvlError> {
+fn read_item_trigger(bytes: &mut Bytes) -> Result<Trigger, DecodeError> {
     let version = bytes.u8()?;
     let name = text(bytes, NAME)?.to_uppercase();
     let packed_flags = bytes.u8()?;

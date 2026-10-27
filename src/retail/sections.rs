@@ -7,9 +7,9 @@
 use super::keyframes::{PathKey, read_path};
 use super::mesh_record::RECORD_SCALE;
 use super::prop::{Prop, read_prop};
-use super::pvl::{PvlError, invalid, text};
+use super::pvl::text;
 use super::trigger::{Trigger, read_trigger};
-use crate::bytes::{Bytes, lenient_string};
+use crate::bytes::{Bytes, DecodeError, lenient_string};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Light {
@@ -101,22 +101,22 @@ impl LevelSections {
 
 /// Compiled levels (`.pvl`) end each section with `-1`; uncompiled ones
 /// (`.lvl`, e.g. skies) do not.
-fn sentinel(bytes: &mut Bytes, compiled: bool) -> Result<(), PvlError> {
+fn sentinel(bytes: &mut Bytes, compiled: bool) -> Result<(), DecodeError> {
     if compiled && bytes.i32()? != -1 {
-        return Err(invalid("section has the wrong length", bytes));
+        return Err(bytes.invalid("section has the wrong length"));
     }
     Ok(())
 }
 
-fn count(bytes: &mut Bytes) -> Result<usize, PvlError> {
+fn count(bytes: &mut Bytes) -> Result<usize, DecodeError> {
     let count = bytes.i32()?;
     if !(0..100_000).contains(&count) {
-        return Err(invalid("invalid record count", bytes));
+        return Err(bytes.invalid("invalid record count"));
     }
     Ok(count as usize)
 }
 
-fn read_lights(bytes: &mut Bytes) -> Result<Vec<Light>, PvlError> {
+fn read_lights(bytes: &mut Bytes) -> Result<Vec<Light>, DecodeError> {
     let count = bytes.i16()?.max(0);
     let mut lights = Vec::with_capacity(count as usize);
     for _ in 0..count {
@@ -144,7 +144,7 @@ fn read_lights(bytes: &mut Bytes) -> Result<Vec<Light>, PvlError> {
     Ok(lights)
 }
 
-fn read_environment(bytes: &mut Bytes) -> Result<Option<Environment>, PvlError> {
+fn read_environment(bytes: &mut Bytes) -> Result<Option<Environment>, DecodeError> {
     if bytes.i32()? == 0 {
         return Ok(None);
     }
@@ -161,7 +161,7 @@ fn read_environment(bytes: &mut Bytes) -> Result<Option<Environment>, PvlError> 
         }
         _ => {}
     }
-    let table = |bytes: &mut Bytes| -> Result<Option<Box<[[u8; 3]; 256]>>, PvlError> {
+    let table = |bytes: &mut Bytes| -> Result<Option<Box<[[u8; 3]; 256]>>, DecodeError> {
         if bytes.u8()? == 0 {
             return Ok(None);
         }
@@ -185,16 +185,16 @@ fn read_environment(bytes: &mut Bytes) -> Result<Option<Environment>, PvlError> 
 const PARTICLE_RECORD: [usize; 4] = [0x216, 0x218, 0x21d, 0x225];
 
 /// Read a compiled level's sections, starting where its meshes end.
-pub fn read_sections(bytes: &mut Bytes) -> Result<LevelSections, PvlError> {
+pub fn read_sections(bytes: &mut Bytes) -> Result<LevelSections, DecodeError> {
     read_sections_of(bytes, true)
 }
 
 /// Read an uncompiled level's sections, starting after its mesh record.
-pub fn read_uncompiled_sections(bytes: &mut Bytes) -> Result<LevelSections, PvlError> {
+pub fn read_uncompiled_sections(bytes: &mut Bytes) -> Result<LevelSections, DecodeError> {
     read_sections_of(bytes, false)
 }
 
-fn read_sections_of(bytes: &mut Bytes, compiled: bool) -> Result<LevelSections, PvlError> {
+fn read_sections_of(bytes: &mut Bytes, compiled: bool) -> Result<LevelSections, DecodeError> {
     let lights = read_lights(bytes)?;
     sentinel(bytes, compiled)?;
     for _ in 0..count(bytes)? {
@@ -249,7 +249,7 @@ fn read_sections_of(bytes: &mut Bytes, compiled: bool) -> Result<LevelSections, 
         let version = bytes.u8()?;
         let size = *PARTICLE_RECORD
             .get((version as usize).wrapping_sub(1))
-            .ok_or_else(|| invalid("unknown particle system version", bytes))?;
+            .ok_or_else(|| bytes.invalid("unknown particle system version"))?;
         let record = bytes.take(size)?;
         let mut location = Bytes::new(&record[0x40..0x4c]);
         particles.push(ParticleSystem {
@@ -261,7 +261,7 @@ fn read_sections_of(bytes: &mut Bytes, compiled: bool) -> Result<LevelSections, 
     let mut named_positions = Vec::new();
     for _ in 0..count(bytes)? {
         if bytes.u8()? != 1 {
-            return Err(invalid("unknown named position version", bytes));
+            return Err(bytes.invalid("unknown named position version"));
         }
         named_positions.push(NamedPosition {
             name: text(bytes, 0x80)?.to_uppercase(),

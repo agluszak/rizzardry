@@ -302,16 +302,6 @@ pub enum CombatNews {
     PartyStops,
 }
 
-/// Whether a member can act or be targeted: alive and nothing worse than
-/// webbed.
-fn able(member: &Vitals) -> bool {
-    !member.is_dead() && member.worst_condition().is_none_or(|c| c < Condition::Asleep)
-}
-
-fn monster_can_attack(monster: &Monster) -> bool {
-    !monster.is_dead() && !monster.conditions.iter().any(|&(c, _)| c > Condition::Webbed)
-}
-
 /// How far a monster is from the party (retail `GetPointDistanceToPlayer`):
 /// from its feet to the point 1000 world units (2 m) under the party's eye,
 /// less both bodies' alternate radii (its fight radius, the party's 1 m),
@@ -412,7 +402,7 @@ pub fn start_battle(
     let lowest_level = members
         .iter_many(roster.iter())
         .matched()
-        .filter(|(_, v)| able(v))
+        .filter(|(_, v)| v.can_fight())
         .map(|(c, _)| i32::from(c.level))
         .min()
         .unwrap_or(0);
@@ -425,7 +415,7 @@ pub fn start_battle(
         .iter()
         .filter(|(_, monster, at, walker, provoked)| {
             let Some(kind) = catalog.0.get(monster.species as usize) else { return false };
-            if kind.npc.is_some() || !monster_can_attack(monster) {
+            if kind.npc.is_some() || !monster.can_fight() {
                 return false;
             }
             let feet = feet(at.translation(), *walker);
@@ -533,13 +523,13 @@ fn accept_round(
             Order::Defend => AcceptedAction::Defend,
             Order::Magic(choice) => AcceptedAction::Magic(choice),
         };
-        let turn = if matches!(action, AcceptedAction::Attack { .. }) && able(vitals) {
+        let turn = if matches!(action, AcceptedAction::Attack { .. }) && vitals.can_fight() {
             let hand = primary_hand(character, carried, items);
             Turn {
                 phase: phase(rng, character_initiative(character, &hand)),
                 attacks_left: hand.attacks,
             }
-        } else if matches!(action, AcceptedAction::Magic(_)) && able(vitals) {
+        } else if matches!(action, AcceptedAction::Magic(_)) && vitals.can_fight() {
             Turn {
                 phase: phase(rng, character.initiative(crate::game::characters::Load::None)),
                 attacks_left: 1,
@@ -569,7 +559,7 @@ fn accept_round(
             let slowest = roster
                 .iter()
                 .filter_map(|m| members.get(m).ok())
-                .filter(|(_, vitals, _)| able(vitals))
+                .filter(|(_, vitals, _)| vitals.can_fight())
                 .map(|(c, _, _)| {
                     c.initiative(crate::game::characters::Load::None) + rng.below(4) as i32
                 })
@@ -733,7 +723,7 @@ pub fn run_battle(
             let member = work.actor;
             let able_now = roster.contains(&member)
                 && members.get(member).is_ok_and(|(_, vitals, carried)| {
-                    able(vitals)
+                    vitals.can_fight()
                         && match work.action {
                             AcceptedAction::Attack { weapon } => {
                                 weapon == carried.worn(EquipSlot::Primary).map(|i| i.id)
@@ -837,7 +827,7 @@ pub fn run_battle(
         if let Some(index) = battle.accepted.monsters.iter().position(|(_, t)| t.phase == step) {
             let monster = battle.accepted.monsters[index].0;
             if !combatants.contains(&monster)
-                || !damage.monsters.get(monster).is_ok_and(|(m, ..)| monster_can_attack(m))
+                || !damage.monsters.get(monster).is_ok_and(|(m, ..)| m.can_fight())
             {
                 battle.accepted.monsters[index].1 = Turn::default();
                 continue;
@@ -1097,27 +1087,25 @@ fn member_acts(
         .iter()
         .filter_map(|&entity| {
             let (monster, at, walker, _) = damage.monsters.get(entity).ok()?;
+            let kind = species.0.get(monster.species as usize).filter(|kind| kind.npc.is_none())?;
             let distance = distance_to_party(party.eye, monster, feet(at.translation(), walker));
-            if !species.0.get(monster.species as usize).is_some_and(|kind| kind.npc.is_none())
-                || !damage.active(entity)
+            if !damage.active(entity)
                 || monster.is_dead()
                 || !party.reaches(formation, member, at.translation(), hand.reach, distance)
             {
                 return None;
             }
             let worst = monster.conditions.iter().map(|&(c, _)| c).max();
-            let has_attack =
-                species.0.get(monster.species as usize).is_some_and(|s| !s.attacks.is_empty());
             let side = formation::quadrant(party.eye, party.yaw, at.translation());
-            let in_reach = has_attack
+            let in_reach = !kind.attacks.is_empty()
                 && (side == Row::Rear
                     || (!formation.occupied(side) && formation.occupied(Row::Center)));
-            Some(((worst, !in_reach, distance), entity))
+            Some(((worst, !in_reach, distance), (entity, kind)))
         })
         .min_by(|a, b| a.0.0.cmp(&b.0.0).then(a.0.1.cmp(&b.0.1)).then(a.0.2.total_cmp(&b.0.2)))
-        .map(|(_, entity)| entity);
+        .map(|(_, target)| target);
     let turn = &mut battle.accepted.party[index].turn;
-    let Some(target) = target else {
+    let Some((target, kind)) = target else {
         // No target in reach: discard the remaining attacks this round.
         *turn = Turn::default();
         return None;
@@ -1125,7 +1113,6 @@ fn member_acts(
     turn.attacks_left -= 1;
     turn.phase = next_phase(turn.phase, turn.attacks_left);
     battle.attacked_this_round = true;
-    let kind = species.0.get(damage.monsters.get(target).ok()?.0.species as usize)?;
     // Retail draws the attack's mode, then its swings.
     let mode = attack::choose_mode(rng, hand.modes);
     let swings = rng.below(hand.swings) + 1;
@@ -1138,15 +1125,15 @@ fn member_acts(
     let (mut hits, mut dealt, mut casualty) = (0, 0, None);
     let weight = carried.worn(EquipSlot::Primary).and_then(|i| items.get(i.item)).map(|d| d.weight);
     for _ in 0..swings {
-        if !able(&vitals) {
+        if !vitals.can_fight() {
             break;
         }
         match character_swing(rng, &character, &vitals, &hand, mode, kind) {
             Swing::Hit(damage_amount) => {
                 hits += 1;
-                let outcome = damage
-                    .apply(target, damage_amount, party_level, rng)
-                    .expect("an active target and required catalogs were checked before attacking");
+                let Ok(outcome) = damage.apply(target, damage_amount, party_level, rng) else {
+                    break;
+                };
                 dealt += outcome.damage;
                 if outcome.died {
                     casualty = Some((target, outcome));
@@ -1191,7 +1178,7 @@ fn monster_acts(
     for (a, attack) in kind.attacks.iter().enumerate() {
         for member in roster.iter() {
             let Ok((_, vitals, _)) = members.get(member) else { continue };
-            if able(vitals)
+            if vitals.can_fight()
                 && party.reaches(formation, member, at.translation(), attack.reach, distance)
             {
                 for mode in attack.modes {

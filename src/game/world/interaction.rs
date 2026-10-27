@@ -242,8 +242,7 @@ pub enum Unable {
 /// `GetPartySlotLocksTrapsLevel`).
 pub fn lock_skill(character: &Character, vitals: &Vitals) -> Option<u32> {
     let level = character.skill(Skill::LocksAndTraps);
-    (crate::game::camp::can_act(vitals)
-        && (character.skill_available(Skill::LocksAndTraps) || level > 0))
+    (vitals.can_act() && (character.skill_available(Skill::LocksAndTraps) || level > 0))
         .then_some(level)
 }
 
@@ -263,10 +262,7 @@ pub fn force_chance(
     setting: Difficulty,
 ) -> Option<u32> {
     let strength = character.attribute(Attribute::Strength);
-    if !crate::game::camp::can_act(vitals)
-        || vitals.stamina < FORCE_STAMINA
-        || strength <= FORCE_STRENGTH
-    {
+    if !vitals.can_act() || vitals.stamina < FORCE_STAMINA || strength <= FORCE_STRENGTH {
         return None;
     }
     let divisor = (setting as i32 - 1 + tumblers as i32).clamp(2, 8);
@@ -344,7 +340,7 @@ fn member(world: &mut World, actor: Entity) -> Result<(&Character, &Vitals), Una
         return Err(Unable::NotMember);
     }
     let entity = world.get_entity(actor).map_err(|_| Unable::NotMember)?;
-    if !crate::game::camp::can_act(entity.get::<Vitals>().ok_or(Unable::NotMember)?) {
+    if !entity.get::<Vitals>().ok_or(Unable::NotMember)?.can_act() {
         return Err(Unable::CannotAct);
     }
     Ok((

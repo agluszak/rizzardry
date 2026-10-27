@@ -181,7 +181,7 @@ pub fn party_communication(world: &mut World) -> u32 {
     roster
         .iter()
         .filter_map(|e| Some((world.get::<Character>(e)?, world.get::<Vitals>(e)?)))
-        .filter(|(_, v)| crate::game::camp::can_act(v))
+        .filter(|(_, v)| v.can_act())
         .map(|(c, _)| c.skill(crate::content::characters::Skill::Communication))
         .max()
         .unwrap_or(0)

@@ -8,7 +8,6 @@ use bevy::prelude::*;
 
 use crate::content::characters::{Attribute, Skill};
 use crate::content::items::ItemCatalog;
-use crate::game::camp::can_act;
 use crate::game::characters::{Character, Profession, Vitals};
 use crate::game::combat::Battle;
 use crate::game::data::GameData;
@@ -164,7 +163,7 @@ pub fn search_pulse(
     let best = members
         .iter_many(roster.iter())
         .matched()
-        .filter(|(_, vitals)| can_act(vitals))
+        .filter(|(_, vitals)| vitals.can_act())
         .map(|(m, _)| (search_score(m, search.on(), running), m))
         .filter(|&(score, _)| score > 0)
         // The first of equals, as retail keeps the earlier slot.

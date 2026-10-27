@@ -9,6 +9,15 @@ pub struct Truncated {
     pub available: usize,
 }
 
+/// A record that could not be decoded.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum DecodeError {
+    #[error(transparent)]
+    Truncated(#[from] Truncated),
+    #[error("{0} at offset {1}")]
+    Invalid(&'static str, usize),
+}
+
 pub struct Bytes<'a> {
     data: &'a [u8],
     offset: usize,
@@ -19,8 +28,21 @@ impl<'a> Bytes<'a> {
         Bytes { data, offset: 0 }
     }
 
+    /// A cursor over `data` from `offset`, for fields at fixed offsets.
+    pub fn at(data: &'a [u8], offset: usize) -> Result<Self, Truncated> {
+        if offset > data.len() {
+            return Err(Truncated { offset: 0, needed: offset, available: data.len() });
+        }
+        Ok(Bytes { data, offset })
+    }
+
     pub fn offset(&self) -> usize {
         self.offset
+    }
+
+    /// The record is invalid at the current offset.
+    pub fn invalid(&self, message: &'static str) -> DecodeError {
+        DecodeError::Invalid(message, self.offset)
     }
 
     pub fn remaining(&self) -> usize {
@@ -101,6 +123,47 @@ impl<'a> Bytes<'a> {
         }
         (0..count).map(|_| read(self)).collect()
     }
+}
+
+/// A little-endian `u16` at `at` in `data`.
+pub fn u16_at(data: &[u8], at: usize) -> Result<u16, Truncated> {
+    Bytes::at(data, at)?.u16()
+}
+
+/// A little-endian `i16` at `at` in `data`.
+pub fn i16_at(data: &[u8], at: usize) -> Result<i16, Truncated> {
+    Bytes::at(data, at)?.i16()
+}
+
+/// A little-endian `u32` at `at` in `data`.
+pub fn u32_at(data: &[u8], at: usize) -> Result<u32, Truncated> {
+    Bytes::at(data, at)?.u32()
+}
+
+/// A little-endian `i32` at `at` in `data`.
+pub fn i32_at(data: &[u8], at: usize) -> Result<i32, Truncated> {
+    Bytes::at(data, at)?.i32()
+}
+
+/// A little-endian `f32` at `at` in `data`.
+pub fn f32_at(data: &[u8], at: usize) -> Result<f32, Truncated> {
+    Bytes::at(data, at)?.f32()
+}
+
+/// A UTF-16LE field's code units up to its first NUL (or its whole length).
+pub fn utf16_units(field: &[u8]) -> Vec<u16> {
+    field
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&pair| u16::from_le_bytes(pair))
+        .take_while(|&u| u != 0)
+        .collect()
+}
+
+/// A UTF-16LE text field up to its first NUL, invalid units replaced.
+pub fn utf16_string(field: &[u8]) -> String {
+    String::from_utf16_lossy(&utf16_units(field))
 }
 
 /// A fixed-size text field up to its first NUL (or its whole length).

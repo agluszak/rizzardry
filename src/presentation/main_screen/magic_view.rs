@@ -608,9 +608,7 @@ pub(super) fn refresh_magic_view(
             member: None,
         };
     }
-    if view.device.is_some()
-        && !members.get(view.caster).is_ok_and(|(_, v, _)| crate::game::camp::can_act(v))
-    {
+    if view.device.is_some() && !members.get(view.caster).is_ok_and(|(_, v, _)| v.can_act()) {
         commands.entity(root).despawn();
         return;
     }

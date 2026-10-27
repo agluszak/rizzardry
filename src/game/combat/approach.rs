@@ -73,7 +73,7 @@ pub fn close_in(
             Some(mut movement) => {
                 movement.moved += walker.speed * time.delta_secs();
                 let continues = battle.is_some()
-                    && super::monster_can_attack(monster)
+                    && monster.can_fight()
                     && movement.moved < movement.budget
                     && needs_approach(monster, here, Some(walker), party_eye, catalog);
                 if !continues {

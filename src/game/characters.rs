@@ -37,6 +37,12 @@ pub enum Condition {
     Unconscious,
 }
 
+/// Whether a party member or monster can fight: alive and nothing worse than
+/// webbed (retail `highest_condition < ASLEEP`).
+pub fn can_fight(hp: u32, conditions: &[(Condition, Lasting)]) -> bool {
+    hp != 0 && conditions.iter().all(|&(c, _)| c < Condition::Asleep)
+}
+
 /// Inflict a condition on a party member or a monster (retail
 /// `InflictCharacterCondition`, `InflictMonsterCondition`): a longer
 /// duration replaces a shorter one, never the reverse.
@@ -668,6 +674,19 @@ impl Vitals {
     /// the member can act.
     pub fn worst_condition(&self) -> Option<Condition> {
         self.conditions.iter().map(|&(c, _)| c).max()
+    }
+
+    /// Alive and nothing worse than blind: able to act outside a combat
+    /// round, such as to search, trade or rest (retail
+    /// `highest_condition < TURNCOAT`).
+    pub fn can_act(&self) -> bool {
+        !self.is_dead() && self.worst_condition().is_none_or(|c| c < Condition::Turncoat)
+    }
+
+    /// Alive and nothing worse than webbed: able to take or be the target of
+    /// a combat action (retail `highest_condition < ASLEEP`).
+    pub fn can_fight(&self) -> bool {
+        can_fight(self.hp, &self.conditions)
     }
 
     /// Inflict a condition, keeping the longer duration if already afflicted.

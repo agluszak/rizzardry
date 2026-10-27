@@ -57,6 +57,10 @@ impl Monster {
     pub fn is_dead(&self) -> bool {
         self.hp == 0
     }
+
+    pub fn can_fight(&self) -> bool {
+        crate::game::characters::can_fight(self.hp, &self.conditions)
+    }
 }
 
 /// A monster's effective gameplay body at the size it was rolled.

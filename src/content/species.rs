@@ -18,15 +18,6 @@ pub enum Reach {
 }
 
 impl Reach {
-    pub fn from_retail(category: u8) -> Self {
-        match category {
-            0 => Reach::Touch,
-            1 => Reach::Short,
-            2 => Reach::Long,
-            _ => Reach::Extreme,
-        }
-    }
-
     /// The furthest a target may be, in metres: 2, 4, 25 or 50.
     pub fn metres(self) -> f32 {
         match self {

@@ -2,7 +2,6 @@
 use crate::content::ui::{CreditLine, Credits};
 use bevy::asset::{AssetLoader, LoadContext, io::Reader};
 use bevy::reflect::TypePath;
-use std::io::{Error, ErrorKind};
 
 #[derive(Default, TypePath)]
 pub struct CreditsLoader;
@@ -10,14 +9,14 @@ pub struct CreditsLoader;
 impl AssetLoader for CreditsLoader {
     type Asset = Credits;
     type Settings = ();
-    type Error = Error;
+    type Error = super::LoadError;
 
     async fn load(
         &self,
         reader: &mut dyn Reader,
         _: &(),
         _: &mut LoadContext<'_>,
-    ) -> Result<Credits, Error> {
+    ) -> Result<Credits, super::LoadError> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
         decode(&bytes)
@@ -27,14 +26,14 @@ impl AssetLoader for CreditsLoader {
     }
 }
 
-fn decode(bytes: &[u8]) -> Result<Credits, Error> {
+fn decode(bytes: &[u8]) -> Result<Credits, super::LoadError> {
     if !bytes.starts_with(&[0xff, 0xfe]) || !bytes.len().is_multiple_of(2) {
-        return Err(Error::new(ErrorKind::InvalidData, "credits require UTF-16LE with a BOM"));
+        return Err(super::LoadError::Invalid("credits require UTF-16LE with a BOM".into()));
     }
     let units: Vec<_> =
         bytes[2..].as_chunks::<2>().0.iter().copied().map(u16::from_le_bytes).collect();
     let text =
-        String::from_utf16(&units).map_err(|error| Error::new(ErrorKind::InvalidData, error))?;
+        String::from_utf16(&units).map_err(|error| super::LoadError::Invalid(error.to_string()))?;
     let lines = text
         .lines()
         .filter(|line| !line.starts_with('*'))

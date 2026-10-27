@@ -454,7 +454,7 @@ fn prepare_source<'a>(
     inventory: &PartyInventory,
 ) -> Result<Prepared<'a>, Refusal> {
     let (profile, vitals, carried) = members.get(caster).map_err(|_| Refusal::CannotAct)?;
-    if vitals.is_dead() || vitals.worst_condition().is_some_and(|c| c >= Condition::Asleep) {
+    if !vitals.can_fight() {
         return Err(Refusal::CannotAct);
     }
     let character = profile.clone();

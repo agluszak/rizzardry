@@ -5,7 +5,7 @@
 //! one compiled mesh per octree mesh, `-1`. Later sections (lights, monsters,
 //! props, triggers, named points, automap) are not decoded yet.
 
-use crate::bytes::{Bytes, Truncated, c_string};
+use crate::bytes::{Bytes, DecodeError, c_string};
 
 const MATERIAL_RECORD: usize = 0x11a;
 const TERMINATOR: i32 = -1;
@@ -83,24 +83,12 @@ pub struct LevelGeometry {
     pub end: usize,
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum PvlError {
-    #[error(transparent)]
-    Truncated(#[from] Truncated),
-    #[error("{0} at offset {1}")]
-    Invalid(&'static str, usize),
-}
-
-pub(crate) fn invalid(message: &'static str, bytes: &Bytes) -> PvlError {
-    PvlError::Invalid(message, bytes.offset())
-}
-
-pub(crate) fn text(bytes: &mut Bytes, len: usize) -> Result<String, PvlError> {
+pub(crate) fn text(bytes: &mut Bytes, len: usize) -> Result<String, DecodeError> {
     let offset = bytes.offset();
-    c_string(bytes.take(len)?).ok_or(PvlError::Invalid("unterminated texture name", offset))
+    c_string(bytes.take(len)?).ok_or(DecodeError::Invalid("unterminated texture name", offset))
 }
 
-fn material(bytes: &mut Bytes, with_modes: bool) -> Result<MaterialRecord, PvlError> {
+fn material(bytes: &mut Bytes, with_modes: bool) -> Result<MaterialRecord, DecodeError> {
     let version = bytes.u8()?;
     let _legacy_name = text(bytes, 0x28)?;
     let textures = [text(bytes, 0x28)?, text(bytes, 0x28)?, text(bytes, 0x28)?, text(bytes, 0x28)?];
@@ -137,14 +125,14 @@ fn material(bytes: &mut Bytes, with_modes: bool) -> Result<MaterialRecord, PvlEr
 
 /// The material table shared by all meshes. The first record's version
 /// decides whether every record carries texture modes.
-pub fn read_materials(bytes: &mut Bytes) -> Result<Vec<MaterialRecord>, PvlError> {
+pub fn read_materials(bytes: &mut Bytes) -> Result<Vec<MaterialRecord>, DecodeError> {
     let count = bytes.i16()?;
     if count < 1 {
-        return Err(invalid("no materials", bytes));
+        return Err(bytes.invalid("no materials"));
     }
     let count = count as usize;
     if count * MATERIAL_RECORD > bytes.remaining() {
-        return Err(invalid("material count exceeds file", bytes));
+        return Err(bytes.invalid("material count exceeds file"));
     }
     let first = material(bytes, false)?;
     let with_modes = first.version >= 4;
@@ -159,9 +147,9 @@ pub fn read_materials(bytes: &mut Bytes) -> Result<Vec<MaterialRecord>, PvlError
     Ok(materials)
 }
 
-fn index(value: i32, len: usize, what: &'static str, bytes: &Bytes) -> Result<u32, PvlError> {
+fn index(value: i32, len: usize, what: &'static str, bytes: &Bytes) -> Result<u32, DecodeError> {
     if value < 0 || value as usize >= len {
-        return Err(invalid(what, bytes));
+        return Err(bytes.invalid(what));
     }
     Ok(value as u32)
 }
@@ -170,19 +158,19 @@ fn compiled_mesh(
     bytes: &mut Bytes,
     mesh_index: usize,
     material_count: usize,
-) -> Result<CompiledMesh, PvlError> {
+) -> Result<CompiledMesh, DecodeError> {
     let packed = bytes.u32()?;
     let [vertex_count, uv_count, polygon_count, link, _next_link, material] = bytes.i32s()?;
     let weighted = packed & 0xff != 0;
     let version = (packed >> 8) as u8;
     if vertex_count < 0 || uv_count < 0 || polygon_count < 0 {
-        return Err(invalid("negative mesh counts", bytes));
+        return Err(bytes.invalid("negative mesh counts"));
     }
     if material < -1 || material >= material_count as i32 {
-        return Err(invalid("mesh material out of range", bytes));
+        return Err(bytes.invalid("mesh material out of range"));
     }
     if link >= mesh_index as i32 || link < -1 {
-        return Err(invalid("linked mesh does not precede it", bytes));
+        return Err(bytes.invalid("linked mesh does not precede it"));
     }
     let (vertices, uv_count, polygon_count) =
         (vertex_count as usize, uv_count as usize, polygon_count as usize);
@@ -204,7 +192,7 @@ fn compiled_mesh(
     let planes = bytes.records(polygon_count, 16, |b| b.f32s())?;
     let sunlight = if version != 0 { Some(bytes.records(vertices, 4, |b| b.f32())?) } else { None };
     if bytes.i32()? != TERMINATOR {
-        return Err(invalid("mesh record has the wrong length", bytes));
+        return Err(bytes.invalid("mesh record has the wrong length"));
     }
 
     let mut polygons = Vec::with_capacity(polygon_count);
@@ -241,23 +229,23 @@ fn compiled_mesh(
     })
 }
 
-pub fn read_level_geometry(data: &[u8]) -> Result<LevelGeometry, PvlError> {
+pub fn read_level_geometry(data: &[u8]) -> Result<LevelGeometry, DecodeError> {
     let mut bytes = Bytes::new(data);
     let mesh_count = bytes.u32()? as usize;
     let root_count = bytes.u32()? as usize;
     if root_count > mesh_count || mesh_count > bytes.remaining() {
-        return Err(invalid("invalid mesh or root count", &bytes));
+        return Err(bytes.invalid("invalid mesh or root count"));
     }
     let materials = read_materials(&mut bytes)?;
     if bytes.i32()? != TERMINATOR {
-        return Err(invalid("material table has the wrong length", &bytes));
+        return Err(bytes.invalid("material table has the wrong length"));
     }
     let mut meshes = Vec::with_capacity(mesh_count);
     for mesh_index in 0..mesh_count {
         meshes.push(compiled_mesh(&mut bytes, mesh_index, materials.len())?);
     }
     if bytes.i32()? != TERMINATOR {
-        return Err(invalid("mesh table has the wrong length", &bytes));
+        return Err(bytes.invalid("mesh table has the wrong length"));
     }
     Ok(LevelGeometry { materials, meshes, root_count, end: bytes.offset() })
 }
