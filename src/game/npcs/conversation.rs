@@ -180,7 +180,7 @@ pub fn party_communication(world: &mut World) -> u32 {
     let Some(roster) = world.get::<PartyRoster>(party) else { return 0 };
     roster
         .iter()
-        .filter_map(|e| Some((world.get::<Character>(*e)?, world.get::<Vitals>(*e)?)))
+        .filter_map(|e| Some((world.get::<Character>(e)?, world.get::<Vitals>(e)?)))
         .filter(|(_, v)| crate::game::camp::can_act(v))
         .map(|(c, _)| c.skill(crate::content::characters::Skill::Communication))
         .max()
@@ -191,7 +191,7 @@ fn average_level(world: &mut World) -> u32 {
     let Some(roster) = world.get::<PartyRoster>(party) else { return 1 };
     let (sum, count) = roster
         .iter()
-        .filter_map(|e| world.get::<Character>(*e))
+        .filter_map(|e| world.get::<Character>(e))
         .fold((0, 0), |(s, n), c| (s + u32::from(c.level), n + 1));
     sum.checked_div(count).unwrap_or(1)
 }
@@ -626,7 +626,7 @@ pub fn quote_trade(
     source: TradeSource,
     quantity: u32,
 ) -> Result<TradeQuote, TradeError> {
-    if !world.query::<&crate::game::world::level::Destination>().is_empty(world) {
+    if !world.query::<&crate::game::world::level::Destination>().iter(world).next().is_none() {
         return Err(TradeError::Busy);
     }
     let c = world.get::<Conversation>(conversation).ok_or(TradeError::StaleSelection)?;
@@ -773,7 +773,7 @@ fn execute_trade(
     Ok(())
 }
 pub fn update_conversation(world: &mut World) {
-    if !world.query::<&crate::game::world::level::Destination>().is_empty(world) {
+    if !world.query::<&crate::game::world::level::Destination>().iter(world).next().is_none() {
         // An accepted entry ends presentation-only dialogue before any queued
         // payment, trade or authored effect can alter the departing campaign.
         close(world);

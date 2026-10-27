@@ -446,12 +446,12 @@ fn sync_view(world: &mut World) {
         }
     }
     for member in world.get::<PartyRoster>(party).into_iter().flat_map(|r| r.iter()) {
-        if let Some(carried) = world.get::<Carried>(*member) {
+        if let Some(carried) = world.get::<Carried>(member) {
             for item in carried.backpack.iter().flatten() {
                 if let Some(d) = items.get(item.item) {
                     rows.push((
                         TradeSource::Party(ItemRef {
-                            owner: ItemOwner::Member(*member),
+                            owner: ItemOwner::Member(member),
                             id: item.id,
                         }),
                         format!(
