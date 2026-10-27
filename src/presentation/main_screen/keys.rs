@@ -163,20 +163,34 @@ fn spawn_main_screen_keys(mut commands: Commands) {
     });
 }
 
+/// Whether the world's shortcut keys may act: the party is in the world,
+/// under no question, and no focused control owns the keyboard. Every world
+/// shortcut context is held by this one rule.
+#[derive(bevy::ecs::system::SystemParam)]
+pub(crate) struct WorldKeys<'w, 's> {
+    screen: Res<'w, State<Screen>>,
+    focus: Res<'w, bevy::input_focus::InputFocus>,
+    controls: Query<'w, 's, (), With<bevy::input_focus::tab_navigation::TabIndex>>,
+    questions: Query<'w, 's, (), With<crate::game::world::level::TravelQuestion>>,
+    conversations: Query<'w, 's, (), With<crate::game::npcs::conversation::Conversation>>,
+}
+
+impl WorldKeys<'_, '_> {
+    pub(crate) fn active(&self) -> bool {
+        *self.screen.get() == Screen::World
+            && self.questions.is_empty()
+            && self.conversations.is_empty()
+            && !self.focus.get().is_some_and(|entity| self.controls.contains(entity))
+    }
+}
+
 /// The keys act while the party is in the world, under no other screen.
 fn hold_main_screen_keys(
     mut commands: Commands,
-    screen: Res<State<Screen>>,
+    world_keys: WorldKeys,
     keys: Query<(Entity, &ContextActivity<MainScreenKeys>)>,
-    focus: Res<bevy::input_focus::InputFocus>,
-    controls: Query<(), With<bevy::input_focus::tab_navigation::TabIndex>>,
-    questions: Query<(), With<crate::game::world::level::TravelQuestion>>,
-    conversations: Query<(), With<crate::game::npcs::conversation::Conversation>>,
 ) {
-    let active = *screen.get() == Screen::World
-        && questions.is_empty()
-        && conversations.is_empty()
-        && !focus.get().is_some_and(|entity| controls.contains(entity));
+    let active = world_keys.active();
     for (entity, activity) in &keys {
         if **activity != active {
             commands.entity(entity).insert(ContextActivity::<MainScreenKeys>::new(active));

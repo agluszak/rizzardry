@@ -1,4 +1,4 @@
-//! The party's fights (`docs/research/combat.md`), first slice: the party
+//! The party's fights, first slice: the party
 //! against the hostile monsters that see it, weapon attacks only, everyone
 //! fighting on their own (retail's continuous mode with every member set to
 //! attack). Who reaches whom in melee follows the party's formation.
@@ -21,7 +21,7 @@ use crate::content::items::{Dice, ItemCatalog};
 use crate::content::species::{MonsterCatalog, Reach};
 use crate::game::characters::{Character, Condition, Vitals};
 use crate::game::data::GameData;
-use crate::game::inventory::{Carried, EquipSlot, ItemInstanceId};
+use crate::game::inventory::{Carried, EquipSlot, StackId};
 use crate::game::party::body::PartyBody;
 use crate::game::party::formation::{self, Formation, Row};
 use crate::game::party::recovery;
@@ -97,7 +97,7 @@ struct Turn {
 /// damage profiles and fatigue use the actor's live stats and accepted weapon.
 #[derive(Clone, Copy, Debug)]
 enum AcceptedAction {
-    Attack { weapon: Option<ItemInstanceId> },
+    Attack { weapon: Option<StackId> },
     Defend,
 }
 
@@ -421,7 +421,9 @@ pub fn run_battle(
     };
     let Ok((position, body)) = party_body.single() else { return };
     let party = PartyView { eye: PartyBody::eye(position), yaw: body.yaw };
-    if !battle.wait.tick(time.delta()).is_finished() {
+    // A finished pause is not ticked again: a fight waiting for the player
+    // stays unchanged.
+    if !battle.wait.is_finished() && !battle.wait.tick(time.delta()).is_finished() {
         return;
     }
 
@@ -710,7 +712,7 @@ fn monster_acts(
     let mode = attack::choose_mode(rng, EnumSet::only(mode));
     let Ok((character, mut vitals, carried)) = members.get_mut(member) else { return };
     let mut armour = armour(&character, carried, items);
-    // Defending is worth 2 (`characters.md` §4.8, component 10).
+    // Defending adds 2 to armour.
     if battle.defends(member) {
         armour.total += 2;
         armour.by_location.values_mut().for_each(|a| *a += 2);
@@ -903,8 +905,9 @@ mod tests {
         for (name, weapon) in ["A", "B"].into_iter().zip(&weapons) {
             let character = Character::new(name, Race::Human, Gender::Male, Profession::Fighter);
             let mut carried = Carried::default();
-            carried.equipment[EquipSlot::Primary] =
-                Some(make_item(weapon, &mut ids, &mut equipment_rng, false, true));
+            carried.equipment[EquipSlot::Primary] = Some(crate::game::inventory::Equipped::new(
+                make_item(weapon, &mut ids, &mut equipment_rng, false, true),
+            ));
             let order = if name == "B" && defending { Order::Defend } else { Order::Attack };
             let entity =
                 app.world_mut().spawn((Vitals::new(&character), character, carried, order)).id();

@@ -7,6 +7,8 @@
 use crate::presentation::character_view::{CharacterView, CharacterViewItem};
 use std::time::Duration;
 
+use bevy::picking::events::{PointerClick, PointerOut, PointerPress, PointerRelease};
+use bevy::picking::pointer::PointerButton;
 use bevy::prelude::*;
 use rand::Rng;
 
@@ -230,7 +232,10 @@ pub fn build_party_parts(
             };
             let node = absolute(at, size);
             parts.push(Box::new(
-                bsn! { node PartyButton({slot}) SlotButton { member: Entity::PLACEHOLDER, review_armed: false } on(press) },
+                bsn! {
+                    node PartyButton({slot}) SlotButton { member: Entity::PLACEHOLDER, review_armed: false }
+                    on(press) on(press_right) on(release_right) on(leave)
+                },
             ));
         }
         commands
@@ -471,7 +476,10 @@ pub fn bind_party_buttons(
                     ChildOf(parent.parent()),
                     shown,
                 ))
-                .observe(press);
+                .observe(press)
+                .observe(press_right)
+                .observe(release_right)
+                .observe(leave);
         } else {
             visibility.set_if_neq(shown);
         }
@@ -486,7 +494,7 @@ pub struct SlotButton {
     review_armed: bool,
 }
 
-/// With an item in hand, a click gives it to the member; otherwise it
+/// With an item in hand, a left click gives it to the member; otherwise it
 /// selects them, and a double click opens their review screen.
 fn press(
     click: On<PointerClick>,
@@ -495,9 +503,11 @@ fn press(
     roster: Res<PartyRoster>,
     mut inventory: crate::game::inventory::operations::InventoryOperations,
     mut news: MessageWriter<ItemNews>,
-    screen: Res<State<crate::game::screen::Screen>>,
-    mut next_screen: ResMut<NextState<crate::game::screen::Screen>>,
+    mut review: crate::presentation::inventory::OpenReview,
 ) {
+    if click.button != PointerButton::Primary {
+        return;
+    }
     let Ok(mut button) = buttons.get_mut(click.entity) else { return };
     let member = button.member;
     if !roster.0.contains(&member) {
@@ -518,15 +528,101 @@ fn press(
     }
     let already_selected = selected.0 == Some(member);
     selected.0 = Some(member);
-    if already_selected
-        && button.review_armed
-        && click.count > 1
-        && *screen.get() == crate::game::screen::Screen::World
-        && matches!(*next_screen, NextState::Unchanged)
-    {
-        next_screen.set(crate::game::screen::Screen::Inventory);
+    if already_selected && button.review_armed && click.count > 1 {
+        review.open(member);
     }
     button.review_armed = true;
+}
+
+/// How long retail's right button must stay down on a portrait to open the
+/// review (`SetCountdownClock(1000)` in the portrait region handler).
+const REVIEW_HOLD: Duration = Duration::from_secs(1);
+
+/// A right press on a portrait that has not been released or left yet.
+#[derive(Component, Debug)]
+pub struct RightHold {
+    since: Duration,
+}
+
+/// Retail's right button on a portrait (`MainGameScreen` portrait region):
+/// held for a second it opens the member's review; released sooner it gives
+/// the held item, or opens the review with nothing held or Ctrl down.
+fn press_right(
+    press: On<PointerPress>,
+    buttons: Query<(), With<SlotButton>>,
+    time: Res<Time<Real>>,
+    mut commands: Commands,
+) {
+    if press.button == PointerButton::Secondary && buttons.contains(press.entity) {
+        commands.entity(press.entity).insert(RightHold { since: time.elapsed() });
+    }
+}
+
+fn release_right(
+    release: On<PointerRelease>,
+    buttons: Query<(&SlotButton, &RightHold)>,
+    time: Res<Time<Real>>,
+    keys: Option<Res<ButtonInput<KeyCode>>>,
+    mut inventory: crate::game::inventory::operations::InventoryOperations,
+    mut news: MessageWriter<ItemNews>,
+    mut review: crate::presentation::inventory::OpenReview,
+    mut selected: ResMut<SelectedMember>,
+    mut commands: Commands,
+) {
+    if release.button != PointerButton::Secondary {
+        return;
+    }
+    let Ok((button, hold)) = buttons.get(release.entity) else { return };
+    commands.entity(release.entity).remove::<RightHold>();
+    let member = button.member;
+    let control =
+        keys.is_some_and(|keys| keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]));
+    if !control && time.elapsed() - hold.since < REVIEW_HOLD {
+        // Retail's right-release give always offers the party pool first
+        // (`force_to_party`); this uses the left click's pool rule.
+        match inventory.give_to(member) {
+            Ok(Some(outcome)) => {
+                news.write(outcome);
+                return;
+            }
+            Err(reason) => {
+                info!("giving item refused: {reason:?}");
+                return;
+            }
+            Ok(None) => {}
+        }
+    }
+    if review.open(member) {
+        selected.set_if_neq(SelectedMember(Some(member)));
+    }
+}
+
+fn leave(out: On<PointerOut>, mut commands: Commands, holds: Query<(), With<RightHold>>) {
+    if holds.contains(out.entity) {
+        commands.entity(out.entity).remove::<RightHold>();
+    }
+}
+
+/// A right press held long enough opens the review; one released elsewhere
+/// is forgotten.
+pub fn open_held_reviews(
+    time: Res<Time<Real>>,
+    mouse: Option<Res<ButtonInput<MouseButton>>>,
+    holds: Query<(Entity, &SlotButton, &RightHold)>,
+    mut review: crate::presentation::inventory::OpenReview,
+    mut selected: ResMut<SelectedMember>,
+    mut commands: Commands,
+) {
+    for (entity, button, hold) in &holds {
+        if !mouse.as_ref().is_some_and(|mouse| mouse.pressed(MouseButton::Right)) {
+            commands.entity(entity).remove::<RightHold>();
+        } else if time.elapsed() - hold.since >= REVIEW_HOLD {
+            commands.entity(entity).remove::<RightHold>();
+            if review.open(button.member) {
+                selected.set_if_neq(SelectedMember(Some(button.member)));
+            }
+        }
+    }
 }
 
 /// Presentation owns an accepted damage animation, keyed by actor rather
@@ -652,7 +748,101 @@ mod tests {
         inventory::PartyInventory,
         screen::Screen,
     };
-    use bevy::picking::{backend::HitData, pointer::PointerButton};
+    use bevy::picking::backend::HitData;
+
+    /// Retail's right-button portrait gestures: a quick release gives the
+    /// held item, or opens the review with nothing held; a held press opens
+    /// it after a second.
+    #[test]
+    fn right_button_gives_or_opens_review_like_retail() {
+        use crate::content::items::ItemDefinition;
+        use crate::game::inventory::{ItemIds, make_item};
+        use crate::game::rng::GameRng;
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<ItemCatalog>()
+            .init_resource::<PartyRoster>()
+            .init_resource::<PartyInventory>()
+            .init_resource::<SelectedMember>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .add_message::<ItemNews>()
+            .insert_resource(State::new(Screen::World))
+            .init_resource::<NextState<Screen>>()
+            .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(Duration::from_millis(
+                400,
+            )))
+            .add_systems(Update, open_held_reviews);
+        let definition = ItemDefinition::default();
+        let item =
+            make_item(&definition, &mut ItemIds::default(), &mut GameRng::seeded(1), false, true);
+        let items = app
+            .world_mut()
+            .resource_mut::<Assets<ItemCatalog>>()
+            .add(ItemCatalog(vec![definition]));
+        app.insert_resource(GameData { items, loot: default(), species: default() });
+        let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
+        let actor =
+            app.world_mut().spawn((Vitals::new(&profile), profile, Carried::default())).id();
+        app.world_mut().resource_mut::<PartyRoster>().0.insert(actor);
+        let button = app
+            .world_mut()
+            .spawn(SlotButton { member: actor, review_armed: false })
+            .observe(press_right)
+            .observe(release_right)
+            .id();
+        app.update();
+        let hit = HitData::new(Entity::PLACEHOLDER, 0.0, None, None);
+        let right = |app: &mut App, down: bool| {
+            let pointer = crate::presentation::test_input::mouse();
+            let mut mouse = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+            if down {
+                mouse.press(MouseButton::Right);
+            } else {
+                mouse.release(MouseButton::Right);
+            }
+            if down {
+                app.world_mut().trigger(PointerPress {
+                    entity: button,
+                    pointer,
+                    button: PointerButton::Secondary,
+                    hit: hit.clone(),
+                    count: 1,
+                });
+            } else {
+                app.world_mut().trigger(PointerRelease {
+                    entity: button,
+                    pointer,
+                    button: PointerButton::Secondary,
+                    hit: hit.clone(),
+                });
+            }
+            app.update();
+        };
+        let opened = |app: &mut App| {
+            let next = app.world_mut().resource_mut::<NextState<Screen>>();
+            let opened = matches!(*next, NextState::Pending(Screen::Inventory));
+            app.world_mut().insert_resource(NextState::<Screen>::Unchanged);
+            opened
+        };
+        // Holding an item: a quick release gives it.
+        app.world_mut().resource_mut::<PartyInventory>().hand.held = Some(item);
+        right(&mut app, true);
+        right(&mut app, false);
+        assert!(app.world().resource::<PartyInventory>().hand.held.is_none());
+        assert!(!opened(&mut app));
+        // Nothing held: a quick release opens the review for that member.
+        right(&mut app, true);
+        right(&mut app, false);
+        assert!(opened(&mut app));
+        assert_eq!(app.world().resource::<SelectedMember>().0, Some(actor));
+        // Held down for a second opens it without a release.
+        right(&mut app, true);
+        for _ in 0..3 {
+            app.update();
+        }
+        assert!(opened(&mut app));
+        assert!(app.world().get::<RightHold>(button).is_none());
+    }
 
     #[test]
     fn new_damage_refreshes_the_existing_splat_before_playback_expires_it() {

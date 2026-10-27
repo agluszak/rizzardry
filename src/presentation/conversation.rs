@@ -423,7 +423,7 @@ fn sync_view(world: &mut World) {
             }
         }
     }
-    for item in &world.resource::<PartyInventory>().pool {
+    for item in &world.resource::<PartyInventory>().pool.stacks {
         if let Some(d) = items.get(item.item) {
             rows.push((
                 TradeSource::Pool(item.id),

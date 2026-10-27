@@ -5,7 +5,7 @@ use crate::content::{
     npcs::NpcDefinition,
 };
 use crate::game::{
-    inventory::{ItemIds, ItemInstance, ItemInstanceId, PartyInventory, Quantity, make_item},
+    inventory::{ItemIds, ItemStack, PartyInventory, StackId},
     rng::GameRng,
 };
 use bevy::prelude::*;
@@ -43,8 +43,8 @@ pub enum TradeError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TradeSource {
     Stock(StockLotId),
-    Pool(ItemInstanceId),
-    Backpack { member: Entity, item: ItemInstanceId },
+    Pool(StackId),
+    Backpack { member: Entity, item: StackId },
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TradeQuote {
@@ -273,21 +273,24 @@ pub fn buy(
     }
     let mut draft = party.clone();
     let mut next_ids = ids.clone();
-    let mut rng = GameRng::seeded(0);
     let mut remaining = quantity;
     while remaining > 0 {
-        let mut delivered = make_item(item, &mut next_ids, &mut rng, true, true);
         let units = if item.quantity == QuantityKind::Stack {
-            remaining.min(u32::from(item.maximum_quantity).max(1))
+            remaining.min(u32::from(item.stack_limit).max(1))
         } else {
             1
         };
-        if item.quantity == QuantityKind::Stack {
-            delivered.quantity = Quantity::Stack(units as u8)
-        } else if matches!(delivered.quantity, Quantity::Uses(_)) {
-            delivered.quantity = Quantity::Uses(source.charges)
+        let amount = if item.quantity == QuantityKind::Stack {
+            units as u16
+        } else if item.quantity == QuantityKind::None {
+            1
+        } else {
+            u16::from(source.charges)
+        };
+        let delivered = ItemStack::new(item, &mut next_ids, amount, true);
+        if draft.pool.receive(delivered, catalog).is_some() {
+            return Err(TradeError::Capacity);
         }
-        draft.place_in_pool(delivered, catalog).map_err(|_| TradeError::Capacity)?;
         remaining -= units;
     }
     draft.gold -= cost;
@@ -299,7 +302,7 @@ pub fn buy(
 }
 pub fn validate_sale(
     def: &NpcDefinition,
-    item: &ItemInstance,
+    item: &ItemStack,
     quantity: u32,
     catalog: &ItemCatalog,
     communication: u32,
@@ -322,13 +325,14 @@ pub fn validate_sale(
 mod tests {
     use super::*;
     use crate::content::items::Dice;
+    use crate::game::inventory::{ItemPool, make_item};
     fn catalog() -> ItemCatalog {
         ItemCatalog(vec![ItemDefinition {
             id: ItemId(0),
             value: 10,
             quantity: QuantityKind::Stack,
             initial_quantity: Dice { base: 20, ..default() },
-            maximum_quantity: 20,
+            stack_limit: 20,
             ..default()
         }])
     }
@@ -351,7 +355,7 @@ mod tests {
             Err(TradeError::PriceChanged)
         );
         assert_eq!(stock, before);
-        assert!(party.pool.is_empty());
+        assert!(party.pool.stacks.is_empty());
         assert_eq!(party.gold, 1000);
         party.gold = cost - 1;
         assert_eq!(
@@ -362,7 +366,7 @@ mod tests {
         party.gold = 1000;
         buy(&mut stock, &mut party, &mut ids, &def, &catalog, lot, 30, cost, 0).unwrap();
         assert_eq!(party.gold, 1000 - cost);
-        assert_eq!(party.pool.iter().map(|i| i.units()).sum::<u32>(), 30);
+        assert_eq!(party.pool.stacks.iter().map(|i| i.units()).sum::<u32>(), 30);
         assert!(stock.lots.is_empty());
         assert_eq!(
             buy(&mut stock, &mut party, &mut ids, &def, &catalog, lot, 1, 12, 0),
@@ -379,17 +383,19 @@ mod tests {
         let mut rng = GameRng::seeded(1);
         let full = make_item(&catalog.0[0], &mut ids, &mut rng, true, true);
         let mut party = PartyInventory {
-            pool: (0..crate::game::inventory::POOL_LIMIT)
-                .map(|_| {
-                    let mut item = full.clone();
-                    item.id = ids.allocate();
-                    item
-                })
-                .collect(),
+            pool: ItemPool {
+                stacks: (0..crate::game::inventory::POOL_LIMIT)
+                    .map(|_| {
+                        let mut item = full.clone();
+                        item.id = ids.allocate();
+                        item
+                    })
+                    .collect(),
+            },
             gold: 1000,
             ..default()
         };
-        party.pool[0].quantity = Quantity::Stack(19);
+        party.pool.stacks[0] = ItemStack::new(&catalog.0[0], &mut ids, 19, true);
         let before = party.clone();
         let before_stock = stock.clone();
         let next = ids.clone().allocate();
@@ -407,9 +413,7 @@ mod tests {
         let catalog = catalog();
         let def = merchant();
         let mut ids = ItemIds::default();
-        let mut rng = GameRng::seeded(1);
-        let mut item = make_item(&catalog.0[0], &mut ids, &mut rng, true, false);
-        item.quantity = Quantity::Stack(3);
+        let item = ItemStack::new(&catalog.0[0], &mut ids, 3, false);
         assert_eq!(validate_sale(&def, &item, 3, &catalog, 0), Ok(6));
         let mut stock = MerchantStock::default();
         stock.add(item.item, 3, &catalog, false).unwrap();

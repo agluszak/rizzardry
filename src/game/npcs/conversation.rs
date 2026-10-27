@@ -7,7 +7,7 @@ use crate::content::{items::ItemCatalog, npcs::*};
 use crate::game::{
     characters::{Character, Vitals},
     data::GameData,
-    inventory::{Carried, ItemIds, PartyInventory, Quantity},
+    inventory::{Carried, ItemIds, PartyInventory},
     party::roster::PartyRoster,
     rng::GameRng,
     world::{ActorPose, level::Level, population::Monster},
@@ -210,7 +210,7 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
     {
         return Err(TradeError::Busy);
     }
-    if world.resource::<PartyInventory>().held.is_some() {
+    if world.resource::<PartyInventory>().hand.held.is_some() {
         return Err(TradeError::Busy);
     }
     let monster = world.get::<Monster>(actor).ok_or(TradeError::Unavailable)?;
@@ -640,10 +640,10 @@ pub fn quote_trade(
 fn sale_item(
     world: &World,
     source: TradeSource,
-) -> Result<&crate::game::inventory::ItemInstance, TradeError> {
+) -> Result<&crate::game::inventory::ItemStack, TradeError> {
     match source {
         TradeSource::Pool(id) => {
-            world.resource::<PartyInventory>().pool.iter().find(|i| i.id == id)
+            world.resource::<PartyInventory>().pool.stacks.iter().find(|i| i.id == id)
         }
         TradeSource::Backpack { member, item }
             if world.resource::<PartyRoster>().0.contains(&member) =>
@@ -706,17 +706,15 @@ fn execute_trade(
                 // template deliberately does not retain sold charges/knowledge.
                 let mut stock = world.get::<Npc>(c.actor).unwrap().stock.clone();
                 stock.add(item.item, quote.quantity, catalog, false)?;
-                let remove = |items: &mut Vec<crate::game::inventory::ItemInstance>| {
+                let remove = |items: &mut Vec<crate::game::inventory::ItemStack>| {
                     let at = items.iter().position(|i| i.id == item.id).unwrap();
-                    if quote.quantity == item.units() {
-                        items.remove(at);
-                    } else if let Quantity::Stack(n) = &mut items[at].quantity {
-                        *n -= quote.quantity as u8;
+                    if let Some(rest) = items.remove(at).remove_units(quote.quantity as u16) {
+                        items.insert(at, rest);
                     }
                 };
                 match source {
                     TradeSource::Pool(_) => {
-                        remove(&mut world.resource_mut::<PartyInventory>().pool)
+                        remove(&mut world.resource_mut::<PartyInventory>().pool.stacks)
                     }
                     TradeSource::Backpack { member, .. } => {
                         let mut carried = world.get_mut::<Carried>(member).unwrap();
@@ -725,13 +723,10 @@ fn execute_trade(
                             .iter()
                             .position(|i| i.as_ref().is_some_and(|i| i.id == item.id))
                             .unwrap();
-                        if quote.quantity == item.units() {
-                            carried.backpack[at] = None;
-                        } else if let Quantity::Stack(n) =
-                            &mut carried.backpack[at].as_mut().unwrap().quantity
-                        {
-                            *n -= quote.quantity as u8;
-                        }
+                        carried.backpack[at] = carried.backpack[at]
+                            .take()
+                            .unwrap()
+                            .remove_units(quote.quantity as u16);
                     }
                     _ => unreachable!(),
                 }

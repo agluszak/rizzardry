@@ -457,7 +457,7 @@ fn read_item(
     bytes.take(3)?; // spell, its power, and one more
     let quantity_kind = bytes.u8()?;
     let initial_quantity = dice(&mut bytes)?;
-    let maximum_quantity = bytes.u8()?;
+    let stack_limit = bytes.u8()?;
     bytes.take(3)?; // regeneration
     let resistance_bonus =
         enum_map::EnumMap::from_array(bytes.array::<6>()?.map(|value| value as i8));
@@ -510,7 +510,7 @@ fn read_item(
             other => return Err(ItemLoadError::QuantityKind(index, other)),
         },
         initial_quantity,
-        maximum_quantity,
+        stack_limit,
         professions,
         races,
         genders,
@@ -667,7 +667,7 @@ mod tests {
         assert!(bows > 0 && arrows > 0, "bows and the arrows they shoot");
         let stacks: Vec<_> =
             catalog.0.iter().filter(|i| i.quantity == QuantityKind::Stack).collect();
-        assert!(stacks.len() > 10 && stacks.iter().all(|i| i.maximum_quantity > 0));
+        assert!(stacks.len() > 10 && stacks.iter().all(|i| i.stack_limit > 0));
         for item in &catalog.0 {
             assert!(files.contains(&item.image), "{}: {}", item.name, item.image);
         }

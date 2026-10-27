@@ -1,6 +1,6 @@
-//! The main game screen around the 3D view (`docs/research/main-game-screen.md`,
-//! decomp `MainGameScreen.cpp` and `MGS*.cpp`): the roof, the party columns,
-//! the bottom panels and the button row, in retail's three layout modes.
+//! Main game screen around the 3D view, based on the decomp's
+//! `MainGameScreen.cpp` and `MGS*.cpp`: roof, party columns, bottom panels
+//! and button row, in retail's three layout modes.
 //! The 3D view renders into the viewport the layout leaves open.
 //!
 //! The frame holds what the layout alone decides and is built again when
@@ -11,7 +11,7 @@
 
 mod bank;
 mod formation;
-mod keys;
+pub(crate) mod keys;
 mod layout;
 mod party;
 mod radar;
@@ -44,6 +44,7 @@ impl Plugin for MainScreenPlugin {
                     (
                         party::build_party_parts,
                         party::bind_party_buttons,
+                        party::open_held_reviews,
                         party::draw_party,
                         (party::record_splats, party::play_splats).chain(),
                         (text_box::draw_text_box, text_box::sync_channels).chain(),

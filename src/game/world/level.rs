@@ -470,8 +470,8 @@ pub fn activate_level(
     mut transition: ParamSet<(LevelContents, PartyPlacement)>,
     mut ready: MessageWriter<LevelReady>,
 ) {
+    // Polling reads the destination; only a failure marks it changed.
     for (root, mut destination) in &mut destinations {
-        let destination = &mut *destination;
         if destination.failed {
             continue;
         }

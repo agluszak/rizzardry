@@ -83,7 +83,9 @@ fn a_green_slime_leaves_treasure() {
     let loot = world.query::<(Entity, &Name)>().iter(world).find(|(_, n)| n.as_str() == "loot");
     let (loot, _) = loot.expect("the treasure lies in the world");
     rizzardry::game::world::items::take_item(world, loot, 1.0).unwrap();
-    step_until(&mut app, "taking the treasure", |w| w.resource::<PartyInventory>().held.is_some());
+    step_until(&mut app, "taking the treasure", |w| {
+        w.resource::<PartyInventory>().hand.held.is_some()
+    });
     assert_eq!(lying_items(app.world_mut()), before);
 }
 
@@ -233,7 +235,7 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
         gold - quote.gold,
         "duplicate confirmation settles once"
     );
-    let bought = app.world().resource::<PartyInventory>().pool[0].id;
+    let bought = app.world().resource::<PartyInventory>().pool.stacks[0].id;
     let sale =
         conversation::quote_trade(app.world_mut(), session, TradeSource::Pool(bought), 1).unwrap();
     app.world_mut().write_message(ConversationRequest::Trade(sale));

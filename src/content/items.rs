@@ -139,7 +139,7 @@ pub struct ItemDefinition {
     /// Rolled when the item is created.
     pub initial_quantity: Dice,
     /// The largest stack retail merges into.
-    pub maximum_quantity: u8,
+    pub stack_limit: u8,
     /// Who may use it.
     pub professions: EnumSet<Profession>,
     pub races: EnumSet<Race>,
