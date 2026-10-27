@@ -439,8 +439,7 @@ pub fn accept_magic(
             });
             continue;
         };
-        let party_at =
-            party.single().map_or(Vec3::ZERO, crate::game::party::body::PartyBody::eye);
+        let party_at = party.single().map_or(Vec3::ZERO, crate::game::party::body::PartyBody::eye);
         // Outside a fight no monster is a target: the hostile spells are
         // combat spells.
         let situation = casting::Situation {

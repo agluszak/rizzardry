@@ -1269,6 +1269,37 @@ mod tests {
         assert!(!attackers.contains(&"A".to_owned()), "casting replaces the attack");
     }
 
+    /// A spell missile flies before it lands: the cast reports at once, the
+    /// damage when it arrives, and the fight's next actor waits for it.
+    #[test]
+    fn a_spell_missile_lands_after_its_flight() {
+        let (mut app, [caster, _]) = round_app(true);
+        app.add_systems(
+            Update,
+            crate::game::magic::deliver_spells.before(crate::game::GameplaySet::Combat),
+        );
+        let monster = order_spell(
+            &mut app,
+            caster,
+            crate::content::spells::SpellDefinition { missile: Some(2), ..energy_blast() },
+        );
+        let mut news = Vec::new();
+        for _ in 0..14 {
+            app.update();
+            news.extend(app.world_mut().resource_mut::<Messages<MagicNews>>().drain());
+            if news.iter().any(|n| matches!(n, MagicNews::Landed { .. })) {
+                break;
+            }
+        }
+        let cast =
+            news.iter().position(|n| matches!(n, MagicNews::Done(r) if r.effects.is_empty()));
+        let landed = news.iter().position(|n| {
+            matches!(n, MagicNews::Landed { effects, .. }
+                if matches!(effects.as_slice(), [Effect::Damaged { victim: Victim::Monster(m), .. }] if *m == monster))
+        });
+        assert!(cast.is_some() && landed.is_some() && cast < landed, "{news:?}");
+    }
+
     /// A monster put to sleep loses its actions until the condition runs out
     /// with the rounds.
     #[test]

@@ -715,6 +715,23 @@ mod tests {
     use crate::content::items::EquipClass;
     use enumset::EnumSet;
 
+    /// Practice counts towards a point every eighth success, only in skills
+    /// the profession may train, and never past 100 (retail
+    /// `PracticeCharacterSkill`).
+    #[test]
+    fn practice_raises_a_point_every_eight_successes() {
+        let mut rng = crate::game::rng::GameRng::seeded(4);
+        let mut mage = Character::new("Mage", Race::Human, Gender::Male, Profession::Mage);
+        let before = mage.skill_points[Skill::FireMagic];
+        assert!(mage.practise(Skill::FireMagic, 400, &mut rng));
+        assert!(mage.skill_points[Skill::FireMagic] > before);
+        let mut fighter = Character::new("Brute", Race::Human, Gender::Male, Profession::Fighter);
+        assert!(!fighter.practise(Skill::FireMagic, 400, &mut rng), "no books, no realm practice");
+        mage.skill_points[Skill::FireMagic] = 100;
+        assert!(!mage.practise(Skill::FireMagic, 400, &mut rng));
+        assert_eq!(mage.skill_points[Skill::FireMagic], 100);
+    }
+
     #[test]
     fn a_human_fighter_has_the_worked_example_numbers() {
         let fighter = Character::new("Ragnar", Race::Human, Gender::Male, Profession::Fighter);
