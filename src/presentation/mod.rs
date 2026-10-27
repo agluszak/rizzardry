@@ -6,6 +6,7 @@ pub mod billboards;
 pub mod camp;
 pub mod character_view;
 pub mod controls;
+pub mod device_panel;
 pub mod dialog;
 pub mod effects;
 pub mod environment;
@@ -72,6 +73,7 @@ impl Plugin for PresentationPlugin {
             main_screen::MainScreenPlugin,
             inventory::InventoryPlugin,
             frontend::FrontendPlugin,
+            device_panel::plugin,
         ))
         .add_input_context::<Exploration>()
         .add_observer(retail_controls::primary_buttons_only)
@@ -121,7 +123,7 @@ impl Plugin for PresentationPlugin {
             PostUpdate,
             (
                 (selection::select_world_target, selection::activate_selection).chain(),
-                (effects::play_trigger_effects, notices::queue_notices)
+                (effects::play_trigger_effects, effects::play_lock_sounds, notices::queue_notices)
                     .after(selection::activate_selection),
                 (hover::hover, hover::show_tooltip).chain().after(selection::activate_selection),
             )

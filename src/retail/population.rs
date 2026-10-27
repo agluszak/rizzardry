@@ -1,7 +1,8 @@
 //! Who stands where in a level: the monster placements of its `.sts` file.
 
 use super::pvl::{PvlError, invalid};
-use crate::bytes::Bytes;
+use crate::bytes::{Bytes, lenient_string};
+use crate::content::level::TRAP_TYPES;
 
 /// One placed monster (a `MONS` monster record).
 #[derive(Clone, Debug, PartialEq)]
@@ -104,6 +105,71 @@ pub fn read_world_items(data: &[u8]) -> Result<Vec<WorldItemRecord>, PvlError> {
         .collect()
 }
 
+/// A device's authored lock or trap (a `W8LockState` record of the `LOCK`
+/// chunk, retail `SaveTriggerRuntimeStates` as the level editor writes it).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LockRecord {
+    /// The trigger it belongs to, upper case.
+    pub trigger: String,
+    pub kind: LockKind,
+    /// The editor's 0 to 10 grade.
+    pub difficulty: i32,
+    /// A trap's type (index into retail's trap table), or `None` to roll
+    /// one when the party first meets it.
+    pub trap: Option<u8>,
+    /// The key item, `None` for none.
+    pub key: Option<u16>,
+}
+
+/// Retail `lock_type`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LockKind {
+    Pickable,
+    Trap,
+    Key,
+}
+
+/// The authored locks and traps of a level's `.sts` file. Level state files
+/// carry the full records the editor writes; the shorter runtime records a
+/// saved game uses (`LCKS`) are not authored content.
+pub fn read_locks(data: &[u8]) -> Result<Vec<LockRecord>, PvlError> {
+    let Some(payload) = level_chunk(data, b"LOCK")? else { return Ok(Vec::new()) };
+    let mut bytes = Bytes::new(payload);
+    let version = bytes.i32()?;
+    let count = bytes.i32()?.max(0);
+    let full = bytes.i32()? != 0;
+    if !full && version > 1 {
+        return Err(invalid("level locks hold runtime records only", &bytes));
+    }
+    let mut locks = Vec::new();
+    for _ in 0..count {
+        let trigger = lenient_string(bytes.take(0x80)?).to_uppercase();
+        let record_version = bytes.i32()?;
+        let kind = bytes.i32()?;
+        let difficulty = bytes.i32()?;
+        bytes.take(1 + 8)?; // completed, pins: reset when a level first loads
+        let device = bytes.i32()?;
+        let key = bytes.i32()?;
+        if record_version > 1 {
+            bytes.i32()?; // practice countdown, reset with the pins
+        }
+        let kind = match kind {
+            1 => LockKind::Pickable,
+            2 => LockKind::Trap,
+            3 => LockKind::Key,
+            _ => continue,
+        };
+        locks.push(LockRecord {
+            trigger,
+            kind,
+            difficulty,
+            trap: u8::try_from(device).ok().filter(|&t| usize::from(t) < TRAP_TYPES),
+            key: u16::try_from(key).ok().filter(|&k| k != 0),
+        });
+    }
+    Ok(locks)
+}
+
 fn read_monsters(data: &[u8]) -> Result<Vec<Placement>, PvlError> {
     let mut bytes = Bytes::new(data);
     let groups = bytes.u32()?;
@@ -161,6 +227,86 @@ fn read_monsters(data: &[u8]) -> Result<Vec<Placement>, PvlError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn chunk(id: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut bytes = id.to_vec();
+        bytes.extend([0, 0]);
+        bytes.extend((payload.len() as u32).to_le_bytes());
+        bytes.extend(payload);
+        bytes
+    }
+
+    /// A level state file holding one chunk.
+    fn level_state(id: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut level = [1u32.to_le_bytes(), 7u32.to_le_bytes()].concat();
+        level.extend(chunk(id, payload));
+        let mut root = 1u32.to_le_bytes().to_vec();
+        root.extend(chunk(b"LVLS", &level));
+        chunk(b"RIFF", &root)
+    }
+
+    #[test]
+    fn authored_locks_name_their_trigger_kind_grade_trap_and_key() {
+        let record = |name: &str, kind: i32, difficulty: i32, device: i32, key: i32| {
+            let mut bytes = name.as_bytes().to_vec();
+            bytes.resize(0x80, 0);
+            for word in [2, kind, difficulty] {
+                bytes.extend(word.to_le_bytes());
+            }
+            bytes.extend([1; 9]); // completed and pins, reset on load
+            for word in [device, key, 9] {
+                bytes.extend(word.to_le_bytes());
+            }
+            bytes
+        };
+        let mut payload = [2i32, 4, 1].map(i32::to_le_bytes).concat();
+        payload.extend(record("Chest1", 2, 5, -1, -1));
+        payload.extend(record("chest2", 2, 3, 6, -1));
+        payload.extend(record("Door", 1, 4, -1, 612));
+        payload.extend(record("Gate", 3, 0, -1, 77));
+        let locks = read_locks(&level_state(b"LOCK", &payload)).unwrap();
+        let summary: Vec<_> = locks
+            .iter()
+            .map(|l| (l.trigger.as_str(), l.kind, l.difficulty, l.trap, l.key))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                ("CHEST1", LockKind::Trap, 5, None, None),
+                ("CHEST2", LockKind::Trap, 3, Some(6), None),
+                ("DOOR", LockKind::Pickable, 4, None, Some(612)),
+                ("GATE", LockKind::Key, 0, None, Some(77)),
+            ]
+        );
+        // A saved game's short records are not authored content.
+        let runtime = [2i32, 0, 0].map(i32::to_le_bytes).concat();
+        assert!(read_locks(&level_state(b"LOCK", &runtime)).is_err());
+        assert!(read_locks(&level_state(b"MONS", &runtime)).unwrap().is_empty());
+    }
+
+    /// Every level's locks decode and name triggers of their level; the
+    /// monastery's are listed.
+    #[test]
+    #[ignore = "requires a retail installation"]
+    fn every_authored_lock_belongs_to_a_trigger_of_its_level() {
+        let files = crate::retail::files::retail_files();
+        for name in files.names().filter(|n| n.ends_with(".sts")) {
+            let locks = read_locks(&files.read(name).unwrap().unwrap())
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            let level = name.replace(".sts", ".pvl");
+            let Some(Ok(data)) = files.read(&level) else { continue };
+            let geometry = super::super::pvl::read_level_geometry(&data).unwrap();
+            let sections =
+                super::super::sections::read_sections(&mut Bytes::new(&data[geometry.end..]))
+                    .unwrap();
+            for lock in &locks {
+                assert!(sections.trigger(&lock.trigger).is_some(), "{name}: {lock:?}");
+                if name.contains("monastery") {
+                    println!("{name}: {lock:?}");
+                }
+            }
+        }
+    }
 
     #[test]
     #[ignore = "requires a retail installation"]

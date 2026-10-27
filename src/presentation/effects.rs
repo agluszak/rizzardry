@@ -5,6 +5,7 @@ use bevy::prelude::*;
 
 use crate::content::UNITS_PER_METRE;
 use crate::game::party::body::EYE_ABOVE_CENTRE;
+use crate::game::world::interaction::LockNews;
 use crate::game::world::triggers::TriggerEffect;
 use crate::presentation::PresentationRng;
 use crate::presentation::party_view::PartyCamera;
@@ -70,6 +71,42 @@ pub fn play_trigger_effects(
         }
     }
 }
+
+/// The sounds of working on a lock or a trap (decomp `MainGameScreen.cpp`).
+pub fn play_lock_sounds(
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+    mut news: MessageReader<LockNews>,
+) {
+    for news in news.read() {
+        let names: &[&str] = match news {
+            LockNews::Locked | LockNews::NotInCombat => &["lock_open_fail"],
+            LockNews::Trapped { .. } => &["trap detect"],
+            LockNews::Tumbler { dropped: false } => &["lock_pin_rising"],
+            LockNews::Tumbler { dropped: true } => &["lock_pin_rising", "lock_pin_falling"],
+            LockNews::Picked => &["lock_picking_success"],
+            LockNews::Forced { .. } => &["lock_forcing_successful"],
+            LockNews::NotForced { .. } => &["lock_forcing_fail"],
+            LockNews::Inspected { .. } => &["trap inspection"],
+            LockNews::ComponentDisarmed { component, .. } => {
+                &[TRAP_COMPONENT_SOUNDS[(*component).min(TRAP_COMPONENT_SOUNDS.len() - 1)]]
+            }
+            LockNews::Sprung { .. } => &["trap sprung"],
+            LockNews::Disarmed { .. } => &[],
+        };
+        for name in names {
+            commands.spawn((
+                Name::new(format!("Sound {name}")),
+                AudioPlayer::new(assets.load(format!("retail://data/sound/misc/{name}.wav"))),
+                PlaybackSettings::DESPAWN,
+            ));
+        }
+    }
+}
+
+/// Each trap component's sound (retail `g_trap_sounds`).
+const TRAP_COMPONENT_SOUNDS: [&str; 8] =
+    ["trap 03", "trap 07", "trap 01", "trap 05", "trap 02", "trap 08", "trap 06", "trap 04"];
 
 /// Jitter the camera while a shake lasts, fading out if it does.
 pub fn shake_camera(
