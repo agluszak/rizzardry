@@ -37,6 +37,7 @@ fn app() -> App {
         .init_resource::<LevelMemory>()
         .init_resource::<MonsterBodies>()
         .init_resource::<rizzardry::game::inventory::PartyInventory>()
+        .init_resource::<rizzardry::game::factions::Factions>()
         .init_resource::<ItemIds>()
         .init_resource::<GameRng>()
         .init_resource::<PendingPartyMove>()
@@ -57,7 +58,7 @@ fn with_data(app: &mut App) {
     let loot = world.resource_mut::<Assets<LootTables>>().add(LootTables::default());
     let crab = Species { name: "Crab".into(), model: "crab".into(), ..default() };
     let species = world.resource_mut::<Assets<MonsterCatalog>>().add(MonsterCatalog(vec![crab]));
-    world.insert_resource(GameData { items, loot, species });
+    world.insert_resource(GameData { items, loot, species, spells: default() });
     // Required body metadata is available without a visual asset or renderer.
     let body = world.resource_mut::<Assets<MonsterBody>>().add(MonsterBody::default());
     world.resource_mut::<MonsterBodies>().0.insert(0, body);

@@ -70,7 +70,7 @@ fn crab_fight(app: &mut App) {
 #[ignore = "requires a retail installation"]
 fn a_green_slime_leaves_treasure() {
     // With this seed one of the three Green Slimes drops from its table.
-    let mut app = game(&["--continuous", "--seed", "4", "--start=69.5,10,-24", "--yaw", "0"]);
+    let mut app = game(&["--continuous", "--seed", "5", "--start=69.5,10,-24", "--yaw", "0"]);
     step_until(&mut app, "the Monastery becoming active", |w| playing(w).is_some());
     let before = lying_items(app.world_mut());
     step_until(&mut app, "a fight with the slimes", |w| w.contains_resource::<Battle>());

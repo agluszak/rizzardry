@@ -11,7 +11,8 @@ use enumset::EnumSet;
 
 use crate::content::items::{Dice, ItemId};
 use crate::content::species::{
-    AttackWord, Drop, MonsterAttack, MonsterAttributes, MonsterCatalog, Reach, Species, Treasure,
+    AttackWord, Disposition, Drop, MonsterAttack, MonsterAttributes, MonsterCatalog, Reach,
+    Species, Treasure,
 };
 
 const RECORD: usize = 0x297;
@@ -76,6 +77,7 @@ fn species(record: &[u8]) -> Species {
         level_sight: record[0xcb] == 4,
         npc: (record[0xd0] & 1 != 0)
             .then_some(crate::content::npcs::NpcId(u16::from(record[0xcd]))),
+        kind: record[0xcb],
         damage_reduction: record[0xcf],
         attributes: MonsterAttributes {
             strength: record[0xd1],
@@ -116,7 +118,21 @@ fn species(record: &[u8]) -> Species {
                 }
             })
             .collect(),
+        resistances: EnumMap::from_array(bytes(0x176, 6).try_into().unwrap()),
+        // Metres (retail scales it by its world scale). Unused records hold
+        // 0xcdcdcdcd filler, read as hostile.
+        disposition: match i32_at(record, 0x25b) {
+            -1 => Disposition::Neutral,
+            radius if radius > 0 => Disposition::HostileWithin(radius as f32),
+            _ => Disposition::Hostile,
+        },
+        faction: i32_at(record, 0x25f),
+        combat_move_range: f32::from_le_bytes(record[0x1ba..0x1be].try_into().unwrap()).max(0.0),
     }
+}
+
+fn i32_at(record: &[u8], at: usize) -> i32 {
+    i32::from_le_bytes(record[at..at + 4].try_into().unwrap())
 }
 
 /// Every species record.
@@ -176,6 +192,10 @@ mod tests {
         assert_eq!(slime.evasion, 7);
         let crocodile = &species[62];
         assert_eq!(crocodile.name, "Ironskin Crocodile");
+        assert_eq!(crocodile.disposition, Disposition::HostileWithin(15.0));
+        assert_eq!(species[253].name, "Crab");
+        assert_eq!(species[253].disposition, Disposition::HostileWithin(15.0));
+        assert_eq!(slime.disposition, Disposition::Hostile);
         // A Venom Crab may leave item 0x27e, one in four.
         let venom = &species[310];
         assert_eq!(venom.treasure[0].drop, Drop::Item(ItemId(0x27e)));

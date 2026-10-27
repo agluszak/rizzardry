@@ -30,6 +30,8 @@ pub enum ItemLoadError {
     Truncated(#[from] Truncated),
     #[error("item {0}: unknown equipment class {1}")]
     EquipClass(usize, u8),
+    #[error("item {0}: unknown use type {1}")]
+    UseType(usize, u8),
     #[error("item {0}: unknown quantity kind {1}")]
     QuantityKind(usize, u8),
     #[error("item {0}: kind {1} has no image")]
@@ -445,7 +447,10 @@ fn read_item(
     let kind = bytes.u16()?;
     let flags = bytes.u8()?;
     let has = |bit| flags & bit != 0;
-    bytes.take(1 + 3)?; // category, whose meaning is not established
+    let use_type = bytes.u8()?;
+    let use_type = crate::content::items::UseType::from_retail(use_type)
+        .ok_or(ItemLoadError::UseType(index, use_type))?;
+    bytes.take(3)?; // not established
     let weapon_skill = u8::try_from(bytes.i8()?).ok().and_then(|s| Skill::try_from(s).ok());
     let reach = Reach::from_retail(bytes.u8()?);
     let damage_bonus = bytes.i8()?;
@@ -454,7 +459,12 @@ fn read_item(
     let attack_modes = EnumSet::from_repr_truncated(bytes.u16()?);
     bytes.take(16 + 1 + 1)?; // effect chances, magnitude, slays
     let armor_class_bonus = bytes.i8()?;
-    bytes.take(3)?; // spell, its power, and one more
+    let (spell, power) = (bytes.u8()?, bytes.u8()?);
+    bytes.u8()?; // not established
+    let spell = (spell != 0 && power != 0).then_some(crate::content::spells::ItemSpell {
+        spell: crate::content::spells::SpellId(spell),
+        power: power.min(crate::content::spells::MAX_POWER),
+    });
     let quantity_kind = bytes.u8()?;
     let initial_quantity = dice(&mut bytes)?;
     let stack_limit = bytes.u8()?;
@@ -499,6 +509,8 @@ fn read_item(
         damage_bonus,
         hit_bonus,
         armor_class_bonus,
+        spell,
+        use_type,
         resistance_bonus,
         quantity: match quantity_kind {
             0 => QuantityKind::None,

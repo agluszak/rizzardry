@@ -133,6 +133,10 @@ pub struct ItemDefinition {
     pub damage_bonus: i8,
     pub hit_bonus: i8,
     pub armor_class_bonus: i8,
+    /// The spell it casts when used, at its own power.
+    pub spell: Option<super::spells::ItemSpell>,
+    /// How it is used, which decides the skill its spell is cast with.
+    pub use_type: UseType,
     /// Resistance modifiers while equipped, by magical realm.
     pub resistance_bonus: EnumMap<Realm, i8>,
     pub quantity: QuantityKind,
@@ -155,6 +159,56 @@ pub struct ItemDefinition {
 }
 
 /// Every item definition, by id.
+/// How an item is used (retail record 0x42, `ubUseType`), and the skill
+/// casting its spell takes (retail `g_item_spell_presentation`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UseType {
+    #[default]
+    None,
+    /// Wands, rods and charged worn items.
+    Charged,
+    Scroll,
+    Spellbook,
+    Food,
+    Potion,
+    Instrument,
+    /// Bombs and powders.
+    Thrown,
+    Gadget,
+    Flamethrower,
+}
+
+impl UseType {
+    pub fn from_retail(value: u8) -> Option<Self> {
+        Some(match value {
+            0 => UseType::None,
+            1 => UseType::Charged,
+            2 => UseType::Scroll,
+            3 => UseType::Spellbook,
+            4 => UseType::Food,
+            5 => UseType::Potion,
+            6 => UseType::Instrument,
+            7 => UseType::Thrown,
+            8 => UseType::Gadget,
+            9 => UseType::Flamethrower,
+            _ => return None,
+        })
+    }
+
+    /// The skill its spell is cast with; none for potions and food, whose
+    /// spells never fail.
+    pub fn skill(self) -> Option<Skill> {
+        match self {
+            UseType::Charged | UseType::Scroll => Some(Skill::Artifacts),
+            UseType::Instrument => Some(Skill::Music),
+            UseType::Thrown => Some(Skill::ThrowingAndSling),
+            UseType::Gadget => Some(Skill::Engineering),
+            UseType::Flamethrower => Some(Skill::ModernWeapon),
+            UseType::None | UseType::Spellbook | UseType::Food | UseType::Potion => None,
+        }
+    }
+}
+
 #[derive(Asset, TypePath, Debug, Default)]
 pub struct ItemCatalog(pub Vec<ItemDefinition>);
 

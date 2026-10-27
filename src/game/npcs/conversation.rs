@@ -201,6 +201,7 @@ fn actor_level(world: &World, actor: Entity) -> Option<Entity> {
 }
 fn available(world: &World, actor: Entity) -> bool {
     world.get::<Monster>(actor).is_some_and(|m| !m.is_dead())
+        && world.get::<crate::game::world::population::Provoked>(actor).is_none()
         && world.get::<Npc>(actor).is_some_and(|n| n.disposition >= 0x42)
         && actor_level(world, actor).is_some_and(|level| world.get::<Level>(level).is_some())
 }
@@ -235,7 +236,7 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
         return Err(TradeError::Unavailable);
     }
     let def = definition(world, actor)?;
-    if world.get::<Npc>(actor).unwrap().disposition < 0x42 {
+    if !available(world, actor) {
         return Err(TradeError::Unavailable);
     }
     let npc = world.get::<Npc>(actor).unwrap();
