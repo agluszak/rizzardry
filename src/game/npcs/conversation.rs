@@ -360,10 +360,10 @@ fn validate_line(world: &World, q: &Quote) -> Result<(), (usize, String)> {
             {
                 return Err((i, format!("unported fact assignment {id:?}")));
             }
-            DialogueOp::Conditional { facts, .. } => {
-                if conditions_match(world, facts).map_err(|e| (i, e))? {
-                    break;
-                }
+            DialogueOp::Conditional { facts, .. }
+                if conditions_match(world, facts).map_err(|e| (i, e))? =>
+            {
+                break;
             }
             _ => {}
         }

@@ -197,7 +197,7 @@ pub fn populate(
                     .maintain(definition, items, average, npcs.clock.ms, false, rng)
                     .expect("validated NPC stock");
             }
-            let entity = commands
+            commands
                 .spawn((
                     key.clone(),
                     crate::game::npcs::Npc {
@@ -209,8 +209,7 @@ pub fn populate(
                         stock,
                     },
                 ))
-                .id();
-            entity
+                .id()
         };
         let kept = if let Ok((_, _, mut npc, active)) = npcs.npcs.get_mut(entity) {
             if active.is_some_and(|bodies| !bodies.is_empty()) && npc.dormant.is_none() {
