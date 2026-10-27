@@ -626,7 +626,7 @@ pub fn quote_trade(
     source: TradeSource,
     quantity: u32,
 ) -> Result<TradeQuote, TradeError> {
-    if !world.query::<&crate::game::world::level::Destination>().iter(world).next().is_none() {
+    if world.query::<&crate::game::world::level::Destination>().iter(world).next().is_some() {
         return Err(TradeError::Busy);
     }
     let c = world.get::<Conversation>(conversation).ok_or(TradeError::StaleSelection)?;
@@ -773,7 +773,7 @@ fn execute_trade(
     Ok(())
 }
 pub fn update_conversation(world: &mut World) {
-    if !world.query::<&crate::game::world::level::Destination>().iter(world).next().is_none() {
+    if world.query::<&crate::game::world::level::Destination>().iter(world).next().is_some() {
         // An accepted entry ends presentation-only dialogue before any queued
         // payment, trade or authored effect can alter the departing campaign.
         close(world);

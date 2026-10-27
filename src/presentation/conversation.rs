@@ -457,7 +457,7 @@ fn sync_view(world: &mut World) {
                         format!(
                             "Sell from {}: {}",
                             world
-                                .get::<crate::game::characters::Character>(*member)
+                                .get::<crate::game::characters::Character>(member)
                                 .map_or("member", |c| c.name.as_str()),
                             item.display_name(d, true)
                         ),
