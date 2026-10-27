@@ -16,9 +16,16 @@ required class tree. [Known gaps](known-gaps.md) distinguishes unfinished work.
 - Character owns identity/training/progression; Vitals owns health, stamina,
   conditions and recovery fractions; MonsterKnowledge owns recognition history.
   Split by independent queries and lifetimes, not by individual fields.
-- PartyRoster owns membership and order. Formation holds actor identities, not
-  replaceable slot indexes. The party has one spatial body; character reach is
-  derived where the rule needs it. Not every spell uses individual positions.
+- The party is one entity: Formation, PartyInventory and, once it enters a level,
+  its single spatial body. Members point to it with PartyMember; the ordered
+  PartyRoster it maintains owns membership and order. Membership does not own a
+  character's lifetime. Formation holds actor identities, not replaceable slot
+  indexes; character reach is derived where the rule needs it. Not every spell
+  uses individual positions.
+- Relationships carry ownership: LevelOwned/LevelEntities is what a level holds
+  (monsters, groups, items, props, devices, navigation, its battle) and despawns
+  with it; `ChildOf` is only spatial. Combatant/Combatants is fight participation,
+  ended without despawning anyone.
 - Named NPC identity can survive role and map changes. Retained adventurer stats
   and world-monster stats are distinct retail rule domains, not synchronized
   copies of one profile. Make recruitment/dismissal conversion explicit.
@@ -31,16 +38,20 @@ required class tree. [Known gaps](known-gaps.md) distinguishes unfinished work.
 
 ## Level lifetime
 
-A pending level owns its requested entrance/placement and prepares mandatory
-collision, navigation and population content. Loading geometry is not readiness.
-LevelDefinition is gameplay content; LevelGeometry and sky are presentation assets.
-Headless gameplay installs no renderer, input bindings or audio.
+An accepted entry (a Destination with its Entry: new game or travel) owns its
+requested entrance/placement and prepares mandatory collision, navigation and
+population content, failing on any that is missing. Loading geometry is not
+readiness. LevelDefinition is gameplay content; LevelGeometry and sky are
+presentation assets. Headless gameplay installs no renderer, input bindings or
+audio. Preparation draws no gameplay RNG, consumes no dormant record and moves
+nobody, so a failure only discards the entry (LevelEntryFailed).
 
-One activation operation captures the source's latest map state, cancels its
-movement, removes local entities, restores the destination and places/resumes the
-persistent party, then announces readiness. Keep the source active during loading;
-failed preparation must not leave a frozen source or speculative snapshot to repair.
-Combat/camping delay the commit. Mandatory navigation/content failure rejects it.
+While an entry is pending, gameplay and physics are suspended and the source stays
+intact (retail's please-wait load), so no fight or camp can begin mid-load. One
+activation operation then captures the source's map state, retires it, restores
+the destination, creates a new game's party, places the party, and announces
+readiness. Unlike retail, which unloads first, a failed entry resumes the source.
+Visuals still load after activation.
 
 Dormant records retain deaths, wounds, items, device state, variables, recognition
 and notes. Restore them rather than respawning authored defaults. Do not persist

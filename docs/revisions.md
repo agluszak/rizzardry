@@ -21,7 +21,7 @@ rules change.
 | NPC identity and role stats | One persistent actor and one adventurer inventory, but distinct retained AdventurerState and active WorldCombatState where the original uses them | [Party/RPCs](systems/party-and-rpcs.md) |
 | NPC world equipment | World-role attacks, armor and loot do not automatically derive from the retained adventurer's equipment; merchant stock is separate again | [Party/RPCs](systems/party-and-rpcs.md) |
 | Unloaded named NPCs | Keeping an actor entity alive is a lifetime decision, not permission to run its world AI/recovery every frame | [Persistence](systems/persistence-and-travel.md), [time](systems/time-rest-and-conditions.md) |
-| Party ownership | PartyRoster and PartyInventory are resources; the single spatial Party entity owns pose/body. Membership has one authority | [Architecture](architecture.md) |
+| Party ownership | One Party entity holds Formation, PartyInventory and the spatial body; the PartyMember relationship's ordered PartyRoster is the one membership authority | [Architecture](architecture.md) |
 | Monster engagement | A monster's engagement can exist before or without the party's Battle. This does not establish independently simulated fights in distant/unloaded areas | [Combat AI](systems/combat-ai-and-navigation.md) |
 | Perception and disposition | Party detection, monster detection and perception history are directional; faction, group provocation and actor overrides are separate rule inputs | [Combat AI](systems/combat-ai-and-navigation.md) |
 | Party combat movement | One scheduled movement action; the inspected initiative calculation uses the minimum living-member initiative, despite misleading comments | [Combat AI](systems/combat-ai-and-navigation.md) |
