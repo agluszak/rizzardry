@@ -12,7 +12,7 @@ use num_enum::{IntoPrimitive, TryFromPrimitive};
 #[derive(Clone, Debug)]
 pub struct LevelPart {
     pub mesh: Handle<Mesh>,
-    pub material: Handle<StandardMaterial>,
+    pub surface: super::surface::Surface,
     /// The inputs of the mesh's vertex colours, per vertex.
     pub lighting: VertexLighting,
 }
@@ -139,7 +139,6 @@ pub struct LevelGeometry {
     pub ambient_sounds: Vec<AmbientSoundModel>,
     /// Indexed in the same authored order as `LevelDefinition::props`.
     pub props: Vec<PropVisual>,
-    pub animated_textures: Vec<TextureAnimation>,
 }
 
 #[derive(Clone, Debug)]
@@ -452,72 +451,5 @@ impl CollisionMesh {
         self.vertices.extend(other.vertices.iter().map(|&v| transform.transform_point(v)));
         self.triangles.extend(other.triangles.iter().map(|t| t.map(|v| base + v)));
         self.walkable.extend(std::iter::repeat_n(walkable, other.triangles.len()));
-    }
-}
-
-/// How an animated texture advances (retail `W8TextureAnimationMode`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Playback {
-    Loop,
-    PingPong,
-    Once,
-    /// Never advances by itself; driven by game state (e.g. the sky by time
-    /// of day).
-    Manual,
-}
-
-/// A material showing one frame of a frame list at a time.
-#[derive(Clone, Debug)]
-pub struct TextureAnimation {
-    pub material: Handle<StandardMaterial>,
-    pub frames: Vec<Handle<Image>>,
-    pub playback: Playback,
-    pub frames_per_second: f32,
-    pub start_frame: usize,
-}
-
-impl TextureAnimation {
-    /// The frame shown `seconds` after the animation started (retail
-    /// `Texture::UpdateFrame`).
-    pub fn frame_at(&self, seconds: f32) -> usize {
-        let count = self.frames.len();
-        if count == 0 {
-            return 0;
-        }
-        let steps = (seconds.max(0.0) * self.frames_per_second) as usize;
-        let start = self.start_frame.min(count - 1);
-        match self.playback {
-            Playback::Manual => start,
-            Playback::Loop => (start + steps) % count,
-            Playback::Once => (start + steps).min(count - 1),
-            Playback::PingPong => {
-                let step = (start + steps) % count;
-                if ((start + steps) / count).is_multiple_of(2) { step } else { count - 1 - step }
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn animation(playback: Playback) -> TextureAnimation {
-        TextureAnimation {
-            material: default(),
-            frames: vec![default(); 4],
-            playback,
-            frames_per_second: 2.0,
-            start_frame: 0,
-        }
-    }
-
-    #[test]
-    fn frames_follow_the_retail_playback_modes() {
-        let at = |p, s| animation(p).frame_at(s);
-        assert_eq!([0.0, 0.5, 1.9, 2.0].map(|s| at(Playback::Loop, s)), [0, 1, 3, 0]);
-        assert_eq!([2.0, 2.5, 3.5].map(|s| at(Playback::PingPong, s)), [3, 2, 0]);
-        assert_eq!(at(Playback::Once, 10.0), 3);
-        assert_eq!(at(Playback::Manual, 10.0), 0);
     }
 }

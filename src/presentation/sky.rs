@@ -162,12 +162,7 @@ pub fn build_sky(
         };
         let Some(sky) = geometry.get(sky) else { continue };
         commands.entity(root).insert(SkyBuilt);
-        info!(
-            "sky ready: {} parts, {} props, {} animated textures",
-            sky.parts.len(),
-            sky.props.len(),
-            sky.animated_textures.len()
-        );
+        info!("sky ready: {} parts, {} props", sky.parts.len(), sky.props.len());
         let layer = RenderLayers::layer(SKY_LAYER);
         let sky_root = commands
             .spawn((Name::new("Sky"), Transform::default(), Visibility::default(), ChildOf(root)))
@@ -175,7 +170,7 @@ pub fn build_sky(
         for part in &sky.parts {
             commands.spawn((
                 Mesh3d(part.mesh.clone()),
-                MeshMaterial3d(part.material.clone()),
+                part.surface.render(),
                 layer.clone(),
                 ChildOf(sky_root),
             ));
@@ -214,7 +209,7 @@ pub fn build_sky(
                         // Clouds share retail's animated cloud material; keep
                         // each one's texture.
                         let texture = materials
-                            .get(&mesh.material)
+                            .get(&mesh.surface.material)
                             .and_then(|m| m.base_color_texture.clone());
                         let material = materials.add(StandardMaterial {
                             base_color_texture: texture,
@@ -224,9 +219,13 @@ pub fn build_sky(
                             alpha_mode: AlphaMode::Blend,
                             ..default()
                         });
-                        entity.insert((MeshMaterial3d(material), Cloud));
+                        entity.insert((
+                            MeshMaterial3d(material),
+                            mesh.surface.animation.clone(),
+                            Cloud,
+                        ));
                     } else {
-                        entity.insert(MeshMaterial3d(mesh.material.clone()));
+                        entity.insert(mesh.surface.render());
                     }
                 }
             }
@@ -238,6 +237,68 @@ pub fn build_sky(
 mod tests {
     use super::*;
     use bevy::transform::TransformSystems;
+
+    #[test]
+    fn cloud_frames_animate_the_material_the_cloud_actually_renders() {
+        use crate::content::{
+            level::{LevelPart, PropVisual, PropVisualPart},
+            surface::{Surface, TextureFrames},
+        };
+        let mut app = App::new();
+        app.init_resource::<Assets<LevelGeometry>>()
+            .init_resource::<Assets<StandardMaterial>>()
+            .init_resource::<Assets<Image>>()
+            .init_resource::<Time<Virtual>>()
+            .init_resource::<GameClock>()
+            .add_systems(Update, (build_sky, super::super::textures::animate_textures).chain());
+        let frames: Vec<_> = (0..2)
+            .map(|_| app.world_mut().resource_mut::<Assets<Image>>().add(Image::default()))
+            .collect();
+        let original = app
+            .world_mut()
+            .resource_mut::<Assets<StandardMaterial>>()
+            .add(StandardMaterial { base_color_texture: Some(frames[0].clone()), ..default() });
+        let geometry = app.world_mut().resource_mut::<Assets<LevelGeometry>>().add(LevelGeometry {
+            props: vec![PropVisual {
+                name: "Clouds1".into(),
+                face_camera: false,
+                parts: vec![PropVisualPart {
+                    transform: default(),
+                    meshes: vec![LevelPart {
+                        mesh: default(),
+                        lighting: default(),
+                        surface: Surface {
+                            material: original.clone(),
+                            ambient: Vec3::ONE,
+                            emission: 0.,
+                            animation: TextureFrames {
+                                frames: frames.clone(),
+                                frames_per_second: 1.,
+                                ..default()
+                            },
+                        },
+                    }],
+                }],
+            }],
+            ..default()
+        });
+        app.world_mut().spawn(LevelSky(Some(geometry)));
+        app.world_mut()
+            .resource_mut::<Time<Virtual>>()
+            .advance_by(std::time::Duration::from_secs(1));
+        app.update();
+        let cloud = app
+            .world_mut()
+            .query_filtered::<&MeshMaterial3d<StandardMaterial>, With<Cloud>>()
+            .single(app.world())
+            .unwrap()
+            .0
+            .clone();
+        assert_ne!(cloud, original);
+        let materials = app.world().resource::<Assets<StandardMaterial>>();
+        assert_eq!(materials.get(&cloud).unwrap().base_color_texture, Some(frames[1].clone()));
+        assert_eq!(materials.get(&original).unwrap().base_color_texture, Some(frames[0].clone()));
+    }
 
     #[test]
     fn sky_uses_current_parented_camera_pose_in_the_same_propagation_pass() {
