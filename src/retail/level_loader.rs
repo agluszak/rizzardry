@@ -787,23 +787,12 @@ mod tests {
     #[test]
     #[ignore = "requires a retail installation"]
     fn retail_containers_name_existing_loot_tables_but_two() {
-        let root = std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL");
-        let files = crate::retail::files::RetailFiles::open(root).unwrap();
+        let files = crate::retail::files::retail_files();
         let tables = crate::retail::items::read_loot_tables(
             &files.read("data/databases/itemtables.dbs").unwrap().unwrap(),
         )
         .unwrap();
-        let mut levels = vec![];
-        let mut directories = vec!["levels".to_owned()];
-        while let Some(directory) = directories.pop() {
-            for child in files.list_directory(&directory) {
-                if child.ends_with(".pvl") {
-                    levels.push(child);
-                } else if files.is_directory(&child) {
-                    directories.push(child);
-                }
-            }
-        }
+        let levels: Vec<&str> = files.names().filter(|n| n.ends_with(".pvl")).collect();
         let (mut containers, mut missing) = (0, vec![]);
         for level in &levels {
             let data = files.read(level).unwrap().unwrap();
@@ -817,7 +806,6 @@ mod tests {
                 }
             }
         }
-        println!("{} levels, {containers} containers", levels.len());
         assert!(levels.len() > 20 && containers > 0);
         missing.sort();
         assert_eq!(

@@ -74,16 +74,6 @@ fn crab_fight(app: &mut App) {
 
 #[test]
 #[ignore = "requires a retail installation"]
-fn the_party_beats_the_beach_crabs() {
-    let _one = ONE_AT_A_TIME.lock();
-    let mut app = game(&["--continuous", "--start=108,2.5,-96"]);
-    crab_fight(&mut app);
-    let (_, dead) = monsters(app.world_mut());
-    assert_eq!(dead, 3, "the three crabs are dead");
-}
-
-#[test]
-#[ignore = "requires a retail installation"]
 fn a_green_slime_leaves_treasure() {
     let _one = ONE_AT_A_TIME.lock();
     // With this seed one of the three Green Slimes drops from its table.
@@ -111,6 +101,7 @@ fn the_dead_stay_dead_across_travel() {
     let mut app = game(&["--continuous", "--start=108,2.5,-96"]);
     crab_fight(&mut app);
     let (count, dead) = monsters(app.world_mut());
+    assert_eq!(dead, 3, "the party beat the three beach crabs");
 
     app.world_mut().write_message(Travel { entrance: "MO204".into() });
     step_until(&mut app, "arriving in Monastery 2", |w| {

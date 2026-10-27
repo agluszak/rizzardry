@@ -295,23 +295,22 @@ fn read_sections_of(bytes: &mut Bytes, compiled: bool) -> Result<LevelSections, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::retail::files::retail_files;
     use crate::retail::pvl::read_level_geometry;
     use crate::retail::trigger::TriggerKind;
 
-    /// Runs against a real installation when `RIZZARDRY_RETAIL` names one.
     #[test]
     #[ignore = "requires a retail installation"]
     fn every_retail_level_parses_to_its_trailer() {
-        let root =
-            std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL to run this test");
-        let files = crate::retail::files::RetailFiles::open(root).unwrap();
+        let files = retail_files();
         let levels: Vec<String> =
             files.names().filter(|n| n.ends_with(".pvl")).map(str::to_owned).collect();
         assert_eq!(levels.len(), 34);
         for level in levels {
             let data = files.read(&level).unwrap().unwrap();
-            let start = read_level_geometry(&data).unwrap().end;
-            let mut bytes = Bytes::new(&data[start..]);
+            let geometry = read_level_geometry(&data).unwrap_or_else(|e| panic!("{level}: {e}"));
+            assert!(!geometry.meshes.is_empty(), "{level}");
+            let mut bytes = Bytes::new(&data[geometry.end..]);
             let sections = read_sections(&mut bytes).unwrap_or_else(|e| panic!("{level}: {e}"));
             assert_eq!(bytes.remaining(), 72, "{level}");
             assert!(sections.environment.is_some(), "{level}");
@@ -321,9 +320,7 @@ mod tests {
     #[test]
     #[ignore = "requires a retail installation"]
     fn the_default_sky_parses() {
-        let root =
-            std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL to run this test");
-        let files = crate::retail::files::RetailFiles::open(root).unwrap();
+        let files = retail_files();
         let data = files.read("levels/test/defaultsky.lvl").unwrap().unwrap();
         let mut bytes = Bytes::new(&data);
         crate::retail::mesh_record::read_mesh_record(&mut bytes).unwrap();
@@ -336,9 +333,7 @@ mod tests {
     #[test]
     #[ignore = "requires a retail installation"]
     fn the_new_game_entrance_is_a_positioned_trigger() {
-        let root =
-            std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL to run this test");
-        let files = crate::retail::files::RetailFiles::open(root).unwrap();
+        let files = retail_files();
         let data = files.read("levels/monastery/monastery1.pvl").unwrap().unwrap();
         let start = read_level_geometry(&data).unwrap().end;
         let sections = read_sections(&mut Bytes::new(&data[start..])).unwrap();
@@ -354,9 +349,7 @@ mod tests {
     #[ignore = "requires a retail installation"]
     fn the_monastery_bells_decode_their_trigger_logic() {
         use crate::retail::trigger::{StateMode, action, flag};
-        let root =
-            std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL to run this test");
-        let files = crate::retail::files::RetailFiles::open(root).unwrap();
+        let files = retail_files();
         let data = files.read("levels/monastery/monastery2.pvl").unwrap().unwrap();
         let start = read_level_geometry(&data).unwrap().end;
         let sections = read_sections(&mut Bytes::new(&data[start..])).unwrap();

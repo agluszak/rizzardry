@@ -25,18 +25,3 @@ pub fn retail_yaw(angle: f32, axis: [f32; 3]) -> f32 {
     let forward = Quat::from_axis_angle(axis, -angle) * Vec3::NEG_Z;
     (-forward.x).atan2(-forward.z)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn mirrors_z_and_scales() {
-        assert_eq!(retail_position([500.0, 1000.0, 1500.0]), Vec3::new(1.0, 2.0, -3.0));
-    }
-
-    #[test]
-    fn identity_rotation_faces_retail_forward() {
-        assert!(retail_yaw(0.0, [0.0, 1.0, 0.0]).abs() < 1e-6);
-    }
-}

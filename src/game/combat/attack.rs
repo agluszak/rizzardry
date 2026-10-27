@@ -432,9 +432,7 @@ mod retail_tests {
     #[test]
     #[ignore = "requires a retail installation"]
     fn a_fighter_and_a_crab_trade_blows() {
-        let root =
-            std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL to run this test");
-        let files = crate::retail::files::RetailFiles::open(root).unwrap();
+        let files = crate::retail::files::retail_files();
         let catalog = crate::retail::items::retail_catalog(&files);
         let species = crate::retail::species::read_species(
             &files.read("data/databases/monsters.dbs").unwrap().unwrap(),

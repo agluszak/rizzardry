@@ -105,6 +105,43 @@ fn floor() -> CollisionMesh {
     }
 }
 
+/// The test level on a floor, with the shared databases, activated.
+fn playing() -> (App, Entity) {
+    let mut app = app();
+    with_data(&mut app);
+    let level = spawn_level(&mut app, floor());
+    app.update();
+    (app, level)
+}
+
+/// Leave through the real travel boundary, then come back to the test level
+/// instead of the (unloadable) destination; returns the level played again.
+fn revisit(app: &mut App) -> Entity {
+    app.world_mut().write_message(Travel { entrance: "MO204".into() });
+    app.world_mut().run_schedule(PreUpdate);
+    let away: Vec<Entity> =
+        app.world_mut().query_filtered::<Entity, With<Destination>>().iter(app.world()).collect();
+    for destination in away {
+        app.world_mut().despawn(destination);
+    }
+    let back = spawn_level(app, floor());
+    app.update();
+    back
+}
+
+/// Update until `done`, failing after five seconds of asynchronous loading.
+fn update_until(app: &mut App, what: &str, done: impl Fn(&World) -> bool) {
+    let started = std::time::Instant::now();
+    loop {
+        app.update();
+        if done(app.world()) {
+            return;
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "{what} within 5 s");
+        std::thread::yield_now();
+    }
+}
+
 #[test]
 fn travel_dialogs_end_with_their_question_without_a_cleanup_system() {
     use rizzardry::game::world::level::{TravelAnswer, answer_travel_questions, ask_travel};
@@ -165,11 +202,7 @@ fn a_level_waits_for_the_shared_databases() {
 
 #[test]
 fn the_party_survives_level_replacement_without_duplication() {
-    let mut app = app();
-    with_data(&mut app);
-    let first_level = spawn_level(&mut app, floor());
-
-    app.update();
+    let (mut app, first_level) = playing();
     let party = party_entities(&mut app);
     assert_eq!(party.len(), 1);
     app.update();
@@ -185,10 +218,7 @@ fn the_party_survives_level_replacement_without_duplication() {
 
 #[test]
 fn a_destination_that_cannot_load_leaves_the_party_where_it_was() {
-    let mut app = app();
-    with_data(&mut app);
-    let first_level = spawn_level(&mut app, floor());
-    app.update();
+    let (mut app, first_level) = playing();
     let party = party_entities(&mut app)[0];
 
     // MO2's files are not there to load here: the destination fails.
@@ -214,36 +244,6 @@ fn monsters(app: &mut App) -> Vec<Monster> {
     let world = app.world_mut();
     let mut query = world.query::<&Monster>();
     query.iter(world).cloned().collect()
-}
-
-#[test]
-fn a_killed_monster_stays_dead_when_the_party_returns() {
-    let mut app = app();
-    with_data(&mut app);
-    spawn_level(&mut app, floor());
-    app.update();
-    assert_eq!(monsters(&mut app).len(), 1);
-    {
-        let world = app.world_mut();
-        let mut query = world.query::<&mut Monster>();
-        query.single_mut(world).unwrap().hp = 0;
-    }
-
-    // Prepare travel, then replace its destination with this map. Activation
-    // captures the current source before restoring the same map.
-    app.world_mut().write_message(Travel { entrance: "MO204".into() });
-    app.world_mut().run_schedule(PreUpdate);
-    let mut destinations = app.world_mut().query_filtered::<Entity, With<Destination>>();
-    let away: Vec<Entity> = destinations.iter(app.world()).collect();
-    for destination in away {
-        app.world_mut().despawn(destination);
-    }
-    let back = spawn_level(&mut app, floor());
-    app.update();
-
-    assert!(is_played(&app, back));
-    assert_eq!(app.world_mut().query::<&Level>().iter(app.world()).count(), 1);
-    assert!(monsters(&mut app).is_empty(), "the dead crab came back");
 }
 
 #[test]
@@ -274,21 +274,11 @@ fn body_metadata_loads_even_when_the_visual_cycles_fail() {
     app.cleanup();
     let body = app.world().resource::<AssetServer>().load::<MonsterBody>("crab.mls");
     let visual = app.world().resource::<AssetServer>().load::<MonsterModel>("crab.mls");
-    let started = std::time::Instant::now();
-    loop {
-        app.update();
-        let assets = app.world().resource::<AssetServer>();
-        if matches!(assets.get_load_state(&body), Some(LoadState::Loaded))
+    update_until(&mut app, "body/visual loads settling independently", |world| {
+        let assets = world.resource::<AssetServer>();
+        matches!(assets.get_load_state(&body), Some(LoadState::Loaded))
             && matches!(assets.get_load_state(&visual), Some(LoadState::Failed(_)))
-        {
-            break;
-        }
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(5),
-            "body/visual loads did not settle independently"
-        );
-        std::thread::yield_now();
-    }
+    });
     let definition = app.world().resource::<Assets<MonsterBody>>().get(&body).unwrap();
     assert_eq!(
         (definition.scale, definition.fight_radius, definition.target_height),
@@ -305,10 +295,7 @@ fn attaching_visuals_does_not_change_physical_state_or_revisit_placement() {
     use rizzardry::presentation::monsters::{MonsterVisual, build_monster_instances};
 
     for show_visuals in [false, true] {
-        let mut app = app();
-        with_data(&mut app);
-        let first = spawn_level(&mut app, floor());
-        app.update();
+        let (mut app, first) = playing();
         let actor =
             app.world_mut().query_filtered::<Entity, With<Monster>>().single(app.world()).unwrap();
         let feet = Vec3::new(2.0, 3.0, 4.0);
@@ -341,18 +328,7 @@ fn attaching_visuals_does_not_change_physical_state_or_revisit_placement() {
         }
         // Capture through the real travel boundary, then consume that level's
         // dormant record. The controller offset is gameplay data in both runs.
-        app.world_mut().write_message(Travel { entrance: "MO204".into() });
-        app.world_mut().run_schedule(PreUpdate);
-        let away: Vec<_> = app
-            .world_mut()
-            .query_filtered::<Entity, With<Destination>>()
-            .iter(app.world())
-            .collect();
-        for destination in away {
-            app.world_mut().despawn(destination);
-        }
-        let back = spawn_level(&mut app, floor());
-        app.update();
+        let back = revisit(&mut app);
         assert!(is_played(&app, back));
         assert!(app.world().get_entity(first).is_err());
         let world = app.world_mut();
@@ -403,24 +379,13 @@ fn a_level_waits_for_body_metadata_and_sizes_monsters_without_render_assets() {
 #[test]
 fn group_knowledge_survives_revisit() {
     use rizzardry::game::world::identify::{GroupMember, MonsterGroup};
-    let mut app = app();
-    with_data(&mut app);
-    spawn_level(&mut app, floor());
-    app.update();
+    let (mut app, _) = playing();
     let old =
         app.world_mut().query_filtered::<Entity, With<MonsterGroup>>().single(app.world()).unwrap();
     let mut group = app.world_mut().get_mut::<MonsterGroup>(old).unwrap();
     group.identified = true;
     group.counted = true;
-    app.world_mut().write_message(Travel { entrance: "MO204".into() });
-    app.world_mut().run_schedule(PreUpdate);
-    let away: Vec<_> =
-        app.world_mut().query_filtered::<Entity, With<Destination>>().iter(app.world()).collect();
-    for entity in away {
-        app.world_mut().despawn(entity);
-    }
-    let back = spawn_level(&mut app, floor());
-    app.update();
+    let back = revisit(&mut app);
     assert!(is_played(&app, back));
     let world = app.world_mut();
     let membership = world.query_filtered::<&GroupMember, With<Monster>>().single(world).unwrap();
@@ -527,10 +492,7 @@ fn direct_damage_settles_death_once_and_rejection_leaves_the_target_unchanged() 
 
 #[test]
 fn departure_captures_live_changes_after_loading_and_waits_for_combat_to_end() {
-    let mut app = app();
-    with_data(&mut app);
-    let source = spawn_level(&mut app, floor());
-    app.update();
+    let (mut app, source) = playing();
     let party = party_entities(&mut app)[0];
     let loading = app.world_mut().resource_mut::<Assets<LevelDefinition>>().reserve_handle();
     let mut destination = test_level(&mut app, floor());
@@ -569,10 +531,7 @@ fn departure_captures_live_changes_after_loading_and_waits_for_combat_to_end() {
 #[test]
 fn preparation_keeps_the_source_live_and_commit_captures_its_latest_state() {
     use avian3d::prelude::Position;
-    let mut app = app();
-    with_data(&mut app);
-    let source = spawn_level(&mut app, floor());
-    app.update();
+    let (mut app, source) = playing();
     let party = party_entities(&mut app)[0];
     let at = app.world().get::<Position>(party).unwrap().0;
     // Start through the real camera-path operation, not a hand-made marker.
@@ -627,19 +586,13 @@ fn preparation_keeps_the_source_live_and_commit_captures_its_latest_state() {
 
 #[test]
 fn failed_navigation_is_a_failed_destination_not_degraded_activation() {
-    let mut app = app();
-    with_data(&mut app);
-    let source = spawn_level(&mut app, floor());
-    app.update();
+    let (mut app, source) = playing();
     let mut next = test_level(&mut app, floor());
     next.navmeshes.push(app.world().resource::<AssetServer>().load("missing.navmesh"));
     let destination = app.world_mut().spawn(Destination::new(next, default())).id();
-    let started = std::time::Instant::now();
-    while !failed(&app, destination) {
-        app.update();
-        assert!(started.elapsed() < std::time::Duration::from_secs(5));
-        std::thread::yield_now();
-    }
+    update_until(&mut app, "the destination failing", |world| {
+        world.get::<Destination>(destination).is_some_and(|d| d.failed)
+    });
     assert!(is_played(&app, source));
     assert!(!is_played(&app, destination));
     assert!(app.world().resource::<LevelMemory>().is_empty());
@@ -688,16 +641,12 @@ fn retail_level_definitions_load_without_render_asset_resources() {
     app.cleanup();
     let definition =
         app.world().resource::<AssetServer>().load::<LevelDefinition>("retail://empty.pvl");
-    let started = std::time::Instant::now();
-    loop {
-        app.update();
-        match app.world().resource::<AssetServer>().get_load_state(&definition) {
-            Some(bevy::asset::LoadState::Loaded) => break,
+    update_until(&mut app, "the definition loading", |world| {
+        match world.resource::<AssetServer>().get_load_state(&definition) {
             Some(bevy::asset::LoadState::Failed(error)) => panic!("definition failed: {error}"),
-            _ => assert!(started.elapsed() < std::time::Duration::from_secs(5)),
+            state => matches!(state, Some(bevy::asset::LoadState::Loaded)),
         }
-        std::thread::yield_now();
-    }
+    });
     assert!(app.world().resource::<Assets<LevelDefinition>>().contains(&definition));
     assert!(!app.world().contains_resource::<Assets<Mesh>>());
     assert!(!app.world().contains_resource::<Assets<StandardMaterial>>());
