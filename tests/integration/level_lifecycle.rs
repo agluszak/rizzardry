@@ -29,6 +29,7 @@ fn app() -> App {
         .init_asset::<ItemCatalog>()
         .init_asset::<LootTables>()
         .init_asset::<MonsterCatalog>()
+        .init_asset::<rizzardry::content::spells::SpellCatalog>()
         .init_asset::<bevy_landmass::NavMesh3d>()
         .init_asset::<MonsterBody>()
         .init_asset::<rizzardry::content::ui::TextTable>()
@@ -36,6 +37,7 @@ fn app() -> App {
         .init_resource::<Assets<rizzardry::game::world::navigation::WalkerMotionConfig>>()
         .init_resource::<LevelMemory>()
         .init_resource::<MonsterBodies>()
+        .init_resource::<rizzardry::game::factions::Factions>()
         .init_resource::<ItemIds>()
         .init_resource::<GameRng>()
         .add_message::<LevelReady>()
@@ -56,7 +58,10 @@ fn with_data(app: &mut App) {
     let loot = world.resource_mut::<Assets<LootTables>>().add(LootTables::default());
     let crab = Species { name: "Crab".into(), model: "crab".into(), ..default() };
     let species = world.resource_mut::<Assets<MonsterCatalog>>().add(MonsterCatalog(vec![crab]));
-    world.insert_resource(GameData { items, loot, species });
+    let spells = world
+        .resource_mut::<Assets<rizzardry::content::spells::SpellCatalog>>()
+        .add(rizzardry::content::spells::SpellCatalog::default());
+    world.insert_resource(GameData { items, loot, species, spells });
     // Required body metadata is available without a visual asset or renderer.
     let body = world.resource_mut::<Assets<MonsterBody>>().add(MonsterBody::default());
     world.resource_mut::<MonsterBodies>().0.insert(0, body);
@@ -87,7 +92,10 @@ fn spawn_level(app: &mut App, collision: CollisionMesh) -> Entity {
     let entry = if world.query::<&Party>().iter(world).next().is_some() {
         Entry::Travel
     } else {
-        Entry::NewGame(vec![Character::new("A", Race::Human, Gender::Male, Profession::Fighter)])
+        Entry::NewGame(vec![(
+            Character::new("A", Race::Human, Gender::Male, Profession::Fighter),
+            default(),
+        )])
     };
     world.spawn(Destination::new(level, default(), entry)).id()
 }

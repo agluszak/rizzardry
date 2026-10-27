@@ -51,7 +51,14 @@ pub fn begin_adventure(
     if !(1..=6).contains(&drafts.len()) {
         return Err("Create between one and six adventurers.");
     }
-    let characters = drafts.iter().map(CharacterDraft::finish).collect::<Result<Vec<_>, _>>()?;
+    let characters = drafts
+        .iter()
+        .map(|draft| {
+            draft.finish().map(|character| {
+                (character, crate::game::magic::LearnedSpells(draft.spells().clone()))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     commands.spawn((
         Name::new(destination.path.clone()),
         Destination::new(
@@ -120,7 +127,8 @@ mod tests {
         );
         let Entry::NewGame(party) = &arrival.entry else { panic!("a new game") };
         assert_eq!(party.len(), 2);
-        assert_eq!(party[0], expected);
+        assert_eq!(party[0].0, expected);
+        assert_eq!(party[0].1.0, drafts[0].spells().clone());
         assert!(
             app.world_mut().query::<&Party>().iter(app.world()).next().is_none(),
             "nobody joins before the level commits"

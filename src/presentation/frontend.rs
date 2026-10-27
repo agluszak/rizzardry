@@ -1,8 +1,10 @@
 //! Retained frontend screens. Drafts belong to the creation root, never the campaign.
 use super::screen_art::{BitmapText, Picture, absolute, spawn_picture};
 use crate::content::characters::{Attribute, Gender, Profession, Skill};
+use crate::content::spells::SpellCatalog;
 use crate::content::ui::SpriteSheet;
 use crate::game::characters::creation::{CharacterDraft, PLAYABLE_RACES};
+use crate::game::data::GameData;
 use crate::game::session::{Campaign, NewGameDestination, Session, begin_adventure};
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::input_focus::{
@@ -32,7 +34,7 @@ impl Plugin for FrontendPlugin {
             .add_input_context::<confirmation::DeleteDialog>()
             .add_systems(
                 PreUpdate,
-                arm_menu_input
+                arm_confirmation_input
                     .after(bevy::input::InputSystems)
                     .before(EnhancedInputSystems::Update),
             )
@@ -51,7 +53,7 @@ impl Plugin for FrontendPlugin {
                     party::refresh,
                     button_colours,
                     paint_menu,
-                    party::paint,
+                    party::paint_labels,
                     confirmation::show_text,
                     credits::populate,
                     credits::scroll,
@@ -74,26 +76,18 @@ fn report_entry_failure(
     }
 }
 
-// A key that opened a screen must be released before that screen handles input.
-fn arm_menu_input(
+// Native buttons also receive raw keyboard events, so the confirmation waits
+// for the opening key to be released before accepting either input path.
+fn arm_confirmation_input(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
-    menu: Query<(Entity, &ContextActivity<MenuInput>)>,
-    credits: Query<(Entity, &ContextActivity<credits::CreditsInput>)>,
     confirmation: Query<(Entity, &ContextActivity<confirmation::DeleteDialog>)>,
 ) {
-    if keys.get_pressed().next().is_some() {
+    if [KeyCode::Enter, KeyCode::Space]
+        .into_iter()
+        .any(|key| keys.pressed(key) || keys.just_pressed(key))
+    {
         return;
-    }
-    for (entity, active) in &menu {
-        if !**active {
-            commands.entity(entity).insert(ContextActivity::<MenuInput>::ACTIVE);
-        }
-    }
-    for (entity, active) in &credits {
-        if !**active {
-            commands.entity(entity).insert(ContextActivity::<credits::CreditsInput>::ACTIVE);
-        }
     }
     for (entity, active) in &confirmation {
         if !**active {
@@ -121,6 +115,7 @@ enum Page {
     Identity,
     Attributes,
     Skills,
+    Spells,
     Review,
 }
 #[derive(Component)]
@@ -129,7 +124,7 @@ struct Creation {
     party: Vec<u32>,
     selected: Option<u32>,
     next_id: u32,
-    editing: Option<(Option<u32>, CharacterDraft)>,
+    editing: Option<CharacterDraft>,
     page: Page,
     message: String,
 }
@@ -140,8 +135,6 @@ enum Action {
     Quit,
     Menu,
     Add,
-    Edit(usize),
-    Remove(usize),
     SelectCandidate(Option<u32>),
     ToggleCandidate,
     DeleteCandidate,
@@ -155,10 +148,11 @@ enum Action {
     Portrait(i32),
     Attribute(Attribute, bool),
     Skill(Skill, bool),
+    /// Pick or unpick the spell shown in this slot.
+    Spell(usize),
 }
 #[derive(Component)]
 enum Field {
-    Slot(usize),
     Race,
     Gender,
     Profession,
@@ -167,6 +161,7 @@ enum Field {
     Skill(Skill),
     Review,
     Message,
+    SpellSlot(usize),
 }
 #[derive(Component)]
 struct PreviewPortrait;
@@ -364,12 +359,11 @@ fn main_menu(mut commands: Commands, assets: Res<AssetServer>, mut focus: ResMut
         MenuInput
         ChildOf({root})
         ContextPriority::<MenuInput>::new(1)
-        ContextActivity::<MenuInput>::INACTIVE
         Actions<MenuInput> [
-            InputBindingAction::<MenuUp>::new() ActionSettings { consume_input: true } Bindings [ Binding(KeyCode::ArrowUp) ]
-            -- InputBindingAction::<MenuDown>::new() ActionSettings { consume_input: true } Bindings [ Binding(KeyCode::ArrowDown) ]
-            -- InputBindingAction::<MenuStart>::new() ActionSettings { consume_input: true } Bindings [ Binding(KeyCode::KeyS) ]
-            -- InputBindingAction::<MenuExit>::new() ActionSettings { consume_input: true } Bindings [ Binding(KeyCode::Escape) Binding(KeyCode::KeyX) Binding(KeyCode::KeyE) ]
+            InputBindingAction::<MenuUp>::new() ActionSettings { consume_input: true, require_reset: true } Bindings [ Binding(KeyCode::ArrowUp) ]
+            -- InputBindingAction::<MenuDown>::new() ActionSettings { consume_input: true, require_reset: true } Bindings [ Binding(KeyCode::ArrowDown) ]
+            -- InputBindingAction::<MenuStart>::new() ActionSettings { consume_input: true, require_reset: true } Bindings [ Binding(KeyCode::KeyS) ]
+            -- InputBindingAction::<MenuExit>::new() ActionSettings { consume_input: true, require_reset: true } Bindings [ Binding(KeyCode::Escape) Binding(KeyCode::KeyX) Binding(KeyCode::KeyE) ]
         ]
         on(menu_up)
         on(menu_down)
@@ -462,29 +456,6 @@ fn creation(mut commands: Commands, assets: Res<AssetServer>) {
     let editor = commands
         .spawn((EditorGroup, absolute(Vec2::ZERO, Vec2::new(640., 480.)), ChildOf(root)))
         .id();
-    text(&mut commands, editor, (22., 16.), 590., 25., "ASSEMBLE YOUR PARTY");
-    text(
-        &mut commands,
-        editor,
-        (22., 51.),
-        580.,
-        10.,
-        "Create up to six adventurers. Nothing is committed until you begin your adventure.",
-    );
-    for i in 0..6 {
-        let label = button(
-            &mut commands,
-            editor,
-            (22., 88. + i as f32 * 45.),
-            139.,
-            "Empty slot",
-            Action::Edit(i),
-        );
-        commands.entity(label).insert(Field::Slot(i));
-        button(&mut commands, editor, (165., 88. + i as f32 * 45.), 22., "x", Action::Remove(i));
-    }
-    button(&mut commands, editor, (22., 369.), 165., "+ NEW ADVENTURER", Action::Add);
-    button(&mut commands, editor, (22., 435.), 165., "DISCARD PARTY & BACK", Action::Menu);
     text(
         &mut commands,
         editor,
@@ -495,7 +466,7 @@ fn creation(mut commands: Commands, assets: Res<AssetServer>) {
     );
     let message = text(&mut commands, editor, (205., 402.), 410., 10., "");
     commands.entity(message).insert(Field::Message);
-    for page in [Page::Identity, Page::Attributes, Page::Skills, Page::Review] {
+    for page in [Page::Identity, Page::Attributes, Page::Skills, Page::Spells, Page::Review] {
         let panel =
             commands.spawn((absolute(Vec2::new(205., 80.), Vec2::new(413., 310.)), page)).id();
         commands.entity(editor).add_child(panel);
@@ -644,12 +615,43 @@ fn creation(mut commands: Commands, assets: Res<AssetServer>) {
                     panel,
                     (225., 275.),
                     175.,
+                    "SPELLS  >",
+                    Action::Page(Page::Spells),
+                );
+            }
+            Page::Spells => {
+                text(&mut commands, panel, (0., 0.), 300., 20., "04 / Spells");
+                let value = text(&mut commands, panel, (0., 31.), 395., 11., "");
+                commands.entity(value).insert(Field::Points);
+                for i in 0..SPELL_SLOTS {
+                    let at = ((i / 8) as f32 * 137., 55. + (i % 8) as f32 * 27.);
+                    let label = button(&mut commands, panel, at, 132., "", Action::Spell(i));
+                    commands.entity(label).insert(Field::SpellSlot(i));
+                    commands.queue(move |world: &mut World| {
+                        if let Some(&ChildOf(slot)) = world.get::<ChildOf>(label) {
+                            world.entity_mut(slot).insert(SpellSlotButton(i));
+                        }
+                    });
+                }
+                button(
+                    &mut commands,
+                    panel,
+                    (0., 275.),
+                    100.,
+                    "<  SKILLS",
+                    Action::Page(Page::Skills),
+                );
+                button(
+                    &mut commands,
+                    panel,
+                    (225., 275.),
+                    175.,
                     "REVIEW  >",
                     Action::Page(Page::Review),
                 );
             }
             Page::Review => {
-                text(&mut commands, panel, (0., 0.), 300., 20., "04 / Review adventurer");
+                text(&mut commands, panel, (0., 0.), 300., 20., "05 / Review adventurer");
                 let value = text(&mut commands, panel, (0., 45.), 395., 13., "");
                 commands.entity(value).insert(Field::Review);
                 text(
@@ -658,15 +660,15 @@ fn creation(mut commands: Commands, assets: Res<AssetServer>) {
                     (0., 205.),
                     395.,
                     11.,
-                    "Spell selection and personality voices are not implemented.\nThis adventurer will begin without learned spells.\nUnspent creation points are discarded when the adventure begins.",
+                    "Personality voices are not implemented.\nUnspent creation points are discarded when the adventure begins.",
                 );
                 button(
                     &mut commands,
                     panel,
                     (0., 275.),
                     100.,
-                    "<  SKILLS",
-                    Action::Page(Page::Skills),
+                    "<  SPELLS",
+                    Action::Page(Page::Spells),
                 );
                 button(
                     &mut commands,
@@ -682,6 +684,24 @@ fn creation(mut commands: Commands, assets: Res<AssetServer>) {
 }
 #[derive(Component)]
 struct SkillRow(Skill);
+/// One of the spell page's buttons; refresh shows the spell it offers.
+#[derive(Component)]
+struct SpellSlotButton(usize);
+const SPELL_SLOTS: usize = 24;
+
+/// The first-level spells the draft could pick, in spell order.
+fn eligible_spells<'a>(
+    draft: &CharacterDraft,
+    spells: Option<&'a SpellCatalog>,
+) -> Vec<&'a crate::content::spells::SpellDefinition> {
+    let profile = draft.preview();
+    if crate::game::magic::starting_picks(&profile) == 0 {
+        return Vec::new();
+    }
+    spells.map_or_else(Vec::new, |catalog| {
+        catalog.0.iter().filter(|s| crate::game::magic::can_learn(&profile, s)).collect()
+    })
+}
 fn words(name: &str) -> String {
     let mut result = String::new();
     for (i, c) in name.chars().enumerate() {
@@ -707,7 +727,10 @@ fn activate(
     assets: Res<AssetServer>,
     destination: Res<NewGameDestination>,
     mut names: Query<&mut EditableText, With<NameInput>>,
-    dialogs: Query<(), With<confirmation::DeleteDialog>>,
+    (dialogs, magic_data): (
+        Query<(), With<confirmation::DeleteDialog>>,
+        (Option<Res<GameData>>, Res<Assets<SpellCatalog>>),
+    ),
 ) {
     if !dialogs.is_empty() {
         return;
@@ -718,7 +741,6 @@ fn activate(
         Action::NewGame
             | Action::Menu
             | Action::Add
-            | Action::Edit(_)
             | Action::Cancel
             | Action::Finish
             | Action::Begin
@@ -750,22 +772,8 @@ fn activate(
     session.message.clear();
     match *action {
         Action::Add if session.candidates.len() < 6 => {
-            session.editing = Some((None, CharacterDraft::default()));
+            session.editing = Some(CharacterDraft::default());
             session.page = Page::Identity;
-        }
-        Action::Edit(i) => {
-            let candidate = session.party.get(i).and_then(|id| {
-                session.candidates.iter().find(|(candidate, _)| candidate == id).cloned()
-            });
-            if let Some((id, draft)) = candidate {
-                session.editing = Some((Some(id), draft));
-                session.page = Page::Identity;
-            }
-        }
-        Action::Remove(i) => {
-            if i < session.party.len() {
-                session.party.remove(i);
-            }
         }
         Action::SelectCandidate(Some(id)) => {
             if session.candidates.iter().any(|(candidate, _)| *candidate == id) {
@@ -804,26 +812,15 @@ fn activate(
             commands.entity(click.entity).insert(FinishWhenSettled);
         }
         Action::Finish => {
-            if let Some((index, draft)) = &session.editing {
+            if let Some(draft) = &session.editing {
                 match draft.finish() {
                     Err(message) => session.message = message.into(),
                     Ok(_) => {
-                        let index = *index;
-                        let (_, draft) = session.editing.take().unwrap();
-                        if let Some(id) = index {
-                            if let Some((_, candidate)) = session
-                                .candidates
-                                .iter_mut()
-                                .find(|(candidate, _)| *candidate == id)
-                            {
-                                *candidate = draft;
-                            }
-                        } else {
-                            let id = session.next_id;
-                            session.next_id += 1;
-                            session.candidates.push((id, draft));
-                            session.selected = Some(id);
-                        }
+                        let draft = session.editing.take().unwrap();
+                        let id = session.next_id;
+                        session.next_id += 1;
+                        session.candidates.push((id, draft));
+                        session.selected = Some(id);
                         session.page = Page::Party;
                     }
                 }
@@ -852,7 +849,7 @@ fn activate(
             }
         }
         action => {
-            let Some((_, draft)) = session.editing.as_mut() else { return };
+            let Some(draft) = session.editing.as_mut() else { return };
             let result = match action {
                 Action::Race(direction) => {
                     let i = PLAYABLE_RACES.iter().position(|&r| r == draft.race()).unwrap() as i32;
@@ -902,6 +899,14 @@ fn activate(
                         Err("Skills allow five allocated points each, within a pool of fifteen.")
                     }
                 }
+                Action::Spell(slot) => {
+                    let catalog = magic_data.0.as_ref().and_then(|d| magic_data.1.get(&d.spells));
+                    match eligible_spells(draft, catalog).get(slot) {
+                        Some(spell) if draft.toggle_spell(spell) => Ok(()),
+                        Some(_) => Err("Unpick a spell first."),
+                        None => Ok(()),
+                    }
+                }
                 _ => Ok(()),
             };
             if let Err(message) = result {
@@ -909,8 +914,8 @@ fn activate(
             }
         }
     }
-    if matches!(*action, Action::Add | Action::Edit(_))
-        && let Some((_, draft)) = &session.editing
+    if matches!(*action, Action::Add)
+        && let Some(draft) = &session.editing
     {
         for mut name in &mut names {
             *name = EditableText {
@@ -946,7 +951,7 @@ fn update_name(
     else {
         return;
     };
-    if let Some((_, draft)) = session.editing.as_mut() {
+    if let Some(draft) = session.editing.as_mut() {
         let value = name.value().to_string();
         if draft.name != value {
             draft.name = value;
@@ -986,12 +991,21 @@ fn refresh(
     sessions: Query<Ref<Creation>>,
     mut commands: Commands,
     buttons: Query<(Entity, &Action, Has<InteractionDisabled>), Without<party::Control>>,
-    mut pages: Query<(&Page, &mut Node, &mut Visibility), Without<SkillRow>>,
+    mut pages: Query<
+        (&Page, &mut Node, &mut Visibility),
+        (Without<SkillRow>, Without<SpellSlotButton>),
+    >,
     mut fields: Query<(&Field, &mut Text)>,
-    mut rows: Query<(&SkillRow, &mut Node, &mut Visibility), Without<Page>>,
+    mut rows: Query<
+        (&SkillRow, &mut Node, &mut Visibility),
+        (Without<Page>, Without<SpellSlotButton>),
+    >,
     mut portraits: Query<&mut Picture, With<PreviewPortrait>>,
     assets: Res<AssetServer>,
+    mut spell_slots: Query<(&SpellSlotButton, &mut Visibility), (Without<Page>, Without<SkillRow>)>,
+    magic_data: (Option<Res<GameData>>, Res<Assets<SpellCatalog>>),
 ) {
+    let spell_catalog = magic_data.0.as_ref().and_then(|d| magic_data.1.get(&d.spells));
     let Ok(session) = sessions.single() else { return };
     if !session.is_changed() {
         return;
@@ -1008,14 +1022,11 @@ fn refresh(
             Visibility::Hidden
         });
     }
-    let draft = session.editing.as_ref().map(|(_, d)| d);
+    let draft = session.editing.as_ref();
     let profile = draft.map(CharacterDraft::preview);
     for (entity, action, disabled) in &buttons {
         let enabled = match *action {
             Action::Add => session.editing.is_none() && session.candidates.len() < 6,
-            Action::Edit(i) | Action::Remove(i) => {
-                session.editing.is_none() && i < session.party.len()
-            }
             Action::Begin => session.editing.is_none() && !session.party.is_empty(),
             _ => true,
         };
@@ -1024,21 +1035,6 @@ fn refresh(
 
     for (field, mut text) in &mut fields {
         let value = match field {
-            Field::Slot(i) => session
-                .party
-                .get(*i)
-                .and_then(|id| session.candidates.iter().find(|(candidate, _)| candidate == id))
-                .map(|(_, draft)| draft)
-                .map(|d| {
-                    let name: String = d.name.chars().take(16).collect();
-                    format!(
-                        "{}{}\n{:?}",
-                        name,
-                        if d.name.chars().count() > 16 { "..." } else { "" },
-                        d.profession()
-                    )
-                })
-                .unwrap_or_else(|| format!("{}  /  Empty", i + 1)),
             Field::Message => session.message.clone(),
             _ => {
                 let (Some(draft), Some(profile)) = (draft, &profile) else { continue };
@@ -1046,6 +1042,21 @@ fn refresh(
                     Field::Race => format!("{:?}", draft.race()),
                     Field::Gender => format!("{:?}", draft.gender()),
                     Field::Profession => format!("{:?}", draft.profession()),
+                    Field::Points if session.page == Page::Spells => {
+                        let picks = crate::game::magic::starting_picks(profile);
+                        if picks == 0 {
+                            format!("A {:?} learns no spells yet.", profile.profession)
+                        } else {
+                            format!("Choose {picks} first spells ({} chosen)", draft.spells().len())
+                        }
+                    }
+                    Field::SpellSlot(i) => eligible_spells(draft, spell_catalog)
+                        .get(*i)
+                        .map(|spell| {
+                            let mark = if draft.spells().contains(&spell.id) { "* " } else { "" };
+                            format!("{mark}{}", spell.name)
+                        })
+                        .unwrap_or_default(),
                     Field::Points => {
                         if session.page == Page::Attributes {
                             format!(
@@ -1078,6 +1089,16 @@ fn refresh(
         };
         if text.0 != value {
             text.0 = value;
+        }
+    }
+    if let Some(draft) = draft {
+        let offered = eligible_spells(draft, spell_catalog).len();
+        for (slot, mut visibility) in &mut spell_slots {
+            visibility.set_if_neq(if slot.0 < offered {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            });
         }
     }
     if let Some(draft) = draft {
@@ -1178,7 +1199,7 @@ mod keyboard_tests {
                 party: vec![],
                 selected: None,
                 next_id: 0,
-                editing: Some((None, CharacterDraft::default())),
+                editing: Some(CharacterDraft::default()),
                 page: Page::Identity,
                 message: String::new(),
             })
@@ -1204,7 +1225,7 @@ mod keyboard_tests {
         }
         app.update();
         assert_eq!(
-            app.world().get::<Creation>(root).unwrap().editing.as_ref().unwrap().1.name,
+            app.world().get::<Creation>(root).unwrap().editing.as_ref().unwrap().name,
             "Nora"
         );
         for edit in
@@ -1214,7 +1235,7 @@ mod keyboard_tests {
         }
         app.update();
         assert_eq!(
-            app.world().get::<Creation>(root).unwrap().editing.as_ref().unwrap().1.name,
+            app.world().get::<Creation>(root).unwrap().editing.as_ref().unwrap().name,
             "Zora"
         );
         app.world_mut()
@@ -1223,7 +1244,7 @@ mod keyboard_tests {
             .queue_edit(TextEdit::ImeSetCompose { value: "é".into(), cursor: None });
         app.update();
         assert_eq!(
-            app.world().get::<Creation>(root).unwrap().editing.as_ref().unwrap().1.name,
+            app.world().get::<Creation>(root).unwrap().editing.as_ref().unwrap().name,
             "Zora"
         );
         app.world_mut()
@@ -1232,7 +1253,7 @@ mod keyboard_tests {
             .queue_edit(TextEdit::ImeCommit { value: "é".into() });
         app.update();
         assert_eq!(
-            app.world().get::<Creation>(root).unwrap().editing.as_ref().unwrap().1.name,
+            app.world().get::<Creation>(root).unwrap().editing.as_ref().unwrap().name,
             "Zéora"
         );
         assert!(app.world().get::<Creation>(root).unwrap().party.is_empty());
@@ -1248,7 +1269,7 @@ mod keyboard_tests {
             .spawn(FinishWhenSettled)
             .observe(
                 |_: On<Activate>, sessions: Query<&Creation>, mut finished: ResMut<Finished>| {
-                    let name = sessions.single().unwrap().editing.as_ref().unwrap().1.name.clone();
+                    let name = sessions.single().unwrap().editing.as_ref().unwrap().name.clone();
                     finished.0.push(name);
                 },
             )
@@ -1274,6 +1295,7 @@ mod keyboard_tests {
         ))
         .init_asset::<crate::content::ui::Credits>()
         .init_asset::<crate::content::ui::TextTable>()
+        .init_asset::<SpellCatalog>()
         .init_asset::<Image>()
         .init_state::<Session>()
         .add_message::<crate::game::world::level::LevelEntryFailed>()
@@ -1299,13 +1321,20 @@ mod keyboard_tests {
             .iter(app.world())
             .find_map(|(entity, action)| matches!(action, Action::Credits).then_some(entity))
             .unwrap();
-        app.world_mut().trigger(Activate { entity: credits });
+        app.world_mut()
+            .resource_mut::<InputFocus>()
+            .set(credits, bevy::input_focus::FocusCause::Navigated);
+        key(&mut app, window, KeyCode::Enter, true);
         app.update();
         assert_eq!(*app.world().resource::<State<MenuPage>>().get(), MenuPage::Credits);
         app.update();
+        assert_eq!(*app.world().resource::<State<MenuPage>>().get(), MenuPage::Credits);
+        key(&mut app, window, KeyCode::Enter, false);
         key(&mut app, window, KeyCode::Escape, true);
         app.update();
         assert_eq!(*app.world().resource::<State<MenuPage>>().get(), MenuPage::Main);
+        app.update();
+        assert!(app.world().resource::<Messages<AppExit>>().is_empty());
         key(&mut app, window, KeyCode::Escape, false);
         key(&mut app, window, KeyCode::KeyS, true);
         app.update();
@@ -1319,7 +1348,10 @@ mod keyboard_tests {
         // The transition cleared focus. Tab still finds a visible enabled control.
         tap(&mut app, window, KeyCode::Tab);
         let focused = app.world().resource::<InputFocus>().get().unwrap();
-        assert!(app.world().get::<Action>(focused).is_some());
+        assert!(
+            app.world().get::<Action>(focused).is_some()
+                || app.world().get::<NameInput>(focused).is_some()
+        );
         assert!(app.world().get::<InteractionDisabled>(focused).is_none());
         assert!(app.world().get::<InheritedVisibility>(focused).unwrap().get());
         let name = app
@@ -1333,6 +1365,9 @@ mod keyboard_tests {
             .set(name, bevy::input_focus::FocusCause::Navigated);
         tap(&mut app, window, KeyCode::Escape);
         tap(&mut app, window, KeyCode::Tab);
+        if app.world().resource::<InputFocus>().get() == Some(name) {
+            tap(&mut app, window, KeyCode::Tab);
+        }
         assert!(
             app.world()
                 .resource::<InputFocus>()
@@ -1358,6 +1393,7 @@ mod keyboard_tests {
                 matches!(action, Action::DeleteCandidate).then_some(entity)
             })
             .unwrap();
+        key(&mut app, window, KeyCode::ShiftLeft, true);
         app.world_mut().write_message(KeyboardInput {
             key_code: KeyCode::Enter,
             logical_key: Key::Enter,
@@ -1379,5 +1415,21 @@ mod keyboard_tests {
         let session = app.world().get::<Creation>(owner).unwrap();
         assert!(session.candidates.is_empty());
         assert!(session.party.is_empty());
+
+        let back = app
+            .world_mut()
+            .query::<(Entity, &Action, Has<party::Control>)>()
+            .iter(app.world())
+            .find_map(|(entity, action, party)| {
+                (party && matches!(action, Action::Menu)).then_some(entity)
+            })
+            .unwrap();
+        app.world_mut().trigger(Activate { entity: back });
+        app.update();
+        app.update();
+        assert_eq!(*app.world().resource::<State<Session>>().get(), Session::MainMenu);
+        key(&mut app, window, KeyCode::KeyS, true);
+        app.update();
+        assert_eq!(*app.world().resource::<State<Session>>().get(), Session::Creation);
     }
 }

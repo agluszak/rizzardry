@@ -92,6 +92,12 @@ impl TextLog {
             .then(|| self.scroll[self.selected] as f32 / (count - SCROLL_WINDOW) as f32)
     }
 
+    /// Map the pointer's retail track position to the selected channel's line.
+    pub fn scroll_thumb(&mut self, position: u32) {
+        let range = self.channels[self.selected].len().saturating_sub(SCROLL_WINDOW);
+        self.scroll_to(range * position.min(46) as usize / 47);
+    }
+
     /// Retail `ScrollTextBoxUp`.
     pub fn scroll_up(&mut self, lines: usize) {
         let first = &mut self.scroll[self.selected];
@@ -245,6 +251,83 @@ fn announce(
     format!("{attacker} {word} {preposition}{target}{swings}")
 }
 
+/// A condition as notices name it.
+fn condition_word(condition: crate::game::characters::Condition) -> String {
+    format!("{condition:?}").to_lowercase()
+}
+
+/// What a cast or an item use tells the player. Retail's own strings for
+/// these are not mapped yet; the wording is plain.
+fn magic_lines(
+    news: &crate::game::magic::casting::MagicNews,
+    names: &super::names::ActorNames,
+    spells: Option<&crate::content::spells::SpellCatalog>,
+) -> Vec<String> {
+    use crate::game::magic::casting::{MagicNews, Refusal};
+    use crate::game::magic::{Effect, Outcome, Victim};
+    let name = |entity| names.name(entity).unwrap_or_default();
+    let victim = |victim: Victim| match victim {
+        Victim::Member(e) | Victim::Monster(e) => name(e),
+    };
+    let effect_line = |effect: Effect| match effect {
+        Effect::Healed { victim: v, amount } => {
+            format!("{} heals {amount}.", victim(v))
+        }
+        Effect::Damaged { victim: v, amount, .. } => {
+            format!("{} takes {amount} damage.", victim(v))
+        }
+        Effect::Inflicted { victim: v, condition } => {
+            format!("{} is {}.", victim(v), condition_word(condition))
+        }
+        Effect::Refreshed { victim: v, amount } => {
+            format!("{} regains {amount} stamina.", victim(v))
+        }
+        Effect::Cured { victim: v, condition } => {
+            format!("{} is no longer {}.", victim(v), condition_word(condition))
+        }
+        Effect::Raised { victim: v } => format!("{} lives again!", victim(v)),
+        Effect::Resisted { victim: v } => format!("{} resists.", victim(v)),
+        Effect::Nothing { victim: v } => format!("{} is unaffected.", victim(v)),
+    };
+    match news {
+        MagicNews::Refused { caster, refusal } => {
+            let why = match refusal {
+                Refusal::CannotAct => "cannot act",
+                Refusal::Silenced => "is silenced",
+                Refusal::NotLearned => "does not know that spell",
+                Refusal::NoSpellPoints => "has too few spell points",
+                Refusal::NoItem => "no longer has that item",
+                Refusal::NoCharges => "finds it has no charges left",
+                Refusal::CannotUse => "cannot use that",
+                Refusal::Unsupported => "cannot do that yet",
+                Refusal::WrongTime => "cannot do that now",
+                Refusal::NoTarget => "has no target in reach",
+                Refusal::MissingContent => "cannot do that: data missing",
+                Refusal::PlayedBadly => "fails to play it",
+            };
+            vec![format!("{} {why}.", name(*caster))]
+        }
+        MagicNews::Landed { effects, .. } => effects.iter().map(|&e| effect_line(e)).collect(),
+        MagicNews::Done(report) => {
+            let spell = spells.and_then(|s| s.get(report.spell)).map_or("", |s| s.name.as_str());
+            let mut lines = vec![match &report.item {
+                Some(item) => format!("{} uses {item}.", name(report.caster)),
+                None => format!("{} casts {spell} ({}).", name(report.caster), report.power),
+            }];
+            match report.outcome {
+                Outcome::Fizzled => lines.push("The spell fizzles.".into()),
+                Outcome::Backfired => lines.push("The spell backfires!".into()),
+                Outcome::Cast => {}
+            }
+            lines.extend(report.effects.iter().map(|&e| effect_line(e)));
+            for &(member, skill) in &report.improved {
+                lines.push(format!("{}'s {skill:?} improves.", name(member)));
+            }
+            lines
+        }
+    }
+}
+
 /// Turn trigger effects, camping and combat news into notice texts.
 pub fn queue_notices(
     mut effects: MessageReader<TriggerEffect>,
@@ -259,9 +342,20 @@ pub fn queue_notices(
     battle: Option<Single<&crate::game::combat::Battle>>,
     sheets: Res<Assets<SpriteSheet>>,
     mut log: ResMut<TextLog>,
+    (mut magic, data, spells): (
+        MessageReader<crate::game::magic::casting::MagicNews>,
+        Option<Res<crate::game::data::GameData>>,
+        Res<Assets<crate::content::spells::SpellCatalog>>,
+    ),
 ) {
     let font = sheets.get(&art.font);
     let channel = usize::from(battle.is_some());
+    let spells = data.as_ref().and_then(|d| spells.get(&d.spells));
+    for news in magic.read() {
+        for line in magic_lines(news, &names, spells) {
+            log.push(channel, &line, font);
+        }
+    }
     let strings = tables.get(&art.strings);
     let string = |index| strings.and_then(|s| s.get(index)).unwrap_or_default().trim().to_owned();
     for effect in effects.read() {
@@ -342,6 +436,14 @@ pub fn queue_notices(
                 log.selected = 1;
                 vec![string(COMBAT)]
             }
+            // Retail notices 0x21b and 0x21c: the party moves, and stops.
+            CombatNews::PartyMoves => vec![string(0x21b)],
+            CombatNews::PartyStops => vec![string(0x21c)],
+            // Retail strings 0x236 ("advances") and 0x237 ("charges").
+            CombatNews::Moves { monster, charge } => names
+                .name(*monster)
+                .map(|name| vec![format!("{name} {}", string(if *charge { 0x237 } else { 0x236 }))])
+                .unwrap_or_default(),
             CombatNews::Attack { attacker, target, how, swings } => {
                 match (names.name(*attacker), names.name(*target)) {
                     (Some(attacker), Some(target)) => {
@@ -409,6 +511,12 @@ mod tests {
         // A new line brings the newest back into view.
         log.push(0, "10", None);
         assert_eq!(log.visible()[0], "4");
+        log.scroll_thumb(0);
+        assert_eq!(log.visible()[0], "0");
+        log.scroll_thumb(23);
+        assert_eq!(log.visible()[0], "4");
+        log.scroll_thumb(46);
+        assert_eq!(log.visible()[0], "9");
         // Down stops with the last line alone at the top.
         log.scroll_down(100);
         assert_eq!(log.visible(), ["10"]);

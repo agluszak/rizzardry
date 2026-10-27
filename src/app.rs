@@ -206,6 +206,8 @@ pub fn build(options: &Options) -> Result<App, String> {
     // Shared campaign services are composed here, not owned by world loading.
     app.init_resource::<crate::game::rng::GameRng>()
         .init_resource::<crate::game::inventory::ItemIds>()
+        .init_resource::<crate::game::factions::Factions>()
+        .init_resource::<crate::game::difficulty::Difficulty>()
         .init_state::<crate::game::screen::Screen>()
         .add_message::<crate::game::inventory::ItemNews>()
         .add_systems(Startup, crate::game::data::load_game_data)
@@ -224,6 +226,7 @@ pub fn build(options: &Options) -> Result<App, String> {
         PartyPlugin,
         TimePlugin,
         crate::game::combat::CombatPlugin,
+        crate::game::magic::MagicPlugin,
     ));
     // Navmeshes: retail decodes a level's collision, navigation bakes it on
     // request and caches the result.
@@ -287,11 +290,13 @@ pub fn build(options: &Options) -> Result<App, String> {
     // file's members. Interactive play commits from the creation flow.
     if quick_start {
         app.add_systems(Startup, move |mut commands: Commands, assets: Res<AssetServer>| {
-            let characters = party.iter().map(Recruit::character).collect();
+            let characters: Vec<_> = party.iter().map(Recruit::character).collect();
             let first = Destination::new(
                 Level::load(&level, &assets),
                 start.clone(),
-                crate::game::world::level::Entry::NewGame(characters),
+                crate::game::world::level::Entry::NewGame(
+                    characters.into_iter().map(|c| (c, default())).collect(),
+                ),
             );
             commands.spawn((Name::new(level.clone()), first));
         });

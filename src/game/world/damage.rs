@@ -65,6 +65,7 @@ pub struct MonsterDamage<'w, 's> {
     tables: Res<'w, Assets<LootTables>>,
     inventory: Single<'w, 's, &'static mut PartyInventory>,
     ids: ResMut<'w, ItemIds>,
+    factions: ResMut<'w, crate::game::factions::Factions>,
 }
 
 impl MonsterDamage<'_, '_> {
@@ -111,7 +112,13 @@ impl MonsterDamage<'_, '_> {
         let position = feet(at.translation(), walker);
         let lost = amount.min(monster.hp);
         monster.hp -= lost;
+        self.commands.entity(target).insert(super::population::Provoked);
         if !monster.is_dead() {
+            crate::game::characters::wake_on_hit(
+                &mut monster.conditions,
+                u32::from(kind.attributes.senses),
+                rng,
+            );
             return Ok(DamageOutcome { damage: lost, ..default() });
         }
         // Stop autonomous work, not the body's geometry or vertical physics.
@@ -135,6 +142,8 @@ impl MonsterDamage<'_, '_> {
             velocity.velocity = Vec3::ZERO;
         }
         self.commands.entity(target).remove::<(Crossing, UsingAnimationLink)>();
+        // The kill counts against its faction (retail `RecordFactionOffense`).
+        self.factions.record_offence(kind.faction, kind.npc);
         let (found, gold) =
             crate::game::loot::monster_loot(kind, tables, catalog, party_level, rng);
         if gold > 0 {

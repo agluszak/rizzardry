@@ -21,6 +21,8 @@ pub enum Order {
     Attack,
     /// No attack; +2 armour, and stamina back at the round's end.
     Defend,
+    /// Cast a learned spell or use an item's spell, at its initiative.
+    Magic(crate::game::magic::casting::MagicChoice),
 }
 
 pub struct PartyPlugin;

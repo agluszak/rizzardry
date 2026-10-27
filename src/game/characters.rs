@@ -37,6 +37,56 @@ pub enum Condition {
     Unconscious,
 }
 
+/// Inflict a condition on a party member or a monster (retail
+/// `InflictCharacterCondition`, `InflictMonsterCondition`): a longer
+/// duration replaces a shorter one, never the reverse.
+pub fn inflict(conditions: &mut Vec<(Condition, Lasting)>, condition: Condition, lasting: Lasting) {
+    match conditions.iter_mut().find(|(c, _)| *c == condition) {
+        Some((_, existing)) => {
+            *existing = match (*existing, lasting) {
+                (Lasting::Rounds(a), Lasting::Rounds(b)) => Lasting::Rounds(a.max(b)),
+                _ => Lasting::Indefinite,
+            }
+        }
+        None => conditions.push((condition, lasting)),
+    }
+}
+
+/// Count timed conditions down by aging ticks, lifting those that run out
+/// (retail `TickCharacterCondition`, `TickMonsterCondition`).
+pub fn age(conditions: &mut Vec<(Condition, Lasting)>, ticks: u32) {
+    conditions.retain_mut(|(_, lasting)| match lasting {
+        Lasting::Rounds(left) if u32::from(*left) <= ticks => false,
+        Lasting::Rounds(left) => {
+            *left -= ticks as u16;
+            true
+        }
+        Lasting::Indefinite => true,
+    });
+}
+
+/// Whether any condition is timed, so that aging has work to do.
+pub fn any_timed(conditions: &[(Condition, Lasting)]) -> bool {
+    conditions.iter().any(|(_, lasting)| matches!(lasting, Lasting::Rounds(_)))
+}
+
+/// A hit that is not quiet may wake a sleeper: `SEN/2 + 50` percent (retail
+/// `damageCharacter`, `MonsterReactsToBeingStruck`). Returns whether it woke.
+pub fn wake_on_hit(
+    conditions: &mut Vec<(Condition, Lasting)>,
+    senses: u32,
+    rng: &mut crate::game::rng::GameRng,
+) -> bool {
+    if !conditions.iter().any(|&(c, _)| c == Condition::Asleep) {
+        return false;
+    }
+    if rng.below(100) < senses / 2 + 50 {
+        conditions.retain(|&(c, _)| c != Condition::Asleep);
+        return true;
+    }
+    false
+}
+
 /// How long a condition lasts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lasting {
@@ -273,6 +323,9 @@ pub struct Character {
     pub attributes: EnumMap<Attribute, u8>,
     /// Points invested per skill.
     pub skill_points: EnumMap<Skill, u8>,
+    /// Successful practice towards each skill's next point (retail
+    /// `practice_count`; eight make a point).
+    pub skill_practice: EnumMap<Skill, u8>,
     /// The portrait's file stem (e.g. `hummf` for `data/portraits/small/shummf.sti`).
     pub portrait: String,
 }
@@ -306,6 +359,7 @@ impl Character {
             experience: 0,
             attributes,
             skill_points: EnumMap::default(),
+            skill_practice: EnumMap::default(),
             portrait: String::new(),
         };
         let share = 60 / (1 + row.skills.len() as u32);
@@ -355,6 +409,49 @@ impl Character {
             }
         }
         true
+    }
+
+    /// Practise a skill `usage` times (retail `PracticeCharacterSkill`): each
+    /// use counts with chance `(100 − points)·base/100` percent (halved for
+    /// the expert skills, at least 1), and every eighth count is a point, up
+    /// to 100. Returns whether the skill improved.
+    pub fn practise(
+        &mut self,
+        skill: Skill,
+        usage: u32,
+        rng: &mut crate::game::rng::GameRng,
+    ) -> bool {
+        let index = skill as usize;
+        let allowed = if index >= Skill::PowerStrike as usize {
+            self.skill_available(skill)
+        } else if index >= Skill::FireMagic as usize {
+            !crate::game::magic::profession_books(self.profession).is_empty()
+        } else {
+            SKILL_AVAILABILITY[index] & (1 << self.profession as usize) != 0
+        };
+        if usage == 0 || !allowed {
+            return false;
+        }
+        let mut improved = false;
+        for _ in 0..usage {
+            let points = u32::from(self.skill_points[skill]);
+            if points >= 100 {
+                break;
+            }
+            let mut threshold = (100 - points) * self.skill_base(skill) / 100;
+            if index >= Skill::PowerStrike as usize {
+                threshold /= 2;
+            }
+            if rng.below(100) < threshold.max(1) {
+                self.skill_practice[skill] += 1;
+                if self.skill_practice[skill] >= 8 {
+                    self.skill_practice[skill] = 0;
+                    self.skill_points[skill] += 1;
+                    improved = true;
+                }
+            }
+        }
+        improved
     }
 
     pub fn bonus_skill(&self) -> Skill {
@@ -508,15 +605,7 @@ impl Vitals {
 
     /// Inflict a condition, keeping the longer duration if already afflicted.
     pub fn inflict(&mut self, condition: Condition, lasting: Lasting) {
-        match self.conditions.iter_mut().find(|(c, _)| *c == condition) {
-            Some((_, existing)) => {
-                *existing = match (*existing, lasting) {
-                    (Lasting::Rounds(a), Lasting::Rounds(b)) => Lasting::Rounds(a.max(b)),
-                    _ => Lasting::Indefinite,
-                }
-            }
-            None => self.conditions.push((condition, lasting)),
-        }
+        inflict(&mut self.conditions, condition, lasting);
     }
 
     pub fn lift(&mut self, condition: Condition) {
@@ -526,14 +615,7 @@ impl Vitals {
     /// Count timed conditions down, lifting those that run out (retail
     /// `AgeCondition`). Poison's weakening is not modelled yet.
     pub fn age_conditions(&mut self, ticks: u32) {
-        self.conditions.retain_mut(|(_, lasting)| match lasting {
-            Lasting::Rounds(left) if u32::from(*left) <= ticks => false,
-            Lasting::Rounds(left) => {
-                *left -= ticks as u16;
-                true
-            }
-            Lasting::Indefinite => true,
-        });
+        age(&mut self.conditions, ticks);
     }
 
     /// Take damage (retail `damageCharacter`): two thirds of it also drain
@@ -629,6 +711,23 @@ mod tests {
     use crate::content::characters::Attribute::*;
     use crate::content::items::EquipClass;
     use enumset::EnumSet;
+
+    /// Practice counts towards a point every eighth success, only in skills
+    /// the profession may train, and never past 100 (retail
+    /// `PracticeCharacterSkill`).
+    #[test]
+    fn practice_raises_a_point_every_eight_successes() {
+        let mut rng = crate::game::rng::GameRng::seeded(4);
+        let mut mage = Character::new("Mage", Race::Human, Gender::Male, Profession::Mage);
+        let before = mage.skill_points[Skill::FireMagic];
+        assert!(mage.practise(Skill::FireMagic, 400, &mut rng));
+        assert!(mage.skill_points[Skill::FireMagic] > before);
+        let mut fighter = Character::new("Brute", Race::Human, Gender::Male, Profession::Fighter);
+        assert!(!fighter.practise(Skill::FireMagic, 400, &mut rng), "no books, no realm practice");
+        mage.skill_points[Skill::FireMagic] = 100;
+        assert!(!mage.practise(Skill::FireMagic, 400, &mut rng));
+        assert_eq!(mage.skill_points[Skill::FireMagic], 100);
+    }
 
     #[test]
     fn a_human_fighter_has_the_worked_example_numbers() {

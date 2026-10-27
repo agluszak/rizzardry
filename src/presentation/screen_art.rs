@@ -147,16 +147,12 @@ pub fn spawn_label(commands: &mut Commands, parent: Entity, text: BitmapText) ->
 pub fn picture(sheet: Handle<SpriteSheet>, frame: usize, at: Vec2) -> impl Scene {
     bsn! {
         template(move |_| Ok(Picture { sheet: sheet.clone(), frame, at, bounds: None }))
-        Node { position_type: PositionType::Absolute }
-        Pickable::IGNORE
     }
 }
 
 pub fn label(font: Handle<SpriteSheet>, at: Vec2, width: f32) -> impl Scene {
     bsn! {
         template(move |_| Ok(BitmapText { font: font.clone(), value: String::new(), at, width, justify: bevy::text::Justify::Center, ..default() }))
-        Node { position_type: PositionType::Absolute }
-        Pickable::IGNORE
     }
 }
 

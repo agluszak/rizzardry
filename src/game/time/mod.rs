@@ -140,10 +140,20 @@ pub(crate) fn pass_time(
     battle: Option<Single<&crate::game::combat::Battle>>,
     party: Query<(&Position, &PartyBody, &LinearVelocity)>,
     roster: Single<&PartyRoster>,
-    mut affected: ParamSet<(Query<(&Character, &mut Vitals)>, GroupRecognition)>,
+    mut affected: ParamSet<(
+        Query<(&Character, &mut Vitals)>,
+        GroupRecognition,
+        Query<&mut crate::game::world::population::Monster>,
+    )>,
     mut clock: ResMut<GameClock>,
     mut rng: ResMut<GameRng>,
+    (data, spells, mut points): (
+        Option<Res<crate::game::data::GameData>>,
+        Res<Assets<crate::content::spells::SpellCatalog>>,
+        Query<(&crate::game::magic::LearnedSpells, &mut crate::game::magic::SpellPoints)>,
+    ),
 ) {
+    let spells = data.as_ref().and_then(|d| spells.get(&d.spells));
     if battle.is_some() {
         return;
     }
@@ -175,6 +185,27 @@ pub(crate) fn pass_time(
         for (profile, mut vitals) in members.iter_many_unique_mut(roster.iter()).matched() {
             if recovery::has_work(profile, &vitals, ticks, pace) {
                 recovery::elapse(profile, &mut vitals, ticks, pace);
+            }
+        }
+        if pass > 0 {
+            // Spell points come back at least at half rate (retail `spellScale`).
+            if let Some(spells) = spells {
+                let scale = crate::game::magic::recovery_scale(pace.health_scale());
+                let members = affected.p0();
+                for member in roster.iter() {
+                    let Ok((profile, _)) = members.get(member) else { continue };
+                    let Ok((learned, mut pool)) = points.get_mut(member) else { continue };
+                    let maximum = crate::game::magic::max_points(profile, learned, spells);
+                    if maximum.iter().any(|(realm, &max)| pool.current[realm] < max) {
+                        pool.recover(&maximum, 1, scale);
+                    }
+                }
+            }
+            // Monsters' conditions run out in the world too.
+            for mut monster in &mut affected.p2() {
+                if crate::game::characters::any_timed(&monster.conditions) {
+                    crate::game::characters::age(&mut monster.conditions, 1);
+                }
             }
         }
         if pass > 0
@@ -210,6 +241,7 @@ mod pass_time_tests {
             .insert_resource(GameClock::at(0))
             .init_resource::<GameRng>()
             .init_resource::<Assets<crate::content::species::MonsterCatalog>>()
+            .init_resource::<Assets<crate::content::spells::SpellCatalog>>()
             .init_resource::<Assets<crate::content::level::LevelDefinition>>()
             .add_message::<crate::game::world::identify::Identified>()
             .add_message::<CampNews>()

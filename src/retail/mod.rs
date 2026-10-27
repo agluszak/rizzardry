@@ -29,6 +29,7 @@ pub mod slf;
 pub mod source;
 pub mod space;
 pub mod species;
+pub mod spells;
 pub mod stci;
 pub mod sti_loader;
 pub mod strings;
@@ -72,6 +73,8 @@ impl Plugin for RetailPlugin {
             .init_asset_loader::<items::ItemCatalogLoader>()
             .init_asset::<crate::content::items::LootTables>()
             .init_asset_loader::<items::LootTablesLoader>()
+            .init_asset::<crate::content::spells::SpellCatalog>()
+            .init_asset_loader::<spells::SpellCatalogLoader>()
             .init_asset::<crate::content::species::MonsterCatalog>()
             .init_asset_loader::<species::MonsterCatalogLoader>()
             .init_asset::<crate::content::ui::TextTable>()

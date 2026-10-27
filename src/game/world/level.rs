@@ -315,7 +315,7 @@ impl Destination {
 pub enum Entry {
     /// A new campaign: the accepted party, which joins only when the level
     /// commits, so a failed first load leaves no campaign behind.
-    NewGame(Vec<crate::game::characters::Character>),
+    NewGame(Vec<(crate::game::characters::Character, crate::game::magic::LearnedSpells)>),
     /// The party travels on from the level it is in.
     Travel,
 }
@@ -520,6 +520,7 @@ pub struct SharedData<'w> {
     items: Res<'w, Assets<ItemCatalog>>,
     loot: Res<'w, Assets<LootTables>>,
     species: Res<'w, Assets<MonsterCatalog>>,
+    spells: Res<'w, Assets<crate::content::spells::SpellCatalog>>,
     bodies: Res<'w, Assets<MonsterBody>>,
     monster_bodies: ResMut<'w, MonsterBodies>,
     motion_configs: ResMut<'w, Assets<navigation::WalkerMotionConfig>>,
@@ -564,6 +565,7 @@ pub fn activate_level(
             || failed(data.items.id().untyped())
             || failed(data.loot.id().untyped())
             || failed(data.species.id().untyped())
+            || failed(data.spells.id().untyped())
         {
             fail("an asset it needs failed to load");
             continue;
@@ -576,6 +578,9 @@ pub fn activate_level(
         ) else {
             continue;
         };
+        if !shared.spells.contains(&data.spells) {
+            continue;
+        }
         if let Err(error) = population::check(geometry, species, items) {
             fail(&error);
             continue;
@@ -660,12 +665,18 @@ pub fn activate_level(
 /// A new campaign's party, its members joining in order.
 fn found_party(
     commands: &mut Commands,
-    characters: Vec<crate::game::characters::Character>,
+    characters: Vec<(crate::game::characters::Character, crate::game::magic::LearnedSpells)>,
 ) -> Entity {
     let party = commands.spawn((Name::new("Party"), Party)).id();
     let mut formation = crate::game::party::formation::Formation::default();
-    for character in characters {
-        crate::game::party::roster::recruit_character(commands, party, &mut formation, character);
+    for (character, learned) in characters {
+        let member = crate::game::party::roster::recruit_character(
+            commands,
+            party,
+            &mut formation,
+            character,
+        );
+        commands.entity(member).insert(learned);
     }
     commands.entity(party).insert(formation);
     party
