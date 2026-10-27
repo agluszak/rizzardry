@@ -524,12 +524,17 @@ fn press(
     mut views: Query<&mut super::magic_view::MagicView>,
     conversations: Query<(), With<crate::game::npcs::conversation::Conversation>>,
 ) {
-    if click.button != PointerButton::Primary || !conversations.is_empty() {
+    if click.button != PointerButton::Primary {
         return;
     }
     let Ok(mut button) = buttons.get_mut(click.entity) else { return };
     let member = button.member;
     if !roster.contains(&member) {
+        return;
+    }
+    if !conversations.is_empty() {
+        selected.set_if_neq(SelectedMember(Some(member)));
+        button.review_armed = false;
         return;
     }
     // A spell for one party member is aimed by clicking their portrait
