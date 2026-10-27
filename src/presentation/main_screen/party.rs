@@ -504,6 +504,7 @@ fn press(
     mut inventory: crate::game::inventory::operations::InventoryOperations,
     mut news: MessageWriter<ItemNews>,
     mut review: crate::presentation::inventory::OpenReview,
+    mut views: Query<&mut super::magic_view::MagicView>,
 ) {
     if click.button != PointerButton::Primary {
         return;
@@ -511,6 +512,14 @@ fn press(
     let Ok(mut button) = buttons.get_mut(click.entity) else { return };
     let member = button.member;
     if !roster.0.contains(&member) {
+        return;
+    }
+    // A spell for one party member is aimed by clicking their portrait
+    // (retail `AimAtCharacter`).
+    if let Ok(mut view) = views.single_mut()
+        && view.wants_member()
+    {
+        view.aim_at(member);
         return;
     }
     match inventory.give_to(member) {

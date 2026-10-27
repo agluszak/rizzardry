@@ -22,12 +22,13 @@ use crate::game::world::population::Monster;
 /// Stop this far inside an attack's reach.
 const REACH_MARGIN: f32 = 0.3;
 
-/// A monster's move this round: how far it may go, and how far it has.
+/// A monster's move this round: how far it may go, and how far its walking
+/// has taken it. Retail counts time at walking speed, not ground covered
+/// (`Navigator.cpp:2202-2211`), so a blocked monster's move still ends.
 #[derive(Component, Debug, Clone, PartialEq)]
 pub struct CombatMove {
     pub budget: f32,
     pub moved: f32,
-    pub last: Option<Vec3>,
 }
 
 /// Whether this living walker still needs to close to attack range. Combat's
@@ -49,10 +50,11 @@ pub(super) fn needs_approach(
     super::distance_to_party(party_eye, monster, feet) > reach.metres() - REACH_MARGIN
 }
 
-/// Walk monsters on their move toward the party, counting the ground they
-/// cover; the move ends when they arrive, spend it, fall, or the fight ends.
+/// Walk monsters on their move toward the party; the move ends when they
+/// arrive, spend it, fall, or the fight ends.
 pub fn close_in(
     mut commands: Commands,
+    time: Res<Time>,
     battle: Option<Res<Battle>>,
     party: Query<(Entity, &Position), With<PartyBody>>,
     mut walkers: Query<(
@@ -73,10 +75,7 @@ pub fn close_in(
         let here = at.translation();
         let going = match movement {
             Some(mut movement) => {
-                if let Some(last) = movement.last {
-                    movement.moved += last.with_y(0.0).distance(here.with_y(0.0));
-                }
-                movement.last = Some(here);
+                movement.moved += walker.speed * time.delta_secs();
                 let continues = battle.is_some()
                     && super::monster_can_attack(monster)
                     && movement.moved < movement.budget

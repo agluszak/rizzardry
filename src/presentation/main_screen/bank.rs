@@ -209,7 +209,8 @@ fn press(
     mut settings: ResMut<CombatSettings>,
     battle: Option<Res<Battle>>,
     mut commands: Commands,
-    menus: Query<Entity, With<super::magic_menu::MagicMenu>>,
+    views: Query<Entity, With<super::magic_view::MagicView>>,
+    magic_art: Res<super::magic_view::MagicViewArt>,
     mut party_moves: MessageWriter<crate::game::combat::ChoosePartyMove>,
 ) {
     match buttons.get(click.entity).ok().and_then(|face| face.kind) {
@@ -245,11 +246,13 @@ fn press(
             party_moves.write(crate::game::combat::ChoosePartyMove(next));
         }
         Some(Bank::Magic { items }) => {
-            for menu in &menus {
-                commands.entity(menu).despawn();
+            // The same button closes its view (retail toggles it).
+            let open = !views.is_empty();
+            for view in &views {
+                commands.entity(view).despawn();
             }
-            if let Some(member) = selected.member(&roster) {
-                commands.spawn(super::magic_menu::MagicMenu::open(member, items));
+            if !open && let Some(member) = selected.member(&roster) {
+                super::magic_view::open(&mut commands, &magic_art, member, items);
             }
         }
         _ => {}

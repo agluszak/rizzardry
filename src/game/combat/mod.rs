@@ -800,11 +800,7 @@ pub fn run_battle(
                     phase: (u32::from(step) * 2).min(100) as u8,
                     attacks_left: turn.attacks_left,
                 };
-                commands.entity(entity).insert(approach::CombatMove {
-                    budget,
-                    moved: 0.0,
-                    last: None,
-                });
+                commands.entity(entity).insert(approach::CombatMove { budget, moved: 0.0 });
                 news.write(CombatNews::Moves { monster: entity, charge });
             }
             battle.wait = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
