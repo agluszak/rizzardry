@@ -2,8 +2,6 @@
 
 A from-scratch Rust and Bevy rewrite of Wizardry 8.
 
-[Retail research](docs/research/README.md) records original-game behavior and
-file formats; the Rust code is the reference for Rizzardry's implementation.
 The game loads a retail level directly from your installation with its props,
 doors, sky, fog and time of day; the party walks it, uses doors and
 teleporters, and is chased over baked navmeshes by animated retail monsters;

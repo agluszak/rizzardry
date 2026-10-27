@@ -67,7 +67,7 @@ pub enum Attribute {
     Senses,
 }
 
-/// Retail's 41 skills (`docs/research/characters.md` §2.5).
+/// Retail's 41 skills.
 #[derive(Debug, Enum, EnumSetType, TryFromPrimitive)]
 #[repr(u8)]
 pub enum Skill {

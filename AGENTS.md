@@ -1,8 +1,7 @@
 # Agent guidelines
 
 Rizzardry rewrites Wizardry 8 in Rust and Bevy. Preserve its gameplay and
-character, not its C++ architecture. [Retail research](docs/research/README.md)
-records evidence, not an implementation blueprint.
+character, not its C++ architecture.
 
 ## Design
 
@@ -49,7 +48,6 @@ records evidence, not an implementation blueprint.
   Bevy scenario, or an actual game check. Focus checks on the change; docs-only
   changes do not need an engine rebuild.
 - Do not claim checks you did not run or visual parity from headless tests.
-- Keep docs for durable retail research; keep working rules here. Put plans,
-  task lists and temporary decisions in issues/PRs, not permanent Markdown.
-  Delete stale notes instead of accumulating revisions.
+- Keep usage instructions in README and development rules here. Put research,
+  plans and temporary decisions in issues/PRs, not a growing docs archive.
 - Create non-draft PRs only. Merge only when the user requests it.

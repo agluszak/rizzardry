@@ -1,6 +1,5 @@
-//! Party members: who they are, their attributes and skills, and the numbers
-//! derived from them. Tables are retail's, hard-coded in its executable (see
-//! `docs/research/characters.md`).
+//! Party members: attributes, skills, and derived statistics.
+//! The tables come from the original executable.
 
 pub mod creation;
 pub mod resistance;
@@ -83,8 +82,7 @@ struct ProfessionRow {
     experience: u32,
     bonus_skill: Skill,
     skills: &'static [Skill],
-    /// Weight of its levels in a hand's physical score (`characters.md`
-    /// §4.7).
+    /// Weight of its levels in a hand's physical score.
     physical: i32,
 }
 
@@ -408,8 +406,7 @@ impl Character {
         (sum / 3.0 * (0.1 * f32::from(self.level) + 2.0)).round() as u32
     }
 
-    /// Levels weighted by how physical each profession is (a hand's
-    /// physical score, `characters.md` §4.7).
+    /// Levels weighted by how physical each profession is.
     pub fn physical_levels(&self) -> i32 {
         self.profession_levels
             .iter()

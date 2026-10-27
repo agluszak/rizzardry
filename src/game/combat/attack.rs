@@ -1,5 +1,4 @@
-//! Weapon attacks both ways, as ordinary functions over the fighters'
-//! numbers (`docs/research/combat.md` §3-§5, `characters.md` §4.7-§4.8).
+//! Weapon attacks in both directions, as ordinary functions over fighter stats.
 //! Fumbles, criticals, knockouts, backstabs, unaware targets and attack
 //! effects are not modelled yet; missiles hit by the same roll as melee
 //! (a deliberate approximation of retail's scattered aim point).
@@ -164,8 +163,7 @@ fn unarmed_dice(martial_arts: u32) -> Dice {
     Dice { base: base + 2, count, sides }
 }
 
-/// The primary hand's numbers (`characters.md` §4.7), without a second
-/// weapon or load.
+/// The primary hand's numbers, without a second weapon or load.
 pub fn primary_hand(c: &Character, carried: &Carried, catalog: &ItemCatalog) -> Hand {
     let weapon = carried
         .worn(EquipSlot::Primary)
@@ -219,9 +217,8 @@ pub fn primary_hand(c: &Character, carried: &Carried, catalog: &ItemCatalog) -> 
     }
 }
 
-/// A member's armour class: the total, and by hit location with that
-/// location's armour (`characters.md` §4.8, without skills, spells,
-/// conditions, defending or load).
+/// A member's total and per-location armour, without skills, spells,
+/// conditions, defending or load.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Armour {
     pub total: i32,
