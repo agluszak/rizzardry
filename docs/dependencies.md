@@ -12,7 +12,7 @@ not verified; `serde` is present but native saves/definitions are not built.
 
 | Need | Choice | Status |
 | --- | --- | --- |
-| Engine | Bevy 0.20.0 (`asset_processor`, `mp3`, `tga`, `wayland`) | In use; UI, picking and audio native |
+| Engine | Bevy 0.20.0 (`mp3`, `tga`, `wayland`) | In use; UI, picking and audio native |
 | Input actions | `bevy_enhanced_input` 0.27 | Exploration and screen contexts |
 | Collision and physics | Avian 0.8 | Level and prop trimeshes, party and walker bodies |
 | Grounded movement | Tnua 0.33 + `bevy-tnua-avian3d` 0.13 | Party and walkers; walk basis only, no actions |
@@ -74,17 +74,15 @@ Integration choices:
   were either a failed bake or covered by walkable polygons), and a failed
   contour triangulation keeps its partial result instead of failing the
   bake. See `third_party/README.md`.
-- Navmeshes go through Bevy's asset processor (`AssetMode::Processed`,
-  `asset_processor` feature). A virtual `navmesh://` source exposes every
-  retail `<level>.pvl` as `<level>_class<n>.navmesh`, one per walker size
-  class (agent radius 0.6, 1.0, 1.6 and 3.0 m; a walker uses the smallest
-  class that fits it, and the party joins every class's archipelago). `LoadTransformAndSave` reads its
-  collision triangles, bakes them and writes a small binary file to
-  `imported_assets/navmesh`. The game loads that file as a Landmass
-  `NavMesh3d`. The bake settings are in the asset meta, so changing a default
-  re-bakes automatically. The first launch bakes all 34 levels × 4 classes
-  in parallel (0.1 to 2 s each); later launches only load. The retail source has a
-  processed reader but no writer, so it is never processed or copied.
+- Navmeshes are baked on request, not by Bevy's asset processor. A virtual
+  `navmesh://` source exposes every retail `<level>.pvl` as
+  `<level>_class<n>.navmesh`, one per walker size class (agent radius 0.6 and
+  1.0 m; a walker uses the smallest class that fits it, wider ones the 1 m
+  class, and the party joins every class's archipelago). The navmesh loader
+  decodes its collision triangles, bakes them off the main thread (0.1 to 2 s
+  each) and caches a small binary file under `imported_assets/navmesh`, keyed
+  by the input, the bake settings and the format version. Only levels entered
+  are baked; later entries only load.
 - The bake input is the level's `.oct` collision mesh (the same one the
   Avian collider uses), compacted to referenced vertices, plus collidable
   props in their rest pose as obstacles. Walkable area comes from the

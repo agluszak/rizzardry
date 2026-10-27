@@ -133,9 +133,9 @@ remains a projection of `TextLog`, not another writable slider position.
 
 ## Assets, sharing and mipmaps
 
-`retail://` and `navmesh://` plus Bevy's asset processor are good boundaries. Keep the retail files
-unmodified and the expensive navmesh bake cacheable. Cache invalidation must include algorithm
-revisions, not only source bytes and settings.
+`retail://` and `navmesh://` are good boundaries. Keep the retail files unmodified and the
+expensive navmesh bake cached. Its key includes the format version besides source bytes and
+settings; bump the version when the bake algorithm changes.
 
 Retail textures are shared assets addressed by retail path: materials load `<file>#image`, the
 `image` sub-asset of a small `RetailTexture` asset whose loader decodes with retail sampling and

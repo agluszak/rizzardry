@@ -4,12 +4,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use avian3d::prelude::*;
-use bevy::asset::io::{AssetSourceBuilder, AssetSourceId};
-use bevy::asset::processor::LoadTransformAndSave;
 use bevy::prelude::*;
 use bevy_enhanced_input::EnhancedInputPlugin;
 
-use crate::content::navmesh::NAVMESH_EXTENSION;
 use crate::dev::{
     OverheadView, SayLine, ScreenshotAndExit, overhead_view, say_line, screenshot_and_exit,
 };
@@ -19,12 +16,11 @@ use crate::game::party::roster::Recruit;
 use crate::game::time::{GameClock, TimePlugin};
 use crate::game::world::WorldPlugin;
 use crate::game::world::level::{Destination, Level};
-use crate::game::world::navigation::asset::{BakeNavmesh, NavmeshSaver};
+use crate::game::world::navigation::asset::NavmeshLoader;
 use crate::game::world::navigation::bake::SIZE_CLASSES;
 use crate::presentation::PresentationPlugin;
 use crate::retail::RetailPlugin;
 use crate::retail::files::RetailFiles;
-use crate::retail::navmesh::LevelCollisionLoader;
 use crate::retail::path::normalize;
 
 pub const DEFAULT_LEVEL: &str = "levels/monastery/monastery1.pvl";
@@ -159,18 +155,8 @@ pub fn build(options: &Options) -> Result<App, String> {
     };
 
     let mut app = App::new();
-    app.add_plugins(RetailPlugin {
-        files,
-        navmesh_cache: "imported_assets/navmesh".into(),
-        navmesh_classes: SIZE_CLASSES.len(),
-    })
-    // AssetPlugin's default source, but sharing imported_assets safely.
-    .register_asset_source(
-        AssetSourceId::Default,
-        AssetSourceBuilder::platform_default("assets", Some("imported_assets/Default"))
-            .with_processed_writer(crate::asset_cache::processed_writer("imported_assets/Default")),
-    );
-    let asset_plugin = AssetPlugin { mode: AssetMode::Processed, ..default() };
+    app.add_plugins(RetailPlugin { files, navmesh_classes: SIZE_CLASSES.len() });
+    let asset_plugin = AssetPlugin::default();
     let rendered = !options.headless || options.screenshot.is_some();
     if rendered {
         let plugins = DefaultPlugins.set(asset_plugin);
@@ -239,17 +225,13 @@ pub fn build(options: &Options) -> Result<App, String> {
         TimePlugin,
         crate::game::combat::CombatPlugin,
     ));
-    // Navmeshes: retail decodes a level's collision, navigation bakes it
-    // and saves the result to the processor's cache.
-    app.register_asset_processor(
-        LoadTransformAndSave::<LevelCollisionLoader, BakeNavmesh, NavmeshSaver>::new(
-            BakeNavmesh,
-            NavmeshSaver,
-        ),
-    )
-    .set_default_asset_processor::<LoadTransformAndSave<LevelCollisionLoader, BakeNavmesh, NavmeshSaver>>(
-        NAVMESH_EXTENSION,
-    );
+    // Navmeshes: retail decodes a level's collision, navigation bakes it on
+    // request and caches the result.
+    app.register_asset_loader(NavmeshLoader {
+        cache: bevy::asset::io::file::FileAssetReader::get_base_path()
+            .join("imported_assets/navmesh"),
+        decode: crate::retail::navmesh::decode_input,
+    });
     // What the player sees and hears: with the window, or offscreen for a
     // headless screenshot. After the gameplay plugins, whose input and
     // messages it uses.

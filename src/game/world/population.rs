@@ -21,7 +21,7 @@ const SENSOR_RADIUS: f32 = 0.3;
 /// Wider monsters navigate the narrowest navmesh that still fits this much:
 /// the wider navmeshes lose narrow ground (beaches, ledges) to erosion, so
 /// big monsters may brush corners instead.
-const MAX_NAVIGATION_RADIUS: f32 = 1.0;
+pub(super) const MAX_NAVIGATION_RADIUS: f32 = 1.0;
 
 use super::identify::{GroupMember, MonsterGroup};
 use super::level::{KeptMonster, LevelRecord};

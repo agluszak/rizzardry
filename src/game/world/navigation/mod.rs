@@ -6,8 +6,8 @@
 //! collision; the resulting velocity goes back to Landmass on the next step.
 //! The party is a Landmass character: an obstacle agents avoid, not an agent.
 //!
-//! The navmesh is baked from the same triangles as the level collider by
-//! Bevy's asset processor ([`asset`]), which caches the result.
+//! The navmesh is baked from the same triangles as the level collider when
+//! a level asks for it, and cached ([`asset`]).
 
 pub mod asset;
 pub mod bake;
@@ -15,7 +15,7 @@ pub mod links;
 
 use crate::game::world::level::LevelOwned;
 use avian3d::prelude::*;
-use bevy::asset::{AssetApp, LoadState};
+use bevy::asset::LoadState;
 use bevy::prelude::*;
 use bevy_landmass::prelude::*;
 use bevy_landmass::{NavMeshHandle, PointSampleDistance3d};
@@ -29,11 +29,6 @@ use crate::game::party::body::{FLOAT_HEIGHT, PartyBody};
 pub struct NavigationPlugin;
 
 impl Plugin for NavigationPlugin {
-    fn finish(&self, app: &mut App) {
-        // After Landmass registers `NavMesh3d`.
-        app.init_asset::<asset::BakedNavmesh>().register_asset_loader(asset::NavmeshLoader);
-    }
-
     fn build(&self, app: &mut App) {
         app.add_plugins(Landmass3dPlugin::default())
             .add_plugins(TnuaControllerPlugin::<WalkerMotion>::new(FixedUpdate))
@@ -95,7 +90,6 @@ pub fn feet(origin: Vec3, walker: Option<&Walker>) -> Vec3 {
 }
 
 /// Whether every mandatory navmesh has loaded successfully.
-/// They come from the asset processor's cache (baked on first use).
 pub fn navmeshes_ready(level: &Level, assets: &AssetServer) -> bool {
     level
         .navmeshes

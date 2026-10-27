@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use bevy::asset::io::{
-    AssetReader, AssetReaderError, AssetSource, AssetSourceBuilder, PathStream, Reader, VecReader,
+    AssetReader, AssetReaderError, AssetSourceBuilder, PathStream, Reader, VecReader,
 };
 use bevy::tasks::futures_lite::stream;
 
@@ -52,21 +52,16 @@ impl AssetReader for RetailReader {
     }
 }
 
-/// The retail installation. It is never processed: in processed mode the
-/// same reader serves as its "processed" reader, so nothing is copied.
+/// The retail installation, read in place.
 pub fn retail_source(files: Arc<RetailFiles>) -> AssetSourceBuilder {
-    let processed = files.clone();
     AssetSourceBuilder::new(move || Box::new(RetailReader(files.clone())))
-        .with_processed_reader(move || Box::new(RetailReader(processed.clone())))
 }
 
 /// Every retail level `<path>.pvl` as `<path>_class<n>.navmesh`, one per
 /// walker size class, whose bytes are the class and the level's collision
-/// (`.oct`) and placement (`.pvl`) files; see [`navmesh_input`]. The asset
-/// processor turns these into baked navmeshes, re-baking when either file
-/// changes. Raw `retail://` assets have no processed metadata/full hashes,
-/// so processor `read_asset_bytes` dependencies cannot replace these source
-/// bytes without changing that source's hashing contract.
+/// (`.oct`) and placement (`.pvl`) files; see [`navmesh_input`]. The
+/// navmesh loader bakes them on request, keyed by these bytes, so a change
+/// to either file re-bakes.
 struct NavmeshInputReader {
     files: Arc<RetailFiles>,
     classes: usize,
@@ -146,11 +141,7 @@ impl AssetReader for NavmeshInputReader {
     }
 }
 
-/// Navmesh inputs for `classes` size classes, processed into `cache` (e.g.
-/// `imported_assets/navmesh`).
-pub fn navmesh_source(files: Arc<RetailFiles>, classes: usize, cache: &Path) -> AssetSourceBuilder {
-    let cache = cache.to_string_lossy().into_owned();
+/// Navmesh inputs for `classes` size classes.
+pub fn navmesh_source(files: Arc<RetailFiles>, classes: usize) -> AssetSourceBuilder {
     AssetSourceBuilder::new(move || Box::new(NavmeshInputReader { files: files.clone(), classes }))
-        .with_processed_reader(AssetSource::get_default_reader(cache.clone()))
-        .with_processed_writer(crate::asset_cache::processed_writer(&cache))
 }

@@ -50,8 +50,6 @@ use crate::content::level::{LevelDefinition, LevelGeometry};
 /// registered before `AssetPlugin` builds the server.
 pub struct RetailPlugin {
     pub files: Arc<files::RetailFiles>,
-    /// Where processed navmeshes are cached.
-    pub navmesh_cache: std::path::PathBuf,
     /// How many walker size classes get a navmesh.
     pub navmesh_classes: usize,
 }
@@ -61,18 +59,12 @@ impl Plugin for RetailPlugin {
         app.register_asset_source(source::RETAIL_SOURCE, source::retail_source(self.files.clone()))
             .register_asset_source(
                 crate::content::navmesh::NAVMESH_SOURCE,
-                source::navmesh_source(
-                    self.files.clone(),
-                    self.navmesh_classes,
-                    &self.navmesh_cache,
-                ),
+                source::navmesh_source(self.files.clone(), self.navmesh_classes),
             );
     }
 
     fn finish(&self, app: &mut App) {
-        app.init_asset::<crate::content::navmesh::LevelCollision>()
-            .init_asset_loader::<navmesh::LevelCollisionLoader>()
-            .init_asset::<LevelDefinition>()
+        app.init_asset::<LevelDefinition>()
             .init_asset_loader::<level_loader::PvlDefinitionLoader>()
             .init_asset::<crate::content::monster::MonsterBody>()
             .init_asset_loader::<monster_loader::MlsBodyLoader>()

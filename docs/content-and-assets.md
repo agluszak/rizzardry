@@ -182,8 +182,8 @@ That proof now exists (see the [implementation plan](implementation-plan.md)
 status). What it established:
 
 - Direct loading suffices: every format so far is a Bevy `AssetLoader` over
-  the `retail://` source (`.pvl`, `.lvl`, `.mls`, `.sti`, MP3, TGA). Only the
-  navmesh bake, which is expensive, goes through the asset processor.
+  the `retail://` source (`.pvl`, `.lvl`, `.mls`, `.sti`, MP3, TGA). The
+  navmesh loader also bakes, which is expensive, so it caches its results.
 - Monster cycles are vertex frames, not skeletons. A model asset holds each
   cycle's frames; every actor animates its own mesh copies on the CPU, which
   is cheap at retail vertex counts (median about 200).

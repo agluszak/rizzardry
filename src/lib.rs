@@ -1,5 +1,4 @@
 pub mod app;
-pub mod asset_cache;
 pub mod bytes;
 pub mod content;
 pub mod dev;

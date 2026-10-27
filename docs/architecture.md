@@ -97,11 +97,10 @@ presentation observes game and submits intents; app composes plugins. Content
 never imports retail, and rules never import UI/meshes/playback. Plugins register
 integration, not an unconditional demo campaign. Pure rules need no empty plugin.
 
-## Navigation cache constraint
+## Navigation cache
 
-The synthetic bake input includes both retail files and size class for cache
-invalidation. A direct LoadContext dependency replacement is not equivalent:
-Bevy 0.20 processor reads require ProcessedInfo.full_hash, while retail:// serves
-raw assets without processed metadata. Any replacement must demonstrate rebaking
-for source and setting changes. Source inspection supports this constraint;
-a retail cache-rebake experiment has not been performed.
+A level's navmeshes are baked when it is entered, never at startup. The
+`navmesh://` input of a size class is the class plus the level's `.oct` and
+`.pvl` bytes; the cache key hashes that input, the bake settings and the file
+format version, so a change to any of them re-bakes. A toolchain whose hasher
+changes only re-bakes too. Superseded cache files are not removed.
