@@ -74,6 +74,7 @@ impl Plugin for PresentationPlugin {
             frontend::FrontendPlugin,
         ))
         .add_input_context::<Exploration>()
+        .add_observer(retail_controls::primary_buttons_only)
         .add_systems(Startup, controls::spawn_exploration_controls)
         .add_systems(PreUpdate, controls::read_controls.after(EnhancedInputSystems::Apply))
         .add_message::<voice::SpeechFinished>()
@@ -193,7 +194,9 @@ impl Plugin for PresentationPlugin {
                     monsters::animate_monsters,
                     monsters::light_monsters,
                 )
-                    .chain(),
+                    .chain()
+                    // A monster killed this frame starts dying this frame.
+                    .after(crate::game::GameplaySet::Combat),
                 (
                     world_items::show_world_items,
                     world_items::build_world_items,

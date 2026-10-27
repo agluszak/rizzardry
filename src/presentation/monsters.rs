@@ -27,8 +27,8 @@ fn first_phase(monster: &Monster) -> f32 {
     (monster.location.unsigned_abs() % 97) as f32 * 0.37
 }
 
-/// The cycle an actor should play. Gameplay sets it; a changed request
-/// restarts playback.
+/// The cycle an actor should play. Gameplay sets it; a different request
+/// restarts playback, an identical one continues it.
 #[derive(Component, Debug, Clone, PartialEq)]
 pub struct CycleRequest {
     pub cycle: String,
@@ -62,14 +62,26 @@ pub fn request_monster_visuals(
     }
 }
 
-/// The built model of one actor.
+/// The playback of one actor's built model.
 #[derive(Component, Debug)]
-pub struct MonsterInstance {
+pub struct MonsterPlayback {
     /// The cycle shown, and how long it has played.
     playing: Option<(CycleRequest, Stopwatch)>,
+    /// A play-once cycle whose last frame is already applied; nothing moves
+    /// until the request changes.
+    settled: bool,
+}
+
+/// The lighting of one actor's built model, independent of its playback: a
+/// settled corpse is still relit.
+#[derive(Component, Debug)]
+pub struct MonsterLight {
     /// How much sky light reaches the actor: retail fades it between 0.75
     /// in sight of the level's `SUN` light and 0 out of it.
     sky_scale: f32,
+    /// Where the sunlight target and fixed light were last decided, and
+    /// their values; only moving re-decides them.
+    lit_at: Option<(Vec3, f32, Vec3)>,
 }
 
 /// The hierarchy itself records which visual entities were successfully built.
@@ -80,11 +92,15 @@ pub struct ModelRoot;
 pub struct ModelCycle(String);
 
 #[derive(Component, Debug)]
-pub struct ModelPart(usize);
+pub struct ModelPart {
+    index: usize,
+    /// The vertex colour last written to its mesh.
+    colour: Option<[f32; 4]>,
+}
 
 pub fn build_monster_instances(
     mut commands: Commands,
-    actors: Query<(Entity, &Monster, &MonsterVisual, Option<&Walker>), Without<MonsterInstance>>,
+    actors: Query<(Entity, &Monster, &MonsterVisual, Option<&Walker>), Without<MonsterPlayback>>,
     models: Res<Assets<MonsterModel>>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
@@ -118,16 +134,18 @@ pub fn build_monster_instances(
                 let Some(mesh) = meshes.get(&part.mesh).cloned() else { continue };
                 let copy = meshes.add(mesh);
                 commands.spawn((
-                    ModelPart(index),
+                    ModelPart { index, colour: None },
                     Mesh3d(copy),
                     MeshMaterial3d(part.material.clone()),
                     ChildOf(cycle_root),
                 ));
             }
         }
-        commands
-            .entity(actor)
-            .insert((MonsterInstance { playing: None, sky_scale: SUNLIT }, Visibility::default()));
+        commands.entity(actor).insert((
+            MonsterPlayback { playing: None, settled: false },
+            MonsterLight { sky_scale: SUNLIT, lit_at: None },
+            Visibility::default(),
+        ));
     }
 }
 
@@ -149,7 +167,7 @@ pub fn animate_monsters(
     mut actors: Query<(
         &Monster,
         &MonsterVisual,
-        &mut MonsterInstance,
+        &mut MonsterPlayback,
         Option<&CycleRequest>,
         &Children,
     )>,
@@ -159,23 +177,29 @@ pub fn animate_monsters(
     mut cycles: Query<(&ModelCycle, &Children, &mut Visibility)>,
     parts: Query<(&ModelPart, &Mesh3d)>,
 ) {
-    for (monster, visual, mut instance, request, children) in &mut actors {
+    for (monster, visual, mut playback, request, children) in &mut actors {
         let Some(model) = models.get(&visual.0) else { continue };
         let request = request.cloned().unwrap_or_else(|| CycleRequest::looping("IDLE"));
+        let current = playback.playing.as_ref().is_some_and(|(playing, _)| *playing == request);
+        if current && playback.settled {
+            continue;
+        }
         let name = if model.cycles.contains_key(&request.cycle) { &request.cycle } else { "IDLE" };
         let Some(cycle) = model.cycles.get(name) else { continue };
-        if instance.playing.as_ref().is_none_or(|(playing, _)| *playing != request) {
+        if !current {
             // The first cycle starts part-way in.
             let mut played = Stopwatch::new();
-            if instance.playing.is_none() {
+            if playback.playing.is_none() {
                 played.set_elapsed(Duration::from_secs_f32(first_phase(monster)));
             }
-            instance.playing = Some((request.clone(), played));
+            playback.playing = Some((request.clone(), played));
+            playback.settled = false;
         }
-        let Some((_, played)) = &mut instance.playing else { continue };
+        let Some((_, played)) = &mut playback.playing else { continue };
         let frames = cycle.frame_count() as f32;
         let elapsed = played.tick(time.delta()).elapsed_secs() * cycle.frames_per_second;
         let frame = if request.once { elapsed.min(frames - 1.0) } else { elapsed % frames };
+        playback.settled = request.once && frame >= frames - 1.0;
         let positions = cycle.positions_at(frame);
         for root in roots.iter_many(children).matched() {
             for child in root.iter() {
@@ -192,8 +216,8 @@ pub fn animate_monsters(
                     continue;
                 }
                 for entity in children.iter() {
-                    let Ok((index, copy)) = parts.get(entity) else { continue };
-                    let Some(part) = cycle.parts.get(index.0) else { continue };
+                    let Ok((part, copy)) = parts.get(entity) else { continue };
+                    let Some(part) = cycle.parts.get(part.index) else { continue };
                     if let Some(mut mesh) = meshes.get_mut(&copy.0) {
                         let moved: Vec<[f32; 3]> =
                             part.source.iter().map(|&v| positions[v as usize].to_array()).collect();
@@ -223,10 +247,10 @@ pub fn light_monsters(
     geometry: Res<Assets<LevelGeometry>>,
     models: Res<Assets<MonsterModel>>,
     spatial: SpatialQuery,
-    mut actors: Query<(&GlobalTransform, &MonsterVisual, &mut MonsterInstance, &Children)>,
+    mut actors: Query<(&GlobalTransform, &MonsterVisual, &mut MonsterLight, &Children)>,
     roots: Query<&Children, With<ModelRoot>>,
     cycles: Query<(&ModelCycle, &Children, &Visibility)>,
-    parts: Query<(&ModelPart, &Mesh3d)>,
+    mut parts: Query<(&mut ModelPart, &Mesh3d)>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let Some((level_entity, level)) =
@@ -235,13 +259,25 @@ pub fn light_monsters(
         return;
     };
     let sky = level.environment.as_ref().map_or(Vec3::ZERO, |e| e.sky_light(clock.phase()));
-    for (transform, visual, mut instance, children) in &mut actors {
+    for (transform, visual, mut light, children) in &mut actors {
         let Some(model) = models.get(&visual.0) else { continue };
         let centre = transform.translation();
-        let target = if sunlit(&spatial, level_entity, level, centre) { SUNLIT } else { 0.0 };
-        let step = SKY_SCALE_PER_SECOND * time.delta_secs();
-        instance.sky_scale += (target - instance.sky_scale).clamp(-step, step);
-        let fixed = level.lighting.at(centre, None);
+        // The sun test only looks past the level itself, so others moving
+        // never change it.
+        let (target, fixed) = match light.lit_at {
+            Some((at, target, fixed)) if at == centre => (target, fixed),
+            _ => {
+                let target =
+                    if sunlit(&spatial, level_entity, level, centre) { SUNLIT } else { 0.0 };
+                let fixed = level.lighting.at(centre, None);
+                light.lit_at = Some((centre, target, fixed));
+                (target, fixed)
+            }
+        };
+        if light.sky_scale != target {
+            let step = SKY_SCALE_PER_SECOND * time.delta_secs();
+            light.sky_scale += (target - light.sky_scale).clamp(-step, step);
+        }
         for root in roots.iter_many(children).matched() {
             for child in root.iter() {
                 let Ok((cycle_name, children, visibility)) = cycles.get(child) else { continue };
@@ -250,19 +286,27 @@ pub fn light_monsters(
                 }
                 let Some(cycle) = model.cycles.get(&cycle_name.0) else { continue };
                 for entity in children.iter() {
-                    let Ok((index, copy)) = parts.get(entity) else { continue };
-                    let Some(part) = cycle.parts.get(index.0) else { continue };
-                    let light = sky * instance.sky_scale * part.ambient
-                        + fixed
-                        + Vec3::splat(part.emission);
-                    let colour = light.extend(1.0).to_array();
-                    let Some(mut mesh) = meshes.get_mut(&copy.0) else { continue };
-                    let count = mesh.count_vertices();
-                    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![colour; count]);
+                    let Ok((mut applied, copy)) = parts.get_mut(entity) else { continue };
+                    let Some(part) = cycle.parts.get(applied.index) else { continue };
+                    let colour =
+                        (sky * light.sky_scale * part.ambient + fixed + Vec3::splat(part.emission))
+                            .extend(1.0)
+                            .to_array();
+                    if applied.colour != Some(colour) && paint(&mut meshes, &copy.0, colour) {
+                        applied.colour = Some(colour);
+                    }
                 }
             }
         }
     }
+}
+
+/// Give a model part's mesh one vertex colour; whether it was there to take it.
+pub(super) fn paint(meshes: &mut Assets<Mesh>, mesh: &Handle<Mesh>, colour: [f32; 4]) -> bool {
+    let Some(mut mesh) = meshes.get_mut(mesh) else { return false };
+    let count = mesh.count_vertices();
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![colour; count]);
+    true
 }
 
 /// Whether the level's `SUN` light is in sight from `at`, past the level's

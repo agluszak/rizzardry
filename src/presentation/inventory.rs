@@ -399,7 +399,6 @@ fn header(art: &InventoryArt) -> impl SceneList {
                 crate::presentation::retail_controls::FocusRing
                 template(move |_| Ok(HeaderDisplay(HeaderPart::Member(slot))))
                 InventoryMemberButton({Entity::PLACEHOLDER})
-                on(crate::presentation::retail_controls::primary_press)
                 on(select_inventory_member)
                 Children [
                     @picture(art.portrait_highlight.clone(),1,Vec2::ZERO)
@@ -499,7 +498,6 @@ fn cell_controls(cell: Cell, art: &InventoryArt) -> impl Scene {
         node template(move |_|Ok(ItemCell{cell}))
         UiButton TabIndex(0) Pickable::default()
         crate::presentation::retail_controls::FocusRing
-        on(crate::presentation::retail_controls::primary_press)
         on(click_cell)
         on(pool_scroll::wheel)
         Children [
@@ -631,7 +629,6 @@ pub fn spawn_inventory_screen(
             -- @{exit}
                 UiButton TabIndex(0) Pickable::default()
                 crate::presentation::retail_controls::FocusRing
-                on(crate::presentation::retail_controls::primary_press)
                 on(|_: On<Activate>, mut next: ResMut<NextState<Screen>>| { next.set(Screen::World); })
         ]
     }).id();
@@ -951,8 +948,14 @@ fn draw_header(
 fn draw_retail_labels(
     art: Res<InventoryArt>,
     tables: Res<Assets<TextTable>>,
-    mut labels: Query<(&RetailLabel, &mut BitmapText)>,
+    mut labels: Query<(Ref<RetailLabel>, &mut BitmapText)>,
 ) {
+    if !art.is_changed()
+        && !tables.is_changed()
+        && !labels.iter().any(|(label, _)| label.is_added())
+    {
+        return;
+    }
     let Some(table) = tables.get(&art.strings) else { return };
     for (label, mut text) in &mut labels {
         let value = table.get(label.0).unwrap_or("");
@@ -962,9 +965,12 @@ fn draw_retail_labels(
     }
 }
 
-fn draw_gold(party: Res<PartyInventory>, mut labels: Query<&mut BitmapText, With<GoldLabel>>) {
+fn draw_gold(party: Res<PartyInventory>, mut labels: Query<(Ref<GoldLabel>, &mut BitmapText)>) {
+    if !party.is_changed() && !labels.iter().any(|(label, _)| label.is_added()) {
+        return;
+    }
     let value = format_gold(party.gold);
-    for mut label in &mut labels {
+    for (_, mut label) in &mut labels {
         if label.value != value {
             label.value = value.clone();
         }
@@ -1107,7 +1113,7 @@ pub fn follow_held(
     data: Option<Res<GameData>>,
     catalogs: Res<Assets<ItemCatalog>>,
     mut picture: Single<(&mut ImageNode, &mut Node, &mut Visibility), With<HeldPicture>>,
-    mut loading: Local<Option<Handle<SpriteSheet>>>,
+    mut loading: Local<Option<(String, Handle<SpriteSheet>)>>,
 ) {
     let (image, node, visibility) = &mut *picture;
     let catalog = data.and_then(|d| catalogs.get(&d.items));
@@ -1121,16 +1127,22 @@ pub fn follow_held(
         visibility.set_if_neq(Visibility::Hidden);
         return;
     };
-    let handle = loading.insert(assets.load(format!("retail://{}", definition.image)));
+    if loading.as_ref().is_none_or(|(path, _)| *path != definition.image) {
+        let handle = assets.load(format!("retail://{}", definition.image));
+        *loading = Some((definition.image.clone(), handle));
+    }
+    let Some((_, handle)) = &*loading else { return };
     let Some((picture, frame)) =
-        sheets.get(&*handle).and_then(|s| Some((s.images.first()?, s.frames.first()?)))
+        sheets.get(handle).and_then(|s| Some((s.images.first()?, s.frames.first()?)))
     else {
         return;
     };
     // Retail makes the picture the cursor, its corner at the hotspot with
     // the arrow drawn over it (`UpdateHeldItemCursor`).
-    image.image = picture.clone();
-    **node = absolute(cursor / scale.0, Vec2::new(frame.width as f32, frame.height as f32));
+    if image.image != *picture {
+        image.image = picture.clone();
+    }
+    node.set_if_neq(absolute(cursor / scale.0, Vec2::new(frame.width as f32, frame.height as f32)));
     visibility.set_if_neq(Visibility::Inherited);
 }
 
@@ -1217,6 +1229,7 @@ mod tests {
             .init_resource::<PartyInventory>()
             .init_resource::<super::super::main_screen::SelectedMember>()
             .add_plugins(InventoryPlugin)
+            .add_observer(crate::presentation::retail_controls::primary_buttons_only)
             .add_systems(PostUpdate, crate::presentation::retail_controls::sync_button_navigation);
         app
     }

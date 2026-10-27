@@ -119,7 +119,7 @@ struct Creation {
     page: Page,
     message: String,
 }
-#[derive(Component, Clone, Copy)]
+#[derive(Component, Clone, Copy, PartialEq)]
 enum Action {
     NewGame,
     Credits,
@@ -216,7 +216,6 @@ fn button(
             BackgroundColor(PANEL),
             BorderColor::all(GOLD),
         ))
-        .observe(crate::presentation::retail_controls::primary_press)
         .id();
     let label = commands
         .spawn((
@@ -942,14 +941,16 @@ fn show_editor(
     let Some(session) = session else { return };
     for (mut node, mut visibility) in &mut editors {
         let shown = session.page != Page::Party;
-        node.display = if shown { Display::Flex } else { Display::None };
+        let display = if shown { Display::Flex } else { Display::None };
+        if node.display != display {
+            node.display = display;
+        }
         visibility.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
     }
 }
 
 fn refresh(
     sessions: Query<Ref<Creation>>,
-    focus: Res<InputFocus>,
     mut commands: Commands,
     buttons: Query<(Entity, &Action, Has<InteractionDisabled>), Without<party::Control>>,
     mut pages: Query<(&Page, &mut Node, &mut Visibility), Without<SkillRow>>,
@@ -959,7 +960,7 @@ fn refresh(
     assets: Res<AssetServer>,
 ) {
     let Ok(session) = sessions.single() else { return };
-    if !session.is_changed() && !focus.is_changed() {
+    if !session.is_changed() {
         return;
     }
     for (page, mut node, mut visibility) in &mut pages {
@@ -1230,6 +1231,7 @@ mod keyboard_tests {
         .insert_resource(NewGameDestination { path: String::new(), start: default() })
         .add_message::<AppExit>()
         .add_plugins(FrontendPlugin)
+        .add_observer(crate::presentation::retail_controls::primary_buttons_only)
         .add_systems(PostUpdate, crate::presentation::retail_controls::sync_button_navigation);
         let window = app.world_mut().spawn((Window::default(), PrimaryWindow)).id();
         app.finish();

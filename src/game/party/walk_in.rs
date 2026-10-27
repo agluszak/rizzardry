@@ -36,6 +36,9 @@ pub fn move_party(
     mut travel: MessageWriter<Travel>,
     mut pending: ResMut<PendingPartyMove>,
 ) {
+    if pending.0.is_none() {
+        return;
+    }
     let Ok((origin, level, mut state)) = levels.single_mut() else { return };
     let Some(party_move) = pending.take_for(origin) else { return };
     let Ok((entity, mut body, mut position, mut transform, flying)) = party.single_mut() else {

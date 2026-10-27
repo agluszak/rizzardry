@@ -421,7 +421,9 @@ pub fn run_battle(
     };
     let Ok((position, body)) = party_body.single() else { return };
     let party = PartyView { eye: PartyBody::eye(position), yaw: body.yaw };
-    if !battle.wait.tick(time.delta()).is_finished() {
+    // A finished pause is not ticked again: a fight waiting for the player
+    // stays unchanged.
+    if !battle.wait.is_finished() && !battle.wait.tick(time.delta()).is_finished() {
         return;
     }
 

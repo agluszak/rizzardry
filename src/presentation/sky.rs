@@ -32,9 +32,13 @@ pub fn follow_with_sky_camera(
     let mut sky = transforms.p1();
     match sky.single_mut() {
         Ok((mut transform, mut projection)) => {
-            transform.rotation = rotation;
+            if transform.rotation != rotation {
+                transform.rotation = rotation;
+            }
             if let (Projection::Perspective(sky), Projection::Perspective(level)) =
-                (projection.as_mut(), party_projection)
+                (projection.as_ref(), party_projection)
+                && sky.fov != level.fov
+                && let Projection::Perspective(sky) = projection.as_mut()
             {
                 sky.fov = level.fov;
             }

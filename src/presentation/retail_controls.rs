@@ -180,7 +180,6 @@ pub fn step_scrollbar(
                 Pickable::default(),
                 ChildOf(parent),
             ))
-            .observe(primary_press)
             .observe(step_arrow);
     }
     slider
@@ -267,11 +266,22 @@ pub fn image_button(sheet: Handle<SpriteSheet>, at: Vec2, skin: ControlSkin) -> 
         template(move |_| Ok(Picture { sheet: sheet.clone(), at, frame: skin.normal, bounds: Some(skin.normal) }))
         template(move |_| Ok(skin))
         Button TabIndex(0) FocusRing Pickable::default()
-        on(primary_press)
     }
 }
 
-pub fn primary_press(event: On<bevy::picking::events::PointerPress>, mut commands: Commands) {
+/// Bevy 0.20's native button presses, and so activates, with any pointer
+/// button; retail buttons answer the primary one only. Every native button
+/// gets that policy here, once. Gestures that use other buttons (portraits,
+/// item cells) read raw pointer events, which this leaves alone.
+///
+/// The removal is queued after the native insertion only because global
+/// observers run before entity-scoped ones in 0.20. Delete this when the
+/// native button accepts a pointer-button policy.
+pub fn primary_buttons_only(add: On<Add<bevy::ui_widgets::Button>>, mut commands: Commands) {
+    commands.entity(add.entity).observe(primary_press);
+}
+
+fn primary_press(event: On<bevy::picking::events::PointerPress>, mut commands: Commands) {
     if event.button != bevy::picking::pointer::PointerButton::Primary {
         commands.entity(event.entity).remove::<Pressed>();
     }
@@ -281,6 +291,73 @@ pub fn primary_press(event: On<bevy::picking::events::PointerPress>, mut command
 mod tests {
     use super::*;
     use bevy::ui_widgets::{ButtonPlugin, SliderPlugin, Tab};
+
+    /// Secondary and middle clicks cannot activate an ordinary button; the
+    /// primary button and the keyboard can.
+    #[test]
+    fn only_the_primary_pointer_button_activates_buttons() {
+        use bevy::input::{
+            ButtonState,
+            keyboard::{Key, KeyboardInput},
+        };
+        use bevy::input_focus::{FocusedInput, InputFocus};
+        use bevy::picking::{
+            backend::HitData,
+            events::{PointerClick, PointerPress},
+            pointer::PointerButton,
+        };
+        #[derive(Resource, Default)]
+        struct Activations(usize);
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, ButtonPlugin))
+            .init_resource::<InputFocus>()
+            .init_resource::<Activations>()
+            .add_observer(primary_buttons_only);
+        let button = app
+            .world_mut()
+            .spawn(bevy::ui_widgets::Button)
+            .observe(|_: On<Activate>, mut activations: ResMut<Activations>| activations.0 += 1)
+            .id();
+        app.world_mut().flush();
+        let hit = HitData::new(Entity::PLACEHOLDER, 0.0, None, None);
+        for (pointer_button, activations) in
+            [(PointerButton::Secondary, 0), (PointerButton::Middle, 0), (PointerButton::Primary, 1)]
+        {
+            let pointer = crate::presentation::test_input::mouse();
+            app.world_mut().trigger(PointerPress {
+                entity: button,
+                pointer: pointer.clone(),
+                button: pointer_button,
+                hit: hit.clone(),
+                count: 1,
+            });
+            app.update();
+            app.world_mut().trigger(PointerClick {
+                entity: button,
+                pointer,
+                button: pointer_button,
+                hit: hit.clone(),
+                count: 1,
+                duration: std::time::Duration::ZERO,
+            });
+            app.update();
+            assert_eq!(app.world().resource::<Activations>().0, activations, "{pointer_button:?}");
+        }
+        app.world_mut().trigger(FocusedInput::new(
+            button,
+            KeyboardInput {
+                key_code: KeyCode::Enter,
+                logical_key: Key::Enter,
+                state: ButtonState::Pressed,
+                text: None,
+                repeat: false,
+                window: Entity::PLACEHOLDER,
+            },
+            Entity::PLACEHOLDER,
+        ));
+        app.update();
+        assert_eq!(app.world().resource::<Activations>().0, 2);
+    }
 
     #[test]
     fn independent_scrollbars_target_their_own_slider_and_disable_native_buttons() {
