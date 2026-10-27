@@ -13,7 +13,7 @@ use bevy::image::{
 use bevy::prelude::*;
 use bevy::reflect::TypePath;
 
-use crate::presentation::mipmaps::generate_mipmaps;
+use super::mipmaps::generate_mipmaps;
 
 /// A retail texture file; its decoded image is the `image` sub-asset.
 #[derive(Asset, TypePath, Debug)]

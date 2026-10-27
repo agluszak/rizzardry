@@ -316,14 +316,6 @@ mod tests {
         let member = app.world_mut().spawn((Vitals::new(&sage), sage.clone())).id();
         let outsider = app.world_mut().spawn((Vitals::new(&sage), sage)).id();
         crate::game::party::roster::test_party(app.world_mut(), &[member]);
-        let camera = app
-            .world_mut()
-            .spawn((
-                crate::presentation::party_view::PartyCamera,
-                Projection::Perspective(PerspectiveProjection { far: 1000.0, ..default() }),
-                Transform::from_translation(Vec3::splat(1000.0)),
-            ))
-            .id();
         app.finish();
         app.cleanup();
         app.update();
@@ -331,7 +323,7 @@ mod tests {
         app.world_mut().run_schedule(Update);
         assert!(
             !app.world().get::<MonsterGroup>(group).unwrap().counted,
-            "the rendering far plane does not make the group visible"
+            "beyond the level's sight distance"
         );
         assert!(app.world().get::<MonsterKnowledge>(member).unwrap().seen.is_empty());
         app.world_mut()
@@ -339,9 +331,6 @@ mod tests {
             .get_mut(&geometry)
             .unwrap()
             .sight_distance = Some(20.0);
-        app.world_mut()
-            .entity_mut(camera)
-            .insert(Projection::Perspective(PerspectiveProjection { far: 1.0, ..default() }));
         app.world_mut().run_schedule(Update);
         let known = app.world().get::<MonsterGroup>(group).unwrap();
         assert!(known.identified && known.counted);

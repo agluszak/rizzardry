@@ -225,6 +225,19 @@ const CONDITION_SAVE: [i32; 20] =
     [0, 1, 2, 3, 4, 4, 5, 6, 7, 8, 9, 10, 12, 14, 16, 20, 18, 22, 24, 22];
 const DEATH_SAVE: i32 = CONDITION_SAVE[18];
 
+/// Whether a monster of `kind` shrugs a condition off (retail
+/// `g_condition_immunities`).
+fn immune(kind: u8, condition: Condition) -> bool {
+    use Condition::*;
+    let immune: &[_] = match kind {
+        20 => &[Diseased, Poisoned, Unconscious, Irritated, Afraid, Insane, Asleep, Nauseated],
+        22 => &[Diseased, Poisoned, Nauseated, Irritated, Afraid, Asleep],
+        17 => &[Insane, Afraid, Nauseated],
+        _ => &[],
+    };
+    immune.contains(&condition)
+}
+
 /// Rounds a condition spell inflicts (retail `RollEffectDuration`).
 fn duration(rng: &mut GameRng, spell: &SpellDefinition, strength: Strength) -> u32 {
     let mut rounds =
@@ -263,7 +276,7 @@ fn target(
                 resistance: i32::from(kind.resistances[realm]),
                 side: Some(Side::Hostile),
                 turncoat: false,
-                immune: condition.is_some_and(|c| kind.immune_to(c)),
+                immune: condition.is_some_and(|c| immune(kind.kind, c)),
                 dead: body.is_dead(),
             })
         }

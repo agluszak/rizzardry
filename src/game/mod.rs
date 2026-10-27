@@ -27,3 +27,40 @@ pub enum GameplaySet {
 }
 
 pub mod session;
+
+use bevy::prelude::*;
+
+/// The game's rules and state: shared campaign services, the world, the
+/// party, time, combat and magic.
+pub struct GamePlugin;
+
+impl Plugin for GamePlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<rng::GameRng>()
+            .init_resource::<inventory::ItemIds>()
+            .init_resource::<factions::Factions>()
+            .init_resource::<difficulty::Difficulty>()
+            .init_state::<screen::Screen>()
+            .add_message::<inventory::ItemNews>()
+            .add_systems(Startup, data::load_game_data)
+            .configure_sets(
+                Update,
+                (GameplaySet::Equipment, GameplaySet::LevelActivation, GameplaySet::Combat).chain(),
+            )
+            .add_plugins((
+                avian3d::prelude::PhysicsPlugins::default(),
+                world::WorldPlugin,
+                npcs::NpcPlugin,
+                party::PartyPlugin,
+                time::TimePlugin,
+                combat::CombatPlugin,
+                magic::MagicPlugin,
+            ))
+            // Navmeshes: retail serves a level's collision, navigation bakes
+            // it on request and caches the result.
+            .register_asset_loader(world::navigation::asset::NavmeshLoader {
+                cache: bevy::asset::io::file::FileAssetReader::get_base_path()
+                    .join(world::navigation::asset::CACHE),
+            });
+    }
+}

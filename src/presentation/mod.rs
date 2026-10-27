@@ -15,7 +15,6 @@ pub mod frontend;
 pub mod hover;
 pub mod inventory;
 pub mod main_screen;
-pub mod mipmaps;
 pub mod monsters;
 mod morph_picking;
 pub mod music;

@@ -12,6 +12,7 @@ pub mod keyframes;
 pub mod level_loader;
 pub mod links;
 pub mod mesh_record;
+pub mod mipmaps;
 pub mod monster;
 pub mod monster_loader;
 pub mod navmesh;

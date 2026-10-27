@@ -135,7 +135,7 @@ pub struct NeedsEquipment;
 /// `AddCharacterStartingEquipment`): their profession's set (Faeries have
 /// their own), then one extra item for some professions, chosen by their
 /// weapon skills.
-fn starting_items(character: &Character) -> Vec<ItemId> {
+pub fn starting_items(character: &Character) -> Vec<ItemId> {
     use Profession::*;
     let set: &[u16] = match character.profession {
         _ if character.race == Race::Faerie => &[63, 169, 196, 335, 358, 0],
@@ -197,36 +197,7 @@ pub fn give_starting_equipment(
 mod tests {
     use super::*;
     use crate::game::characters::Gender;
-    use crate::game::inventory::EquipSlot;
 
-    #[test]
-    #[ignore = "requires a retail installation"]
-    fn starting_equipment_is_worn() {
-        let files = crate::retail::files::retail_files();
-        let catalog = crate::retail::items::retail_catalog(&files);
-        let (mut ids, mut rng) = (ItemIds::default(), GameRng::seeded(1));
-        let professions = [
-            (Race::Human, Profession::Fighter),
-            (Race::Dracon, Profession::Valkyrie),
-            (Race::Dwarf, Profession::Priest),
-            (Race::Hobbit, Profession::Rogue),
-            (Race::Elf, Profession::Mage),
-            (Race::Felpurr, Profession::Bard),
-            (Race::Elf, Profession::Ranger),
-            (Race::Faerie, Profession::Ninja),
-        ];
-        for (race, profession) in professions {
-            let gender =
-                if profession == Profession::Valkyrie { Gender::Female } else { Gender::Male };
-            let character = Character::new("Test", race, gender, profession);
-            let mut carried = Carried::default();
-            for id in starting_items(&character) {
-                let item = make_item(catalog.get(id).unwrap(), &mut ids, &mut rng, true, true);
-                assert!(place_at_creation(&mut carried, item, &catalog, &character).is_none());
-            }
-            assert!(carried.worn(EquipSlot::Primary).is_some(), "{profession:?} holds a weapon");
-        }
-    }
     #[test]
     fn recruitment_and_removal_settle_formation_without_inheriting_anothers_order() {
         use crate::game::party::{Order, formation::Formation};

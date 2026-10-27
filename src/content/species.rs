@@ -121,34 +121,6 @@ pub struct Species {
     pub combat_move_range: f32,
 }
 
-impl Species {
-    /// Whether it fights the party at `distance` metres before anything has
-    /// provoked it (retail `MonsterGroupCalcDefaultDisposition`): unaligned
-    /// species by their hostility radius, others by their faction's band.
-    pub fn hostile_at(&self, distance: f32, factions: &crate::game::factions::Factions) -> bool {
-        if self.faction != crate::game::factions::UNALIGNED {
-            return factions.band(self.faction) == crate::game::factions::Band::Hostile;
-        }
-        match self.disposition {
-            Disposition::Hostile => true,
-            Disposition::Neutral => false,
-            Disposition::HostileWithin(radius) => distance <= radius,
-        }
-    }
-
-    /// Whether its kind shrugs a condition off (retail `g_condition_immunities`).
-    pub fn immune_to(&self, condition: crate::game::characters::Condition) -> bool {
-        use crate::game::characters::Condition::*;
-        let immune: &[_] = match self.kind {
-            20 => &[Diseased, Poisoned, Unconscious, Irritated, Afraid, Insane, Asleep, Nauseated],
-            22 => &[Diseased, Poisoned, Nauseated, Irritated, Afraid, Asleep],
-            17 => &[Insane, Afraid, Nauseated],
-            _ => &[],
-        };
-        immune.contains(&condition)
-    }
-}
-
 /// How a species meets the party before anything provokes it.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Disposition {
@@ -195,22 +167,3 @@ pub enum Drop {
 /// Every species, by retail record number.
 #[derive(Asset, TypePath, Debug, Default)]
 pub struct MonsterCatalog(pub Vec<Species>);
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Retail's crabs keep to themselves until the party comes within their
-    /// fifteen metres; aligned species follow their faction instead.
-    #[test]
-    fn a_hostility_radius_makes_an_unaligned_species_hostile_only_up_close() {
-        let factions = crate::game::factions::Factions::default();
-        let crab = Species { disposition: Disposition::HostileWithin(15.0), ..default() };
-        assert!(!crab.hostile_at(20.0, &factions) && crab.hostile_at(10.0, &factions));
-        let neutral = Species { disposition: Disposition::Neutral, ..default() };
-        assert!(!neutral.hostile_at(0.0, &factions));
-        let rapax = Species { faction: 15, ..crab.clone() };
-        assert!(rapax.hostile_at(20.0, &factions), "common Rapax start hostile");
-        assert!(!Species { faction: 4, ..crab }.hostile_at(0.0, &factions), "Umpani are friends");
-    }
-}

@@ -422,7 +422,7 @@ pub fn start_battle(
             let distance = distance_to_party(party_eye, monster, feet);
             // Authored disposition: some keep to themselves until the party
             // comes close or hurts them.
-            if !provoked && !kind.hostile_at(distance, &factions) {
+            if !provoked && !factions.hostile_on_sight(kind, distance) {
                 return false;
             }
             let eye = feet + Vec3::Y * monster.body.eye_height;
