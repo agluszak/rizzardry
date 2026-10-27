@@ -362,12 +362,7 @@ impl ItemPool {
         }
     }
     pub fn receive(&mut self, incoming: ItemStack, catalog: &ItemCatalog) -> Option<ItemStack> {
-        let rest = fill(self.stacks.iter_mut(), incoming, catalog)?;
-        if self.stacks.len() >= POOL_LIMIT {
-            return Some(rest);
-        }
-        self.stacks.insert(0, rest);
-        None
+        self.deposit(incoming, PoolPosition::Front, catalog)
     }
     /// Missing anchors reject without mutation; overflow is an ordinary remainder.
     pub fn deposit(
@@ -392,6 +387,36 @@ impl ItemPool {
         self.stacks.insert(index, rest);
         None
     }
+    /// Drain owned contents through the same pool-transfer rules for chests and
+    /// world bags. Partial stack merges are reported; every remainder stays owned
+    /// by the source, in its original order.
+    pub fn collect(
+        &mut self,
+        contents: &mut Vec<ItemStack>,
+        catalog: &ItemCatalog,
+    ) -> Vec<(String, u32)> {
+        let mut taken = Vec::new();
+        let mut remaining = Vec::new();
+        for item in contents.drain(..) {
+            let before = item.units();
+            let name =
+                catalog.get(item.item).map(|d| item.display_name(d, false)).unwrap_or_default();
+            let after = match self.receive(item, catalog) {
+                None => 0,
+                Some(item) => {
+                    let units = item.units();
+                    remaining.push(item);
+                    units
+                }
+            };
+            if before > after {
+                taken.push((name, before - after));
+            }
+        }
+        *contents = remaining;
+        taken
+    }
+
     pub fn take(&mut self, id: StackId) -> Option<ItemStack> {
         let index = self.stacks.iter().position(|s| s.id == id)?;
         Some(self.stacks.remove(index))
@@ -652,12 +677,6 @@ impl PartyInventory {
         }
         Some(given)
     }
-    pub fn put_away_held(&mut self, carried: &mut Carried, catalog: &ItemCatalog) {
-        let pool = &mut self.pool;
-        self.hand.offer(|item| {
-            carried.receive(item, catalog).and_then(|rest| pool.receive(rest, catalog))
-        });
-    }
     pub fn take_from_pool(&mut self, id: StackId) -> Result<(), Refusal> {
         if self.hand.held.is_some() {
             return Err(Refusal::HandFull);
@@ -883,7 +902,7 @@ mod tests {
         source.remarked = true;
         let source_id = source.id;
         let mut contents = vec![source];
-        let taken = operations::transfer_contents(&mut contents, &mut party, &c);
+        let taken = party.pool.collect(&mut contents, &c);
         assert_eq!(taken, vec![("item 0".to_owned(), 1)]);
         assert_eq!(
             (contents[0].id, contents[0].count(), contents[0].remarked),
@@ -898,7 +917,7 @@ mod tests {
             (target_id, 20, false)
         );
         let before = (party.clone(), contents.clone());
-        assert!(operations::transfer_contents(&mut contents, &mut party, &c).is_empty());
+        assert!(party.pool.collect(&mut contents, &c).is_empty());
         assert_eq!((party, contents), before);
     }
 
@@ -1116,5 +1135,18 @@ mod tests {
             .unwrap();
         assert_eq!(take(&mut world), Err(Refusal::Nothing));
         assert_eq!(world.resource::<PartyInventory>().pool.stacks[0].id, id);
+        // Clicking a full pool must report a refusal, not pretend a transfer happened.
+        let c = catalog();
+        {
+            let mut party = world.resource_mut::<PartyInventory>();
+            party.pool.stacks = (0..POOL_LIMIT).map(|_| stack(&c, &mut ids, 1, 1)).collect();
+            party.hand.held = Some(stack(&c, &mut ids, 1, 1));
+        }
+        let before = world.resource::<PartyInventory>().clone();
+        assert_eq!(
+            world.run_system_once(|mut op: InventoryOperations| op.click_pool(0)).unwrap(),
+            Err(Refusal::NoRoom)
+        );
+        assert_eq!(*world.resource::<PartyInventory>(), before);
     }
 }

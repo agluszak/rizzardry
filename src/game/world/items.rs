@@ -5,7 +5,6 @@ use bevy::prelude::*;
 
 use crate::content::items::{ItemCatalog, ItemDefinition, ItemId, QuantityKind};
 use crate::content::level::ItemPlacement;
-use crate::game::inventory::operations::transfer_contents;
 use crate::game::inventory::{ItemIds, ItemNews, ItemStack, PartyInventory, Refusal};
 
 /// An item lying in the level.
@@ -143,7 +142,7 @@ pub fn take_item(world: &mut World, target: Entity, distance: f32) -> Result<(),
     if let GroundLoot::Pile { contents, .. } = &mut item.loot {
         let taken = world.resource_scope(|world, mut party: Mut<PartyInventory>| {
             let catalog = world.resource::<Assets<ItemCatalog>>().get(&handle).unwrap();
-            transfer_contents(contents, &mut party, catalog)
+            party.pool.collect(contents, catalog)
         });
         for (name, _) in taken {
             world.write_message(ItemNews::Takes { member: None, item: name });
@@ -208,10 +207,7 @@ pub(crate) const CLEARANCE: f32 = 0.25;
 mod tests {
     use super::*;
     use crate::content::items::ItemDefinition;
-    use crate::game::{
-        inventory::make_item,
-        rng::GameRng,
-    };
+    use crate::game::{inventory::make_item, rng::GameRng};
 
     fn catalog() -> ItemCatalog {
         let mut items: Vec<ItemDefinition> = (0..=BAG_OF_ITEMS.0)

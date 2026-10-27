@@ -31,7 +31,9 @@ an extra transferable item. Chest rolled/unrolled state remains separate.
   equipment separately.
 - `ItemPool::receive` absorbs in row order and inserts at the front.
   `deposit` tries the anchor first, then other rows, then inserts at that position.
-  The 500-entry limit may still allow partial absorption.
+  Both share the same insertion implementation. The 500-entry limit may still
+  allow partial absorption. `collect` drains chest/bag contents through receipt,
+  preserving source remainders without borrowing the hand or purse.
 - `Hand::offer` restores every remainder. Member/pool receipt composes directly;
   neither a failed nor a partially successful receipt can lose the held stack.
 - `ItemRef { owner, id }` selects an existing stack. `MemberSlot` names a fixed
@@ -72,7 +74,7 @@ does not end the equipment placement.
 Regression coverage is in `game::inventory::tests` and world-item tests:
 conservation under partial collection, split/merge/move identity, stale anchors,
 placement release lifetime, retained empty charges, compound replacement failure,
-member receipt and membership validation. Run `cargo test --locked`;
+member receipt and membership validation. Run `cargo nextest run --locked`;
 retail/rendering scenarios require assets and are not inferred from value tests.
 
 ## Trade: original versus modern implementation

@@ -319,11 +319,7 @@ fn open_container(
         outcomes.write(TriggerEffect::Gold(contents.gold));
         contents.gold = 0;
     }
-    for (name, _) in crate::game::inventory::operations::transfer_contents(
-        &mut contents.items,
-        &mut party,
-        catalog,
-    ) {
+    for (name, _) in party.pool.collect(&mut contents.items, catalog) {
         item_news.write(crate::game::inventory::ItemNews::Takes { member: None, item: name });
     }
     if !contents.items.is_empty() {

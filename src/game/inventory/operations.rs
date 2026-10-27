@@ -59,7 +59,7 @@ impl InventoryOperations<'_, '_> {
         if self.roster.0.contains(&member)
             && let Ok((_, _, mut carried)) = self.members.get_mut(member)
         {
-            self.party.put_away_held(&mut carried, catalog);
+            self.party.give_held(Some(&mut carried), false, catalog);
         } else {
             self.party.give_held(None, false, catalog);
         }
@@ -71,7 +71,10 @@ impl InventoryOperations<'_, '_> {
     pub fn click_pool(&mut self, row: usize) -> Result<(), Refusal> {
         let anchor = self.party.pool.stacks.get(row).map(|s| s.id);
         if self.party.hand.held.is_some() {
-            self.deposit(anchor.map_or(PoolPosition::End, PoolPosition::Before)).map(|_| ())
+            match self.deposit(anchor.map_or(PoolPosition::End, PoolPosition::Before))? {
+                0 => Err(Refusal::NoRoom),
+                _ => Ok(()),
+            }
         } else {
             self.take(ItemRef { owner: ItemOwner::Pool, id: anchor.ok_or(Refusal::Nothing)? })
         }
@@ -168,33 +171,4 @@ impl InventoryOperations<'_, '_> {
         }
         Ok(())
     }
-}
-
-/// Drain owned contents through the same pool-transfer rules for chests and
-/// world bags. Partial stack merges are reported; every remainder stays owned
-/// by the source, in its original order.
-pub fn transfer_contents(
-    contents: &mut Vec<ItemStack>,
-    party: &mut PartyInventory,
-    catalog: &ItemCatalog,
-) -> Vec<(String, u32)> {
-    let mut taken = Vec::new();
-    let mut remaining = Vec::new();
-    for item in contents.drain(..) {
-        let before = item.units();
-        let name = catalog.get(item.item).map(|d| item.display_name(d, false)).unwrap_or_default();
-        let after = match party.pool.receive(item, catalog) {
-            None => 0,
-            Some(item) => {
-                let units = item.units();
-                remaining.push(item);
-                units
-            }
-        };
-        if before > after {
-            taken.push((name, before - after));
-        }
-    }
-    *contents = remaining;
-    taken
 }
