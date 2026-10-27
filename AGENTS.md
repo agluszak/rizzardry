@@ -51,4 +51,4 @@ ownership decisions, not a mandatory inventory of abstractions.
 - Do not claim checks you did not run or visual parity from headless tests.
 - Keep documentation concise: decisions, evidence, unresolved gaps and commands.
   Remove superseded plans and implementation diaries instead of appending to them.
-- Create non-draft PRs only. Merge only when the user requests it.
+- Always open a non-draft PR for completed changes. Merge only when the user requests it.
