@@ -221,6 +221,8 @@ pub fn build(options: &Options) -> Result<App, String> {
     app.init_resource::<crate::game::rng::GameRng>()
         .init_resource::<crate::game::inventory::ItemIds>()
         .init_resource::<crate::game::inventory::PartyInventory>()
+        .init_resource::<crate::game::factions::Factions>()
+        .init_resource::<crate::game::difficulty::Difficulty>()
         .init_state::<crate::game::screen::Screen>()
         .add_message::<crate::game::inventory::ItemNews>()
         .add_systems(Startup, crate::game::data::load_game_data)

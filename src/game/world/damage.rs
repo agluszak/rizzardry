@@ -61,6 +61,7 @@ pub struct MonsterDamage<'w, 's> {
     tables: Res<'w, Assets<LootTables>>,
     inventory: ResMut<'w, PartyInventory>,
     ids: ResMut<'w, ItemIds>,
+    factions: ResMut<'w, crate::game::factions::Factions>,
 }
 
 impl MonsterDamage<'_, '_> {
@@ -137,6 +138,8 @@ impl MonsterDamage<'_, '_> {
             velocity.velocity = Vec3::ZERO;
         }
         self.commands.entity(target).remove::<(Crossing, UsingAnimationLink)>();
+        // The kill counts against its faction (retail `RecordFactionOffense`).
+        self.factions.record_offence(kind.faction, kind.npc);
         let (found, gold) =
             crate::game::loot::monster_loot(kind, tables, catalog, party_level, rng);
         if gold > 0 {

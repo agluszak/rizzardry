@@ -5,6 +5,8 @@ pub mod camp;
 pub mod characters;
 pub mod combat;
 pub mod data;
+pub mod difficulty;
+pub mod factions;
 pub mod inventory;
 pub mod loot;
 pub mod magic;

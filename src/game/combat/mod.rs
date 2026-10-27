@@ -305,6 +305,7 @@ pub fn start_battle(
     mut news: MessageWriter<CombatNews>,
     mut recognition: GroupRecognition,
     mut rng: ResMut<GameRng>,
+    factions: Res<crate::game::factions::Factions>,
 ) {
     if battle.is_some()
         || camp.is_some()
@@ -344,7 +345,7 @@ pub fn start_battle(
             let distance = distance_to_party(party_eye, monster, feet);
             // Authored disposition: some keep to themselves until the party
             // comes close or hurts them.
-            if !provoked && !kind.hostile_at(distance) {
+            if !provoked && !kind.hostile_at(distance, &factions) {
                 return false;
             }
             let eye = feet + Vec3::Y * monster.body.eye_height;
@@ -1093,6 +1094,7 @@ mod tests {
             .init_resource::<PartyRoster>()
             .init_resource::<Formation>()
             .init_resource::<PartyInventory>()
+            .init_resource::<crate::game::factions::Factions>()
             .init_resource::<ItemIds>()
             .init_resource::<GameClock>()
             .insert_resource(GameRng::seeded(5))

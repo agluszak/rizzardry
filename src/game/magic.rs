@@ -707,6 +707,7 @@ mod tests {
             .init_resource::<PartyRoster>()
             .init_resource::<Formation>()
             .init_resource::<PartyInventory>()
+            .init_resource::<crate::game::factions::Factions>()
             .init_resource::<ItemIds>()
             .insert_resource(GameRng::seeded(3))
             .add_message::<DamageApplied>()

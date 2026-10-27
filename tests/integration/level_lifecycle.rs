@@ -34,6 +34,7 @@ fn app() -> App {
         .init_resource::<LevelMemory>()
         .init_resource::<MonsterBodies>()
         .init_resource::<rizzardry::game::inventory::PartyInventory>()
+        .init_resource::<rizzardry::game::factions::Factions>()
         .init_resource::<ItemIds>()
         .init_resource::<GameRng>()
         .init_resource::<PendingPartyMove>()

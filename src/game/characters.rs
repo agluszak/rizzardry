@@ -325,6 +325,9 @@ pub struct Character {
     pub attributes: EnumMap<Attribute, u8>,
     /// Points invested per skill.
     pub skill_points: EnumMap<Skill, u8>,
+    /// Successful practice towards each skill's next point (retail
+    /// `practice_count`; eight make a point).
+    pub skill_practice: EnumMap<Skill, u8>,
     /// The portrait's file stem (e.g. `hummf` for `data/portraits/small/shummf.sti`).
     pub portrait: String,
 }
@@ -358,6 +361,7 @@ impl Character {
             experience: 0,
             attributes,
             skill_points: EnumMap::default(),
+            skill_practice: EnumMap::default(),
             portrait: String::new(),
         };
         let share = 60 / (1 + row.skills.len() as u32);
@@ -407,6 +411,49 @@ impl Character {
             }
         }
         true
+    }
+
+    /// Practise a skill `usage` times (retail `PracticeCharacterSkill`): each
+    /// use counts with chance `(100 − points)·base/100` percent (halved for
+    /// the expert skills, at least 1), and every eighth count is a point, up
+    /// to 100. Returns whether the skill improved.
+    pub fn practise(
+        &mut self,
+        skill: Skill,
+        usage: u32,
+        rng: &mut crate::game::rng::GameRng,
+    ) -> bool {
+        let index = skill as usize;
+        let allowed = if index >= Skill::PowerStrike as usize {
+            self.skill_available(skill)
+        } else if index >= Skill::FireMagic as usize {
+            !crate::game::magic::profession_books(self.profession).is_empty()
+        } else {
+            SKILL_AVAILABILITY[index] & (1 << self.profession as usize) != 0
+        };
+        if usage == 0 || !allowed {
+            return false;
+        }
+        let mut improved = false;
+        for _ in 0..usage {
+            let points = u32::from(self.skill_points[skill]);
+            if points >= 100 {
+                break;
+            }
+            let mut threshold = (100 - points) * self.skill_base(skill) / 100;
+            if index >= Skill::PowerStrike as usize {
+                threshold /= 2;
+            }
+            if rng.below(100) < threshold.max(1) {
+                self.skill_practice[skill] += 1;
+                if self.skill_practice[skill] >= 8 {
+                    self.skill_practice[skill] = 0;
+                    self.skill_points[skill] += 1;
+                    improved = true;
+                }
+            }
+        }
+        improved
     }
 
     pub fn bonus_skill(&self) -> Skill {

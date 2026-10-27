@@ -84,6 +84,9 @@ pub struct Species {
     /// Sees the party further by its level (retail species kind 4; what
     /// the kinds mean is not established).
     pub level_sight: bool,
+    /// Retail's species kind (record 0xcb): 20 is undead; kinds 17, 20 and
+    /// 22 are immune to some conditions.
+    pub kind: u8,
     /// An NPC's record: its loot is its NPC's, not the treasure table.
     pub npc: bool,
     /// Percent taken off every hit.
@@ -127,18 +130,29 @@ pub struct Species {
 
 impl Species {
     /// Whether it fights the party at `distance` metres before anything has
-    /// provoked it (retail `MonsterGroup.cpp`). Factions other than the
-    /// unaligned follow retail's faction table, not decoded yet: they stay
-    /// hostile as before.
-    pub fn hostile_at(&self, distance: f32) -> bool {
-        if self.faction != 0 {
-            return true;
+    /// provoked it (retail `MonsterGroupCalcDefaultDisposition`): unaligned
+    /// species by their hostility radius, others by their faction's band.
+    pub fn hostile_at(&self, distance: f32, factions: &crate::game::factions::Factions) -> bool {
+        if self.faction != crate::game::factions::UNALIGNED {
+            return factions.band(self.faction) == crate::game::factions::Band::Hostile;
         }
         match self.disposition {
             Disposition::Hostile => true,
             Disposition::Neutral => false,
             Disposition::HostileWithin(radius) => distance <= radius,
         }
+    }
+
+    /// Whether its kind shrugs a condition off (retail `g_condition_immunities`).
+    pub fn immune_to(&self, condition: crate::game::characters::Condition) -> bool {
+        use crate::game::characters::Condition::*;
+        let immune: &[_] = match self.kind {
+            20 => &[Diseased, Poisoned, Unconscious, Irritated, Afraid, Insane, Asleep, Nauseated],
+            22 => &[Diseased, Poisoned, Nauseated, Irritated, Afraid, Asleep],
+            17 => &[Insane, Afraid, Nauseated],
+            _ => &[],
+        };
+        immune.contains(&condition)
     }
 }
 
@@ -197,9 +211,13 @@ mod tests {
     /// fifteen metres; aligned species follow their faction instead.
     #[test]
     fn a_hostility_radius_makes_an_unaligned_species_hostile_only_up_close() {
+        let factions = crate::game::factions::Factions::default();
         let crab = Species { disposition: Disposition::HostileWithin(15.0), ..default() };
-        assert!(!crab.hostile_at(20.0) && crab.hostile_at(10.0));
-        assert!(!Species { disposition: Disposition::Neutral, ..default() }.hostile_at(0.0));
-        assert!(Species { faction: 1, ..crab }.hostile_at(20.0));
+        assert!(!crab.hostile_at(20.0, &factions) && crab.hostile_at(10.0, &factions));
+        let neutral = Species { disposition: Disposition::Neutral, ..default() };
+        assert!(!neutral.hostile_at(0.0, &factions));
+        let rapax = Species { faction: 15, ..crab.clone() };
+        assert!(rapax.hostile_at(20.0, &factions), "common Rapax start hostile");
+        assert!(!Species { faction: 4, ..crab }.hostile_at(0.0, &factions), "Umpani are friends");
     }
 }
