@@ -150,7 +150,9 @@ mod tests {
 
     #[test]
     fn native_weights_move_picking_outside_the_base_pose_without_hiding_nearer_geometry() {
-        let mut world = World::new();
+        let mut app = App::new();
+        app.add_plugins(bevy::app::TaskPoolPlugin::default());
+        let world = app.world_mut();
         world.init_resource::<Assets<Mesh>>();
         let mut mesh = triangle();
         mesh.set_morph_targets(vec![MorphAttributes::new(Vec3::X * 3., Vec3::ZERO, Vec3::ZERO); 3]);
@@ -168,9 +170,9 @@ mod tests {
             ))
             .id();
         let moved = Ray3d::new(Vec3::new(3., 0., 2.), Dir3::NEG_Z);
-        assert_eq!(hit(&mut world, moved), Some((actor, 2.)));
+        assert_eq!(hit(world, moved), Some((actor, 2.)));
         assert!(
-            hit(&mut world, Ray3d::new(Vec3::new(0., 0., 2.), Dir3::NEG_Z)).is_none(),
+            hit(world, Ray3d::new(Vec3::new(0., 0., 2.), Dir3::NEG_Z)).is_none(),
             "base pose must not be picked"
         );
         let wall_mesh = world.resource_mut::<Assets<Mesh>>().add(triangle());
@@ -183,13 +185,10 @@ mod tests {
                 Aabb::from_min_max(Vec3::new(-1., -1., 0.), Vec3::new(1., 1., 0.)),
             ))
             .id();
-        assert_eq!(hit(&mut world, moved), Some((wall, 1.)));
+        assert_eq!(hit(world, moved), Some((wall, 1.)));
         world.despawn(wall);
         world.get_mut::<MorphWeights>(source).unwrap().weights_mut()[0] = 0.;
-        assert!(hit(&mut world, moved).is_none());
-        assert_eq!(
-            hit(&mut world, Ray3d::new(Vec3::new(0., 0., 2.), Dir3::NEG_Z)),
-            Some((actor, 2.))
-        );
+        assert!(hit(world, moved).is_none());
+        assert_eq!(hit(world, Ray3d::new(Vec3::new(0., 0., 2.), Dir3::NEG_Z)), Some((actor, 2.)));
     }
 }
