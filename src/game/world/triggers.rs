@@ -271,6 +271,9 @@ pub fn spawn_devices(
         }
         if let Some(name) = &definition.loot_table {
             let table = tables.0.iter().position(|t| t.name.eq_ignore_ascii_case(name));
+            // Retail itself has two containers naming tables that do not
+            // exist (camp's AWAYCAMPCHEST, Rapax's CONSTABLE CHEST); they
+            // hold nothing rather than failing their levels.
             if table.is_none() {
                 warn!("trigger {}: no loot table {name}; it holds nothing", definition.name);
             }

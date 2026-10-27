@@ -561,6 +561,10 @@ pub fn activate_level(
         ) else {
             continue;
         };
+        if let Err(error) = population::check(geometry, species, items) {
+            fail(&error);
+            continue;
+        }
         let bodies = shared.monster_bodies.for_level(geometry, species, &assets);
         if bodies.iter().any(|body| failed(body.id().untyped())) {
             fail("a monster's body definition failed to load");
