@@ -566,6 +566,7 @@ mod tests {
             .init_asset::<ItemCatalog>()
             .init_resource::<PartyRoster>()
             .init_resource::<SelectedMember>()
+            .init_resource::<crate::game::difficulty::Difficulty>()
             .insert_resource(crate::game::rng::GameRng::seeded(1))
             .add_message::<LockNews>();
         let mut profile = Character::new("A", Race::Human, Gender::Male, Profession::Rogue);
