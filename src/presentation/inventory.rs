@@ -208,23 +208,62 @@ pub fn spawn_inventory_key(mut commands: Commands) {
             Action::<OpenInventory>::new()
             Bindings [ Binding(KeyCode::KeyI) ]
         ]
+        ContextActivity::<InventoryKey>::INACTIVE
         on(open_with_key)
     });
+}
+
+/// The key is held by the same rule as the other world shortcuts, so a
+/// question or a focused control owns the keyboard instead.
+fn hold_inventory_key(
+    mut commands: Commands,
+    world_keys: super::main_screen::keys::WorldKeys,
+    keys: Query<(Entity, &ContextActivity<InventoryKey>)>,
+) {
+    let active = world_keys.active();
+    for (entity, activity) in &keys {
+        if **activity != active {
+            commands.entity(entity).insert(ContextActivity::<InventoryKey>::new(active));
+        }
+    }
+}
+
+/// The one acceptance rule for opening a member's review, however it was
+/// asked for: the party is in the world, under no question and no pending
+/// screen change, and the member is in the party. The review shows the
+/// selected member, so the caller selects the member it opened.
+#[derive(bevy::ecs::system::SystemParam)]
+pub(crate) struct OpenReview<'w, 's> {
+    screen: Res<'w, State<Screen>>,
+    next: ResMut<'w, NextState<Screen>>,
+    questions: Query<'w, 's, (), With<crate::game::world::level::TravelQuestion>>,
+    roster: Res<'w, PartyRoster>,
+}
+
+impl OpenReview<'_, '_> {
+    /// Open `member`'s review; whether it opens.
+    pub(crate) fn open(&mut self, member: Entity) -> bool {
+        if *self.screen.get() != Screen::World
+            || !matches!(*self.next, NextState::Unchanged)
+            || !self.questions.is_empty()
+            || !self.roster.0.contains(&member)
+        {
+            return false;
+        }
+        self.next.set(Screen::Inventory);
+        true
+    }
 }
 
 /// Retail opens the selected character.
 fn open_with_key(
     _: On<Start<OpenInventory>>,
-    screen: Res<State<Screen>>,
-    mut next: ResMut<NextState<Screen>>,
+    mut review: OpenReview,
     roster: Res<PartyRoster>,
     selected: Res<super::main_screen::SelectedMember>,
 ) {
-    if *screen.get() == Screen::World
-        && matches!(*next, NextState::Unchanged)
-        && selected.member(&roster).is_some()
-    {
-        next.set(Screen::Inventory);
+    if let Some(member) = selected.member(&roster) {
+        review.open(member);
     }
 }
 
@@ -1154,6 +1193,12 @@ impl Plugin for InventoryPlugin {
             .add_input_context::<InventoryRoot>()
             .add_input_context::<info::InfoDialog>()
             .add_systems(Startup, (load_inventory_art, spawn_inventory_key, spawn_held_picture))
+            .add_systems(
+                PreUpdate,
+                hold_inventory_key
+                    .after(bevy::input_focus::InputFocusSystems::Dispatch)
+                    .before(EnhancedInputSystems::Update),
+            )
             .add_systems(OnEnter(Screen::Inventory), enter_inventory)
             .add_systems(OnExit(Screen::Inventory), put_away_held)
             .configure_sets(
@@ -1300,6 +1345,41 @@ mod tests {
                 if still_a_member { vec![] } else { vec![id] }
             );
         }
+    }
+
+    /// A travel question owns the keyboard: I cannot open the review under it.
+    #[test]
+    fn inventory_key_waits_for_an_open_travel_question() {
+        use crate::game::characters::{Gender, Profession, Race};
+        use crate::game::world::level::TravelQuestion;
+        use crate::presentation::test_input::key;
+        let mut app = inventory_app();
+        let window = app
+            .world_mut()
+            .spawn((bevy::window::Window::default(), bevy::window::PrimaryWindow))
+            .id();
+        let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
+        let member =
+            app.world_mut().spawn((Vitals::new(&profile), profile, Carried::default())).id();
+        app.world_mut().resource_mut::<PartyRoster>().0.insert(member);
+        app.finish();
+        app.cleanup();
+        app.update();
+        // Without artwork the screen returns to the world, so look at it as
+        // the key goes down.
+        let opens = |app: &mut App| {
+            key(app, window, KeyCode::KeyI, true);
+            let opened = *app.world().resource::<State<Screen>>().get() == Screen::Inventory;
+            key(app, window, KeyCode::KeyI, false);
+            app.update();
+            opened
+        };
+        let question = app.world_mut().spawn(TravelQuestion { entrance: "gate".into() }).id();
+        app.update();
+        assert!(!opens(&mut app));
+        app.world_mut().despawn(question);
+        app.update();
+        assert!(opens(&mut app));
     }
 
     #[test]
