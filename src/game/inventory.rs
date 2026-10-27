@@ -171,6 +171,10 @@ pub enum EquipSlot {
 }
 
 impl EquipSlot {
+    pub fn is_active(self) -> bool {
+        !matches!(self, Self::AlternatePrimary | Self::AlternateSecondary)
+    }
+
     /// The other hand of the same weapon set.
     pub fn partner(self) -> Option<EquipSlot> {
         Some(match self {
@@ -230,6 +234,13 @@ pub struct Carried {
     pub backpack: [Option<ItemStack>; BACKPACK_SLOTS],
 }
 impl Carried {
+    pub fn active_equipment(&self) -> impl Iterator<Item = (EquipSlot, &Equipped)> {
+        self.equipment
+            .iter()
+            .filter(|(slot, _)| slot.is_active())
+            .filter_map(|(slot, equipped)| equipped.as_ref().map(|equipped| (slot, equipped)))
+    }
+
     pub fn worn(&self, slot: EquipSlot) -> Option<&ItemStack> {
         self.equipment[slot].as_ref().map(|e| &e.stack)
     }
@@ -335,11 +346,7 @@ impl Carried {
         if let Slot::Equipment(s) = slot {
             let Some(e) = self.equipment[s].as_mut() else { return Ok(()) };
             let d = catalog.get(e.stack.item).ok_or(Refusal::MissingContent)?;
-            if d.cursed
-                && !e.curse_released
-                && !dead
-                && !matches!(s, EquipSlot::AlternatePrimary | EquipSlot::AlternateSecondary)
-            {
+            if d.cursed && !e.curse_released && !dead && s.is_active() {
                 e.stack.curse_known = true;
                 return Err(Refusal::Cursed);
             }

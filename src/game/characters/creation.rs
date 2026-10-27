@@ -122,10 +122,11 @@ impl CharacterDraft {
 
     pub fn adjust_skill(&mut self, skill: Skill, increase: bool) -> bool {
         if increase {
+            let preview = self.preview();
             if self.skill_remaining() == 0
                 || self.skills[skill] >= 5
-                || !self.skill_available(skill)
-                || self.preview().skill_points[skill] >= 75
+                || !preview.skill_available(skill)
+                || preview.skill_points[skill] >= 75
             {
                 return false;
             }
@@ -139,29 +140,6 @@ impl CharacterDraft {
         true
     }
 
-    pub fn skill_available(&self, skill: Skill) -> bool {
-        let index = skill as usize;
-        if index >= Skill::FireMagic as usize {
-            // No learned spells in this creation flow. Expert skills require 100
-            // in their governing attribute, unreachable with creation's budgets.
-            return false;
-        }
-        if SKILL_AVAILABILITY[index] & (1 << self.profession as usize) == 0 {
-            return false;
-        }
-        if index >= Skill::Wizardry as usize {
-            return matches!(
-                self.profession,
-                Profession::Mage
-                    | Profession::Priest
-                    | Profession::Alchemist
-                    | Profession::Psionic
-                    | Profession::Bishop
-            );
-        }
-        true
-    }
-
     pub fn preview(&self) -> Character {
         let mut character =
             Character::new(self.name.trim(), self.race, self.gender, self.profession);
@@ -169,12 +147,7 @@ impl CharacterDraft {
         for a in EnumSet::<Attribute>::all() {
             character.attributes[a] += self.attributes[a];
         }
-        let row = profession_row(self.profession);
-        let share = 60 / (1 + row.skills.len() as u32);
-        character.skill_points = EnumMap::default();
-        for &skill in row.skills.iter().chain(std::iter::once(&row.bonus_skill)) {
-            character.skill_points[skill] = (character.skill_base(skill) * share / 100) as u8;
-        }
+        character.seed_starting_skills();
         for skill in EnumSet::<Skill>::all() {
             character.skill_points[skill] += self.skills[skill];
         }

@@ -66,39 +66,30 @@ impl MonsterModel {
 pub struct MonsterCycleModel {
     pub frames_per_second: f32,
     pub parts: Vec<MonsterPart>,
-    /// Model-space positions (metres, facing +Z) per frame, per source
-    /// vertex.
-    pub frames: Vec<Vec<Vec3>>,
+    pub frame_count: usize,
 }
 
 impl MonsterCycleModel {
-    pub fn frame_count(&self) -> usize {
-        self.frames.len()
-    }
-
-    /// The source-vertex positions at a fractional frame. Retail blends
-    /// toward the next frame but never from the last back to the first.
-    pub fn positions_at(&self, frame: f32) -> Vec<Vec3> {
-        let last = self.frames.len() - 1;
+    /// Retail holds the final frame rather than blending back to frame zero.
+    pub fn write_weights(&self, frame: f32, weights: &mut [f32]) {
+        weights.fill(0.0);
+        let last = self.frame_count - 1;
         let frame = frame.clamp(0.0, last as f32);
-        let (index, t) = (frame.floor() as usize, frame.fract());
-        if index >= last || t == 0.0 {
-            return self.frames[index.min(last)].clone();
+        let index = frame.floor() as usize;
+        let t = frame.fract();
+        weights[index] = 1.0 - t;
+        if index < last {
+            weights[index + 1] = t;
         }
-        self.frames[index].iter().zip(&self.frames[index + 1]).map(|(a, b)| a.lerp(*b, t)).collect()
     }
 }
 
 /// One material's faces of a cycle.
 #[derive(Debug)]
 pub struct MonsterPart {
-    /// Positioned at frame 0; instances animate their own copies.
+    /// Shared immutable geometry with one morph target per source frame.
     pub mesh: Handle<Mesh>,
-    pub material: Handle<StandardMaterial>,
-    /// The material's ambient reflectance, which scales sky light.
-    pub ambient: Vec3,
-    /// Light the material gives off itself.
-    pub emission: f32,
-    /// The source vertex of each render vertex.
-    pub source: Vec<u32>,
+    pub surface: super::surface::Surface,
+    /// Bounds enclose every pose, not just the base mesh.
+    pub bounds: bevy::camera::primitives::Aabb,
 }

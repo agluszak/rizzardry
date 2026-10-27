@@ -11,7 +11,8 @@ use super::mesh_record::read_mesh_record;
 use super::prop_loader::{PropLighting, record_meshes};
 use super::sections::read_uncompiled_sections;
 use crate::bytes::Bytes;
-use crate::content::level::{LevelGeometry, LevelPart, Playback, TextureAnimation};
+use crate::content::level::{LevelGeometry, LevelPart};
+use crate::content::surface::Playback;
 
 #[derive(Default, TypePath)]
 pub struct LvlLoader;
@@ -45,6 +46,10 @@ impl AssetLoader for LvlLoader {
                 load_material(context, label, directory, &mut textures, index, material).await,
             );
         }
+        // Only the dome gradients are driven by the game clock.
+        for surface in &mut materials {
+            surface.animation.playback = Playback::Manual;
+        }
         // The dome's vertices are already in sky space around the origin,
         // where the sky camera sits; its record placement is the dome's
         // pivot vertex, not a transform to apply.
@@ -56,17 +61,10 @@ impl AssetLoader for LvlLoader {
             let mesh = context.add_labeled_asset(format!("mesh/{material}"), mesh);
             parts.push(LevelPart {
                 mesh,
-                material: materials[material].handle.clone(),
+                surface: materials[material].clone(),
                 lighting: vertex_lighting,
             });
         }
-        // The dome's gradient frame lists show the time of day: retail sets
-        // them to manual playback and picks the frame from the phase.
-        let mut animated_textures: Vec<TextureAnimation> = materials
-            .into_iter()
-            .filter_map(|m| m.animation)
-            .map(|animation| TextureAnimation { playback: Playback::Manual, ..animation })
-            .collect();
         let props = sections.props.iter().chain(&sections.bitmaps);
         let props = build_props(
             context,
@@ -75,10 +73,9 @@ impl AssetLoader for LvlLoader {
             directory,
             &mut textures,
             &lighting,
-            &mut animated_textures,
         )
         .await;
-        Ok(LevelGeometry { parts, props, animated_textures, ..default() })
+        Ok(LevelGeometry { parts, props, ..default() })
     }
 
     fn extensions(&self) -> &[&str] {

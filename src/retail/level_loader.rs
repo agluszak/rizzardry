@@ -2,6 +2,8 @@
 
 use std::collections::HashMap;
 
+use crate::content::surface::{Playback, Surface, TextureFrames};
+
 use bevy::asset::{AssetLoader, AssetPath, LoadContext, RenderAssetUsages, io::Reader};
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
@@ -26,9 +28,9 @@ use crate::content::items::Dice;
 use crate::content::items::ItemId;
 use crate::content::level::{
     AmbientSoundModel, Animation, CameraPathModel, DoorLock, Fountain, ItemPlacement,
-    LevelDefinition, LevelEnvironment, LevelGeometry, LevelPart, MonsterPlacement, Playback,
-    PropModel, PropModelPart, PropVisual, PropVisualPart, Restores, StateChange, TextureAnimation,
-    TriggerAction, TriggerDefinition, TriggerSound, TriggerUse, VertexLighting,
+    LevelDefinition, LevelEnvironment, LevelGeometry, LevelPart, MonsterPlacement, PropModel,
+    PropModelPart, PropVisual, PropVisualPart, Restores, StateChange, TriggerAction,
+    TriggerDefinition, TriggerSound, TriggerUse, VertexLighting,
 };
 
 /// Time-of-day phase used for baked lighting until the game clock exists:
@@ -57,6 +59,8 @@ pub struct PvlLoader;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PvlLoadError {
+    #[error("monster cycle has {0} frames, exceeding native morph target capacity")]
+    MorphTargets(usize),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
@@ -74,14 +78,6 @@ enum Blend {
     Opaque,
     Translucent,
     Additive,
-}
-
-pub(super) struct LoadedMaterial {
-    pub(super) handle: Handle<StandardMaterial>,
-    pub(super) emission: f32,
-    /// The material's ambient reflectance, which scales sun and sky light.
-    pub(super) ambient: Vec3,
-    pub(super) animation: Option<TextureAnimation>,
 }
 
 /// A path in `directory` next to the asset being loaded, in the same source.
@@ -165,7 +161,7 @@ pub(super) async fn load_material(
     textures: &mut LoadedTextures,
     index: usize,
     record: &MaterialRecord,
-) -> LoadedMaterial {
+) -> Surface {
     let selected = if index == 0 { None } else { record.texture() };
     let mut frames = Vec::new();
     let mut alpha = false;
@@ -208,8 +204,7 @@ pub(super) async fn load_material(
         ..default()
     };
     let handle = context.add_labeled_asset(label, material);
-    let animation = (frames.len() > 1).then(|| TextureAnimation {
-        material: handle.clone(),
+    let animation = TextureFrames {
         frames: frames.into_iter().map(|(frame, _)| frame).collect(),
         playback: match record.animation_mode {
             1 => Playback::PingPong,
@@ -219,9 +214,9 @@ pub(super) async fn load_material(
         },
         frames_per_second: record.animation_rate,
         start_frame: record.animation_frame.max(0) as usize,
-    });
-    LoadedMaterial {
-        handle,
+    };
+    Surface {
+        material: handle,
         emission: record.emission,
         ambient: Vec3::from(record.ambient),
         animation,
@@ -472,7 +467,6 @@ pub(super) async fn build_props(
     directory: &str,
     textures: &mut LoadedTextures,
     lighting: &PropLighting<'_>,
-    animated_textures: &mut Vec<TextureAnimation>,
 ) -> Vec<PropVisual> {
     let mut props = Vec::new();
     for (prop_index, prop) in source.enumerate() {
@@ -496,11 +490,10 @@ pub(super) async fn build_props(
                 let mesh = context.add_labeled_asset(label, mesh);
                 meshes.push(LevelPart {
                     mesh,
-                    material: part_materials[material].handle.clone(),
+                    surface: part_materials[material].clone(),
                     lighting,
                 });
             }
-            animated_textures.extend(part_materials.into_iter().filter_map(|m| m.animation));
             parts.push(PropVisualPart { transform, meshes });
         }
         props.push(PropVisual { name: prop.name.clone(), face_camera: prop.face_camera, parts });
@@ -548,28 +541,14 @@ impl AssetLoader for PvlLoader {
                 {
                     let handle =
                         context.add_labeled_asset(format!("mesh/{mesh_index}/{material}"), part);
-                    parts.push(LevelPart {
-                        mesh: handle,
-                        material: loaded.handle.clone(),
-                        lighting,
-                    });
+                    parts.push(LevelPart { mesh: handle, surface: loaded.clone(), lighting });
                 }
             }
         }
         let level_lighting = level_lighting(&sections.lights, sections.environment_offset);
         let lighting = PropLighting { ambient, level: &level_lighting };
-        let mut animated_textures: Vec<TextureAnimation> =
-            materials.into_iter().filter_map(|m| m.animation).collect();
         let props = sections.props.iter().chain(&sections.bitmaps);
-        let props = build_props(
-            context,
-            props,
-            directory,
-            &mut textures,
-            &lighting,
-            &mut animated_textures,
-        )
-        .await;
+        let props = build_props(context, props, directory, &mut textures, &lighting).await;
         Ok(LevelGeometry {
             parts,
             environment,
@@ -582,7 +561,6 @@ impl AssetLoader for PvlLoader {
                 })
                 .collect(),
             props,
-            animated_textures,
         })
     }
 

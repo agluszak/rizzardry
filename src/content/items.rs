@@ -248,9 +248,5 @@ pub struct ItemModel {
 #[derive(Debug)]
 pub struct ItemModelPart {
     pub mesh: Handle<Mesh>,
-    pub material: Handle<StandardMaterial>,
-    /// The material's ambient reflectance, which scales sky light.
-    pub ambient: Vec3,
-    /// Light the material gives off itself.
-    pub emission: f32,
+    pub surface: super::surface::Surface,
 }
