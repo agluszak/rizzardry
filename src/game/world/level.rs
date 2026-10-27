@@ -229,14 +229,16 @@ impl LevelContents<'_, '_> {
         let notes = self.notes.get(root).ok();
         LevelRecord {
             triggers: self.devices.remember(root, state),
-            prop_frames: children
-                .iter()
-                .filter_map(|&c| self.props.get(c).ok())
+            prop_frames: self
+                .props
+                .iter_many(children)
+                .matched()
                 .map(|(prop, motion)| (prop.definition, motion.target))
                 .collect(),
-            monsters: children
-                .iter()
-                .filter_map(|&c| self.monsters.get(c).ok())
+            monsters: self
+                .monsters
+                .iter_many(children)
+                .matched()
                 .map(|(monster, at, walker, group)| KeptMonster {
                     group: group.and_then(|m| self.groups.get(m.0).ok()).map(|g| g.authored),
                     monster: monster.clone(),
@@ -244,12 +246,13 @@ impl LevelContents<'_, '_> {
                     yaw: at.rotation().to_euler(EulerRot::YXZ).0,
                 })
                 .collect(),
-            items: children
-                .iter()
-                .filter_map(|&c| self.items.get(c).ok())
+            items: self
+                .items
+                .iter_many(children)
+                .matched()
                 .map(|(item, at)| (item.clone(), at.translation))
                 .collect(),
-            groups: children.iter().filter_map(|&c| self.groups.get(c).ok().copied()).collect(),
+            groups: self.groups.iter_many(children).matched().copied().collect(),
             notes: notes.cloned().unwrap_or_default(),
         }
     }

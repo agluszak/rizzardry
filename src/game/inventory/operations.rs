@@ -30,16 +30,16 @@ impl InventoryOperations<'_, '_> {
             .as_ref()
             .and_then(|d| self.catalogs.get(&d.items))
             .ok_or(Refusal::MissingContent)?;
-        let (profile, vitals, _) = self.members.get(member).map_err(|_| Refusal::NotMember)?;
+        let (profile, vitals, mut carried) =
+            self.members.get_mut(member).map_err(|_| Refusal::NotMember)?;
         let definition = catalog.get(held.item.item).ok_or(Refusal::MissingContent)?;
         let item = held.item.display_name(definition, false);
         let name = profile.name.clone();
         let eligible = crate::game::camp::can_act(vitals);
         let pool_first = !eligible || self.battle.is_some();
-        // Try the pool before borrowing carried items when that is the rule.
+        // Try the pool before mutating carried items when that is the rule.
         let mut result = if pool_first { self.party.give_held(None, true, catalog) } else { None };
         if eligible && (result.is_none() || result == Some(Given::NoRoom)) {
-            let (_, _, mut carried) = self.members.get_mut(member).unwrap();
             result = self.party.give_held(Some(&mut carried), false, catalog);
         }
         Ok(result.map(|given| match given {
@@ -100,8 +100,8 @@ impl InventoryOperations<'_, '_> {
                 if !self.roster.0.contains(&member) {
                     return Err(Refusal::NotMember);
                 }
-                let (character, vitals, carried) =
-                    self.members.get(member).map_err(|_| Refusal::NotMember)?;
+                let (character, vitals, mut carried) =
+                    self.members.get_mut(member).map_err(|_| Refusal::NotMember)?;
                 let target = carried.slot(slot).ok_or(Refusal::Nothing)?;
                 let merge =
                     self.party.held.as_ref().zip(target.as_ref()).is_some_and(|(held, target)| {
@@ -120,11 +120,9 @@ impl InventoryOperations<'_, '_> {
                     {
                         return Err(Refusal::DoesNotFit);
                     }
-                    let (_, _, mut carried) = self.members.get_mut(member).unwrap();
                     self.party.merge_held(Some(&mut carried), destination, catalog);
                 } else {
-                    self.party.check_swap(character, vitals, carried, slot, catalog)?;
-                    let (character, vitals, mut carried) = self.members.get_mut(member).unwrap();
+                    self.party.check_swap(character, vitals, &carried, slot, catalog)?;
                     self.party.swap_with_hand(
                         character,
                         vitals,

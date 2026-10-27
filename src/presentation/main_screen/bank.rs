@@ -4,10 +4,12 @@
 //! Camp, search, the formation panel and the combat orders work; the
 //! journal, items, spells and options are grayed until they exist.
 
+use crate::presentation::retail_controls::{ControlSkin, set_enabled};
 use bevy::prelude::*;
+use bevy::ui::Selected;
 use bevy::ui_widgets::Activate;
 
-use super::{MainScreenArt, Panel, ScreenLayout, SelectedMember, button, layer, loaded};
+use super::{MainScreenArt, Panel, ScreenLayout, SelectedMember, layer};
 use crate::content::items::ItemCatalog;
 use crate::content::ui::SpriteSheet;
 use crate::game::camp::CampRequest;
@@ -18,7 +20,7 @@ use crate::game::inventory::{Carried, EquipSlot};
 use crate::game::party::Order;
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::search::{Search, ToggleSearch};
-use crate::presentation::screen_art::{BitmapText, Picture, hover_art, label, picture, sprite};
+use crate::presentation::screen_art::{BitmapText, Picture, PictureCrop, label, picture};
 use bevy::picking::hover::Hovered;
 
 /// Native nodes retain the buttons' input and display lifetimes.
@@ -42,26 +44,11 @@ enum Bank {
     EndCombat,
 }
 
-#[derive(Clone, Copy)]
-struct Frames {
-    grayed: usize,
-    off: usize,
-    hovered: usize,
-    on: usize,
-    on_hovered: usize,
-}
-impl From<[usize; 5]> for Frames {
-    fn from([grayed, off, hovered, on, on_hovered]: [usize; 5]) -> Self {
-        Self { grayed, off, hovered, on, on_hovered }
-    }
-}
-
 #[derive(Component)]
 #[require(Hovered)]
 pub struct BankFace {
     kind: Option<Bank>,
     sheet: Handle<SpriteSheet>,
-    frames: Frames,
 }
 
 fn bank_button(
@@ -70,20 +57,19 @@ fn bank_button(
     frames: [usize; 5],
     kind: Option<Bank>,
 ) -> impl Scene {
-    let frames = Frames::from(frames);
+    let [disabled, normal, hovered, pressed, pressed_hovered] = frames;
+    let skin = ControlSkin::new(normal, hovered, pressed, pressed_hovered, disabled);
     bsn! {
-        @picture(default(),0,at)
-        bevy::ui_widgets::Button bevy::input_focus::tab_navigation::TabIndex(0) super::HudFocus Outline::new(px(1),px(1),Color::NONE) Pickable::default()
-        template(move |_| Ok(BankFace {kind,sheet:sheet.clone(),frames}))
+        @crate::presentation::retail_controls::image_button(sheet.clone(),at,skin)
+        template(move |_| Ok(BankFace {kind,sheet:sheet.clone()}))
         on(press)
     }
 }
 
-pub fn row(art: &MainScreenArt, sheets: &Assets<SpriteSheet>) -> impl SceneList {
-    let progress = sprite(loaded(sheets, &art.progress), 0, Vec2::new(177.0, 2.0));
-    let arrows = loaded(sheets, &art.scroll_arrows);
+pub fn row(art: &MainScreenArt, _sheets: &Assets<SpriteSheet>) -> impl SceneList {
+    let progress = picture(art.progress.clone(), 0, Vec2::new(177.0, 2.0));
     let steps:Vec<_>=[(0,300.0,-1_i32),(4,323.0,1)].into_iter().map(|(frame,x,step)|bsn!{
-        @button(arrows,frame,Vec2::new(x,456.0)) @hover_art(arrows,frame,frame+1)
+        @crate::presentation::retail_controls::image_button(art.scroll_arrows.clone(),Vec2::new(x,456.0),ControlSkin::new(frame,frame+1,frame+2,frame+2,frame+3))
         on(move |_:On<Activate>,roster:Res<PartyRoster>,mut selected:ResMut<SelectedMember>|{
             let members=roster.0.len() as i32;
             if members>0{let current=selected.member(&roster).and_then(|m|roster.0.get_index_of(&m)).unwrap_or(0);
@@ -108,7 +94,7 @@ pub fn row(art: &MainScreenArt, sheets: &Assets<SpriteSheet>) -> impl SceneList 
         @layer() ButtonBank Children [{buttons}]
         -- @label(art.small_font.clone(),Vec2::new(343.0,454.0),185.0) CaptionLine(0)
         -- @label(art.small_font.clone(),Vec2::new(343.0,465.0),185.0) CaptionLine(1)
-        -- @{progress} RoundProgress Visibility::Hidden
+        -- @{progress} RoundProgress template(|_| Ok(PictureCrop::horizontal(0.0, 0.0))) Visibility::Hidden
         -- {steps}
     }
 }
@@ -126,10 +112,9 @@ pub fn draw_bank(
     mut buttons: Query<(
         Entity,
         &BankFace,
-        &Hovered,
-        Has<bevy::ui::Pressed>,
+        &ControlSkin,
+        Has<Selected>,
         Has<bevy::ui::InteractionDisabled>,
-        &mut bevy::input_focus::tab_navigation::TabIndex,
         &mut Picture,
         &mut Visibility,
     )>,
@@ -137,9 +122,7 @@ pub fn draw_bank(
     let fighting = battle.is_some();
     let order =
         selected.member(&roster).and_then(|m| orders.get(m).ok()).copied().unwrap_or_default();
-    for (entity, face, hovered, pressing, disabled, mut tab, mut picture, mut visible) in
-        &mut buttons
-    {
+    for (entity, face, skin, selected, disabled, mut picture, mut visible) in &mut buttons {
         let combat_only = matches!(face.kind, Some(Bank::Order(_) | Bank::Round));
         visible.set_if_neq(if combat_only && !fighting {
             Visibility::Hidden
@@ -151,33 +134,20 @@ pub fn draw_bank(
                 && !(fighting && matches!(kind, Bank::Camp | Bank::Search))
                 && !(combat_only && !fighting)
         });
-        tab.set_if_neq(bevy::input_focus::tab_navigation::TabIndex(if enabled { 0 } else { -1 }));
-        if enabled == disabled {
-            if enabled {
-                commands.entity(entity).remove::<bevy::ui::InteractionDisabled>();
-            } else {
-                commands
-                    .entity(entity)
-                    .insert(bevy::ui::InteractionDisabled)
-                    .remove::<bevy::ui::Pressed>();
-            }
-        }
+        set_enabled(&mut commands, entity, enabled, disabled);
         let selected_state = match face.kind {
             Some(Bank::Search) => search.on(),
             Some(Bank::Formation) => layout.shows(Panel::Formation),
             Some(Bank::Order(wanted)) => wanted == order,
             _ => false,
         };
-        let mut frame = if !enabled {
-            face.frames.grayed
-        } else {
-            match (selected_state || pressing, hovered.get()) {
-                (true, true) => face.frames.on_hovered,
-                (true, false) => face.frames.on,
-                (false, true) => face.frames.hovered,
-                (false, false) => face.frames.off,
+        if selected_state != selected {
+            if selected_state {
+                commands.entity(entity).insert(Selected);
+            } else {
+                commands.entity(entity).remove::<Selected>();
             }
-        };
+        }
         let sheet = match face.kind {
             Some(Bank::Round) => {
                 match (settings.continuous, battle.as_ref().is_some_and(|b| b.executing())) {
@@ -188,7 +158,13 @@ pub fn draw_bank(
                 }
             }
             Some(Bank::EndCombat) => {
-                frame = if fighting { 7 } else { 3 };
+                commands.entity(entity).insert(ControlSkin::new(
+                    0,
+                    0,
+                    0,
+                    0,
+                    if fighting { 7 } else { 3 },
+                ));
                 if picture.at.x != if fighting { 200.0 } else { 199.0 } {
                     picture.at.x = if fighting { 200.0 } else { 199.0 };
                 }
@@ -198,13 +174,18 @@ pub fn draw_bank(
         };
         let at = picture.at;
         let bounds = if !enabled {
-            frame
+            if matches!(face.kind, Some(Bank::EndCombat)) && fighting { 7 } else { skin.disabled }
         } else if selected_state {
-            face.frames.on
+            skin.pressed
         } else {
-            face.frames.off
+            skin.normal
         };
-        picture.set_if_neq(Picture { sheet: sheet.clone(), frame, at, bounds: Some(bounds) });
+        picture.set_if_neq(Picture {
+            sheet: sheet.clone(),
+            frame: picture.frame,
+            at,
+            bounds: Some(bounds),
+        });
     }
 }
 
@@ -251,14 +232,13 @@ fn press(
 /// Show the round's progress along the roof while one plays.
 pub fn show_round_progress(
     battle: Option<Res<Battle>>,
-    mut bars: Query<(&mut Node, &mut Visibility), With<RoundProgress>>,
+    mut bars: Query<(&mut PictureCrop, &mut Visibility), With<RoundProgress>>,
 ) {
     let progress = battle.and_then(|b| b.progress());
-    for (mut node, mut visibility) in &mut bars {
+    for (mut crop, mut visibility) in &mut bars {
         match progress {
             Some(progress) => {
-                node.width = Val::Px(286.0 * progress);
-                node.overflow = Overflow::clip();
+                crop.set_if_neq(PictureCrop::horizontal(0.0, 286.0 * progress));
                 visibility.set_if_neq(Visibility::Inherited);
             }
             None => {

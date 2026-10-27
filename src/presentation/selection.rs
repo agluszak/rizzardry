@@ -6,10 +6,10 @@ use super::party_view::PartyCamera;
 use crate::game::inventory::PartyInventory;
 use crate::game::world::items::{CLEARANCE, THROW, WorldItem, drop_held, take_item};
 use crate::game::world::level::Level;
+use crate::game::world::obstacles::WorldObstacles;
 use crate::game::world::population::Monster;
 use crate::game::world::props::Prop;
 use crate::game::world::triggers::{self, Device};
-use avian3d::prelude::{RigidBody, SpatialQuery, SpatialQueryFilter};
 use bevy::camera::visibility::RenderLayers;
 use bevy::picking::mesh_picking::ray_cast::{MeshRayCast, MeshRayCastSettings};
 use bevy::picking::pointer::{PointerId, PointerLocation};
@@ -63,8 +63,7 @@ pub fn activate_selection(
     selection: Res<WorldSelection>,
     props: Query<Has<Device>, With<Prop>>,
     held: Res<PartyInventory>,
-    spatial: SpatialQuery,
-    bodies: Query<&RigidBody>,
+    obstacles: WorldObstacles,
     mut commands: Commands,
 ) {
     if !interact.contains(ActionEvents::START) {
@@ -82,8 +81,7 @@ pub fn activate_selection(
     }
     if held.held.is_some() {
         let (Some(level), Some(ray)) = (selection.level, selection.ray) else { return };
-        let solid = |entity| bodies.get(entity).is_ok_and(RigidBody::is_static);
-        if let Some(at) = drop_point(&spatial, ray, &solid) {
+        if let Some(at) = drop_point(&obstacles, ray) {
             commands.queue(move |world: &mut World| {
                 let _ = drop_held(world, level, at);
             });
@@ -96,13 +94,11 @@ pub fn activate_selection(
 }
 
 /// Retail stops the throw short of a collision and probes the ground below it.
-fn drop_point(spatial: &SpatialQuery, ray: Ray3d, solid: &dyn Fn(Entity) -> bool) -> Option<Vec3> {
-    let filter = SpatialQueryFilter::default();
-    let reach = spatial
-        .cast_ray_predicate(ray.origin, ray.direction, THROW, true, &filter, solid)
-        .map_or(THROW, |hit| hit.distance);
+fn drop_point(obstacles: &WorldObstacles, ray: Ray3d) -> Option<Vec3> {
+    let reach =
+        obstacles.first_hit(ray.origin, ray.direction, THROW).map_or(THROW, |hit| hit.distance);
     let above = ray.get_point((reach - CLEARANCE).max(0.0));
-    let ground = spatial.cast_ray_predicate(above, Dir3::NEG_Y, 100.0, true, &filter, solid)?;
+    let ground = obstacles.first_hit(above, Dir3::NEG_Y, 100.0)?;
     Some(above - Vec3::Y * (ground.distance - CLEARANCE))
 }
 

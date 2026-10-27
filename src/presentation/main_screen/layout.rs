@@ -170,7 +170,6 @@ pub fn buttons(
     art: &MainScreenArt,
     sheets: &Assets<SpriteSheet>,
 ) -> impl SceneList {
-    let roof_buttons = loaded(sheets, &art.roof_buttons);
     let modes: Vec<_> =
         [(LayoutMode::Closed, 10.0), (LayoutMode::Wide, 39.0), (LayoutMode::Full, 68.0)]
             .into_iter()
@@ -178,7 +177,7 @@ pub fn buttons(
             .map(|(i, (mode, x))| {
                 let image = if mode == layout.mode { 3 + i } else { i };
                 bsn! {
-                    @button(roof_buttons, image, Vec2::new(x, 1.0))
+                    @button(art.roof_buttons.clone(), image, Vec2::new(x, 1.0))
                     on(move |_: On<Activate>, mut layout: ResMut<ScreenLayout>| {
                         layout.mode = mode;
                     })
@@ -201,7 +200,7 @@ pub fn buttons(
         }
         let image = if layout.shows(panel) { hide } else { show };
         panels.push(Box::new(bsn! {
-            @button(arrows, image, at)
+            @button(art.layout_arrows.clone(), image, at)
             on(move |_: On<Activate>, mut layout: ResMut<ScreenLayout>| layout.toggle(panel))
         }));
     }

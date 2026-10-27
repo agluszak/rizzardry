@@ -16,10 +16,13 @@ use bevy::input::keyboard::KeyboardInput;
 use bevy::input_focus::tab_navigation::{TabGroup, TabIndex};
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
-use bevy::ui::{InteractionDisabled, Pressed};
-use bevy::ui_widgets::{Activate, Button};
+use bevy::ui::InteractionDisabled;
+use bevy::ui_widgets::Activate;
 
 use crate::game::screen::Screen;
+use crate::presentation::retail_controls::{ControlSkin, set_enabled};
+use crate::presentation::screen_art::BitmapText;
+use bevy::ui::Selected;
 use bevy_enhanced_input::prelude::*;
 
 use crate::content::level::{CollisionMesh, LevelDefinition};
@@ -231,11 +234,13 @@ pub struct NotesLayer;
 #[derive(Component, Clone, Default)]
 pub struct NoteMarker;
 
+/// The note index is view identity only; gameplay validates editing separately.
+#[derive(Component)]
+pub struct NoteView(Option<usize>);
+
 /// A button drawn from four frames of a sheet starting at `base`.
 #[derive(Component)]
 pub struct SheetButton {
-    sheet: Handle<SpriteSheet>,
-    base: usize,
     action: ButtonAction,
 }
 
@@ -292,15 +297,14 @@ pub fn request_automap(
 pub fn enter_automap(
     mut commands: Commands,
     party: Query<&Transform, With<PartyBody>>,
-    levels: Query<(Entity, &Level)>,
-    geometry: Res<Assets<LevelDefinition>>,
+    played: crate::game::world::level::PlayedLevel,
     mut next: ResMut<NextState<Screen>>,
 ) {
-    let (Ok(party), Ok((level, definition))) = (party.single(), levels.single()) else {
+    let (Ok(party), Some(level)) = (party.single(), played.entity()) else {
         next.set(Screen::World);
         return;
     };
-    let collision = geometry.get(&definition.geometry);
+    let collision = played.geometry();
     let layers = collision.map_or(&[][..], |g| g.map_layers.as_slice());
     let mut map = Automap::new(
         collision.map(|g| &g.collision),
@@ -392,18 +396,18 @@ pub fn build_automap(
             let node = absolute(Vec2::ZERO, VIEWPORT);
             bsn! { FloorPlan ImageNode { image: {plan} } node Pickable::IGNORE }
         });
-    let button =
-        |sheet: &SpriteSheet, handle: &Handle<SpriteSheet>, base: usize, at: Vec2, action| {
-            let (image, handle) = (sheet.images[base].clone(), handle.clone());
-            bsn! {
-                Node { position_type: PositionType::Absolute, left: px(at.x), top: px(at.y) }
-                ImageNode { image: {image} }
-                Hovered Button TabIndex(0)
-                on(primary_press)
-                template(move |_| Ok(SheetButton { sheet: handle.clone(), base, action }))
-                on(press_button)
-            }
-        };
+    let button = |sheet: &SpriteSheet,
+                  handle: &Handle<SpriteSheet>,
+                  base: usize,
+                  at: Vec2,
+                  action| {
+        let _ = sheet;
+        bsn! {
+            @crate::presentation::retail_controls::image_button(handle.clone(), at, ControlSkin::new(base, base+1, base+2, base+2, base+3))
+            template(move |_| Ok(SheetButton { action }))
+            on(press_button)
+        }
+    };
     let add = ButtonAction::Tool(MapTool::AddNote);
     let erase = ButtonAction::Tool(MapTool::EraseNote);
     let (layer, notes, zoom, moves) =
@@ -439,8 +443,8 @@ pub fn build_automap(
     let marker_image = art.party_marker.clone();
     let frame = border.images[0].clone();
     let (whole, map_area) = (absolute(Vec2::ZERO, SCREEN), absolute(VIEWPORT_AT, VIEWPORT));
-    let (notes_layer, label) =
-        (absolute(Vec2::ZERO, VIEWPORT), absolute(Vec2::new(500.0, 199.0), Vec2::new(120.0, 16.0)));
+    let notes_layer = absolute(Vec2::ZERO, VIEWPORT);
+    let label_font = art.font.clone();
     commands.entity(root).insert(AutomapBuilt).queue_spawn_related_scenes::<Children>(vec![bsn! {
     @screen()
     Children [
@@ -459,7 +463,7 @@ pub fn build_automap(
             -- PartyMarker ImageNode { image: {marker_image} } marker Pickable::IGNORE
             -- NotesLayer notes_layer Pickable::IGNORE
         ]
-        -- LayerLabel ImageNode label Pickable::IGNORE
+        -- LayerLabel template(move |_| Ok(BitmapText { font: label_font.clone(), at: Vec2::new(498.0, 199.0), width: 120.0, justify: bevy::text::Justify::Center, ..default() }))
         -- {buttons}
     ]
     }]);
@@ -514,12 +518,6 @@ fn floor_plan(collision: &CollisionMesh, layers: &[f32], automap: &Automap) -> I
 
 // Button tracks presses natively; reject non-primary presses before its later
 // click can activate. Keeping this policy local preserves the map canvas gestures.
-fn primary_press(event: On<PointerPress>, mut commands: Commands) {
-    if event.button != bevy::picking::pointer::PointerButton::Primary {
-        commands.entity(event.entity).remove::<Pressed>();
-    }
-}
-
 fn action_enabled(action: ButtonAction, map: &Automap, layers: Option<usize>) -> bool {
     match action {
         ButtonAction::LayerPrevious => map.layer > 0,
@@ -585,47 +583,29 @@ pub fn paint_buttons(
     level: Query<&Level>,
     geometry: Res<Assets<LevelDefinition>>,
     mut commands: Commands,
-    mut buttons: Query<(
-        Entity,
-        &Hovered,
-        &SheetButton,
-        Has<InteractionDisabled>,
-        Has<Pressed>,
-        &mut TabIndex,
-        &mut ImageNode,
-    )>,
+    buttons: Query<(Entity, &SheetButton, Has<InteractionDisabled>, Has<Selected>)>,
     automap: Option<Single<Ref<Automap>>>,
-    sheets: Res<Assets<SpriteSheet>>,
 ) {
     let Some(automap) = automap else { return };
-    for (entity, hovered, button, disabled, pressed, mut tab, mut image) in &mut buttons {
+    let layers = level
+        .get(automap.level)
+        .ok()
+        .and_then(|l| geometry.get(&l.geometry))
+        .map(|g| g.map_layers.len());
+    for (entity, button, disabled, selected) in &buttons {
         let on = matches!(button.action, ButtonAction::Tool(tool) if automap.tool == Some(tool));
-        let layers = level
-            .get(automap.level)
-            .ok()
-            .and_then(|l| geometry.get(&l.geometry))
-            .map(|g| g.map_layers.len());
-        let enabled = action_enabled(button.action, &automap, layers);
-        tab.set_if_neq(TabIndex(if enabled { 0 } else { -1 }));
-        if enabled == disabled {
-            if enabled {
-                commands.entity(entity).remove::<InteractionDisabled>();
+        set_enabled(
+            &mut commands,
+            entity,
+            action_enabled(button.action, &automap, layers),
+            disabled,
+        );
+        if on != selected {
+            if on {
+                commands.entity(entity).insert(Selected);
             } else {
-                commands.entity(entity).insert(InteractionDisabled).remove::<Pressed>();
+                commands.entity(entity).remove::<Selected>();
             }
-        }
-        let state = if !enabled {
-            3
-        } else if on || pressed {
-            2
-        } else {
-            hovered.get() as usize
-        };
-        if let Some(frame) =
-            sheets.get(&button.sheet).and_then(|s| s.images.get(button.base + state))
-            && image.image != *frame
-        {
-            image.image = frame.clone();
         }
     }
 }
@@ -686,86 +666,73 @@ fn click_map(
 
 pub fn draw_notes(
     mut commands: Commands,
-    layer: Query<(Entity, Ref<NotesLayer>)>,
+    layer: Query<Entity, With<NotesLayer>>,
     automap: Option<Single<Ref<Automap>>>,
     notes: Query<Ref<MapNotes>>,
     art: Option<Res<AutomapArt>>,
-    sheets: Res<Assets<SpriteSheet>>,
-    mut images: ResMut<Assets<Image>>,
+    mut views: Query<(Entity, &NoteView, &mut Node, &mut Visibility, &Children)>,
+    mut labels: Query<(&mut BitmapText, &mut Visibility), Without<NoteView>>,
 ) {
-    let (Some(automap), Some(art), Ok((layer, layer_state))) = (automap, art, layer.single())
-    else {
-        return;
-    };
-    let Ok(notes) = notes.get(automap.level) else { return };
-    if !layer_state.is_added()
-        && !notes.is_changed()
-        && !automap.is_changed()
-        && !sheets.is_changed()
-    {
-        return;
-    }
-    let Some(font) = sheets.get(&art.font) else { return };
-    let mut parts: Vec<Box<dyn Scene>> = vec![];
-    // The draft replaces only its displayed label; persistent notes remain
-    // untouched until the explicit confirm operation succeeds.
+    let (Some(map), Some(art), Ok(layer)) = (automap, art, layer.single()) else { return };
+    let Ok(notes) = notes.get(map.level) else { return };
+    // Retain each marker/label while panning, editing and changing layers.
     let displayed = notes
         .notes
         .iter()
         .enumerate()
-        .filter(|(index, _)| {
-            automap
-                .editing
-                .as_ref()
-                .is_none_or(|d| d.original.as_ref().map(|(index, _)| *index) != Some(*index))
-        })
-        .map(|(_, note)| (note, false))
-        .chain(automap.editing.iter().map(|d| (&d.note, true)));
-    for (note, editing) in displayed {
-        let at = automap.project(note.position);
-        let (marker, image) =
-            (absolute(at - MARKER / 2.0, Vec2::splat(MARKER)), art.note_marker.clone());
-        parts.push(Box::new(
-            bsn! { NoteMarker ImageNode { image: {image} } marker Pickable::IGNORE },
-        ));
-        // Retail keeps the marker visible on other layers, but only labels
-        // and selects notes on the current layer.
-        if editing || note.layer != automap.layer || note.text.is_empty() {
-            continue;
-        }
-        let label = font.text_image(&note.text);
-        let size = label.size_f32();
-        // The note being typed is boxed.
-        let border = if editing { 1.0 } else { 0.0 };
-        let (left, top) = (at.x + MARKER / 2.0 + 2.0 - border, at.y - size.y / 2.0 - border);
-        let text: Vec<_> = (!note.text.is_empty())
-            .then(|| {
-                let label = images.add(label);
-                bsn! {
-                    Node { width: px(size.x), height: px(size.y) }
-                    ImageNode { image: {label} }
-                    Pickable::IGNORE
-                }
-            })
-            .into_iter()
-            .collect();
-        parts.push(Box::new(bsn! {
-            Node {
-                position_type: PositionType::Absolute,
-                left: px(left),
-                top: px(top),
-                border: UiRect::all(px(border)),
-                min_width: px(4),
+        .map(|(i, n)| (Some(i), n))
+        .chain(map.editing.iter().map(|d| (None, &d.note)));
+    let hidden = map.editing.as_ref().and_then(|d| d.original.as_ref().map(|(i, _)| *i));
+    for (key, note) in displayed {
+        let at = map.project(note.position);
+        let show =
+            key.is_some() && key != hidden && note.layer == map.layer && !note.text.is_empty();
+        let text = BitmapText {
+            font: art.font.clone(),
+            value: note.text.clone(),
+            at: Vec2::new(MARKER + 2.0, MARKER / 2.0),
+            ..default()
+        };
+        if let Some((_, _, mut node, mut visible, children)) =
+            views.iter_mut().find(|(_, v, _, _, _)| v.0 == key)
+        {
+            node.set_if_neq(absolute(at - MARKER / 2.0, Vec2::splat(MARKER)));
+            visible.set_if_neq(if key.is_some() && key == hidden {
+                Visibility::Hidden
+            } else {
+                Visibility::Inherited
+            });
+            for child in children.iter() {
+                let Ok((mut label, mut visible)) = labels.get_mut(child) else { continue };
+                label.set_if_neq(text.clone());
+                visible.set_if_neq(if show { Visibility::Inherited } else { Visibility::Hidden });
             }
-            BorderColor::all(EDIT_BOX)
-            Pickable::IGNORE
-            Children [ {text} ]
-        }));
+        } else {
+            let marker = commands
+                .spawn((
+                    NoteMarker,
+                    NoteView(key),
+                    ImageNode::new(art.note_marker.clone()),
+                    absolute(at - MARKER / 2.0, Vec2::splat(MARKER)),
+                    Pickable::IGNORE,
+                    ChildOf(layer),
+                ))
+                .id();
+            commands.spawn((
+                text,
+                UiTransform::from_translation(bevy::ui::Val2::new(px(0), percent(-50))),
+                if show { Visibility::Inherited } else { Visibility::Hidden },
+                ChildOf(marker),
+            ));
+        }
     }
-    commands
-        .entity(layer)
-        .despawn_related::<Children>()
-        .queue_spawn_related_scenes::<Children>(parts);
+    for (entity, view, _, _, _) in &views {
+        if view.0.is_some_and(|i| i >= notes.notes.len())
+            || (view.0.is_none() && map.editing.is_none())
+        {
+            commands.entity(entity).despawn();
+        }
+    }
 }
 
 pub fn glow_note_markers(time: Res<Time>, mut markers: Query<&mut ImageNode, With<NoteMarker>>) {
@@ -810,37 +777,21 @@ pub fn update_map_view(
 }
 
 pub fn draw_layer_label(
-    automap: Option<Single<Ref<Automap>>>,
-    art: Option<Res<AutomapArt>>,
-    sheets: Res<Assets<SpriteSheet>>,
+    automap: Option<Single<&Automap>>,
     level: Query<&Level>,
     geometry: Res<Assets<LevelDefinition>>,
-    mut labels: Query<(Entity, &mut ImageNode, &mut Node), With<LayerLabel>>,
-    mut images: ResMut<Assets<Image>>,
-    mut previous: Local<Option<(Entity, usize)>>,
+    mut labels: Query<&mut BitmapText, With<LayerLabel>>,
 ) {
-    let (Some(automap), Some(art), Ok((entity, mut image, mut node))) =
-        (automap, art, labels.single_mut())
-    else {
+    let Some(map) = automap else { return };
+    let Some(level) = level.get(map.level).ok().and_then(|l| geometry.get(&l.geometry)) else {
         return;
     };
-    if *previous == Some((entity, automap.layer)) {
-        return;
+    let value = format!("Layer {}/{}", map.layer + 1, level.map_layers.len() + 1);
+    for mut label in &mut labels {
+        if label.value != value {
+            label.value.clone_from(&value);
+        }
     }
-    let (Some(font), Some(level)) = (
-        sheets.get(&art.font),
-        level.get(automap.level).ok().and_then(|l| geometry.get(&l.geometry)),
-    ) else {
-        return;
-    };
-    let label =
-        font.text_image(&format!("Layer {}/{}", automap.layer + 1, level.map_layers.len() + 1));
-    let size = label.size_f32();
-    node.left = Val::Px(558.0 - size.x / 2.0);
-    node.width = Val::Px(size.x);
-    node.height = Val::Px(size.y);
-    image.image = images.add(label);
-    *previous = Some((entity, automap.layer));
 }
 
 /// Let the window backend draw retail's cursors with their original
@@ -901,6 +852,8 @@ pub fn update_map_cursor(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::presentation::retail_controls::primary_press;
+    use bevy::ui_widgets::Button;
 
     fn large_map() -> Automap {
         let collision = CollisionMesh {
@@ -933,11 +886,8 @@ mod tests {
             ButtonAction::LayerPrevious,
             ButtonAction::LayerNext,
         ] {
-            let button = app
-                .world_mut()
-                .spawn((Button, SheetButton { sheet: default(), base: 0, action }))
-                .observe(press_button)
-                .id();
+            let button =
+                app.world_mut().spawn((Button, SheetButton { action })).observe(press_button).id();
             // Even a queued activation must recheck prerequisites before clearing the draft.
             app.world_mut().trigger(Activate { entity: button });
             app.update();
@@ -948,14 +898,7 @@ mod tests {
         }
         let button = app
             .world_mut()
-            .spawn((
-                Button,
-                SheetButton {
-                    sheet: default(),
-                    base: 0,
-                    action: ButtonAction::Tool(MapTool::AddNote),
-                },
-            ))
+            .spawn((Button, SheetButton { action: ButtonAction::Tool(MapTool::AddNote) }))
             .observe(press_button)
             .id();
         app.world_mut().trigger(FocusedInput::new(
@@ -986,14 +929,7 @@ mod tests {
         let root = app.world_mut().spawn(Automap::new(None, &[], Vec3::ZERO)).id();
         let button = app
             .world_mut()
-            .spawn((
-                Button,
-                SheetButton {
-                    sheet: default(),
-                    base: 0,
-                    action: ButtonAction::Tool(MapTool::AddNote),
-                },
-            ))
+            .spawn((Button, SheetButton { action: ButtonAction::Tool(MapTool::AddNote) }))
             .observe(primary_press)
             .observe(press_button)
             .id();

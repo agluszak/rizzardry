@@ -145,7 +145,9 @@ impl GroupRecognition<'_, '_> {
             .collect();
         order.sort_unstable_by_key(|&(authored, _)| authored);
         for (_, entity) in order {
-            let (_, group, Some(membership), _) = groups.get(entity).unwrap() else { continue };
+            let (_, mut group, Some(membership), _) = groups.get_mut(entity).unwrap() else {
+                continue;
+            };
             let (known, counted) = (group.identified, group.counted);
             if known && counted {
                 continue;
@@ -169,8 +171,7 @@ impl GroupRecognition<'_, '_> {
             let Some(species) = catalog.0.get(species_id as usize) else { continue };
             if !known {
                 let mut best: Option<(String, i32)> = None;
-                for &member in &roster.0 {
-                    let Ok((profile, vitals, knowledge)) = members.get(member) else { continue };
+                for (profile, vitals, knowledge) in members.iter_many(&roster.0).matched() {
                     if !can_look(vitals) {
                         continue;
                     }
@@ -189,17 +190,16 @@ impl GroupRecognition<'_, '_> {
                         is: species.shown_name(true, count).to_owned(),
                         count,
                     });
-                    groups.get_mut(entity).unwrap().1.identified = true;
+                    group.identified = true;
                 }
             }
             if !counted {
-                groups.get_mut(entity).unwrap().1.counted = true;
-                for &member in &roster.0 {
-                    let Ok((_, vitals, _)) = members.get(member) else { continue };
+                group.counted = true;
+                for (_, vitals, mut knowledge) in members.iter_many_unique_mut(&roster.0).matched()
+                {
                     if !can_look(vitals) {
                         continue;
                     }
-                    let (_, _, mut knowledge) = members.get_mut(member).unwrap();
                     let seen = knowledge.seen.entry(species_id).or_default();
                     *seen = seen.saturating_add(count.min(255) as u8);
                 }

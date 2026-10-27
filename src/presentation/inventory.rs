@@ -396,9 +396,10 @@ fn header(art: &InventoryArt) -> impl SceneList {
             bsn! {
                 @picture(default(),0,at)
                 UiButton TabIndex(0) Hovered::default() Pickable::default()
-                review::FocusControl Outline::new(px(1), px(1), Color::NONE)
+                crate::presentation::retail_controls::FocusRing
                 template(move |_| Ok(HeaderDisplay(HeaderPart::Member(slot))))
                 InventoryMemberButton({Entity::PLACEHOLDER})
+                on(crate::presentation::retail_controls::primary_press)
                 on(select_inventory_member)
                 Children [
                     @picture(art.portrait_highlight.clone(),1,Vec2::ZERO)
@@ -497,7 +498,8 @@ fn cell_controls(cell: Cell, art: &InventoryArt) -> impl Scene {
     bsn! {
         node template(move |_|Ok(ItemCell{cell}))
         UiButton TabIndex(0) Pickable::default()
-        review::FocusControl Outline::new(px(1), px(1), Color::NONE)
+        crate::presentation::retail_controls::FocusRing
+        on(crate::presentation::retail_controls::primary_press)
         on(click_cell)
         on(pool_scroll::wheel)
         Children [
@@ -628,7 +630,8 @@ pub fn spawn_inventory_screen(
             -- @{bottom_bar}
             -- @{exit}
                 UiButton TabIndex(0) Pickable::default()
-                review::FocusControl Outline::new(px(1), px(1), Color::NONE)
+                crate::presentation::retail_controls::FocusRing
+                on(crate::presentation::retail_controls::primary_press)
                 on(|_: On<Activate>, mut next: ResMut<NextState<Screen>>| { next.set(Screen::World); })
         ]
     }).id();
@@ -852,7 +855,7 @@ fn draw_header(
     let changed = screen.is_changed()
         || roster.is_changed()
         || tables.is_changed()
-        || members.iter_many(&roster.0).flatten().any(|(character, vitals)| {
+        || members.iter_many(&roster.0).matched().any(|(character, vitals)| {
             character.is_changed() || vitals.is_some_and(|vitals| vitals.is_changed())
         });
     for (display, button, picture, label) in &mut displays {
@@ -1131,21 +1134,6 @@ pub fn follow_held(
     visibility.set_if_neq(Visibility::Inherited);
 }
 
-// Bevy 0.20 clears a slider's pressed state on cancellation but leaves its
-// drag state set; a canceled pointer must not continue editing the value.
-fn cancel_slider_drag(
-    event: On<bevy::picking::events::PointerCancel>,
-    mut sliders: Query<&mut bevy::ui_widgets::SliderDragState>,
-    mut captures: ResMut<bevy::picking::hover::PointerCaptureMap>,
-) {
-    if let Ok(mut drag) = sliders.get_mut(event.entity)
-        && drag.dragging
-    {
-        drag.dragging = false;
-        captures.release(event.pointer.id);
-    }
-}
-
 pub struct InventoryPlugin;
 
 impl Plugin for InventoryPlugin {
@@ -1182,11 +1170,13 @@ impl Plugin for InventoryPlugin {
             .add_systems(
                 Update,
                 (
-                    review::systems(),
+                    review::show_pages,
+                    review::refresh,
+                    review::layout_skills,
+                    review::style_info_button,
+                    review::style_effect_buttons,
                     info::update_scroll,
-                    info::style_close,
                     info::initialize_focus,
-                    info::style_arrows,
                     item_info::refresh,
                     spells::refresh,
                     pool_scroll::sync.before(draw_cells),
@@ -1226,7 +1216,8 @@ mod tests {
             .init_resource::<PartyRoster>()
             .init_resource::<PartyInventory>()
             .init_resource::<super::super::main_screen::SelectedMember>()
-            .add_plugins(InventoryPlugin);
+            .add_plugins(InventoryPlugin)
+            .add_systems(PostUpdate, crate::presentation::retail_controls::sync_button_navigation);
         app
     }
 

@@ -9,10 +9,11 @@ See [research](research/README.md) for recovered mechanics and
 - Character review lacks learned spells, level-up editing, trait/enchantment
   details, several combat/armor values and the improved-skill palette. See the
   [original-game comparison](research/character-review.md) for exact limits.
-- The frontend deliberately uses a native layout rather than retail's widget tree.
-  Saved-game loading, character import/export, difficulty/gameplay options, intro
-  movie, menu music, personality/voice and learned-spell selection are absent.
-  Casters start without spells; drafts remain session-local.
+- The main menu and party assembly use retail artwork; the character editor still
+  has a custom layout. Candidate review and persistence are
+  absent. Saved-game loading, character import/export, difficulty/gameplay options,
+  intro movie, menu music, personality/voice and learned-spell selection are also
+  absent. Casters start without spells; candidates remain session-local.
 - Several HUD bank actions remain unimplemented. Inventory lacks stack splitting,
   ammunition pouring, weapon-partner stowing, remaining item actions and filtering.
   Containers/bags currently transfer contents directly instead of opening a picker.

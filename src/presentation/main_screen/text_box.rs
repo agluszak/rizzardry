@@ -3,11 +3,10 @@
 use super::{MainScreenArt, layer};
 use crate::presentation::notices::{TextLog, VISIBLE_LINES};
 use crate::presentation::screen_art::{BitmapText, Picture, absolute, label, picture};
-use bevy::input_focus::tab_navigation::TabIndex;
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
-use bevy::ui::{InteractionDisabled, Pressed};
-use bevy::ui_widgets::{Activate, Button, SelectedTab, Tab, TabList, ValueChange};
+use bevy::ui::InteractionDisabled;
+use bevy::ui_widgets::{Activate, SelectedTab, Tab, TabList, ValueChange};
 
 #[derive(Component, Clone, Default)]
 pub(super) struct Channels;
@@ -71,7 +70,7 @@ pub fn draw_text_box(
             &mut Visibility,
             Option<&Tabs>,
             Option<&Thumb>,
-            Option<(&Scroll, &Hovered, Has<Pressed>, Has<InteractionDisabled>, &mut TabIndex)>,
+            Option<(&Scroll, Has<InteractionDisabled>)>,
         ),
         (Without<Line>, Or<(With<Tabs>, With<Thumb>, With<Scroll>)>),
     >,
@@ -90,8 +89,8 @@ pub fn draw_text_box(
             .map(|down| {
                 let at = Vec2::new(461.0, if down { 429.0 } else { 363.0 });
                 bsn! {
-                    @picture(art.text_scroll.clone(), if down { 8 } else { 0 }, at)
-                    template(move |_| Ok(Scroll { down })) Button TabIndex(0) super::HudFocus Outline::new(px(1),px(1),Color::NONE) Pickable::default()
+                    @crate::presentation::retail_controls::image_button(art.text_scroll.clone(), at, { let base = if down { 8 } else { 0 }; crate::presentation::retail_controls::ControlSkin::new(base, base+1, base+2, base+2, base+3) })
+                    template(move |_| Ok(Scroll { down }))
                     on(move |_: On<Activate>, mut log: ResMut<TextLog>| {
                         if down && log.can_scroll().1 { log.scroll_down(1); }
                         else if !down && log.can_scroll().0 { log.scroll_up(1); }
@@ -104,7 +103,7 @@ pub fn draw_text_box(
             .map(|(channel, y)| {
                 bsn! {
                     template(move |_| Ok(absolute(Vec2::new(140.0, y), Vec2::new(24.0, 16.0))))
-                    Tab super::HudFocus Outline::new(px(1),px(1),Color::NONE)
+                    Tab crate::presentation::retail_controls::FocusRing
                     template(move |_| Ok(Channel(channel)))
                 }
             })
@@ -148,29 +147,14 @@ pub fn draw_text_box(
                     .set_if_neq(Vec2::new(461.0, 379.0 + (thumb * 40.0).floor()));
             }
         }
-        if let Some((scroll, hovered, pressed, disabled, mut tab)) = scroll {
+        if let Some((scroll, disabled)) = scroll {
             let enabled = if scroll.down { log.can_scroll().1 } else { log.can_scroll().0 };
-            tab.set_if_neq(TabIndex(if enabled { 0 } else { -1 }));
-            if enabled == disabled {
-                if enabled {
-                    commands.entity(entity).remove::<InteractionDisabled>();
-                } else {
-                    commands.entity(entity).insert(InteractionDisabled).remove::<Pressed>();
-                }
-            }
-            let normal = if scroll.down { 8 } else { 0 };
-            let frame = normal
-                + if !enabled {
-                    3
-                } else if pressed {
-                    2
-                } else if hovered.get() {
-                    1
-                } else {
-                    0
-                };
-            let next = Picture { frame, bounds: Some(normal), ..picture.clone() };
-            picture.set_if_neq(next);
+            crate::presentation::retail_controls::set_enabled(
+                &mut commands,
+                entity,
+                enabled,
+                disabled,
+            );
         }
     }
 }

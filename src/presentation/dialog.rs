@@ -1,17 +1,21 @@
 //! Retail's "Proceed to <level>?" question before a level change, in native
 //! Bevy UI with the retail message box buttons and text font.
 
+use bevy::input_focus::{InputFocus, tab_navigation::TabGroup};
 use bevy::prelude::*;
 use bevy_enhanced_input::prelude::*;
 
 use crate::content::levels::LevelInfo;
 use crate::content::ui::{SpriteSheet, TextTable};
 use crate::game::world::level::{TravelAnswer, TravelQuestion};
-use crate::presentation::screen_art::{centred, hover_art};
+use crate::presentation::screen_art::{BitmapText, centred};
 
 /// "Proceed to" in the game string table.
 const PROCEED_TO: usize = 0x799;
 const PANEL: Vec2 = Vec2::new(320.0, 110.0);
+
+#[derive(Component, Clone, Default)]
+pub struct DialogButton(bool);
 
 #[derive(Resource)]
 pub struct DialogArt {
@@ -62,7 +66,7 @@ pub fn open_travel_question(
         let dialog = QuestionDialog(question_id);
         commands.spawn_scene(bsn! {
         @centred()
-        dialog
+        dialog TabGroup::modal() bevy::ui_widgets::ModalDialog
         ContextPriority::<QuestionDialog>::new(1)
         Actions<QuestionDialog> [
             Action::<Accept>::new()
@@ -73,8 +77,8 @@ pub fn open_travel_question(
             ActionSettings { consume_input: true }
             Bindings [ Binding(KeyCode::Escape) ]
         ]
-        on(move |event: On<Start<Accept>>, built: Query<(), With<DialogBuilt>>, mut answers: MessageWriter<TravelAnswer>| {
-            if built.contains(event.context) {
+        on(move |event: On<Start<Accept>>, built: Query<(), With<DialogBuilt>>, buttons: Query<(), With<DialogButton>>, focus: Option<Res<InputFocus>>, mut answers: MessageWriter<TravelAnswer>| {
+            if built.contains(event.context) && !focus.as_ref().and_then(|f| f.get()).is_some_and(|e| buttons.contains(e)) {
                 answers.write(TravelAnswer { question: question_id, accept: true });
             }
         })
@@ -95,7 +99,6 @@ pub fn show_travel_question(
     art: Res<DialogArt>,
     sheets: Res<Assets<SpriteSheet>>,
     tables: Res<Assets<TextTable>>,
-    mut images: ResMut<Assets<Image>>,
 ) {
     let Ok((dialog, owner)) = dialogs.single() else { return };
     let question_id = owner.0;
@@ -108,7 +111,7 @@ pub fn show_travel_question(
         answers.write(TravelAnswer { question: question_id, accept: false });
         return;
     }
-    let (Some(ok), Some(cancel), Some(font), Some(strings)) = (
+    let (Some(ok), Some(cancel), Some(_font), Some(strings)) = (
         sheets.get(&art.ok),
         sheets.get(&art.cancel),
         sheets.get(&art.font),
@@ -121,24 +124,19 @@ pub fn show_travel_question(
         .and_then(|name| strings.get(name))
         .unwrap_or(&question.entrance);
     let text = format!("{} {}?", strings.get(PROCEED_TO).unwrap_or("Proceed to"), level.trim());
-    let label = font.text_image(&text);
-    let (width, height) = (label.width(), label.height());
-    let label = images.add(label);
-    let buttons: Vec<_> = [(ok, true), (cancel, false)]
-        .into_iter()
-        .filter_map(|(sheet, accept)| {
-            let frame = sheet.frames.first()?;
-            let (width, height) = (frame.width, frame.height);
+    let label_font = art.font.clone();
+    let buttons: Vec<_> = [(ok, art.ok.clone(), true), (cancel, art.cancel.clone(), false)]
+        .into_iter().filter_map(|(sheet, handle, accept)| {
+            sheet.frames.first()?;
+            let hover = usize::from(sheet.images.len() > 1);
             Some(bsn! {
-                Node { width: px(width), height: px(height) }
-                ImageNode
-                @hover_art(sheet, 0, if sheet.images.len() > 1 { 1 } else { 0 })
-                on(move |_: On<PointerClick>, mut answers: MessageWriter<TravelAnswer>| {
+                @crate::presentation::retail_controls::image_button(handle, Vec2::ZERO, crate::presentation::retail_controls::ControlSkin::new(0, hover, hover, hover, 0))
+                Node { position_type: PositionType::Relative } template(move |_| Ok(DialogButton(accept)))
+                on(move |_: On<bevy::ui_widgets::Activate>, mut answers: MessageWriter<TravelAnswer>| {
                     answers.write(TravelAnswer { question: question_id, accept });
                 })
             })
-        })
-        .collect();
+        }).collect();
     commands.entity(dialog).insert(DialogBuilt).queue_spawn_related_scenes::<Children>(bsn! {
 
             Node {
@@ -152,14 +150,26 @@ pub fn show_travel_question(
             BackgroundColor(Color::srgba(0.05, 0.04, 0.03, 0.92))
             BorderColor::all(Color::srgb(0.55, 0.45, 0.3))
             Children [
-                Node { width: px(width), height: px(height) }
-                ImageNode { image: {label} }
-                Pickable::IGNORE
+                template(move |_| Ok(BitmapText { font: label_font.clone(), value: text.clone(), ..default() }))
+                Node { position_type: PositionType::Relative }
                 --
                 Node { column_gap: px(24) }
                 Children [ {buttons} ]
             ]
     });
+}
+
+pub fn focus_ready_question(
+    buttons: Query<(Entity, &DialogButton), Added<DialogButton>>,
+    mut focus: Option<ResMut<InputFocus>>,
+) {
+    if let Some(focus) = focus.as_mut() {
+        for (entity, button) in &buttons {
+            if button.0 {
+                focus.set(entity, bevy::input_focus::FocusCause::Navigated);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -169,18 +179,27 @@ mod tests {
 
     fn input_app() -> App {
         let mut app = crate::presentation::test_input::input_app();
-        app.add_input_context::<QuestionDialog>()
-            .add_message::<TravelAnswer>()
-            .init_asset::<SpriteSheet>()
-            .init_asset::<TextTable>()
-            .init_asset::<Image>()
-            .insert_resource(DialogArt {
-                ok: default(),
-                cancel: default(),
-                font: default(),
-                strings: default(),
-            })
-            .add_systems(Update, (open_travel_question, show_travel_question).chain());
+        app.add_plugins((
+            bevy::input_focus::InputDispatchPlugin,
+            bevy::input_focus::tab_navigation::TabNavigationPlugin,
+            bevy::ui_widgets::ButtonPlugin,
+            bevy::ui_widgets::ModalDialogPlugin,
+        ))
+        .add_input_context::<QuestionDialog>()
+        .add_message::<TravelAnswer>()
+        .init_asset::<SpriteSheet>()
+        .init_asset::<TextTable>()
+        .init_asset::<Image>()
+        .insert_resource(DialogArt {
+            ok: default(),
+            cancel: default(),
+            font: default(),
+            strings: default(),
+        })
+        .add_systems(
+            Update,
+            (open_travel_question, show_travel_question, focus_ready_question).chain(),
+        );
         app.finish();
         app.cleanup();
         app
@@ -208,6 +227,63 @@ mod tests {
         app.world_mut().despawn(level);
         app.update();
         assert!(app.world().get_entity(dialog).is_err());
+    }
+
+    #[test]
+    fn delayed_art_focuses_ok_and_focused_cancel_owns_enter() {
+        let mut app = input_app();
+        let window = app.world_mut().spawn((Window::default(), bevy::window::PrimaryWindow)).id();
+        let question = app.world_mut().spawn(TravelQuestion { entrance: "MO204".into() }).id();
+        app.update();
+        app.update();
+        assert!(app.world_mut().query::<&DialogButton>().iter(app.world()).next().is_none());
+        let sheet = app.world_mut().resource_mut::<Assets<SpriteSheet>>().add(SpriteSheet {
+            frames: vec![crate::content::ui::Frame {
+                offset: [0, 0],
+                width: 16,
+                height: 16,
+                rgba: vec![255; 16 * 16 * 4],
+            }],
+            images: vec![default()],
+            palette: None,
+        });
+        let strings = app.world_mut().resource_mut::<Assets<TextTable>>().add(TextTable(vec![]));
+        app.insert_resource(DialogArt {
+            ok: sheet.clone(),
+            cancel: sheet.clone(),
+            font: sheet,
+            strings,
+        });
+        // Scene spawning is deferred; wait for that actual readiness boundary.
+        for _ in 0..4 {
+            app.update();
+            if app
+                .world()
+                .resource::<InputFocus>()
+                .get()
+                .is_some_and(|e| app.world().get::<DialogButton>(e).is_some())
+            {
+                break;
+            }
+        }
+        let focused =
+            app.world().resource::<InputFocus>().get().expect("built question focuses OK");
+        assert!(app.world().get::<DialogButton>(focused).unwrap().0);
+        let cancel = app
+            .world_mut()
+            .query::<(Entity, &DialogButton)>()
+            .iter(app.world())
+            .find_map(|(e, b)| (!b.0).then_some(e))
+            .unwrap();
+        app.world_mut()
+            .resource_mut::<InputFocus>()
+            .set(cancel, bevy::input_focus::FocusCause::Navigated);
+        crate::presentation::test_input::key(&mut app, window, KeyCode::Enter, true);
+        let answers: Vec<_> =
+            app.world_mut().resource_mut::<Messages<TravelAnswer>>().drain().collect();
+        assert_eq!(answers.len(), 1);
+        assert_eq!(answers[0].question, question);
+        assert!(!answers[0].accept);
     }
 
     #[test]

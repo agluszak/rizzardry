@@ -4,6 +4,7 @@
 //! splats over the portraits. Clicking a slot selects the member, gives
 //! them the held item, or (double click) opens their review screen.
 
+use crate::presentation::character_view::{CharacterView, CharacterViewItem};
 use std::time::Duration;
 
 use bevy::prelude::*;
@@ -245,7 +246,8 @@ pub fn draw_party(
     art: Res<MainScreenArt>,
     assets: Res<AssetServer>,
     roster: Res<PartyRoster>,
-    members: Query<(Ref<Character>, Ref<Vitals>, Option<Ref<Carried>>)>,
+    members: Query<CharacterView>,
+    mut removed_carried: RemovedComponents<Carried>,
     data: Option<Res<GameData>>,
     catalogs: Res<Assets<ItemCatalog>>,
     mut parts: Query<(
@@ -257,6 +259,7 @@ pub fn draw_party(
         Option<&mut ImageNode>,
     )>,
 ) {
+    let removed: Vec<_> = removed_carried.read().collect();
     let catalog = data.as_ref().and_then(|d| catalogs.get(&d.items));
     let closed = layout.mode == LayoutMode::Closed;
     for (part, mut node, mut visible, picture, label, image_node) in &mut parts {
@@ -266,9 +269,8 @@ pub fn draw_party(
             && !roster.is_changed()
             && !selected.is_changed()
             && !catalogs.is_changed()
-            && actor.as_ref().is_none_or(|(c, v, i)| {
-                !c.is_changed() && !v.is_changed() && i.as_ref().is_none_or(|i| !i.is_changed())
-            })
+            && !member.is_some_and(|m| removed.contains(&m))
+            && actor.as_ref().is_none_or(|view| !view.is_changed())
         {
             continue;
         }
@@ -281,7 +283,7 @@ pub fn draw_party(
             frame,
             ..default()
         };
-        if let Some((profile, vitals, carried)) = actor {
+        if let Some(CharacterViewItem { profile, vitals, carried }) = actor {
             let dead = vitals.is_dead();
             let worn = |slot| {
                 carried.as_ref().and_then(|c| c.worn(slot)).and_then(|i| catalog?.get(i.item))
@@ -432,7 +434,9 @@ pub fn draw_party(
         if let Some(mut image) = image_node {
             let flip = matches!(part.kind, Part::Portrait)
                 && part.slot % 2 == 1
-                && member.and_then(|e| members.get(e).ok()).is_some_and(|(_, v, _)| v.is_dead());
+                && member
+                    .and_then(|e| members.get(e).ok())
+                    .is_some_and(|view| view.vitals.is_dead());
             if image.flip_x != flip {
                 image.flip_x = flip;
             }
