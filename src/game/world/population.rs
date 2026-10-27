@@ -213,7 +213,7 @@ pub fn populate(
             entity
         };
         let kept = if let Ok((_, _, mut npc, active)) = npcs.npcs.get_mut(entity) {
-            if active.is_some_and(|bodies| !bodies.0.is_empty()) && npc.dormant.is_none() {
+            if active.is_some_and(|bodies| !bodies.is_empty()) && npc.dormant.is_none() {
                 continue;
             }
             match npc.dormant.take() {

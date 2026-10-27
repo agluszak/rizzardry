@@ -32,9 +32,9 @@ impl ActorId {
 #[component(immutable)]
 #[relationship(relationship_target=NpcBodies)]
 pub struct NpcBody(pub Entity);
-#[derive(Component, Debug)]
+#[derive(Component, Debug, Deref)]
 #[relationship_target(relationship=NpcBody)]
-pub struct NpcBodies(pub Vec<Entity>);
+pub struct NpcBodies(Vec<Entity>);
 #[derive(Debug)]
 pub struct NpcWorldRole {
     pub map: String,

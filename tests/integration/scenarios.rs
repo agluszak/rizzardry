@@ -168,7 +168,7 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
         app.world().get::<ChildOf>(actor).is_none(),
         "map lifetime does not own the named actor"
     );
-    let body = app.world().get::<NpcBodies>(actor).unwrap().0[0];
+    let body = app.world().get::<NpcBodies>(actor).unwrap()[0];
     let position = app.world().get::<avian3d::prelude::Position>(body).unwrap().0;
     for mut p in app.world_mut().query_filtered::<&mut avian3d::prelude::Position,With<rizzardry::game::party::body::PartyBody>>().iter_mut(app.world_mut()){p.0=position+Vec3::X*2.0;}
     app.world_mut().resource_mut::<PartyInventory>().gold = 10000;
@@ -295,7 +295,7 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     step_until(&mut app, "returning to Burz", |w| {
         playing(w).is_some_and(|p| p.ends_with("monastery1.pvl"))
     });
-    let returned_body = app.world().get::<NpcBodies>(actor).unwrap().0[0];
+    let returned_body = app.world().get::<NpcBodies>(actor).unwrap()[0];
     assert!(app.world().get::<Monster>(returned_body).is_some());
     assert!(app.world().get_entity(body).is_err());
     let npc = app.world().get::<Npc>(actor).unwrap();

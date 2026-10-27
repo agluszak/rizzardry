@@ -196,7 +196,7 @@ fn average_level(world: &World) -> u32 {
     sum.checked_div(count).unwrap_or(1)
 }
 fn active_body(world: &World, actor: Entity) -> Option<Entity> {
-    world.get::<super::NpcBodies>(actor)?.0.iter().copied().find(|body| {
+    world.get::<super::NpcBodies>(actor)?.iter().copied().find(|body| {
         world
             .get::<ChildOf>(*body)
             .is_some_and(|parent| world.get::<Level>(parent.parent()).is_some())

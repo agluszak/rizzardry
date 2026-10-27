@@ -698,7 +698,7 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     assert!(is_played(&app, source));
     let actor = app.world_mut().query::<(Entity, &Npc)>().single(app.world()).unwrap().0;
     assert!(app.world().get::<ChildOf>(actor).is_none());
-    let body = app.world().get::<NpcBodies>(actor).unwrap().0[0];
+    let body = app.world().get::<NpcBodies>(actor).unwrap()[0];
     assert_ne!(body, actor);
     assert_eq!(app.world().get::<ChildOf>(body).unwrap().parent(), source);
     {
@@ -743,14 +743,14 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     assert!(app.world().get_entity(source).is_err());
     assert!(app.world().get::<Monster>(actor).is_none());
     assert!(app.world().get_entity(body).is_err());
-    assert!(app.world().get::<NpcBodies>(actor).is_none_or(|b| b.0.is_empty()));
+    assert!(app.world().get::<NpcBodies>(actor).is_none_or(|b| b.is_empty()));
     assert_eq!(app.world().get::<Npc>(actor).unwrap().dormant.as_ref().unwrap().body.monster.hp, 4);
     app.update();
     assert_eq!(app.world().get::<Npc>(actor).unwrap().stock, stock);
     let back = spawn_level(&mut app, floor());
     app.update();
     assert!(is_played(&app, back));
-    let returned_body = app.world().get::<NpcBodies>(actor).unwrap().0[0];
+    let returned_body = app.world().get::<NpcBodies>(actor).unwrap()[0];
     assert_ne!(returned_body, body);
     assert_eq!(app.world().get::<ChildOf>(returned_body).unwrap().parent(), back);
     assert_eq!(app.world().get::<Monster>(returned_body).unwrap().hp, 4);
