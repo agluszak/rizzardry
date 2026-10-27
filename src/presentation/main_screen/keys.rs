@@ -172,12 +172,14 @@ pub(crate) struct WorldKeys<'w, 's> {
     focus: Res<'w, bevy::input_focus::InputFocus>,
     controls: Query<'w, 's, (), With<bevy::input_focus::tab_navigation::TabIndex>>,
     questions: Query<'w, 's, (), With<crate::game::world::level::TravelQuestion>>,
+    conversations: Query<'w, 's, (), With<crate::game::npcs::conversation::Conversation>>,
 }
 
 impl WorldKeys<'_, '_> {
     pub(crate) fn active(&self) -> bool {
         *self.screen.get() == Screen::World
             && self.questions.is_empty()
+            && self.conversations.is_empty()
             && !self.focus.get().is_some_and(|entity| self.controls.contains(entity))
     }
 }

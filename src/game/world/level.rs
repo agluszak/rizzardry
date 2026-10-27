@@ -254,6 +254,7 @@ pub struct LevelContents<'w, 's> {
             Option<&'static GroupMember>,
             Has<super::population::Provoked>,
         ),
+        Without<crate::game::npcs::NpcBody>,
     >,
     items: Query<'w, 's, (&'static WorldItem, &'static Transform)>,
     groups: Query<'w, 's, &'static MonsterGroup>,
@@ -549,6 +550,7 @@ pub fn activate_level(
     geometry: Res<Assets<LevelDefinition>>,
     assets: Res<AssetServer>,
     mut shared: SharedData,
+    mut npcs: crate::game::npcs::NpcPopulation,
     mut memory: ResMut<LevelMemory>,
     (mut ids, mut rng): (ResMut<ItemIds>, ResMut<GameRng>),
     mut transition: ParamSet<(LevelContents, PartyPlacement)>,
@@ -593,6 +595,14 @@ pub fn activate_level(
             fail(&error);
             continue;
         }
+        match npcs.prepare(species, &geometry.monsters, items, &assets) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(reason) => {
+                fail(&reason);
+                continue;
+            }
+        }
         let bodies = shared.monster_bodies.for_level(geometry, species, &assets);
         if bodies.iter().any(|body| failed(body.id().untyped())) {
             fail("a monster's body definition failed to load");
@@ -628,6 +638,8 @@ pub fn activate_level(
         for (entity, source, state, owned) in &current {
             let owned = owned.map_or(&[][..], LevelEntities::entities);
             memory.0.insert(source.path.clone(), transition.p0().remember(entity, state, owned));
+            npcs.depart(entity, &source.path);
+            commands.queue(crate::game::npcs::conversation::close);
             commands.entity(entity).despawn();
         }
         let mut remembered = memory.0.remove(&level.path);
@@ -647,6 +659,7 @@ pub fn activate_level(
             geometry,
             remembered,
             (species, items),
+            (&level.path, &mut npcs),
             (&shared.monster_bodies.0, &shared.bodies),
             (&navigation, &mut shared.motion_configs),
             &mut ids,

@@ -10,6 +10,7 @@ pub mod factions;
 pub mod inventory;
 pub mod loot;
 pub mod magic;
+pub mod npcs;
 pub mod party;
 pub mod rng;
 pub mod screen;

@@ -478,6 +478,10 @@ pub(super) fn show_pages(
 }
 
 pub(super) fn refresh(
+    spell_state: (
+        Query<&crate::game::magic::LearnedSpells>,
+        Option<Res<Assets<crate::content::spells::SpellCatalog>>>,
+    ),
     screen: Option<Single<&InventoryScreen>>,
     characters: Query<CharacterView>,
     roster: Option<Single<&PartyRoster>>,
@@ -511,6 +515,10 @@ pub(super) fn refresh(
         .is_some_and(|item| !item.identified);
     let table =
         art.as_ref().and_then(|art| tables.as_ref().and_then(|tables| tables.get(&art.strings)));
+    let learned = spell_state.0.get(screen.member).ok();
+    let spell_catalog = data
+        .as_ref()
+        .and_then(|data| spell_state.1.as_ref().and_then(|catalogs| catalogs.get(&data.spells)));
     let string = |id| table.and_then(|table| table.get(id)).unwrap_or("");
     let mut effects = Vec::new();
     if show_items {
@@ -616,7 +624,8 @@ pub(super) fn refresh(
                 art.as_ref().map(|art| art.green.clone())
             }
             Field::SkillName(skill) => {
-                let active = profile.skill_available(skill);
+                let active =
+                    crate::game::magic::skill_available(profile, learned, spell_catalog, skill);
                 let level = profile.skill(skill);
                 let best = level > 0
                     && roster.as_ref().is_some_and(|roster| {
@@ -708,6 +717,11 @@ pub(super) fn refresh(
 }
 
 pub(super) fn layout_skills(
+    spell_state: (
+        Query<&crate::game::magic::LearnedSpells>,
+        Option<Res<GameData>>,
+        Option<Res<Assets<crate::content::spells::SpellCatalog>>>,
+    ),
     screen: Option<Single<&InventoryScreen>>,
     characters: Query<&Character>,
     mut rows: Query<
@@ -720,6 +734,11 @@ pub(super) fn layout_skills(
 ) {
     let Some(screen) = screen else { return };
     let Ok(profile) = characters.get(screen.member) else { return };
+    let learned = spell_state.0.get(screen.member).ok();
+    let spell_catalog = spell_state
+        .1
+        .as_ref()
+        .and_then(|data| spell_state.2.as_ref().and_then(|catalogs| catalogs.get(&data.spells)));
     let mut ordered: Vec<_> =
         rows.iter().map(|(entity, row, _, _)| (row.0 as usize, entity)).collect();
     ordered.sort_unstable_by_key(|(skill, _)| *skill);
@@ -728,7 +747,7 @@ pub(super) fn layout_skills(
     for (_, entity) in ordered {
         let Ok((_, row, mut node, mut visibility)) = rows.get_mut(entity) else { continue };
         let category = skill_category(row.0);
-        let shown = profile.skill_available(row.0)
+        let shown = crate::game::magic::skill_available(profile, learned, spell_catalog, row.0)
             || profile.skill_points[row.0] > 0
             || profile.skill(row.0) > 0;
         let display = if shown { Display::Flex } else { Display::None };

@@ -16,8 +16,8 @@ use rizzardry::game::party::body::{PartyBody, PartyMotionConfig};
 use rizzardry::game::party::roster::Party;
 use rizzardry::game::rng::GameRng;
 use rizzardry::game::world::level::{
-    Destination, Entry, Level, LevelEntryFailed, LevelMemory, LevelReady, Travel, activate_level,
-    travel,
+    Destination, Entry, Level, LevelEntryFailed, LevelMemory, LevelOwned, LevelReady, Travel,
+    activate_level, travel,
 };
 use rizzardry::game::world::population::{Monster, MonsterBodies};
 use rizzardry::game::world::triggers::PendingPartyMove;
@@ -25,6 +25,8 @@ use rizzardry::game::world::triggers::PendingPartyMove;
 fn app() -> App {
     let mut app = App::new();
     app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+        .add_plugins(rizzardry::game::npcs::NpcPlugin)
+        .init_resource::<rizzardry::game::time::GameClock>()
         .init_asset::<LevelDefinition>()
         .init_asset::<ItemCatalog>()
         .init_asset::<LootTables>()
@@ -684,6 +686,113 @@ fn retail_level_definitions_load_without_render_asset_resources() {
     assert!(!app.world().contains_resource::<Assets<StandardMaterial>>());
     assert!(app.world().resource::<Assets<LevelGeometry>>().is_empty());
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
+    use rizzardry::content::{
+        items::{ItemDefinition, ItemId},
+        npcs::{DialogueScript, FactCatalog, NpcCatalog, NpcDefinition, NpcId, Quote, StockRule},
+    };
+    use rizzardry::game::npcs::{ActorId, Npc, NpcAssets, NpcBodies};
+    let mut app = app();
+    with_data(&mut app);
+    let data = app.world().resource::<GameData>();
+    let items = data.items.clone();
+    let species = data.species.clone();
+    app.world_mut()
+        .resource_mut::<Assets<ItemCatalog>>()
+        .get_mut(&items)
+        .unwrap()
+        .0
+        .push(ItemDefinition { id: ItemId(0), ..default() });
+    app.world_mut().resource_mut::<Assets<MonsterCatalog>>().get_mut(&species).unwrap().0[0].npc =
+        Some(NpcId(0));
+    let catalog =
+        app.world_mut().resource_mut::<Assets<NpcCatalog>>().add(NpcCatalog(vec![NpcDefinition {
+            source_name: "Fixture".into(),
+            merchant: true,
+            disposition: 80,
+            owns_stock: true,
+            stock: vec![StockRule { item: ItemId(0), quantity: 3, persistent: true }],
+            ..default()
+        }]));
+    let facts = app.world_mut().resource_mut::<Assets<FactCatalog>>().add(FactCatalog::default());
+    let script = app.world_mut().resource_mut::<Assets<DialogueScript>>().add(DialogueScript {
+        quotes: vec![Quote { text: vec!["Greeting".into()], ..default() }],
+        ..default()
+    });
+    app.insert_resource(NpcAssets { catalog, facts, scripts: [(NpcId(0), script)].into() });
+    let source = spawn_level(&mut app, floor());
+    app.update();
+    assert!(is_played(&app, source));
+    let actor = app.world_mut().query::<(Entity, &Npc)>().single(app.world()).unwrap().0;
+    assert!(app.world().get::<ChildOf>(actor).is_none());
+    let body = app.world().get::<NpcBodies>(actor).unwrap()[0];
+    assert_ne!(body, actor);
+    assert_eq!(app.world().get::<LevelOwned>(body).unwrap().0, source);
+    {
+        let mut npc = app.world_mut().get_mut::<Npc>(actor).unwrap();
+        npc.greeting_pending = false;
+        npc.paid_topics.push(7);
+        npc.stock.lots[0].units = 2;
+    }
+    {
+        let mut body = app.world_mut().get_mut::<Monster>(body).unwrap();
+        body.hp = 4;
+        body.max_hp = 9;
+    }
+    // A merchant re-enters at authored quote zero even after its greeting was remembered.
+    use rizzardry::game::npcs::conversation::{self, Conversation, ConversationRequest};
+    use rizzardry::game::screen::Screen;
+    app.insert_resource(State::new(Screen::World)).init_resource::<NextState<Screen>>();
+    let at = app.world().get::<Transform>(body).unwrap().translation;
+    let party = party_entities(&mut app)[0];
+    app.world_mut().get_mut::<avian3d::prelude::Position>(party).unwrap().0 = at + Vec3::X;
+    for _ in 0..2 {
+        let session = conversation::begin(app.world_mut(), actor).unwrap();
+        app.update();
+        assert_eq!(app.world().get::<Conversation>(session).unwrap().current, Some((0, 0)));
+        app.world_mut().write_message(ConversationRequest::Close { conversation: session });
+        app.update();
+        assert!(app.world().get_entity(session).is_err());
+    }
+    app.world_mut().entity_mut(body).insert(rizzardry::game::world::population::Provoked);
+    let stock = app.world().get::<Npc>(actor).unwrap().stock.clone();
+    let mut away = test_level(&mut app, floor());
+    away.path = "levels/away/away.pvl".into();
+    app.world_mut()
+        .resource_mut::<Assets<LevelDefinition>>()
+        .get_mut(&away.geometry)
+        .unwrap()
+        .monsters
+        .clear();
+    let away = app.world_mut().spawn(Destination::new(away, default(), Entry::Travel)).id();
+    app.update();
+    assert!(is_played(&app, away));
+    assert!(app.world().get_entity(source).is_err());
+    assert!(app.world().get::<Monster>(actor).is_none());
+    assert!(app.world().get_entity(body).is_err());
+    assert!(app.world().get::<NpcBodies>(actor).is_none_or(|b| b.is_empty()));
+    assert_eq!(app.world().get::<Npc>(actor).unwrap().dormant.as_ref().unwrap().body.monster.hp, 4);
+    app.update();
+    assert_eq!(app.world().get::<Npc>(actor).unwrap().stock, stock);
+    let back = spawn_level(&mut app, floor());
+    app.update();
+    assert!(is_played(&app, back));
+    let returned_body = app.world().get::<NpcBodies>(actor).unwrap()[0];
+    assert_ne!(returned_body, body);
+    assert_eq!(app.world().get::<LevelOwned>(returned_body).unwrap().0, back);
+    assert_eq!(app.world().get::<Monster>(returned_body).unwrap().hp, 4);
+    assert!(
+        app.world().get::<rizzardry::game::world::population::Provoked>(returned_body).is_some()
+    );
+    let npc = app.world().get::<Npc>(actor).unwrap();
+    assert_eq!(npc.stock, stock);
+    assert_eq!(npc.paid_topics, [7]);
+    assert!(!npc.greeting_pending);
+    assert_eq!(app.world_mut().query::<&Npc>().iter(app.world()).count(), 1);
+    assert_eq!(app.world().get::<ActorId>(actor), Some(&ActorId::Named(NpcId(0))));
 }
 
 #[test]

@@ -7,7 +7,7 @@ pub mod resistance;
 use bevy::prelude::*;
 use enum_map::EnumMap;
 
-use crate::content::characters::{Attribute, Skill};
+use crate::content::characters::{Attribute, Realm, Skill};
 pub use crate::content::characters::{Gender, Profession, Race};
 use crate::content::items::ItemDefinition;
 
@@ -313,6 +313,9 @@ fn load_band(weight: u32, capacity: u32) -> Load {
 #[require(MonsterKnowledge)]
 pub struct Character {
     pub name: String,
+    pub full_name: String,
+    pub personality: crate::content::characters::Personality,
+    pub voice: crate::content::characters::Voice,
     pub race: Race,
     pub gender: Gender,
     pub profession: Profession,
@@ -323,6 +326,8 @@ pub struct Character {
     pub attributes: EnumMap<Attribute, u8>,
     /// Points invested per skill.
     pub skill_points: EnumMap<Skill, u8>,
+    /// Unspent spell picks carried forward to later character advancement.
+    pub unspent_spell_picks: u8,
     /// Successful practice towards each skill's next point (retail
     /// `practice_count`; eight make a point).
     pub skill_practice: EnumMap<Skill, u8>,
@@ -350,6 +355,9 @@ impl Character {
         profession_levels[profession] = 1;
         let mut character = Character {
             name: name.to_owned(),
+            full_name: name.to_owned(),
+            personality: default(),
+            voice: default(),
             race,
             gender,
             profession,
@@ -359,6 +367,7 @@ impl Character {
             experience: 0,
             attributes,
             skill_points: EnumMap::default(),
+            unspent_spell_picks: 0,
             skill_practice: EnumMap::default(),
             portrait: String::new(),
         };
@@ -383,7 +392,7 @@ impl Character {
     }
 
     /// Whether retail currently permits this character to use a skill.
-    /// Realm skills require learned spells, which are not yet modelled.
+    /// Realm skills require a learned spell in that realm.
     pub fn skill_available(&self, skill: Skill) -> bool {
         let index = skill as usize;
         if index >= Skill::PowerStrike as usize {
@@ -463,6 +472,57 @@ impl Character {
 
     pub fn bonus_skill(&self) -> Skill {
         profession_row(self.profession).bonus_skill
+    }
+
+    pub fn profession_skills(&self) -> &'static [Skill] {
+        profession_row(self.profession).skills
+    }
+
+    /// Abilities conferred by the current profession and race.
+    pub fn traits(&self) -> enumset::EnumSet<crate::content::characters::Trait> {
+        self.profession_traits() | self.racial_traits()
+    }
+
+    pub fn profession_traits(&self) -> enumset::EnumSet<crate::content::characters::Trait> {
+        use crate::content::characters::Trait::*;
+        use Profession::*;
+        let profession: &[crate::content::characters::Trait] = match self.profession {
+            Fighter => &[StaminaRegeneration, Knockout, Berserk],
+            Lord => &[HealthRegeneration],
+            Valkyrie => &[CheatDeath],
+            Ranger => &[RangedCriticals, Search],
+            Samurai => &[Fearless, LightningStrike],
+            Ninja => &[ThrownCriticals, ThrownAutoPenetrate],
+            Monk => &[MonkDamageResistance, EffectiveWhileBlind],
+            Rogue => &[Backstab],
+            Gadgeteer => &[MergeGadgets],
+            Bard => &[CampRecovery],
+            Priest => &[Pray, TurnUndead],
+            Alchemist => &[MakePotions],
+            Bishop => &[RemoveCursedItems, TurnUndead],
+            Psionic => &[Fearless, MentalConditionImmunity],
+            Mage => &[MagicResistance],
+        };
+        profession.iter().copied().collect()
+    }
+
+    pub fn racial_traits(&self) -> enumset::EnumSet<crate::content::characters::Trait> {
+        use crate::content::characters::Trait::*;
+        let racial: &[crate::content::characters::Trait] = match self.race {
+            Race::Dwarf => &[DwarfDamageResistance],
+            Race::Faerie => &[
+                FaerieArmour,
+                FaerieAbility23,
+                FaerieCarryCapacity,
+                FaerieAbility25,
+                FaerieAbility26,
+            ],
+            Race::Lizardman => &[LizardmanMagicRecovery],
+            Race::Dracon => &[Breathe],
+            Race::Android => &[AndroidAbility30, CannotLearn],
+            _ => &[],
+        };
+        racial.iter().copied().collect()
     }
 
     /// The average of a skill's governing attributes' bases.

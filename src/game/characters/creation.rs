@@ -1,6 +1,6 @@
 //! New-character drafts. No live actor exists until the party is accepted.
 use super::*;
-use crate::content::spells::{SpellDefinition, SpellId};
+use crate::content::spells::{SpellCatalog, SpellId, Spellbook};
 use enumset::EnumSet;
 
 pub const PLAYABLE_RACES: [Race; 11] = [
@@ -20,32 +20,42 @@ pub const PLAYABLE_RACES: [Race; 11] = [
 #[derive(Clone, Debug)]
 pub struct CharacterDraft {
     pub name: String,
+    pub nickname: String,
+    pub personality: crate::content::characters::Personality,
+    pub voice: crate::content::characters::Voice,
     pub portrait: String,
     race: Race,
     gender: Gender,
     profession: Profession,
     attributes: EnumMap<Attribute, u8>,
     skills: EnumMap<Skill, u8>,
-    /// The first spells picked (retail state 2 until the character is made).
-    spells: std::collections::BTreeSet<SpellId>,
+    learned_spells: EnumMap<Realm, Vec<SpellId>>,
+    last_spell: Option<SpellId>,
 }
 
 impl Default for CharacterDraft {
     fn default() -> Self {
         Self {
             name: String::new(),
+            nickname: String::new(),
+            personality: Default::default(),
+            voice: Default::default(),
             portrait: "hummf".into(),
             race: Race::Human,
             gender: Gender::Male,
             profession: Profession::Fighter,
             attributes: EnumMap::default(),
             skills: EnumMap::default(),
-            spells: default(),
+            learned_spells: EnumMap::default(),
+            last_spell: None,
         }
     }
 }
 
 impl CharacterDraft {
+    pub fn display_name(&self) -> &str {
+        if self.nickname.trim().is_empty() { self.name.trim() } else { self.nickname.trim() }
+    }
     pub fn race(&self) -> Race {
         self.race
     }
@@ -70,7 +80,8 @@ impl CharacterDraft {
         self.profession = profession;
         self.attributes = EnumMap::default();
         self.skills = EnumMap::default();
-        self.spells.clear();
+        self.learned_spells = EnumMap::default();
+        self.last_spell = None;
         Ok(())
     }
 
@@ -94,55 +105,196 @@ impl CharacterDraft {
         Self::budget(self.race, self.gender, self.profession).unwrap()
             - self.attributes.values().copied().sum::<u8>()
     }
+    pub fn spell_books(&self) -> EnumSet<Spellbook> {
+        match self.profession {
+            Profession::Mage => Spellbook::Wizardry.into(),
+            Profession::Priest => Spellbook::Divinity.into(),
+            Profession::Alchemist => Spellbook::Alchemy.into(),
+            Profession::Psionic => Spellbook::Psionics.into(),
+            Profession::Bishop => EnumSet::all(),
+            _ => EnumSet::empty(),
+        }
+    }
+
+    pub fn spell_points_total(&self) -> usize {
+        if self.spell_books().is_empty() { 0 } else { 2 }
+    }
+
+    pub fn spell_remaining(&self) -> usize {
+        self.spell_points_total().saturating_sub(self.learned_spells.values().map(Vec::len).sum())
+    }
+
+    /// The accepted selection, shared with the live LearnedSpells component.
+    pub fn spells(&self) -> std::collections::BTreeSet<SpellId> {
+        self.learned_spells.values().flatten().copied().collect()
+    }
+
+    pub fn knows_spell(&self, id: SpellId) -> bool {
+        self.learned_spells.values().any(|spells| spells.contains(&id))
+    }
+
+    pub fn can_learn_spell(&self, catalog: &SpellCatalog, id: SpellId) -> bool {
+        id.0 > 0
+            && id.0 < 0x72
+            && catalog.get(id).is_some_and(|spell| {
+                spell.realm.is_some()
+                    && spell.level == 1
+                    && !(spell.books & self.spell_books()).is_empty()
+            })
+    }
+
+    pub fn toggle_spell(&mut self, catalog: &SpellCatalog, id: SpellId) -> bool {
+        if !self.can_learn_spell(catalog, id) {
+            return false;
+        }
+        let realm = catalog.get(id).unwrap().realm.unwrap();
+        if let Some(index) = self.learned_spells[realm].iter().position(|&spell| spell == id) {
+            self.learned_spells[realm].remove(index);
+        } else {
+            if self.spell_remaining() == 0 {
+                // Retail replaces the earliest selected spell other than the most recent.
+                let replaced = self
+                    .learned_spells
+                    .values()
+                    .flatten()
+                    .copied()
+                    .filter(|spell| Some(*spell) != self.last_spell)
+                    .min_by_key(|spell| spell.0);
+                if let Some(replaced) = replaced {
+                    for spells in self.learned_spells.values_mut() {
+                        spells.retain(|&spell| spell != replaced);
+                    }
+                } else {
+                    return false;
+                }
+            }
+            self.learned_spells[realm].push(id);
+            self.last_spell = Some(id);
+        }
+        // Allocations in a realm cease to be valid when its last spell is removed.
+        for realm in EnumSet::<Realm>::all() {
+            if self.learned_spells[realm].is_empty() {
+                let skill = Skill::try_from(Skill::FireMagic as u8 + realm as u8).unwrap();
+                self.skills[skill] = 0;
+            }
+        }
+        true
+    }
+
+    pub fn reset_spells(&mut self) {
+        self.learned_spells = EnumMap::default();
+        self.last_spell = None;
+        for realm in EnumSet::<Realm>::all() {
+            let skill = Skill::try_from(Skill::FireMagic as u8 + realm as u8).unwrap();
+            self.skills[skill] = 0;
+        }
+    }
+
     pub fn skill_remaining(&self) -> u8 {
         15 - self.skills.values().copied().sum::<u8>()
     }
 
-    pub fn adjust_attribute(&mut self, attribute: Attribute, increase: bool) -> bool {
+    /// Points explicitly assigned on the creation screen, after minimums.
+    pub fn allocated_attribute(&self, attribute: Attribute) -> u8 {
+        self.attributes[attribute]
+    }
+
+    pub fn allocated_skill(&self, skill: Skill) -> u8 {
+        self.skills[skill]
+    }
+
+    /// Retail's per-attribute ceiling after profession requirements are paid.
+    pub fn attribute_step_limit(&self) -> u8 {
+        let budget = Self::budget(self.race, self.gender, self.profession).unwrap();
+        budget.div_ceil(3).max(3).min(budget)
+    }
+
+    pub fn can_adjust_attribute(&self, attribute: Attribute, increase: bool) -> bool {
         let allocated = self.attributes[attribute];
         if increase {
-            // Retail recomputes this ceiling after paying profession minimums.
-            let budget = Self::budget(self.race, self.gender, self.profession).unwrap();
-            let cap = budget.div_ceil(3).max(3).min(budget);
-            if self.attribute_remaining() == 0
-                || allocated >= cap
-                || self.preview().attributes[attribute] >= 100
-            {
-                return false;
-            }
+            self.attribute_remaining() > 0
+                && allocated < self.attribute_step_limit()
+                && self.preview().attributes[attribute] < 100
+        } else {
+            allocated > 0
+        }
+    }
+
+    pub fn reset_attributes(&mut self) {
+        self.attributes = EnumMap::default();
+    }
+
+    pub fn reset_skills(&mut self) {
+        self.skills = EnumMap::default();
+    }
+
+    pub fn adjust_attribute(&mut self, attribute: Attribute, increase: bool) -> bool {
+        if !self.can_adjust_attribute(attribute, increase) {
+            return false;
+        }
+        if increase {
             self.attributes[attribute] += 1;
         } else {
-            if allocated == 0 {
-                return false;
-            }
             self.attributes[attribute] -= 1;
         }
         true
     }
 
-    pub fn adjust_skill(&mut self, skill: Skill, increase: bool) -> bool {
+    pub fn can_adjust_skill(&self, skill: Skill, increase: bool) -> bool {
         if increase {
-            let preview = self.preview();
-            if self.skill_remaining() == 0
-                || self.skills[skill] >= 5
-                || !preview.skill_available(skill)
-                || preview.skill_points[skill] >= 75
-            {
-                return false;
-            }
+            self.skill_remaining() > 0
+                && self.skills[skill] < 5
+                && self.skill_available(skill)
+                && self.preview().skill_points[skill] < 75
+        } else {
+            self.skills[skill] > 0
+        }
+    }
+
+    pub fn adjust_skill(&mut self, skill: Skill, increase: bool) -> bool {
+        if !self.can_adjust_skill(skill, increase) {
+            return false;
+        }
+        if increase {
             self.skills[skill] += 1;
         } else {
-            if self.skills[skill] == 0 {
-                return false;
-            }
             self.skills[skill] -= 1;
+        }
+        true
+    }
+
+    pub fn skill_available(&self, skill: Skill) -> bool {
+        let index = skill as usize;
+        if index >= Skill::PowerStrike as usize {
+            return false;
+        }
+        if index >= Skill::FireMagic as usize {
+            let realm = Realm::try_from((index - Skill::FireMagic as usize) as u8).unwrap();
+            return !self.learned_spells[realm].is_empty();
+        }
+        if SKILL_AVAILABILITY[index] & (1 << self.profession as usize) == 0 {
+            return false;
+        }
+        if index >= Skill::Wizardry as usize {
+            return matches!(
+                self.profession,
+                Profession::Mage
+                    | Profession::Priest
+                    | Profession::Alchemist
+                    | Profession::Psionic
+                    | Profession::Bishop
+            );
         }
         true
     }
 
     pub fn preview(&self) -> Character {
         let mut character =
-            Character::new(self.name.trim(), self.race, self.gender, self.profession);
+            Character::new(self.display_name(), self.race, self.gender, self.profession);
+        character.full_name = self.name.trim().to_owned();
+        character.personality = self.personality;
+        character.voice = self.voice;
+        character.unspent_spell_picks = self.spell_remaining() as u8;
         character.portrait.clone_from(&self.portrait);
         for a in EnumSet::<Attribute>::all() {
             character.attributes[a] += self.attributes[a];
@@ -154,47 +306,109 @@ impl CharacterDraft {
         character
     }
 
-    pub fn spells(&self) -> &std::collections::BTreeSet<SpellId> {
-        &self.spells
-    }
-
-    /// Pick or unpick a first spell (retail `CharGeneration.cpp`): the
-    /// profession's casters pick two they could learn now.
-    pub fn toggle_spell(&mut self, spell: &SpellDefinition) -> bool {
-        if self.spells.remove(&spell.id) {
-            return true;
-        }
-        let profile = self.preview();
-        if self.spells.len() >= crate::game::magic::starting_picks(&profile)
-            || !crate::game::magic::can_learn(&profile, spell)
-        {
-            return false;
-        }
-        self.spells.insert(spell.id)
-    }
-
     pub fn finish(&self) -> Result<Character, &'static str> {
         Self::budget(self.race, self.gender, self.profession)?;
         if self.name.trim().is_empty()
-            || self.name.chars().count() > 24
-            || self.name.chars().any(char::is_control)
+            || self.name.chars().count() > 39
+            || self.name.chars().any(|c| c.is_control() || "\\/:*?\"<>|".contains(c))
         {
-            return Err("Enter a name of 1–24 characters.");
+            return Err("Enter a valid full name of 1–39 characters.");
+        }
+        if self.nickname.chars().count() > 9
+            || self.nickname.chars().any(|c| c.is_control() || "\\/:*?\"<>|".contains(c))
+        {
+            return Err("Enter a valid nickname of at most nine characters.");
         }
         if self.portrait.is_empty() || !self.portrait.bytes().all(|c| c.is_ascii_alphanumeric()) {
             return Err("Choose a portrait.");
         }
-        let preview = self.preview();
-        if self.spells.len() != crate::game::magic::starting_picks(&preview) {
-            return Err("Choose your first spells.");
+        if EnumSet::<Attribute>::all()
+            .iter()
+            .any(|attribute| self.can_adjust_attribute(attribute, true))
+        {
+            return Err("Allocate the remaining attribute points.");
         }
-        Ok(preview)
+        if EnumSet::<Skill>::all().iter().any(|skill| self.can_adjust_skill(skill, true)) {
+            return Err("Allocate the remaining skill points.");
+        }
+        // Spell picks may deliberately be retained for later advancement.
+        Ok(self.preview())
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn complete_allocations(draft: &mut CharacterDraft) {
+    while let Some(attribute) =
+        EnumSet::<Attribute>::all().iter().find(|&a| draft.can_adjust_attribute(a, true))
+    {
+        draft.adjust_attribute(attribute, true);
+    }
+    while let Some(skill) =
+        EnumSet::<Skill>::all().iter().find(|&s| draft.can_adjust_skill(s, true))
+    {
+        draft.adjust_skill(skill, true);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn learned_spells_survive_creation_and_make_their_realm_available() {
+        use crate::content::spells::SpellDefinition;
+        let catalog = SpellCatalog(vec![
+            SpellDefinition::default(),
+            SpellDefinition {
+                id: SpellId(1),
+                name: "Flame".into(),
+                level: 1,
+                cost: 1,
+                realm: Some(Realm::Fire),
+                books: Spellbook::Wizardry.into(),
+                ..default()
+            },
+            SpellDefinition {
+                id: SpellId(2),
+                name: "Frost".into(),
+                level: 1,
+                cost: 1,
+                realm: Some(Realm::Water),
+                books: Spellbook::Wizardry.into(),
+                ..default()
+            },
+            SpellDefinition {
+                id: SpellId(3),
+                name: "Prayer".into(),
+                level: 1,
+                cost: 1,
+                realm: Some(Realm::Divine),
+                books: Spellbook::Divinity.into(),
+                ..default()
+            },
+        ]);
+        let mut draft = CharacterDraft::default();
+        draft.choose(Race::Human, Gender::Male, Profession::Mage).unwrap();
+        assert!(!draft.toggle_spell(&catalog, SpellId(3)));
+        assert!(draft.toggle_spell(&catalog, SpellId(1)));
+        assert!(draft.skill_available(Skill::FireMagic));
+        assert_eq!(draft.preview().unspent_spell_picks, 1);
+        assert!(draft.adjust_skill(Skill::FireMagic, true));
+        assert!(draft.toggle_spell(&catalog, SpellId(2)));
+        draft.name = "A spellcaster".into();
+        complete_allocations(&mut draft);
+        let character = draft.finish().unwrap();
+        assert!(crate::game::magic::skill_available(
+            &character,
+            Some(&crate::game::magic::LearnedSpells(draft.spells())),
+            Some(&catalog),
+            Skill::FireMagic
+        ));
+        assert!(draft.spells().contains(&SpellId(2)));
+        assert!(draft.toggle_spell(&catalog, SpellId(1)));
+        assert!(!draft.skill_available(Skill::FireMagic));
+        assert_eq!(draft.allocated_skill(Skill::FireMagic), 0);
+    }
 
     #[test]
     fn creation_spends_the_pool_after_requirements_and_refunds_a_changed_recipe() {
@@ -212,6 +426,7 @@ mod tests {
         }
         assert_eq!(draft.attribute_remaining(), 0);
         assert!(!draft.adjust_attribute(Attribute::Speed, true));
+        complete_allocations(&mut draft);
         let character = draft.finish().unwrap();
         assert_eq!(character.name, "Kestrel");
         assert_eq!(character.attributes[Attribute::Strength], 69);
@@ -227,6 +442,8 @@ mod tests {
     #[test]
     fn training_respects_profession_and_per_skill_limits_without_losing_allocations() {
         let mut draft = CharacterDraft { name: "Mira".into(), ..default() };
+        complete_allocations(&mut draft);
+        draft.reset_skills();
         let initial = draft.preview();
         assert!(!draft.adjust_skill(Skill::Wizardry, true));
         for skill in [Skill::Sword, Skill::CloseCombat, Skill::Shield] {
@@ -247,35 +464,15 @@ mod tests {
         assert_eq!(draft.preview(), before, "rejected identity choices do not erase training");
     }
 
-    /// A pure caster must pick their two first spells from their own book;
-    /// changing profession clears the picks.
     #[test]
-    fn a_mage_picks_two_first_spells_from_their_book() {
-        use crate::content::spells::{SpellDefinition, Spellbook};
-        let spell = |id, books| SpellDefinition {
-            id: SpellId(id),
-            level: 1,
-            books,
-            realm: Some(crate::content::characters::Realm::Fire),
-            ..default()
-        };
-        let (blast, frost, missile, heal) = (
-            spell(5, Spellbook::Wizardry.into()),
-            spell(4, Spellbook::Wizardry.into()),
-            spell(25, Spellbook::Wizardry.into()),
-            spell(6, Spellbook::Divinity.into()),
-        );
-        let mut draft = CharacterDraft { name: "Merlin".into(), ..default() };
+    fn finish_rejects_unallocated_points_but_allows_retained_spell_picks() {
+        let mut draft = CharacterDraft { name: "Mage".into(), ..default() };
         draft.choose(Race::Human, Gender::Male, Profession::Mage).unwrap();
-        assert_eq!(draft.finish().unwrap_err(), "Choose your first spells.");
-        assert!(!draft.toggle_spell(&heal), "not in the Mage's book");
-        assert!(draft.toggle_spell(&blast) && draft.toggle_spell(&frost));
-        assert!(!draft.toggle_spell(&missile), "two picks only");
-        assert!(draft.finish().is_ok());
-        assert!(draft.toggle_spell(&frost), "a pick can be taken back");
-        draft.choose(Race::Human, Gender::Male, Profession::Fighter).unwrap();
-        assert!(draft.spells().is_empty());
-        assert!(draft.finish().is_ok(), "fighters pick none");
+        assert!(draft.finish().is_err());
+        complete_allocations(&mut draft);
+        assert_eq!(draft.finish().unwrap().unspent_spell_picks, 2);
+        draft.reset_skills();
+        assert!(draft.finish().is_err());
     }
 
     #[test]
@@ -286,6 +483,7 @@ mod tests {
         assert!(draft.finish().is_err());
         draft.name = "Éowyn".into();
         draft.choose(Race::Human, Gender::Female, Profession::Valkyrie).unwrap();
+        complete_allocations(&mut draft);
         assert!(draft.finish().is_ok());
     }
 }

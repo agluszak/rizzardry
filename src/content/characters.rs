@@ -55,6 +55,67 @@ pub enum Gender {
     Female,
 }
 
+/// Retail personality and the two voice variations chosen at creation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Personality {
+    #[default]
+    Aggressive,
+    Intellectual,
+    Burly,
+    Chaotic,
+    Cunning,
+    Eccentric,
+    Kindly,
+    Laidback,
+    Loner,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Voice {
+    #[default]
+    First,
+    Second,
+}
+
+/// Profession and racial abilities, in retail's description order.
+#[derive(Debug, EnumSetType)]
+#[enumset(repr = "u32")]
+#[repr(u8)]
+pub enum Trait {
+    StaminaRegeneration = 0,
+    HealthRegeneration = 1,
+    CheatDeath = 2,
+    Fearless = 3,
+    RangedCriticals = 4,
+    ThrownCriticals = 5,
+    MonkDamageResistance = 6,
+    EffectiveWhileBlind = 7,
+    MergeGadgets = 8,
+    Backstab = 9,
+    CampRecovery = 10,
+    Pray = 11,
+    Search = 12,
+    RemoveCursedItems = 13,
+    MentalConditionImmunity = 14,
+    MagicResistance = 15,
+    LightningStrike = 16,
+    TurnUndead = 17,
+    MakePotions = 18,
+    Knockout = 19,
+    Berserk = 20,
+    ThrownAutoPenetrate = 21,
+    FaerieArmour = 22,
+    FaerieAbility23 = 23,
+    FaerieCarryCapacity = 24,
+    FaerieAbility25 = 25,
+    FaerieAbility26 = 26,
+    LizardmanMagicRecovery = 27,
+    Breathe = 28,
+    DwarfDamageResistance = 29,
+    AndroidAbility30 = 30,
+    CannotLearn = 31,
+}
+
 #[derive(Debug, Enum, EnumSetType, TryFromPrimitive)]
 #[repr(u8)]
 pub enum Attribute {

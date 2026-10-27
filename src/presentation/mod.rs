@@ -6,6 +6,7 @@ pub mod billboards;
 pub mod camp;
 pub mod character_view;
 pub mod controls;
+pub mod conversation;
 pub mod device_panel;
 pub mod dialog;
 pub mod effects;
@@ -73,6 +74,7 @@ impl Plugin for PresentationPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((
             main_screen::MainScreenPlugin,
+            conversation::ConversationViewPlugin,
             inventory::InventoryPlugin,
             frontend::FrontendPlugin,
             device_panel::plugin,

@@ -74,3 +74,11 @@ Behavioral research compares
 [Wizardry 8 Decomp](https://github.com/agluszak/wizardry-8-decomp) and
 [Whizzardry 8](https://github.com/agluszak/whizzardry-8). Their implementations are
 evidence for game behavior, not constraints on the new architecture.
+
+Friendly NPCs can be selected in the world to open a conversation. Type a topic
+and choose **Ask**, use the authored reply buttons, or select merchandise or
+a backpack/pool item and confirm its trade quote. Burz's greeting and
+Monastery/Arnika branch are the first supported content slice. NPC memory and
+stock survive closure and level travel within this session; disk saves,
+recruitment and further script semantics remain unfinished. Unsupported
+mandatory dialogue operations stop with an explicit content gap.

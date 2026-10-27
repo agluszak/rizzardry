@@ -30,6 +30,7 @@ pub struct Freedom<'w, 's> {
     screen: Res<'w, State<Screen>>,
     next: Res<'w, NextState<Screen>>,
     camp: Option<Res<'w, Camp>>,
+    conversations: Query<'w, 's, (), With<crate::game::npcs::conversation::Conversation>>,
     questions: Query<'w, 's, (), With<TravelQuestion>>,
     flights: Query<'w, 's, (), With<crate::game::party::walk_in::PathFlight>>,
     interaction: Option<Res<'w, crate::game::world::interaction::DeviceInteraction>>,
@@ -42,6 +43,7 @@ impl Freedom<'_, '_> {
             && *self.screen.get() == Screen::World
             && matches!(*self.next, NextState::Unchanged | NextState::Pending(Screen::World))
             && self.camp.is_none()
+            && self.conversations.is_empty()
             && self.questions.is_empty()
             && self.flights.is_empty()
             && self.interaction.is_none()
