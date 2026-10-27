@@ -33,6 +33,25 @@ use crate::game::world::damage::MonsterDamage;
 #[derive(Component, Clone, Debug, Default, PartialEq, Eq)]
 pub struct LearnedSpells(pub BTreeSet<SpellId>);
 
+/// Skill eligibility combines profile rules with the actual learned spell set.
+pub fn skill_available(
+    character: &Character,
+    learned: Option<&LearnedSpells>,
+    catalog: Option<&SpellCatalog>,
+    skill: Skill,
+) -> bool {
+    if (Skill::FireMagic as u8..Skill::PowerStrike as u8).contains(&(skill as u8)) {
+        let realm = Realm::try_from(skill as u8 - Skill::FireMagic as u8).unwrap();
+        return learned.zip(catalog).is_some_and(|(learned, catalog)| {
+            learned
+                .0
+                .iter()
+                .any(|&id| catalog.get(id).is_some_and(|spell| spell.realm == Some(realm)))
+        });
+    }
+    character.skill_available(skill)
+}
+
 /// Spell points left per realm, and recovery not yet whole points. The
 /// maximum is derived from the profile and learned spells ([`max_points`]).
 #[derive(Component, Clone, Debug, Default, PartialEq)]
