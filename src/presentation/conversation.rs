@@ -260,6 +260,9 @@ fn close(world: &mut World, session: Entity) {
     world.write_message(ConversationRequest::Close { conversation: session });
 }
 fn build(world: &mut World, session: Entity) -> Entity {
+    // OpenNpcDialoguePanel selects portrait mode before building its controls.
+    world.resource_mut::<super::main_screen::ScreenLayout>().mode =
+        super::main_screen::LayoutMode::Closed;
     let root = world
         .spawn((
             ConversationView {
@@ -428,6 +431,19 @@ fn build(world: &mut World, session: Entity) -> Entity {
                     });
             }
             let back = action(world, left, "Back", Vec2::new(114., 71.), Vec2::new(23., 16.));
+            let children: Vec<_> =
+                world.get::<Children>(back).into_iter().flatten().copied().collect();
+            for child in children {
+                world.despawn(child);
+            }
+            let sheet = world
+                .resource::<AssetServer>()
+                .load("retail://data/npc interaction/npc_buttons.sti");
+            world.entity_mut(back).insert((
+                Picture { sheet, frame: 0, at: Vec2::new(114., 71.), bounds: Some(0) },
+                ControlSkin::new(0, 1, 4, 2, 3),
+                Pickable::default(),
+            ));
             world.entity_mut(back).insert(ModeFocus(true));
             world.entity_mut(back).observe(move |_: On<Activate>, mut commands: Commands| {
                 commands.queue(move |w: &mut World| set_mode(w, root, Mode::Talk));
@@ -641,7 +657,7 @@ fn build(world: &mut World, session: Entity) -> Entity {
                                 commands.queue(move |w: &mut World| {
                                     let Some(text) = w
                                         .get::<EditableText>(input)
-                                        .map(|t| t.value().trim().to_owned())
+                                        .map(|t| t.value().to_string().trim().to_owned())
                                     else {
                                         return;
                                     };
@@ -800,11 +816,17 @@ fn sync_view(world: &mut World) {
         mode = Mode::Talk;
     }
     for (panel, mut node) in world.query::<(&ModePanel, &mut Node)>().iter_mut(world) {
-        node.display = if panel.0 == (mode != Mode::Talk) { Display::Flex } else { Display::None };
+        let display = if panel.0 == (mode != Mode::Talk) { Display::Flex } else { Display::None };
+        if node.display != display {
+            node.display = display;
+        }
     }
     for mut node in world.query_filtered::<&mut Node, With<QuoteBubble>>().iter_mut(world) {
-        node.display =
+        let display =
             if mode == Mode::Talk && !speech.is_empty() { Display::Flex } else { Display::None };
+        if node.display != display {
+            node.display = display;
+        }
     }
     set_label::<QuoteText>(world, &speech);
     sync_bubble(world, &speech);
@@ -1082,7 +1104,7 @@ fn sync_view(world: &mut World) {
     }
     if world
         .get::<Children>(list)
-        .is_none_or(|children| children.iter().copied().ne(ordered.iter().copied()))
+        .is_none_or(|children| children.iter().ne(ordered.iter().copied()))
     {
         world.entity_mut(list).replace_children(&ordered);
     }
@@ -1093,7 +1115,7 @@ fn sync_bubble(world: &mut World, speech: &str) {
     let font =
         world.resource::<AssetServer>().load::<SpriteSheet>("retail://data/fonts/font12point1.sti");
     let Some(font) = world.resource::<Assets<SpriteSheet>>().get(&font) else { return };
-    let width = (font.text_width(speech) + 24).min(280).max(25);
+    let width = (font.text_width(speech) + 24).clamp(25, 280);
     let wrapped = crate::content::ui::wrap_text(&font.frames, speech, width - 24);
     let line =
         font.frames.first().map_or(12, |f| (f.height as i32 + f.offset[1] as i32).max(1) as u32);
