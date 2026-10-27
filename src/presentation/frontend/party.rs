@@ -111,7 +111,7 @@ fn action_button(
     if let Some(action) = action {
         button.insert(action);
     } else {
-        button.insert(InteractionDisabled);
+        button.insert((InteractionDisabled, TabIndex(-1)));
     }
     let button = button.id();
     picture(commands, button, sheet, frame, Vec2::ZERO);
@@ -292,7 +292,14 @@ pub(super) fn refresh(
     assets: Res<AssetServer>,
     mut commands: Commands,
     mut controls: Query<
-        (Entity, &mut Action, Option<&CandidateRow>, Option<&PartySlot>, Has<InteractionDisabled>),
+        (
+            Entity,
+            &mut Action,
+            Option<&CandidateRow>,
+            Option<&PartySlot>,
+            Has<InteractionDisabled>,
+            &mut TabIndex,
+        ),
         With<Control>,
     >,
     mut portraits: Query<(&Portrait, &mut Picture, &mut Visibility), Without<RowBackground>>,
@@ -314,7 +321,7 @@ pub(super) fn refresh(
     if !session.is_changed() {
         return;
     }
-    for (entity, mut action, row, slot, disabled) in &mut controls {
+    for (entity, mut action, row, slot, disabled, mut tab) in &mut controls {
         if let Some(row) = row {
             *action = Action::SelectCandidate(session.candidates.get(row.0).map(|(id, _)| *id));
         } else if let Some(slot) = slot {
@@ -330,6 +337,7 @@ pub(super) fn refresh(
             Action::Begin => !session.party.is_empty(),
             _ => true,
         };
+        tab.set_if_neq(TabIndex(if enabled { 0 } else { -1 }));
         if enabled == disabled {
             if enabled {
                 commands.entity(entity).remove::<InteractionDisabled>();
