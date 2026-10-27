@@ -13,7 +13,7 @@ use crate::game::npcs::{
 };
 use crate::game::{
     data::GameData,
-    inventory::{Carried, PartyInventory},
+    inventory::{Carried, ItemOwner, ItemRef, PartyInventory},
     party::roster::PartyRoster,
 };
 use bevy::{
@@ -55,6 +55,8 @@ struct TopicInput;
 struct SubmitTopic;
 #[derive(Component)]
 struct TradeList;
+#[derive(Component)]
+struct TradeControls;
 #[derive(Component, Clone, Copy)]
 struct TradeRow(TradeSource);
 #[derive(Component)]
@@ -228,9 +230,9 @@ fn build(world: &mut World, session: Entity) -> Entity {
         );
     }
     world.spawn((Choices, Node { column_gap: px(5), ..default() }, ChildOf(root)));
-    let offer = world.spawn((Offer, Node { min_height: px(18), ..default() }, ChildOf(root))).id();
+    let offer = world.spawn((Offer, TradeControls, Node { min_height: px(18), ..default() }, ChildOf(root))).id();
     bitmap(world, offer, "Select merchandise or an item to sell.".into(), 510.0);
-    let controls = world.spawn((Node { column_gap: px(5), ..default() }, ChildOf(root))).id();
+    let controls = world.spawn((TradeControls, Node { column_gap: px(5), ..default() }, ChildOf(root))).id();
     for (label, change) in [("-", -1), ("+", 1), ("Confirm trade", 0)] {
         let e = button(world, controls, label);
         world.entity_mut(e).observe(move |_: On<Activate>, mut commands: Commands| {
@@ -262,6 +264,7 @@ fn build(world: &mut World, session: Entity) -> Entity {
     }
     world.spawn((
         TradeList,
+        TradeControls,
         Node {
             flex_grow: 1.0,
             overflow: Overflow::scroll_y(),
@@ -401,6 +404,13 @@ fn sync_view(world: &mut World) {
             );
         }
     }
+    let can_trade = trade_allowed(world, actor);
+    for mut node in world.query_filtered::<&mut Node, With<TradeControls>>().iter_mut(world) {
+        node.display = if can_trade { Display::Flex } else { Display::None };
+    }
+    if !can_trade {
+        return;
+    }
     let items = world
         .get_resource::<GameData>()
         .and_then(|d| world.resource::<Assets<ItemCatalog>>().get(&d.items));
@@ -425,7 +435,7 @@ fn sync_view(world: &mut World) {
     for item in &world.resource::<PartyInventory>().pool.stacks {
         if let Some(d) = items.get(item.item) {
             rows.push((
-                TradeSource::Pool(item.id),
+                TradeSource::Party(ItemRef { owner: ItemOwner::Pool, id: item.id }),
                 format!("Sell from party pool: {}", item.display_name(d, true)),
                 if d.class == EquipClass::Ammunition { item.units() } else { 1 },
             ));
@@ -436,7 +446,7 @@ fn sync_view(world: &mut World) {
             for item in carried.backpack.iter().flatten() {
                 if let Some(d) = items.get(item.item) {
                     rows.push((
-                        TradeSource::Backpack { member: *member, item: item.id },
+                        TradeSource::Party(ItemRef { owner: ItemOwner::Member(*member), id: item.id }),
                         format!(
                             "Sell from {}: {}",
                             world

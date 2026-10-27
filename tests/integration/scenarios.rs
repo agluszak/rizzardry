@@ -142,7 +142,8 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
         self, Conversation, ConversationRequest, ConversationWait,
     };
     use rizzardry::game::npcs::trade::TradeSource;
-    use rizzardry::game::npcs::{Npc, NpcAssets};
+    use rizzardry::game::npcs::{Npc, NpcAssets, NpcBodies};
+    use rizzardry::game::inventory::{ItemOwner, ItemRef};
     let mut app = game(&["--seed", "8", "--start=225,36.7,-68.6"]);
     step_until(&mut app, "the Monastery becoming active", |w| playing(w).is_some());
     let assets = app.world().resource::<NpcAssets>();
@@ -161,8 +162,8 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
         app.world().get::<ChildOf>(actor).is_none(),
         "map lifetime does not own the named actor"
     );
-    assert!(app.world().get::<rizzardry::game::npcs::NpcPresence>(actor).is_some());
-    let position = app.world().get::<avian3d::prelude::Position>(actor).unwrap().0;
+    let body = app.world().get::<NpcBodies>(actor).unwrap().0[0];
+    let position = app.world().get::<avian3d::prelude::Position>(body).unwrap().0;
     for mut p in app.world_mut().query_filtered::<&mut avian3d::prelude::Position,With<rizzardry::game::party::body::PartyBody>>().iter_mut(app.world_mut()){p.0=position+Vec3::X*2.0;}
     app.world_mut().resource_mut::<PartyInventory>().gold = 10000;
     let session = conversation::begin(app.world_mut(), actor).unwrap();
@@ -237,7 +238,7 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     );
     let bought = app.world().resource::<PartyInventory>().pool.stacks[0].id;
     let sale =
-        conversation::quote_trade(app.world_mut(), session, TradeSource::Pool(bought), 1).unwrap();
+        conversation::quote_trade(app.world_mut(), session, TradeSource::Party(ItemRef { owner: ItemOwner::Pool, id: bought }), 1).unwrap();
     app.world_mut().write_message(ConversationRequest::Trade(sale));
     app.update();
     assert_eq!(app.world().resource::<PartyInventory>().gold, gold - quote.gold + sale.gold);
@@ -283,7 +284,9 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     step_until(&mut app, "returning to Burz", |w| {
         playing(w).is_some_and(|p| p.ends_with("monastery1.pvl"))
     });
-    assert!(app.world().get::<Monster>(actor).is_some());
+    let returned_body = app.world().get::<NpcBodies>(actor).unwrap().0[0];
+    assert!(app.world().get::<Monster>(returned_body).is_some());
+    assert!(app.world().get_entity(body).is_err());
     let npc = app.world().get::<Npc>(actor).unwrap();
     assert_eq!(npc.stock, stock);
     assert!(npc.paid_topics.contains(&topic));
@@ -303,4 +306,13 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
             .count(),
         1
     );
+    let position = app.world().get::<avian3d::prelude::Position>(returned_body).unwrap().0;
+    for mut p in app.world_mut().query_filtered::<&mut avian3d::prelude::Position, With<rizzardry::game::party::body::PartyBody>>().iter_mut(app.world_mut()) {
+        p.0 = position + Vec3::X * 2.0;
+    }
+    let reopened = conversation::begin(app.world_mut(), actor).unwrap();
+    app.update();
+    assert_eq!(app.world().get::<Conversation>(reopened).unwrap().current, Some((121, 0)));
+    finish(&mut app, reopened);
+    assert!(app.world().get::<Conversation>(reopened).unwrap().ready());
 }

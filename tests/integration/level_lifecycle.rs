@@ -307,7 +307,7 @@ fn attaching_visuals_does_not_change_physical_state_or_revisit_placement() {
         let float_height = 1.1;
         let pose = Transform::from_translation(feet + Vec3::Y * float_height)
             .with_rotation(Quat::from_rotation_y(0.7));
-        app.world_mut().get_mut::<Monster>(actor).unwrap().body = body;
+        app.world_mut().get_mut::<Monster>(body).unwrap().body = body;
         app.world_mut().entity_mut(actor).insert((
             Walker { speed: body.speed, float_height },
             pose,
@@ -664,7 +664,7 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
         items::{ItemDefinition, ItemId},
         npcs::{DialogueScript, FactCatalog, NpcCatalog, NpcDefinition, NpcId, Quote, StockRule},
     };
-    use rizzardry::game::npcs::{ActorId, Npc, NpcAssets, NpcPresence};
+    use rizzardry::game::npcs::{ActorId, Npc, NpcAssets, NpcBodies};
     let mut app = app();
     with_data(&mut app);
     let data = app.world().resource::<GameData>();
@@ -697,7 +697,9 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     assert!(is_played(&app, source));
     let actor = app.world_mut().query::<(Entity, &Npc)>().single(app.world()).unwrap().0;
     assert!(app.world().get::<ChildOf>(actor).is_none());
-    assert_eq!(app.world().get::<NpcPresence>(actor).unwrap().0, source);
+    let body = app.world().get::<NpcBodies>(actor).unwrap().0[0];
+    assert_ne!(body, actor);
+    assert_eq!(app.world().get::<ChildOf>(body).unwrap().parent(), source);
     {
         let mut npc = app.world_mut().get_mut::<Npc>(actor).unwrap();
         npc.greeting_pending = false;
@@ -723,14 +725,18 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     assert!(is_played(&app, away));
     assert!(app.world().get_entity(source).is_err());
     assert!(app.world().get::<Monster>(actor).is_none());
-    assert!(app.world().get::<NpcPresence>(actor).is_none());
+    assert!(app.world().get_entity(body).is_err());
+    assert!(app.world().get::<NpcBodies>(actor).is_none_or(|b| b.0.is_empty()));
     assert_eq!(app.world().get::<Npc>(actor).unwrap().dormant.as_ref().unwrap().1.monster.hp, 4);
     app.update();
     assert_eq!(app.world().get::<Npc>(actor).unwrap().stock, stock);
     let back = spawn_level(&mut app, floor());
     app.update();
     assert!(is_played(&app, back));
-    assert_eq!(app.world().get::<Monster>(actor).unwrap().hp, 4);
+    let returned_body = app.world().get::<NpcBodies>(actor).unwrap().0[0];
+    assert_ne!(returned_body, body);
+    assert_eq!(app.world().get::<ChildOf>(returned_body).unwrap().parent(), back);
+    assert_eq!(app.world().get::<Monster>(returned_body).unwrap().hp, 4);
     let npc = app.world().get::<Npc>(actor).unwrap();
     assert_eq!(npc.stock, stock);
     assert_eq!(npc.paid_topics, [7]);

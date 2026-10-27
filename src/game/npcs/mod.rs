@@ -1,5 +1,4 @@
-//! Campaign-lived NPC actors. Active world components are removed on departure;
-//! the retained entity owns memory and stock, never a second live character.
+//! Campaign-lived NPC identity, memory and stock, linked to map-owned bodies.
 pub mod conversation;
 pub mod trade;
 use crate::content::{npcs::*, species::MonsterCatalog};
@@ -27,27 +26,25 @@ impl ActorId {
         }
     }
 }
-/// World presence is independent of despawn ownership. A map never owns the
-/// lifetime of a named actor, even while its body is on that map.
+/// A map-owned body points to its campaign-lived NPC. Despawning the map
+/// removes the body and relationship, never the durable NPC.
 #[derive(Component, Debug)]
 #[component(immutable)]
-#[relationship(relationship_target=PresentNpcs)]
-pub struct NpcPresence(pub Entity);
+#[relationship(relationship_target=NpcBodies)]
+pub struct NpcBody(pub Entity);
 #[derive(Component, Debug)]
-#[relationship_target(relationship=NpcPresence)]
-pub struct PresentNpcs(Vec<Entity>);
+#[relationship_target(relationship=NpcBody)]
+pub struct NpcBodies(pub Vec<Entity>);
 #[derive(Component, Debug)]
 pub struct Npc {
     pub definition: NpcId,
     pub disposition: u8,
     pub greeting_pending: bool,
     pub paid_topics: Vec<u16>,
-    /// Present only while there is no Monster/body on this entity.
+    /// Durable world role captured when the active body leaves its map.
     pub dormant: Option<(String, KeptMonster)>,
     pub stock: trade::MerchantStock,
 }
-#[derive(Resource, Default)]
-pub struct NpcActors(pub HashMap<ActorId, Entity>);
 #[derive(Resource, Default)]
 pub struct NpcAssets {
     pub catalog: Handle<NpcCatalog>,
@@ -68,18 +65,17 @@ pub struct NpcPopulation<'w, 's> {
     pub definitions: Res<'w, Assets<NpcCatalog>>,
     pub facts: Res<'w, Assets<FactCatalog>>,
     pub scripts: Res<'w, Assets<DialogueScript>>,
-    pub actors: ResMut<'w, NpcActors>,
-    pub npcs: Query<
+    pub npcs: Query<'w, 's, (Entity, &'static ActorId, &'static mut Npc, Option<&'static NpcBodies>)>,
+    bodies: Query<
         'w,
         's,
         (
-            Entity,
-            &'static mut Npc,
-            Option<&'static Monster>,
-            Option<ActorPose>,
+            &'static NpcBody,
+            &'static Monster,
+            ActorPose,
             Option<&'static Walker>,
             Option<&'static crate::game::world::identify::GroupMember>,
-            Option<&'static Children>,
+            &'static ChildOf,
         ),
         Without<crate::game::party::body::PartyBody>,
     >,
@@ -144,13 +140,12 @@ impl NpcPopulation<'_, '_> {
         }
         Ok(ready)
     }
-    pub fn depart(&mut self, commands: &mut Commands, map: &str) {
-        use crate::game::world::{identify::GroupMember, navigation::WalkerMotion};
-        use avian3d::prelude::*;
-        use bevy_landmass::prelude::*;
-        use bevy_tnua::prelude::*;
-        for (entity, mut npc, monster, pose, walker, group, children) in &mut self.npcs {
-            let (Some(monster), Some(pose)) = (monster, pose) else { continue };
+    pub fn depart(&mut self, root: Entity, map: &str) {
+        for (body, monster, pose, walker, group, parent) in &self.bodies {
+            if parent.parent() != root {
+                continue;
+            }
+            let Ok((_, _, mut npc, _)) = self.npcs.get_mut(body.0) else { continue };
             npc.dormant = Some((
                 map.into(),
                 KeptMonster {
@@ -160,34 +155,6 @@ impl NpcPopulation<'_, '_> {
                     yaw: pose.rotation().to_euler(EulerRot::YXZ).0,
                 },
             ));
-            if let Some(children) = children {
-                for child in children.iter() {
-                    commands.entity(child).despawn();
-                }
-            }
-            commands
-                .entity(entity)
-                .remove::<NpcPresence>()
-                .remove::<(Transform, GlobalTransform, Visibility, InheritedVisibility, ViewVisibility)>()
-                .remove::<(
-                    Monster,
-                    GroupMember,
-                    Walker,
-                    RigidBody,
-                    Position,
-                    Rotation,
-                    Collider,
-                    LinearVelocity,
-                    AngularVelocity,
-                    LockedAxes,
-                )>()
-                .remove::<(
-                    TnuaController<WalkerMotion>,
-                    TnuaConfig<WalkerMotion>,
-                    bevy_tnua::TnuaMotor,
-                    bevy_tnua_avian3d::TnuaAvian3dSensorShape,
-                )>()
-                .remove::<(bevy_landmass::Agent3d, AgentTarget3d, AgentSettings, ArchipelagoRef3d, Velocity3d)>();
         }
     }
 }
@@ -198,7 +165,6 @@ impl Plugin for NpcPlugin {
             .init_asset::<DialogueScript>()
             .init_asset::<FactCatalog>()
             .init_resource::<NpcAssets>()
-            .init_resource::<NpcActors>()
             .init_resource::<conversation::StoryFacts>()
             .add_message::<conversation::ConversationRequest>()
             .add_message::<conversation::LinePlayback>()

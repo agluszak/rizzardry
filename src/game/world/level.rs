@@ -218,7 +218,7 @@ pub struct LevelContents<'w, 's> {
         'w,
         's,
         (&'static Monster, super::ActorPose, Option<&'static Walker>, Option<&'static GroupMember>),
-        Without<crate::game::npcs::Npc>,
+        Without<crate::game::npcs::NpcBody>,
     >,
     items: Query<'w, 's, (&'static WorldItem, &'static Transform)>,
     groups: Query<'w, 's, &'static MonsterGroup>,
@@ -535,7 +535,7 @@ pub fn activate_level(
         for (entity, source, state, children) in &current {
             let children = children.map_or(&[][..], |c| &c[..]);
             memory.0.insert(source.path.clone(), transition.p0().remember(entity, state, children));
-            npcs.depart(&mut commands, &source.path);
+            npcs.depart(entity, &source.path);
             commands.queue(crate::game::npcs::conversation::close);
             commands.entity(entity).despawn();
         }

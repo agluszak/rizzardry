@@ -5,7 +5,7 @@ use crate::content::{
     npcs::NpcDefinition,
 };
 use crate::game::{
-    inventory::{ItemIds, ItemStack, PartyInventory, StackId},
+    inventory::{ItemIds, ItemRef, ItemStack, PartyInventory},
     rng::GameRng,
 };
 use bevy::prelude::*;
@@ -43,8 +43,7 @@ pub enum TradeError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TradeSource {
     Stock(StockLotId),
-    Pool(StackId),
-    Backpack { member: Entity, item: StackId },
+    Party(ItemRef),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TradeQuote {
@@ -115,6 +114,7 @@ impl MerchantStock {
         catalog: &ItemCatalog,
         level: u32,
         now: u64,
+        templar: bool,
         rng: &mut GameRng,
     ) -> Result<(), TradeError> {
         // Validate before consuming RNG or changing stock.
@@ -134,11 +134,8 @@ impl MerchantStock {
             return Ok(());
         }
         let daily = now.saturating_sub(self.maintenance_at) >= 86_400_000;
-        if daily && def.stock.iter().any(|r| !r.persistent && r.item == ItemId(0x1fc)) {
-            return Err(TradeError::Unavailable);
-        }
         if now.saturating_sub(self.restock_at) > 43_200_000 {
-            self.replenish(def, catalog, level, true, rng)?;
+            self.replenish(def, catalog, level, true, templar, rng)?;
             self.restock_at = now;
         }
         if daily {
@@ -159,7 +156,7 @@ impl MerchantStock {
                 }
                 lot.units = lot.units.saturating_sub(count);
             }
-            self.replenish(def, catalog, level, false, rng)?;
+            self.replenish(def, catalog, level, false, templar, rng)?;
             self.lots.retain(|l| l.units > 0);
             self.maintenance_at = now;
             self.restock_at = now;
@@ -177,15 +174,17 @@ impl MerchantStock {
         catalog: &ItemCatalog,
         level: u32,
         persistent: bool,
+        templar: bool,
         rng: &mut GameRng,
     ) -> Result<(), TradeError> {
         for r in &def.stock {
             if r.persistent != persistent {
                 continue;
             }
-            // This original restock gate requires story semantics not yet ported.
-            if r.item == ItemId(0x1fc) {
-                return Err(TradeError::Unavailable);
+            // Retail RestockNpcItems gates only this non-persistent rule.
+            // Initial population and persistent replenishment do not use the gate.
+            if !persistent && r.item == ItemId(0x1fc) && !templar {
+                continue;
             }
             let held = self.lots.iter().find(|l| l.item == r.item).map_or(0, |l| {
                 if catalog.get(r.item).unwrap().quantity == QuantityKind::Stack {
@@ -422,4 +421,32 @@ mod tests {
         // Communication is applied per unit, then truncated before multiplication.
         assert_eq!(price(&def, &catalog.0[0], 3, true, true, 20), Ok(33));
     }
+    #[test]
+    fn templar_gate_skips_one_daily_rule_without_disabling_other_stock() {
+        use crate::content::npcs::StockRule;
+        let mut catalog = catalog();
+        catalog.0.resize_with(0x1fd, ItemDefinition::default);
+        catalog.0[0x1fc] = ItemDefinition { id: ItemId(0x1fc), ..catalog.0[0].clone() };
+        let def = NpcDefinition {
+            stock: vec![
+                StockRule { item: ItemId(0x1fc), quantity: 4, persistent: false },
+                StockRule { item: ItemId(0), quantity: 4, persistent: true },
+            ],
+            ..merchant()
+        };
+        let mut stock = MerchantStock { initialized: true, ..default() };
+        let mut rng = GameRng::seeded(8);
+        stock.maintain(&def, &catalog, 1, 86_400_000, false, &mut rng).unwrap();
+        assert!(stock.lots.iter().all(|lot| lot.item != ItemId(0x1fc)));
+        assert!(stock.lots.iter().any(|lot| lot.item == ItemId(0) && lot.units > 0));
+        assert_eq!(stock.maintenance_at, 86_400_000);
+        for day in 2..=10 {
+            stock.maintain(&def, &catalog, 1, day * 86_400_000, true, &mut rng).unwrap();
+            if stock.lots.iter().any(|lot| lot.item == ItemId(0x1fc) && lot.units > 0) {
+                return;
+            }
+        }
+        panic!("the open gate must allow replenishment with the seeded rolls");
+    }
+
 }

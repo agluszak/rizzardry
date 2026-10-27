@@ -75,7 +75,6 @@ impl Plugin for PresentationPlugin {
             inventory::InventoryPlugin,
             frontend::FrontendPlugin,
         ))
-        .add_observer(monsters::forget_departed_visuals)
         .add_input_context::<Exploration>()
         .add_observer(retail_controls::primary_buttons_only)
         .add_observer(party_view::attach_camera)

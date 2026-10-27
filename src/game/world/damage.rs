@@ -43,7 +43,7 @@ pub struct MonsterDamage<'w, 's> {
     pub monsters: Query<
         'w,
         's,
-        (&'static mut Monster, ActorPose, Option<&'static Walker>, super::ActorLevel),
+        (&'static mut Monster, ActorPose, Option<&'static Walker>, &'static ChildOf),
     >,
     motion: Query<
         'w,
@@ -78,7 +78,7 @@ impl MonsterDamage<'_, '_> {
 
     pub fn active(&self, target: Entity) -> bool {
         self.monsters.get(target).is_ok_and(|(_, _, _, owner)| {
-            owner.level().is_some_and(|level| self.levels.contains(level))
+            self.levels.contains(owner.parent())
         })
     }
 
@@ -91,7 +91,7 @@ impl MonsterDamage<'_, '_> {
     ) -> Result<DamageOutcome, DamageRefusal> {
         let (mut monster, at, walker, owner) =
             self.monsters.get_mut(target).map_err(|_| DamageRefusal::MissingTarget)?;
-        let level = owner.level().ok_or(DamageRefusal::InactiveLevel)?;
+        let level = owner.parent();
         if !self.levels.contains(level) {
             return Err(DamageRefusal::InactiveLevel);
         }

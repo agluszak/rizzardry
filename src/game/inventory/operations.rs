@@ -15,16 +15,12 @@ pub struct InventoryOperations<'w, 's> {
     data: Option<Res<'w, GameData>>,
     catalogs: Res<'w, Assets<ItemCatalog>>,
     battle: Option<Res<'w, crate::game::combat::Battle>>,
-    conversations: Query<'w, 's, (), With<crate::game::npcs::conversation::Conversation>>,
 }
 
 impl InventoryOperations<'_, '_> {
     /// Give the held item to an identified actor. Eligibility and battle pool
     /// precedence are rules here; the clicked portrait only supplies its target.
     pub fn give_to(&mut self, member: Entity) -> Result<Option<ItemNews>, Refusal> {
-        if !self.conversations.is_empty() {
-            return Err(Refusal::HandFull);
-        }
         let Some(held) = self.party.hand.held.as_ref() else { return Ok(None) };
         if !self.roster.0.contains(&member) {
             return Err(Refusal::NotMember);
@@ -84,9 +80,6 @@ impl InventoryOperations<'_, '_> {
         }
     }
     pub fn deposit(&mut self, position: PoolPosition) -> Result<u32, Refusal> {
-        if !self.conversations.is_empty() {
-            return Err(Refusal::HandFull);
-        }
         let catalog = self
             .data
             .as_ref()
@@ -95,9 +88,6 @@ impl InventoryOperations<'_, '_> {
         self.party.deposit_hand(position, catalog)
     }
     pub fn interact_slot(&mut self, destination: MemberSlot) -> Result<(), Refusal> {
-        if !self.conversations.is_empty() {
-            return Err(Refusal::HandFull);
-        }
         if !self.roster.0.contains(&destination.member) {
             return Err(Refusal::NotMember);
         }
@@ -111,9 +101,6 @@ impl InventoryOperations<'_, '_> {
         self.party.interact_slot(character, vitals, &mut carried, destination.slot, catalog)
     }
     pub fn switch_weapon_sets(&mut self, member: Entity) -> Result<(), Refusal> {
-        if !self.conversations.is_empty() {
-            return Err(Refusal::HandFull);
-        }
         if !self.roster.0.contains(&member) {
             return Err(Refusal::NotMember);
         }
@@ -127,9 +114,6 @@ impl InventoryOperations<'_, '_> {
         carried.switch_weapon_sets(catalog, vitals.is_dead())
     }
     pub fn take(&mut self, source: ItemRef) -> Result<(), Refusal> {
-        if !self.conversations.is_empty() {
-            return Err(Refusal::HandFull);
-        }
         if self.party.hand.held.is_some() {
             return Err(Refusal::HandFull);
         }

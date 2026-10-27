@@ -63,7 +63,7 @@ pub fn activate_selection(
     selection: Res<WorldSelection>,
     props: Query<Has<Device>, With<Prop>>,
     held: Res<PartyInventory>,
-    npcs: Query<(), With<crate::game::npcs::Npc>>,
+    npcs: Query<&crate::game::npcs::NpcBody>,
     mut conversations: MessageWriter<crate::game::npcs::conversation::ConversationRequest>,
     obstacles: WorldObstacles,
     mut commands: Commands,
@@ -73,10 +73,10 @@ pub fn activate_selection(
     }
     if held.hand.held.is_none()
         && let Some(hit) = selection.hit
-        && npcs.contains(hit.entity)
+        && let Ok(npc) = npcs.get(hit.entity)
     {
         conversations.write(crate::game::npcs::conversation::ConversationRequest::Begin {
-            actor: hit.entity,
+            actor: npc.0,
         });
         return;
     }
