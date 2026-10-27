@@ -233,6 +233,7 @@ pub struct LevelRecord {
 #[derive(Clone, Debug)]
 pub struct KeptMonster {
     pub group: Option<i32>,
+    pub provoked: bool,
     pub monster: Monster,
     pub feet: Vec3,
     pub yaw: f32,
@@ -246,7 +247,13 @@ pub struct LevelContents<'w, 's> {
     monsters: Query<
         'w,
         's,
-        (&'static Monster, super::ActorPose, Option<&'static Walker>, Option<&'static GroupMember>),
+        (
+            &'static Monster,
+            super::ActorPose,
+            Option<&'static Walker>,
+            Option<&'static GroupMember>,
+            Has<super::population::Provoked>,
+        ),
     >,
     items: Query<'w, 's, (&'static WorldItem, &'static Transform)>,
     groups: Query<'w, 's, &'static MonsterGroup>,
@@ -268,7 +275,8 @@ impl LevelContents<'_, '_> {
                 .monsters
                 .iter_many(children)
                 .matched()
-                .map(|(monster, at, walker, group)| KeptMonster {
+                .map(|(monster, at, walker, group, provoked)| KeptMonster {
+                    provoked,
                     group: group.and_then(|m| self.groups.get(m.0).ok()).map(|g| g.authored),
                     monster: monster.clone(),
                     feet: super::navigation::feet(at.translation(), walker),

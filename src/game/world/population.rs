@@ -174,6 +174,7 @@ pub fn populate(
                 let size_roll = rng.below(1000);
                 let body = ScaledBody::new(bodies.get(body_definition).unwrap(), size_roll);
                 KeptMonster {
+                    provoked: false,
                     monster: Monster {
                         location: placed.location,
                         species: placed.species,
@@ -216,6 +217,9 @@ pub fn populate(
                 .with_rotation(Quat::from_rotation_y(kept.yaw)),
             LevelOwned(root),
         ));
+        if kept.provoked {
+            entity.insert(Provoked);
+        }
         if let Some(group) = group {
             entity.insert(GroupMember(group));
         }

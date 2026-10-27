@@ -399,6 +399,9 @@ fn a_level_waits_for_body_metadata_and_sizes_monsters_without_render_assets() {
 fn group_knowledge_survives_revisit() {
     use rizzardry::game::world::identify::{GroupMember, MonsterGroup};
     let (mut app, _) = playing();
+    let monster =
+        app.world_mut().query_filtered::<Entity, With<Monster>>().single(app.world()).unwrap();
+    app.world_mut().entity_mut(monster).insert(rizzardry::game::world::population::Provoked);
     let old =
         app.world_mut().query_filtered::<Entity, With<MonsterGroup>>().single(app.world()).unwrap();
     let mut group = app.world_mut().get_mut::<MonsterGroup>(old).unwrap();
