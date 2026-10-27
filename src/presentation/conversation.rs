@@ -986,23 +986,20 @@ fn sync_view(world: &mut World) {
             }
         }
     }
-    if mode == Mode::Sell && !pool {
-        if let Some(member) = member {
-            if let Some(carried) = world.get::<Carried>(member) {
-                for item in carried.backpack.iter().flatten() {
-                    if let Some(d) = items.get(item.item)
-                        && allows(d)
-                    {
-                        rows.push((
-                            TradeSource::Party(ItemRef {
-                                owner: ItemOwner::Member(member),
-                                id: item.id,
-                            }),
-                            item.display_name(d, true),
-                            if d.class == EquipClass::Ammunition { item.units() } else { 1 },
-                        ));
-                    }
-                }
+    if mode == Mode::Sell
+        && !pool
+        && let Some(member) = member
+        && let Some(carried) = world.get::<Carried>(member)
+    {
+        for item in carried.backpack.iter().flatten() {
+            if let Some(d) = items.get(item.item)
+                && allows(d)
+            {
+                rows.push((
+                    TradeSource::Party(ItemRef { owner: ItemOwner::Member(member), id: item.id }),
+                    item.display_name(d, true),
+                    if d.class == EquipClass::Ammunition { item.units() } else { 1 },
+                ));
             }
         }
     }
