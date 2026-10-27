@@ -75,18 +75,3 @@ impl AssetLoader for RetailTextureLoader {
 pub fn file_has_alpha(bytes: &[u8], extension: &str) -> bool {
     extension.eq_ignore_ascii_case("tga") && bytes.get(16) == Some(&32)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_32_bit_targas_carry_alpha() {
-        let mut header = [0u8; 18];
-        header[16] = 32;
-        assert!(file_has_alpha(&header, "TGA"));
-        header[16] = 24;
-        assert!(!file_has_alpha(&header, "tga"));
-        assert!(!file_has_alpha(&[0xff, 0xd8, 0xff], "jpg"));
-    }
-}

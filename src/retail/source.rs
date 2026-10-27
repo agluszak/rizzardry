@@ -152,5 +152,5 @@ pub fn navmesh_source(files: Arc<RetailFiles>, classes: usize, cache: &Path) -> 
     let cache = cache.to_string_lossy().into_owned();
     AssetSourceBuilder::new(move || Box::new(NavmeshInputReader { files: files.clone(), classes }))
         .with_processed_reader(AssetSource::get_default_reader(cache.clone()))
-        .with_processed_writer(AssetSource::get_default_writer(cache))
+        .with_processed_writer(crate::asset_cache::processed_writer(&cache))
 }

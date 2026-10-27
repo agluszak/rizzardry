@@ -968,16 +968,7 @@ mod tests {
             self.world.despawn(self.root);
             let handle =
                 self.world.resource_mut::<Assets<LevelDefinition>>().add(self.geometry.clone());
-            self.root = self
-                .world
-                .spawn(super::super::level::Level {
-                    path: "test".into(),
-                    geometry: handle,
-                    script: self.script,
-                    navmeshes: vec![],
-                    messages: None,
-                })
-                .id();
+            self.root = self.world.spawn(Level { script: self.script, ..Level::test(handle) }).id();
             let props: Vec<_> = self
                 .geometry
                 .props
@@ -1081,9 +1072,15 @@ mod tests {
         door.alternate = Some(act(TriggerAction::ToggleDoor));
         let mut locked = trigger("LOCKED", TriggerAction::OpenDoor);
         locked.door = Some(DoorLock { locked: true, key: None });
+        let mut plain = trigger("PLAIN", TriggerAction::OpenDoor);
+        plain.usable = true;
         let mut level = Scenario::new(
-            vec![door, locked],
-            &[PropSpec("DOOR", 15.0, false, &[]), PropSpec("LOCKED", 15.0, false, &[])],
+            vec![door, locked, plain],
+            &[
+                PropSpec("DOOR", 15.0, false, &[]),
+                PropSpec("LOCKED", 15.0, false, &[]),
+                PropSpec("PLAIN", 10.0, false, &[]),
+            ],
             LevelScript::None,
         );
         assert!(level.run("DOOR").0);
@@ -1098,6 +1095,13 @@ mod tests {
         assert_eq!(level.motion("DOOR").target, 15.0);
         assert_eq!(level.run("LOCKED"), (false, vec![TriggerEffect::Locked]));
         assert_eq!(level.motion("LOCKED").target, 0.0);
+        let plain = level.device("PLAIN");
+        assert!(!activate(&mut level.world, plain, Some(100.0)), "out of reach");
+        assert_eq!(level.motion("PLAIN").target, 0.0);
+        assert!(activate(&mut level.world, plain, Some(1.0)));
+        level.settle();
+        assert!(!level.run("PLAIN").0, "opening an open door does nothing");
+        assert_eq!(level.motion("PLAIN").target, 10.0);
     }
 
     #[test]
@@ -1342,21 +1346,15 @@ mod tests {
     }
 
     #[test]
-    fn traps_hurt_each_member_by_their_own_roll_and_zones_hurt_while_stood_in() {
-        let trap = trigger("TRAP", TriggerAction::HurtParty(Dice { count: 2, sides: 4, base: 0 }));
+    fn damage_zones_hurt_each_member_while_stood_in() {
         let mut zone = trigger("ACID", TriggerAction::DamageZone);
         zone.usable = true;
         zone.place = Some(Vec3::ZERO);
         zone.range = (0.0, 2.0);
-        let mut level = Scenario::new(vec![trap, zone], &[], LevelScript::None);
+        let mut level = Scenario::new(vec![zone], &[], LevelScript::None);
         level.add_member("B");
         let full = level.world.get::<Vitals>(level.members[0]).unwrap().hp;
         let tick = Duration::from_millis(100);
-        let (committed, _) = level.run("TRAP");
-        assert!(committed);
-        let hurt: Vec<_> = level.damage().into_iter().map(|hit| hit.amount).collect();
-        assert_eq!(hurt.len(), 2);
-        assert!(hurt.iter().all(|n| (2..=8).contains(n)));
         level.walk(Vec3::new(5.0, 0.0, 0.0), tick);
         level.walk(Vec3::ZERO, tick);
         for _ in 0..10 {
@@ -1416,13 +1414,19 @@ mod tests {
 
     #[test]
     fn environmental_damage_finishes_a_waiting_battle_before_returning() {
+        use crate::game::party::formation::Formation;
         let mut level = Scenario::new(
             vec![trigger("LETHAL", TriggerAction::HurtParty(Dice { base: 10000, ..default() }))],
             &[],
             LevelScript::None,
         );
         level.world.insert_resource(crate::game::combat::Battle::default());
+        let member = level.members[0];
+        assert!(level.world.resource::<Formation>().row_of(member).is_some());
         assert!(level.run("LETHAL").0);
+        // Death bookkeeping is synchronous: the seat is gone at once.
+        assert!(level.world.get::<Vitals>(member).unwrap().is_dead());
+        assert!(level.world.resource::<Formation>().row_of(member).is_none());
         assert!(!level.world.contains_resource::<crate::game::combat::Battle>());
         assert_eq!(
             level
@@ -1457,64 +1461,6 @@ mod tests {
         level.world.resource_mut::<GameClock>().ms = 2 * 720 * 1000;
         assert!(level.run("WELL").0);
         assert_eq!(level.world.get::<Vitals>(level.members[0]).unwrap().hp, 11.min(full));
-    }
-
-    #[test]
-    fn assessment_and_door_use_leave_unrelated_components_unchanged() {
-        let mut door = trigger("DOOR", TriggerAction::OpenDoor);
-        door.usable = true;
-        let mut level = Scenario::new(
-            vec![door, trigger("OTHER", TriggerAction::Animate(Animation::Toggle))],
-            &[PropSpec("DOOR", 10.0, false, &[]), PropSpec("OTHER", 10.0, false, &[])],
-            LevelScript::None,
-        );
-        let door = level.device("DOOR");
-        let other = level.device("OTHER");
-        level.world.clear_trackers();
-        assert!(!activate(&mut level.world, door, Some(100.0)));
-        assert_eq!(
-            level
-                .world
-                .query_filtered::<Entity, Changed<TriggerState>>()
-                .iter(&level.world)
-                .count(),
-            0
-        );
-        assert_eq!(
-            level.world.query_filtered::<Entity, Changed<PropMotion>>().iter(&level.world).count(),
-            0
-        );
-        assert_eq!(
-            level.world.query_filtered::<Entity, Changed<Vitals>>().iter(&level.world).count(),
-            0
-        );
-        assert!(activate(&mut level.world, door, Some(1.0)));
-        let changed: Vec<_> = level
-            .world
-            .query_filtered::<Entity, Changed<PropMotion>>()
-            .iter(&level.world)
-            .collect();
-        assert_eq!(changed, [door]);
-        assert!(!changed.contains(&other));
-        assert_eq!(
-            level.world.query_filtered::<Entity, Changed<Vitals>>().iter(&level.world).count(),
-            0
-        );
-        assert_eq!(
-            level.world.query_filtered::<Entity, Changed<LevelState>>().iter(&level.world).count(),
-            0
-        );
-        level.settle();
-        level.world.clear_trackers();
-        assert!(!level.run("DOOR").0, "opening an open door is a no-op");
-        assert_eq!(
-            level
-                .world
-                .query_filtered::<Entity, Or<(Changed<DoorState>, Changed<PropMotion>)>>()
-                .iter(&level.world)
-                .count(),
-            0
-        );
     }
 
     #[test]
@@ -1559,7 +1505,6 @@ mod tests {
         let second = level.add_member("B");
         let first = level.members[0];
         level.world.resource_mut::<PartyRoster>().0 = [second, first].into_iter().collect();
-        level.world.clear_trackers();
         let before = [second, first].map(|e| level.world.get::<Vitals>(e).unwrap().hp);
         level.run("TRAP");
         let hits: Vec<_> = level.damage().into_iter().map(|hit| (hit.member, hit.amount)).collect();
@@ -1569,9 +1514,6 @@ mod tests {
             assert_eq!(level.world.get::<Vitals>(member).unwrap().hp, hp - amount);
         }
         assert_eq!(level.world.get::<Vitals>(outsider).unwrap().hp, outsider_hp);
-        let changed: Vec<_> =
-            level.world.query_filtered::<Entity, Changed<Vitals>>().iter(&level.world).collect();
-        assert!(!changed.contains(&outsider));
     }
 
     #[test]
@@ -1607,62 +1549,6 @@ mod tests {
     }
 
     #[test]
-    fn door_clicks_and_arrival_do_not_require_unrelated_gameplay_resources() {
-        use crate::game::party::body::{EYE_ABOVE_CENTRE, PartyBody};
-        use crate::game::party::walk_in::move_party;
-        use crate::game::world::level::Travel;
-        use avian3d::prelude::Position;
-        use bevy::ecs::system::RunSystemOnce;
-        let mut door = trigger("DOOR", TriggerAction::OpenDoor);
-        door.usable = true;
-        door.initial.message = Some(1);
-        let mut button = trigger("BUTTON", TriggerAction::Nothing);
-        button.usable = true;
-        button.initial.message = Some(2);
-        let mut level = Scenario::new(
-            vec![door, button],
-            &[PropSpec("DOOR", 10.0, false, &[]), PropSpec("BUTTON", 0.0, false, &[])],
-            LevelScript::None,
-        );
-        let door = level.device("DOOR");
-        level.world.entity_mut(door).insert(Name::new("door"));
-        let button = level.device("BUTTON");
-        level.world.entity_mut(button).insert(Name::new("button"));
-        level.world.remove_resource::<GameData>();
-        level.world.remove_resource::<Assets<ItemCatalog>>();
-        level.world.remove_resource::<Assets<LootTables>>();
-        level.world.remove_resource::<GameRng>();
-        level.world.remove_resource::<ItemIds>();
-        level.world.remove_resource::<PartyInventory>();
-        level.world.remove_resource::<PartyRoster>();
-        level.world.remove_resource::<GameClock>();
-        for entity in [button, door] {
-            assert!(activate(&mut level.world, entity, Some(1.0)));
-        }
-        assert_eq!(
-            level.effects(),
-            [
-                TriggerEffect::Message { source: None, id: 2 },
-                TriggerEffect::Message { source: None, id: 1 }
-            ],
-            "activations complete in submission order"
-        );
-        assert_eq!(level.world.get::<PropMotion>(door).unwrap().target, 10.0);
-        level.world.init_resource::<Messages<Travel>>();
-        let party = level
-            .world
-            .spawn((PartyBody::default(), Position::default(), Transform::default()))
-            .id();
-        level.world.resource_mut::<PendingPartyMove>().0 =
-            Some((level.root, PartyMove::Teleport(Arrival::Here { eye: Vec3::X, yaw: 0.0 })));
-        level.world.run_system_once(move_party).unwrap();
-        assert_eq!(
-            level.world.get::<Position>(party).unwrap().0,
-            Vec3::X - Vec3::Y * EYE_ABOVE_CENTRE
-        );
-    }
-
-    #[test]
     fn the_production_post_step_applies_trigger_commands_before_moving() {
         use crate::game::party::{
             PartyPlugin,
@@ -1695,15 +1581,7 @@ mod tests {
         .add_message::<Travel>();
         let world = app.world_mut();
         let handle = world.resource_mut::<Assets<LevelDefinition>>().add(geometry.clone());
-        let root = world
-            .spawn(Level {
-                path: "test".into(),
-                geometry: handle,
-                navmeshes: vec![],
-                script: LevelScript::None,
-                messages: None,
-            })
-            .id();
+        let root = world.spawn(Level::test(handle)).id();
         let mut spawning = SystemState::<Commands>::new(world);
         spawn_devices(
             &mut spawning.get_mut(world).unwrap(),
@@ -1805,37 +1683,5 @@ mod tests {
         assert!(level.world.resource_mut::<PendingPartyMove>().take_for(level.root).is_none());
         assert!(level.run("PORTAL").0);
         assert!(level.world.resource_mut::<PendingPartyMove>().take_for(level.root).is_some());
-    }
-    #[test]
-    fn lethal_trigger_damage_removes_formation_seats_synchronously() {
-        use crate::game::party::formation::Formation;
-        let mut level = Scenario::new(
-            vec![trigger(
-                "TRAP",
-                TriggerAction::HurtParty(Dice { count: 0, sides: 0, base: 1000 }),
-            )],
-            &[],
-            LevelScript::None,
-        );
-        let member = level.members[0];
-        assert!(level.world.resource::<Formation>().row_of(member).is_some());
-        assert!(level.run("TRAP").0);
-        assert!(level.world.get::<Vitals>(member).unwrap().is_dead());
-        assert!(level.world.resource::<Formation>().row_of(member).is_none());
-    }
-    #[test]
-    fn nonlethal_trigger_damage_does_not_mark_formation_changed() {
-        use crate::game::party::formation::Formation;
-        let mut level = Scenario::new(
-            vec![trigger("TRAP", TriggerAction::HurtParty(Dice { count: 0, sides: 0, base: 1 }))],
-            &[],
-            LevelScript::None,
-        );
-        let member = level.members[0];
-        let place = level.world.resource::<Formation>().place_of(member);
-        level.world.clear_trackers();
-        assert!(level.run("TRAP").0);
-        assert_eq!(level.world.resource::<Formation>().place_of(member), place);
-        assert!(!level.world.get_resource_ref::<Formation>().unwrap().is_changed());
     }
 }

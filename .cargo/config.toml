@@ -1,0 +1,4 @@
+# mold links the multi-gigabyte game and test binaries much faster than the
+# default linker. Install it (e.g. `apt install mold`) to build.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]

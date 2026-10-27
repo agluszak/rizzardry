@@ -633,12 +633,6 @@ pub fn retail_catalog(files: &crate::retail::files::RetailFiles) -> ItemCatalog 
 mod tests {
     use super::*;
 
-    fn files() -> crate::retail::files::RetailFiles {
-        let root =
-            std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL to run this test");
-        crate::retail::files::RetailFiles::open(root).unwrap()
-    }
-
     #[test]
     fn invalid_requirement_ids_cannot_import_as_unrestricted_items() {
         let mut data = vec![0; 4 + RECORD];
@@ -658,7 +652,7 @@ mod tests {
     #[test]
     #[ignore = "requires a retail installation"]
     fn retail_items_decode() {
-        let files = files();
+        let files = crate::retail::files::retail_files();
         let catalog = retail_catalog(&files);
         assert_eq!(catalog.0.len(), 819);
         let dagger = catalog.get(ItemId(0)).unwrap();
@@ -691,7 +685,7 @@ mod tests {
     #[test]
     #[ignore = "requires a retail installation"]
     fn retail_loot_tables_decode() {
-        let files = files();
+        let files = crate::retail::files::retail_files();
         let tables =
             read_loot_tables(&files.read("data/databases/itemtables.dbs").unwrap().unwrap())
                 .unwrap();

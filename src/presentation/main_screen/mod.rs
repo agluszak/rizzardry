@@ -19,7 +19,6 @@ mod text_box;
 
 use bevy::input_focus::{InputFocus, InputFocusSystems, tab_navigation::TabGroup};
 use bevy::prelude::*;
-use bevy_enhanced_input::prelude::*;
 
 use super::screen_art::{SCREEN, absolute, centred, screen, sprite};
 use crate::content::ui::SpriteSheet;
@@ -34,17 +33,8 @@ impl Plugin for MainScreenPlugin {
             std::time::Duration::from_millis(400);
         app.init_resource::<ScreenLayout>()
             .init_resource::<SelectedMember>()
-            .add_input_context::<keys::MainScreenKeys>()
-            .add_systems(
-                Startup,
-                (load_main_screen_art, layout::spawn_screen_cameras, keys::spawn_main_screen_keys),
-            )
-            .add_systems(
-                PreUpdate,
-                keys::hold_main_screen_keys
-                    .after(InputFocusSystems::Dispatch)
-                    .before(bevy_enhanced_input::EnhancedInputSystems::Update),
-            )
+            .add_plugins(keys::plugin)
+            .add_systems(Startup, (load_main_screen_art, layout::spawn_screen_cameras))
             .add_systems(PreUpdate, route_hud_focus.before(InputFocusSystems::Dispatch))
             .add_systems(
                 Update,
@@ -331,35 +321,13 @@ fn build_frame(
 #[cfg(test)]
 mod keyboard_tests {
     use super::*;
-    use bevy::input::{
-        ButtonState,
-        keyboard::{Key, KeyboardInput},
-    };
+    use crate::presentation::test_input::tap;
     use bevy::input_focus::tab_navigation::TabIndex;
-    use bevy::input_focus::{
-        InputDispatchPlugin, InputFocusPlugin, tab_navigation::TabNavigationPlugin,
-    };
+    use bevy::input_focus::{InputDispatchPlugin, tab_navigation::TabNavigationPlugin};
     use bevy::ui_widgets::Button;
     use bevy::ui_widgets::ButtonPlugin;
     use bevy::window::PrimaryWindow;
-
-    fn tap(app: &mut App, window: Entity, code: KeyCode) {
-        for state in [ButtonState::Pressed, ButtonState::Released] {
-            app.world_mut().write_message(KeyboardInput {
-                key_code: code,
-                logical_key: match code {
-                    KeyCode::Tab => Key::Tab,
-                    KeyCode::Escape => Key::Escape,
-                    _ => Key::Unidentified(bevy::input::keyboard::NativeKey::Unidentified),
-                },
-                state,
-                text: None,
-                repeat: false,
-                window,
-            });
-            app.update();
-        }
-    }
+    use bevy_enhanced_input::prelude::*;
 
     #[test]
     fn f6_enters_hud_without_stealing_the_worlds_map_binding() {
@@ -367,36 +335,19 @@ mod keyboard_tests {
             automap::{MapKey, OpenAutomap, spawn_map_key},
             notices::TextLog,
         };
-        let mut app = App::new();
-        app.add_plugins((
-            MinimalPlugins,
-            AssetPlugin::default(),
-            bevy::input::InputPlugin,
-            bevy::scene::ScenePlugin,
-            bevy::state::app::StatesPlugin,
-            EnhancedInputPlugin,
-            InputFocusPlugin,
-            InputDispatchPlugin,
-            TabNavigationPlugin,
-            ButtonPlugin,
-        ))
-        .init_state::<crate::game::screen::Screen>()
-        .init_resource::<ScreenLayout>()
-        .init_resource::<SelectedMember>()
-        .init_resource::<crate::game::party::roster::PartyRoster>()
-        .init_resource::<crate::game::combat::CombatSettings>()
-        .init_resource::<TextLog>()
-        .add_message::<crate::game::combat::StartRound>()
-        .add_message::<OpenAutomap>()
-        .add_input_context::<keys::MainScreenKeys>()
-        .add_input_context::<MapKey>()
-        .add_systems(Startup, (keys::spawn_main_screen_keys, spawn_map_key))
-        .add_systems(
-            PreUpdate,
-            keys::hold_main_screen_keys
-                .after(InputFocusSystems::Dispatch)
-                .before(EnhancedInputSystems::Update),
-        );
+        let mut app = crate::presentation::test_input::input_app();
+        app.add_plugins((InputDispatchPlugin, TabNavigationPlugin, ButtonPlugin))
+            .init_state::<crate::game::screen::Screen>()
+            .init_resource::<ScreenLayout>()
+            .init_resource::<SelectedMember>()
+            .init_resource::<crate::game::party::roster::PartyRoster>()
+            .init_resource::<crate::game::combat::CombatSettings>()
+            .init_resource::<TextLog>()
+            .add_message::<crate::game::combat::StartRound>()
+            .add_message::<OpenAutomap>()
+            .add_input_context::<MapKey>()
+            .add_systems(Startup, spawn_map_key)
+            .add_plugins(keys::plugin);
         let window = app.world_mut().spawn((Window::default(), PrimaryWindow)).id();
         let root = app
             .world_mut()

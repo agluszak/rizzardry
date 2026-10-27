@@ -23,6 +23,8 @@ pub mod retail_controls;
 pub mod screen_art;
 pub mod selection;
 pub mod sky;
+#[cfg(test)]
+mod test_input;
 pub mod textures;
 pub mod voice;
 pub mod world_items;
@@ -217,13 +219,7 @@ mod focus_tests {
             .init_state::<Screen>()
             .init_resource::<InputFocus>()
             .add_systems(Update, hold_exploration);
-        app.world_mut().spawn(Level {
-            path: "test".into(),
-            geometry: default(),
-            navmeshes: vec![],
-            script: default(),
-            messages: None,
-        });
+        app.world_mut().spawn(Level::test(default()));
         let controls =
             app.world_mut().spawn((Exploration, ContextActivity::<Exploration>::new(true))).id();
         let widget = app.world_mut().spawn(TabIndex(0)).id();

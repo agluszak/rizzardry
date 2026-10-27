@@ -385,12 +385,21 @@ mod tests {
 
     #[test]
     fn modes_are_chosen_from_the_set_bits_round_robin() {
-        let mut rng = GameRng::seeded(3);
+        // Each draw below 9 walks the set bits round: with two modes the
+        // first takes the even draws (5 in 9), with three each takes 3 in 9.
+        let (mut rng, mut twin) = (GameRng::seeded(3), GameRng::seeded(3));
         for _ in 0..50 {
-            assert_eq!(choose_mode(&mut rng, EnumSet::only(AttackMode::Lash)), AttackMode::Lash);
-            let either = choose_mode(&mut rng, AttackMode::Swing | AttackMode::Thrust);
-            assert!(matches!(either, AttackMode::Swing | AttackMode::Thrust));
+            let expected = match twin.below(9) % 2 {
+                0 => AttackMode::Swing,
+                _ => AttackMode::Shoot,
+            };
+            assert_eq!(choose_mode(&mut rng, AttackMode::Shoot | AttackMode::Swing), expected);
+            let expected = [AttackMode::Thrust, AttackMode::Kick, AttackMode::Lash]
+                [twin.below(9) as usize % 3];
+            let modes = AttackMode::Lash | AttackMode::Thrust | AttackMode::Kick;
+            assert_eq!(choose_mode(&mut rng, modes), expected);
         }
+        assert_eq!(choose_mode(&mut rng, EnumSet::empty()), AttackMode::Swing);
     }
 
     #[test]
@@ -423,9 +432,7 @@ mod retail_tests {
     #[test]
     #[ignore = "requires a retail installation"]
     fn a_fighter_and_a_crab_trade_blows() {
-        let root =
-            std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL to run this test");
-        let files = crate::retail::files::RetailFiles::open(root).unwrap();
+        let files = crate::retail::files::retail_files();
         let catalog = crate::retail::items::retail_catalog(&files);
         let species = crate::retail::species::read_species(
             &files.read("data/databases/monsters.dbs").unwrap().unwrap(),
@@ -441,8 +448,6 @@ mod retail_tests {
         }
         let hand = primary_hand(&fighter, &carried, &catalog);
         let armour = armour(&fighter, &carried, &catalog);
-        println!("{} {:?}", crab.name, crab.attacks);
-        println!("{hand:?}\n{armour:?}");
         let tally = |swings: Vec<Swing>| {
             let hits: Vec<u32> = swings
                 .iter()
@@ -476,7 +481,6 @@ mod retail_tests {
                 })
                 .collect(),
         );
-        println!("fighter lands {ours:?} of 1000, crab lands {theirs:?}");
         assert!(ours.0 > 100 && ours.0 < 1000, "the fighter sometimes hits and sometimes misses");
         assert!(theirs.0 > 50 && theirs.0 < 1000);
     }

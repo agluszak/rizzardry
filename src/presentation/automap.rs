@@ -921,11 +921,7 @@ mod tests {
 
     #[test]
     fn non_primary_press_cannot_activate_a_map_button() {
-        use bevy::picking::{
-            backend::HitData,
-            events::Pointer,
-            pointer::{Location, PointerButton, PointerId},
-        };
+        use bevy::picking::{backend::HitData, pointer::PointerButton};
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, bevy::ui_widgets::ButtonPlugin))
             .init_resource::<Assets<LevelDefinition>>()
@@ -938,13 +934,7 @@ mod tests {
             .observe(press_button)
             .id();
         for mouse_button in [PointerButton::Secondary, PointerButton::Primary] {
-            let pointer = Pointer::new(
-                PointerId::Mouse,
-                Location {
-                    target: bevy::camera::NormalizedRenderTarget::None { width: 640, height: 480 },
-                    position: Vec2::ZERO,
-                },
-            );
+            let pointer = crate::presentation::test_input::mouse();
             let hit = HitData::new(Entity::PLACEHOLDER, 0.0, None, None);
             app.world_mut().trigger(PointerPress {
                 entity: button,

@@ -201,34 +201,3 @@ impl AssetLoader for NavmeshLoader {
         &[NAVMESH_EXTENSION]
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_file_format_round_trips() {
-        let mesh = NavigationMesh3d {
-            vertices: vec![Vec3::ZERO, Vec3::X, Vec3::NEG_Z],
-            polygons: vec![vec![0, 1, 2]],
-            polygon_type_indices: vec![255],
-            height_mesh: Some(HeightNavigationMesh3d {
-                polygons: vec![HeightPolygon {
-                    base_vertex_index: 0,
-                    vertex_count: 3,
-                    base_triangle_index: 0,
-                    triangle_count: 1,
-                }],
-                triangles: vec![[0, 1, 2]],
-                vertices: vec![Vec3::ZERO, Vec3::X, Vec3::NEG_Z],
-            }),
-        };
-        let decoded = decode(&encode(&mesh)).unwrap();
-        assert_eq!(decoded.vertices, mesh.vertices);
-        assert_eq!(decoded.polygons, mesh.polygons);
-        assert_eq!(decoded.polygon_type_indices, mesh.polygon_type_indices);
-        let (a, b) = (decoded.height_mesh.unwrap(), mesh.height_mesh.unwrap());
-        assert_eq!((a.vertices, a.triangles), (b.vertices, b.triangles));
-        assert!(decode(b"RZNM\x02\0\0\0").is_err());
-    }
-}

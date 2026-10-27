@@ -210,13 +210,10 @@ pub fn read_collision(data: &[u8]) -> Result<Collision, PvlError> {
 mod tests {
     use super::*;
 
-    /// Runs against a real installation when `RIZZARDRY_RETAIL` names one.
     #[test]
     #[ignore = "requires a retail installation"]
     fn every_retail_level_has_collision() {
-        let root =
-            std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL to run this test");
-        let files = crate::retail::files::RetailFiles::open(root).unwrap();
+        let files = crate::retail::files::retail_files();
         let levels: Vec<String> =
             files.names().filter(|n| n.ends_with(".oct")).map(str::to_owned).collect();
         assert_eq!(levels.len(), 34);

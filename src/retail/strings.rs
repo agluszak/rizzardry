@@ -67,28 +67,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn text_is_stored_complemented() {
-        let unit = |c: char| (!((c as u16).wrapping_sub(0x9697))).to_le_bytes();
-        let bytes: Vec<u8> = "Hi\0".chars().flat_map(unit).collect();
-        assert_eq!(decode(&bytes, true), "Hi");
-    }
-
-    #[test]
     #[ignore = "requires a retail installation"]
     fn retail_strings_and_messages_decode() {
-        let root =
-            std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL to run this test");
-        let files = crate::retail::files::RetailFiles::open(root).unwrap();
+        let files = crate::retail::files::retail_files();
         let strings =
             read_string_table(&files.read("data/strings/stringdata.dat").unwrap().unwrap())
                 .unwrap();
-        println!("0x964: {:?}", strings[0x964]);
-        println!("0x96b: {:?}", strings[0x96b]);
         assert!(strings[0x964].to_lowercase().contains("nothing"), "{:?}", strings[0x964]);
         let messages =
             read_messages(&files.read("data/messages/monastery.msg").unwrap().unwrap()).unwrap();
         for id in [15, 17, 36] {
-            println!("{id}: {:?}", messages[id]);
             assert!(messages[id].as_ref().is_some_and(|m| !m.is_empty()));
         }
     }

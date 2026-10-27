@@ -69,7 +69,7 @@ connectivity. Both read `RIZZARDRY_RETAIL`. Retail-dependent tests are ignored
 by default; run them explicitly against your installation:
 
 ```sh
-RIZZARDRY_RETAIL=/path/to/wizardry8 cargo test --locked -- --ignored
+RIZZARDRY_RETAIL=/path/to/wizardry8 cargo nextest run --locked --run-ignored only
 ```
 
 See [testing](docs/testing.md) for the lightweight Bevy testing approach.

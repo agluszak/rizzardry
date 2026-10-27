@@ -57,10 +57,9 @@ mod tests {
     fn retail_layers_and_cursor_hotspots_match_authored_data() {
         use crate::bytes::Bytes;
         use crate::retail::{
-            files::RetailFiles, pvl::read_level_geometry, sections::read_sections,
+            files::retail_files, pvl::read_level_geometry, sections::read_sections,
         };
-        let files = RetailFiles::open(std::env::var("RIZZARDRY_RETAIL").expect("RIZZARDRY_RETAIL"))
-            .unwrap();
+        let files = retail_files();
         let filters = files.read("data/automap/mapfilters.txt").unwrap().unwrap();
         let filters = String::from_utf8_lossy(&filters);
         let cursor_data = files.read("data/automap/map_cursors.sti").unwrap().unwrap();

@@ -188,6 +188,7 @@ mod tests {
     #[test]
     fn physical_door_pose_and_navigation_agree_before_each_planning_step() {
         use crate::game::world::{WorldPlugin, level::Level};
+        assert!(DoorLink::around([]).is_none(), "no corners, no doorway");
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default(), WorldPlugin));
         app.finish();
@@ -198,16 +199,7 @@ mod tests {
             .id();
         let level = app
             .world_mut()
-            .spawn((
-                Level {
-                    path: "test".into(),
-                    geometry: default(),
-                    navmeshes: vec![],
-                    script: default(),
-                    messages: None,
-                },
-                LevelNavigation { archipelagos: vec![archipelago] },
-            ))
+            .spawn((Level::test(default()), LevelNavigation { archipelagos: vec![archipelago] }))
             .id();
         let door = app
             .world_mut()
@@ -249,15 +241,5 @@ mod tests {
             .unwrap();
         app.world_mut().despawn(door);
         assert!(app.world().get_entity(link).is_err());
-    }
-
-    #[test]
-    fn a_doorway_crosses_the_door_at_its_floor() {
-        // A door 2 m wide along X, 0.2 m thick along Z, standing on y = 1.
-        let corners = [Vec3::new(-1.0, 1.0, -0.1), Vec3::new(1.0, 3.0, 0.1)];
-        let door = DoorLink::around(corners).unwrap();
-        assert_eq!(door.centre, Vec3::new(0.0, 1.0, 0.0));
-        assert_eq!(door.half_thickness, Vec3::new(0.0, 0.0, 0.1));
-        assert!(DoorLink::around([]).is_none());
     }
 }

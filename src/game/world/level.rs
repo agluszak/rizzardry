@@ -70,6 +70,21 @@ impl Level {
     }
 }
 
+/// A level as if already activated, without navmeshes or messages. Not a
+/// `Default`: a `Level` exists only once [`activate_level`] says so.
+#[cfg(test)]
+impl Level {
+    pub fn test(geometry: Handle<LevelDefinition>) -> Self {
+        Level {
+            path: "test".into(),
+            geometry,
+            navmeshes: vec![],
+            script: default(),
+            messages: None,
+        }
+    }
+}
+
 /// The party is being asked whether to leave for another level's entrance;
 /// it waits until the player answers (retail `RequestLevelTransition`).
 #[derive(Component, Debug, Clone)]
@@ -551,16 +566,7 @@ mod travel_question_tests {
         app.add_message::<TravelAnswer>()
             .add_message::<Travel>()
             .add_systems(Update, answer_travel_questions);
-        let level = app
-            .world_mut()
-            .spawn(Level {
-                path: "question-test".into(),
-                geometry: default(),
-                navmeshes: vec![],
-                script: default(),
-                messages: None,
-            })
-            .id();
+        let level = app.world_mut().spawn(Level::test(default())).id();
         (app, level)
     }
 
@@ -576,7 +582,12 @@ mod travel_question_tests {
         app.update();
         assert!(app.world().get_entity(old).is_err());
         assert!(app.world().resource::<Messages<Travel>>().is_empty());
+        // Asking again replaces an unanswered question.
+        let replaced = ask(&mut app, level, "replaced");
         let current = ask(&mut app, level, "second");
+        assert!(app.world().get_entity(replaced).is_err());
+        assert_eq!(app.world_mut().query::<&TravelQuestion>().iter(app.world()).count(), 1);
+        app.world_mut().write_message(TravelAnswer { question: replaced, accept: true });
         app.world_mut().write_message(TravelAnswer { question: old, accept: true });
         app.update();
         assert!(app.world().get_entity(current).is_ok());
@@ -585,24 +596,6 @@ mod travel_question_tests {
         app.world_mut().write_message(TravelAnswer { question: current, accept: false });
         app.update();
         assert!(app.world().get_entity(current).is_err());
-        let travel: Vec<_> = app.world_mut().resource_mut::<Messages<Travel>>().drain().collect();
-        assert_eq!(travel.len(), 1);
-        assert_eq!(travel[0].entrance, "second");
-    }
-
-    #[test]
-    fn asking_twice_replaces_the_question_before_presentation() {
-        let (mut app, level) = app();
-        let old = ask(&mut app, level, "first");
-        let current = ask(&mut app, level, "second");
-        assert!(app.world().get_entity(old).is_err());
-        assert_eq!(app.world_mut().query::<&TravelQuestion>().iter(app.world()).count(), 1);
-        app.world_mut().write_message(TravelAnswer { question: old, accept: true });
-        app.update();
-        assert!(app.world().get_entity(current).is_ok());
-        assert!(app.world().resource::<Messages<Travel>>().is_empty());
-        app.world_mut().write_message(TravelAnswer { question: current, accept: true });
-        app.update();
         let travel: Vec<_> = app.world_mut().resource_mut::<Messages<Travel>>().drain().collect();
         assert_eq!(travel.len(), 1);
         assert_eq!(travel[0].entrance, "second");

@@ -74,7 +74,20 @@ enum TextBoxCommand {
 #[derive(Component, Clone, Default)]
 struct TextBoxKeyCommand(TextBoxCommand);
 
-pub fn spawn_main_screen_keys(mut commands: Commands) {
+/// The keys, held each frame once focus has been dispatched and before
+/// their bindings are read.
+pub(super) fn plugin(app: &mut App) {
+    app.add_input_context::<MainScreenKeys>()
+        .add_systems(Startup, spawn_main_screen_keys)
+        .add_systems(
+            PreUpdate,
+            hold_main_screen_keys
+                .after(bevy::input_focus::InputFocusSystems::Dispatch)
+                .before(EnhancedInputSystems::Update),
+        );
+}
+
+fn spawn_main_screen_keys(mut commands: Commands) {
     let members: Vec<_> = [
         KeyCode::Digit1,
         KeyCode::Digit2,
@@ -151,7 +164,7 @@ pub fn spawn_main_screen_keys(mut commands: Commands) {
 }
 
 /// The keys act while the party is in the world, under no other screen.
-pub fn hold_main_screen_keys(
+fn hold_main_screen_keys(
     mut commands: Commands,
     screen: Res<State<Screen>>,
     keys: Query<(Entity, &ContextActivity<MainScreenKeys>)>,
@@ -220,24 +233,12 @@ mod tests {
     use crate::presentation::main_screen::LayoutMode;
 
     fn app() -> App {
-        let mut app = App::new();
-        app.add_plugins((
-            MinimalPlugins,
-            bevy::state::app::StatesPlugin,
-            bevy::input::InputPlugin,
-            AssetPlugin::default(),
-            bevy::scene::ScenePlugin,
-            EnhancedInputPlugin,
-        ))
-        .add_input_context::<MainScreenKeys>()
-        .init_resource::<ScreenLayout>()
-        .init_resource::<SelectedMember>()
-        .init_resource::<bevy::input_focus::InputFocus>()
-        .init_resource::<bevy::input_focus::InputFocusVisible>()
-        .init_state::<Screen>()
-        .init_resource::<PartyRoster>()
-        .add_systems(Startup, spawn_main_screen_keys)
-        .add_systems(PreUpdate, hold_main_screen_keys);
+        let mut app = crate::presentation::test_input::input_app();
+        app.init_resource::<ScreenLayout>()
+            .init_resource::<SelectedMember>()
+            .init_state::<Screen>()
+            .init_resource::<PartyRoster>()
+            .add_plugins(plugin);
         app.finish();
         app.cleanup();
         app.update();

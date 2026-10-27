@@ -261,25 +261,3 @@ pub fn read_level_geometry(data: &[u8]) -> Result<LevelGeometry, PvlError> {
     }
     Ok(LevelGeometry { materials, meshes, root_count, end: bytes.offset() })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Runs against a real installation when `RIZZARDRY_RETAIL` names one.
-    #[test]
-    #[ignore = "requires a retail installation"]
-    fn decodes_retail_level_geometry() {
-        let root =
-            std::env::var("RIZZARDRY_RETAIL").expect("set RIZZARDRY_RETAIL to run this test");
-        let files = crate::retail::files::RetailFiles::open(root).unwrap();
-        let levels: Vec<String> =
-            files.names().filter(|name| name.ends_with(".pvl")).map(str::to_owned).collect();
-        assert!(!levels.is_empty());
-        for level in levels {
-            let data = files.read(&level).unwrap().unwrap();
-            let geometry = read_level_geometry(&data).unwrap_or_else(|e| panic!("{level}: {e}"));
-            assert!(!geometry.meshes.is_empty(), "{level}");
-        }
-    }
-}

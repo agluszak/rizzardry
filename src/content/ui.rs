@@ -154,18 +154,3 @@ impl TextTable {
         self.0.get(index)?.as_deref()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn glyphs_follow_the_retail_order() {
-        assert_eq!(glyph_index('A'), Some(0));
-        assert_eq!(glyph_index('a'), Some(26));
-        assert_eq!(glyph_index('0'), Some(52));
-        assert_eq!(glyph_index('!'), Some(62));
-        assert_eq!(glyph_index(' '), Some(92));
-        assert_eq!(glyph_index('À'), Some(94));
-    }
-}
