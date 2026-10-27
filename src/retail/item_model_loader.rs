@@ -46,14 +46,13 @@ impl AssetLoader for ItmLoader {
         let unlit = default();
         let lighting = PropLighting { ambient: Vec3::ONE, level: &unlit };
         let mut parts = Vec::new();
-        for (material, mesh, _) in
+        for (material, mut mesh, _) in
             record_meshes(&record, &Transform::default(), &lighting, |m| materials[m].emission)
         {
+            mesh.remove_attribute(Mesh::ATTRIBUTE_COLOR);
             parts.push(ItemModelPart {
                 mesh: context.add_labeled_asset(format!("mesh/{material}"), mesh),
-                material: materials[material].handle.clone(),
-                ambient: materials[material].ambient,
-                emission: materials[material].emission,
+                surface: materials[material].clone(),
             });
         }
         Ok(ItemModel { parts })

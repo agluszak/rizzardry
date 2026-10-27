@@ -7,7 +7,7 @@ use crate::content::ui::{SpriteSheet, TextTable};
 use crate::game::characters::Character;
 use crate::game::combat::attack::{character_initiative, primary_hand};
 use crate::game::data::GameData;
-use crate::game::inventory::{Carried, EquipSlot};
+use crate::game::inventory::EquipSlot;
 use crate::game::party::roster::PartyRoster;
 use crate::presentation::character_view::{CharacterView, CharacterViewItem};
 use crate::presentation::retail_controls::ControlSkin;
@@ -480,70 +480,44 @@ pub(super) fn show_pages(
 }
 
 pub(super) fn refresh(
-    screen: Option<Single<Ref<InventoryScreen>>>,
+    screen: Option<Single<&InventoryScreen>>,
     characters: Query<CharacterView>,
-    mut removed_carried: RemovedComponents<Carried>,
     roster: Option<Res<PartyRoster>>,
-    profiles: Query<Ref<Character>>,
-    info: Option<Single<Ref<StatsInfo>>>,
-    slider: Option<Single<(Entity, Ref<SliderValue>, &SliderRange), With<StatsScroll>>>,
+    profiles: Query<&Character>,
+    info: Option<Single<&StatsInfo>>,
+    slider: Option<Single<(Entity, &SliderValue, &SliderRange), With<StatsScroll>>>,
     mut commands: Commands,
     data: Option<Res<GameData>>,
     catalogs: Option<Res<Assets<ItemCatalog>>>,
     art: Option<Res<InventoryArt>>,
     tables: Option<Res<Assets<TextTable>>>,
-    mut fields: Query<(Ref<Field>, &mut BitmapText)>,
+    mut fields: Query<(&Field, &mut BitmapText)>,
     mut info_background: Query<&mut Picture, With<InfoBackground>>,
 ) {
-    let removed: Vec<_> = removed_carried.read().collect();
     let Some(screen) = screen else { return };
     let Ok(view) = characters.get(screen.member) else { return };
-    let actor_changed = view.is_changed() || removed.contains(&screen.member);
     let CharacterViewItem { profile, vitals, carried } = view;
     let armour_view = info.as_ref().is_some_and(|info| info.armour);
     let effect_filter = info.as_ref().map_or(EffectFilter::All, |info| info.filter);
     let show_items = info.as_ref().is_some_and(|info| info.items);
-    let info_changed = info.as_ref().is_some_and(|info| info.is_changed());
     let catalog = data
         .as_ref()
         .and_then(|data| catalogs.as_ref().and_then(|catalogs| catalogs.get(&data.items)));
     let hand = carried
         .as_ref()
         .zip(catalog)
-        .map(|(carried, catalog)| primary_hand(&profile, carried, catalog));
+        .map(|(carried, catalog)| primary_hand(profile, carried, catalog));
     let unidentified = carried
         .as_ref()
         .and_then(|c| c.worn(EquipSlot::Primary))
         .is_some_and(|item| !item.identified);
     let table =
         art.as_ref().and_then(|art| tables.as_ref().and_then(|tables| tables.get(&art.strings)));
-    let table_changed = tables.as_ref().is_some_and(|tables| tables.is_changed());
-    let party_changed = roster.as_ref().is_some_and(|roster| {
-        roster.is_changed()
-            || profiles.iter_many(&roster.0).matched().any(|profile| profile.is_changed())
-    });
-    if !screen.is_changed()
-        && !actor_changed
-        && !info_changed
-        && !slider.as_ref().is_some_and(|slider| slider.1.is_changed())
-        && !table_changed
-        && !party_changed
-        && !catalogs.as_ref().is_some_and(|catalogs| catalogs.is_changed())
-        && !fields.iter().any(|(field, _)| field.is_added())
-    {
-        return;
-    }
     let string = |id| table.and_then(|table| table.get(id)).unwrap_or("");
     let mut effects = Vec::new();
     if show_items {
         if let (Some(carried), Some(catalog)) = (carried.as_ref(), catalog) {
-            for slot in EnumSet::<EquipSlot>::all() {
-                if matches!(slot, EquipSlot::AlternatePrimary | EquipSlot::AlternateSecondary) {
-                    continue;
-                }
-                let Some(item) = carried.worn(slot).filter(|item| item.identified) else {
-                    continue;
-                };
+            for (slot, item) in carried.active_equipment().filter(|(_, item)| item.identified) {
                 let Some(definition) = catalog.get(item.item) else { continue };
                 let armour = if definition.armor_class_bonus < 0
                     || (!matches!(
@@ -635,18 +609,6 @@ pub(super) fn refresh(
         }
     }
     for (field, mut text) in &mut fields {
-        if !field.is_added()
-            && !screen.is_changed()
-            && !profile.is_changed()
-            && !vitals.is_changed()
-            && !table_changed
-            && !party_changed
-            && !info_changed
-            && !slider.as_ref().is_some_and(|slider| slider.1.is_changed())
-            && !catalogs.as_ref().is_some_and(|catalogs| catalogs.is_changed())
-        {
-            continue;
-        }
         let palette = match *field {
             Field::Effect(index)
                 if effects.get(index + offset).is_some_and(|(_, heading)| *heading) =>
@@ -724,7 +686,7 @@ pub(super) fn refresh(
                             4 => hand.swings.to_string(),
                             5 => format!("{:+}", hand.to_hit),
                             7 => format!("{:+}%", hand.damage_percent),
-                            8 => character_initiative(&profile, hand).to_string(),
+                            8 => character_initiative(profile, hand).to_string(),
                             _ => String::new(),
                         }
                     }
@@ -746,10 +708,10 @@ pub(super) fn refresh(
 }
 
 pub(super) fn layout_skills(
-    screen: Option<Single<Ref<InventoryScreen>>>,
-    characters: Query<Ref<Character>>,
+    screen: Option<Single<&InventoryScreen>>,
+    characters: Query<&Character>,
     mut rows: Query<
-        (Entity, Ref<SkillRow>, &mut Node, &mut Visibility),
+        (Entity, &SkillRow, &mut Node, &mut Visibility),
         (Without<Bar>, Without<CategoryIcon>),
     >,
     mut bars: Query<(&Bar, &mut PictureCrop), Without<SkillRow>>,
@@ -758,12 +720,6 @@ pub(super) fn layout_skills(
 ) {
     let Some(screen) = screen else { return };
     let Ok(profile) = characters.get(screen.member) else { return };
-    if !screen.is_changed()
-        && !profile.is_changed()
-        && !rows.iter().any(|(_, row, _, _)| row.is_added())
-    {
-        return;
-    }
     let mut ordered: Vec<_> =
         rows.iter().map(|(entity, row, _, _)| (row.0 as usize, entity)).collect();
     ordered.sort_unstable_by_key(|(skill, _)| *skill);

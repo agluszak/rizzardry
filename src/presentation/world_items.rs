@@ -1,6 +1,8 @@
 //! Showing items lying in the world: their models turning in place, lit as
 //! retail lights them (`ActivateItem`, `W8Item::UpdateAnimation`).
 
+use super::surfaces::ActorLight;
+use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 
 use avian3d::prelude::SpatialQuery;
@@ -58,22 +60,19 @@ pub fn show_world_items(
 #[derive(Component, Debug)]
 pub struct ItemVisual;
 
-#[derive(Component, Debug)]
-pub struct ItemPart(usize);
-
 pub fn build_world_items(
     mut commands: Commands,
     items: Query<(Entity, &WorldItem, &ItemShown, Option<&Children>)>,
     visuals: Query<(), With<ItemVisual>>,
     models: Res<Assets<ItemModel>>,
-    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     for (entity, item, shown, children) in &items {
         if children.is_some_and(|c| c.iter().any(|e| visuals.contains(e))) {
             continue;
         }
         let Some(model) = models.get(&shown.model) else { continue };
-        commands.entity(entity).insert(Visibility::default());
+        commands.entity(entity).insert((Visibility::default(), ActorLight::default()));
         let root = commands
             .spawn((
                 ItemVisual,
@@ -84,15 +83,13 @@ pub fn build_world_items(
                 ChildOf(entity),
             ))
             .id();
-        for (index, part) in model.parts.iter().enumerate() {
-            let Some(mesh) = meshes.get(&part.mesh).cloned() else { continue };
-            let copy = meshes.add(mesh);
-            commands.spawn((
-                ItemPart(index),
-                Mesh3d(copy),
-                MeshMaterial3d(part.material.clone()),
-                ChildOf(root),
-            ));
+        let mut instances = HashMap::new();
+        for part in &model.parts {
+            let Some(surface) = part.surface.lit_instance(entity, &mut instances, &mut materials)
+            else {
+                continue;
+            };
+            commands.spawn((Mesh3d(part.mesh.clone()), surface, ChildOf(root)));
         }
     }
 }
@@ -112,12 +109,8 @@ pub fn light_world_items(
     clock: Res<GameClock>,
     levels: Query<(Entity, &LevelAppearance)>,
     geometry: Res<Assets<LevelGeometry>>,
-    models: Res<Assets<ItemModel>>,
     spatial: SpatialQuery,
-    mut items: Query<(Entity, &GlobalTransform, &mut ItemShown, &Children)>,
-    visuals: Query<&Children, With<ItemVisual>>,
-    parts: Query<(&ItemPart, &Mesh3d)>,
-    mut meshes: ResMut<Assets<Mesh>>,
+    mut items: Query<(Entity, &GlobalTransform, &mut ItemShown, &mut ActorLight)>,
 ) {
     let Some((level_entity, level)) =
         levels.iter().find_map(|(e, l)| geometry.get(&l.0).map(|g| (e, g)))
@@ -130,26 +123,15 @@ pub fn light_world_items(
     // highlight in is not recovered; here it adds green light.
     let phase = (time.elapsed_secs() / PULSE_SECONDS).fract();
     let pulse = 0.25 + 0.75 * (1.0 - (2.0 * phase - 1.0).abs());
-    for (entity, transform, mut shown, children) in &mut items {
+    for (entity, transform, mut shown, mut light) in &mut items {
         let at = transform.translation();
         let sky_scale = *shown.sky_scale.get_or_insert_with(|| {
             if sunlit(&spatial, level_entity, level, at) { 1.0 } else { 0.0 }
         });
-        let fixed = level.lighting.at(at, None);
-        let Some(model) = models.get(&shown.model) else { continue };
-        for visual in visuals.iter_many(children).matched() {
-            for child in visual.iter() {
-                let Ok((index, copy)) = parts.get(child) else { continue };
-                let Some(part) = model.parts.get(index.0) else { continue };
-                let mut light = sky * sky_scale * part.ambient + fixed + Vec3::splat(part.emission);
-                if hovered.entity() == Some(entity) {
-                    light += Vec3::Y * pulse;
-                }
-                let colour = light.extend(1.0).to_array();
-                let Some(mut mesh) = meshes.get_mut(&copy.0) else { continue };
-                let count = mesh.count_vertices();
-                mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![colour; count]);
-            }
+        light.sky = sky * sky_scale;
+        light.fixed = level.lighting.at(at, None);
+        if hovered.entity() == Some(entity) {
+            light.fixed += Vec3::Y * pulse;
         }
     }
 }

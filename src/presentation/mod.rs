@@ -15,6 +15,7 @@ pub mod inventory;
 pub mod main_screen;
 pub mod mipmaps;
 pub mod monsters;
+mod morph_picking;
 pub mod music;
 pub mod names;
 pub mod notices;
@@ -23,6 +24,7 @@ pub mod retail_controls;
 pub mod screen_art;
 pub mod selection;
 pub mod sky;
+mod surfaces;
 #[cfg(test)]
 mod test_input;
 pub mod textures;
@@ -167,7 +169,14 @@ impl Plugin for PresentationPlugin {
         .add_systems(
             Update,
             (
-                textures::animate_level_textures,
+                textures::animate_textures
+                    .after(sky::build_sky)
+                    .after(environment::attach_level_visuals)
+                    .after(monsters::build_monster_instances)
+                    .after(world_items::build_world_items),
+                surfaces::tint_surfaces
+                    .after(monsters::light_monsters)
+                    .after(world_items::light_world_items),
                 environment::apply_environment,
                 sky::shade_clouds,
                 (sky::request_skies, sky::build_sky).chain(),

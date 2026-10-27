@@ -104,11 +104,7 @@ pub fn attach_level_visuals(
         let Some(geometry) = geometry.get(&level.0) else { continue };
         commands.entity(root).insert((LevelVisuals, Visibility::default()));
         for part in &geometry.parts {
-            commands.spawn((
-                Mesh3d(part.mesh.clone()),
-                MeshMaterial3d(part.material.clone()),
-                ChildOf(root),
-            ));
+            commands.spawn((Mesh3d(part.mesh.clone()), part.surface.render(), ChildOf(root)));
         }
         for &child in children.into_iter().flatten() {
             let Ok((prop, prop_parts)) = props.get(child) else { continue };
@@ -137,7 +133,7 @@ pub fn attach_level_visuals(
                 for mesh in &part.meshes {
                     commands.spawn((
                         Mesh3d(mesh.mesh.clone()),
-                        MeshMaterial3d(mesh.material.clone()),
+                        mesh.surface.render(),
                         ChildOf(visual),
                     ));
                 }

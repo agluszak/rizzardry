@@ -181,6 +181,10 @@ pub enum EquipSlot {
 }
 
 impl EquipSlot {
+    pub fn is_active(self) -> bool {
+        !matches!(self, Self::AlternatePrimary | Self::AlternateSecondary)
+    }
+
     /// The other hand of the same weapon set.
     pub fn partner(self) -> Option<EquipSlot> {
         Some(match self {
@@ -205,6 +209,13 @@ pub struct Carried {
 }
 
 impl Carried {
+    pub fn active_equipment(&self) -> impl Iterator<Item = (EquipSlot, &ItemInstance)> {
+        self.equipment
+            .iter()
+            .filter(|(slot, _)| slot.is_active())
+            .filter_map(|(slot, item)| item.as_ref().map(|item| (slot, item)))
+    }
+
     pub fn worn(&self, slot: EquipSlot) -> Option<&ItemInstance> {
         self.equipment[slot].as_ref()
     }
@@ -385,10 +396,7 @@ pub fn can_take_off(
     definition: &ItemDefinition,
     dead: bool,
 ) -> bool {
-    !definition.cursed
-        || item.curse_released
-        || matches!(slot, EquipSlot::AlternatePrimary | EquipSlot::AlternateSecondary)
-        || dead
+    !definition.cursed || item.curse_released || !slot.is_active() || dead
 }
 
 /// Give an item to a member (retail `PlaceWithCharacter` during play): merge

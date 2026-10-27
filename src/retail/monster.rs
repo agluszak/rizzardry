@@ -189,7 +189,8 @@ mod tests {
             if data.is_empty() {
                 continue; // nessie_attack_speed.mon, unused
             }
-            read_cycle(&data).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let cycle = read_cycle(&data).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(cycle.frames.len() <= bevy::mesh::morph::MAX_MORPH_WEIGHTS, "{name}");
             decoded += 1;
         }
         assert!(decoded >= 1088, "{decoded}");

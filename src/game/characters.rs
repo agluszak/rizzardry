@@ -310,11 +310,18 @@ impl Character {
             skill_points: EnumMap::default(),
             portrait: String::new(),
         };
+        character.seed_starting_skills();
+        character
+    }
+
+    /// Seed from the final starting attributes, shared by recipes and drafts.
+    fn seed_starting_skills(&mut self) {
+        let row = profession_row(self.profession);
+        self.skill_points = EnumMap::default();
         let share = 60 / (1 + row.skills.len() as u32);
         for &skill in row.skills.iter().chain(std::iter::once(&row.bonus_skill)) {
-            character.skill_points[skill] = (character.skill_base(skill) * share / 100) as u8;
+            self.skill_points[skill] = (self.skill_base(skill) * share / 100) as u8;
         }
-        character
     }
 
     /// Effective attribute: no modifiers are modelled yet, so the base,
