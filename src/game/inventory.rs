@@ -119,7 +119,9 @@ impl ItemStack {
             if *uses == 0 && !keep_empty {
                 return None;
             }
-        } else if definition.quantity == QuantityKind::Stack {
+        } else if definition.quantity == QuantityKind::Stack
+            || definition.class == EquipClass::Drink
+        {
             self.count = NonZeroU16::new(self.count() - 1)?;
         }
         Some(self)
@@ -462,6 +464,17 @@ impl ItemPool {
         }
         *contents = remaining;
         taken
+    }
+
+    /// Spend a use from the same shared row, retaining its identity if it survives.
+    pub fn consume_use(&mut self, id: StackId, definition: &ItemDefinition) -> bool {
+        let Some(at) = self.stacks.iter().position(|stack| stack.id == id) else { return false };
+        if let Some(remaining) =
+            self.stacks.remove(at).consume_use(definition, definition.keeps_empty())
+        {
+            self.stacks.insert(at, remaining);
+        }
+        true
     }
 
     /// Consume physical units while preserving the remainder's identity and row.

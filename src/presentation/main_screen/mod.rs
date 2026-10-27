@@ -13,7 +13,7 @@ mod bank;
 mod formation;
 pub(crate) mod keys;
 mod layout;
-mod magic_view;
+pub(super) mod magic_view;
 mod party;
 mod radar;
 mod text_box;

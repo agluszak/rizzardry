@@ -137,6 +137,9 @@ pub struct ItemDefinition {
     pub spell: Option<super::spells::ItemSpell>,
     /// How it is used, which decides the skill its spell is cast with.
     pub use_type: UseType,
+    pub must_equip_to_use: bool,
+    /// Authored health, stamina and spell-point regeneration rates.
+    pub regeneration: [i8; 3],
     /// Resistance modifiers while equipped, by magical realm.
     pub resistance_bonus: EnumMap<Realm, i8>,
     pub quantity: QuantityKind,
@@ -156,6 +159,38 @@ pub struct ItemDefinition {
     pub weight: u16,
     /// Retail's "binds on equip" byte; the assay screen shows it means cursed.
     pub cursed: bool,
+}
+
+impl ItemDefinition {
+    pub fn requires_worn(&self) -> bool {
+        use EquipClass::*;
+        self.must_equip_to_use
+            || matches!(
+                self.class,
+                ShortWeapon
+                    | ExtendedWeapon
+                    | RangedWeapon
+                    | ThrownWeapon
+                    | Ammunition
+                    | Misc
+                    | Head
+                    | Torso
+                    | Legs
+                    | Hands
+                    | Feet
+                    | Cloak
+                    | Shield
+            )
+    }
+
+    /// Retail preserves an exhausted item only when it still has these properties.
+    pub fn keeps_empty(&self) -> bool {
+        !self.attack_modes.is_empty()
+            || self.armor_class_bonus != 0
+            || self.cursed
+            || self.resistance_bonus.values().any(|&value| value != 0)
+            || self.regeneration.iter().any(|&value| value != 0)
+    }
 }
 
 /// Every item definition, by id.

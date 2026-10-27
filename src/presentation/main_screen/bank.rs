@@ -252,7 +252,7 @@ fn press(
                 commands.entity(view).despawn();
             }
             if !open && let Some(member) = selected.member(&roster) {
-                super::magic_view::open(&mut commands, &magic_art, member, items);
+                super::magic_view::open(&mut commands, &magic_art, member, items, None);
             }
         }
         _ => {}
@@ -280,6 +280,7 @@ pub fn show_round_progress(
 
 /// Captions are two stable text controls, independent of button input.
 pub fn draw_caption(
+    pool: Single<&crate::game::inventory::PartyInventory>,
     selected: Res<SelectedMember>,
     roster: Single<&PartyRoster>,
     members: Query<(&Character, &Vitals, Option<&Carried>)>,
@@ -315,6 +316,16 @@ pub fn draw_caption(
                         crate::game::magic::casting::Source::Spell { spell, power } => {
                             let name = spells.and_then(|s| s.get(spell)).map_or("", |s| &s.name);
                             format!("Cast {name} ({power})")
+                        }
+                        crate::game::magic::casting::Source::PoolItem(id) => {
+                            let name = pool
+                                .pool
+                                .stacks
+                                .iter()
+                                .find(|s| s.id == id)
+                                .and_then(|s| catalog?.get(s.item))
+                                .map_or("", |d| d.name.as_str());
+                            format!("Use {name} from party pool")
                         }
                         crate::game::magic::casting::Source::Item(id) => {
                             let name = carried

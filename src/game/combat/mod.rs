@@ -1053,7 +1053,7 @@ fn member_casts(
         }
     };
     let situation = casting::Situation {
-        in_combat: true,
+        context: casting::UseContext::Combat,
         party: &party_members,
         party_at: party.eye,
         monsters: &candidates,
