@@ -215,13 +215,7 @@ mod tests {
             .add_message::<ToggleSearch>()
             .add_message::<SearchNews>()
             .add_systems(Update, toggle_search);
-        app.world_mut().spawn(Level {
-            path: "test".into(),
-            geometry: default(),
-            navmeshes: vec![],
-            script: default(),
-            messages: None,
-        });
+        app.world_mut().spawn(Level::test(default()));
         app.world_mut().write_message(ToggleSearch);
         app.update();
         assert!(app.world().resource::<Search>().on());

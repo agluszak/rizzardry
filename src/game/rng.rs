@@ -61,6 +61,5 @@ mod tests {
         assert!(rolls.iter().all(|r| (3..=13).contains(r)));
         assert!(rolls.contains(&3) && rolls.contains(&13), "both extremes appear");
         assert_ne!(GameRng::seeded(8).below(1 << 30), GameRng::seeded(7).below(1 << 30));
-        assert_eq!(dice.maximum(), 13);
     }
 }

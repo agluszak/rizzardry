@@ -889,13 +889,10 @@ mod tests {
             .init_resource::<ItemIds>()
             .init_resource::<GameClock>()
             .insert_resource(GameRng::seeded(5))
-            .init_resource::<CombatSettings>()
-            .add_message::<CombatNews>()
             .add_message::<DamageApplied>()
-            .add_message::<StartRound>()
             .init_resource::<Assets<crate::content::level::LevelDefinition>>()
             .add_message::<crate::game::world::identify::Identified>()
-            .add_systems(Update, (settle_defeat, start_battle, run_battle, settle_defeat).chain());
+            .add_plugins(CombatPlugin);
         app.world_mut()
             .resource_mut::<Time<Virtual>>()
             .set_max_delta(std::time::Duration::from_secs(2));
@@ -937,16 +934,7 @@ mod tests {
         let loot = app.world_mut().resource_mut::<Assets<LootTables>>().add(LootTables::default());
         app.insert_resource(GameData { items, species, loot });
         app.world_mut().spawn((PartyBody::default(), Position::default()));
-        let root = app
-            .world_mut()
-            .spawn(crate::game::world::level::Level {
-                path: "combat-test".into(),
-                geometry: default(),
-                navmeshes: vec![],
-                script: default(),
-                messages: None,
-            })
-            .id();
+        let root = app.world_mut().spawn(crate::game::world::level::Level::test(default())).id();
         let monster = app
             .world_mut()
             .spawn((

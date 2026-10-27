@@ -283,16 +283,7 @@ mod tests {
                 Species { name: "Crab".into(), generic_name: "Crustacean".into(), ..default() },
             ]));
         app.insert_resource(GameData { items: default(), loot: default(), species });
-        let root = app
-            .world_mut()
-            .spawn(Level {
-                path: "test".into(),
-                geometry: geometry.clone(),
-                navmeshes: vec![],
-                script: default(),
-                messages: None,
-            })
-            .id();
+        let root = app.world_mut().spawn(Level::test(geometry.clone())).id();
         let group =
             app.world_mut().spawn((MonsterGroup { authored: 7, ..default() }, ChildOf(root))).id();
         app.world_mut().spawn((

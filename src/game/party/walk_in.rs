@@ -142,13 +142,7 @@ mod tests {
                 }],
                 ..default()
             });
-        app.world_mut().spawn(Level {
-            path: "test".into(),
-            geometry,
-            navmeshes: vec![],
-            script: default(),
-            messages: None,
-        });
+        app.world_mut().spawn(Level::test(geometry));
         let body = app
             .world_mut()
             .spawn((

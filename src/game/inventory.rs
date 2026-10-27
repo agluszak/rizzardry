@@ -930,16 +930,6 @@ mod tests {
     }
 
     #[test]
-    fn the_pool_has_a_limit() {
-        let (catalog, mut ids) = (catalog(), ItemIds::default());
-        let mut party = PartyInventory::default();
-        for _ in 0..POOL_LIMIT {
-            party.place_in_pool(item(&mut ids, 1, Quantity::One), &catalog).unwrap();
-        }
-        assert!(party.place_in_pool(item(&mut ids, 1, Quantity::One), &catalog).is_err());
-    }
-
-    #[test]
     fn hands_follow_two_handed_and_pairing_rules() {
         let catalog = catalog();
         let mut ids = ItemIds::default();

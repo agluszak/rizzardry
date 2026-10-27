@@ -176,18 +176,6 @@ mod tests {
                 let item = make_item(catalog.get(id).unwrap(), &mut ids, &mut rng, true, true);
                 place_at_creation(&mut carried, item, &catalog, &character).unwrap();
             }
-            let name = |i: &Option<crate::game::inventory::ItemInstance>| {
-                i.as_ref().map(|i| catalog.get(i.item).unwrap().name.clone())
-            };
-            println!("{race:?} {profession:?}");
-            for (slot, item) in &carried.equipment {
-                if let Some(name) = name(item) {
-                    println!("  {slot:?}: {name}");
-                }
-            }
-            for item in carried.backpack.iter().filter(|i| i.is_some()) {
-                println!("  pack: {}", name(item).unwrap());
-            }
             assert!(carried.worn(EquipSlot::Primary).is_some(), "{profession:?} holds a weapon");
         }
     }

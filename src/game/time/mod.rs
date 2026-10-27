@@ -206,24 +206,39 @@ pub(crate) fn pass_time(
 }
 
 #[cfg(test)]
-mod roster_tests {
+mod pass_time_tests {
     use super::*;
-    use crate::game::characters::{Gender, Profession, Race};
-    use crate::game::time::AGING_TICK_MS;
+    use crate::game::camp::RestGoal;
+    use crate::game::characters::{Condition, Gender, Lasting, Profession, Race};
     use bevy::time::TimeUpdateStrategy;
+    use std::time::Duration;
 
-    #[test]
-    fn passing_time_heals_the_party_not_every_character() {
+    /// Each update advances `step` of real time in 1/64 s fixed steps.
+    fn fixed_app(step: Duration) -> App {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
-            .init_resource::<GameClock>()
+            .insert_resource(TimeUpdateStrategy::ManualDuration(step))
+            .insert_resource(Time::<Fixed>::from_hz(64.0))
+            .insert_resource(GameClock::at(0))
             .init_resource::<PartyRoster>()
             .init_resource::<GameRng>()
             .init_resource::<Assets<crate::content::species::MonsterCatalog>>()
             .init_resource::<Assets<crate::content::level::LevelDefinition>>()
             .add_message::<crate::game::world::identify::Identified>()
             .add_message::<CampNews>()
-            .add_systems(Update, pass_time);
+            .add_systems(FixedUpdate, pass_time);
+        app.world_mut().resource_mut::<Time<Virtual>>().set_max_delta(step);
+        app.update();
+        app
+    }
+
+    #[test]
+    fn passing_time_heals_the_party_not_every_character() {
+        // A long real step: at 12x, many aging ticks of standing still.
+        let step = Duration::from_millis(AGING_TICK_MS * 30 / EXPLORATION_RATE);
+        let mut app = fixed_app(step);
+        // One fixed step per update; 1/64 s steps would take tens of thousands.
+        app.insert_resource(Time::<Fixed>::from_duration(step));
         let hurt = || {
             let c = Character::new("Hurt", Race::Human, Gender::Male, Profession::Fighter);
             let mut vitals = Vitals::new(&c);
@@ -234,46 +249,16 @@ mod roster_tests {
         // An adventurer the party has not recruited.
         let stranger = app.world_mut().spawn(hurt()).id();
         app.world_mut().resource_mut::<PartyRoster>().0.insert(member);
-        // A long real step: at 12x, many aging ticks of standing still.
-        let step = std::time::Duration::from_millis(AGING_TICK_MS * 30 / EXPLORATION_RATE);
-        app.insert_resource(TimeUpdateStrategy::ManualDuration(step));
-        app.world_mut().resource_mut::<Time<Virtual>>().set_max_delta(step);
         for _ in 0..3 {
             app.update();
         }
         assert!(app.world().get::<Vitals>(member).unwrap().hp > 1);
         assert_eq!(app.world().get::<Vitals>(stranger).unwrap().hp, 1);
     }
-}
-
-#[cfg(test)]
-mod camp_tests {
-    use super::*;
-    use crate::game::camp::RestGoal;
-    use crate::game::characters::{Condition, Gender, Lasting, Profession, Race};
-    use bevy::time::TimeUpdateStrategy;
-    use std::time::Duration;
-
-    fn fixed_app() -> App {
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins)
-            .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(250)))
-            .insert_resource(Time::<Fixed>::from_hz(64.0))
-            .insert_resource(GameClock::at(0))
-            .init_resource::<PartyRoster>()
-            .init_resource::<GameRng>()
-            .init_resource::<Assets<crate::content::species::MonsterCatalog>>()
-            .init_resource::<Assets<crate::content::level::LevelDefinition>>()
-            .add_message::<crate::game::world::identify::Identified>()
-            .add_message::<CampNews>()
-            .add_systems(FixedUpdate, pass_time);
-        app.update();
-        app
-    }
 
     #[test]
     fn a_batch_of_fixed_steps_stops_accelerating_at_the_rest_deadline() {
-        let mut app = fixed_app();
+        let mut app = fixed_app(Duration::from_millis(250));
         app.insert_resource(Camp::Resting(RestGoal::Until(180_000)));
         app.update();
         // Four accelerated steps, then twelve exploration-rate fade steps.
@@ -287,7 +272,7 @@ mod camp_tests {
 
     #[test]
     fn recovery_ends_forced_rest_in_the_same_fixed_step() {
-        let mut app = fixed_app();
+        let mut app = fixed_app(Duration::from_millis(250));
         let profile = Character::new("Sleeper", Race::Human, Gender::Male, Profession::Fighter);
         let mut vitals = Vitals::new(&profile);
         vitals.inflict(Condition::Asleep, Lasting::Rounds(1));
