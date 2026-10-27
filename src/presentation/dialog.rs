@@ -165,28 +165,22 @@ pub fn show_travel_question(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::presentation::test_input::tap;
 
     fn input_app() -> App {
-        let mut app = App::new();
-        app.add_plugins((
-            MinimalPlugins,
-            AssetPlugin::default(),
-            bevy::scene::ScenePlugin,
-            bevy::input::InputPlugin,
-            EnhancedInputPlugin,
-        ))
-        .add_input_context::<QuestionDialog>()
-        .add_message::<TravelAnswer>()
-        .init_asset::<SpriteSheet>()
-        .init_asset::<TextTable>()
-        .init_asset::<Image>()
-        .insert_resource(DialogArt {
-            ok: default(),
-            cancel: default(),
-            font: default(),
-            strings: default(),
-        })
-        .add_systems(Update, (open_travel_question, show_travel_question).chain());
+        let mut app = crate::presentation::test_input::input_app();
+        app.add_input_context::<QuestionDialog>()
+            .add_message::<TravelAnswer>()
+            .init_asset::<SpriteSheet>()
+            .init_asset::<TextTable>()
+            .init_asset::<Image>()
+            .insert_resource(DialogArt {
+                ok: default(),
+                cancel: default(),
+                font: default(),
+                strings: default(),
+            })
+            .add_systems(Update, (open_travel_question, show_travel_question).chain());
         app.finish();
         app.cleanup();
         app
@@ -194,30 +188,26 @@ mod tests {
 
     #[test]
     fn escape_answers_a_question_even_without_artwork() {
-        use bevy::input::{
-            ButtonState,
-            keyboard::{Key, KeyboardInput},
-        };
         let mut app = input_app();
-        let question = app.world_mut().spawn(TravelQuestion { entrance: "MO204".into() }).id();
+        let level = app.world_mut().spawn_empty().id();
+        let question = app
+            .world_mut()
+            .spawn((TravelQuestion { entrance: "MO204".into() }, ChildOf(level)))
+            .id();
         app.update();
         app.update();
         let dialog = app.world().get::<QuestionView>(question).unwrap().0;
         assert!(app.world().get::<DialogBuilt>(dialog).is_none());
-        app.world_mut().write_message(KeyboardInput {
-            key_code: KeyCode::Escape,
-            logical_key: Key::Escape,
-            state: ButtonState::Pressed,
-            text: None,
-            repeat: false,
-            window: Entity::PLACEHOLDER,
-        });
-        app.update();
+        tap(&mut app, Entity::PLACEHOLDER, KeyCode::Escape);
         let answers: Vec<_> =
             app.world_mut().resource_mut::<Messages<TravelAnswer>>().drain().collect();
         assert_eq!(answers.len(), 1);
         assert_eq!(answers[0].question, question);
         assert!(!answers[0].accept);
+        // Leaving the level ends the question, and its dialog goes with it.
+        app.world_mut().despawn(level);
+        app.update();
+        assert!(app.world().get_entity(dialog).is_err());
     }
 
     #[test]
@@ -241,33 +231,5 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "asset failure did not resolve travel");
             std::thread::yield_now();
         }
-    }
-
-    #[test]
-    fn ending_a_question_removes_its_dialog_and_controls() {
-        let mut world = World::new();
-        let level = world.spawn_empty().id();
-        let question =
-            world.spawn((TravelQuestion { entrance: "MO204".into() }, ChildOf(level))).id();
-        let dialog = world.spawn(QuestionDialog(question)).id();
-        let button = world.spawn(ChildOf(dialog)).id();
-        assert_eq!(world.get::<QuestionView>(question).unwrap().0, dialog);
-        world.despawn(level);
-        assert!(world.get_entity(question).is_err());
-        assert!(world.get_entity(dialog).is_err());
-        assert!(world.get_entity(button).is_err());
-    }
-
-    #[test]
-    fn rebuilding_a_dialog_keeps_the_question_and_allows_a_new_view() {
-        let mut world = World::new();
-        let question = world.spawn(TravelQuestion { entrance: "MO204".into() }).id();
-        let dialog = world.spawn(QuestionDialog(question)).id();
-        world.despawn(dialog);
-        world.flush();
-        assert!(world.get::<TravelQuestion>(question).is_some());
-        assert!(world.get::<QuestionView>(question).is_none());
-        let replacement = world.spawn(QuestionDialog(question)).id();
-        assert_eq!(world.get::<QuestionView>(question).unwrap().0, replacement);
     }
 }

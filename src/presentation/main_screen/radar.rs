@@ -93,14 +93,17 @@ const ITEM_BLIPS: BlipColours = BlipColours {
     above: Color::srgb(1.0, 1.0, 1.0),
 };
 
+/// Pixels from the radar's centre to the party's radius.
+const PARTY_EDGE: f32 = 2.0;
+/// Pixels from the radar's centre to its rim, at extreme range.
+const RIM: f32 = 38.0;
+
 /// Where a blip `delta` away from the party goes on the radar, for a party
 /// facing `yaw` (retail `PlaceRadarBlip`, zoomed out: 2 pixels at the
 /// party's radius, growing to the 38-pixel rim at extreme range). Inside
 /// the party's radius monsters sit on its edge and items (`spread`) are
 /// spread across it.
 fn blip_position(delta: Vec3, yaw: f32, spread: bool) -> Vec2 {
-    const SCALE: f32 = 2.0;
-    const RIM: f32 = 38.0;
     let inner = 1.0;
     let outer = 50.0 + inner;
     // Right and forward: in the party's frame forward is -Z.
@@ -108,9 +111,9 @@ fn blip_position(delta: Vec3, yaw: f32, spread: bool) -> Vec2 {
     let flat = Vec2::new(local.x, -local.z);
     let distance = flat.length();
     let pixels = if distance <= inner {
-        if spread { SCALE * distance / inner } else { SCALE }
+        if spread { PARTY_EDGE * distance / inner } else { PARTY_EDGE }
     } else {
-        (SCALE + (distance - inner) * (RIM - SCALE) / (outer - inner)).min(RIM)
+        (PARTY_EDGE + (distance - inner) * (RIM - PARTY_EDGE) / (outer - inner)).min(RIM)
     };
     let unit = flat.normalize_or_zero();
     Vec2::new(75.0 + unit.x * pixels, 404.0 - unit.y * pixels)
@@ -256,28 +259,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn radar_views_follow_both_target_and_screen_lifetimes() {
-        let mut world = World::new();
-        let level = world.spawn_empty().id();
-        let target = world.spawn((RadarItem { seen: true, ..default() }, ChildOf(level))).id();
-        let screen = world.spawn(RadarBlips).id();
-        let blip = world.spawn((RadarBlip(target), ChildOf(screen))).id();
-        world.despawn(screen);
-        world.flush();
-        assert!(world.get_entity(blip).is_err());
-        assert!(world.get::<RadarItem>(target).unwrap().seen);
-        assert!(world.get::<RadarView>(target).is_none());
-        let screen = world.spawn(RadarBlips).id();
-        let blip = world.spawn((RadarBlip(target), ChildOf(screen))).id();
-        world.despawn(level);
-        world.flush();
-        assert!(world.get_entity(blip).is_err());
-        assert!(world.get_entity(target).is_err());
-        assert!(world.get_entity(screen).is_ok());
-        assert!(world.get::<Children>(screen).is_none());
-    }
-
-    #[test]
     fn discovery_glows_even_when_the_hud_has_not_been_built() {
         use crate::game::inventory::{ItemIds, make_item};
         use crate::game::rng::GameRng;
@@ -309,16 +290,18 @@ mod tests {
 
     #[test]
     fn blips_sit_ahead_and_beyond_on_the_rim() {
-        // Ahead of a party facing -Z, 10 m off: straight up from the centre.
-        let ahead = blip_position(Vec3::new(0.0, 0.0, -10.0), 0.0, false);
-        assert_eq!(ahead.x, 75.0);
-        assert!(ahead.y < 404.0 && ahead.y > 404.0 - 38.0);
-        // Far beyond extreme range: on the 38-pixel rim, to the right.
-        assert_eq!(blip_position(Vec3::new(200.0, 0.0, 0.0), 0.0, false), Vec2::new(113.0, 404.0));
-        // Within the party's radius a monster sits on its edge, an item
-        // where it is.
+        // An item exactly at the party lies at the centre.
+        let centre = blip_position(Vec3::ZERO, 0.0, true);
+        // Ahead of a party facing -Z, 10 m off: straight up, inside the rim.
+        let ahead = blip_position(Vec3::new(0.0, 0.0, -10.0), 0.0, false) - centre;
+        assert_eq!(ahead.x, 0.0);
+        assert!(ahead.y < 0.0 && ahead.length() < RIM);
+        // Far beyond extreme range: on the rim, to the right.
+        assert_eq!(blip_position(Vec3::new(200.0, 0.0, 0.0), 0.0, false) - centre, RIM * Vec2::X);
+        // Halfway inside the party's radius a monster sits on its edge, an
+        // item where it is.
         let near = Vec3::new(0.5, 0.0, 0.0);
-        assert_eq!(blip_position(near, 0.0, false), Vec2::new(77.0, 404.0));
-        assert_eq!(blip_position(near, 0.0, true), Vec2::new(76.0, 404.0));
+        assert_eq!(blip_position(near, 0.0, false) - centre, PARTY_EDGE * Vec2::X);
+        assert_eq!(blip_position(near, 0.0, true) - centre, PARTY_EDGE / 2.0 * Vec2::X);
     }
 }

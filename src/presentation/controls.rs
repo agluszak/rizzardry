@@ -144,21 +144,14 @@ mod tests {
 
     #[test]
     fn bindings_produce_gameplay_requests_and_clear_movement_when_disabled() {
-        let mut app = App::new();
-        app.add_plugins((
-            MinimalPlugins,
-            bevy::input::InputPlugin,
-            AssetPlugin::default(),
-            bevy::scene::ScenePlugin,
-            EnhancedInputPlugin,
-        ))
-        .add_input_context::<Exploration>()
-        .init_resource::<PartyMovement>()
-        .add_message::<PartyLook>()
-        .add_message::<CampRequest>()
-        .add_message::<ToggleSearch>()
-        .add_systems(Startup, spawn_exploration_controls)
-        .add_systems(PreUpdate, read_controls.after(EnhancedInputSystems::Apply));
+        let mut app = crate::presentation::test_input::input_app();
+        app.add_input_context::<Exploration>()
+            .init_resource::<PartyMovement>()
+            .add_message::<PartyLook>()
+            .add_message::<CampRequest>()
+            .add_message::<ToggleSearch>()
+            .add_systems(Startup, spawn_exploration_controls)
+            .add_systems(PreUpdate, read_controls.after(EnhancedInputSystems::Apply));
         app.finish();
         app.cleanup();
         app.update();

@@ -170,9 +170,9 @@ mod tests {
     use bevy::input::{mouse::MouseScrollUnit, touch::TouchPhase};
     use bevy::picking::{
         backend::HitData,
-        events::{Pointer, PointerCancel, PointerDragStart},
+        events::{PointerCancel, PointerDragStart},
         hover::PointerCaptureMap,
-        pointer::{Location, PointerButton, PointerId},
+        pointer::PointerButton,
     };
     use bevy::ui_widgets::{SliderDragState, SliderPlugin};
 
@@ -204,13 +204,7 @@ mod tests {
             .id();
         let cell = app.world_mut().spawn(ItemCell { cell: Cell::Pool(0) }).observe(wheel).id();
         app.update();
-        let pointer = Pointer::new(
-            PointerId::Mouse,
-            Location {
-                target: bevy::camera::NormalizedRenderTarget::None { width: 640, height: 480 },
-                position: Vec2::ZERO,
-            },
-        );
+        let pointer = crate::presentation::test_input::mouse();
         for _ in 0..2 {
             app.world_mut().trigger(PointerScroll {
                 entity: cell,

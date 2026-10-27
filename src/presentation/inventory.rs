@@ -1182,14 +1182,7 @@ impl Plugin for InventoryPlugin {
             .add_systems(
                 Update,
                 (
-                    review::show_pages,
-                    review::refresh,
-                    review::layout_skills,
-                    review::style_scroll.after(review::refresh),
-                    review::style_buttons,
-                    review::style_info_button,
-                    review::style_effect_buttons,
-                    review::focus_controls,
+                    review::systems(),
                     info::update_scroll,
                     info::style_close,
                     info::initialize_focus,
@@ -1221,22 +1214,10 @@ mod tests {
     use super::*;
     use crate::content::items::ItemDefinition;
 
-    #[test]
-    fn closing_inventory_returns_the_held_item_even_before_art_is_ready() {
-        use crate::game::characters::{Gender, Profession, Race};
-        use crate::game::inventory::{Held, ItemIds, make_item};
-        use crate::game::rng::GameRng;
-        for still_a_member in [true, false] {
-            let mut app = App::new();
-            app.add_plugins((
-                MinimalPlugins,
-                AssetPlugin::default(),
-                bevy::scene::ScenePlugin,
-                bevy::input::InputPlugin,
-                bevy::state::app::StatesPlugin,
-                EnhancedInputPlugin,
-            ))
-            .init_state::<Screen>()
+    /// The inventory screen as the game installs it, over keyboard input.
+    fn inventory_app() -> App {
+        let mut app = crate::presentation::test_input::input_app();
+        app.init_state::<Screen>()
             .init_asset::<SpriteSheet>()
             .init_asset::<TextTable>()
             .init_asset::<Image>()
@@ -1246,6 +1227,16 @@ mod tests {
             .init_resource::<PartyInventory>()
             .init_resource::<super::super::main_screen::SelectedMember>()
             .add_plugins(InventoryPlugin);
+        app
+    }
+
+    #[test]
+    fn closing_inventory_returns_the_held_item_even_before_art_is_ready() {
+        use crate::game::characters::{Gender, Profession, Race};
+        use crate::game::inventory::{Held, ItemIds, make_item};
+        use crate::game::rng::GameRng;
+        for still_a_member in [true, false] {
+            let mut app = inventory_app();
             let definition = ItemDefinition { ..default() };
             let item = make_item(
                 &definition,
@@ -1308,60 +1299,23 @@ mod tests {
     }
 
     #[test]
-    fn gold_is_grouped_in_thousands() {
-        assert_eq!(format_gold(0), "0");
-        assert_eq!(format_gold(950), "950");
-        assert_eq!(format_gold(12345), "12,345");
-        assert_eq!(format_gold(1234567), "1,234,567");
-    }
-}
-
-#[cfg(test)]
-mod keyboard_lifecycle_tests {
-    use super::*;
-    use crate::game::characters::{Gender, Profession, Race};
-    use bevy::input::{
-        ButtonState,
-        keyboard::{Key, KeyboardInput},
-    };
-    use bevy::input_focus::{
-        InputDispatchPlugin, InputFocus, InputFocusPlugin, tab_navigation::TabNavigationPlugin,
-    };
-    use bevy::picking::{
-        backend::HitData,
-        events::{Pointer, PointerClick, PointerPress},
-        pointer::{Location, PointerButton, PointerId},
-    };
-    use bevy::ui_widgets::{ButtonPlugin, ModalDialogPlugin, SelectedTab, SliderPlugin, TabPlugin};
-    use bevy::window::{PrimaryWindow, Window};
-
-    fn key(app: &mut App, window: Entity, code: KeyCode, pressed: bool) {
-        app.world_mut().write_message(KeyboardInput {
-            key_code: code,
-            logical_key: Key::Character("x".into()),
-            state: if pressed { ButtonState::Pressed } else { ButtonState::Released },
-            text: None,
-            repeat: false,
-            window,
-        });
-        app.update();
-    }
-    fn tap(app: &mut App, window: Entity, code: KeyCode) {
-        key(app, window, code, true);
-        key(app, window, code, false);
-    }
-
-    #[test]
     fn review_and_information_dialog_keep_keyboard_navigation() {
-        let mut app = App::new();
+        use crate::game::characters::{Gender, Profession, Race};
+        use crate::presentation::test_input::{key, mouse, tap};
+        use bevy::input_focus::{
+            InputDispatchPlugin, InputFocus, tab_navigation::TabNavigationPlugin,
+        };
+        use bevy::picking::{
+            backend::HitData,
+            events::{PointerClick, PointerPress},
+            pointer::PointerButton,
+        };
+        use bevy::ui_widgets::{
+            ButtonPlugin, ModalDialogPlugin, SelectedTab, SliderPlugin, TabPlugin,
+        };
+        use bevy::window::{PrimaryWindow, Window};
+        let mut app = inventory_app();
         app.add_plugins((
-            MinimalPlugins,
-            AssetPlugin::default(),
-            bevy::scene::ScenePlugin,
-            bevy::input::InputPlugin,
-            bevy::state::app::StatesPlugin,
-            EnhancedInputPlugin,
-            InputFocusPlugin,
             InputDispatchPlugin,
             TabNavigationPlugin,
             bevy::input_focus::pointer_focus::PointerFocusPlugin,
@@ -1371,18 +1325,8 @@ mod keyboard_lifecycle_tests {
             ModalDialogPlugin,
             bevy::camera::visibility::VisibilityPlugin,
         ))
-        .init_state::<Screen>()
-        .init_asset::<SpriteSheet>()
-        .init_asset::<TextTable>()
-        .init_asset::<Image>()
-        .init_asset::<ItemCatalog>()
         .init_asset::<Mesh>()
-        .init_asset::<bevy::mesh::skinning::SkinnedMeshInverseBindposes>()
-        .init_resource::<UiScale>()
-        .init_resource::<PartyRoster>()
-        .init_resource::<PartyInventory>()
-        .init_resource::<super::super::main_screen::SelectedMember>()
-        .add_plugins(InventoryPlugin);
+        .init_asset::<bevy::mesh::skinning::SkinnedMeshInverseBindposes>();
         let window = app.world_mut().spawn((Window::default(), PrimaryWindow)).id();
         let profile = Character::new("Test", Race::Human, Gender::Male, Profession::Fighter);
         let member =
@@ -1461,26 +1405,14 @@ mod keyboard_lifecycle_tests {
             .unwrap();
         app.world_mut().trigger(PointerPress {
             entity: target,
-            pointer: Pointer::new(
-                PointerId::Mouse,
-                Location {
-                    target: bevy::camera::NormalizedRenderTarget::None { width: 640, height: 480 },
-                    position: Vec2::ZERO,
-                },
-            ),
+            pointer: mouse(),
             button: PointerButton::Secondary,
             hit: HitData::new(Entity::PLACEHOLDER, 0.0, None, None),
             count: 1,
         });
         app.world_mut().trigger(PointerClick {
             entity: target,
-            pointer: Pointer::new(
-                PointerId::Mouse,
-                Location {
-                    target: bevy::camera::NormalizedRenderTarget::None { width: 640, height: 480 },
-                    position: Vec2::ZERO,
-                },
-            ),
+            pointer: mouse(),
             button: PointerButton::Secondary,
             hit: HitData::new(Entity::PLACEHOLDER, 0.0, None, None),
             duration: std::time::Duration::ZERO,

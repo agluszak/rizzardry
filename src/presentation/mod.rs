@@ -21,6 +21,8 @@ pub mod party_view;
 pub mod screen_art;
 pub mod selection;
 pub mod sky;
+#[cfg(test)]
+mod test_input;
 pub mod textures;
 pub mod voice;
 pub mod world_items;

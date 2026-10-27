@@ -834,23 +834,10 @@ const PORTRAITS: &[&str] = &[
 #[cfg(test)]
 mod keyboard_tests {
     use super::*;
-    use bevy::input_focus::{InputDispatchPlugin, InputFocusPlugin};
+    use crate::presentation::test_input::tap;
+    use bevy::input_focus::InputDispatchPlugin;
     use bevy::ui_widgets::ButtonPlugin;
     use bevy::window::PrimaryWindow;
-
-    fn tap(app: &mut App, window: Entity, key_code: KeyCode) {
-        for state in [ButtonState::Pressed, ButtonState::Released] {
-            app.world_mut().write_message(KeyboardInput {
-                key_code,
-                logical_key: Key::Unidentified(bevy::input::keyboard::NativeKey::Unidentified),
-                state,
-                text: None,
-                repeat: false,
-                window,
-            });
-            app.update();
-        }
-    }
 
     #[test]
     fn native_name_edits_update_only_the_working_draft() {
@@ -931,13 +918,8 @@ mod keyboard_tests {
 
     #[test]
     fn frontend_can_reenter_tab_navigation_after_page_and_name_changes() {
-        let mut app = App::new();
+        let mut app = crate::presentation::test_input::input_app();
         app.add_plugins((
-            MinimalPlugins,
-            AssetPlugin::default(),
-            bevy::input::InputPlugin,
-            bevy::state::app::StatesPlugin,
-            InputFocusPlugin,
             InputDispatchPlugin,
             ButtonPlugin,
             bevy::ui_widgets::TextInputPlugin,

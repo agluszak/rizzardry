@@ -9,6 +9,7 @@ use crate::game::combat::attack::{character_initiative, primary_hand};
 use crate::game::data::GameData;
 use crate::game::inventory::{Carried, EquipSlot};
 use crate::game::party::roster::PartyRoster;
+use bevy::ecs::{schedule::ScheduleConfigs, system::ScheduleSystem};
 use bevy::input_focus::{InputFocus, tab_navigation::TabIndex};
 use bevy::picking::{events::PointerScroll, hover::Hovered};
 use bevy::prelude::*;
@@ -542,7 +543,22 @@ fn words(value: impl std::fmt::Debug) -> String {
     }
     result
 }
-pub(super) fn show_pages(
+/// The pages' systems, as the inventory screen runs them each frame.
+pub(super) fn systems() -> ScheduleConfigs<ScheduleSystem> {
+    (
+        show_pages,
+        refresh,
+        layout_skills,
+        style_scroll.after(refresh),
+        style_buttons,
+        style_info_button,
+        style_effect_buttons,
+        focus_controls,
+    )
+        .into_configs()
+}
+
+fn show_pages(
     selected: Option<Single<&SelectedTab, With<PageTabs>>>,
     buttons: Query<&PageButton>,
     mut pages: Query<(&Page, &mut Node, &mut Visibility)>,
@@ -559,7 +575,7 @@ pub(super) fn show_pages(
     }
 }
 
-pub(super) fn refresh(
+fn refresh(
     screen: Option<Single<Ref<InventoryScreen>>>,
     characters: Query<(Ref<Character>, Ref<Vitals>, Option<Ref<Carried>>)>,
     roster: Option<Res<PartyRoster>>,
@@ -826,7 +842,7 @@ pub(super) fn refresh(
     }
 }
 
-pub(super) fn style_scroll(
+fn style_scroll(
     slider: Option<Single<(&SliderValue, &SliderRange), With<StatsScroll>>>,
     mut commands: Commands,
     mut buttons: Query<
@@ -881,7 +897,7 @@ pub(super) fn style_scroll(
     }
 }
 
-pub(super) fn layout_skills(
+fn layout_skills(
     screen: Option<Single<Ref<InventoryScreen>>>,
     characters: Query<Ref<Character>>,
     mut rows: Query<
@@ -980,7 +996,7 @@ pub(super) fn layout_skills(
     }
 }
 
-pub(super) fn style_buttons(
+fn style_buttons(
     mut buttons: Query<(&PageButton, &Hovered, Has<Pressed>, Has<Selected>, &mut Picture)>,
 ) {
     for (button, hovered, pressed, selected, mut picture) in &mut buttons {
@@ -1004,7 +1020,7 @@ pub(super) fn style_buttons(
     }
 }
 
-pub(super) fn style_info_button(
+fn style_info_button(
     info: Option<Single<&StatsInfo>>,
     mut buttons: Query<(&Hovered, Has<Pressed>, &mut Picture), With<InfoToggle>>,
 ) {
@@ -1026,7 +1042,7 @@ pub(super) fn style_info_button(
     }
 }
 
-pub(super) fn style_effect_buttons(
+fn style_effect_buttons(
     info: Option<Single<&StatsInfo>>,
     mut buttons: Query<(&EffectButton, &Hovered, Has<Pressed>, &mut Picture)>,
 ) {
@@ -1061,7 +1077,7 @@ pub(super) fn style_effect_buttons(
 pub(super) struct FocusControl;
 
 /// Retail images keep their existing dimensions; focus is painted outside them.
-pub(super) fn focus_controls(
+fn focus_controls(
     focus: Option<Res<InputFocus>>,
     visible: Option<Res<bevy::input_focus::InputFocusVisible>>,
     mut controls: Query<(Entity, &mut Outline), With<FocusControl>>,
@@ -1101,19 +1117,9 @@ mod tests {
     #[test]
     fn review_tracks_character_and_condition_changes() {
         let mut app = App::new();
-        app.add_plugins(MinimalPlugins).insert_resource(InventoryArt::default()).add_systems(
-            Update,
-            (
-                show_pages,
-                refresh,
-                layout_skills,
-                style_scroll,
-                style_buttons,
-                style_info_button,
-                style_effect_buttons,
-            )
-                .chain(),
-        );
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(InventoryArt::default())
+            .add_systems(Update, systems());
         let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
         let actor = app.world_mut().spawn((Vitals::new(&profile), profile)).id();
         let root = app.world_mut().spawn(InventoryScreen { member: actor }).id();
