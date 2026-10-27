@@ -146,7 +146,7 @@ pub type Members<'w, 's> =
 pub struct Field<'a, 'm, 'ms, 'd, 'ds, 'f, 'p> {
     pub members: &'a mut Members<'m, 'ms>,
     pub monsters: &'a mut MonsterDamage<'d, 'ds>,
-    pub formation: &'a mut ResMut<'f, Formation>,
+    pub formation: &'a mut Mut<'f, Formation>,
     pub party_damage: &'a mut MessageWriter<'p, DamageApplied>,
     pub items: &'a ItemCatalog,
     pub species: &'a MonsterCatalog,

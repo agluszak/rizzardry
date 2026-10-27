@@ -43,8 +43,8 @@ pub fn panel(art: &MainScreenArt, sheets: &Assets<SpriteSheet>) -> impl SceneLis
 }
 
 pub fn draw_formation(
-    roster: Res<PartyRoster>,
-    formation: Res<Formation>,
+    roster: Single<Ref<PartyRoster>>,
+    formation: Single<Ref<Formation>>,
     mut markers: Query<(Ref<FormationMarker>, &mut Picture, &mut Visibility)>,
 ) {
     if !roster.is_changed()
@@ -54,7 +54,7 @@ pub fn draw_formation(
         return;
     }
     for (marker, mut picture, mut visibility) in &mut markers {
-        let place = roster.0.get_index(marker.slot).and_then(|&actor| formation.place_of(actor));
+        let place = roster.get_index(marker.slot).and_then(|&actor| formation.place_of(actor));
         let Some((row, seat)) = place else {
             visibility.set_if_neq(Visibility::Hidden);
             continue;

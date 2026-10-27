@@ -31,16 +31,13 @@ pub struct PathFlight {
 pub fn move_party(
     mut commands: Commands,
     mut party: Query<(Entity, &mut PartyBody, &mut Position, &mut Transform, Has<PathFlight>)>,
-    mut levels: Query<(Entity, &Level, &mut LevelState)>,
+    mut levels: Query<(Entity, &Level, &mut LevelState, &PendingPartyMove)>,
     geometry: Res<Assets<LevelDefinition>>,
     mut travel: MessageWriter<Travel>,
-    mut pending: ResMut<PendingPartyMove>,
 ) {
-    if pending.0.is_none() {
-        return;
-    }
-    let Ok((origin, level, mut state)) = levels.single_mut() else { return };
-    let Some(party_move) = pending.take_for(origin) else { return };
+    let Ok((origin, level, mut state, pending)) = levels.single_mut() else { return };
+    let party_move = pending.0.clone();
+    commands.entity(origin).remove::<PendingPartyMove>();
     let Ok((entity, mut body, mut position, mut transform, flying)) = party.single_mut() else {
         return;
     };

@@ -137,9 +137,9 @@ pub(crate) fn pass_time(
     time: Res<Time>,
     mut camp: Option<ResMut<Camp>>,
     mut news: MessageWriter<CampNews>,
-    battle: Option<Res<crate::game::combat::Battle>>,
+    battle: Option<Single<&crate::game::combat::Battle>>,
     party: Query<(&Position, &PartyBody, &LinearVelocity)>,
-    roster: Res<PartyRoster>,
+    roster: Single<&PartyRoster>,
     mut affected: ParamSet<(
         Query<(&Character, &mut Vitals)>,
         GroupRecognition,
@@ -182,7 +182,7 @@ pub(crate) fn pass_time(
             Ticks { stamina: 0, aging: 1 }
         };
         let mut members = affected.p0();
-        for (profile, mut vitals) in members.iter_many_unique_mut(&roster.0).matched() {
+        for (profile, mut vitals) in members.iter_many_unique_mut(roster.iter()).matched() {
             if recovery::has_work(profile, &vitals, ticks, pace) {
                 recovery::elapse(profile, &mut vitals, ticks, pace);
             }
@@ -192,7 +192,7 @@ pub(crate) fn pass_time(
             if let Some(spells) = spells {
                 let scale = crate::game::magic::recovery_scale(pace.health_scale());
                 let members = affected.p0();
-                for &member in &roster.0 {
+                for member in roster.iter() {
                     let Ok((profile, _)) = members.get(member) else { continue };
                     let Ok((learned, mut pool)) = points.get_mut(member) else { continue };
                     let maximum = crate::game::magic::max_points(profile, learned, spells);
@@ -215,7 +215,7 @@ pub(crate) fn pass_time(
         }
     }
     let anyone_able =
-        affected.p0().iter_many(&roster.0).matched().any(|(_, vitals)| camp::can_act(vitals));
+        affected.p0().iter_many(roster.iter()).matched().any(|(_, vitals)| camp::can_act(vitals));
     if let Some(camp) = camp.as_mut()
         && let Some(outcome) = camp.advance(time.delta(), clock.ms, anyone_able)
     {
@@ -239,7 +239,6 @@ mod pass_time_tests {
             .insert_resource(TimeUpdateStrategy::ManualDuration(step))
             .insert_resource(Time::<Fixed>::from_hz(64.0))
             .insert_resource(GameClock::at(0))
-            .init_resource::<PartyRoster>()
             .init_resource::<GameRng>()
             .init_resource::<Assets<crate::content::species::MonsterCatalog>>()
             .init_resource::<Assets<crate::content::spells::SpellCatalog>>()
@@ -268,7 +267,7 @@ mod pass_time_tests {
         let member = app.world_mut().spawn(hurt()).id();
         // An adventurer the party has not recruited.
         let stranger = app.world_mut().spawn(hurt()).id();
-        app.world_mut().resource_mut::<PartyRoster>().0.insert(member);
+        crate::game::party::roster::test_party(app.world_mut(), &[member]);
         for _ in 0..3 {
             app.update();
         }
@@ -279,6 +278,9 @@ mod pass_time_tests {
     #[test]
     fn a_batch_of_fixed_steps_stops_accelerating_at_the_rest_deadline() {
         let mut app = fixed_app(Duration::from_millis(250));
+        let profile = Character::new("Rester", Race::Human, Gender::Male, Profession::Fighter);
+        let member = app.world_mut().spawn((Vitals::new(&profile), profile)).id();
+        crate::game::party::roster::test_party(app.world_mut(), &[member]);
         app.insert_resource(Camp::Resting(RestGoal::Until(180_000)));
         app.update();
         // Four accelerated steps, then twelve exploration-rate fade steps.
@@ -297,7 +299,7 @@ mod pass_time_tests {
         let mut vitals = Vitals::new(&profile);
         vitals.inflict(Condition::Asleep, Lasting::Rounds(1));
         let member = app.world_mut().spawn((profile, vitals)).id();
-        app.world_mut().resource_mut::<PartyRoster>().0.insert(member);
+        crate::game::party::roster::test_party(app.world_mut(), &[member]);
         app.insert_resource(Camp::Resting(RestGoal::UntilAble));
         app.update();
         // The third accelerated step crosses the aging tick and clears sleep;

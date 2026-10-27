@@ -460,7 +460,8 @@ impl Hand {
         before - self.held.as_ref().map_or(0, |h| h.units())
     }
 }
-#[derive(Resource, Clone, Debug, Default, PartialEq)]
+/// On the party: what it shares, the pool, the item in hand and the purse.
+#[derive(Component, Clone, Debug, Default, PartialEq)]
 pub struct PartyInventory {
     pub pool: ItemPool,
     pub hand: Hand,
@@ -1128,7 +1129,8 @@ mod tests {
     #[test]
     fn gameplay_operations_revalidate_membership_and_stack_identity() {
         use super::operations::InventoryOperations;
-        use crate::game::{data::GameData, party::roster::PartyRoster};
+        use crate::game::data::GameData;
+        use crate::game::party::roster::{test_join, test_party};
         use bevy::ecs::system::RunSystemOnce;
         let mut world = World::new();
         let (c, mut ids) = (catalog(), ItemIds::default());
@@ -1143,8 +1145,9 @@ mod tests {
             species: default(),
             spells: default(),
         });
-        world.init_resource::<PartyRoster>();
-        world.init_resource::<PartyInventory>();
+        // Someone else is in the party; the actor is not, at first.
+        let other = world.spawn((Vitals::new(&wearer()), wearer(), Carried::default())).id();
+        let party = test_party(&mut world, &[other]);
         let character = wearer();
         let mut carried = Carried::default();
         carried.backpack[0] = Some(item);
@@ -1154,28 +1157,28 @@ mod tests {
             world.run_system_once(move |mut op: InventoryOperations| op.take(source)).unwrap()
         };
         assert_eq!(take(&mut world), Err(Refusal::NotMember));
-        world.resource_mut::<PartyRoster>().0.insert(actor);
+        test_join(&mut world, actor);
         take(&mut world).unwrap();
         assert!(world.get::<Carried>(actor).unwrap().backpack[0].is_none());
-        assert_eq!(world.resource::<PartyInventory>().hand.held.as_ref().unwrap().id, id);
+        assert_eq!(world.get::<PartyInventory>(party).unwrap().hand.held.as_ref().unwrap().id, id);
         world
             .run_system_once(|mut op: InventoryOperations| op.deposit(PoolPosition::Front))
             .unwrap()
             .unwrap();
         assert_eq!(take(&mut world), Err(Refusal::Nothing));
-        assert_eq!(world.resource::<PartyInventory>().pool.stacks[0].id, id);
+        assert_eq!(world.get::<PartyInventory>(party).unwrap().pool.stacks[0].id, id);
         // Clicking a full pool must report a refusal, not pretend a transfer happened.
         let c = catalog();
         {
-            let mut party = world.resource_mut::<PartyInventory>();
-            party.pool.stacks = (0..POOL_LIMIT).map(|_| stack(&c, &mut ids, 1, 1)).collect();
-            party.hand.held = Some(stack(&c, &mut ids, 1, 1));
+            let mut inventory = world.get_mut::<PartyInventory>(party).unwrap();
+            inventory.pool.stacks = (0..POOL_LIMIT).map(|_| stack(&c, &mut ids, 1, 1)).collect();
+            inventory.hand.held = Some(stack(&c, &mut ids, 1, 1));
         }
-        let before = world.resource::<PartyInventory>().clone();
+        let before = world.get::<PartyInventory>(party).unwrap().clone();
         assert_eq!(
             world.run_system_once(|mut op: InventoryOperations| op.click_pool(0)).unwrap(),
             Err(Refusal::NoRoom)
         );
-        assert_eq!(*world.resource::<PartyInventory>(), before);
+        assert_eq!(*world.get::<PartyInventory>(party).unwrap(), before);
     }
 }

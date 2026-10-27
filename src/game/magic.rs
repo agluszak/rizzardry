@@ -396,24 +396,27 @@ pub struct MagicRequest {
 /// What resolving magic needs beside the members and monsters it changes.
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct MagicContext<'w, 's> {
-    roster: Res<'w, crate::game::party::roster::PartyRoster>,
+    roster: Single<'w, 's, &'static crate::game::party::roster::PartyRoster>,
     data: Option<Res<'w, crate::game::data::GameData>>,
     items: Res<'w, Assets<ItemCatalog>>,
     species: Res<'w, Assets<MonsterCatalog>>,
     spells: Res<'w, Assets<SpellCatalog>>,
     difficulty: Res<'w, crate::game::difficulty::Difficulty>,
-    formation: ResMut<'w, Formation>,
+    formation: Single<'w, 's, &'static mut Formation>,
     party_damage: MessageWriter<'w, DamageApplied>,
     rng: ResMut<'w, GameRng>,
     news: MessageWriter<'w, casting::MagicNews>,
-    _marker: std::marker::PhantomData<&'s ()>,
+    level: Single<'w, 's, Entity, With<crate::game::world::level::Level>>,
 }
 
 impl MagicContext<'_, '_> {
     fn party_level(&self, members: &Members) -> u32 {
-        let levels: u32 =
-            members.iter_many(&self.roster.0).matched().map(|(c, _, _)| u32::from(c.level)).sum();
-        levels / self.roster.0.len().max(1) as u32
+        let levels: u32 = members
+            .iter_many(self.roster.iter())
+            .matched()
+            .map(|(c, _, _)| u32::from(c.level))
+            .sum();
+        levels / self.roster.len().max(1) as u32
     }
 }
 
@@ -421,7 +424,7 @@ impl MagicContext<'_, '_> {
 /// choice; outside it, execute it now.
 pub fn accept_magic(
     mut requests: MessageReader<MagicRequest>,
-    battle: Option<Res<crate::game::combat::Battle>>,
+    battle: Option<Single<&crate::game::combat::Battle>>,
     mut orders: Query<&mut crate::game::party::Order>,
     (mut members, mut monsters): (Members, MonsterDamage),
     mut points: Query<(&LearnedSpells, &mut SpellPoints)>,
@@ -430,7 +433,7 @@ pub fn accept_magic(
     mut commands: Commands,
 ) {
     for &MagicRequest { caster, choice } in requests.read() {
-        if !context.roster.0.contains(&caster) {
+        if !context.roster.contains(&caster) {
             continue;
         }
         if battle.is_some() {
@@ -451,6 +454,7 @@ pub fn accept_magic(
             party_damage,
             rng,
             news,
+            level,
             ..
         } = &mut context;
         let catalogs = data.as_ref().and_then(|d| {
@@ -468,12 +472,12 @@ pub fn accept_magic(
         // combat spells.
         let situation = casting::Situation {
             in_combat: false,
-            party: &roster.0.iter().copied().collect::<Vec<_>>(),
+            party: &roster.iter().collect::<Vec<_>>(),
             party_at,
             monsters: &[],
             group_of: &|m| vec![m],
         };
-        let living: Vec<Entity> = roster.0.iter().copied().collect();
+        let living: Vec<Entity> = roster.iter().collect();
         let mut field = Field {
             members: &mut members,
             monsters: &mut monsters,
@@ -491,7 +495,7 @@ pub fn accept_magic(
             {
                 Ok((report, flights)) => {
                     for flight in flights {
-                        commands.spawn(flight);
+                        commands.spawn((flight, crate::game::world::level::LevelOwned(**level)));
                     }
                     casting::MagicNews::Done(report)
                 }
@@ -510,7 +514,7 @@ pub fn deliver_spells(
     mut flights: Query<(Entity, &mut casting::SpellInFlight)>,
     (mut members, mut monsters): (Members, MonsterDamage),
     mut context: MagicContext,
-    mut battle: Option<ResMut<crate::game::combat::Battle>>,
+    mut battle: Option<Single<&mut crate::game::combat::Battle>>,
     mut combat_news: MessageWriter<crate::game::combat::CombatNews>,
     mut commands: Commands,
 ) {
@@ -535,7 +539,7 @@ pub fn deliver_spells(
         Some((items.get(&d.items)?, species.get(&d.species)?, spells.get(&d.spells)?))
     });
     let Some((items, species, spells)) = catalogs else { return };
-    let living: Vec<Entity> = roster.0.iter().copied().collect();
+    let living: Vec<Entity> = roster.iter().collect();
     for (entity, mut flight) in &mut flights {
         if !flight.arrives.tick(time.delta()).is_finished() {
             continue;
@@ -627,10 +631,7 @@ mod tests {
         };
         use crate::content::spells::ItemSpell;
         use crate::game::characters::Vitals;
-        use crate::game::inventory::{
-            Carried, EquipSlot, Equipped, ItemIds, ItemStack, PartyInventory,
-        };
-        use crate::game::party::roster::PartyRoster;
+        use crate::game::inventory::{Carried, EquipSlot, Equipped, ItemIds, ItemStack};
         use casting::{Aim, MagicChoice, MagicNews, Refusal, Source};
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
@@ -638,9 +639,6 @@ mod tests {
             .init_asset::<MonsterCatalog>()
             .init_asset::<SpellCatalog>()
             .init_asset::<LootTables>()
-            .init_resource::<PartyRoster>()
-            .init_resource::<Formation>()
-            .init_resource::<PartyInventory>()
             .init_resource::<crate::game::factions::Factions>()
             .init_resource::<ItemIds>()
             .init_resource::<crate::game::difficulty::Difficulty>()
@@ -691,7 +689,8 @@ mod tests {
         carried.backpack[0] = Some(potions);
         carried.equipment[EquipSlot::Misc1] = Some(Equipped::new(charged));
         let member = world.spawn((profile, vitals, carried)).id();
-        world.resource_mut::<PartyRoster>().0.insert(member);
+        crate::game::party::roster::test_party(world, &[member]);
+        world.spawn(crate::game::world::level::Level::test(default()));
         let mut news = Vec::new();
         let mut request = |app: &mut App, source| {
             let choice = MagicChoice { source, aim: Aim::Member(member) };
@@ -781,8 +780,7 @@ mod tests {
         };
         use crate::content::spells::ItemSpell;
         use crate::game::characters::{Condition, Lasting, Vitals};
-        use crate::game::inventory::{Carried, ItemIds, ItemStack, PartyInventory};
-        use crate::game::party::roster::PartyRoster;
+        use crate::game::inventory::{Carried, ItemIds, ItemStack};
         use casting::{Aim, MagicChoice, MagicNews, Source};
 
         for id in [114, 115, 116] {
@@ -792,9 +790,6 @@ mod tests {
                 .init_asset::<MonsterCatalog>()
                 .init_asset::<SpellCatalog>()
                 .init_asset::<LootTables>()
-                .init_resource::<PartyRoster>()
-                .init_resource::<PartyInventory>()
-                .init_resource::<Formation>()
                 .init_resource::<crate::game::factions::Factions>()
                 .init_resource::<ItemIds>()
                 .init_resource::<crate::game::difficulty::Difficulty>()
@@ -855,7 +850,7 @@ mod tests {
                     SpellPoints::default(),
                 ))
                 .id();
-            world.resource_mut::<PartyRoster>().0.extend([user, ally]);
+            crate::game::party::roster::test_party(world, &[user, ally]);
             let user_before = world.get::<Vitals>(user).unwrap().clone();
             world.write_message(MagicRequest {
                 caster: user,

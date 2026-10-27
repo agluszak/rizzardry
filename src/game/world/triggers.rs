@@ -12,7 +12,7 @@ use bevy::ecs::system::SystemParam;
 use bevy::ecs::world::EntityMut;
 use bevy::prelude::*;
 
-use super::level::Level;
+use super::level::{Level, LevelOwned};
 use super::props::{Prop, PropMotion};
 use super::scripts::{BellButton, LevelScript};
 use crate::content::items::{Dice, ItemCatalog, LootTables};
@@ -36,7 +36,6 @@ const MAX_DEPTH: usize = 16;
 /// A prop-backed device lives on that prop; positioned devices stand alone.
 #[derive(Component, Debug)]
 pub struct Device {
-    pub level: Entity,
     pub definition: usize,
     pub recipients: Vec<Entity>,
 }
@@ -163,11 +162,12 @@ pub struct DeviceRecords<'w, 's> {
 }
 
 impl DeviceRecords<'_, '_> {
-    pub fn remember(&self, level: Entity, state: &LevelState) -> TriggerMemory {
+    /// Remember the devices among what a level owns.
+    pub fn remember(&self, owned: &[Entity], state: &LevelState) -> TriggerMemory {
         let devices = self
             .devices
-            .iter()
-            .filter(|(device, ..)| device.level == level)
+            .iter_many(owned)
+            .matched()
             .map(|(device, state, door, dial, container, fountain)| {
                 (
                     device.definition,
@@ -208,7 +208,7 @@ pub fn spawn_devices(
     }
     let devices: Vec<Entity> = attached
         .into_iter()
-        .map(|prop| prop.unwrap_or_else(|| commands.spawn(ChildOf(level)).id()))
+        .map(|prop| prop.unwrap_or_else(|| commands.spawn(LevelOwned(level)).id()))
         .collect();
     let mut state = LevelState::default();
     if let Some(memory) = &mut memory {
@@ -239,7 +239,6 @@ pub fn spawn_devices(
         let mut entity = commands.entity(devices[index]);
         entity.insert((
             Device {
-                level,
                 definition: index,
                 recipients: definition.recipients.iter().map(|&i| devices[i]).collect(),
             },
@@ -271,6 +270,9 @@ pub fn spawn_devices(
         }
         if let Some(name) = &definition.loot_table {
             let table = tables.0.iter().position(|t| t.name.eq_ignore_ascii_case(name));
+            // Retail itself has two containers naming tables that do not
+            // exist (camp's AWAYCAMPCHEST, Rapax's CONSTABLE CHEST); they
+            // hold nothing rather than failing their levels.
             if table.is_none() {
                 warn!("trigger {}: no loot table {name}; it holds nothing", definition.name);
             }
@@ -294,7 +296,7 @@ fn open_container(
     data: Res<GameData>,
     catalogs: Res<Assets<ItemCatalog>>,
     tables: Res<Assets<LootTables>>,
-    mut party: ResMut<PartyInventory>,
+    mut party: Single<&mut PartyInventory>,
     mut ids: ResMut<ItemIds>,
     mut rng: ResMut<GameRng>,
     mut outcomes: MessageWriter<TriggerEffect>,
@@ -329,21 +331,21 @@ fn open_container(
 fn damage_party(
     In(dice): In<Dice>,
     mut commands: Commands,
-    roster: Res<PartyRoster>,
+    roster: Single<&PartyRoster>,
     mut members: Query<&mut Vitals>,
     mut rng: ResMut<GameRng>,
-    mut formation: ResMut<crate::game::party::formation::Formation>,
+    mut formation: Single<&mut crate::game::party::formation::Formation>,
     mut damage: MessageWriter<DamageApplied>,
 ) {
-    for entity in roster.0.iter() {
-        let Ok(mut member) = members.get_mut(*entity) else { continue };
+    for entity in roster.iter() {
+        let Ok(mut member) = members.get_mut(entity) else { continue };
         if member.is_dead() {
             continue;
         }
         let rolled = rng.roll(dice);
         if rolled > 0 {
             crate::game::party::damage_member(
-                *entity,
+                entity,
                 &mut member,
                 &mut formation,
                 rolled,
@@ -358,7 +360,7 @@ fn drink_fountain(
     In((entity, fountain, at)): In<(Entity, Fountain, Option<Vec3>)>,
     mut fountains: Query<&mut FountainState>,
     clock: Res<GameClock>,
-    roster: Res<PartyRoster>,
+    roster: Single<&PartyRoster>,
     mut members: Query<(&Character, &mut Vitals)>,
     mut outcomes: MessageWriter<TriggerEffect>,
 ) -> bool {
@@ -381,7 +383,7 @@ fn drink_fountain(
             state.refills_at = fountain.refills_after.map(|after| now + after);
         }
     }
-    for (profile, mut member) in members.iter_many_unique_mut(&roster.0).matched() {
+    for (profile, mut member) in members.iter_many_unique_mut(roster.iter()).matched() {
         if member.is_dead()
             || match fountain.restores {
                 Restores::Health => member.hp >= profile.max_hp(),
@@ -442,17 +444,10 @@ pub enum PartyMove {
     Fly(usize),
 }
 
-/// A move requested by a device, scoped to its originating level.
-/// Taking the move discards it if that level is no longer active.
-#[derive(Resource, Debug, Default)]
-pub struct PendingPartyMove(pub Option<(Entity, PartyMove)>);
-
-impl PendingPartyMove {
-    pub fn take_for(&mut self, level: Entity) -> Option<PartyMove> {
-        let (origin, movement) = self.0.take()?;
-        (origin == level).then_some(movement)
-    }
-}
+/// On a level: a move one of its devices requested, carried out after the
+/// trigger step. A later request replaces it; it goes with its level.
+#[derive(Component, Clone, Debug)]
+pub struct PendingPartyMove(pub PartyMove);
 
 /// Complete a device request synchronously. A hit distance means player use;
 /// linked/script activation does not apply the player's reach/usable gate.
@@ -462,8 +457,10 @@ pub fn activate(world: &mut World, entity: Entity, distance: Option<f32>) -> boo
     {
         return false;
     }
-    let Some(device) = world.get::<Device>(entity) else { return false };
-    let level = device.level;
+    if world.get::<Device>(entity).is_none() {
+        return false;
+    }
+    let Some(&LevelOwned(level)) = world.get::<LevelOwned>(entity) else { return false };
     let Some(level) = world.get::<Level>(level) else { return false };
     let handle = level.geometry.clone();
     // Borrow immutable definitions for the entire synchronous operation. Nested
@@ -626,14 +623,17 @@ fn execute(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth:
         return false;
     }
     let Some(device) = world.get::<Device>(entity) else { return false };
-    let level = device.level;
+    let Some(&LevelOwned(level)) = world.get::<LevelOwned>(entity) else { return false };
     let definition = &geometry.triggers[device.definition];
     if depth > MAX_DEPTH {
         warn!("trigger {} recurses too deeply", definition.name);
         return false;
     }
-    let offered =
-        world.get_resource::<PartyInventory>().and_then(|p| p.hand.held.as_ref()).map(|h| h.item);
+    let party = crate::game::party::roster::the_party(world);
+    let offered = party
+        .and_then(|party| world.get::<PartyInventory>(party))
+        .and_then(|p| p.hand.held.as_ref())
+        .map(|h| h.item);
     let chosen = {
         let [actor, owner] = world.get_entity_mut([entity, level]).unwrap();
         select_use(actor, owner.get::<LevelState>().unwrap(), definition, offered)
@@ -680,11 +680,10 @@ fn execute(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth:
             execute_links(world, geometry, entity, depth);
         }
         TriggerAction::Teleport(arrival) => {
-            world.resource_mut::<PendingPartyMove>().0 =
-                Some((level, PartyMove::Teleport(arrival.clone())));
+            world.entity_mut(level).insert(PendingPartyMove(PartyMove::Teleport(arrival.clone())));
         }
         TriggerAction::CameraPath(path) => {
-            world.resource_mut::<PendingPartyMove>().0 = Some((level, PartyMove::Fly(*path)));
+            world.entity_mut(level).insert(PendingPartyMove(PartyMove::Fly(*path)));
         }
         TriggerAction::HurtParty(dice) => {
             world.run_system_cached_with(damage_party, *dice).unwrap();
@@ -763,13 +762,12 @@ fn contains(definition: &TriggerDefinition, eye: Vec3) -> bool {
 pub(crate) fn walk(
     In(sample): In<Option<(Entity, Vec3, Duration)>>,
     mut commands: Commands,
-    mut levels: Query<(&Level, &PositionedDevices, &mut LevelState)>,
+    mut levels: Query<(&Level, &PositionedDevices, &mut LevelState, Has<PendingPartyMove>)>,
     geometry: Res<Assets<LevelDefinition>>,
     mut devices: Query<(&Device, &TriggerState, Option<&mut ActiveDamageZone>)>,
-    pending: Res<PendingPartyMove>,
 ) {
     let Some((level, eye, elapsed)) = sample else { return };
-    let Ok((owner, positioned, mut state)) = levels.get_mut(level) else { return };
+    let Ok((owner, positioned, mut state, pending)) = levels.get_mut(level) else { return };
     let Some(geometry) = geometry.get(&owner.geometry) else { return };
     let previous_eye = state.previous_eye;
     if previous_eye != Some(eye) {
@@ -781,7 +779,7 @@ pub(crate) fn walk(
         let inside = contains(definition, eye);
         if inside
             && previous_eye.is_some_and(|previous| !contains(definition, previous))
-            && pending.0.is_none()
+            && !pending
             && definition.usable
             && !(definition.once && state.fired)
         {
@@ -834,7 +832,7 @@ fn walk_activation(
             }
             if inside
                 && previous_eye.is_some_and(|previous| !contains(definition, previous))
-                && world.resource::<PendingPartyMove>().0.is_none()
+                && world.get::<PendingPartyMove>(level).is_none()
                 && usable(world, entity, definition)
             {
                 execute(world, geometry, entity, 0);
@@ -930,14 +928,11 @@ mod tests {
             world.init_resource::<Messages<TriggerEffect>>();
             world.init_resource::<Messages<DamageApplied>>();
             world.init_resource::<Messages<crate::game::combat::CombatNews>>();
-            world.init_resource::<PendingPartyMove>();
-            world.init_resource::<PartyInventory>();
-            world.init_resource::<crate::game::party::formation::Formation>();
             world.init_resource::<State<crate::game::screen::Screen>>();
             world.init_resource::<NextState<crate::game::screen::Screen>>();
             world.init_resource::<Messages<crate::game::inventory::ItemNews>>();
             world.init_resource::<ItemIds>();
-            world.init_resource::<PartyRoster>();
+            crate::game::party::roster::test_party(&mut world, &[]);
             world.insert_resource(GameClock::at(0));
             world.insert_resource(GameRng::seeded(5));
             let items = world.resource_mut::<Assets<ItemCatalog>>().add(ItemCatalog::default());
@@ -967,7 +962,7 @@ mod tests {
                 .geometry
                 .props
                 .iter()
-                .map(|_| self.world.spawn(ChildOf(self.root)).id())
+                .map(|_| self.world.spawn(LevelOwned(self.root)).id())
                 .collect();
             let tables = LootTables(
                 self.world
@@ -1005,6 +1000,16 @@ mod tests {
             state.apply(&mut self.world);
         }
 
+        fn inventory(&mut self) -> Mut<'_, PartyInventory> {
+            let party = crate::game::party::roster::the_party(&mut self.world).unwrap();
+            self.world.get_mut::<PartyInventory>(party).unwrap()
+        }
+
+        fn formation(&mut self) -> &crate::game::party::formation::Formation {
+            let party = crate::game::party::roster::the_party(&mut self.world).unwrap();
+            self.world.get::<crate::game::party::formation::Formation>(party).unwrap()
+        }
+
         fn device(&self, name: &str) -> Entity {
             self.devices[self.geometry.triggers.iter().position(|t| t.name == name).unwrap()]
         }
@@ -1012,8 +1017,7 @@ mod tests {
         fn add_member(&mut self, name: &str) -> Entity {
             let profile = Character::new(name, Race::Human, Gender::Male, Profession::Fighter);
             let member = self.world.spawn((Vitals::new(&profile), profile)).id();
-            self.world.resource_mut::<PartyRoster>().0.insert(member);
-            self.world.resource_mut::<crate::game::party::formation::Formation>().seat(member);
+            crate::game::party::roster::test_join(&mut self.world, member);
             self.members.push(member);
             member
         }
@@ -1034,7 +1038,7 @@ mod tests {
 
         fn walk(&mut self, eye: Vec3, elapsed: Duration) -> Option<PartyMove> {
             self.world.run_system_cached_with(walk, Some((self.root, eye, elapsed))).unwrap();
-            self.world.resource_mut::<PendingPartyMove>().take_for(self.root)
+            self.world.entity_mut(self.root).take::<PendingPartyMove>().map(|p| p.0)
         }
 
         fn motion(&self, name: &str) -> &PropMotion {
@@ -1053,10 +1057,11 @@ mod tests {
 
         fn remember(&mut self) -> TriggerMemory {
             let mut records = SystemState::<DeviceRecords>::new(&mut self.world);
+            let owned = self.world.get::<super::super::level::LevelEntities>(self.root).unwrap();
             records
                 .get(&self.world)
                 .unwrap()
-                .remember(self.root, self.world.get::<LevelState>(self.root).unwrap())
+                .remember(owned.entities(), self.world.get::<LevelState>(self.root).unwrap())
         }
     }
 
@@ -1112,7 +1117,7 @@ mod tests {
         let definition = ItemDefinition { id: key, ..default() };
         let item =
             make_item(&definition, &mut ItemIds::default(), &mut GameRng::seeded(5), false, true);
-        level.world.resource_mut::<PartyInventory>().hand.held = Some(item);
+        level.inventory().hand.held = Some(item);
         assert!(level.run("DOOR").0);
         assert_eq!(level.motion("DOOR").target, 15.0);
         // Unlocked for good: kept while the party is away.
@@ -1156,7 +1161,7 @@ mod tests {
             level.world.get::<Container>(lost).unwrap().contents.is_none(),
             "no contents are made up"
         );
-        assert_eq!(level.world.resource::<PartyInventory>().gold, 5);
+        assert_eq!(level.inventory().gold, 5);
         let memory = level.remember();
         level.visit(Some(memory));
         assert!(level.run("CHEST").1.is_empty(), "returning never rolls the gold again");
@@ -1165,7 +1170,7 @@ mod tests {
         level.world.entity_mut(chest).remove::<PropMotion>();
         assert!(!level.run("CHEST").0, "a missing prop cannot open a container");
         assert!(level.world.get::<Container>(chest).unwrap().contents.is_none());
-        assert_eq!(level.world.resource::<PartyInventory>().gold, 5);
+        assert_eq!(level.inventory().gold, 5);
     }
 
     #[test]
@@ -1408,20 +1413,21 @@ mod tests {
 
     #[test]
     fn environmental_damage_finishes_a_waiting_battle_before_returning() {
-        use crate::game::party::formation::Formation;
         let mut level = Scenario::new(
             vec![trigger("LETHAL", TriggerAction::HurtParty(Dice { base: 10000, ..default() }))],
             &[],
             LevelScript::None,
         );
-        level.world.insert_resource(crate::game::combat::Battle::default());
+        level.world.spawn(crate::game::combat::Battle::default());
         let member = level.members[0];
-        assert!(level.world.resource::<Formation>().row_of(member).is_some());
+        assert!(level.formation().row_of(member).is_some());
         assert!(level.run("LETHAL").0);
         // Death bookkeeping is synchronous: the seat is gone at once.
         assert!(level.world.get::<Vitals>(member).unwrap().is_dead());
-        assert!(level.world.resource::<Formation>().row_of(member).is_none());
-        assert!(!level.world.contains_resource::<crate::game::combat::Battle>());
+        assert!(level.formation().row_of(member).is_none());
+        assert!(
+            level.world.query::<&crate::game::combat::Battle>().iter(&level.world).next().is_none()
+        );
         assert_eq!(
             level
                 .world
@@ -1498,7 +1504,7 @@ mod tests {
         let outsider_hp = level.world.get::<Vitals>(outsider).unwrap().hp;
         let second = level.add_member("B");
         let first = level.members[0];
-        level.world.resource_mut::<PartyRoster>().0 = [second, first].into_iter().collect();
+        crate::game::party::roster::test_reorder(&mut level.world, &[second, first]);
         let before = [second, first].map(|e| level.world.get::<Vitals>(e).unwrap().hp);
         level.run("TRAP");
         let hits: Vec<_> = level.damage().into_iter().map(|hit| (hit.member, hit.amount)).collect();
@@ -1602,7 +1608,7 @@ mod tests {
             app.world().get::<Position>(party).unwrap().0,
             Vec3::X * 10.0 - Vec3::Y * EYE_ABOVE_CENTRE
         );
-        assert!(app.world().resource::<PendingPartyMove>().0.is_none());
+        assert!(app.world_mut().query::<&PendingPartyMove>().iter(app.world()).next().is_none());
         app.world_mut().run_schedule(FixedPostUpdate);
         assert_eq!(
             PartyBody::eye(app.world().get::<Position>(party).unwrap()),
@@ -1674,8 +1680,8 @@ mod tests {
         );
         assert!(level.run("PORTAL").0);
         level.visit(None);
-        assert!(level.world.resource_mut::<PendingPartyMove>().take_for(level.root).is_none());
+        assert!(level.world.query::<&PendingPartyMove>().iter(&level.world).next().is_none());
         assert!(level.run("PORTAL").0);
-        assert!(level.world.resource_mut::<PendingPartyMove>().take_for(level.root).is_some());
+        assert!(level.world.get::<PendingPartyMove>(level.root).is_some());
     }
 }
