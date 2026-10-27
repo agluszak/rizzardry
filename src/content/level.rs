@@ -322,6 +322,8 @@ pub struct TriggerDefinition {
     /// The distance band, in metres, from which the party can use it.
     pub range: (f32, f32),
     pub door: Option<DoorLock>,
+    /// A lock to pick or a trap to disarm before it runs.
+    pub lock: Option<Lock>,
     /// A trigger standing at a place rather than on a prop: it runs when the
     /// party's eye comes within `range` of it.
     pub place: Option<Vec3>,
@@ -422,6 +424,21 @@ pub struct DoorLock {
     pub locked: bool,
     pub key: Option<ItemId>,
 }
+
+/// What stands between the party and a device as authored (retail
+/// `W8LockState`): a lock to pick, or a trap to disarm. Keyed locks are
+/// [`DoorLock`]s.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lock {
+    /// Its difficulty is the editor's 0 to 10 grade; it has 2 to 8 tumblers.
+    Pickable { difficulty: u8 },
+    /// `kind` (below [`TRAP_TYPES`]) indexes retail's trap tables; `None` rolls one from the
+    /// difficulty when the party first meets it.
+    Trap { difficulty: u8, kind: Option<u8> },
+}
+
+/// The trap types retail's trap tables describe.
+pub const TRAP_TYPES: usize = 15;
 
 /// One rigid part of a prop, in its rest pose.
 #[derive(Clone, Debug)]

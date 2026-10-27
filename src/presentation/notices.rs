@@ -14,9 +14,18 @@ use crate::game::camp::CampNews;
 use crate::game::combat::{Announcement, CombatNews};
 use crate::game::inventory::ItemNews;
 use crate::game::world::identify::Identified;
+use crate::game::world::interaction::LockNews;
 use crate::game::world::search::SearchNews;
 use crate::game::world::triggers::TriggerEffect;
 
+/// Lock and trap notices in the game's string table: a picked lock, a
+/// lock forced or not (after the member's name), the trap types' names, and
+/// what became of a trap (after its name).
+const LOCK_PICKED: usize = 0x7ac;
+const LOCK_NOT_FORCED: usize = 0x7ad;
+const LOCK_FORCED: usize = 0x7ae;
+const TRAP_NAMES: usize = 0x542;
+const TRAP_DISARMED: usize = 0x7b2;
 /// Retail's "Nothing happens." in the game's string table.
 const NOTHING_HAPPENS: usize = 0x964;
 /// Lines a channel keeps.
@@ -339,6 +348,8 @@ pub fn queue_notices(
     mut items: MessageReader<ItemNews>,
     mut search: MessageReader<SearchNews>,
     mut identified: MessageReader<Identified>,
+    mut locks: MessageReader<LockNews>,
+    members: Query<&crate::game::characters::Character>,
     names: super::names::ActorNames,
     art: Res<NoticeArt>,
     tables: Res<Assets<TextTable>>,
@@ -416,6 +427,32 @@ pub fn queue_notices(
             }
             ItemNews::Takes { member: None, item } => string(PARTY_TAKES).replace("%s", item),
             ItemNews::NoRoom => string(NO_ROOM),
+        };
+        log.push(channel, &text, font);
+    }
+    // Retail's lock and trap notices (`AttemptForce`, `ResolvePick`,
+    // `CompleteTrapDisarm`, `ResolveSprungTrap`); the rest are voices.
+    let member = |entity: &Entity| members.get(*entity).map(|c| c.name.clone()).unwrap_or_default();
+    let trap = |trap: &u8| string(TRAP_NAMES + usize::from(*trap));
+    for news in locks.read() {
+        let text = match news {
+            LockNews::Picked => string(LOCK_PICKED),
+            LockNews::Forced { member: who } => format!("{} {}", member(who), string(LOCK_FORCED)),
+            LockNews::NotForced { member: who } => {
+                format!("{} {}", member(who), string(LOCK_NOT_FORCED))
+            }
+            LockNews::Disarmed { trap: kind } => {
+                format!("{} {}", trap(kind), string(TRAP_DISARMED))
+            }
+            LockNews::UnsupportedTrap => {
+                "Trap effects are not implemented yet; the device remains guarded.".to_owned()
+            }
+            LockNews::Locked
+            | LockNews::Trapped { .. }
+            | LockNews::NotInCombat
+            | LockNews::Tumbler { .. }
+            | LockNews::Inspected { .. }
+            | LockNews::ComponentDisarmed { .. } => continue,
         };
         log.push(channel, &text, font);
     }

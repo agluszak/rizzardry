@@ -12,6 +12,7 @@ use bevy::ecs::system::SystemParam;
 use bevy::ecs::world::EntityMut;
 use bevy::prelude::*;
 
+use super::interaction::{DeviceInteraction, Guarded, Work};
 use super::level::{Level, LevelOwned};
 use super::props::{Prop, PropMotion};
 use super::scripts::{BellButton, LevelScript};
@@ -99,10 +100,14 @@ pub struct DialState {
     pub position: usize,
 }
 
-#[derive(Component, Debug)]
+/// A container's contents, drawn from its loot table the first time it is
+/// opened and kept from then on (retail `GenerateItemGroup`); whatever the
+/// party leaves or puts in it stays.
+#[derive(Component, Clone, Debug)]
 pub struct Container {
     table: Option<usize>,
-    pub contents: Option<Contents>,
+    generated: bool,
+    pub contents: Contents,
 }
 
 #[derive(Component, Clone, Debug, Default)]
@@ -134,7 +139,8 @@ struct KeptDevice {
     use_alternate: bool,
     door: Option<DoorState>,
     dial: Option<DialState>,
-    contents: Option<Contents>,
+    container: Option<Container>,
+    guarded: Option<Guarded>,
     fountain: Option<FountainState>,
 }
 
@@ -156,6 +162,7 @@ pub struct DeviceRecords<'w, 's> {
             Option<&'static DoorState>,
             Option<&'static DialState>,
             Option<&'static Container>,
+            Option<&'static Guarded>,
             Option<&'static FountainState>,
         ),
     >,
@@ -168,7 +175,7 @@ impl DeviceRecords<'_, '_> {
             .devices
             .iter_many(owned)
             .matched()
-            .map(|(device, state, door, dial, container, fountain)| {
+            .map(|(device, state, door, dial, container, guarded, fountain)| {
                 (
                     device.definition,
                     KeptDevice {
@@ -177,7 +184,8 @@ impl DeviceRecords<'_, '_> {
                         use_alternate: state.use_alternate,
                         door: door.cloned(),
                         dial: dial.cloned(),
-                        contents: container.and_then(|c| c.contents.clone()),
+                        container: container.cloned(),
+                        guarded: guarded.cloned(),
                         fountain: fountain.cloned(),
                     },
                 )
@@ -276,10 +284,19 @@ pub fn spawn_devices(
             if table.is_none() {
                 warn!("trigger {}: no loot table {name}; it holds nothing", definition.name);
             }
-            entity.insert(Container {
+            entity.insert(kept.as_mut().and_then(|k| k.container.take()).unwrap_or(Container {
                 table,
-                contents: kept.as_mut().and_then(|k| k.contents.take()),
-            });
+                generated: false,
+                contents: Contents::default(),
+            }));
+        }
+        // A lock overcome stays overcome.
+        let guarded = match &kept {
+            Some(kept) => kept.guarded.clone(),
+            None => definition.lock.map(Guarded::new),
+        };
+        if let Some(guarded) = guarded {
+            entity.insert(guarded);
         }
         if definition.place.is_some() {
             positioned.0.push(devices[index]);
@@ -290,41 +307,71 @@ pub fn spawn_devices(
     devices
 }
 
-fn open_container(
+/// What using a container came to (retail action 3 with an item table).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ContainerUse {
+    /// The held item went in; nothing else happens.
+    Deposited,
+    /// Its contents are already being looked through.
+    Busy,
+    /// Empty, or its one item went to the hand: it opens or closes.
+    Toggle,
+    /// Look through its contents, opening it first if it is shut.
+    Look { open: bool },
+}
+
+/// Retail `Trigger::RunAction` case 3: a held item goes in; otherwise the
+/// contents are drawn once, their gold goes to the party, a lone item to
+/// the hand, and several are looked through.
+fn use_container(
     In(entity): In<Entity>,
-    mut containers: Query<&mut Container>,
+    mut containers: Query<(&mut Container, &PropMotion)>,
     data: Res<GameData>,
     catalogs: Res<Assets<ItemCatalog>>,
     tables: Res<Assets<LootTables>>,
+    interaction: Option<Res<DeviceInteraction>>,
     mut party: Single<&mut PartyInventory>,
     mut ids: ResMut<ItemIds>,
     mut rng: ResMut<GameRng>,
     mut outcomes: MessageWriter<TriggerEffect>,
-    mut item_news: MessageWriter<crate::game::inventory::ItemNews>,
-) {
-    let mut container = containers.get_mut(entity).unwrap();
+) -> ContainerUse {
+    let (mut container, motion) = containers.get_mut(entity).unwrap();
+    if let Some(held) = party.hand.held.take() {
+        container.contents.items.push(held);
+        return ContainerUse::Deposited;
+    }
+    if interaction.is_some_and(|i| i.device == entity) {
+        return ContainerUse::Busy;
+    }
     let catalog = catalogs.get(&data.items).unwrap();
-    let loot = tables.get(&data.loot).unwrap();
-    let Some(table) = container.table else { return };
-    let contents = container.contents.get_or_insert_with(|| {
+    if !container.generated
+        && let Some(table) = container.table
+    {
+        let loot = tables.get(&data.loot).unwrap();
         let (found, gold) = roll_loot(&loot.0[table], catalog, 1, &mut rng);
-        let items = found
-            .into_iter()
-            .filter_map(|id| catalog.get(id))
-            .map(|d| make_item(d, &mut ids, &mut rng, false, false))
-            .collect();
-        Contents { items, gold }
-    });
+        let contents = &mut container.contents;
+        contents.items.extend(
+            found
+                .into_iter()
+                .filter_map(|id| catalog.get(id))
+                .map(|d| make_item(d, &mut ids, &mut rng, false, false)),
+        );
+        contents.gold += gold;
+        container.generated = true;
+    }
+    let contents = &mut container.contents;
     if contents.gold > 0 {
         party.gold += contents.gold;
         outcomes.write(TriggerEffect::Gold(contents.gold));
         contents.gold = 0;
     }
-    for (name, _) in party.pool.collect(&mut contents.items, catalog) {
-        item_news.write(crate::game::inventory::ItemNews::Takes { member: None, item: name });
-    }
-    if !contents.items.is_empty() {
-        item_news.write(crate::game::inventory::ItemNews::NoRoom);
+    match contents.items.len() {
+        0 => ContainerUse::Toggle,
+        1 => {
+            party.hand.held = contents.items.pop();
+            ContainerUse::Toggle
+        }
+        _ => ContainerUse::Look { open: motion.target > 0.0 },
     }
 }
 
@@ -476,12 +523,32 @@ pub fn activate(world: &mut World, entity: Entity, distance: Option<f32>) -> boo
         {
             return false;
         }
-        let committed = execute(world, geometry, entity, 0);
-        if distance.is_some() && !committed {
+        let ran = execute(world, geometry, entity, 0);
+        if distance.is_some() && ran == Ran::Declined {
             world.write_message(TriggerEffect::NothingHappened);
         }
-        committed
+        ran == Ran::Committed
     })
+}
+
+/// How running a device went.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ran {
+    Committed,
+    /// It did not run, and nothing came of it.
+    Declined,
+    /// It did not run, but something answered: its lock or trap, or an item
+    /// put into it (retail `g_trigger_feedback`).
+    Answered,
+}
+
+/// The use a device's state selects.
+enum Selected<'a> {
+    /// `keyed` when a key just unlocked it, which overcomes its lock too
+    /// (retail marks the lock completed).
+    Use { chosen: &'a TriggerUse, keyed: bool },
+    /// A lock or trap must be overcome first.
+    Guarded,
 }
 
 fn usable(world: &World, entity: Entity, definition: &TriggerDefinition) -> bool {
@@ -505,7 +572,7 @@ fn select_use<'a>(
     variables: &LevelState,
     definition: &'a TriggerDefinition,
     offered: Option<crate::content::items::ItemId>,
-) -> Option<&'a TriggerUse> {
+) -> Option<Selected<'a>> {
     let state = actor.get::<TriggerState>()?;
     let motion = actor.get::<PropMotion>();
     let running = state.awaits_animation && motion.is_some_and(|m| m.frame != m.target);
@@ -516,17 +583,25 @@ fn select_use<'a>(
         return None;
     }
     if !definition.required_states.iter().all(|name| variables.variable(name)) {
-        return definition.fallback.as_ref();
+        return definition.fallback.as_ref().map(|chosen| Selected::Use { chosen, keyed: false });
     }
+    let mut keyed = false;
     if let Some(mut door) = actor.get_mut::<DoorState>()
         && door.locked
         && let Some(key) = definition.door.and_then(|d| d.key)
     {
         if offered == Some(key) {
             door.locked = false;
+            keyed = true;
         } else {
-            return definition.fallback.as_ref();
+            return definition
+                .fallback
+                .as_ref()
+                .map(|chosen| Selected::Use { chosen, keyed: false });
         }
+    }
+    if !keyed && actor.contains::<Guarded>() {
+        return Some(Selected::Guarded);
     }
     let mut state = actor.get_mut::<TriggerState>()?;
     let (chosen, next) = match &definition.alternate {
@@ -536,7 +611,7 @@ fn select_use<'a>(
     if state.use_alternate != next {
         state.use_alternate = next;
     }
-    Some(chosen)
+    Some(Selected::Use { chosen, keyed })
 }
 
 fn operate_door(mut device: EntityMut, open_only: bool) -> Result<bool, TriggerEffect> {
@@ -618,16 +693,16 @@ fn execute_links(world: &mut World, geometry: &LevelDefinition, entity: Entity, 
     }
 }
 
-fn execute(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth: usize) -> bool {
+fn execute(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth: usize) -> Ran {
     if !ready(world, entity) {
-        return false;
+        return Ran::Declined;
     }
-    let Some(device) = world.get::<Device>(entity) else { return false };
-    let Some(&LevelOwned(level)) = world.get::<LevelOwned>(entity) else { return false };
+    let Some(device) = world.get::<Device>(entity) else { return Ran::Declined };
+    let Some(&LevelOwned(level)) = world.get::<LevelOwned>(entity) else { return Ran::Declined };
     let definition = &geometry.triggers[device.definition];
     if depth > MAX_DEPTH {
         warn!("trigger {} recurses too deeply", definition.name);
-        return false;
+        return Ran::Declined;
     }
     let party = crate::game::party::roster::the_party(world);
     let offered = party
@@ -638,7 +713,21 @@ fn execute(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth:
         let [actor, owner] = world.get_entity_mut([entity, level]).unwrap();
         select_use(actor, owner.get::<LevelState>().unwrap(), definition, offered)
     };
-    let Some(chosen) = chosen else { return false };
+    let chosen = match chosen {
+        None => return Ran::Declined,
+        Some(Selected::Guarded) => {
+            if let Some(lock) = definition.lock {
+                super::interaction::confront(world, entity, lock);
+            }
+            return Ran::Answered;
+        }
+        Some(Selected::Use { chosen, keyed }) => {
+            if keyed {
+                world.entity_mut(entity).remove::<Guarded>();
+            }
+            chosen
+        }
+    };
     if let Some(bell) = world.get::<BellButton>(entity).copied() {
         let [button, dial] = world.get_entity_mut([entity, bell.dial]).unwrap();
         let outcome = super::scripts::ring_bell(button, dial);
@@ -653,29 +742,42 @@ fn execute(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth:
                 *action == TriggerAction::OpenDoor,
             ) {
                 Ok(true) => {}
-                Ok(false) => return false,
+                Ok(false) => return Ran::Declined,
                 Err(outcome) => {
                     world.write_message(outcome);
-                    return false;
+                    return Ran::Declined;
                 }
             }
         }
         TriggerAction::Animate(animation) => {
             if world.get::<Prop>(entity).is_none() || world.get::<PropMotion>(entity).is_none() {
-                return false;
+                return Ran::Declined;
             }
             if world.get::<Container>(entity).is_some() {
-                world.run_system_cached_with(open_container, entity).unwrap();
+                match world.run_system_cached_with(use_container, entity).unwrap() {
+                    ContainerUse::Deposited => return Ran::Answered,
+                    ContainerUse::Busy => return Ran::Declined,
+                    ContainerUse::Toggle => {}
+                    ContainerUse::Look { open } => {
+                        world.insert_resource(DeviceInteraction {
+                            device: entity,
+                            work: Work::Looting,
+                        });
+                        if open {
+                            return Ran::Answered;
+                        }
+                    }
+                }
             }
             animate_device(world.entity_mut(entity).into_mutable(), *animation);
         }
         TriggerAction::Sound => {
             play_authored_sound(world, entity, definition);
-            return false;
+            return Ran::Declined;
         }
         TriggerAction::Relay => {
             if world.get::<Device>(entity).unwrap().recipients.is_empty() {
-                return false;
+                return Ran::Declined;
             }
             execute_links(world, geometry, entity, depth);
         }
@@ -691,7 +793,7 @@ fn execute(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth:
         TriggerAction::Fountain(fountain) => {
             let at = sound_position(world, entity, definition);
             if !world.run_system_cached_with(drink_fountain, (entity, *fountain, at)).unwrap() {
-                return false;
+                return Ran::Declined;
             }
         }
         TriggerAction::DamageZone => {
@@ -716,12 +818,12 @@ fn execute(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth:
                 owner.get_mut::<LevelState>().unwrap(),
                 definition.state_change.as_ref().map(|(name, _)| name),
             ) {
-                return false;
+                return Ran::Declined;
             }
         }
         TriggerAction::Unsupported(code) => {
             debug!("trigger {}: action {code:#x} is not implemented", definition.name);
-            return false;
+            return Ran::Declined;
         }
     }
     if definition.sound_on_commit {
@@ -749,7 +851,7 @@ fn execute(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth:
     if !state.fired {
         state.fired = true;
     }
-    true
+    Ran::Committed
 }
 
 fn contains(definition: &TriggerDefinition, eye: Vec3) -> bool {
@@ -872,6 +974,7 @@ mod tests {
             door: None,
             place: None,
             loot_table: None,
+            lock: None,
         }
     }
 
@@ -931,6 +1034,8 @@ mod tests {
             world.init_resource::<State<crate::game::screen::Screen>>();
             world.init_resource::<NextState<crate::game::screen::Screen>>();
             world.init_resource::<Messages<crate::game::inventory::ItemNews>>();
+            world.init_resource::<Messages<super::super::interaction::LockNews>>();
+            world.init_resource::<crate::game::difficulty::Difficulty>();
             world.init_resource::<ItemIds>();
             crate::game::party::roster::test_party(&mut world, &[]);
             world.insert_resource(GameClock::at(0));
@@ -1065,6 +1170,197 @@ mod tests {
         }
     }
 
+    fn chest(lock: Option<crate::content::level::Lock>) -> TriggerDefinition {
+        let mut chest = trigger("CHEST", TriggerAction::Animate(Animation::Toggle));
+        chest.loot_table = Some("CHEST".into());
+        chest.usable = true;
+        chest.lock = lock;
+        chest
+    }
+
+    /// A chest whose table yields `gold` and nothing else.
+    fn chest_level(lock: Option<crate::content::level::Lock>, gold: i16) -> Scenario {
+        let mut level = Scenario::new(
+            vec![chest(lock)],
+            &[PropSpec("CHEST", 5.0, false, &[])],
+            LevelScript::None,
+        );
+        let loot = LootTables(vec![LootTable {
+            name: "CHEST".into(),
+            entries: vec![],
+            level_scaled: false,
+            item_count: Dice::default(),
+            gold: Dice { count: 0, sides: 0, base: gold },
+        }]);
+        let handle = level.world.resource::<GameData>().loot.clone();
+        level.world.resource_mut::<Assets<LootTables>>().insert(&handle, loot).unwrap();
+        level.visit(None);
+        level
+    }
+
+    fn work(level: &Scenario) -> Option<&super::super::interaction::Work> {
+        level.world.get_resource::<DeviceInteraction>().map(|i| &i.work)
+    }
+
+    #[test]
+    fn a_locked_chest_opens_once_picked_and_stays_unlocked() {
+        use super::super::interaction::pick_tumbler;
+        let lock = crate::content::level::Lock::Pickable { difficulty: 3 };
+        let mut level = chest_level(Some(lock), 5);
+        let picker = level.members[0];
+        level.world.get_mut::<Character>(picker).unwrap().skill_points
+            [crate::content::characters::Skill::LocksAndTraps] = 100;
+        // The lock answers instead of the chest: no "Nothing happens".
+        let chest = level.device("CHEST");
+        assert!(!activate(&mut level.world, chest, Some(1.0)));
+        assert!(level.effects().is_empty());
+        let Some(Work::Picking(picking)) = work(&level) else { panic!("picking") };
+        assert_eq!(picking.tumblers.len(), 3);
+        assert_eq!(level.motion("CHEST").target, 0.0);
+        // At full skill no tumbler falls; the last one opens the chest.
+        for tumbler in 0..3 {
+            pick_tumbler(&mut level.world, picker, tumbler).unwrap();
+        }
+        assert!(work(&level).is_none());
+        assert!(level.world.get::<Guarded>(chest).is_none());
+        assert_eq!(level.motion("CHEST").target, 5.0);
+        assert_eq!(level.effects(), [TriggerEffect::Gold(5)]);
+        // Overcome for good: kept while the party is away.
+        level.settle();
+        let memory = level.remember();
+        level.visit(Some(memory));
+        assert!(level.world.get::<Guarded>(level.device("CHEST")).is_none());
+        assert!(level.run("CHEST").0);
+        assert!(work(&level).is_none());
+    }
+
+    #[test]
+    fn a_trap_keeps_its_type_and_a_wrong_component_springs_it() {
+        use super::super::interaction::{
+            LockNews, TRAP_COMPONENTS, Unable, disarm_component, inspect_trap, leave, spring_trap,
+        };
+        let lock = crate::content::level::Lock::Trap { difficulty: 5, kind: None };
+        let mut level = chest_level(Some(lock), 0);
+        let member = level.members[0];
+        level.world.get_mut::<Character>(member).unwrap().skill_points
+            [crate::content::characters::Skill::LocksAndTraps] = 50;
+        assert!(!level.run("CHEST").0);
+        let Some(Work::Disarming(disarming)) = work(&level) else { panic!("disarming") };
+        let trap = disarming.trap;
+        let chest = level.device("CHEST");
+        assert_eq!(level.world.get::<Guarded>(chest).unwrap().trap, Some(trap));
+        // Leaving and returning faces the same trap.
+        leave(&mut level.world);
+        let memory = level.remember();
+        level.visit(Some(memory));
+        let chest = level.device("CHEST");
+        assert!(!level.run("CHEST").0);
+        assert_eq!(level.world.get::<Guarded>(chest).unwrap().trap, Some(trap));
+        let wrong = TRAP_COMPONENTS[usize::from(trap)].iter().position(|&p| !p).unwrap();
+        assert_eq!(disarm_component(&mut level.world, member, wrong), Err(Unable::UnsupportedTrap));
+        assert_eq!(inspect_trap(&mut level.world, member), Err(Unable::UnsupportedTrap));
+        assert_eq!(spring_trap(&mut level.world), Err(Unable::UnsupportedTrap));
+        assert!(matches!(work(&level), Some(Work::Disarming(_))));
+        assert_eq!(level.world.get::<Guarded>(chest).unwrap().trap, Some(trap));
+        assert_eq!(level.motion("CHEST").target, 0.0);
+        let news: Vec<_> = level.world.resource_mut::<Messages<LockNews>>().drain().collect();
+        assert_eq!(news.iter().filter(|n| matches!(n, LockNews::UnsupportedTrap)).count(), 3);
+    }
+
+    #[test]
+    fn a_chest_keeps_what_is_left_in_it_through_closing_and_revisits() {
+        use super::super::containers::{Recipient, close_container, take_from_container};
+        use crate::content::items::QuantityKind;
+        let mut level = chest_level(None, 0);
+        let mut arrows = ItemDefinition { id: ItemId(0), name: "arrow".into(), ..default() };
+        arrows.quantity = QuantityKind::Stack;
+        arrows.stack_limit = 99;
+        let dagger = ItemDefinition { id: ItemId(1), name: "dagger".into(), ..default() };
+        let handle = level.world.resource::<GameData>().items.clone();
+        let catalog = ItemCatalog(vec![arrows.clone(), dagger.clone()]);
+        level.world.resource_mut::<Assets<ItemCatalog>>().insert(&handle, catalog).unwrap();
+        let chest = level.device("CHEST");
+        let stacks = {
+            let mut ids = level.world.resource_mut::<ItemIds>();
+            vec![
+                ItemStack::new(&arrows, &mut ids, 10, true),
+                ItemStack::new(&dagger, &mut ids, 1, true),
+            ]
+        };
+        let (quiver, knife) = (stacks[0].id, stacks[1].id);
+        let mut container = level.world.get_mut::<Container>(chest).unwrap();
+        container.generated = true;
+        container.contents.items = stacks;
+        // Several items: the chest opens and its contents are looked through.
+        assert!(level.run("CHEST").0);
+        assert!(matches!(work(&level), Some(Work::Looting)));
+        level.settle();
+        let before = level.world.get::<Container>(chest).unwrap().contents.items.clone();
+        take_from_container(
+            &mut level.world,
+            &[(quiver, 0), (quiver, 11), (knife, 2)],
+            Recipient::Party,
+        )
+        .unwrap();
+        assert_eq!(level.world.get::<Container>(chest).unwrap().contents.items, before);
+        assert!(level.inventory().pool.stacks.is_empty());
+        let entering = level
+            .world
+            .spawn(super::super::level::Destination::new(
+                Level::test(default()),
+                default(),
+                super::super::level::Entry::Travel,
+            ))
+            .id();
+        assert_eq!(
+            take_from_container(&mut level.world, &[(quiver, 4)], Recipient::Party),
+            Err(crate::game::inventory::Refusal::Nothing)
+        );
+        assert_eq!(level.world.get::<Container>(chest).unwrap().contents.items, before);
+        assert!(level.inventory().pool.stacks.is_empty());
+        level.world.despawn(entering);
+        take_from_container(&mut level.world, &[(quiver, 4)], Recipient::Party).unwrap();
+        let pool = &level.inventory().pool.stacks;
+        assert_eq!(pool.iter().map(ItemStack::count).collect::<Vec<_>>(), [4]);
+        let left = |level: &Scenario| {
+            level.world.get::<Container>(level.device("CHEST")).unwrap().contents.items.clone()
+        };
+        assert_eq!(
+            left(&level).iter().map(|s| (s.id, s.count())).collect::<Vec<_>>(),
+            [(quiver, 6), (knife, 1)]
+        );
+        close_container(&mut level.world);
+        assert!(work(&level).is_none());
+        // Using the open chest looks again without closing it.
+        level.run("CHEST");
+        assert!(matches!(work(&level), Some(Work::Looting)));
+        assert_eq!(level.motion("CHEST").target, 5.0);
+        let member = level.members[0];
+        level.world.entity_mut(member).insert(crate::game::inventory::Carried::default());
+        take_from_container(&mut level.world, &[(knife, 1)], Recipient::Member(member)).unwrap();
+        let carried = level.world.get::<crate::game::inventory::Carried>(member).unwrap();
+        assert_eq!(carried.stacks().map(|s| s.id).collect::<Vec<_>>(), [knife]);
+        close_container(&mut level.world);
+        // Nothing is rolled again on return; the last stack goes to the hand.
+        let memory = level.remember();
+        level.visit(Some(memory));
+        assert_eq!(
+            left(&level).iter().map(|s| (s.id, s.count())).collect::<Vec<_>>(),
+            [(quiver, 6)]
+        );
+        level.run("CHEST");
+        assert!(work(&level).is_none());
+        let held = level.inventory().hand.held.as_ref().map(|h| h.id);
+        assert_eq!(held, Some(quiver));
+        assert!(left(&level).is_empty());
+        // Putting it back is all that using the chest with it in hand does.
+        let target = level.motion("CHEST").target;
+        level.settle();
+        assert!(!level.run("CHEST").0);
+        assert_eq!(left(&level).iter().map(|s| s.id).collect::<Vec<_>>(), [quiver]);
+        assert_eq!(level.motion("CHEST").target, target);
+    }
+
     #[test]
     fn a_door_opens_then_toggles_and_a_locked_one_stays_shut() {
         let mut door = trigger("DOOR", TriggerAction::OpenDoor);
@@ -1157,10 +1453,8 @@ mod tests {
         assert_eq!(level.run("CHEST"), (true, vec![]), "its gold was taken");
         assert_eq!(level.run("LOST"), (true, vec![]));
         let lost = level.device("LOST");
-        assert!(
-            level.world.get::<Container>(lost).unwrap().contents.is_none(),
-            "no contents are made up"
-        );
+        let lost = level.world.get::<Container>(lost).unwrap();
+        assert!(!lost.generated && lost.contents.items.is_empty(), "no contents are made up");
         assert_eq!(level.inventory().gold, 5);
         let memory = level.remember();
         level.visit(Some(memory));
@@ -1169,7 +1463,7 @@ mod tests {
         let chest = level.device("CHEST");
         level.world.entity_mut(chest).remove::<PropMotion>();
         assert!(!level.run("CHEST").0, "a missing prop cannot open a container");
-        assert!(level.world.get::<Container>(chest).unwrap().contents.is_none());
+        assert!(!level.world.get::<Container>(chest).unwrap().generated);
         assert_eq!(level.inventory().gold, 5);
     }
 

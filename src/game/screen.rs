@@ -2,9 +2,9 @@
 //! are presentation; which one is up, and what that holds, is a gameplay
 //! fact that presentation routes input by but does not decide.
 //!
-//! While a full screen (the automap, the inventory), a camp or a travel
-//! question is up, the party does not move, use, take or rest; nor while it
-//! enters a level, when gameplay is suspended altogether. Time,
+//! While a full screen, a camp, a travel question or work on a device is up,
+//! the party does not move, use, take or rest. Entering a level suspends gameplay
+//! altogether. Time,
 //! monsters and fights go on: no screen pauses the simulation.
 
 use bevy::ecs::system::SystemParam;
@@ -33,6 +33,7 @@ pub struct Freedom<'w, 's> {
     conversations: Query<'w, 's, (), With<crate::game::npcs::conversation::Conversation>>,
     questions: Query<'w, 's, (), With<TravelQuestion>>,
     flights: Query<'w, 's, (), With<crate::game::party::walk_in::PathFlight>>,
+    interaction: Option<Res<'w, crate::game::world::interaction::DeviceInteraction>>,
 }
 
 impl Freedom<'_, '_> {
@@ -45,6 +46,7 @@ impl Freedom<'_, '_> {
             && self.conversations.is_empty()
             && self.questions.is_empty()
             && self.flights.is_empty()
+            && self.interaction.is_none()
     }
 }
 

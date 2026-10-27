@@ -367,6 +367,7 @@ mod tests {
         .add_message::<SearchNews>()
         .add_message::<Identified>()
         .add_message::<crate::game::magic::casting::MagicNews>()
+        .add_message::<crate::game::world::interaction::LockNews>()
         .add_systems(Startup, (super::super::load_main_screen_art, load_notice_art))
         .add_systems(Update, (queue_notices, draw_text_box, repeat_arrows).chain());
         app.world_mut().register_component::<Window>();

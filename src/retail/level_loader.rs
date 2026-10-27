@@ -11,7 +11,9 @@ use bevy::reflect::TypePath;
 
 use super::links::{level_entrances, level_links, teleport_arrival};
 use super::oct::read_collision;
-use super::population::{Placement, WorldItemRecord, read_placements, read_world_items};
+use super::population::{
+    LockKind, LockRecord, Placement, WorldItemRecord, read_locks, read_placements, read_world_items,
+};
 use super::prop::{PROP_COLLIDABLE, Prop};
 use super::prop_loader::{
     PropLighting, key_transform, level_lighting, part_transforms, record_collision, record_meshes,
@@ -28,7 +30,7 @@ use crate::content::items::Dice;
 use crate::content::items::ItemId;
 use crate::content::level::{
     AmbientSoundModel, Animation, CameraPathModel, DoorLock, Fountain, ItemPlacement,
-    LevelDefinition, LevelEnvironment, LevelGeometry, LevelPart, MonsterPlacement, PropModel,
+    LevelDefinition, LevelEnvironment, LevelGeometry, LevelPart, Lock, MonsterPlacement, PropModel,
     PropModelPart, PropVisual, PropVisualPart, Restores, StateChange, TriggerAction,
     TriggerDefinition, TriggerSound, TriggerUse, VertexLighting,
 };
@@ -360,6 +362,32 @@ fn trigger_definition(
             .map(|placement| retail_position(placement.position)),
         loot_table: (item.initial_action == action::TOGGLE && !item.action_data.is_empty())
             .then(|| item.action_data.clone()),
+        lock: None,
+    }
+}
+
+/// Fold a level's authored locks into its triggers, as retail does when a
+/// level first loads (`LoadTriggerRuntimeStates` restoring the shipped
+/// status file): every lock starts unfinished, and an unlocked or keyless
+/// door becomes locked, by the record's key if it names one.
+fn apply_locks(triggers: &mut [TriggerDefinition], locks: &[LockRecord]) {
+    for record in locks {
+        let Some(trigger) =
+            triggers.iter_mut().find(|t| t.name.eq_ignore_ascii_case(&record.trigger))
+        else {
+            continue;
+        };
+        if let Some(door) = &mut trigger.door
+            && (!door.locked || door.key.is_none())
+        {
+            *door = DoorLock { locked: true, key: record.key.map(ItemId) };
+        }
+        let difficulty = record.difficulty.clamp(0, 10) as u8;
+        trigger.lock = match record.kind {
+            LockKind::Pickable => Some(Lock::Pickable { difficulty }),
+            LockKind::Trap => Some(Lock::Trap { difficulty, kind: record.trap }),
+            LockKind::Key => None,
+        };
     }
 }
 
@@ -611,21 +639,22 @@ impl AssetLoader for PvlDefinitionLoader {
 
         // Who stands where and what lies about; levels without a state file
         // are empty, but one that cannot be read fails the level.
-        let (monsters, items) = match sibling(context, ".", &format!("{stem}.sts")) {
+        let (monsters, items, locks) = match sibling(context, ".", &format!("{stem}.sts")) {
             Some(path) => match context.read_asset_bytes(path).await {
                 Ok(state) => {
                     let items = read_world_items(&state)?.iter().map(item_placement).collect();
-                    (monster_placements(&read_placements(&state)?), items)
+                    (monster_placements(&read_placements(&state)?), items, read_locks(&state)?)
                 }
                 Err(bevy::asset::ReadAssetBytesError::AssetReaderError(
                     bevy::asset::io::AssetReaderError::NotFound(_),
-                )) => (vec![], vec![]),
+                )) => (vec![], vec![], vec![]),
                 Err(error) => return Err(error.into()),
             },
-            None => (vec![], vec![]),
+            None => (vec![], vec![], vec![]),
         };
 
-        let (triggers, prop_triggers) = level_triggers(&sections);
+        let (mut triggers, prop_triggers) = level_triggers(&sections);
+        apply_locks(&mut triggers, &locks);
         let props = sections
             .props
             .iter()
