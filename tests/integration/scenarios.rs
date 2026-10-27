@@ -29,7 +29,18 @@ fn game(args: &[&str]) -> App {
     assert!(!app.world().contains_resource::<Assets<Mesh>>());
     assert!(!app.world().contains_resource::<Assets<Image>>());
     assert!(!app.world().contains_resource::<Assets<StandardMaterial>>());
+    wait_for_level(&mut app, "levels/monastery/monastery1.pvl");
     app
+}
+
+/// Cold asset processing is wall-clock work, not a number of simulation ticks.
+fn wait_for_level(app: &mut App, path: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while playing(app.world_mut()).as_deref() != Some(path) {
+        app.update();
+        assert!(std::time::Instant::now() < deadline, "loading {path}");
+        std::thread::yield_now();
+    }
 }
 
 /// Step the game until `done`, failing after [`STEPS`].
@@ -102,13 +113,9 @@ fn the_dead_stay_dead_across_travel() {
     assert_eq!(dead, 3, "the party beat the three beach crabs");
 
     app.world_mut().write_message(Travel { entrance: "MO204".into() });
-    step_until(&mut app, "arriving in Monastery 2", |w| {
-        playing(w).as_deref() == Some("levels/monastery/monastery2.pvl")
-    });
+    wait_for_level(&mut app, "levels/monastery/monastery2.pvl");
     app.world_mut().write_message(Travel { entrance: "MO102".into() });
-    step_until(&mut app, "returning to Monastery 1", |w| {
-        playing(w).as_deref() == Some("levels/monastery/monastery1.pvl")
-    });
+    wait_for_level(&mut app, "levels/monastery/monastery1.pvl");
 
     assert_eq!(monsters(app.world_mut()), (count - dead, 0), "the crabs did not come back");
 }

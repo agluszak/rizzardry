@@ -50,6 +50,7 @@ impl Plugin for FrontendPlugin {
                     report_entry_failure,
                     refresh,
                     show_editor,
+                    party::sync_views,
                     party::refresh,
                     button_colours,
                     paint_menu,
@@ -110,8 +111,7 @@ const GOLD: Color = Color::srgb(0.83, 0.68, 0.40);
 const PAPER: Color = Color::srgb(0.91, 0.88, 0.80);
 
 #[derive(Clone, Copy, PartialEq, Eq, Component)]
-enum Page {
-    Party,
+enum EditStep {
     Identity,
     Attributes,
     Skills,
@@ -124,10 +124,29 @@ struct Creation {
     party: Vec<u32>,
     selected: Option<u32>,
     next_id: u32,
-    editing: Option<CharacterDraft>,
-    page: Page,
+    mode: CreationMode,
     message: String,
 }
+enum CreationMode {
+    Party,
+    Editing { draft: CharacterDraft, step: EditStep },
+}
+impl CreationMode {
+    fn step(&self) -> Option<EditStep> {
+        match self {
+            Self::Party => None,
+            Self::Editing { step, .. } => Some(*step),
+        }
+    }
+    fn draft(&self) -> Option<&CharacterDraft> {
+        match self {
+            Self::Party => None,
+            Self::Editing { draft, .. } => Some(draft),
+        }
+    }
+}
+#[derive(Component)]
+struct CreationPage(Option<EditStep>);
 #[derive(Component, Clone, Copy, PartialEq)]
 enum Action {
     NewGame,
@@ -138,7 +157,7 @@ enum Action {
     SelectCandidate(Option<u32>),
     ToggleCandidate,
     DeleteCandidate,
-    Page(Page),
+    Page(EditStep),
     Cancel,
     Finish,
     Begin,
@@ -448,8 +467,7 @@ fn creation(mut commands: Commands, assets: Res<AssetServer>) {
         party: Vec::new(),
         selected: None,
         next_id: 0,
-        editing: None,
-        page: Page::Party,
+        mode: CreationMode::Party,
         message: String::new(),
     });
     party::build(&mut commands, root, &assets);
@@ -466,13 +484,22 @@ fn creation(mut commands: Commands, assets: Res<AssetServer>) {
     );
     let message = text(&mut commands, editor, (205., 402.), 410., 10., "");
     commands.entity(message).insert(Field::Message);
-    for page in [Page::Identity, Page::Attributes, Page::Skills, Page::Spells, Page::Review] {
-        let panel =
-            commands.spawn((absolute(Vec2::new(205., 80.), Vec2::new(413., 310.)), page)).id();
+    for page in [
+        EditStep::Identity,
+        EditStep::Attributes,
+        EditStep::Skills,
+        EditStep::Spells,
+        EditStep::Review,
+    ] {
+        let panel = commands
+            .spawn((
+                absolute(Vec2::new(205., 80.), Vec2::new(413., 310.)),
+                CreationPage(Some(page)),
+            ))
+            .id();
         commands.entity(editor).add_child(panel);
         match page {
-            Page::Party => unreachable!(),
-            Page::Identity => {
+            EditStep::Identity => {
                 text(&mut commands, panel, (0., 0.), 320., 20., "01 / Identity");
                 commands
                     .spawn((
@@ -542,10 +569,10 @@ fn creation(mut commands: Commands, assets: Res<AssetServer>) {
                     (225., 275.),
                     175.,
                     "ATTRIBUTES  >",
-                    Action::Page(Page::Attributes),
+                    Action::Page(EditStep::Attributes),
                 );
             }
-            Page::Attributes => {
+            EditStep::Attributes => {
                 text(&mut commands, panel, (0., 0.), 300., 20., "02 / Attributes");
                 let value = text(&mut commands, panel, (0., 31.), 395., 11., "");
                 commands.entity(value).insert(Field::Points);
@@ -577,7 +604,7 @@ fn creation(mut commands: Commands, assets: Res<AssetServer>) {
                     (0., 275.),
                     100.,
                     "<  IDENTITY",
-                    Action::Page(Page::Identity),
+                    Action::Page(EditStep::Identity),
                 );
                 button(
                     &mut commands,
@@ -585,10 +612,10 @@ fn creation(mut commands: Commands, assets: Res<AssetServer>) {
                     (225., 275.),
                     175.,
                     "SKILLS  >",
-                    Action::Page(Page::Skills),
+                    Action::Page(EditStep::Skills),
                 );
             }
-            Page::Skills => {
+            EditStep::Skills => {
                 text(&mut commands, panel, (0., 0.), 300., 20., "03 / Training");
                 let value = text(&mut commands, panel, (0., 31.), 395., 11., "");
                 commands.entity(value).insert(Field::Points);
@@ -608,7 +635,7 @@ fn creation(mut commands: Commands, assets: Res<AssetServer>) {
                     (0., 275.),
                     100.,
                     "<  ATTRIBUTES",
-                    Action::Page(Page::Attributes),
+                    Action::Page(EditStep::Attributes),
                 );
                 button(
                     &mut commands,
@@ -616,10 +643,10 @@ fn creation(mut commands: Commands, assets: Res<AssetServer>) {
                     (225., 275.),
                     175.,
                     "SPELLS  >",
-                    Action::Page(Page::Spells),
+                    Action::Page(EditStep::Spells),
                 );
             }
-            Page::Spells => {
+            EditStep::Spells => {
                 text(&mut commands, panel, (0., 0.), 300., 20., "04 / Spells");
                 let value = text(&mut commands, panel, (0., 31.), 395., 11., "");
                 commands.entity(value).insert(Field::Points);
@@ -639,7 +666,7 @@ fn creation(mut commands: Commands, assets: Res<AssetServer>) {
                     (0., 275.),
                     100.,
                     "<  SKILLS",
-                    Action::Page(Page::Skills),
+                    Action::Page(EditStep::Skills),
                 );
                 button(
                     &mut commands,
@@ -647,10 +674,10 @@ fn creation(mut commands: Commands, assets: Res<AssetServer>) {
                     (225., 275.),
                     175.,
                     "REVIEW  >",
-                    Action::Page(Page::Review),
+                    Action::Page(EditStep::Review),
                 );
             }
-            Page::Review => {
+            EditStep::Review => {
                 text(&mut commands, panel, (0., 0.), 300., 20., "05 / Review adventurer");
                 let value = text(&mut commands, panel, (0., 45.), 395., 13., "");
                 commands.entity(value).insert(Field::Review);
@@ -668,7 +695,7 @@ fn creation(mut commands: Commands, assets: Res<AssetServer>) {
                     (0., 275.),
                     100.,
                     "<  SPELLS",
-                    Action::Page(Page::Spells),
+                    Action::Page(EditStep::Spells),
                 );
                 button(
                     &mut commands,
@@ -772,8 +799,10 @@ fn activate(
     session.message.clear();
     match *action {
         Action::Add if session.candidates.len() < 6 => {
-            session.editing = Some(CharacterDraft::default());
-            session.page = Page::Identity;
+            session.mode = CreationMode::Editing {
+                draft: CharacterDraft::default(),
+                step: EditStep::Identity,
+            };
         }
         Action::SelectCandidate(Some(id)) => {
             if session.candidates.iter().any(|(candidate, _)| *candidate == id) {
@@ -798,10 +827,13 @@ fn activate(
             }
         }
         Action::Cancel => {
-            session.editing = None;
-            session.page = Page::Party;
+            session.mode = CreationMode::Party;
         }
-        Action::Page(page) => session.page = page,
+        Action::Page(page) => {
+            if let CreationMode::Editing { step, .. } = &mut session.mode {
+                *step = page;
+            }
+        }
         Action::Finish
             if names
                 .iter()
@@ -812,16 +844,19 @@ fn activate(
             commands.entity(click.entity).insert(FinishWhenSettled);
         }
         Action::Finish => {
-            if let Some(draft) = &session.editing {
+            if let CreationMode::Editing { draft, .. } = &session.mode {
                 match draft.finish() {
                     Err(message) => session.message = message.into(),
                     Ok(_) => {
-                        let draft = session.editing.take().unwrap();
+                        let CreationMode::Editing { draft, .. } =
+                            std::mem::replace(&mut session.mode, CreationMode::Party)
+                        else {
+                            unreachable!()
+                        };
                         let id = session.next_id;
                         session.next_id += 1;
                         session.candidates.push((id, draft));
                         session.selected = Some(id);
-                        session.page = Page::Party;
                     }
                 }
             }
@@ -849,7 +884,7 @@ fn activate(
             }
         }
         action => {
-            let Some(draft) = session.editing.as_mut() else { return };
+            let CreationMode::Editing { draft, .. } = &mut session.mode else { return };
             let result = match action {
                 Action::Race(direction) => {
                     let i = PLAYABLE_RACES.iter().position(|&r| r == draft.race()).unwrap() as i32;
@@ -915,7 +950,7 @@ fn activate(
         }
     }
     if matches!(*action, Action::Add)
-        && let Some(draft) = &session.editing
+        && let CreationMode::Editing { draft, .. } = &session.mode
     {
         for mut name in &mut names {
             *name = EditableText {
@@ -951,7 +986,7 @@ fn update_name(
     else {
         return;
     };
-    if let Some(draft) = session.editing.as_mut() {
+    if let CreationMode::Editing { draft, .. } = &mut session.mode {
         let value = name.value().to_string();
         if draft.name != value {
             draft.name = value;
@@ -973,12 +1008,12 @@ fn finish_name(
 }
 
 fn show_editor(
-    session: Option<Single<Ref<Creation>>>,
+    session: Option<Single<&Creation>>,
     mut editors: Query<(&mut Node, &mut Visibility), With<EditorGroup>>,
 ) {
     let Some(session) = session else { return };
     for (mut node, mut visibility) in &mut editors {
-        let shown = session.page != Page::Party;
+        let shown = session.mode.step().is_some();
         let display = if shown { Display::Flex } else { Display::None };
         if node.display != display {
             node.display = display;
@@ -988,46 +1023,50 @@ fn show_editor(
 }
 
 fn refresh(
-    sessions: Query<Ref<Creation>>,
+    sessions: Query<&Creation>,
     mut commands: Commands,
     buttons: Query<(Entity, &Action, Has<InteractionDisabled>), Without<party::Control>>,
     mut pages: Query<
-        (&Page, &mut Node, &mut Visibility),
+        (&CreationPage, &mut Node, &mut Visibility),
         (Without<SkillRow>, Without<SpellSlotButton>),
     >,
     mut fields: Query<(&Field, &mut Text)>,
     mut rows: Query<
         (&SkillRow, &mut Node, &mut Visibility),
-        (Without<Page>, Without<SpellSlotButton>),
+        (Without<CreationPage>, Without<SpellSlotButton>),
     >,
     mut portraits: Query<&mut Picture, With<PreviewPortrait>>,
     assets: Res<AssetServer>,
-    mut spell_slots: Query<(&SpellSlotButton, &mut Visibility), (Without<Page>, Without<SkillRow>)>,
+    mut spell_slots: Query<
+        (&SpellSlotButton, &mut Visibility),
+        (Without<CreationPage>, Without<SkillRow>),
+    >,
     magic_data: (Option<Res<GameData>>, Res<Assets<SpellCatalog>>),
 ) {
     let spell_catalog = magic_data.0.as_ref().and_then(|d| magic_data.1.get(&d.spells));
     let Ok(session) = sessions.single() else { return };
-    if !session.is_changed() {
-        return;
-    }
     for (page, mut node, mut visibility) in &mut pages {
-        let display = if *page == session.page { Display::Flex } else { Display::None };
+        let display = if page.0 == session.mode.step() { Display::Flex } else { Display::None };
         if node.display != display {
             node.display = display;
         }
         // Tab navigation follows visibility rather than layout display.
-        visibility.set_if_neq(if *page == session.page {
+        visibility.set_if_neq(if page.0 == session.mode.step() {
             Visibility::Inherited
         } else {
             Visibility::Hidden
         });
     }
-    let draft = session.editing.as_ref();
+    let draft = session.mode.draft();
     let profile = draft.map(CharacterDraft::preview);
     for (entity, action, disabled) in &buttons {
         let enabled = match *action {
-            Action::Add => session.editing.is_none() && session.candidates.len() < 6,
-            Action::Begin => session.editing.is_none() && !session.party.is_empty(),
+            Action::Add => {
+                matches!(session.mode, CreationMode::Party) && session.candidates.len() < 6
+            }
+            Action::Begin => {
+                matches!(session.mode, CreationMode::Party) && !session.party.is_empty()
+            }
             _ => true,
         };
         crate::presentation::retail_controls::set_enabled(&mut commands, entity, enabled, disabled);
@@ -1042,7 +1081,7 @@ fn refresh(
                     Field::Race => format!("{:?}", draft.race()),
                     Field::Gender => format!("{:?}", draft.gender()),
                     Field::Profession => format!("{:?}", draft.profession()),
-                    Field::Points if session.page == Page::Spells => {
+                    Field::Points if session.mode.step() == Some(EditStep::Spells) => {
                         let picks = crate::game::magic::starting_picks(profile);
                         if picks == 0 {
                             format!("A {:?} learns no spells yet.", profile.profession)
@@ -1058,7 +1097,7 @@ fn refresh(
                         })
                         .unwrap_or_default(),
                     Field::Points => {
-                        if session.page == Page::Attributes {
+                        if session.mode.step() == Some(EditStep::Attributes) {
                             format!(
                                 "{} points remaining / profession minimums already paid",
                                 draft.attribute_remaining()
@@ -1103,8 +1142,10 @@ fn refresh(
     }
     if let Some(draft) = draft {
         // Query order does not decide the skill order.
-        let available: Vec<_> =
-            EnumSet::<Skill>::all().iter().filter(|&s| draft.skill_available(s)).collect();
+        let available: Vec<_> = EnumSet::<Skill>::all()
+            .iter()
+            .filter(|&s| profile.as_ref().unwrap().skill_available(s))
+            .collect();
         for (row, mut node, mut visibility) in &mut rows {
             if let Some(i) = available.iter().position(|s| *s == row.0) {
                 visibility.set_if_neq(Visibility::Inherited);
@@ -1199,8 +1240,10 @@ mod keyboard_tests {
                 party: vec![],
                 selected: None,
                 next_id: 0,
-                editing: Some(CharacterDraft::default()),
-                page: Page::Identity,
+                mode: CreationMode::Editing {
+                    draft: CharacterDraft::default(),
+                    step: EditStep::Identity,
+                },
                 message: String::new(),
             })
             .id();
@@ -1224,38 +1267,26 @@ mod keyboard_tests {
             app.world_mut().get_mut::<EditableText>(field).unwrap().queue_edit(edit);
         }
         app.update();
-        assert_eq!(
-            app.world().get::<Creation>(root).unwrap().editing.as_ref().unwrap().name,
-            "Nora"
-        );
+        assert_eq!(app.world().get::<Creation>(root).unwrap().mode.draft().unwrap().name, "Nora");
         for edit in
             [TextEdit::TextStart(false), TextEdit::Right(true), TextEdit::Insert("Z".into())]
         {
             app.world_mut().get_mut::<EditableText>(field).unwrap().queue_edit(edit);
         }
         app.update();
-        assert_eq!(
-            app.world().get::<Creation>(root).unwrap().editing.as_ref().unwrap().name,
-            "Zora"
-        );
+        assert_eq!(app.world().get::<Creation>(root).unwrap().mode.draft().unwrap().name, "Zora");
         app.world_mut()
             .get_mut::<EditableText>(field)
             .unwrap()
             .queue_edit(TextEdit::ImeSetCompose { value: "é".into(), cursor: None });
         app.update();
-        assert_eq!(
-            app.world().get::<Creation>(root).unwrap().editing.as_ref().unwrap().name,
-            "Zora"
-        );
+        assert_eq!(app.world().get::<Creation>(root).unwrap().mode.draft().unwrap().name, "Zora");
         app.world_mut()
             .get_mut::<EditableText>(field)
             .unwrap()
             .queue_edit(TextEdit::ImeCommit { value: "é".into() });
         app.update();
-        assert_eq!(
-            app.world().get::<Creation>(root).unwrap().editing.as_ref().unwrap().name,
-            "Zéora"
-        );
+        assert_eq!(app.world().get::<Creation>(root).unwrap().mode.draft().unwrap().name, "Zéora");
         assert!(app.world().get::<Creation>(root).unwrap().party.is_empty());
 
         // A Finish pressed with edits still queued is activated again only
@@ -1269,7 +1300,7 @@ mod keyboard_tests {
             .spawn(FinishWhenSettled)
             .observe(
                 |_: On<Activate>, sessions: Query<&Creation>, mut finished: ResMut<Finished>| {
-                    let name = sessions.single().unwrap().editing.as_ref().unwrap().name.clone();
+                    let name = sessions.single().unwrap().mode.draft().unwrap().name.clone();
                     finished.0.push(name);
                 },
             )
@@ -1379,8 +1410,7 @@ mod keyboard_tests {
         let owner =
             app.world_mut().query_filtered::<Entity, With<Creation>>().single(app.world()).unwrap();
         let mut session = app.world_mut().get_mut::<Creation>(owner).unwrap();
-        session.editing = None;
-        session.page = Page::Party;
+        session.mode = CreationMode::Party;
         session.candidates.push((7, CharacterDraft::default()));
         session.party.push(7);
         session.selected = Some(7);

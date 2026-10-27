@@ -87,32 +87,24 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) {
 }
 
 pub(super) fn refresh(
-    screen: Option<Single<Ref<InventoryScreen>>>,
-    characters: Query<(Ref<Character>, Ref<Carried>)>,
+    screen: Option<Single<&InventoryScreen>>,
+    characters: Query<(&Character, Option<&Carried>)>,
     data: Option<Res<GameData>>,
     catalogs: Option<Res<Assets<ItemCatalog>>>,
-    mut values: Query<(Ref<Value>, &mut BitmapText)>,
-    mut segments: Query<(Ref<Segment>, &mut PictureCrop, &mut Picture)>,
+    mut values: Query<(&Value, &mut BitmapText)>,
+    mut segments: Query<(&Segment, &mut PictureCrop, &mut Picture)>,
 ) {
     let Some(screen) = screen else { return };
     let Ok((character, carried)) = characters.get(screen.member) else { return };
+    let empty = Carried::default();
+    let carried = carried.unwrap_or(&empty);
     let Some(catalog) = data
         .as_ref()
         .and_then(|data| catalogs.as_ref().and_then(|catalogs| catalogs.get(&data.items)))
     else {
         return;
     };
-    let changed = screen.is_changed()
-        || character.is_changed()
-        || carried.is_changed()
-        || catalogs.as_ref().is_some_and(|catalogs| catalogs.is_changed());
-    if !changed
-        && !values.iter().any(|(value, _)| value.is_added())
-        && !segments.iter().any(|(segment, _, _)| segment.is_added())
-    {
-        return;
-    }
-    let scores = resistances(&character, &carried, catalog);
+    let scores = resistances(character, carried, catalog);
     for (value, mut text) in &mut values {
         let desired = scores[value.0].total.to_string();
         if text.value != desired {

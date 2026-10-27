@@ -116,6 +116,13 @@ impl Options {
 /// The fixed step: Bevy's default 64 Hz, which movement and physics run on.
 const FIXED_STEP: std::time::Duration = std::time::Duration::from_micros(15_625);
 
+fn cpu_mesh_preprocessing(
+    mut support: ResMut<bevy::render::batching::gpu_preprocessing::GpuPreprocessingSupport>,
+) {
+    support.max_supported_mode =
+        bevy::render::batching::gpu_preprocessing::GpuPreprocessingMode::None;
+}
+
 pub fn run(options: Options) -> AppExit {
     match build(&options) {
         Ok(mut app) => app.run(),
@@ -159,7 +166,12 @@ pub fn build(options: &Options) -> Result<App, String> {
     let asset_plugin = AssetPlugin::default();
     let rendered = !options.headless || options.screenshot.is_some();
     if rendered {
-        let plugins = DefaultPlugins.set(asset_plugin);
+        // Bevy #25966: GPU instance-buffer construction can retain a missing
+        // morph descriptor after a hidden cycle becomes visible. CPU instance
+        // construction resolves the current descriptor; deformation stays on GPU.
+        let plugins = DefaultPlugins
+            .set(asset_plugin)
+            .set(bevy::pbr::PbrPlugin { use_gpu_instance_buffer_builder: false, ..default() });
         if options.headless {
             app.add_plugins(
                 plugins
@@ -185,6 +197,16 @@ pub fn build(options: &Options) -> Result<App, String> {
                 ..default()
             }));
         }
+        use bevy::render::{
+            RenderApp, RenderStartup, batching::gpu_preprocessing::GpuPreprocessingSupport,
+            init_gpu_resource,
+        };
+        // Keep phase batching consistent with CPU instance construction, also
+        // after device recovery. Otherwise opaque meshes enter undrawn GPU bins.
+        app.sub_app_mut(RenderApp).add_systems(
+            RenderStartup,
+            cpu_mesh_preprocessing.after(init_gpu_resource::<GpuPreprocessingSupport>),
+        );
         app.insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.07)));
     } else {
         // Gameplay has no renderer, window, image/mesh assets, UI or audio.

@@ -50,10 +50,13 @@ impl Plugin for MainScreenPlugin {
                     layout::fit_viewport,
                     build_frame.run_if(in_state(crate::game::session::Session::Playing)),
                     (
-                        party::build_party_parts,
-                        party::bind_party_buttons,
-                        party::open_held_reviews,
-                        party::draw_party,
+                        (
+                            party::build_party_parts,
+                            party::place_party_buttons,
+                            party::open_held_reviews,
+                            party::draw_party,
+                        )
+                            .chain(),
                         (party::record_splats, party::play_splats).chain(),
                         (text_box::draw_text_box, text_box::sync_channels, text_box::repeat_arrows)
                             .chain(),
