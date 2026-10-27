@@ -136,10 +136,6 @@ impl Disarming {
     pub fn observed(&self, member: Entity) -> Option<&[Observation; COMPONENTS]> {
         self.observations.iter().find(|(m, _)| *m == member).map(|(_, seen)| seen)
     }
-
-    fn components(&self) -> &[bool; COMPONENTS] {
-        &TRAP_COMPONENTS[usize::from(self.trap)]
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
