@@ -65,7 +65,7 @@ pub fn activate_selection(
     interact: Single<&ActionEvents, With<Action<Interact>>>,
     selection: Res<WorldSelection>,
     props: Query<Has<Device>, With<Prop>>,
-    held: Res<PartyInventory>,
+    held: Single<&PartyInventory>,
     obstacles: WorldObstacles,
     mut commands: Commands,
 ) {

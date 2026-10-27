@@ -1,31 +1,26 @@
-//! Navmeshes through Bevy's asset processor.
+//! Navmeshes, baked when a level asks for them and cached on disk.
 //!
-//! Each retail level has a `navmesh://` input per walker size class, which
-//! `retail` decodes into a [`LevelCollision`]. The processor bakes it once
-//! (`LoadTransformAndSave<LevelCollisionLoader, BakeNavmesh, NavmeshSaver>`,
-//! put together in `app`) and caches the result under
-//! `imported_assets/navmesh`, re-baking only when the level or the
-//! [`NavmeshBakeSettings`] in its meta change. The game loads the processed
-//! file as a Landmass [`NavMesh3d`].
+//! Each retail level has a `navmesh://` input per walker size class: the
+//! class and the level's collision files. [`NavmeshLoader`] keys the cache
+//! by those bytes, the bake settings and this format's version; on a miss
+//! it decodes the collision (through a decoder the app supplies, since the
+//! retail formats are not the game's to read), bakes off the main thread
+//! and writes the result whole, so concurrent games and tests can share
+//! the cache. Only the levels entered are baked.
 
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use bevy::asset::io::{Reader, Writer};
-use bevy::asset::saver::{AssetSaver, SavedAsset};
-use bevy::asset::transformer::{AssetTransformer, TransformedAsset};
-use bevy::asset::{AssetLoader, AssetPath, LoadContext};
+use bevy::asset::io::Reader;
+use bevy::asset::{AssetLoader, LoadContext};
 use bevy::prelude::*;
 use bevy::reflect::TypePath;
-use bevy::tasks::futures_lite::AsyncWriteExt;
 use bevy_landmass::{HeightNavigationMesh3d, HeightPolygon, NavMesh3d, NavigationMesh3d};
 
 use super::bake::{NavmeshBakeSettings, SIZE_CLASSES, bake};
 use crate::bytes::{Bytes, Truncated};
 use crate::content::navmesh::{LevelCollision, NAVMESH_EXTENSION};
-
-/// An unvalidated baked navmesh, between the transformer and the saver.
-#[derive(Asset, TypePath)]
-pub struct BakedNavmesh(pub NavigationMesh3d);
 
 #[derive(Debug, thiserror::Error)]
 pub enum NavmeshAssetError {
@@ -33,6 +28,8 @@ pub enum NavmeshAssetError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Truncated(#[from] Truncated),
+    #[error("navmesh input: {0}")]
+    Input(String),
     #[error("navmesh bake failed: {0}")]
     Bake(String),
     #[error("not a navmesh file of format version {VERSION}")]
@@ -41,33 +38,7 @@ pub enum NavmeshAssetError {
     Invalid(String),
 }
 
-#[derive(Default, TypePath)]
-pub struct BakeNavmesh;
-
-impl AssetTransformer for BakeNavmesh {
-    type AssetInput = LevelCollision;
-    type AssetOutput = BakedNavmesh;
-    type Settings = NavmeshBakeSettings;
-    type Error = NavmeshAssetError;
-
-    async fn transform<'a>(
-        &'a self,
-        asset: TransformedAsset<LevelCollision>,
-        settings: &'a NavmeshBakeSettings,
-    ) -> Result<TransformedAsset<BakedNavmesh>, NavmeshAssetError> {
-        let agent_radius = *SIZE_CLASSES.get(asset.class).ok_or(NavmeshAssetError::Format)?;
-        let settings = NavmeshBakeSettings { agent_radius, ..settings.clone() };
-        let (mesh, report) = bake(&asset.collision, &settings).map_err(NavmeshAssetError::Bake)?;
-        if report.inverted_polygons > 0 {
-            warn!("navmesh dropped folded polygons: {report:?}");
-        } else if report != Default::default() {
-            info!("navmesh repaired: {report:?}");
-        }
-        Ok(asset.replace_asset(BakedNavmesh(mesh)))
-    }
-}
-
-// The processed file: a magic number, a format version, then the mesh as
+// The cached file: a magic number, a format version, then the mesh as
 // little-endian counts and values.
 const MAGIC: &[u8; 4] = b"RZNM";
 const VERSION: u32 = 1;
@@ -154,30 +125,95 @@ fn decode(data: &[u8]) -> Result<NavigationMesh3d, NavmeshAssetError> {
     Ok(NavigationMesh3d { vertices, polygons, polygon_type_indices, height_mesh })
 }
 
-#[derive(Default, TypePath)]
-pub struct NavmeshSaver;
+/// Where baked navmeshes are cached, under the asset base path.
+pub const CACHE: &str = "imported_assets/navmesh";
 
-impl AssetSaver for NavmeshSaver {
-    type Asset = BakedNavmesh;
-    type Settings = ();
-    type OutputLoader = NavmeshLoader;
-    type Error = NavmeshAssetError;
+/// Loads a level's navmesh for one size class from its input, baking and
+/// caching it on a miss, validated for Landmass.
+#[derive(TypePath)]
+pub struct NavmeshLoader {
+    /// Where baked navmeshes are kept, by input path and key.
+    pub cache: PathBuf,
+    /// Reads a navmesh input's collision.
+    pub decode: fn(&[u8]) -> Result<LevelCollision, String>,
+}
 
-    async fn save(
+impl NavmeshLoader {
+    /// The cached file for an input: a re-bake follows any change to the
+    /// level, the settings or the format. (A changed hasher only re-bakes.)
+    /// The navmesh of an input (at `input_path` under `navmesh://`): from
+    /// the cache, or baked and cached, replacing what the input's earlier
+    /// versions left there.
+    pub fn navmesh(
         &self,
-        writer: &mut Writer,
-        asset: SavedAsset<'_, '_, BakedNavmesh>,
-        _: &(),
-        _: AssetPath<'_>,
-    ) -> Result<(), NavmeshAssetError> {
-        writer.write_all(&encode(&asset.0)).await?;
-        Ok(())
+        input_path: &Path,
+        input: &[u8],
+    ) -> Result<NavigationMesh3d, NavmeshAssetError> {
+        let cached = self.cached(input_path, input);
+        if let Some(mesh) = std::fs::read(&cached).ok().and_then(|bytes| decode(&bytes).ok()) {
+            return Ok(mesh);
+        }
+        let mesh = self.bake(input)?;
+        match publish(&cached, &encode(&mesh)) {
+            Ok(()) => remove_superseded(&cached),
+            Err(error) => warn!("could not cache {}: {error}", cached.display()),
+        }
+        Ok(mesh)
+    }
+
+    /// The cached file for an input: a re-bake follows any change to the
+    /// level, the settings or the format. (A changed hasher only re-bakes.)
+    fn cached(&self, input_path: &Path, input: &[u8]) -> PathBuf {
+        let mut hasher = std::hash::DefaultHasher::new();
+        (input, format!("{:?}", NavmeshBakeSettings::default()), VERSION).hash(&mut hasher);
+        self.cache
+            .join(input_path)
+            .with_extension(format!("{:016x}.{NAVMESH_EXTENSION}", hasher.finish()))
+    }
+
+    fn bake(&self, input: &[u8]) -> Result<NavigationMesh3d, NavmeshAssetError> {
+        let level = (self.decode)(input).map_err(NavmeshAssetError::Input)?;
+        let agent_radius = *SIZE_CLASSES.get(level.class).ok_or(NavmeshAssetError::Format)?;
+        let settings = NavmeshBakeSettings { agent_radius, ..default() };
+        let (mesh, report) = bake(&level.collision, &settings).map_err(NavmeshAssetError::Bake)?;
+        if report.inverted_polygons > 0 {
+            warn!("navmesh dropped folded polygons: {report:?}");
+        } else if report != Default::default() {
+            info!("navmesh repaired: {report:?}");
+        }
+        Ok(mesh)
     }
 }
 
-/// Loads a processed navmesh, validated for Landmass.
-#[derive(Default, TypePath)]
-pub struct NavmeshLoader;
+/// Write `bytes` to `path` whole: to a temporary file, then renamed over it.
+fn publish(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    std::fs::create_dir_all(path.parent().expect("a cached file lies in a directory"))?;
+    let mut temp = path.as_os_str().to_owned();
+    temp.push(format!(".{}.tmp", std::process::id()));
+    std::fs::write(&temp, bytes)?;
+    std::fs::rename(&temp, path)
+}
+
+/// Remove the same input's files under other keys (`<input>.<key>.navmesh`).
+/// Another game still using an old key only re-bakes.
+fn remove_superseded(current: &Path) {
+    let (Some(dir), Some(name)) = (current.parent(), current.file_name().and_then(|n| n.to_str()))
+    else {
+        return;
+    };
+    let Some((input, _)) = name.split_once('.') else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let other = entry.file_name();
+        let Some(other) = other.to_str() else { continue };
+        if other != name
+            && other.strip_prefix(input).is_some_and(|rest| rest.starts_with('.'))
+            && other.ends_with(&format!(".{NAVMESH_EXTENSION}"))
+        {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
 
 impl AssetLoader for NavmeshLoader {
     type Asset = NavMesh3d;
@@ -188,11 +224,11 @@ impl AssetLoader for NavmeshLoader {
         &self,
         reader: &mut dyn Reader,
         _: &(),
-        _: &mut LoadContext<'_>,
+        context: &mut LoadContext<'_>,
     ) -> Result<NavMesh3d, NavmeshAssetError> {
-        let mut data = Vec::new();
-        reader.read_to_end(&mut data).await?;
-        let mesh = decode(&data)?;
+        let mut input = Vec::new();
+        reader.read_to_end(&mut input).await?;
+        let mesh = self.navmesh(context.path().path(), &input)?;
         let valid = mesh.validate().map_err(|e| NavmeshAssetError::Invalid(format!("{e:?}")))?;
         Ok(NavMesh3d { nav_mesh: Arc::new(valid) })
     }

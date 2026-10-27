@@ -299,7 +299,7 @@ fn draw_device_panel(
     interaction: Option<Res<DeviceInteraction>>,
     panels: Query<&DevicePanel>,
     selected: Res<SelectedMember>,
-    roster: Res<PartyRoster>,
+    roster: Single<&PartyRoster>,
     members: Query<(&Character, &Vitals)>,
     containers: Query<&Container>,
     data: Option<Res<GameData>>,
@@ -450,7 +450,7 @@ fn press(
     mut panels: Query<&mut DevicePanel>,
     containers: Query<&Container>,
     selected: Res<SelectedMember>,
-    roster: Res<PartyRoster>,
+    roster: Single<&PartyRoster>,
     mut commands: Commands,
 ) {
     let (Ok(&control), Ok(mut panel)) = (controls.get(click.entity), panels.single_mut()) else {
@@ -564,7 +564,6 @@ mod tests {
             .init_asset::<SpriteSheet>()
             .init_asset::<TextTable>()
             .init_asset::<ItemCatalog>()
-            .init_resource::<PartyRoster>()
             .init_resource::<SelectedMember>()
             .init_resource::<crate::game::difficulty::Difficulty>()
             .insert_resource(crate::game::rng::GameRng::seeded(1))
@@ -572,7 +571,7 @@ mod tests {
         let mut profile = Character::new("A", Race::Human, Gender::Male, Profession::Rogue);
         profile.skill_points[Skill::LocksAndTraps] = 100;
         let member = app.world_mut().spawn((Vitals::new(&profile), profile)).id();
-        app.world_mut().resource_mut::<PartyRoster>().0.insert(member);
+        crate::game::party::roster::test_party(app.world_mut(), &[member]);
         app.world_mut().resource_mut::<SelectedMember>().0 = Some(member);
         let lock = Lock::Pickable { difficulty: 2 };
         let device = app.world_mut().spawn(interaction::Guarded::new(lock)).id();

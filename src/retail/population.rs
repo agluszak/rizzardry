@@ -344,10 +344,25 @@ mod tests {
             let model = &models[placement.species as usize];
             assert!(files.contains(&format!("data/monsters/{model}.mls")), "{model}");
         }
-        // Every level's state decodes.
+        // Every level's state decodes and places only monsters and items
+        // that exist, so a level that fails preparation is a broken install.
+        let catalog = crate::retail::items::retail_catalog(&files);
         for name in files.names().filter(|n| n.ends_with(".sts")) {
-            read_placements(&files.read(name).unwrap().unwrap())
-                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            let state = files.read(name).unwrap().unwrap();
+            for placement in read_placements(&state).unwrap_or_else(|e| panic!("{name}: {e}")) {
+                let model = models.get(placement.species as usize).unwrap_or_else(|| {
+                    panic!("{name}: species {} is not in the catalog", placement.species)
+                });
+                assert!(files.contains(&format!("data/monsters/{model}.mls")), "{name}: {model}");
+            }
+            for item in read_world_items(&state).unwrap() {
+                let id = crate::content::items::ItemId(item.item as u16);
+                assert!(
+                    catalog.get(id).is_some(),
+                    "{name}: item {} is not in the catalog",
+                    item.item
+                );
+            }
         }
     }
 }

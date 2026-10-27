@@ -2,6 +2,7 @@
 
 use super::navigation::{WalkerMotion, links::Crossing};
 use crate::game::world::ActorPose;
+use crate::game::world::level::LevelOwned;
 use avian3d::prelude::LinearVelocity;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
@@ -40,8 +41,11 @@ pub enum DamageRefusal {
 /// it again on the corpse produces no second reward or drop.
 #[derive(SystemParam)]
 pub struct MonsterDamage<'w, 's> {
-    pub monsters:
-        Query<'w, 's, (&'static mut Monster, ActorPose, Option<&'static Walker>, &'static ChildOf)>,
+    pub monsters: Query<
+        'w,
+        's,
+        (&'static mut Monster, ActorPose, Option<&'static Walker>, &'static LevelOwned),
+    >,
     motion: Query<
         'w,
         's,
@@ -59,7 +63,7 @@ pub struct MonsterDamage<'w, 's> {
     catalogs: Res<'w, Assets<ItemCatalog>>,
     species: Res<'w, Assets<MonsterCatalog>>,
     tables: Res<'w, Assets<LootTables>>,
-    inventory: ResMut<'w, PartyInventory>,
+    inventory: Single<'w, 's, &'static mut PartyInventory>,
     ids: ResMut<'w, ItemIds>,
     factions: ResMut<'w, crate::game::factions::Factions>,
 }
@@ -74,7 +78,7 @@ impl MonsterDamage<'_, '_> {
     }
 
     pub fn active(&self, target: Entity) -> bool {
-        self.monsters.get(target).is_ok_and(|(_, _, _, owner)| self.levels.contains(owner.parent()))
+        self.monsters.get(target).is_ok_and(|(_, _, _, owner)| self.levels.contains(owner.0))
     }
 
     pub fn apply(
@@ -86,7 +90,7 @@ impl MonsterDamage<'_, '_> {
     ) -> Result<DamageOutcome, DamageRefusal> {
         let (mut monster, at, walker, owner) =
             self.monsters.get_mut(target).map_err(|_| DamageRefusal::MissingTarget)?;
-        let level = owner.parent();
+        let level = owner.0;
         if !self.levels.contains(level) {
             return Err(DamageRefusal::InactiveLevel);
         }

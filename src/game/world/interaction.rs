@@ -23,7 +23,7 @@ use crate::content::characters::{Attribute, Skill};
 use crate::content::level::{Lock, TRAP_TYPES};
 use crate::game::characters::{Character, Vitals};
 use crate::game::difficulty::Difficulty;
-use crate::game::party::roster::PartyRoster;
+use crate::game::party::roster::PartyMember;
 use crate::game::rng::GameRng;
 use crate::game::time::GameClock;
 
@@ -287,7 +287,7 @@ fn roll_trap(difficulty: u8, rng: &mut GameRng) -> u8 {
 
 /// The member's character and vitals, if they are in the party.
 fn member(world: &World, actor: Entity) -> Result<(&Character, &Vitals), Unable> {
-    if !world.resource::<PartyRoster>().0.contains(&actor) {
+    if world.get::<PartyMember>(actor).is_none() {
         return Err(Unable::NotMember);
     }
     let entity = world.get_entity(actor).map_err(|_| Unable::NotMember)?;

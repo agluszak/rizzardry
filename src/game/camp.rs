@@ -126,7 +126,7 @@ pub fn request_camp(
     mut commands: Commands,
     freedom: crate::game::screen::Freedom,
     mut button: MessageReader<CampRequest>,
-    battle: Option<Res<crate::game::combat::Battle>>,
+    battle: Option<Single<&crate::game::combat::Battle>>,
     party: Query<&LinearVelocity, With<PartyBody>>,
     mut news: MessageWriter<CampNews>,
 ) {
@@ -150,13 +150,13 @@ pub fn request_camp(
 pub fn force_camp(
     mut commands: Commands,
     camp: Option<Res<Camp>>,
-    battle: Option<Res<crate::game::combat::Battle>>,
-    roster: Res<PartyRoster>,
+    battle: Option<Single<&crate::game::combat::Battle>>,
+    roster: Single<&PartyRoster>,
     members: Query<&Vitals>,
     mut news: MessageWriter<CampNews>,
 ) {
-    let anyone_alive = members.iter_many(&roster.0).matched().any(|m| !m.is_dead());
-    let anyone_able = members.iter_many(&roster.0).matched().any(can_act);
+    let anyone_alive = members.iter_many(roster.iter()).matched().any(|m| !m.is_dead());
+    let anyone_able = members.iter_many(roster.iter()).matched().any(can_act);
     if camp.is_some() || battle.is_some() || !anyone_alive || anyone_able {
         return;
     }

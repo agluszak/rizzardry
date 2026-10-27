@@ -2,16 +2,16 @@
 //! are presentation; which one is up, and what that holds, is a gameplay
 //! fact that presentation routes input by but does not decide.
 //!
-//! While a full screen (the automap, the inventory), a camp, a travel
-//! question or work on a device (a lock, a trap, a container's contents) is
-//! up, the party does not move, use, take or rest. Time,
+//! While a full screen, a camp, a travel question or work on a device is up,
+//! the party does not move, use, take or rest. Entering a level suspends gameplay
+//! altogether. Time,
 //! monsters and fights go on: no screen pauses the simulation.
 
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use crate::game::camp::Camp;
-use crate::game::world::level::{Level, TravelQuestion};
+use crate::game::world::level::{Destination, Level, TravelQuestion};
 
 /// The full screen that is up; they are mutually exclusive.
 #[derive(States, Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
@@ -26,6 +26,7 @@ pub enum Screen {
 #[derive(SystemParam)]
 pub struct Freedom<'w, 's> {
     levels: Query<'w, 's, (), With<Level>>,
+    entering: Query<'w, 's, (), With<Destination>>,
     screen: Res<'w, State<Screen>>,
     next: Res<'w, NextState<Screen>>,
     camp: Option<Res<'w, Camp>>,
@@ -37,6 +38,7 @@ pub struct Freedom<'w, 's> {
 impl Freedom<'_, '_> {
     pub fn free(&self) -> bool {
         !self.levels.is_empty()
+            && self.entering.is_empty()
             && *self.screen.get() == Screen::World
             && matches!(*self.next, NextState::Unchanged | NextState::Pending(Screen::World))
             && self.camp.is_none()

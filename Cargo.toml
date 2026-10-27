@@ -7,7 +7,7 @@ description = "A Rust and Bevy rewrite of Wizardry 8"
 publish = false
 
 [dependencies]
-bevy = { version = "0.20.0", features = ["asset_processor", "system_clipboard", "mp3", "tga", "wav", "wayland"] }
+bevy = { version = "0.20.0", features = ["system_clipboard", "mp3", "tga", "wav", "wayland"] }
 # Colliders come from gameplay collision data, never render meshes or scenes.
 avian3d = { version = "0.8.0", default-features = false, features = ["3d", "parry-f32", "parallel", "xpbd_joints"] }
 bevy-tnua = "0.33.0"

@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use super::STEP_HEIGHT;
 use super::navigation::{LevelNavigation, Walker, WalkerMotion, WalkerMotionConfig};
+use crate::game::world::level::LevelOwned;
 use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy_landmass::prelude::*;
@@ -20,7 +21,7 @@ const SENSOR_RADIUS: f32 = 0.3;
 /// Wider monsters navigate the narrowest navmesh that still fits this much:
 /// the wider navmeshes lose narrow ground (beaches, ledges) to erosion, so
 /// big monsters may brush corners instead.
-const MAX_NAVIGATION_RADIUS: f32 = 1.0;
+pub(super) const MAX_NAVIGATION_RADIUS: f32 = 1.0;
 
 use super::identify::{GroupMember, MonsterGroup};
 use super::level::{KeptMonster, LevelRecord};
@@ -113,6 +114,28 @@ impl MonsterBodies {
     }
 }
 
+/// Check that every monster and item the level places exists, as part of
+/// its preparation: one missing is broken content, not something to leave
+/// out of the level.
+pub fn check(
+    geometry: &LevelDefinition,
+    species: &MonsterCatalog,
+    items: &ItemCatalog,
+) -> Result<(), String> {
+    if let Some(placed) =
+        geometry.monsters.iter().find(|p| species.0.get(p.species as usize).is_none())
+    {
+        return Err(format!(
+            "monster {} is of unknown species {}",
+            placed.location, placed.species
+        ));
+    }
+    if let Some(placed) = geometry.items.iter().find(|p| items.get(p.item).is_none()) {
+        return Err(format!("an item lying about is unknown ({:?})", placed.item));
+    }
+    Ok(())
+}
+
 /// Spawn the level's monsters and items under its root, as part of its
 /// activation: on a first visit every placed monster, idling at its feet
 /// and facing its heading (retail places them all at once on arrival), with
@@ -139,17 +162,19 @@ pub fn populate(
         None => geometry
             .monsters
             .iter()
-            .filter_map(|placed| {
-                let kind = species.0.get(placed.species as usize)?;
-                let body_definition = handles.get(&placed.species)?;
+            .map(|placed| {
+                // Preparation checked the species and loaded its body.
+                let kind = &species.0[placed.species as usize];
+                let body_definition = &handles[&placed.species];
                 let max_hp = rng.roll(kind.hit_points).max(1);
                 let max_stamina = rng.roll(kind.stamina);
                 // Retail draws Random(1000) for the size; its left-handed
                 // mirror draw, presentation only, is not taken from
                 // gameplay's stream.
                 let size_roll = rng.below(1000);
-                let body = ScaledBody::new(bodies.get(body_definition)?, size_roll);
-                Some(KeptMonster {
+                let body = ScaledBody::new(bodies.get(body_definition).unwrap(), size_roll);
+                KeptMonster {
+                    provoked: false,
                     monster: Monster {
                         location: placed.location,
                         species: placed.species,
@@ -163,13 +188,13 @@ pub fn populate(
                     group: Some(placed.group),
                     feet: placed.position,
                     yaw: placed.yaw,
-                })
+                }
             })
             .collect(),
     };
     let mut groups: HashMap<i32, Entity> = groups
         .into_iter()
-        .map(|group| (group.authored, commands.spawn((group, ChildOf(root))).id()))
+        .map(|group| (group.authored, commands.spawn((group, LevelOwned(root))).id()))
         .collect();
     let monster_count = monsters.iter().filter(|m| !m.monster.is_dead()).count();
     for kept in monsters {
@@ -177,10 +202,10 @@ pub fn populate(
         if monster.is_dead() {
             continue;
         }
-        let Some(kind) = species.0.get(monster.species as usize) else { continue };
+        let kind = &species.0[monster.species as usize];
         let group = kept.group.map(|authored| {
             *groups.entry(authored).or_insert_with(|| {
-                commands.spawn((MonsterGroup { authored, ..default() }, ChildOf(root))).id()
+                commands.spawn((MonsterGroup { authored, ..default() }, LevelOwned(root))).id()
             })
         });
         let ScaledBody { radius, speed, .. } = monster.body;
@@ -190,8 +215,11 @@ pub fn populate(
             monster,
             Transform::from_translation(kept.feet + Vec3::Y * float_height)
                 .with_rotation(Quat::from_rotation_y(kept.yaw)),
-            ChildOf(root),
+            LevelOwned(root),
         ));
+        if kept.provoked {
+            entity.insert(Provoked);
+        }
         if let Some(group) = group {
             entity.insert(GroupMember(group));
         }
@@ -239,8 +267,8 @@ pub fn populate(
         None => geometry
             .items
             .iter()
-            .filter_map(|placement| {
-                let definition = items.get(placement.item)?;
+            .map(|placement| {
+                let definition = items.get(placement.item).expect("checked in preparation");
                 let loot = if definition.container {
                     super::items::GroundLoot::Pile {
                         appearance: definition.id,
@@ -250,13 +278,13 @@ pub fn populate(
                 } else {
                     super::items::GroundLoot::Loose(placed_item(placement, definition, ids))
                 };
-                Some((WorldItem { loot, hidden: placement.hidden }, placement.position))
+                (WorldItem { loot, hidden: placement.hidden }, placement.position)
             })
             .collect(),
     };
     info!("placed {monster_count} monsters and {} items", lying.len());
     for (item, at) in lying {
         let name = items.get(item.appearance()).map_or_else(String::new, |d| d.name.clone());
-        commands.spawn((Name::new(name), item, Transform::from_translation(at), ChildOf(root)));
+        commands.spawn((Name::new(name), item, Transform::from_translation(at), LevelOwned(root)));
     }
 }

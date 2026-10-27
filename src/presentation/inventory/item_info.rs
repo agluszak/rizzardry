@@ -143,8 +143,8 @@ pub(super) fn build(commands: &mut Commands, panel: Entity, root: Entity, art: &
 
 pub(super) fn refresh(
     screen: Option<Single<&InventoryScreen>>,
-    party: Option<Res<PartyRoster>>,
-    inventory: Option<Res<PartyInventory>>,
+    party: Option<Single<&PartyRoster>>,
+    inventory: Option<Single<&PartyInventory>>,
     data: Option<Res<GameData>>,
     catalogs: Option<Res<Assets<ItemCatalog>>>,
     members: Query<CharacterView>,
@@ -162,10 +162,9 @@ pub(super) fn refresh(
     let weight = party.as_ref().zip(inventory.as_ref()).zip(catalog).and_then(
         |((roster, inventory), catalog)| {
             let member_data: Vec<_> = roster
-                .0
                 .iter()
                 .map(|entity| {
-                    members.get(*entity).ok().and_then(
+                    members.get(entity).ok().and_then(
                         |CharacterViewItem { profile, vitals, carried }| {
                             if vitals.is_dead() {
                                 None
@@ -181,7 +180,7 @@ pub(super) fn refresh(
                 .collect();
             let pool = inventory.pool.stacks.iter().map(|item| item_weight(item, catalog)).sum();
             let shares = pool_shares(pool, &member_data);
-            let index = roster.0.get_index_of(&screen.member)?;
+            let index = roster.get_index_of(&screen.member)?;
             let own = carried.map_or(0, |carried| carried_weight(carried, catalog));
             Some(own + shares[index])
         },

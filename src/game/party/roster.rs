@@ -11,21 +11,76 @@ use crate::game::data::GameData;
 use crate::game::inventory::{Carried, ItemIds, make_item, place_at_creation};
 use crate::game::rng::GameRng;
 
-/// The party's members in slot order. Each is an entity with a
-/// [`Character`] and what it [`Carried`].
-#[derive(Resource, Debug, Default)]
-pub struct PartyRoster(pub EntityIndexSet);
+/// The party: who adventures together, how they stand and what they share.
+/// A campaign creates it when it enters its first level, where it also gets
+/// its body ([`super::body::PartyBody`]).
+#[derive(Component, Debug, Default)]
+#[require(
+    super::formation::Formation,
+    crate::game::inventory::PartyInventory,
+    super::body::PartyMovement
+)]
+pub struct Party;
 
-impl PartyRoster {
-    /// Remove membership without transferring its formation seat to whoever
-    /// follows in roster order. The character entity may remain as an NPC.
-    pub fn remove(&mut self, member: Entity, formation: &mut super::formation::Formation) -> bool {
-        let removed = self.0.shift_remove(&member);
-        if removed {
-            formation.unseat(member);
-        }
-        removed
+/// Membership of a party. It does not own the character: a member who
+/// leaves (an NPC dismissed) keeps its identity and state.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+#[relationship(relationship_target = PartyRoster)]
+pub struct PartyMember(pub Entity);
+
+/// The party's members in slot order, maintained by Bevy from
+/// [`PartyMember`]. Each is an entity with a [`Character`] and what it
+/// [`Carried`]. Roster order is the order of rules, RNG draws and the UI.
+#[derive(Component, Debug, Default)]
+#[relationship_target(relationship = PartyMember)]
+pub struct PartyRoster(EntityIndexSet);
+
+impl std::ops::Deref for PartyRoster {
+    type Target = EntityIndexSet;
+
+    fn deref(&self) -> &EntityIndexSet {
+        &self.0
     }
+}
+
+/// The party, for operations that hold the whole world.
+pub fn the_party(world: &mut World) -> Option<Entity> {
+    world.query_filtered::<Entity, With<Party>>().single(world).ok()
+}
+
+/// A party of `members`, in order, each seated; for tests.
+#[cfg(test)]
+pub fn test_party(world: &mut World, members: &[Entity]) -> Entity {
+    let party = world.spawn(Party).id();
+    for &member in members {
+        world.entity_mut(member).insert(PartyMember(party));
+        world.get_mut::<super::formation::Formation>(party).unwrap().seat(member);
+    }
+    party
+}
+
+/// Add `member` to the end of the party and seat them; for tests.
+#[cfg(test)]
+pub fn test_join(world: &mut World, member: Entity) {
+    let party = the_party(world).unwrap();
+    world.entity_mut(member).insert(PartyMember(party));
+    world.get_mut::<super::formation::Formation>(party).unwrap().seat(member);
+}
+
+/// Put the party's members in `order`; for tests.
+#[cfg(test)]
+pub fn test_reorder(world: &mut World, order: &[Entity]) {
+    let party = the_party(world).unwrap();
+    for &member in order {
+        world.entity_mut(member).remove::<PartyMember>().insert(PartyMember(party));
+    }
+}
+
+/// End a membership without transferring its formation seat to whoever
+/// follows in roster order. The character entity remains.
+pub fn leave(commands: &mut Commands, member: Entity, formation: &mut super::formation::Formation) {
+    commands.entity(member).remove::<PartyMember>();
+    formation.unseat(member);
 }
 
 /// Someone joining a new party, as party creation (or a party file) makes
@@ -40,24 +95,19 @@ pub struct Recruit {
     pub portrait: String,
 }
 
-/// Add a new member at the end of the party; they receive their starting
-/// equipment once the items have loaded.
-pub fn recruit(
-    commands: &mut Commands,
-    roster: &mut PartyRoster,
-    formation: &mut super::formation::Formation,
-    recruit: &Recruit,
-) -> Entity {
-    let mut character =
-        Character::new(&recruit.name, recruit.race, recruit.gender, recruit.profession);
-    character.portrait = recruit.portrait.clone();
-    recruit_character(commands, roster, formation, character)
+impl Recruit {
+    /// The new character, before they join.
+    pub fn character(&self) -> Character {
+        let mut character = Character::new(&self.name, self.race, self.gender, self.profession);
+        character.portrait = self.portrait.clone();
+        character
+    }
 }
 
 /// Commit the completed profile, including the player's allocated points.
 pub fn recruit_character(
     commands: &mut Commands,
-    roster: &mut PartyRoster,
+    party: Entity,
     formation: &mut super::formation::Formation,
     character: Character,
 ) -> Entity {
@@ -70,9 +120,9 @@ pub fn recruit_character(
             super::Order::Attack,
             crate::game::magic::LearnedSpells::default(),
             NeedsEquipment,
+            PartyMember(party),
         ))
         .id();
-    roster.0.insert(member);
     formation.seat(member);
     member
 }
@@ -127,10 +177,10 @@ pub fn give_starting_equipment(
     mut ids: ResMut<ItemIds>,
     mut rng: ResMut<GameRng>,
     members: Query<(Entity, &Character), With<NeedsEquipment>>,
-    roster: Res<PartyRoster>,
+    roster: Single<&PartyRoster>,
 ) {
     let Some(catalog) = data.and_then(|d| catalogs.get(&d.items)) else { return };
-    for (entity, character) in members.iter_many(&roster.0).matched() {
+    for (entity, character) in members.iter_many(roster.iter()).matched() {
         let mut carried = Carried::default();
         for id in starting_items(character) {
             let Some(definition) = catalog.get(id) else { continue };
@@ -182,8 +232,7 @@ mod tests {
         use crate::game::party::{Order, formation::Formation};
         use bevy::ecs::system::SystemState;
         let mut world = World::new();
-        world.init_resource::<PartyRoster>();
-        world.init_resource::<Formation>();
+        let party = world.spawn(Party).id();
         let definition = Recruit {
             name: "First".into(),
             race: Race::Human,
@@ -191,35 +240,35 @@ mod tests {
             profession: Profession::Fighter,
             portrait: String::new(),
         };
-        let mut operations =
-            SystemState::<(Commands, ResMut<PartyRoster>, ResMut<Formation>)>::new(&mut world);
-        let (mut commands, mut roster, mut formation) = operations.get_mut(&mut world).unwrap();
-        let first = recruit(&mut commands, &mut roster, &mut formation, &definition);
-        let second = recruit(
+        let mut operations = SystemState::<(Commands, Single<&mut Formation>)>::new(&mut world);
+        let (mut commands, mut formation) = operations.get_mut(&mut world).unwrap();
+        let first = recruit_character(&mut commands, party, &mut formation, definition.character());
+        let second = recruit_character(
             &mut commands,
-            &mut roster,
+            party,
             &mut formation,
-            &Recruit { name: "Second".into(), ..definition.clone() },
+            Recruit { name: "Second".into(), ..definition.clone() }.character(),
         );
         operations.apply(&mut world);
-        let place = world.resource::<Formation>().place_of(second);
+        let place = world.get::<Formation>(party).unwrap().place_of(second);
         world.entity_mut(first).insert(Order::Defend);
-        let (mut commands, mut roster, mut formation) = operations.get_mut(&mut world).unwrap();
-        assert!(roster.remove(first, &mut formation));
-        let replacement = recruit(
+        let (mut commands, mut formation) = operations.get_mut(&mut world).unwrap();
+        leave(&mut commands, first, &mut formation);
+        let replacement = recruit_character(
             &mut commands,
-            &mut roster,
+            party,
             &mut formation,
-            &Recruit { name: "Replacement".into(), ..definition },
+            Recruit { name: "Replacement".into(), ..definition }.character(),
         );
         operations.apply(&mut world);
         assert_eq!(
-            world.resource::<PartyRoster>().0.iter().copied().collect::<Vec<_>>(),
+            world.get::<PartyRoster>(party).unwrap().iter().collect::<Vec<_>>(),
             [second, replacement]
         );
-        assert!(world.resource::<Formation>().place_of(first).is_none());
-        assert_eq!(world.resource::<Formation>().place_of(second), place);
-        assert!(world.resource::<Formation>().place_of(replacement).is_some());
+        let formation = world.get::<Formation>(party).unwrap();
+        assert!(formation.place_of(first).is_none());
+        assert_eq!(formation.place_of(second), place);
+        assert!(formation.place_of(replacement).is_some());
         assert_eq!(world.get::<Order>(replacement), Some(&Order::Attack));
         assert_eq!(
             world.get::<Order>(first),

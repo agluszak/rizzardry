@@ -480,7 +480,7 @@ pub(super) fn show_pages(
 pub(super) fn refresh(
     screen: Option<Single<&InventoryScreen>>,
     characters: Query<CharacterView>,
-    roster: Option<Res<PartyRoster>>,
+    roster: Option<Single<&PartyRoster>>,
     profiles: Query<&Character>,
     info: Option<Single<&StatsInfo>>,
     slider: Option<Single<(Entity, &SliderValue, &SliderRange), With<StatsScroll>>>,
@@ -621,7 +621,7 @@ pub(super) fn refresh(
                 let best = level > 0
                     && roster.as_ref().is_some_and(|roster| {
                         profiles
-                            .iter_many(&roster.0)
+                            .iter_many(roster.iter())
                             .matched()
                             .all(|other| other.skill(skill) <= level)
                     });
