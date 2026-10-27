@@ -627,12 +627,13 @@ pub(super) fn refresh(
     let maximum = effects.len().saturating_sub(17);
     let offset = slider.as_deref().map_or(0, |(_, value, _)| (value.0 as usize).min(maximum));
     if let Some((entity, value, range)) = slider.as_deref() {
-        if range.end() != maximum as f32 {
-            commands.entity(*entity).insert(SliderRange::new(0.0, maximum as f32));
-        }
-        if value.0 > maximum as f32 {
-            commands.entity(*entity).insert(SliderValue(maximum as f32));
-        }
+        crate::presentation::retail_controls::set_scroll_maximum(
+            &mut commands,
+            *entity,
+            value,
+            range,
+            maximum as f32,
+        );
     }
     for (field, mut text) in &mut fields {
         if !field.is_added()

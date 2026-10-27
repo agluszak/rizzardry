@@ -136,6 +136,22 @@ pub struct ScrollThumb(Entity);
 #[derive(Component)]
 pub struct ScrollWheel(pub Entity);
 
+/// Keep a scrolling view's offset within its current content extent.
+pub fn set_scroll_maximum(
+    commands: &mut Commands,
+    slider: Entity,
+    value: &SliderValue,
+    range: &SliderRange,
+    maximum: f32,
+) {
+    if range.end() != maximum {
+        commands.entity(slider).insert(SliderRange::new(0.0, maximum));
+    }
+    if value.0 > maximum {
+        commands.entity(slider).insert(SliderValue(maximum));
+    }
+}
+
 pub fn step_scrollbar(
     commands: &mut Commands,
     parent: Entity,

@@ -1,5 +1,5 @@
 //! The item pool's two-column retail scrollbar.
-use super::{InventoryArt, POOL_CELLS, absolute, review};
+use super::{InventoryArt, POOL_CELLS};
 use crate::game::inventory::PartyInventory;
 use bevy::prelude::*;
 use bevy::ui_widgets::{SliderRange, SliderValue};
@@ -12,17 +12,9 @@ fn maximum(items: usize) -> usize {
 }
 
 pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) -> Entity {
-    let panel = commands
-        .spawn((
-            review::Page::Items,
-            absolute(Vec2::ZERO, Vec2::new(640.0, 450.0)),
-            Pickable::IGNORE,
-            ChildOf(root),
-        ))
-        .id();
     let track = crate::presentation::retail_controls::step_scrollbar(
         commands,
-        panel,
+        root,
         art.scroll.clone(),
         Vec2::new(611.0, 193.0),
         192.0,
@@ -39,12 +31,13 @@ pub(super) fn sync(
 ) {
     let (Some((slider, value, range)), Some(party)) = (slider.as_deref(), party) else { return };
     let max = maximum(party.pool.len()) as f32;
-    if range.end() != max {
-        commands.entity(*slider).insert(SliderRange::new(0.0, max));
-    }
-    if value.0 > max {
-        commands.entity(*slider).insert(SliderValue(max));
-    }
+    crate::presentation::retail_controls::set_scroll_maximum(
+        &mut commands,
+        *slider,
+        value,
+        range,
+        max,
+    );
 }
 
 #[cfg(test)]
