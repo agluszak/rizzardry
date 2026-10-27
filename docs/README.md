@@ -30,6 +30,7 @@ completed mechanics. See known gaps for validation limits and unfinished work.
 | --- | --- |
 | [Combat items and magic](systems/combat-items-and-magic.md) | Prepare an area bomb, choose a point, execute, consume it, deliver the effect, apply damage/conditions and finish the action |
 | [Inventory, trade and curses](systems/inventory-trade-and-curses.md) | Item ownership and cursor transfers, buy/sell, identification, cursed equipment, Remove Curse and Hex |
+| [NPC conversations and trading](systems/npc-conversations.md) | Data-driven Burz slice, persistent actor ownership, dialogue waits and merchant settlement |
 | [Story scenes and puzzles](systems/story-scenes-and-puzzles.md) | Aletheides/Savant henchman monastery scene; Black Box and Orbital Tracker at Arnika |
 | [Progression and map notes](systems/progression-and-map.md) | Level-up draft/commit and custom automap/minimap annotations |
 | [Combat AI and navigation](systems/combat-ai-and-navigation.md) | Perception, encounter/group decisions, party movement, combat scheduling, navigation and continuing magic |

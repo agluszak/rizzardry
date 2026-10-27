@@ -41,6 +41,11 @@ See [research](research/README.md) for recovered mechanics and
 
 ## World interaction and persistence
 
+- [NPC conversations](systems/npc-conversations.md) cover Burz's greeting,
+  Monastery/Arnika branch and trading. Other fact/script semantics, recruitment,
+  NPC death and story scenes remain explicit gaps. Dialogue presentation awaits
+  retail screen parity and interactive audio/focus checks.
+
 - Keyless locked doors await lock/trap interaction. Missing loot table IDs in two
   retail containers produce nothing, matching retail rather than invented content.
 - Search lacks searchable triggers, practice, turning toward a find, the identify

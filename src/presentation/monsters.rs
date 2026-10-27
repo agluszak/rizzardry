@@ -307,3 +307,8 @@ pub fn choose_walker_cycles(
         }
     }
 }
+
+/// A retained actor must rebuild its visual hierarchy on its next embodiment.
+pub fn forget_departed_visuals(event: On<Remove<Monster>>, mut commands: Commands) {
+    commands.entity(event.entity).remove::<(MonsterVisual, MonsterInstance, CycleRequest)>();
+}

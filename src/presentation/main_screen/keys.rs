@@ -171,9 +171,11 @@ fn hold_main_screen_keys(
     focus: Res<bevy::input_focus::InputFocus>,
     controls: Query<(), With<bevy::input_focus::tab_navigation::TabIndex>>,
     questions: Query<(), With<crate::game::world::level::TravelQuestion>>,
+    conversations: Query<(), With<crate::game::npcs::conversation::Conversation>>,
 ) {
     let active = *screen.get() == Screen::World
         && questions.is_empty()
+        && conversations.is_empty()
         && !focus.get().is_some_and(|entity| controls.contains(entity));
     for (entity, activity) in &keys {
         if **activity != active {

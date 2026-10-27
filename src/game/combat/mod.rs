@@ -317,7 +317,7 @@ pub fn start_battle(
         .iter()
         .filter(|(_, monster, at, walker)| {
             let Some(kind) = catalog.0.get(monster.species as usize) else { return false };
-            if kind.npc || !monster_can_attack(monster) {
+            if kind.npc.is_some() || !monster_can_attack(monster) {
                 return false;
             }
             let feet = feet(at.translation(), *walker);
@@ -595,7 +595,7 @@ fn member_acts(
         .filter_map(|&(entity, _)| {
             let (monster, at, walker, _) = damage.monsters.get(entity).ok()?;
             let distance = distance_to_party(party.eye, monster, feet(at.translation(), walker));
-            if !species.0.get(monster.species as usize).is_some_and(|kind| !kind.npc)
+            if !species.0.get(monster.species as usize).is_some_and(|kind| kind.npc.is_none())
                 || !damage.active(entity)
                 || monster.is_dead()
                 || !party.reaches(formation, member, at.translation(), hand.reach, distance)
@@ -672,7 +672,7 @@ fn monster_acts(
     rng: &mut GameRng,
     roster: &PartyRoster,
     members: &mut Query<(&mut Character, &mut Vitals, &Carried)>,
-    monsters: &Query<(&mut Monster, ActorPose, Option<&Walker>, &ChildOf)>,
+    monsters: &Query<(&mut Monster, ActorPose, Option<&Walker>, crate::game::world::ActorLevel)>,
     party: &PartyView,
     formation: &mut ResMut<Formation>,
     items: &ItemCatalog,
@@ -759,7 +759,7 @@ fn end_round(
     rng: &mut GameRng,
     roster: &PartyRoster,
     members: &mut Query<(&mut Character, &mut Vitals, &Carried)>,
-    monsters: &Query<(&mut Monster, ActorPose, Option<&Walker>, &ChildOf)>,
+    monsters: &Query<(&mut Monster, ActorPose, Option<&Walker>, crate::game::world::ActorLevel)>,
     party_eye: Vec3,
     species: &MonsterCatalog,
     news: &mut MessageWriter<CombatNews>,

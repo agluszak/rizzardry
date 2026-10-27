@@ -40,8 +40,11 @@ pub enum DamageRefusal {
 /// it again on the corpse produces no second reward or drop.
 #[derive(SystemParam)]
 pub struct MonsterDamage<'w, 's> {
-    pub monsters:
-        Query<'w, 's, (&'static mut Monster, ActorPose, Option<&'static Walker>, &'static ChildOf)>,
+    pub monsters: Query<
+        'w,
+        's,
+        (&'static mut Monster, ActorPose, Option<&'static Walker>, super::ActorLevel),
+    >,
     motion: Query<
         'w,
         's,
@@ -73,7 +76,9 @@ impl MonsterDamage<'_, '_> {
     }
 
     pub fn active(&self, target: Entity) -> bool {
-        self.monsters.get(target).is_ok_and(|(_, _, _, owner)| self.levels.contains(owner.parent()))
+        self.monsters.get(target).is_ok_and(|(_, _, _, owner)| {
+            owner.level().is_some_and(|level| self.levels.contains(level))
+        })
     }
 
     pub fn apply(
@@ -85,7 +90,7 @@ impl MonsterDamage<'_, '_> {
     ) -> Result<DamageOutcome, DamageRefusal> {
         let (mut monster, at, walker, owner) =
             self.monsters.get_mut(target).map_err(|_| DamageRefusal::MissingTarget)?;
-        let level = owner.parent();
+        let level = owner.level().ok_or(DamageRefusal::InactiveLevel)?;
         if !self.levels.contains(level) {
             return Err(DamageRefusal::InactiveLevel);
         }
@@ -101,7 +106,7 @@ impl MonsterDamage<'_, '_> {
         if monster.is_dead() || amount == 0 {
             return Ok(DamageOutcome::default());
         }
-        if amount >= monster.hp && kind.npc {
+        if amount >= monster.hp && kind.npc.is_some() {
             return Err(DamageRefusal::UnsupportedNpcDeath);
         }
         let position = feet(at.translation(), walker);

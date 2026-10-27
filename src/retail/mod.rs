@@ -15,6 +15,7 @@ pub mod mesh_record;
 pub mod monster;
 pub mod monster_loader;
 pub mod navmesh;
+pub mod npcs;
 pub mod oct;
 pub mod path;
 pub mod pcx_loader;
@@ -80,6 +81,12 @@ impl Plugin for RetailPlugin {
             .init_asset_loader::<items::ItemCatalogLoader>()
             .init_asset::<crate::content::items::LootTables>()
             .init_asset_loader::<items::LootTablesLoader>()
+            .init_asset::<crate::content::npcs::FactCatalog>()
+            .init_asset_loader::<npcs::FactCatalogLoader>()
+            .init_asset::<crate::content::npcs::NpcCatalog>()
+            .init_asset_loader::<npcs::NpcCatalogLoader>()
+            .init_asset::<crate::content::npcs::DialogueScript>()
+            .init_asset_loader::<npcs::DialogueLoader>()
             .init_asset::<crate::content::species::MonsterCatalog>()
             .init_asset_loader::<species::MonsterCatalogLoader>()
             .init_asset::<crate::content::ui::TextTable>()

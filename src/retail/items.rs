@@ -467,7 +467,7 @@ fn read_item(
     let genders = EnumSet::from_repr_truncated(bytes.u8()?);
     let attribute_minimums = minimums(&mut bytes)?;
     let skill_minimums = minimums(&mut bytes)?;
-    bytes.u8()?; // identify difficulty
+    let identify_difficulty = bytes.u8()?;
     let value = bytes.u32()?;
     let weight = bytes.u16()?;
     let cursed = bytes.u8()? != 0;
@@ -485,6 +485,8 @@ fn read_item(
             .map_err(|_| ItemLoadError::EquipClass(index, equip_class))?,
         auto_identify: has(flag::AUTO_IDENTIFY),
         crucial: has(flag::NO_DISCARD),
+        merchant_cannot_sell: has(0x10),
+        identify_difficulty,
         two_handed: has(flag::TWO_HANDED),
         off_hand: has(flag::OFF_HAND_ALLOWED),
         container: has(flag::CONTAINER),

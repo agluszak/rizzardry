@@ -21,7 +21,7 @@ use crate::content::items::{EquipClass, ItemCatalog, ItemDefinition, ItemId, Qua
 pub struct ItemInstanceId(pub u32);
 
 /// Hands out item identities.
-#[derive(Resource, Debug, Default)]
+#[derive(Resource, Clone, Debug, Default)]
 pub struct ItemIds {
     next: u32,
 }

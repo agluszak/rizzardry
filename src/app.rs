@@ -236,6 +236,7 @@ pub fn build(options: &Options) -> Result<App, String> {
     app.add_plugins((
         PhysicsPlugins::default(),
         WorldPlugin,
+        crate::game::npcs::NpcPlugin,
         PartyPlugin,
         TimePlugin,
         crate::game::combat::CombatPlugin,

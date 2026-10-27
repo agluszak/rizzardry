@@ -6,6 +6,7 @@ pub mod billboards;
 pub mod camp;
 pub mod character_view;
 pub mod controls;
+pub mod conversation;
 pub mod dialog;
 pub mod effects;
 pub mod environment;
@@ -70,9 +71,11 @@ impl Plugin for PresentationPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((
             main_screen::MainScreenPlugin,
+            conversation::ConversationViewPlugin,
             inventory::InventoryPlugin,
             frontend::FrontendPlugin,
         ))
+        .add_observer(monsters::forget_departed_visuals)
         .add_input_context::<Exploration>()
         .add_systems(Startup, controls::spawn_exploration_controls)
         .add_systems(PreUpdate, controls::read_controls.after(EnhancedInputSystems::Apply))

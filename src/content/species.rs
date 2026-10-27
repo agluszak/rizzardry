@@ -85,7 +85,7 @@ pub struct Species {
     /// the kinds mean is not established).
     pub level_sight: bool,
     /// An NPC's record: its loot is its NPC's, not the treasure table.
-    pub npc: bool,
+    pub npc: Option<super::npcs::NpcId>,
     /// Percent taken off every hit.
     pub damage_reduction: u8,
     pub attributes: MonsterAttributes,

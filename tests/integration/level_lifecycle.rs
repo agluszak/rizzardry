@@ -22,6 +22,9 @@ use rizzardry::game::world::triggers::PendingPartyMove;
 fn app() -> App {
     let mut app = App::new();
     app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+        .add_plugins(rizzardry::game::npcs::NpcPlugin)
+        .init_resource::<rizzardry::game::time::GameClock>()
+        .init_resource::<rizzardry::game::party::roster::PartyRoster>()
         .init_asset::<LevelDefinition>()
         .init_asset::<ItemCatalog>()
         .init_asset::<LootTables>()

@@ -120,6 +120,7 @@ pub fn populate(
     geometry: &LevelDefinition,
     remembered: Option<LevelRecord>,
     (species, items): (&MonsterCatalog, &ItemCatalog),
+    (map, npcs): (&str, &mut crate::game::npcs::NpcPopulation),
     (handles, bodies): (&HashMap<u32, Handle<MonsterBody>>, &Assets<MonsterBody>),
     (navigation, configs): (&LevelNavigation, &mut Assets<WalkerMotionConfig>),
     ids: &mut ItemIds,
@@ -129,13 +130,16 @@ pub fn populate(
         Some(record) => (Some(record.monsters), Some(record.items), record.groups),
         None => (None, None, default()),
     };
-    let monsters: Vec<KeptMonster> = match remembered_monsters {
+    let mut monsters: Vec<KeptMonster> = match remembered_monsters {
         Some(monsters) => monsters,
         None => geometry
             .monsters
             .iter()
             .filter_map(|placed| {
                 let kind = species.0.get(placed.species as usize)?;
+                if kind.npc.is_some() {
+                    return None;
+                }
                 let body_definition = handles.get(&placed.species)?;
                 let max_hp = rng.roll(kind.hit_points).max(1);
                 let max_stamina = rng.roll(kind.stamina);
@@ -162,6 +166,79 @@ pub fn populate(
             })
             .collect(),
     };
+    let average = npcs.average_level();
+    let mut identities = HashMap::new();
+    for placed in &geometry.monsters {
+        let Some(kind) = species.0.get(placed.species as usize) else { continue };
+        let Some(id) = kind.npc else { continue };
+        let definition = npcs
+            .definitions
+            .get(&npcs.assets.catalog)
+            .and_then(|c| c.get(id))
+            .expect("NPC preparation validated definition");
+        let key = crate::game::npcs::ActorId::for_placement(id, definition, map, placed.location);
+        let entity = if let Some(&entity) = npcs.actors.0.get(&key) {
+            entity
+        } else {
+            let mut stock = crate::game::npcs::trade::MerchantStock::default();
+            if definition.owns_stock {
+                stock
+                    .maintain(definition, items, average, npcs.clock.ms, rng)
+                    .expect("validated NPC stock");
+            }
+            let entity = commands
+                .spawn((
+                    key.clone(),
+                    crate::game::npcs::Npc {
+                        definition: id,
+                        disposition: definition.disposition,
+                        greeting_pending: true,
+                        paid_topics: vec![],
+                        dormant: None,
+                        stock,
+                    },
+                ))
+                .id();
+            npcs.actors.0.insert(key, entity);
+            entity
+        };
+        let kept = if let Ok((_, mut npc, active, _, _, _, _)) = npcs.npcs.get_mut(entity) {
+            if active.is_some() && npc.dormant.is_none() {
+                continue;
+            }
+            match npc.dormant.take() {
+                Some((location, kept)) if location == map => kept,
+                other => {
+                    npc.dormant = other;
+                    continue;
+                }
+            }
+        } else {
+            let max_hp = rng.roll(kind.hit_points).max(1);
+            let max_stamina = rng.roll(kind.stamina);
+            let body = ScaledBody::new(
+                bodies.get(handles.get(&placed.species).unwrap()).unwrap(),
+                rng.below(1000),
+            );
+            KeptMonster {
+                monster: Monster {
+                    location: placed.location,
+                    species: placed.species,
+                    hp: max_hp,
+                    max_hp,
+                    stamina: max_stamina,
+                    max_stamina,
+                    conditions: vec![],
+                    body,
+                },
+                group: Some(placed.group),
+                feet: placed.position,
+                yaw: placed.yaw,
+            }
+        };
+        identities.insert(kept.monster.location, entity);
+        monsters.push(kept);
+    }
     let mut groups: HashMap<i32, Entity> = groups
         .into_iter()
         .map(|group| (group.authored, commands.spawn((group, ChildOf(root))).id()))
@@ -180,13 +257,23 @@ pub fn populate(
         });
         let ScaledBody { radius, speed, .. } = monster.body;
         let float_height = if speed > 0.0 { STEP_HEIGHT + HALF_HEIGHT } else { 0.0 };
-        let mut entity = commands.spawn((
+        let entity_id = identities
+            .get(&monster.location)
+            .copied()
+            .unwrap_or_else(|| commands.spawn_empty().id());
+        let persistent = identities.contains_key(&monster.location);
+        let mut entity = commands.entity(entity_id);
+        entity.insert((
             Name::new(format!("{} #{}", kind.name, monster.location)),
             monster,
             Transform::from_translation(kept.feet + Vec3::Y * float_height)
                 .with_rotation(Quat::from_rotation_y(kept.yaw)),
-            ChildOf(root),
         ));
+        if persistent {
+            entity.insert(crate::game::npcs::NpcPresence(root));
+        } else {
+            entity.insert(ChildOf(root));
+        }
         if let Some(group) = group {
             entity.insert(GroupMember(group));
         }

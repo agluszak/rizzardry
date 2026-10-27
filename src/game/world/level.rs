@@ -218,6 +218,7 @@ pub struct LevelContents<'w, 's> {
         'w,
         's,
         (&'static Monster, super::ActorPose, Option<&'static Walker>, Option<&'static GroupMember>),
+        Without<crate::game::npcs::Npc>,
     >,
     items: Query<'w, 's, (&'static WorldItem, &'static Transform)>,
     groups: Query<'w, 's, &'static MonsterGroup>,
@@ -463,6 +464,7 @@ pub fn activate_level(
     geometry: Res<Assets<LevelDefinition>>,
     assets: Res<AssetServer>,
     mut shared: SharedData,
+    mut npcs: crate::game::npcs::NpcPopulation,
     mut memory: ResMut<LevelMemory>,
     (mut ids, mut rng): (ResMut<ItemIds>, ResMut<GameRng>),
     mut transition: ParamSet<(LevelContents, PartyPlacement)>,
@@ -496,6 +498,15 @@ pub fn activate_level(
         ) else {
             continue;
         };
+        match npcs.prepare(species, &geometry.monsters, items, &assets) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(reason) => {
+                error!("{}: {reason}", level.path);
+                destination.failed = true;
+                continue;
+            }
+        }
         let bodies = shared.monster_bodies.for_level(geometry, species, &assets);
         if bodies.iter().any(|body| failed(body.id().untyped())) {
             error!("{}: a monster's body definition failed to load", level.path);
@@ -524,6 +535,8 @@ pub fn activate_level(
         for (entity, source, state, children) in &current {
             let children = children.map_or(&[][..], |c| &c[..]);
             memory.0.insert(source.path.clone(), transition.p0().remember(entity, state, children));
+            npcs.depart(&mut commands, &source.path);
+            commands.queue(crate::game::npcs::conversation::close);
             commands.entity(entity).despawn();
         }
         pending.0 = None;
@@ -544,6 +557,7 @@ pub fn activate_level(
             geometry,
             remembered,
             (species, items),
+            (&level.path, &mut npcs),
             (&shared.monster_bodies.0, &shared.bodies),
             (&navigation, &mut shared.motion_configs),
             &mut ids,

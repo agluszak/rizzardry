@@ -215,12 +215,14 @@ pub fn spawn_inventory_key(mut commands: Commands) {
 /// Retail opens the selected character.
 fn open_with_key(
     _: On<Start<OpenInventory>>,
+    conversations: Query<(), With<crate::game::npcs::conversation::Conversation>>,
     screen: Res<State<Screen>>,
     mut next: ResMut<NextState<Screen>>,
     roster: Res<PartyRoster>,
     selected: Res<super::main_screen::SelectedMember>,
 ) {
     if *screen.get() == Screen::World
+        && conversations.is_empty()
         && matches!(*next, NextState::Unchanged)
         && selected.member(&roster).is_some()
     {

@@ -38,6 +38,19 @@ impl ActorPoseItem<'_, '_> {
     }
 }
 
+/// The active map of an actor. Ordinary actors are map-owned; a named NPC
+/// instead has a presence relationship whose removal cannot despawn its identity.
+#[derive(bevy::ecs::query::QueryData)]
+pub struct ActorLevel {
+    presence: Option<&'static crate::game::npcs::NpcPresence>,
+    parent: Option<&'static ChildOf>,
+}
+impl ActorLevelItem<'_, '_> {
+    pub fn level(&self) -> Option<Entity> {
+        self.presence.map(|p| p.0).or_else(|| self.parent.map(ChildOf::parent))
+    }
+}
+
 /// The highest step the party and walking monsters climb: 300 retail units
 /// (0.6 m).
 ///

@@ -15,12 +15,16 @@ pub struct InventoryOperations<'w, 's> {
     data: Option<Res<'w, GameData>>,
     catalogs: Res<'w, Assets<ItemCatalog>>,
     battle: Option<Res<'w, crate::game::combat::Battle>>,
+    conversations: Query<'w, 's, (), With<crate::game::npcs::conversation::Conversation>>,
 }
 
 impl InventoryOperations<'_, '_> {
     /// Give the held item to an identified actor. Eligibility and battle pool
     /// precedence are rules here; the clicked portrait only supplies its target.
     pub fn give_to(&mut self, member: Entity) -> Result<Option<ItemNews>, Refusal> {
+        if !self.conversations.is_empty() {
+            return Err(Refusal::HandFull);
+        }
         let Some(held) = self.party.held.as_ref() else { return Ok(None) };
         if !self.roster.0.contains(&member) {
             return Err(Refusal::NotMember);
@@ -77,6 +81,9 @@ impl InventoryOperations<'_, '_> {
         &mut self,
         destination: ItemLocation,
     ) -> Result<Option<(ItemInstanceId, Quantity)>, Refusal> {
+        if !self.conversations.is_empty() {
+            return Err(Refusal::HandFull);
+        }
         let catalog = self
             .data
             .as_ref()
