@@ -22,6 +22,7 @@ pub mod music;
 pub mod names;
 pub mod notices;
 pub mod party_view;
+mod party_voice;
 pub mod retail_controls;
 pub mod screen_art;
 pub mod selection;
@@ -88,6 +89,7 @@ impl Plugin for PresentationPlugin {
         .add_systems(Startup, controls::spawn_exploration_controls)
         .add_systems(PreUpdate, controls::read_controls.after(EnhancedInputSystems::Apply))
         .add_message::<voice::SpeechFinished>()
+        .add_message::<party_voice::SpokenRemark>()
         .add_message::<automap::OpenAutomap>()
         .init_resource::<effects::CameraShake>()
         .init_resource::<notices::TextLog>()
@@ -136,6 +138,16 @@ impl Plugin for PresentationPlugin {
                 .after(
                     bevy::camera::visibility::VisibilitySystems::MarkNewlyHiddenEntitiesInvisible,
                 ),
+        )
+        .add_systems(
+            PostUpdate,
+            (
+                party_voice::queue_device_remarks.run_if(crate::game::world::level::level_active),
+                party_voice::play_device_remarks,
+            )
+                .chain()
+                .after(selection::activate_selection)
+                .before(notices::queue_notices),
         )
         .add_systems(
             Startup,

@@ -363,6 +363,7 @@ pub fn queue_notices(
     mut search: MessageReader<SearchNews>,
     mut identified: MessageReader<Identified>,
     mut locks: MessageReader<LockNews>,
+    mut remarks: MessageReader<super::party_voice::SpokenRemark>,
     members: Query<&crate::game::characters::Character>,
     names: super::names::ActorNames,
     art: Res<NoticeArt>,
@@ -379,6 +380,11 @@ pub fn queue_notices(
     let font = sheets.get(&art.font);
     let channel = usize::from(battle.is_some());
     let spells = data.as_ref().and_then(|d| spells.get(&d.spells));
+    for remark in remarks.read() {
+        if let Some(name) = names.name(remark.actor) {
+            log.push(channel, &format!("{name}: {}", remark.text), font);
+        }
+    }
     for news in magic.read() {
         for line in magic_lines(news, &names, spells) {
             log.push(channel, &line, font);

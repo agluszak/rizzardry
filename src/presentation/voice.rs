@@ -8,6 +8,24 @@
 use bevy::audio::{AudioPlayer, AudioSink, AudioSinkPlayback, PlaybackSettings};
 use bevy::prelude::*;
 
+/// Shared PC voice/quote identity used by creation and live party remarks.
+pub fn pc_voice_stem(
+    gender: crate::content::characters::Gender,
+    personality: crate::content::characters::Personality,
+    voice: crate::content::characters::Voice,
+) -> String {
+    use crate::content::characters::{Gender, Voice};
+    let gender = if gender == Gender::Male { "m" } else { "f" };
+    let personality = ["aggr", "intell", "burly", "chaos", "cun", "ecc", "kind", "laid", "loner"]
+        [personality as usize];
+    let voice = if voice == Voice::First { 1 } else { 2 };
+    format!("{gender}_{personality}{voice}0")
+}
+
+pub fn pc_voice_path(stem: &str, event: u16) -> String {
+    format!("retail://data/sound/pcs/{stem}/{stem}_{event:03}.mp3")
+}
+
 /// A voice line being spoken.
 #[derive(Component, Debug)]
 pub struct Speech {
