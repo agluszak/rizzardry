@@ -10,6 +10,11 @@ use bevy::ui_widgets::Button;
 #[require(Outline = Outline::new(px(1), px(1), Color::NONE))]
 pub struct FocusRing;
 
+/// Use the hover sprite for keyboard focus on controls whose retail art has
+/// no separate focus outline.
+#[derive(Component, Clone, Copy)]
+pub struct FocusHighlight;
+
 /// Explicit sheet indices: retail sheets do not share a frame ordering.
 #[derive(Component, Clone, Copy, PartialEq)]
 #[require(Hovered)]
@@ -61,21 +66,28 @@ pub fn set_enabled(commands: &mut Commands, entity: Entity, enabled: bool, disab
 }
 
 pub fn paint_controls(
+    focus: Option<Res<InputFocus>>,
     mut controls: Query<(
+        Entity,
         &ControlSkin,
         &Hovered,
         Has<Pressed>,
         Has<Selected>,
         Has<InteractionDisabled>,
+        Has<FocusHighlight>,
         &mut Picture,
     )>,
 ) {
-    for (skin, hovered, pressed, selected, disabled, mut picture) in &mut controls {
+    for (entity, skin, hovered, pressed, selected, disabled, focus_highlight, mut picture) in
+        &mut controls
+    {
         let frame = if disabled {
             skin.disabled
         } else if pressed || selected {
             if hovered.get() { skin.pressed_hovered } else { skin.pressed }
-        } else if hovered.get() {
+        } else if hovered.get()
+            || (focus_highlight && focus.as_ref().and_then(|focus| focus.get()) == Some(entity))
+        {
             skin.hovered
         } else {
             skin.normal

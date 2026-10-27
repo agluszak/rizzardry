@@ -52,7 +52,7 @@ impl Plugin for FrontendPlugin {
                     party::refresh,
                     button_colours,
                     paint_menu,
-                    party::paint,
+                    party::paint_labels,
                     confirmation::show_text,
                     credits::populate,
                     credits::scroll,
