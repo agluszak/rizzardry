@@ -115,7 +115,7 @@ fn button(world: &mut World, parent: Entity, label: &str) -> Entity {
 fn build(world: &mut World, session: Entity) -> Entity {
     let root = world
         .spawn((
-            ConversationView { session, selected: None, quantity: 1, error: None },
+            ConversationView { session, selected: None, error: None },
             Node {
                 position_type: PositionType::Absolute,
                 left: percent(8),
@@ -356,10 +356,9 @@ fn sync_view(world: &mut World) {
         .and_then(|c| c.first().copied());
     if let Some(e) = summary
         && let Some(mut t) = world.get_mut::<BitmapText>(e)
+        && t.value != text
     {
-        if t.value != text {
-            t.value = text;
-        }
+        t.value = text;
     }
     let choices = world.query_filtered::<Entity, With<Choices>>().iter(world).next().unwrap();
     let old_choices: Vec<_> =
@@ -471,10 +470,9 @@ fn sync_view(world: &mut World) {
         .and_then(|c| c.first().copied());
     if let Some(e) = label
         && let Some(mut t) = world.get_mut::<BitmapText>(e)
+        && t.value != offer
     {
-        if t.value != offer {
-            t.value = offer;
-        }
+        t.value = offer;
     }
     let old: Vec<_> =
         world.query::<(Entity, &TradeRow)>().iter(world).map(|(e, r)| (e, r.0)).collect();

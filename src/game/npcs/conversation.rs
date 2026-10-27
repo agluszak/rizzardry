@@ -380,22 +380,22 @@ fn run(world: &mut World, entity: Entity, c: &mut Conversation) {
                     block(c, quote, None, "missing quote".into());
                     return;
                 };
-                if !paid && subquote == 0 {
-                    if let Some((gold, always)) = q.operations.iter().find_map(|op| {
+                if !paid
+                    && subquote == 0
+                    && let Some((gold, always)) = q.operations.iter().find_map(|op| {
                         if let DialogueOp::Price { gold, always } = op {
                             Some((*gold, *always))
                         } else {
                             None
                         }
-                    }) && (always
-                        || !world.get::<Npc>(c.actor).unwrap().paid_topics.contains(&quote))
-                    {
-                        let gold =
-                            (gold - gold.saturating_mul(party_communication(world)) / 500).max(1);
-                        c.queue.push_front(Step::Price { quote, gold, always });
-                        c.queue.push_front(Step::Quote { quote: 0x12, subquote: 0, paid: true });
-                        continue;
-                    }
+                    })
+                    && (always || !world.get::<Npc>(c.actor).unwrap().paid_topics.contains(&quote))
+                {
+                    let gold =
+                        (gold - gold.saturating_mul(party_communication(world)) / 500).max(1);
+                    c.queue.push_front(Step::Price { quote, gold, always });
+                    c.queue.push_front(Step::Quote { quote: 0x12, subquote: 0, paid: true });
+                    continue;
                 }
                 if q.alert {
                     block(c, quote, None, "alert quote presentation is not ported".into());
@@ -529,37 +529,34 @@ fn topic(world: &mut World, c: &mut Conversation, text: &str) {
 }
 fn reply(world: &mut World, c: &mut Conversation, text: &str) {
     let Some(script) = script(world, c) else { return };
-    match c.wait.clone() {
-        ConversationWait::Options { quote, words } => {
-            let matched = words.iter().any(|w| w.eq_ignore_ascii_case(text));
-            let entries = &script.quotes[quote as usize].operations;
-            let response = entries
-                .iter()
-                .find_map(|op| match op {
-                    DialogueOp::Reply { response, role: 3, words }
-                        if matched && words.iter().any(|w| w.eq_ignore_ascii_case(text)) =>
+    if let ConversationWait::Options { quote, words } = c.wait.clone() {
+        let matched = words.iter().any(|w| w.eq_ignore_ascii_case(text));
+        let entries = &script.quotes[quote as usize].operations;
+        let response = entries
+            .iter()
+            .find_map(|op| match op {
+                DialogueOp::Reply { response, role: 3, words }
+                    if matched && words.iter().any(|w| w.eq_ignore_ascii_case(text)) =>
+                {
+                    Some(*response)
+                }
+                _ => None,
+            })
+            .or_else(|| {
+                entries.iter().find_map(|op| match op {
+                    DialogueOp::Reply { response, role, .. }
+                        if *role == if matched { 1 } else { 2 } =>
                     {
                         Some(*response)
                     }
                     _ => None,
                 })
-                .or_else(|| {
-                    entries.iter().find_map(|op| match op {
-                        DialogueOp::Reply { response, role, .. }
-                            if *role == if matched { 1 } else { 2 } =>
-                        {
-                            Some(*response)
-                        }
-                        _ => None,
-                    })
-                });
-            if let Some(quote) = response {
-                c.wait = ConversationWait::Ready;
-                c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false });
-                c.revision += 1;
-            }
+            });
+        if let Some(quote) = response {
+            c.wait = ConversationWait::Ready;
+            c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false });
+            c.revision += 1;
         }
-        _ => {}
     }
 }
 fn answer_price(world: &mut World, c: &mut Conversation, accept: bool) {

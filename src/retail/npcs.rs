@@ -257,33 +257,6 @@ impl AssetLoader for DialogueLoader {
         &["nsf"]
     }
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn refuses_truncation() {
-        assert!(read_npcs(&[1, 0, 0, 0]).is_err());
-        assert!(read_dialogue(&[0; 13]).is_err());
-    }
-    #[test]
-    #[ignore = "requires a retail installation"]
-    fn burz_content_is_decoded_not_authored_in_rust() {
-        let files = crate::retail::files::retail_files();
-        let npcs = read_npcs(&files.read("data/databases/npc.dbs").unwrap().unwrap()).unwrap();
-        let burz = &npcs.0[80];
-        assert_eq!(burz.source_name, "Burz");
-        assert_eq!(burz.disposition, 80);
-        assert_eq!(burz.stock.len(), 35);
-        let script = read_dialogue(&files.read(&burz.script_path()).unwrap().unwrap()).unwrap();
-        assert_eq!(script.quotes.len(), 214);
-        assert_eq!(script.topic("MONASTERY"), Some(127));
-        assert_eq!(script.quotes[0].text, ["Pssst... hey!"]);
-        assert!(
-            matches!(&script.quotes[127].operations[2],DialogueOp::Conditional{facts,..} if facts==&[(FactId(514),0)])
-        );
-    }
-}
-
 pub fn read_facts(data: &[u8]) -> Result<FactCatalog, NpcLoadError> {
     let mut b = Bytes::new(data);
     let n = b.u32()? as usize;
@@ -324,5 +297,32 @@ impl AssetLoader for FactCatalogLoader {
         let mut b = Vec::new();
         reader.read_to_end(&mut b).await?;
         read_facts(&b)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn refuses_truncation() {
+        assert!(read_npcs(&[1, 0, 0, 0]).is_err());
+        assert!(read_dialogue(&[0; 13]).is_err());
+    }
+    #[test]
+    #[ignore = "requires a retail installation"]
+    fn burz_content_is_decoded_not_authored_in_rust() {
+        let files = crate::retail::files::retail_files();
+        let npcs = read_npcs(&files.read("data/databases/npc.dbs").unwrap().unwrap()).unwrap();
+        let burz = &npcs.0[80];
+        assert_eq!(burz.source_name, "Burz");
+        assert_eq!(burz.disposition, 80);
+        assert_eq!(burz.stock.len(), 35);
+        let script = read_dialogue(&files.read(&burz.script_path()).unwrap().unwrap()).unwrap();
+        assert_eq!(script.quotes.len(), 214);
+        assert_eq!(script.topic("MONASTERY"), Some(127));
+        assert_eq!(script.quotes[0].text, ["Pssst... hey!"]);
+        assert!(
+            matches!(&script.quotes[127].operations[2],DialogueOp::Conditional{facts,..} if facts==&[(FactId(514),0)])
+        );
     }
 }
