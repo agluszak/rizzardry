@@ -5,7 +5,11 @@ use bevy::prelude::*;
 
 use crate::content::level::LevelGeometry;
 use crate::game::time::GameClock;
-use crate::game::world::level::{Level, LevelEntities, PropPart};
+use bevy::asset::{LoadState, RecursiveDependencyLoadState};
+
+use crate::game::world::level::{
+    Destination, Level, LevelEntities, PresentationReadiness, PropPart,
+};
 use crate::game::world::props::Prop;
 use crate::presentation::billboards::FaceCamera;
 use crate::presentation::party_view::PartyCamera;
@@ -14,16 +18,66 @@ use crate::presentation::party_view::PartyCamera;
 #[derive(Component, Debug)]
 pub struct LevelAppearance(pub Handle<LevelGeometry>);
 
-pub fn request_level_visuals(
+/// On an entry being prepared: its appearance, loading before it commits.
+#[derive(Component, Debug)]
+pub struct PreparedAppearance(Handle<LevelGeometry>);
+
+/// Load an entry's appearance as part of its preparation, holding its
+/// commit until the appearance and what it uses have loaded. If the level
+/// itself cannot be shown the entry fails; a missing texture or model only
+/// shows as missing, as before.
+pub fn prepare_appearance(
     mut commands: Commands,
-    levels: Query<(Entity, &Level), Without<LevelAppearance>>,
+    entries: Query<(Entity, &Destination, Option<&PreparedAppearance>)>,
     assets: Res<AssetServer>,
 ) {
-    for (entity, level) in &levels {
-        commands.entity(entity).insert((
-            LevelAppearance(assets.load(format!("retail://{}", level.path))),
-            Visibility::default(),
-        ));
+    for (entity, destination, prepared) in &entries {
+        let Some(PreparedAppearance(handle)) = prepared else {
+            let handle = assets.load(format!("retail://{}", destination.level.path));
+            commands
+                .entity(entity)
+                .insert((PreparedAppearance(handle), PresentationReadiness::Waiting));
+            continue;
+        };
+        let readiness = match assets.get_load_states(handle) {
+            Some((LoadState::Failed(error), ..)) => {
+                Some(PresentationReadiness::Failed(format!("its appearance failed: {error}")))
+            }
+            Some((
+                LoadState::Loaded,
+                _,
+                RecursiveDependencyLoadState::Loaded | RecursiveDependencyLoadState::Failed(_),
+            )) => None,
+            _ => Some(PresentationReadiness::Waiting),
+        };
+        match readiness {
+            Some(PresentationReadiness::Waiting) => {}
+            Some(failed) => {
+                commands.entity(entity).insert(failed);
+            }
+            None => {
+                commands.entity(entity).remove::<PresentationReadiness>();
+            }
+        }
+    }
+}
+
+/// Show an active level: with the appearance its entry prepared, or (for
+/// a level entered without a renderer's preparation) loading it now.
+pub fn request_level_visuals(
+    mut commands: Commands,
+    levels: Query<(Entity, &Level, Option<&PreparedAppearance>), Without<LevelAppearance>>,
+    assets: Res<AssetServer>,
+) {
+    for (entity, level, prepared) in &levels {
+        let handle = prepared.map_or_else(
+            || assets.load(format!("retail://{}", level.path)),
+            |prepared| prepared.0.clone(),
+        );
+        commands
+            .entity(entity)
+            .remove::<PreparedAppearance>()
+            .insert((LevelAppearance(handle), Visibility::default()));
     }
 }
 

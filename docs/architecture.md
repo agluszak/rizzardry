@@ -51,7 +51,11 @@ intact (retail's please-wait load), so no fight or camp can begin mid-load. One
 activation operation then captures the source's map state, retires it, restores
 the destination, creates a new game's party, places the party, and announces
 readiness. Unlike retail, which unloads first, a failed entry resumes the source.
-Visuals still load after activation.
+With a renderer, presentation also loads the destination's appearance during
+preparation and holds the commit (PresentationReadiness) until it and its
+dependencies have loaded; a level that cannot be shown fails the entry. Headless
+play never holds it. Retail's first-visit and save-restore entry effects (sight
+state, clearing continuing spells) wait for saves and spells to exist.
 
 Dormant records retain deaths, wounds, items, device state, variables, recognition
 and notes. Restore them rather than respawning authored defaults. Do not persist

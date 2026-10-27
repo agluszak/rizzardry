@@ -320,6 +320,18 @@ pub enum Entry {
     Travel,
 }
 
+/// On an entry: the rendered app is still preparing to show it (its
+/// appearance), or found it cannot. Activation waits while it is
+/// `Waiting` and discards the entry on `Failed`, before the source is
+/// retired. Headless play never adds it, so gameplay readiness does not
+/// depend on artwork; with a renderer, the loading phase also covers the
+/// destination's looks.
+#[derive(Component, Debug)]
+pub enum PresentationReadiness {
+    Waiting,
+    Failed(String),
+}
+
 /// An entry could not be prepared and was discarded.
 #[derive(Message, Debug, Clone)]
 pub struct LevelEntryFailed {
@@ -522,7 +534,7 @@ pub struct SharedData<'w> {
 /// collision fail is discarded and the party plays on where it was.
 pub fn activate_level(
     mut commands: Commands,
-    mut destinations: Query<(Entity, &mut Destination)>,
+    mut destinations: Query<(Entity, &mut Destination, Option<&PresentationReadiness>)>,
     current: Query<(Entity, &Level, &LevelState, Option<&LevelEntities>)>,
     parties: Query<Entity, With<Party>>,
     geometry: Res<Assets<LevelDefinition>>,
@@ -534,7 +546,7 @@ pub fn activate_level(
     mut session: Option<ResMut<NextState<crate::game::session::Session>>>,
     (mut ready, mut failures): (MessageWriter<LevelReady>, MessageWriter<LevelEntryFailed>),
 ) {
-    for (root, mut destination) in &mut destinations {
+    for (root, mut destination, presentation) in &mut destinations {
         let destination = &mut *destination;
         let level = &destination.level;
         let mut fail = |why: &str| {
@@ -584,6 +596,14 @@ pub fn activate_level(
                 continue;
             }
         };
+        match presentation {
+            Some(PresentationReadiness::Waiting) => continue,
+            Some(PresentationReadiness::Failed(why)) => {
+                fail(why);
+                continue;
+            }
+            None => {}
+        }
         let traveller = parties.single().ok();
         if matches!(destination.entry, Entry::Travel) && traveller.is_none() {
             fail("there is no party to travel");

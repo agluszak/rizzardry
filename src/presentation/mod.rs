@@ -171,6 +171,7 @@ impl Plugin for PresentationPlugin {
                 environment::apply_environment,
                 sky::shade_clouds,
                 (sky::request_skies, sky::build_sky).chain(),
+                environment::prepare_appearance.before(crate::game::GameplaySet::LevelActivation),
                 (environment::request_level_visuals, environment::attach_level_visuals).chain(),
                 billboards::face_camera.after(party_view::aim_camera),
                 music::play_music,
