@@ -116,7 +116,7 @@ struct Creation {
 }
 enum CreationMode {
     Party,
-    Editing { target: Option<u32>, draft: CharacterDraft, step: EditStep },
+    Editing { draft: CharacterDraft, step: EditStep },
 }
 impl CreationMode {
     fn step(&self) -> Option<EditStep> {
@@ -788,24 +788,9 @@ fn activate(
     match *action {
         Action::Add if session.candidates.len() < 6 => {
             session.mode = CreationMode::Editing {
-                target: None,
                 draft: CharacterDraft::default(),
                 step: EditStep::Identity,
             };
-        }
-        Action::Edit(i) => {
-            let candidate = session.party.get(i).and_then(|id| {
-                session.candidates.iter().find(|(candidate, _)| candidate == id).cloned()
-            });
-            if let Some((id, draft)) = candidate {
-                session.mode =
-                    CreationMode::Editing { target: Some(id), draft, step: EditStep::Identity };
-            }
-        }
-        Action::Remove(i) => {
-            if i < session.party.len() {
-                session.party.remove(i);
-            }
         }
         Action::SelectCandidate(Some(id)) => {
             if session.candidates.iter().any(|(candidate, _)| *candidate == id) {
@@ -847,30 +832,19 @@ fn activate(
             commands.entity(click.entity).insert(FinishWhenSettled);
         }
         Action::Finish => {
-            if let CreationMode::Editing { target: index, draft, .. } = &session.mode {
+            if let CreationMode::Editing { draft, .. } = &session.mode {
                 match draft.finish() {
                     Err(message) => session.message = message.into(),
                     Ok(_) => {
-                        let index = *index;
                         let CreationMode::Editing { draft, .. } =
                             std::mem::replace(&mut session.mode, CreationMode::Party)
                         else {
                             unreachable!()
                         };
-                        if let Some(id) = index {
-                            if let Some((_, candidate)) = session
-                                .candidates
-                                .iter_mut()
-                                .find(|(candidate, _)| *candidate == id)
-                            {
-                                *candidate = draft;
-                            }
-                        } else {
-                            let id = session.next_id;
-                            session.next_id += 1;
-                            session.candidates.push((id, draft));
-                            session.selected = Some(id);
-                        }
+                        let id = session.next_id;
+                        session.next_id += 1;
+                        session.candidates.push((id, draft));
+                        session.selected = Some(id);
                     }
                 }
             }
@@ -970,7 +944,7 @@ fn activate(
             }
         }
     }
-    if matches!(*action, Action::Add | Action::Edit(_))
+    if matches!(*action, Action::Add)
         && let CreationMode::Editing { draft, .. } = &session.mode
     {
         for mut name in &mut names {
@@ -1084,9 +1058,6 @@ fn refresh(
         let enabled = match *action {
             Action::Add => {
                 matches!(session.mode, CreationMode::Party) && session.candidates.len() < 6
-            }
-            Action::Edit(i) | Action::Remove(i) => {
-                matches!(session.mode, CreationMode::Party) && i < session.party.len()
             }
             Action::Begin => {
                 matches!(session.mode, CreationMode::Party) && !session.party.is_empty()
@@ -1265,7 +1236,6 @@ mod keyboard_tests {
                 selected: None,
                 next_id: 0,
                 mode: CreationMode::Editing {
-                    target: None,
                     draft: CharacterDraft::default(),
                     step: EditStep::Identity,
                 },
