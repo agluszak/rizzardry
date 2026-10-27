@@ -92,6 +92,12 @@ impl TextLog {
             .then(|| self.scroll[self.selected] as f32 / (count - SCROLL_WINDOW) as f32)
     }
 
+    /// Map the pointer's retail track position to the selected channel's line.
+    pub fn scroll_thumb(&mut self, position: u32) {
+        let range = self.channels[self.selected].len().saturating_sub(SCROLL_WINDOW);
+        self.scroll_to(range * position.min(46) as usize / 47);
+    }
+
     /// Retail `ScrollTextBoxUp`.
     pub fn scroll_up(&mut self, lines: usize) {
         let first = &mut self.scroll[self.selected];
@@ -409,6 +415,12 @@ mod tests {
         // A new line brings the newest back into view.
         log.push(0, "10", None);
         assert_eq!(log.visible()[0], "4");
+        log.scroll_thumb(0);
+        assert_eq!(log.visible()[0], "0");
+        log.scroll_thumb(23);
+        assert_eq!(log.visible()[0], "4");
+        log.scroll_thumb(46);
+        assert_eq!(log.visible()[0], "9");
         // Down stops with the last line alone at the top.
         log.scroll_down(100);
         assert_eq!(log.visible(), ["10"]);

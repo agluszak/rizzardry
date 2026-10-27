@@ -1,5 +1,5 @@
 //! The character values on the retail item page.
-use super::{InventoryArt, InventoryScreen, RetailLabel, absolute, format_gold, info, review};
+use super::{InventoryArt, InventoryScreen, RetailLabel, absolute, format_gold, info};
 use crate::content::characters::Attribute;
 use crate::content::items::ItemCatalog;
 use crate::game::characters::Load;
@@ -70,15 +70,7 @@ fn caption(
     commands.entity(label).insert(RetailLabel(id));
 }
 
-pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) {
-    let panel = commands
-        .spawn((
-            review::Page::Items,
-            absolute(Vec2::ZERO, Vec2::new(640.0, 165.0)),
-            Pickable::IGNORE,
-            ChildOf(root),
-        ))
-        .id();
+pub(super) fn build(commands: &mut Commands, panel: Entity, root: Entity, art: &InventoryArt) {
     commands.spawn((
         ExperienceBar,
         Picture {

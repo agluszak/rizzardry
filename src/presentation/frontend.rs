@@ -33,7 +33,7 @@ impl Plugin for FrontendPlugin {
             .add_input_context::<confirmation::DeleteDialog>()
             .add_systems(
                 PreUpdate,
-                arm_menu_input
+                arm_confirmation_input
                     .after(bevy::input::InputSystems)
                     .before(EnhancedInputSystems::Update),
             )
@@ -51,7 +51,7 @@ impl Plugin for FrontendPlugin {
                     party::refresh,
                     button_colours,
                     paint_menu,
-                    party::paint,
+                    party::paint_labels,
                     confirmation::show_text,
                     credits::populate,
                     credits::scroll,
@@ -61,26 +61,18 @@ impl Plugin for FrontendPlugin {
     }
 }
 
-// A key that opened a screen must be released before that screen handles input.
-fn arm_menu_input(
+// Native buttons also receive raw keyboard events, so the confirmation waits
+// for the opening key to be released before accepting either input path.
+fn arm_confirmation_input(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
-    menu: Query<(Entity, &ContextActivity<MenuInput>)>,
-    credits: Query<(Entity, &ContextActivity<credits::CreditsInput>)>,
     confirmation: Query<(Entity, &ContextActivity<confirmation::DeleteDialog>)>,
 ) {
-    if keys.get_pressed().next().is_some() {
+    if [KeyCode::Enter, KeyCode::Space]
+        .into_iter()
+        .any(|key| keys.pressed(key) || keys.just_pressed(key))
+    {
         return;
-    }
-    for (entity, active) in &menu {
-        if !**active {
-            commands.entity(entity).insert(ContextActivity::<MenuInput>::ACTIVE);
-        }
-    }
-    for (entity, active) in &credits {
-        if !**active {
-            commands.entity(entity).insert(ContextActivity::<credits::CreditsInput>::ACTIVE);
-        }
     }
     for (entity, active) in &confirmation {
         if !**active {
@@ -116,7 +108,7 @@ struct Creation {
     party: Vec<u32>,
     selected: Option<u32>,
     next_id: u32,
-    editing: Option<(Option<u32>, CharacterDraft)>,
+    editing: Option<CharacterDraft>,
     page: Page,
     message: String,
 }
@@ -127,8 +119,6 @@ enum Action {
     Quit,
     Menu,
     Add,
-    Edit(usize),
-    Remove(usize),
     SelectCandidate(Option<u32>),
     ToggleCandidate,
     DeleteCandidate,
@@ -145,7 +135,6 @@ enum Action {
 }
 #[derive(Component)]
 enum Field {
-    Slot(usize),
     Race,
     Gender,
     Profession,
@@ -351,12 +340,11 @@ fn main_menu(mut commands: Commands, assets: Res<AssetServer>, mut focus: ResMut
         MenuInput
         ChildOf({root})
         ContextPriority::<MenuInput>::new(1)
-        ContextActivity::<MenuInput>::INACTIVE
         Actions<MenuInput> [
-            InputBindingAction::<MenuUp>::new() ActionSettings { consume_input: true } Bindings [ Binding(KeyCode::ArrowUp) ]
-            -- InputBindingAction::<MenuDown>::new() ActionSettings { consume_input: true } Bindings [ Binding(KeyCode::ArrowDown) ]
-            -- InputBindingAction::<MenuStart>::new() ActionSettings { consume_input: true } Bindings [ Binding(KeyCode::KeyS) ]
-            -- InputBindingAction::<MenuExit>::new() ActionSettings { consume_input: true } Bindings [ Binding(KeyCode::Escape) Binding(KeyCode::KeyX) Binding(KeyCode::KeyE) ]
+            InputBindingAction::<MenuUp>::new() ActionSettings { consume_input: true, require_reset: true } Bindings [ Binding(KeyCode::ArrowUp) ]
+            -- InputBindingAction::<MenuDown>::new() ActionSettings { consume_input: true, require_reset: true } Bindings [ Binding(KeyCode::ArrowDown) ]
+            -- InputBindingAction::<MenuStart>::new() ActionSettings { consume_input: true, require_reset: true } Bindings [ Binding(KeyCode::KeyS) ]
+            -- InputBindingAction::<MenuExit>::new() ActionSettings { consume_input: true, require_reset: true } Bindings [ Binding(KeyCode::Escape) Binding(KeyCode::KeyX) Binding(KeyCode::KeyE) ]
         ]
         on(menu_up)
         on(menu_down)
@@ -449,29 +437,6 @@ fn creation(mut commands: Commands, assets: Res<AssetServer>) {
     let editor = commands
         .spawn((EditorGroup, absolute(Vec2::ZERO, Vec2::new(640., 480.)), ChildOf(root)))
         .id();
-    text(&mut commands, editor, (22., 16.), 590., 25., "ASSEMBLE YOUR PARTY");
-    text(
-        &mut commands,
-        editor,
-        (22., 51.),
-        580.,
-        10.,
-        "Create up to six adventurers. Nothing is committed until you begin your adventure.",
-    );
-    for i in 0..6 {
-        let label = button(
-            &mut commands,
-            editor,
-            (22., 88. + i as f32 * 45.),
-            139.,
-            "Empty slot",
-            Action::Edit(i),
-        );
-        commands.entity(label).insert(Field::Slot(i));
-        button(&mut commands, editor, (165., 88. + i as f32 * 45.), 22., "x", Action::Remove(i));
-    }
-    button(&mut commands, editor, (22., 369.), 165., "+ NEW ADVENTURER", Action::Add);
-    button(&mut commands, editor, (22., 435.), 165., "DISCARD PARTY & BACK", Action::Menu);
     text(
         &mut commands,
         editor,
@@ -706,7 +671,6 @@ fn activate(
         Action::NewGame
             | Action::Menu
             | Action::Add
-            | Action::Edit(_)
             | Action::Cancel
             | Action::Finish
             | Action::Begin
@@ -738,22 +702,8 @@ fn activate(
     session.message.clear();
     match *action {
         Action::Add if session.candidates.len() < 6 => {
-            session.editing = Some((None, CharacterDraft::default()));
+            session.editing = Some(CharacterDraft::default());
             session.page = Page::Identity;
-        }
-        Action::Edit(i) => {
-            let candidate = session.party.get(i).and_then(|id| {
-                session.candidates.iter().find(|(candidate, _)| candidate == id).cloned()
-            });
-            if let Some((id, draft)) = candidate {
-                session.editing = Some((Some(id), draft));
-                session.page = Page::Identity;
-            }
-        }
-        Action::Remove(i) => {
-            if i < session.party.len() {
-                session.party.remove(i);
-            }
         }
         Action::SelectCandidate(Some(id)) => {
             if session.candidates.iter().any(|(candidate, _)| *candidate == id) {
@@ -792,26 +742,15 @@ fn activate(
             commands.entity(click.entity).insert(FinishWhenSettled);
         }
         Action::Finish => {
-            if let Some((index, draft)) = &session.editing {
+            if let Some(draft) = &session.editing {
                 match draft.finish() {
                     Err(message) => session.message = message.into(),
                     Ok(_) => {
-                        let index = *index;
-                        let (_, draft) = session.editing.take().unwrap();
-                        if let Some(id) = index {
-                            if let Some((_, candidate)) = session
-                                .candidates
-                                .iter_mut()
-                                .find(|(candidate, _)| *candidate == id)
-                            {
-                                *candidate = draft;
-                            }
-                        } else {
-                            let id = session.next_id;
-                            session.next_id += 1;
-                            session.candidates.push((id, draft));
-                            session.selected = Some(id);
-                        }
+                        let draft = session.editing.take().unwrap();
+                        let id = session.next_id;
+                        session.next_id += 1;
+                        session.candidates.push((id, draft));
+                        session.selected = Some(id);
                         session.page = Page::Party;
                     }
                 }
@@ -847,7 +786,7 @@ fn activate(
             }
         }
         action => {
-            let Some((_, draft)) = session.editing.as_mut() else { return };
+            let Some(draft) = session.editing.as_mut() else { return };
             let result = match action {
                 Action::Race(direction) => {
                     let i = PLAYABLE_RACES.iter().position(|&r| r == draft.race()).unwrap() as i32;
@@ -904,8 +843,8 @@ fn activate(
             }
         }
     }
-    if matches!(*action, Action::Add | Action::Edit(_))
-        && let Some((_, draft)) = &session.editing
+    if matches!(*action, Action::Add)
+        && let Some(draft) = &session.editing
     {
         for mut name in &mut names {
             *name = EditableText {
@@ -941,7 +880,7 @@ fn update_name(
     else {
         return;
     };
-    if let Some((_, draft)) = session.editing.as_mut() {
+    if let Some(draft) = session.editing.as_mut() {
         let value = name.value().to_string();
         if draft.name != value {
             draft.name = value;
@@ -1003,14 +942,11 @@ fn refresh(
             Visibility::Hidden
         });
     }
-    let draft = session.editing.as_ref().map(|(_, d)| d);
+    let draft = session.editing.as_ref();
     let profile = draft.map(CharacterDraft::preview);
     for (entity, action, disabled) in &buttons {
         let enabled = match *action {
             Action::Add => session.editing.is_none() && session.candidates.len() < 6,
-            Action::Edit(i) | Action::Remove(i) => {
-                session.editing.is_none() && i < session.party.len()
-            }
             Action::Begin => session.editing.is_none() && !session.party.is_empty(),
             _ => true,
         };
@@ -1019,21 +955,6 @@ fn refresh(
 
     for (field, mut text) in &mut fields {
         let value = match field {
-            Field::Slot(i) => session
-                .party
-                .get(*i)
-                .and_then(|id| session.candidates.iter().find(|(candidate, _)| candidate == id))
-                .map(|(_, draft)| draft)
-                .map(|d| {
-                    let name: String = d.name.chars().take(16).collect();
-                    format!(
-                        "{}{}\n{:?}",
-                        name,
-                        if d.name.chars().count() > 16 { "..." } else { "" },
-                        d.profession()
-                    )
-                })
-                .unwrap_or_else(|| format!("{}  /  Empty", i + 1)),
             Field::Message => session.message.clone(),
             _ => {
                 let (Some(draft), Some(profile)) = (draft, &profile) else { continue };
@@ -1173,7 +1094,7 @@ mod keyboard_tests {
                 party: vec![],
                 selected: None,
                 next_id: 0,
-                editing: Some((None, CharacterDraft::default())),
+                editing: Some(CharacterDraft::default()),
                 page: Page::Identity,
                 message: String::new(),
             })
@@ -1199,7 +1120,7 @@ mod keyboard_tests {
         }
         app.update();
         assert_eq!(
-            app.world().get::<Creation>(root).unwrap().editing.as_ref().unwrap().1.name,
+            app.world().get::<Creation>(root).unwrap().editing.as_ref().unwrap().name,
             "Nora"
         );
         for edit in
@@ -1209,7 +1130,7 @@ mod keyboard_tests {
         }
         app.update();
         assert_eq!(
-            app.world().get::<Creation>(root).unwrap().editing.as_ref().unwrap().1.name,
+            app.world().get::<Creation>(root).unwrap().editing.as_ref().unwrap().name,
             "Zora"
         );
         app.world_mut()
@@ -1218,7 +1139,7 @@ mod keyboard_tests {
             .queue_edit(TextEdit::ImeSetCompose { value: "é".into(), cursor: None });
         app.update();
         assert_eq!(
-            app.world().get::<Creation>(root).unwrap().editing.as_ref().unwrap().1.name,
+            app.world().get::<Creation>(root).unwrap().editing.as_ref().unwrap().name,
             "Zora"
         );
         app.world_mut()
@@ -1227,7 +1148,7 @@ mod keyboard_tests {
             .queue_edit(TextEdit::ImeCommit { value: "é".into() });
         app.update();
         assert_eq!(
-            app.world().get::<Creation>(root).unwrap().editing.as_ref().unwrap().1.name,
+            app.world().get::<Creation>(root).unwrap().editing.as_ref().unwrap().name,
             "Zéora"
         );
         assert!(app.world().get::<Creation>(root).unwrap().party.is_empty());
@@ -1243,7 +1164,7 @@ mod keyboard_tests {
             .spawn(FinishWhenSettled)
             .observe(
                 |_: On<Activate>, sessions: Query<&Creation>, mut finished: ResMut<Finished>| {
-                    let name = sessions.single().unwrap().editing.as_ref().unwrap().1.name.clone();
+                    let name = sessions.single().unwrap().editing.as_ref().unwrap().name.clone();
                     finished.0.push(name);
                 },
             )
@@ -1295,13 +1216,20 @@ mod keyboard_tests {
             .iter(app.world())
             .find_map(|(entity, action)| matches!(action, Action::Credits).then_some(entity))
             .unwrap();
-        app.world_mut().trigger(Activate { entity: credits });
+        app.world_mut()
+            .resource_mut::<InputFocus>()
+            .set(credits, bevy::input_focus::FocusCause::Navigated);
+        key(&mut app, window, KeyCode::Enter, true);
         app.update();
         assert_eq!(*app.world().resource::<State<MenuPage>>().get(), MenuPage::Credits);
         app.update();
+        assert_eq!(*app.world().resource::<State<MenuPage>>().get(), MenuPage::Credits);
+        key(&mut app, window, KeyCode::Enter, false);
         key(&mut app, window, KeyCode::Escape, true);
         app.update();
         assert_eq!(*app.world().resource::<State<MenuPage>>().get(), MenuPage::Main);
+        app.update();
+        assert!(app.world().resource::<Messages<AppExit>>().is_empty());
         key(&mut app, window, KeyCode::Escape, false);
         key(&mut app, window, KeyCode::KeyS, true);
         app.update();
@@ -1315,7 +1243,10 @@ mod keyboard_tests {
         // The transition cleared focus. Tab still finds a visible enabled control.
         tap(&mut app, window, KeyCode::Tab);
         let focused = app.world().resource::<InputFocus>().get().unwrap();
-        assert!(app.world().get::<Action>(focused).is_some());
+        assert!(
+            app.world().get::<Action>(focused).is_some()
+                || app.world().get::<NameInput>(focused).is_some()
+        );
         assert!(app.world().get::<InteractionDisabled>(focused).is_none());
         assert!(app.world().get::<InheritedVisibility>(focused).unwrap().get());
         let name = app
@@ -1329,6 +1260,9 @@ mod keyboard_tests {
             .set(name, bevy::input_focus::FocusCause::Navigated);
         tap(&mut app, window, KeyCode::Escape);
         tap(&mut app, window, KeyCode::Tab);
+        if app.world().resource::<InputFocus>().get() == Some(name) {
+            tap(&mut app, window, KeyCode::Tab);
+        }
         assert!(
             app.world()
                 .resource::<InputFocus>()
@@ -1354,6 +1288,7 @@ mod keyboard_tests {
                 matches!(action, Action::DeleteCandidate).then_some(entity)
             })
             .unwrap();
+        key(&mut app, window, KeyCode::ShiftLeft, true);
         app.world_mut().write_message(KeyboardInput {
             key_code: KeyCode::Enter,
             logical_key: Key::Enter,
@@ -1375,5 +1310,21 @@ mod keyboard_tests {
         let session = app.world().get::<Creation>(owner).unwrap();
         assert!(session.candidates.is_empty());
         assert!(session.party.is_empty());
+
+        let back = app
+            .world_mut()
+            .query::<(Entity, &Action, Has<party::Control>)>()
+            .iter(app.world())
+            .find_map(|(entity, action, party)| {
+                (party && matches!(action, Action::Menu)).then_some(entity)
+            })
+            .unwrap();
+        app.world_mut().trigger(Activate { entity: back });
+        app.update();
+        app.update();
+        assert_eq!(*app.world().resource::<State<Session>>().get(), Session::MainMenu);
+        key(&mut app, window, KeyCode::KeyS, true);
+        app.update();
+        assert_eq!(*app.world().resource::<State<Session>>().get(), Session::Creation);
     }
 }

@@ -1,9 +1,8 @@
 //! The item pool's two-column retail scrollbar.
-use super::{Cell, InventoryArt, ItemCell, POOL_CELLS, absolute, review};
+use super::{InventoryArt, POOL_CELLS};
 use crate::game::inventory::PartyInventory;
-use bevy::picking::events::PointerScroll;
 use bevy::prelude::*;
-use bevy::ui_widgets::{SetSliderValue, SliderRange, SliderValue, SliderValueChange};
+use bevy::ui_widgets::{SliderRange, SliderValue};
 
 #[derive(Component)]
 pub(super) struct PoolScroll;
@@ -12,41 +11,17 @@ fn maximum(items: usize) -> usize {
     items.saturating_sub(POOL_CELLS).div_ceil(2)
 }
 
-pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) {
-    let panel = commands
-        .spawn((
-            review::Page::Items,
-            absolute(Vec2::ZERO, Vec2::new(640.0, 450.0)),
-            Pickable::IGNORE,
-            ChildOf(root),
-        ))
-        .id();
+pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) -> Entity {
     let track = crate::presentation::retail_controls::step_scrollbar(
         commands,
-        panel,
+        root,
         art.scroll.clone(),
         Vec2::new(611.0, 193.0),
         192.0,
         0.0,
     );
     commands.entity(track).insert(PoolScroll);
-}
-
-pub(super) fn wheel(
-    event: On<PointerScroll>,
-    cells: Query<&ItemCell>,
-    slider: Option<Single<Entity, With<PoolScroll>>>,
-    mut commands: Commands,
-) {
-    if let (Ok(cell), Some(slider)) = (cells.get(event.entity), slider)
-        && matches!(cell.cell, Cell::Pool(_))
-        && event.y != 0.0
-    {
-        commands.trigger(SetSliderValue {
-            entity: *slider,
-            change: SliderValueChange::RelativeStep(if event.y < 0.0 { 1.0 } else { -1.0 }),
-        });
-    }
+    track
 }
 
 pub(super) fn sync(
@@ -56,12 +31,13 @@ pub(super) fn sync(
 ) {
     let (Some((slider, value, range)), Some(party)) = (slider.as_deref(), party) else { return };
     let max = maximum(party.pool.stacks.len()) as f32;
-    if range.end() != max {
-        commands.entity(*slider).insert(SliderRange::new(0.0, max));
-    }
-    if value.0 > max {
-        commands.entity(*slider).insert(SliderValue(max));
-    }
+    crate::presentation::retail_controls::set_scroll_maximum(
+        &mut commands,
+        *slider,
+        value,
+        range,
+        max,
+    );
 }
 
 #[cfg(test)]
@@ -72,7 +48,7 @@ mod tests {
     use bevy::input::{mouse::MouseScrollUnit, touch::TouchPhase};
     use bevy::picking::{
         backend::HitData,
-        events::{PointerCancel, PointerDragStart},
+        events::{PointerCancel, PointerDragStart, PointerScroll},
         hover::PointerCaptureMap,
         pointer::PointerButton,
     };
@@ -86,6 +62,7 @@ mod tests {
             .init_resource::<PointerCaptureMap>()
             .init_resource::<UiScale>()
             .add_systems(Update, sync);
+        app.world_mut().register_component::<Window>();
         let mut ids = ItemIds::default();
         let items = (0..11)
             .map(|id| {
@@ -104,9 +81,26 @@ mod tests {
             .observe(slider_self_update)
             .observe(crate::presentation::retail_controls::cancel_slider_drag)
             .id();
-        let cell = app.world_mut().spawn(ItemCell { cell: Cell::Pool(0) }).observe(wheel).id();
+        let region = app
+            .world_mut()
+            .spawn(crate::presentation::retail_controls::ScrollWheel(slider))
+            .observe(crate::presentation::retail_controls::scroll_wheel)
+            .id();
+        let cell = app.world_mut().spawn(ChildOf(region)).id();
+        let backpack_cell = app.world_mut().spawn_empty().id();
         app.update();
         let pointer = crate::presentation::test_input::mouse();
+        app.world_mut().trigger(PointerScroll {
+            entity: backpack_cell,
+            pointer: pointer.clone(),
+            unit: MouseScrollUnit::Line,
+            x: 0.0,
+            y: -1.0,
+            hit: HitData::new(Entity::PLACEHOLDER, 0.0, None, None),
+            phase: TouchPhase::Moved,
+        });
+        app.update();
+        assert_eq!(app.world().get::<SliderValue>(slider).unwrap().0, 0.0);
         for _ in 0..2 {
             app.world_mut().trigger(PointerScroll {
                 entity: cell,
