@@ -11,10 +11,9 @@
 //! consequences at once; retail's progress bars and tumbler animations are
 //! presentation and do not delay the outcome.
 //!
-//! Not ported yet: trap disarming, the Knock-Knock
-//! and Divine Trap spells and tools used on a device, and what a sprung
-//! trap's spell does. Attempts that could spring a trap are refused before
-//! spending RNG or changing the device until those consequences are implemented.
+//! Knock-Knock, Divine Trap and device tools are separate follow-ups. Traps
+//! whose missile, poison, hearing or summoning prerequisites remain unported
+//! are refused before spending RNG or changing the device.
 
 use bevy::prelude::*;
 
@@ -31,7 +30,7 @@ use crate::game::time::GameClock;
 pub const COMPONENTS: usize = 8;
 
 /// Each trap type's own grade (retail `g_trap_difficulty`).
-const TRAP_GRADE: [i32; TRAP_TYPES] = [1, 1, 2, 2, 3, 3, 3, 4, 5, 5, 5, 6, 6, 7, 7];
+pub(crate) const TRAP_GRADE: [i32; TRAP_TYPES] = [1, 1, 2, 2, 3, 3, 3, 4, 5, 5, 5, 6, 6, 7, 7];
 
 /// Which components each trap type is built from (retail `g_table1`).
 pub const TRAP_COMPONENTS: [[bool; COMPONENTS]; TRAP_TYPES] = {
@@ -186,6 +185,10 @@ pub enum LockNews {
     SkillImproved {
         member: Entity,
     },
+    Sprung {
+        trap: u8,
+        destroyed: bool,
+    },
 }
 
 /// Why an attempt was not made.
@@ -201,6 +204,7 @@ pub enum Unable {
     /// That tumbler or component is already done.
     Done,
     UnsupportedTrap,
+    MissingContent,
 }
 
 /// A member's Locks & Traps level, if they can use it now (retail
@@ -409,28 +413,114 @@ fn disarming(world: &World) -> Result<&Disarming, Unable> {
     }
 }
 
-/// Inspecting or disarming can discharge a trap. Until that consequence is
-/// implemented, none of these routes may roll an attempt or open the device.
+/// Check the source, level and dependencies before any failure can discharge.
+fn ready_trap(world: &mut World) -> Result<Disarming, Unable> {
+    if world.query::<&super::level::Destination>().iter(world).next().is_some()
+        || world.query::<&crate::game::combat::Battle>().iter(world).next().is_some()
+    {
+        return Err(Unable::NotNow);
+    }
+    let interaction = world.get_resource::<DeviceInteraction>().ok_or(Unable::NotNow)?;
+    let device = interaction.device;
+    let trap = disarming(world)?.clone();
+    if world.get::<Guarded>(device).is_none()
+        || world
+            .get::<super::level::LevelOwned>(device)
+            .is_none_or(|owner| world.get::<super::level::Level>(owner.0).is_none())
+    {
+        return Err(Unable::NotNow);
+    }
+    if let Err(error) = crate::game::magic::traps::validate(world, trap.trap) {
+        if error == Unable::UnsupportedTrap {
+            world.write_message(LockNews::UnsupportedTrap);
+        }
+        return Err(error);
+    }
+    Ok(trap)
+}
+
+fn practise_traps(world: &mut World, actor: Entity) {
+    let improved = world.resource_scope(|world, mut rng: Mut<GameRng>| {
+        world.get_mut::<Character>(actor).unwrap().practise(Skill::LocksAndTraps, 1, &mut rng)
+    });
+    if improved {
+        world.write_message(LockNews::SkillImproved { member: actor });
+    }
+}
+
 pub fn inspect_trap(world: &mut World, actor: Entity) -> Result<(), Unable> {
-    member(world, actor)?;
-    disarming(world)?;
-    unsupported_trap(world)
+    let trap = ready_trap(world)?;
+    let (character, vitals) = member(world, actor)?;
+    let skill = lock_skill(character, vitals).ok_or(Unable::Unskilled)?;
+    let setting = *world.resource::<Difficulty>();
+    let chance = trap_chance(Some(skill), trap.difficulty, setting) as u32;
+    if rng(world).below(100) >= chance {
+        return spring_trap(world, Some(actor));
+    }
+    // Practice may increase this very inspection's observation chance.
+    practise_traps(world, actor);
+    let (character, vitals) = member(world, actor)?;
+    let chance = trap_chance(lock_skill(character, vitals), trap.difficulty, setting) as u32;
+    let seen = std::array::from_fn(|column| {
+        if rng(world).below(100) >= chance {
+            Observation::Unknown
+        } else if TRAP_COMPONENTS[usize::from(trap.trap)][column] {
+            Observation::Present
+        } else {
+            Observation::Absent
+        }
+    });
+    let mut interaction = world.resource_mut::<DeviceInteraction>();
+    let Work::Disarming(trap) = &mut interaction.work else { unreachable!() };
+    if let Some((_, previous)) = trap.observations.iter_mut().find(|(member, _)| *member == actor) {
+        *previous = seen;
+    } else {
+        trap.observations.push((actor, seen));
+    }
+    world.write_message(LockNews::Inspected { member: actor });
+    Ok(())
 }
 
-pub fn disarm_component(world: &mut World, actor: Entity, _component: usize) -> Result<(), Unable> {
-    member(world, actor)?;
-    disarming(world)?;
-    unsupported_trap(world)
+pub fn disarm_component(world: &mut World, actor: Entity, component: usize) -> Result<(), Unable> {
+    let trap = ready_trap(world)?;
+    if component >= COMPONENTS || trap.disarmed[component] {
+        return Err(Unable::Done);
+    }
+    let (character, vitals) = member(world, actor)?;
+    let skill = lock_skill(character, vitals).ok_or(Unable::Unskilled)?;
+    let chance = trap_chance(Some(skill), trap.difficulty, *world.resource::<Difficulty>()) as u32;
+    if !TRAP_COMPONENTS[usize::from(trap.trap)][component]
+        || rng(world).below(100) >= chance * chance / 100
+    {
+        return spring_trap(world, Some(actor));
+    }
+    let mut interaction = world.resource_mut::<DeviceInteraction>();
+    let Work::Disarming(work) = &mut interaction.work else { unreachable!() };
+    work.disarmed[component] = true;
+    let done = TRAP_COMPONENTS[usize::from(trap.trap)]
+        .iter()
+        .zip(work.disarmed)
+        .all(|(&required, disarmed)| !required || disarmed);
+    practise_traps(world, actor);
+    world.write_message(LockNews::ComponentDisarmed { member: actor, component });
+    if done {
+        world.write_message(LockNews::Disarmed { trap: trap.trap });
+        complete(world);
+    }
+    Ok(())
 }
 
-pub fn spring_trap(world: &mut World) -> Result<(), Unable> {
-    disarming(world)?;
-    unsupported_trap(world)
-}
-
-fn unsupported_trap(world: &mut World) -> Result<(), Unable> {
-    world.write_message(LockNews::UnsupportedTrap);
-    Err(Unable::UnsupportedTrap)
+pub fn spring_trap(world: &mut World, selected: Option<Entity>) -> Result<(), Unable> {
+    let trap = ready_trap(world)?;
+    let destroyed =
+        crate::game::magic::traps::discharge(world, trap.trap, trap.difficulty, selected)?;
+    world.write_message(LockNews::Sprung { trap: trap.trap, destroyed });
+    if destroyed {
+        complete(world);
+    } else {
+        leave(world);
+    }
+    Ok(())
 }
 
 /// The lock or trap is overcome: the interaction ends and the device runs.

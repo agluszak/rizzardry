@@ -297,6 +297,11 @@ fn magic_lines(
         Effect::Cured { victim: v, condition } => {
             format!("{} is no longer {}.", victim(v), condition_word(condition))
         }
+        Effect::GoldLost { amount } => format!("The party loses {amount} gold."),
+        Effect::Destroyed { class, amount } => format!("{amount} {class:?} items are destroyed."),
+        Effect::Drained { victim: v, amount } => {
+            format!("{} loses {amount} spell points.", victim(v))
+        }
         Effect::Raised { victim: v } => format!("{} lives again!", victim(v)),
         Effect::Resisted { victim: v } => format!("{} resists.", victim(v)),
         Effect::Nothing { victim: v } => format!("{} is unaffected.", victim(v)),
@@ -318,6 +323,15 @@ fn magic_lines(
                 Refusal::PlayedBadly => "fails to play it",
             };
             vec![format!("{} {why}.", name(*caster))]
+        }
+        MagicNews::Triggered { effects, improved, .. } => {
+            let mut lines: Vec<_> = effects.iter().map(|&e| effect_line(e)).collect();
+            lines.extend(
+                improved
+                    .iter()
+                    .map(|&(member, skill)| format!("{}'s {skill:?} improves.", name(member))),
+            );
+            lines
         }
         MagicNews::Landed { effects, .. } => effects.iter().map(|&e| effect_line(e)).collect(),
         MagicNews::Done(report) => {
@@ -437,6 +451,9 @@ pub fn queue_notices(
     for news in locks.read() {
         let text = match news {
             LockNews::Picked => string(LOCK_PICKED),
+            LockNews::Sprung { trap: kind, destroyed } => {
+                format!("{} {}", trap(kind), string(if *destroyed { 0x7b3 } else { 0x7b4 }))
+            }
             LockNews::SkillImproved { member: who } => {
                 format!("{}'s Locks & Traps improves.", member(who))
             }
@@ -448,7 +465,7 @@ pub fn queue_notices(
                 format!("{} {}", trap(kind), string(TRAP_DISARMED))
             }
             LockNews::UnsupportedTrap => {
-                "Trap effects are not implemented yet; the device remains guarded.".to_owned()
+                "This trap effect is not implemented yet; the device remains guarded.".to_owned()
             }
             LockNews::Locked
             | LockNews::Trapped { .. }

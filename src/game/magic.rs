@@ -8,6 +8,7 @@
 
 pub mod casting;
 pub mod effects;
+pub(crate) mod traps;
 
 pub use effects::{Effect, Field, Members, Victim, modelled};
 
@@ -63,6 +64,22 @@ pub struct SpellPoints {
 impl SpellPoints {
     pub fn full(maximum: EnumMap<Realm, u32>) -> Self {
         SpellPoints { current: maximum, ..default() }
+    }
+
+    /// Drain randomly chosen realms, at most fifty draws (retail
+    /// `DrainCharacterSpellPoints`). Fractional recovery is not spent.
+    pub fn drain(&mut self, amount: u32, rng: &mut GameRng) -> u32 {
+        let mut remaining = amount;
+        for _ in 0..50 {
+            if remaining == 0 {
+                break;
+            }
+            let realm = Realm::try_from(rng.below(6) as u8).unwrap();
+            let taken = remaining.min(self.current[realm]);
+            self.current[realm] -= taken;
+            remaining -= taken;
+        }
+        amount - remaining
     }
 
     /// Restore the largest realm deficits first (retail

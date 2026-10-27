@@ -490,8 +490,8 @@ fn press(
                 });
             }
         }
-        Control::Spring => commands.queue(|world: &mut World| {
-            let _ = interaction::spring_trap(world);
+        Control::Spring => commands.queue(move |world: &mut World| {
+            let _ = interaction::spring_trap(world, actor);
         }),
         Control::PreviousTrap => panel.guess = (panel.guess + TRAP_TYPES - 1) % TRAP_TYPES,
         Control::NextTrap => panel.guess = (panel.guess + 1) % TRAP_TYPES,

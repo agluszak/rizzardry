@@ -7,7 +7,7 @@ use bevy::prelude::*;
 
 use super::{LearnedSpells, SpellPoints, Strength};
 use crate::content::characters::{Attribute, Realm, Skill};
-use crate::content::items::{Dice, ItemCatalog};
+use crate::content::items::{Dice, EquipClass, ItemCatalog};
 use crate::content::species::MonsterCatalog;
 use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId};
 use crate::game::characters::{
@@ -34,6 +34,9 @@ enum Kind {
     /// Healing followed by stamina with twice the dice count.
     RestoreHealth,
     RestoreMagic,
+    GoldLoss,
+    DestroyConsumables,
+    DrainMagic,
     /// Heal, restore stamina and lift conditions 2..17 but infatuation.
     Restoration,
     /// `InflictConditionAttack` at a percent chance.
@@ -97,6 +100,10 @@ fn kind(spell: SpellId) -> Option<Kind> {
         74 => Kind::Cure(&[Insane, Turncoat]),
         88 => Kind::Resurrect,
         82 => Kind::Lifesteal,
+        124 => Kind::GoldLoss,
+        125 => Kind::Damage,
+        126 => Kind::DestroyConsumables,
+        127 => Kind::DrainMagic,
         114 => Kind::RestoreHealth,
         115 => Kind::RestoreMagic,
         116 => Kind::Cure(&[Unconscious, Asleep]),
@@ -133,6 +140,9 @@ pub enum Effect {
     Inflicted { victim: Victim, condition: Condition },
     Cured { victim: Victim, condition: Condition },
     Raised { victim: Victim },
+    GoldLost { amount: u32 },
+    Destroyed { class: EquipClass, amount: u32 },
+    Drained { victim: Victim, amount: u32 },
     Resisted { victim: Victim },
     Nothing { victim: Victim },
 }
@@ -141,6 +151,27 @@ pub enum Effect {
 /// change them.
 pub type Members<'w, 's> =
     Query<'w, 's, (&'static mut Character, &'static mut Vitals, &'static mut Carried)>;
+
+/// Consume physical units, not charges, in place; remaining identity and
+/// equipment binding metadata belong to the existing owner.
+fn burn_stack(
+    stack: crate::game::inventory::ItemStack,
+    items: &ItemCatalog,
+    chance: u32,
+    rng: &mut GameRng,
+    totals: &mut [u32; 3],
+) -> Option<crate::game::inventory::ItemStack> {
+    let Some(definition) = items.get(stack.item) else { return Some(stack) };
+    let category = match definition.class {
+        EquipClass::Potion => 0,
+        EquipClass::Scroll => 1,
+        EquipClass::Spellbook => 2,
+        _ => return Some(stack),
+    };
+    let lost = (0..stack.count()).filter(|_| rng.below(100) < chance).count() as u16;
+    totals[category] += u32::from(lost);
+    stack.remove_units(lost)
+}
 
 /// What a spell's effects need from the world.
 pub struct Field<'a, 'm, 'ms, 'd, 'ds, 'f, 'p> {
@@ -471,6 +502,72 @@ pub fn resolve(
         }
     };
     match kind {
+        Kind::GoldLoss => {
+            if victims.iter().any(|v| matches!(v, Victim::Member(_))) {
+                // Retail's second roll when the first is below 100 is intentional.
+                let first = magnitude(rng, spell.dice, strength);
+                let percent = if first < 100 { magnitude(rng, spell.dice, strength) } else { 100 };
+                let inventory = &mut world.monsters.inventory;
+                // Malformed/modded percentages cannot wrap the unsigned purse.
+                let lost = (u64::from(inventory.gold) * u64::from(percent.min(100)) / 100) as u32;
+                inventory.gold -= lost;
+                effects.push(Effect::GoldLost { amount: lost });
+            }
+        }
+        Kind::DestroyConsumables => {
+            let mut totals = [0; 3];
+            let chance = u32::from(strength.power) * 10;
+            for &victim in victims {
+                let Victim::Member(member) = victim else { continue };
+                let Ok((_, _, mut carried)) = world.members.get_mut(member) else { continue };
+                // Retail visits all twelve equipped slots, including alternate hands.
+                for (_, slot) in &mut carried.equipment {
+                    if let Some(equipped) = slot.take() {
+                        *slot = burn_stack(equipped.stack, world.items, chance, rng, &mut totals)
+                            .map(|stack| crate::game::inventory::Equipped {
+                                stack,
+                                curse_released: equipped.curse_released,
+                            });
+                    }
+                }
+                for slot in &mut carried.backpack {
+                    if let Some(stack) = slot.take() {
+                        *slot = burn_stack(stack, world.items, chance, rng, &mut totals);
+                    }
+                }
+            }
+            if victims.iter().any(|v| matches!(v, Victim::Member(_))) {
+                let pool = &mut world.monsters.inventory.pool.stacks;
+                *pool = std::mem::take(pool)
+                    .into_iter()
+                    .filter_map(|stack| burn_stack(stack, world.items, chance, rng, &mut totals))
+                    .collect();
+            }
+            for (class, amount) in [EquipClass::Potion, EquipClass::Scroll, EquipClass::Spellbook]
+                .into_iter()
+                .zip(totals)
+            {
+                if amount != 0 {
+                    effects.push(Effect::Destroyed { class, amount });
+                }
+            }
+        }
+        Kind::DrainMagic => {
+            if victims.iter().any(|v| matches!(v, Victim::Member(_))) {
+                let base = u32::from(strength.power) * 50;
+                let amount = base + base * strength.boost / 100;
+                // Anti-Magic drains the whole living party, not only captured victims.
+                for &member in world.party {
+                    if world.members.get(member).is_ok_and(|(_, v, _)| !v.is_dead())
+                        && let Ok((_, mut pool)) = points.get_mut(member)
+                    {
+                        let amount = pool.drain(amount, rng);
+                        effects.push(Effect::Drained { victim: Victim::Member(member), amount });
+                    }
+                }
+                // Party enchantment slots are not modelled; no active buffs can exist yet.
+            }
+        }
         Kind::RestoreMagic => each(&mut |v, rng, world| {
             let Victim::Member(member) = v else { return None };
             let (character, vitals, _) = world.members.get(member).ok()?;
