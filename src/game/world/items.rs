@@ -6,20 +6,43 @@ use bevy::prelude::*;
 use crate::content::items::{ItemCatalog, ItemDefinition, ItemId, QuantityKind};
 use crate::content::level::ItemPlacement;
 use crate::game::inventory::operations::transfer_contents;
-use crate::game::inventory::{
-    Held, ItemIds, ItemInstance, ItemNews, PartyInventory, Quantity, Refusal, make_item,
-};
-use crate::game::rng::GameRng;
+use crate::game::inventory::{ItemIds, ItemNews, ItemStack, PartyInventory, Refusal};
 
 /// An item lying in the level.
 #[derive(Component, Debug, Clone)]
 pub struct WorldItem {
-    pub item: ItemInstance,
-    /// Unseen, and out of reach, until found by searching.
+    pub loot: GroundLoot,
     pub hidden: bool,
-    /// A container's items (retail chains them after it), such as the Bag
-    /// of Items a monster's several drops lie in.
-    pub contents: Vec<ItemInstance>,
+}
+#[derive(Debug, Clone)]
+pub enum GroundLoot {
+    Loose(ItemStack),
+    Pile { appearance: ItemId, identified: bool, contents: Vec<ItemStack> },
+}
+impl WorldItem {
+    pub fn loose(item: ItemStack, hidden: bool) -> Self {
+        Self { loot: GroundLoot::Loose(item), hidden }
+    }
+    pub fn appearance(&self) -> ItemId {
+        match &self.loot {
+            GroundLoot::Loose(s) => s.item,
+            GroundLoot::Pile { appearance, .. } => *appearance,
+        }
+    }
+    pub fn display_name(&self, definition: &ItemDefinition, count: bool) -> String {
+        match &self.loot {
+            GroundLoot::Loose(s) => s.display_name(definition, count),
+            GroundLoot::Pile { identified, .. } => {
+                if *identified { &definition.name } else { &definition.unidentified_name }.clone()
+            }
+        }
+    }
+    pub fn stacks(&self) -> &[ItemStack] {
+        match &self.loot {
+            GroundLoot::Loose(s) => std::slice::from_ref(s),
+            GroundLoot::Pile { contents, .. } => contents,
+        }
+    }
 }
 
 /// The Bag of Items that holds what a monster leaves when it is more than
@@ -34,32 +57,33 @@ pub fn drop_loot(
     commands: &mut Commands,
     level: Entity,
     feet: Vec3,
-    mut items: Vec<ItemInstance>,
+    mut items: Vec<ItemStack>,
     catalog: &ItemCatalog,
-    ids: &mut ItemIds,
-    rng: &mut GameRng,
 ) {
     if !items.is_empty() {
         info!("loot: {} item(s) at {feet:.1}", items.len());
     }
     let lying = match items.len() {
         0 => return,
-        1 => WorldItem { item: items.remove(0), hidden: false, contents: vec![] },
+        1 => WorldItem::loose(items.remove(0), false),
+        _ if catalog.get(BAG_OF_ITEMS).is_some() => WorldItem {
+            loot: GroundLoot::Pile {
+                appearance: BAG_OF_ITEMS,
+                identified: catalog.get(BAG_OF_ITEMS).unwrap().auto_identify,
+                contents: items,
+            },
+            hidden: false,
+        },
         _ => {
-            let Some(bag) = catalog.get(BAG_OF_ITEMS) else {
-                // Invalid/incomplete catalogs still preserve every owned drop.
-                for item in items {
-                    commands.spawn((
-                        Name::new("loot"),
-                        WorldItem { item, hidden: false, contents: vec![] },
-                        Transform::from_translation(feet + Vec3::Y * CLEARANCE),
-                        ChildOf(level),
-                    ));
-                }
-                return;
-            };
-            let item = make_item(bag, ids, rng, false, false);
-            WorldItem { item, hidden: false, contents: items }
+            for item in items {
+                commands.spawn((
+                    Name::new("loot"),
+                    WorldItem::loose(item, false),
+                    Transform::from_translation(feet + Vec3::Y * CLEARANCE),
+                    ChildOf(level),
+                ));
+            }
+            return;
         }
     };
     commands.spawn((
@@ -79,22 +103,13 @@ pub fn placed_item(
     placement: &ItemPlacement,
     definition: &ItemDefinition,
     ids: &mut ItemIds,
-) -> ItemInstance {
-    let quantity = match definition.quantity {
-        QuantityKind::None => Quantity::One,
-        QuantityKind::Stack => Quantity::Stack(placement.stack),
-        _ => Quantity::Uses(placement.uses),
+) -> ItemStack {
+    let amount = match definition.quantity {
+        QuantityKind::None => 1,
+        QuantityKind::Stack => placement.stack,
+        _ => placement.uses,
     };
-    ItemInstance {
-        id: ids.allocate(),
-        item: definition.id,
-        quantity,
-        identified: placement.identified || definition.auto_identify,
-        spell_known: false,
-        curse_known: false,
-        curse_released: false,
-        remarked: false,
-    }
+    ItemStack::new(definition, ids, u16::from(amount), placement.identified)
 }
 
 /// Take a resolved world item. Validation and the owned-value move complete
@@ -120,26 +135,26 @@ pub fn take_item(world: &mut World, target: Entity, distance: f32) -> Result<(),
     if world.get::<super::level::Level>(owner).is_none() || item.hidden {
         return Err(Refusal::DoesNotFit);
     }
-    let is_container = catalog.get(item.item.item).ok_or(Refusal::MissingContent)?.container;
-    if world.resource::<PartyInventory>().held.is_some() {
+    catalog.get(item.appearance()).ok_or(Refusal::MissingContent)?;
+    if world.resource::<PartyInventory>().hand.held.is_some() {
         return Err(Refusal::HandFull);
     }
     let mut item = world.entity_mut(target).take::<WorldItem>().unwrap();
-    if is_container {
+    if let GroundLoot::Pile { contents, .. } = &mut item.loot {
         let taken = world.resource_scope(|world, mut party: Mut<PartyInventory>| {
             let catalog = world.resource::<Assets<ItemCatalog>>().get(&handle).unwrap();
-            transfer_contents(&mut item.contents, &mut party, catalog)
+            transfer_contents(contents, &mut party, catalog)
         });
         for (name, _) in taken {
             world.write_message(ItemNews::Takes { member: None, item: name });
         }
-        if !item.contents.is_empty() {
+        if !contents.is_empty() {
             world.entity_mut(target).insert(item);
             world.write_message(ItemNews::NoRoom);
             return Ok(());
         }
-    } else {
-        world.resource_mut::<PartyInventory>().held = Some(Held { item: item.item, origin: None });
+    } else if let GroundLoot::Loose(stack) = item.loot {
+        world.resource_mut::<PartyInventory>().hand.held = Some(stack);
     }
     world.despawn(target);
     Ok(())
@@ -162,11 +177,22 @@ pub fn drop_held(world: &mut World, level: Entity, at: Vec3) -> Result<Entity, R
     if eye.xz().distance(at.xz()) > THROW + CLEARANCE {
         return Err(Refusal::DoesNotFit);
     }
-    let held = world.resource_mut::<PartyInventory>().held.take().ok_or(Refusal::Nothing)?;
+    let held = world.resource::<PartyInventory>().hand.held.as_ref().ok_or(Refusal::Nothing)?;
+    let data =
+        world.get_resource::<crate::game::data::GameData>().ok_or(Refusal::MissingContent)?;
+    let definition = world
+        .get_resource::<Assets<ItemCatalog>>()
+        .and_then(|c| c.get(&data.items))
+        .and_then(|c| c.get(held.item))
+        .ok_or(Refusal::MissingContent)?;
+    if definition.crucial {
+        return Err(Refusal::Crucial);
+    }
+    let held = world.resource_mut::<PartyInventory>().hand.held.take().ok_or(Refusal::Nothing)?;
     Ok(world
         .spawn((
             Name::new("dropped item"),
-            WorldItem { item: held.item, hidden: false, contents: vec![] },
+            WorldItem::loose(held, false),
             Transform::from_translation(at),
             ChildOf(level),
         ))
@@ -182,6 +208,10 @@ pub(crate) const CLEARANCE: f32 = 0.25;
 mod tests {
     use super::*;
     use crate::content::items::ItemDefinition;
+    use crate::game::{
+        inventory::make_item,
+        rng::GameRng,
+    };
 
     fn catalog() -> ItemCatalog {
         let mut items: Vec<ItemDefinition> = (0..=BAG_OF_ITEMS.0)
@@ -191,26 +221,34 @@ mod tests {
         ItemCatalog(items)
     }
 
-    fn item(ids: &mut ItemIds, id: u16) -> ItemInstance {
+    fn item(ids: &mut ItemIds, id: u16) -> ItemStack {
         let definition = ItemDefinition { id: ItemId(id), ..default() };
         make_item(&definition, ids, &mut GameRng::seeded(1), false, true)
     }
 
     #[test]
     fn several_drops_lie_in_a_bag_one_lies_alone() {
-        let (catalog, mut ids, mut rng) = (catalog(), ItemIds::default(), GameRng::seeded(2));
+        let (catalog, mut ids) = (catalog(), ItemIds::default());
         let mut world = World::new();
         let level = world.spawn_empty().id();
         let (one, two) = (item(&mut ids, 1), vec![item(&mut ids, 2), item(&mut ids, 3)]);
         let mut commands = world.commands();
-        drop_loot(&mut commands, level, Vec3::ZERO, vec![one], &catalog, &mut ids, &mut rng);
-        drop_loot(&mut commands, level, Vec3::X, two, &catalog, &mut ids, &mut rng);
-        drop_loot(&mut commands, level, Vec3::Y, vec![], &catalog, &mut ids, &mut rng);
+        drop_loot(&mut commands, level, Vec3::ZERO, vec![one], &catalog);
+        drop_loot(&mut commands, level, Vec3::X, two, &catalog);
+        drop_loot(&mut commands, level, Vec3::Y, vec![], &catalog);
         world.flush();
         let mut lying: Vec<(u16, usize)> = world
             .query::<&WorldItem>()
             .iter(&world)
-            .map(|w| (w.item.item.0, w.contents.len()))
+            .map(|w| {
+                (
+                    w.appearance().0,
+                    match &w.loot {
+                        GroundLoot::Loose(_) => 0,
+                        GroundLoot::Pile { contents, .. } => contents.len(),
+                    },
+                )
+            })
             .collect();
         lying.sort();
         assert_eq!(lying, [(1, 0), (BAG_OF_ITEMS.0, 2)]);

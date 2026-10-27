@@ -32,7 +32,7 @@ use crate::game::characters::{Character, Gender, Race, Vitals};
 use crate::game::combat::attack::armour;
 use crate::game::data::GameData;
 use crate::game::inventory::{
-    BACKPACK_SLOTS, Carried, EquipSlot, ItemInstance, ItemLocation, PartyInventory, Quantity, Slot,
+    BACKPACK_SLOTS, Carried, EquipSlot, ItemStack, MemberSlot, PartyInventory, Slot,
 };
 use crate::game::party::roster::PartyRoster;
 use crate::game::screen::Screen;
@@ -336,11 +336,8 @@ struct CellDisplay {
 
 /// A cell's count: a stack above one, charges or shots; `?` for charges
 /// not yet identified.
-fn count_label(item: &ItemInstance, kind: QuantityKind) -> Option<String> {
-    let count = match item.quantity {
-        Quantity::One => return None,
-        Quantity::Stack(n) | Quantity::Uses(n) => n,
-    };
+fn count_label(item: &ItemStack, kind: QuantityKind) -> Option<String> {
+    let count = item.remaining_uses().unwrap_or(item.count());
     match kind {
         QuantityKind::None | QuantityKind::Unlabelled => None,
         QuantityKind::Stack if count <= 1 => None,
@@ -814,10 +811,20 @@ fn draw_header_hands(
             HeaderHand::Count(off) => {
                 shown = !(off && two_handed);
                 let slot = if off { EquipSlot::Secondary } else { EquipSlot::Primary };
-                value = Some(match carried.worn(slot).map(|item| item.quantity) {
-                    Some(Quantity::Stack(count)) if count > 0 => count.to_string(),
-                    _ => String::new(),
-                });
+                value = Some(
+                    match carried
+                        .worn(slot)
+                        .filter(|item| {
+                            catalog
+                                .get(item.item)
+                                .is_some_and(|d| d.quantity == QuantityKind::Stack)
+                        })
+                        .map(ItemStack::count)
+                    {
+                        Some(count) => count.to_string(),
+                        _ => String::new(),
+                    },
+                );
             }
             HeaderHand::Armour => {
                 value = Some(armour(&profile, &carried, catalog).average().to_string())
@@ -1002,9 +1009,10 @@ fn draw_cells(
         let item = match display.cell {
             Cell::Member(Slot::Equipment(slot)) => carried.worn(slot),
             Cell::Member(Slot::Backpack(i)) => carried.backpack[i].as_ref(),
-            Cell::Pool(i) => {
-                party.pool.get(pool_scroll.as_ref().map_or(0, |value| value.0 as usize * 2) + i)
-            }
+            Cell::Pool(i) => party
+                .pool
+                .stacks
+                .get(pool_scroll.as_ref().map_or(0, |value| value.0 as usize * 2) + i),
         };
         let definition = item.and_then(|i| Some((i, catalog.get(i.item)?)));
         let grid = !matches!(display.cell, Cell::Member(Slot::Equipment(_)));
@@ -1050,8 +1058,7 @@ fn draw_cells(
 /// Click a cell (retail's item-page click, `rcs.cpp:1459-1742`): with an
 /// empty hand, pick the item up; holding one, a pool cell takes it in, a
 /// stack of the same item takes what it can, anything else swaps.
-/// Shift-clicking a single unit, pouring ammunition and stowing a weapon's
-/// partner are not done yet.
+/// Shift-clicking a single unit and manual reloading are not wired to UI yet.
 fn click_cell(
     click: On<Activate>,
     cells: Query<&ItemCell>,
@@ -1070,13 +1077,13 @@ fn click_cell(
     {
         return;
     }
-    let destination = match cell.cell {
+    let result = match cell.cell {
         Cell::Pool(row) => {
-            ItemLocation::Pool(pool_scroll.as_ref().map_or(0, |value| value.0 as usize * 2) + row)
+            inventory.click_pool(pool_scroll.as_ref().map_or(0, |value| value.0 as usize * 2) + row)
         }
-        Cell::Member(slot) => ItemLocation::Member(screen.member, slot),
+        Cell::Member(slot) => inventory.interact_slot(MemberSlot { member: screen.member, slot }),
     };
-    if let Err(refusal) = inventory.activate(destination) {
+    if let Err(refusal) = result {
         info!("inventory: {:?} refused: {refusal:?}", cell.cell);
     }
 }
@@ -1111,7 +1118,7 @@ pub fn follow_held(
 ) {
     let (image, node, visibility) = &mut *picture;
     let catalog = data.and_then(|d| catalogs.get(&d.items));
-    let definition = party.held.as_ref().zip(catalog).and_then(|(h, c)| c.get(h.item.item));
+    let definition = party.hand.held.as_ref().zip(catalog).and_then(|(h, c)| c.get(h.item));
     let cursor = pointers
         .iter()
         .find(|(id, _)| **id == PointerId::Mouse)
@@ -1224,7 +1231,7 @@ mod tests {
     #[test]
     fn closing_inventory_returns_the_held_item_even_before_art_is_ready() {
         use crate::game::characters::{Gender, Profession, Race};
-        use crate::game::inventory::{Held, ItemIds, make_item};
+        use crate::game::inventory::{ItemIds, make_item};
         use crate::game::rng::GameRng;
         for still_a_member in [true, false] {
             let mut app = inventory_app();
@@ -1252,8 +1259,7 @@ mod tests {
                 ))
                 .id();
             app.world_mut().resource_mut::<PartyRoster>().0.insert(member);
-            app.world_mut().resource_mut::<PartyInventory>().held =
-                Some(Held { item, origin: None });
+            app.world_mut().resource_mut::<PartyInventory>().hand.held = Some(item);
             app.world_mut().resource_mut::<super::super::main_screen::SelectedMember>().0 =
                 Some(member);
             app.world_mut().resource_mut::<NextState<Screen>>().set(Screen::Inventory);
@@ -1265,7 +1271,7 @@ mod tests {
             }
             app.world_mut().resource_mut::<NextState<Screen>>().set(Screen::World);
             app.update();
-            assert!(app.world().resource::<PartyInventory>().held.is_none());
+            assert!(app.world().resource::<PartyInventory>().hand.held.is_none());
             assert_eq!(
                 app.world()
                     .get::<Carried>(member)
@@ -1281,6 +1287,7 @@ mod tests {
                 app.world()
                     .resource::<PartyInventory>()
                     .pool
+                    .stacks
                     .iter()
                     .map(|item| item.id)
                     .collect::<Vec<_>>(),

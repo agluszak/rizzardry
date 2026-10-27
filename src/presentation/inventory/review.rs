@@ -559,7 +559,8 @@ pub(super) fn refresh(
                 } else {
                     0
                 };
-                let cursed = definition.cursed && !item.curse_released;
+                let cursed =
+                    definition.cursed && !carried.equipment[slot].as_ref().unwrap().curse_released;
                 let beneficial = definition.hit_bonus > 0
                     || armour > 0
                     || definition.resistance_bonus.values().any(|&value| value > 0);

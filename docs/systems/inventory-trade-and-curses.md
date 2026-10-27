@@ -1,73 +1,79 @@
 # Inventory, trade, identification and curses
 
-## Ownership
+## Implemented inventory ownership
 
-An inventory item is an owned value. A character owns equipment/backpack values;
-`PartyInventory` owns the shared pool, purse and held item; a container/pile owns
-its contents. A conversation can temporarily own an offered item. Selection and
-view rows own references, never copies of live items.
+`ItemStack` is an owned, nonempty batch with a `StackId`, private
+`NonZeroU16` physical count, independent optional remaining uses, and per-stack
+knowledge. A drained retained wand is one object with zero uses; an exhausted
+physical stack is absent. Construction interprets legacy zero physical counts
+as one, preserving the former weight/unit interpretation at the import boundary.
+Overfull imported/generated stacks are retained, not truncated to `stack_limit`.
+The limit controls absorption, not charge capacity.
 
-```rust
-struct ItemKnowledge { identity: bool, spell: bool, curse: bool }
-struct ItemInstance {
-    id: ItemInstanceId,
-    definition: ItemDefId,
-    quantity: u16,
-    charges: u16,
-    knowledge: ItemKnowledge,
-    curse_released: bool,
-}
-struct ItemRef { owner: ItemOwner, id: ItemInstanceId }
-```
+`Carried` owns twelve optional `Equipped` placements and eight optional backpack
+stacks. `Equipped` alone owns `curse_released`. Taking its stack discards the
+placement; equipping creates a fresh unreleased placement. Partial absorption or
+splitting leaves the source placement intact. Switching weapon sets creates new
+placements, including the alternate slots.
 
-This sketch does not prescribe integer widths or the final quantity encoding.
-Definitions specify stacking/use rules; constructors validate the instance.
-An identity is useful for queued uses and item-targeted spells without making
-each item an entity. Splits create a new identity; merges retain the destination
-identity and retire the source. Any choice referring to a retired source is
-invalidated explicitly, not silently redirected by vector index.
+`PartyInventory` owns an `ItemPool`, `Hand` and purse. World loot is explicitly a
+loose stack or a pile with an appearance and owned contents: a bag visual is not
+an extra transferable item. Chest rolled/unrolled state remains separate.
 
-Common operations are `pick_up`, `place`, `move_item`, `equip_item`, `consume_use`,
-`remove_quantity` and `receive_items`. Each returns the actual result/remainder.
-Merging can succeed partially. Identification or acquisition side effects may
-already have occurred even if placement cannot fully complete. No blanket
-transaction rollback is implied.
+### Transfers and identity
 
-Whizzardry's [Inventory](https://github.com/agluszak/whizzardry-8/blob/9c433ec9725877a963cb43bb1df13d5d084ed873/include/wiz8/inventory.h)
-and [implementation](https://github.com/agluszak/whizzardry-8/blob/9c433ec9725877a963cb43bb1df13d5d084ed873/src/wiz8/inventory.cpp)
-already centralize transfers and held state. The new design keeps complete
-operations while removing record-pointer repair, view-owned mutations and a
-catch-all game dependency. A full selected item does not have to become an entity
-to survive sorting.
+- `ItemStack::absorb` consumes a source and returns its nonempty remainder.
+  Ordinary absorption requires matching definitions and identification; other
+  metadata stays with its existing stack. `split_off` allocates one new identity
+  for a proper subset, leaving the source identity intact.
+- `Carried::receive` absorbs into equipment then backpack stacks, then uses an
+  empty backpack slot. It never auto-equips. `place_at_creation` handles starting
+  equipment separately.
+- `ItemPool::receive` absorbs in row order and inserts at the front.
+  `deposit` tries the anchor first, then other rows, then inserts at that position.
+  The 500-entry limit may still allow partial absorption.
+- `Hand::offer` restores every remainder. Member/pool receipt composes directly;
+  neither a failed nor a partially successful receipt can lose the held stack.
+- `ItemRef { owner, id }` selects an existing stack. `MemberSlot` names a fixed
+  destination; `PoolPosition` names front, end or before an existing stack ID.
+  Missing anchors reject without mutation. Only immediate UI row resolution uses
+  indices. Accepted attacks continue to validate the actual weapon stack ID.
 
-### Validation belongs to the operation
+Whole moves preserve identity; fully absorbed/consumed sources disappear.
+Shift-taking into an existing hand changes counts directly and allocates no ID.
+Its identification exception follows the original
+[Shift-taking path](https://github.com/agluszak/wizardry-8-decomp/blob/075cbd0b853c4670e94f6ae4fe48d53b52b5e819/src/wiz8/local_screens/ReviewCharacterScreen.cpp#L2337),
+while ordinary merging follows
+[MergeStack](https://github.com/agluszak/wizardry-8-decomp/blob/075cbd0b853c4670e94f6ae4fe48d53b52b5e819/src/wiz8/local_code/PC%20Item.cpp#L2727).
 
-UI, AI and scripts may all request the same equipment or transfer operation.
-The operation checks the authoritative source item, wearer state, equipment
-slot, curses, capacity and destination when it executes. Never rely solely on
-a disabled UI control or a caller-provided `can_use` boolean; a caller must
-not be able to bypass the rule by supplying a favorable answer. Preview and
-execution can share a pure eligibility predicate, but execution rechecks it
-against the current state. Do not hard-code assumed wearer state (for example
-`dead = false`) to satisfy a helper signature.
+### Complete operations
 
-Reject invalid operations without consuming or duplicating items, and return
-the actual partial transfer and held remainder for legal operations. Ordinary
-direct calls are sufficient; no generic transaction engine is needed.
+`InventoryOperations` resolves party membership, wearer state and stack identity
+before modifying storage. Slot interaction validates use/removal rules and
+merges or exchanges values. Replacing equipment that displaces a weapon partner
+stages the carried inventory and pool and commits only if the complete placement
+fits. Candidates allocate no IDs, consume no RNG and emit no messages. Refused
+curse removal deliberately reveals curse knowledge even when ownership does not
+change. Partial world collection preserves the remaining contents at the source.
+Ground dropping validates the destination and refuses crucial items.
 
-## Cursor transfer
+The hand persists across screens. Closing inventory tries the reviewed member,
+then the pool; unresolved items stay held. There is no unused origin metadata:
+split-return is not implemented yet. Reload, merchant execution, accepted Use
+Item cancellation and magical identification remain separate unimplemented game
+features, described below or in [combat items](combat-items-and-magic.md). This
+refactor does not introduce placeholder models for them. The original paths,
+not Whizzardry's differing reload/split-return paths, are their behavior baseline.
 
-1. Resolve the source and check removal permission, including curses.
-2. Move the requested value/quantity into held state, retaining enough provenance
-   to attempt a return. The source no longer owns that quantity.
-3. Hover/preview reads eligibility without mutating either inventory.
-4. Placement calls the normal destination operation, including partial stacking.
-5. Any remainder stays held. Closing a screen cannot delete it.
-6. Cancellation tries the permitted return/receipt path; it does not recreate a
-   source slot that another completed operation now owns.
+Intentional fix: taking the final unit of cursed active equipment still checks
+removal permission, despite the original Shift-taking bypass. Partial splitting
+does not end the equipment placement.
 
-Targeting an item for combat is different: selection leaves it in inventory
-until an accepted execution consumes it. See [combat items](combat-items-and-magic.md).
+Regression coverage is in `game::inventory::tests` and world-item tests:
+conservation under partial collection, split/merge/move identity, stale anchors,
+placement release lifetime, retained empty charges, compound replacement failure,
+member receipt and membership validation. Run `cargo test --locked`;
+retail/rendering scenarios require assets and are not inferred from value tests.
 
 ## Trade: original versus modern implementation
 
@@ -231,11 +237,10 @@ Remove Curse resolves through shared magic:
 1. Attempt to lift the target character's separate Hexed condition.
 2. Examine equipment; compare cursed definitions' difficulty with adjusted
    `3 * effect strength`.
-3. Set release on qualifying values and report none/partial/all release.
+3. Set release on qualifying equipment placements and report none/partial/all release.
 4. Charge through normal casting, not per item released.
 
-Equipment release has no countdown in this implementation. The normal move
-clears it, so removing and re-equipping the item restores the restriction. The
+Equipment release has no countdown. Ending its equipment placement discards it, so removing and re-equipping the item restores the restriction. The
 definition remains cursed. Release does not itself need to identify the item.
 Sources: [release](https://github.com/agluszak/wizardry-8-decomp/blob/075cbd0b853c4670e94f6ae4fe48d53b52b5e819/src/wiz8/local_code/PC%20Item.cpp#L2132-L2156),
 [move reset](https://github.com/agluszak/wizardry-8-decomp/blob/075cbd0b853c4670e94f6ae4fe48d53b52b5e819/src/wiz8/local_code/PC%20Item.cpp#L2770-L2806).
