@@ -238,7 +238,12 @@ pub(crate) fn confront(world: &mut World, device: Entity, lock: Lock) {
     if world.contains_resource::<DeviceInteraction>() {
         return;
     }
-    if world.contains_resource::<crate::game::combat::Battle>() {
+    if world
+        .query_filtered::<Entity, With<crate::game::combat::Battle>>()
+        .iter(world)
+        .next()
+        .is_some()
+    {
         world.write_message(LockNews::NotInCombat);
         return;
     }
@@ -423,9 +428,9 @@ pub(crate) fn end_lost_interaction(
     mut commands: Commands,
     interaction: Option<Res<DeviceInteraction>>,
     devices: Query<(), With<Device>>,
-    battle: Option<Res<crate::game::combat::Battle>>,
+    battle: Query<(), With<crate::game::combat::Battle>>,
 ) {
-    if interaction.is_some_and(|i| !devices.contains(i.device) || battle.is_some()) {
+    if interaction.is_some_and(|i| !devices.contains(i.device) || !battle.is_empty()) {
         commands.remove_resource::<DeviceInteraction>();
     }
 }

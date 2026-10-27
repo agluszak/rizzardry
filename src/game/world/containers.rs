@@ -10,7 +10,7 @@ use super::triggers::Container;
 use crate::content::items::ItemCatalog;
 use crate::game::data::GameData;
 use crate::game::inventory::{Carried, ItemIds, ItemNews, PartyInventory, Refusal, StackId};
-use crate::game::party::roster::PartyRoster;
+use crate::game::party::roster::{PartyMember, the_party};
 
 /// Where taken items go.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,8 +38,9 @@ pub fn take_from_container(
     to: Recipient,
 ) -> Result<(), Refusal> {
     let device = looting(world).ok_or(Refusal::Nothing)?;
+    let party = the_party(world).ok_or(Refusal::NotMember)?;
     if let Recipient::Member(member) = to {
-        if !world.resource::<PartyRoster>().0.contains(&member) {
+        if !world.get::<PartyMember>(member).is_some_and(|m| m.0 == party) {
             return Err(Refusal::NotMember);
         }
         let vitals = world.get(member).ok_or(Refusal::NotMember)?;
@@ -73,7 +74,7 @@ pub fn take_from_container(
             let before = taking.units();
             let rest = match to {
                 Recipient::Party => {
-                    world.resource_mut::<PartyInventory>().pool.receive(taking, catalog)
+                    world.get_mut::<PartyInventory>(party).unwrap().pool.receive(taking, catalog)
                 }
                 Recipient::Member(member) => {
                     world.get_mut::<Carried>(member).unwrap().receive(taking, catalog)
