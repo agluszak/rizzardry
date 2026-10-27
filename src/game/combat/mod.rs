@@ -1155,6 +1155,138 @@ mod tests {
         (app, [members[0], members[1]])
     }
 
+    /// Make `member` a trained Mage who knows `spell`, with points to cast it,
+    /// and order the cast at the fight's monster.
+    fn order_spell(
+        app: &mut App,
+        member: Entity,
+        spell: crate::content::spells::SpellDefinition,
+    ) -> Entity {
+        use crate::content::characters::{Realm, Skill};
+        use crate::content::spells::SpellCatalog;
+        use crate::game::characters::Profession;
+        use crate::game::magic::casting::{Aim, MagicChoice, Source};
+        let id = spell.id;
+        let mut catalog: Vec<_> = (0..=id.0).map(|_| default()).collect();
+        catalog[usize::from(id.0)] = spell;
+        let handle =
+            app.world_mut().resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(catalog));
+        app.world_mut().resource_mut::<GameData>().spells = handle;
+        {
+            let mut character = app.world_mut().get_mut::<Character>(member).unwrap();
+            character.profession = Profession::Mage;
+            character.profession_levels[Profession::Mage] = 1;
+            for skill in [Skill::Wizardry, Skill::FireMagic, Skill::AirMagic] {
+                character.skill_points[skill] = 100;
+            }
+        }
+        let mut points = SpellPoints::default();
+        for realm in [Realm::Fire, Realm::Air] {
+            points.current[realm] = 20;
+        }
+        let monster = app.world().resource::<Battle>().monsters[0].0;
+        let choice = MagicChoice {
+            source: Source::Spell { spell: id, power: 1 },
+            aim: Aim::Monster(monster),
+        };
+        app.world_mut().entity_mut(member).insert((
+            LearnedSpells([id].into()),
+            points,
+            Order::Magic(choice),
+        ));
+        monster
+    }
+
+    fn energy_blast() -> crate::content::spells::SpellDefinition {
+        use crate::content::spells::{SpellDefinition, SpellId, Targeting, Usable};
+        SpellDefinition {
+            id: SpellId::ENERGY_BLAST,
+            name: "Energy Blast".into(),
+            realm: Some(crate::content::characters::Realm::Fire),
+            level: 1,
+            cost: 2,
+            reach: Reach::Long,
+            targeting: Targeting::Enemy,
+            usable: Usable::InCombat,
+            dice: Some(Dice { base: 0, count: 1, sides: 7 }),
+            ..default()
+        }
+    }
+
+    /// A cast waits for its caster's initiative, is revalidated then, spends
+    /// its points and hurts the monster it was aimed at; the caster swings
+    /// nothing that round.
+    #[test]
+    fn an_ordered_spell_is_paid_and_resolved_at_initiative() {
+        use crate::content::characters::Realm;
+        let (mut app, [caster, _]) = round_app(true);
+        let monster = order_spell(&mut app, caster, energy_blast());
+        let mut news = Vec::new();
+        let mut attackers = Vec::new();
+        for _ in 0..12 {
+            app.update();
+            news.extend(app.world_mut().resource_mut::<Messages<MagicNews>>().drain());
+            attackers.extend(attacks(&mut app));
+            if !news.is_empty() {
+                break;
+            }
+        }
+        let [MagicNews::Done(report)] = news.as_slice() else { panic!("{news:?}") };
+        assert_eq!(report.caster, caster);
+        assert!(matches!(
+            report.effects.as_slice(),
+            [Effect::Damaged { victim: Victim::Monster(m), amount, .. }] if *m == monster && *amount > 0
+        ));
+        let monster = app.world().get::<Monster>(monster).unwrap();
+        assert!(monster.hp < monster.max_hp);
+        assert_eq!(app.world().get::<SpellPoints>(caster).unwrap().current[Realm::Fire], 18);
+        assert!(!attackers.contains(&"A".to_owned()), "casting replaces the attack");
+    }
+
+    /// A monster put to sleep loses its actions until the condition runs out
+    /// with the rounds.
+    #[test]
+    fn sleep_holds_a_monster_until_its_rounds_run_out() {
+        use crate::content::spells::{SpellDefinition, SpellId, Targeting, Usable};
+        let (mut app, [caster, _]) = round_app(true);
+        let sleep = SpellDefinition {
+            id: SpellId::SLEEP,
+            name: "Sleep".into(),
+            realm: Some(crate::content::characters::Realm::Air),
+            level: 1,
+            cost: 3,
+            reach: Reach::Long,
+            targeting: Targeting::EnemyGroup,
+            usable: Usable::InCombat,
+            duration_per_power: 1,
+            ..default()
+        };
+        let monster = order_spell(&mut app, caster, sleep);
+        let asleep = |app: &App| {
+            app.world()
+                .get::<Monster>(monster)
+                .unwrap()
+                .conditions
+                .iter()
+                .any(|&(c, _)| c == Condition::Asleep)
+        };
+        let mut slept = false;
+        for _ in 0..6 {
+            app.update();
+            slept |= asleep(&app);
+        }
+        assert!(slept, "the monster failed its save against a strong caster");
+        app.world_mut().entity_mut(caster).insert(Order::Defend);
+        app.world_mut().resource_mut::<CombatSettings>().continuous = true;
+        for _ in 0..40 {
+            if !asleep(&app) {
+                break;
+            }
+            app.update();
+        }
+        assert!(!asleep(&app), "sleep wears off as rounds pass");
+    }
+
     fn attacks(app: &mut App) -> Vec<String> {
         let actors: Vec<_> = app
             .world_mut()

@@ -274,6 +274,37 @@ mod tests {
         assert_eq!(draft.preview(), before, "rejected identity choices do not erase training");
     }
 
+    /// A pure caster must pick their two first spells from their own book;
+    /// changing profession clears the picks.
+    #[test]
+    fn a_mage_picks_two_first_spells_from_their_book() {
+        use crate::content::spells::{SpellDefinition, Spellbook};
+        let spell = |id, books| SpellDefinition {
+            id: SpellId(id),
+            level: 1,
+            books,
+            realm: Some(crate::content::characters::Realm::Fire),
+            ..default()
+        };
+        let (blast, frost, missile, heal) = (
+            spell(5, Spellbook::Wizardry.into()),
+            spell(4, Spellbook::Wizardry.into()),
+            spell(25, Spellbook::Wizardry.into()),
+            spell(6, Spellbook::Divinity.into()),
+        );
+        let mut draft = CharacterDraft { name: "Merlin".into(), ..default() };
+        draft.choose(Race::Human, Gender::Male, Profession::Mage).unwrap();
+        assert_eq!(draft.finish().unwrap_err(), "Choose your first spells.");
+        assert!(!draft.toggle_spell(&heal), "not in the Mage's book");
+        assert!(draft.toggle_spell(&blast) && draft.toggle_spell(&frost));
+        assert!(!draft.toggle_spell(&missile), "two picks only");
+        assert!(draft.finish().is_ok());
+        assert!(draft.toggle_spell(&frost), "a pick can be taken back");
+        draft.choose(Race::Human, Gender::Male, Profession::Fighter).unwrap();
+        assert!(draft.spells().is_empty());
+        assert!(draft.finish().is_ok(), "fighters pick none");
+    }
+
     #[test]
     fn unfinished_identity_cannot_be_committed() {
         let mut draft = CharacterDraft::default();

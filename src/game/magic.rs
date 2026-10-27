@@ -689,6 +689,124 @@ mod tests {
         }
     }
 
+    /// The out-of-combat use path with real requests: a potion stack and a
+    /// charged wand, each casting its own spell at its own power.
+    #[test]
+    fn using_items_spends_a_dose_or_a_charge_and_the_last_dose_still_heals() {
+        use crate::content::items::{EquipClass, ItemDefinition, ItemId, LootTables, QuantityKind};
+        use crate::content::spells::ItemSpell;
+        use crate::game::inventory::{EquipSlot, ItemIds, PartyInventory, Quantity, make_item};
+        use crate::game::party::roster::PartyRoster;
+        use casting::{Aim, MagicChoice, MagicNews, Refusal, Source};
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<ItemCatalog>()
+            .init_asset::<MonsterCatalog>()
+            .init_asset::<SpellCatalog>()
+            .init_asset::<LootTables>()
+            .init_resource::<PartyRoster>()
+            .init_resource::<Formation>()
+            .init_resource::<PartyInventory>()
+            .init_resource::<ItemIds>()
+            .insert_resource(GameRng::seeded(3))
+            .add_message::<DamageApplied>()
+            .add_message::<MagicRequest>()
+            .add_message::<casting::MagicNews>()
+            .add_systems(Update, accept_magic);
+        let potion = ItemDefinition {
+            id: ItemId(0),
+            name: "Potion of Light Heal".into(),
+            class: EquipClass::Potion,
+            quantity: QuantityKind::Stack,
+            maximum_quantity: 5,
+            spell: Some(ItemSpell { spell: SpellId::HEAL_WOUNDS, power: 1 }),
+            ..default()
+        };
+        let wand = ItemDefinition {
+            id: ItemId(1),
+            name: "Healing Wand".into(),
+            class: EquipClass::Gadget,
+            quantity: QuantityKind::Charges,
+            professions: enumset::EnumSet::all(),
+            races: enumset::EnumSet::all(),
+            genders: enumset::EnumSet::all(),
+            spell: Some(ItemSpell { spell: SpellId::HEAL_WOUNDS, power: 1 }),
+            ..default()
+        };
+        let mut ids = ItemIds::default();
+        let mut rng = GameRng::seeded(0);
+        let mut potions = make_item(&potion, &mut ids, &mut rng, false, true);
+        potions.quantity = Quantity::Stack(2);
+        let mut charged = make_item(&wand, &mut ids, &mut rng, false, true);
+        charged.quantity = Quantity::Uses(1);
+        let (potion_id, wand_id) = (potions.id, charged.id);
+        let world = app.world_mut();
+        let items =
+            world.resource_mut::<Assets<ItemCatalog>>().add(ItemCatalog(vec![potion, wand]));
+        let species = world.resource_mut::<Assets<MonsterCatalog>>().add(MonsterCatalog::default());
+        let loot = world.resource_mut::<Assets<LootTables>>().add(LootTables::default());
+        let spells = world.resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(
+            (0..=6).map(|i| if i == 6 { heal_wounds() } else { default() }).collect(),
+        ));
+        world.insert_resource(crate::game::data::GameData { items, loot, species, spells });
+        let profile = Character::new("Drinker", Race::Human, Gender::Male, Profession::Fighter);
+        let mut vitals = Vitals::new(&profile);
+        vitals.hp = 1;
+        let mut carried = Carried::default();
+        carried.backpack[0] = Some(potions);
+        carried.equipment[EquipSlot::Misc1] = Some(charged);
+        let member = world.spawn((profile, vitals, carried)).id();
+        world.resource_mut::<PartyRoster>().0.insert(member);
+        let mut news = Vec::new();
+        let mut request = |app: &mut App, source| {
+            let choice = MagicChoice { source, aim: Aim::Member(member) };
+            app.world_mut().write_message(MagicRequest { caster: member, choice });
+            app.update();
+            news.extend(app.world_mut().resource_mut::<Messages<MagicNews>>().drain());
+            news.last().cloned()
+        };
+        let hp = |app: &App| app.world().get::<Vitals>(member).unwrap().hp;
+        let backpack = |app: &App| app.world().get::<Carried>(member).unwrap().backpack[0].clone();
+        assert!(matches!(request(&mut app, Source::Item(potion_id)), Some(MagicNews::Done(_))));
+        assert_eq!(backpack(&app).unwrap().quantity, Quantity::Stack(1));
+        let before = hp(&app);
+        assert!(before > 1, "4d4 heals at power 1");
+        // Hurt again, and drink the last one: it is gone, and it heals.
+        app.world_mut().get_mut::<Vitals>(member).unwrap().hp = 1;
+        assert!(matches!(request(&mut app, Source::Item(potion_id)), Some(MagicNews::Done(_))));
+        assert!(backpack(&app).is_none(), "the last dose is used up");
+        assert!(hp(&app) > 1, "the effect outlives the potion");
+        assert!(matches!(
+            request(&mut app, Source::Item(potion_id)),
+            Some(MagicNews::Refused { refusal: Refusal::NoItem, .. })
+        ));
+        // A charged item keeps its body when emptied, and refuses then.
+        assert!(matches!(request(&mut app, Source::Item(wand_id)), Some(MagicNews::Done(_))));
+        let carried = app.world().get::<Carried>(member).unwrap();
+        assert_eq!(
+            carried.equipment[EquipSlot::Misc1].as_ref().unwrap().quantity,
+            Quantity::Uses(0)
+        );
+        assert!(matches!(
+            request(&mut app, Source::Item(wand_id)),
+            Some(MagicNews::Refused { refusal: Refusal::NoCharges, .. })
+        ));
+    }
+
+    /// Spell points pay for a learned cast whatever its roll; a refusal
+    /// spends nothing.
+    #[test]
+    fn a_learned_cast_pays_even_when_it_fizzles_and_a_refusal_pays_nothing() {
+        let priest = Character::new("Cleric", Race::Human, Gender::Male, Profession::Priest);
+        let heal = heal_wounds();
+        let mut rng = GameRng::seeded(9);
+        // An untrained priest at power 7: a high failure chance.
+        let chance = fail_chance(&priest, &heal, 7);
+        assert!(chance > 50, "{chance}");
+        let outcomes: Vec<_> = (0..50).map(|_| roll(&mut rng, chance, &heal)).collect();
+        assert!(outcomes.contains(&Outcome::Fizzled) && outcomes.contains(&Outcome::Cast));
+    }
+
     #[test]
     fn a_priest_picks_two_first_level_divine_spells_and_gains_their_points() {
         let priest = Character::new("Cleric", Race::Human, Gender::Male, Profession::Priest);
