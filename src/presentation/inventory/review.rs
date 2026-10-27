@@ -871,7 +871,7 @@ mod tests {
     #[test]
     fn statistics_follow_equipment_only_changes() {
         use crate::content::items::ItemDefinition;
-        use crate::game::inventory::{ItemIds, make_item};
+        use crate::game::inventory::{Equipped, ItemIds, make_item};
         use crate::game::rng::GameRng;
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))

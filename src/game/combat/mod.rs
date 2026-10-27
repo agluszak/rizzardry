@@ -1,4 +1,4 @@
-//! The party's fights (`docs/research/combat.md`), first slice: the party
+//! The party's fights, first slice: the party
 //! against the hostile monsters that see it, weapon attacks only, everyone
 //! fighting on their own (retail's continuous mode with every member set to
 //! attack). Who reaches whom in melee follows the party's formation.
@@ -712,7 +712,7 @@ fn monster_acts(
     let mode = attack::choose_mode(rng, EnumSet::only(mode));
     let Ok((character, mut vitals, carried)) = members.get_mut(member) else { return };
     let mut armour = armour(&character, carried, items);
-    // Defending is worth 2 (`characters.md` §4.8, component 10).
+    // Defending adds 2 to armour.
     if battle.defends(member) {
         armour.total += 2;
         armour.by_location.values_mut().for_each(|a| *a += 2);
