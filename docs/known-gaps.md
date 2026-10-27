@@ -27,16 +27,19 @@ See [research](research/README.md) for recovered mechanics and
 
 ## Combat and progression
 
-- Additional orders, criticals/fumbles, continuing effects, off-hand attacks,
-  the faction table, levelling and complete party/monster movement and fleeing
-  remain. Monsters close in only while a round plays, not as retail's per-actor
-  advance and charge actions; the party has no combat movement budget.
-- Magic: only Heal Wounds, Energy Blast and Sleep resolve; other spells and item
-  spells are refused before anything is spent. Spell and item views are plain
-  popups, not retail's overlays. Effects apply at the action rather than after
-  missile flight or visuals; backfires turn on the caster instead of retail's
-  re-aim; item-use difficulty, skill practice, the repeat-heal pip, combat pace,
-  difficulty scaling and condition immunities by monster kind are not modelled.
+- Additional orders, criticals/fumbles, off-hand attacks, levelling, fleeing and
+  monster spellcasting remain. The party's combat move pauses the round instead
+  of interleaving monsters by distance covered; faction standings change only by
+  kills, not by dialogue, facts or theft.
+- Magic: buffs (enchantments and effect slots such as Bless, Haste, Armorplate),
+  continuing clouds, summoning, Turncoat, Charm and utility spells (light,
+  portals, identify, locks) are refused before anything is spent. Monster and
+  weapon attack effects (poison and its strength among them) are not ported.
+  Effects that retail applies when their visuals end apply at the action, since
+  gameplay does not wait for artwork. Spell missiles fly at 15 m/s and hit their
+  captured victim. The spell views pick enemies by retail's auto-target rule,
+  not by pointing in the 3D view; they neither scroll nor list the party pool.
+  Difficulty has no options screen yet.
 - Party swing fatigue/rest are implemented; shared-load fatigue scaling, Berserk
   order and monster fatigue/recovery are not. Charging monster fatigue alone could
   leave exhausted monsters stranded after combat.

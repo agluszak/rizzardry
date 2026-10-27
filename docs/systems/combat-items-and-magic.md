@@ -21,11 +21,32 @@ together. Decoded evidence (decomp paths under `src/wiz8/local_code/`):
   (`Magic.cpp:2680-2681`); an item spends a use for any nonzero item-cast result
   (`PC Item.cpp:1271-1276`). A refusal spends nothing. Exhausted charged items
   stay; a used-up stack or potion is gone, and its effect still applies.
-- Effects: Heal Wounds `(4·power)d4` with no save; Energy Blast `power d7` less
-  `ReduceMagnitudeByResistance`; Sleep's save `(level − strength)·3 + 20 +
-  resistance` within 5..95 and its duration (`Magic Effects.cpp:268-585`).
-  Sleepers lose their actions, age out by round and may wake when hit
-  (`SEN/2 + 50`%).
+- Effects (`game::magic::effects`, table by spell id): damage, healing,
+  stamina, restoration, condition attacks with the save
+  `(level − strength)·3 + base + resistance` scaled by difficulty within 5..95,
+  death spells, cures (`power²` rounds, or `power·15`% for lasting ones),
+  resurrection, Lifesteal, Pandemonium and the Prismic afflictions, in
+  retail's per-spell passes (`Magic Effects.cpp`). Monster kinds 17, 20 and 22
+  are immune to some conditions. Sleepers lose their actions, age out by round
+  and may wake when hit (`SEN/2 + 50`%).
+- Items cast with their use type's skill (`GetItemUseDifficulty`): Artifacts
+  for wands and scrolls, Music and Engineering with their profession levels,
+  thrown items quietly; unidentified items add 30; potions never fail.
+  Instruments and gadgets find the power their player can manage.
+- A backfire turns a one-victim spell on its caster and any other on the whole
+  party (`PrepareSpellTarget`). Auto power heals what the victim lacks; outside
+  a fight Auto Recast repeats until the victim is whole.
+- Missiles fly at 15 m/s (the `energy_blast.mls` velocity per retail's
+  two-millisecond step) and resolve on the victims captured at the cast; the
+  next actor waits for them.
+- Practice (`PracticeCharacterSkill`): casting trains the book, the realm and
+  Power Cast; item use its skill; a party member's save Iron Will.
+- Monsters out of reach advance (or charge, when hurt) as their action, up to
+  `combat_move_range` × 20 m of walking time, and act again later in the round.
+  The party's Walk or Run is its own phased action: 20 or 30 m, then each
+  member keeps their action by the share left, paying stamina by load.
+- Factions start at retail's standings; aligned species fight by their band,
+  kills lower it (`RecordFactionOffense`).
 - First spells: two picks for the pure casters, from their books, of levels
   their caster level and training allow (`CharGeneration.cpp:594-711`,
   `Magic.cpp:1042-1095`).
