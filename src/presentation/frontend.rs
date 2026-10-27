@@ -107,7 +107,7 @@ struct Creation {
     party: Vec<u32>,
     selected: Option<u32>,
     next_id: u32,
-    editing: Option<(Option<u32>, CharacterDraft)>,
+    editing: Option<CharacterDraft>,
     page: Page,
     message: String,
 }
@@ -118,8 +118,6 @@ enum Action {
     Quit,
     Menu,
     Add,
-    Edit(usize),
-    Remove(usize),
     SelectCandidate(Option<u32>),
     ToggleCandidate,
     DeleteCandidate,
@@ -136,7 +134,6 @@ enum Action {
 }
 #[derive(Component)]
 enum Field {
-    Slot(usize),
     Race,
     Gender,
     Profession,
@@ -437,29 +434,6 @@ fn creation(mut commands: Commands, assets: Res<AssetServer>) {
     let editor = commands
         .spawn((EditorGroup, absolute(Vec2::ZERO, Vec2::new(640., 480.)), ChildOf(root)))
         .id();
-    text(&mut commands, editor, (22., 16.), 590., 25., "ASSEMBLE YOUR PARTY");
-    text(
-        &mut commands,
-        editor,
-        (22., 51.),
-        580.,
-        10.,
-        "Create up to six adventurers. Nothing is committed until you begin your adventure.",
-    );
-    for i in 0..6 {
-        let label = button(
-            &mut commands,
-            editor,
-            (22., 88. + i as f32 * 45.),
-            139.,
-            "Empty slot",
-            Action::Edit(i),
-        );
-        commands.entity(label).insert(Field::Slot(i));
-        button(&mut commands, editor, (165., 88. + i as f32 * 45.), 22., "x", Action::Remove(i));
-    }
-    button(&mut commands, editor, (22., 369.), 165., "+ NEW ADVENTURER", Action::Add);
-    button(&mut commands, editor, (22., 435.), 165., "DISCARD PARTY & BACK", Action::Menu);
     text(
         &mut commands,
         editor,
@@ -694,7 +668,6 @@ fn activate(
         Action::NewGame
             | Action::Menu
             | Action::Add
-            | Action::Edit(_)
             | Action::Cancel
             | Action::Finish
             | Action::Begin
@@ -726,22 +699,8 @@ fn activate(
     session.message.clear();
     match *action {
         Action::Add if session.candidates.len() < 6 => {
-            session.editing = Some((None, CharacterDraft::default()));
+            session.editing = Some(CharacterDraft::default());
             session.page = Page::Identity;
-        }
-        Action::Edit(i) => {
-            let candidate = session.party.get(i).and_then(|id| {
-                session.candidates.iter().find(|(candidate, _)| candidate == id).cloned()
-            });
-            if let Some((id, draft)) = candidate {
-                session.editing = Some((Some(id), draft));
-                session.page = Page::Identity;
-            }
-        }
-        Action::Remove(i) => {
-            if i < session.party.len() {
-                session.party.remove(i);
-            }
         }
         Action::SelectCandidate(Some(id)) => {
             if session.candidates.iter().any(|(candidate, _)| *candidate == id) {
@@ -771,26 +730,15 @@ fn activate(
         }
         Action::Page(page) => session.page = page,
         Action::Finish => {
-            if let Some((index, draft)) = &session.editing {
+            if let Some(draft) = &session.editing {
                 match draft.finish() {
                     Err(message) => session.message = message.into(),
                     Ok(_) => {
-                        let index = *index;
-                        let (_, draft) = session.editing.take().unwrap();
-                        if let Some(id) = index {
-                            if let Some((_, candidate)) = session
-                                .candidates
-                                .iter_mut()
-                                .find(|(candidate, _)| *candidate == id)
-                            {
-                                *candidate = draft;
-                            }
-                        } else {
-                            let id = session.next_id;
-                            session.next_id += 1;
-                            session.candidates.push((id, draft));
-                            session.selected = Some(id);
-                        }
+                        let draft = session.editing.take().unwrap();
+                        let id = session.next_id;
+                        session.next_id += 1;
+                        session.candidates.push((id, draft));
+                        session.selected = Some(id);
                         session.page = Page::Party;
                     }
                 }
@@ -826,7 +774,7 @@ fn activate(
             }
         }
         action => {
-            let Some((_, draft)) = session.editing.as_mut() else { return };
+            let Some(draft) = session.editing.as_mut() else { return };
             let result = match action {
                 Action::Race(direction) => {
                     let i = PLAYABLE_RACES.iter().position(|&r| r == draft.race()).unwrap() as i32;
@@ -883,8 +831,8 @@ fn activate(
             }
         }
     }
-    if matches!(*action, Action::Add | Action::Edit(_))
-        && let Some((_, draft)) = &session.editing
+    if matches!(*action, Action::Add)
+        && let Some(draft) = &session.editing
     {
         for mut name in &mut names {
             *name = EditableText {
@@ -905,7 +853,7 @@ fn update_name(
     else {
         return;
     };
-    if let Some((_, draft)) = session.editing.as_mut() {
+    if let Some(draft) = session.editing.as_mut() {
         let value = name.value().to_string();
         if draft.name != value {
             draft.name = value;
@@ -965,14 +913,11 @@ fn refresh(
             Visibility::Hidden
         });
     }
-    let draft = session.editing.as_ref().map(|(_, d)| d);
+    let draft = session.editing.as_ref();
     let profile = draft.map(CharacterDraft::preview);
     for (entity, action, disabled) in &buttons {
         let enabled = match *action {
             Action::Add => session.editing.is_none() && session.candidates.len() < 6,
-            Action::Edit(i) | Action::Remove(i) => {
-                session.editing.is_none() && i < session.party.len()
-            }
             Action::Begin => session.editing.is_none() && !session.party.is_empty(),
             _ => true,
         };
@@ -981,21 +926,6 @@ fn refresh(
 
     for (field, mut text) in &mut fields {
         let value = match field {
-            Field::Slot(i) => session
-                .party
-                .get(*i)
-                .and_then(|id| session.candidates.iter().find(|(candidate, _)| candidate == id))
-                .map(|(_, draft)| draft)
-                .map(|d| {
-                    let name: String = d.name.chars().take(16).collect();
-                    format!(
-                        "{}{}\n{:?}",
-                        name,
-                        if d.name.chars().count() > 16 { "..." } else { "" },
-                        d.profession()
-                    )
-                })
-                .unwrap_or_else(|| format!("{}  /  Empty", i + 1)),
             Field::Message => session.message.clone(),
             _ => {
                 let (Some(draft), Some(profile)) = (draft, &profile) else { continue };
@@ -1135,7 +1065,7 @@ mod keyboard_tests {
                 party: vec![],
                 selected: None,
                 next_id: 0,
-                editing: Some((None, CharacterDraft::default())),
+                editing: Some(CharacterDraft::default()),
                 page: Page::Identity,
                 message: String::new(),
             })
@@ -1161,7 +1091,7 @@ mod keyboard_tests {
         }
         app.update();
         assert_eq!(
-            app.world().get::<Creation>(root).unwrap().editing.as_ref().unwrap().1.name,
+            app.world().get::<Creation>(root).unwrap().editing.as_ref().unwrap().name,
             "Nora"
         );
         for edit in
@@ -1171,7 +1101,7 @@ mod keyboard_tests {
         }
         app.update();
         assert_eq!(
-            app.world().get::<Creation>(root).unwrap().editing.as_ref().unwrap().1.name,
+            app.world().get::<Creation>(root).unwrap().editing.as_ref().unwrap().name,
             "Zora"
         );
         app.world_mut()
@@ -1180,7 +1110,7 @@ mod keyboard_tests {
             .queue_edit(TextEdit::ImeSetCompose { value: "é".into(), cursor: None });
         app.update();
         assert_eq!(
-            app.world().get::<Creation>(root).unwrap().editing.as_ref().unwrap().1.name,
+            app.world().get::<Creation>(root).unwrap().editing.as_ref().unwrap().name,
             "Zora"
         );
         app.world_mut()
@@ -1189,7 +1119,7 @@ mod keyboard_tests {
             .queue_edit(TextEdit::ImeCommit { value: "é".into() });
         app.update();
         assert_eq!(
-            app.world().get::<Creation>(root).unwrap().editing.as_ref().unwrap().1.name,
+            app.world().get::<Creation>(root).unwrap().editing.as_ref().unwrap().name,
             "Zéora"
         );
         assert!(app.world().get::<Creation>(root).unwrap().party.is_empty());
@@ -1259,7 +1189,10 @@ mod keyboard_tests {
         // The transition cleared focus. Tab still finds a visible enabled control.
         tap(&mut app, window, KeyCode::Tab);
         let focused = app.world().resource::<InputFocus>().get().unwrap();
-        assert!(app.world().get::<Action>(focused).is_some());
+        assert!(
+            app.world().get::<Action>(focused).is_some()
+                || app.world().get::<NameInput>(focused).is_some()
+        );
         assert!(app.world().get::<InteractionDisabled>(focused).is_none());
         assert!(app.world().get::<InheritedVisibility>(focused).unwrap().get());
         let name = app
@@ -1273,6 +1206,9 @@ mod keyboard_tests {
             .set(name, bevy::input_focus::FocusCause::Navigated);
         tap(&mut app, window, KeyCode::Escape);
         tap(&mut app, window, KeyCode::Tab);
+        if app.world().resource::<InputFocus>().get() == Some(name) {
+            tap(&mut app, window, KeyCode::Tab);
+        }
         assert!(
             app.world()
                 .resource::<InputFocus>()

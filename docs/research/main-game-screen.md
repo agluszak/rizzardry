@@ -475,6 +475,10 @@ three bottom panels shown (`Gameplay Init.cpp:483-490`).
   (`txt.cpp:1955-1972`).
 - Selecting the Dialog tab scrolls to show the last 7 lines.
 - PgUp, PgDn, Home, End and Del (500-504) scroll or clear the box.
+- The mouse wheel over the body scrolls by its line delta; right-clicking an
+  arrow scrolls seven lines (`TextBoxBodyRegionEvent`, `TextBoxScrollUpRegionEvent`,
+  `TextBoxScrollDownRegionEvent`). Dragging the thumb and repeated arrow presses
+  are still unimplemented.
 - **Uncertain**: `GetTextBoxVisibleLineCount` returns 1 outside spell, item, camp and
   dialogue modes, which makes the thumb range "lines - 1" there.
 
