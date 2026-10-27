@@ -245,6 +245,11 @@ fn announce(
     format!("{attacker} {word} {preposition}{target}{swings}")
 }
 
+/// A condition as notices name it.
+fn condition_word(condition: crate::game::characters::Condition) -> String {
+    format!("{condition:?}").to_lowercase()
+}
+
 /// What a cast or an item use tells the player. Retail's own strings for
 /// these are not mapped yet; the wording is plain.
 fn magic_lines(
@@ -257,6 +262,26 @@ fn magic_lines(
     let name = |entity| names.name(entity).unwrap_or_default();
     let victim = |victim: Victim| match victim {
         Victim::Member(e) | Victim::Monster(e) => name(e),
+    };
+    let effect_line = |effect: Effect| match effect {
+        Effect::Healed { victim: v, amount } => {
+            format!("{} heals {amount}.", victim(v))
+        }
+        Effect::Damaged { victim: v, amount, .. } => {
+            format!("{} takes {amount} damage.", victim(v))
+        }
+        Effect::Inflicted { victim: v, condition } => {
+            format!("{} is {}.", victim(v), condition_word(condition))
+        }
+        Effect::Refreshed { victim: v, amount } => {
+            format!("{} regains {amount} stamina.", victim(v))
+        }
+        Effect::Cured { victim: v, condition } => {
+            format!("{} is no longer {}.", victim(v), condition_word(condition))
+        }
+        Effect::Raised { victim: v } => format!("{} lives again!", victim(v)),
+        Effect::Resisted { victim: v } => format!("{} resists.", victim(v)),
+        Effect::Nothing { victim: v } => format!("{} is unaffected.", victim(v)),
     };
     match news {
         MagicNews::Refused { caster, refusal } => {
@@ -272,9 +297,11 @@ fn magic_lines(
                 Refusal::WrongTime => "cannot do that now",
                 Refusal::NoTarget => "has no target in reach",
                 Refusal::MissingContent => "cannot do that: data missing",
+                Refusal::PlayedBadly => "fails to play it",
             };
             vec![format!("{} {why}.", name(*caster))]
         }
+        MagicNews::Landed { effects, .. } => effects.iter().map(|&e| effect_line(e)).collect(),
         MagicNews::Done(report) => {
             let spell = spells.and_then(|s| s.get(report.spell)).map_or("", |s| s.name.as_str());
             let mut lines = vec![match &report.item {
@@ -286,18 +313,9 @@ fn magic_lines(
                 Outcome::Backfired => lines.push("The spell backfires!".into()),
                 Outcome::Cast => {}
             }
-            for effect in &report.effects {
-                lines.push(match *effect {
-                    Effect::Healed { victim: v, amount } => {
-                        format!("{} heals {amount}.", victim(v))
-                    }
-                    Effect::Damaged { victim: v, amount, .. } => {
-                        format!("{} takes {amount} damage.", victim(v))
-                    }
-                    Effect::Inflicted { victim: v, .. } => format!("{} falls asleep.", victim(v)),
-                    Effect::Resisted { victim: v } => format!("{} resists.", victim(v)),
-                    Effect::Nothing { victim: v } => format!("{} is unaffected.", victim(v)),
-                });
+            lines.extend(report.effects.iter().map(|&e| effect_line(e)));
+            for &(member, skill) in &report.improved {
+                lines.push(format!("{}'s {skill:?} improves.", name(member)));
             }
             lines
         }

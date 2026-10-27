@@ -75,7 +75,7 @@ global access with owned payloads and explicit queries.
 | Damage/conditions | Target's active-role combat state |
 
 ```rust
-struct ItemRef { owner: ItemOwner, id: ItemInstanceId }
+struct ItemRef { owner: ItemOwner, id: StackId }
 struct PlannedItemUse { item: ItemRef, target: TargetSpec }
 enum TargetSpec { Actor(Entity), Area { center: Vec3 } }
 struct ActiveSpellEffect {

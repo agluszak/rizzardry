@@ -241,15 +241,22 @@ pub fn populate(
             .iter()
             .filter_map(|placement| {
                 let definition = items.get(placement.item)?;
-                let item = placed_item(placement, definition, ids);
-                let hidden = placement.hidden;
-                Some((WorldItem { item, hidden, contents: vec![] }, placement.position))
+                let loot = if definition.container {
+                    super::items::GroundLoot::Pile {
+                        appearance: definition.id,
+                        identified: placement.identified || definition.auto_identify,
+                        contents: vec![],
+                    }
+                } else {
+                    super::items::GroundLoot::Loose(placed_item(placement, definition, ids))
+                };
+                Some((WorldItem { loot, hidden: placement.hidden }, placement.position))
             })
             .collect(),
     };
     info!("placed {monster_count} monsters and {} items", lying.len());
     for (item, at) in lying {
-        let name = items.get(item.item.item).map_or_else(String::new, |d| d.name.clone());
+        let name = items.get(item.appearance()).map_or_else(String::new, |d| d.name.clone());
         commands.spawn((Name::new(name), item, Transform::from_translation(at), ChildOf(root)));
     }
 }

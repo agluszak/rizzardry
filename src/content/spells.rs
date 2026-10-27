@@ -129,10 +129,19 @@ impl SpellDefinition {
         self.cost * u32::from(power)
     }
 
-    /// Retail `CanSpellBackfire` for the spells modelled: hostile spells can
-    /// backfire, healing cannot.
+    /// Retail `CanSpellBackfire` (`Spells.cpp:1483-1531`): spells aimed at
+    /// enemies, but Banish and two creature spells; eight friendly ones; of
+    /// the lock spells, Knock Knock.
     pub fn can_backfire(&self) -> bool {
-        self.targeting.hostile()
+        match self.targeting {
+            Targeting::Enemy
+            | Targeting::EnemyGroup
+            | Targeting::Cone
+            | Targeting::Radius
+            | Targeting::AllEnemies => !matches!(self.id.0, 77 | 118 | 131),
+            Targeting::LockOrTrap => self.id.0 == 39,
+            _ => matches!(self.id.0, 3 | 13 | 16 | 34 | 44 | 56 | 58 | 74),
+        }
     }
 }
 

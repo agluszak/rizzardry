@@ -135,7 +135,7 @@ pub fn give_starting_equipment(
         for id in starting_items(character) {
             let Some(definition) = catalog.get(id) else { continue };
             let item = make_item(definition, &mut ids, &mut rng, true, true);
-            if place_at_creation(&mut carried, item, catalog, character).is_err() {
+            if place_at_creation(&mut carried, item, catalog, character).is_some() {
                 warn!("{}: no room for {}", character.name, definition.name);
             }
         }
@@ -172,7 +172,7 @@ mod tests {
             let mut carried = Carried::default();
             for id in starting_items(&character) {
                 let item = make_item(catalog.get(id).unwrap(), &mut ids, &mut rng, true, true);
-                place_at_creation(&mut carried, item, &catalog, &character).unwrap();
+                assert!(place_at_creation(&mut carried, item, &catalog, &character).is_none());
             }
             assert!(carried.worn(EquipSlot::Primary).is_some(), "{profession:?} holds a weapon");
         }

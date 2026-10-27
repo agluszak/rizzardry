@@ -19,10 +19,10 @@ use crate::content::species::AttackWord;
 
 use crate::content::items::{Dice, ItemCatalog};
 use crate::content::species::{MonsterCatalog, Reach};
-use crate::content::spells::{SpellCatalog, SpellDefinition};
+use crate::content::spells::SpellCatalog;
 use crate::game::characters::{Character, Condition, Vitals};
 use crate::game::data::GameData;
-use crate::game::inventory::{EquipSlot, ItemInstanceId};
+use crate::game::inventory::{EquipSlot, StackId};
 use crate::game::magic::casting::{self, MagicChoice, MagicNews};
 use crate::game::magic::{Effect, LearnedSpells, SpellPoints, Victim};
 use crate::game::party::body::PartyBody;
@@ -103,7 +103,7 @@ struct Turn {
 #[derive(Clone, Copy, Debug)]
 enum AcceptedAction {
     Attack {
-        weapon: Option<ItemInstanceId>,
+        weapon: Option<StackId>,
     },
     Defend,
     /// A spell or item use, revalidated and paid when its initiative comes.
@@ -152,6 +152,16 @@ impl Battle {
 
     fn defends(&self, actor: Entity) -> bool {
         self.party.iter().any(|p| p.actor == actor && matches!(p.action, AcceptedAction::Defend))
+    }
+
+    /// A monster died to the party: its experience is shared at the end and
+    /// it acts no more this round.
+    pub fn credit_kill(&mut self, monster: Entity, experience: u32) {
+        self.experience += experience;
+        self.kills += 1;
+        if let Some((_, turn)) = self.monsters.iter_mut().find(|(actor, _)| *actor == monster) {
+            *turn = Turn::default();
+        }
     }
 
     /// The monsters in the fight, in its stable order.
@@ -445,7 +455,14 @@ pub fn run_battle(
     };
     let Ok((position, body)) = party_body.single() else { return };
     let party = PartyView { eye: PartyBody::eye(position), yaw: body.yaw };
-    if !battle.wait.tick(time.delta()).is_finished() {
+    // A finished pause is not ticked again: a fight waiting for the player
+    // stays unchanged.
+    if !battle.wait.is_finished() && !battle.wait.tick(time.delta()).is_finished() {
+        return;
+    }
+    // The next actor waits until the last one's missiles have landed
+    // (retail `UpdateCombat`).
+    if !magic.in_flight.is_empty() {
         return;
     }
 
@@ -574,7 +591,7 @@ pub fn run_battle(
                 );
                 battle.party[index].turn = Turn::default();
                 match report {
-                    Ok(report) => {
+                    Ok((report, flights)) => {
                         battle.attacked_this_round = true;
                         for effect in &report.effects {
                             if let Effect::Damaged {
@@ -582,15 +599,12 @@ pub fn run_battle(
                             } = *effect
                                 && outcome.died
                             {
-                                battle.experience += outcome.experience;
-                                battle.kills += 1;
-                                if let Some((_, turn)) =
-                                    battle.monsters.iter_mut().find(|(actor, _)| *actor == target)
-                                {
-                                    *turn = Turn::default();
-                                }
+                                battle.credit_kill(target, outcome.experience);
                                 news.write(CombatNews::Killed { actor: target });
                             }
+                        }
+                        for flight in flights {
+                            commands.spawn(flight);
                         }
                         magic_news.write(MagicNews::Done(report));
                     }
@@ -680,6 +694,9 @@ pub struct BattleMagic<'w, 's> {
     obstacles: WorldObstacles<'w, 's>,
     groups: Query<'w, 's, &'static GroupMember>,
     group_members: Query<'w, 's, &'static GroupMembers>,
+    difficulty: Res<'w, crate::game::difficulty::Difficulty>,
+    /// Missiles still on their way hold the fight's next action.
+    in_flight: Query<'w, 's, (), With<casting::SpellInFlight>>,
 }
 
 /// A member casts or uses an item at their initiative. The monsters it may
@@ -702,18 +719,12 @@ fn member_casts(
     species: &MonsterCatalog,
     party_level: u32,
     magic: &mut BattleMagic,
-) -> Result<casting::Report, casting::Refusal> {
-    let BattleMagic { spells, points, obstacles, groups, group_members } = magic;
+) -> Result<(casting::Report, Vec<casting::SpellInFlight>), casting::Refusal> {
+    let BattleMagic { spells, points, obstacles, groups, group_members, difficulty, .. } = magic;
     let spells = spells.get(&data.spells).ok_or(casting::Refusal::MissingContent)?;
-    let living: Vec<Entity> = members
-        .iter_many(&roster.0)
-        .matched()
-        .zip(roster.0.iter())
-        .filter(|((_, vitals, _), _)| !vitals.is_dead())
-        .map(|(_, &entity)| entity)
-        .collect();
-    // Distance from the party and line of sight, per fighting monster.
-    let in_sight: Vec<(Entity, f32, Option<Entity>)> = battle
+    let party_members: Vec<Entity> = roster.0.iter().copied().collect();
+    // Where each fighting monster in the party's sight stands, and how far.
+    let in_sight: Vec<(casting::Candidate, Option<Entity>)> = battle
         .monsters
         .iter()
         .filter_map(|&(entity, _)| {
@@ -727,19 +738,15 @@ fn member_casts(
                 obstacles.first_hit(party.eye, direction, party.eye.distance(eye)).is_none()
             });
             clear.then(|| {
-                (
-                    entity,
-                    distance_to_party(party.eye, monster, feet),
-                    groups.get(entity).ok().map(|g| g.0),
-                )
+                let distance = distance_to_party(party.eye, monster, feet);
+                let candidate = casting::Candidate { entity, at: feet, distance };
+                (candidate, groups.get(entity).ok().map(|g| g.0))
             })
         })
         .collect();
-    let reachable = |monster: Entity, spell: &SpellDefinition| {
-        in_sight.iter().any(|&(m, distance, _)| m == monster && distance <= spell.reach.metres())
-    };
+    let candidates: Vec<_> = in_sight.iter().map(|&(c, _)| c).collect();
     let group_of = |monster: Entity| -> Vec<Entity> {
-        let group = in_sight.iter().find(|&&(m, ..)| m == monster).and_then(|&(.., g)| g);
+        let group = in_sight.iter().find(|(c, _)| c.entity == monster).and_then(|&(_, g)| g);
         match group.and_then(|g| group_members.get(g).ok()) {
             Some(mates) => mates.iter().collect(),
             None => vec![monster],
@@ -747,11 +754,12 @@ fn member_casts(
     };
     let situation = casting::Situation {
         in_combat: true,
-        party: &living,
-        reachable: &reachable,
+        party: &party_members,
+        party_at: party.eye,
+        monsters: &candidates,
         group_of: &group_of,
     };
-    let mut world = crate::game::magic::World {
+    let mut world = crate::game::magic::Field {
         members,
         monsters: damage,
         formation,
@@ -759,6 +767,9 @@ fn member_casts(
         items,
         species,
         party_level,
+        difficulty: **difficulty,
+        party: &party_members,
+        improved: Vec::new(),
     };
     casting::perform(member, choice, &situation, spells, points, rng, &mut world)
 }
@@ -1095,6 +1106,7 @@ mod tests {
             .init_resource::<Formation>()
             .init_resource::<PartyInventory>()
             .init_resource::<crate::game::factions::Factions>()
+            .init_resource::<crate::game::difficulty::Difficulty>()
             .init_resource::<ItemIds>()
             .init_resource::<GameClock>()
             .insert_resource(GameRng::seeded(5))
@@ -1126,8 +1138,9 @@ mod tests {
         for (name, weapon) in ["A", "B"].into_iter().zip(&weapons) {
             let character = Character::new(name, Race::Human, Gender::Male, Profession::Fighter);
             let mut carried = Carried::default();
-            carried.equipment[EquipSlot::Primary] =
-                Some(make_item(weapon, &mut ids, &mut equipment_rng, false, true));
+            carried.equipment[EquipSlot::Primary] = Some(crate::game::inventory::Equipped::new(
+                make_item(weapon, &mut ids, &mut equipment_rng, false, true),
+            ));
             let order = if name == "B" && defending { Order::Defend } else { Order::Attack };
             let entity =
                 app.world_mut().spawn((Vitals::new(&character), character, carried, order)).id();

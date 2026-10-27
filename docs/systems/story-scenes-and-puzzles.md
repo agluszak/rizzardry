@@ -197,7 +197,7 @@ their purposes. A spelling cleanup must not silently merge them.
 | Step | Proposed responsibility | State change |
 | --- | --- | --- |
 | Point at the device | World interaction query | Select the terminal/slot, not an arbitrary NPC |
-| Choose Use or offer an item | UI/interaction intent | Keep the specific device and ItemInstanceId; selection does not consume |
+| Choose Use or offer an item | UI/interaction intent | Keep the specific device and StackId; selection does not consume |
 | Validate availability | Arnika interaction function | Check repair/current conversation conditions and the real content predicate |
 | Reject an offer | Same function | Explain rejection; ownership and quantity remain unchanged |
 | Accept an offer | Inventory operation coordinated by the device function | Transfer or consume the specified item exactly as the content requires; commit the corresponding device state once |

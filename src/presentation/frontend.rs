@@ -44,6 +44,7 @@ impl Plugin for FrontendPlugin {
             .add_systems(OnEnter(MenuPage::Main), main_menu)
             .add_systems(OnEnter(MenuPage::Credits), credits::enter)
             .add_systems(OnEnter(Session::Creation), creation)
+            .add_systems(PostUpdate, finish_when_settled.after(bevy::text::EditableTextSystems))
             .add_systems(
                 Update,
                 (
@@ -122,7 +123,7 @@ struct Creation {
     page: Page,
     message: String,
 }
-#[derive(Component, Clone, Copy)]
+#[derive(Component, Clone, Copy, PartialEq)]
 enum Action {
     NewGame,
     Credits,
@@ -164,6 +165,9 @@ enum Field {
 struct PreviewPortrait;
 #[derive(Component)]
 struct NameInput;
+/// A Finish pressed while the name editor still had unapplied input.
+#[derive(Component)]
+struct FinishWhenSettled;
 #[derive(Component)]
 struct EditorGroup;
 
@@ -222,7 +226,6 @@ fn button(
             BackgroundColor(PANEL),
             BorderColor::all(GOLD),
         ))
-        .observe(crate::presentation::retail_controls::primary_press)
         .id();
     let label = commands
         .spawn((
@@ -837,6 +840,15 @@ fn activate(
             session.page = Page::Party;
         }
         Action::Page(page) => session.page = page,
+        Action::Finish
+            if names
+                .iter()
+                .any(|name| !name.pending_edits.is_empty() || name.pending_paste.is_some()) =>
+        {
+            // The name editor owns its text until its edits and any paste
+            // settle; accept the draft then.
+            commands.entity(click.entity).insert(FinishWhenSettled);
+        }
         Action::Finish => {
             if let Some((index, draft)) = &session.editing {
                 match draft.finish() {
@@ -971,6 +983,21 @@ fn activate(
     }
 }
 
+/// Activate a deferred Finish again once native editing has settled.
+fn finish_when_settled(
+    names: Query<&EditableText, With<NameInput>>,
+    buttons: Query<Entity, With<FinishWhenSettled>>,
+    mut commands: Commands,
+) {
+    if names.iter().any(|name| !name.pending_edits.is_empty() || name.pending_paste.is_some()) {
+        return;
+    }
+    for button in &buttons {
+        commands.entity(button).remove::<FinishWhenSettled>();
+        commands.trigger(Activate { entity: button });
+    }
+}
+
 fn update_name(
     event: On<TextEditChange>,
     names: Query<&EditableText, With<NameInput>>,
@@ -1008,14 +1035,16 @@ fn show_editor(
     let Some(session) = session else { return };
     for (mut node, mut visibility) in &mut editors {
         let shown = session.page != Page::Party;
-        node.display = if shown { Display::Flex } else { Display::None };
+        let display = if shown { Display::Flex } else { Display::None };
+        if node.display != display {
+            node.display = display;
+        }
         visibility.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
     }
 }
 
 fn refresh(
     sessions: Query<Ref<Creation>>,
-    focus: Res<InputFocus>,
     mut commands: Commands,
     buttons: Query<(Entity, &Action, Has<InteractionDisabled>), Without<party::Control>>,
     mut pages: Query<
@@ -1034,7 +1063,7 @@ fn refresh(
 ) {
     let spell_catalog = magic_data.0.as_ref().and_then(|d| magic_data.1.get(&d.spells));
     let Ok(session) = sessions.single() else { return };
-    if !session.is_changed() && !focus.is_changed() {
+    if !session.is_changed() {
         return;
     }
     for (page, mut node, mut visibility) in &mut pages {
@@ -1302,6 +1331,30 @@ mod keyboard_tests {
             "Zéora"
         );
         assert!(app.world().get::<Creation>(root).unwrap().party.is_empty());
+
+        // A Finish pressed with edits still queued is activated again only
+        // once they are applied, and sees the settled name.
+        #[derive(Resource, Default)]
+        struct Finished(Vec<String>);
+        app.init_resource::<Finished>()
+            .add_systems(PostUpdate, finish_when_settled.after(apply_text_edits));
+        let finish = app
+            .world_mut()
+            .spawn(FinishWhenSettled)
+            .observe(
+                |_: On<Activate>, sessions: Query<&Creation>, mut finished: ResMut<Finished>| {
+                    let name = sessions.single().unwrap().editing.as_ref().unwrap().1.name.clone();
+                    finished.0.push(name);
+                },
+            )
+            .id();
+        for edit in [TextEdit::SelectAll, TextEdit::Insert("Kai".into())] {
+            app.world_mut().get_mut::<EditableText>(field).unwrap().queue_edit(edit);
+        }
+        app.update();
+        app.update();
+        assert_eq!(app.world().resource::<Finished>().0, ["Kai"]);
+        assert!(app.world().get::<FinishWhenSettled>(finish).is_none());
     }
 
     #[test]
@@ -1331,6 +1384,7 @@ mod keyboard_tests {
         .insert_resource(NewGameDestination { path: String::new(), start: default() })
         .add_message::<AppExit>()
         .add_plugins(FrontendPlugin)
+        .add_observer(crate::presentation::retail_controls::primary_buttons_only)
         .add_systems(PostUpdate, crate::presentation::retail_controls::sync_button_navigation);
         let window = app.world_mut().spawn((Window::default(), PrimaryWindow)).id();
         app.finish();

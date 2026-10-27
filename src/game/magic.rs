@@ -7,6 +7,9 @@
 //! item spends a use (see `game::magic::casting`).
 
 pub mod casting;
+pub mod effects;
+
+pub use effects::{Effect, Field, Members, Victim, modelled};
 
 use std::collections::BTreeSet;
 
@@ -15,20 +18,16 @@ use enum_map::EnumMap;
 use enumset::EnumSet;
 
 use crate::content::characters::{Attribute, Realm, Skill};
-use crate::content::items::{Dice, ItemCatalog};
+use crate::content::items::ItemCatalog;
 use crate::content::species::MonsterCatalog;
 use crate::content::spells::{
     MAX_POWER, SpellCatalog, SpellDefinition, SpellId, Spellbook, Targeting, min_caster_level,
 };
-use crate::game::characters::{
-    Character, Condition, Lasting, Profession, Vitals, inflict, resistance::resistances,
-    wake_on_hit,
-};
-use crate::game::inventory::Carried;
+use crate::game::characters::{Character, Profession};
 use crate::game::party::DamageApplied;
 use crate::game::party::formation::Formation;
 use crate::game::rng::GameRng;
-use crate::game::world::damage::{DamageOutcome, MonsterDamage};
+use crate::game::world::damage::MonsterDamage;
 
 /// The spells a character has learned. Creation picks the first ones.
 #[derive(Component, Clone, Debug, Default, PartialEq, Eq)]
@@ -142,7 +141,7 @@ fn book_skill(book: Spellbook) -> Skill {
     }
 }
 
-fn realm_skill(realm: Realm) -> Skill {
+pub(crate) fn realm_skill(realm: Realm) -> Skill {
     match realm {
         Realm::Fire => Skill::FireMagic,
         Realm::Water => Skill::WaterMagic,
@@ -169,6 +168,13 @@ fn best_book_skill(character: &Character, spell: &SpellDefinition) -> u32 {
     let books = spell.books & character_books(character);
     let books = if books.is_empty() { spell.books } else { books };
     books.iter().map(|b| character.skill(book_skill(b))).max().unwrap_or(0)
+}
+
+/// The book skill a spell is cast by: the best of the character's.
+pub(crate) fn best_book(character: &Character, spell: &SpellDefinition) -> Skill {
+    let books = spell.books & character_books(character);
+    let books = if books.is_empty() { spell.books } else { books };
+    books.iter().map(book_skill).max_by_key(|&s| character.skill(s)).unwrap_or(Skill::Wizardry)
 }
 
 /// Retail `GetSpellCastingSkillLevel`: the book counts once, the realm four
@@ -236,15 +242,19 @@ pub fn max_points(
 const CAST_THRESHOLDS: [u32; 17] =
     [30, 40, 50, 58, 64, 70, 76, 81, 86, 90, 94, 97, 100, 102, 105, 107, 110];
 
-/// The percent chance a learned cast fails (retail `ExecuteCharacterSpellCast`).
-/// Combat pace and difficulty are not modelled; retail's Normal setting
-/// leaves a cast that is not late in the round unchanged.
-pub fn fail_chance(character: &Character, spell: &SpellDefinition, power: u8) -> u32 {
+/// Retail `GetSpellFailureChance`: the skill a spell's difficulty band
+/// needs at `power`, and up to 70% failure for falling short of it.
+pub(crate) fn spell_failure(skill: u32, spell: &SpellDefinition, power: u8) -> u32 {
     let band = (spell.cost / 2 + u32::from(spell.level)).min(16) as usize;
     let need = CAST_THRESHOLDS[band] * u32::from(power) / 7;
-    let skill = casting_skill(character, spell);
-    let mut chance =
-        if skill < need { ((need - skill) * 70 / need.max(1)).min(100) as i32 } else { 0 };
+    if skill < need { ((need - skill) * 70 / need.max(1)).min(100) } else { 0 }
+}
+
+/// The percent chance a learned cast fails (retail `ExecuteCharacterSpellCast`),
+/// before combat pace: the casting skill's shortfall, and the caster levels the
+/// spell's level and power call for.
+pub fn fail_chance(character: &Character, spell: &SpellDefinition, power: u8) -> u32 {
+    let mut chance = spell_failure(casting_skill(character, spell), spell, power) as i32;
     let caster = total_caster_level(character, spell.books);
     let short = min_caster_level(spell.level) - caster - 1 + i32::from(power);
     if short > 0 {
@@ -272,16 +282,28 @@ pub struct Strength {
 }
 
 impl Strength {
-    /// A character's cast: `caster/2 + power + (cost/2 + level)/2`, three
-    /// less against all enemies, then raised by half the Power Cast bonus.
+    /// A character's cast: by their total caster level, raised by Power Cast.
     pub fn of(character: &Character, spell: &SpellDefinition, power: u8) -> Self {
-        let boost = power_cast(character);
         let caster = total_caster_level(character, spell.books).max(0) as u32;
+        Strength::at(caster, spell, power, power_cast(character))
+    }
+
+    /// Retail `GetSpellDifficulty`: `figure/2 + power + (cost/2 + level)/2`,
+    /// three less against all enemies, less the death spells' floors, then
+    /// raised by half the boost.
+    pub fn at(figure: u32, spell: &SpellDefinition, power: u8, boost: u32) -> Self {
         let mut against =
-            caster / 2 + u32::from(power) + (spell.cost / 2 + u32::from(spell.level)) / 2;
+            figure / 2 + u32::from(power) + (spell.cost / 2 + u32::from(spell.level)) / 2;
         if spell.targeting == Targeting::AllEnemies {
             against = against.saturating_sub(3);
         }
+        let floor = match spell.id.0 {
+            70 => 2,
+            87 => 4,
+            90 | 93 | 94 => 6,
+            _ => 0,
+        };
+        against = against.saturating_sub(floor);
         against += against * (boost / 2) / 100;
         Strength { power, against, boost }
     }
@@ -296,248 +318,20 @@ pub enum Outcome {
     Backfired,
 }
 
-/// Roll a cast against its failure chance (retail `CastSpellFromSource`):
-/// a failure backfires a third of the time it could, never under 6%.
-pub fn roll(rng: &mut GameRng, chance: u32, spell: &SpellDefinition) -> Outcome {
-    if rng.below(100) >= chance {
+/// Roll a cast against its failure chance (retail `CastSpellFromSource`): a
+/// failure backfires a third of the time it could, never under 6%; a quiet
+/// (thrown) use backfires whenever it fails and can.
+pub fn roll(rng: &mut GameRng, chance: u32, spell: &SpellDefinition, quiet: bool) -> Outcome {
+    if chance == 0 || rng.below(100) >= chance {
         return Outcome::Cast;
     }
-    let backfire = if chance < 6 || !spell.can_backfire() { 0 } else { chance / 3 };
+    let backfire = match () {
+        _ if !spell.can_backfire() => 0,
+        _ if quiet => chance,
+        _ if chance < 6 => 0,
+        _ => chance / 3,
+    };
     if rng.below(100) < backfire { Outcome::Backfired } else { Outcome::Fizzled }
-}
-
-/// The magnitude a spell rolls at `power`: its dice count times power, then
-/// raised by the boost percent.
-fn magnitude(rng: &mut GameRng, spell: &SpellDefinition, strength: Strength) -> u32 {
-    let Some(dice) = spell.dice else { return 0 };
-    let count = (u32::from(dice.count) * u32::from(strength.power)).min(255) as u8;
-    let rolled = rng.roll(Dice { count, ..dice });
-    rolled + rolled * strength.boost / 100
-}
-
-/// Retail `ReduceMagnitudeByResistance`: resistance and the victim's level
-/// over the cast's strength take a random share off.
-fn resist(rng: &mut GameRng, amount: u32, resistance: i32, level: u32, against: u32) -> u32 {
-    let mut c = resistance + (level as i32 - against as i32) * 3;
-    if c <= 0 {
-        return amount;
-    }
-    c += 1;
-    let half = c / 2;
-    let share =
-        (rng.below((c - half) as u32) as i32 + half + rng.below(half as u32) as i32).min(100);
-    amount - amount * share as u32 / 100
-}
-
-/// Each condition's base save (retail `g_condition_resist_base`), by retail
-/// number (Drained is 1).
-const CONDITION_SAVE: [i32; 20] =
-    [0, 1, 2, 3, 4, 4, 5, 6, 7, 8, 9, 10, 12, 14, 16, 20, 18, 22, 24, 22];
-
-fn condition_number(condition: Condition) -> usize {
-    condition as usize + 1
-}
-
-/// Whether a victim shrugs a condition off (retail `ResolveAttackOnTarget`
-/// on Normal difficulty): `(level − strength)·3 + base + resistance`
-/// percent, within 5..=95.
-fn saves(
-    rng: &mut GameRng,
-    condition: Condition,
-    resistance: i32,
-    level: u32,
-    against: u32,
-) -> bool {
-    let chance = (level as i32 - against as i32) * 3
-        + CONDITION_SAVE[condition_number(condition)]
-        + resistance;
-    (rng.below(100) as i32) < chance.clamp(5, 95)
-}
-
-/// Rounds a condition spell inflicts (retail `RollConditionDuration`).
-fn duration(rng: &mut GameRng, spell: &SpellDefinition, strength: Strength) -> u32 {
-    let mut rounds =
-        (spell.duration_per_power * i32::from(strength.power) + spell.duration_base + 1).max(0)
-            as u32;
-    if rng.below(4) == 0 && rounds > 1 {
-        rounds += 1;
-    }
-    if rng.below(4) == 0 && rounds <= 2 {
-        rounds += 1;
-    }
-    rounds + rounds * strength.boost / 100
-}
-
-/// Whom a spell lands on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Victim {
-    Member(Entity),
-    Monster(Entity),
-}
-
-/// What a spell did to one victim.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Effect {
-    Healed { victim: Victim, amount: u32 },
-    Damaged { victim: Victim, amount: u32, outcome: DamageOutcome },
-    Inflicted { victim: Victim, condition: Condition },
-    Resisted { victim: Victim },
-    Nothing { victim: Victim },
-}
-
-/// The party members' profile, vitals and belongings, as spells and combat
-/// change them.
-pub type Members<'w, 's> =
-    Query<'w, 's, (&'static mut Character, &'static mut Vitals, &'static mut Carried)>;
-
-/// What a spell's effects need from the world.
-pub struct World<'a, 'm, 'ms, 'd, 'ds, 'f, 'p> {
-    pub members: &'a mut Members<'m, 'ms>,
-    pub monsters: &'a mut MonsterDamage<'d, 'ds>,
-    pub formation: &'a mut ResMut<'f, Formation>,
-    pub party_damage: &'a mut MessageWriter<'p, DamageApplied>,
-    pub items: &'a ItemCatalog,
-    pub species: &'a MonsterCatalog,
-    /// What monster loot tables scale by.
-    pub party_level: u32,
-}
-
-/// Resolve a spell on the victims captured when it was cast (retail
-/// `ProcessSpellEffectTargets`), in their captured order. Victims that died
-/// or left since are skipped; nobody new is added.
-pub fn resolve(
-    spell: &SpellDefinition,
-    strength: Strength,
-    victims: &[Victim],
-    rng: &mut GameRng,
-    world: &mut World,
-) -> Vec<Effect> {
-    victims.iter().filter_map(|&victim| resolve_one(spell, strength, victim, rng, world)).collect()
-}
-
-fn resolve_one(
-    spell: &SpellDefinition,
-    strength: Strength,
-    victim: Victim,
-    rng: &mut GameRng,
-    world: &mut World,
-) -> Option<Effect> {
-    let realm = spell.realm?;
-    match spell.id {
-        SpellId::HEAL_WOUNDS => {
-            // Retail `HealTargets`: no resistance.
-            let Victim::Member(member) = victim else { return None };
-            let (character, mut vitals, _) = world.members.get_mut(member).ok()?;
-            let missing = character.max_hp().saturating_sub(vitals.hp);
-            if vitals.is_dead() || missing == 0 {
-                return Some(Effect::Nothing { victim });
-            }
-            let amount = magnitude(rng, spell, strength).min(missing);
-            vitals.heal(amount, character.max_hp());
-            Some(Effect::Healed { victim, amount })
-        }
-        SpellId::ENERGY_BLAST => {
-            let rolled = magnitude(rng, spell, strength);
-            match victim {
-                Victim::Monster(monster) => {
-                    let (target, ..) = world.monsters.monsters.get(monster).ok()?;
-                    if target.is_dead() {
-                        return None;
-                    }
-                    let kind = world.species.0.get(target.species as usize)?;
-                    let amount = resist(
-                        rng,
-                        rolled,
-                        i32::from(kind.resistances[realm]),
-                        u32::from(kind.level),
-                        strength.against,
-                    );
-                    let outcome =
-                        world.monsters.apply(monster, amount, world.party_level, rng).ok()?;
-                    Some(Effect::Damaged { victim, amount: outcome.damage, outcome })
-                }
-                Victim::Member(member) => {
-                    let (character, mut vitals, carried) = world.members.get_mut(member).ok()?;
-                    if vitals.is_dead() {
-                        return None;
-                    }
-                    let resistance = resistances(&character, &carried, world.items)[realm].total;
-                    let amount = resist(
-                        rng,
-                        rolled,
-                        resistance,
-                        u32::from(character.level),
-                        strength.against,
-                    );
-                    let lost = crate::game::party::damage_member(
-                        member,
-                        &mut vitals,
-                        world.formation,
-                        amount,
-                        world.party_damage,
-                    );
-                    if !vitals.is_dead() {
-                        let senses = character.attribute(Attribute::Senses);
-                        wake_on_hit(&mut vitals.conditions, senses, rng);
-                    }
-                    let outcome =
-                        DamageOutcome { damage: lost, died: vitals.is_dead(), experience: 0 };
-                    Some(Effect::Damaged { victim, amount: lost, outcome })
-                }
-            }
-        }
-        SpellId::SLEEP => {
-            let condition = Condition::Asleep;
-            let (level, resistance) = match victim {
-                Victim::Monster(monster) => {
-                    let (target, ..) = world.monsters.monsters.get(monster).ok()?;
-                    if target.is_dead() {
-                        return None;
-                    }
-                    let kind = world.species.0.get(target.species as usize)?;
-                    (u32::from(kind.level), i32::from(kind.resistances[realm]))
-                }
-                Victim::Member(member) => {
-                    let (character, vitals, carried) = world.members.get(member).ok()?;
-                    if vitals.is_dead() {
-                        return None;
-                    }
-                    (
-                        u32::from(character.level),
-                        resistances(character, carried, world.items)[realm].total,
-                    )
-                }
-            };
-            let rounds = duration(rng, spell, strength);
-            if saves(rng, condition, resistance, level, strength.against) {
-                return Some(Effect::Resisted { victim });
-            }
-            let rounds = match resist(rng, rounds, resistance, level, strength.against) {
-                0 => return Some(Effect::Resisted { victim }),
-                1 => 2,
-                rounds => rounds,
-            };
-            let lasting = Lasting::Rounds(rounds.min(u32::from(u16::MAX)) as u16);
-            match victim {
-                Victim::Monster(monster) => {
-                    let (mut target, ..) = world.monsters.monsters.get_mut(monster).ok()?;
-                    inflict(&mut target.conditions, condition, lasting);
-                }
-                Victim::Member(member) => {
-                    let (_, mut vitals, _) = world.members.get_mut(member).ok()?;
-                    vitals.inflict(condition, lasting);
-                }
-            }
-            Some(Effect::Inflicted { victim, condition })
-        }
-        _ => None,
-    }
-}
-
-/// The spells whose effects are modelled; others are refused before
-/// anything is spent.
-pub fn modelled(spell: SpellId) -> bool {
-    matches!(spell, SpellId::HEAL_WOUNDS | SpellId::ENERGY_BLAST | SpellId::SLEEP)
 }
 
 /// Retail fatigue for a learned cast: the spell's level plus its power.
@@ -549,16 +343,21 @@ pub struct MagicPlugin;
 
 impl Plugin for MagicPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<MagicRequest>().add_message::<casting::MagicNews>().add_systems(
-            Update,
-            (
-                fill_spell_points.in_set(crate::game::GameplaySet::Equipment),
-                accept_magic
-                    .after(crate::game::GameplaySet::LevelActivation)
-                    .before(crate::game::GameplaySet::Combat)
-                    .run_if(crate::game::world::level::level_active),
-            ),
-        );
+        app.add_message::<MagicRequest>()
+            .add_message::<casting::MagicNews>()
+            .init_resource::<crate::game::factions::Factions>()
+            .init_resource::<crate::game::difficulty::Difficulty>()
+            .add_systems(
+                Update,
+                (
+                    fill_spell_points.in_set(crate::game::GameplaySet::Equipment),
+                    (accept_magic, deliver_spells)
+                        .chain()
+                        .after(crate::game::GameplaySet::LevelActivation)
+                        .before(crate::game::GameplaySet::Combat)
+                        .run_if(crate::game::world::level::level_active),
+                ),
+            );
     }
 }
 
@@ -570,28 +369,44 @@ pub struct MagicRequest {
     pub choice: casting::MagicChoice,
 }
 
+/// What resolving magic needs beside the members and monsters it changes.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct MagicContext<'w, 's> {
+    roster: Res<'w, crate::game::party::roster::PartyRoster>,
+    data: Option<Res<'w, crate::game::data::GameData>>,
+    items: Res<'w, Assets<ItemCatalog>>,
+    species: Res<'w, Assets<MonsterCatalog>>,
+    spells: Res<'w, Assets<SpellCatalog>>,
+    difficulty: Res<'w, crate::game::difficulty::Difficulty>,
+    formation: ResMut<'w, Formation>,
+    party_damage: MessageWriter<'w, DamageApplied>,
+    rng: ResMut<'w, GameRng>,
+    news: MessageWriter<'w, casting::MagicNews>,
+    _marker: std::marker::PhantomData<&'s ()>,
+}
+
+impl MagicContext<'_, '_> {
+    fn party_level(&self, members: &Members) -> u32 {
+        let levels: u32 =
+            members.iter_many(&self.roster.0).matched().map(|(c, _, _)| u32::from(c.level)).sum();
+        levels / self.roster.0.len().max(1) as u32
+    }
+}
+
 /// Accept magic requests (retail `ChooseAction`): in combat only record the
 /// choice; outside it, execute it now.
-#[allow(clippy::too_many_arguments)]
 pub fn accept_magic(
     mut requests: MessageReader<MagicRequest>,
     battle: Option<Res<crate::game::combat::Battle>>,
-    roster: Res<crate::game::party::roster::PartyRoster>,
     mut orders: Query<&mut crate::game::party::Order>,
     (mut members, mut monsters): (Members, MonsterDamage),
-    (mut formation, mut party_damage): (ResMut<Formation>, MessageWriter<DamageApplied>),
-    data: Option<Res<crate::game::data::GameData>>,
-    (items, species, spells): (
-        Res<Assets<ItemCatalog>>,
-        Res<Assets<MonsterCatalog>>,
-        Res<Assets<SpellCatalog>>,
-    ),
     mut points: Query<(&LearnedSpells, &mut SpellPoints)>,
-    mut rng: ResMut<GameRng>,
-    mut news: MessageWriter<casting::MagicNews>,
+    mut context: MagicContext,
+    party: Query<&avian3d::prelude::Position, With<crate::game::party::body::PartyBody>>,
+    mut commands: Commands,
 ) {
     for &MagicRequest { caster, choice } in requests.read() {
-        if !roster.0.contains(&caster) {
+        if !context.roster.0.contains(&caster) {
             continue;
         }
         if battle.is_some() {
@@ -600,6 +415,20 @@ pub fn accept_magic(
             }
             continue;
         }
+        let party_level = context.party_level(&members);
+        let MagicContext {
+            roster,
+            data,
+            items,
+            species,
+            spells,
+            difficulty,
+            formation,
+            party_damage,
+            rng,
+            news,
+            ..
+        } = &mut context;
         let catalogs = data.as_ref().and_then(|d| {
             Some((items.get(&d.items)?, species.get(&d.species)?, spells.get(&d.spells)?))
         });
@@ -610,45 +439,113 @@ pub fn accept_magic(
             });
             continue;
         };
-        let living: Vec<Entity> = roster
-            .0
-            .iter()
-            .copied()
-            .filter(|&m| members.get(m).is_ok_and(|(_, v, _)| !v.is_dead()))
-            .collect();
-        let levels: u32 =
-            members.iter_many(&roster.0).matched().map(|(c, _, _)| u32::from(c.level)).sum();
-        // Outside a fight no monster is a target: the hostile spells
-        // modelled are combat spells.
+        let party_at =
+            party.single().map_or(Vec3::ZERO, crate::game::party::body::PartyBody::eye);
+        // Outside a fight no monster is a target: the hostile spells are
+        // combat spells.
         let situation = casting::Situation {
             in_combat: false,
-            party: &living,
-            reachable: &|_, _| false,
+            party: &roster.0.iter().copied().collect::<Vec<_>>(),
+            party_at,
+            monsters: &[],
             group_of: &|m| vec![m],
         };
-        let mut world = World {
+        let living: Vec<Entity> = roster.0.iter().copied().collect();
+        let mut field = Field {
             members: &mut members,
             monsters: &mut monsters,
-            formation: &mut formation,
-            party_damage: &mut party_damage,
+            formation,
+            party_damage,
             items,
             species,
-            party_level: levels / roster.0.len().max(1) as u32,
+            party_level,
+            difficulty: **difficulty,
+            party: &living,
+            improved: Vec::new(),
         };
         news.write(
-            match casting::perform(
-                caster,
-                choice,
-                &situation,
-                spells,
-                &mut points,
-                &mut rng,
-                &mut world,
-            ) {
-                Ok(report) => casting::MagicNews::Done(report),
+            match casting::perform(caster, choice, &situation, spells, &mut points, rng, &mut field)
+            {
+                Ok((report, flights)) => {
+                    for flight in flights {
+                        commands.spawn(flight);
+                    }
+                    casting::MagicNews::Done(report)
+                }
                 Err(refusal) => casting::MagicNews::Refused { caster, refusal },
             },
         );
+    }
+}
+
+/// Fly spell missiles and resolve them on arrival (retail
+/// `ResolveSpellMissileHit`): on the victims captured at the cast; one that
+/// died meanwhile is missed. Kills in a fight count for it.
+pub fn deliver_spells(
+    time: Res<Time<Virtual>>,
+    mut flights: Query<(Entity, &mut casting::SpellInFlight)>,
+    (mut members, mut monsters): (Members, MonsterDamage),
+    mut context: MagicContext,
+    mut battle: Option<ResMut<crate::game::combat::Battle>>,
+    mut combat_news: MessageWriter<crate::game::combat::CombatNews>,
+    mut commands: Commands,
+) {
+    if flights.is_empty() {
+        return;
+    }
+    let party_level = context.party_level(&members);
+    let MagicContext {
+        roster,
+        data,
+        items,
+        species,
+        spells,
+        difficulty,
+        formation,
+        party_damage,
+        rng,
+        news,
+        ..
+    } = &mut context;
+    let catalogs = data.as_ref().and_then(|d| {
+        Some((items.get(&d.items)?, species.get(&d.species)?, spells.get(&d.spells)?))
+    });
+    let Some((items, species, spells)) = catalogs else { return };
+    let living: Vec<Entity> = roster.0.iter().copied().collect();
+    for (entity, mut flight) in &mut flights {
+        if !flight.arrives.tick(time.delta()).is_finished() {
+            continue;
+        }
+        commands.entity(entity).despawn();
+        let Some(spell) = spells.get(flight.spell) else { continue };
+        let mut field = Field {
+            members: &mut members,
+            monsters: &mut monsters,
+            formation,
+            party_damage,
+            items,
+            species,
+            party_level,
+            difficulty: **difficulty,
+            party: &living,
+            improved: Vec::new(),
+        };
+        let effects = effects::resolve(spell, flight.strength, &flight.victims, rng, &mut field);
+        if let Some(battle) = battle.as_mut() {
+            for effect in &effects {
+                if let Effect::Damaged { victim: Victim::Monster(target), outcome, .. } = *effect
+                    && outcome.died
+                {
+                    battle.credit_kill(target, outcome.experience);
+                    combat_news.write(crate::game::combat::CombatNews::Killed { actor: target });
+                }
+            }
+        }
+        news.write(casting::MagicNews::Landed {
+            caster: flight.caster,
+            spell: flight.spell,
+            effects,
+        });
     }
 }
 
@@ -669,6 +566,7 @@ pub fn fill_spell_points(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::content::items::Dice;
     use crate::content::spells::{PowerChoice, Reach, Usable};
     use crate::game::characters::{Gender, Race};
 
@@ -693,9 +591,14 @@ mod tests {
     /// charged wand, each casting its own spell at its own power.
     #[test]
     fn using_items_spends_a_dose_or_a_charge_and_the_last_dose_still_heals() {
-        use crate::content::items::{EquipClass, ItemDefinition, ItemId, LootTables, QuantityKind};
+        use crate::content::items::{
+            EquipClass, ItemDefinition, ItemId, LootTables, QuantityKind, UseType,
+        };
         use crate::content::spells::ItemSpell;
-        use crate::game::inventory::{EquipSlot, ItemIds, PartyInventory, Quantity, make_item};
+        use crate::game::characters::Vitals;
+        use crate::game::inventory::{
+            Carried, EquipSlot, Equipped, ItemIds, ItemStack, PartyInventory,
+        };
         use crate::game::party::roster::PartyRoster;
         use casting::{Aim, MagicChoice, MagicNews, Refusal, Source};
         let mut app = App::new();
@@ -709,6 +612,7 @@ mod tests {
             .init_resource::<PartyInventory>()
             .init_resource::<crate::game::factions::Factions>()
             .init_resource::<ItemIds>()
+            .init_resource::<crate::game::difficulty::Difficulty>()
             .insert_resource(GameRng::seeded(3))
             .add_message::<DamageApplied>()
             .add_message::<MagicRequest>()
@@ -718,15 +622,17 @@ mod tests {
             id: ItemId(0),
             name: "Potion of Light Heal".into(),
             class: EquipClass::Potion,
+            use_type: UseType::Potion,
             quantity: QuantityKind::Stack,
-            maximum_quantity: 5,
+            stack_limit: 5,
             spell: Some(ItemSpell { spell: SpellId::HEAL_WOUNDS, power: 1 }),
             ..default()
         };
         let wand = ItemDefinition {
             id: ItemId(1),
             name: "Healing Wand".into(),
-            class: EquipClass::Gadget,
+            class: EquipClass::MiscMagic,
+            use_type: UseType::Charged,
             quantity: QuantityKind::Charges,
             professions: enumset::EnumSet::all(),
             races: enumset::EnumSet::all(),
@@ -735,11 +641,8 @@ mod tests {
             ..default()
         };
         let mut ids = ItemIds::default();
-        let mut rng = GameRng::seeded(0);
-        let mut potions = make_item(&potion, &mut ids, &mut rng, false, true);
-        potions.quantity = Quantity::Stack(2);
-        let mut charged = make_item(&wand, &mut ids, &mut rng, false, true);
-        charged.quantity = Quantity::Uses(1);
+        let potions = ItemStack::new(&potion, &mut ids, 2, true);
+        let charged = ItemStack::new(&wand, &mut ids, 1, true);
         let (potion_id, wand_id) = (potions.id, charged.id);
         let world = app.world_mut();
         let items =
@@ -755,7 +658,7 @@ mod tests {
         vitals.hp = 1;
         let mut carried = Carried::default();
         carried.backpack[0] = Some(potions);
-        carried.equipment[EquipSlot::Misc1] = Some(charged);
+        carried.equipment[EquipSlot::Misc1] = Some(Equipped::new(charged));
         let member = world.spawn((profile, vitals, carried)).id();
         world.resource_mut::<PartyRoster>().0.insert(member);
         let mut news = Vec::new();
@@ -769,7 +672,7 @@ mod tests {
         let hp = |app: &App| app.world().get::<Vitals>(member).unwrap().hp;
         let backpack = |app: &App| app.world().get::<Carried>(member).unwrap().backpack[0].clone();
         assert!(matches!(request(&mut app, Source::Item(potion_id)), Some(MagicNews::Done(_))));
-        assert_eq!(backpack(&app).unwrap().quantity, Quantity::Stack(1));
+        assert_eq!(backpack(&app).unwrap().count(), 1);
         let before = hp(&app);
         assert!(before > 1, "4d4 heals at power 1");
         // Hurt again, and drink the last one: it is gone, and it heals.
@@ -784,10 +687,7 @@ mod tests {
         // A charged item keeps its body when emptied, and refuses then.
         assert!(matches!(request(&mut app, Source::Item(wand_id)), Some(MagicNews::Done(_))));
         let carried = app.world().get::<Carried>(member).unwrap();
-        assert_eq!(
-            carried.equipment[EquipSlot::Misc1].as_ref().unwrap().quantity,
-            Quantity::Uses(0)
-        );
+        assert_eq!(carried.worn(EquipSlot::Misc1).unwrap().remaining_uses(), Some(0));
         assert!(matches!(
             request(&mut app, Source::Item(wand_id)),
             Some(MagicNews::Refused { refusal: Refusal::NoCharges, .. })
@@ -804,7 +704,7 @@ mod tests {
         // An untrained priest at power 7: a high failure chance.
         let chance = fail_chance(&priest, &heal, 7);
         assert!(chance > 50, "{chance}");
-        let outcomes: Vec<_> = (0..50).map(|_| roll(&mut rng, chance, &heal)).collect();
+        let outcomes: Vec<_> = (0..50).map(|_| roll(&mut rng, chance, &heal, false)).collect();
         assert!(outcomes.contains(&Outcome::Fizzled) && outcomes.contains(&Outcome::Cast));
     }
 
@@ -854,7 +754,7 @@ mod tests {
         assert!(fail_chance(&priest, &heal, 7) > fail_chance(&priest, &heal, 1));
         let mut rng = GameRng::seeded(1);
         for _ in 0..200 {
-            assert_ne!(roll(&mut rng, 100, &heal), Outcome::Backfired);
+            assert_ne!(roll(&mut rng, 100, &heal, false), Outcome::Backfired);
         }
     }
 }

@@ -444,7 +444,7 @@ mod retail_tests {
         let mut carried = Carried::default();
         for id in [143, 153, 203, 246, 7] {
             let item = make_item(catalog.get(ItemId(id)).unwrap(), &mut ids, &mut rng, true, true);
-            place_at_creation(&mut carried, item, &catalog, &fighter).unwrap();
+            assert!(place_at_creation(&mut carried, item, &catalog, &fighter).is_none());
         }
         let hand = primary_hand(&fighter, &carried, &catalog);
         let armour = armour(&fighter, &carried, &catalog);

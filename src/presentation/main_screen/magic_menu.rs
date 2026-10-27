@@ -116,12 +116,7 @@ pub fn draw_magic_menu(
                     .into_iter()
                     .filter_map(|(id, spell)| {
                         let definition = spells.get(spell)?;
-                        let item = carried
-                            .equipment
-                            .values()
-                            .chain(carried.backpack.iter())
-                            .flatten()
-                            .find(|i| i.id == id)?;
+                        let item = carried.find_stack(id)?;
                         let name = items.get(item.item)?;
                         Some((Source::Item(id), definition, item.display_name(name, true)))
                     })
@@ -209,7 +204,6 @@ pub fn draw_magic_menu(
         ));
         if let Some(choice) = choice {
             row.insert((UiButton, TabIndex(0), choice, BorderColor::all(GOLD.with_alpha(0.5))))
-                .observe(crate::presentation::retail_controls::primary_press)
                 .observe(choose);
             first.get_or_insert(row.id());
         }

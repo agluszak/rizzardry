@@ -30,6 +30,8 @@ pub enum ItemLoadError {
     Truncated(#[from] Truncated),
     #[error("item {0}: unknown equipment class {1}")]
     EquipClass(usize, u8),
+    #[error("item {0}: unknown use type {1}")]
+    UseType(usize, u8),
     #[error("item {0}: unknown quantity kind {1}")]
     QuantityKind(usize, u8),
     #[error("item {0}: kind {1} has no image")]
@@ -445,7 +447,10 @@ fn read_item(
     let kind = bytes.u16()?;
     let flags = bytes.u8()?;
     let has = |bit| flags & bit != 0;
-    bytes.take(1 + 3)?; // category, whose meaning is not established
+    let use_type = bytes.u8()?;
+    let use_type = crate::content::items::UseType::from_retail(use_type)
+        .ok_or(ItemLoadError::UseType(index, use_type))?;
+    bytes.take(3)?; // not established
     let weapon_skill = u8::try_from(bytes.i8()?).ok().and_then(|s| Skill::try_from(s).ok());
     let reach = Reach::from_retail(bytes.u8()?);
     let damage_bonus = bytes.i8()?;
@@ -462,7 +467,7 @@ fn read_item(
     });
     let quantity_kind = bytes.u8()?;
     let initial_quantity = dice(&mut bytes)?;
-    let maximum_quantity = bytes.u8()?;
+    let stack_limit = bytes.u8()?;
     bytes.take(3)?; // regeneration
     let resistance_bonus =
         enum_map::EnumMap::from_array(bytes.array::<6>()?.map(|value| value as i8));
@@ -503,6 +508,7 @@ fn read_item(
         hit_bonus,
         armor_class_bonus,
         spell,
+        use_type,
         resistance_bonus,
         quantity: match quantity_kind {
             0 => QuantityKind::None,
@@ -514,7 +520,7 @@ fn read_item(
             other => return Err(ItemLoadError::QuantityKind(index, other)),
         },
         initial_quantity,
-        maximum_quantity,
+        stack_limit,
         professions,
         races,
         genders,
@@ -671,7 +677,7 @@ mod tests {
         assert!(bows > 0 && arrows > 0, "bows and the arrows they shoot");
         let stacks: Vec<_> =
             catalog.0.iter().filter(|i| i.quantity == QuantityKind::Stack).collect();
-        assert!(stacks.len() > 10 && stacks.iter().all(|i| i.maximum_quantity > 0));
+        assert!(stacks.len() > 10 && stacks.iter().all(|i| i.stack_limit > 0));
         for item in &catalog.0 {
             assert!(files.contains(&item.image), "{}: {}", item.name, item.image);
         }

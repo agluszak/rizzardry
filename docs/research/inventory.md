@@ -492,16 +492,11 @@ Attempt rule (`pci.cpp:455-475`, `pci.cpp:568-596`):
 - `placeHeld` into a backpack slot draws gameplay RNG (`inv.cpp:1046`). Pool
   receipt picks a random member for the reaction (`inv.cpp:399`).
 
-## 8. Notes for the Rust model
+## 8. Rust ownership decision
 
-- Item values belong to their owners. The stores are `[Option<Item>; 12]`,
-  `[Option<Item>; 8]`, a pool `Vec<Item>` capped at 500, `Option<Held>` and the
-  purse. The quantity should be an enum chosen by `quantity_kind` instead of two
-  bytes.
-- Rename the knowledge fields: `curse_known` (`bound`) and `curse_released`
-  (`bind_announced`). Clear `curse_released` inside the single move primitive,
-  not at each call site.
-- Pool indices shift on insert at the front, insert at a row, and erase. Choices
-  that must survive operations (queued item use, identify target) need an
-  instance identity. Whizzardry instead re-checks "same item id still at this
-  location" and drops stale uses (`inv.cpp:253-257`, `inv.cpp:290-297`).
+The implemented model uses nonempty owned `ItemStack` values, independent
+physical counts and use reservoirs, and release on `Equipped` placements.
+Concrete containers consume incoming values and return remainders. Stable stack
+IDs select items; member slots and pool insertion anchors select destinations.
+See [inventory ownership](../systems/inventory-trade-and-curses.md) for operation
+contracts, original-source corrections to this reconstruction and remaining gaps.

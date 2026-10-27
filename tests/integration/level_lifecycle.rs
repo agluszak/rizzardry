@@ -484,7 +484,7 @@ fn direct_damage_settles_death_once_and_rejection_leaves_the_target_unchanged() 
     let units = world
         .query::<&WorldItem>()
         .iter(world)
-        .flat_map(|w| std::iter::once(&w.item).chain(w.contents.iter()))
+        .flat_map(|w| w.stacks().iter())
         .filter(|i| i.item == ItemId(0))
         .map(|i| i.units())
         .sum::<u32>();

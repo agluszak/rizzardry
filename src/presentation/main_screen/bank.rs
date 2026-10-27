@@ -164,13 +164,10 @@ pub fn draw_bank(
                 }
             }
             Some(Bank::EndCombat) => {
-                commands.entity(entity).insert(ControlSkin::new(
-                    0,
-                    0,
-                    0,
-                    0,
-                    if fighting { 7 } else { 3 },
-                ));
+                let end_skin = ControlSkin::new(0, 0, 0, 0, if fighting { 7 } else { 3 });
+                if *skin != end_skin {
+                    commands.entity(entity).insert(end_skin);
+                }
                 if picture.at.x != if fighting { 200.0 } else { 199.0 } {
                     picture.at.x = if fighting { 200.0 } else { 199.0 };
                 }
@@ -304,13 +301,7 @@ pub fn draw_caption(
                         }
                         crate::game::magic::casting::Source::Item(id) => {
                             let name = carried
-                                .and_then(|c| {
-                                    c.equipment
-                                        .values()
-                                        .chain(c.backpack.iter())
-                                        .flatten()
-                                        .find(|i| i.id == id)
-                                })
+                                .and_then(|c| c.find_stack(id))
                                 .and_then(|i| catalog?.get(i.item))
                                 .map_or("", |d| d.name.as_str());
                             format!("Use {name}")
