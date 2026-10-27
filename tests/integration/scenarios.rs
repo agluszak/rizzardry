@@ -279,12 +279,16 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     };
     let invalid = app
         .world_mut()
-        .spawn(rizzardry::game::world::level::Destination::new(invalid, default()))
+        .spawn(rizzardry::game::world::level::Destination::new(
+            invalid,
+            default(),
+            rizzardry::game::world::level::Entry::Travel,
+        ))
         .id();
-    step_until(&mut app, "failed preparation", |w| {
-        w.get::<rizzardry::game::world::level::Destination>(invalid).is_some_and(|d| d.failed)
-    });
-    assert!(app.world().get::<Conversation>(session).is_some());
+    step_until(&mut app, "failed preparation", |w| w.get_entity(invalid).is_err());
+    assert!(app.world().get::<Conversation>(session).is_none());
+    assert!(playing(app.world_mut()).is_some_and(|p| p.ends_with("monastery1.pvl")));
+    assert_eq!(app.world().get::<Npc>(actor).unwrap().stock, stock);
 
     app.world_mut().write_message(ConversationRequest::Close { conversation: session });
     app.update();
