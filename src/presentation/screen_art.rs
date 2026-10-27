@@ -2,7 +2,6 @@
 //! their offsets, lines of text in a retail font, and buttons that show
 //! their hover frame.
 
-use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 
 use crate::content::ui::SpriteSheet;
@@ -89,56 +88,16 @@ pub fn sprite(sheet: &SpriteSheet, frame: usize, at: Vec2) -> Option<impl Scene 
     Some(bsn! { ImageNode { image: {image} } node Pickable::IGNORE })
 }
 
-/// A line of text, centred in a box `width` wide (or left-aligned when 0).
-pub fn text(
-    font: &SpriteSheet,
-    images: &mut Assets<Image>,
-    line: &str,
-    at: Vec2,
-    width: f32,
-) -> impl Scene + use<> {
-    let image = font.text_image(line);
-    let size = image.size_f32();
-    let x = if width > 0.0 { at.x + ((width - size.x) / 2.0).floor() } else { at.x };
-    let (image, node) = (images.add(image), absolute(Vec2::new(x, at.y), size));
-    bsn! { ImageNode { image: {image} } node Pickable::IGNORE }
-}
-
 /// A rectangle of colour at `at` of `size`.
 pub fn rect(at: Vec2, size: Vec2, colour: Color) -> impl Scene {
     let node = absolute(at, size);
     bsn! { node BackgroundColor({colour}) Pickable::IGNORE }
 }
 
-/// A button's look while hovered (retail's buttons have a frame for it).
-#[derive(Component, Clone, FromTemplate)]
-#[require(Hovered)]
-pub struct HoverArt {
-    pub normal: Handle<Image>,
-    pub hovered: Handle<Image>,
-}
-
-/// Show frame `hovered` of `sheet` while the pointer is over the button,
-/// `normal` otherwise.
-pub fn hover_art(sheet: &SpriteSheet, normal: usize, hovered: usize) -> impl Scene + use<> {
-    let image = |frame: usize| sheet.images.get(frame).cloned().unwrap_or_default();
-    let (normal, hovered) = (image(normal), image(hovered));
-    bsn! { HoverArt { normal: {normal}, hovered: {hovered} } }
-}
-
-/// Show each button's hover frame while the pointer is over it.
-pub fn paint_hover_art(
-    mut buttons: Query<(&Hovered, &HoverArt, &mut ImageNode), Changed<Hovered>>,
-) {
-    for (hovered, art, mut image) in &mut buttons {
-        image.image = if hovered.get() { art.hovered.clone() } else { art.normal.clone() };
-    }
-}
-
 /// The source frame of a retained retail picture. The ImageNode owns the
 /// displayed image; this keeps its source sheet alive while it loads/changes.
 #[derive(Component, Clone, Default, PartialEq)]
-#[require(ImageNode)]
+#[require(ImageNode, Node = Node { position_type: PositionType::Absolute, ..default() }, Pickable = Pickable::IGNORE)]
 pub struct Picture {
     pub sheet: Handle<SpriteSheet>,
     pub frame: usize,
@@ -147,9 +106,19 @@ pub struct Picture {
     pub at: Vec2,
 }
 
+/// Visible region in sprite-local coordinates, including the authored offset.
+/// Cropping preserves texel alignment rather than stretching a shortened node.
+#[derive(Component, Clone, Copy, PartialEq)]
+pub struct PictureCrop(pub Rect);
+impl PictureCrop {
+    pub fn horizontal(start: f32, end: f32) -> Self {
+        Self(Rect::from_corners(Vec2::new(start, f32::MIN), Vec2::new(end, f32::MAX)))
+    }
+}
+
 /// A retained bitmap-font label. Only its rasterized image is cached.
 #[derive(Component, Clone, Default, PartialEq)]
-#[require(ImageNode)]
+#[require(ImageNode, Node = Node { position_type: PositionType::Absolute, ..default() }, Pickable = Pickable::IGNORE)]
 pub struct BitmapText {
     pub font: Handle<SpriteSheet>,
     pub palette: Option<Handle<SpriteSheet>>,
@@ -157,6 +126,22 @@ pub struct BitmapText {
     pub at: Vec2,
     pub width: f32,
     pub justify: bevy::text::Justify,
+}
+
+/// Spawn a retained image; callers attach screen-specific roles.
+pub fn spawn_picture(
+    commands: &mut Commands,
+    parent: Entity,
+    sheet: Handle<SpriteSheet>,
+    frame: usize,
+    at: Vec2,
+) -> Entity {
+    commands.spawn((Picture { sheet, frame, at, bounds: None }, ChildOf(parent))).id()
+}
+
+/// Spawn a fully described label, including initial text, alignment and palette.
+pub fn spawn_label(commands: &mut Commands, parent: Entity, text: BitmapText) -> Entity {
+    commands.spawn((text, ChildOf(parent))).id()
 }
 
 pub fn picture(sheet: Handle<SpriteSheet>, frame: usize, at: Vec2) -> impl Scene {
@@ -177,9 +162,17 @@ pub fn label(font: Handle<SpriteSheet>, at: Vec2, width: f32) -> impl Scene {
 
 pub fn render_pictures(
     sheets: Res<Assets<SpriteSheet>>,
+    mut removed_crops: RemovedComponents<PictureCrop>,
     mut events: MessageReader<AssetEvent<SpriteSheet>>,
-    mut pictures: Query<(Ref<Picture>, &mut ImageNode, &mut Node)>,
+    mut pictures: Query<(
+        Entity,
+        Ref<Picture>,
+        Option<Ref<PictureCrop>>,
+        &mut ImageNode,
+        &mut Node,
+    )>,
 ) {
+    let removed: Vec<_> = removed_crops.read().collect();
     let changed: std::collections::HashSet<_> = events
         .read()
         .filter_map(|event| match event {
@@ -190,8 +183,12 @@ pub fn render_pictures(
             AssetEvent::Unused { .. } => None,
         })
         .collect();
-    for (source, mut image, mut node) in &mut pictures {
-        if !source.is_changed() && !changed.contains(&source.sheet.id()) {
+    for (entity, source, crop, mut image, mut node) in &mut pictures {
+        if !source.is_changed()
+            && !removed.contains(&entity)
+            && !crop.as_ref().is_some_and(|c| c.is_changed())
+            && !changed.contains(&source.sheet.id())
+        {
             continue;
         }
         let frame = sheets.get(&source.sheet).and_then(|sheet| {
@@ -207,13 +204,16 @@ pub fn render_pictures(
         if image.image != *handle {
             image.image = handle.clone();
         }
-        image.color.set_alpha(1.0);
-        let desired = (
-            px(source.at.x + f32::from(frame.offset[0])),
-            px(source.at.y + f32::from(frame.offset[1])),
-            px(frame.width),
-            px(frame.height),
-        );
+        let offset = Vec2::new(f32::from(frame.offset[0]), f32::from(frame.offset[1]));
+        let full =
+            Rect::from_corners(offset, offset + Vec2::new(frame.width as f32, frame.height as f32));
+        let shown = crop.as_ref().map_or(full, |crop| full.intersect(crop.0));
+        let size = shown.size().max(Vec2::ZERO);
+        image.color.set_alpha(if size.x > 0.0 && size.y > 0.0 { 1.0 } else { 0.0 });
+        image.rect =
+            crop.as_ref().map(|_| Rect::from_corners(shown.min - offset, shown.max - offset));
+        let desired =
+            (px(source.at.x + shown.min.x), px(source.at.y + shown.min.y), px(size.x), px(size.y));
         if node.left != desired.0 {
             node.left = desired.0;
         }
@@ -279,5 +279,47 @@ pub fn render_text(
         node.top = px(text.at.y);
         node.width = px(size.x);
         node.height = px(size.y);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::content::ui::Frame;
+
+    #[test]
+    fn crop_keeps_source_pixels_offsets_and_restores_full_picture() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<Assets<SpriteSheet>>()
+            .add_message::<AssetEvent<SpriteSheet>>()
+            .add_systems(Update, render_pictures);
+        let sheet = app.world_mut().resource_mut::<Assets<SpriteSheet>>().add(SpriteSheet {
+            frames: vec![Frame { offset: [2, -3], width: 125, height: 14, rgba: vec![] }],
+            images: vec![Handle::default()],
+            palette: None,
+        });
+        let entity = app
+            .world_mut()
+            .spawn((
+                Picture { sheet, at: Vec2::new(100.0, 20.0), ..default() },
+                PictureCrop::horizontal(40.0, 65.0),
+            ))
+            .id();
+        app.update();
+        let image = app.world().get::<ImageNode>(entity).unwrap();
+        assert_eq!(image.rect, Some(Rect::new(38.0, 0.0, 63.0, 14.0)));
+        let node = app.world().get::<Node>(entity).unwrap();
+        assert_eq!(
+            (node.left, node.top, node.width, node.height),
+            (px(140), px(17), px(25), px(14))
+        );
+        app.world_mut().entity_mut(entity).insert(PictureCrop::horizontal(0.0, 0.0));
+        app.update();
+        assert_eq!(app.world().get::<ImageNode>(entity).unwrap().color.alpha(), 0.0);
+        app.world_mut().entity_mut(entity).remove::<PictureCrop>();
+        app.update();
+        assert_eq!(app.world().get::<ImageNode>(entity).unwrap().rect, None);
+        assert_eq!(app.world().get::<Node>(entity).unwrap().width, px(125));
     }
 }

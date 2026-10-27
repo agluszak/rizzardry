@@ -9,7 +9,8 @@ pub mod attack;
 use crate::game::world::ActorPose;
 use crate::game::world::level::PlayedLevel;
 use crate::game::world::navigation::{Walker, feet};
-use avian3d::prelude::{Position, RigidBody, SpatialQuery, SpatialQueryFilter};
+use crate::game::world::obstacles::WorldObstacles;
+use avian3d::prelude::Position;
 use bevy::prelude::*;
 use enumset::EnumSet;
 
@@ -277,8 +278,7 @@ pub fn start_battle(
     level: PlayedLevel,
     members: Query<(&Character, &Vitals)>,
     monsters: Query<(Entity, &Monster, ActorPose, Option<&Walker>)>,
-    spatial: SpatialQuery,
-    bodies: Query<&RigidBody>,
+    obstacles: WorldObstacles,
     data: Option<Res<GameData>>,
     species: Res<Assets<MonsterCatalog>>,
     roster: Res<PartyRoster>,
@@ -288,7 +288,7 @@ pub fn start_battle(
 ) {
     if battle.is_some()
         || camp.is_some()
-        || !roster.0.iter().any(|&member| members.get(member).is_ok_and(|(_, v)| !v.is_dead()))
+        || !members.iter_many(&roster.0).matched().any(|(_, v)| !v.is_dead())
     {
         return;
     }
@@ -301,22 +301,17 @@ pub fn start_battle(
     let party_eye = PartyBody::eye(party_at);
     // The party's lowest level among those who can act weakens sight
     // from behind.
-    let lowest_level = roster
-        .0
-        .iter()
-        .filter_map(|&m| members.get(m).ok())
+    let lowest_level = members
+        .iter_many(&roster.0)
+        .matched()
         .filter(|(_, v)| able(v))
         .map(|(c, _)| i32::from(c.level))
         .min()
         .unwrap_or(0);
     // Only the level's static geometry blocks sight.
-    let level = |entity| bodies.get(entity).is_ok_and(RigidBody::is_static);
     let clear = |from: Vec3, to: Vec3| {
         let Ok(direction) = Dir3::new(to - from) else { return true };
-        let filter = SpatialQueryFilter::default();
-        spatial
-            .cast_ray_predicate(from, direction, from.distance(to), true, &filter, &level)
-            .is_none()
+        obstacles.first_hit(from, direction, from.distance(to)).is_none()
     };
     let mut joined: Vec<(i32, Entity)> = monsters
         .iter()
@@ -353,9 +348,9 @@ pub fn start_battle(
     joined.sort();
     info!("combat: {} monsters", joined.len());
     // The view turns to the nearest of them (retail `beginCombat`).
-    let nearest = joined
-        .iter()
-        .filter_map(|&(_, e)| monsters.get(e).ok())
+    let nearest = monsters
+        .iter_many(joined.iter().map(|&(_, e)| e))
+        .matched()
         .map(|(_, _, at, _)| at.translation())
         .min_by(|a, b| a.distance(party_eye).total_cmp(&b.distance(party_eye)));
     if let Some(nearest) = nearest {
@@ -379,9 +374,7 @@ pub fn settle_defeat(
     members: Query<&Vitals>,
     mut news: MessageWriter<CombatNews>,
 ) {
-    if battle.is_some()
-        && !roster.0.iter().any(|&member| members.get(member).is_ok_and(|v| !v.is_dead()))
-    {
+    if battle.is_some() && !members.iter_many(&roster.0).matched().any(|v| !v.is_dead()) {
         news.write(CombatNews::Lost);
         commands.remove_resource::<Battle>();
     }
@@ -512,7 +505,7 @@ pub fn run_battle(
             }
             // Retail `GetAveragePartyLevel`: what loot tables scale by.
             let levels_sum: u32 =
-                members.iter_many(&roster.0).flatten().map(|(c, _, _)| u32::from(c.level)).sum();
+                members.iter_many(&roster.0).matched().map(|(c, _, _)| u32::from(c.level)).sum();
             let party_level = levels_sum / roster.0.len().max(1) as u32;
             let casualty = member_acts(
                 &mut battle,
@@ -774,11 +767,8 @@ fn end_round(
     // The round's time passes now, with its meaning: conditions age and
     // nobody recovers (retail `AdvanceCombatRound`).
     let ticks = clock.advance(ROUND_MS);
-    for &member in &roster.0 {
-        if members.get(member).is_ok_and(|(profile, vitals, _)| {
-            recovery::has_work(profile, vitals, ticks, recovery::Pace::Fighting)
-        }) {
-            let (profile, mut vitals, _) = members.get_mut(member).unwrap();
+    for (profile, mut vitals, _) in members.iter_many_unique_mut(&roster.0).matched() {
+        if recovery::has_work(&profile, &vitals, ticks, recovery::Pace::Fighting) {
             recovery::elapse(&profile, &mut vitals, ticks, recovery::Pace::Fighting);
         }
     }
@@ -789,7 +779,7 @@ fn end_round(
         if !roster.0.contains(&member) {
             continue;
         }
-        let Ok((character, vitals, _)) = members.get(member) else { continue };
+        let Ok((character, mut vitals, _)) = members.get_mut(member) else { continue };
         let resting = matches!(work.action, AcceptedAction::Defend)
             || matches!(vitals.worst_condition(), Some(Condition::Asleep | Condition::Unconscious));
         if vitals.is_dead() || !resting {
@@ -797,13 +787,12 @@ fn end_round(
         }
         let sides = (character.max_stamina() / 20).saturating_sub(1).max(1);
         let rolled = rng.roll(Dice { count: 2, sides: sides.min(255) as u8, base: 0 });
-        let gained = recovery::combat_rest_amount(character, rolled);
+        let gained = recovery::combat_rest_amount(&character, rolled);
         if vitals.stamina < character.max_stamina()
             || vitals
                 .conditions
                 .contains(&(Condition::Unconscious, crate::game::characters::Lasting::Indefinite))
         {
-            let (character, mut vitals, _) = members.get_mut(member).unwrap();
             vitals.restore_stamina(gained, character.max_stamina());
         }
     }
@@ -822,14 +811,11 @@ fn end_round(
     }
     // Experience is shared among the living, the unconscious included.
     let living =
-        roster.0.iter().filter(|&&m| members.get(m).is_ok_and(|(_, v, _)| !v.is_dead())).count()
-            as u32;
+        members.iter_many(&roster.0).matched().filter(|(_, v, _)| !v.is_dead()).count() as u32;
     let each = battle.experience / living.max(1);
     if each > 0 {
-        for &member in &roster.0 {
-            if let Ok((mut character, vitals, _)) = members.get_mut(member)
-                && !vitals.is_dead()
-            {
+        for (mut character, vitals, _) in members.iter_many_unique_mut(&roster.0).matched() {
+            if !vitals.is_dead() {
                 character.experience += each;
             }
         }

@@ -1,7 +1,7 @@
 //! The original credits, scrolled over the retail background.
 use super::MenuPage;
 use crate::content::ui::{CreditLine, Credits, SpriteSheet};
-use crate::presentation::screen_art::{BitmapText, Picture, absolute};
+use crate::presentation::screen_art::{BitmapText, absolute, spawn_picture};
 use bevy::prelude::*;
 use bevy_enhanced_input::prelude::*;
 
@@ -51,12 +51,7 @@ pub(super) fn enter(mut commands: Commands, assets: Res<AssetServer>) {
             ChildOf(root),
         ))
         .id();
-    commands.spawn((
-        Picture { sheet: background, frame: 0, at: Vec2::ZERO, bounds: None },
-        Node { position_type: PositionType::Absolute, ..default() },
-        Pickable::IGNORE,
-        ChildOf(screen),
-    ));
+    spawn_picture(&mut commands, screen, background, 0, Vec2::ZERO);
 }
 
 fn line(
@@ -70,8 +65,6 @@ fn line(
 ) {
     commands.spawn((
         BitmapText { font, value: value.to_owned(), at, width, justify, ..default() },
-        Node { position_type: PositionType::Absolute, ..default() },
-        Pickable::IGNORE,
         ChildOf(parent),
     ));
 }

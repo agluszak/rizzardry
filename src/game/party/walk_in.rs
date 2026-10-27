@@ -6,7 +6,7 @@ use bevy::prelude::*;
 
 use super::body::{EYE_ABOVE_CENTRE, PartyBody};
 use crate::content::level::{Arrival, LevelDefinition};
-use crate::game::world::level::{Level, Travel, ask_travel};
+use crate::game::world::level::{Level, PlayedLevel, Travel, ask_travel};
 use crate::game::world::props::pose;
 use crate::game::world::triggers::{LevelState, PartyMove, PendingPartyMove};
 
@@ -88,16 +88,14 @@ pub fn fly_party(
         &mut Transform,
         &mut LinearVelocity,
     )>,
-    levels: Query<&Level>,
-    geometry: Res<Assets<LevelDefinition>>,
+    level: PlayedLevel,
 ) {
     let Ok((entity, mut flight, mut body, mut position, mut transform, mut velocity)) =
         party.single_mut()
     else {
         return;
     };
-    let level = levels.iter().find_map(|level| geometry.get(&level.geometry));
-    let Some(path) = level.and_then(|level| level.camera_paths.get(flight.path)) else {
+    let Some(path) = level.geometry().and_then(|level| level.camera_paths.get(flight.path)) else {
         commands.entity(entity).remove::<(PathFlight, RigidBodyDisabled)>();
         return;
     };

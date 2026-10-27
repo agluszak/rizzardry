@@ -180,12 +180,8 @@ pub(crate) fn pass_time(
             Ticks { stamina: 0, aging: 1 }
         };
         let mut members = affected.p0();
-        for &member in &roster.0 {
-            if members
-                .get(member)
-                .is_ok_and(|(profile, vitals)| recovery::has_work(profile, vitals, ticks, pace))
-            {
-                let (profile, mut vitals) = members.get_mut(member).unwrap();
+        for (profile, mut vitals) in members.iter_many_unique_mut(&roster.0).matched() {
+            if recovery::has_work(profile, &vitals, ticks, pace) {
                 recovery::elapse(profile, &mut vitals, ticks, pace);
             }
         }
@@ -196,7 +192,7 @@ pub(crate) fn pass_time(
         }
     }
     let anyone_able =
-        affected.p0().iter_many(&roster.0).flatten().any(|(_, vitals)| camp::can_act(vitals));
+        affected.p0().iter_many(&roster.0).matched().any(|(_, vitals)| camp::can_act(vitals));
     if let Some(camp) = camp.as_mut()
         && let Some(outcome) = camp.advance(time.delta(), clock.ms, anyone_able)
     {

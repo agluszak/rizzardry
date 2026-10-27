@@ -4,6 +4,7 @@ pub mod ambience;
 pub mod automap;
 pub mod billboards;
 pub mod camp;
+pub mod character_view;
 pub mod controls;
 pub mod dialog;
 pub mod effects;
@@ -18,6 +19,7 @@ pub mod music;
 pub mod names;
 pub mod notices;
 pub mod party_view;
+pub mod retail_controls;
 pub mod screen_art;
 pub mod selection;
 pub mod sky;
@@ -94,7 +96,14 @@ impl Plugin for PresentationPlugin {
         .add_input_context::<camp::CampScreen>()
         .add_systems(
             PostUpdate,
-            (screen_art::render_pictures, screen_art::render_text)
+            (
+                retail_controls::sync_scrollbars,
+                retail_controls::sync_button_navigation,
+                retail_controls::paint_controls,
+                retail_controls::paint_focus,
+                screen_art::render_pictures,
+                screen_art::render_text,
+            )
                 .chain()
                 .before(bevy::ui::UiSystems::Content),
         )
@@ -129,7 +138,6 @@ impl Plugin for PresentationPlugin {
             Update,
             (
                 automap::scale_ui,
-                screen_art::paint_hover_art,
                 (party_view::attach_camera, party_view::aim_camera)
                     .chain()
                     .after(crate::game::GameplaySet::Combat),
@@ -165,7 +173,11 @@ impl Plugin for PresentationPlugin {
                 billboards::face_camera.after(party_view::aim_camera),
                 music::play_music,
                 (ambience::place_ambient_sounds, ambience::play_ambient_sounds).chain(),
-                (dialog::open_travel_question, dialog::show_travel_question)
+                (
+                    dialog::open_travel_question,
+                    dialog::show_travel_question,
+                    dialog::focus_ready_question,
+                )
                     .chain()
                     .after(crate::game::GameplaySet::LevelActivation),
                 effects::shake_camera.after(party_view::aim_camera),

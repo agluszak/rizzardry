@@ -155,8 +155,8 @@ pub fn force_camp(
     members: Query<&Vitals>,
     mut news: MessageWriter<CampNews>,
 ) {
-    let anyone_alive = members.iter_many(&roster.0).flatten().any(|m| !m.is_dead());
-    let anyone_able = members.iter_many(&roster.0).flatten().any(can_act);
+    let anyone_alive = members.iter_many(&roster.0).matched().any(|m| !m.is_dead());
+    let anyone_able = members.iter_many(&roster.0).matched().any(can_act);
     if camp.is_some() || battle.is_some() || !anyone_alive || anyone_able {
         return;
     }

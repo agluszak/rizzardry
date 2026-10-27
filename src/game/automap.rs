@@ -60,14 +60,13 @@ pub fn commit_note(world: &mut World, draft: NoteDraft) -> Result<(), NoteRefusa
     if world.get::<Level>(draft.level).is_none() {
         return Err(NoteRefusal::InactiveMap);
     }
+    let notes = world.get_mut::<MapNotes>(draft.level);
     if let Some((index, expected)) = &draft.original
-        && world.get::<MapNotes>(draft.level).and_then(|notes| notes.notes.get(*index))
-            != Some(expected)
+        && notes.as_ref().and_then(|notes| notes.notes.get(*index)) != Some(expected)
     {
         return Err(NoteRefusal::MissingNote);
     }
-    world
-        .get_mut::<MapNotes>(draft.level)
+    notes
         .ok_or(NoteRefusal::InactiveMap)?
         .commit(draft.original.map(|(index, _)| index), draft.note)
 }

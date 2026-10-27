@@ -119,7 +119,7 @@ pub fn show_tooltip(
                 .and_then(|m| groups.get(m.0).ok())
                 .is_some_and(|g| g.identified);
             let party: Vec<(&Character, &Vitals)> =
-                roster.0.iter().filter_map(|&m| members.get(m).ok()).collect();
+                members.iter_many(&roster.0).matched().collect();
             let health = health_known(&party, monster.hp, monster.max_hp, kind.display_level);
             format!("{} ({health})", kind.shown_name(identified, 1))
         } else {

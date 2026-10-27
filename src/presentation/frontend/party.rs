@@ -1,7 +1,8 @@
 //! Retail party assembly: the candidate list and the ordered party are separate.
 use super::{Action, CharacterDraft, Creation, Page, absolute};
 use crate::content::ui::SpriteSheet;
-use crate::presentation::screen_art::{BitmapText, Picture};
+use crate::presentation::retail_controls::set_enabled;
+use crate::presentation::screen_art::{BitmapText, Picture, spawn_picture as picture};
 use bevy::input_focus::{InputFocus, tab_navigation::TabIndex};
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
@@ -47,22 +48,6 @@ pub(super) enum Label {
     Summary(u8),
 }
 
-fn picture(
-    commands: &mut Commands,
-    parent: Entity,
-    sheet: Handle<SpriteSheet>,
-    frame: usize,
-    at: Vec2,
-) -> Entity {
-    commands
-        .spawn((
-            Picture { sheet, frame, at, bounds: None },
-            Node { position_type: PositionType::Absolute, ..default() },
-            Pickable::IGNORE,
-            ChildOf(parent),
-        ))
-        .id()
-}
 fn label(
     commands: &mut Commands,
     parent: Entity,
@@ -81,8 +66,6 @@ fn label(
                 justify: bevy::text::Justify::Center,
                 ..default()
             },
-            Node { position_type: PositionType::Absolute, ..default() },
-            Pickable::IGNORE,
             ChildOf(parent),
         ))
         .id()
@@ -292,14 +275,7 @@ pub(super) fn refresh(
     assets: Res<AssetServer>,
     mut commands: Commands,
     mut controls: Query<
-        (
-            Entity,
-            &mut Action,
-            Option<&CandidateRow>,
-            Option<&PartySlot>,
-            Has<InteractionDisabled>,
-            &mut TabIndex,
-        ),
+        (Entity, &mut Action, Option<&CandidateRow>, Option<&PartySlot>, Has<InteractionDisabled>),
         With<Control>,
     >,
     mut portraits: Query<(&Portrait, &mut Picture, &mut Visibility), Without<RowBackground>>,
@@ -321,7 +297,7 @@ pub(super) fn refresh(
     if !session.is_changed() {
         return;
     }
-    for (entity, mut action, row, slot, disabled, mut tab) in &mut controls {
+    for (entity, mut action, row, slot, disabled) in &mut controls {
         if let Some(row) = row {
             *action = Action::SelectCandidate(session.candidates.get(row.0).map(|(id, _)| *id));
         } else if let Some(slot) = slot {
@@ -337,14 +313,7 @@ pub(super) fn refresh(
             Action::Begin => !session.party.is_empty(),
             _ => true,
         };
-        tab.set_if_neq(TabIndex(if enabled { 0 } else { -1 }));
-        if enabled == disabled {
-            if enabled {
-                commands.entity(entity).remove::<InteractionDisabled>();
-            } else {
-                commands.entity(entity).insert(InteractionDisabled);
-            }
-        }
+        set_enabled(&mut commands, entity, enabled, disabled);
     }
     for (portrait, mut picture, mut visible) in &mut portraits {
         let draft = match portrait {

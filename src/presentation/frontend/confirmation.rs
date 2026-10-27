@@ -1,15 +1,14 @@
 //! Confirmation for removing a character from the pre-game party list.
-use super::{Creation, Session, absolute};
+use super::{Creation, Session};
 use crate::content::ui::{SpriteSheet, TextTable};
+use crate::presentation::retail_controls::{ControlSkin, primary_press};
 use crate::presentation::screen_art::{BitmapText, Picture};
 use bevy::input_focus::{
     FocusCause, InputFocus,
     tab_navigation::{TabGroup, TabIndex},
 };
-use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
-use bevy::ui::Pressed;
-use bevy::ui_widgets::{Activate, Button};
+use bevy::ui_widgets::{Activate, Button, ModalDialog};
 use bevy_enhanced_input::prelude::*;
 
 #[derive(Component, Clone)]
@@ -58,6 +57,7 @@ pub(super) fn open(
         GlobalZIndex(100)
         Pickable::default()
         TabGroup::modal()
+        ModalDialog
         ContextPriority::<DeleteDialog>::new(10)
         ContextActivity::<DeleteDialog>::INACTIVE
         Actions<DeleteDialog> [
@@ -169,8 +169,6 @@ pub(super) fn open(
             justify: bevy::text::Justify::Center,
             ..default()
         },
-        Node { position_type: PositionType::Absolute, ..default() },
-        Pickable::IGNORE,
         ChildOf(panel),
     ));
     let sheet: Handle<SpriteSheet> = assets.load("retail://data/dialogs/dialogconfirmation.sti");
@@ -178,23 +176,18 @@ pub(super) fn open(
         let button = commands
             .spawn((
                 Button,
-                Hovered::default(),
                 TabIndex(0),
                 ConfirmationButton(frame),
-                absolute(Vec2::new(x, 61.), Vec2::new(25., 24.)),
+                ControlSkin::new(frame, frame + 1, frame + 2, frame + 2, frame + 3),
+                Picture { sheet: sheet.clone(), frame, at: Vec2::new(x, 61.), bounds: Some(frame) },
                 Pickable::default(),
                 ChildOf(panel),
             ))
+            .observe(primary_press)
             .observe(move |_: On<Activate>, mut commands: Commands| {
                 commands.trigger(Answer { dialog, accepted });
             })
             .id();
-        commands.spawn((
-            Picture { sheet: sheet.clone(), frame, at: Vec2::ZERO, bounds: None },
-            Node { position_type: PositionType::Absolute, ..default() },
-            Pickable::IGNORE,
-            ChildOf(button),
-        ));
         if accepted {
             focus.set(button, FocusCause::Navigated);
         }
@@ -238,11 +231,7 @@ pub(super) fn show_text(
     sheets: Res<Assets<SpriteSheet>>,
     mut texts: Query<(Entity, &QuestionText, &mut BitmapText), Without<Measured>>,
     mut panels: Query<&mut Node, (With<Panel>, Without<ConfirmationButton>)>,
-    mut buttons: Query<
-        (&ConfirmationButton, &Hovered, Has<Pressed>, &Children, &mut Node),
-        Without<Panel>,
-    >,
-    mut pictures: Query<&mut Picture>,
+    mut buttons: Query<(&ConfirmationButton, &mut Picture), Without<Panel>>,
     mut borders: Query<(&BorderPiece, &mut ImageNode, &mut Visibility), Without<Picture>>,
 ) {
     let mut size = None;
@@ -283,34 +272,16 @@ pub(super) fn show_text(
             }
         }
     }
-    for (button, hovered, pressed, children, mut node) in &mut buttons {
+    for (button, mut picture) in &mut buttons {
         if let Some((width, height)) = size {
-            let left = px(if button.0 == 0 {
+            let left = if button.0 == 0 {
                 ((width - 75.) / 2.).floor()
             } else {
                 ((width + 25.) / 2.).floor()
-            });
-            let top = px(height - 24. - 15.);
-            if node.left != left {
-                node.left = left;
-            }
-            if node.top != top {
-                node.top = top;
-            }
-        }
-        let frame = button.0
-            + if pressed {
-                2
-            } else if hovered.get() {
-                1
-            } else {
-                0
             };
-        for child in children.iter() {
-            if let Ok(mut picture) = pictures.get_mut(child)
-                && picture.frame != frame
-            {
-                picture.frame = frame;
+            let top = height - 24. - 15.;
+            if picture.at != Vec2::new(left, top) {
+                picture.at = Vec2::new(left, top);
             }
         }
     }
