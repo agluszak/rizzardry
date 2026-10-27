@@ -127,6 +127,7 @@ fn species(record: &[u8]) -> Species {
             _ => Disposition::Hostile,
         },
         faction: i32_at(record, 0x25f),
+        combat_move_range: f32::from_le_bytes(record[0x1ba..0x1be].try_into().unwrap()).max(0.0),
     }
 }
 

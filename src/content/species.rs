@@ -126,6 +126,9 @@ pub struct Species {
     /// Retail faction (0 is unaligned); only unaligned species use the
     /// hostility radius.
     pub faction: i32,
+    /// How far it moves in one combat action: this many times 20 metres
+    /// (retail `combat_move_range`, `MonsterManager.cpp:620-633`).
+    pub combat_move_range: f32,
 }
 
 impl Species {

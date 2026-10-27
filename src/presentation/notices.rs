@@ -430,6 +430,11 @@ pub fn queue_notices(
                 log.selected = 1;
                 vec![string(COMBAT)]
             }
+            // Retail strings 0x236 ("advances") and 0x237 ("charges").
+            CombatNews::Moves { monster, charge } => names
+                .name(*monster)
+                .map(|name| vec![format!("{name} {}", string(if *charge { 0x237 } else { 0x236 }))])
+                .unwrap_or_default(),
             CombatNews::Attack { attacker, target, how, swings } => {
                 match (names.name(*attacker), names.name(*target)) {
                     (Some(attacker), Some(target)) => {

@@ -130,6 +130,8 @@ pub struct Battle {
     kills: u32,
     passive_rounds: u32,
     attacked_this_round: bool,
+    /// Monsters that have moved this round: one move each.
+    moved: Vec<Entity>,
     /// Until the next action.
     wait: Timer,
 }
@@ -223,6 +225,11 @@ pub enum CombatNews {
     Lost,
     /// Nobody could reach anybody for a while.
     Over,
+    /// A monster advances on the party, or charges it.
+    Moves {
+        monster: Entity,
+        charge: bool,
+    },
 }
 
 /// Whether a member can act or be targeted: alive and nothing worse than
@@ -462,7 +469,7 @@ pub fn run_battle(
     }
     // The next actor waits until the last one's missiles have landed
     // (retail `UpdateCombat`).
-    if !magic.in_flight.is_empty() {
+    if !magic.in_flight.is_empty() || !magic.moving.is_empty() {
         return;
     }
 
@@ -478,6 +485,7 @@ pub fn run_battle(
         // A new round: the party's phases, then the monsters'.
         battle.round += 1;
         battle.attacked_this_round = false;
+        battle.moved.clear();
         battle.party.clear();
         for &member in &roster.0 {
             let Ok((character, vitals, carried)) = members.get(member) else { continue };
@@ -655,7 +663,8 @@ pub fn run_battle(
                 battle.monsters[index].1 = Turn::default();
                 continue;
             }
-            monster_acts(
+            let turn = battle.monsters[index].1;
+            let idle = monster_acts(
                 &mut battle,
                 index,
                 &mut rng,
@@ -669,6 +678,31 @@ pub fn run_battle(
                 &mut news,
                 &mut party_damage,
             );
+            // Nothing in reach: advance, or charge when hurt, then act again
+            // later in the round (retail `UpdateMonsterAI`, `StepMonsterCombatAction`).
+            if idle
+                && !battle.moved.contains(&entity)
+                && let Ok((monster, at, walker, _)) = damage.monsters.get(entity)
+                && approach::needs_approach(monster, at.translation(), walker, party.eye, species)
+                && let Some(kind) = species.0.get(monster.species as usize)
+            {
+                let charge = monster.hp * 100 <= monster.max_hp * 95;
+                let mut budget = kind.combat_move_range * 20.0 * if charge { 1.5 } else { 1.0 };
+                if monster.conditions.iter().any(|&(c, _)| c == Condition::Slowed) {
+                    budget *= 0.5;
+                }
+                battle.moved.push(entity);
+                battle.monsters[index].1 = Turn {
+                    phase: (u32::from(step) * 2).min(100) as u8,
+                    attacks_left: turn.attacks_left,
+                };
+                commands.entity(entity).insert(approach::CombatMove {
+                    budget,
+                    moved: 0.0,
+                    last: None,
+                });
+                news.write(CombatNews::Moves { monster: entity, charge });
+            }
             battle.wait = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
             return;
         }
@@ -695,8 +729,10 @@ pub struct BattleMagic<'w, 's> {
     groups: Query<'w, 's, &'static GroupMember>,
     group_members: Query<'w, 's, &'static GroupMembers>,
     difficulty: Res<'w, crate::game::difficulty::Difficulty>,
-    /// Missiles still on their way hold the fight's next action.
+    /// Missiles still on their way hold the fight's next action, as do
+    /// monsters still advancing.
     in_flight: Query<'w, 's, (), With<casting::SpellInFlight>>,
+    moving: Query<'w, 's, (), With<approach::CombatMove>>,
 }
 
 /// A member casts or uses an item at their initiative. The monsters it may
@@ -883,10 +919,10 @@ fn monster_acts(
     species: &MonsterCatalog,
     news: &mut MessageWriter<CombatNews>,
     damage: &mut MessageWriter<DamageApplied>,
-) {
+) -> bool {
     let (entity, turn) = battle.monsters[index];
-    let Ok((monster, at, walker, _)) = monsters.get(entity) else { return };
-    let Some(kind) = species.0.get(monster.species as usize) else { return };
+    let Ok((monster, at, walker, _)) = monsters.get(entity) else { return false };
+    let Some(kind) = species.0.get(monster.species as usize) else { return false };
     let distance = distance_to_party(party.eye, monster, feet(at.translation(), walker));
     // Every (attack, mode, member) that reaches is equally likely.
     let mut candidates = vec![];
@@ -905,14 +941,14 @@ fn monster_acts(
     let turn_left = turn.attacks_left.saturating_sub(1);
     battle.monsters[index].1 = Turn { phase: 0, attacks_left: 0 };
     if candidates.is_empty() {
-        return;
+        return true;
     }
     battle.attacked_this_round = true;
     let (a, mode, member) = candidates[rng.below(candidates.len() as u32) as usize];
     let attack = &kind.attacks[a];
     // Retail draws for the mode again, from just the one chosen.
     let mode = attack::choose_mode(rng, EnumSet::only(mode));
-    let Ok((character, mut vitals, carried)) = members.get_mut(member) else { return };
+    let Ok((character, mut vitals, carried)) = members.get_mut(member) else { return false };
     let mut armour = armour(&character, &carried, items);
     // Defending is worth 2 (`characters.md` §4.8, component 10).
     if battle.defends(member) {
@@ -954,6 +990,7 @@ fn monster_acts(
     }
     battle.monsters[index].1 =
         Turn { phase: next_phase(turn.phase, turn_left), attacks_left: turn_left };
+    false
 }
 
 /// The round is over: a round's game time passes, and the fight ends when
@@ -1298,6 +1335,48 @@ mod tests {
                 if matches!(effects.as_slice(), [Effect::Damaged { victim: Victim::Monster(m), .. }] if *m == monster))
         });
         assert!(cast.is_some() && landed.is_some() && cast < landed, "{news:?}");
+    }
+
+    /// A monster with nothing in reach spends its phase advancing, by its
+    /// own budget, and the fight waits for the move.
+    #[test]
+    fn a_monster_out_of_reach_advances_as_its_action() {
+        let (mut app, _) = round_app(true);
+        let monster = app.world().resource::<Battle>().monsters[0].0;
+        app.world_mut().entity_mut(monster).insert((
+            Walker { speed: 2.0, float_height: 1.0 },
+            Transform::from_translation(Vec3::NEG_Z * 20.0),
+        ));
+        let data = app.world().resource::<GameData>().species.clone();
+        {
+            let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
+            let mut species = catalogs.get_mut(&data).unwrap();
+            species.0[0].combat_move_range = 1.0;
+            species.0[0].attacks = vec![crate::content::species::MonsterAttack {
+                word: AttackWord::Verb,
+                named: false,
+                reach: Reach::Touch,
+                score: 50,
+                modes: EnumSet::only(AttackMode::Bash),
+                damage: Dice { base: 1, count: 1, sides: 2 },
+            }];
+        }
+        let mut moved = None;
+        for _ in 0..8 {
+            app.update();
+            let news: Vec<_> =
+                app.world_mut().resource_mut::<Messages<CombatNews>>().drain().collect();
+            if let Some(n) = news.into_iter().find(|n| matches!(n, CombatNews::Moves { .. })) {
+                moved = Some(n);
+                break;
+            }
+        }
+        assert_eq!(moved, Some(CombatNews::Moves { monster, charge: false }));
+        let order = app.world().get::<approach::CombatMove>(monster).unwrap();
+        assert_eq!(order.budget, 20.0);
+        let phase = app.world().resource::<Battle>().phase;
+        app.update();
+        assert_eq!(app.world().resource::<Battle>().phase, phase, "the round waits for the move");
     }
 
     /// A monster put to sleep loses its actions until the condition runs out
