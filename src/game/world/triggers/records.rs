@@ -25,9 +25,7 @@ pub struct TriggerMemory {
 
 #[derive(Debug)]
 struct KeptDevice {
-    on: bool,
-    fired: bool,
-    use_alternate: bool,
+    trigger: TriggerState,
     door: Option<DoorState>,
     dial: Option<DialState>,
     container: Option<Container>,
@@ -35,7 +33,7 @@ struct KeptDevice {
     fountain: Option<FountainState>,
 }
 
-/// Capture device state without persisting animation waits, proximity or zones.
+/// Keep the same device values between visits; proximity and zones are transient.
 #[derive(SystemParam)]
 pub struct DeviceRecords<'w, 's> {
     devices: Query<
@@ -64,9 +62,7 @@ impl DeviceRecords<'_, '_> {
                 (
                     device.definition,
                     KeptDevice {
-                        on: state.on,
-                        fired: state.fired,
-                        use_alternate: state.use_alternate,
+                        trigger: state.clone(),
                         door: door.cloned(),
                         dial: dial.cloned(),
                         container: container.cloned(),
@@ -128,60 +124,63 @@ pub fn spawn_devices(
     }
     let mut positioned = PositionedDevices::default();
     for (index, definition) in geometry.triggers.iter().enumerate() {
-        let mut kept = memory.as_mut().and_then(|m| m.devices.remove(&index));
+        let kept = memory.as_mut().and_then(|m| m.devices.remove(&index));
         let mut entity = commands.entity(devices[index]);
-        entity.insert((
-            Device {
-                definition: index,
-                recipients: definition.recipients.iter().map(|&i| devices[i]).collect(),
-            },
-            TriggerState {
-                on: kept.as_ref().is_none_or(|k| k.on),
-                fired: kept.as_ref().is_some_and(|k| k.fired),
-                use_alternate: kept.as_ref().is_some_and(|k| k.use_alternate),
-                awaits_animation: false,
-            },
-        ));
-        let actions = std::iter::once(&definition.initial)
-            .chain(definition.alternate.iter())
-            .chain(definition.fallback.iter());
-        if definition.door.is_some()
-            || actions
-                .clone()
-                .any(|b| matches!(b.action, TriggerAction::OpenDoor | TriggerAction::ToggleDoor))
-        {
-            entity.insert(kept.as_mut().and_then(|k| k.door.take()).unwrap_or(DoorState {
-                open: false,
-                locked: definition.door.is_some_and(|d| d.locked),
-            }));
-        }
-        if actions.clone().any(|b| matches!(b.action, TriggerAction::Dial)) {
-            entity.insert(kept.as_mut().and_then(|k| k.dial.take()).unwrap_or_default());
-        }
-        if actions.clone().any(|b| matches!(b.action, TriggerAction::Fountain(_))) {
-            entity.insert(kept.as_mut().and_then(|k| k.fountain.take()).unwrap_or_default());
-        }
-        if let Some(name) = &definition.loot_table {
-            let table = tables.0.iter().position(|t| t.name.eq_ignore_ascii_case(name));
-            // Retail itself has two containers naming tables that do not
-            // exist (camp's AWAYCAMPCHEST, Rapax's CONSTABLE CHEST); they
-            // hold nothing rather than failing their levels.
-            if table.is_none() {
-                warn!("trigger {}: no loot table {name}; it holds nothing", definition.name);
+        entity.insert(Device {
+            definition: index,
+            recipients: definition.recipients.iter().map(|&i| devices[i]).collect(),
+        });
+        if let Some(kept) = kept {
+            entity.insert(kept.trigger);
+            if let Some(value) = kept.door {
+                entity.insert(value);
             }
-            entity.insert(kept.as_mut().and_then(|k| k.container.take()).unwrap_or(Container {
-                table,
-                generated: false,
-                contents: Contents::default(),
-            }));
-        }
-        // A lock overcome stays overcome.
-        let guarded = match &kept {
-            Some(kept) => kept.guarded.clone(),
-            None => definition.lock.map(Guarded::new),
-        };
-        if let Some(guarded) = guarded {
-            entity.insert(guarded);
+            if let Some(value) = kept.dial {
+                entity.insert(value);
+            }
+            if let Some(value) = kept.container {
+                entity.insert(value);
+            }
+            if let Some(value) = kept.guarded {
+                entity.insert(value);
+            }
+            if let Some(value) = kept.fountain {
+                entity.insert(value);
+            }
+        } else {
+            entity.insert(TriggerState::default());
+            let actions = std::iter::once(&definition.initial)
+                .chain(definition.alternate.iter())
+                .chain(definition.fallback.iter());
+            if definition.door.is_some()
+                || actions.clone().any(|b| {
+                    matches!(b.action, TriggerAction::OpenDoor | TriggerAction::ToggleDoor)
+                })
+            {
+                entity.insert(DoorState {
+                    open: false,
+                    locked: definition.door.is_some_and(|d| d.locked),
+                });
+            }
+            if actions.clone().any(|b| matches!(b.action, TriggerAction::Dial)) {
+                entity.insert(DialState::default());
+            }
+            if actions.clone().any(|b| matches!(b.action, TriggerAction::Fountain(_))) {
+                entity.insert(FountainState::default());
+            }
+            if let Some(name) = &definition.loot_table {
+                let table = tables.0.iter().position(|t| t.name.eq_ignore_ascii_case(name));
+                // Retail itself has two containers naming tables that do not
+                // exist (camp's AWAYCAMPCHEST, Rapax's CONSTABLE CHEST); they
+                // hold nothing rather than failing their levels.
+                if table.is_none() {
+                    warn!("trigger {}: no loot table {name}; it holds nothing", definition.name);
+                }
+                entity.insert(Container { table, generated: false, contents: Contents::default() });
+            }
+            if let Some(guarded) = definition.lock.map(Guarded::new) {
+                entity.insert(guarded);
+            }
         }
         if definition.place.is_some() {
             positioned.0.push(devices[index]);
