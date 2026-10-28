@@ -1,7 +1,7 @@
 //! Retail party assembly: the candidate list and the ordered party are separate.
 use super::{Action, CharacterDraft, Creation, Page, absolute};
 use crate::content::ui::SpriteSheet;
-use crate::presentation::retail_controls::{ControlSkin, FocusHighlight, set_enabled};
+use crate::presentation::retail_controls::{ControlSkin, FocusHighlight, FocusRing, set_enabled};
 use crate::presentation::screen_art::{BitmapText, Picture, spawn_picture as picture};
 use bevy::input_focus::tab_navigation::TabIndex;
 use bevy::picking::hover::Hovered;
@@ -255,6 +255,8 @@ pub(super) fn sync_views(
                     CandidateView { id, joined },
                     Button,
                     TabIndex(0),
+                    // Keyboard focus shows, as on the page's buttons.
+                    FocusRing,
                     Hovered::default(),
                     Action::SelectCandidate(Some(id)),
                     absolute(at, if joined { Vec2::new(90., 71.) } else { Vec2::new(158., 40.) }),
