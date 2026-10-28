@@ -170,6 +170,22 @@ pub enum Outcome {
     Traded,
     TradeRefused(TradeError),
 }
+#[cfg(test)]
+impl Default for Conversation {
+    fn default() -> Self {
+        Self {
+            actor: Entity::PLACEHOLDER,
+            script: default(),
+            revision: 0,
+            current: None,
+            wait: ConversationWait::Ready,
+            transcript: vec![],
+            learned_topics: default(),
+            result: None,
+            queue: default(),
+        }
+    }
+}
 impl Conversation {
     pub fn ready(&self) -> bool {
         self.wait == ConversationWait::Ready && self.queue.is_empty()
