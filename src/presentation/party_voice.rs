@@ -39,10 +39,6 @@ pub(super) struct PendingRemark {
 #[derive(Component)]
 pub(super) struct PlayingRemark;
 
-fn eligible(vitals: &Vitals) -> bool {
-    !vitals.is_dead() && vitals.worst_condition().is_none_or(|c| c < Condition::Asleep)
-}
-
 pub(super) fn queue_device_remarks(
     mut commands: Commands,
     mut news: MessageReader<LockNews>,
@@ -68,7 +64,7 @@ pub(super) fn queue_device_remarks(
             .iter()
             .filter_map(|actor| {
                 let (character, vitals) = members.get(actor).ok()?;
-                eligible(vitals).then_some((actor, character))
+                vitals.can_fight().then_some((actor, character))
             })
             .collect();
         if candidates.is_empty() {
@@ -111,7 +107,7 @@ pub(super) fn play_device_remarks(
         let vitals = members.get(remark.actor).ok();
         if !entering.is_empty()
             || !roster.as_ref().is_some_and(|r| r.contains(&remark.actor))
-            || vitals.is_none_or(|v| !eligible(v))
+            || vitals.is_none_or(|v| !v.can_fight())
         {
             commands.entity(entity).despawn();
             continue;

@@ -15,6 +15,7 @@
 //! movement keys do nothing; portraits stay clickable to choose who works,
 //! as retail allows.
 
+use super::main_screen::magic_view::AttemptCasting;
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::input_focus::tab_navigation::{TabGroup, TabIndex};
 use bevy::input_focus::{FocusedInput, InputFocus};
@@ -25,11 +26,9 @@ use bevy::ui_widgets::{Activate, Button};
 use super::main_screen::SelectedMember;
 use super::retail_controls::FocusRing;
 use super::screen_art::{BitmapText, visible_if};
-use crate::content::items::ItemCatalog;
 use crate::content::level::TRAP_TYPES;
-use crate::content::ui::{SpriteSheet, TextTable};
+use crate::content::ui::SpriteSheet;
 use crate::game::characters::{Character, Vitals};
-use crate::game::data::GameData;
 use crate::game::inventory::StackId;
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::containers::{Container, Recipient};
@@ -56,13 +55,11 @@ pub fn plugin(app: &mut App) {
 #[derive(Resource)]
 struct DevicePanelArt {
     font: Handle<SpriteSheet>,
-    strings: Handle<TextTable>,
 }
 
 fn load_device_panel_art(mut commands: Commands, assets: Res<AssetServer>) {
     commands.insert_resource(DevicePanelArt {
         font: assets.load("retail://data/fonts/wiz_text_font.sti"),
-        strings: assets.load(crate::content::paths::STRINGS),
     });
 }
 
@@ -251,15 +248,13 @@ fn open_panel(
 /// attempt.
 fn show_panel(
     mut panels: Query<(&PanelOf, &mut Visibility)>,
-    attempts: Query<(&DeviceInteraction, &AttemptOn)>,
-    magic_views: Query<&super::main_screen::magic_view::MagicView>,
+    attempts: Query<(&DeviceInteraction, &AttemptOn, Has<AttemptCasting>)>,
     motions: Query<&PropMotion>,
 ) {
     for (panel, mut visibility) in &mut panels {
-        let Ok((interaction, on)) = attempts.get(panel.0) else { continue };
+        let Ok((interaction, on, casting)) = attempts.get(panel.0) else { continue };
         let settled = !matches!(interaction.work, Work::Looting)
             || motions.get(on.0).is_ok_and(|m| m.frame == m.target);
-        let casting = magic_views.iter().any(|view| view.attempt == Some(panel.0));
         visibility.set_if_neq(visible_if(settled && !casting));
     }
 }
@@ -392,10 +387,8 @@ fn draw_device_panel(
     roster: Single<&PartyRoster>,
     members: Query<(&Character, &Vitals)>,
     containers: Query<&Container>,
-    data: Option<Res<GameData>>,
-    catalogs: Res<Assets<ItemCatalog>>,
-    art: Res<DevicePanelArt>,
-    tables: Res<Assets<TextTable>>,
+    content: crate::game::data::Content,
+    strings: crate::presentation::screen_art::GameStrings,
     mut captions: Query<(&Caption, &mut BitmapText)>,
     mut buttons: Query<(Entity, &Control, &mut BackgroundColor, Has<InteractionDisabled>)>,
 ) {
@@ -404,15 +397,11 @@ fn draw_device_panel(
     let member = selected.member(&roster).and_then(|m| Some((m, members.get(m).ok()?)));
     let name = member.map_or(String::new(), |(_, (c, _))| c.name.clone());
     let skill = member.and_then(|(_, (c, v))| interaction::lock_skill(c, v));
-    let strings = tables.get(&art.strings);
     let trap_name = |trap: usize| {
-        strings
-            .and_then(|s| s.get(crate::retail::strings::TRAP_NAMES + trap))
-            .unwrap_or("Trap")
-            .trim()
-            .to_owned()
+        let name = strings.get(crate::content::ui::TRAP_NAMES + trap);
+        if name.is_empty() { "Trap" } else { name }.to_owned()
     };
-    let catalog = data.as_ref().and_then(|d| catalogs.get(&d.items));
+    let catalog = content.items();
     let stacks = containers.get(on.0).map_or(&[][..], |c| &c.contents.items[..]);
     let percent = |value: Option<i64>| value.map_or("-".to_owned(), |v| format!("{v}%"));
 
@@ -664,6 +653,7 @@ mod tests {
     use crate::content::characters::Skill;
     use crate::content::items::{ItemDefinition, ItemId, QuantityKind};
     use crate::content::level::Lock;
+    use crate::content::{items::ItemCatalog, ui::TextTable};
     use crate::game::characters::{Gender, Profession, Race};
     use crate::game::inventory::{ItemIds, ItemStack};
     use crate::game::world::interaction::{LockNews, Unable};

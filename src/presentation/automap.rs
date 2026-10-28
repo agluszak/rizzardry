@@ -262,12 +262,13 @@ enum ButtonAction {
 #[derive(Message, Debug, Clone, Copy)]
 pub struct OpenAutomap;
 
+/// The map closes with the level it shows.
 pub fn close_ended_map(
+    ended: On<Remove<Level>>,
     map: Option<Single<&Automap>>,
-    levels: Query<(), With<Level>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
-    if map.is_some_and(|map| !levels.contains(map.level)) {
+    if map.is_some_and(|map| map.level == ended.entity) {
         next.set(Screen::World);
     }
 }

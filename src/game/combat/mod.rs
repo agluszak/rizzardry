@@ -46,11 +46,13 @@ pub struct CombatPlugin;
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<CombatNews>()
-            .add_message::<ChoosePartyMove>()
+            .add_message::<CyclePartyMove>()
             .add_message::<StartRound>()
             .add_message::<GiveOrder>()
             .init_resource::<CombatSettings>()
             .init_resource::<casting::FlightOrder>()
+            .add_observer(approach::end_move)
+            .add_observer(approach::stop_walking)
             .add_systems(
                 Update,
                 // A fight keeps the loads it began with (retail
@@ -149,7 +151,7 @@ fn give_orders(
 
 /// Choose, between rounds, whether the party moves in the next ones.
 #[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ChoosePartyMove(pub Option<PartyPace>);
+pub struct CyclePartyMove;
 
 /// The party's move this round.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -548,32 +550,20 @@ pub fn in_battle(world: &mut World) -> bool {
     world.query_filtered::<(), With<Battle>>().iter(world).next().is_some()
 }
 
-/// End the fight: its combatants stop closing in (the movement it gave
-/// them) and are no longer in a fight; they themselves remain.
-fn end_battle(commands: &mut Commands, battle: Entity, combatants: &[Entity]) {
-    for &monster in combatants {
-        commands
-            .entity(monster)
-            .remove::<approach::CombatMove>()
-            .entry::<bevy_landmass::prelude::AgentTarget3d>()
-            .and_modify(|mut target| *target = bevy_landmass::prelude::AgentTarget3d::None);
-    }
-    commands.entity(battle).despawn();
-}
-
 /// Terminal state is settled independently of whose action dealt the damage.
 /// Used before/after combat execution and at the end of environmental damage.
 pub fn settle_defeat(
     mut commands: Commands,
-    battle: Option<Single<(Entity, Option<&Combatants>), With<Battle>>>,
+    battle: Option<Single<Entity, With<Battle>>>,
     roster: Single<&PartyRoster>,
     members: Query<&Vitals>,
     mut news: MessageWriter<CombatNews>,
 ) {
-    let Some((battle, combatants)) = battle.map(Single::into_inner) else { return };
+    let Some(battle) = battle.map(Single::into_inner) else { return };
     if !members.iter_many(roster.iter()).matched().any(|v| !v.is_dead()) {
         news.write(CombatNews::Lost);
-        end_battle(&mut commands, battle, combatants.map_or(&[][..], Combatants::entities));
+        // Its combatants leave the fight and stop closing in; they remain.
+        commands.entity(battle).despawn();
     }
 }
 
@@ -673,17 +663,22 @@ pub fn begin_round(
         Query<(), With<approach::CombatMove>>,
     ),
     mut news: MessageWriter<CombatNews>,
-    (mut starts, mut moves): (MessageReader<StartRound>, MessageReader<ChoosePartyMove>),
+    (mut starts, mut moves): (MessageReader<StartRound>, MessageReader<CyclePartyMove>),
 ) {
     let Some((entity, mut battle, combatants)) = battle.map(Single::into_inner) else {
         starts.clear();
+        moves.clear();
         return;
     };
     let combatants = combatants.map_or(&[][..], Combatants::entities);
     let start = starts.read().count() > 0;
-    for &ChoosePartyMove(pace) in moves.read() {
+    for _ in moves.read() {
         if !battle.executing() {
-            battle.party_pace = pace;
+            battle.party_pace = match battle.party_pace {
+                None => Some(PartyPace::Walk),
+                Some(PartyPace::Walk) => Some(PartyPace::Run),
+                Some(PartyPace::Run) => None,
+            };
         }
     }
     // Starting the round while the party moves ends its move (retail
@@ -840,7 +835,7 @@ pub fn run_battle(
             // accepted action or the battle's end can change its meaning.
             actors.p1().detect(party.eye, body.forward(), Some(combatants), &mut rng);
             if over {
-                end_battle(&mut commands, entity, combatants);
+                commands.entity(entity).despawn();
             }
             return;
         }
@@ -1302,7 +1297,7 @@ fn monster_turn(
         battle.this_round.monsters[index].1 =
             Turn { phase: (u32::from(step) * 2).min(100) as u8, attacks_left: turn.attacks_left };
         let charge = budget.charge;
-        commands.entity(monster).insert(budget.movement);
+        commands.entity(monster).insert(approach::CombatMove { budget: budget.metres, moved: 0.0 });
         news.write(CombatNews::Moves { monster, charge });
     }
     true
@@ -1933,6 +1928,27 @@ mod tests {
         assert!(reported > 0, "no impact improved a skill");
     }
 
+    #[test]
+    fn pace_requests_cycle_current_state_and_do_not_survive_a_battle() {
+        let (mut app, _) = round_app(false);
+        app.world_mut().resource_mut::<Messages<StartRound>>().clear();
+        app.world_mut().write_message(CyclePartyMove);
+        app.world_mut().write_message(CyclePartyMove);
+        app.update();
+        assert_eq!(fight(app.world()).unwrap().party_pace, Some(PartyPace::Run));
+        app.world_mut().write_message(CyclePartyMove);
+        app.update();
+        assert_eq!(fight(app.world()).unwrap().party_pace, None);
+        let battle =
+            app.world_mut().query_filtered::<Entity, With<Battle>>().single(app.world()).unwrap();
+        let state = app.world_mut().entity_mut(battle).take::<Battle>().unwrap();
+        app.world_mut().write_message(CyclePartyMove);
+        app.update();
+        app.world_mut().entity_mut(battle).insert(state);
+        app.update();
+        assert_eq!(fight(app.world()).unwrap().party_pace, None);
+    }
+
     /// A monster with nothing in reach spends its phase advancing, by its
     /// own budget, and the fight waits for the move.
     #[test]
@@ -1983,7 +1999,7 @@ mod tests {
     #[test]
     fn a_spent_party_move_costs_the_members_their_actions() {
         let (mut app, _) = round_app(false);
-        app.world_mut().write_message(ChoosePartyMove(Some(PartyPace::Walk)));
+        app.world_mut().write_message(CyclePartyMove);
         let mut news = Vec::new();
         for _ in 0..12 {
             app.update();

@@ -2,11 +2,10 @@
 use super::super::screen_art::{BitmapText, Picture, PictureCrop};
 use super::{InventoryArt, InventoryScreen, absolute};
 use crate::content::characters::{Attribute, Skill};
-use crate::content::items::{EquipClass, ItemCatalog};
-use crate::content::ui::{SpriteSheet, TextTable};
+use crate::content::items::EquipClass;
+use crate::content::ui::SpriteSheet;
 use crate::game::characters::Character;
 use crate::game::combat::attack::{character_initiative, primary_hand};
-use crate::game::data::GameData;
 use crate::game::inventory::EquipSlot;
 use crate::game::party::roster::PartyRoster;
 use crate::presentation::character_view::{CharacterView, CharacterViewItem};
@@ -479,10 +478,7 @@ pub(super) fn show_pages(
 }
 
 pub(super) fn refresh(
-    spell_state: (
-        Query<&crate::game::magic::LearnedSpells>,
-        Option<Res<Assets<crate::content::spells::SpellCatalog>>>,
-    ),
+    learned_spells: Query<&crate::game::magic::LearnedSpells>,
     screen: Option<Single<&InventoryScreen>>,
     characters: Query<CharacterView>,
     roster: Option<Single<&PartyRoster>>,
@@ -490,10 +486,9 @@ pub(super) fn refresh(
     info: Option<Single<&StatsInfo>>,
     slider: Option<Single<(Entity, &SliderValue, &SliderRange), With<StatsScroll>>>,
     mut commands: Commands,
-    data: Option<Res<GameData>>,
-    catalogs: Option<Res<Assets<ItemCatalog>>>,
+    content: crate::game::data::Content,
     art: Option<Res<InventoryArt>>,
-    tables: Option<Res<Assets<TextTable>>>,
+    strings: crate::presentation::screen_art::GameStrings,
     mut fields: Query<(&Field, &mut BitmapText)>,
     mut info_background: Query<&mut Picture, With<InfoBackground>>,
 ) {
@@ -504,9 +499,7 @@ pub(super) fn refresh(
     let armour_view = info.as_ref().is_some_and(|info| info.armour);
     let effect_filter = info.as_ref().map_or(EffectFilter::All, |info| info.filter);
     let show_items = info.as_ref().is_some_and(|info| info.items);
-    let catalog = data
-        .as_ref()
-        .and_then(|data| catalogs.as_ref().and_then(|catalogs| catalogs.get(&data.items)));
+    let catalog = content.items();
     let hand = carried
         .as_ref()
         .zip(catalog)
@@ -515,12 +508,9 @@ pub(super) fn refresh(
         .as_ref()
         .and_then(|c| c.worn(EquipSlot::Primary))
         .is_some_and(|item| !item.identified);
-    let table =
-        art.as_ref().and_then(|art| tables.as_ref().and_then(|tables| tables.get(&art.strings)));
-    let learned = spell_state.0.get(screen.member).ok();
-    let spell_catalog = data
-        .as_ref()
-        .and_then(|data| spell_state.1.as_ref().and_then(|catalogs| catalogs.get(&data.spells)));
+    let table = strings.table();
+    let learned = learned_spells.get(screen.member).ok();
+    let spell_catalog = content.spells();
     let string = |id| table.and_then(|table| table.get(id)).unwrap_or("");
     let mut effects = Vec::new();
     if show_items {
@@ -656,12 +646,12 @@ pub(super) fn refresh(
             Field::Attribute(attribute) => profile.attribute(attribute).to_string(),
             Field::Skill(skill) => profile.skill(skill).to_string(),
             Field::SkillName(skill) => {
-                string(crate::retail::strings::SKILL_NAMES + skill as usize).to_owned()
+                string(crate::content::ui::SKILL_NAMES + skill as usize).to_owned()
             }
             Field::Bonus => {
                 format!(
                     "{} {}",
-                    string(crate::retail::strings::SKILL_NAMES + profile.bonus_skill() as usize),
+                    string(crate::content::ui::SKILL_NAMES + profile.bonus_skill() as usize),
                     string(0x8c5)
                 )
             }
@@ -725,11 +715,7 @@ pub(super) fn refresh(
 }
 
 pub(super) fn layout_skills(
-    spell_state: (
-        Query<&crate::game::magic::LearnedSpells>,
-        Option<Res<GameData>>,
-        Option<Res<Assets<crate::content::spells::SpellCatalog>>>,
-    ),
+    spell_state: (Query<&crate::game::magic::LearnedSpells>, crate::game::data::Content),
     screen: Option<Single<&InventoryScreen>>,
     characters: Query<&Character>,
     mut rows: Query<
@@ -743,10 +729,7 @@ pub(super) fn layout_skills(
     let Some(screen) = screen else { return };
     let Ok(profile) = characters.get(screen.member) else { return };
     let learned = spell_state.0.get(screen.member).ok();
-    let spell_catalog = spell_state
-        .1
-        .as_ref()
-        .and_then(|data| spell_state.2.as_ref().and_then(|catalogs| catalogs.get(&data.spells)));
+    let spell_catalog = spell_state.1.spells();
     let mut ordered: Vec<_> =
         rows.iter().map(|(entity, row, _, _)| (row.0 as usize, entity)).collect();
     ordered.sort_unstable_by_key(|(skill, _)| *skill);
@@ -841,8 +824,11 @@ pub(super) fn style_effect_buttons(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::content::items::ItemCatalog;
+    use crate::content::ui::TextTable;
     use crate::game::characters::Vitals;
     use crate::game::characters::{Condition, Gender, Lasting, Profession, Race};
+    use crate::game::data::GameData;
     use crate::game::inventory::Carried;
 
     #[test]

@@ -42,14 +42,11 @@ const WRAP_WIDTH: u32 = 456 - 166 - 10;
 #[derive(Resource)]
 pub struct NoticeArt {
     font: Handle<SpriteSheet>,
-    strings: Handle<TextTable>,
 }
 
 pub fn load_notice_art(mut commands: Commands, assets: Res<AssetServer>) {
-    commands.insert_resource(NoticeArt {
-        font: assets.load("retail://data/fonts/wiz_text_font.sti"),
-        strings: assets.load(crate::content::paths::STRINGS),
-    });
+    commands
+        .insert_resource(NoticeArt { font: assets.load("retail://data/fonts/wiz_text_font.sti") });
 }
 
 /// The text box's channels, the first line each shows, and which one it
@@ -278,7 +275,7 @@ fn magic_lines(
         format!(
             "{}'s {} improves.",
             name(member),
-            string(crate::retail::strings::SKILL_NAMES + skill as usize)
+            string(crate::content::ui::SKILL_NAMES + skill as usize)
         )
     };
     let victim = |victim: Victim| match victim {
@@ -373,21 +370,19 @@ pub fn queue_notices(
     members: Query<&crate::game::characters::Character>,
     names: super::names::ActorNames,
     art: Res<NoticeArt>,
-    tables: Res<Assets<TextTable>>,
+    (tables, strings): (Res<Assets<TextTable>>, crate::presentation::screen_art::GameStrings),
     battle: Option<Single<&crate::game::combat::Battle>>,
     sheets: Res<Assets<SpriteSheet>>,
     mut log: ResMut<TextLog>,
-    (mut magic, data, spells): (
+    (mut magic, content): (
         MessageReader<crate::game::magic::casting::MagicNews>,
-        Option<Res<crate::game::data::GameData>>,
-        Res<Assets<crate::content::spells::SpellCatalog>>,
+        crate::game::data::Content,
     ),
 ) {
     let font = sheets.get(&art.font);
     let channel = usize::from(battle.is_some());
-    let spells = data.as_ref().and_then(|d| spells.get(&d.spells));
-    let strings = tables.get(&art.strings);
-    let string = |index| strings.and_then(|s| s.get(index)).unwrap_or_default().trim().to_owned();
+    let spells = content.spells();
+    let string = |index| strings.get(index).to_owned();
     for remark in remarks.read() {
         if let Some(name) = names.name(remark.actor) {
             log.push(channel, &format!("{name}: {}", remark.text), font);
@@ -459,7 +454,7 @@ pub fn queue_notices(
     // Retail's lock and trap notices (`AttemptForce`, `ResolvePick`,
     // `CompleteTrapDisarm`, `ResolveSprungTrap`); the rest are voices.
     let member = |entity: &Entity| members.get(*entity).map(|c| c.name.clone()).unwrap_or_default();
-    let trap = |trap: &u8| string(crate::retail::strings::TRAP_NAMES + usize::from(*trap));
+    let trap = |trap: &u8| string(crate::content::ui::TRAP_NAMES + usize::from(*trap));
     for news in locks.read() {
         let text = match news {
             LockNews::Picked => string(LOCK_PICKED),

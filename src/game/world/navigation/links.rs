@@ -115,10 +115,12 @@ pub fn sync_door_links(
     }
 }
 
-/// A walker crossing a door's link, toward its far side. It ends when the
-/// walker gets there, and with the link: a door that closes despawns its
-/// links, and the walker then finds its way again.
+/// A walker crossing a door's link, toward its far side, paused by
+/// navigation while it does. It ends when the walker gets there, and with
+/// the link: a door that closes despawns its links, and the walker then
+/// finds its way again.
 #[derive(Component, Debug)]
+#[require(UsingAnimationLink)]
 #[relationship(relationship_target = Crossers)]
 pub struct Crossing {
     #[relationship]
@@ -174,10 +176,9 @@ pub fn use_reached_links(
                 }
             }
             LinkKind::Door => {
-                commands.entity(entity).insert((
-                    UsingAnimationLink,
-                    Crossing { link: reached.link_entity, to: reached.end_point },
-                ));
+                commands
+                    .entity(entity)
+                    .insert(Crossing { link: reached.link_entity, to: reached.end_point });
             }
         }
     }
@@ -199,7 +200,7 @@ pub fn finish_crossings(
         if monster.is_some_and(|m| m.is_dead())
             || feet.with_y(0.0).distance(crossing.to.with_y(0.0)) < 0.4
         {
-            commands.entity(entity).remove::<(Crossing, UsingAnimationLink)>();
+            commands.entity(entity).remove_with_requires::<Crossing>();
         }
     }
 }

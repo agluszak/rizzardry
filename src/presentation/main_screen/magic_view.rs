@@ -23,10 +23,9 @@ use enumset::EnumSet;
 use crate::content::characters::Realm;
 use crate::content::items::ItemCatalog;
 use crate::content::spells::{MAX_POWER, PowerChoice, SpellCatalog, SpellDefinition, Targeting};
-use crate::content::ui::{SpriteSheet, TextTable};
+use crate::content::ui::SpriteSheet;
 use crate::game::characters::{Character, Vitals};
 use crate::game::combat::Battle;
-use crate::game::data::GameData;
 use crate::game::inventory::{Carried, PartyInventory};
 use crate::game::magic::casting::{
     AUTO_POWER, Aim, MagicChoice, Source, UseContext, can_activate, usable_items, usable_now,
@@ -55,7 +54,6 @@ pub struct MagicViewArt {
     orange: Handle<SpriteSheet>,
     blue: Handle<SpriteSheet>,
     yellow: Handle<SpriteSheet>,
-    strings: Handle<TextTable>,
 }
 
 pub(super) fn load_magic_view_art(mut commands: Commands, assets: Res<AssetServer>) {
@@ -74,7 +72,6 @@ pub(super) fn load_magic_view_art(mut commands: Commands, assets: Res<AssetServe
         orange: sheet("fonts/paletteorange"),
         blue: sheet("fonts/paletteblue"),
         yellow: sheet("fonts/paletteyellow"),
-        strings: assets.load(crate::content::paths::STRINGS),
     });
 }
 
@@ -124,8 +121,6 @@ fn give_focus_back(
 pub struct MagicView {
     pub caster: Entity,
     pub items: bool,
-    /// The device attempt it casts at, if any.
-    pub attempt: Option<Entity>,
     pool: bool,
     realm: Option<Realm>,
     source: Option<Source>,
@@ -136,15 +131,26 @@ pub struct MagicView {
 }
 
 impl MagicView {
-    /// Whether a portrait click now aims the spell rather than selects.
+    /// Whether a portrait click now aims the spell rather than selects, for
+    /// a view not casting at a device.
     pub fn wants_member(&self) -> bool {
-        self.attempt.is_none() && self.source.is_some() && self.member.is_none()
+        self.source.is_some() && self.member.is_none()
     }
 
     pub fn aim_at(&mut self, member: Entity) {
         self.member = Some(member);
     }
 }
+
+/// The device attempt a view casts at; the view closes with it.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+#[relationship(relationship_target = AttemptCasting)]
+pub struct CastsAt(pub Entity);
+
+/// The view casting at an attempt, despawned with it.
+#[derive(Component, Debug)]
+#[relationship_target(relationship = CastsAt, linked_spawn)]
+pub struct AttemptCasting(Entity);
 
 #[derive(Component)]
 pub(super) struct MagicScroll(Entity);
@@ -294,7 +300,6 @@ fn spawn_view(
             MagicView {
                 caster,
                 items,
-                attempt,
                 pool: false,
                 realm: None,
                 source: None,
@@ -307,6 +312,9 @@ fn spawn_view(
             DespawnOnExit(crate::game::screen::Screen::World),
         ))
         .id();
+    if let Some(attempt) = attempt {
+        commands.entity(root).insert(CastsAt(attempt));
+    }
     let picture = |commands: &mut Commands, sheet: &Handle<SpriteSheet>, frame, at| {
         commands
             .spawn((Picture { sheet: sheet.clone(), frame, at, bounds: None }, ChildOf(root)))
@@ -491,13 +499,13 @@ struct Offer<'a> {
 }
 
 fn context(
-    view: &MagicView,
+    attempt: Option<Entity>,
     fighting: bool,
     camped: bool,
     attempts: &Query<&crate::game::world::interaction::DeviceInteraction>,
 ) -> Option<UseContext> {
     use crate::game::world::interaction::Work;
-    match view.attempt {
+    match attempt {
         Some(attempt) => {
             let interaction = attempts.get(attempt).ok()?;
             match interaction.work {
@@ -623,7 +631,7 @@ fn rating(chance: u32) -> usize {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn refresh_magic_view(
     mut commands: Commands,
-    mut views: Query<(Entity, &mut MagicView, &MagicScroll)>,
+    mut views: Query<(Entity, &mut MagicView, &MagicScroll, Option<&CastsAt>)>,
     sliders: Query<(&SliderValue, &SliderRange)>,
     (selected, roster): (Res<super::SelectedMember>, Single<&PartyRoster>),
     members: Query<(&Character, &Vitals, Option<&Carried>)>,
@@ -638,13 +646,11 @@ pub(super) fn refresh_magic_view(
         Query<&crate::game::world::interaction::DeviceInteraction>,
         Single<&PartyInventory>,
     ),
-    data: Option<Res<GameData>>,
-    (spells, items, art, assets, tables): (
-        Res<Assets<SpellCatalog>>,
-        Res<Assets<ItemCatalog>>,
+    content: crate::game::data::Content,
+    (art, assets, strings): (
         Res<MagicViewArt>,
         Res<AssetServer>,
-        Res<Assets<TextTable>>,
+        crate::presentation::screen_art::GameStrings,
     ),
     mut captions: Query<
         &mut BitmapText,
@@ -671,12 +677,13 @@ pub(super) fn refresh_magic_view(
         MessageWriter<crate::game::world::interaction::DeviceRequest>,
     ),
 ) {
-    let Ok((root, mut view, scroll)) = views.single_mut() else { return };
+    let Ok((root, mut view, scroll, casts_at)) = views.single_mut() else { return };
+    let attempt = casts_at.map(|casts_at| casts_at.0);
     // The selected member casts; choosing another starts over for them.
     if let Some(member) = selected.member(&roster)
         && member != view.caster
     {
-        if let Some(attempt) = view.attempt {
+        if let Some(attempt) = attempt {
             devices.write(crate::game::world::interaction::DeviceRequest::PrepareMagic {
                 on: attempt,
                 actor: member,
@@ -685,7 +692,6 @@ pub(super) fn refresh_magic_view(
         *view = MagicView {
             caster: member,
             items: view.items,
-            attempt: view.attempt,
             pool: view.pool,
             realm: None,
             source: None,
@@ -693,17 +699,14 @@ pub(super) fn refresh_magic_view(
             member: None,
         };
     }
-    if view.attempt.is_some() && !members.get(view.caster).is_ok_and(|(_, v, _)| v.can_act()) {
+    if attempt.is_some() && !members.get(view.caster).is_ok_and(|(_, v, _)| v.can_act()) {
         commands.entity(root).despawn();
         return;
     }
-    let (Some(spells), Some(items)) = (
-        data.as_ref().and_then(|d| spells.get(&d.spells)),
-        data.as_ref().and_then(|d| items.get(&d.items)),
-    ) else {
+    let (Some(spells), Some(items)) = (content.spells(), content.items()) else {
         return;
     };
-    let Some(context) = context(&view, battle.is_some(), camp.is_some(), &interaction) else {
+    let Some(context) = context(attempt, battle.is_some(), camp.is_some(), &interaction) else {
         commands.entity(root).despawn();
         return;
     };
@@ -881,11 +884,7 @@ pub(super) fn refresh_magic_view(
                 }
             }
         }
-        let caption = if view.pool {
-            "Party pool"
-        } else {
-            tables.get(&art.strings).and_then(|t| t.get(0x77a)).unwrap_or("")
-        };
+        let caption = if view.pool { "Party pool" } else { strings.get(0x77a) };
         for mut label in &mut captions {
             if label.value != caption {
                 label.value = caption.to_owned();
@@ -897,7 +896,7 @@ pub(super) fn refresh_magic_view(
     // An item casts at its own power.
     let power = if view.items { Some(1) } else { view.power };
     let Some(power) = power else { return };
-    let aim = if let Some(attempt) = view.attempt {
+    let aim = if let Some(attempt) = attempt {
         Aim::Device(attempt)
     } else {
         match spell.targeting {
@@ -959,7 +958,7 @@ fn choose_realm(
 fn choose_row(
     click: On<Activate>,
     rows: Query<&Row>,
-    mut views: Query<&mut MagicView>,
+    mut views: Query<(&mut MagicView, Option<&CastsAt>)>,
     members: Query<(&Character, &Vitals, Option<&Carried>)>,
     casters: Query<(&LearnedSpells, Option<&SpellPoints>)>,
     battle: Option<Single<&Battle>>,
@@ -968,16 +967,12 @@ fn choose_row(
         Query<&crate::game::world::interaction::DeviceInteraction>,
         Single<&PartyInventory>,
     ),
-    data: Option<Res<GameData>>,
-    (spells, items): (Res<Assets<SpellCatalog>>, Res<Assets<ItemCatalog>>),
+    content: crate::game::data::Content,
 ) {
-    let (Ok(row), Ok(mut view)) = (rows.get(click.entity), views.single_mut()) else {
+    let (Ok(row), Ok((mut view, casts_at))) = (rows.get(click.entity), views.single_mut()) else {
         return;
     };
-    let (Some(spells), Some(items)) = (
-        data.as_ref().and_then(|d| spells.get(&d.spells)),
-        data.as_ref().and_then(|d| items.get(&d.items)),
-    ) else {
+    let (Some(spells), Some(items)) = (content.spells(), content.items()) else {
         return;
     };
     let Ok((character, _, carried)) = members.get(view.caster) else { return };
@@ -993,7 +988,7 @@ fn choose_row(
         points,
         spells,
         items,
-        match context(&view, battle.is_some(), camp.is_some(), &interaction) {
+        match context(casts_at.map(|c| c.0), battle.is_some(), camp.is_some(), &interaction) {
             Some(c) => c,
             None => return,
         },
@@ -1056,7 +1051,6 @@ mod tests {
         ))
         .add_input_context::<Beneath>()
         .init_asset::<SpriteSheet>()
-        .init_asset::<TextTable>()
         .init_resource::<Left>()
         .insert_resource(MagicViewArt {
             spell_panels: default(),
@@ -1071,7 +1065,6 @@ mod tests {
             orange: default(),
             blue: default(),
             yellow: default(),
-            strings: default(),
         });
         app.finish();
         app.cleanup();

@@ -393,7 +393,7 @@ pub(super) fn refresh(
     }
     let preview =
         session.selected.and_then(|id| candidate(&session, id)).map(CharacterDraft::preview);
-    use crate::retail::strings::{GENDER_NAMES, PROFESSION_NAMES, RACE_NAMES};
+    use crate::content::ui::{GENDER_NAMES, PROFESSION_NAMES, RACE_NAMES};
     let level_1 = |profession: crate::game::characters::Profession| {
         format!("Level 1 {}", strings.get(PROFESSION_NAMES + profession as usize))
     };

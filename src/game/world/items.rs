@@ -109,10 +109,23 @@ pub fn placed_item(
 
 /// Take a resolved world item. Validation and the owned-value move complete
 /// synchronously, without a pointer, camera, rendering or a battle session.
-pub fn take_item(world: &mut World, target: Entity, distance: f32) -> Result<(), Refusal> {
+pub fn take_item(world: &mut World, target: Entity) -> Result<(), Refusal> {
     if !world.run_system_cached(crate::game::screen::party_free).unwrap_or(false) {
         return Err(Refusal::DoesNotFit);
     }
+    let eye = world
+        .query_filtered::<&avian3d::prelude::Position, With<crate::game::party::body::PartyBody>>()
+        .single(world)
+        .map(crate::game::party::body::PartyBody::eye)
+        .map_err(|_| Refusal::Nothing)?;
+    let at = world
+        .query::<super::ActorPose>()
+        .get(world, target)
+        .map_err(|_| Refusal::Nothing)?
+        .translation();
+    // Retail measures to the model bounds' centre (ItemDistanceToCamera).
+    // Deliberately use the gameplay placement so pickup never requires artwork.
+    let distance = eye.distance(at);
     if !distance.is_finite() || !(0.0..=REACH).contains(&distance) {
         return Err(Refusal::DoesNotFit);
     }
@@ -209,6 +222,44 @@ mod tests {
     fn item(ids: &mut ItemIds, id: u16) -> ItemStack {
         let definition = ItemDefinition { id: ItemId(id), ..default() };
         make_item(&definition, ids, &mut GameRng::seeded(1), false, true)
+    }
+
+    #[test]
+    fn pickup_checks_current_positions_before_transferring_ownership() {
+        use crate::game::party::body::PartyBody;
+        use avian3d::prelude::Position;
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::state::app::StatesPlugin))
+            .init_state::<crate::game::screen::Screen>()
+            .init_resource::<Assets<ItemCatalog>>()
+            .add_message::<ItemNews>()
+            .add_message::<super::super::WorldRequest>()
+            .add_systems(Update, super::super::handle_world_requests);
+        let catalog = app.world_mut().resource_mut::<Assets<ItemCatalog>>().add(catalog());
+        app.insert_resource(GameData {
+            items: catalog,
+            loot: default(),
+            species: default(),
+            spells: default(),
+        });
+        let party = crate::game::party::roster::test_party(app.world_mut(), &[]);
+        app.world_mut().entity_mut(party).insert((PartyBody::default(), Position::default()));
+        let level = app.world_mut().spawn(super::super::level::Level::test(default())).id();
+        let stack = item(&mut ItemIds::default(), 1);
+        let target = app
+            .world_mut()
+            .spawn((WorldItem::loose(stack, false), Transform::default(), LevelOwned(level)))
+            .id();
+        app.world_mut().write_message(super::super::WorldRequest::TakeItem { item: target });
+        app.world_mut().get_mut::<Position>(party).unwrap().0 = Vec3::X * (REACH + 1.0);
+        app.update();
+        assert!(app.world().get::<WorldItem>(target).is_some());
+        assert!(app.world().get::<PartyInventory>(party).unwrap().hand.held.is_none());
+        app.world_mut().get_mut::<Position>(party).unwrap().0 = Vec3::ZERO;
+        app.world_mut().write_message(super::super::WorldRequest::TakeItem { item: target });
+        app.update();
+        assert!(app.world().get_entity(target).is_err());
+        assert!(app.world().get::<PartyInventory>(party).unwrap().hand.held.is_some());
     }
 
     #[test]

@@ -97,7 +97,13 @@ fn a_green_slime_leaves_treasure() {
     let world = app.world_mut();
     let loot = world.query::<(Entity, &Name)>().iter(world).find(|(_, n)| n.as_str() == "loot");
     let (loot, _) = loot.expect("the treasure lies in the world");
-    rizzardry::game::world::items::take_item(world, loot, 1.0).unwrap();
+    let at = world.get::<Transform>(loot).unwrap().translation;
+    let mut body = world
+        .query_filtered::<&mut avian3d::prelude::Position, With<rizzardry::game::party::body::PartyBody>>()
+        .single_mut(world)
+        .unwrap();
+    body.0 = at + Vec3::X;
+    rizzardry::game::world::items::take_item(world, loot).unwrap();
     step_until(&mut app, "taking the treasure", |w| {
         w.try_query::<&PartyInventory>().unwrap().single(w).is_ok_and(|p| p.hand.held.is_some())
     });

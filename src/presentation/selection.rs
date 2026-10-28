@@ -110,7 +110,7 @@ pub fn activate_selection(
             requests.write(WorldRequest::DropHeld { level, at });
         }
     } else if let Some(hit) = selection.hit {
-        requests.write(WorldRequest::TakeItem { item: hit.entity, distance: hit.distance });
+        requests.write(WorldRequest::TakeItem { item: hit.entity });
     }
 }
 
