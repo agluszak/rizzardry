@@ -34,7 +34,7 @@ impl Plugin for MainScreenPlugin {
             std::time::Duration::from_millis(400);
         app.init_resource::<ScreenLayout>()
             .init_resource::<SelectedMember>()
-            .add_plugins(keys::plugin)
+            .add_plugins((keys::plugin, magic_view::magic_keys))
             .add_systems(
                 Startup,
                 (
