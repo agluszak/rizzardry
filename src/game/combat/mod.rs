@@ -719,8 +719,8 @@ pub fn begin_round(
 }
 
 /// Keep each member's armour current, recomputing it only when something it
-/// is made of changes: the character, what they wear, their load, whether
-/// they defend, or the item catalog itself.
+/// is made of changes: the character, what they wear, their load or
+/// whether they defend.
 pub fn sync_armour(
     mut members: Query<(
         Entity,
@@ -731,14 +731,15 @@ pub fn sync_armour(
         &mut Armour,
     )>,
     mut undefended: RemovedComponents<Defends>,
-    mut catalogs: MessageReader<AssetEvent<ItemCatalog>>,
     content: crate::game::data::Content,
+    mut had_catalog: Local<bool>,
 ) {
     let undefended: bevy::ecs::entity::EntityHashSet = undefended.read().collect();
-    let reloaded = catalogs.read().count() > 0;
     let Some(catalog) = content.items() else { return };
+    // Everyone's armour is settled once the item catalog has loaded.
+    let loaded = !std::mem::replace(&mut *had_catalog, true);
     for (entity, character, carried, burden, defends, mut armour) in &mut members {
-        let changed = reloaded
+        let changed = loaded
             || character.is_changed()
             || carried.is_changed()
             || burden.is_changed()
