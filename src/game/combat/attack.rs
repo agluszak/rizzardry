@@ -3,7 +3,6 @@
 //! effects are not modelled yet; missiles hit by the same roll as melee
 //! (a deliberate approximation of retail's scattered aim point).
 
-use bevy::prelude::Component;
 use enum_map::EnumMap;
 use enumset::EnumSet;
 
@@ -125,8 +124,9 @@ fn fatigue_penalty(c: &Character, vitals: &Vitals) -> i32 {
     }
 }
 
-/// A member's main hand, as the character sheet works it out.
-#[derive(Clone, Debug, PartialEq)]
+/// A member's main hand, as the character sheet works it out. Members carry
+/// theirs, kept current by `sync_stats`.
+#[derive(bevy::prelude::Component, Clone, Debug, Default, PartialEq)]
 pub struct Hand {
     pub reach: Reach,
     pub dice: Dice,
@@ -223,8 +223,8 @@ pub fn primary_hand(c: &Character, carried: &Carried, catalog: &ItemCatalog, loa
 }
 
 /// A member's total and per-location armour, without skills, spells or
-/// conditions. Members carry theirs, kept current by `sync_armour`.
-#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// conditions. Calculated from current inputs, never stored on the member.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Armour {
     pub total: i32,
     pub by_location: EnumMap<BodyPart, i32>,

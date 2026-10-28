@@ -22,10 +22,14 @@ pub mod world;
 #[derive(bevy::prelude::SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GameplaySet {
     LevelActivation,
+    /// Members' derived stats are refreshed ([`stats`]); what reads them
+    /// runs after.
+    Stats,
     Combat,
 }
 
 pub mod session;
+pub mod stats;
 
 use bevy::prelude::*;
 
@@ -42,7 +46,10 @@ impl Plugin for GamePlugin {
             .init_state::<screen::Screen>()
             .add_message::<inventory::ItemNews>()
             .add_systems(Startup, data::load_game_data)
-            .configure_sets(Update, (GameplaySet::LevelActivation, GameplaySet::Combat).chain())
+            .configure_sets(
+                Update,
+                (GameplaySet::LevelActivation, GameplaySet::Stats, GameplaySet::Combat).chain(),
+            )
             .add_plugins((
                 avian3d::prelude::PhysicsPlugins::default(),
                 world::WorldPlugin,
@@ -52,6 +59,7 @@ impl Plugin for GamePlugin {
                 camp::CampPlugin,
                 combat::CombatPlugin,
                 magic::MagicPlugin,
+                stats::plugin,
             ))
             // Navmeshes: retail serves a level's collision, navigation bakes
             // it on request and caches the result.

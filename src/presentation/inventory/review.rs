@@ -5,7 +5,7 @@ use crate::content::characters::{Attribute, Skill};
 use crate::content::items::EquipClass;
 use crate::content::ui::SpriteSheet;
 use crate::game::characters::Character;
-use crate::game::combat::attack::{character_initiative, primary_hand};
+use crate::game::combat::attack::character_initiative;
 use crate::game::inventory::EquipSlot;
 use crate::game::party::roster::PartyRoster;
 use crate::presentation::character_view::{CharacterView, CharacterViewItem};
@@ -512,15 +512,11 @@ pub(super) fn refresh(
     let Some(screen) = screen else { return };
     let Ok(view) = characters.get(screen.member) else { return };
     let load = view.load();
-    let CharacterViewItem { profile, vitals, carried, .. } = view;
+    let CharacterViewItem { profile, vitals, carried, hand, .. } = view;
     let armour_view = info.as_ref().is_some_and(|info| info.armour);
     let effect_filter = info.as_ref().map_or(EffectFilter::All, |info| info.filter);
     let show_items = info.as_ref().is_some_and(|info| info.items);
     let catalog = content.items();
-    let hand = carried
-        .as_ref()
-        .zip(catalog)
-        .map(|(carried, catalog)| primary_hand(profile, carried, catalog, load));
     let unidentified = carried
         .as_ref()
         .and_then(|c| c.worn(EquipSlot::Primary))
@@ -690,7 +686,7 @@ pub(super) fn refresh(
             }
             Field::CombatValue(_) if armour_view => String::new(),
             Field::CombatValue(index) => {
-                if let Some(hand) = &hand {
+                if let Some(hand) = hand {
                     if unidentified && index != 8 {
                         "?".to_owned()
                     } else {
