@@ -39,7 +39,7 @@ pub fn plugin(app: &mut App) {
         .add_input_context::<OptionsView>()
         .add_message::<OpenOptions>()
         .add_systems(Startup, super::settings::load)
-        .add_systems(Update, (request, refresh))
+        .add_systems(Update, (request, refresh, style_buttons))
         .add_systems(
             Update,
             super::settings::apply
@@ -223,26 +223,36 @@ fn activate(
         },
     }
 }
-fn refresh(
-    view: Option<Single<&OptionsView>>,
-    mut status: Query<&mut BitmapText, With<Status>>,
+/// A button's colour follows whether it is pressed or hovered; an unchanged
+/// colour is left untouched.
+fn style_buttons(
     mut buttons: Query<
         (&bevy::picking::hover::Hovered, Has<bevy::ui::Pressed>, &mut BackgroundColor),
         With<Choice>,
     >,
 ) {
-    let Some(view) = view else { return };
     for (hovered, pressed, mut background) in &mut buttons {
-        background.0 = if pressed {
+        background.set_if_neq(BackgroundColor(if pressed {
             Color::srgb(0.30, 0.24, 0.15)
         } else if hovered.get() {
             Color::srgb(0.23, 0.20, 0.14)
         } else {
             Color::srgb(0.15, 0.13, 0.10)
-        };
+        }));
     }
+}
+
+/// The settings shown follow the draft, redrawn only when it changes.
+fn refresh(
+    view: Option<Single<Ref<OptionsView>>>,
+    mut status: Query<&mut BitmapText, With<Status>>,
+) {
+    let Some(view) = view else { return };
     for mut text in &mut status {
-        text.value = format!(
+        if !view.is_changed() && !text.is_added() {
+            continue;
+        }
+        let value = format!(
             "Options\nDifficulty: {:?}    Combat: {}    Volume: {}%\nInvert mouse Y: {}    Fullscreen: {}\n{}",
             view.draft.difficulty,
             if view.draft.continuous { "Continuous" } else { "Phased" },
@@ -251,5 +261,8 @@ fn refresh(
             if view.draft.preferences.fullscreen { "On" } else { "Off" },
             view.error
         );
+        if text.value != value {
+            text.value = value;
+        }
     }
 }

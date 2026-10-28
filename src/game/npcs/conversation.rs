@@ -25,17 +25,19 @@ pub struct StoryFacts {
     pub journal: Vec<JournalEntry>,
     initialized: bool,
 }
-/// A fact transition, retaining its original level and value for journal history.
+/// A fact transition, retaining the level it happened on and whether the
+/// fact became true, which picks its description (retail `W8JournalEntry`'s
+/// `alternate_text`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JournalEntry {
     pub fact: FactId,
-    pub value: u8,
+    pub was_true: bool,
     pub level: String,
 }
 impl JournalEntry {
     pub fn description<'a>(&self, catalog: &'a FactCatalog) -> Option<&'a str> {
         let fact = catalog.get(self.fact)?;
-        Some(if self.value != 0 { &fact.alternate_description } else { &fact.description })
+        Some(if self.was_true { &fact.alternate_description } else { &fact.description })
     }
 }
 impl StoryFacts {
@@ -94,7 +96,7 @@ impl StoryFacts {
         }
         let previous = self.values.insert(id, value).unwrap_or(0);
         if previous != value {
-            self.journal.push(JournalEntry { fact: id, value, level });
+            self.journal.push(JournalEntry { fact: id, was_true: value != 0, level });
         }
         Ok(())
     }
@@ -551,23 +553,17 @@ fn run(world: &mut World, entity: Entity, c: &mut Conversation) {
                                 break;
                             }
                             DialogueOp::SetFact(id, value) => {
-                                let facts_handle = world.resource::<NpcAssets>().facts.clone();
                                 let level = world
                                     .query::<&Level>()
-                                    .iter(world)
-                                    .next()
-                                    .map(|level| level.path.clone())
-                                    .unwrap_or_default();
+                                    .single(world)
+                                    .map_or_else(|_| String::new(), |level| level.path.clone());
+                                let facts = world.resource::<NpcAssets>().facts.clone();
                                 world.resource_scope(
                                     |world, catalogs: Mut<Assets<FactCatalog>>| {
+                                        let catalog = catalogs.get(&facts).unwrap();
                                         world
                                             .resource_mut::<StoryFacts>()
-                                            .set(
-                                                *id,
-                                                *value,
-                                                catalogs.get(&facts_handle).unwrap(),
-                                                level,
-                                            )
+                                            .set(*id, *value, catalog, level)
                                             .expect("preflighted fact");
                                     },
                                 );

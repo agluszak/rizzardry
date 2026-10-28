@@ -233,22 +233,41 @@ fn activate(
         Choice::Close => close(view, &mut next, &mut focus),
     }
 }
+/// Show the journal's page. It is redrawn only when what it shows changes:
+/// the view's page or mode, the history, the difficulty, the factions, or
+/// the fact and string tables it reads.
+#[allow(clippy::too_many_arguments)]
 fn refresh(
     mut view: Option<Single<&mut Journal>>,
-    facts: Res<StoryFacts>,
-    assets: Res<NpcAssets>,
-    catalogs: Res<Assets<FactCatalog>>,
-    difficulty: Res<Difficulty>,
-    factions: Res<crate::game::factions::Factions>,
-    strings: super::screen_art::GameStrings,
-    asset_server: Res<AssetServer>,
+    (facts, difficulty, factions): (
+        Res<StoryFacts>,
+        Res<Difficulty>,
+        Res<crate::game::factions::Factions>,
+    ),
+    (assets, catalogs, strings, asset_server): (
+        Res<NpcAssets>,
+        Res<Assets<FactCatalog>>,
+        super::screen_art::GameStrings,
+        Res<AssetServer>,
+    ),
     mut rows: Query<(&Row, &mut BitmapText), (Without<PageLabel>, Without<Heading>)>,
     mut title: Query<&mut BitmapText, (With<PageLabel>, Without<Heading>)>,
     mut headings: Query<(&Heading, &mut BitmapText), Without<PageLabel>>,
+    added: Query<(), Or<(Added<Row>, Added<Heading>, Added<PageLabel>)>>,
     mut commands: Commands,
     buttons: Query<(Entity, &Choice, Has<bevy::ui::InteractionDisabled>)>,
 ) {
     let Some(view) = view.as_mut() else { return };
+    let changed = view.is_changed()
+        || facts.is_changed()
+        || difficulty.is_changed()
+        || factions.is_changed()
+        || catalogs.is_changed()
+        || strings.is_changed()
+        || !added.is_empty();
+    if !changed {
+        return;
+    }
     let Some(catalog) = catalogs.get(&assets.facts) else { return };
     let mut entries: Vec<(String, String, bool)> = Vec::new();
     match view.mode {
@@ -322,6 +341,7 @@ fn refresh(
         }
     }
     let count = entries.len();
+    // A new count moves to the newest page.
     if count != view.count {
         view.count = count;
         view.page = count.saturating_sub(1) / 12;
@@ -329,7 +349,7 @@ fn refresh(
     for (row, mut text) in &mut rows {
         let index = view.page * 12 + row.0;
         let entry = entries.get(index);
-        text.value = entry
+        let value = entry
             .map(|(left, right, _)| {
                 if row.1 {
                     if view.mode == JournalMode::Events
@@ -345,22 +365,33 @@ fn refresh(
                 }
             })
             .unwrap_or_default();
-        text.palette = (!row.1 && entry.is_some_and(|e| e.2))
+        if text.value != value {
+            text.value = value;
+        }
+        let palette = (!row.1 && entry.is_some_and(|e| e.2))
             .then(|| asset_server.load("retail://data/journal/journal_whitepal.sti"));
+        if text.palette != palette {
+            text.palette = palette;
+        }
     }
     for (heading, mut text) in &mut headings {
-        text.value = match (view.mode, heading.0) {
+        let value = match (view.mode, heading.0) {
             (JournalMode::Events, true) => "Location",
             (JournalMode::Events, false) => "Journal",
             (JournalMode::Topics, true) => "Category",
             (JournalMode::Topics, false) => "Topic",
             (JournalMode::Factions, true) => "Disposition",
             (JournalMode::Factions, false) => "Faction",
+        };
+        if text.value != value {
+            text.value = value.into();
         }
-        .into();
     }
+    let page = format!("{} / {}", view.page + 1, count.saturating_sub(1) / 12 + 1);
     for mut title in &mut title {
-        title.value = format!("{} / {}", view.page + 1, count.saturating_sub(1) / 12 + 1);
+        if title.value != page {
+            title.value = page.clone();
+        }
     }
     for (entity, choice, disabled) in &buttons {
         let enabled = match choice {
@@ -409,12 +440,12 @@ mod tests {
         for index in 0..13 {
             facts.journal.push(JournalEntry {
                 fact: FactId(1),
-                value: u8::from(index == 12),
+                was_true: index == 12,
                 level: String::new(),
             });
         }
-        facts.journal.push(JournalEntry { fact: FactId(2), value: 0, level: String::new() });
-        facts.journal.push(JournalEntry { fact: FactId(2), value: 1, level: String::new() });
+        facts.journal.push(JournalEntry { fact: FactId(2), was_true: false, level: String::new() });
+        facts.journal.push(JournalEntry { fact: FactId(2), was_true: true, level: String::new() });
         app.insert_resource(facts);
         let view = app.world_mut().spawn(Journal::default()).id();
         let row = app.world_mut().spawn((Row(0, false), BitmapText::default())).id();
@@ -434,5 +465,10 @@ mod tests {
         let journal = app.world().get::<Journal>(view).unwrap();
         assert_eq!((journal.page, journal.count), (0, 0));
         assert!(app.world().get::<BitmapText>(row).unwrap().value.is_empty());
+        // With nothing it shows changing, the page is left alone.
+        app.update();
+        app.update();
+        let text = app.world_mut().query::<Ref<BitmapText>>().get(app.world(), row).unwrap();
+        assert!(!text.is_changed(), "an idle journal does not redraw");
     }
 }
