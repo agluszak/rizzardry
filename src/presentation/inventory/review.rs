@@ -131,16 +131,32 @@ fn panel(commands: &mut Commands, root: Entity, page: Page) -> Entity {
 
 pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) -> Entity {
     super::progression::build(commands, root, art);
-    // These actions require their gameplay operations; show retail's disabled
-    // art until those operations are available.
+    // Retail's item actions: Identify, Merge, Split, Use, Drop, Use on Item,
+    // Use on Character and Cast. The ones without their gameplay operations
+    // yet show retail's disabled art.
     for (i, base) in [0, 10, 5, 15, 20, 30, 35, 25].into_iter().enumerate() {
-        picture(
-            commands,
-            root,
-            art.item_buttons.clone(),
-            base + 3,
-            Vec2::new(i as f32 * 44.0, 450.0),
-        );
+        let at = Vec2::new(i as f32 * 44.0, 450.0);
+        let action = match i {
+            0 => super::ItemAction::Identify,
+            1 => super::ItemAction::Merge,
+            _ => {
+                picture(commands, root, art.item_buttons.clone(), base + 3, at);
+                continue;
+            }
+        };
+        commands
+            .spawn((
+                UiButton,
+                TabIndex(0),
+                super::ItemActionButton(action),
+                ControlSkin::new(base, base + 1, base + 2, base + 4, base + 3),
+                Picture { sheet: art.item_buttons.clone(), frame: base, bounds: Some(base), at },
+                absolute(at, Vec2::new(44.0, 30.0)),
+                Pickable::default(),
+                crate::presentation::retail_controls::FocusRing,
+                ChildOf(root),
+            ))
+            .observe(super::press_item_action);
     }
     let list = commands
         .spawn((
