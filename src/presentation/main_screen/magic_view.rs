@@ -154,8 +154,19 @@ pub(super) struct RealmButton(Realm);
 pub(super) struct RealmText(Realm);
 #[derive(Component, Clone, Copy)]
 pub(super) struct RealmIcon(Realm);
+/// A list row: its place, and the offer it shows, which a click chooses
+/// (a row's place can hold another offer by the time the click lands).
 #[derive(Component, Clone, Copy)]
-pub(super) struct Row(usize);
+pub(super) struct Row(usize, Option<Source>);
+
+/// Whether two sources are the same spell or stack, whatever the power.
+fn same_source(a: Source, b: Source) -> bool {
+    match (a, b) {
+        (Source::Spell { spell: a, .. }, Source::Spell { spell: b, .. }) => a == b,
+        (Source::Item(a), Source::Item(b)) | (Source::PoolItem(a), Source::PoolItem(b)) => a == b,
+        _ => false,
+    }
+}
 #[derive(Component, Clone, Copy)]
 pub(super) struct RowText(usize);
 #[derive(Component, Clone, Copy)]
@@ -450,7 +461,7 @@ fn spawn_view(
         let at = rows_at + Vec2::Y * ROW_HEIGHT * i as f32;
         commands
             .spawn((
-                Row(i),
+                Row(i, None),
                 UiButton,
                 TabIndex(0),
                 FocusRing,
@@ -648,7 +659,7 @@ pub(super) fn refresh_magic_view(
     mut parts: ParamSet<(
         Query<(&RealmButton, Has<Selected>, Entity)>,
         Query<(&RealmText, &mut BitmapText)>,
-        Query<(&Row, &mut Visibility)>,
+        Query<(&mut Row, &mut Visibility)>,
         Query<(&RowText, &mut BitmapText)>,
         Query<(&RowCost, &mut BitmapText)>,
         Query<(&Pip, &Hovered, &mut Picture, &mut Visibility), (Without<Row>, Without<RealmIcon>)>,
@@ -756,19 +767,19 @@ pub(super) fn refresh_magic_view(
     set_scroll_maximum(&mut commands, scroll.0, scroll_value, scroll_range, maximum as f32);
     let offset = (scroll_value.0 as usize).min(maximum);
     let hovered = rows_hovered.iter().find(|(_, h)| h.get()).map(|(r, _)| r.0);
-    for (row, mut visibility) in &mut parts.p2() {
-        visibility.set_if_neq(if row.0 + offset < offers.len() {
+    for (mut row, mut visibility) in &mut parts.p2() {
+        let shown = offers.get(row.0 + offset).map(|offer| offer.source);
+        if row.1 != shown {
+            row.1 = shown;
+        }
+        visibility.set_if_neq(if shown.is_some() {
             Visibility::Inherited
         } else {
             Visibility::Hidden
         });
     }
-    let chosen = |offer: &Offer| match (view.source, offer.source) {
-        (Some(Source::Spell { spell: a, .. }), Source::Spell { spell: b, .. }) => a == b,
-        (Some(Source::Item(a)), Source::Item(b))
-        | (Some(Source::PoolItem(a)), Source::PoolItem(b)) => a == b,
-        _ => false,
-    };
+    let chosen =
+        |offer: &Offer| view.source.is_some_and(|source| same_source(source, offer.source));
     let palette = |i: usize, offer: &Offer| {
         if chosen(offer) {
             Some(art.blue.clone())
@@ -964,8 +975,7 @@ fn choose_realm(
 fn choose_row(
     click: On<Activate>,
     rows: Query<&Row>,
-    mut views: Query<(&mut MagicView, &MagicScroll)>,
-    sliders: Query<&SliderValue>,
+    mut views: Query<&mut MagicView>,
     members: Query<(&Character, &Vitals, Option<&Carried>)>,
     casters: Query<(&LearnedSpells, Option<&SpellPoints>)>,
     battle: Option<Single<&Battle>>,
@@ -977,7 +987,7 @@ fn choose_row(
     data: Option<Res<GameData>>,
     (spells, items): (Res<Assets<SpellCatalog>>, Res<Assets<ItemCatalog>>),
 ) {
-    let (Ok(row), Ok((mut view, scroll))) = (rows.get(click.entity), views.single_mut()) else {
+    let (Ok(row), Ok(mut view)) = (rows.get(click.entity), views.single_mut()) else {
         return;
     };
     let (Some(spells), Some(items)) = (
@@ -1006,16 +1016,11 @@ fn choose_row(
         &pool,
         silenced,
     );
-    // Unavailable rows only explain themselves in retail; here they do nothing.
-    if let Some(offer) = offers
-        .get(
-            row.0
-                + sliders
-                    .get(scroll.0)
-                    .map_or(0, |v| v.0 as usize)
-                    .min(offers.len().saturating_sub(ROWS)),
-        )
-        .filter(|o| o.available)
+    // The offer the row showed, as it stands now. Unavailable rows only
+    // explain themselves in retail; here they do nothing.
+    let Some(shown) = row.1 else { return };
+    if let Some(offer) =
+        offers.iter().find(|o| same_source(o.source, shown)).filter(|o| o.available)
     {
         view.source = Some(offer.source);
         view.power = None;
