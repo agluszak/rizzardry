@@ -888,7 +888,7 @@ fn pay(
     let (_, mut vitals, _, burden) =
         world.members.get_mut(caster).map_err(|_| Refusal::CannotAct)?;
     let slowed = vitals.has(Condition::Slowed);
-    let hasted = vitals.enchantments.get(56).is_some();
+    let hasted = vitals.enchantments.get(crate::content::spells::SpellId::HASTE).is_some();
     vitals.spend_stamina(burden.load.scale_fatigue(fatigue, slowed, hasted));
     Ok(())
 }

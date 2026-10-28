@@ -75,7 +75,7 @@ pub(super) fn move_budget(
     if charge {
         budget *= 1.5;
     }
-    if let Some(haste) = monster.enchantments.get(56) {
+    if let Some(haste) = monster.enchantments.get(crate::content::spells::SpellId::HASTE) {
         budget += kind.combat_move_range * METRES_PER_MOVE_RANGE * f32::from(haste.power) * 0.1;
     } else if monster.conditions.iter().any(|&(c, _)| c == Condition::Slowed) {
         budget *= 0.5;

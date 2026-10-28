@@ -136,7 +136,7 @@ mod tests {
             let (mut members, mut formation, mut damage) = operation.get_mut(&mut world).unwrap();
             let mut vitals = members.get_mut(first).unwrap();
             vitals.enchantments.apply(crate::game::magic::enchantments::Enchantment {
-                spell: crate::content::spells::SpellId(21),
+                spell: crate::content::spells::SpellId::GUARDIAN_ANGEL,
                 power: 2,
                 boost: 0,
                 turns: 4,

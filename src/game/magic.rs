@@ -937,7 +937,14 @@ mod tests {
             match id {
                 21 => {
                     assert!(world.get::<Vitals>(user).unwrap().enchantments.0.is_empty());
-                    assert_eq!(vitals.enchantments.get(21).unwrap().absorption, 4);
+                    assert_eq!(
+                        vitals
+                            .enchantments
+                            .get(crate::content::spells::SpellId::GUARDIAN_ANGEL)
+                            .unwrap()
+                            .absorption,
+                        4
+                    );
                     let mut vitals = world.get_mut::<Vitals>(ally).unwrap();
                     let stamina = vitals.stamina;
                     assert_eq!(vitals.damage(4), 0);
