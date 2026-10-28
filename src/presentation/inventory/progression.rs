@@ -365,11 +365,11 @@ fn refresh(
     mut pages: Query<(&PagePanel, &mut Node, &mut Visibility)>,
     mut actions: Query<(Entity, &Action, Has<InteractionDisabled>, &mut BackgroundColor)>,
     added: Query<(), Or<(Added<Caption>, Added<Action>, Added<PagePanel>)>>,
-    spell_catalogs: Res<Assets<crate::content::spells::SpellCatalog>>,
+    spell_catalogs: Option<Res<Assets<crate::content::spells::SpellCatalog>>>,
 ) {
     let Ok(editor) = editors.single() else { return };
     let changed = editor.is_changed()
-        || spell_catalogs.is_changed()
+        || spell_catalogs.is_some_and(|c| c.is_changed())
         || strings.is_changed()
         || !added.is_empty();
     if !changed {
@@ -579,6 +579,7 @@ mod tests {
     fn experience_for_another_level_reopens_the_review_after_accepting() {
         let mut c = Character::new("A", Race::Human, Gender::Female, Profession::Fighter);
         let mut next = c.clone();
+        next.experience_previous_goal = c.experience_goal();
         next.level += 1;
         c.experience = next.experience_goal();
         let (mut app, members, _, open) = review(&[c.clone()]);
