@@ -290,6 +290,7 @@ pub fn draw_party(
         Option<&mut BitmapText>,
         Option<&mut ImageNode>,
     )>,
+    battle: Option<Single<&crate::game::combat::Battle>>,
 ) {
     let catalog = data.as_ref().and_then(|d| catalogs.get(&d.items));
     let closed = layout.mode == LayoutMode::Closed;
@@ -390,7 +391,9 @@ pub fn draw_party(
                     value = Some(
                         match (carried.as_ref(), catalog) {
                             (Some(c), Some(catalog)) => {
-                                armour(profile, c, catalog, load, false).average()
+                                let defending =
+                                    battle.as_ref().is_some_and(|b| b.defends(part.member));
+                                armour(profile, c, catalog, load, defending).average()
                             }
                             _ => 0,
                         }

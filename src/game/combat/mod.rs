@@ -251,7 +251,10 @@ impl Battle {
         self.phase != RoundPhase::Waiting
     }
 
-    fn defends(&self, actor: Entity) -> bool {
+    /// Whether the member defends in the current round. It holds from the
+    /// round's acceptance until the next one, as retail's armour does
+    /// (`CalcArmorClasses` in `BeginCombatExecution`).
+    pub fn defends(&self, actor: Entity) -> bool {
         self.this_round
             .party
             .iter()

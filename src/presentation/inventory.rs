@@ -777,6 +777,7 @@ fn draw_header_hands(
     members: Query<(&Character, Option<&Carried>, Option<&Burden>)>,
     art: Res<InventoryArt>,
     mut parts: Query<(&HeaderHand, &mut Visibility, Option<&mut Picture>, Option<&mut BitmapText>)>,
+    battle: Option<Single<&crate::game::combat::Battle>>,
 ) {
     let Some(screen) = screen else { return };
     let Some(catalog) = data.and_then(|data| catalogs.get(&data.items)) else { return };
@@ -843,7 +844,9 @@ fn draw_header_hands(
                 );
             }
             HeaderHand::Armour => {
-                value = Some(armour(profile, carried, catalog, load, false).average().to_string())
+                let defending = battle.as_ref().is_some_and(|b| b.defends(screen.member));
+                value =
+                    Some(armour(profile, carried, catalog, load, defending).average().to_string())
             }
         }
         visibility.set_if_neq(visible_if(shown));

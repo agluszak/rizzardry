@@ -147,6 +147,7 @@ pub(super) fn refresh(
     art: Option<Res<InventoryArt>>,
     mut values: Query<(&Value, &mut BitmapText)>,
     mut bars: Query<&mut PictureCrop, With<ExperienceBar>>,
+    battle: Option<Single<&crate::game::combat::Battle>>,
 ) {
     let (Some(screen), Some(art)) = (screen, art) else { return };
     let Ok(view) = members.get(screen.member) else { return };
@@ -157,9 +158,10 @@ pub(super) fn refresh(
         .as_ref()
         .and_then(|data| catalogs.as_ref().and_then(|catalogs| catalogs.get(&data.items)));
     let weight = burden.map(|burden| burden.weight);
-    let armour = carried
-        .zip(catalog)
-        .map(|(carried, catalog)| armour(character, carried, catalog, load, false));
+    let armour = carried.zip(catalog).map(|(carried, catalog)| {
+        let defending = battle.as_ref().is_some_and(|b| b.defends(screen.member));
+        armour(character, carried, catalog, load, defending)
+    });
     for (kind, mut text) in &mut values {
         let (value, palette) = match *kind {
             Value::Experience => (format_gold(character.experience), None),
