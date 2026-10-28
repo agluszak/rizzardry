@@ -19,6 +19,9 @@ use crate::game::world::level::level_active;
 pub enum Order {
     #[default]
     Attack,
+    /// A Fighter's fury: attacks that hit harder and less surely, at twice
+    /// the stamina (retail Berserk action).
+    Berserk,
     /// No attack; +2 armour, and stamina back at the round's end.
     Defend,
     /// Cast a learned spell or use an item's spell, at its initiative.

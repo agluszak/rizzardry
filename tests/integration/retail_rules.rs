@@ -4,9 +4,11 @@
 use rizzardry::content::items::{AttackMode, ItemCatalog, ItemId};
 use rizzardry::game::characters::{Character, Gender, Load, Profession, Race, Vitals};
 use rizzardry::game::combat::attack::*;
+use rizzardry::game::difficulty::Difficulty;
 use rizzardry::game::inventory::{Carried, EquipSlot, ItemIds, make_item, place_at_creation};
 use rizzardry::game::party::roster::starting_items;
 use rizzardry::game::rng::GameRng;
+use rizzardry::game::world::population::{Monster, ScaledBody};
 use rizzardry::retail::files::RetailFiles;
 
 fn retail_files() -> RetailFiles {
@@ -41,41 +43,39 @@ fn a_fighter_and_a_crab_trade_blows() {
     }
     let hand = primary_hand(&fighter, &carried, &catalog, Load::None);
     let armour = armour(&fighter, &carried, &catalog, Load::None, false);
-    let tally = |swings: Vec<Swing>| {
-        let hits: Vec<u32> = swings
-            .iter()
-            .filter_map(|s| match s {
-                Swing::Hit(damage) => Some(*damage),
-                _ => None,
-            })
-            .collect();
-        (hits.len(), hits.iter().sum::<u32>() as f32 / hits.len().max(1) as f32)
+    let body = Monster {
+        location: 0,
+        species: 0,
+        hp: 10,
+        max_hp: 10,
+        stamina: 10,
+        max_stamina: 10,
+        conditions: Vec::new(),
+        body: ScaledBody { scale: 1.0, radius: 1.0, eye_height: 1.0, speed: 0.0 },
     };
-    let ours = tally(
-        (0..1000)
-            .map(|_| {
-                character_swing(
-                    &mut rng,
-                    &fighter,
-                    &Vitals::new(&fighter),
-                    &hand,
-                    AttackMode::Swing,
-                    crab,
-                )
-            })
-            .collect(),
+    // Each side's aim lands somewhere a roll of 1-100 sometimes beats and
+    // sometimes does not.
+    let ours = member_aim(
+        &fighter,
+        &Vitals::new(&fighter),
+        &hand,
+        AttackMode::Swing,
+        Surprise::default(),
+        Some(&Defence::monster(crab, &body, false)),
+        Difficulty::Normal,
     );
+    assert!((6..=95).contains(&ours), "the fighter sometimes hits and sometimes misses: {ours}");
     let attack = &crab.attacks[0];
-    let theirs = tally(
-        (0..1000)
-            .map(|_| {
-                let mode = choose_mode(&mut rng, attack.modes);
-                monster_swing(&mut rng, crab, attack, mode, &fighter, &armour)
-            })
-            .collect(),
+    let mode = choose_mode(&mut rng, attack.modes);
+    let theirs = monster_aim(
+        (crab, &body),
+        attack,
+        mode,
+        Surprise::default(),
+        Some(&Defence::member(&fighter, armour, false, false)),
+        Difficulty::Normal,
     );
-    assert!(ours.0 > 100 && ours.0 < 1000, "the fighter sometimes hits and sometimes misses");
-    assert!(theirs.0 > 50 && theirs.0 < 1000);
+    assert!(theirs > 5, "the crab sometimes hits: {theirs}");
 }
 
 #[test]

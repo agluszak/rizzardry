@@ -220,6 +220,8 @@ const DIES: usize = 0x391;
 /// "at " after Swing, Thrust and Throw; "upon " after Berserk.
 const AT: usize = 0x217;
 const UPON: usize = 0x218;
+const SNEAKS: usize = 0x204;
+const UNAWARE: usize = 0x207;
 
 /// An attack's opening line in retail's terse form (`StartCharacterAttack`,
 /// `AnnounceMonsterAttack` without verbose messages): the attacker, the
@@ -230,7 +232,7 @@ fn announce(
     attacker: &str,
     target: &str,
     how: Announcement,
-    swings: u32,
+    (swings, surprise): (u32, crate::game::combat::attack::Surprise),
 ) -> String {
     // Retail `g_attack_flag_name_ids`: each mode's noun, then its verb.
     let verb = |mode: AttackMode| string(0x51f + 2 * mode as usize + 1);
@@ -250,9 +252,15 @@ fn announce(
         ),
     };
     let swings = if swings > 1 { format!(" {swings}x") } else { String::new() };
+    // A backstab or an ambush says so instead of the verb; a blow from
+    // behind says so after the target (retail strings 0x204 and 0x207).
+    if surprise.natural {
+        return format!("{attacker} {} {target}{swings}", string(SNEAKS));
+    }
+    let unaware = if surprise.unaware { format!(" {}", string(UNAWARE)) } else { String::new() };
     // `string` trims, so the preposition's own trailing space is restored.
     let preposition = if preposition.is_empty() { preposition } else { format!("{preposition} ") };
-    format!("{attacker} {word} {preposition}{target}{swings}")
+    format!("{attacker} {word} {preposition}{target}{unaware}{swings}")
 }
 
 /// A condition as notices name it.
@@ -260,28 +268,26 @@ fn condition_word(condition: crate::game::characters::Condition) -> String {
     format!("{condition:?}").to_lowercase()
 }
 
-/// What a cast or an item use tells the player. Retail's own strings for
-/// these are not mapped yet; the wording is plain.
-fn magic_lines(
-    news: &crate::game::magic::casting::MagicNews,
+/// A member's skill improving.
+fn improves(
     names: &super::names::ActorNames,
-    spells: Option<&crate::content::spells::SpellCatalog>,
     string: &impl Fn(usize) -> String,
-) -> Vec<String> {
-    use crate::game::magic::casting::{MagicNews, Refusal};
-    use crate::game::magic::{Effect, Outcome, Victim};
-    let name = |entity| names.name(entity).unwrap_or_default();
-    let improves = |member, skill: crate::content::characters::Skill| {
-        format!(
-            "{}'s {} improves.",
-            name(member),
-            string(crate::content::ui::SKILL_NAMES + skill as usize)
-        )
-    };
-    let victim = |victim: Victim| match victim {
-        Victim::Member(e) | Victim::Monster(e) => name(e),
-    };
-    let effect_line = |effect: Effect| match effect {
+    member: Entity,
+    skill: crate::content::characters::Skill,
+) -> String {
+    format!(
+        "{}'s {} improves.",
+        names.name(member).unwrap_or_default(),
+        string(crate::content::ui::SKILL_NAMES + skill as usize)
+    )
+}
+
+/// What a spell or a blow did to someone. Retail's own strings for these
+/// are not mapped yet; the wording is plain.
+fn effect_line(names: &super::names::ActorNames, effect: crate::game::magic::Effect) -> String {
+    use crate::game::magic::{Effect, Victim};
+    let victim = |victim: Victim| names.name(victim.entity()).unwrap_or_default();
+    match effect {
         Effect::Healed { victim: v, amount } => {
             format!("{} heals {amount}.", victim(v))
         }
@@ -305,10 +311,26 @@ fn magic_lines(
         Effect::Drained { victim: v, amount } => {
             format!("{} loses {amount} spell points.", victim(v))
         }
+        Effect::Tired { victim: v, amount } => format!("{} loses {amount} stamina.", victim(v)),
         Effect::Raised { victim: v } => format!("{} lives again!", victim(v)),
         Effect::Resisted { victim: v } => format!("{} resists.", victim(v)),
         Effect::Nothing { victim: v } => format!("{} is unaffected.", victim(v)),
-    };
+    }
+}
+
+/// What a cast or an item use tells the player. Retail's own strings for
+/// these are not mapped yet; the wording is plain.
+fn magic_lines(
+    news: &crate::game::magic::casting::MagicNews,
+    names: &super::names::ActorNames,
+    spells: Option<&crate::content::spells::SpellCatalog>,
+    string: &impl Fn(usize) -> String,
+) -> Vec<String> {
+    use crate::game::magic::Outcome;
+    use crate::game::magic::casting::{MagicNews, Refusal};
+    let name = |entity| names.name(entity).unwrap_or_default();
+    let improves = |member, skill| improves(names, string, member, skill);
+    let effect_line = |effect| effect_line(names, effect);
     match news {
         MagicNews::Refused { caster, refusal } => {
             let why = match refusal {
@@ -507,13 +529,28 @@ pub fn queue_notices(
                 .name(*monster)
                 .map(|name| vec![format!("{name} {}", string(if *charge { 0x237 } else { 0x236 }))])
                 .unwrap_or_default(),
-            CombatNews::Attack { attacker, target, how, swings } => {
+            CombatNews::Attack { attacker, target, how, swings, surprise } => {
                 match (names.name(*attacker), names.name(*target)) {
                     (Some(attacker), Some(target)) => {
-                        vec![announce(&string, &attacker, &target, *how, *swings)]
+                        vec![announce(&string, &attacker, &target, *how, (*swings, *surprise))]
                     }
                     _ => vec![],
                 }
+            }
+            // Retail `AnnounceAccidentalStrike`'s own words.
+            CombatNews::Fumble { attacker, victim } => {
+                match (names.name(*attacker), names.name(victim.entity())) {
+                    (Some(attacker), Some(victim)) => {
+                        vec![format!("{attacker} accidentally strikes {victim}")]
+                    }
+                    _ => vec![],
+                }
+            }
+            CombatNews::Effects(effects) => {
+                effects.iter().map(|&effect| effect_line(&names, effect)).collect()
+            }
+            CombatNews::Improved { member, skill } => {
+                vec![improves(&names, &string, *member, *skill)]
             }
             // Retail's summary (`ReportCharacterAttackResult`).
             CombatNews::Result { attacker, hits, damage, .. } => {

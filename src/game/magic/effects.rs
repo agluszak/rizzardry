@@ -127,21 +127,67 @@ pub enum Victim {
     Monster(Entity),
 }
 
+impl Victim {
+    pub fn entity(self) -> Entity {
+        match self {
+            Victim::Member(entity) | Victim::Monster(entity) => entity,
+        }
+    }
+}
+
 /// What a spell did to one victim.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Effect {
-    Healed { victim: Victim, amount: u32 },
-    Refreshed { victim: Victim, amount: u32 },
-    Replenished { victim: Victim, amount: u32 },
-    Damaged { victim: Victim, amount: u32, outcome: DamageOutcome },
-    Inflicted { victim: Victim, condition: Condition },
-    Cured { victim: Victim, condition: Condition },
-    Raised { victim: Victim },
-    GoldLost { amount: u32 },
-    Destroyed { class: EquipClass, amount: u32 },
-    Drained { victim: Victim, amount: u32 },
-    Resisted { victim: Victim },
-    Nothing { victim: Victim },
+    Healed {
+        victim: Victim,
+        amount: u32,
+    },
+    Refreshed {
+        victim: Victim,
+        amount: u32,
+    },
+    Replenished {
+        victim: Victim,
+        amount: u32,
+    },
+    Damaged {
+        victim: Victim,
+        amount: u32,
+        outcome: DamageOutcome,
+    },
+    Inflicted {
+        victim: Victim,
+        condition: Condition,
+    },
+    Cured {
+        victim: Victim,
+        condition: Condition,
+    },
+    Raised {
+        victim: Victim,
+    },
+    GoldLost {
+        amount: u32,
+    },
+    Destroyed {
+        class: EquipClass,
+        amount: u32,
+    },
+    Drained {
+        victim: Victim,
+        amount: u32,
+    },
+    /// Stamina a blow drained.
+    Tired {
+        victim: Victim,
+        amount: u32,
+    },
+    Resisted {
+        victim: Victim,
+    },
+    Nothing {
+        victim: Victim,
+    },
 }
 
 use crate::game::inventory::PartyInventory;
@@ -344,7 +390,7 @@ fn damage(
 }
 
 /// Take `amount` health from a victim; a member who survives may wake.
-fn hurt(rng: &mut GameRng, world: &mut Field, victim: Victim, amount: u32) -> Option<Effect> {
+pub fn hurt(rng: &mut GameRng, world: &mut Field, victim: Victim, amount: u32) -> Option<Effect> {
     match victim {
         Victim::Monster(monster) => {
             let outcome = world
@@ -388,7 +434,7 @@ fn inflict_on(
 }
 
 /// Retail `InflictConditionAttack` on one victim: the chance, a fresh
-/// duration, immunity, the save, then the duration cut by resistance.
+/// duration, then [`afflict`].
 #[allow(clippy::too_many_arguments)]
 fn attack(
     rng: &mut GameRng,
@@ -403,23 +449,207 @@ fn attack(
     if rng.below(100) >= chance {
         return None;
     }
-    let target = target(world, victim, realm, Some(condition))?;
+    // A victim that died or left is not attacked at all.
+    target(world, victim, realm, Some(condition)).filter(|t| !t.dead)?;
+    let rounds = duration(rng, spell, strength);
+    afflict(rng, world, victim, Some(condition), realm, strength.against, Some(rounds))
+}
+
+/// Retail `ResolveAttackOnTarget`: a condition, or death when `condition` is
+/// `None`, unless the victim is immune, saves, or shrugs it off by its
+/// nature; then resistance cuts its duration, and nothing lands from none
+/// (retail `InflictConditionOnTarget`). `rounds` of `None` lasts until
+/// lifted.
+fn afflict(
+    rng: &mut GameRng,
+    world: &mut Field,
+    victim: Victim,
+    condition: Option<Condition>,
+    realm: Realm,
+    against: u32,
+    rounds: Option<u32>,
+) -> Option<Effect> {
+    use crate::content::characters::Trait;
+    let target = target(world, victim, realm, condition)?;
     if target.dead {
         return None;
     }
-    let rounds = duration(rng, spell, strength);
-    let base = CONDITION_SAVE[condition as usize + 1];
-    if target.immune || saves(rng, world, victim, &target, base, strength.against) {
+    let death_immune = match victim {
+        Victim::Monster(monster) => {
+            condition.is_none() && {
+                let (body, ..) = world.monsters.monsters().get(monster).ok()?;
+                world.species.kind(body.species)?.death_immune
+            }
+        }
+        Victim::Member(_) => false,
+    };
+    if target.immune || death_immune {
         return Some(Effect::Resisted { victim });
     }
-    let rounds = match resist(rng, rounds, target.resistance, target.level, strength.against) {
+    let base = condition.map_or(DEATH_SAVE, |c| CONDITION_SAVE[c as usize + 1]);
+    if saves(rng, world, victim, &target, base, against) {
+        return Some(Effect::Resisted { victim });
+    }
+    // Fearless members, Androids' constitution and Psionics' minds.
+    if let (Victim::Member(member), Some(condition)) = (victim, condition) {
+        let (character, ..) = world.members.get(member).ok()?;
+        let android = character.has_trait(Trait::AndroidAbility30);
+        let shrugged = match condition {
+            Condition::Afraid => character.has_trait(Trait::Fearless) || android,
+            Condition::Diseased
+            | Condition::Irritated
+            | Condition::Nauseated
+            | Condition::Poisoned
+            | Condition::Asleep => android,
+            // Lasting insanity gets past a Psionic's mind.
+            Condition::Insane if rounds.is_none() => false,
+            Condition::Insane | Condition::Turncoat => {
+                character.has_trait(Trait::MentalConditionImmunity)
+            }
+            _ => false,
+        };
+        if shrugged {
+            return Some(Effect::Resisted { victim });
+        }
+    }
+    let lasting = rounds.unwrap_or(INDEFINITE);
+    let lasting = match resist(rng, lasting, target.resistance, target.level, against) {
         0 => return Some(Effect::Resisted { victim }),
-        1 => 2,
-        rounds => rounds,
+        _ if rounds.is_none() => Lasting::Indefinite,
+        1 => Lasting::Rounds(2),
+        rounds => Lasting::Rounds(rounds.min(u32::from(u16::MAX)) as u16),
     };
-    let lasting = Lasting::Rounds(rounds.min(u32::from(u16::MAX)) as u16);
+    let Some(condition) = condition else {
+        let hp = match victim {
+            Victim::Monster(monster) => world.monsters.monsters().get(monster).ok()?.0.hp,
+            Victim::Member(member) => world.members.get(member).ok()?.1.hp,
+        };
+        return hurt(rng, world, victim, hp);
+    };
     inflict_on(world, victim, condition, lasting)?;
     Some(Effect::Inflicted { victim, condition })
+}
+
+/// Retail's marker for a condition without end (`W8_CONDITION_INDEFINITE`),
+/// which resistance cuts like any other duration.
+const INDEFINITE: u32 = 9999;
+
+/// Rounds, or an amount, a blow's effect rolls (retail `RollEffectDuration`
+/// on an empty definition, then `count`d2 + `base` and one more when that
+/// came to under two).
+fn blow_roll(rng: &mut GameRng, count: u32, sides: u8, base: u32) -> u32 {
+    if rng.below(4) == 1 {
+        return 2;
+    }
+    let dice = Dice { count: count.min(255) as u8, sides, base: base.min(i16::MAX as u32) as i16 };
+    rng.roll(dice) + 1
+}
+
+/// Retail `ApplyEffectConditions`: what a weapon or a monster's blow that
+/// drew blood does besides its damage. Each effect with a chance rolls for
+/// it in turn until the victim dies; `power` is the attacker's effect
+/// strength, and only a monster swallows or possesses.
+pub fn blow(
+    rng: &mut GameRng,
+    world: &mut Field,
+    points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
+    victim: Victim,
+    effects: &crate::content::items::AttackEffects,
+    power: u32,
+    by_monster: bool,
+) -> Vec<Effect> {
+    use crate::content::items::AttackEffect as E;
+    let mut landed = Vec::new();
+    for (effect, &chance) in &effects.chances {
+        if target(world, victim, Realm::Fire, None).is_none_or(|t| t.dead) {
+            break;
+        }
+        if chance == 0 || rng.below(100) >= u32::from(chance) {
+            continue;
+        }
+        let count = power / 3 + 1;
+        let rounds = blow_roll(rng, count, 2, 1).clamp(1, 12);
+        let mut afflicts = |rng: &mut GameRng, condition, realm, rounds| {
+            afflict(rng, world, victim, condition, realm, power, rounds)
+        };
+        let member = matches!(victim, Victim::Member(_));
+        let outcome = match effect {
+            E::Sleep => afflicts(rng, Some(Condition::Asleep), Realm::Air, Some(rounds)),
+            E::Paralyze => afflicts(rng, Some(Condition::Paralyzed), Realm::Water, Some(rounds)),
+            E::Poison => {
+                let rounds = blow_roll(rng, count * 3, 2, u32::from(effects.strength));
+                afflicts(rng, Some(Condition::Poisoned), Realm::Water, Some(rounds))
+            }
+            E::Hex => afflicts(rng, Some(Condition::Hexed), Realm::Divine, Some(rounds)),
+            E::Disease => afflicts(rng, Some(Condition::Diseased), Realm::Water, None),
+            E::Kill => afflicts(rng, None, Realm::Divine, None),
+            E::KnockOut => afflicts(rng, Some(Condition::Unconscious), Realm::Earth, Some(rounds)),
+            E::Blind => afflicts(rng, Some(Condition::Blind), Realm::Fire, Some(rounds)),
+            E::Frighten => afflicts(rng, Some(Condition::Afraid), Realm::Mental, Some(rounds)),
+            // Being swallowed (retail Missing) is not modelled.
+            E::Swallow => None,
+            E::Possess if by_monster && member => {
+                afflicts(rng, Some(Condition::Turncoat), Realm::Divine, Some(rounds))
+            }
+            E::Possess => None,
+            E::DrainHealth if member => {
+                drain(rng, world, victim, Realm::Earth, power, (count, 2, 0))
+                    .and_then(|amount| hurt(rng, world, victim, amount))
+            }
+            E::DrainHealth => None,
+            E::DrainStamina => {
+                drain(rng, world, victim, Realm::Water, power, (count * 2, 5, count * 3)).map(
+                    |amount| {
+                        let amount = match victim {
+                            Victim::Member(member) => {
+                                world.members.get_mut(member).map_or(0, |(_, mut vitals, ..)| {
+                                    let before = vitals.stamina;
+                                    vitals.spend_stamina(amount);
+                                    before - vitals.stamina
+                                })
+                            }
+                            Victim::Monster(monster) => world.monsters.fatigue(monster, amount),
+                        };
+                        Effect::Tired { victim, amount }
+                    },
+                )
+            }
+            E::DrainSpellPoints => match victim {
+                Victim::Member(member) => {
+                    drain(rng, world, victim, Realm::Divine, power, (count, 6, count)).and_then(
+                        |amount| {
+                            let (_, mut pool) = points.get_mut(member).ok()?;
+                            let amount = pool.drain(amount, rng);
+                            Some(Effect::Drained { victim, amount })
+                        },
+                    )
+                }
+                Victim::Monster(_) => None,
+            },
+            E::Nauseate => afflicts(rng, Some(Condition::Nauseated), Realm::Air, Some(rounds)),
+            E::Insane => afflicts(rng, Some(Condition::Insane), Realm::Mental, Some(rounds)),
+        };
+        landed.extend(outcome);
+    }
+    landed
+}
+
+/// A blow's drain: the victim's save, then `dice` (count, sides, base),
+/// one more, cut by resistance. `None` when nothing is left to take.
+fn drain(
+    rng: &mut GameRng,
+    world: &mut Field,
+    victim: Victim,
+    realm: Realm,
+    power: u32,
+    (count, sides, base): (u32, u8, u32),
+) -> Option<u32> {
+    let target = target(world, victim, realm, None).filter(|t| !t.dead)?;
+    if saves(rng, world, victim, &target, 0, power) {
+        return None;
+    }
+    let amount = blow_roll(rng, count, sides, base);
+    Some(resist(rng, amount, target.resistance, target.level, power)).filter(|&a| a != 0)
 }
 
 /// Death spells: a failed save kills, unless resistance cuts the attempt's

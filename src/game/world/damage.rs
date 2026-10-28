@@ -86,6 +86,25 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         Some(monster.map_unchanged(|monster| &mut monster.conditions))
     }
 
+    /// Tire a monster (retail `FatigueMonster`); spent, it drops
+    /// unconscious. Returns the stamina taken.
+    pub fn fatigue(&mut self, monster: Entity, amount: u32) -> u32 {
+        let Ok((mut monster, ..)) = self.monsters.get_mut(monster) else { return 0 };
+        if monster.is_dead() || monster.stamina == 0 {
+            return 0;
+        }
+        let taken = amount.min(monster.stamina);
+        monster.stamina -= taken;
+        if monster.stamina == 0 {
+            crate::game::characters::inflict(
+                &mut monster.conditions,
+                Condition::Unconscious,
+                Lasting::Indefinite,
+            );
+        }
+        taken
+    }
+
     pub fn active(&self, target: Entity) -> bool {
         self.monsters.get(target).is_ok_and(|(_, _, _, owner)| self.levels.contains(owner.0))
     }

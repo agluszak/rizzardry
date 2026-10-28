@@ -157,8 +157,8 @@ pub fn log_news(
     for news in combat.read() {
         use crate::game::combat::CombatNews;
         match news {
-            CombatNews::Attack { attacker, target, how, swings } => info!(
-                "combat: {:?} attacks {:?}: {how:?}, {swings} swings",
+            CombatNews::Attack { attacker, target, how, swings, surprise } => info!(
+                "combat: {:?} attacks {:?}: {how:?}, {swings} swings, {surprise:?}",
                 names.name(*attacker),
                 names.name(*target)
             ),

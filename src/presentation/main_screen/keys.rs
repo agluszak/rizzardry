@@ -137,6 +137,10 @@ fn spawn_main_screen_keys(mut commands: Commands) {
             --
             Action::<SetOrder>::new() OrderKey({Order::Defend}) Bindings [ Binding(KeyCode::KeyD) ]
             --
+            // Retail offers Berserk among a Fighter's actions; its own
+            // control for it is not recovered, so it has a key here.
+            Action::<SetOrder>::new() OrderKey({Order::Berserk}) Bindings [ Binding(KeyCode::KeyB) ]
+            --
             {text_box}
         ]
         on(|_: On<Start<CycleLayout>>, mut layout: ResMut<ScreenLayout>| layout.cycle(false))
