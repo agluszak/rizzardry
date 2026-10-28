@@ -87,13 +87,25 @@ fn operation(
             .map(|(_, s)| s.clone().ok_or_else(|| invalid("missing keyword")))
             .collect::<Result<Vec<_>, _>>()
     };
+    // Retail's response chooser (`RunNpcScriptLine`, `SelectNpcQuoteResponse`):
+    // mode 2 picks at random up to the bound; otherwise a bound of 4 hands
+    // the dialogue to the NPC the first sub-entry names (its text past a
+    // four-character prefix); anything else answers with the first operand.
     let response = || -> Result<Response, LoadError> {
         match (args[1], args[2]) {
             (2, last) if last >= args[0] => {
                 Ok(Response::Random { first: id(args[0])?, last: id(last)? })
             }
-            (1, 0) => Ok(Response::Fixed(id(args[0])?)),
-            _ => Err(invalid("unsupported response mode")),
+            (2, _) => Err(invalid("empty random response range")),
+            (_, 4) => {
+                let npc = subs
+                    .first()
+                    .and_then(|(_, text)| text.as_deref()?.get(4..))
+                    .filter(|name| !name.is_empty())
+                    .ok_or_else(|| invalid("speaker change without a speaker"))?;
+                Ok(Response::Speaker { npc: npc.to_owned(), quote: id(args[0])? })
+            }
+            _ => Ok(Response::Fixed(id(args[0])?)),
         }
     };
     let unsupported =
@@ -104,8 +116,13 @@ fn operation(
             Ok(r) => DialogueOp::Next(r),
             Err(_) => unsupported(),
         },
-        3 if subs.len().is_multiple_of(2) && args[2] != 4 => {
-            let facts = subs
+        3 => {
+            // A speaker change names its speaker before the fact pairs.
+            let pairs = &subs[usize::from(args[1] != 2 && args[2] == 4).min(subs.len())..];
+            if !pairs.len().is_multiple_of(2) {
+                return Ok(unsupported());
+            }
+            let facts = pairs
                 .as_chunks::<2>()
                 .0
                 .iter()
@@ -231,6 +248,8 @@ pub fn read_dialogue(data: &[u8]) -> Result<DialogueScript, LoadError> {
                 DialogueOp::Next(r) | DialogueOp::Conditional { response: r, .. } => match r {
                     Response::Fixed(q) => vec![*q],
                     Response::Random { first, last } => vec![*first, *last],
+                    // The quote belongs to the other speaker's script.
+                    Response::Speaker { .. } => vec![],
                 },
                 _ => vec![],
             };
@@ -348,6 +367,33 @@ mod tests {
         invalid[40..44].copy_from_slice(&2i32.to_le_bytes());
         assert!(read_dialogue(&invalid).is_err(), "out-of-range authored continuation is rejected");
     }
+    /// Retail's response chooser: a random range in mode 2, else a bound of
+    /// 4 names another speaker, else the first operand is the answer.
+    #[test]
+    fn decodes_every_response_mode_and_speaker_changes() {
+        let named = || vec![(0, Some("NPC_Gadrock".into()))];
+        assert_eq!(operation(2, [5, 0, 0], vec![]).unwrap(), DialogueOp::Next(Response::Fixed(5)));
+        assert_eq!(operation(2, [5, 3, 7], vec![]).unwrap(), DialogueOp::Next(Response::Fixed(5)));
+        assert_eq!(
+            operation(2, [5, 2, 7], vec![]).unwrap(),
+            DialogueOp::Next(Response::Random { first: 5, last: 7 })
+        );
+        assert_eq!(
+            operation(2, [5, 1, 4], named()).unwrap(),
+            DialogueOp::Next(Response::Speaker { npc: "Gadrock".into(), quote: 5 })
+        );
+        let mut subs = named();
+        subs.extend([(91, None), (1, None)]);
+        assert_eq!(
+            operation(3, [5, 1, 4], subs).unwrap(),
+            DialogueOp::Conditional {
+                facts: vec![(FactId(91), 1)],
+                response: Response::Speaker { npc: "Gadrock".into(), quote: 5 }
+            }
+        );
+        assert!(matches!(operation(2, [5, 1, 4], vec![]).unwrap(), DialogueOp::Unsupported { .. }));
+    }
+
     #[test]
     fn decodes_item_gifts_removals_and_item_answers() {
         assert_eq!(

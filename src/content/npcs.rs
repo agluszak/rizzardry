@@ -64,7 +64,16 @@ pub enum TopicCategory {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Response {
     Fixed(u16),
-    Random { first: u16, last: u16 },
+    Random {
+        first: u16,
+        last: u16,
+    },
+    /// The NPC with this display name takes over the conversation and says
+    /// this quote of its own script.
+    Speaker {
+        npc: String,
+        quote: u16,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DialogueOp {

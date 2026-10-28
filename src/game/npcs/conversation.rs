@@ -464,11 +464,43 @@ fn close_one(world: &mut World, entity: Entity) {
     }
 }
 
-fn select_response(response: &Response, rng: &mut GameRng) -> u16 {
+/// The quote a response leads to in this script; a speaker change leads out
+/// of it.
+fn select_response(response: &Response, rng: &mut GameRng) -> Option<u16> {
     match *response {
-        Response::Fixed(n) => n,
-        Response::Random { first, last } => first + rng.below(u32::from(last - first) + 1) as u16,
+        Response::Fixed(n) => Some(n),
+        Response::Random { first, last } => {
+            Some(first + rng.below(u32::from(last - first) + 1) as u16)
+        }
+        Response::Speaker { .. } => None,
     }
+}
+/// Another NPC takes over the conversation and says `quote` of its own
+/// script (retail `ProcessNpcQuoteEntry` for a response naming a speaker).
+/// Retail finds the NPC by display name among those it knows; when none
+/// answers to it, the conversation simply waits for the party.
+fn hand_over(world: &mut World, entity: Entity, name: &str, quote: u16) {
+    let assets = world.resource::<NpcAssets>();
+    let Some(catalog) = world.resource::<Assets<NpcCatalog>>().get(&assets.catalog) else {
+        return;
+    };
+    let speaker = world.iter_entities().find_map(|e| {
+        let npc = e.get::<Npc>()?;
+        catalog
+            .get(npc.definition)
+            .is_some_and(|d| d.display_name.eq_ignore_ascii_case(name))
+            .then(|| (e.id(), npc.definition))
+    });
+    let Some((speaker, id)) = speaker else { return };
+    let Some(script) = assets.scripts.get(&id).cloned() else {
+        let mut c = world.get_mut::<Conversation>(entity).unwrap();
+        block(&mut c, quote, None, format!("{name}'s script unavailable"));
+        return;
+    };
+    let mut c = world.get_mut::<Conversation>(entity).unwrap();
+    c.actor = speaker;
+    c.script = script;
+    c.queue.push_front(Step::Quote { quote, subquote: 0, paid: false, plan: None });
 }
 fn block(c: &mut Conversation, quote: u16, entry: Option<usize>, reason: String) {
     c.wait = ConversationWait::Blocked { quote, entry, reason };
@@ -737,8 +769,12 @@ fn commit_quote(world: &mut World, entity: Entity, quote: u16, plan: QuotePlan) 
     commit_effects(world, entity, plan.effects);
     if let Some(following) = plan.following {
         let next = match following {
+            Continuation::Quote(Response::Speaker { npc, quote }) => {
+                return hand_over(world, entity, &npc, quote);
+            }
             Continuation::Quote(response) => Step::Quote {
-                quote: select_response(&response, &mut world.resource_mut::<GameRng>()),
+                quote: select_response(&response, &mut world.resource_mut::<GameRng>())
+                    .expect("a response within this script"),
                 subquote: 0,
                 paid: false,
                 plan: None,
@@ -856,7 +892,9 @@ fn run_script(world: &mut World, entity: Entity, script: &DialogueScript, party:
     let actor = world.get::<Conversation>(entity).unwrap().actor;
     // Bound immediate authored transitions, including malicious empty-quote loops.
     for _ in 0..256 {
-        if world.get::<Conversation>(entity).unwrap().wait != ConversationWait::Ready {
+        let c = world.get::<Conversation>(entity).unwrap();
+        // A new speaker's script is fetched on the next run.
+        if c.wait != ConversationWait::Ready || c.actor != actor {
             return;
         }
         let Some(step) = world.get_mut::<Conversation>(entity).unwrap().queue.pop_front() else {
@@ -1810,6 +1848,91 @@ mod tests {
             finish_line(&mut app, session);
         }
         assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, 50);
+    }
+
+    /// A second NPC, `name`, in the same level, speaking `script`.
+    fn second_speaker(app: &mut App, name: &str, script: DialogueScript) -> Entity {
+        let world = app.world_mut();
+        let handle = world.resource::<NpcAssets>().catalog.clone();
+        let id = {
+            let mut catalogs = world.resource_mut::<Assets<NpcCatalog>>();
+            let mut catalog = catalogs.get_mut(&handle).unwrap();
+            catalog.0.push(NpcDefinition {
+                source_name: name.into(),
+                display_name: name.into(),
+                ..default()
+            });
+            NpcId(catalog.0.len() as u16 - 1)
+        };
+        let script = world.resource_mut::<Assets<DialogueScript>>().add(script);
+        world.resource_mut::<NpcAssets>().scripts.insert(id, script);
+        let level = world.query_filtered::<Entity, With<Level>>().single(world).unwrap();
+        let actor = world
+            .spawn(Npc {
+                definition: id,
+                disposition: 80,
+                greeting_pending: true,
+                paid_topics: vec![],
+                stock: default(),
+            })
+            .id();
+        world.spawn((
+            super::super::NpcBody(actor),
+            crate::game::world::level::LevelOwned(level),
+            Monster {
+                enchantments: default(),
+                location: 2,
+                species: 0,
+                hp: 5,
+                max_hp: 5,
+                stamina: 5,
+                max_stamina: 5,
+                conditions: vec![],
+                body: ScaledBody { scale: 1., radius: 0.5, eye_height: 1., speed: 0. },
+            },
+        ));
+        actor
+    }
+
+    /// Retail `ProcessNpcQuoteEntry`: a response naming another NPC hands the
+    /// conversation to it, which answers with that quote of its own script;
+    /// a name no NPC answers to leaves the conversation waiting.
+    #[test]
+    fn a_response_naming_another_npc_hands_the_conversation_over() {
+        for (named, expected) in [("Gadrock", true), ("Nobody", false)] {
+            let (mut app, session, first) = app(DialogueScript {
+                quotes: vec![Quote {
+                    text: vec!["Ask him".into()],
+                    operations: vec![DialogueOp::Next(Response::Speaker {
+                        npc: named.into(),
+                        quote: 2,
+                    })],
+                    ..default()
+                }],
+                ..default()
+            });
+            let other = second_speaker(
+                &mut app,
+                "GADROCK",
+                DialogueScript {
+                    quotes: (0..3)
+                        .map(|i| Quote { text: vec![format!("Gadrock {i}")], ..default() })
+                        .collect(),
+                    ..default()
+                },
+            );
+            app.update();
+            finish_line(&mut app, session);
+            app.update();
+            let c = app.world().get::<Conversation>(session).unwrap();
+            if expected {
+                assert_eq!((c.actor, c.current), (other, Some((2, 0))));
+                assert!(matches!(c.wait, ConversationWait::Line { .. }));
+            } else {
+                assert_eq!(c.actor, first);
+                assert!(c.ready());
+            }
+        }
     }
 
     /// Fill the party's items to `rows` full, unmergeable stacks of item 0.
