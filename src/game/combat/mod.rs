@@ -652,7 +652,7 @@ pub fn start_battle(
         shadow_hound,
         camp.is_some(),
         movement.single().is_ok_and(|m| m.running),
-        search.as_ref().is_some_and(|s| s.on()),
+        search.as_ref().is_some_and(|s| s.on(false)),
         members.iter_many(roster.iter()).matched(),
         &mut rng,
     );
