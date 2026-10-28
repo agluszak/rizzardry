@@ -83,6 +83,16 @@ pub enum DialogueOp {
         words: Vec<String>,
     },
     SetFact(FactId, u8),
+    /// The NPC hands the party an item, identified and at full quantity.
+    GiveItem(ItemId),
+    /// One of the item leaves the party.
+    TakeItem(ItemId),
+    /// This quote answers the party offering the item. The NPC keeps what it
+    /// asked for and hands back what it only remarks on.
+    ItemQuote {
+        item: ItemId,
+        keeps: bool,
+    },
     GiveGold(u32),
     GiveExperience(u32),
     /// A change to a faction's standing. Retail ignores a name it does not
@@ -120,6 +130,18 @@ pub struct DialogueScript {
     pub quotes: Vec<Quote>,
 }
 impl DialogueScript {
+    /// The first quote that answers the offered item, and whether the NPC
+    /// keeps it (retail `FindNpcScriptItemQuote`).
+    pub fn item_quote(&self, offered: ItemId) -> Option<(u16, bool)> {
+        self.quotes.iter().enumerate().find_map(|(index, quote)| {
+            quote.operations.iter().find_map(|op| match *op {
+                DialogueOp::ItemQuote { item, keeps } if item == offered => {
+                    Some((index as u16, keeps))
+                }
+                _ => None,
+            })
+        })
+    }
     pub fn topic(&self, text: &str) -> Option<u16> {
         self.quotes.iter().position(|q| q.operations.iter().any(|op| matches!(op,
             DialogueOp::Keywords(words) if words.iter().any(|w| w.eq_ignore_ascii_case(text.trim())))))

@@ -4,12 +4,15 @@ use super::{
     trade::{self, TradeError, TradeQuote, TradeSource},
 };
 use crate::content::factions::Faction;
-use crate::content::{items::ItemCatalog, npcs::*};
+use crate::content::{
+    items::{ItemCatalog, ItemId},
+    npcs::*,
+};
 use crate::game::factions::Factions;
 use crate::game::{
     characters::{Character, Vitals},
     data::GameData,
-    inventory::{Carried, ItemIds, ItemOwner, PartyInventory},
+    inventory::{Carried, ItemIds, ItemOwner, ItemRef, POOL_LIMIT, PartyInventory, make_item},
     party::roster::{PartyMember, PartyRoster, the_party},
     rng::GameRng,
     world::{ActorPose, level::Level, population::Monster},
@@ -154,8 +157,21 @@ pub enum TranscriptLine {
 /// Committed outcomes, not commands. Presentation supplies retail wording.
 #[derive(Clone, Debug, PartialEq)]
 pub enum QuestReward {
-    Gold { giver: String, amount: u32 },
-    Experience { amount_each: u32 },
+    Gold {
+        giver: String,
+        amount: u32,
+    },
+    Experience {
+        amount_each: u32,
+    },
+    /// The NPC handed the party this item.
+    Item {
+        name: String,
+    },
+    /// One of an item left this member's pack, or the party's items.
+    Taken {
+        member: Option<String>,
+    },
 }
 #[derive(Component, Debug)]
 pub struct Conversation {
@@ -178,6 +194,7 @@ pub enum Outcome {
     NoTopic,
     Traded,
     TradeRefused(TradeError),
+    GiftRefused(TradeError),
 }
 impl Conversation {
     pub fn ready(&self) -> bool {
@@ -213,13 +230,38 @@ pub struct LinePlayback {
 }
 #[derive(Message, Clone, Debug)]
 pub enum ConversationRequest {
-    Begin { actor: Entity },
-    Topic { conversation: Entity, revision: u64, text: String },
-    Reply { conversation: Entity, revision: u64, text: String },
-    PriceAnswer { conversation: Entity, revision: u64, accept: bool },
-    Advance { conversation: Entity, speech: Entity },
-    Close { conversation: Entity },
+    Begin {
+        actor: Entity,
+    },
+    Topic {
+        conversation: Entity,
+        revision: u64,
+        text: String,
+    },
+    Reply {
+        conversation: Entity,
+        revision: u64,
+        text: String,
+    },
+    PriceAnswer {
+        conversation: Entity,
+        revision: u64,
+        accept: bool,
+    },
+    Advance {
+        conversation: Entity,
+        speech: Entity,
+    },
+    Close {
+        conversation: Entity,
+    },
     Trade(TradeQuote),
+    /// Hand the NPC an item from a member's pack or the party's items.
+    Give {
+        conversation: Entity,
+        revision: u64,
+        item: ItemRef,
+    },
 }
 fn definition(world: &World, actor: Entity) -> Result<&NpcDefinition, TradeError> {
     let npc = world.get::<Npc>(actor).ok_or(TradeError::Unavailable)?;
@@ -448,6 +490,8 @@ enum QuoteEffect {
     Gold { party: Entity, amount: u32 },
     Experience { members: Vec<Entity>, amount: u32 },
     Faction { faction: Faction, delta: i8 },
+    GiveItem { party: Entity, item: ItemId },
+    TakeItem { party: Entity, item: ItemId },
 }
 #[derive(Debug)]
 enum Continuation {
@@ -519,6 +563,21 @@ fn plan_quote(
             }
             // Retail ignores a faction name it does not know.
             DialogueOp::AdjustFaction { faction: None, .. } => {}
+            DialogueOp::GiveItem(item) => {
+                if GameData::items(world).and_then(|c| c.get(*item)).is_none() {
+                    return Err((i, format!("unknown item {}", item.0)));
+                }
+                let party = party
+                    .filter(|&p| world.get::<PartyInventory>(p).is_some())
+                    .ok_or_else(|| (i, "party items unavailable".into()))?;
+                plan.effects.push(QuoteEffect::GiveItem { party, item: *item });
+            }
+            DialogueOp::TakeItem(item) => {
+                let party = party
+                    .filter(|&p| world.get::<PartyRoster>(p).is_some())
+                    .ok_or_else(|| (i, "party roster unavailable".into()))?;
+                plan.effects.push(QuoteEffect::TakeItem { party, item: *item });
+            }
             DialogueOp::Conditional { facts, response } => {
                 let mut matched = true;
                 for (id, expected) in facts {
@@ -570,7 +629,35 @@ fn quote_targets_present(world: &World, plan: &QuotePlan) -> bool {
             fact_catalog(world).is_some_and(|catalog| StoryFacts::can_set(*id, catalog))
         }
         QuoteEffect::Mention(..) => true,
+        // Retail drops a gift the party has no room for; here the quote
+        // waits until the party's items have a free row.
+        QuoteEffect::GiveItem { party, .. } => {
+            world.get::<PartyInventory>(*party).is_some_and(|p| p.pool.stacks.len() < POOL_LIMIT)
+        }
+        QuoteEffect::TakeItem { party, .. } => world.get::<PartyRoster>(*party).is_some(),
     })
+}
+/// Take one of the item from the first member's pack that holds it, in
+/// party order, else from the party's items (retail `RemoveNpcScriptItem`).
+/// Says whose it was: a member's name, or `None` for the party's; nothing
+/// when the party has none.
+fn take_item(world: &mut World, party: Entity, item: ItemId) -> Option<Option<String>> {
+    let roster: Vec<_> = world.get::<PartyRoster>(party)?.iter().collect();
+    for member in roster {
+        let Some(mut carried) = world.get_mut::<Carried>(member) else { continue };
+        let Some(id) = carried.backpack.iter().flatten().find(|s| s.item == item).map(|s| s.id)
+        else {
+            continue;
+        };
+        carried.consume_backpack_units(id, 1).ok()?;
+        return Some(Some(
+            world.get::<Character>(member).map(|c| c.name.clone()).unwrap_or_default(),
+        ));
+    }
+    let mut inventory = world.get_mut::<PartyInventory>(party)?;
+    let id = inventory.pool.stacks.iter().find(|s| s.item == item)?.id;
+    inventory.pool.consume_units(id, 1).ok()?;
+    Some(None)
 }
 fn commit_quote(world: &mut World, entity: Entity, quote: u16, plan: QuotePlan) {
     for effect in plan.effects {
@@ -609,6 +696,38 @@ fn commit_quote(world: &mut World, entity: Entity, quote: u16, plan: QuotePlan) 
                     .unwrap()
                     .transcript
                     .push(TranscriptLine::Reward(QuestReward::Experience { amount_each: amount }));
+            }
+            QuoteEffect::GiveItem { party, item } => {
+                let reward = with_items(world, |world, catalog| {
+                    let definition = catalog.get(item).ok_or(TradeError::MissingContent)?;
+                    let stack = world.resource_scope(|world, mut ids: Mut<ItemIds>| {
+                        let mut rng = world.resource_mut::<GameRng>();
+                        make_item(definition, &mut ids, &mut rng, true, true)
+                    });
+                    let rest = world
+                        .get_mut::<PartyInventory>(party)
+                        .unwrap()
+                        .pool
+                        .receive(stack, catalog);
+                    debug_assert!(rest.is_none(), "the gift was checked to have room");
+                    Ok(QuestReward::Item { name: definition.name.clone() })
+                });
+                if let Ok(reward) = reward {
+                    world
+                        .get_mut::<Conversation>(entity)
+                        .unwrap()
+                        .transcript
+                        .push(TranscriptLine::Reward(reward));
+                }
+            }
+            QuoteEffect::TakeItem { party, item } => {
+                if let Some(member) = take_item(world, party, item) {
+                    world
+                        .get_mut::<Conversation>(entity)
+                        .unwrap()
+                        .transcript
+                        .push(TranscriptLine::Reward(QuestReward::Taken { member }));
+                }
             }
             QuoteEffect::Faction { faction, delta } => {
                 // Retail announces it in the text box, not the dialogue.
@@ -820,6 +939,56 @@ fn topic(world: &mut World, entity: Entity, text: &str) {
     } else {
         world.get_mut::<Conversation>(entity).unwrap().report(Outcome::NoTopic);
     }
+}
+/// What a friendly NPC says to an item it has no quote for: it takes it
+/// gladly, or turns down one the party may not give away.
+const ACCEPTED_GIFT_QUOTE: u16 = 0x10;
+const REFUSED_GIFT_QUOTE: u16 = 0x11;
+/// The party offers the NPC an item from a member's pack or the party's items
+/// (retail `HandleNpcDialogueItem`; only friendly NPCs talk here). The quote
+/// answering it runs; the NPC keeps what it asked for, and any other item it
+/// is given unless the party may not part with it. A voice-scripted NPC
+/// ignores an item it has nothing to say about. An item is taken only once
+/// its answer's effects are validated, so a content gap keeps it.
+fn give(world: &mut World, entity: Entity, item: ItemRef) -> Result<(), TradeError> {
+    let party = the_party(world).ok_or(TradeError::Unavailable)?;
+    let c = world.get::<Conversation>(entity).unwrap();
+    if !c.ready() {
+        return Err(TradeError::Busy);
+    }
+    let actor = c.actor;
+    let offered = sale_item(world, TradeSource::Party(item), party)?.item;
+    let crucial = GameData::items(world)
+        .and_then(|catalog| catalog.get(offered))
+        .ok_or(TradeError::MissingContent)?
+        .crucial;
+    let voiced = definition(world, actor)?.voice_script;
+    let script = script(world, c).ok_or(TradeError::MissingContent)?;
+    let (quote, keeps) = match script.item_quote(offered) {
+        Some(answer) => answer,
+        None if voiced => return Ok(()),
+        None if crucial => (REFUSED_GIFT_QUOTE, false),
+        None => (ACCEPTED_GIFT_QUOTE, true),
+    };
+    let plan = script
+        .quotes
+        .get(usize::from(quote))
+        .and_then(|line| plan_quote(world, Some(party), line).ok());
+    if keeps && plan.is_some() {
+        match item.owner {
+            ItemOwner::Pool => {
+                world.get_mut::<PartyInventory>(party).unwrap().pool.consume_units(item.id, 1)
+            }
+            ItemOwner::Member(member) => {
+                world.get_mut::<Carried>(member).unwrap().consume_backpack_units(item.id, 1)
+            }
+        }
+        .map_err(|_| TradeError::StaleSelection)?;
+    }
+    let mut c = world.get_mut::<Conversation>(entity).unwrap();
+    c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false, plan });
+    c.revision += 1;
+    Ok(())
 }
 fn reply(world: &mut World, entity: Entity, text: &str) {
     let c = world.get::<Conversation>(entity).unwrap();
@@ -1070,7 +1239,8 @@ pub fn update_conversation(world: &mut World) {
             | ConversationRequest::Reply { conversation, .. }
             | ConversationRequest::PriceAnswer { conversation, .. }
             | ConversationRequest::Advance { conversation, .. }
-            | ConversationRequest::Close { conversation } => *conversation,
+            | ConversationRequest::Close { conversation }
+            | ConversationRequest::Give { conversation, .. } => *conversation,
             ConversationRequest::Trade(q) => q.conversation,
             _ => unreachable!(),
         };
@@ -1111,6 +1281,16 @@ pub fn update_conversation(world: &mut World) {
                     let mut c = world.get_mut::<Conversation>(entity).unwrap();
                     c.wait = ConversationWait::Ready;
                     c.revision += 1;
+                }
+            }
+            ConversationRequest::Give { revision: requested, item, .. }
+                if requested == revision =>
+            {
+                if let Err(refused) = give(world, entity, item) {
+                    world
+                        .get_mut::<Conversation>(entity)
+                        .unwrap()
+                        .report(Outcome::GiftRefused(refused));
                 }
             }
             ConversationRequest::Trade(q) => {
@@ -1380,6 +1560,212 @@ mod tests {
                 "the faction notice goes to the text box once"
             );
         }
+    }
+
+    /// Items 0 to 3 in a stackable catalog; item 3 may not be given away.
+    fn with_items(app: &mut App) {
+        use crate::content::items::{Dice, ItemDefinition, QuantityKind};
+        let world = app.world_mut();
+        world.init_resource::<Assets<ItemCatalog>>();
+        world.init_resource::<ItemIds>();
+        let items = (0..4)
+            .map(|id| ItemDefinition {
+                id: ItemId(id),
+                name: format!("Item {id}"),
+                quantity: QuantityKind::Stack,
+                stack_limit: 20,
+                initial_quantity: Dice { base: 5, ..default() },
+                crucial: id == 3,
+                ..default()
+            })
+            .collect();
+        let items = world.resource_mut::<Assets<ItemCatalog>>().add(ItemCatalog(items));
+        world.insert_resource(GameData {
+            items,
+            loot: default(),
+            species: default(),
+            spells: default(),
+        });
+    }
+
+    fn stack(app: &mut App, item: u16, count: u16) -> crate::game::inventory::ItemStack {
+        let world = app.world_mut();
+        let definition = GameData::items(world).unwrap().get(ItemId(item)).unwrap().clone();
+        crate::game::inventory::ItemStack::new(
+            &definition,
+            &mut world.resource_mut::<ItemIds>(),
+            count,
+            true,
+        )
+    }
+
+    /// A member carrying `count` of `item` in their first backpack slot.
+    fn carrier(app: &mut App, name: &str, item: u16, count: u16) -> Entity {
+        use crate::game::characters::{Gender, Profession, Race};
+        let mut carried = Carried::default();
+        carried.backpack[0] = Some(stack(app, item, count));
+        let character = Character::new(name, Race::Human, Gender::Male, Profession::Fighter);
+        let vitals = Vitals::new(&character);
+        let member = app.world_mut().spawn((character, vitals, carried)).id();
+        crate::game::party::roster::test_join(app.world_mut(), member);
+        member
+    }
+
+    fn finish_line(app: &mut App, session: Entity) {
+        if let ConversationWait::Line { speech, .. } =
+            app.world().get::<Conversation>(session).unwrap().wait
+        {
+            app.world_mut()
+                .write_message(ConversationRequest::Advance { conversation: session, speech });
+            app.update();
+        }
+    }
+
+    fn rewards(app: &App, session: Entity) -> Vec<QuestReward> {
+        app.world()
+            .get::<Conversation>(session)
+            .unwrap()
+            .transcript
+            .iter()
+            .filter_map(|line| match line {
+                TranscriptLine::Reward(reward) => Some(reward.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Retail `ProcessNpcQuoteEntry`: a gift arrives whole and identified in
+    /// the party's items; a removal takes one from the first member's pack
+    /// that holds it before the party's items.
+    #[test]
+    fn scripted_items_are_given_whole_and_taken_one_at_a_time() {
+        let (mut app, session, _) = app(DialogueScript {
+            quotes: vec![
+                Quote {
+                    text: vec!["Take this".into()],
+                    operations: vec![
+                        DialogueOp::GiveItem(ItemId(1)),
+                        DialogueOp::TakeItem(ItemId(2)),
+                        DialogueOp::Next(Response::Fixed(1)),
+                    ],
+                    ..default()
+                },
+                Quote { text: vec!["Done".into()], ..default() },
+            ],
+            ..default()
+        });
+        with_items(&mut app);
+        let member = carrier(&mut app, "Ragnar", 2, 3);
+        let party = the_party(app.world_mut()).unwrap();
+        let pooled = stack(&mut app, 2, 4);
+        app.world_mut().get_mut::<PartyInventory>(party).unwrap().pool.stacks.push(pooled);
+        app.update();
+        let world = app.world();
+        let pool = &world.get::<PartyInventory>(party).unwrap().pool.stacks;
+        let gift = pool.iter().find(|s| s.item == ItemId(1)).expect("the gift");
+        assert_eq!((gift.count(), gift.identified), (5, true), "whole and identified");
+        assert_eq!(pool.iter().find(|s| s.item == ItemId(2)).unwrap().count(), 4);
+        let pack = world.get::<Carried>(member).unwrap().backpack[0].as_ref().unwrap();
+        assert_eq!(pack.count(), 2, "one taken from the member's pack first");
+        assert_eq!(
+            rewards(&app, session),
+            [
+                QuestReward::Item { name: "Item 1".into() },
+                QuestReward::Taken { member: Some("Ragnar".into()) }
+            ]
+        );
+    }
+
+    /// Retail `HandleNpcDialogueItem` for a friendly NPC: the answering quote
+    /// runs; what it asks for is kept and what it only remarks on comes
+    /// back; anything else is taken as a gift unless it may not be given.
+    #[test]
+    fn offered_items_are_answered_and_kept_only_when_wanted() {
+        let mut quotes: Vec<_> =
+            (0..18).map(|i| Quote { text: vec![format!("Line {i}")], ..default() }).collect();
+        quotes[1].operations =
+            vec![DialogueOp::ItemQuote { item: ItemId(1), keeps: true }, DialogueOp::GiveGold(50)];
+        quotes[2].operations = vec![DialogueOp::ItemQuote { item: ItemId(2), keeps: false }];
+        let (mut app, session, _) = app(DialogueScript { quotes, ..default() });
+        with_items(&mut app);
+        let party = the_party(app.world_mut()).unwrap();
+        let mut refs = Vec::new();
+        for item in 0..4 {
+            let stack = stack(&mut app, item, 2);
+            refs.push(ItemRef { owner: ItemOwner::Pool, id: stack.id });
+            app.world_mut().get_mut::<PartyInventory>(party).unwrap().pool.stacks.push(stack);
+        }
+        app.update();
+        finish_line(&mut app, session);
+        let count = |app: &App, item: usize| {
+            app.world()
+                .get::<PartyInventory>(party)
+                .unwrap()
+                .pool
+                .stacks
+                .iter()
+                .find(|s| s.id == refs[item].id)
+                .map_or(0, |s| s.count())
+        };
+        for (item, quote, kept) in [(1, 1, 1), (2, 2, 2), (0, 0x10, 1), (3, 0x11, 2)] {
+            let revision = app.world().get::<Conversation>(session).unwrap().revision;
+            app.world_mut().write_message(ConversationRequest::Give {
+                conversation: session,
+                revision,
+                item: refs[item],
+            });
+            app.update();
+            assert_eq!(
+                app.world().get::<Conversation>(session).unwrap().current.map(|c| c.0),
+                Some(quote)
+            );
+            assert_eq!(count(&app, item), kept, "item {item}");
+            finish_line(&mut app, session);
+        }
+        assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, 50);
+    }
+
+    /// The item stays with the party when the answer it would buy cannot run.
+    #[test]
+    fn an_offered_item_is_kept_when_its_answer_is_a_content_gap() {
+        let (mut app, session, _) = app(DialogueScript {
+            quotes: vec![
+                Quote { text: vec!["Hello".into()], ..default() },
+                Quote {
+                    text: vec!["Thanks".into()],
+                    operations: vec![
+                        DialogueOp::ItemQuote { item: ItemId(1), keeps: true },
+                        DialogueOp::Unsupported {
+                            opcode: 13,
+                            operands: [0; 3],
+                            subentries: vec![],
+                        },
+                    ],
+                    ..default()
+                },
+            ],
+            ..default()
+        });
+        with_items(&mut app);
+        let party = the_party(app.world_mut()).unwrap();
+        let offered = stack(&mut app, 1, 1);
+        let item = ItemRef { owner: ItemOwner::Pool, id: offered.id };
+        app.world_mut().get_mut::<PartyInventory>(party).unwrap().pool.stacks.push(offered);
+        app.update();
+        finish_line(&mut app, session);
+        let revision = app.world().get::<Conversation>(session).unwrap().revision;
+        app.world_mut().write_message(ConversationRequest::Give {
+            conversation: session,
+            revision,
+            item,
+        });
+        app.update();
+        let world = app.world();
+        assert!(matches!(
+            world.get::<Conversation>(session).unwrap().wait,
+            ConversationWait::Blocked { .. }
+        ));
+        assert_eq!(world.get::<PartyInventory>(party).unwrap().pool.stacks.len(), 1);
     }
 
     #[test]

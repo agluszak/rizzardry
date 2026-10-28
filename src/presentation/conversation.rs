@@ -49,6 +49,8 @@ enum Mode {
     Talk,
     Buy,
     Sell,
+    /// Hand the NPC an item from a member's pack or the party's items.
+    Give,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ItemGroup {
@@ -471,9 +473,35 @@ fn build(world: &mut World, session: Entity) -> Entity {
                 Vec2::new(67., 16.),
             );
             match (trade, i) {
-                (false, 0) | (true, 0) | (true, 1) => {
-                    let mode = if i == 1 { Mode::Sell } else { Mode::Buy };
-                    world.entity_mut(e).insert((ModeButton(mode), TradeAvailable));
+                // Every NPC takes items; only merchants buy and sell.
+                (false, 0) => {
+                    world.entity_mut(e).observe(
+                        move |_: On<Activate>,
+                              mut states: Query<&mut DialogueState>,
+                              roots: Query<&ConversationView>,
+                              sessions: Query<&Conversation>,
+                              npcs: Query<&Npc>,
+                              definitions: Res<Assets<NpcCatalog>>,
+                              assets: Res<NpcAssets>| {
+                            let merchant = roots
+                                .get(root)
+                                .ok()
+                                .and_then(|view| sessions.get(view.0).ok())
+                                .and_then(|c| npcs.get(c.actor).ok())
+                                .and_then(|n| definitions.get(&assets.catalog)?.get(n.definition))
+                                .is_some_and(|d| d.owns_stock);
+                            if let Ok(mut state) = states.get_mut(root) {
+                                set_mode(&mut state, if merchant { Mode::Buy } else { Mode::Give });
+                            }
+                        },
+                    );
+                }
+                (true, 0..=2) => {
+                    let mode = [Mode::Buy, Mode::Sell, Mode::Give][i];
+                    world.entity_mut(e).insert(ModeButton(mode));
+                    if mode != Mode::Give {
+                        world.entity_mut(e).insert(TradeAvailable);
+                    }
                     world.entity_mut(e).observe(
                         move |_: On<Activate>, mut states: Query<&mut DialogueState>| {
                             if let Ok(mut state) = states.get_mut(root) {
@@ -685,13 +713,24 @@ fn build(world: &mut World, session: Entity) -> Entity {
             world.entity_mut(caption).insert(Caption::TradeAction);
             world.entity_mut(confirm).observe(
                 move |_: On<Activate>,
-                      states: Query<&DialogueState>,
+                      mut states: Query<&mut DialogueState>,
                       roots: Query<&ConversationView>,
                       mut requests: MessageWriter<ConversationRequest>| {
-                    if let Some(q) = states.get(root).ok().and_then(|s| s.selected)
+                    let Ok(mut state) = states.get_mut(root) else { return };
+                    if let Some(q) = state.selected
                         && roots.get(root).is_ok_and(|v| v.0 == q.conversation)
                     {
-                        requests.write(ConversationRequest::Trade(q));
+                        if state.mode != Mode::Give {
+                            requests.write(ConversationRequest::Trade(q));
+                        } else if let TradeSource::Party(item) = q.source {
+                            requests.write(ConversationRequest::Give {
+                                conversation: q.conversation,
+                                revision: q.revision,
+                                item,
+                            });
+                            // Retail returns to the transcript for the answer.
+                            set_mode(&mut state, Mode::Talk);
+                        }
                     }
                 },
             );
@@ -930,7 +969,22 @@ fn select(world: &mut World, view: Entity, session: Entity, source: TradeSource,
     if world.get::<ConversationView>(view).is_none_or(|v| v.0 != session) {
         return;
     }
-    let result = quote_trade(world, session, source, quantity);
+    // A gift has no price: one of the item is chosen as it is.
+    let giving = world.get::<DialogueState>(view).is_some_and(|s| s.mode == Mode::Give);
+    let result = if giving {
+        world
+            .get::<Conversation>(session)
+            .map(|c| TradeQuote {
+                conversation: session,
+                revision: c.revision,
+                source,
+                quantity: 1,
+                gold: 0,
+            })
+            .ok_or(trade::TradeError::StaleSelection)
+    } else {
+        quote_trade(world, session, source, quantity)
+    };
     let Some(mut v) = world.get_mut::<DialogueState>(view) else { return };
     match result {
         Ok(q) => {
@@ -1006,9 +1060,15 @@ fn project_text(
                     .to_owned(),
                 Mode::Buy => "Buy".into(),
                 Mode::Sell => "Sell".into(),
+                Mode::Give => "Give".into(),
             },
             Caption::Gold => parties.single().map(|p| format!("{}g", p.gold)).unwrap_or_default(),
-            Caption::TradeAction => if state.mode == Mode::Buy { "Buy" } else { "Sell" }.into(),
+            Caption::TradeAction => match state.mode {
+                Mode::Buy => "Buy",
+                Mode::Give => "Give",
+                _ => "Sell",
+            }
+            .into(),
             Caption::Quote => {
                 if let ConversationWait::Line { speech: entity, .. } = c.wait {
                     speech.get(entity).map(|s| s.text.clone()).unwrap_or_default()
@@ -1022,7 +1082,13 @@ fn project_text(
         }
     }
 }
+/// What the NPC says as it hands over gold or an item, and as an item leaves
+/// a member's pack or the party's items (retail `ProcessNpcQuoteEntry`,
+/// `RemoveNpcScriptItem`), and the experience notice (`AwardPartyExperience`).
 const QUEST_GOLD: usize = 0x7e9;
+const QUEST_ITEM: usize = 0x7ea;
+const ITEM_TAKEN_FROM: usize = 0x7ec;
+const ITEM_TAKEN: usize = 0x7ed;
 const QUEST_EXPERIENCE: usize = 0x232;
 
 fn sync_transcript(
@@ -1049,18 +1115,27 @@ fn sync_transcript(
                 TranscriptLine::Npc(text) => (text.clone(), None),
                 TranscriptLine::Question(text) => (text.clone(), Some("palettebronze")),
                 TranscriptLine::Reply(text) => (text.clone(), Some("palettegreen")),
-                TranscriptLine::Reward(reward) => {
-                    let text = match reward {
-                        QuestReward::Gold { giver, amount } => strings
-                            .get(QUEST_GOLD)
-                            .replacen("%s", giver, 1)
-                            .replace("%d", &amount.to_string()),
-                        QuestReward::Experience { amount_each } => {
-                            strings.get(QUEST_EXPERIENCE).replace("%d", &amount_each.to_string())
-                        }
-                    };
-                    (text, Some("palettegreen"))
+                // Retail shows gifts and removals in the NPC's own quote.
+                TranscriptLine::Reward(QuestReward::Gold { giver, amount }) => (
+                    strings
+                        .get(QUEST_GOLD)
+                        .replacen("%s", giver, 1)
+                        .replace("%d", &amount.to_string()),
+                    None,
+                ),
+                TranscriptLine::Reward(QuestReward::Item { name }) => {
+                    (strings.get(QUEST_ITEM).replacen("%s", name, 1), None)
                 }
+                TranscriptLine::Reward(QuestReward::Taken { member: Some(member) }) => {
+                    (strings.get(ITEM_TAKEN_FROM).replacen("%s", member, 1), None)
+                }
+                TranscriptLine::Reward(QuestReward::Taken { member: None }) => {
+                    (strings.get(ITEM_TAKEN).to_owned(), None)
+                }
+                TranscriptLine::Reward(QuestReward::Experience { amount_each }) => (
+                    strings.get(QUEST_EXPERIENCE).replace("%d", &amount_each.to_string()),
+                    Some("palettegreen"),
+                ),
             })
             .collect();
         if let ConversationWait::Blocked { quote, entry, reason } = &c.wait {
@@ -1074,6 +1149,7 @@ fn sync_transcript(
                 Outcome::NoTopic => "No supported topic matches that input.".into(),
                 Outcome::Traded => "Trade complete.".into(),
                 Outcome::TradeRefused(error) => format!("Trade refused: {error:?}"),
+                Outcome::GiftRefused(error) => format!("Gift refused: {error:?}"),
             };
             lines.push((text, Some("palettebronze")));
         }
@@ -1199,7 +1275,12 @@ fn project_modes(
                 .is_some_and(|d| d.owns_stock);
             set_enabled(&mut commands, entity, can_trade, disabled);
         } else if pool.is_some() {
-            set_enabled(&mut commands, entity, state.mode == Mode::Sell, disabled);
+            set_enabled(
+                &mut commands,
+                entity,
+                matches!(state.mode, Mode::Sell | Mode::Give),
+                disabled,
+            );
         }
         let selected = (sort && state.alphabetical)
             || mode.is_some_and(|m| state.mode == m.0)
@@ -1726,6 +1807,8 @@ fn sync_trade_rows(
                 let value = quote.map_or_else(String::new, |q| {
                     if count {
                         if units > 1 { q.quantity.to_string() } else { String::new() }
+                    } else if state.mode == Mode::Give {
+                        String::new()
                     } else {
                         format!("{}g", q.gold)
                     }
@@ -1740,7 +1823,9 @@ fn sync_trade_rows(
                 set_enabled(
                     &mut commands,
                     entity,
-                    units > 1 && item.is_some_and(|d| d.class != EquipClass::Ammunition),
+                    state.mode != Mode::Give
+                        && units > 1
+                        && item.is_some_and(|d| d.class != EquipClass::Ammunition),
                     disabled,
                 );
             }

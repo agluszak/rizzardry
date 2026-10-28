@@ -131,6 +131,12 @@ fn operation(
             u8::try_from(args[1]).map_err(|_| invalid("fact value"))?,
         ),
         8 => DialogueOp::Close,
+        9..=11 | 15 => match u16::try_from(args[0]).map(ItemId) {
+            Ok(item) if kind == 9 => DialogueOp::GiveItem(item),
+            Ok(item) if kind == 10 => DialogueOp::TakeItem(item),
+            Ok(item) => DialogueOp::ItemQuote { item, keeps: kind == 11 },
+            Err(_) => unsupported(),
+        },
         16 if args[0] >= 0 => DialogueOp::GiveGold(args[0] as u32),
         17 if args[0] >= 0 => DialogueOp::GiveExperience(args[0] as u32),
         // `AdjustFactionDisposition` takes the operand as a char.
@@ -342,6 +348,27 @@ mod tests {
         invalid[40..44].copy_from_slice(&2i32.to_le_bytes());
         assert!(read_dialogue(&invalid).is_err(), "out-of-range authored continuation is rejected");
     }
+    #[test]
+    fn decodes_item_gifts_removals_and_item_answers() {
+        assert_eq!(
+            operation(9, [0x1f0, 0, 0], vec![]).unwrap(),
+            DialogueOp::GiveItem(ItemId(0x1f0))
+        );
+        assert_eq!(operation(10, [7, 0, 0], vec![]).unwrap(), DialogueOp::TakeItem(ItemId(7)));
+        assert_eq!(
+            operation(11, [7, 0, 0], vec![]).unwrap(),
+            DialogueOp::ItemQuote { item: ItemId(7), keeps: true }
+        );
+        assert_eq!(
+            operation(15, [7, 0, 0], vec![]).unwrap(),
+            DialogueOp::ItemQuote { item: ItemId(7), keeps: false }
+        );
+        assert!(matches!(
+            operation(9, [-1, 0, 0], vec![]).unwrap(),
+            DialogueOp::Unsupported { .. }
+        ));
+    }
+
     #[test]
     fn decodes_rewards_and_signed_faction_changes_without_guessing_bad_operands() {
         assert_eq!(operation(16, [6000, 0, 0], vec![]).unwrap(), DialogueOp::GiveGold(6000));
