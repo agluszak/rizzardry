@@ -148,7 +148,10 @@ struct ScrollToNewest;
 #[derive(Component)]
 struct Offer;
 #[derive(Component, PartialEq)]
-struct Choices;
+struct Choices {
+    font: Handle<SpriteSheet>,
+    strings: Handle<TextTable>,
+}
 #[derive(Component, Default)]
 struct ChoiceOverlay {
     previous_focus: Option<Entity>,
@@ -621,9 +624,13 @@ fn build(world: &mut World, session: Entity) -> Entity {
                     event.propagate(false);
                 }
             });
+            let assets = world.resource::<AssetServer>().clone();
             let choices = world
                 .spawn((
-                    Choices,
+                    Choices {
+                        font: assets.load("retail://data/fonts/wiz_text_font_monopalette.sti"),
+                        strings: assets.load("retail://data/strings/stringdata.dat"),
+                    },
                     absolute(Vec2::new(220., 184.), Vec2::new(200., 70.)),
                     ChildOf(overlay),
                 ))
@@ -1348,7 +1355,6 @@ fn activate_topic(
 fn sync_choices(
     views: ViewScope,
     mut commands: Commands,
-    assets: Res<AssetServer>,
     sheets: Res<Assets<SpriteSheet>>,
     tables: Res<Assets<TextTable>>,
     sessions: Query<&Conversation>,
@@ -1356,7 +1362,7 @@ fn sync_choices(
     mut focus: ResMut<InputFocus>,
     mut overlays: Query<(Entity, &mut Node, &mut ChoiceOverlay), Without<Choices>>,
     mut lists: Query<
-        (Entity, &ChildOf, &mut Node, Option<&Children>),
+        (Entity, &Choices, &ChildOf, &mut Node, Option<&Children>),
         (With<Choices>, Without<ChoiceOverlay>, Without<Choice>),
     >,
     mut choices: Query<
@@ -1365,12 +1371,11 @@ fn sync_choices(
     >,
     mut labels: Query<(&mut BitmapText, Option<&ChoiceCaption>)>,
 ) {
-    let font = assets.load("retail://data/fonts/wiz_text_font_monopalette.sti");
-    let strings = assets.load("retail://data/strings/stringdata.dat");
-    let string = |id, fallback: &str| {
-        tables.get(&strings).and_then(|s| s.get(id)).unwrap_or(fallback).to_owned()
-    };
-    for (list, parent, mut node, children) in &mut lists {
+    for (list, art, parent, mut node, children) in &mut lists {
+        let font = &art.font;
+        let string = |id, fallback: &str| {
+            tables.get(&art.strings).and_then(|s| s.get(id)).unwrap_or(fallback).to_owned()
+        };
         let Some((_, session)) = views.owner(list) else { continue };
         let Ok(c) = sessions.get(session) else { continue };
         let answers: Vec<(String, Answer)> = match &c.wait {
@@ -1401,7 +1406,7 @@ fn sync_choices(
             }
         }
         let price = matches!(c.wait, ConversationWait::Price { .. });
-        let button_width = sheets.get(&font).map_or(70., |f| {
+        let button_width = sheets.get(font).map_or(70., |f| {
             answers.iter().map(|(t, _)| f.text_width(t)).max().unwrap_or(0) as f32 + 6.
         });
         let width = if price {
