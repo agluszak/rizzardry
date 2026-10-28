@@ -122,8 +122,11 @@ impl MerchantStock {
         templar: bool,
         rng: &mut GameRng,
     ) -> Result<(), TradeError> {
-        // Validate before consuming RNG or changing stock.
-        if def.stock.iter().any(|r| catalog.get(r.item).is_none()) {
+        // Validate before consuming RNG or changing stock: the authored
+        // stock and every lot held, which daily maintenance looks up.
+        if def.stock.iter().any(|r| catalog.get(r.item).is_none())
+            || self.lots.iter().any(|lot| catalog.get(lot.item).is_none())
+        {
             return Err(TradeError::MissingContent);
         }
         if !self.initialized {
@@ -145,7 +148,7 @@ impl MerchantStock {
         }
         if daily {
             for lot in &mut self.lots {
-                let d = catalog.get(lot.item).ok_or(TradeError::MissingContent)?;
+                let d = catalog.get(lot.item).expect("lots are checked before maintenance");
                 if lot.available_at != 0
                     || d.crucial
                     || d.merchant_cannot_sell
@@ -334,8 +337,7 @@ pub fn validate_sale(
     communication: u32,
 ) -> Result<u32, TradeError> {
     let d = catalog.get(item.item).ok_or(TradeError::MissingContent)?;
-    if d.crucial || u8::from(d.class) >= 26 || def.accepted_classes & (1 << u8::from(d.class)) == 0
-    {
+    if d.crucial || !d.class.merchant_class() || !def.accepted_classes.contains(d.class) {
         return Err(TradeError::Rejected);
     }
     if quantity == 0
@@ -382,7 +384,12 @@ mod tests {
         }])
     }
     fn merchant() -> NpcDefinition {
-        NpcDefinition { buy_factor: 0.8, sell_factor: 1.2, accepted_classes: u32::MAX, ..default() }
+        NpcDefinition {
+            buy_factor: 0.8,
+            sell_factor: 1.2,
+            accepted_classes: enumset::EnumSet::all(),
+            ..default()
+        }
     }
     #[test]
     fn purchase_revalidates_and_settles_complete_delivery() {
@@ -466,6 +473,23 @@ mod tests {
         assert_eq!(stock.lots[0].charges, 20);
         // Communication is applied per unit, then truncated before multiplication.
         assert_eq!(price(&def, &catalog.0[0], 3, true, true, 20), Ok(33));
+    }
+    /// A lot whose item the catalog lacks refuses maintenance before any
+    /// stock changes or any random number is drawn.
+    #[test]
+    fn maintenance_checks_every_lot_before_changing_stock() {
+        let catalog = catalog();
+        let def = merchant();
+        let mut stock = MerchantStock { initialized: true, ..default() };
+        stock.add(ItemId(0), 3, &catalog, false).unwrap();
+        stock.lots.push(StockLot { item: ItemId(999), ..stock.lots[0].clone() });
+        let (before, mut rng) = (stock.clone(), GameRng::seeded(3));
+        assert_eq!(
+            stock.maintain(&def, &catalog, 1, 3 * 86_400_000, false, &mut rng),
+            Err(TradeError::MissingContent)
+        );
+        assert_eq!(stock, before);
+        assert_eq!(rng, GameRng::seeded(3));
     }
     #[test]
     fn templar_gate_skips_one_daily_rule_without_disabling_other_stock() {

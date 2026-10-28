@@ -426,7 +426,12 @@ fn read_item(index: usize, record: &[u8], strings: &[String]) -> Result<ItemDefi
     let chances = bytes.array::<16>()?;
     let effects =
         AttackEffects { chances: enum_map::EnumMap::from_array(chances), strength: bytes.u8()? };
-    let slays = Some(bytes.u8()?).filter(|&kind| kind != u8::MAX);
+    let slays = match bytes.u8()? {
+        u8::MAX => None,
+        kind => Some(crate::content::species::MonsterKind::try_from(kind).map_err(|_| {
+            LoadError::Invalid(format!("item {index}: unknown slaying category {kind}"))
+        })?),
+    };
     let armor_class_bonus = bytes.i8()?;
     let (spell, power) = (bytes.u8()?, bytes.u8()?);
     bytes.u8()?; // not established
@@ -463,6 +468,8 @@ fn read_item(index: usize, record: &[u8], strings: &[String]) -> Result<ItemDefi
     let kind_name = KIND_NAMES.get(usize::from(kind)).map_or("", |&k| string(k));
     Ok(ItemDefinition {
         unidentified_name: string(UNIDENTIFIED).replace("%s", kind_name),
+        kind: crate::content::items::ItemKind(kind),
+        kind_name: kind_name.to_owned(),
         id: ItemId(index as u16),
         name: utf16_string(&record[..60]),
         image: image_path(&own_image, kind)
@@ -487,7 +494,6 @@ fn read_item(index: usize, record: &[u8], strings: &[String]) -> Result<ItemDefi
         effects,
         slays,
         extra_swings,
-        kind,
         never_depletes: has(flag::NEVER_DEPLETES),
         damage_bonus,
         hit_bonus,
@@ -659,7 +665,7 @@ mod tests {
         assert_eq!(
             catalog.0[0].spell,
             Some(crate::content::spells::ItemSpell {
-                spell: crate::content::spells::SpellId(39),
+                spell: crate::content::spells::SpellId::KNOCK_KNOCK,
                 power: 0
             })
         );
@@ -690,6 +696,7 @@ mod tests {
         let dagger = catalog.get(ItemId(0)).unwrap();
         assert_eq!((dagger.name.as_str(), dagger.class), ("Dagger", EquipClass::ShortWeapon));
         assert_eq!(dagger.unidentified_name, "Dagger (Unidentified)");
+        assert_eq!(dagger.kind_name, "Dagger");
         assert!(dagger.off_hand && !dagger.two_handed);
         assert!(catalog.0.iter().filter(|i| !i.name.is_empty()).count() > 500);
         let bows = catalog.0.iter().filter(|i| i.shoots == Some(Ammunition::Arrow)).count();

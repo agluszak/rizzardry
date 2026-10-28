@@ -14,7 +14,7 @@ use enumset::EnumSet;
 use crate::content::characters::{Attribute, BodyPart, Skill, Trait};
 use crate::content::items::{
     AttackEffect, AttackEffects, AttackMode, Dice, EquipClass, ItemCatalog, ItemDefinition,
-    QuantityKind,
+    ItemKind, QuantityKind,
 };
 use crate::content::species::{MonsterAttack, Reach, Species};
 use crate::game::characters::{Character, Condition, Load, Race, Vitals};
@@ -169,16 +169,24 @@ pub enum Holds {
 /// The weapons that need ammunition from the other hand (retail
 /// `ItemHasSingledOutGenericName`): longbow, crossbow, sling, greatbow and
 /// omnigun.
-fn is_launcher(kind: u16) -> bool {
-    matches!(kind, 0x0b | 0x0c | 0x0d | 0x25 | 0x83)
+fn is_launcher(kind: ItemKind) -> bool {
+    matches!(
+        kind,
+        ItemKind::LONGBOW
+            | ItemKind::CROSSBOW
+            | ItemKind::SLING
+            | ItemKind::GREATBOW
+            | ItemKind::OMNIGUN
+    )
 }
-const SLING: u16 = 0x0d;
-/// The omnigun: what it fires sits in the off hand as ammunition.
-const OMNIGUN: u16 = 0x83;
-/// A weapon swung only once an attack.
-const SINGLE_SWING: u16 = 0x90;
 /// Throwing weapons and guns that strength does not help.
-const NO_STRENGTH: [u16; 5] = [0x68, 0x6e, 0x72, OMNIGUN, SINGLE_SWING];
+const NO_STRENGTH: [ItemKind; 5] = [
+    ItemKind::POWER_GLOVE,
+    ItemKind::PHASER,
+    ItemKind::MUSKET,
+    ItemKind::OMNIGUN,
+    ItemKind::ROCKET_LAUNCHER,
+];
 
 /// One hand's attack, as the character sheet works it out (retail
 /// `W8HandAttack`).
@@ -207,7 +215,7 @@ pub struct Hand {
     /// the weapon's effects with its ammunition's.
     pub effects: AttackEffects,
     /// The monster kinds its weapon and ammunition slay.
-    pub slays: [Option<u8>; 2],
+    pub slays: [Option<crate::content::species::MonsterKind>; 2],
     /// Swings the weapon adds to each attack.
     pub extra_swings: i32,
     /// It shoots ammunition from the other hand.
@@ -215,7 +223,7 @@ pub struct Hand {
     /// What swinging it weighs, for its stamina.
     pub weight: Option<u16>,
     /// The weapon's retail kind.
-    pub kind: Option<u16>,
+    pub kind: Option<ItemKind>,
 }
 
 /// A member's two hands (retail `CalcAttacks`).
@@ -282,7 +290,7 @@ pub fn hands(c: &Character, carried: &Carried, catalog: &ItemCatalog, load: Load
                 Holds::Weapon
             }
             EquipClass::ThrownWeapon
-                if hand == 1 && definition(0).is_some_and(|p| p.kind == OMNIGUN) =>
+                if hand == 1 && definition(0).is_some_and(|p| p.kind == ItemKind::OMNIGUN) =>
             {
                 Holds::Ammunition
             }
@@ -322,7 +330,7 @@ pub fn hands(c: &Character, carried: &Carried, catalog: &ItemCatalog, load: Load
     });
     if ranged[0] != ranged[1]
         || matches!(holds[1], Holds::Shield | Holds::Ammunition)
-        || definition(0).is_some_and(|d| d.kind == OMNIGUN)
+        || definition(0).is_some_and(|d| d.kind == ItemKind::OMNIGUN)
         || (holds[1] == Holds::Nothing && holds[0] != Holds::Nothing)
     {
         in_play[1] = false;
@@ -425,7 +433,7 @@ pub fn hands(c: &Character, carried: &Carried, catalog: &ItemCatalog, load: Load
         let score =
             (speed + hand.initiative * 10 + dual_penalty + physical + load_penalty + combined) / 3;
         hand.swings = 1 + u32::from(score > 66) + u32::from(score > 99);
-        if definition(0).is_some_and(|d| d.kind == SINGLE_SWING) {
+        if definition(0).is_some_and(|d| d.kind == ItemKind::ROCKET_LAUNCHER) {
             hand.swings = 1;
         }
         let mut strength_divisor = 1;
@@ -946,7 +954,7 @@ pub fn critical_chance(rng: &mut GameRng, c: &Character, hand: &Hand) -> u8 {
     let skill = if !hand.ranged {
         c.skill(Skill::CriticalStrike)
     } else if matches!(hand.weapon_skill, Skill::ModernWeapon | Skill::Bow)
-        || (hand.weapon_skill == Skill::ThrowingAndSling && hand.kind == Some(SLING))
+        || (hand.weapon_skill == Skill::ThrowingAndSling && hand.kind == Some(ItemKind::SLING))
     {
         if c.has_trait(Trait::RangedCriticals) { c.skill(Skill::RangedCombat) } else { 0 }
     } else if hand.weapon_skill == Skill::ThrowingAndSling && c.has_trait(Trait::ThrownCriticals) {
@@ -971,7 +979,7 @@ pub fn sure_penetration(c: &Character, hand: &Hand) -> bool {
     c.has_trait(Trait::ThrownCriticals)
         && hand.ranged
         && hand.weapon_skill == Skill::ThrowingAndSling
-        && hand.kind != Some(SLING)
+        && hand.kind != Some(ItemKind::SLING)
 }
 
 /// The world units in a metre (retail's 500).
@@ -1199,7 +1207,7 @@ mod tests {
             ..ItemDefinition::default()
         };
         let mut bow = weapon(2, EquipClass::RangedWeapon, Skill::Bow);
-        bow.kind = 0x0b;
+        bow.kind = ItemKind::LONGBOW;
         bow.shoots = Some(crate::content::items::Ammunition::Arrow);
         bow.reach = Reach::Long;
         bow.damage = Dice { base: 2, count: 1, sides: 4 };

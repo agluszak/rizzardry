@@ -5,8 +5,7 @@ use bevy::reflect::TypePath;
 
 use super::record::{dice_at, reach};
 use crate::bytes::{
-    Bytes, DecodeError, Truncated, f32_at, i16_at, i32_at, lenient_string, u16_at, u32_at,
-    utf16_string,
+    Bytes, DecodeError, f32_at, i16_at, i32_at, lenient_string, u16_at, u32_at, utf16_string,
 };
 use enum_map::EnumMap;
 use enumset::EnumSet;
@@ -27,7 +26,9 @@ fn name(raw: &[u8]) -> String {
     name.split('#').next().unwrap_or_default().trim().to_owned()
 }
 
-fn species(record: &[u8]) -> Result<Species, Truncated> {
+fn species(record: &[u8]) -> Result<Species, DecodeError> {
+    let kind = crate::content::species::MonsterKind::try_from(record[0xcb])
+        .map_err(|_| DecodeError::Invalid("unknown monster category", 0xcb))?;
     let bytes = |at: usize, n: usize| &record[at..at + n];
     let signed = |at: usize| record[at] as i8;
     let attacks = (0..3)
@@ -35,7 +36,8 @@ fn species(record: &[u8]) -> Result<Species, Truncated> {
         .filter(|attack| attack[0] != 0)
         .map(|attack| {
             Ok(MonsterAttack {
-                weapon_name: attack[1],
+                weapon: crate::content::species::MonsterWeapon::try_from(attack[1])
+                    .map_err(|_| DecodeError::Invalid("unknown monster weapon", 1))?,
                 word: match attack[2] {
                     1 => AttackWord::Verb,
                     word => AttackWord::Word(word),
@@ -50,7 +52,7 @@ fn species(record: &[u8]) -> Result<Species, Truncated> {
                 },
             })
         })
-        .collect::<Result<_, Truncated>>()?;
+        .collect::<Result<_, DecodeError>>()?;
     let experience = match u32_at(record, 0x26b)? {
         0 => u32_at(record, 0x181)?,
         over => over,
@@ -61,10 +63,10 @@ fn species(record: &[u8]) -> Result<Species, Truncated> {
         generic_name: name(bytes(0x60, 48)),
         generic_plural: name(bytes(0x90, 48)),
         model: lenient_string(bytes(0x189, 48)).to_lowercase(),
-        level_sight: record[0xcb] == 4,
+        level_sight: kind == crate::content::species::MonsterKind::Ranger,
         npc: (record[0xd0] & 1 != 0)
             .then_some(crate::content::npcs::NpcId(u16::from(record[0xcd]))),
-        kind: record[0xcb],
+        kind,
         damage_reduction: record[0xcf],
         vulnerable_from_behind: record[0xd0] & 0x02 != 0,
         death_immune: record[0x1be] != 0,
@@ -106,7 +108,7 @@ fn species(record: &[u8]) -> Result<Species, Truncated> {
                     dice: dice_at(slot, 6)?,
                 })
             })
-            .collect::<Result<_, Truncated>>()?,
+            .collect::<Result<_, DecodeError>>()?,
         resistances: EnumMap::from_array(bytes(0x176, 6).try_into().unwrap()),
         // Metres (retail scales it by its world scale). Unused records hold
         // 0xcdcdcdcd filler, read as hostile.
@@ -124,7 +126,7 @@ fn species(record: &[u8]) -> Result<Species, Truncated> {
 pub fn read_species(data: &[u8]) -> Result<Vec<Species>, DecodeError> {
     let mut bytes = Bytes::new(data);
     let count = bytes.u32()? as usize;
-    (0..count).map(|_| Ok(species(bytes.take(RECORD)?)?)).collect()
+    (0..count).map(|_| species(bytes.take(RECORD)?)).collect()
 }
 
 #[derive(Default, TypePath)]

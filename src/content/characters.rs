@@ -105,14 +105,16 @@ pub enum Trait {
     Berserk = 20,
     ThrownAutoPenetrate = 21,
     FaerieArmour = 22,
-    FaerieAbility23 = 23,
+    UnusualStartingEquipment = 23,
     FaerieCarryCapacity = 24,
-    FaerieAbility25 = 25,
-    FaerieAbility26 = 26,
+    EquippableItemWeightLimit = 25,
+    /// Retail trait 0x1a multiplies spell recovery in GameplayTime.cpp.
+    FastMagicRecovery = 26,
     LizardmanMagicRecovery = 27,
     Breathe = 28,
     DwarfDamageResistance = 29,
-    AndroidAbility30 = 30,
+    /// Immune to fear, disease, irritation, nausea, poison and sleep.
+    AndroidConditionImmunity = 30,
     CannotLearn = 31,
 }
 

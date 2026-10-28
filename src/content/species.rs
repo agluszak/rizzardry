@@ -7,6 +7,46 @@ use enumset::EnumSet;
 use super::characters::BodyPart;
 use super::items::{AttackEffects, AttackMode, Dice};
 
+/// Retail monster categories, named by StringData entries 0x578..=0x598.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, num_enum::TryFromPrimitive)]
+#[repr(u8)]
+pub enum MonsterKind {
+    #[default]
+    Fighter = 0,
+    Wizard = 1,
+    Priest = 2,
+    Rogue = 3,
+    Ranger = 4,
+    Alchemist = 5,
+    Bard = 6,
+    Psionic = 7,
+    Valkyrie = 8,
+    Bishop = 9,
+    Lord = 10,
+    Samurai = 11,
+    Monk = 12,
+    Ninja = 13,
+    Giant = 14,
+    Tiny = 15,
+    Beast = 16,
+    Plant = 17,
+    Insect = 18,
+    Vapor = 19,
+    Undead = 20,
+    Demon = 21,
+    Android = 22,
+    SeaMonster = 23,
+    Dragon = 24,
+    Myth = 25,
+    Robot = 26,
+    Deity = 27,
+    Spirit = 28,
+    Flyer = 29,
+    Swimmer = 30,
+    Gadgeteer = 31,
+    Reptile = 32,
+}
+
 /// How far an attack reaches (retail range category).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Reach {
@@ -29,12 +69,137 @@ impl Reach {
     }
 }
 
-/// How an attack is announced: by its mode's verb, or by a word of its own
-/// ("Claws", "Bites"), retail string 0x619 + 2 × the word's number.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Monster attack announcements, named by retail strings 0x618..=0x63d.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, num_enum::TryFromPrimitive)]
+#[repr(u8)]
 pub enum AttackWord {
-    Verb,
-    Word(u8),
+    Silent = 0,
+    Verb = 1,
+    Throw = 2,
+    Shoot = 3,
+    Claw = 4,
+    Bite = 5,
+    TailSweep = 6,
+    Sting = 7,
+    Touch = 8,
+    Grapple = 9,
+    Punch = 10,
+    Kick = 11,
+    Stomp = 12,
+    Stare = 14,
+    Bash = 15,
+    Charge = 16,
+    Peck = 17,
+    Spit = 18,
+}
+
+impl AttackWord {
+    pub fn text_id(self) -> usize {
+        const FIRST_VERB: usize = 0x619;
+        FIRST_VERB + 2 * self as usize
+    }
+}
+
+/// Monster weapon labels from the original retail string table (0x5b8..0x617).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, num_enum::TryFromPrimitive)]
+#[repr(u8)]
+pub enum MonsterWeapon {
+    Unarmed = 0,
+    ThornySpikes = 1,
+    PoisonSpikes = 2,
+    ShockRod = 3,
+    StunRod = 4,
+    PsiRod = 5,
+    Walriblade = 6,
+    Musket = 7,
+    LongStaff = 8,
+    WillowArrow = 9,
+    Spear = 10,
+    Naginata = 11,
+    SpearPlus2 = 12,
+    TracerBolt = 13,
+    LaserBolt = 14,
+    BlasterBolt = 15,
+    BiteDagger = 16,
+    Baselard = 17,
+    VorpalBlade = 18,
+    LaserSpear = 19,
+    StunLance = 20,
+    Disruptor = 21,
+    PainStick = 22,
+    Webbing = 23,
+    Tongue = 24,
+    Blunderbuss = 25,
+    Rhinablade = 26,
+    Dagger = 27,
+    QuarterStaff = 28,
+    LancePlus2 = 29,
+    Stone = 30,
+    PoisonDart = 31,
+    HunterArrow = 32,
+    HeavyBlaster = 33,
+    SkullDagger = 34,
+    Dongfu = 35,
+    DeathStar = 36,
+    BowelRaker = 37,
+    Lance = 38,
+    AwlPike = 39,
+    NoDachi = 40,
+    Claymore = 41,
+    MangClub = 42,
+    PhaserBolt = 43,
+    Tentacle = 44,
+    BarbedArrow = 45,
+    MysticArrow = 46,
+    CaneofCorpus = 47,
+    Boulder = 48,
+    PlasmaCannon = 49,
+    LaserCannon = 50,
+    LaserSpearPlus3 = 51,
+    #[num_enum(alternatives = [59])]
+    ChromaGlove = 52,
+    PhaserPistol = 53,
+    PowerGlove = 54,
+    WhiteSword = 55,
+    SpectralRay = 56,
+    BushidoBlade = 57,
+    CrookedStaff = 58,
+    Enchantment = 60,
+    Longsword = 61,
+    Flamberge = 62,
+    Zweihander = 63,
+    BattleAxe = 64,
+    WarScepter = 65,
+    FaerieStick = 66,
+    RapaxSword = 67,
+    PoisonArrow = 68,
+    FireBarb = 69,
+    DeathRod = 70,
+    SpectralBlade = 71,
+    AlderStaff = 72,
+    GiantStones = 73,
+    Mace = 74,
+    StunMace = 75,
+    DisruptorMace = 76,
+    RoyalScepter = 77,
+    Goo = 78,
+    Venom = 79,
+    Stinger = 80,
+    Tusks = 81,
+    Hammer = 82,
+    FireStaff = 83,
+    RottingFlesh = 84,
+    EnergyBolt = 85,
+    NeuroBolt = 86,
+    PlasmaBolt = 87,
+    PhantomSpear = 88,
+    StoneClub = 89,
+    Cestus = 90,
+    Pseudopod = 91,
+    Talon = 92,
+    Scimitar = 93,
+    Shuriken = 94,
+    SpiritStaff = 95,
 }
 
 /// One of a species' attacks.
@@ -43,7 +208,7 @@ pub struct MonsterAttack {
     pub word: AttackWord,
     /// The attack's weapon name (retail `ubWeaponNameIndex`), 0 for none.
     /// A named attack adds a preposition to its announcement.
-    pub weapon_name: u8,
+    pub weapon: MonsterWeapon,
     pub reach: Reach,
     pub score: u8,
     pub modes: EnumSet<AttackMode>,
@@ -54,17 +219,32 @@ pub struct MonsterAttack {
 
 impl MonsterAttack {
     pub fn named(&self) -> bool {
-        self.weapon_name != 0
+        self.weapon != MonsterWeapon::Unarmed
     }
 
-    /// Natural weapons that tire their user less: fatigue counts half
-    /// against their aim (retail `g_low_fatigue_attack_verbs`).
+    /// Modern ranged weapons halve the fatigue penalty to their aim.
     pub fn tires_little(&self) -> bool {
-        const LOW_FATIGUE: [u8; 18] = [
-            0x07, 0x0d, 0x0e, 0x0f, 0x15, 0x19, 0x21, 0x2b, 0x31, 0x32, 0x34, 0x35, 0x36, 0x38,
-            0x3b, 0x55, 0x56, 0x57,
-        ];
-        LOW_FATIGUE.contains(&self.weapon_name)
+        use MonsterWeapon::*;
+        matches!(
+            self.weapon,
+            Musket
+                | TracerBolt
+                | LaserBolt
+                | BlasterBolt
+                | Disruptor
+                | Blunderbuss
+                | HeavyBlaster
+                | PhaserBolt
+                | PlasmaCannon
+                | LaserCannon
+                | ChromaGlove
+                | PhaserPistol
+                | PowerGlove
+                | SpectralRay
+                | EnergyBolt
+                | NeuroBolt
+                | PlasmaBolt
+        )
     }
 }
 
@@ -89,12 +269,10 @@ pub struct Species {
     pub generic_plural: String,
     /// `data/monsters/<model>.mls`.
     pub model: String,
-    /// Sees the party further by its level (retail species kind 4; what
-    /// the kinds mean is not established).
+    /// Rangers see the party further according to their level.
     pub level_sight: bool,
-    /// Retail's species kind (record 0xcb): 20 is undead; kinds 17, 20 and
-    /// 22 are immune to some conditions.
-    pub kind: u8,
+    /// The creature category used for targeting, slaying and immunities.
+    pub kind: MonsterKind,
     /// An NPC's record: its loot is its NPC's, not the treasure table.
     pub npc: Option<super::npcs::NpcId>,
     /// Percent taken off every hit.
@@ -166,6 +344,108 @@ impl Species {
             (false, false) => &self.generic_plural,
         }
     }
+}
+
+/// Monster weapon labels from the original retail string table (0x5b8..0x617).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, num_enum::TryFromPrimitive)]
+#[repr(u8)]
+pub enum MonsterWeapon {
+    Unarmed = 0,
+    ThornySpikes = 1,
+    PoisonSpikes = 2,
+    ShockRod = 3,
+    StunRod = 4,
+    PsiRod = 5,
+    Walriblade = 6,
+    Musket = 7,
+    LongStaff = 8,
+    WillowArrow = 9,
+    Spear = 10,
+    Naginata = 11,
+    SpearPlus2 = 12,
+    TracerBolt = 13,
+    LaserBolt = 14,
+    BlasterBolt = 15,
+    BiteDagger = 16,
+    Baselard = 17,
+    VorpalBlade = 18,
+    LaserSpear = 19,
+    StunLance = 20,
+    Disruptor = 21,
+    PainStick = 22,
+    Webbing = 23,
+    Tongue = 24,
+    Blunderbuss = 25,
+    Rhinablade = 26,
+    Dagger = 27,
+    QuarterStaff = 28,
+    LancePlus2 = 29,
+    Stone = 30,
+    PoisonDart = 31,
+    HunterArrow = 32,
+    HeavyBlaster = 33,
+    SkullDagger = 34,
+    Dongfu = 35,
+    DeathStar = 36,
+    BowelRaker = 37,
+    Lance = 38,
+    AwlPike = 39,
+    NoDachi = 40,
+    Claymore = 41,
+    MangClub = 42,
+    PhaserBolt = 43,
+    Tentacle = 44,
+    BarbedArrow = 45,
+    MysticArrow = 46,
+    CaneofCorpus = 47,
+    Boulder = 48,
+    PlasmaCannon = 49,
+    LaserCannon = 50,
+    LaserSpearPlus3 = 51,
+    #[num_enum(alternatives = [59])]
+    ChromaGlove = 52,
+    PhaserPistol = 53,
+    PowerGlove = 54,
+    WhiteSword = 55,
+    SpectralRay = 56,
+    BushidoBlade = 57,
+    CrookedStaff = 58,
+    Enchantment = 60,
+    Longsword = 61,
+    Flamberge = 62,
+    Zweihander = 63,
+    BattleAxe = 64,
+    WarScepter = 65,
+    FaerieStick = 66,
+    RapaxSword = 67,
+    PoisonArrow = 68,
+    FireBarb = 69,
+    DeathRod = 70,
+    SpectralBlade = 71,
+    AlderStaff = 72,
+    GiantStones = 73,
+    Mace = 74,
+    StunMace = 75,
+    DisruptorMace = 76,
+    RoyalScepter = 77,
+    Goo = 78,
+    Venom = 79,
+    Stinger = 80,
+    Tusks = 81,
+    Hammer = 82,
+    FireStaff = 83,
+    RottingFlesh = 84,
+    EnergyBolt = 85,
+    NeuroBolt = 86,
+    PlasmaBolt = 87,
+    PhantomSpear = 88,
+    StoneClub = 89,
+    Cestus = 90,
+    Pseudopod = 91,
+    Talon = 92,
+    Scimitar = 93,
+    Shuriken = 94,
+    SpiritStaff = 95,
 }
 
 /// One of a species' treasure slots (retail `W8MonsterTreasureEntry`): it
