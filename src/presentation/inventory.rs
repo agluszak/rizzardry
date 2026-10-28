@@ -1396,6 +1396,8 @@ mod tests {
         app.init_asset::<SpriteSheet>()
             .init_asset::<ItemCatalog>()
             .add_message::<crate::game::inventory::ItemNews>()
+            .init_resource::<ItemIds>()
+            .init_resource::<crate::game::rng::GameRng>()
             .add_systems(Update, draw_cells);
         let definition =
             ItemDefinition { quantity: QuantityKind::Stack, stack_limit: 99, ..default() };
