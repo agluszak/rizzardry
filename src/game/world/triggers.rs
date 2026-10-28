@@ -339,6 +339,7 @@ fn use_container(
     tables: Res<Assets<LootTables>>,
     attempts: Query<&DeviceAttempt>,
     mut party: Single<&mut PartyInventory>,
+    (roster, profiles): (Single<&PartyRoster>, Query<&Character>),
     mut ids: ResMut<ItemIds>,
     mut rng: ResMut<GameRng>,
     mut outcomes: MessageWriter<TriggerEffect>,
@@ -356,7 +357,15 @@ fn use_container(
         && let Some(table) = container.table
     {
         let loot = tables.get(&data.loot).unwrap();
-        let (found, gold) = roll_loot(&loot.0[table], catalog, 1, &mut rng);
+        // Level-scaled tables draw for the party's average level (retail
+        // `GetAveragePartyLevel`). Retail reseeds its generator from the
+        // trigger's own seed first; here the draw comes from the shared
+        // gameplay generator, so contents depend on when the chest is first
+        // opened.
+        let levels: Vec<u32> =
+            profiles.iter_many(roster.iter()).matched().map(|c| u32::from(c.level)).collect();
+        let party_level = (levels.iter().sum::<u32>() / levels.len().max(1) as u32).max(1);
+        let (found, gold) = roll_loot(&loot.0[table], catalog, party_level, &mut rng);
         let contents = &mut container.contents;
         contents.items.extend(
             found
