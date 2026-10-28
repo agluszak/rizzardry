@@ -32,6 +32,7 @@ impl Plugin for MainScreenPlugin {
         app.init_resource::<ScreenLayout>()
             .init_resource::<SelectedMember>()
             .add_plugins(keys::plugin)
+            .add_plugins(magic_view::plugin)
             .add_systems(
                 Startup,
                 (

@@ -619,6 +619,29 @@ pub fn fill_spell_points(
     }
 }
 
+/// Retail's auto-targeting: of the living monsters within the spell's
+/// reach, the one nearest the party's heading, the nearer of equals.
+pub fn target_ahead<'a>(
+    eye: Vec3,
+    forward: Vec3,
+    reach: f32,
+    monsters: impl IntoIterator<Item = (Entity, &'a crate::game::world::population::Monster, Vec3)>,
+) -> Option<Entity> {
+    let ahead = forward.with_y(0.0);
+    monsters
+        .into_iter()
+        .filter_map(|(entity, monster, at)| {
+            let to = (at - eye).with_y(0.0);
+            (!monster.is_dead() && to.length() <= reach + monster.body.radius).then_some((
+                entity,
+                to.angle_between(ahead),
+                to.length(),
+            ))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1).then(a.2.total_cmp(&b.2)))
+        .map(|(entity, ..)| entity)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

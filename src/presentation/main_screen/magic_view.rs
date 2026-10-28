@@ -16,6 +16,7 @@ use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::ui::Selected;
 use bevy::ui_widgets::{Activate, Button as UiButton, SliderRange, SliderValue};
+use bevy_enhanced_input::prelude::*;
 use enumset::EnumSet;
 
 use crate::content::characters::Realm;
@@ -209,7 +210,14 @@ fn spawn_view(
     device: Option<Entity>,
 ) {
     let root = commands
-        .spawn((
+        .spawn_scene(bsn! {
+            ContextPriority::<MagicView>::new(1)
+            Actions<MagicView> [
+                Action::<Dismiss>::new() ActionSettings { consume_input: true } Bindings [ Binding(KeyCode::Escape) ]
+            ]
+            on(dismiss)
+        })
+        .insert((
             MagicView {
                 caster,
                 items,
@@ -573,17 +581,9 @@ pub(super) fn refresh_magic_view(
     mut icons: Query<(&RealmIcon, &mut Picture), (Without<ItemIcon>, Without<Pip>)>,
     time: Res<Time<Real>>,
     rows_hovered: Query<(&Row, &Hovered)>,
-    (keys, mut requests, mut focus): (
-        Res<ButtonInput<KeyCode>>,
-        MessageWriter<MagicRequest>,
-        ResMut<InputFocus>,
-    ),
+    (mut requests, mut focus): (MessageWriter<MagicRequest>, ResMut<InputFocus>),
 ) {
     let Ok((root, mut view, scroll)) = views.single_mut() else { return };
-    if keys.just_pressed(KeyCode::Escape) {
-        commands.entity(root).despawn();
-        return;
-    }
     // The selected member casts; choosing another starts over for them.
     if let Some(member) = selected.member(&roster)
         && member != view.caster
@@ -827,24 +827,21 @@ pub(super) fn refresh_magic_view(
                 None => return,
             },
             Targeting::Enemy | Targeting::EnemyGroup | Targeting::Cone | Targeting::Radius => {
-                // Retail's auto-targeting: the nearest fighting monster ahead.
                 let Ok(eye) = party.single() else { return };
-                let ahead = eye.forward().with_y(0.0);
-                let target = battle
+                let fighting = battle
                     .iter()
                     .flat_map(|b| b.1.into_iter().flat_map(|c| c.entities().iter().copied()))
                     .filter_map(|m| {
                         let (_, monster, at) = monsters.get(m).ok()?;
-                        let to = (at.translation() - eye.translation()).with_y(0.0);
-                        (!monster.is_dead()
-                            && to.length() <= spell.reach.metres() + monster.body.radius)
-                            .then_some((m, to.angle_between(ahead), to.length()))
+                        Some((m, monster, at.translation()))
                     });
-                let nearest = target.min_by(|a, b| a.1.total_cmp(&b.1).then(a.2.total_cmp(&b.2)));
-                match nearest {
-                    Some((monster, ..)) => Aim::Monster(monster),
-                    None => Aim::Member(view.caster),
-                }
+                let ahead = crate::game::magic::target_ahead(
+                    eye.translation(),
+                    eye.forward().into(),
+                    spell.reach.metres(),
+                    fighting,
+                );
+                ahead.map_or(Aim::Member(view.caster), Aim::Monster)
             }
             _ => Aim::Member(view.caster),
         }
@@ -951,6 +948,19 @@ fn choose_power(click: On<Activate>, pips: Query<&Pip>, mut views: Query<&mut Ma
     let power = if pip.0 >= 7 { AUTO_POWER } else { (pip.0 + 1).min(MAX_POWER) };
     // Clicking the lit pip again takes the choice back.
     view.power = if view.power == Some(power) { None } else { Some(power) };
+}
+
+pub(super) fn plugin(app: &mut App) {
+    app.add_input_context::<MagicView>();
+}
+
+/// Escape closes the view before the other screens' keys see it.
+#[derive(InputAction)]
+#[action_output(bool)]
+struct Dismiss;
+
+fn dismiss(dismiss: On<Start<Dismiss>>, mut commands: Commands) {
+    commands.entity(dismiss.context).despawn();
 }
 
 fn cancel_view(_: On<Activate>, views: Query<Entity, With<MagicView>>, mut commands: Commands) {
