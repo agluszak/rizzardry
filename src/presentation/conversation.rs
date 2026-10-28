@@ -31,8 +31,13 @@ use bevy::{
     ui_widgets::{Activate, Button, ScrollArea, TextInput},
 };
 #[derive(Component)]
-struct ConversationView {
-    session: Entity,
+#[relationship(relationship_target = ConversationViews)]
+struct ConversationView(pub Entity);
+#[derive(Component)]
+#[relationship_target(relationship = ConversationView, linked_spawn)]
+struct ConversationViews(Vec<Entity>);
+#[derive(Component, Default)]
+struct DialogueState {
     selected: Option<TradeQuote>,
     error: Option<String>,
     mode: Mode,
@@ -42,8 +47,9 @@ struct ConversationView {
     item_group: Option<ItemGroup>,
     usability: Option<bool>,
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum Mode {
+    #[default]
     Talk,
     Buy,
     Sell,
@@ -94,19 +100,22 @@ struct BubbleEdge;
 #[derive(Component)]
 struct TopicChrome;
 #[derive(Component)]
-struct NpcName;
+enum Caption {
+    Name,
+    Gold,
+    Quote,
+    Transcript,
+}
 #[derive(Component)]
 struct TopicList;
 #[derive(Component)]
 struct TopicRow(String);
 #[derive(Component)]
-struct QuoteBubble;
-#[derive(Component)]
-struct QuoteText;
+struct QuoteBubble {
+    line: Option<(Entity, Entity)>,
+}
 #[derive(Component)]
 struct ItemPreview;
-#[derive(Component)]
-struct Gold;
 #[derive(Component)]
 struct Confirm;
 #[derive(Component)]
@@ -122,15 +131,16 @@ struct TradeAvailable;
 struct Summary;
 #[derive(Component)]
 struct Offer;
-#[derive(Component)]
+#[derive(Component, PartialEq)]
 struct Choices;
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 enum Answer {
     Reply(String),
     Price(bool),
 }
-#[derive(Component)]
+#[derive(Component, PartialEq)]
 struct Choice {
+    session: Entity,
     index: usize,
     revision: u64,
     answer: Answer,
@@ -141,8 +151,9 @@ struct TopicInput;
 struct SubmitTopic;
 #[derive(Component)]
 struct TradeList;
-#[derive(Component, Clone, Copy)]
+#[derive(Component, Clone, Copy, PartialEq)]
 struct TradeRow {
+    session: Entity,
     source: TradeSource,
     quantity: u32,
 }
@@ -152,13 +163,29 @@ struct PlaybackStarted;
 pub struct ConversationViewPlugin;
 impl Plugin for ConversationViewPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            Update,
-            (sync_view, play_lines, watch_playback)
-                .chain()
-                .after(crate::game::npcs::conversation::update_conversation),
-        )
-        .add_systems(PostUpdate, submit_topic.after(bevy::text::EditableTextSystems));
+        app.add_observer(activate_choice)
+            .add_observer(activate_trade)
+            .add_observer(activate_topic)
+            .add_systems(
+                Update,
+                (
+                    create_views,
+                    (project_text, project_modes, sync_choices, sync_trade_rows, sync_topic_rows),
+                    (sync_bubble_geometry, sync_topic_geometry, route_mode_focus),
+                )
+                    .chain()
+                    .after(crate::game::npcs::conversation::update_conversation),
+            )
+            .add_systems(
+                Update,
+                (play_lines, watch_playback)
+                    .chain()
+                    .after(crate::game::npcs::conversation::update_conversation),
+            )
+            .add_systems(
+                PostUpdate,
+                (submit_topic.after(bevy::text::EditableTextSystems), colour_selections),
+            );
     }
 }
 fn bitmap(world: &mut World, parent: Entity, value: String, width: f32) -> Entity {
@@ -237,27 +264,12 @@ fn scroll_arrows(world: &mut World, parent: Entity, target: Entity, at: Vec2, ga
             });
     }
 }
-fn set_mode(world: &mut World, root: Entity, mode: Mode) {
-    if let Some(mut view) = world.get_mut::<ConversationView>(root) {
-        view.mode = mode;
-        view.selected = None;
-        view.error = None;
+fn set_mode(state: &mut DialogueState, mode: Mode) {
+    if state.mode != mode {
+        state.mode = mode;
+        state.selected = None;
+        state.error = None;
     }
-    let target = world
-        .query::<(Entity, &ModeFocus)>()
-        .iter(world)
-        .find(|(_, f)| f.0 == (mode != Mode::Talk))
-        .map(|(e, _)| e);
-    if let Some(target) = target {
-        world.resource_mut::<InputFocus>().set(target, FocusCause::Navigated);
-    }
-    for mut scroll in world.query_filtered::<&mut ScrollPosition, With<TradeList>>().iter_mut(world)
-    {
-        *scroll = default();
-    }
-}
-fn close(world: &mut World, session: Entity) {
-    world.write_message(ConversationRequest::Close { conversation: session });
 }
 fn build(world: &mut World, session: Entity) -> Entity {
     // OpenNpcDialoguePanel selects portrait mode before building its controls.
@@ -265,8 +277,8 @@ fn build(world: &mut World, session: Entity) -> Entity {
         super::main_screen::LayoutMode::Closed;
     let root = world
         .spawn((
-            ConversationView {
-                session,
+            ConversationView(session),
+            DialogueState {
                 selected: None,
                 error: None,
                 mode: Mode::Talk,
@@ -289,16 +301,17 @@ fn build(world: &mut World, session: Entity) -> Entity {
         ))
         .id();
     world.entity_mut(root).observe(
-        move |mut e: On<FocusedInput<KeyboardInput>>, mut commands: Commands| {
-            if e.input.state.is_pressed() && e.input.logical_key == Key::Escape {
-                e.propagate(false);
-                commands.queue(move |world: &mut World| {
-                    if world.get::<ConversationView>(root).is_some_and(|v| v.mode != Mode::Talk) {
-                        set_mode(world, root, Mode::Talk);
-                    } else {
-                        close(world, session);
-                    }
-                });
+        move |mut event: On<FocusedInput<KeyboardInput>>,
+              mut states: Query<(&ConversationView, &mut DialogueState)>,
+              mut requests: MessageWriter<ConversationRequest>| {
+            if event.input.state.is_pressed() && event.input.logical_key == Key::Escape {
+                event.propagate(false);
+                let Ok((view, mut state)) = states.get_mut(root) else { return };
+                if state.mode != Mode::Talk {
+                    set_mode(&mut state, Mode::Talk);
+                } else {
+                    requests.write(ConversationRequest::Close { conversation: view.0 });
+                }
             }
         },
     );
@@ -324,7 +337,7 @@ fn build(world: &mut World, session: Entity) -> Entity {
         );
         let name = label(world, left, "", Vec2::new(5., 2.), 132.);
         world.get_mut::<BitmapText>(name).unwrap().justify = bevy::text::Justify::Center;
-        world.entity_mut(name).insert(NpcName);
+        world.entity_mut(name).insert(Caption::Name);
         let bold =
             world.resource::<AssetServer>().load("retail://data/fonts/wiz_text_font_bold.sti");
         world.get_mut::<BitmapText>(name).unwrap().font = bold;
@@ -345,27 +358,35 @@ fn build(world: &mut World, session: Entity) -> Entity {
                 (false, 0) | (true, 0) | (true, 1) => {
                     let mode = if i == 1 { Mode::Sell } else { Mode::Buy };
                     world.entity_mut(e).insert((ModeButton(mode), TradeAvailable));
-                    world.entity_mut(e).observe(move |_: On<Activate>, mut commands: Commands| {
-                        commands.queue(move |w: &mut World| set_mode(w, root, mode));
-                    });
+                    world.entity_mut(e).observe(
+                        move |_: On<Activate>, mut states: Query<&mut DialogueState>| {
+                            if let Ok(mut state) = states.get_mut(root) {
+                                set_mode(&mut state, mode);
+                            }
+                        },
+                    );
                 }
                 (false, 5) => {
-                    world.entity_mut(e).observe(move |_: On<Activate>, mut commands: Commands| {
-                        commands.queue(move |w: &mut World| close(w, session));
-                    });
+                    world.entity_mut(e).observe(
+                        move |_: On<Activate>, roots: Query<&ConversationView>, mut requests: MessageWriter<ConversationRequest>| {
+                            if let Ok(view)=roots.get(root){requests.write(ConversationRequest::Close { conversation:view.0 });}
+                        },
+                    );
                 }
                 (true, 4..=5) => {
                     let pool = i == 4;
                     world.entity_mut(e).insert(PoolButton(pool));
-                    world.entity_mut(e).observe(move |_: On<Activate>, mut commands: Commands| {
-                        commands.queue(move |w: &mut World| {
-                            if let Some(mut v) = w.get_mut::<ConversationView>(root) {
-                                v.pool = pool;
-                                v.selected = None;
-                                v.error = None;
+                    world.entity_mut(e).observe(
+                        move |_: On<Activate>, mut states: Query<&mut DialogueState>| {
+                            if let Ok(mut state) = states.get_mut(root)
+                                && state.pool != pool
+                            {
+                                state.pool = pool;
+                                state.selected = None;
+                                state.error = None;
                             }
-                        });
-                    });
+                        },
+                    );
                 }
                 _ => {
                     world.entity_mut(e).insert(InteractionDisabled);
@@ -405,29 +426,27 @@ fn build(world: &mut World, session: Entity) -> Entity {
                         ControlSkin::new(first, first + 2, first + 1, first + 4, first + 3),
                         ChildOf(left),
                     ))
-                    .observe(move |_: On<Activate>, mut commands: Commands| {
-                        commands.queue(move |w: &mut World| {
-                            if let Some(mut v) = w.get_mut::<ConversationView>(root) {
-                                match filter {
-                                    ItemFilter::Group(group) => {
-                                        v.item_group = if v.item_group == Some(group) {
-                                            None
-                                        } else {
-                                            Some(group)
-                                        }
-                                    }
-                                    ItemFilter::Usable(party) => {
-                                        v.usability = if v.usability == Some(party) {
-                                            None
-                                        } else {
-                                            Some(party)
-                                        }
+                    .observe(move |_: On<Activate>, mut states: Query<&mut DialogueState>| {
+                        if let Ok(mut state) = states.get_mut(root) {
+                            match filter {
+                                ItemFilter::Group(group) => {
+                                    state.item_group = if state.item_group == Some(group) {
+                                        None
+                                    } else {
+                                        Some(group)
                                     }
                                 }
-                                v.selected = None;
-                                v.error = None;
+                                ItemFilter::Usable(party) => {
+                                    state.usability = if state.usability == Some(party) {
+                                        None
+                                    } else {
+                                        Some(party)
+                                    }
+                                }
                             }
-                        });
+                            state.selected = None;
+                            state.error = None;
+                        }
                     });
             }
             let back = action(world, left, "Back", Vec2::new(114., 71.), Vec2::new(23., 16.));
@@ -445,9 +464,13 @@ fn build(world: &mut World, session: Entity) -> Entity {
                 Pickable::default(),
             ));
             world.entity_mut(back).insert(ModeFocus(true));
-            world.entity_mut(back).observe(move |_: On<Activate>, mut commands: Commands| {
-                commands.queue(move |w: &mut World| set_mode(w, root, Mode::Talk));
-            });
+            world.entity_mut(back).observe(
+                move |_: On<Activate>, mut states: Query<&mut DialogueState>| {
+                    if let Ok(mut state) = states.get_mut(root) {
+                        set_mode(&mut state, Mode::Talk);
+                    }
+                },
+            );
         }
         let centre = panel(world, group, Vec2::new(164., 358.), Vec2::new(312., 92.), 1);
         let list = world
@@ -473,7 +496,9 @@ fn build(world: &mut World, session: Entity) -> Entity {
             world.entity_mut(list).insert(Summary);
             scroll_arrows(world, centre, list, Vec2::new(298., 4.), 48.);
             let text = bitmap(world, list, String::new(), 290.);
-            world.entity_mut(text).insert(BitmapWrap { width: 290, line_spacing: 0 });
+            world
+                .entity_mut(text)
+                .insert((Caption::Transcript, BitmapWrap { width: 290, line_spacing: 0 }));
             world.spawn((
                 Choices,
                 Node {
@@ -509,32 +534,40 @@ fn build(world: &mut World, session: Entity) -> Entity {
                     Vec2::new(if i < 2 { 22. } else { 78. }, 16.),
                 );
                 world.entity_mut(e).insert(Confirm);
-                world.entity_mut(e).observe(move |_: On<Activate>, mut commands: Commands| {
-                    commands.queue(move |w: &mut World| {
-                        let Some(q) = w.get::<ConversationView>(root).and_then(|v| v.selected)
-                        else {
+                world.entity_mut(e).observe(
+                    move |_: On<Activate>,
+                          states: Query<&DialogueState>,
+                          roots: Query<&ConversationView>,
+                          mut requests: MessageWriter<ConversationRequest>,
+                          mut commands: Commands| {
+                        let Some(q) = states.get(root).ok().and_then(|v| v.selected) else {
                             return;
                         };
-                        if delta == 0 {
-                            w.write_message(ConversationRequest::Trade(q));
-                        } else {
-                            select(
-                                w,
-                                root,
-                                session,
-                                q.source,
-                                if delta > 0 {
-                                    q.quantity.saturating_add(1)
-                                } else {
-                                    q.quantity.saturating_sub(1).max(1)
-                                },
-                            );
+                        if !roots.get(root).is_ok_and(|v| v.0 == q.conversation) {
+                            return;
                         }
-                    });
-                });
+                        if delta == 0 {
+                            requests.write(ConversationRequest::Trade(q));
+                        } else {
+                            commands.queue(move |world: &mut World| {
+                                select(
+                                    world,
+                                    root,
+                                    q.conversation,
+                                    q.source,
+                                    if delta > 0 {
+                                        q.quantity.saturating_add(1)
+                                    } else {
+                                        q.quantity.saturating_sub(1).max(1)
+                                    },
+                                )
+                            });
+                        }
+                    },
+                );
             }
             let gold = label(world, right, "", Vec2::new(5., 78.), 130.);
-            world.entity_mut(gold).insert(Gold);
+            world.entity_mut(gold).insert(Caption::Gold);
         } else {
             let topics = world
                 .spawn((
@@ -570,13 +603,13 @@ fn build(world: &mut World, session: Entity) -> Entity {
                 Vec2::new(6., 2.),
                 Vec2::new(130., 12.),
             );
-            world.entity_mut(sort).observe(move |_: On<Activate>, mut commands: Commands| {
-                commands.queue(move |w: &mut World| {
-                    if let Some(mut v) = w.get_mut::<ConversationView>(root) {
-                        v.alphabetical = !v.alphabetical;
+            world.entity_mut(sort).observe(
+                move |_: On<Activate>, mut states: Query<&mut DialogueState>| {
+                    if let Ok(mut state) = states.get_mut(root) {
+                        state.alphabetical = !state.alphabetical;
                     }
-                });
-            });
+                },
+            );
             for (i, (text, category)) in [
                 ("People", Some(TopicCategory::Person)),
                 ("Places", Some(TopicCategory::Place)),
@@ -595,13 +628,15 @@ fn build(world: &mut World, session: Entity) -> Entity {
                     Vec2::new(61., 12.),
                 );
                 world.entity_mut(e).insert(CategoryButton(category));
-                world.entity_mut(e).observe(move |_: On<Activate>, mut commands: Commands| {
-                    commands.queue(move |w: &mut World| {
-                        if let Some(mut v) = w.get_mut::<ConversationView>(root) {
-                            v.category = category;
+                world.entity_mut(e).observe(
+                    move |_: On<Activate>, mut states: Query<&mut DialogueState>| {
+                        if let Ok(mut state) = states.get_mut(root)
+                            && state.category != category
+                        {
+                            state.category = category;
                         }
-                    });
-                });
+                    },
+                );
             }
             let input_panel = panel(world, group, Vec2::new(476., 358.), Vec2::new(141., 92.), 13);
             let input = world
@@ -653,30 +688,26 @@ fn build(world: &mut World, session: Entity) -> Entity {
                     }
                     0 | 1 => {
                         world.entity_mut(e).observe(
-                            move |_: On<Activate>, mut commands: Commands| {
-                                commands.queue(move |w: &mut World| {
-                                    let Some(text) = w
-                                        .get::<EditableText>(input)
-                                        .map(|t| t.value().to_string().trim().to_owned())
-                                    else {
-                                        return;
-                                    };
-                                    if text.is_empty() {
-                                        return;
-                                    }
-                                    let mut facts = w.resource_mut::<StoryFacts>();
-                                    if i == 1 {
-                                        facts
-                                            .topics
-                                            .retain(|(_, t)| !t.eq_ignore_ascii_case(&text));
-                                    } else if !facts
-                                        .topics
-                                        .iter()
-                                        .any(|(_, t)| t.eq_ignore_ascii_case(&text))
-                                    {
-                                        facts.topics.push((TopicCategory::Misc, text));
-                                    }
-                                });
+                            move |_: On<Activate>,
+                                  inputs: Query<&EditableText>,
+                                  mut facts: ResMut<StoryFacts>| {
+                                let Ok(editor) = inputs.get(input) else { return };
+                                if editor.is_composing() {
+                                    return;
+                                }
+                                let text = editor.value().to_string().trim().to_owned();
+                                if text.is_empty() {
+                                    return;
+                                }
+                                if i == 1 {
+                                    facts.topics.retain(|(_, t)| !t.eq_ignore_ascii_case(&text));
+                                } else if !facts
+                                    .topics
+                                    .iter()
+                                    .any(|(_, t)| t.eq_ignore_ascii_case(&text))
+                                {
+                                    facts.topics.push((TopicCategory::Misc, text));
+                                }
                             },
                         );
                     }
@@ -690,7 +721,7 @@ fn build(world: &mut World, session: Entity) -> Entity {
     }
     let bubble = world
         .spawn((
-            QuoteBubble,
+            QuoteBubble { line: None },
             Button,
             FocusRing,
             TabIndex(0),
@@ -719,25 +750,31 @@ fn build(world: &mut World, session: Entity) -> Entity {
     let text = bitmap(world, bubble, String::new(), 256.);
     let font = world.resource::<AssetServer>().load("retail://data/fonts/font12point1.sti");
     world.get_mut::<BitmapText>(text).unwrap().font = font;
-    world.entity_mut(text).insert((QuoteText, BitmapWrap { width: 256, line_spacing: 2 }));
-    world.entity_mut(bubble).observe(move |_: On<Activate>, mut commands: Commands| {
-        commands.queue(move |w: &mut World| {
-            if let Some(ConversationWait::Line { speech, .. }) =
-                w.get::<Conversation>(session).map(|c| &c.wait)
+    world.entity_mut(text).insert((Caption::Quote, BitmapWrap { width: 256, line_spacing: 2 }));
+    world.entity_mut(bubble).observe(
+        move |_: On<Activate>,
+              bubbles: Query<&QuoteBubble>,
+              roots: Query<&ConversationView>,
+              mut requests: MessageWriter<ConversationRequest>| {
+            if let Ok(bubble) = bubbles.get(bubble)
+                && let Some((session, speech)) = bubble.line
+                && roots.get(root).is_ok_and(|v| v.0 == session)
             {
-                let speech = *speech;
-                w.write_message(ConversationRequest::Advance { conversation: session, speech });
+                requests.write(ConversationRequest::Advance { conversation: session, speech });
             }
-        });
-    });
+        },
+    );
     root
 }
 #[derive(Component)]
 struct TopicRows;
 
 fn select(world: &mut World, view: Entity, session: Entity, source: TradeSource, quantity: u32) {
+    if world.get::<ConversationView>(view).is_none_or(|v| v.0 != session) {
+        return;
+    }
     let result = quote_trade(world, session, source, quantity);
-    let Some(mut v) = world.get_mut::<ConversationView>(view) else { return };
+    let Some(mut v) = world.get_mut::<DialogueState>(view) else { return };
     match result {
         Ok(q) => {
             v.selected = Some(q);
@@ -749,558 +786,738 @@ fn select(world: &mut World, view: Entity, session: Entity, source: TradeSource,
         }
     }
 }
-fn sync_view(world: &mut World) {
-    let session = world.query_filtered::<Entity, With<Conversation>>().iter(world).next();
-    let views: Vec<_> = world
-        .query::<(Entity, &ConversationView)>()
-        .iter(world)
-        .map(|(e, v)| (e, v.session))
-        .collect();
-    for (e, s) in views {
-        if Some(s) != session {
-            world.despawn(e);
-        }
-    }
-    let Some(session) = session else { return };
-    let root = world
-        .query_filtered::<Entity, With<ConversationView>>()
-        .iter(world)
-        .next()
-        .unwrap_or_else(|| build(world, session));
-    let Some(party) = crate::game::party::roster::the_party(world) else { return };
-    let c = world.get::<Conversation>(session).unwrap();
-    let revision = c.revision;
-    let answers: Vec<(String, Answer)> = match &c.wait {
-        ConversationWait::Options { words, .. } => {
-            words.iter().map(|word| (word.clone(), Answer::Reply(word.clone()))).collect()
-        }
-        ConversationWait::Price { gold, .. } => vec![
-            (format!("Pay {gold} gold"), Answer::Price(true)),
-            ("Decline".into(), Answer::Price(false)),
-        ],
-        _ => vec![],
-    };
-    let actor = c.actor;
-    let def = world.get::<Npc>(actor).and_then(|n| {
-        let assets = world.resource::<NpcAssets>();
-        world
-            .resource::<Assets<NpcCatalog>>()
-            .get(&assets.catalog)
-            .and_then(|c| c.get(n.definition))
-    });
-    let name = def.map_or("NPC", |d| d.source_name.as_str());
-    let name = name.to_owned();
-    let state = match &c.wait {
-        ConversationWait::Blocked { quote, entry, reason } => {
-            format!("Content gap at quote {quote}, entry {entry:?}: {reason}")
-        }
-        _ => String::new(),
-    };
-    let speech = if let ConversationWait::Line { speech, .. } = c.wait {
-        world.get::<ConversationSpeech>(speech).map(|s| s.text.clone()).unwrap_or_default()
-    } else {
-        String::new()
-    };
-    let text = [c.transcript.join("\n"), state, c.result.clone().unwrap_or_default()]
-        .into_iter()
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n");
-    let view = world.get::<ConversationView>(root).unwrap();
-    let (mut mode, pool, category, alphabetical) =
-        (view.mode, view.pool, view.category, view.alphabetical);
-    let (item_group, usability) = (view.item_group, view.usability);
-    let can_trade = trade_allowed(world, actor);
-    if !can_trade && mode != Mode::Talk {
-        set_mode(world, root, Mode::Talk);
-        mode = Mode::Talk;
-    }
-    for (panel, mut node) in world.query::<(&ModePanel, &mut Node)>().iter_mut(world) {
-        let display = if panel.0 == (mode != Mode::Talk) { Display::Flex } else { Display::None };
-        if node.display != display {
-            node.display = display;
-        }
-    }
-    for mut node in world.query_filtered::<&mut Node, With<QuoteBubble>>().iter_mut(world) {
-        let display =
-            if mode == Mode::Talk && !speech.is_empty() { Display::Flex } else { Display::None };
-        if node.display != display {
-            node.display = display;
-        }
-    }
-    set_label::<QuoteText>(world, &speech);
-    sync_bubble(world, &speech);
-    set_label::<NpcName>(
-        world,
-        match mode {
-            Mode::Talk => &name,
-            Mode::Buy => "Buy",
-            Mode::Sell => "Sell",
-        },
-    );
-    let gold = world.get::<PartyInventory>(party).unwrap().gold;
-    set_label::<Gold>(world, &format!("Party gold: {gold}"));
-    let available: Vec<_> =
-        world.query_filtered::<Entity, With<TradeAvailable>>().iter(world).collect();
-    for e in available {
-        enabled(world, e, can_trade);
-    }
-    let pool_buttons: Vec<_> =
-        world.query::<(Entity, &PoolButton)>().iter(world).map(|(e, b)| (e, b.0)).collect();
-    for (e, is_pool) in pool_buttons {
-        enabled(world, e, mode == Mode::Sell);
-        selected(world, e, pool == is_pool);
-    }
-    let mode_buttons: Vec<_> =
-        world.query::<(Entity, &ModeButton)>().iter(world).map(|(e, b)| (e, b.0)).collect();
-    for (e, m) in mode_buttons {
-        selected(world, e, mode == m);
-    }
-    let category_buttons: Vec<_> =
-        world.query::<(Entity, &CategoryButton)>().iter(world).map(|(e, b)| (e, b.0)).collect();
-    for (e, c) in category_buttons {
-        selected(world, e, category == c);
-    }
-    let filters: Vec<_> =
-        world.query::<(Entity, &ItemFilter)>().iter(world).map(|(e, f)| (e, *f)).collect();
-    for (e, f) in filters {
-        selected(
-            world,
-            e,
-            match f {
-                ItemFilter::Group(g) => item_group == Some(g),
-                ItemFilter::Usable(p) => usability == Some(p),
-            },
-        );
-    }
-    sync_topics(world, category, alphabetical);
-    let summary = world
-        .query_filtered::<&Children, With<Summary>>()
-        .iter(world)
-        .next()
-        .and_then(|c| c.first().copied());
-    if let Some(e) = summary
-        && let Some(mut t) = world.get_mut::<BitmapText>(e)
-        && t.value != text
-    {
-        t.value = text;
-    }
-    let choices = world.query_filtered::<Entity, With<Choices>>().iter(world).next().unwrap();
-    let old_choices: Vec<_> =
-        world.query::<(Entity, &Choice)>().iter(world).map(|(e, c)| (e, c.index)).collect();
-    for (entity, index) in &old_choices {
-        if *index >= answers.len() {
-            world.despawn(*entity);
-        }
-    }
-    for (index, (label, answer)) in answers.into_iter().enumerate() {
-        if let Some((entity, _)) = old_choices.iter().find(|(_, i)| *i == index) {
-            world.entity_mut(*entity).insert(Choice { index, revision, answer });
-            if let Some(child) = world.get::<Children>(*entity).and_then(|c| c.first().copied())
-                && let Some(mut text) = world.get_mut::<BitmapText>(child)
-                && text.value != label
-            {
-                text.value = label;
-            }
-        } else {
-            let entity = button(world, choices, &label);
-            world.entity_mut(entity).insert(Choice { index, revision, answer });
-            world.entity_mut(entity).observe(
-                move |_: On<Activate>,
-                      choices: Query<&Choice>,
-                      mut requests: MessageWriter<ConversationRequest>| {
-                    let Ok(choice) = choices.get(entity) else { return };
-                    requests.write(match &choice.answer {
-                        Answer::Reply(text) => ConversationRequest::Reply {
-                            conversation: session,
-                            revision: choice.revision,
-                            text: text.clone(),
-                        },
-                        Answer::Price(accept) => ConversationRequest::PriceAnswer {
-                            conversation: session,
-                            revision: choice.revision,
-                            accept: *accept,
-                        },
-                    });
-                },
-            );
-        }
-    }
-    if mode == Mode::Talk || !can_trade {
-        return;
-    }
-    let member = world
-        .resource::<SelectedMember>()
-        .0
-        .filter(|e| world.get::<PartyRoster>(party).is_some_and(|r| r.contains(e)));
-    let items = world
-        .get_resource::<GameData>()
-        .and_then(|d| world.resource::<Assets<ItemCatalog>>().get(&d.items));
-    let Some(items) = items else { return };
-    let allows = |d: &crate::content::items::ItemDefinition| {
-        item_group.is_none_or(|group| group == ItemGroup::of(d.class))
-            && usability.is_none_or(|party_wide| {
-                if party_wide {
-                    world.get::<PartyRoster>(party).into_iter().flat_map(|r| r.iter()).any(|e| {
-                        world
-                            .get::<crate::game::characters::Character>(e)
-                            .is_some_and(|c| c.can_use(d))
-                    })
-                } else {
-                    member
-                        .and_then(|e| world.get::<crate::game::characters::Character>(e))
-                        .is_some_and(|c| c.can_use(d))
-                }
-            })
-    };
-    let mut rows = Vec::new();
-    if mode == Mode::Buy
-        && let Some(npc) = world.get::<Npc>(actor)
-    {
-        for lot in &npc.stock.lots {
-            if lot.units == 0 || lot.available_at != 0 {
-                continue;
-            }
-            if let Some(d) = items.get(lot.item)
-                && !d.merchant_cannot_sell
-                && allows(d)
-            {
-                rows.push((
-                    TradeSource::Stock(lot.id),
-                    format!("{} ({})", d.name, lot.units),
-                    if d.class == EquipClass::Ammunition { lot.units } else { 1 },
-                ));
-            }
-        }
-    }
-    if mode == Mode::Sell && pool {
-        for item in &world.get::<PartyInventory>(party).unwrap().pool.stacks {
-            if let Some(d) = items.get(item.item)
-                && allows(d)
-            {
-                rows.push((
-                    TradeSource::Party(ItemRef { owner: ItemOwner::Pool, id: item.id }),
-                    item.display_name(d, true),
-                    if d.class == EquipClass::Ammunition { item.units() } else { 1 },
-                ));
-            }
-        }
-    }
-    if mode == Mode::Sell
-        && !pool
-        && let Some(member) = member
-        && let Some(carried) = world.get::<Carried>(member)
-    {
-        for item in carried.backpack.iter().flatten() {
-            if let Some(d) = items.get(item.item)
-                && allows(d)
-            {
-                rows.push((
-                    TradeSource::Party(ItemRef { owner: ItemOwner::Member(member), id: item.id }),
-                    item.display_name(d, true),
-                    if d.class == EquipClass::Ammunition { item.units() } else { 1 },
-                ));
-            }
-        }
-    }
-    let view = world.get::<ConversationView>(root).unwrap();
-    let quote = view.selected.filter(|q| rows.iter().any(|r| r.0 == q.source));
-    let offer = if let Some(err) = &view.error {
-        err.clone()
-    } else if let Some(q) = quote {
-        format!(
-            "{}\n{} x  {} gold",
-            rows.iter().find(|r| r.0 == q.source).unwrap().1,
-            q.quantity,
-            q.gold
-        )
-    } else {
-        "Select an item".into()
-    };
-    let image = quote
-        .and_then(|q| match q.source {
-            TradeSource::Stock(id) => {
-                world.get::<Npc>(actor)?.stock.lots.iter().find(|l| l.id == id).map(|l| l.item)
-            }
-            TradeSource::Party(item) => match item.owner {
-                ItemOwner::Pool => world
-                    .get::<PartyInventory>(party)?
-                    .pool
-                    .stacks
-                    .iter()
-                    .find(|s| s.id == item.id)
-                    .map(|s| s.item),
-                ItemOwner::Member(member) => {
-                    world.get::<Carried>(member)?.find_stack(item.id).map(|s| s.item)
-                }
-            },
-        })
-        .and_then(|id| items.get(id))
-        .map(|d| d.image.clone());
-    set_label::<Offer>(world, &offer);
-    let controls: Vec<_> = world.query_filtered::<Entity, With<Confirm>>().iter(world).collect();
-    for e in controls {
-        enabled(world, e, quote.is_some());
-    }
-    let handle = image.map(|p| world.resource::<AssetServer>().load(format!("retail://{p}")));
-    for (mut picture, mut visibility) in
-        world.query_filtered::<(&mut Picture, &mut Visibility), With<ItemPreview>>().iter_mut(world)
-    {
-        *visibility = if handle.is_some() { Visibility::Inherited } else { Visibility::Hidden };
-        if let Some(sheet) = &handle {
-            picture.set_if_neq(Picture {
-                sheet: sheet.clone(),
-                frame: 1,
-                at: Vec2::new(5., 28.),
-                bounds: None,
-            });
-        }
-    }
-    let old: Vec<_> =
-        world.query::<(Entity, &TradeRow)>().iter(world).map(|(e, r)| (e, r.source)).collect();
-    for (e, source) in &old {
-        if !rows.iter().any(|r| r.0 == *source) {
-            world.despawn(*e);
-        }
-    }
-    let list = world.query_filtered::<Entity, With<TradeList>>().iter(world).next().unwrap();
-    let mut ordered = Vec::with_capacity(rows.len());
-    for (source, text, quantity) in rows {
-        if let Some((e, _)) = old.iter().find(|(_, s)| *s == source) {
-            ordered.push(*e);
-            if let Some(mut row) = world.get_mut::<TradeRow>(*e)
-                && row.quantity != quantity
-            {
-                row.quantity = quantity;
-            }
-            let child = world.get::<Children>(*e).and_then(|c| c.first().copied());
-            if let Some(child) = child
-                && let Some(mut label) = world.get_mut::<BitmapText>(child)
-                && label.value != text
-            {
-                label.value = text;
-            }
-        } else {
-            let e = button(world, list, &text);
-            world.entity_mut(e).insert(TradeRow { source, quantity });
-            ordered.push(e);
-            if let Some(child) = world.get::<Children>(e).and_then(|c| c.first().copied()) {
-                world.entity_mut(child).insert(BitmapWrap { width: 280, line_spacing: 0 });
-            }
-            world.entity_mut(e).observe(
-                move |_: On<Activate>, rows: Query<&TradeRow>, mut commands: Commands| {
-                    if let Ok(row) = rows.get(e) {
-                        let (source, quantity) = (row.source, row.quantity);
-                        commands.queue(move |world: &mut World| {
-                            select(world, root, session, source, quantity)
-                        });
-                    }
-                },
-            );
-        }
-    }
-    if world
-        .get::<Children>(list)
-        .is_none_or(|children| children.iter().ne(ordered.iter().copied()))
-    {
-        world.entity_mut(list).replace_children(&ordered);
-    }
+/// Resolve a retained control through its real UI hierarchy, not a global
+/// singleton or a separate registry of UI entity IDs.
+#[derive(bevy::ecs::system::SystemParam)]
+struct ViewScope<'w, 's> {
+    roots: Query<'w, 's, &'static ConversationView>,
+    states: Query<'w, 's, &'static DialogueState>,
+    parents: Query<'w, 's, &'static ChildOf>,
 }
-/// PortraitQuote.cpp: 280px maximum, 12px margins, 2px line spacing,
-/// centred at y=20; edge frames are tiled, never stretched.
-fn sync_bubble(world: &mut World, speech: &str) {
-    let font =
-        world.resource::<AssetServer>().load::<SpriteSheet>("retail://data/fonts/font12point1.sti");
-    let Some(font) = world.resource::<Assets<SpriteSheet>>().get(&font) else { return };
-    let width = (font.text_width(speech) + 24).clamp(25, 280);
-    let wrapped = crate::content::ui::wrap_text(&font.frames, speech, width - 24);
-    let line =
-        font.frames.first().map_or(12, |f| (f.height as i32 + f.offset[1] as i32).max(1) as u32);
-    let rows = wrapped.split('\n').count() as u32;
-    let height = (rows * (line + 2) - 2 + 24).min(198);
-    let bubble = world.query_filtered::<Entity, With<QuoteBubble>>().iter(world).next().unwrap();
-    let changed = world
-        .get::<Node>(bubble)
-        .is_none_or(|n| n.width != px(width as f32) || n.height != px(height as f32));
-    if !changed {
-        return;
-    }
-    if let Some(mut n) = world.get_mut::<Node>(bubble) {
-        n.left = px(320. - width as f32 / 2.);
-        n.width = px(width as f32);
-        n.height = px(height as f32);
-        n.max_height = px(198);
-    }
-    if let Some(mut image) = world.get_mut::<ImageNode>(bubble) {
-        image.rect = Some(Rect::new(0., 0., width as f32, height as f32));
-    }
-    for mut wrap in world.query_filtered::<&mut BitmapWrap, With<QuoteText>>().iter_mut(world) {
-        wrap.width = width - 24;
-    }
-    let old: Vec<_> = world.query_filtered::<Entity, With<BubbleEdge>>().iter(world).collect();
-    for e in old {
-        world.despawn(e);
-    }
-    let mut parts = vec![
-        (0, Vec2::ZERO),
-        (2, Vec2::new(width as f32 - 16., 0.)),
-        (5, Vec2::new(0., height as f32 - 16.)),
-        (7, Vec2::new(width as f32 - 16., height as f32 - 16.)),
-    ];
-    for x in (16..width.saturating_sub(16)).step_by(16) {
-        parts.push((1, Vec2::new(x as f32, 0.)));
-        parts.push((6, Vec2::new(x as f32, height as f32 - 16.)));
-    }
-    for y in (16..height.saturating_sub(16)).step_by(16) {
-        parts.push((3, Vec2::new(0., y as f32)));
-        parts.push((4, Vec2::new(width as f32 - 8., y as f32)));
-    }
-    for (frame, at) in parts {
-        let e = picture(world, bubble, "npc_popup_edge", frame, at);
-        world.entity_mut(e).insert(BubbleEdge);
+impl ViewScope<'_, '_> {
+    fn owner(&self, entity: Entity) -> Option<(Entity, Entity)> {
+        scope(entity, &self.parents, &self.roots)
     }
 }
 
-fn set_label<T: Component>(world: &mut World, value: &str) {
-    for mut text in world.query_filtered::<&mut BitmapText, With<T>>().iter_mut(world) {
+/// Existing hierarchy owns controls; the relationship owns the complete view.
+fn scope(
+    entity: Entity,
+    parents: &Query<&ChildOf>,
+    roots: &Query<&ConversationView>,
+) -> Option<(Entity, Entity)> {
+    roots.get(entity).ok().map(|v| (entity, v.0)).or_else(|| {
+        parents.iter_ancestors(entity).find_map(|root| roots.get(root).ok().map(|v| (root, v.0)))
+    })
+}
+fn create_views(
+    mut commands: Commands,
+    sessions: Query<(Entity, Option<&ConversationViews>), With<Conversation>>,
+) {
+    for (session, views) in &sessions {
+        if views.is_none_or(|v| v.0.is_empty()) {
+            commands.queue(move |world: &mut World| {
+                if world.get::<Conversation>(session).is_some()
+                    && world.get::<ConversationViews>(session).is_none_or(|v| v.0.is_empty())
+                {
+                    build(world, session);
+                }
+            });
+        }
+    }
+}
+fn project_text(
+    views: ViewScope,
+    sessions: Query<&Conversation>,
+    speech: Query<&ConversationSpeech>,
+    npcs: Query<&Npc>,
+    definitions: Res<Assets<NpcCatalog>>,
+    assets: Res<NpcAssets>,
+    parties: Query<&PartyInventory, With<crate::game::party::roster::Party>>,
+    mut labels: Query<(Entity, &Caption, &mut BitmapText)>,
+) {
+    for (entity, caption, mut text) in &mut labels {
+        let Some((root, session)) = views.owner(entity) else { continue };
+        let (Ok(state), Ok(c)) = (views.states.get(root), sessions.get(session)) else { continue };
+        let value = match caption {
+            Caption::Name => match state.mode {
+                Mode::Talk => npcs
+                    .get(c.actor)
+                    .ok()
+                    .and_then(|n| definitions.get(&assets.catalog)?.get(n.definition))
+                    .map_or("NPC", |d| d.source_name.as_str())
+                    .to_owned(),
+                Mode::Buy => "Buy".into(),
+                Mode::Sell => "Sell".into(),
+            },
+            Caption::Gold => {
+                parties.single().map(|p| format!("Party gold: {}", p.gold)).unwrap_or_default()
+            }
+            Caption::Quote => {
+                if let ConversationWait::Line { speech: entity, .. } = c.wait {
+                    speech.get(entity).map(|s| s.text.clone()).unwrap_or_default()
+                } else {
+                    String::new()
+                }
+            }
+            Caption::Transcript => {
+                let error = if let ConversationWait::Blocked { quote, entry, reason } = &c.wait {
+                    format!("Content gap at quote {quote}, entry {entry:?}: {reason}")
+                } else {
+                    String::new()
+                };
+                [c.transcript.join("\n"), error, c.result.clone().unwrap_or_default()]
+                    .into_iter()
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+        };
         if text.value != value {
-            text.value = value.to_owned();
+            text.value = value;
         }
     }
 }
-fn enabled(world: &mut World, e: Entity, value: bool) {
-    let disabled = world.get::<InteractionDisabled>(e).is_some();
-    if value == disabled {
-        if value {
-            world.entity_mut(e).remove::<InteractionDisabled>();
+fn set_enabled(commands: &mut Commands, entity: Entity, enabled: bool, disabled: bool) {
+    if enabled == disabled {
+        if enabled {
+            commands.entity(entity).remove::<InteractionDisabled>();
         } else {
-            world.entity_mut(e).insert(InteractionDisabled);
+            commands.entity(entity).insert(InteractionDisabled);
         }
     }
 }
-fn selected(world: &mut World, e: Entity, value: bool) {
-    if world.get::<bevy::ui::Selected>(e).is_some() != value {
-        if value {
-            world.entity_mut(e).insert(bevy::ui::Selected);
+fn project_modes(
+    views: ViewScope,
+    mut commands: Commands,
+    sessions: Query<&Conversation>,
+    npcs: Query<&Npc>,
+    definitions: Res<Assets<NpcCatalog>>,
+    assets: Res<NpcAssets>,
+    mut panels: Query<
+        (Entity, &mut Node, Option<&ModePanel>, Option<&mut QuoteBubble>),
+        Or<(With<ModePanel>, With<QuoteBubble>)>,
+    >,
+    controls: Query<
+        (
+            Entity,
+            Has<InteractionDisabled>,
+            Has<bevy::ui::Selected>,
+            Option<&ModeButton>,
+            Option<&PoolButton>,
+            Option<&CategoryButton>,
+            Option<&ItemFilter>,
+            Has<TradeAvailable>,
+        ),
+        Or<(
+            With<ModeButton>,
+            With<PoolButton>,
+            With<CategoryButton>,
+            With<ItemFilter>,
+            With<TradeAvailable>,
+        )>,
+    >,
+) {
+    for (entity, mut node, panel, bubble) in &mut panels {
+        let Some((root, session)) = views.owner(entity) else { continue };
+        let (Ok(state), Ok(c)) = (views.states.get(root), sessions.get(session)) else { continue };
+        let visible = if let Some(mut bubble) = bubble {
+            let line = if let ConversationWait::Line { speech, .. } = c.wait {
+                Some((session, speech))
+            } else {
+                None
+            };
+            if bubble.line != line {
+                bubble.line = line;
+            }
+            state.mode == Mode::Talk && line.is_some()
         } else {
-            world.entity_mut(e).remove::<bevy::ui::Selected>();
+            panel.is_some_and(|p| p.0 == (state.mode != Mode::Talk))
+        };
+        let display = if visible { Display::Flex } else { Display::None };
+        if node.display != display {
+            node.display = display;
         }
     }
-    let child = world.get::<Children>(e).and_then(|c| c.first().copied());
-    if let Some(child) = child
-        && let Some(mut image) = world.get_mut::<ImageNode>(child)
+    for (entity, disabled, was_selected, mode, pool, category, filter, trade) in &controls {
+        let Some((root, session)) = views.owner(entity) else { continue };
+        let (Ok(state), Ok(c)) = (views.states.get(root), sessions.get(session)) else { continue };
+        if trade {
+            let can_trade = npcs
+                .get(c.actor)
+                .ok()
+                .and_then(|n| definitions.get(&assets.catalog)?.get(n.definition))
+                .is_some_and(|d| d.owns_stock);
+            set_enabled(&mut commands, entity, can_trade, disabled);
+        } else if pool.is_some() {
+            set_enabled(&mut commands, entity, state.mode == Mode::Sell, disabled);
+        }
+        let selected = mode.is_some_and(|m| state.mode == m.0)
+            || pool.is_some_and(|p| state.pool == p.0)
+            || category.is_some_and(|c| state.category == c.0)
+            || filter.is_some_and(|f| match f {
+                ItemFilter::Group(g) => state.item_group == Some(*g),
+                ItemFilter::Usable(p) => state.usability == Some(*p),
+            });
+        if selected != was_selected {
+            if selected {
+                commands.entity(entity).insert(bevy::ui::Selected);
+            } else {
+                commands.entity(entity).remove::<bevy::ui::Selected>();
+            }
+        }
+    }
+}
+/// Paint labels from the native selection state; sprite controls use ControlSkin.
+fn colour_selections(
+    views: ViewScope,
+    controls: Query<Has<bevy::ui::Selected>, With<Button>>,
+    mut labels: Query<(Entity, &ChildOf, &mut ImageNode), With<BitmapText>>,
+) {
+    for (entity, parent, mut image) in &mut labels {
+        if views.owner(entity).is_none() {
+            continue;
+        }
+        if let Ok(selected) = controls.get(parent.parent()) {
+            let color = if selected { Color::srgb(1., 0.9, 0.4) } else { Color::WHITE }
+                .with_alpha(image.color.alpha());
+            if image.color != color {
+                image.color = color;
+            }
+        }
+    }
+}
+fn route_mode_focus(
+    views: ViewScope,
+    panels: Query<&ModePanel>,
+    targets: Query<(Entity, &ModeFocus)>,
+    mut focus: ResMut<InputFocus>,
+) {
+    let Some(focused) = focus.get() else { return };
+    let Some((root, _)) = views.owner(focused) else { return };
+    let Ok(state) = views.states.get(root) else { return };
+    if views
+        .parents
+        .iter_ancestors(focused)
+        .any(|p| panels.get(p).is_ok_and(|p| p.0 != (state.mode != Mode::Talk)))
+        && let Some((target, _)) = targets.iter().find(|(e, f)| {
+            f.0 == (state.mode != Mode::Talk)
+                && views.owner(*e).is_some_and(|(owner, _)| owner == root)
+        })
     {
-        let color = if value { Color::srgb(1., 0.9, 0.4) } else { Color::WHITE };
-        if image.color != color {
-            image.color = color;
+        focus.set(target, FocusCause::Navigated);
+    }
+}
+
+fn row_button(
+    commands: &mut Commands,
+    parent: Entity,
+    font: Handle<SpriteSheet>,
+    value: String,
+) -> (Entity, Entity) {
+    let entity = commands
+        .spawn((
+            Button,
+            FocusRing,
+            TabIndex(0),
+            Node { min_height: px(14), flex_shrink: 0., ..default() },
+            ChildOf(parent),
+        ))
+        .id();
+    let text = commands
+        .spawn((
+            BitmapText { font, value, ..default() },
+            Node { position_type: PositionType::Relative, flex_shrink: 0., ..default() },
+            Pickable::IGNORE,
+            ChildOf(entity),
+        ))
+        .id();
+    (entity, text)
+}
+fn activate_choice(
+    event: On<Activate>,
+    views: ViewScope,
+    choices: Query<&Choice>,
+    mut requests: MessageWriter<ConversationRequest>,
+) {
+    let Ok(choice) = choices.get(event.entity) else { return };
+    let Some((_, session)) = views.owner(event.entity) else { return };
+    if choice.session != session {
+        return;
+    }
+    requests.write(match &choice.answer {
+        Answer::Reply(text) => ConversationRequest::Reply {
+            conversation: session,
+            revision: choice.revision,
+            text: text.clone(),
+        },
+        Answer::Price(accept) => ConversationRequest::PriceAnswer {
+            conversation: session,
+            revision: choice.revision,
+            accept: *accept,
+        },
+    });
+}
+fn activate_trade(
+    event: On<Activate>,
+    views: ViewScope,
+    rows: Query<&TradeRow>,
+    mut commands: Commands,
+) {
+    let Ok(row) = rows.get(event.entity) else { return };
+    let Some((root, session)) = views.owner(event.entity) else { return };
+    if row.session != session {
+        return;
+    }
+    let (source, quantity) = (row.source, row.quantity);
+    commands.queue(move |world: &mut World| select(world, root, session, source, quantity));
+}
+fn activate_topic(
+    event: On<Activate>,
+    views: ViewScope,
+    rows: Query<&TopicRow>,
+    mut inputs: Query<(Entity, &mut EditableText), With<TopicInput>>,
+) {
+    let Ok(row) = rows.get(event.entity) else { return };
+    let Some((root, _)) = views.owner(event.entity) else { return };
+    for (entity, mut input) in &mut inputs {
+        if views.owner(entity).is_some_and(|(owner, _)| owner == root) {
+            *input = EditableText {
+                max_characters: Some(128),
+                allow_newlines: false,
+                ..EditableText::new(&row.0)
+            };
         }
     }
 }
-fn topic_geometry(world: &mut World, count: usize) {
-    let sheet = world
-        .resource::<AssetServer>()
-        .load::<SpriteSheet>("retail://data/npc interaction/npc_bottompanel.sti");
-    let Some((line, margin)) = world
-        .resource::<Assets<SpriteSheet>>()
-        .get(&sheet)
-        .and_then(|s| Some((s.frames.get(3)?.height, s.frames.get(4)?.height)))
+fn sync_choices(
+    views: ViewScope,
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+    sessions: Query<&Conversation>,
+    lists: Query<(Entity, Option<&Children>), With<Choices>>,
+    mut choices: Query<(&mut Choice, &Children)>,
+    mut labels: Query<&mut BitmapText>,
+) {
+    for (list, children) in &lists {
+        let Some((_, session)) = views.owner(list) else { continue };
+        let Ok(c) = sessions.get(session) else { continue };
+        let answers: Vec<(String, Answer)> = match &c.wait {
+            ConversationWait::Options { words, .. } => {
+                words.iter().map(|w| (w.clone(), Answer::Reply(w.clone()))).collect()
+            }
+            ConversationWait::Price { gold, .. } => vec![
+                (format!("Pay {gold} gold"), Answer::Price(true)),
+                ("Decline".into(), Answer::Price(false)),
+            ],
+            _ => vec![],
+        };
+        let old: Vec<_> = children
+            .into_iter()
+            .flatten()
+            .filter_map(|e| choices.get(*e).ok().map(|(c, _)| (*e, c.index)))
+            .collect();
+        for (entity, index) in &old {
+            if *index >= answers.len() {
+                commands.entity(*entity).despawn();
+            }
+        }
+        for (index, (label, answer)) in answers.into_iter().enumerate() {
+            let value = Choice { session, index, revision: c.revision, answer };
+            if let Some((entity, _)) = old.iter().find(|(_, i)| *i == index) {
+                if let Ok((mut choice, children)) = choices.get_mut(*entity) {
+                    choice.set_if_neq(value);
+                    if let Some(child) = children.first()
+                        && let Ok(mut text) = labels.get_mut(*child)
+                        && text.value != label
+                    {
+                        text.value = label;
+                    }
+                }
+            } else {
+                let (entity, _) = row_button(
+                    &mut commands,
+                    list,
+                    assets.load("retail://data/fonts/wiz_text_font.sti"),
+                    label,
+                );
+                commands.entity(entity).insert(value);
+            }
+        }
+    }
+}
+fn sync_topic_rows(
+    views: ViewScope,
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+    facts: Res<StoryFacts>,
+    lists: Query<(Entity, Option<&Children>), With<TopicRows>>,
+    rows: Query<&TopicRow>,
+) {
+    for (list, children) in &lists {
+        let Some((root, _)) = views.owner(list) else { continue };
+        let Ok(state) = views.states.get(root) else { continue };
+        let mut topics: Vec<_> = facts
+            .topics
+            .iter()
+            .filter(|(c, _)| state.category.is_none_or(|wanted| wanted == *c))
+            .map(|(_, t)| t.clone())
+            .collect();
+        if state.alphabetical {
+            topics.sort_by_key(|t| t.to_lowercase());
+        }
+        let old: Vec<_> = children
+            .into_iter()
+            .flatten()
+            .filter_map(|e| rows.get(*e).ok().map(|r| (*e, &r.0)))
+            .collect();
+        for (entity, text) in &old {
+            if !topics.contains(text) {
+                commands.entity(*entity).despawn();
+            }
+        }
+        let mut ordered = Vec::with_capacity(topics.len());
+        for text in topics {
+            if let Some((entity, _)) = old.iter().find(|(_, t)| **t == text) {
+                ordered.push(*entity);
+            } else {
+                let (entity, _) = row_button(
+                    &mut commands,
+                    list,
+                    assets.load("retail://data/fonts/wiz_text_font.sti"),
+                    text.clone(),
+                );
+                ordered.push(entity);
+                commands.entity(entity).insert(TopicRow(text.clone()));
+            }
+        }
+        if children.is_none_or(|c| c.iter().ne(ordered.iter().copied())) {
+            commands.entity(list).replace_children(&ordered);
+        }
+    }
+}
+fn sync_trade_rows(
+    views: ViewScope,
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+    data: Option<Res<GameData>>,
+    catalogs: Res<Assets<ItemCatalog>>,
+    sessions: Query<&Conversation>,
+    npcs: Query<&Npc>,
+    parties: Query<(&PartyRoster, &PartyInventory), With<crate::game::party::roster::Party>>,
+    members: Query<(&crate::game::characters::Character, &Carried)>,
+    selection: Res<SelectedMember>,
+    lists: Query<(Entity, Option<&Children>), With<TradeList>>,
+    mut row_data: Query<(&mut TradeRow, &Children)>,
+    offers: Query<Entity, With<Offer>>,
+    mut texts: Query<&mut BitmapText>,
+    controls: Query<(Entity, Has<InteractionDisabled>), With<Confirm>>,
+    mut previews: Query<(Entity, &mut Picture, &mut Visibility), With<ItemPreview>>,
+) {
+    let Some(items) = data.and_then(|d| catalogs.get(&d.items)) else { return };
+    let Ok((roster, party)) = parties.single() else { return };
+    for (list, children) in &lists {
+        let Some((root, session)) = views.owner(list) else { continue };
+        let (Ok(state), Ok(c)) = (views.states.get(root), sessions.get(session)) else { continue };
+        if state.mode == Mode::Talk {
+            continue;
+        }
+        let Ok(npc) = npcs.get(c.actor) else { continue };
+        let member = selection.0.filter(|e| roster.contains(e));
+        let allows = |d: &crate::content::items::ItemDefinition| {
+            state.item_group.is_none_or(|group| group == ItemGroup::of(d.class))
+                && state.usability.is_none_or(|party_wide| {
+                    if party_wide {
+                        roster.iter().any(|e| members.get(e).is_ok_and(|(c, _)| c.can_use(d)))
+                    } else {
+                        member.and_then(|e| members.get(e).ok()).is_some_and(|(c, _)| c.can_use(d))
+                    }
+                })
+        };
+        let mut rows = Vec::new();
+        if state.mode == Mode::Buy {
+            for lot in &npc.stock.lots {
+                if lot.units > 0
+                    && lot.available_at == 0
+                    && let Some(d) = items.get(lot.item)
+                    && !d.merchant_cannot_sell
+                    && allows(d)
+                {
+                    rows.push((
+                        TradeSource::Stock(lot.id),
+                        format!("{} ({})", d.name, lot.units),
+                        if d.class == EquipClass::Ammunition { lot.units } else { 1 },
+                    ));
+                }
+            }
+        } else {
+            let carried = member.and_then(|e| members.get(e).ok()).map(|(_, c)| c);
+            let pool = party.pool.stacks.iter().filter(|_| state.pool);
+            let backpack = carried
+                .into_iter()
+                .flat_map(|c| c.backpack.iter().flatten())
+                .filter(|_| !state.pool);
+            for item in pool.chain(backpack) {
+                if let Some(d) = items.get(item.item)
+                    && allows(d)
+                {
+                    let owner = if state.pool {
+                        ItemOwner::Pool
+                    } else {
+                        let Some(member) = member else { continue };
+                        ItemOwner::Member(member)
+                    };
+                    rows.push((
+                        TradeSource::Party(ItemRef { owner, id: item.id }),
+                        item.display_name(d, true),
+                        if d.class == EquipClass::Ammunition { item.units() } else { 1 },
+                    ));
+                }
+            }
+        }
+        let quote = state.selected.filter(|q| {
+            q.conversation == session
+                && q.revision == c.revision
+                && rows.iter().any(|r| r.0 == q.source)
+        });
+        let offer = if let Some(error) = &state.error {
+            error.clone()
+        } else if let Some(q) = quote {
+            format!(
+                "{}\n{} x  {} gold",
+                rows.iter().find(|r| r.0 == q.source).unwrap().1,
+                q.quantity,
+                q.gold
+            )
+        } else {
+            "Select an item".into()
+        };
+        for entity in &offers {
+            if views.owner(entity).is_some_and(|(owner, _)| owner == root)
+                && let Ok(mut text) = texts.get_mut(entity)
+                && text.value != offer
+            {
+                text.value = offer.clone();
+            }
+        }
+        for (entity, disabled) in &controls {
+            if views.owner(entity).is_some_and(|(owner, _)| owner == root) {
+                set_enabled(&mut commands, entity, quote.is_some(), disabled);
+            }
+        }
+        let item = quote
+            .and_then(|q| match q.source {
+                TradeSource::Stock(id) => {
+                    npc.stock.lots.iter().find(|l| l.id == id).map(|l| l.item)
+                }
+                TradeSource::Party(item) => match item.owner {
+                    ItemOwner::Pool => {
+                        party.pool.stacks.iter().find(|s| s.id == item.id).map(|s| s.item)
+                    }
+                    ItemOwner::Member(e) => {
+                        members.get(e).ok()?.1.find_stack(item.id).map(|s| s.item)
+                    }
+                },
+            })
+            .and_then(|id| items.get(id));
+        for (entity, mut picture, mut visibility) in &mut previews {
+            if !views.owner(entity).is_some_and(|(owner, _)| owner == root) {
+                continue;
+            }
+            visibility.set_if_neq(if item.is_some() {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            });
+            if let Some(item) = item {
+                picture.set_if_neq(Picture {
+                    sheet: assets.load(format!("retail://{}", item.image)),
+                    frame: 1,
+                    at: Vec2::new(5., 28.),
+                    bounds: None,
+                });
+            }
+        }
+        let old: Vec<_> = children
+            .into_iter()
+            .flatten()
+            .filter_map(|e| row_data.get(*e).ok().map(|(r, _)| (*e, r.source)))
+            .collect();
+        for (entity, source) in &old {
+            if !rows.iter().any(|r| r.0 == *source) {
+                commands.entity(*entity).despawn();
+            }
+        }
+        let mut ordered = Vec::with_capacity(rows.len());
+        for (source, text, quantity) in rows {
+            if let Some((entity, _)) = old.iter().find(|(_, s)| *s == source) {
+                ordered.push(*entity);
+                if let Ok((mut row, children)) = row_data.get_mut(*entity) {
+                    row.set_if_neq(TradeRow { session, source, quantity });
+                    if let Some(child) = children.first()
+                        && let Ok(mut label) = texts.get_mut(*child)
+                        && label.value != text
+                    {
+                        label.value = text;
+                    }
+                }
+            } else {
+                let (entity, label) = row_button(
+                    &mut commands,
+                    list,
+                    assets.load("retail://data/fonts/wiz_text_font.sti"),
+                    text,
+                );
+                ordered.push(entity);
+                commands.entity(label).insert(BitmapWrap { width: 280, line_spacing: 0 });
+                commands.entity(entity).insert(TradeRow { session, source, quantity });
+            }
+        }
+        if children.is_none_or(|c| c.iter().ne(ordered.iter().copied())) {
+            commands.entity(list).replace_children(&ordered);
+        }
+    }
+}
+fn sync_bubble_geometry(
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+    sheets: Res<Assets<SpriteSheet>>,
+    mut bubbles: Query<(Entity, &mut Node, &mut ImageNode, &Children), With<QuoteBubble>>,
+    mut labels: Query<(&BitmapText, &mut BitmapWrap, &Caption)>,
+    edges: Query<(), With<BubbleEdge>>,
+) {
+    for (bubble, mut node, mut image, children) in &mut bubbles {
+        let Some(text_entity) = children
+            .iter()
+            .find(|e| labels.get(*e).is_ok_and(|(_, _, c)| matches!(c, Caption::Quote)))
+        else {
+            continue;
+        };
+        let Ok((text, mut wrap, _)) = labels.get_mut(text_entity) else { continue };
+        let Some(font) = sheets.get(&text.font) else { continue };
+        let width = (font.text_width(&text.value) + 24).clamp(25, 280);
+        let wrapped = crate::content::ui::wrap_text(&font.frames, &text.value, width - 24);
+        let line = font
+            .frames
+            .first()
+            .map_or(12, |f| (f.height as i32 + f.offset[1] as i32).max(1) as u32);
+        let height = (wrapped.split('\n').count() as u32 * (line + 2) - 2 + 24).min(198);
+        if node.width == px(width as f32) && node.height == px(height as f32) {
+            continue;
+        }
+        node.left = px(320. - width as f32 / 2.);
+        node.width = px(width as f32);
+        node.height = px(height as f32);
+        node.max_height = px(198);
+        image.rect = Some(Rect::new(0., 0., width as f32, height as f32));
+        wrap.width = width - 24;
+        for child in children {
+            if edges.contains(*child) {
+                commands.entity(*child).despawn();
+            }
+        }
+        let mut parts = vec![
+            (0, Vec2::ZERO),
+            (2, Vec2::new(width as f32 - 16., 0.)),
+            (5, Vec2::new(0., height as f32 - 16.)),
+            (7, Vec2::new(width as f32 - 16., height as f32 - 16.)),
+        ];
+        for x in (16..width.saturating_sub(16)).step_by(16) {
+            parts.push((1, Vec2::new(x as f32, 0.)));
+            parts.push((6, Vec2::new(x as f32, height as f32 - 16.)));
+        }
+        for y in (16..height.saturating_sub(16)).step_by(16) {
+            parts.push((3, Vec2::new(0., y as f32)));
+            parts.push((4, Vec2::new(width as f32 - 8., y as f32)));
+        }
+        for (frame, at) in parts {
+            commands.spawn((
+                BubbleEdge,
+                Picture {
+                    sheet: assets.load("retail://data/npc interaction/npc_popup_edge.sti"),
+                    frame,
+                    at,
+                    bounds: None,
+                },
+                ChildOf(bubble),
+            ));
+        }
+    }
+}
+fn sync_topic_geometry(
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+    sheets: Res<Assets<SpriteSheet>>,
+    mut panels: Query<(Entity, &mut Node, &Children), (With<TopicList>, Without<TopicRows>)>,
+    mut lists: Query<(&mut Node, Option<&Children>), (With<TopicRows>, Without<TopicList>)>,
+    chrome: Query<(), With<TopicChrome>>,
+    mut arrows: Query<(&ControlSkin, &mut Picture)>,
+) {
+    let sheet = assets.load::<SpriteSheet>("retail://data/npc interaction/npc_bottompanel.sti");
+    let Some((line, margin)) =
+        sheets.get(&sheet).and_then(|s| Some((s.frames.get(3)?.height, s.frames.get(4)?.height)))
     else {
         return;
     };
     if line == 0 {
         return;
     }
-    let height = (count as u32 * line).clamp(line, 255);
-    let panel = world.query_filtered::<Entity, With<TopicList>>().iter(world).next().unwrap();
-    if world.get::<Node>(panel).is_some_and(|n| n.height == px(height as f32)) {
-        return;
-    }
-    if let Some(mut node) = world.get_mut::<Node>(panel) {
+    for (panel, mut node, children) in &mut panels {
+        let Some(list) = children.iter().find(|e| lists.contains(*e)) else { continue };
+        let Ok((mut list_node, rows)) = lists.get_mut(list) else { continue };
+        let height = (rows.map_or(0, |c| c.len()) as u32 * line).clamp(line.min(255), 255);
+        if node.height == px(height as f32) {
+            continue;
+        }
         node.top = px(301. - height as f32);
         node.height = px(height as f32);
-    }
-    for mut node in world.query_filtered::<&mut Node, With<TopicRows>>().iter_mut(world) {
-        node.top = px(0);
-        node.width = px(118);
-        node.height = px(height as f32);
-    }
-    for (parent, skin, mut picture) in
-        world.query::<(&ChildOf, &ControlSkin, &mut Picture)>().iter_mut(world)
-    {
-        if parent.parent() == panel {
-            picture.at =
-                Vec2::new(126., height as f32 - 18. + if skin.normal == 20 { 3. } else { 11. });
+        list_node.top = px(0);
+        list_node.width = px(118);
+        list_node.height = px(height as f32);
+        for child in children {
+            if let Ok((skin, mut picture)) = arrows.get_mut(*child) {
+                picture.at =
+                    Vec2::new(126., height as f32 - 18. + if skin.normal == 20 { 3. } else { 11. });
+            }
+            if chrome.contains(*child) {
+                commands.entity(*child).despawn();
+            }
+        }
+        let mut parts =
+            vec![(2, Vec2::new(0., height as f32 - 18.)), (4, Vec2::new(0., -(margin as f32)))];
+        for y in (0..height.saturating_sub(line)).step_by(line as usize) {
+            parts.push((3, Vec2::new(0., y as f32)));
+        }
+        for (frame, at) in parts {
+            commands.spawn((
+                TopicChrome,
+                Picture { sheet: sheet.clone(), frame, at, bounds: None },
+                ChildOf(panel),
+            ));
         }
     }
-    let old: Vec<_> = world.query_filtered::<Entity, With<TopicChrome>>().iter(world).collect();
-    for e in old {
-        world.despawn(e);
-    }
-    let mut parts =
-        vec![(2, Vec2::new(0., height as f32 - 18.)), (4, Vec2::new(0., -(margin as f32)))];
-    for y in (0..height.saturating_sub(line)).step_by(line as usize) {
-        parts.push((3, Vec2::new(0., y as f32)));
-    }
-    for (frame, at) in parts {
-        let e = picture(world, panel, "npc_bottompanel", frame, at);
-        world.entity_mut(e).insert(TopicChrome);
-    }
 }
-fn sync_topics(world: &mut World, category: Option<TopicCategory>, alphabetical: bool) {
-    let mut topics: Vec<_> = world
-        .resource::<StoryFacts>()
-        .topics
-        .iter()
-        .filter(|(c, _)| category.is_none_or(|wanted| wanted == *c))
-        .map(|(_, t)| t.clone())
-        .collect();
-    topic_geometry(world, topics.len());
-    if alphabetical {
-        topics.sort_by_key(|t| t.to_lowercase());
-    }
-    let list = world.query_filtered::<Entity, With<TopicRows>>().iter(world).next().unwrap();
-    let current: Vec<_> = world
-        .get::<Children>(list)
-        .into_iter()
-        .flatten()
-        .filter_map(|e| world.get::<TopicRow>(*e).map(|t| t.0.clone()))
-        .collect();
-    if current == topics {
-        return;
-    }
-    let children: Vec<_> = world.get::<Children>(list).into_iter().flatten().copied().collect();
-    for e in children {
-        world.despawn(e);
-    }
-    let input = world.query_filtered::<Entity, With<TopicInput>>().iter(world).next().unwrap();
-    for text in topics {
-        let e = button(world, list, &text);
-        world.entity_mut(e).insert(TopicRow(text.clone()));
-        world.entity_mut(e).observe(move |_: On<Activate>, mut commands: Commands| {
-            commands.entity(input).insert(EditableText {
-                max_characters: Some(128),
-                allow_newlines: false,
-                ..EditableText::new(&text)
-            });
-        });
-    }
-}
+
 fn submit_topic(
+    views: ViewScope,
     mut commands: Commands,
     inputs: Query<(Entity, &EditableText), With<SubmitTopic>>,
-    sessions: Query<(Entity, &Conversation)>,
+    sessions: Query<&Conversation>,
     mut requests: MessageWriter<ConversationRequest>,
 ) {
-    let Ok((session, c)) = sessions.single() else { return };
     for (entity, text) in &inputs {
         if !text.pending_edits.is_empty() || text.pending_paste.is_some() {
             continue;
         }
-        requests.write(ConversationRequest::Topic {
-            conversation: session,
-            revision: c.revision,
-            text: text.value().to_string(),
-        });
+        if let Some((_, session)) = views.owner(entity)
+            && let Ok(c) = sessions.get(session)
+        {
+            requests.write(ConversationRequest::Topic {
+                conversation: session,
+                revision: c.revision,
+                text: text.value().to_string(),
+            });
+        }
         commands.entity(entity).remove::<SubmitTopic>();
     }
 }
@@ -1330,5 +1547,124 @@ fn watch_playback(
         if sink.empty() {
             events.write(LinePlayback { speech: e, event: PlaybackEvent::Finished });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_ownership_rejects_stale_choices_and_cleans_only_its_views() {
+        let mut world = World::new();
+        world.init_resource::<Messages<ConversationRequest>>();
+        world.add_observer(activate_choice);
+        let first = world.spawn_empty().id();
+        let second = world.spawn_empty().id();
+        let view = world.spawn((ConversationView(first), DialogueState::default())).id();
+        let other = world.spawn((ConversationView(second), DialogueState::default())).id();
+        let row = world
+            .spawn((
+                Button,
+                Choice { session: first, index: 0, revision: 7, answer: Answer::Price(true) },
+                ChildOf(view),
+            ))
+            .id();
+        world.trigger(Activate { entity: row });
+        let requests: Vec<_> =
+            world.resource_mut::<Messages<ConversationRequest>>().drain().collect();
+        assert!(
+            matches!(&requests[..],[ConversationRequest::PriceAnswer{conversation,revision:7,accept:true}] if *conversation==first)
+        );
+        // A stale callback cannot act on the old session after replacement,
+        // even if that old session still exists and has the same revision.
+        world.entity_mut(view).insert(ConversationView(second));
+        world.trigger(Activate { entity: row });
+        assert!(world.resource::<Messages<ConversationRequest>>().is_empty());
+        select(
+            &mut world,
+            view,
+            first,
+            TradeSource::Stock(crate::game::npcs::trade::StockLotId(1)),
+            1,
+        );
+        assert!(world.get::<DialogueState>(view).unwrap().selected.is_none());
+        world.despawn(first);
+        assert!(world.get_entity(view).is_ok());
+        world.despawn(second);
+        for entity in [view, other, row] {
+            assert!(world.get_entity(entity).is_err());
+        }
+    }
+
+    #[test]
+    fn topic_projection_retains_rows_and_late_art_without_crossing_view_boundaries() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<SpriteSheet>()
+            .init_resource::<Assets<Image>>()
+            .init_resource::<StoryFacts>()
+            .init_resource::<Assets<NpcCatalog>>()
+            .init_resource::<NpcAssets>()
+            .init_resource::<SelectedMember>()
+            .init_resource::<InputFocus>()
+            .add_message::<ConversationRequest>()
+            .add_message::<LinePlayback>()
+            .add_plugins(ConversationViewPlugin)
+            .add_systems(Update, super::super::screen_art::render_text.after(sync_topic_rows));
+        app.world_mut().resource_mut::<StoryFacts>().topics =
+            vec![(TopicCategory::Person, "Burz".into()), (TopicCategory::Place, "Arnika".into())];
+        let first = app.world_mut().spawn_empty().id();
+        let second = app.world_mut().spawn_empty().id();
+        let view = app
+            .world_mut()
+            .spawn((
+                ConversationView(first),
+                DialogueState { category: Some(TopicCategory::Person), ..default() },
+            ))
+            .id();
+        let other = app
+            .world_mut()
+            .spawn((
+                ConversationView(second),
+                DialogueState { category: Some(TopicCategory::Place), ..default() },
+            ))
+            .id();
+        let list = app.world_mut().spawn((TopicRows, ChildOf(view))).id();
+        let other_list = app.world_mut().spawn((TopicRows, ChildOf(other))).id();
+        app.update();
+        let row = app.world().get::<Children>(list).unwrap()[0];
+        let other_row = app.world().get::<Children>(other_list).unwrap()[0];
+        assert_eq!(app.world().get::<TopicRow>(row).unwrap().0, "Burz");
+        assert_eq!(app.world().get::<TopicRow>(other_row).unwrap().0, "Arnika");
+        let label = app.world().get::<Children>(row).unwrap()[0];
+        let font = app.world().get::<BitmapText>(label).unwrap().font.clone();
+        let frames = vec![
+            crate::content::ui::Frame {
+                offset: [0, 0],
+                width: 2,
+                height: 3,
+                rgba: vec![255; 24]
+            };
+            150
+        ];
+        app.world_mut()
+            .resource_mut::<Assets<SpriteSheet>>()
+            .insert(font.id(), SpriteSheet { frames, images: vec![], palette: None })
+            .unwrap();
+        app.world_mut()
+            .resource_mut::<StoryFacts>()
+            .topics
+            .push((TopicCategory::Person, "Antone".into()));
+        app.world_mut().get_mut::<DialogueState>(view).unwrap().alphabetical = true;
+        app.update();
+        app.update();
+        assert_eq!(app.world().get::<Children>(list).unwrap()[1], row);
+        assert_eq!(app.world().get::<Children>(other_list).unwrap()[0], other_row);
+        assert_eq!(app.world().get::<ImageNode>(label).unwrap().color.alpha(), 1.);
+        assert_eq!(app.world().get::<Node>(label).unwrap().width, px(8));
+        app.world_mut().despawn(first);
+        assert!(app.world().get_entity(row).is_err());
+        assert!(app.world().get_entity(other_row).is_ok());
     }
 }
