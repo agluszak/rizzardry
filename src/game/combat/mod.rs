@@ -188,12 +188,23 @@ enum AcceptedAction {
 struct PartyTurn {
     actor: Entity,
     action: AcceptedAction,
-    turn: Turn,
+    /// When the member acts next, 1 to 100; 0 when done for the round.
+    phase: u8,
+    /// What an attack has left; other actions act once.
     hands: HandTurns,
 }
 
+impl PartyTurn {
+    /// Done for the round: nothing left to act with.
+    fn end(&mut self) {
+        self.phase = 0;
+        self.hands.left = [0, 0];
+    }
+}
+
 /// A member's attacks left in each hand this round and the hand due next
-/// (retail `hand_attack_values`, `current_hand`).
+/// (retail `hand_attack_values`, `current_hand`): the one authority on
+/// what an attack has left.
 #[derive(Clone, Copy, Debug, Default)]
 struct HandTurns {
     left: [u32; 2],
@@ -630,7 +641,7 @@ fn accept_round(
             Order::Magic(choice) => AcceptedAction::Magic(choice),
         };
         let mut turns = HandTurns { lightning, ..default() };
-        let turn = match action {
+        let phase = match action {
             // The hand with the most attacks opens, its weapon's initiative
             // counting (retail `AssignCombatPhases`).
             AcceptedAction::Attack { .. } if vitals.can_fight() => match hands.choose() {
@@ -640,21 +651,21 @@ fn accept_round(
                         hands.hands.each_ref().map(|h| if h.in_play { h.attacks } else { 0 });
                     let initiative =
                         character.initiative(burden.load) + hands.hands[hand].initiative;
-                    Turn { phase: phase(rng, initiative), attacks_left: turns.left.iter().sum() }
+                    phase(rng, initiative)
                 }
-                None => Turn::default(),
+                None => 0,
             },
             AcceptedAction::Magic(_) if vitals.can_fight() => {
-                Turn { phase: phase(rng, character.initiative(burden.load)), attacks_left: 1 }
+                phase(rng, character.initiative(burden.load))
             }
-            _ => Turn::default(),
+            _ => 0,
         };
         if matches!(action, AcceptedAction::Defend) {
             commands.entity(member).insert(Defends(entity));
         } else {
             commands.entity(member).remove::<Defends>();
         }
-        round.party.push(PartyTurn { actor: member, action, turn, hands: turns });
+        round.party.push(PartyTurn { actor: member, action, phase, hands: turns });
     }
     for &entity in combatants {
         let Ok((monster, ..)) = monsters.get(entity) else { continue };
@@ -878,12 +889,8 @@ pub fn run_battle(
         }
         // Nobody in the party acts while its move is still to come.
         let party_waits = matches!(battle.party_move, PartyMove::Pending { .. });
-        if let Some(index) = battle
-            .this_round
-            .party
-            .iter()
-            .position(|p| p.turn.phase == step)
-            .filter(|_| !party_waits)
+        if let Some(index) =
+            battle.this_round.party.iter().position(|p| p.phase == step).filter(|_| !party_waits)
         {
             let acted = party_turn(
                 &mut commands,
@@ -958,11 +965,11 @@ fn party_turn(
                 }
         });
     if !able_now {
-        battle.this_round.party[index].turn = Turn::default();
+        battle.this_round.party[index].end();
         return false;
     }
     if let AcceptedAction::Magic(choice) = work.action {
-        battle.this_round.party[index].turn = Turn::default();
+        battle.this_round.party[index].end();
         match member_casts(combatants, member, choice, rng, members, damage, party, magic) {
             Ok((report, flights)) => {
                 battle.this_round.attacked = true;
@@ -990,7 +997,7 @@ fn party_turn(
         blows::member_attacks(battle, index, rng, field, &mut fight, news);
     });
     if attacked.is_err() {
-        battle.this_round.party[index].turn = Turn::default();
+        battle.this_round.party[index].end();
     }
     attacked.is_ok()
 }
@@ -1060,13 +1067,13 @@ fn finish_party_move(battle: &mut Battle, rng: &mut GameRng, members: &mut Membe
     }
     let keep = 100u32.saturating_sub(spent as u32);
     for work in &mut battle.this_round.party {
-        if work.turn.phase == 0 {
+        if work.phase == 0 {
             continue;
         }
         if rng.below(100) < keep {
-            work.turn.phase = work.turn.phase.max(step);
+            work.phase = work.phase.max(step);
         } else {
-            work.turn = Turn::default();
+            work.end();
         }
     }
     for work in &battle.this_round.party {
@@ -1319,7 +1326,7 @@ mod tests {
     use crate::content::items::{ItemId, LootTables};
     use crate::content::spells::SpellCatalog;
     use crate::game::data::GameData;
-    use crate::game::inventory::{Carried, ItemIds, make_item};
+    use crate::game::inventory::{Carried, ItemIds, ItemStack, make_item};
     use crate::game::party::DamageApplied;
     use enumset::EnumSet;
 
@@ -1823,13 +1830,8 @@ mod tests {
         news.extend(app.world_mut().resource_mut::<Messages<CombatNews>>().drain());
         assert!(news.contains(&CombatNews::PartyStops));
         assert!(!fight(app.world()).unwrap().party_may_move());
-        let pending = fight(app.world())
-            .unwrap()
-            .this_round
-            .party
-            .iter()
-            .filter(|p| p.turn.phase > 0)
-            .count();
+        let pending =
+            fight(app.world()).unwrap().this_round.party.iter().filter(|p| p.phase > 0).count();
         assert_eq!(pending, 0, "a move spent in full keeps nobody's action");
     }
 
@@ -2369,5 +2371,65 @@ mod tests {
                 .iter()
                 .any(|&(c, _)| c == Condition::Unconscious)
         );
+    }
+
+    /// A hand that runs out of shots gives up only its own attacks: the
+    /// other, still loaded, makes the ones it was accepted for.
+    #[test]
+    fn a_hand_out_of_shots_leaves_the_other_hands_attacks() {
+        use crate::content::characters::{Attribute, Skill};
+        use crate::content::items::{EquipClass, ItemDefinition, QuantityKind};
+        let (mut app, [a, _]) = round_app(true);
+        let gun = |id: u16, initiative: i8| ItemDefinition {
+            id: ItemId(id),
+            name: format!("gun {id}"),
+            class: EquipClass::RangedWeapon,
+            weapon_skill: Some(Skill::ModernWeapon),
+            reach: Reach::Touch,
+            damage: Dice { count: 0, sides: 0, base: 1 },
+            damage_bonus: initiative,
+            attack_modes: EnumSet::only(AttackMode::Shoot),
+            quantity: QuantityKind::Shots,
+            ..default()
+        };
+        // The main gun is quicker and has more attacks, so it is due again
+        // after its first; it has a single shot.
+        let catalog = ItemCatalog(vec![gun(0, 10), gun(1, 0)]);
+        let handle = app.world().resource::<GameData>().items.clone();
+        let mut ids = ItemIds::default();
+        let (main, off) = (
+            ItemStack::new(&catalog.0[0], &mut ids, 1, true),
+            ItemStack::new(&catalog.0[1], &mut ids, 20, true),
+        );
+        {
+            let mut character = app.world_mut().get_mut::<Character>(a).unwrap();
+            for attribute in [Attribute::Speed, Attribute::Dexterity] {
+                character.attributes[attribute] = 125;
+            }
+            for skill in [Skill::ModernWeapon, Skill::RangedCombat, Skill::DualWeapons] {
+                character.skill_points[skill] = 100;
+            }
+        }
+        let mut carried = app.world_mut().get_mut::<Carried>(a).unwrap();
+        carried.equipment[EquipSlot::Primary] = Some(crate::game::inventory::Equipped::new(main));
+        carried.equipment[EquipSlot::Secondary] =
+            Some(crate::game::inventory::Equipped::new(off.clone()));
+        let (character, carried) = (
+            app.world().get::<Character>(a).unwrap().clone(),
+            app.world().get::<Carried>(a).unwrap().clone(),
+        );
+        let hands = attack::hands(&character, &carried, &catalog, Default::default());
+        assert!(hands.dual_wielding);
+        assert!(hands.hands[0].attacks > hands.hands[1].attacks, "{hands:?}");
+        app.world_mut().resource_mut::<Assets<ItemCatalog>>().insert(&handle, catalog).unwrap();
+        let news = finish_round(&mut app);
+        let attacks = news
+            .iter()
+            .filter(|n| matches!(n, CombatNews::Attack { attacker, .. } if *attacker == a))
+            .count();
+        // One from the main gun before it ran dry, then the off hand's.
+        assert_eq!(attacks, 1 + hands.hands[1].attacks as usize);
+        let fired = app.world().get::<Carried>(a).unwrap().worn(EquipSlot::Secondary).unwrap();
+        assert!(fired.remaining_uses() < off.remaining_uses(), "the loaded gun fired");
     }
 }

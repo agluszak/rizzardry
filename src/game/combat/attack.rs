@@ -295,29 +295,31 @@ pub fn hands(c: &Character, carried: &Carried, catalog: &ItemCatalog, load: Load
     let holds = [holds(0), holds(1)];
     let weapon_skill =
         |hand: usize| definition(hand).map_or(Some(Skill::MartialArts), |d| d.weapon_skill);
-    // Which combat skill each hand fights with, and whether it can at all.
+    // Which combat skill each hand fights with: close, ranged, or none.
     let combat = |hand: usize| -> Option<bool> {
-        let skill = weapon_skill(hand)?;
-        if skill as usize <= Skill::Shield as usize || skill == Skill::MartialArts {
-            return Some(false);
+        match weapon_skill(hand)? {
+            skill if skill as usize <= Skill::Shield as usize || skill == Skill::MartialArts => {
+                Some(false)
+            }
+            Skill::ModernWeapon | Skill::Bow | Skill::ThrowingAndSling => Some(true),
+            _ => None,
         }
-        if !matches!(skill, Skill::ModernWeapon | Skill::Bow | Skill::ThrowingAndSling) {
-            return None;
-        }
-        let (stack, d) = worn[hand]?;
-        let other = definition(1 - hand);
-        if is_launcher(d.kind)
-            && !other.is_some_and(|o| d.shoots.is_some() && d.shoots == o.ammunition)
-        {
-            return None;
-        }
-        if d.quantity == QuantityKind::Shots && stack.remaining_uses() == Some(0) {
-            return None;
-        }
-        Some(true)
     };
     let ranged = [combat(0), combat(1)];
-    let mut in_play = ranged.map(|r| r.is_some());
+    // A ranged hand cannot attack with a launcher lacking its ammunition,
+    // or a gun out of shots; it keeps its combat skill all the same.
+    let loaded = |hand: usize| {
+        let Some((stack, d)) = worn[hand] else { return true };
+        let other = definition(1 - hand);
+        (!is_launcher(d.kind)
+            || other.is_some_and(|o| d.shoots.is_some() && d.shoots == o.ammunition))
+            && !(d.quantity == QuantityKind::Shots && stack.remaining_uses() == Some(0))
+    };
+    let mut in_play = [0, 1].map(|hand| match ranged[hand] {
+        None => false,
+        Some(false) => true,
+        Some(true) => loaded(hand),
+    });
     if ranged[0] != ranged[1]
         || matches!(holds[1], Holds::Shield | Holds::Ammunition)
         || definition(0).is_some_and(|d| d.kind == OMNIGUN)

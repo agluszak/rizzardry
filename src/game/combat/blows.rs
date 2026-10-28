@@ -291,14 +291,30 @@ pub(super) fn member_attacks(
     let slowed = vitals.has(Condition::Slowed);
     let hands = attack::hands(&character, carried, items, load);
     let mut turns = work.hands;
-    let current = turns.current;
-    let hand = hands.hands[current].clone();
-    let target = melee_target(member, &hand, field, fight);
-    let Some((target, _)) = target.filter(|_| hand.in_play && turns.left[current] > 0) else {
-        // No target in reach: the rest of the turn is lost.
-        battle.this_round.party[index].turn = Turn::default();
+    // The hand due attacks if it still can; a hand that cannot (out of
+    // shots, or nothing in its reach) gives up only its own attacks, and
+    // the other hand takes over (retail `StartCharacterAttack`,
+    // `ComputeCharacterActionPhase`).
+    let mut due = None;
+    for current in [turns.current, 1 - turns.current] {
+        let hand = &hands.hands[current];
+        let target = (hand.in_play && turns.left[current] > 0)
+            .then(|| melee_target(member, hand, field, fight))
+            .flatten();
+        match target {
+            Some((target, _)) => {
+                due = Some((current, target));
+                break;
+            }
+            None => turns.left[current] = 0,
+        }
+    }
+    let Some((current, target)) = due else {
+        battle.this_round.party[index].end();
         return;
     };
+    turns.current = current;
+    let hand = hands.hands[current].clone();
     battle.this_round.attacked = true;
     // Retail draws the attack's mode, then its swings.
     let mode = if berserk { AttackMode::Berserk } else { attack::choose_mode(rng, hand.modes) };
@@ -422,8 +438,10 @@ pub(super) fn member_attacks(
         vitals.spend_stamina(load.scale_fatigue(cost, slowed));
         // Arrows, bolts and stones are shot away, thrown weapons thrown,
         // and guns spend their shots.
+        // A hand with nothing left to fire is done for the round.
         if (hand.paired || hand.ranged) && !spend_shot(&mut carried, items, current, &hand) {
             left = 0;
+            turns.left[current] = 0;
         }
     }
     tally.report(battle, (member, target), news);
@@ -576,13 +594,7 @@ fn iron_skin(
 /// other hand while it has attacks, unless it has fewer and less
 /// initiative; spread over the rest of the round, and a switch costs the
 /// difference in the hands' initiative.
-fn next_hand(
-    battle: &mut Battle,
-    index: usize,
-    step: u8,
-    mut turns: HandTurns,
-    hands: &attack::Hands,
-) {
+fn next_hand(battle: &mut Battle, index: usize, step: u8, turns: HandTurns, hands: &attack::Hands) {
     let current = turns.current;
     let other = 1 - current;
     let (now, then) = (turns.left[current], turns.left[other]);
@@ -600,18 +612,17 @@ fn next_hand(
     } else {
         Some(u32::from(step))
     };
-    let turn = &mut battle.this_round.party[index].turn;
+    let work = &mut battle.this_round.party[index];
+    work.hands = turns;
     match phase.filter(|&phase| phase <= 100) {
         Some(phase) => {
             let phase = phase as i32
                 + if chosen != current { initiative(current) - initiative(chosen) } else { 0 };
-            turns.current = chosen;
-            turn.phase = phase.clamp(i32::from(step), 100) as u8;
-            turn.attacks_left = turns.left.iter().sum();
+            work.hands.current = chosen;
+            work.phase = phase.clamp(i32::from(step), 100) as u8;
         }
-        None => *turn = Turn::default(),
+        None => work.end(),
     }
-    battle.this_round.party[index].hands = turns;
 }
 
 /// Whether a member notices a monster coming at them in time to turn
