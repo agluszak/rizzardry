@@ -189,8 +189,10 @@ impl Advancement {
     pub fn learned(&self) -> LearnedSpells {
         let mut known = self.known.clone();
         known.0.extend(self.spells.iter().copied());
-        if self.spells.contains(&SpellId(73)) || self.spells.contains(&SpellId(75)) {
-            known.0.extend([SpellId(73), SpellId(75)]);
+        if self.spells.contains(&SpellId::RETURN_TO_PORTAL)
+            || self.spells.contains(&SpellId::SET_PORTAL)
+        {
+            known.0.extend([SpellId::RETURN_TO_PORTAL, SpellId::SET_PORTAL]);
         }
         known
     }
@@ -217,7 +219,17 @@ impl Advancement {
     }
     pub fn selected_spell(&self, id: SpellId) -> bool {
         self.spells.contains(&id)
-            || (matches!(id.0, 73 | 75) && self.spells.iter().any(|s| matches!(s.0, 73 | 75)))
+            || (matches!(
+                id,
+                crate::content::spells::SpellId::RETURN_TO_PORTAL
+                    | crate::content::spells::SpellId::SET_PORTAL
+            ) && self.spells.iter().any(|s| {
+                matches!(
+                    *s,
+                    crate::content::spells::SpellId::RETURN_TO_PORTAL
+                        | crate::content::spells::SpellId::SET_PORTAL
+                )
+            }))
     }
     pub fn can_learn(&self, id: SpellId, catalog: &SpellCatalog) -> bool {
         // Retail excludes this draft's magic-skill allocations from spell eligibility.
@@ -239,12 +251,16 @@ impl Advancement {
     }
     pub fn toggle_spell(&mut self, id: SpellId, catalog: &SpellCatalog) -> bool {
         // Retail charges the linked portal pair at Set Portal (75) in spell order.
-        let id = if id == SpellId(73) { SpellId(75) } else { id };
+        let id = if id == SpellId::RETURN_TO_PORTAL { SpellId::SET_PORTAL } else { id };
         if self.selected_spell(id) {
             self.spells.remove(&id);
-            if matches!(id.0, 73 | 75) {
-                self.spells.remove(&SpellId(73));
-                self.spells.remove(&SpellId(75));
+            if matches!(
+                id,
+                crate::content::spells::SpellId::RETURN_TO_PORTAL
+                    | crate::content::spells::SpellId::SET_PORTAL
+            ) {
+                self.spells.remove(&SpellId::RETURN_TO_PORTAL);
+                self.spells.remove(&SpellId::SET_PORTAL);
             }
         } else {
             if !self.can_learn(id, catalog) {
@@ -506,9 +522,9 @@ mod tests {
             };
         }
         let mut draft = Advancement::new(Entity::PLACEHOLDER, &c, &default());
-        assert!(draft.toggle_spell(SpellId(75), &spells));
+        assert!(draft.toggle_spell(SpellId::SET_PORTAL, &spells));
         assert_eq!(draft.spell_remaining(&spells), 0);
-        assert!(draft.learned().0.contains(&SpellId(73)));
+        assert!(draft.learned().0.contains(&SpellId::RETURN_TO_PORTAL));
         assert!(magic::skill_available(
             &draft.preview(),
             Some(&draft.learned()),
@@ -525,12 +541,12 @@ mod tests {
             Some(&spells),
             Skill::MentalMagic
         ));
-        assert!(draft.toggle_spell(SpellId(73), &spells));
+        assert!(draft.toggle_spell(SpellId::RETURN_TO_PORTAL, &spells));
         assert_eq!(draft.spell_remaining(&spells), 1);
         assert!(draft.learned().0.is_empty());
         c.skill_points[Skill::Wizardry] = 10; // 12 effective, below rank 2.
         spells.0[1] = SpellDefinition {
-            id: SpellId(1),
+            id: SpellId::ACID_SPLASH,
             realm: Some(Realm::Fire),
             level: 2,
             books: Spellbook::Wizardry.into(),
@@ -541,7 +557,7 @@ mod tests {
             assert!(draft.adjust_skill(Skill::Wizardry, true, &spells));
         }
         assert!(magic::can_learn(&draft.preview(), &spells.0[1]));
-        assert!(!draft.can_learn(SpellId(1), &spells));
+        assert!(!draft.can_learn(SpellId::ACID_SPLASH, &spells));
     }
     fn world(c: Character, catalog: ItemCatalog) -> (World, Entity, Entity) {
         let mut world = World::new();
@@ -669,7 +685,7 @@ mod tests {
             ..default()
         };
         let catalog = SpellCatalog(vec![SpellDefinition::default(), spell(1), spell(2)]);
-        let known = LearnedSpells([SpellId(1)].into());
+        let known = LearnedSpells([SpellId::ACID_SPLASH].into());
         let old = magic::max_points(w.get::<Character>(member).unwrap(), &known, &catalog);
         let mut mana = SpellPoints::full(old);
         mana.current[Realm::Divine] -= 2;
@@ -679,7 +695,7 @@ mod tests {
         w.resource_mut::<Assets<SpellCatalog>>().insert(handle.id(), catalog).unwrap();
         let mut draft = begin(&mut w, member);
         let catalog = w.resource::<Assets<SpellCatalog>>().get(&handle).unwrap();
-        assert!(draft.toggle_spell(SpellId(2), catalog));
+        assert!(draft.toggle_spell(SpellId::BLESS, catalog));
         complete(&mut draft, catalog);
         accept(&mut w, &draft).unwrap();
         let c = w.get::<Character>(member).unwrap();
@@ -692,7 +708,7 @@ mod tests {
         let mana = w.get::<SpellPoints>(member).unwrap();
         assert_eq!(mana.current[Realm::Divine], maximum[Realm::Divine] - 2);
         assert_eq!(mana.fraction[Realm::Divine], 0.25);
-        assert_eq!(learned.0, [SpellId(1), SpellId(2)].into());
+        assert_eq!(learned.0, [SpellId::ACID_SPLASH, SpellId::BLESS].into());
         assert_eq!(c.spell_picks.total(), 0);
     }
 }

@@ -389,7 +389,7 @@ mod tests {
         let catalog = SpellCatalog(vec![
             SpellDefinition::default(),
             SpellDefinition {
-                id: SpellId(1),
+                id: SpellId::ACID_SPLASH,
                 name: "Flame".into(),
                 level: 1,
                 cost: 1,
@@ -398,7 +398,7 @@ mod tests {
                 ..default()
             },
             SpellDefinition {
-                id: SpellId(2),
+                id: SpellId::BLESS,
                 name: "Frost".into(),
                 level: 1,
                 cost: 1,
@@ -407,7 +407,7 @@ mod tests {
                 ..default()
             },
             SpellDefinition {
-                id: SpellId(3),
+                id: SpellId::CHARM,
                 name: "Prayer".into(),
                 level: 1,
                 cost: 1,
@@ -418,12 +418,12 @@ mod tests {
         ]);
         let mut draft = CharacterDraft::default();
         draft.choose(Race::Human, Gender::Male, Profession::Mage).unwrap();
-        assert!(!draft.toggle_spell(&catalog, SpellId(3)));
-        assert!(draft.toggle_spell(&catalog, SpellId(1)));
+        assert!(!draft.toggle_spell(&catalog, SpellId::CHARM));
+        assert!(draft.toggle_spell(&catalog, SpellId::ACID_SPLASH));
         assert!(draft.skill_available(Skill::FireMagic));
         assert_eq!(draft.preview().spell_picks.total(), 1);
         assert!(draft.adjust_skill(Skill::FireMagic, true));
-        assert!(draft.toggle_spell(&catalog, SpellId(2)));
+        assert!(draft.toggle_spell(&catalog, SpellId::BLESS));
         draft.name = "A spellcaster".into();
         complete_allocations(&mut draft);
         let character = draft.finish().unwrap();
@@ -433,8 +433,8 @@ mod tests {
             Some(&catalog),
             Skill::FireMagic
         ));
-        assert!(draft.spells().contains(&SpellId(2)));
-        assert!(draft.toggle_spell(&catalog, SpellId(1)));
+        assert!(draft.spells().contains(&SpellId::BLESS));
+        assert!(draft.toggle_spell(&catalog, SpellId::ACID_SPLASH));
         assert!(!draft.skill_available(Skill::FireMagic));
         assert_eq!(draft.allocated_skill(Skill::FireMagic), 0);
     }

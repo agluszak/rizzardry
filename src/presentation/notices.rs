@@ -244,7 +244,7 @@ fn announce(
         Announcement::Monster { word, mode, named } => (
             match word {
                 AttackWord::Verb => verb(mode),
-                AttackWord::Word(word) => string(0x619 + 2 * usize::from(word)),
+                word => string(word.text_id()),
             },
             if named { preposition(mode) } else { String::new() },
         ),

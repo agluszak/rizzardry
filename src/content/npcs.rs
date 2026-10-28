@@ -19,7 +19,7 @@ pub struct NpcDefinition {
     pub faction: u8,
     pub buy_factor: f32,
     pub sell_factor: f32,
-    pub accepted_classes: u32,
+    pub accepted_classes: enumset::EnumSet<super::items::EquipClass>,
     pub voice_script: bool,
     pub stock: Vec<StockRule>,
 }
