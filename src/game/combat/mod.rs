@@ -48,6 +48,7 @@ impl Plugin for CombatPlugin {
         app.add_message::<CombatNews>()
             .add_message::<ChoosePartyMove>()
             .add_message::<StartRound>()
+            .add_message::<GiveOrder>()
             .init_resource::<CombatSettings>()
             .add_systems(
                 Update,
@@ -60,6 +61,7 @@ impl Plugin for CombatPlugin {
             .add_systems(
                 Update,
                 (
+                    give_orders,
                     settle_defeat,
                     start_battle,
                     track_party_move,
@@ -105,6 +107,30 @@ pub struct CombatSettings {
 pub enum PartyPace {
     Walk,
     Run,
+}
+
+/// Give a member their order for the coming rounds.
+#[derive(Message, Clone, Copy, Debug, PartialEq)]
+pub struct GiveOrder {
+    pub member: Entity,
+    pub order: crate::game::party::Order,
+}
+
+/// Orders are given to the party's members during a fight.
+fn give_orders(
+    mut requests: MessageReader<GiveOrder>,
+    battle: Option<Single<&Battle>>,
+    roster: Single<&crate::game::party::roster::PartyRoster>,
+    mut orders: Query<&mut crate::game::party::Order>,
+) {
+    for &GiveOrder { member, order } in requests.read() {
+        if battle.is_some()
+            && roster.contains(&member)
+            && let Ok(mut current) = orders.get_mut(member)
+        {
+            current.set_if_neq(order);
+        }
+    }
 }
 
 /// Choose, between rounds, whether the party moves in the next ones.

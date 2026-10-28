@@ -355,6 +355,7 @@ mod keyboard_tests {
             .init_resource::<crate::game::combat::CombatSettings>()
             .init_resource::<TextLog>()
             .add_message::<crate::game::combat::StartRound>()
+            .add_message::<crate::game::combat::GiveOrder>()
             .add_message::<OpenAutomap>()
             .add_input_context::<MapKey>()
             .add_systems(Startup, spawn_map_key)

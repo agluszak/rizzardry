@@ -215,16 +215,14 @@ fn select_member(
 fn set_order(
     key: On<Start<SetOrder>>,
     orders_by_key: Query<&OrderKey>,
-    battle: Option<Single<&Battle>>,
     selected: Res<SelectedMember>,
-    mut orders: Query<&mut Order>,
+    mut orders: MessageWriter<crate::game::combat::GiveOrder>,
     roster: Single<&PartyRoster>,
 ) {
-    if let (Ok(OrderKey(order)), Some(_)) = (orders_by_key.get(key.action), battle)
+    if let Ok(&OrderKey(order)) = orders_by_key.get(key.action)
         && let Some(member) = selected.member(&roster)
-        && let Ok(mut current) = orders.get_mut(member)
     {
-        current.set_if_neq(*order);
+        orders.write(crate::game::combat::GiveOrder { member, order });
     }
 }
 

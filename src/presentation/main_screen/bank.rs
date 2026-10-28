@@ -199,7 +199,7 @@ fn press(
     mut camp: MessageWriter<CampRequest>,
     mut search: MessageWriter<ToggleSearch>,
     mut layout: ResMut<ScreenLayout>,
-    mut orders: Query<&mut Order>,
+    mut orders: MessageWriter<crate::game::combat::GiveOrder>,
     roster: Single<&PartyRoster>,
     selected: Res<SelectedMember>,
     mut round: MessageWriter<StartRound>,
@@ -212,10 +212,8 @@ fn press(
 ) {
     match buttons.get(click.entity).ok().and_then(|face| face.kind) {
         Some(Bank::Order(order)) if battle.is_some() => {
-            if let Some(member) = selected.member(&roster)
-                && let Ok(mut current) = orders.get_mut(member)
-            {
-                current.set_if_neq(order);
+            if let Some(member) = selected.member(&roster) {
+                orders.write(crate::game::combat::GiveOrder { member, order });
             }
         }
         Some(Bank::Round) if battle.is_some() => {
