@@ -289,11 +289,10 @@ fn player_distance(world: &mut World, entity: Entity) -> Option<f32> {
         .into_iter()
         .flatten()
         .filter_map(|child| {
+            world.get::<super::props::PropPart>(*child)?;
             let at = world.get::<Transform>(*child)?;
-            Some(world.get::<Collider>(*child).map_or_else(
-                || eye.distance(at.translation),
-                |collider| collider.distance_to_point(at.translation, at.rotation, eye, true),
-            ))
+            let collider = world.get::<Collider>(*child)?;
+            Some(collider.distance_to_point(at.translation, at.rotation, eye, true))
         })
         .min_by(f32::total_cmp);
     Some(distance.unwrap_or_else(|| eye.distance(prop.centre)))

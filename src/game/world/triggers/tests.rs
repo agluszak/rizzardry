@@ -1131,3 +1131,42 @@ fn a_door_waits_for_the_doors_it_runs_before_its_key_is_tried() {
     assert!(!level.world.get::<DoorState>(level.device("DOOR")).unwrap().locked);
     assert_eq!(level.motion("DOOR").target, 15.0);
 }
+
+#[test]
+fn player_reach_uses_only_prop_colliders_then_one_centre_fallback() {
+    use crate::game::party::body::PartyBody;
+    use crate::game::world::props::PropPart;
+    use avian3d::prelude::{Collider, Position};
+    let mut world = World::new();
+    let position = Position::default();
+    let eye = PartyBody::eye(&position);
+    world.spawn((PartyBody::default(), position));
+    let prop = world
+        .spawn(Prop {
+            definition: 0,
+            centre: eye + Vec3::X * 20.0,
+            frames_per_second: 0.0,
+            last_frame: 0,
+            wraps: false,
+            slots: vec![],
+        })
+        .id();
+    let surface = world
+        .spawn((
+            PropPart { part: 0, keys: vec![] },
+            Transform::from_translation(eye + Vec3::X * 10.0),
+            Collider::sphere(1.0),
+            ChildOf(prop),
+        ))
+        .id();
+    // Neither a colliderless part nor a helper collider is gameplay reach geometry.
+    world.spawn((
+        PropPart { part: 1, keys: vec![] },
+        Transform::from_translation(eye),
+        ChildOf(prop),
+    ));
+    world.spawn((Collider::sphere(1.0), Transform::from_translation(eye), ChildOf(prop)));
+    assert!((player_distance(&mut world, prop).unwrap() - 9.0).abs() < 0.001);
+    world.entity_mut(surface).remove::<Collider>();
+    assert!((player_distance(&mut world, prop).unwrap() - 20.0).abs() < 0.001);
+}

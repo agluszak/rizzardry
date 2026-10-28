@@ -904,6 +904,19 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     }
     app.world_mut().entity_mut(body).insert(rizzardry::game::world::population::Provoked);
     let stock = app.world().get::<Npc>(actor).unwrap().stock.clone();
+    // Replacing the current map departs and reuses this role in the same
+    // activation, before its queued Disabled insertion is applied.
+    let replacement = spawn_level(&mut app, floor());
+    app.update();
+    assert!(is_played(&app, replacement));
+    assert!(app.world().get_entity(source).is_err());
+    assert_eq!(app.world().get::<NpcBodies>(actor).unwrap()[0], body);
+    assert_eq!(app.world().get::<LevelOwned>(body).unwrap().0, replacement);
+    assert!(app.world().get::<bevy::ecs::entity_disabling::Disabled>(body).is_none());
+    assert!(app.world().get::<Collider>(body).is_some());
+    assert_eq!(app.world().get::<Monster>(body).unwrap().hp, 4);
+    assert_eq!(app.world().get::<Npc>(actor).unwrap().stock, stock);
+    let source = replacement;
     app.world_mut()
         .entity_mut(body)
         .insert(rizzardry::game::world::navigation::links::Crossing { link: source, to: Vec3::X });

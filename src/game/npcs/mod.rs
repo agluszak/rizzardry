@@ -74,24 +74,21 @@ pub struct NpcPopulation<'w, 's> {
     pub facts: Res<'w, Assets<FactCatalog>>,
     pub scripts: Res<'w, Assets<DialogueScript>>,
     pub npcs: Query<'w, 's, (Entity, &'static ActorId, &'static NpcBodies)>,
+    // Activation owns both live and dormant roles. Departure and placement
+    // happen in one commit, before deferred Disabled changes become visible.
     roles: Query<
-        'w,
-        's,
-        (&'static NpcWorldRole, &'static Monster, &'static Transform),
-        (With<Disabled>, Without<PartyBody>),
-    >,
-    bodies: Query<
         'w,
         's,
         (
             Entity,
+            &'static mut NpcWorldRole,
+            &'static Monster,
             ActorPose,
             Option<&'static Walker>,
-            &'static crate::game::world::level::LevelOwned,
+            Option<&'static crate::game::world::level::LevelOwned>,
             Option<&'static crate::game::world::identify::GroupMember>,
-            &'static mut NpcWorldRole,
         ),
-        (With<NpcBody>, Without<Disabled>, Without<PartyBody>),
+        (With<NpcBody>, Allow<Disabled>, Without<PartyBody>),
     >,
     groups: Query<'w, 's, &'static crate::game::world::identify::MonsterGroup>,
     pub clock: Res<'w, crate::game::time::GameClock>,
@@ -130,15 +127,15 @@ impl NpcPopulation<'_, '_> {
         }
         if let Some((_, _, bodies)) = self.npcs.iter().find(|(_, identity, _)| **identity == key) {
             let entity = *bodies.first()?;
-            let (role, monster, at) = self.roles.get(entity).ok()?;
+            let (_, role, monster, pose, walker, ..) = self.roles.get(entity).ok()?;
             if role.map != map || monster.is_dead() {
                 return None;
             }
             commands.entity(entity).remove::<Disabled>();
             return Some((
                 entity,
-                at.translation,
-                at.rotation.to_euler(EulerRot::YXZ).0,
+                crate::game::world::navigation::feet(pose.translation(), walker),
+                pose.rotation().to_euler(EulerRot::YXZ).0,
                 monster.body,
                 role.group,
             ));
@@ -229,8 +226,8 @@ impl NpcPopulation<'_, '_> {
     }
     pub fn depart(&mut self, commands: &mut Commands, root: Entity) {
         use avian3d::prelude::{Collider, RigidBody};
-        for (entity, pose, walker, parent, group, mut role) in &mut self.bodies {
-            if parent.0 != root {
+        for (entity, mut role, _, pose, walker, parent, group) in &mut self.roles {
+            if !parent.is_some_and(|parent| parent.0 == root) {
                 continue;
             }
             role.group = group.and_then(|g| self.groups.get(g.0).ok()).map(|g| g.authored);
