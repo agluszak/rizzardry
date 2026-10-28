@@ -248,14 +248,22 @@ impl Battle {
     }
 
     /// Credit and announce the kills magic made, whether it landed at once
-    /// or as a missile: the one place spell kills are counted.
+    /// or as a missile: the one place spell kills are counted. A member it
+    /// killed is announced as one a monster's blow kills is.
     pub fn credit_magic_kills(&mut self, effects: &[Effect], news: &mut MessageWriter<CombatNews>) {
         for effect in effects {
-            if let Effect::Damaged { victim: Victim::Monster(target), outcome, .. } = *effect
-                && outcome.died
-            {
-                self.credit_kill(target, outcome.experience);
-                news.write(CombatNews::Killed { actor: target });
+            let Effect::Damaged { victim, outcome, .. } = *effect else { continue };
+            if !outcome.died {
+                continue;
+            }
+            match victim {
+                Victim::Monster(target) => {
+                    self.credit_kill(target, outcome.experience);
+                    news.write(CombatNews::Killed { actor: target });
+                }
+                Victim::Member(member) => {
+                    news.write(CombatNews::Killed { actor: member });
+                }
             }
         }
     }
@@ -1733,6 +1741,32 @@ mod tests {
             .filter(|n| matches!(n, CombatNews::Killed { .. }))
             .collect();
         assert_eq!(killed, [CombatNews::Killed { actor: monster }]);
+    }
+
+    /// A member killed by magic is announced as one killed in melee is.
+    #[test]
+    fn a_member_killed_by_magic_is_announced() {
+        let (mut app, [caster, member]) = round_app(true);
+        order_spell(
+            &mut app,
+            caster,
+            crate::content::spells::SpellDefinition {
+                dice: Some(Dice { base: 1000, count: 0, sides: 0 }),
+                ..energy_blast()
+            },
+        );
+        app.world_mut().resource_mut::<Messages<CombatNews>>().clear();
+        let id = crate::content::spells::SpellId::ENERGY_BLAST;
+        land(&mut app, vec![missile(caster, id, Victim::Member(member))]);
+        assert!(app.world().get::<Vitals>(member).unwrap().is_dead());
+        let killed: Vec<_> = app
+            .world_mut()
+            .resource_mut::<Messages<CombatNews>>()
+            .drain()
+            .filter(|n| matches!(n, CombatNews::Killed { .. }))
+            .collect();
+        assert_eq!(killed, [CombatNews::Killed { actor: member }]);
+        assert_eq!(fight(app.world()).unwrap().kills, 0, "a member is no kill");
     }
 
     /// Skills an impact improves (a member resisting, practising Iron Will)
