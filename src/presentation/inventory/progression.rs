@@ -304,6 +304,14 @@ fn press(
                 editor.message = error.into();
                 return;
             }
+            // Experience enough for another level opens its review straight away.
+            if matches!(action, Action::Accept)
+                && let Ok(next) = progression.begin(editor.draft.member())
+            {
+                editor.draft = next;
+                editor.page = Page::Attributes;
+                return;
+            }
             if let Ok(button) = offers.single() {
                 focus.set(button, bevy::input_focus::FocusCause::Navigated);
             }
@@ -460,8 +468,8 @@ mod tests {
         party::roster,
     };
 
-    #[test]
-    fn editor_keeps_actor_and_rows_and_escape_discards_without_closing_review() {
+    /// An inventory review of the first of `party`, with its level-up button.
+    fn review(party: &[Character]) -> (App, Vec<Entity>, Entity, Entity) {
         let mut app = crate::presentation::test_input::input_app();
         app.init_asset::<SpriteSheet>()
             .init_asset::<TextTable>()
@@ -484,31 +492,21 @@ mod tests {
         let items =
             app.world_mut().resource_mut::<Assets<ItemCatalog>>().add(ItemCatalog::default());
         app.insert_resource(GameData { items, spells, species: default(), loot: default() });
-        let mut c = Character::new("A", Race::Human, Gender::Female, Profession::Fighter);
-        c.experience = c.experience_goal();
-        let a = app
-            .world_mut()
-            .spawn((
-                c.clone(),
-                Vitals::new(&c),
-                Carried::default(),
-                LearnedSpells::default(),
-                SpellPoints::default(),
-            ))
-            .id();
-        let mut second = c.clone();
-        second.name = "B".into();
-        let b = app
-            .world_mut()
-            .spawn((
-                second.clone(),
-                Vitals::new(&c),
-                Carried::default(),
-                LearnedSpells::default(),
-                SpellPoints::default(),
-            ))
-            .id();
-        roster::test_party(app.world_mut(), &[a, b]);
+        let members = party
+            .iter()
+            .map(|c| {
+                app.world_mut()
+                    .spawn((
+                        c.clone(),
+                        Vitals::new(c),
+                        Carried::default(),
+                        LearnedSpells::default(),
+                        SpellPoints::default(),
+                    ))
+                    .id()
+            })
+            .collect::<Vec<_>>();
+        roster::test_party(app.world_mut(), &members);
         app.world_mut()
             .resource_mut::<NextState<crate::game::screen::Screen>>()
             .set(crate::game::screen::Screen::Inventory);
@@ -521,6 +519,17 @@ mod tests {
             .single(app.world())
             .unwrap();
         let open = app.world_mut().spawn((Open, ChildOf(root))).observe(super::open).id();
+        (app, members, root, open)
+    }
+
+    #[test]
+    fn editor_keeps_actor_and_rows_and_escape_discards_without_closing_review() {
+        let mut c = Character::new("A", Race::Human, Gender::Female, Profession::Fighter);
+        c.experience = c.experience_goal();
+        let mut second = c.clone();
+        second.name = "B".into();
+        let (mut app, members, root, open) = review(&[c.clone(), second.clone()]);
+        let (a, b) = (members[0], members[1]);
         app.world_mut().trigger(Activate { entity: open });
         app.update();
         let editor =
@@ -564,5 +573,50 @@ mod tests {
             app.world_mut().query_filtered::<Entity, With<Editor>>().single(app.world()).unwrap();
         app.world_mut().despawn(root);
         assert!(app.world().get_entity(editor).is_err(), "the draft lives with the review");
+    }
+
+    #[test]
+    fn experience_for_another_level_reopens_the_review_after_accepting() {
+        let mut c = Character::new("A", Race::Human, Gender::Female, Profession::Fighter);
+        let mut next = c.clone();
+        next.level += 1;
+        c.experience = next.experience_goal();
+        let (mut app, members, _, open) = review(&[c.clone()]);
+        let a = members[0];
+        app.world_mut().trigger(Activate { entity: open });
+        app.update();
+        let accept = app
+            .world_mut()
+            .query::<(Entity, &Action)>()
+            .iter(app.world())
+            .find_map(|(e, a)| matches!(a, Action::Accept).then_some(e))
+            .unwrap();
+        let level_up = |app: &mut App| {
+            let spells = SpellCatalog::default();
+            let mut editor =
+                app.world_mut().query::<&mut Editor>().single_mut(app.world_mut()).unwrap();
+            let draft = &mut editor.draft;
+            while let Some(a) =
+                EnumSet::<Attribute>::all().iter().find(|&a| draft.can_adjust_attribute(a, true))
+            {
+                draft.adjust_attribute(a, true);
+            }
+            while let Some(s) =
+                EnumSet::<Skill>::all().iter().find(|&s| draft.can_adjust_skill(s, true, &spells))
+            {
+                draft.adjust_skill(s, true, &spells);
+            }
+            app.world_mut().trigger(Activate { entity: accept });
+            app.update();
+        };
+        level_up(&mut app);
+        assert_eq!(app.world().get::<Character>(a).unwrap().level, c.level + 1);
+        let editor =
+            app.world_mut().query::<&Editor>().single(app.world()).expect("a second level waits");
+        assert_eq!(editor.draft.preview().level, c.level + 2);
+        assert!(editor.message.is_empty());
+        level_up(&mut app);
+        assert_eq!(app.world().get::<Character>(a).unwrap().level, c.level + 2);
+        assert!(app.world_mut().query::<&Editor>().iter(app.world()).next().is_none());
     }
 }

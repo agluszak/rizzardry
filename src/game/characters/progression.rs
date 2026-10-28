@@ -102,6 +102,9 @@ impl Advancement {
             spells: default(),
         }
     }
+    pub fn member(&self) -> Entity {
+        self.member
+    }
     pub fn profession(&self) -> Profession {
         self.profession
     }
