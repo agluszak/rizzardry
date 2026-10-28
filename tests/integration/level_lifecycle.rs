@@ -535,26 +535,22 @@ fn group_knowledge_survives_revisit() {
     let (mut app, _) = playing();
     let monster =
         app.world_mut().query_filtered::<Entity, With<Monster>>().single(app.world()).unwrap();
-    app.world_mut().entity_mut(monster).insert(rizzardry::game::world::population::Provoked);
-    let old =
-        app.world_mut().query_filtered::<Entity, With<MonsterGroup>>().single(app.world()).unwrap();
+    let provoked = rizzardry::game::world::hostility::SetStance {
+        stance: rizzardry::game::world::hostility::Stance::Hostile,
+        at: 7,
+    };
+    let old = app.world().get::<GroupMember>(monster).unwrap().0;
     let mut group = app.world_mut().get_mut::<MonsterGroup>(old).unwrap();
     group.identified = true;
     group.counted = true;
+    group.set = Some(provoked);
     let back = revisit(&mut app);
     assert!(is_played(&app, back));
-    assert_eq!(
-        app.world_mut()
-            .query_filtered::<Entity, With<rizzardry::game::world::population::Provoked>>()
-            .iter(app.world())
-            .count(),
-        1,
-        "revisiting does not forgive provoked aggression",
-    );
     let world = app.world_mut();
     let membership = world.query_filtered::<&GroupMember, With<Monster>>().single(world).unwrap();
     let group = world.get::<MonsterGroup>(membership.0).unwrap();
     assert!(group.identified && group.counted);
+    assert_eq!(group.set, Some(provoked), "revisiting does not forgive provoked aggression");
 }
 
 #[test]
@@ -902,7 +898,13 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
         app.update();
         assert!(app.world().get_entity(session).is_err());
     }
-    app.world_mut().entity_mut(body).insert(rizzardry::game::world::population::Provoked);
+    let provoked = rizzardry::game::world::hostility::SetStance {
+        stance: rizzardry::game::world::hostility::Stance::Hostile,
+        at: 7,
+    };
+    let group = app.world().get::<rizzardry::game::world::identify::GroupMember>(body).unwrap().0;
+    app.world_mut().get_mut::<rizzardry::game::world::identify::MonsterGroup>(group).unwrap().set =
+        Some(provoked);
     let stock = app.world().get::<Npc>(actor).unwrap().stock.clone();
     // Replacing the current map departs and reuses this role in the same
     // activation, before its queued Disabled insertion is applied.
@@ -953,8 +955,12 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     assert!(app.world().get::<Collider>(returned_body).is_some());
     assert!(app.world().get::<bevy::ecs::entity_disabling::Disabled>(returned_body).is_none());
     assert_eq!(app.world().get::<Monster>(returned_body).unwrap().hp, 4);
-    assert!(
-        app.world().get::<rizzardry::game::world::population::Provoked>(returned_body).is_some()
+    let group =
+        app.world().get::<rizzardry::game::world::identify::GroupMember>(returned_body).unwrap().0;
+    assert_eq!(
+        app.world().get::<rizzardry::game::world::identify::MonsterGroup>(group).unwrap().set,
+        Some(provoked),
+        "the NPC's group keeps the provocation"
     );
     let npc = app.world().get::<Npc>(actor).unwrap();
     assert_eq!(npc.stock, stock);

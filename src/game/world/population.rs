@@ -32,11 +32,6 @@ pub struct Monster {
     pub body: ScaledBody,
 }
 
-/// A monster something has hurt: it fights whatever its authored
-/// disposition (retail `MakeTargetGroupHostile`).
-#[derive(Component, Debug, Clone, Copy, Default)]
-pub struct Provoked;
-
 impl Monster {
     pub fn is_dead(&self) -> bool {
         self.hp == 0
@@ -170,11 +165,8 @@ pub fn populate(
         let body = kept.monster.body;
         let name =
             format!("{} #{}", species.0[kept.monster.species as usize].name, kept.monster.location);
-        let mut entity = commands.spawn((Name::new(name), kept.monster));
-        if kept.provoked {
-            entity.insert(Provoked);
-        }
-        actors.push((entity.id(), kept.feet, kept.yaw, body, kept.group));
+        let entity = commands.spawn((Name::new(name), kept.monster)).id();
+        actors.push((entity, kept.feet, kept.yaw, body, kept.group));
     }
     let average = npcs.average_level();
     let mut placed_actors = std::collections::HashSet::new();

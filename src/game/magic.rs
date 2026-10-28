@@ -453,6 +453,7 @@ impl Plugin for MagicPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<MagicRequest>()
             .add_message::<casting::MagicNews>()
+            .add_message::<crate::game::world::hostility::Provocation>()
             .init_resource::<casting::FlightOrder>()
             .add_systems(
                 Update,
@@ -487,6 +488,7 @@ pub struct MagicContext<'w, 's> {
     level: Single<'w, 's, Entity, With<crate::game::world::level::Level>>,
     /// Missiles leave in launch order, so equal arrivals land in it too.
     pub flight_order: ResMut<'w, casting::FlightOrder>,
+    provocations: MessageWriter<'w, crate::game::world::hostility::Provocation>,
 }
 
 impl MagicContext<'_, '_> {
@@ -544,8 +546,12 @@ impl MagicContext<'_, '_> {
             difficulty: *self.difficulty,
             party: &party,
             improved: Vec::new(),
+            provoked: Vec::new(),
         };
-        Ok(act(&mut field, self.content.spells()))
+        let result = act(&mut field, self.content.spells());
+        self.provocations
+            .write_batch(field.provoked.drain(..).map(crate::game::world::hostility::Provocation));
+        Ok(result)
     }
 }
 
@@ -754,6 +760,7 @@ mod tests {
             .init_asset::<SpellCatalog>()
             .init_asset::<LootTables>()
             .init_resource::<crate::game::factions::Factions>()
+            .init_resource::<crate::game::time::GameClock>()
             .init_resource::<ItemIds>()
             .init_resource::<crate::game::difficulty::Difficulty>()
             .init_resource::<casting::FlightOrder>()
@@ -761,6 +768,7 @@ mod tests {
             .add_message::<DamageApplied>()
             .add_message::<MagicRequest>()
             .add_message::<casting::MagicNews>()
+            .add_message::<crate::game::world::hostility::Provocation>()
             .add_systems(Update, accept_magic);
         let potion = ItemDefinition {
             id: ItemId(0),
@@ -920,6 +928,7 @@ mod tests {
                 .init_asset::<SpellCatalog>()
                 .init_asset::<LootTables>()
                 .init_resource::<crate::game::factions::Factions>()
+                .init_resource::<crate::game::time::GameClock>()
                 .init_resource::<ItemIds>()
                 .init_resource::<crate::game::difficulty::Difficulty>()
                 .init_resource::<casting::FlightOrder>()
@@ -927,6 +936,7 @@ mod tests {
                 .add_message::<DamageApplied>()
                 .add_message::<MagicRequest>()
                 .add_message::<MagicNews>()
+                .add_message::<crate::game::world::hostility::Provocation>()
                 .add_systems(Update, (sync_spell_points, accept_magic).chain());
             let definition = ItemDefinition {
                 id: ItemId(0),

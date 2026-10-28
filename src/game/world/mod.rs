@@ -2,6 +2,7 @@
 
 pub mod containers;
 pub mod damage;
+pub mod hostility;
 pub mod identify;
 pub mod interaction;
 pub mod items;

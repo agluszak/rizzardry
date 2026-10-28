@@ -263,9 +263,10 @@ const PRICE_QUOTE: u16 = 0x12;
 /// The script's quote for a party that cannot pay.
 const TOO_POOR_QUOTE: u16 = 0x14;
 fn available(world: &World, actor: Entity) -> bool {
-    active_body(world, actor)
-        .is_some_and(|body| world.get::<crate::game::world::population::Provoked>(body).is_none())
-        && world.get::<Npc>(actor).is_some_and(|n| n.disposition >= WILLING_DISPOSITION)
+    active_body(world, actor).is_some_and(|body| {
+        crate::game::world::hostility::monster_stance(world, body)
+            != crate::game::world::hostility::Stance::Hostile
+    }) && world.get::<Npc>(actor).is_some_and(|n| n.disposition >= WILLING_DISPOSITION)
 }
 /// Shared gameplay permission, also used to derive the trade controls.
 pub fn trade_allowed(world: &World, actor: Entity) -> bool {

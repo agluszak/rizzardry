@@ -274,6 +274,8 @@ pub struct Field<'a, 'm, 'ms, 'd, 'ds, 'f, 'p> {
     pub party: &'a [Entity],
     /// Skills that improved while resolving, for the notices.
     pub improved: Vec<(Entity, Skill)>,
+    /// Monsters the party acted against, whose groups this provokes.
+    pub provoked: Vec<Entity>,
 }
 
 /// The magnitude a spell rolls at `power` (retail `RollEffectMagnitude`): its

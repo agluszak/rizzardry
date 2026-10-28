@@ -351,6 +351,9 @@ pub(super) fn member_attacks(
         swings,
         surprise,
     });
+    // Attacking a monster provokes its group, whatever the blows do
+    // (retail `MakeTargetGroupHostile` as the action starts).
+    field.provoked.push(target);
     let backstab_chance = character.scale_by_profession(100.0) as i32;
     let mut tally = Tally::default();
     let mut left = swings;

@@ -63,6 +63,7 @@ pub struct MonsterDamage<'w, 's> {
     content: crate::game::data::Content<'w>,
     ids: ResMut<'w, ItemIds>,
     factions: ResMut<'w, crate::game::factions::Factions>,
+    clock: Res<'w, crate::game::time::GameClock>,
 }
 
 impl<'w, 's> MonsterDamage<'w, 's> {
@@ -156,7 +157,6 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         let position = feet(at.translation(), walker);
         let lost = amount.min(monster.hp);
         monster.hp -= lost;
-        self.commands.entity(target).insert(super::population::Provoked);
         if !monster.is_dead() {
             crate::game::characters::wake_on_hit(
                 &mut monster.conditions,
@@ -188,7 +188,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         }
         self.commands.entity(target).remove_with_requires::<Crossing>();
         // The kill counts against its faction (retail `RecordFactionOffense`).
-        self.factions.record_offence(kind.faction, kind.npc.is_some());
+        self.factions.record_offence(kind.faction, kind.npc.is_some(), self.clock.ms);
         let (found, gold) =
             crate::game::loot::monster_loot(kind, tables, catalog, party_level, rng);
         if gold > 0 {

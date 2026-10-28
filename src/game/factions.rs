@@ -3,8 +3,6 @@
 
 use bevy::prelude::*;
 
-use crate::content::species::{Disposition, Species};
-
 pub const UNALIGNED: i32 = 0;
 pub const PARTY: i32 = 1;
 pub const DARK_SAVANT: i32 = 2;
@@ -34,12 +32,14 @@ pub enum Band {
     Friendly,
 }
 
-/// Scores 0..99 per faction, and how often the party has offended them.
+/// Scores 0..99 per faction, how often the party has offended them, and
+/// when (game milliseconds) each last moved into another band.
 #[derive(Resource, Clone, Debug, PartialEq, Eq)]
 pub struct Factions {
     encountered: [bool; 21],
     scores: [u8; 21],
     offences: [u8; 21],
+    band_changed: [u64; 21],
 }
 
 impl Default for Factions {
@@ -47,7 +47,7 @@ impl Default for Factions {
     fn default() -> Self {
         let scores =
             [0, 100, 0, 100, 80, 80, 80, 50, 80, 80, 80, 80, 80, 80, 70, 25, 50, 50, 80, 0, 0];
-        Factions { scores, offences: [0; 21], encountered: [false; 21] }
+        Factions { scores, offences: [0; 21], encountered: [false; 21], band_changed: [0; 21] }
     }
 }
 
@@ -67,21 +67,6 @@ impl Factions {
             .unwrap_or(false)
     }
 
-    /// Whether a species fights the party at `distance` metres before
-    /// anything has provoked it (retail `MonsterGroupCalcDefaultDisposition`):
-    /// unaligned species by their hostility radius, others by their
-    /// faction's band.
-    pub fn hostile_on_sight(&self, species: &Species, distance: f32) -> bool {
-        if species.faction != UNALIGNED {
-            return self.band(species.faction) == Band::Hostile;
-        }
-        match species.disposition {
-            Disposition::Hostile => true,
-            Disposition::Neutral => false,
-            Disposition::HostileWithin(radius) => distance <= radius,
-        }
-    }
-
     /// Hostile under 34, neutral under 67, friendly above; the party is
     /// always friendly to itself.
     pub fn band(&self, faction: i32) -> Band {
@@ -95,13 +80,18 @@ impl Factions {
         }
     }
 
+    /// When the faction's band last changed (retail `band_changed_clock`).
+    pub fn band_changed_at(&self, faction: i32) -> u64 {
+        usize::try_from(faction).ok().and_then(|f| self.band_changed.get(f)).copied().unwrap_or(0)
+    }
+
     pub fn score(&self, faction: i32) -> Option<u8> {
         usize::try_from(faction).ok().and_then(|f| self.scores.get(f)).copied()
     }
 
-    /// The party killed one of the faction's (retail `RecordFactionOffense`).
-    /// Returns whether the band worsened.
-    pub fn record_offence(&mut self, faction: i32, npc: bool) -> bool {
+    /// The party killed one of the faction's (retail `RecordFactionOffense`)
+    /// at `now`. Returns whether the band worsened.
+    pub fn record_offence(&mut self, faction: i32, npc: bool, now: u64) -> bool {
         let Ok(index) = usize::try_from(faction) else { return false };
         if index <= PARTY as usize || index >= self.scores.len() {
             return false;
@@ -124,7 +114,11 @@ impl Factions {
             };
             self.scores[index] = self.scores[index].saturating_sub(loss).min(99);
         }
-        self.band(faction) != before
+        let changed = self.band(faction) != before;
+        if changed {
+            self.band_changed[index] = now;
+        }
+        changed
     }
 }
 
@@ -132,32 +126,18 @@ impl Factions {
 mod tests {
     use super::*;
 
-    /// Retail's crabs keep to themselves until the party comes within their
-    /// fifteen metres; aligned species follow their faction instead.
-    #[test]
-    fn a_hostility_radius_makes_an_unaligned_species_hostile_only_up_close() {
-        let factions = Factions::default();
-        let crab = Species { disposition: Disposition::HostileWithin(15.0), ..default() };
-        assert!(!factions.hostile_on_sight(&crab, 20.0) && factions.hostile_on_sight(&crab, 10.0));
-        let neutral = Species { disposition: Disposition::Neutral, ..default() };
-        assert!(!factions.hostile_on_sight(&neutral, 0.0));
-        let rapax = Species { faction: 15, ..crab.clone() };
-        assert!(factions.hostile_on_sight(&rapax, 20.0), "common Rapax start hostile");
-        let umpani = Species { faction: 4, ..crab };
-        assert!(!factions.hostile_on_sight(&umpani, 0.0), "Umpani are friends");
-    }
-
     #[test]
     fn retail_starting_bands_and_offences() {
         let mut factions = Factions::default();
         assert_eq!(factions.band(4), Band::Friendly, "Umpani");
         assert_eq!(factions.band(15), Band::Hostile, "common Rapax");
         assert_eq!(factions.band(7), Band::Neutral, "common Rattkin");
-        assert!(factions.record_offence(MOOK, false), "Mook turn at once");
+        assert!(factions.record_offence(MOOK, false, 7), "Mook turn at once");
+        assert_eq!(factions.band_changed_at(MOOK), 7);
         assert_eq!(factions.band(MOOK), Band::Hostile);
-        factions.record_offence(4, false);
+        factions.record_offence(4, false, 0);
         assert_eq!(factions.score(4), Some(78));
-        factions.record_offence(4, true);
+        factions.record_offence(4, true, 0);
         assert_eq!(factions.score(4), Some(58));
         assert_eq!(factions.band(4), Band::Neutral);
     }

@@ -627,6 +627,14 @@ pub fn perform(
         };
         let (victims, landing) =
             capture(caster, spell, cast_power, choice.aim, situation, forced_self)?;
+        // A spell aimed at enemies provokes those it is cast at, whatever
+        // the roll (retail `MakeTargetGroupHostile` as the action starts).
+        if first && spell.aimed_at_enemies() {
+            world.provoked.extend(victims.iter().filter_map(|v| match *v {
+                Victim::Monster(m) => Some(m),
+                Victim::Member(_) => None,
+            }));
+        }
         // Accepted: roll, then pay whatever the roll.
         let (chance, quiet, strength) =
             attempt(&character, item.as_ref(), spell, cast_power, world.difficulty);
