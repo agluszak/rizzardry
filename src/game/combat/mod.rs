@@ -6,6 +6,7 @@
 pub mod approach;
 pub mod attack;
 mod blows;
+pub mod breath;
 
 use crate::game::world::ActorPose;
 use crate::game::world::level::LevelOwned;
@@ -126,15 +127,16 @@ fn give_orders(
     mut requests: MessageReader<GiveOrder>,
     battle: Option<Single<&Battle>>,
     roster: Single<&crate::game::party::roster::PartyRoster>,
-    mut orders: Query<(&mut crate::game::party::Order, &Character)>,
+    mut orders: Query<(&mut crate::game::party::Order, &Character, &Vitals)>,
 ) {
     use crate::content::characters::Trait;
     for &GiveOrder { member, order } in requests.read() {
         if battle.is_some()
             && roster.contains(&member)
-            && let Ok((mut current, character)) = orders.get_mut(member)
+            && let Ok((mut current, character, vitals)) = orders.get_mut(member)
             // Only those with the trait go berserk.
             && (order != Order::Berserk || character.has_trait(Trait::Berserk))
+            && (!matches!(order, Order::Breathe(_)) || breath::available(character, vitals))
         {
             current.set_if_neq(order);
         }
@@ -213,6 +215,7 @@ enum RoundAction {
     Defend,
     /// A spell or item use, revalidated and paid when its initiative comes.
     Magic(MagicChoice),
+    Breathe(Entity),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -441,6 +444,9 @@ fn opening_surprise<'a>(
 pub enum CombatNews {
     Began,
     Surprised(SurpriseCause),
+    Breathed {
+        actor: Entity,
+    },
     /// An attack begins (retail `StartCharacterAttack`,
     /// `AnnounceMonsterAttack`).
     Attack {
@@ -762,6 +768,7 @@ fn accept_round(
             }
             Order::Defend => RoundAction::Defend,
             Order::Magic(choice) => RoundAction::Magic(choice),
+            Order::Breathe(target) => RoundAction::Breathe(target),
         };
         let mut turns = HandTurns { lightning, ..default() };
         let phase = match action {
@@ -777,7 +784,7 @@ fn accept_round(
                 }
                 None => 0,
             },
-            RoundAction::Magic(_) if vitals.can_fight() => {
+            RoundAction::Magic(_) | RoundAction::Breathe(_) if vitals.can_fight() => {
                 phase(rng, stats.initiative(burden.load))
             }
             _ => 0,
@@ -1095,12 +1102,41 @@ fn party_turn(
                         )
                     }
                     RoundAction::Magic(_) => true,
+                    RoundAction::Breathe(_) => true,
                     RoundAction::Defend => false,
                 }
         });
     if !able_now {
         battle.this_round.party[index].end();
         return false;
+    }
+    if let RoundAction::Breathe(target) = work.action {
+        battle.this_round.party[index].end();
+        let candidates = visible_monsters(combatants, damage, &magic.obstacles, party.eye);
+        let party_members: Vec<_> = magic.context.roster.iter().collect();
+        let situation = casting::Situation {
+            context: casting::UseContext::Combat,
+            party: &party_members,
+            party_at: party.eye,
+            monsters: &candidates,
+            group_of: &|m| vec![m],
+        };
+        let result = magic
+            .context
+            .resolve(members, damage, |field, spells| {
+                breath::execute(member, target, &situation, spells, rng, field)
+            })
+            .and_then(|result| result);
+        match result {
+            Ok(effects) => {
+                battle.this_round.attacked = true;
+                news.write(CombatNews::Breathed { actor: member });
+                battle.credit_kills(&effects, news);
+                news.write(CombatNews::Effects(effects));
+            }
+            Err(_) => battle.this_round.party[index].action = RoundAction::Defend,
+        }
+        return true;
     }
     if let RoundAction::Magic(choice) = work.action {
         battle.this_round.party[index].end();
@@ -1246,6 +1282,35 @@ pub struct BattleMagic<'w, 's> {
     moving: Query<'w, 's, (), With<approach::CombatMove>>,
 }
 
+/// Live, active combatants with unobstructed scenery sight, shared by casts
+/// and breath. Accepted aim never redirects to a replacement actor.
+fn visible_monsters(
+    combatants: &[Entity],
+    damage: &MonsterDamage,
+    obstacles: &WorldObstacles,
+    party_eye: Vec3,
+) -> Vec<casting::Candidate> {
+    combatants
+        .iter()
+        .filter_map(|&entity| {
+            let (monster, at, walker, ..) = damage.monsters().get(entity).ok()?;
+            if monster.is_dead() || !damage.active(entity) {
+                return None;
+            }
+            let feet = feet(at.translation(), walker);
+            let eye = feet + Vec3::Y * monster.body.eye_height;
+            let clear = Dir3::new(eye - party_eye).map_or(true, |direction| {
+                obstacles.first_hit(party_eye, direction, party_eye.distance(eye)).is_none()
+            });
+            clear.then(|| casting::Candidate {
+                entity,
+                at: feet,
+                distance: distance_to_party(party_eye, monster, feet),
+            })
+        })
+        .collect()
+}
+
 /// A member casts or uses an item at their initiative. The monsters it may
 /// aim at are decided now: in the fight, alive, within the spell's reach of
 /// the party and in its sight (retail `CharacterActionReachesTarget`).
@@ -1261,25 +1326,9 @@ fn member_casts(
 ) -> Result<(casting::Report, Vec<casting::SpellInFlight>), casting::Refusal> {
     let BattleMagic { context, points, obstacles, groups, group_members, .. } = magic;
     let party_members: Vec<Entity> = context.roster.iter().collect();
-    // Where each fighting monster in the party's sight stands, and how far.
-    let in_sight: Vec<(casting::Candidate, Option<Entity>)> = combatants
-        .iter()
-        .filter_map(|&entity| {
-            let (monster, at, walker, ..) = damage.monsters().get(entity).ok()?;
-            if monster.is_dead() || !damage.active(entity) {
-                return None;
-            }
-            let feet = feet(at.translation(), walker);
-            let eye = feet + Vec3::Y * monster.body.eye_height;
-            let clear = Dir3::new(eye - party.eye).map_or(true, |direction| {
-                obstacles.first_hit(party.eye, direction, party.eye.distance(eye)).is_none()
-            });
-            clear.then(|| {
-                let distance = distance_to_party(party.eye, monster, feet);
-                let candidate = casting::Candidate { entity, at: feet, distance };
-                (candidate, groups.get(entity).ok().map(|g| g.0))
-            })
-        })
+    let in_sight: Vec<_> = visible_monsters(combatants, damage, obstacles, party.eye)
+        .into_iter()
+        .map(|candidate| (candidate, groups.get(candidate.entity).ok().map(|g| g.0)))
         .collect();
     let candidates: Vec<_> = in_sight.iter().map(|&(c, _)| c).collect();
     let group_of = |monster: Entity| -> Vec<Entity> {
@@ -1646,6 +1695,87 @@ mod tests {
         app.update();
         assert_eq!(fight(app.world()).unwrap().this_round.party.len(), 2);
         assert!(!attacks(&mut app).is_empty());
+    }
+
+    #[test]
+    fn spell_granted_breath_spends_stamina_and_expiry_prevents_reusing_the_order() {
+        use crate::{
+            content::spells::{SpellDefinition, SpellId, Targeting},
+            game::magic::enchantments::Enchantment,
+        };
+        let (mut app, [actor, _]) = round_app(true);
+        let monster =
+            app.world_mut().query_filtered::<Entity, With<Monster>>().single(app.world()).unwrap();
+        let mut spells = vec![SpellDefinition::default(); 120];
+        spells[119] = SpellDefinition {
+            id: SpellId::SPECIAL_ATTACK_CONE,
+            targeting: Targeting::Cone,
+            reach: Reach::Short,
+            ..default()
+        };
+        let spells =
+            app.world_mut().resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(spells));
+        app.world_mut().resource_mut::<GameData>().spells = spells;
+        app.world_mut().get_mut::<Vitals>(actor).unwrap().enchantments.apply(Enchantment {
+            spell: SpellId::DRACON_BREATH,
+            power: 1,
+            boost: 0,
+            turns: 1,
+            absorption: 0,
+        });
+        app.world_mut().entity_mut(actor).insert(Order::Breathe(monster));
+        app.world_mut().get_mut::<Character>(actor).unwrap().level = 20;
+        let battle = app.world().get::<Combatant>(monster).unwrap().0;
+        let root = app.world().get::<LevelOwned>(monster).unwrap().0;
+        let body = app.world().get::<Monster>(monster).unwrap().clone();
+        let behind = app
+            .world_mut()
+            .spawn((
+                body.clone(),
+                Transform::from_translation(Vec3::Z),
+                LevelOwned(root),
+                Combatant(battle),
+            ))
+            .id();
+        let above = app
+            .world_mut()
+            .spawn((body, Transform::from_xyz(0.0, 4.0, -1.0), LevelOwned(root), Combatant(battle)))
+            .id();
+        let before = app.world().get::<Vitals>(actor).unwrap().stamina;
+        let cost = {
+            let profile = app.world().get::<Character>(actor).unwrap();
+            let vitals = app.world().get::<Vitals>(actor).unwrap();
+            profile.stats(&vitals.enchantments).max_stamina() / 5
+        };
+        app.update();
+        assert_eq!(app.world().get::<Vitals>(actor).unwrap().stamina, before - cost);
+        let news: Vec<_> = app.world_mut().resource_mut::<Messages<CombatNews>>().drain().collect();
+        assert!(news.contains(&CombatNews::Breathed { actor }));
+        assert!(
+            app.world().get::<Monster>(monster).unwrap().hp < 10000,
+            "breath applies Water damage to the aimed actor"
+        );
+        assert_eq!(app.world().get::<Monster>(behind).unwrap().hp, 10000);
+        assert_eq!(
+            app.world().get::<Monster>(above).unwrap().hp,
+            10000,
+            "elevation also limits the cone"
+        );
+        app.world_mut().get_mut::<Vitals>(actor).unwrap().enchantments.age(1);
+        assert!(!breath::available(
+            app.world().get::<Character>(actor).unwrap(),
+            app.world().get::<Vitals>(actor).unwrap()
+        ));
+        {
+            let mut fight = fight_mut(app.world_mut());
+            fight.phase = RoundPhase::Waiting;
+            fight.wait = default();
+        }
+        app.world_mut().write_message(StartRound);
+        app.update();
+        let news: Vec<_> = app.world_mut().resource_mut::<Messages<CombatNews>>().drain().collect();
+        assert!(!news.contains(&CombatNews::Breathed { actor }));
+        assert!(fight(app.world()).unwrap().defends(actor));
     }
 
     #[test]

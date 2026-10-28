@@ -553,6 +553,9 @@ pub fn queue_notices(
                 log.selected = 1;
                 vec![string(COMBAT)]
             }
+            CombatNews::Breathed { actor } => {
+                names.name(*actor).map(|name| vec![format!("{name} breathes!")]).unwrap_or_default()
+            }
             CombatNews::Surprised(cause) => vec![string(match cause {
                 crate::game::combat::SurpriseCause::Ambush => 0x240,
                 crate::game::combat::SurpriseCause::Running => 0x23e,

@@ -244,7 +244,18 @@ impl Situation<'_> {
 /// The victims a spell takes when it is cast (retail
 /// `PopulateSpellTargetMarkers`), and where its missile flies. Later movement
 /// adds nobody.
-fn capture(
+/// Retail tests heading and elevation independently against a 45° half arc.
+fn in_cone(aim: Vec3, target: Vec3) -> bool {
+    let heading = |v: Vec3| v.x.atan2(v.z);
+    let elevation = |v: Vec3| v.y.atan2(v.x.hypot(v.z));
+    let within = |a: f32, b: f32| {
+        let difference = a - b;
+        difference.sin().atan2(difference.cos()).abs() < std::f32::consts::FRAC_PI_4
+    };
+    within(heading(aim), heading(target)) && within(elevation(aim), elevation(target))
+}
+
+pub(crate) fn capture(
     caster: Entity,
     spell: &SpellDefinition,
     aim: Aim,
@@ -297,15 +308,11 @@ fn capture(
         // A cone fans out from the party toward the aimed monster.
         Targeting::Cone => {
             let target = aimed()?;
-            let toward = (target.at - situation.party_at).with_y(0.0);
+            let toward = target.at - situation.party_at;
             let victims = situation
                 .monsters
                 .iter()
-                .filter(|c| {
-                    c.distance <= reach
-                        && (c.at - situation.party_at).with_y(0.0).angle_between(toward)
-                            < std::f32::consts::FRAC_PI_4
-                })
+                .filter(|c| c.distance <= reach && in_cone(toward, c.at - situation.party_at))
                 .map(|c| Victim::Monster(c.entity))
                 .collect();
             (victims, Some(target.at))

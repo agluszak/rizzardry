@@ -89,7 +89,8 @@ fn kind(spell: SpellId) -> Option<Kind> {
         | SpellId::MIND_FLAY
         | SpellId::NUCLEAR_BLAST
         | SpellId::TSUNAMI => Kind::Damage,
-        SpellId::SHADOW_HOUND
+        SpellId::DRACON_BREATH
+        | SpellId::SHADOW_HOUND
         | SpellId::CHAMELEON
         | SpellId::ACID_BOMB
         | SpellId::DEATH_CLOUD
@@ -470,6 +471,33 @@ fn resisted_magnitude(
 ) -> Option<u32> {
     let target = target(world, victim, realm, None).filter(|target| !target.dead)?;
     Some(resist(rng, rolled, target.resistance, target.level, against))
+}
+
+/// Character breath, retail special-attack entry 30: stamina scales its
+/// saving strength and three uniform rolls; the Water realm supplies its save.
+pub(crate) fn breath(
+    level: u32,
+    stamina: u32,
+    maximum: u32,
+    victims: &[Victim],
+    rng: &mut GameRng,
+    world: &mut Field,
+) -> Vec<Effect> {
+    let scale = level + level.min(15);
+    let against = (stamina * scale / maximum.max(1)).max(1);
+    let bound = (stamina * (scale + 5) / maximum.max(1)).max(1);
+    let mut effects = Vec::new();
+    for &victim in victims {
+        if rng.below(100) > 9 {
+            let amount = (rng.below(bound) + rng.below(bound) + rng.below(bound)) / 3 + 1;
+            if let Some(effect) = damage(rng, world, victim, Realm::Water, amount, against) {
+                effects.push(effect);
+            }
+        }
+        // The second special-attack slot is empty, but its gate still rolls.
+        rng.below(100);
+    }
+    effects
 }
 
 /// Take `amount` health from a victim; a member who survives may wake.
@@ -892,7 +920,9 @@ pub fn resolve(
     }
     let (Some(kind), Some(realm)) = (kind(spell.id), spell.realm) else { return Vec::new() };
     let kind = if backfired && super::enchantments::personal(spell.id) {
-        if spell.id == SpellId::HASTE {
+        if spell.id == SpellId::DRACON_BREATH {
+            Kind::Inflict(Condition::Nauseated, 100)
+        } else if spell.id == SpellId::HASTE {
             Kind::Inflict(Condition::Slowed, 100)
         } else if spell.id == SpellId::RAZOR_CLOAK {
             Kind::Damage

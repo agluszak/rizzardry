@@ -59,6 +59,10 @@ struct ToggleContinuous;
 #[action_output(bool)]
 struct SetOrder;
 
+#[derive(InputAction)]
+#[action_output(bool)]
+struct Breathe;
+
 #[derive(Component, Clone, Default)]
 struct OrderKey(Order);
 
@@ -150,6 +154,7 @@ fn spawn_main_screen_keys(mut commands: Commands) {
             // Retail offers Berserk among a Fighter's actions; its own
             // control for it is not recovered, so it has a key here.
             Action::<SetOrder>::new() OrderKey({Order::Berserk}) Bindings [ Binding(KeyCode::KeyB) ]
+            -- Action::<Breathe>::new() Bindings [ Binding(KeyCode::KeyE) ]
             --
             {text_box}
         ]
@@ -175,6 +180,7 @@ fn spawn_main_screen_keys(mut commands: Commands) {
             controls.write(crate::game::combat::CombatControl::ToggleContinuous);
         })
         on(set_order)
+        on(breathe)
         on(text_box_key)
     });
 }
@@ -239,6 +245,44 @@ fn set_order(
         && let Some(member) = selected.member(&roster)
     {
         orders.write(crate::game::combat::GiveOrder { member, order });
+    }
+}
+
+fn breathe(
+    _: On<Start<Breathe>>,
+    selected: Res<SelectedMember>,
+    roster: Single<&PartyRoster>,
+    party: Query<(&avian3d::prelude::Position, &crate::game::party::body::PartyBody)>,
+    battle: Query<&crate::game::combat::Combatants>,
+    monsters: Query<(
+        Entity,
+        &crate::game::world::population::Monster,
+        crate::game::world::ActorPose,
+    )>,
+    content: crate::game::data::Content,
+    mut orders: MessageWriter<crate::game::combat::GiveOrder>,
+) {
+    let (Some(member), Ok((position, body)), Ok(combatants), Some(spell)) = (
+        selected.member(&roster),
+        party.single(),
+        battle.single(),
+        content
+            .spells()
+            .and_then(|spells| spells.get(crate::content::spells::SpellId::SPECIAL_ATTACK_CONE)),
+    ) else {
+        return;
+    };
+    let eye = crate::game::party::body::PartyBody::eye(position);
+    if let Some(target) = crate::game::magic::target_ahead(
+        eye,
+        body.forward(),
+        spell.reach.metres(),
+        monsters
+            .iter_many(combatants.entities().iter().copied())
+            .matched()
+            .map(|(entity, monster, at)| (entity, monster, at.translation())),
+    ) {
+        orders.write(crate::game::combat::GiveOrder { member, order: Order::Breathe(target) });
     }
 }
 

@@ -24,6 +24,8 @@ pub enum Order {
     Berserk,
     /// No attack; +2 armour, and stamina back at the round's end.
     Defend,
+    /// Breathe toward the chosen actor; identity survives order edits.
+    Breathe(Entity),
     /// Cast a learned spell or use an item's spell, at its initiative.
     Magic(crate::game::magic::casting::MagicChoice),
 }
