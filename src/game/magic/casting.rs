@@ -598,6 +598,9 @@ pub fn perform(
     if !effects::modelled(spell.id) {
         return Err(Refusal::Unsupported);
     }
+    if !super::impacts::ready(spell.id, spells) {
+        return Err(Refusal::MissingContent);
+    }
     if !usable_now(spell, situation.context) {
         return Err(Refusal::WrongTime);
     }
@@ -611,7 +614,8 @@ pub fn perform(
     // first. Radius changes may widen victims but cannot rescue an invalid aim.
     let (targets, _) =
         capture(caster, spell, power.min(MAX_POWER), choice.aim, situation, forced_self)?;
-    if targets.iter().any(|victim| matches!(victim, Victim::Monster(_)))
+    if (spell.id == SpellId::BOILING_BLOOD
+        || targets.iter().any(|victim| matches!(victim, Victim::Monster(_))))
         && (world.species.is_none() || !world.monsters.ready())
     {
         return Err(Refusal::MissingContent);
@@ -718,11 +722,14 @@ pub fn perform(
             }
             Vec::new()
         } else {
-            effects::resolve(
+            super::impacts::resolve(
+                caster,
                 outcome == Outcome::Backfired,
                 spell,
                 strength,
                 &victims,
+                situation.party_at,
+                spells,
                 rng,
                 world,
                 &mut *points,

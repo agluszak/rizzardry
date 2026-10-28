@@ -9,6 +9,7 @@
 pub mod casting;
 pub mod effects;
 pub mod enchantments;
+mod impacts;
 pub mod portals;
 pub(crate) mod sources;
 pub(crate) mod traps;
@@ -636,6 +637,7 @@ pub fn accept_magic(
 /// died meanwhile is missed. Kills in a fight count for it.
 pub fn deliver_spells(
     mut points: Query<(&LearnedSpells, &mut SpellPoints)>,
+    party: Query<&avian3d::prelude::Position, With<crate::game::party::body::PartyBody>>,
     time: Res<Time<Virtual>>,
     mut flights: Query<(Entity, &mut casting::SpellInFlight)>,
     (mut members, mut monsters): (Members, MonsterDamage),
@@ -650,10 +652,20 @@ pub fn deliver_spells(
     }
     // Keep accepted impacts pending while mandatory assets/services are absent.
     if context.content.spells().is_none()
+        || context.content.items().is_none()
         || (flights.iter().any(|(_, flight)| {
-            flight.victims.iter().any(|victim| matches!(victim, Victim::Monster(_)))
+            flight.spell == SpellId::BOILING_BLOOD
+                || flight.victims.iter().any(|victim| matches!(victim, Victim::Monster(_)))
         }) && !monsters.ready())
     {
+        return;
+    }
+    let party_at = party.single().ok().map(crate::game::party::body::PartyBody::eye);
+    let spells = context.content.spells().unwrap();
+    if flights.iter().any(|(_, flight)| {
+        !impacts::ready(flight.spell, spells)
+            || flight.spell == SpellId::BOILING_BLOOD && party_at.is_none()
+    }) {
         return;
     }
     // Every impact due in this update, in the order they arrive.
@@ -671,11 +683,14 @@ pub fn deliver_spells(
         let landed = context.resolve(&mut members, &mut monsters, |field, spells| {
             let spell = spells.get(flight.spell)?;
             let victims = &flight.victims;
-            let effects = effects::resolve(
+            let effects = impacts::resolve(
+                flight.caster,
                 false,
                 spell,
                 flight.strength,
                 victims,
+                party_at.unwrap_or_default(),
+                spells,
                 &mut rng,
                 field,
                 &mut points,

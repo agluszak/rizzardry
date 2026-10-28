@@ -1883,6 +1883,61 @@ mod tests {
         }
     }
 
+    #[test]
+    fn boiling_blood_explodes_at_a_dead_victim_and_credits_secondary_kills() {
+        use crate::content::spells::{SpellId, Targeting};
+        for (initial_hp, kills) in [(1000, 0), (1, 2), (0, 1)] {
+            let (mut app, [caster, _]) = round_app(true);
+            let monster = order_spell(
+                &mut app,
+                caster,
+                crate::content::spells::SpellDefinition {
+                    id: SpellId::BOILING_BLOOD,
+                    dice: Some(Dice { base: 50, count: 0, sides: 0 }),
+                    ..energy_blast()
+                },
+            );
+            let handle = app.world().resource::<GameData>().spells.clone();
+            {
+                let mut catalogs = app.world_mut().resource_mut::<Assets<SpellCatalog>>();
+                let mut catalog = catalogs.get_mut(&handle).unwrap();
+                catalog.0.resize_with(
+                    usize::from(SpellId::BOILING_BLOOD_EXPLOSION.0) + 1,
+                    Default::default,
+                );
+                catalog.0[usize::from(SpellId::BOILING_BLOOD_EXPLOSION.0)] =
+                    crate::content::spells::SpellDefinition {
+                        id: SpellId::BOILING_BLOOD_EXPLOSION,
+                        targeting: Targeting::Radius,
+                        radius: 2.0,
+                        dice: Some(Dice { base: 50, count: 0, sides: 0 }),
+                        ..energy_blast()
+                    };
+            }
+            let mut body = app.world().get::<Monster>(monster).unwrap().clone();
+            body.hp = 1;
+            body.location += 1;
+            let owner = *app.world().get::<LevelOwned>(monster).unwrap();
+            let nearby = app
+                .world_mut()
+                .spawn((body.clone(), Transform::from_translation(Vec3::NEG_Z * 2.0), owner))
+                .id();
+            body.location += 1;
+            let far = app
+                .world_mut()
+                .spawn((body, Transform::from_translation(Vec3::NEG_Z * 20.0), owner))
+                .id();
+            app.world_mut().get_mut::<Monster>(monster).unwrap().hp = initial_hp;
+            let landed = land(
+                &mut app,
+                vec![missile(caster, SpellId::BOILING_BLOOD, Victim::Monster(monster))],
+            );
+            assert_eq!(fight(app.world()).unwrap().kills, kills, "{initial_hp}: {landed:?}");
+            assert_eq!(app.world().get::<Monster>(nearby).unwrap().is_dead(), initial_hp <= 1);
+            assert_eq!(app.world().get::<Monster>(far).unwrap().hp, 1);
+        }
+    }
+
     /// A missile that kills is credited and announced once, as an immediate
     /// kill is; one landing on the dead afterwards adds nothing.
     #[test]

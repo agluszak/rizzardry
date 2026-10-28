@@ -24,13 +24,12 @@ pub fn animate_textures(
             _ => animation.frame_at(time.elapsed_secs()),
         };
         let frame = &animation.frames[index];
-        if let (Some(lit), Some(dynamic)) = (lit, dynamic.as_deref_mut()) {
-            if dynamic.get(&lit.0).and_then(|material| material.base.base_color_texture.as_ref())
+        if let (Some(lit), Some(dynamic)) = (lit, dynamic.as_deref_mut())
+            && dynamic.get(&lit.0).and_then(|material| material.base.base_color_texture.as_ref())
                 != Some(frame)
-                && let Some(mut material) = dynamic.get_mut(&lit.0)
-            {
-                material.base.base_color_texture = Some(frame.clone());
-            }
+            && let Some(mut material) = dynamic.get_mut(&lit.0)
+        {
+            material.base.base_color_texture = Some(frame.clone());
         }
         let Some(material) = material else { continue };
         let shown = materials.get(&material.0).and_then(|m| m.base_color_texture.as_ref());

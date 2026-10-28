@@ -66,7 +66,9 @@ enum Kind {
 fn kind(spell: SpellId) -> Option<Kind> {
     use Condition::*;
     Some(match spell {
-        SpellId::ACID_SPLASH
+        SpellId::BOILING_BLOOD
+        | SpellId::BOILING_BLOOD_EXPLOSION
+        | SpellId::ACID_SPLASH
         | SpellId::FROST
         | SpellId::ENERGY_BLAST
         | SpellId::MAKE_WOUNDS
