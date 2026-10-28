@@ -136,10 +136,7 @@ pub(crate) fn pass_time(
     mut enchantments: Single<&mut crate::game::magic::enchantments::PartyEffects>,
     mut clock: ResMut<GameClock>,
     mut rng: ResMut<GameRng>,
-    (content, mut points): (
-        crate::game::data::Content,
-        Query<(&crate::game::magic::LearnedSpells, &mut crate::game::magic::SpellPoints)>,
-    ),
+    mut points: Query<&mut crate::game::magic::SpellPoints>,
 ) {
     if battle.is_some() {
         return;
@@ -169,29 +166,19 @@ pub(crate) fn pass_time(
             Ticks { stamina: 0, aging: 1 }
         };
         let mut members = affected.p0();
-        // Spell points come back first, to the maximum the member has before
-        // anything on them runs out (retail ages after recovering), at least
-        // at half rate (retail `spellScale`).
-        if pass > 0
-            && let Some(spells) = content.spells()
-        {
-            let scale = crate::game::magic::recovery_scale(pace.health_scale());
-            for member in roster.iter() {
-                let (Ok((profile, vitals)), Ok((learned, mut pool))) =
-                    (members.get(member), points.get_mut(member))
-                else {
-                    continue;
-                };
-                let stats = profile.stats(&vitals.enchantments);
-                pool.recover(&crate::game::magic::max_points(&stats, learned, spells), 1, scale);
-            }
-        }
         for (profile, mut vitals) in members.iter_many_unique_mut(roster.iter()).matched() {
             recovery::pass(profile, &mut vitals, ticks, pace);
         }
         if pass > 0 {
             if !enchantments.0.0.is_empty() {
                 enchantments.0.age(1);
+            }
+            // Spell points come back at least at half rate (retail `spellScale`).
+            let scale = crate::game::magic::recovery_scale(pace.health_scale());
+            for mut pool in points.iter_many_unique_mut(roster.iter()).matched() {
+                if pool.short() {
+                    pool.recover(1, scale);
+                }
             }
             // Monsters' conditions run out in the world too.
             for mut monster in &mut affected.p2() {
@@ -261,72 +248,6 @@ mod pass_time_tests {
         }
         assert!(app.world().get::<Vitals>(member).unwrap().hp > 1);
         assert_eq!(app.world().get::<Vitals>(stranger).unwrap().hp, 1);
-    }
-
-    /// Mana recovers to the maximum the member has at each aging tick, so it
-    /// comes to the same however the ticks are grouped into fixed steps and
-    /// updates, and a Superman that runs out partway counts until it does.
-    #[test]
-    fn mana_recovery_follows_each_tick_and_not_the_frame() {
-        use crate::content::characters::Realm;
-        use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId};
-        use crate::game::magic::enchantments::Enchantment;
-        use crate::game::magic::{LearnedSpells, SpellPoints};
-        const TICKS: u64 = 60;
-        let recovered = |ticks_per_update: u64, superman: bool| {
-            let tick = Duration::from_millis(AGING_TICK_MS / EXPLORATION_RATE);
-            let step = tick * ticks_per_update as u32;
-            let mut app = fixed_app(step);
-            app.insert_resource(Time::<Fixed>::from_duration(step));
-            let heal = SpellDefinition {
-                id: SpellId::HEAL_WOUNDS,
-                realm: Some(Realm::Divine),
-                cost: 3,
-                ..default()
-            };
-            let catalog = SpellCatalog(
-                (0..=SpellId::HEAL_WOUNDS.0)
-                    .map(|i| if i == SpellId::HEAL_WOUNDS.0 { heal.clone() } else { default() })
-                    .collect(),
-            );
-            let spells = app.world_mut().resource_mut::<Assets<SpellCatalog>>().add(catalog);
-            app.insert_resource(crate::game::data::GameData {
-                spells,
-                items: default(),
-                loot: default(),
-                species: default(),
-            });
-            let priest = Character::new("Priest", Race::Human, Gender::Female, Profession::Priest);
-            let mut vitals = Vitals::new(&priest);
-            if superman {
-                vitals.enchantments.apply(Enchantment {
-                    spell: SpellId::SUPERMAN,
-                    power: 7,
-                    boost: 0,
-                    turns: (TICKS / 2) as u32,
-                    absorption: 0,
-                });
-            }
-            let member = app
-                .world_mut()
-                .spawn((
-                    priest,
-                    vitals,
-                    LearnedSpells([SpellId::HEAL_WOUNDS].into()),
-                    SpellPoints::default(),
-                ))
-                .id();
-            crate::game::party::roster::test_party(app.world_mut(), &[member]);
-            for _ in 0..TICKS / ticks_per_update {
-                app.update();
-            }
-            let points = app.world().get::<SpellPoints>(member).unwrap();
-            points.current[Realm::Divine] as f32 + points.fraction[Realm::Divine]
-        };
-        let batched = recovered(TICKS, true);
-        assert!(batched > 0.0);
-        assert_eq!(batched, recovered(1, true), "one tick per update or all in one");
-        assert!(batched > recovered(TICKS, false), "Superman counted until it ran out");
     }
 
     #[test]

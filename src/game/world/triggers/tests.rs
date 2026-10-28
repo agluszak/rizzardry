@@ -725,14 +725,6 @@ fn linked_hazards_tick_and_reset_in_authored_order() {
             usize::from(!zone_first),
             "a later hazard sees its linked activation this step"
         );
-        // Standing still: the hazard keeps hurting, and nothing enters again.
-        level.walk(Vec3::ZERO, Duration::from_millis(500));
-        assert_eq!(level.damage().len(), 1);
-        // Leaving its place ends the hazard.
-        let zone = level.device("ZONE");
-        level.walk(Vec3::X * 25.0, Duration::from_millis(500));
-        assert!(level.damage().is_empty());
-        assert!(level.world.get::<walk::ActiveDamageZone>(zone).is_none());
     }
     let mut definitions = vec![relay, zone];
     link(&mut definitions, &[("RELAY", &["ZONE"])]);

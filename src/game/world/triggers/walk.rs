@@ -6,7 +6,8 @@ use std::time::Duration;
 use bevy::prelude::*;
 
 use super::{
-    Device, LevelState, PendingPartyMove, PositionedDevices, damage_party, execute, usable,
+    Device, LevelState, PendingPartyMove, PositionedDevices, TriggerState, damage_party, execute,
+    usable,
 };
 use crate::content::items::Dice;
 use crate::content::level::{LevelDefinition, TriggerDefinition};
@@ -42,26 +43,63 @@ impl ActiveDamageZone {
     }
 }
 
-/// One step of the party's eye. Each positioned device, in authored order,
-/// advances its damage zone and then runs if the eye has just come into its
-/// place. It is one pass so that a device run here can start or reset a
-/// later hazard within the same step.
-pub(crate) fn walk(In(sample): In<Option<(Entity, Vec3, Duration)>>, world: &mut World) {
+/// Quiet fixed ticks are ordinary ECS iteration. Only a real entry candidate
+/// starts an exclusive operation; the remaining authored suffix stays inside
+/// that operation because links can start/reset a later hazard in this step.
+pub(crate) fn walk(
+    In(sample): In<Option<(Entity, Vec3, Duration)>>,
+    mut commands: Commands,
+    mut levels: Query<(&Level, &PositionedDevices, &mut LevelState, Has<PendingPartyMove>)>,
+    geometry: Res<Assets<LevelDefinition>>,
+    mut devices: Query<(&Device, &TriggerState, Option<&mut ActiveDamageZone>)>,
+) {
     let Some((level, eye, elapsed)) = sample else { return };
+    let Ok((owner, positioned, mut state, pending)) = levels.get_mut(level) else { return };
+    let Some(geometry) = geometry.get(&owner.definition) else { return };
+    let previous_eye = state.previous_eye;
+    if previous_eye != Some(eye) {
+        state.previous_eye = Some(eye);
+    }
+    for (index, &entity) in positioned.0.iter().enumerate() {
+        let (device, state, zone) = devices.get_mut(entity).unwrap();
+        let definition = &geometry.triggers[device.definition];
+        let inside = contains(definition, eye);
+        if entered(definition, eye, previous_eye)
+            && !pending
+            && definition.usable
+            && !(definition.once && state.fired)
+        {
+            commands.queue(move |world: &mut World| {
+                walk_activation(world, level, eye, previous_eye, elapsed, index);
+            });
+            return;
+        }
+        if let Some(mut zone) = zone {
+            match zone.step(inside, elapsed) {
+                None => {
+                    commands.entity(entity).remove::<ActiveDamageZone>();
+                }
+                Some(true) => commands.run_system_cached_with(damage_party, DAMAGE_ZONE_DICE),
+                Some(false) => {}
+            }
+        }
+    }
+}
+
+fn walk_activation(
+    world: &mut World,
+    level: Entity,
+    eye: Vec3,
+    previous_eye: Option<Vec3>,
+    elapsed: Duration,
+    start: usize,
+) {
     let Some(owner) = world.get::<Level>(level) else { return };
     let handle = owner.definition.clone();
-    if world.get::<PositionedDevices>(level).is_none() {
-        return;
-    }
     world.resource_scope(|world, geometry: Mut<Assets<LevelDefinition>>| {
         let Some(geometry) = geometry.get(&handle) else { return };
-        let Some(mut state) = world.get_mut::<LevelState>(level) else { return };
-        let previous_eye = state.previous_eye;
-        if previous_eye != Some(eye) {
-            state.previous_eye = Some(eye);
-        }
         let count = world.get::<PositionedDevices>(level).unwrap().0.len();
-        for index in 0..count {
+        for index in start..count {
             let entity = world.get::<PositionedDevices>(level).unwrap().0[index];
             let definition = &geometry.triggers[world.get::<Device>(entity).unwrap().definition];
             let inside = contains(definition, eye);
