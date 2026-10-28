@@ -12,7 +12,7 @@ use crate::game::factions::Factions;
 use crate::game::{
     characters::{Character, Vitals},
     data::GameData,
-    inventory::{Carried, ItemIds, ItemOwner, ItemRef, PartyInventory, make_item},
+    inventory::{Carried, ItemIds, ItemOwner, ItemPool, ItemRef, PartyInventory, make_item},
     party::roster::{PartyMember, PartyRoster, the_party},
     rng::GameRng,
     world::{ActorPose, level::Level, population::Monster},
@@ -619,9 +619,9 @@ fn plan_quote(
     Ok(plan)
 }
 /// Whether the plan can commit now: its recipients and content exist and its
-/// gifts fit the party's items. `offered` is a hand-in from the party's items
-/// that leaves before the answer commits.
-fn executable(world: &World, plan: &QuotePlan, offered: Option<ItemRef>) -> bool {
+/// gifts fit the party's items. `offered` is a hand-in that leaves the
+/// party's items before the answer commits.
+fn executable(world: &World, plan: &QuotePlan, offered: Option<(Entity, ItemRef)>) -> bool {
     let present = plan.effects.iter().all(|effect| match effect {
         QuoteEffect::Gold { party, .. } => world.get::<PartyInventory>(*party).is_some(),
         QuoteEffect::Experience { members, .. } => {
@@ -638,83 +638,117 @@ fn executable(world: &World, plan: &QuotePlan, offered: Option<ItemRef>) -> bool
         }
         QuoteEffect::TakeItem { party, .. } => world.get::<PartyRoster>(*party).is_some(),
     });
-    present && gifts_fit(world, plan, offered)
+    present && exchange_fits(world, plan, offered)
 }
-/// Play the plan's gifts and removals, in order, on a copy of the party's
-/// items with their own transfer rules: whether every gift finds room.
-/// Retail drops a gift there is no room for; here the answer waits instead,
-/// so no part of it commits and nothing is lost.
-fn gifts_fit(world: &World, plan: &QuotePlan, offered: Option<ItemRef>) -> bool {
-    let Some(party) = plan.effects.iter().find_map(|effect| match effect {
+/// Play the hand-in and the plan's gifts and removals, in order, on a copy
+/// of the party's items with the rules they commit by: whether every gift
+/// finds room. Retail drops a gift there is no room for; here the answer
+/// waits instead, so no part of it commits and nothing is lost.
+fn exchange_fits(world: &World, plan: &QuotePlan, offered: Option<(Entity, ItemRef)>) -> bool {
+    let gift_party = plan.effects.iter().find_map(|effect| match effect {
         QuoteEffect::GiveItem { party, .. } => Some(*party),
         _ => None,
-    }) else {
-        return true;
-    };
-    let (Some(catalog), Some(inventory)) =
-        (GameData::items(world), world.get::<PartyInventory>(party))
+    });
+    let Some(party) = gift_party.or(offered.map(|(party, _)| party)) else { return true };
+    let (Some(catalog), Some(mut items)) = (GameData::items(world), PartyItems::of(world, party))
     else {
         return false;
     };
-    let mut pool = inventory.pool.clone();
-    if let Some(ItemRef { owner: ItemOwner::Pool, id }) = offered
-        && pool.consume_units(id, 1).is_err()
+    if let Some((_, offered)) = offered
+        && !items.hand_in(offered)
     {
         return false;
     }
     let mut ids = world.get_resource::<ItemIds>().cloned().unwrap_or_default();
-    let packs_hold = |item: ItemId| {
-        world.get::<PartyRoster>(party).is_some_and(|roster| {
-            roster.iter().any(|member| {
-                world
-                    .get::<Carried>(member)
-                    .is_some_and(|c| c.backpack.iter().flatten().any(|s| s.item == item))
-            })
-        })
-    };
     for effect in &plan.effects {
         match *effect {
             QuoteEffect::GiveItem { item, .. } => {
                 let Some(definition) = catalog.get(item) else { return false };
                 let gift = make_item(definition, &mut ids, &mut GameRng::default(), true, true);
-                if pool.receive(gift, catalog).is_some() {
+                if items.pool.receive(gift, catalog).is_some() {
                     return false;
                 }
             }
-            QuoteEffect::TakeItem { item, .. } if !packs_hold(item) => {
-                if let Some(id) = pool.stacks.iter().find(|s| s.item == item).map(|s| s.id) {
-                    let _ = pool.consume_units(id, 1);
-                }
+            QuoteEffect::TakeItem { item, .. } => {
+                items.take(item);
             }
             _ => {}
         }
     }
     true
 }
-/// Take one of the item from the first member's pack that holds it, in
-/// party order, else from the party's items (retail `RemoveNpcScriptItem`).
-/// Says whose it was: a member's name, or `None` for the party's; nothing
-/// when the party has none.
-fn take_item(world: &mut World, party: Entity, item: ItemId) -> Option<Option<String>> {
-    let roster: Vec<_> = world.get::<PartyRoster>(party)?.iter().collect();
-    for member in roster {
-        let Some(mut carried) = world.get_mut::<Carried>(member) else { continue };
-        let Some(id) = carried.backpack.iter().flatten().find(|s| s.item == item).map(|s| s.id)
-        else {
-            continue;
-        };
-        carried.consume_backpack_units(id, 1).ok()?;
-        return Some(Some(
-            world.get::<Character>(member).map(|c| c.name.clone()).unwrap_or_default(),
-        ));
+/// What scripted gifts and removals change: each member's pack, in party
+/// order, and the party's items. An answer previews its exchange on a copy
+/// and commits it through the same rules.
+struct PartyItems {
+    packs: Vec<(Entity, Carried)>,
+    pool: ItemPool,
+}
+impl PartyItems {
+    fn of(world: &World, party: Entity) -> Option<Self> {
+        let packs = world
+            .get::<PartyRoster>(party)?
+            .iter()
+            .filter_map(|member| Some((member, world.get::<Carried>(member)?.clone())))
+            .collect();
+        Some(Self { packs, pool: world.get::<PartyInventory>(party)?.pool.clone() })
     }
-    let mut inventory = world.get_mut::<PartyInventory>(party)?;
-    let id = inventory.pool.stacks.iter().find(|s| s.item == item)?.id;
-    inventory.pool.consume_units(id, 1).ok()?;
-    Some(None)
+    fn store(self, world: &mut World, party: Entity) {
+        for (member, carried) in self.packs {
+            if let Some(mut current) = world.get_mut::<Carried>(member) {
+                current.set_if_neq(carried);
+            }
+        }
+        let mut inventory = world.get_mut::<PartyInventory>(party).unwrap();
+        if inventory.pool != self.pool {
+            inventory.pool = self.pool;
+        }
+    }
+    /// One of the offered stack leaves its member's pack or the party's items.
+    fn hand_in(&mut self, offered: ItemRef) -> bool {
+        match offered.owner {
+            ItemOwner::Pool => self.pool.consume_units(offered.id, 1).is_ok(),
+            ItemOwner::Member(member) => self
+                .packs
+                .iter_mut()
+                .find(|(owner, _)| *owner == member)
+                .is_some_and(|(_, pack)| pack.consume_backpack_units(offered.id, 1).is_ok()),
+        }
+    }
+    /// One of the item leaves the first member's pack that holds it, else the
+    /// party's items (retail `RemoveNpcScriptItem`). Says whose it was: a
+    /// member, or `None` for the party's; nothing when the party has none.
+    fn take(&mut self, item: ItemId) -> Option<Option<Entity>> {
+        for (member, pack) in &mut self.packs {
+            if let Some(id) = pack.backpack.iter().flatten().find(|s| s.item == item).map(|s| s.id)
+            {
+                pack.consume_backpack_units(id, 1).ok()?;
+                return Some(Some(*member));
+            }
+        }
+        let id = self.pool.stacks.iter().find(|s| s.item == item)?.id;
+        self.pool.consume_units(id, 1).ok()?;
+        Some(None)
+    }
 }
 fn commit_quote(world: &mut World, entity: Entity, quote: u16, plan: QuotePlan) {
-    for effect in plan.effects {
+    commit_effects(world, entity, plan.effects);
+    if let Some(following) = plan.following {
+        let next = match following {
+            Continuation::Quote(response) => Step::Quote {
+                quote: select_response(&response, &mut world.resource_mut::<GameRng>()),
+                subquote: 0,
+                paid: false,
+                plan: None,
+            },
+            Continuation::Options(words) => Step::Options { quote, words },
+            Continuation::End => Step::End,
+        };
+        world.get_mut::<Conversation>(entity).unwrap().queue.push_front(next);
+    }
+}
+fn commit_effects(world: &mut World, entity: Entity, effects: Vec<QuoteEffect>) {
+    for effect in effects {
         match effect {
             QuoteEffect::SetFact(id, value) => {
                 let level = world
@@ -775,7 +809,13 @@ fn commit_quote(world: &mut World, entity: Entity, quote: u16, plan: QuotePlan) 
                     .push(TranscriptLine::Reward(reward));
             }
             QuoteEffect::TakeItem { party, item } => {
-                if let Some(member) = take_item(world, party, item) {
+                let Some(mut items) = PartyItems::of(world, party) else { continue };
+                let taken = items.take(item);
+                items.store(world, party);
+                if let Some(from) = taken {
+                    let member = from.map(|member| {
+                        world.get::<Character>(member).map(|c| c.name.clone()).unwrap_or_default()
+                    });
                     world
                         .get_mut::<Conversation>(entity)
                         .unwrap()
@@ -790,19 +830,6 @@ fn commit_quote(world: &mut World, entity: Entity, quote: u16, plan: QuotePlan) 
                 }
             }
         }
-    }
-    if let Some(following) = plan.following {
-        let next = match following {
-            Continuation::Quote(response) => Step::Quote {
-                quote: select_response(&response, &mut world.resource_mut::<GameRng>()),
-                subquote: 0,
-                paid: false,
-                plan: None,
-            },
-            Continuation::Options(words) => Step::Options { quote, words },
-            Continuation::End => Step::End,
-        };
-        world.get_mut::<Conversation>(entity).unwrap().queue.push_front(next);
     }
 }
 fn run(world: &mut World, entity: Entity) {
@@ -1002,9 +1029,8 @@ const REFUSED_GIFT_QUOTE: u16 = 0x11;
 /// (retail `HandleNpcDialogueItem`; only friendly NPCs talk here). The quote
 /// answering it runs; the NPC keeps what it asked for, and any other item it
 /// is given unless the party may not part with it. A voice-scripted NPC
-/// ignores an item it has nothing to say about. An item is taken only once
-/// its whole answer can commit: a content gap keeps it and queues the answer
-/// to show the gap, and an answer that cannot commit yet refuses the item.
+/// ignores an item it has nothing to say about. An item is taken only with
+/// its whole answer: an answer that cannot commit yet refuses the item.
 fn give(world: &mut World, entity: Entity, item: ItemRef) -> Result<(), TradeError> {
     let party = the_party(world).ok_or(TradeError::Unavailable)?;
     let c = world.get::<Conversation>(entity).unwrap();
@@ -1025,28 +1051,27 @@ fn give(world: &mut World, entity: Entity, item: ItemRef) -> Result<(), TradeErr
         None if crucial => (REFUSED_GIFT_QUOTE, false),
         None => (ACCEPTED_GIFT_QUOTE, true),
     };
-    let plan = script
+    let mut plan = script
         .quotes
         .get(usize::from(quote))
         .and_then(|line| plan_quote(world, Some(party), line).ok());
-    // The whole exchange must be able to commit before the item is taken,
-    // including the answer's gifts finding room once it has gone.
-    if keeps && plan.as_ref().is_some_and(|plan| !executable(world, plan, Some(item))) {
-        return Err(TradeError::Capacity);
-    }
-    if keeps && plan.is_some() {
-        match item.owner {
-            ItemOwner::Pool => {
-                world.get_mut::<PartyInventory>(party).unwrap().pool.consume_units(item.id, 1)
-            }
-            ItemOwner::Member(member) => {
-                world.get_mut::<Carried>(member).unwrap().consume_backpack_units(item.id, 1)
-            }
+    // The NPC takes the item and the answer's effects commit together, now:
+    // the answer's lines follow, and closing during them cannot separate
+    // the two. A content gap keeps the item and queues the answer to show it.
+    let exchanged = keeps && plan.is_some();
+    if let Some(plan) = plan.as_mut().filter(|_| exchanged) {
+        if !executable(world, plan, Some((party, item))) {
+            return Err(TradeError::Capacity);
         }
-        .map_err(|_| TradeError::StaleSelection)?;
+        let mut items = PartyItems::of(world, party).ok_or(TradeError::Unavailable)?;
+        if !items.hand_in(item) {
+            return Err(TradeError::StaleSelection);
+        }
+        items.store(world, party);
+        commit_effects(world, entity, std::mem::take(&mut plan.effects));
     }
     let mut c = world.get_mut::<Conversation>(entity).unwrap();
-    c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false, plan });
+    c.queue.push_back(Step::Quote { quote, subquote: 0, paid: exchanged, plan });
     c.revision += 1;
     Ok(())
 }
@@ -1909,6 +1934,89 @@ mod tests {
         ));
         let inventory = world.get::<PartyInventory>(party).unwrap();
         assert_eq!((inventory.gold, inventory.pool.stacks.len()), (0, 0));
+    }
+
+    /// A hand-in and its answer's effects commit together: closing during the
+    /// answer's lines cannot take the item without the reward.
+    #[test]
+    fn closing_during_a_hand_in_answer_keeps_the_exchange_whole() {
+        let (mut app, session, _) = app(DialogueScript {
+            quotes: vec![
+                Quote { text: vec!["Hello".into()], ..default() },
+                Quote {
+                    text: vec!["Thanks".into(), "Here".into()],
+                    operations: vec![
+                        DialogueOp::ItemQuote { item: ItemId(2), keeps: true },
+                        DialogueOp::GiveGold(50),
+                        DialogueOp::GiveItem(ItemId(1)),
+                    ],
+                    ..default()
+                },
+            ],
+            ..default()
+        });
+        with_items(&mut app);
+        let member = carrier(&mut app, "Ragnar", 2, 1);
+        let party = the_party(app.world_mut()).unwrap();
+        app.update();
+        finish_line(&mut app, session);
+        let id = app.world().get::<Carried>(member).unwrap().backpack[0].as_ref().unwrap().id;
+        let revision = app.world().get::<Conversation>(session).unwrap().revision;
+        app.world_mut().write_message(ConversationRequest::Give {
+            conversation: session,
+            revision,
+            item: ItemRef { owner: ItemOwner::Member(member), id },
+        });
+        app.update();
+        assert!(matches!(
+            app.world().get::<Conversation>(session).unwrap().wait,
+            ConversationWait::Line { .. }
+        ));
+        app.world_mut().write_message(ConversationRequest::Close { conversation: session });
+        app.update();
+        let world = app.world();
+        assert!(world.get::<Conversation>(session).is_none());
+        assert!(world.get::<Carried>(member).unwrap().backpack[0].is_none(), "handed in");
+        let inventory = world.get::<PartyInventory>(party).unwrap();
+        assert_eq!(inventory.gold, 50, "and rewarded");
+        assert!(inventory.pool.stacks.iter().any(|s| s.item == ItemId(1)));
+    }
+
+    /// Removals empty the members' packs before the party's items, and the
+    /// room they free counts for a later gift, both in preview and commit.
+    #[test]
+    fn repeated_removals_exhaust_a_pack_before_freeing_the_pool_for_a_gift() {
+        let (mut app, session, _) = app(reward_script(
+            vec![
+                DialogueOp::TakeItem(ItemId(2)),
+                DialogueOp::TakeItem(ItemId(2)),
+                DialogueOp::GiveItem(ItemId(1)),
+            ],
+            1,
+        ));
+        with_items(&mut app);
+        let member = carrier(&mut app, "Ragnar", 2, 1);
+        let party = fill_pool(&mut app, crate::game::inventory::POOL_LIMIT - 1);
+        let last = stack(&mut app, 2, 1);
+        app.world_mut().get_mut::<PartyInventory>(party).unwrap().pool.stacks.push(last);
+        app.update();
+        let world = app.world();
+        assert!(!matches!(
+            world.get::<Conversation>(session).unwrap().wait,
+            ConversationWait::Blocked { .. }
+        ));
+        assert!(world.get::<Carried>(member).unwrap().backpack[0].is_none());
+        let pool = &world.get::<PartyInventory>(party).unwrap().pool.stacks;
+        assert!(!pool.iter().any(|s| s.item == ItemId(2)));
+        assert!(pool.iter().any(|s| s.item == ItemId(1)));
+        assert_eq!(
+            rewards(&app, session),
+            [
+                QuestReward::Taken { member: Some("Ragnar".into()) },
+                QuestReward::Taken { member: None },
+                QuestReward::Item { name: "Item 1".into() },
+            ]
+        );
     }
 
     /// The item stays with the party when the answer it would buy cannot run.
