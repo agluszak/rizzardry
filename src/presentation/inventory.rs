@@ -1304,7 +1304,10 @@ mod tests {
             inventory::ItemIds,
         };
         let mut app = crate::presentation::test_input::input_app();
-        app.init_asset::<SpriteSheet>().init_asset::<ItemCatalog>().add_systems(Update, draw_cells);
+        app.init_asset::<SpriteSheet>()
+            .init_asset::<ItemCatalog>()
+            .add_message::<crate::game::inventory::ItemNews>()
+            .add_systems(Update, draw_cells);
         let definition =
             ItemDefinition { quantity: QuantityKind::Stack, stack_limit: 99, ..default() };
         let items = app
