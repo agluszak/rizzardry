@@ -929,7 +929,10 @@ pub fn distribute_burden(
         .iter_many(roster.iter())
         .matched()
         .map(|(character, vitals, carried, _)| {
-            (carried_weight(&carried, catalog), (!vitals.is_dead()).then(|| character.capacity()))
+            (
+                carried_weight(&carried, catalog),
+                (!vitals.is_dead()).then(|| character.stats(&vitals.enchantments).capacity()),
+            )
         })
         .collect();
     let pool = inventory.pool.stacks.iter().map(|item| item_weight(item, catalog)).sum();
@@ -937,9 +940,14 @@ pub fn distribute_burden(
         own.iter().map(|&(weight, capacity)| capacity.map(|c| (weight, c))).collect();
     let shares = pool_shares(pool, &eligible);
     let members = members.iter_many_unique_mut(roster.iter()).matched();
-    for ((character, _, _, mut burden), (&(own, _), share)) in members.zip(own.iter().zip(shares)) {
+    for ((character, vitals, _, mut burden), (&(own, _), share)) in
+        members.zip(own.iter().zip(shares))
+    {
         let weight = own + share;
-        burden.set_if_neq(Burden { weight, load: character.load(weight) });
+        burden.set_if_neq(Burden {
+            weight,
+            load: character.stats(&vitals.enchantments).load(weight),
+        });
     }
 }
 

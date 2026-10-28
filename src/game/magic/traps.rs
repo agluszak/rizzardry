@@ -133,6 +133,7 @@ pub(crate) fn discharge(
                         }
                         let victims: Vec<_> = targets.into_iter().map(Victim::Member).collect();
                         let effects = effects::resolve(
+                            false,
                             spell,
                             Strength::at(0, spell, power, 0),
                             &victims,

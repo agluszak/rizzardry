@@ -133,6 +133,7 @@ pub(crate) fn pass_time(
         GroupRecognition,
         Query<&mut crate::game::world::population::Monster>,
     )>,
+    mut enchantments: Single<&mut crate::game::magic::enchantments::PartyEffects>,
     mut clock: ResMut<GameClock>,
     mut rng: ResMut<GameRng>,
     mut points: Query<&mut crate::game::magic::SpellPoints>,
@@ -169,6 +170,9 @@ pub(crate) fn pass_time(
             recovery::pass(profile, &mut vitals, ticks, pace);
         }
         if pass > 0 {
+            if !enchantments.0.0.is_empty() {
+                enchantments.0.age(1);
+            }
             // Spell points come back at least at half rate (retail `spellScale`).
             let scale = crate::game::magic::recovery_scale(pace.health_scale());
             for mut pool in points.iter_many_unique_mut(roster.iter()).matched() {
@@ -178,6 +182,9 @@ pub(crate) fn pass_time(
             }
             // Monsters' conditions run out in the world too.
             for mut monster in &mut affected.p2() {
+                if !monster.enchantments.0.is_empty() {
+                    monster.enchantments.age(1);
+                }
                 if crate::game::characters::any_timed(&monster.conditions) {
                     crate::game::characters::age(&mut monster.conditions, 1);
                 }

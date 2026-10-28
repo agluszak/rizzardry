@@ -575,9 +575,15 @@ pub fn settle_defeat(
     roster: Single<&PartyRoster>,
     members: Query<&Vitals>,
     mut news: MessageWriter<CombatNews>,
+    mut effects: Single<&mut crate::game::magic::enchantments::PartyEffects>,
+    mut monsters: Query<&mut Monster>,
 ) {
     let Some(battle) = battle.map(Single::into_inner) else { return };
     if !members.iter_many(roster.iter()).matched().any(|v| !v.is_dead()) {
+        effects.0.end_combat();
+        for mut monster in &mut monsters {
+            monster.enchantments.end_combat();
+        }
         news.write(CombatNews::Lost);
         // Its combatants leave the fight and stop closing in; they remain.
         commands.entity(battle).despawn();
@@ -614,12 +620,16 @@ fn accept_round(
         };
         let turn = match action {
             RoundAction::Attack { .. } if vitals.can_fight() => Turn {
-                phase: phase(rng, character_initiative(character, hand, burden.load)),
+                phase: phase(
+                    rng,
+                    character_initiative(&character.stats(&vitals.enchantments), hand, burden.load),
+                ),
                 attacks_left: hand.attacks,
             },
-            RoundAction::Magic(_) if vitals.can_fight() => {
-                Turn { phase: phase(rng, character.initiative(burden.load)), attacks_left: 1 }
-            }
+            RoundAction::Magic(_) if vitals.can_fight() => Turn {
+                phase: phase(rng, character.stats(&vitals.enchantments).initiative(burden.load)),
+                attacks_left: 1,
+            },
             _ => Turn::default(),
         };
         round.party.push(PartyTurn { actor: member, action, turn });
@@ -775,10 +785,17 @@ pub fn run_battle(
         if let PartyMove::Pending { pace, phase } = battle.party_move
             && phase <= step
         {
-            // Counted from where the party stands as its move begins.
+            let haste = roster
+                .iter()
+                .try_fold(0, |sum, member| {
+                    let (_, vitals, ..) = members.get(member).ok()?;
+                    let effect = vitals.enchantments.get(crate::content::spells::SpellId::HASTE)?;
+                    Some(sum + effect.scaled(u32::from(effect.power) * 10))
+                })
+                .map_or(0.0, |sum| (sum / roster.len().max(1) as u32) as f32 * 0.2);
             battle.party_move = PartyMove::Moving {
                 pace,
-                budget: pace.combat_budget(),
+                budget: pace.combat_budget() + haste,
                 moved: 0.0,
                 last: Some(position.0),
             };
@@ -798,11 +815,20 @@ pub fn run_battle(
                 species,
                 &mut news,
                 &mut magic.points,
+                &mut magic.context.enchantments.0,
             );
+            if over {
+                for &actor in combatants {
+                    if let Some(mut e) = damage.enchantments_mut(actor) {
+                        e.end_combat();
+                    }
+                }
+            }
             // Recognition is a required part of this round, before the next
             // accepted action or the battle's end can change its meaning.
             actors.p1().detect(party.eye, body.forward(), Some(combatants), &mut rng);
             if over {
+                magic.context.enchantments.0.end_combat();
                 commands.entity(entity).despawn();
             }
             return;
@@ -933,6 +959,7 @@ fn party_turn(
         (hand, items, species),
         party_level,
         news,
+        &magic.context.enchantments.0,
     );
     true
 }
@@ -1153,10 +1180,13 @@ fn member_acts(
     (hand, items, species): (&Hand, &ItemCatalog, &MonsterCatalog),
     party_level: u32,
     news: &mut MessageWriter<CombatNews>,
+    enchantments: &crate::game::magic::enchantments::Enchantments,
 ) {
     let member = battle.this_round.party[index].actor;
     let Ok((character, mut vitals, carried, burden)) = members.get_mut(member) else { return };
-    let target = melee_target(member, hand, combatants, damage, party, formation, species);
+    let mut hand = hand.clone();
+    hand.to_hit += enchantments.hit_bonus();
+    let target = melee_target(member, &hand, combatants, damage, party, formation, species);
     let turn = &mut battle.this_round.party[index].turn;
     let Some((target, kind)) = target else {
         // No target in reach: discard the remaining attacks this round.
@@ -1181,9 +1211,26 @@ fn member_acts(
         if !vitals.can_fight() {
             break;
         }
-        match character_swing(rng, &character, &vitals, hand, mode, kind) {
+        match character_swing(
+            rng,
+            &character.stats(&vitals.enchantments),
+            &vitals,
+            &hand,
+            mode,
+            kind,
+            &damage.monsters().get(target).unwrap().0.enchantments,
+        ) {
             Swing::Hit(damage_amount) => {
                 hits += 1;
+                let damage_amount = if damage
+                    .monsters()
+                    .get(target)
+                    .is_ok_and(|(m, ..)| m.enchantments.deflects(mode, rng))
+                {
+                    0
+                } else {
+                    damage_amount
+                };
                 let Ok(outcome) = damage.apply(target, damage_amount, party_level, purse, rng)
                 else {
                     break;
@@ -1198,7 +1245,8 @@ fn member_acts(
         };
         let cost = attack::swing_stamina(rng, mode, weight, vitals.has(Condition::Diseased));
         let slowed = vitals.has(Condition::Slowed);
-        vitals.spend_stamina(burden.load.scale_fatigue(cost, slowed));
+        let hasted = vitals.enchantments.get(crate::content::spells::SpellId::HASTE).is_some();
+        vitals.spend_stamina(burden.load.scale_fatigue(cost, slowed, hasted));
         if casualty.is_some() {
             break;
         }
@@ -1237,7 +1285,7 @@ fn monster_turn(
         return false;
     }
     let turn = battle.this_round.monsters[index].1;
-    let MagicContext { formation, party_damage, .. } = context;
+    let MagicContext { formation, party_damage, enchantments, .. } = context;
     let idle = monster_acts(
         battle,
         index,
@@ -1250,6 +1298,7 @@ fn monster_turn(
         catalogs,
         news,
         party_damage,
+        &enchantments.0,
     );
     if idle
         && !battle.this_round.moved.contains(&monster)
@@ -1279,6 +1328,7 @@ fn monster_acts(
     (items, species): (&ItemCatalog, &MonsterCatalog),
     news: &mut MessageWriter<CombatNews>,
     damage: &mut MessageWriter<DamageApplied>,
+    enchantments: &crate::game::magic::enchantments::Enchantments,
 ) -> bool {
     let (entity, turn) = battle.this_round.monsters[index];
     let Ok((monster, at, walker, _)) = monsters.get(entity) else { return false };
@@ -1311,7 +1361,14 @@ fn monster_acts(
     let Ok((character, mut vitals, carried, burden)) = members.get_mut(member) else {
         return false;
     };
-    let armour = attack::armour(&character, &carried, items, burden.load, battle.defends(member));
+    let armour = attack::enchanted_armour(
+        &character.stats(&vitals.enchantments),
+        &carried,
+        items,
+        burden.load,
+        battle.defends(member),
+        (&vitals.enchantments, Some(enchantments)),
+    );
     let swings = rng.below(u32::from(kind.swings_per_round.max(1))) + 1;
     news.write(CombatNews::Attack {
         attacker: entity,
@@ -1321,21 +1378,38 @@ fn monster_acts(
     });
     let (mut hits, mut dealt) = (0, 0);
     for _ in 0..swings {
-        match monster_swing(rng, kind, attack, mode, &character, &armour) {
+        match monster_swing(
+            rng,
+            kind,
+            attack,
+            mode,
+            &character.stats(&vitals.enchantments),
+            &armour,
+            &monster.enchantments,
+        ) {
             Swing::Hit(amount) => {
+                if enchantments.deflects(mode, rng) {
+                    continue;
+                }
                 hits += 1;
-                dealt += crate::game::party::damage_member(
+                let amount = vitals.enchantments.physical_damage(amount);
+                let lost = crate::game::party::damage_member(
                     member,
                     &mut vitals,
                     formation,
                     amount,
                     damage,
                 );
+                dealt += lost;
                 if vitals.is_dead() {
                     break;
                 }
-                let senses = character.attribute(crate::content::characters::Attribute::Senses);
-                crate::game::characters::wake_on_hit(&mut vitals.conditions, senses, rng);
+                let senses = character
+                    .stats(&vitals.enchantments)
+                    .attribute(crate::content::characters::Attribute::Senses);
+                if lost > 0 {
+                    crate::game::characters::wake_on_hit(&mut vitals.conditions, senses, rng);
+                }
             }
             Swing::NoPenetration => hits += 1,
             Swing::Missed => {}
@@ -1364,12 +1438,17 @@ fn end_round(
     species: &MonsterCatalog,
     news: &mut MessageWriter<CombatNews>,
     points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
+    enchantments: &mut crate::game::magic::enchantments::Enchantments,
 ) -> bool {
     // The round's time passes now, with its meaning: conditions age, spell
     // points come back at half rate and nothing else recovers (retail
     // `AdvanceCombatRound`, `AdvanceTimedEffects`).
     let ticks = clock.advance(ROUND_MS);
+    enchantments.age(ticks.aging);
     for &entity in combatants {
+        if let Some(mut e) = damage.enchantments_mut(entity) {
+            e.age(ticks.aging);
+        }
         if let Some(mut conditions) = damage.conditions_mut(entity)
             && crate::game::characters::any_timed(&conditions)
         {
@@ -1397,15 +1476,17 @@ fn end_round(
         if vitals.is_dead() || !resting {
             continue;
         }
-        let sides = (character.max_stamina() / 20).saturating_sub(1).max(1);
+        let sides =
+            (character.stats(&vitals.enchantments).max_stamina() / 20).saturating_sub(1).max(1);
         let rolled = rng.roll(Dice { count: 2, sides: sides.min(255) as u8, base: 0 });
         let gained = recovery::combat_rest_amount(&character, rolled);
-        if vitals.stamina < character.max_stamina()
+        if vitals.stamina < character.stats(&vitals.enchantments).max_stamina()
             || vitals
                 .conditions
                 .contains(&(Condition::Unconscious, crate::game::characters::Lasting::Indefinite))
         {
-            vitals.restore_stamina(gained, character.max_stamina());
+            let maximum = character.stats(&vitals.enchantments).max_stamina();
+            vitals.restore_stamina(gained, maximum);
         }
     }
     battle.wait = Timer::from_seconds(ROUND_SECONDS, TimerMode::Once);
@@ -1448,6 +1529,51 @@ mod tests {
     use crate::content::spells::SpellCatalog;
     use crate::game::data::GameData;
     use crate::game::inventory::{Carried, ItemIds, make_item};
+
+    #[test]
+    fn party_armour_follows_membership_and_expiry() {
+        use crate::game::magic::enchantments::{Enchantment, PartyEffects};
+        use crate::game::party::roster::PartyMember;
+        let (mut app, members) = round_app(false);
+        app.world_mut().resource_mut::<Messages<StartRound>>().clear();
+        let profile = app.world().get::<Character>(members[0]).unwrap().clone();
+        let stranger =
+            app.world_mut().spawn((Vitals::new(&profile), profile, Carried::default())).id();
+        app.update();
+        let armour = |app: &mut App, member: Entity| {
+            let mut state = bevy::ecs::system::SystemState::<(
+                Query<crate::presentation::character_view::CharacterView>,
+                Option<Single<&PartyEffects>>,
+            )>::new(app.world_mut());
+            let (views, party) = state.get(app.world()).unwrap();
+            let items = GameData::items(app.world()).unwrap();
+            views
+                .get(member)
+                .unwrap()
+                .armour(member, Some(items), None, party.as_deref().copied())
+                .unwrap()
+                .total
+        };
+        let before = armour(&mut app, members[0]);
+        let outsider = armour(&mut app, stranger);
+        let party = crate::game::party::roster::the_party(app.world_mut()).unwrap();
+        app.world_mut().get_mut::<PartyEffects>(party).unwrap().0.apply(Enchantment {
+            spell: crate::content::spells::SpellId::ARMORPLATE,
+            power: 5,
+            boost: 0,
+            turns: 2,
+            absorption: 0,
+        });
+        app.update();
+        assert_eq!(armour(&mut app, members[0]), before + 3);
+        assert_eq!(armour(&mut app, stranger), outsider);
+        app.world_mut().entity_mut(members[0]).remove::<PartyMember>();
+        app.update();
+        assert_eq!(armour(&mut app, members[0]), before);
+        app.world_mut().get_mut::<PartyEffects>(party).unwrap().0.age(2);
+        app.update();
+        assert!(app.world().get::<PartyEffects>(party).unwrap().0.0.is_empty());
+    }
 
     #[test]
     fn round_button_is_interpreted_by_the_current_battle() {
@@ -1567,6 +1693,7 @@ mod tests {
             .world_mut()
             .spawn((
                 Monster {
+                    enchantments: default(),
                     location: 0,
                     species: 0,
                     hp: 10000,
@@ -1721,8 +1848,9 @@ mod tests {
         let carried = world.get::<Carried>(caster).unwrap();
         let load = world.get::<Burden>(caster).unwrap().load;
         let items = GameData::items(world).unwrap();
-        let baseline = attack::armour(character, carried, items, load, false);
-        let defended = attack::armour(character, carried, items, load, battle.defends(caster));
+        let stats = character.base_stats();
+        let baseline = attack::armour(&stats, carried, items, load, false);
+        let defended = attack::armour(&stats, carried, items, load, battle.defends(caster));
         assert_eq!(defended.total, baseline.total + 2);
         assert_eq!(defended.average(), baseline.average() + 2);
         // Draft edits and a spent turn cannot undo the effective defense.

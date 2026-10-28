@@ -21,6 +21,7 @@ use crate::game::world::items::{WorldItem, placed_item};
 /// it is, its body, and its health and stamina.
 #[derive(Component, Clone, Debug)]
 pub struct Monster {
+    pub enchantments: crate::game::magic::enchantments::Enchantments,
     pub location: i32,
     pub species: u32,
     pub hp: u32,

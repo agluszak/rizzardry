@@ -86,6 +86,14 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         Some(monster.map_unchanged(|monster| &mut monster.conditions))
     }
 
+    pub fn enchantments_mut(
+        &mut self,
+        entity: Entity,
+    ) -> Option<Mut<'_, crate::game::magic::enchantments::Enchantments>> {
+        let (monster, ..) = self.monsters.get_mut(entity).ok()?;
+        Some(monster.map_unchanged(|m| &mut m.enchantments))
+    }
+
     pub fn active(&self, target: Entity) -> bool {
         self.monsters.get(target).is_ok_and(|(_, _, _, owner)| self.levels.contains(owner.0))
     }
@@ -115,8 +123,16 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         if monster.is_dead() || amount == 0 {
             return Ok(DamageOutcome::default());
         }
+        // A Guardian Angel's absorption counts before the NPC-death refusal,
+        // and is spent only once the hit is allowed.
+        let mut enchantments = monster.enchantments.clone();
+        let amount = enchantments.absorb(amount);
         if amount >= monster.hp && kind.npc.is_some() {
             return Err(DamageRefusal::UnsupportedNpcDeath);
+        }
+        monster.enchantments = enchantments;
+        if amount == 0 {
+            return Ok(DamageOutcome::default());
         }
         let position = feet(at.translation(), walker);
         let lost = amount.min(monster.hp);
@@ -130,6 +146,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
             );
             return Ok(DamageOutcome { damage: lost, ..default() });
         }
+        monster.enchantments.0.clear();
         // Stop autonomous work, not the body's geometry or vertical physics.
         // Structural removal is applied with this operation's loot commands,
         // before any following movement consumer can run.

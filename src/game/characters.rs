@@ -339,10 +339,17 @@ impl Load {
         }
     }
 
-    /// Fatigue scaled by load, less a quarter when slowed (retail
-    /// `FatigueCharacter`; Haste is not modelled yet).
-    pub fn scale_fatigue(self, amount: u32, slowed: bool) -> u32 {
-        let percent = self.fatigue_percent() as i32 - if slowed { 25 } else { 0 };
+    /// Fatigue scaled by load, minus a quarter for Slow or plus a quarter
+    /// for Haste (retail `FatigueCharacter`).
+    pub fn scale_fatigue(self, amount: u32, slowed: bool, hasted: bool) -> u32 {
+        let percent = self.fatigue_percent() as i32
+            + if slowed {
+                -25
+            } else if hasted {
+                25
+            } else {
+                0
+            };
         (amount as i32 + percent * amount as i32 / 100).max(0) as u32
     }
 
@@ -614,28 +621,12 @@ impl Character {
     /// `round(Σ (0.6 + 0.008·VIT) × factor × levels)`, counting one extra
     /// level for the original profession.
     pub fn max_hp(&self) -> u32 {
-        let vitality = 0.6 + 0.008 * self.attribute(Attribute::Vitality) as f32;
-        let total: f32 = self
-            .profession_levels
-            .iter()
-            .map(|(profession, &levels)| {
-                let mut levels = u32::from(levels);
-                if profession == self.original_profession && levels > 0 {
-                    levels += 1;
-                }
-                vitality * profession_row(profession).hp_factor * levels as f32
-            })
-            .sum();
-        (total.round() as u32).max(1)
+        self.base_stats().max_hp()
     }
 
     /// `round((STR + PIE + VIT) / 3 × (0.1·level + 2))`.
     pub fn max_stamina(&self) -> u32 {
-        let sum = [Attribute::Strength, Attribute::Piety, Attribute::Vitality]
-            .map(|a| self.attribute(a))
-            .iter()
-            .sum::<u32>() as f32;
-        (sum / 3.0 * (0.1 * f32::from(self.level) + 2.0)).round() as u32
+        self.base_stats().max_stamina()
     }
 
     /// Levels weighted by how physical each profession is.
@@ -648,26 +639,18 @@ impl Character {
 
     /// Tenths of a pound: `(VIT + 2·STR) × 12`, × 8 for a Faerie.
     pub fn capacity(&self) -> u32 {
-        let factor = if self.race == Race::Faerie { 8 } else { 12 };
-        (self.attribute(Attribute::Vitality) + 2 * self.attribute(Attribute::Strength)) * factor
+        self.base_stats().capacity()
     }
 
     /// The load band of carrying `weight` (own plus pool share).
     pub fn load(&self, weight: u32) -> Load {
-        load_band(weight, self.capacity())
+        self.base_stats().load(weight)
     }
 
     /// `(level + 1)/2 + SEN/5 + SPD/5 − 10`, plus Snake Speed, less 1, 2, 4
     /// or 8 by load.
     pub fn initiative(&self, load: Load) -> i32 {
-        let mut initiative = (i32::from(self.level) + 1) / 2
-            + self.attribute(Attribute::Senses) as i32 / 5
-            + self.attribute(Attribute::Speed) as i32 / 5
-            - 10;
-        if self.skill_points[Skill::SnakeSpeed] > 0 {
-            initiative += self.skill(Skill::SnakeSpeed) as i32 / 10 + 1;
-        }
-        initiative - load.penalty()
+        self.base_stats().initiative(load)
     }
 
     /// The passed threshold plus this profession's next increment: doubling
@@ -689,10 +672,81 @@ impl Character {
     }
 }
 
+/// A borrowed view of current attributes. No copy of the profile or temporary
+/// modifiers is stored; creation uses base stats, gameplay supplies live effects.
+#[derive(Clone, Copy)]
+pub struct CharacterStats<'a> {
+    profile: &'a Character,
+    enchantments: Option<&'a crate::game::magic::enchantments::Enchantments>,
+}
+impl std::ops::Deref for CharacterStats<'_> {
+    type Target = Character;
+    fn deref(&self) -> &Character {
+        self.profile
+    }
+}
+impl Character {
+    pub fn stats<'a>(
+        &'a self,
+        effects: &'a crate::game::magic::enchantments::Enchantments,
+    ) -> CharacterStats<'a> {
+        CharacterStats { profile: self, enchantments: Some(effects) }
+    }
+    pub fn base_stats(&self) -> CharacterStats<'_> {
+        CharacterStats { profile: self, enchantments: None }
+    }
+}
+impl CharacterStats<'_> {
+    pub fn attribute(&self, attribute: Attribute) -> u32 {
+        let bonus = self.enchantments.map_or(0, |e| e.attribute_bonus(attribute));
+        (self.profile.attribute(attribute) + bonus).min(125)
+    }
+    pub fn max_hp(&self) -> u32 {
+        let vitality = 0.6 + 0.008 * self.attribute(Attribute::Vitality) as f32;
+        let total: f32 = self
+            .profession_levels
+            .iter()
+            .map(|(profession, &levels)| {
+                let mut levels = u32::from(levels);
+                if profession == self.original_profession && levels > 0 {
+                    levels += 1;
+                }
+                vitality * profession_row(profession).hp_factor * levels as f32
+            })
+            .sum();
+        (total.round() as u32).max(1)
+    }
+    pub fn max_stamina(&self) -> u32 {
+        let sum = [Attribute::Strength, Attribute::Piety, Attribute::Vitality]
+            .map(|a| self.attribute(a))
+            .iter()
+            .sum::<u32>() as f32;
+        (sum / 3.0 * (0.1 * f32::from(self.level) + 2.0)).round() as u32
+    }
+    pub fn capacity(&self) -> u32 {
+        let factor = if self.race == Race::Faerie { 8 } else { 12 };
+        (self.attribute(Attribute::Vitality) + 2 * self.attribute(Attribute::Strength)) * factor
+    }
+    pub fn load(&self, weight: u32) -> Load {
+        load_band(weight, self.capacity())
+    }
+    pub fn initiative(&self, load: Load) -> i32 {
+        let mut initiative = (i32::from(self.level) + 1) / 2
+            + self.attribute(Attribute::Senses) as i32 / 5
+            + self.attribute(Attribute::Speed) as i32 / 5
+            - 10;
+        if self.skill_points[Skill::SnakeSpeed] > 0 {
+            initiative += self.skill(Skill::SnakeSpeed) as i32 / 10 + 1;
+        }
+        initiative - load.penalty()
+    }
+}
+
 /// Health, fatigue and conditions change independently of identity, training
 /// and recognition. Recruitment initializes these from the actual profile.
 #[derive(Component, Clone, Debug, Default, PartialEq)]
 pub struct Vitals {
+    pub enchantments: crate::game::magic::enchantments::Enchantments,
     pub hp: u32,
     pub stamina: u32,
     pub conditions: Vec<(Condition, Lasting)>,
@@ -740,6 +794,20 @@ impl Vitals {
 
     /// Inflict a condition, keeping the longer duration if already afflicted.
     pub fn inflict(&mut self, condition: Condition, lasting: Lasting) {
+        let lasting = if condition == Condition::Slowed {
+            if let Lasting::Rounds(turns) = lasting {
+                let remaining = self.enchantments.counter_slow(u32::from(turns));
+                if remaining == 0 {
+                    return;
+                }
+                Lasting::Rounds(remaining as u16)
+            } else {
+                self.enchantments.0.retain(|e| e.spell != crate::content::spells::SpellId::HASTE);
+                lasting
+            }
+        } else {
+            lasting
+        };
         inflict(&mut self.conditions, condition, lasting);
     }
 
@@ -751,20 +819,23 @@ impl Vitals {
     /// `AgeCondition`). Poison's weakening is not modelled yet.
     pub fn age_conditions(&mut self, ticks: u32) {
         age(&mut self.conditions, ticks);
+        self.enchantments.age(ticks);
     }
 
     /// Take damage (retail `damageCharacter`): two thirds of it also drain
     /// stamina, and health reaching 0 is death. The dead take none. Returns
-    /// the health lost. Guardian Angel, cheating death and waking the asleep
-    /// are not modelled yet.
+    /// the health lost. Guardian Angel absorbs before fatigue. The caller
+    /// handles waking; exceptional survival traits remain unported.
     pub fn damage(&mut self, amount: u32) -> u32 {
         if self.is_dead() {
             return 0;
         }
+        let amount = self.enchantments.absorb(amount);
         self.spend_stamina(amount * 2 / 3);
         let lost = amount.min(self.hp);
         self.hp -= lost;
         if self.is_dead() {
+            self.enchantments.0.clear();
             // Death clears every condition but infatuation (retail `Die`).
             self.conditions.retain(|&(c, _)| c == Condition::Infatuated);
             self.stamina = 0;

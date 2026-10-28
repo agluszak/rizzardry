@@ -135,6 +135,16 @@ mod tests {
         {
             let (mut members, mut formation, mut damage) = operation.get_mut(&mut world).unwrap();
             let mut vitals = members.get_mut(first).unwrap();
+            vitals.enchantments.apply(crate::game::magic::enchantments::Enchantment {
+                spell: crate::content::spells::SpellId::GUARDIAN_ANGEL,
+                power: 2,
+                boost: 0,
+                turns: 4,
+                absorption: 6,
+            });
+            assert_eq!(damage_member(first, &mut vitals, &mut formation, 6, &mut damage), 0);
+            assert_eq!(vitals.stamina, 20, "Guardian Angel absorbs before fatigue");
+            assert!(formation.row_of(first).is_some());
             assert_eq!(damage_member(first, &mut vitals, &mut formation, 3, &mut damage), 3);
             vitals.heal(3, 10);
         }

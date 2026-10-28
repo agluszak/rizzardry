@@ -175,9 +175,9 @@ fn drink_fountain(
     for (profile, mut member) in members.iter_many_unique_mut(roster.iter()).matched() {
         if member.is_dead()
             || match fountain.restores {
-                Restores::Health => member.hp >= profile.max_hp(),
+                Restores::Health => member.hp >= profile.stats(&member.enchantments).max_hp(),
                 Restores::Stamina => {
-                    member.stamina >= profile.max_stamina()
+                    member.stamina >= profile.stats(&member.enchantments).max_stamina()
                         && !member.conditions.contains(&(
                             crate::game::characters::Condition::Unconscious,
                             crate::game::characters::Lasting::Indefinite,
@@ -188,8 +188,14 @@ fn drink_fountain(
             continue;
         }
         match fountain.restores {
-            Restores::Health => member.heal(fountain.amount, profile.max_hp()),
-            Restores::Stamina => member.restore_stamina(fountain.amount, profile.max_stamina()),
+            Restores::Health => {
+                let maximum = profile.stats(&member.enchantments).max_hp();
+                member.heal(fountain.amount, maximum)
+            }
+            Restores::Stamina => {
+                let maximum = profile.stats(&member.enchantments).max_stamina();
+                member.restore_stamina(fountain.amount, maximum)
+            }
         }
     }
     outcomes.write(TriggerEffect::FountainUsed { at });

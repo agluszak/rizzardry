@@ -1024,6 +1024,7 @@ mod tests {
             super::super::NpcBody(actor),
             crate::game::world::level::LevelOwned(level),
             Monster {
+                enchantments: default(),
                 location: 1,
                 species: 0,
                 hp: 5,

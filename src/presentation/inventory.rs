@@ -791,8 +791,10 @@ fn draw_vitals(
         visibility.set_if_neq(visible_if(!vitals.is_dead()));
         if let (Some(shade), Some(mut node)) = (shade, node) {
             let (current, maximum) = match shade {
-                VitalShade::Health => (vitals.hp, profile.max_hp()),
-                VitalShade::Stamina => (vitals.stamina, profile.max_stamina()),
+                VitalShade::Health => (vitals.hp, profile.stats(&vitals.enchantments).max_hp()),
+                VitalShade::Stamina => {
+                    (vitals.stamina, profile.stats(&vitals.enchantments).max_stamina())
+                }
             };
             let filled = super::screen_art::vital_fill(current, maximum);
             let height = px((45 - filled) as f32);
@@ -839,13 +841,19 @@ fn draw_header_hands(
     content: crate::game::data::Content,
     members: Query<crate::presentation::character_view::CharacterView>,
     battle: Option<Single<&crate::game::combat::Battle>>,
+    party_effects: Option<Single<&crate::game::magic::enchantments::PartyEffects>>,
     art: Res<InventoryArt>,
     mut parts: Query<(&HeaderHand, &mut Visibility, Option<&mut Picture>, Option<&mut BitmapText>)>,
 ) {
     let Some(screen) = screen else { return };
     let Some(catalog) = content.items() else { return };
     let Ok(view) = members.get(screen.member) else { return };
-    let armour = view.armour(screen.member, Some(catalog), battle.as_deref().copied());
+    let armour = view.armour(
+        screen.member,
+        Some(catalog),
+        battle.as_deref().copied(),
+        party_effects.as_deref().copied(),
+    );
     let profile = view.profile;
     let carried = view.carried;
     let empty = Carried::default();

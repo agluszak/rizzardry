@@ -39,8 +39,8 @@ fn a_fighter_and_a_crab_trade_blows() {
         let item = make_item(catalog.get(ItemId(id)).unwrap(), &mut ids, &mut rng, true, true);
         assert!(place_at_creation(&mut carried, item, &catalog, &fighter).is_none());
     }
-    let hand = primary_hand(&fighter, &carried, &catalog, Load::None);
-    let armour = armour(&fighter, &carried, &catalog, Load::None, false);
+    let hand = primary_hand(&fighter.base_stats(), &carried, &catalog, Load::None);
+    let armour = armour(&fighter.base_stats(), &carried, &catalog, Load::None, false);
     let tally = |swings: Vec<Swing>| {
         let hits: Vec<u32> = swings
             .iter()
@@ -56,11 +56,12 @@ fn a_fighter_and_a_crab_trade_blows() {
             .map(|_| {
                 character_swing(
                     &mut rng,
-                    &fighter,
+                    &fighter.base_stats(),
                     &Vitals::new(&fighter),
                     &hand,
                     AttackMode::Swing,
                     crab,
+                    &Default::default(),
                 )
             })
             .collect(),
@@ -70,7 +71,15 @@ fn a_fighter_and_a_crab_trade_blows() {
         (0..1000)
             .map(|_| {
                 let mode = choose_mode(&mut rng, attack.modes);
-                monster_swing(&mut rng, crab, attack, mode, &fighter, &armour)
+                monster_swing(
+                    &mut rng,
+                    crab,
+                    attack,
+                    mode,
+                    &fighter.base_stats(),
+                    &armour,
+                    &Default::default(),
+                )
             })
             .collect(),
     );
