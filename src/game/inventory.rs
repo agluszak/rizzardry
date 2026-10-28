@@ -1267,6 +1267,7 @@ mod tests {
         use crate::game::party::roster::{test_join, test_party};
         use bevy::ecs::system::RunSystemOnce;
         let mut world = World::new();
+        world.init_resource::<Messages<ItemNews>>();
         let (c, mut ids) = (catalog(), ItemIds::default());
         let item = stack(&c, &mut ids, 0, 7);
         let id = item.id;

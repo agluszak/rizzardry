@@ -14,13 +14,15 @@ pub struct InventoryOperations<'w, 's> {
     members: Members<'w, 's>,
     content: Content<'w>,
     battle: Option<Single<'w, 's, &'static crate::game::combat::Battle>>,
+    news: MessageWriter<'w, ItemNews>,
 }
 
 impl InventoryOperations<'_, '_> {
-    /// Give the held item to an identified actor. Eligibility and battle pool
-    /// precedence are rules here; the clicked portrait only supplies its target.
-    pub fn give_to(&mut self, member: Entity) -> Result<Option<ItemNews>, Refusal> {
-        let Some(held) = self.party.hand.held.as_ref() else { return Ok(None) };
+    /// Give the held item to an identified actor, telling who took it.
+    /// Eligibility and battle pool precedence are rules here; the clicked
+    /// portrait only supplies its target. False when nothing was held.
+    pub fn give_to(&mut self, member: Entity) -> Result<bool, Refusal> {
+        let Some(held) = self.party.hand.held.as_ref() else { return Ok(false) };
         let catalog = self.content.items().ok_or(Refusal::MissingContent)?;
         let (profile, vitals, mut carried) = self::member(&self.roster, &mut self.members, member)?;
         let definition = catalog.get(held.item).ok_or(Refusal::MissingContent)?;
@@ -28,12 +30,17 @@ impl InventoryOperations<'_, '_> {
         let name = profile.name.clone();
         let eligible = vitals.can_act();
         let pool_first = !eligible || self.battle.is_some();
-        let result = self.party.give_held(eligible.then_some(&mut *carried), pool_first, catalog);
-        Ok(result.map(|given| match given {
+        let Some(given) =
+            self.party.give_held(eligible.then_some(&mut *carried), pool_first, catalog)
+        else {
+            return Ok(false);
+        };
+        self.news.write(match given {
             Given::Member => ItemNews::Takes { member: Some(name), item },
             Given::Pool => ItemNews::Takes { member: None, item },
             Given::NoRoom => ItemNews::NoRoom,
-        }))
+        });
+        Ok(true)
     }
 
     /// Return the hand to the reviewed member, falling back to the pool. A

@@ -67,6 +67,9 @@ impl Plugin for WorldPlugin {
             .init_resource::<population::MonsterBodies>()
             .add_message::<triggers::TriggerEffect>()
             .add_message::<interaction::LockNews>()
+            .add_message::<WorldRequest>()
+            .add_message::<crate::game::automap::CommitNote>()
+            .add_plugins(interaction::plugin)
             // Resolve travel intent early; activation owns the later level swap.
             .add_systems(PreUpdate, (level::answer_travel_questions, level::travel).chain())
             .add_observer(level::suspend_physics_for_entry)
@@ -79,6 +82,9 @@ impl Plugin for WorldPlugin {
                 Update,
                 (
                     level::activate_level.in_set(crate::game::GameplaySet::LevelActivation),
+                    (handle_world_requests, crate::game::automap::commit_notes)
+                        .after(crate::game::GameplaySet::LevelActivation)
+                        .before(crate::game::GameplaySet::Combat),
                     (search::toggle_search, search::search_pulse)
                         .chain()
                         .run_if(level::level_active)
@@ -91,6 +97,45 @@ impl Plugin for WorldPlugin {
                     .before(navigation::links::sync_door_links)
                     .run_if(level::level_active),
             );
+    }
+}
+
+/// What the player asks of the world under the pointer.
+#[derive(Message, Clone, Copy, Debug, PartialEq)]
+pub enum WorldRequest {
+    /// Use a device from this far away.
+    Activate {
+        device: Entity,
+        distance: f32,
+    },
+    TakeItem {
+        item: Entity,
+        distance: f32,
+    },
+    DropHeld {
+        level: Entity,
+        at: Vec3,
+    },
+}
+
+/// Carry out the player's world requests in order; a refused one changes
+/// nothing.
+pub fn handle_world_requests(world: &mut World) {
+    let requests: Vec<_> = world.resource_mut::<Messages<WorldRequest>>().drain().collect();
+    for request in requests {
+        let refused = match request {
+            WorldRequest::Activate { device, distance } => {
+                triggers::activate(world, device, Some(distance));
+                None
+            }
+            WorldRequest::TakeItem { item, distance } => {
+                items::take_item(world, item, distance).err()
+            }
+            WorldRequest::DropHeld { level, at } => items::drop_held(world, level, at).err(),
+        };
+        if let Some(why) = refused {
+            debug!("{request:?} refused: {why:?}");
+        }
     }
 }
 

@@ -23,6 +23,7 @@ use crate::content::level::{Lock, TRAP_TYPES};
 use crate::content::spells::SpellId;
 use crate::game::characters::{Character, Vitals};
 use crate::game::difficulty::Difficulty;
+use crate::game::inventory::StackId;
 use crate::game::party::roster::PartyMember;
 use crate::game::rng::GameRng;
 use crate::game::time::GameClock;
@@ -674,6 +675,79 @@ fn complete(world: &mut World) {
 /// Leave the device as it is, forgetting the attempt in progress.
 pub fn leave(world: &mut World) {
     world.remove_resource::<DeviceInteraction>();
+}
+
+pub(crate) fn plugin(app: &mut App) {
+    app.add_message::<DeviceRequest>().add_systems(
+        Update,
+        handle_device_requests
+            .after(crate::game::GameplaySet::LevelActivation)
+            .before(crate::game::GameplaySet::Combat),
+    );
+}
+
+/// What the player asks of the device being worked on.
+#[derive(Message, Clone, Debug, PartialEq)]
+pub enum DeviceRequest {
+    Pick {
+        actor: Entity,
+        tumbler: usize,
+    },
+    Force {
+        actor: Entity,
+    },
+    Inspect {
+        actor: Entity,
+    },
+    Disarm {
+        actor: Entity,
+        component: usize,
+    },
+    Spring {
+        actor: Option<Entity>,
+    },
+    /// A spell or item selector opens on the device.
+    PrepareMagic {
+        actor: Entity,
+        device: Entity,
+    },
+    Take {
+        picks: Vec<(StackId, u16)>,
+        to: super::containers::Recipient,
+    },
+    Leave,
+}
+
+/// Carry out the player's device requests in order. A refused request
+/// changes nothing: retail offers only the controls that can work.
+pub fn handle_device_requests(world: &mut World) {
+    let requests: Vec<_> = world.resource_mut::<Messages<DeviceRequest>>().drain().collect();
+    for request in requests {
+        match &request {
+            &DeviceRequest::Pick { actor, tumbler } => {
+                report(&request, pick_tumbler(world, actor, tumbler))
+            }
+            &DeviceRequest::Force { actor } => report(&request, force_lock(world, actor)),
+            &DeviceRequest::Inspect { actor } => report(&request, inspect_trap(world, actor)),
+            &DeviceRequest::Disarm { actor, component } => {
+                report(&request, disarm_component(world, actor, component))
+            }
+            &DeviceRequest::Spring { actor } => report(&request, spring_trap(world, actor)),
+            &DeviceRequest::PrepareMagic { actor, device } => {
+                report(&request, prepare_device_magic(world, actor, device))
+            }
+            DeviceRequest::Take { picks, to } => {
+                report(&request, super::containers::take_from_container(world, picks, *to))
+            }
+            DeviceRequest::Leave => leave(world),
+        }
+    }
+}
+
+fn report<E: std::fmt::Debug>(request: &DeviceRequest, result: Result<(), E>) {
+    if let Err(why) = result {
+        debug!("{request:?} refused: {why:?}");
+    }
 }
 
 /// An interaction ends with its device, an accepted entry, or a fight.

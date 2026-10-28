@@ -22,7 +22,7 @@ use crate::game::characters::Race;
 use crate::game::characters::{Character, Vitals};
 use crate::game::combat::attack::armour;
 use crate::game::data::GameData;
-use crate::game::inventory::{EquipSlot, ItemNews};
+use crate::game::inventory::EquipSlot;
 use crate::game::party::DamageApplied;
 use crate::game::party::roster::PartyRoster;
 use crate::presentation::PresentationRng;
@@ -518,7 +518,6 @@ fn press(
     mut selected: ResMut<SelectedMember>,
     roster: Single<Ref<PartyRoster>>,
     mut inventory: crate::game::inventory::operations::InventoryOperations,
-    mut news: MessageWriter<ItemNews>,
     mut review: crate::presentation::inventory::OpenReview,
     mut views: Query<&mut super::magic_view::MagicView>,
     conversations: Query<(), With<crate::game::npcs::conversation::Conversation>>,
@@ -540,9 +539,8 @@ fn press(
         return;
     }
     match inventory.give_to(member) {
-        Ok(Some(outcome)) => {
+        Ok(true) => {
             button.review_armed = false;
-            news.write(outcome);
             return;
         }
         Err(reason) => {
@@ -550,7 +548,7 @@ fn press(
             info!("giving item refused: {reason:?}");
             return;
         }
-        Ok(None) => {}
+        Ok(false) => {}
     }
     let already_selected = selected.0 == Some(member);
     selected.0 = Some(member);
@@ -590,7 +588,6 @@ fn release_right(
     time: Res<Time<Real>>,
     keys: Option<Res<ButtonInput<KeyCode>>>,
     mut inventory: crate::game::inventory::operations::InventoryOperations,
-    mut news: MessageWriter<ItemNews>,
     mut review: crate::presentation::inventory::OpenReview,
     mut selected: ResMut<SelectedMember>,
     mut commands: Commands,
@@ -608,15 +605,12 @@ fn release_right(
         // Retail's right-release give always offers the party pool first
         // (`force_to_party`); this uses the left click's pool rule.
         match inventory.give_to(member) {
-            Ok(Some(outcome)) => {
-                news.write(outcome);
-                return;
-            }
+            Ok(true) => return,
             Err(reason) => {
                 info!("giving item refused: {reason:?}");
                 return;
             }
-            Ok(None) => {}
+            Ok(false) => {}
         }
     }
     if review.open(member) {
@@ -785,7 +779,7 @@ mod tests {
             .init_asset::<ItemCatalog>()
             .init_resource::<SelectedMember>()
             .init_resource::<ButtonInput<MouseButton>>()
-            .add_message::<ItemNews>()
+            .add_message::<crate::game::inventory::ItemNews>()
             .insert_resource(State::new(Screen::World))
             .init_resource::<NextState<Screen>>()
             .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(Duration::from_millis(
@@ -914,7 +908,7 @@ mod tests {
         world.init_resource::<ScreenLayout>();
         world.init_resource::<Assets<ItemCatalog>>();
         world.init_resource::<SelectedMember>();
-        world.init_resource::<Messages<ItemNews>>();
+        world.init_resource::<Messages<crate::game::inventory::ItemNews>>();
         world.insert_resource(State::new(Screen::World));
         world.init_resource::<NextState<Screen>>();
         let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);

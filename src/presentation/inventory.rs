@@ -1289,6 +1289,7 @@ mod tests {
             .init_asset::<Image>()
             .init_asset::<ItemCatalog>()
             .init_resource::<UiScale>()
+            .add_message::<crate::game::inventory::ItemNews>()
             .init_resource::<super::super::main_screen::SelectedMember>()
             .add_plugins(InventoryPlugin)
             .add_observer(crate::presentation::retail_controls::primary_buttons_only)

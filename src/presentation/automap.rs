@@ -27,7 +27,7 @@ use bevy_enhanced_input::prelude::*;
 
 use crate::content::level::CollisionMesh;
 use crate::content::ui::{SpriteSheet, ui_image};
-use crate::game::automap::{MapNote, MapNotes, NoteDraft};
+use crate::game::automap::{CommitNote, MapNote, MapNotes, NoteDraft};
 use crate::game::party::body::{FLOAT_HEIGHT, PartyBody};
 use crate::game::world::level::{Level, PlayedLevel};
 use crate::presentation::screen_art::visible_if;
@@ -588,7 +588,8 @@ pub fn paint_buttons(
 fn click_map(
     click: On<PointerClick>,
     map: Option<Single<&mut Automap>>,
-    mut levels: Query<&mut MapNotes>,
+    levels: Query<&MapNotes>,
+    mut commits: MessageWriter<CommitNote>,
     mut commands: Commands,
     editors: Query<Entity, With<note_input::NoteInput>>,
 ) {
@@ -606,7 +607,7 @@ fn click_map(
         return;
     }
     map.editing = None;
-    let Ok(mut notes) = levels.get_mut(map.level) else { return };
+    let Ok(notes) = levels.get(map.level) else { return };
     let point = map.unproject((hit.truncate() + 0.5) * VIEWPORT);
     let reach = MARKER / map.pixels_per_metre();
     let original = notes.nearest(point, reach, map.layer);
@@ -620,8 +621,14 @@ fn click_map(
         }
         Some(MapTool::AddNote) => {}
         Some(MapTool::EraseNote) => {
+            // A note committed empty is erased.
             if let Some(index) = original {
-                let _ = notes.erase(index);
+                let note = notes.notes[index].clone();
+                commits.write(CommitNote(NoteDraft {
+                    level: map.level,
+                    original: Some((index, note.clone())),
+                    note: MapNote { text: String::new(), ..note },
+                }));
             }
         }
         None => {

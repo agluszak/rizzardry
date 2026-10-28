@@ -172,7 +172,7 @@ pub fn open(
 ) {
     let art = art.clone();
     commands.queue(move |world: &mut World| {
-        use crate::game::world::interaction::{DeviceInteraction, Work, prepare_device_magic};
+        use crate::game::world::interaction::{DeviceInteraction, DeviceRequest, Work};
         let device = match world.get_resource::<DeviceInteraction>() {
             Some(interaction) => {
                 if matches!(interaction.work, Work::Looting) {
@@ -186,10 +186,8 @@ pub fn open(
             None if requested_device.is_some() => return,
             None => None,
         };
-        if let Some(device) = device
-            && prepare_device_magic(world, caster, device).is_err()
-        {
-            return;
+        if let Some(device) = device {
+            world.write_message(DeviceRequest::PrepareMagic { actor: caster, device });
         }
         // Serialize replacements, including multiple opens queued in one frame.
         let previous: Vec<_> =
@@ -582,7 +580,11 @@ pub(super) fn refresh_magic_view(
     mut icons: Query<(&RealmIcon, &mut Picture), (Without<ItemIcon>, Without<Pip>)>,
     time: Res<Time<Real>>,
     rows_hovered: Query<(&Row, &Hovered)>,
-    (mut requests, mut focus): (MessageWriter<MagicRequest>, ResMut<InputFocus>),
+    (mut requests, mut devices, mut focus): (
+        MessageWriter<MagicRequest>,
+        MessageWriter<crate::game::world::interaction::DeviceRequest>,
+        ResMut<InputFocus>,
+    ),
 ) {
     let Ok((root, mut view, scroll)) = views.single_mut() else { return };
     // The selected member casts; choosing another starts over for them.
@@ -590,9 +592,9 @@ pub(super) fn refresh_magic_view(
         && member != view.caster
     {
         if let Some(device) = view.device {
-            commands.queue(move |world: &mut World| {
-                let _ =
-                    crate::game::world::interaction::prepare_device_magic(world, member, device);
+            devices.write(crate::game::world::interaction::DeviceRequest::PrepareMagic {
+                actor: member,
+                device,
             });
         }
         *view = MagicView {

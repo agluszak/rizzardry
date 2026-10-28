@@ -53,6 +53,19 @@ impl MapNote {
     }
 }
 
+/// The player accepts a note draft.
+#[derive(Message, Debug)]
+pub struct CommitNote(pub NoteDraft);
+
+pub fn commit_notes(world: &mut World) {
+    let requests: Vec<_> = world.resource_mut::<Messages<CommitNote>>().drain().collect();
+    for CommitNote(draft) in requests {
+        if let Err(why) = commit_note(world, draft) {
+            debug!("note refused: {why:?}");
+        }
+    }
+}
+
 /// Commit an identified map's draft. Departure/cancellation cannot capture
 /// unfinished editing in the campaign's notes or a dormant level record.
 pub fn commit_note(world: &mut World, draft: NoteDraft) -> Result<(), NoteRefusal> {
@@ -98,14 +111,6 @@ impl MapNotes {
     /// Whether another note fits.
     pub fn has_room(&self) -> bool {
         self.notes.len() < MAX_NOTES
-    }
-
-    pub fn erase(&mut self, index: usize) -> Result<MapNote, NoteRefusal> {
-        if index < self.notes.len() {
-            Ok(self.notes.remove(index))
-        } else {
-            Err(NoteRefusal::MissingNote)
-        }
     }
 
     /// The note nearest a point, within `reach` metres.

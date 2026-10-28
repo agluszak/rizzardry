@@ -62,10 +62,12 @@ impl Plugin for CombatPlugin {
                 Update,
                 (
                     give_orders,
+                    // Defeat is settled before a fight starts or a round runs,
                     settle_defeat,
                     start_battle,
                     track_party_move,
                     run_battle,
+                    // and again after the round's damage.
                     settle_defeat,
                     approach::close_in,
                 )

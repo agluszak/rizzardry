@@ -21,9 +21,9 @@ use crate::game::data::GameData;
 use crate::game::inventory::StackId;
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::containers::Container;
-use crate::game::world::containers::{self, Recipient};
+use crate::game::world::containers::Recipient;
 use crate::game::world::interaction::{
-    self, COMPONENTS, DeviceInteraction, Observation, TRAP_COMPONENTS, Work,
+    self, COMPONENTS, DeviceInteraction, DeviceRequest, Observation, TRAP_COMPONENTS, Work,
 };
 use crate::game::world::props::PropMotion;
 use crate::presentation::screen_art::visible_if;
@@ -472,6 +472,7 @@ fn press(
     selected: Res<SelectedMember>,
     roster: Single<&PartyRoster>,
     mut commands: Commands,
+    mut requests: MessageWriter<DeviceRequest>,
 ) {
     let (Ok(&control), Ok(mut panel)) = (controls.get(click.entity), panels.single_mut()) else {
         return;
@@ -483,15 +484,6 @@ fn press(
             .ok()
             .and_then(|c| c.contents.items.iter().find(|s| s.id == id))
             .map_or(0, |s| s.count())
-    };
-    let attempt = move |run: fn(&mut World, Entity) -> Result<(), interaction::Unable>| {
-        move |world: &mut World| {
-            if let Some(actor) = actor
-                && let Err(unable) = run(world, actor)
-            {
-                debug!("device attempt refused: {unable:?}");
-            }
-        }
     };
     match control {
         Control::Cast | Control::UseItem => {
@@ -506,25 +498,29 @@ fn press(
                 );
             }
         }
-        Control::Tumbler(index) => {
+        Control::Tumbler(tumbler) => {
             if let Some(actor) = actor {
-                commands.queue(move |world: &mut World| {
-                    let _ = interaction::pick_tumbler(world, actor, index);
-                });
+                requests.write(DeviceRequest::Pick { actor, tumbler });
             }
         }
-        Control::Force => commands.queue(attempt(interaction::force_lock)),
-        Control::Inspect => commands.queue(attempt(interaction::inspect_trap)),
-        Control::Component(index) => {
+        Control::Force => {
             if let Some(actor) = actor {
-                commands.queue(move |world: &mut World| {
-                    let _ = interaction::disarm_component(world, actor, index);
-                });
+                requests.write(DeviceRequest::Force { actor });
             }
         }
-        Control::Spring => commands.queue(move |world: &mut World| {
-            let _ = interaction::spring_trap(world, actor);
-        }),
+        Control::Inspect => {
+            if let Some(actor) = actor {
+                requests.write(DeviceRequest::Inspect { actor });
+            }
+        }
+        Control::Component(component) => {
+            if let Some(actor) = actor {
+                requests.write(DeviceRequest::Disarm { actor, component });
+            }
+        }
+        Control::Spring => {
+            requests.write(DeviceRequest::Spring { actor });
+        }
         Control::PreviousTrap => panel.guess = (panel.guess + TRAP_TYPES - 1) % TRAP_TYPES,
         Control::NextTrap => panel.guess = (panel.guess + 1) % TRAP_TYPES,
         Control::Row(id) => {
@@ -569,13 +565,11 @@ fn press(
                 },
             };
             let picks = std::mem::take(&mut panel.chosen);
-            commands.queue(move |world: &mut World| {
-                if let Err(refusal) = containers::take_from_container(world, &picks, to) {
-                    debug!("taking from the container refused: {refusal:?}");
-                }
-            });
+            requests.write(DeviceRequest::Take { picks, to });
         }
-        Control::Leave => commands.queue(interaction::leave),
+        Control::Leave => {
+            requests.write(DeviceRequest::Leave);
+        }
     }
 }
 
@@ -592,7 +586,7 @@ mod tests {
     #[test]
     fn the_lock_panel_picks_for_the_selected_member_and_closes_with_the_lock() {
         let mut app = crate::presentation::test_input::input_app();
-        app.add_plugins(plugin)
+        app.add_plugins((plugin, interaction::plugin))
             .init_asset::<SpriteSheet>()
             .init_asset::<TextTable>()
             .init_asset::<ItemCatalog>()
