@@ -652,12 +652,18 @@ pub fn resolve(
                 let effect = super::enchantments::Enchantment {
                     spell: spell.id,
                     power: strength.power,
-                    boost: if personal { strength.boost } else { 0 },
+                    boost: strength.boost,
                     turns,
                     absorption: 0,
                 };
-                let mut apply = |enchantments: &mut super::enchantments::Enchantments| {
-                    if !enchantments.accepts(spell.id, strength.power) {
+                let mut apply = |enchantments: &mut super::enchantments::Enchantments,
+                                 monster: bool| {
+                    let accepts = if monster {
+                        enchantments.monster_accepts(spell.id, strength.power)
+                    } else {
+                        enchantments.accepts(spell.id, strength.power)
+                    };
+                    if !accepts {
                         return false;
                     }
                     let absorption = if spell.id == SpellId::GUARDIAN_ANGEL {
@@ -667,7 +673,12 @@ pub fn resolve(
                     } else {
                         0
                     };
-                    enchantments.apply(super::enchantments::Enchantment { absorption, ..effect })
+                    let effect = super::enchantments::Enchantment { absorption, ..effect };
+                    if monster {
+                        enchantments.apply_to_monster(effect)
+                    } else {
+                        enchantments.apply(effect)
+                    }
                 };
                 let changed = match victim {
                     Victim::Member(member) if personal => {
@@ -685,7 +696,7 @@ pub fn resolve(
                                     ..effect
                                 });
                             }
-                            apply(&mut v.enchantments)
+                            apply(&mut v.enchantments, false)
                         })
                     }
                     Victim::Member(_) => {
@@ -693,7 +704,7 @@ pub fn resolve(
                             continue;
                         }
                         party_applied = true;
-                        apply(world.enchantments)
+                        apply(world.enchantments, false)
                     }
                     Victim::Monster(entity) => {
                         if spell.id == SpellId::HASTE {
@@ -705,7 +716,7 @@ pub fn resolve(
                                 turns == 0
                                     || world.monsters.enchantments_mut(entity).is_some_and(
                                         |mut e| {
-                                            e.apply(super::enchantments::Enchantment {
+                                            e.apply_to_monster(super::enchantments::Enchantment {
                                                 turns,
                                                 ..effect
                                             })
@@ -716,7 +727,7 @@ pub fn resolve(
                             world
                                 .monsters
                                 .enchantments_mut(entity)
-                                .is_some_and(|mut e| apply(&mut e))
+                                .is_some_and(|mut e| apply(&mut e, true))
                         }
                     }
                 };

@@ -727,8 +727,10 @@ fn draw_vitals(
         visibility.set_if_neq(visible_if(!vitals.is_dead()));
         if let (Some(shade), Some(mut node)) = (shade, node) {
             let (current, maximum) = match shade {
-                VitalShade::Health => (vitals.hp, profile.max_hp()),
-                VitalShade::Stamina => (vitals.stamina, profile.max_stamina()),
+                VitalShade::Health => (vitals.hp, profile.stats(&vitals.enchantments).max_hp()),
+                VitalShade::Stamina => {
+                    (vitals.stamina, profile.stats(&vitals.enchantments).max_stamina())
+                }
             };
             let filled = super::screen_art::vital_fill(current, maximum);
             let height = px((45 - filled) as f32);

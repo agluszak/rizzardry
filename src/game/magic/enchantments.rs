@@ -18,6 +18,12 @@ impl Enchantment {
     pub fn scaled(&self, amount: u32) -> u32 {
         amount + amount * self.boost / 100
     }
+
+    /// A party or combat slot's figure raised by the boost, rounded and kept
+    /// to a byte (retail `AdjustByteByPercent`).
+    pub fn adjusted(&self, amount: u32) -> u32 {
+        (((self.boost + 100) * u32::from(amount as u8) + 50) / 100) as u8 as u32
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -61,12 +67,32 @@ impl Enchantments {
         self.0.iter().find(|e| e.spell == spell && e.turns > 0)
     }
 
+    /// A character's effect is replaced only by a stronger one.
     pub fn accepts(&self, spell: SpellId, power: u8) -> bool {
-        !personal(spell) || self.get(spell).is_none_or(|e| power > e.power)
+        self.admits(spell, power, false)
+    }
+
+    /// A monster's effect is also refreshed at equal power (retail
+    /// `ApplyMonsterCondition`).
+    pub fn monster_accepts(&self, spell: SpellId, power: u8) -> bool {
+        self.admits(spell, power, true)
+    }
+
+    fn admits(&self, spell: SpellId, power: u8, equal: bool) -> bool {
+        !personal(spell)
+            || self.get(spell).is_none_or(|e| power > e.power || equal && power == e.power)
     }
 
     pub fn apply(&mut self, effect: Enchantment) -> bool {
-        if effect.turns == 0 || !self.accepts(effect.spell, effect.power) {
+        self.install(effect, false)
+    }
+
+    pub fn apply_to_monster(&mut self, effect: Enchantment) -> bool {
+        self.install(effect, true)
+    }
+
+    fn install(&mut self, effect: Enchantment, equal: bool) -> bool {
+        if effect.turns == 0 || !self.admits(effect.spell, effect.power, equal) {
             return false;
         }
         self.0.retain(|e| e.spell != effect.spell);
@@ -106,20 +132,20 @@ impl Enchantments {
     }
 
     pub fn armour(&self) -> i32 {
-        self.get(crate::content::spells::SpellId::BLESS).map_or(0, |e| e.scaled(2)) as i32
+        self.get(crate::content::spells::SpellId::BLESS).map_or(0, |e| e.adjusted(2)) as i32
             + self
                 .get(crate::content::spells::SpellId::ARMORPLATE)
-                .map_or(0, |e| u32::from(e.power).div_ceil(2)) as i32
+                .map_or(0, |e| e.adjusted(u32::from(e.power).div_ceil(2))) as i32
             + self
                 .get(crate::content::spells::SpellId::BODY_OF_STONE)
                 .map_or(0, |e| e.scaled(u32::from(e.power))) as i32
     }
 
     pub fn hit_bonus(&self) -> i32 {
-        self.get(crate::content::spells::SpellId::BLESS).map_or(0, |e| e.scaled(2)) as i32
+        self.get(crate::content::spells::SpellId::BLESS).map_or(0, |e| e.adjusted(2)) as i32
             + self
                 .get(crate::content::spells::SpellId::ENCHANTED_BLADE)
-                .map_or(0, |e| u32::from(e.power).div_ceil(2)) as i32
+                .map_or(0, |e| e.adjusted(u32::from(e.power).div_ceil(2))) as i32
     }
 
     pub fn resistance(&self, realm: Realm) -> i32 {
@@ -129,16 +155,22 @@ impl Enchantments {
             crate::content::spells::SpellId::ELEMENT_SHIELD
         };
         self.get(crate::content::spells::SpellId::MAGIC_SCREEN)
-            .map_or(0, |e| u32::from(e.power) * 4 + 7) as i32
+            .map_or(0, |e| e.adjusted(u32::from(e.power) * 4 + 7)) as i32
             + self.get(shield).map_or(0, |e| {
-                u32::from(e.power)
-                    * if shield == crate::content::spells::SpellId::SOUL_SHIELD { 10 } else { 7 }
+                e.adjusted(
+                    u32::from(e.power)
+                        * if shield == crate::content::spells::SpellId::SOUL_SHIELD {
+                            10
+                        } else {
+                            7
+                        },
+                )
             }) as i32
     }
 
     pub fn missile_deflection(&self) -> u32 {
         self.get(crate::content::spells::SpellId::MISSILE_SHIELD)
-            .map_or(0, |e| (u32::from(e.power) + 5) * 5)
+            .map_or(0, |e| e.adjusted((u32::from(e.power) + 5) * 5))
     }
 
     pub fn deflects(
@@ -214,6 +246,28 @@ mod tests {
         assert_eq!(effects.armour(), 1);
         effects.age(2);
         assert!(effects.0.is_empty());
+    }
+    #[test]
+    fn monsters_refresh_at_equal_power() {
+        let mut effects = Enchantments::default();
+        assert!(effects.apply_to_monster(effect(SpellId::HASTE, 3, 2)));
+        assert!(effects.apply_to_monster(effect(SpellId::HASTE, 3, 9)));
+        assert_eq!(effects.get(SpellId::HASTE).unwrap().turns, 9);
+        assert!(!effects.apply_to_monster(effect(SpellId::HASTE, 2, 20)));
+        assert!(!effects.apply(effect(SpellId::HASTE, 3, 20)));
+    }
+    #[test]
+    fn the_boost_raises_party_and_combat_slots() {
+        let mut effects = Enchantments::default();
+        let boosted = |spell, power| Enchantment { boost: 50, ..effect(spell, power, 5) };
+        effects.apply(boosted(SpellId::ARMORPLATE, 5));
+        effects.apply(boosted(SpellId::ENCHANTED_BLADE, 5));
+        effects.apply(boosted(SpellId::MISSILE_SHIELD, 1));
+        effects.apply(boosted(SpellId::MAGIC_SCREEN, 1));
+        assert_eq!(effects.armour(), 5, "(5 + 1) / 2 raised by half");
+        assert_eq!(effects.hit_bonus(), 5);
+        assert_eq!(effects.missile_deflection(), 45);
+        assert_eq!(effects.resistance(Realm::Fire), 17, "11 raised by half, rounded");
     }
     #[test]
     fn stats_and_protections_expire_without_changing_the_profile() {

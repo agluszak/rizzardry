@@ -361,11 +361,14 @@ pub fn draw_party(
                 Part::HealthEmpty | Part::StaminaEmpty => {
                     shown = !dead;
                     let amount = if matches!(part.kind, Part::HealthEmpty) {
-                        crate::presentation::screen_art::vital_fill(vitals.hp, profile.max_hp())
+                        crate::presentation::screen_art::vital_fill(
+                            vitals.hp,
+                            profile.stats(&vitals.enchantments).max_hp(),
+                        )
                     } else {
                         crate::presentation::screen_art::vital_fill(
                             vitals.stamina,
-                            profile.max_stamina(),
+                            profile.stats(&vitals.enchantments).max_stamina(),
                         )
                     };
                     let height = px(45 - amount);

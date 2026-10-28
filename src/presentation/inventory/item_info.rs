@@ -151,12 +151,13 @@ pub(super) fn refresh(
     let armour = carried.and(armour);
 
     let weight = burden.map(|burden| burden.weight);
+    let stats = character.stats(&vitals.enchantments);
     for (kind, mut text) in &mut values {
         let (value, palette) = match *kind {
             Value::Experience => (format_gold(character.experience), None),
             Value::Goal => (format_gold(character.experience_goal()), None),
-            Value::HitPoints => (format!("{}/{}", vitals.hp, character.max_hp()), None),
-            Value::Stamina => (format!("{}/{}", vitals.stamina, character.max_stamina()), None),
+            Value::HitPoints => (format!("{}/{}", vitals.hp, stats.max_hp()), None),
+            Value::Stamina => (format!("{}/{}", vitals.stamina, stats.max_stamina()), None),
             Value::Load => weight.map_or((String::new(), None), |weight| {
                 let palette = match load {
                     Load::None => None,
@@ -165,7 +166,7 @@ pub(super) fn refresh(
                     Load::Heavy => Some(art.yellow.clone()),
                     Load::Extreme => Some(art.red.clone()),
                 };
-                (format!("{}/{}", weight / 10, character.capacity() / 10), palette)
+                (format!("{}/{}", weight / 10, stats.capacity() / 10), palette)
             }),
             Value::BaseArmour => {
                 (armour.as_ref().map_or(String::new(), |armour| armour.total.to_string()), None)

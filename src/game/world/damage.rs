@@ -123,10 +123,14 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         if monster.is_dead() || amount == 0 {
             return Ok(DamageOutcome::default());
         }
+        // A Guardian Angel's absorption counts before the NPC-death refusal,
+        // and is spent only once the hit is allowed.
+        let mut enchantments = monster.enchantments.clone();
+        let amount = enchantments.absorb(amount);
         if amount >= monster.hp && kind.npc.is_some() {
             return Err(DamageRefusal::UnsupportedNpcDeath);
         }
-        let amount = monster.enchantments.absorb(amount);
+        monster.enchantments = enchantments;
         if amount == 0 {
             return Ok(DamageOutcome::default());
         }
