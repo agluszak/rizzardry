@@ -1242,7 +1242,8 @@ impl Plugin for InventoryPlugin {
                         draw_gold,
                         draw_cells,
                     )
-                        .after(spawn_inventory_screen),
+                        .after(spawn_inventory_screen)
+                        .run_if(any_with_component::<InventoryScreen>),
                     follow_held,
                 ),
             )

@@ -70,7 +70,8 @@ impl Plugin for FrontendPlugin {
                     credits::populate,
                     credits::scroll,
                 )
-                    .chain(),
+                    .chain()
+                    .run_if(not(in_state(crate::game::session::Session::Playing))),
             );
     }
 }

@@ -172,15 +172,19 @@ impl Plugin for PresentationPlugin {
                 (
                     automap::close_ended_map,
                     automap::request_automap,
-                    automap::build_automap,
+                    automap::build_automap.run_if(any_with_component::<automap::Automap>),
                     automap::sync_note_input,
                     automap::draw_note_input,
-                    automap::paint_buttons,
-                    automap::update_map_view,
-                    automap::draw_notes,
-                    automap::draw_layer_label,
+                    (
+                        automap::paint_buttons,
+                        automap::update_map_view,
+                        automap::draw_notes,
+                        automap::draw_layer_label,
+                    )
+                        .chain()
+                        .run_if(any_with_component::<automap::Automap>),
                     automap::update_map_cursor,
-                    automap::glow_note_markers,
+                    automap::glow_note_markers.run_if(any_with_component::<automap::NoteMarker>),
                 )
                     .chain(),
             ),
