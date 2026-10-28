@@ -1764,12 +1764,12 @@ mod tests {
         assert!(matches!(work(&level), Some(Work::Looting)));
         level.settle();
         let before = level.world.get::<Container>(chest).unwrap().contents.items.clone();
-        take_from_container(
-            &mut level.world,
-            &[(quiver, 0), (quiver, 11), (knife, 2)],
-            Recipient::Party,
-        )
-        .unwrap();
+        for picks in [&[(quiver, 0)][..], &[(quiver, 11)], &[(knife, 1), (knife, 2)], &[]] {
+            assert_eq!(
+                take_from_container(&mut level.world, picks, Recipient::Party),
+                Err(crate::game::inventory::Refusal::Nothing)
+            );
+        }
         assert_eq!(level.world.get::<Container>(chest).unwrap().contents.items, before);
         assert!(level.inventory().pool.stacks.is_empty());
         let entering = level
@@ -1827,6 +1827,88 @@ mod tests {
         assert!(!level.run("CHEST").0);
         assert_eq!(left(&level).iter().map(|s| s.id).collect::<Vec<_>>(), [quiver]);
         assert_eq!(level.motion("CHEST").target, target);
+    }
+
+    #[test]
+    fn a_refused_take_leaves_container_receiver_and_identities_untouched() {
+        use super::super::containers::{Recipient, take_from_container};
+        use crate::content::items::QuantityKind;
+        use crate::game::inventory::{Carried, Refusal};
+        let mut level = chest_level(None, 0);
+        let mut arrows = ItemDefinition { id: ItemId(0), name: "arrow".into(), ..default() };
+        arrows.quantity = QuantityKind::Stack;
+        arrows.stack_limit = 99;
+        let dagger = ItemDefinition { id: ItemId(1), name: "dagger".into(), ..default() };
+        let handle = level.world.resource::<GameData>().items.clone();
+        let catalog = ItemCatalog(vec![arrows.clone(), dagger.clone()]);
+        let chest = level.device("CHEST");
+        let quiver = {
+            let mut ids = level.world.resource_mut::<ItemIds>();
+            ItemStack::new(&arrows, &mut ids, 10, true)
+        };
+        let mut second = quiver.clone();
+        second.id = level.world.resource_mut::<ItemIds>().allocate();
+        let mut container = level.world.get_mut::<Container>(chest).unwrap();
+        container.generated = true;
+        container.contents.items = vec![quiver.clone(), second];
+        assert!(level.run("CHEST").0);
+        let quiver = quiver.id;
+        let contents = |level: &Scenario| {
+            level.world.get::<Container>(level.device("CHEST")).unwrap().contents.items.clone()
+        };
+        let next_id = |level: &Scenario| level.world.resource::<ItemIds>().clone().allocate();
+        let before = contents(&level);
+
+        // Content not loaded yet: refused, not a silent success.
+        assert_eq!(
+            take_from_container(&mut level.world, &[(quiver, 4)], Recipient::Party),
+            Err(Refusal::MissingContent)
+        );
+        level.world.resource_mut::<Assets<ItemCatalog>>().insert(&handle, catalog).unwrap();
+
+        // A member with no room at all: nothing moves and no identity is used.
+        let member = level.members[0];
+        let mut carried = Carried::default();
+        {
+            let catalog = ItemCatalog(vec![arrows.clone(), dagger.clone()]);
+            let mut ids = level.world.resource_mut::<ItemIds>();
+            for _ in 0..7 {
+                assert!(
+                    carried.receive(ItemStack::new(&dagger, &mut ids, 1, true), &catalog).is_none()
+                );
+            }
+            assert!(
+                carried.receive(ItemStack::new(&arrows, &mut ids, 95, true), &catalog).is_none()
+            );
+        }
+        let full = carried.clone();
+        level.world.entity_mut(member).insert(carried.clone());
+        // Fill the last arrows too, so only a new stack could take them.
+        let ids_before = next_id(&level);
+        let mut stuffed = full.clone();
+        {
+            let catalog = ItemCatalog(vec![arrows.clone(), dagger.clone()]);
+            let mut ids = level.world.resource::<ItemIds>().clone();
+            stuffed.receive(ItemStack::new(&arrows, &mut ids, 4, true), &catalog);
+        }
+        level.world.entity_mut(member).insert(stuffed.clone());
+        take_from_container(&mut level.world, &[(quiver, 4)], Recipient::Member(member)).unwrap();
+        assert_eq!(contents(&level), before);
+        assert_eq!(level.world.get::<Carried>(member), Some(&stuffed));
+        assert_eq!(next_id(&level), ids_before);
+
+        // Room only to top up a stack: units merge, the rest stays, no new identity.
+        level.world.entity_mut(member).insert(full);
+        take_from_container(&mut level.world, &[(quiver, 6)], Recipient::Member(member)).unwrap();
+        assert_eq!(contents(&level).iter().map(ItemStack::count).collect::<Vec<_>>(), [6, 10]);
+        assert_eq!(contents(&level)[0].id, quiver);
+        assert_eq!(next_id(&level), ids_before);
+
+        // A part kept as a stack of its own takes exactly one new identity.
+        take_from_container(&mut level.world, &[(quiver, 2)], Recipient::Party).unwrap();
+        let pool = level.inventory().pool.stacks.clone();
+        assert_eq!(pool.iter().map(|s| (s.id, s.count())).collect::<Vec<_>>(), [(ids_before, 2)]);
+        assert_eq!(contents(&level)[0].count(), 4);
     }
 
     #[test]
