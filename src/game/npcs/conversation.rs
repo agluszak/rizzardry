@@ -12,7 +12,7 @@ use crate::game::factions::Factions;
 use crate::game::{
     characters::{Character, Vitals},
     data::GameData,
-    inventory::{Carried, ItemIds, ItemOwner, ItemRef, POOL_LIMIT, PartyInventory, make_item},
+    inventory::{Carried, ItemIds, ItemOwner, ItemRef, PartyInventory, make_item},
     party::roster::{PartyMember, PartyRoster, the_party},
     rng::GameRng,
     world::{ActorPose, level::Level, population::Monster},
@@ -618,8 +618,11 @@ fn plan_quote(
     }
     Ok(plan)
 }
-fn quote_targets_present(world: &World, plan: &QuotePlan) -> bool {
-    plan.effects.iter().all(|effect| match effect {
+/// Whether the plan can commit now: its recipients and content exist and its
+/// gifts fit the party's items. `offered` is a hand-in from the party's items
+/// that leaves before the answer commits.
+fn executable(world: &World, plan: &QuotePlan, offered: Option<ItemRef>) -> bool {
+    let present = plan.effects.iter().all(|effect| match effect {
         QuoteEffect::Gold { party, .. } => world.get::<PartyInventory>(*party).is_some(),
         QuoteEffect::Experience { members, .. } => {
             members.iter().all(|&member| world.get::<Character>(member).is_some())
@@ -629,13 +632,64 @@ fn quote_targets_present(world: &World, plan: &QuotePlan) -> bool {
             fact_catalog(world).is_some_and(|catalog| StoryFacts::can_set(*id, catalog))
         }
         QuoteEffect::Mention(..) => true,
-        // Retail drops a gift the party has no room for; here the quote
-        // waits until the party's items have a free row.
-        QuoteEffect::GiveItem { party, .. } => {
-            world.get::<PartyInventory>(*party).is_some_and(|p| p.pool.stacks.len() < POOL_LIMIT)
+        QuoteEffect::GiveItem { party, item } => {
+            world.get::<PartyInventory>(*party).is_some()
+                && GameData::items(world).is_some_and(|catalog| catalog.get(*item).is_some())
         }
         QuoteEffect::TakeItem { party, .. } => world.get::<PartyRoster>(*party).is_some(),
-    })
+    });
+    present && gifts_fit(world, plan, offered)
+}
+/// Play the plan's gifts and removals, in order, on a copy of the party's
+/// items with their own transfer rules: whether every gift finds room.
+/// Retail drops a gift there is no room for; here the answer waits instead,
+/// so no part of it commits and nothing is lost.
+fn gifts_fit(world: &World, plan: &QuotePlan, offered: Option<ItemRef>) -> bool {
+    let Some(party) = plan.effects.iter().find_map(|effect| match effect {
+        QuoteEffect::GiveItem { party, .. } => Some(*party),
+        _ => None,
+    }) else {
+        return true;
+    };
+    let (Some(catalog), Some(inventory)) =
+        (GameData::items(world), world.get::<PartyInventory>(party))
+    else {
+        return false;
+    };
+    let mut pool = inventory.pool.clone();
+    if let Some(ItemRef { owner: ItemOwner::Pool, id }) = offered
+        && pool.consume_units(id, 1).is_err()
+    {
+        return false;
+    }
+    let mut ids = world.get_resource::<ItemIds>().cloned().unwrap_or_default();
+    let packs_hold = |item: ItemId| {
+        world.get::<PartyRoster>(party).is_some_and(|roster| {
+            roster.iter().any(|member| {
+                world
+                    .get::<Carried>(member)
+                    .is_some_and(|c| c.backpack.iter().flatten().any(|s| s.item == item))
+            })
+        })
+    };
+    for effect in &plan.effects {
+        match *effect {
+            QuoteEffect::GiveItem { item, .. } => {
+                let Some(definition) = catalog.get(item) else { return false };
+                let gift = make_item(definition, &mut ids, &mut GameRng::default(), true, true);
+                if pool.receive(gift, catalog).is_some() {
+                    return false;
+                }
+            }
+            QuoteEffect::TakeItem { item, .. } if !packs_hold(item) => {
+                if let Some(id) = pool.stacks.iter().find(|s| s.item == item).map(|s| s.id) {
+                    let _ = pool.consume_units(id, 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    true
 }
 /// Take one of the item from the first member's pack that holds it, in
 /// party order, else from the party's items (retail `RemoveNpcScriptItem`).
@@ -697,6 +751,7 @@ fn commit_quote(world: &mut World, entity: Entity, quote: u16, plan: QuotePlan) 
                     .transcript
                     .push(TranscriptLine::Reward(QuestReward::Experience { amount_each: amount }));
             }
+            // `executable` checked the content and the room just before.
             QuoteEffect::GiveItem { party, item } => {
                 let reward = with_items(world, |world, catalog| {
                     let definition = catalog.get(item).ok_or(TradeError::MissingContent)?;
@@ -709,16 +764,15 @@ fn commit_quote(world: &mut World, entity: Entity, quote: u16, plan: QuotePlan) 
                         .unwrap()
                         .pool
                         .receive(stack, catalog);
-                    debug_assert!(rest.is_none(), "the gift was checked to have room");
+                    assert!(rest.is_none(), "a validated gift fits the party's items");
                     Ok(QuestReward::Item { name: definition.name.clone() })
-                });
-                if let Ok(reward) = reward {
-                    world
-                        .get_mut::<Conversation>(entity)
-                        .unwrap()
-                        .transcript
-                        .push(TranscriptLine::Reward(reward));
-                }
+                })
+                .expect("a validated gift has its item");
+                world
+                    .get_mut::<Conversation>(entity)
+                    .unwrap()
+                    .transcript
+                    .push(TranscriptLine::Reward(reward));
             }
             QuoteEffect::TakeItem { party, item } => {
                 if let Some(member) = take_item(world, party, item) {
@@ -838,7 +892,7 @@ fn run_script(world: &mut World, entity: Entity, script: &DialogueScript, party:
                         return;
                     }
                 };
-                if !quote_targets_present(world, &plan) {
+                if !executable(world, &plan, None) {
                     let mut c = world.get_mut::<Conversation>(entity).unwrap();
                     c.queue.push_front(Step::Quote { quote, subquote, paid, plan: Some(plan) });
                     block(&mut c, quote, None, "accepted reward recipient unavailable".into());
@@ -949,7 +1003,8 @@ const REFUSED_GIFT_QUOTE: u16 = 0x11;
 /// answering it runs; the NPC keeps what it asked for, and any other item it
 /// is given unless the party may not part with it. A voice-scripted NPC
 /// ignores an item it has nothing to say about. An item is taken only once
-/// its answer's effects are validated, so a content gap keeps it.
+/// its whole answer can commit: a content gap keeps it and queues the answer
+/// to show the gap, and an answer that cannot commit yet refuses the item.
 fn give(world: &mut World, entity: Entity, item: ItemRef) -> Result<(), TradeError> {
     let party = the_party(world).ok_or(TradeError::Unavailable)?;
     let c = world.get::<Conversation>(entity).unwrap();
@@ -974,6 +1029,11 @@ fn give(world: &mut World, entity: Entity, item: ItemRef) -> Result<(), TradeErr
         .quotes
         .get(usize::from(quote))
         .and_then(|line| plan_quote(world, Some(party), line).ok());
+    // The whole exchange must be able to commit before the item is taken,
+    // including the answer's gifts finding room once it has gone.
+    if keeps && plan.as_ref().is_some_and(|plan| !executable(world, plan, Some(item))) {
+        return Err(TradeError::Capacity);
+    }
     if keeps && plan.is_some() {
         match item.owner {
             ItemOwner::Pool => {
@@ -1723,6 +1783,132 @@ mod tests {
             finish_line(&mut app, session);
         }
         assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, 50);
+    }
+
+    /// Fill the party's items to `rows` full, unmergeable stacks of item 0.
+    fn fill_pool(app: &mut App, rows: usize) -> Entity {
+        let party = the_party(app.world_mut()).unwrap();
+        for _ in 0..rows {
+            let full = stack(app, 0, 20);
+            app.world_mut().get_mut::<PartyInventory>(party).unwrap().pool.stacks.push(full);
+        }
+        party
+    }
+
+    fn reward_script(operations: Vec<DialogueOp>, lines: usize) -> DialogueScript {
+        DialogueScript {
+            quotes: vec![Quote {
+                text: (0..lines).map(|i| format!("Line {i}")).collect(),
+                operations,
+                ..default()
+            }],
+            ..default()
+        }
+    }
+
+    /// Two gifts that each need a row cannot share the last one: the answer
+    /// waits whole, with neither gift nor its gold committed.
+    #[test]
+    fn gifts_competing_for_the_last_row_commit_nothing() {
+        let (mut app, session, _) = app(reward_script(
+            vec![
+                DialogueOp::GiveGold(10),
+                DialogueOp::GiveItem(ItemId(1)),
+                DialogueOp::GiveItem(ItemId(2)),
+            ],
+            1,
+        ));
+        with_items(&mut app);
+        let party = fill_pool(&mut app, crate::game::inventory::POOL_LIMIT - 1);
+        app.update();
+        let world = app.world();
+        assert!(matches!(
+            world.get::<Conversation>(session).unwrap().wait,
+            ConversationWait::Blocked { .. }
+        ));
+        let inventory = world.get::<PartyInventory>(party).unwrap();
+        assert_eq!(inventory.pool.stacks.len(), crate::game::inventory::POOL_LIMIT - 1);
+        assert_eq!(inventory.gold, 0);
+    }
+
+    /// A full set of rows still takes a gift that merges into one of them.
+    #[test]
+    fn a_gift_merges_into_a_full_pool() {
+        let (mut app, session, _) = app(reward_script(vec![DialogueOp::GiveItem(ItemId(1))], 1));
+        with_items(&mut app);
+        let party = fill_pool(&mut app, crate::game::inventory::POOL_LIMIT - 1);
+        let partial = stack(&mut app, 1, 5);
+        app.world_mut().get_mut::<PartyInventory>(party).unwrap().pool.stacks.push(partial);
+        app.update();
+        let world = app.world();
+        assert!(!matches!(
+            world.get::<Conversation>(session).unwrap().wait,
+            ConversationWait::Blocked { .. }
+        ));
+        let pool = &world.get::<PartyInventory>(party).unwrap().pool.stacks;
+        assert_eq!(pool.len(), crate::game::inventory::POOL_LIMIT);
+        assert_eq!(pool.iter().find(|s| s.item == ItemId(1)).unwrap().count(), 10);
+    }
+
+    /// A hand-in whose reward could not find room is refused before the item
+    /// leaves, and stays with its member when the conversation closes.
+    #[test]
+    fn a_hand_in_is_refused_whole_when_its_reward_has_no_room() {
+        let (mut app, session, _) = app(DialogueScript {
+            quotes: vec![
+                Quote { text: vec!["Hello".into()], ..default() },
+                Quote {
+                    text: vec!["Thanks".into()],
+                    operations: vec![
+                        DialogueOp::ItemQuote { item: ItemId(2), keeps: true },
+                        DialogueOp::GiveItem(ItemId(1)),
+                    ],
+                    ..default()
+                },
+            ],
+            ..default()
+        });
+        with_items(&mut app);
+        let member = carrier(&mut app, "Ragnar", 2, 1);
+        fill_pool(&mut app, crate::game::inventory::POOL_LIMIT);
+        app.update();
+        finish_line(&mut app, session);
+        let id = app.world().get::<Carried>(member).unwrap().backpack[0].as_ref().unwrap().id;
+        let revision = app.world().get::<Conversation>(session).unwrap().revision;
+        app.world_mut().write_message(ConversationRequest::Give {
+            conversation: session,
+            revision,
+            item: ItemRef { owner: ItemOwner::Member(member), id },
+        });
+        app.update();
+        let c = app.world().get::<Conversation>(session).unwrap();
+        assert_eq!(c.outcome(), Some(Outcome::GiftRefused(TradeError::Capacity)));
+        assert!(c.ready(), "nothing was queued");
+        app.world_mut().write_message(ConversationRequest::Close { conversation: session });
+        app.update();
+        assert!(app.world().get::<Conversation>(session).is_none());
+        assert!(app.world().get::<Carried>(member).unwrap().backpack[0].is_some());
+    }
+
+    /// Content that disappears before an answer's last line holds the whole
+    /// answer back: no gift is lost and no other effect commits.
+    #[test]
+    fn missing_item_content_at_the_last_line_holds_the_whole_answer() {
+        let (mut app, session, _) =
+            app(reward_script(vec![DialogueOp::GiveGold(10), DialogueOp::GiveItem(ItemId(1))], 2));
+        with_items(&mut app);
+        let party = the_party(app.world_mut()).unwrap();
+        app.update();
+        let handle = app.world().resource::<GameData>().items.clone();
+        app.world_mut().resource_mut::<Assets<ItemCatalog>>().remove(&handle);
+        finish_line(&mut app, session);
+        let world = app.world();
+        assert!(matches!(
+            world.get::<Conversation>(session).unwrap().wait,
+            ConversationWait::Blocked { .. }
+        ));
+        let inventory = world.get::<PartyInventory>(party).unwrap();
+        assert_eq!((inventory.gold, inventory.pool.stacks.len()), (0, 0));
     }
 
     /// The item stays with the party when the answer it would buy cannot run.
