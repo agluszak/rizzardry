@@ -350,7 +350,7 @@ fn sync_view(world: &mut World) {
     let text = format!(
         "{name} - {} gold\n{lines}\n{state}\n{}",
         world.get::<PartyInventory>(party).map_or(0, |p| p.gold),
-        c.result.map_or_else(String::new, |result| match result {
+        c.outcome().map_or_else(String::new, |outcome| match outcome {
             Outcome::NoTopic => "No supported topic matches that input.".into(),
             Outcome::Traded => "Trade complete.".into(),
             Outcome::TradeRefused(e) => format!("Trade refused: {e:?}"),

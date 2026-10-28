@@ -120,7 +120,8 @@ pub struct Conversation {
     pub current: Option<(u16, usize)>,
     pub wait: ConversationWait,
     pub transcript: Vec<String>,
-    pub result: Option<Outcome>,
+    /// The last request's outcome and the revision it belongs to.
+    result: Option<(u64, Outcome)>,
     queue: VecDeque<Step>,
 }
 /// What the party's last request came to.
@@ -133,6 +134,15 @@ pub enum Outcome {
 impl Conversation {
     pub fn ready(&self) -> bool {
         self.wait == ConversationWait::Ready && self.queue.is_empty()
+    }
+
+    /// What the last request came to, until the conversation moves on.
+    pub fn outcome(&self) -> Option<Outcome> {
+        self.result.filter(|&(revision, _)| revision == self.revision).map(|(_, o)| o)
+    }
+
+    fn report(&mut self, outcome: Outcome) {
+        self.result = Some((self.revision, outcome));
     }
 }
 /// Presentation may attach audio to this identity. No artwork/audio is required
@@ -563,9 +573,8 @@ fn topic(world: &mut World, c: &mut Conversation, text: &str) {
     if let Some(quote) = matched {
         c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false });
         c.revision += 1;
-        c.result = None;
     } else {
-        c.result = Some(Outcome::NoTopic);
+        c.report(Outcome::NoTopic);
     }
 }
 fn reply(world: &mut World, c: &mut Conversation, text: &str) {
@@ -826,10 +835,11 @@ pub fn update_conversation(world: &mut World) {
                 }
             }
             ConversationRequest::Trade(q) => {
-                c.result = Some(match execute_trade(world, &mut c, q) {
+                let outcome = match execute_trade(world, &mut c, q) {
                     Ok(()) => Outcome::Traded,
                     Err(e) => Outcome::TradeRefused(e),
-                });
+                };
+                c.report(outcome);
             }
             _ => {}
         }
