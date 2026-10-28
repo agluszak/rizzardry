@@ -134,8 +134,8 @@ fn enter(
     for (i, (label, choice)) in [
         ("Difficulty", Choice::Difficulty),
         ("Combat mode", Choice::Combat),
-        ("Volume -", Choice::VolumeDown),
-        ("Volume +", Choice::VolumeUp),
+        ("Decrease volume", Choice::VolumeDown),
+        ("Increase volume", Choice::VolumeUp),
         ("Invert mouse Y", Choice::Invert),
         ("Fullscreen", Choice::Fullscreen),
         ("Apply", Choice::Apply),
