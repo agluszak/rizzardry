@@ -11,8 +11,8 @@ use enumset::EnumSet;
 
 use crate::content::characters::Skill;
 use crate::content::items::{
-    Ammunition, AttackEffects, EquipClass, ItemCatalog, ItemDefinition, ItemId, LootTable,
-    LootTables, QuantityKind,
+    Ammunition, AttackEffects, EquipClass, ItemCatalog, ItemDefinition, ItemId, ItemKind,
+    LootTable, LootTables, QuantityKind,
 };
 
 const RECORD: usize = 0x10d;
@@ -370,14 +370,14 @@ fn minimums<K: enum_map::Enum + TryFrom<u8>>(
 /// is: retail's plain pairs in `CompatiblePartnerItems` (longbow and
 /// greatbow with arrows, crossbow with quarrels, sling with sling stones).
 /// Its guns and the Gadgeteer's omnigun tiers are not ported yet.
-fn launcher_and_ammunition(kind: u16) -> (Option<Ammunition>, Option<Ammunition>) {
+fn launcher_and_ammunition(kind: ItemKind) -> (Option<Ammunition>, Option<Ammunition>) {
     match kind {
-        0x0b | 0x25 => (Some(Ammunition::Arrow), None),
-        0x0c => (Some(Ammunition::Quarrel), None),
-        0x0d => (Some(Ammunition::SlingStone), None),
-        0x16 => (None, Some(Ammunition::Arrow)),
-        0x53 => (None, Some(Ammunition::Quarrel)),
-        0x17 => (None, Some(Ammunition::SlingStone)),
+        ItemKind::LONGBOW | ItemKind::GREATBOW => (Some(Ammunition::Arrow), None),
+        ItemKind::CROSSBOW => (Some(Ammunition::Quarrel), None),
+        ItemKind::SLING => (Some(Ammunition::SlingStone), None),
+        ItemKind::ARROWS => (None, Some(Ammunition::Arrow)),
+        ItemKind::QUARRELS => (None, Some(Ammunition::Quarrel)),
+        ItemKind::SLING_STONES => (None, Some(Ammunition::SlingStone)),
         _ => (None, None),
     }
 }
@@ -460,7 +460,7 @@ fn read_item(index: usize, record: &[u8], strings: &[String]) -> Result<ItemDefi
     let extra_swings = i32::from_le_bytes(record[0xad..0xb1].try_into().unwrap());
     let own_image = lenient_string(&record[0xcd..0xcd + 0x18]);
     let string = |index: usize| strings.get(index).map_or("", |s| s.as_str());
-    let (shoots, ammunition) = launcher_and_ammunition(kind);
+    let (shoots, ammunition) = launcher_and_ammunition(ItemKind(kind));
     let kind_name = KIND_NAMES.get(usize::from(kind)).map_or("", |&k| string(k));
     Ok(ItemDefinition {
         unidentified_name: string(UNIDENTIFIED).replace("%s", kind_name),
@@ -488,7 +488,7 @@ fn read_item(index: usize, record: &[u8], strings: &[String]) -> Result<ItemDefi
         effects,
         slays,
         extra_swings,
-        kind,
+        kind: ItemKind(kind),
         never_depletes: has(flag::NEVER_DEPLETES),
         damage_bonus,
         hit_bonus,

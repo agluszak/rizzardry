@@ -90,6 +90,46 @@ pub enum AttackMode {
     Shoot,
 }
 
+/// An item's generic kind (retail `unidentified_name_index`), which names it
+/// until it is identified. The kinds rules single out are named as retail's
+/// own item art and models name them (`g_item_video_object_fallback_names`,
+/// `g_item_model_fallback_names`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ItemKind(pub u16);
+
+impl ItemKind {
+    pub const LONGBOW: ItemKind = ItemKind(0x0b);
+    pub const CROSSBOW: ItemKind = ItemKind(0x0c);
+    pub const SLING: ItemKind = ItemKind(0x0d);
+    pub const ARROWS: ItemKind = ItemKind(0x16);
+    pub const SLING_STONES: ItemKind = ItemKind(0x17);
+    pub const GREATBOW: ItemKind = ItemKind(0x25);
+    pub const QUARRELS: ItemKind = ItemKind(0x53);
+    pub const POWER_GLOVE: ItemKind = ItemKind(0x68);
+    pub const PHASER: ItemKind = ItemKind(0x6e);
+    pub const MUSKET: ItemKind = ItemKind(0x72);
+    pub const OMNIGUN: ItemKind = ItemKind(0x83);
+    pub const ROCKET_LAUNCHER: ItemKind = ItemKind(0x90);
+
+    /// Shoots what the other hand holds (retail
+    /// `ItemHasSingledOutGenericName`): bows, crossbows, slings and the
+    /// omnigun.
+    pub fn launcher(self) -> bool {
+        matches!(
+            self,
+            Self::LONGBOW | Self::CROSSBOW | Self::SLING | Self::GREATBOW | Self::OMNIGUN
+        )
+    }
+
+    /// The guns, whose blows strength does not help (retail `CalcAttacks`).
+    pub fn gun(self) -> bool {
+        matches!(
+            self,
+            Self::POWER_GLOVE | Self::PHASER | Self::MUSKET | Self::OMNIGUN | Self::ROCKET_LAUNCHER
+        )
+    }
+}
+
 /// What a blow may do besides its damage, in retail's order (its attack
 /// effect slots).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Enum)]
@@ -179,9 +219,8 @@ pub struct ItemDefinition {
     pub slays: Option<super::species::MonsterKind>,
     /// Swings it adds to each attack.
     pub extra_swings: i32,
-    /// Its retail kind (its unidentified name), which a few combat rules
-    /// single out.
-    pub kind: u16,
+    /// What kind of item it is, as its unidentified name says.
+    pub kind: ItemKind,
     /// Thrown, it is not used up.
     pub never_depletes: bool,
     pub damage_bonus: i8,
