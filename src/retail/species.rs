@@ -13,11 +13,17 @@ use enumset::EnumSet;
 
 use crate::content::items::{AttackEffects, ItemId};
 use crate::content::species::{
-    AttackWord, Disposition, Drop, MonsterAttack, MonsterAttributes, MonsterCatalog, Species,
-    Treasure,
+    AttackWord, Disposition, Drop, MonsterAttack, MonsterAttributes, MonsterCatalog, MonsterKind,
+    Species, Treasure,
 };
 
 const RECORD: usize = 0x297;
+/// The weapon names of natural attacks that tire their user less (retail
+/// `g_low_fatigue_attack_verbs`, by `ubWeaponNameIndex`).
+const LOW_FATIGUE: [u8; 18] = [
+    0x07, 0x0d, 0x0e, 0x0f, 0x15, 0x19, 0x21, 0x2b, 0x31, 0x32, 0x34, 0x35, 0x36, 0x38, 0x3b, 0x55,
+    0x56, 0x57,
+];
 const ATTACKS_AT: usize = 0xe7;
 const ATTACK: usize = 0x22;
 
@@ -35,7 +41,8 @@ fn species(record: &[u8]) -> Result<Species, Truncated> {
         .filter(|attack| attack[0] != 0)
         .map(|attack| {
             Ok(MonsterAttack {
-                weapon_name: attack[1],
+                named: attack[1] != 0,
+                tires_little: LOW_FATIGUE.contains(&attack[1]),
                 word: match attack[2] {
                     1 => AttackWord::Verb,
                     word => AttackWord::Word(word),
@@ -61,10 +68,9 @@ fn species(record: &[u8]) -> Result<Species, Truncated> {
         generic_name: name(bytes(0x60, 48)),
         generic_plural: name(bytes(0x90, 48)),
         model: lenient_string(bytes(0x189, 48)).to_lowercase(),
-        level_sight: record[0xcb] == 4,
         npc: (record[0xd0] & 1 != 0)
             .then_some(crate::content::npcs::NpcId(u16::from(record[0xcd]))),
-        kind: record[0xcb],
+        kind: MonsterKind(record[0xcb]),
         damage_reduction: record[0xcf],
         vulnerable_from_behind: record[0xd0] & 0x02 != 0,
         death_immune: record[0x1be] != 0,

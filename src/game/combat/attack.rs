@@ -207,7 +207,7 @@ pub struct Hand {
     /// the weapon's effects with its ammunition's.
     pub effects: AttackEffects,
     /// The monster kinds its weapon and ammunition slay.
-    pub slays: [Option<u8>; 2],
+    pub slays: [Option<crate::content::species::MonsterKind>; 2],
     /// Swings the weapon adds to each attack.
     pub extra_swings: i32,
     /// It shoots ammunition from the other hand.
@@ -795,7 +795,7 @@ pub fn monster_aim(
     difficulty: Difficulty,
 ) -> i32 {
     let mut fatigue = monster_fatigue(monster);
-    if attack.tires_little() {
+    if attack.tires_little {
         fatigue >>= 1;
     }
     let mut score = i32::from(attack.score)
@@ -824,7 +824,7 @@ pub fn monster_penetration(
     difficulty: Difficulty,
 ) -> i32 {
     let mut score = i32::from(attack.score) + mode_penetration(mode);
-    if attack.tires_little() {
+    if attack.tires_little {
         score -= monster_fatigue(monster);
     }
     score -= target.armour_at(mode, surprise, at) * 5;

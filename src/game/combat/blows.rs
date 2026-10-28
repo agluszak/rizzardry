@@ -708,7 +708,7 @@ pub(super) fn monster_attacks(
     let swings = rng.below(u32::from(kind.swings_per_round.max(1))) + 1;
     // A natural ambusher strikes from hiding at arm's length.
     let mut surprise =
-        Surprise { unaware: false, natural: kind.kind == 3 && attack.reach <= Reach::Touch };
+        Surprise { unaware: false, natural: kind.kind.ambusher() && attack.reach <= Reach::Touch };
     // A member not facing it may turn in time, or be struck from behind.
     if attack.reach <= Reach::Short
         && let Ok((character, vitals, ..)) = field.members.get(member)
@@ -727,7 +727,7 @@ pub(super) fn monster_attacks(
     news.write(CombatNews::Attack {
         attacker: entity,
         target: member,
-        how: Announcement::Monster { word: attack.word, mode, named: attack.named() },
+        how: Announcement::Monster { word: attack.word, mode, named: attack.named },
         swings,
         surprise,
     });

@@ -426,7 +426,8 @@ fn read_item(index: usize, record: &[u8], strings: &[String]) -> Result<ItemDefi
     let chances = bytes.array::<16>()?;
     let effects =
         AttackEffects { chances: enum_map::EnumMap::from_array(chances), strength: bytes.u8()? };
-    let slays = Some(bytes.u8()?).filter(|&kind| kind != u8::MAX);
+    let slays =
+        Some(bytes.u8()?).filter(|&kind| kind != u8::MAX).map(crate::content::species::MonsterKind);
     let armor_class_bonus = bytes.i8()?;
     let (spell, power) = (bytes.u8()?, bytes.u8()?);
     bytes.u8()?; // not established

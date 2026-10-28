@@ -538,7 +538,8 @@ pub fn start_battle(
             let to_party = (party_eye - eye).with_y(0.0);
             let angle = forward.angle_between(to_party);
             let senses = i32::from(kind.attributes.senses);
-            let bonus = if kind.level_sight { (u32::from(kind.level) * 5).min(125) } else { 0 };
+            let bonus =
+                if kind.kind.sees_by_level() { (u32::from(kind.level) * 5).min(125) } else { 0 };
             if sight_threshold(angle, senses, bonus, lowest_level, far, distance) < distance {
                 return false;
             }
@@ -1776,7 +1777,8 @@ mod tests {
             species.0[0].combat_move_range = 1.0;
             species.0[0].attacks = vec![crate::content::species::MonsterAttack {
                 word: AttackWord::Verb,
-                weapon_name: 0,
+                named: false,
+                tires_little: false,
                 effects: default(),
                 reach: Reach::Touch,
                 score: 50,
@@ -2183,7 +2185,8 @@ mod tests {
                 .attacks
                 .push(crate::content::species::MonsterAttack {
                     word: AttackWord::Verb,
-                    weapon_name: 0,
+                    named: false,
+                    tires_little: false,
                     effects: default(),
                     reach: Reach::Touch,
                     score: 0,
@@ -2455,7 +2458,8 @@ mod tests {
                 let fighter = &mut catalog.0[0];
                 fighter.attacks = vec![MonsterAttack {
                     word: AttackWord::Verb,
-                    weapon_name: 0,
+                    named: false,
+                    tires_little: false,
                     reach: Reach::Short,
                     score: 0,
                     modes: EnumSet::only(AttackMode::Swing),

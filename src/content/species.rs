@@ -41,9 +41,12 @@ pub enum AttackWord {
 #[derive(Clone, Debug, PartialEq)]
 pub struct MonsterAttack {
     pub word: AttackWord,
-    /// The attack's weapon name (retail `ubWeaponNameIndex`), 0 for none.
-    /// A named attack adds a preposition to its announcement.
-    pub weapon_name: u8,
+    /// The attack names a weapon of its own, which adds a preposition to
+    /// its announcement.
+    pub named: bool,
+    /// A natural weapon that tires its user less: fatigue counts half
+    /// against its aim and in full against its penetration.
+    pub tires_little: bool,
     pub reach: Reach,
     pub score: u8,
     pub modes: EnumSet<AttackMode>,
@@ -52,19 +55,36 @@ pub struct MonsterAttack {
     pub effects: AttackEffects,
 }
 
-impl MonsterAttack {
-    pub fn named(&self) -> bool {
-        self.weapon_name != 0
+/// A monster's category (retail record byte 0xcb), which slaying weapons,
+/// condition immunities and a few rules single out. Retail names each one
+/// with string 1400 + its number (`g_special_category_name_ids`); those
+/// names are not checked here, so the rules below are named for what they
+/// do.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct MonsterKind(pub u8);
+
+impl MonsterKind {
+    /// Strikes from hiding at arm's length: its touch attacks are natural
+    /// ambushes (retail `AnnounceMonsterAttack`, kind 3).
+    pub fn ambusher(self) -> bool {
+        self.0 == 3
     }
 
-    /// Natural weapons that tire their user less: fatigue counts half
-    /// against their aim (retail `g_low_fatigue_attack_verbs`).
-    pub fn tires_little(&self) -> bool {
-        const LOW_FATIGUE: [u8; 18] = [
-            0x07, 0x0d, 0x0e, 0x0f, 0x15, 0x19, 0x21, 0x2b, 0x31, 0x32, 0x34, 0x35, 0x36, 0x38,
-            0x3b, 0x55, 0x56, 0x57,
-        ];
-        LOW_FATIGUE.contains(&self.weapon_name)
+    /// Sees the party further by its level (retail sight, kind 4).
+    pub fn sees_by_level(self) -> bool {
+        self.0 == 4
+    }
+
+    /// Turned by priests and harmed by Dispel Undead (retail
+    /// `CanPartySlotTurnUndead` for kind 0x14, Dispel Undead for 0x14 and
+    /// 0x15).
+    pub fn undead(self) -> bool {
+        matches!(self.0, 0x14 | 0x15)
+    }
+
+    /// Harmed by Banish besides the undead (kind 0x1c).
+    pub fn banishable(self) -> bool {
+        self.undead() || self.0 == 0x1c
     }
 }
 
@@ -89,12 +109,7 @@ pub struct Species {
     pub generic_plural: String,
     /// `data/monsters/<model>.mls`.
     pub model: String,
-    /// Sees the party further by its level (retail species kind 4; what
-    /// the kinds mean is not established).
-    pub level_sight: bool,
-    /// Retail's species kind (record 0xcb): 20 is undead; kinds 17, 20 and
-    /// 22 are immune to some conditions.
-    pub kind: u8,
+    pub kind: MonsterKind,
     /// An NPC's record: its loot is its NPC's, not the treasure table.
     pub npc: Option<super::npcs::NpcId>,
     /// Percent taken off every hit.

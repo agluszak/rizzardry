@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use super::{LearnedSpells, SpellPoints, Strength};
 use crate::content::characters::{Attribute, Realm, Skill};
 use crate::content::items::{Dice, EquipClass, ItemCatalog};
-use crate::content::species::MonsterCatalog;
+use crate::content::species::{MonsterCatalog, MonsterKind};
 use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId};
 use crate::game::characters::{Condition, Lasting, inflict, resistance::resistances, wake_on_hit};
 use crate::game::difficulty::{Difficulty, Side};
@@ -268,16 +268,11 @@ const CONDITION_SAVE: [i32; 20] =
     [0, 1, 2, 3, 4, 4, 5, 6, 7, 8, 9, 10, 12, 14, 16, 20, 18, 22, 24, 22];
 const DEATH_SAVE: i32 = CONDITION_SAVE[18];
 
-/// The monster kinds Dispel Undead harms.
-const UNDEAD_KINDS: [u8; 2] = [0x14, 0x15];
-/// The kind only Banish harms besides them.
-const BANISHED_KIND: u8 = 0x1c;
-
 /// Whether a monster of `kind` shrugs a condition off (retail
-/// `g_condition_immunities`).
-fn immune(kind: u8, condition: Condition) -> bool {
+/// `g_condition_immunities`; what kinds 17 and 22 are is not established).
+fn immune(kind: MonsterKind, condition: Condition) -> bool {
     use Condition::*;
-    let immune: &[_] = match kind {
+    let immune: &[_] = match kind.0 {
         20 => &[Diseased, Poisoned, Unconscious, Irritated, Afraid, Insane, Asleep, Nauseated],
         22 => &[Diseased, Poisoned, Nauseated, Irritated, Afraid, Asleep],
         17 => &[Insane, Afraid, Nauseated],
@@ -850,7 +845,7 @@ pub fn resolve(
             let Victim::Monster(m) = v else { return None };
             let (body, ..) = world.monsters.monsters().get(m).ok()?;
             let kind = world.species.kind(body.species)?.kind;
-            if !(UNDEAD_KINDS.contains(&kind) || (banish && kind == BANISHED_KIND)) {
+            if !(kind.undead() || (banish && kind.banishable())) {
                 return Some(Effect::Nothing { victim: v });
             }
             let rolled = magnitude(rng, spell.dice, strength);

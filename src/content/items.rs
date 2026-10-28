@@ -176,7 +176,7 @@ pub struct ItemDefinition {
     /// What its blows may do besides damage.
     pub effects: AttackEffects,
     /// The monster kind it slays for an extra damage die.
-    pub slays: Option<u8>,
+    pub slays: Option<super::species::MonsterKind>,
     /// Swings it adds to each attack.
     pub extra_swings: i32,
     /// Its retail kind (its unidentified name), which a few combat rules
