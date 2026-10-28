@@ -232,9 +232,13 @@ pub fn talk_to_npc(world: &mut World) {
 /// fabricated dialogue state, payment bypass or forced quote selection.
 #[derive(Resource)]
 pub struct AskAbout(pub String);
-pub fn ask_about(
+pub(crate) fn ask_about(
     mut commands: Commands,
     question: Option<Res<AskAbout>>,
+    mut inputs: Query<
+        &mut bevy::text::EditableText,
+        With<crate::presentation::conversation::TopicInput>,
+    >,
     sessions: Query<(Entity, &crate::game::npcs::conversation::Conversation)>,
     mut requests: MessageWriter<crate::game::npcs::conversation::ConversationRequest>,
 ) {
@@ -242,6 +246,13 @@ pub fn ask_about(
     let Ok((conversation, state)) = sessions.single() else { return };
     if state.ready() {
         info!("asking NPC about {}", question.0);
+        for mut input in &mut inputs {
+            *input = bevy::text::EditableText {
+                max_characters: Some(128),
+                allow_newlines: false,
+                ..bevy::text::EditableText::new(&question.0)
+            };
+        }
         requests.write(crate::game::npcs::conversation::ConversationRequest::Topic {
             conversation,
             revision: state.revision,

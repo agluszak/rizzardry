@@ -171,7 +171,7 @@ struct Choice {
     answer: Answer,
 }
 #[derive(Component)]
-struct TopicInput;
+pub(crate) struct TopicInput;
 #[derive(Component)]
 struct SubmitTopic;
 #[derive(Component)]
@@ -781,8 +781,15 @@ fn build(world: &mut World, session: Entity) -> Entity {
                         allow_newlines: false,
                         ..EditableText::new("")
                     },
-                    TextFont { font_size: 11.0.into(), ..default() },
-                    TextColor(Color::srgb(0.95, 0.8, 0.6)),
+                    TextFont {
+                        font: world
+                            .resource::<AssetServer>()
+                            .load("retail://data/fonts/wiz_text_font.sti#font")
+                            .into(),
+                        font_size: 11.0.into(),
+                        ..default()
+                    },
+                    TextColor(Color::WHITE),
                     TabIndex(0),
                     absolute(Vec2::new(9., 8.), Vec2::new(122., 20.)),
                     ChildOf(input_panel),
@@ -849,12 +856,8 @@ fn build(world: &mut World, session: Entity) -> Entity {
                                 }
                                 if i == 1 {
                                     facts.topics.retain(|(_, t)| !t.eq_ignore_ascii_case(&text));
-                                } else if !facts
-                                    .topics
-                                    .iter()
-                                    .any(|(_, t)| t.eq_ignore_ascii_case(&text))
-                                {
-                                    facts.topics.push((TopicCategory::Misc, text));
+                                } else {
+                                    facts.remember_topic(TopicCategory::Misc, &text);
                                 }
                             },
                         );
@@ -1223,17 +1226,23 @@ fn paint_topic_text(
     views: ViewScope,
     assets: Res<AssetServer>,
     rows: Query<(Entity, &TopicRow, &bevy::picking::hover::Hovered, &Children)>,
+    sessions: Query<&Conversation>,
     inputs: Query<(Entity, &EditableText), With<TopicInput>>,
     mut texts: Query<&mut BitmapText>,
 ) {
     for (entity, row, hovered, children) in &rows {
-        let Some((root, _)) = views.owner(entity) else { continue };
+        let Some((root, session)) = views.owner(entity) else { continue };
         let selected = inputs.iter().any(|(input, text)| {
             views.owner(input).is_some_and(|(owner, _)| owner == root)
                 && text.value().to_string().eq_ignore_ascii_case(&row.0)
         });
         let name = if hovered.0 {
             "paletteyellow"
+        } else if sessions
+            .get(session)
+            .is_ok_and(|c| c.learned_topics.contains(&row.0.to_ascii_lowercase()))
+        {
+            "palettegreen"
         } else if selected {
             "palettewhite"
         } else {

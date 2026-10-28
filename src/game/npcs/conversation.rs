@@ -13,7 +13,7 @@ use crate::game::{
     world::{ActorPose, level::Level, population::Monster},
 };
 use bevy::{ecs::system::RunSystemOnce, prelude::*};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// Engine semantics refer to the database's symbolic keys; script operands and
 /// campaign storage keep the actual decoded identifiers. No Burz record or
@@ -26,6 +26,18 @@ pub struct StoryFacts {
     initialized: bool,
 }
 impl StoryFacts {
+    /// The keyword notebook outlives a conversation. Learning/discussing a
+    /// keyword does not consume it; only the explicit minus button removes it.
+    pub fn remember_topic(&mut self, category: TopicCategory, text: &str) -> bool {
+        let text = text.trim();
+        if text.is_empty() || self.topics.iter().any(|(_, known)| known.eq_ignore_ascii_case(text))
+        {
+            return false;
+        }
+        self.topics.push((category, text.to_owned()));
+        true
+    }
+
     pub fn initialize(&mut self, catalog: &FactCatalog) {
         if self.initialized {
             return;
@@ -128,6 +140,9 @@ pub struct Conversation {
     pub current: Option<(u16, usize)>,
     pub wait: ConversationWait,
     pub transcript: Vec<TranscriptLine>,
+    /// Keywords discovered during this conversation are green. Reopening
+    /// imports the persistent notebook without the transient discovery marks.
+    pub learned_topics: BTreeSet<String>,
     pub result: Option<String>,
     queue: VecDeque<Step>,
 }
@@ -335,6 +350,7 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
             current: None,
             wait: ConversationWait::Ready,
             transcript: vec![],
+            learned_topics: default(),
             result: None,
             queue: VecDeque::from([Step::Quote { quote: greeting, subquote: 0, paid: false }]),
         })
@@ -460,14 +476,7 @@ fn run(world: &mut World, entity: Entity, c: &mut Conversation) {
                 if quote == 0 {
                     let first = world.get::<Npc>(c.actor).unwrap().greeting_pending;
                     if first && let Ok(definition) = definition(world, c.actor) {
-                        let mut facts = world.resource_mut::<StoryFacts>();
-                        if !facts
-                            .topics
-                            .iter()
-                            .any(|(_, text)| text.eq_ignore_ascii_case(&definition.source_name))
-                        {
-                            facts.topics.push((TopicCategory::Person, definition.source_name));
-                        }
+                        learn_topic(world, c, TopicCategory::Person, &definition.source_name);
                     }
                     world.get_mut::<Npc>(c.actor).unwrap().greeting_pending = false;
                 }
@@ -514,14 +523,7 @@ fn run(world: &mut World, entity: Entity, c: &mut Conversation) {
                                 );
                             }
                             DialogueOp::Mention { category, text } => {
-                                let mut facts = world.resource_mut::<StoryFacts>();
-                                if !facts
-                                    .topics
-                                    .iter()
-                                    .any(|(cat, t)| cat == category && t.eq_ignore_ascii_case(text))
-                                {
-                                    facts.topics.push((*category, text.clone()));
-                                }
+                                learn_topic(world, c, *category, text);
                             }
                             DialogueOp::Close => following = Some(Step::End),
                             _ => {}
@@ -569,6 +571,11 @@ fn run(world: &mut World, entity: Entity, c: &mut Conversation) {
     }
     block(c, c.current.map_or(0, |v| v.0), None, "script made no bounded progress".into());
 }
+fn learn_topic(world: &mut World, c: &mut Conversation, category: TopicCategory, text: &str) {
+    if world.resource_mut::<StoryFacts>().remember_topic(category, text) {
+        c.learned_topics.insert(text.trim().to_ascii_lowercase());
+    }
+}
 fn topic(world: &mut World, c: &mut Conversation, text: &str) {
     if !c.ready() {
         return;
@@ -584,6 +591,9 @@ fn topic(world: &mut World, c: &mut Conversation, text: &str) {
         .or_else(|| words.windows(2).find_map(|pair| script.topic(&pair.join(" "))))
         .or_else(|| words.iter().find_map(|word| script.topic(word)));
     if let Some(quote) = matched {
+        if validate_line(world, &script.quotes[quote as usize]).is_ok() {
+            world.resource_mut::<StoryFacts>().remember_topic(TopicCategory::Misc, &cleaned);
+        }
         c.transcript.push(TranscriptLine::Question(text.to_owned()));
         c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false });
         c.revision += 1;
@@ -1012,12 +1022,56 @@ mod tests {
                 current: None,
                 wait: ConversationWait::Ready,
                 transcript: vec![],
+                learned_topics: default(),
                 result: None,
                 queue: VecDeque::from([Step::Quote { quote: 0, subquote: 0, paid: false }]),
             })
             .id();
         (app, entity, actor)
     }
+    #[test]
+    fn discussed_topics_survive_the_session_and_discoveries_are_marked_only_in_it() {
+        let (mut app, session, _) = app(DialogueScript {
+            quotes: vec![
+                Quote::default(),
+                Quote {
+                    text: vec!["The ship came from Arnika.".into()],
+                    operations: vec![
+                        DialogueOp::Keywords(vec!["SHIP".into()]),
+                        DialogueOp::Mention {
+                            category: TopicCategory::Place,
+                            text: "Arnika".into(),
+                        },
+                    ],
+                    ..default()
+                },
+            ],
+            ..default()
+        });
+        app.update();
+        let revision = app.world().get::<Conversation>(session).unwrap().revision;
+        for text in ["SHIP", "ship"] {
+            app.world_mut().write_message(ConversationRequest::Topic {
+                conversation: session,
+                revision,
+                text: text.into(),
+            });
+        }
+        app.update();
+        let facts = app.world().resource::<StoryFacts>();
+        assert_eq!(facts.topics.iter().filter(|(_, t)| t.eq_ignore_ascii_case("ship")).count(), 1);
+        let session_state = app.world().get::<Conversation>(session).unwrap();
+        assert!(session_state.learned_topics.contains("arnika"));
+        assert!(!session_state.learned_topics.contains("ship"));
+        app.world_mut().despawn(session);
+        assert!(app.world().resource::<StoryFacts>().topics.iter().any(|(_, t)| t == "SHIP"));
+        assert!(
+            !app.world_mut()
+                .resource_mut::<StoryFacts>()
+                .remember_topic(TopicCategory::Misc, "ship")
+        );
+    }
+
     #[test]
     fn unknown_mandatory_operation_blocks_before_any_effect_or_successful_line() {
         let q = Quote {
