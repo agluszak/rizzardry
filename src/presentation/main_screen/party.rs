@@ -120,10 +120,6 @@ pub fn slots(closed: bool) -> impl SceneList {
 
 /// A bar's fill, 0 to 45 pixels, at least 1 while any is left (retail
 /// `SyncPartyPortraitVitalsBars`).
-fn fill(now: u32, max: u32) -> u32 {
-    if now == 0 || max == 0 { 0 } else { (now * 45 / max).max(1) }
-}
-
 /// Create controls once for this layout. Gameplay updates their properties.
 pub fn build_party_parts(
     mut commands: Commands,
@@ -347,9 +343,12 @@ pub fn draw_party(
                 Part::HealthEmpty | Part::StaminaEmpty => {
                     shown = !dead;
                     let amount = if matches!(part.kind, Part::HealthEmpty) {
-                        fill(vitals.hp, profile.max_hp())
+                        crate::presentation::screen_art::vital_fill(vitals.hp, profile.max_hp())
                     } else {
-                        fill(vitals.stamina, profile.max_stamina())
+                        crate::presentation::screen_art::vital_fill(
+                            vitals.stamina,
+                            profile.max_stamina(),
+                        )
                     };
                     let height = px(45 - amount);
                     if node.height != height {

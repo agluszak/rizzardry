@@ -732,7 +732,7 @@ fn draw_vitals(
                 VitalShade::Health => (vitals.hp, profile.max_hp()),
                 VitalShade::Stamina => (vitals.stamina, profile.max_stamina()),
             };
-            let filled = current.min(maximum).saturating_mul(45) / maximum.max(1);
+            let filled = super::screen_art::vital_fill(current, maximum);
             let height = px((45 - filled) as f32);
             if node.height != height {
                 node.height = height;

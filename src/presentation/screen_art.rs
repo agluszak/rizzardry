@@ -292,6 +292,12 @@ pub fn scale_ui(
     }
 }
 
+/// How many of a vital bar's 45 pixels are full: any of `now` shows at
+/// least one.
+pub fn vital_fill(now: u32, max: u32) -> u32 {
+    if now == 0 || max == 0 { 0 } else { (now.min(max) * 45 / max).max(1) }
+}
+
 /// Inherited visibility when shown, hidden otherwise.
 pub fn shown(visible: bool) -> Visibility {
     if visible { Visibility::Inherited } else { Visibility::Hidden }
