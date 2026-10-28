@@ -156,7 +156,6 @@ impl Scenario {
                 Prop {
                     definition: index,
                     centre: Vec3::ZERO,
-                    door: false,
                     frames_per_second: 10.0,
                     last_frame: self.last_frames[index] as usize,
                     wraps: model.wraps,

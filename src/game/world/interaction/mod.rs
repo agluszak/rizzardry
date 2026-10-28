@@ -688,16 +688,21 @@ pub fn leave(world: &mut World) {
 }
 
 /// An interaction ends with its device, an accepted entry, or a fight.
+/// A fight or an entry ends work on a device.
+pub(crate) fn interrupt_interaction(
+    _: On<Add<(crate::game::combat::Battle, super::level::Destination)>>,
+    mut commands: Commands,
+) {
+    commands.remove_resource::<DeviceInteraction>();
+}
+
+/// Work on a device ends with the device.
 pub(crate) fn end_lost_interaction(
+    lost: On<Remove<Device>>,
     mut commands: Commands,
     interaction: Option<Res<DeviceInteraction>>,
-    devices: Query<(), With<Device>>,
-    entering: Query<(), With<super::level::Destination>>,
-    battle: Query<(), With<crate::game::combat::Battle>>,
 ) {
-    if interaction
-        .is_some_and(|i| !devices.contains(i.device) || !battle.is_empty() || !entering.is_empty())
-    {
+    if interaction.is_some_and(|i| i.device == lost.entity) {
         commands.remove_resource::<DeviceInteraction>();
     }
 }

@@ -7,10 +7,9 @@ use crate::content::level::LevelGeometry;
 use crate::game::time::GameClock;
 use bevy::asset::{LoadState, RecursiveDependencyLoadState};
 
-use crate::game::world::level::{
-    Destination, Level, LevelEntities, PresentationReadiness, PropPart,
-};
+use crate::game::world::level::{Destination, Level, LevelEntities, PresentationReadiness};
 use crate::game::world::props::Prop;
+use crate::game::world::props::PropPart;
 use crate::presentation::billboards::FaceCamera;
 use crate::presentation::party_view::PartyCamera;
 
@@ -271,7 +270,6 @@ mod tests {
                 Prop {
                     definition: 0,
                     centre: authored.translation,
-                    door: false,
                     frames_per_second: 1.0,
                     last_frame: 0,
                     wraps: false,

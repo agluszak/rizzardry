@@ -108,7 +108,8 @@ fn walk_activation(
                     world.entity_mut(entity).remove::<ActiveDamageZone>();
                 }
                 Some(Some(true)) => {
-                    world.run_system_cached_with(damage_party, DAMAGE_ZONE_DICE).unwrap();
+                    // A party-less world has nobody to hurt.
+                    let _ = world.run_system_cached_with(damage_party, DAMAGE_ZONE_DICE);
                 }
                 _ => {}
             }

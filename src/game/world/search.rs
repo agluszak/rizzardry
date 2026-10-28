@@ -72,6 +72,30 @@ pub enum SearchNews {
     },
 }
 
+/// A fight switches search mode off (retail `InitializeCombat`)...
+pub fn suspend_search(
+    _: On<Add<Battle>>,
+    mut search: ResMut<Search>,
+    mut news: MessageWriter<SearchNews>,
+) {
+    if search.mode == SearchMode::On {
+        *search = Search::new(SearchMode::Suspended);
+        news.write(SearchNews::Off);
+    }
+}
+
+/// ...and its end back on (retail `EndCombat`).
+pub fn resume_search(
+    _: On<Remove<Battle>>,
+    mut search: ResMut<Search>,
+    mut news: MessageWriter<SearchNews>,
+) {
+    if search.mode == SearchMode::Suspended {
+        *search = Search::new(SearchMode::On);
+        news.write(SearchNews::On);
+    }
+}
+
 pub fn toggle_search(
     mut requests: MessageReader<ToggleSearch>,
     freedom: crate::game::screen::Freedom,
@@ -79,19 +103,6 @@ pub fn toggle_search(
     mut search: ResMut<Search>,
     mut news: MessageWriter<SearchNews>,
 ) {
-    // A fight switches search mode off, and the end of the fight back on
-    // (retail `InitializeCombat`, `EndCombat`).
-    match (battle.is_some(), search.mode) {
-        (true, SearchMode::On) => {
-            *search = Search::new(SearchMode::Suspended);
-            news.write(SearchNews::Off);
-        }
-        (false, SearchMode::Suspended) => {
-            *search = Search::new(SearchMode::On);
-            news.write(SearchNews::On);
-        }
-        _ => {}
-    }
     for ToggleSearch in requests.read() {
         if !freedom.free() {
             continue;

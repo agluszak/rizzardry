@@ -495,11 +495,12 @@ fn execute(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth:
                 return Ran::Declined;
             }
             if world.get::<Container>(entity).is_some() {
-                match world.run_system_cached_with(use_container, entity).unwrap() {
-                    ContainerUse::Deposited => return Ran::Answered,
-                    ContainerUse::Busy => return Ran::Declined,
-                    ContainerUse::Toggle => {}
-                    ContainerUse::Look { open } => {
+                // Without a party there is nobody to use it.
+                match world.run_system_cached_with(use_container, entity) {
+                    Err(_) | Ok(ContainerUse::Busy) => return Ran::Declined,
+                    Ok(ContainerUse::Deposited) => return Ran::Answered,
+                    Ok(ContainerUse::Toggle) => {}
+                    Ok(ContainerUse::Look { open }) => {
                         world.insert_resource(DeviceInteraction {
                             device: entity,
                             work: Work::Looting,
@@ -529,11 +530,16 @@ fn execute(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth:
             world.entity_mut(level).insert(PendingPartyMove(PartyMove::Fly(*path)));
         }
         TriggerAction::HurtParty(dice) => {
-            world.run_system_cached_with(damage_party, *dice).unwrap();
+            if world.run_system_cached_with(damage_party, *dice).is_err() {
+                return Ran::Declined;
+            }
         }
         TriggerAction::Fountain(fountain) => {
             let at = sound_position(world, entity, definition);
-            if !world.run_system_cached_with(drink_fountain, (entity, *fountain, at)).unwrap() {
+            if !world
+                .run_system_cached_with(drink_fountain, (entity, *fountain, at))
+                .unwrap_or(false)
+            {
                 return Ran::Declined;
             }
         }

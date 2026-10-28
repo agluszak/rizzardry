@@ -86,7 +86,10 @@ impl DoorLink {
 /// Keep each door's link present exactly while the door is open.
 pub fn sync_door_links(
     mut commands: Commands,
-    doors: Query<(Entity, &Prop, &PropMotion, &DoorLink, Option<&Children>)>,
+    doors: Query<
+        (Entity, &Prop, &PropMotion, &DoorLink, Option<&Children>),
+        Or<(Changed<PropMotion>, Added<DoorLink>)>,
+    >,
     links: Query<(), With<AnimationLink3d>>,
     navigation: Query<&LevelNavigation>,
 ) {
@@ -208,7 +211,6 @@ mod tests {
                 Prop {
                     definition: 0,
                     centre: Vec3::ZERO,
-                    door: true,
                     frames_per_second: 10.0,
                     last_frame: 10,
                     wraps: false,
