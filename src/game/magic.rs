@@ -889,7 +889,7 @@ mod tests {
             let mut definitions = vec![SpellDefinition::default(); 117];
             definitions[usize::from(SpellId::HEAL_WOUNDS.0)] = heal_wounds();
             definitions[usize::from(id.0)] = SpellDefinition {
-                id: id,
+                id,
                 realm: Some(Realm::Divine),
                 targeting: Targeting::Ally,
                 dice: Some(Dice { base: 0, count: 1, sides: 1 }),
