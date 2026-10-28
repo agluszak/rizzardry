@@ -290,13 +290,18 @@ pub fn draw_caption(
     orders: Query<&Order>,
     mut captions: Query<(&CaptionLine, &mut BitmapText)>,
     spells: Res<Assets<crate::content::spells::SpellCatalog>>,
+    mut strings: crate::presentation::screen_art::GameStrings,
 ) {
     let spells = data.as_ref().and_then(|d| spells.get(&d.spells));
     let catalog = data.and_then(|d| catalogs.get(&d.items));
     let (first, second) = match selected.member(&roster).and_then(|m| members.get(m).ok()) {
         None => (String::new(), String::new()),
         Some((profile, vitals, carried)) => {
-            let first = format!("{} - {:?}", profile.name, profile.profession);
+            let first = format!(
+                "{} - {}",
+                profile.name,
+                strings.get(crate::retail::strings::PROFESSION_NAMES + profile.profession as usize)
+            );
             let mut second = if battle.is_some() {
                 match selected
                     .member(&roster)

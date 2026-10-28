@@ -269,10 +269,18 @@ fn magic_lines(
     news: &crate::game::magic::casting::MagicNews,
     names: &super::names::ActorNames,
     spells: Option<&crate::content::spells::SpellCatalog>,
+    string: &impl Fn(usize) -> String,
 ) -> Vec<String> {
     use crate::game::magic::casting::{MagicNews, Refusal};
     use crate::game::magic::{Effect, Outcome, Victim};
     let name = |entity| names.name(entity).unwrap_or_default();
+    let improves = |member, skill: crate::content::characters::Skill| {
+        format!(
+            "{}'s {} improves.",
+            name(member),
+            string(crate::retail::strings::SKILL_NAMES + skill as usize)
+        )
+    };
     let victim = |victim: Victim| match victim {
         Victim::Member(e) | Victim::Monster(e) => name(e),
     };
@@ -324,11 +332,7 @@ fn magic_lines(
         }
         MagicNews::Triggered { effects, improved, .. } => {
             let mut lines: Vec<_> = effects.iter().map(|&e| effect_line(e)).collect();
-            lines.extend(
-                improved
-                    .iter()
-                    .map(|&(member, skill)| format!("{}'s {skill:?} improves.", name(member))),
-            );
+            lines.extend(improved.iter().map(|&(member, skill)| improves(member, skill)));
             lines
         }
         MagicNews::Landed { effects, .. } => effects.iter().map(|&e| effect_line(e)).collect(),
@@ -345,7 +349,7 @@ fn magic_lines(
             }
             lines.extend(report.effects.iter().map(|&e| effect_line(e)));
             for &(member, skill) in &report.improved {
-                lines.push(format!("{}'s {skill:?} improves.", name(member)));
+                lines.push(improves(member, skill));
             }
             lines
         }
@@ -378,18 +382,18 @@ pub fn queue_notices(
     let font = sheets.get(&art.font);
     let channel = usize::from(battle.is_some());
     let spells = data.as_ref().and_then(|d| spells.get(&d.spells));
+    let strings = tables.get(&art.strings);
+    let string = |index| strings.and_then(|s| s.get(index)).unwrap_or_default().trim().to_owned();
     for remark in remarks.read() {
         if let Some(name) = names.name(remark.actor) {
             log.push(channel, &format!("{name}: {}", remark.text), font);
         }
     }
     for news in magic.read() {
-        for line in magic_lines(news, &names, spells) {
+        for line in magic_lines(news, &names, spells, &string) {
             log.push(channel, &line, font);
         }
     }
-    let strings = tables.get(&art.strings);
-    let string = |index| strings.and_then(|s| s.get(index)).unwrap_or_default().trim().to_owned();
     for effect in effects.read() {
         let text = match effect {
             TriggerEffect::Message { source, id } => source

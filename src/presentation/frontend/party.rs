@@ -335,6 +335,7 @@ pub(super) fn refresh(
     mut messages: Query<&mut BitmapText, (With<PartyMessage>, Without<Label>)>,
     mut toggles: Query<&Children, With<ToggleLabel>>,
     mut toggle_text: Query<&mut BitmapText, (Without<Label>, Without<PartyMessage>)>,
+    mut strings: crate::presentation::screen_art::GameStrings,
 ) {
     let Some(session) = session else { return };
     for (entity, action, disabled) in &controls {
@@ -397,16 +398,27 @@ pub(super) fn refresh(
     }
     let preview =
         session.selected.and_then(|id| candidate(&session, id)).map(CharacterDraft::preview);
+    use crate::retail::strings::{GENDER_NAMES, PROFESSION_NAMES, RACE_NAMES};
+    let level_1 = |strings: &mut crate::presentation::screen_art::GameStrings,
+                   profession: crate::game::characters::Profession| {
+        format!("Level 1 {}", strings.get(PROFESSION_NAMES + profession as usize))
+    };
+    let kind = |strings: &mut crate::presentation::screen_art::GameStrings,
+                gender: crate::game::characters::Gender,
+                race: crate::game::characters::Race| {
+        let gender = strings.get(GENDER_NAMES + gender as usize).to_owned();
+        format!("{gender} {}", strings.get(RACE_NAMES + race as usize))
+    };
     for (field, mut text) in &mut labels {
         let value = match field {
             Label::CandidateName(id) | Label::Member(id) => {
                 candidate(&session, *id).map(|draft| draft.display_name().to_owned())
             }
             Label::CandidateClass(id) => {
-                candidate(&session, *id).map(|draft| format!("Level 1 {:?}", draft.profession()))
+                candidate(&session, *id).map(|draft| level_1(&mut strings, draft.profession()))
             }
             Label::CandidateRace(id) => candidate(&session, *id)
-                .map(|draft| format!("{:?} {:?}", draft.gender(), draft.race())),
+                .map(|draft| kind(&mut strings, draft.gender(), draft.race())),
             Label::Joined => session
                 .selected
                 .filter(|id| session.party.contains(id))
@@ -415,8 +427,8 @@ pub(super) fn refresh(
                 use crate::content::characters::Attribute::*;
                 match line {
                     0 => profile.name.clone(),
-                    1 => format!("Level 1 {:?}", profile.profession),
-                    2 => format!("{:?} {:?}", profile.gender, profile.race),
+                    1 => level_1(&mut strings, profile.profession),
+                    2 => kind(&mut strings, profile.gender, profile.race),
                     3 => format!("Str: {}", profile.attribute(Strength)),
                     4 => format!("Int: {}", profile.attribute(Intelligence)),
                     5 => format!("Pie: {}", profile.attribute(Piety)),

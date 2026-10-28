@@ -402,7 +402,7 @@ pub(super) fn build(commands: &mut Commands, parent: Entity, assets: &AssetServe
                     let index = profession as usize;
                     (
                         Action::ChooseProfession(profession),
-                        0x2a4 + index,
+                        crate::retail::strings::PROFESSION_NAMES + index,
                         [10, 24, 8, 2, 16, 20, 12, 28, 6, 0, 18, 22, 4, 14, 26][index],
                         profession_icons.clone(),
                     )
@@ -414,7 +414,7 @@ pub(super) fn build(commands: &mut Commands, parent: Entity, assets: &AssetServe
                     let index = race as usize;
                     (
                         Action::ChooseRace(race),
-                        0x284 + index,
+                        crate::retail::strings::RACE_NAMES + index,
                         [8, 4, 12, 16, 14, 20, 0, 10, 2, 18, 6][index],
                         race_icons.clone(),
                     )
@@ -425,7 +425,7 @@ pub(super) fn build(commands: &mut Commands, parent: Entity, assets: &AssetServe
                 .map(|gender| {
                     (
                         Action::ChooseGender(gender),
-                        0x2d1 + gender as usize,
+                        crate::retail::strings::GENDER_NAMES + gender as usize,
                         2 * gender as usize,
                         gender_icons.clone(),
                     )
@@ -534,19 +534,23 @@ pub(super) fn refresh(
                 wrap(id, u32::from(width)).get(line).cloned().unwrap_or_default()
             }
             Value::Profession => string(if session.choices.profession {
-                0x2a4 + draft.profession() as usize
+                crate::retail::strings::PROFESSION_NAMES + draft.profession() as usize
             } else {
                 0x8f
             })
             .to_owned(),
-            Value::Race => {
-                string(if session.choices.race { 0x284 + draft.race() as usize } else { 0x90 })
-                    .to_owned()
-            }
-            Value::Gender => {
-                string(if session.choices.gender { 0x2d1 + draft.gender() as usize } else { 0x91 })
-                    .to_owned()
-            }
+            Value::Race => string(if session.choices.race {
+                crate::retail::strings::RACE_NAMES + draft.race() as usize
+            } else {
+                0x90
+            })
+            .to_owned(),
+            Value::Gender => string(if session.choices.gender {
+                crate::retail::strings::GENDER_NAMES + draft.gender() as usize
+            } else {
+                0x91
+            })
+            .to_owned(),
             Value::Attribute(a) => {
                 if session.choices.race {
                     profile.attribute(a).to_string()
@@ -561,7 +565,9 @@ pub(super) fn refresh(
                     String::new()
                 }
             }
-            Value::SkillName(skill) => string(0x2e2 + skill as usize).to_owned(),
+            Value::SkillName(skill) => {
+                string(crate::retail::strings::SKILL_NAMES + skill as usize).to_owned()
+            }
             Value::Skill(skill) => profile.skill_points[skill].to_string(),
             Value::AllocatedSkill(skill) => draft.allocated_skill(skill).to_string(),
             Value::Remaining => {
@@ -596,10 +602,11 @@ pub(super) fn refresh(
             Value::Summary(i) => match i {
                 0 => format!(
                     "{} {}",
-                    string(0x2d1 + draft.gender() as usize),
-                    string(0x284 + draft.race() as usize)
+                    string(crate::retail::strings::GENDER_NAMES + draft.gender() as usize),
+                    string(crate::retail::strings::RACE_NAMES + draft.race() as usize)
                 ),
-                1 => string(0x2a4 + draft.profession() as usize).to_owned(),
+                1 => string(crate::retail::strings::PROFESSION_NAMES + draft.profession() as usize)
+                    .to_owned(),
                 _ => format!("{} 1 (Novice)", string(0x6b9)),
             },
             Value::Health => {
@@ -681,7 +688,9 @@ pub(super) fn refresh(
                 if session.choices.profession {
                     lines.push(format!(
                         "{} {}",
-                        string(0x2e2 + profile.bonus_skill() as usize),
+                        string(
+                            crate::retail::strings::SKILL_NAMES + profile.bonus_skill() as usize
+                        ),
                         string(0xb2)
                     ));
                 }
@@ -692,9 +701,9 @@ pub(super) fn refresh(
                 if session.choices.race {
                     abilities |= profile.racial_traits();
                 }
-                lines.extend(
-                    abilities.iter().map(|ability| string(0x328 + ability as usize).to_owned()),
-                );
+                lines.extend(abilities.iter().map(|ability| {
+                    string(crate::retail::strings::ABILITY_NAMES + ability as usize).to_owned()
+                }));
                 lines.get(i).cloned().unwrap_or_default()
             }
             Value::ProfessionSkill(i) => {
@@ -706,7 +715,11 @@ pub(super) fn refresh(
                     } else {
                         profile.profession_skills().get(i - 1).copied()
                     };
-                    skill.map(|s| string(0x2e2 + s as usize).to_owned()).unwrap_or_default()
+                    skill
+                        .map(|s| {
+                            string(crate::retail::strings::SKILL_NAMES + s as usize).to_owned()
+                        })
+                        .unwrap_or_default()
                 }
             }
         };

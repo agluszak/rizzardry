@@ -654,9 +654,15 @@ pub(super) fn refresh(
             }
             Field::Attribute(attribute) => profile.attribute(attribute).to_string(),
             Field::Skill(skill) => profile.skill(skill).to_string(),
-            Field::SkillName(skill) => string(0x2e2 + skill as usize).to_owned(),
+            Field::SkillName(skill) => {
+                string(crate::retail::strings::SKILL_NAMES + skill as usize).to_owned()
+            }
             Field::Bonus => {
-                format!("{} {}", string(0x2e2 + profile.bonus_skill() as usize), string(0x8c5))
+                format!(
+                    "{} {}",
+                    string(crate::retail::strings::SKILL_NAMES + profile.bonus_skill() as usize),
+                    string(0x8c5)
+                )
             }
             Field::Effect(index) => {
                 effects.get(index + offset).map(|(value, _)| value.clone()).unwrap_or_default()

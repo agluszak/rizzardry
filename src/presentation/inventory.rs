@@ -969,14 +969,21 @@ fn draw_header(
                 let gender = if profile.gender == Gender::Male { 0x2d1 } else { 0x2d2 };
                 let table = tables.get(&art.strings);
                 let gender = table.and_then(|t| t.get(gender)).unwrap_or("");
-                let race = table.and_then(|t| t.get(0x284 + profile.race as usize)).unwrap_or("");
+                let race = table
+                    .and_then(|t| t.get(crate::retail::strings::RACE_NAMES + profile.race as usize))
+                    .unwrap_or("");
                 value = Some(format!("{gender} {race}").trim().to_owned());
             }
             HeaderPart::Profession => {
                 value = Some(
                     tables
                         .get(&art.strings)
-                        .and_then(|t| t.get(0x2a4 + profile.profession as usize))
+                        .and_then(|t| {
+                            t.get(
+                                crate::retail::strings::PROFESSION_NAMES
+                                    + profile.profession as usize,
+                            )
+                        })
                         .unwrap_or("")
                         .to_owned(),
                 )

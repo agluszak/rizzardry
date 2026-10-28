@@ -292,6 +292,28 @@ pub fn scale_ui(
     }
 }
 
+/// The game's string table, for views that name things the way retail does.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct GameStrings<'w, 's> {
+    assets: Option<Res<'w, AssetServer>>,
+    tables: Res<'w, Assets<crate::content::ui::TextTable>>,
+    table: Local<'s, Option<Handle<crate::content::ui::TextTable>>>,
+}
+
+impl GameStrings<'_, '_> {
+    /// The string, trimmed; empty until the table has loaded.
+    pub fn get(&mut self, id: usize) -> &str {
+        if self.table.is_none() {
+            *self.table = self.assets.as_ref().map(|a| a.load(crate::content::paths::STRINGS));
+        }
+        self.table
+            .as_ref()
+            .and_then(|t| self.tables.get(t))
+            .and_then(|t| t.get(id))
+            .map_or("", str::trim)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
