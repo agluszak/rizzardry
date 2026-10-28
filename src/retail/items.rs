@@ -11,7 +11,8 @@ use enumset::EnumSet;
 
 use crate::content::characters::Skill;
 use crate::content::items::{
-    EquipClass, ItemCatalog, ItemDefinition, ItemId, LootTable, LootTables, QuantityKind, Recipe,
+    EquipClass, ItemCatalog, ItemDefinition, ItemId, ItemKind, LootTable, LootTables, QuantityKind,
+    Recipe,
 };
 
 const RECORD: usize = 0x10d;
@@ -464,7 +465,7 @@ fn read_item(index: usize, record: &[u8], strings: &[String]) -> Result<ItemDefi
     let kind_name = KIND_NAMES.get(usize::from(kind)).map_or("", |&k| string(k));
     Ok(ItemDefinition {
         unidentified_name: string(UNIDENTIFIED).replace("%s", kind_name),
-        kind,
+        kind: ItemKind(kind),
         kind_name: kind_name.to_owned(),
         id: ItemId(index as u16),
         name: utf16_string(&record[..60]),
@@ -692,7 +693,8 @@ mod tests {
         assert!(catalog.0.iter().filter(|i| !i.name.is_empty()).count() > 500);
         assert!(catalog.0.iter().any(|i| i.recipe.is_some()), "items are made from others");
         assert!(
-            (599..=610).all(|id| catalog.get(ItemId(id)).is_some_and(|i| i.kind == 0x83)),
+            (599..=610)
+                .all(|id| catalog.get(ItemId(id)).is_some_and(|i| i.kind == ItemKind::OMNIGUN)),
             "the omnigun's twelve tiers"
         );
         let stacks: Vec<_> =

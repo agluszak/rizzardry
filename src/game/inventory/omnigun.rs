@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::content::characters::Profession;
+use crate::content::items::ItemKind;
 
 /// The omnigun tier a Gadgeteer level earns: the item and its tier above the
 /// first (1 to 11), none below level 3.
@@ -51,7 +52,8 @@ pub fn advance(
     if character.profession != Profession::Gadgeteer {
         return Vec::new();
     }
-    let omnigun = |stack: &ItemStack| catalog.get(stack.item).is_some_and(|d| d.kind == OMNIGUN);
+    let omnigun =
+        |stack: &ItemStack| catalog.get(stack.item).is_some_and(|d| d.kind == ItemKind::OMNIGUN);
     let carries = |carried: &Query<&mut Carried>, owner: Entity| {
         carried.get(owner).is_ok_and(|c| c.stacks().any(omnigun))
     };
@@ -116,7 +118,7 @@ mod tests {
             (0..=610)
                 .map(|id| ItemDefinition {
                     id: ItemId(id),
-                    kind: if id >= 599 { OMNIGUN } else { 0 },
+                    kind: if id >= 599 { ItemKind::OMNIGUN } else { ItemKind::default() },
                     ..default()
                 })
                 .collect(),

@@ -8,7 +8,9 @@ use super::characters::{Character, Load, Vitals};
 use super::party::roster::PartyRoster;
 use super::rng::GameRng;
 use crate::content::characters::Skill;
-use crate::content::items::{EquipClass, ItemCatalog, ItemDefinition, ItemId, QuantityKind};
+use crate::content::items::{
+    EquipClass, ItemCatalog, ItemDefinition, ItemId, ItemKind, QuantityKind,
+};
 use bevy::prelude::*;
 use enum_map::{Enum, EnumMap};
 use enumset::EnumSetType;
@@ -748,42 +750,58 @@ pub(crate) fn identify_attempt(
     })
 }
 
-/// Kinds loaded by one other kind (retail `g_compatible_partner_pairs`):
-/// guns and their ammunition.
-const LOADED_BY: [(u16, u16); 5] = [(114, 113), (110, 132), (104, 132), (144, 143), (145, 146)];
+/// Guns and what loads them (retail `g_compatible_partner_pairs`).
+const LOADED_BY: [(ItemKind, ItemKind); 5] = [
+    (ItemKind::MUSKET, ItemKind::POWDER_SHOT),
+    (ItemKind::PHASER, ItemKind::CELL),
+    (ItemKind::POWER_GLOVE, ItemKind::CELL),
+    (ItemKind::ROCKET_LAUNCHER, ItemKind::ROCKET),
+    (ItemKind::GUN_0X91, ItemKind::GUN_0X91_LOAD),
+];
 
-/// The kind that loads an item of this kind (retail `GetItemMergeKind`).
-pub fn loaded_by(kind: u16) -> Option<u16> {
+/// What loads an item of this kind (retail `GetItemMergeKind`).
+pub fn loaded_by(kind: ItemKind) -> Option<ItemKind> {
     LOADED_BY.iter().find(|&&(gun, _)| gun == kind).map(|&(_, ammunition)| ammunition)
 }
-
-/// The Gadgeteer's omnigun (retail item kind 0x83), whose twelve tiers are
-/// items 599 to 610.
-pub const OMNIGUN: u16 = 0x83;
 
 /// Whether `other` may be held with the ranged weapon `ranged` (retail
 /// `CompatiblePartnerItems`): bows, crossbows and slings with their
 /// missiles, guns with what loads them, and each omnigun tier with what it
 /// has learnt to fire.
 fn partners(ranged: &ItemDefinition, other: &ItemDefinition) -> bool {
+    use ItemKind as K;
     let kind = other.kind;
     match ranged.kind {
-        0x0b | 0x25 => kind == 0x16,
-        0x0c => kind == 0x53,
-        0x0d => kind == 0x17,
-        0x68 | 0x6e | 0x72 => {
+        K::LONGBOW | K::GREATBOW => kind == K::ARROW,
+        K::CROSSBOW => kind == K::QUARREL,
+        K::SLING => kind == K::SLING_STONE,
+        K::POWER_GLOVE | K::PHASER | K::MUSKET => {
             (u8::from(other.class) > u8::from(EquipClass::RangedWeapon)
                 || ranged.reach == other.reach)
                 && loaded_by(ranged.kind).is_none_or(|loads| loads == kind)
         }
-        OMNIGUN => {
-            let thrown = other.class == EquipClass::ThrownWeapon && kind == 0;
+        K::OMNIGUN => {
+            let dagger = other.class == EquipClass::ThrownWeapon && kind == K::DAGGER;
             match ranged.id.0 {
-                599 => matches!(kind, 0x17 | 0x71),
-                600 | 601 => matches!(kind, 0x17 | 0x71 | 0x70),
-                602..=605 => matches!(kind, 0x17 | 0x71 | 0x70 | 0x15 | 0x7e) || thrown,
+                599 => matches!(kind, K::SLING_STONE | K::POWDER_SHOT),
+                600 | 601 => matches!(kind, K::SLING_STONE | K::POWDER_SHOT | K::DARTS),
+                602..=605 => {
+                    matches!(
+                        kind,
+                        K::SLING_STONE | K::POWDER_SHOT | K::DARTS | K::SHURIKEN | K::SHURIKEN_2
+                    ) || dagger
+                }
                 606..=610 => {
-                    matches!(kind, 0x17 | 0x71 | 0x70 | 0x15 | 0x7e | 0x16 | 0x53) || thrown
+                    matches!(
+                        kind,
+                        K::SLING_STONE
+                            | K::POWDER_SHOT
+                            | K::DARTS
+                            | K::SHURIKEN
+                            | K::SHURIKEN_2
+                            | K::ARROW
+                            | K::QUARREL
+                    ) || dagger
                 }
                 _ => false,
             }
@@ -1542,7 +1560,7 @@ mod tests {
     fn ammunition_loads_its_gun_up_to_what_it_holds() {
         let gun = ItemDefinition {
             id: ItemId(0),
-            kind: 114,
+            kind: ItemKind::MUSKET,
             class: EquipClass::RangedWeapon,
             quantity: QuantityKind::Shots,
             initial_quantity: crate::content::items::Dice { count: 0, sides: 0, base: 10 },
@@ -1550,7 +1568,7 @@ mod tests {
         };
         let clips = ItemDefinition {
             id: ItemId(1),
-            kind: 113,
+            kind: ItemKind::POWDER_SHOT,
             class: EquipClass::Ammunition,
             quantity: QuantityKind::Stack,
             stack_limit: 99,
@@ -1578,20 +1596,26 @@ mod tests {
     /// to fire; bows their arrows.
     #[test]
     fn guns_and_omnigun_tiers_hold_only_what_loads_them() {
-        let item =
-            |id: u16, kind: u16, class| ItemDefinition { id: ItemId(id), kind, class, ..default() };
-        let gun = item(0, 114, EquipClass::RangedWeapon);
-        let (clips, cells) =
-            (item(1, 113, EquipClass::Ammunition), item(2, 132, EquipClass::Ammunition));
-        assert!(can_hold_together(&gun, &clips) && can_hold_together(&clips, &gun));
-        assert!(!can_hold_together(&gun, &cells));
-        let arrows = item(3, 0x16, EquipClass::Ammunition);
+        let item = |id: u16, kind: ItemKind, class| ItemDefinition {
+            id: ItemId(id),
+            kind,
+            class,
+            ..default()
+        };
+        let musket = item(0, ItemKind::MUSKET, EquipClass::RangedWeapon);
+        let (shot, cells) = (
+            item(1, ItemKind::POWDER_SHOT, EquipClass::Ammunition),
+            item(2, ItemKind::CELL, EquipClass::Ammunition),
+        );
+        assert!(can_hold_together(&musket, &shot) && can_hold_together(&shot, &musket));
+        assert!(!can_hold_together(&musket, &cells));
+        let arrows = item(3, ItemKind::ARROW, EquipClass::Ammunition);
         let (first, last) = (
-            item(599, OMNIGUN, EquipClass::RangedWeapon),
-            item(610, OMNIGUN, EquipClass::RangedWeapon),
+            item(599, ItemKind::OMNIGUN, EquipClass::RangedWeapon),
+            item(610, ItemKind::OMNIGUN, EquipClass::RangedWeapon),
         );
         assert!(!can_hold_together(&first, &arrows) && can_hold_together(&last, &arrows));
-        assert!(can_hold_together(&item(4, 0x0b, EquipClass::RangedWeapon), &arrows));
+        assert!(can_hold_together(&item(4, ItemKind::LONGBOW, EquipClass::RangedWeapon), &arrows));
     }
 
     /// The party identifies an item when someone's Artifacts reaches its
@@ -1653,7 +1677,7 @@ mod tests {
         use bevy::ecs::system::RunSystemOnce;
         let gun = ItemDefinition {
             id: ItemId(0),
-            kind: 114,
+            kind: ItemKind::MUSKET,
             class: EquipClass::RangedWeapon,
             quantity: QuantityKind::Shots,
             initial_quantity: Dice { count: 0, sides: 0, base: 10 },
@@ -1661,7 +1685,7 @@ mod tests {
         };
         let cell = ItemDefinition {
             id: ItemId(1),
-            kind: 113,
+            kind: ItemKind::POWDER_SHOT,
             class: EquipClass::Ammunition,
             quantity: QuantityKind::Charges,
             ..default()

@@ -409,7 +409,7 @@ fn resized(current: u32, old: u32, new: u32) -> u32 {
 mod tests {
     use super::*;
     use crate::content::{
-        items::{ItemCatalog, ItemDefinition, ItemId},
+        items::{ItemCatalog, ItemDefinition, ItemId, ItemKind},
         spells::SpellDefinition,
     };
     use crate::game::{
@@ -605,7 +605,7 @@ mod tests {
             (0..=599)
                 .map(|id| ItemDefinition {
                     id: ItemId(id),
-                    kind: if id == 599 { crate::game::inventory::OMNIGUN } else { 0 },
+                    kind: if id == 599 { ItemKind::OMNIGUN } else { ItemKind::default() },
                     ..default()
                 })
                 .collect(),

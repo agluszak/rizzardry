@@ -98,15 +98,55 @@ pub struct Recipe {
     pub skill: Option<(Skill, u8)>,
 }
 
+/// What kind of thing an item is: retail's generic name index
+/// (`unidentified_name_index`), which picks its unidentified name, picture
+/// and model, and which a few rules single out. Retail has 147 kinds; only
+/// those rules name are named here.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ItemKind(pub u16);
+
+impl ItemKind {
+    pub const DAGGER: Self = Self(0x00);
+    pub const LONGBOW: Self = Self(0x0b);
+    pub const CROSSBOW: Self = Self(0x0c);
+    pub const SLING: Self = Self(0x0d);
+    pub const SHURIKEN: Self = Self(0x15);
+    pub const ARROW: Self = Self(0x16);
+    pub const SLING_STONE: Self = Self(0x17);
+    pub const GREATBOW: Self = Self(0x25);
+    pub const QUARREL: Self = Self(0x53);
+    pub const POWER_GLOVE: Self = Self(0x68);
+    pub const PHASER: Self = Self(0x6e);
+    pub const DARTS: Self = Self(0x70);
+    pub const POWDER_SHOT: Self = Self(0x71);
+    pub const MUSKET: Self = Self(0x72);
+    /// A second kind retail also names "Shuriken" (picture `shuriken2`).
+    pub const SHURIKEN_2: Self = Self(0x7e);
+    /// The Gadgeteer's omnigun, whose twelve tiers are items 599 to 610.
+    pub const OMNIGUN: Self = Self(0x83);
+    /// What loads the phaser and the power glove. Its generic name (string
+    /// 0x4d8) is not recovered; retail's model table calls it "UNDEFINED".
+    pub const CELL: Self = Self(0x84);
+    pub const ROCKET: Self = Self(0x8f);
+    pub const ROCKET_LAUNCHER: Self = Self(0x90);
+    /// A gun past retail's picture and model tables, loaded by
+    /// [`Self::GUN_0X91_LOAD`]. Its generic name (string 0x4e5) is not
+    /// recovered.
+    pub const GUN_0X91: Self = Self(0x91);
+    /// What loads [`Self::GUN_0X91`]; its generic name (string 0x4e6) is not
+    /// recovered.
+    pub const GUN_0X91_LOAD: Self = Self(0x92);
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct ItemDefinition {
     pub id: ItemId,
     pub name: String,
     /// What it is called before it is identified ("Dagger (Unidentified)").
     pub unidentified_name: String,
-    /// What kind of thing it is (retail's generic name index): which
-    /// unidentified name it shows, and what it may be held or loaded with.
-    pub kind: u16,
+    /// What kind of thing it is: which unidentified name it shows, and what
+    /// it may be held or loaded with.
+    pub kind: ItemKind,
     /// Generic kind without the unidentified annotation (for assay/type labels).
     pub kind_name: String,
     /// The item's picture, a retail path such as `data/items/dagger.sti`.
