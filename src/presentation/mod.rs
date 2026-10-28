@@ -121,6 +121,7 @@ impl Plugin for PresentationPlugin {
                 retail_controls::paint_controls,
                 retail_controls::paint_focus,
                 screen_art::render_pictures,
+                screen_art::render_tiled_pictures,
                 screen_art::render_text,
             )
                 .chain()
