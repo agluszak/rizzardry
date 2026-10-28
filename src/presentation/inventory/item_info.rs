@@ -174,7 +174,7 @@ pub(super) fn refresh(
             Value::AverageArmour => {
                 (armour.as_ref().map_or(String::new(), |armour| armour.average().to_string()), None)
             }
-            Value::Attribute(attribute) => (character.attribute(attribute).to_string(), None),
+            Value::Attribute(attribute) => (stats.attribute(attribute).to_string(), None),
         };
         if text.value != value {
             text.value = value;
