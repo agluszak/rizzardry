@@ -828,6 +828,9 @@ pub fn run_battle(
 ) {
     let Some((entity, mut battle, combatants)) = battle.map(Single::into_inner) else { return };
     let combatants = combatants.map_or(&[][..], Combatants::entities);
+    if content.spells().is_none() && roster.iter().any(|actor| magic.points.contains(actor)) {
+        return;
+    }
     let (mut members, mut damage) = actors.p0();
     // Content and the party's body exist whenever a level is played.
     let Some(species) = content.species() else { return };
@@ -1288,11 +1291,15 @@ fn end_round(
     for actor in roster.iter() {
         let Ok((profile, mut vitals, ..)) = members.get_mut(actor) else { continue };
         let mut pool = magic.points.get_mut(actor).ok();
-        let mana = pool
-            .as_mut()
-            .zip(magic.context.content.spells())
-            .map(|((known, pool), spells)| (*known, &mut **pool, spells));
-        recovery::pass(&profile, &mut vitals, ticks, recovery::Pace::Fighting, mana);
+        let mana = pool.as_mut().map(|(known, pool)| (*known, &mut **pool));
+        recovery::pass(
+            &profile,
+            &mut vitals,
+            ticks,
+            recovery::Pace::Fighting,
+            mana,
+            magic.context.content.spells(),
+        );
     }
     // AdvanceTimedEffects applies offensive slots after personal aging and
     // before expiring the slots. Their final remaining turn still pulses.
@@ -1834,6 +1841,31 @@ mod tests {
         world.run_system_cached(crate::game::magic::deliver_spells).unwrap();
         world.flush();
         world.resource_mut::<Messages<MagicNews>>().drain().collect()
+    }
+
+    #[test]
+    fn accepted_missiles_wait_for_monster_damage_services_without_spending_rng() {
+        let (mut app, [caster, _]) = round_app(true);
+        let monster = order_spell(&mut app, caster, energy_blast());
+        let loot = app.world_mut().remove_resource::<Assets<LootTables>>().unwrap();
+        let rng = app.world().resource::<GameRng>().clone();
+        let health = app.world().get::<Monster>(monster).unwrap().hp;
+        let news = land(
+            &mut app,
+            vec![missile(
+                caster,
+                crate::content::spells::SpellId::ENERGY_BLAST,
+                Victim::Monster(monster),
+            )],
+        );
+        assert!(news.is_empty());
+        assert_eq!(app.world().resource::<GameRng>(), &rng);
+        assert_eq!(app.world().get::<Monster>(monster).unwrap().hp, health);
+        assert_eq!(app.world_mut().query::<&casting::SpellInFlight>().iter(app.world()).count(), 1);
+        app.insert_resource(loot);
+        assert!(matches!(land(&mut app, vec![]).as_slice(), [MagicNews::Landed { .. }]));
+        assert!(app.world().get::<Monster>(monster).unwrap().hp < health);
+        assert_eq!(app.world_mut().query::<&casting::SpellInFlight>().iter(app.world()).count(), 0);
     }
 
     fn missile(
@@ -2716,9 +2748,13 @@ mod tests {
             characters::Realm,
             spells::{SpellDefinition, SpellId, Spellbook, Targeting, Usable},
         };
-        for cloud in
-            [SpellId::ACID_BOMB, SpellId::FIRESTORM, SpellId::TOXIC_CLOUD, SpellId::DRAINING_CLOUD]
-        {
+        for (cloud, shielded) in [
+            (SpellId::ACID_BOMB, false),
+            (SpellId::FIRESTORM, false),
+            (SpellId::TOXIC_CLOUD, false),
+            (SpellId::DRAINING_CLOUD, false),
+            (SpellId::DRAINING_CLOUD, true),
+        ] {
             let (mut app, [caster, _]) = round_app(false);
             let monster = order_spell(
                 &mut app,
@@ -2742,6 +2778,17 @@ mod tests {
                 let mut target = app.world_mut().get_mut::<Monster>(monster).unwrap();
                 let effect = target.enchantments.0.iter_mut().find(|e| e.spell == cloud).unwrap();
                 effect.turns = 1;
+                target.stamina = 100;
+                target.max_stamina = 100;
+                if shielded {
+                    target.enchantments.apply(crate::game::magic::enchantments::Enchantment {
+                        spell: SpellId::GUARDIAN_ANGEL,
+                        power: 7,
+                        boost: 0,
+                        turns: 9,
+                        absorption: u32::MAX,
+                    });
+                }
             }
             app.world_mut().resource_mut::<Messages<MagicNews>>().clear();
             finish_round(&mut app);
@@ -2752,6 +2799,10 @@ mod tests {
             assert!(app.world().get::<Monster>(monster).unwrap().enchantments.get(cloud).is_none());
             if cloud == SpellId::DRAINING_CLOUD {
                 assert_eq!(app.world().get::<Monster>(monster).unwrap().mana, 18);
+                assert_eq!(app.world().get::<Monster>(monster).unwrap().stamina, 95);
+                if shielded {
+                    assert_eq!(app.world().get::<Monster>(monster).unwrap().hp, 10000);
+                }
             }
             app.world_mut().entity_mut(caster).insert(Order::Defend);
             app.world_mut().write_message(StartRound);

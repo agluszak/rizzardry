@@ -7,10 +7,10 @@
 //! item spends a use (see `game::magic::casting`).
 
 pub mod casting;
-pub(crate) mod devices;
 pub mod effects;
 pub mod enchantments;
 pub mod portals;
+pub(crate) mod sources;
 pub(crate) mod traps;
 pub(crate) mod utilities;
 
@@ -495,6 +495,9 @@ impl MagicContext<'_, '_> {
         monsters: &mut MonsterDamage,
         act: impl FnOnce(&mut Field) -> R,
     ) -> Result<R, casting::Refusal> {
+        if self.content.species().is_none() || !monsters.ready() {
+            return Err(casting::Refusal::MissingContent);
+        }
         self.field(members, monsters, |field, _| act(field))
     }
 
@@ -508,7 +511,7 @@ impl MagicContext<'_, '_> {
         let party_level = crate::game::party::average_level(
             members.iter_many(self.roster.iter()).matched().map(|(c, ..)| c.level),
         );
-        let (Some(items), Some(species)) = (self.content.items(), self.content.species()) else {
+        let Some(items) = self.content.items() else {
             return Err(casting::Refusal::MissingContent);
         };
         let mut field = Field {
@@ -519,7 +522,7 @@ impl MagicContext<'_, '_> {
             formation: &mut self.formation,
             party_damage: &mut self.party_damage,
             items,
-            species,
+            species: self.content.species(),
             spells: self.content.spells(),
             resistances: &self.resistances,
             party_level,
@@ -643,6 +646,14 @@ pub fn deliver_spells(
     mut commands: Commands,
 ) {
     if flights.is_empty() {
+        return;
+    }
+    // Keep accepted impacts pending while mandatory assets/services are absent.
+    if context.content.spells().is_none()
+        || (flights.iter().any(|(_, flight)| {
+            flight.victims.iter().any(|victim| matches!(victim, Victim::Monster(_)))
+        }) && !monsters.ready())
+    {
         return;
     }
     // Every impact due in this update, in the order they arrive.

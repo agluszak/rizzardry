@@ -7,7 +7,8 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use super::{
-    Device, DialState, DoorState, FountainState, LevelState, PositionedDevices, TriggerState,
+    Device, DialState, DoorState, FountainState, LevelState, LightActivation, PositionedDevices,
+    TriggerState,
 };
 use crate::content::items::LootTables;
 use crate::content::level::{LevelDefinition, TriggerAction, VariableName};
@@ -22,7 +23,7 @@ pub struct TriggerMemory {
     devices: HashMap<usize, KeptDevice>,
     variables: HashMap<VariableName, bool>,
     ambient_sounds: HashMap<String, bool>,
-    lights: HashMap<String, bool>,
+    lights: LightActivation,
 }
 
 #[derive(Debug)]
@@ -55,7 +56,12 @@ pub struct DeviceRecords<'w, 's> {
 
 impl DeviceRecords<'_, '_> {
     /// Remember the devices among what a level owns.
-    pub fn remember(&self, owned: &[Entity], state: &LevelState) -> TriggerMemory {
+    pub fn remember(
+        &self,
+        owned: &[Entity],
+        state: &LevelState,
+        lights: &LightActivation,
+    ) -> TriggerMemory {
         let devices = self
             .devices
             .iter_many(owned)
@@ -78,7 +84,7 @@ impl DeviceRecords<'_, '_> {
             devices,
             variables: state.variables.clone(),
             ambient_sounds: state.ambient_sounds.clone(),
-            lights: state.lights.clone(),
+            lights: lights.clone(),
         }
     }
 }
@@ -107,10 +113,12 @@ pub fn spawn_devices(
         .map(|prop| prop.unwrap_or_else(|| commands.spawn(LevelOwned(level)).id()))
         .collect();
     let mut state = LevelState::default();
+    let lights = memory
+        .as_mut()
+        .map_or_else(LightActivation::default, |memory| std::mem::take(&mut memory.lights));
     if let Some(memory) = &mut memory {
         state.variables = std::mem::take(&mut memory.variables);
         state.ambient_sounds = std::mem::take(&mut memory.ambient_sounds);
-        state.lights = std::mem::take(&mut memory.lights);
     } else {
         for definition in &geometry.triggers {
             if let (Some((name, _)), Some(value)) =
@@ -195,7 +203,7 @@ pub fn spawn_devices(
             positioned.0.push(devices[index]);
         }
     }
-    commands.entity(level).insert((state, positioned));
+    commands.entity(level).insert((state, lights, positioned));
     script.bind(commands, geometry, &devices);
     devices
 }

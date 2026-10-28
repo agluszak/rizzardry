@@ -609,10 +609,16 @@ pub fn perform(
     }
     // Instruments can pay fatigue while finding power, so validate the target
     // first. Radius changes may widen victims but cannot rescue an invalid aim.
-    capture(caster, spell, power.min(MAX_POWER), choice.aim, situation, forced_self)?;
+    let (targets, _) =
+        capture(caster, spell, power.min(MAX_POWER), choice.aim, situation, forced_self)?;
+    if targets.iter().any(|victim| matches!(victim, Victim::Monster(_)))
+        && (world.species.is_none() || !world.monsters.ready())
+    {
+        return Err(Refusal::MissingContent);
+    }
     let power = match &item {
         Some(use_) if matches!(use_.definition.use_type, UseType::Instrument | UseType::Gadget) => {
-            play(caster, &character, use_, spell, rng, world)?
+            play(caster, &character, use_, spell, rng, world.members)?
         }
         _ => power,
     };
@@ -655,7 +661,17 @@ pub fn perform(
         let (chance, quiet, strength) =
             attempt(&character, item.as_ref(), spell, cast_power, world.difficulty);
         let outcome = super::roll(rng, chance, spell, quiet);
-        pay(caster, spell, cast_power, item.as_ref(), points, rng, world, &mut report)?;
+        pay(
+            caster,
+            spell,
+            cast_power,
+            item.as_ref(),
+            points,
+            rng,
+            world.members,
+            world.inventory,
+            &mut report,
+        )?;
         let victims = match outcome {
             Outcome::Cast => victims,
             Outcome::Backfired => backfire_victims(caster, spell, situation),
@@ -714,7 +730,15 @@ pub fn perform(
         };
         // Practice follows what the cast did; a missile on its way counts.
         if outcome != Outcome::Fizzled && (flies || effects::affected(&landed)) {
-            practise(caster, &character, spell, cast_power, item.as_ref(), rng, world);
+            world.improved.extend(practise(
+                caster,
+                &character,
+                spell,
+                cast_power,
+                item.as_ref(),
+                rng,
+                world.members,
+            ));
         }
         if first {
             report.power = cast_power;
@@ -757,17 +781,13 @@ pub(crate) fn perform_utility(
     spells: &SpellCatalog,
     points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
     rng: &mut GameRng,
-    world: &mut Field,
+    members: &mut crate::game::party::Members,
+    inventory: &mut PartyInventory,
+    items: &ItemCatalog,
+    difficulty: Difficulty,
 ) -> Result<(Report, Strength), Refusal> {
-    let Prepared { character, spell, power, item, .. } = prepare_source(
-        caster,
-        source,
-        false,
-        (spells, world.items),
-        world.members,
-        points,
-        world.inventory,
-    )?;
+    let Prepared { character, spell, power, item, .. } =
+        prepare_source(caster, source, false, (spells, items), members, points, inventory)?;
     if !(matches!(context, UseContext::Lock | UseContext::Trap)
         || super::utilities::spell(spell.id))
         || !usable_now(spell, context)
@@ -779,7 +799,7 @@ pub(crate) fn perform_utility(
     }
     let power = match &item {
         Some(use_) if matches!(use_.definition.use_type, UseType::Instrument | UseType::Gadget) => {
-            play(caster, &character, use_, spell, rng, world)?
+            play(caster, &character, use_, spell, rng, members)?
         }
         Some(_) => power,
         None => power
@@ -789,8 +809,7 @@ pub(crate) fn perform_utility(
     if power == 0 {
         return Err(Refusal::NoSpellPoints);
     }
-    let (chance, quiet, strength) =
-        attempt(&character, item.as_ref(), spell, power, world.difficulty);
+    let (chance, quiet, strength) = attempt(&character, item.as_ref(), spell, power, difficulty);
     let outcome = super::roll(rng, chance, spell, quiet);
     let mut report = Report {
         caster,
@@ -802,10 +821,9 @@ pub(crate) fn perform_utility(
         improved: Vec::new(),
         repeats: 0,
     };
-    pay(caster, spell, power, item.as_ref(), points, rng, world, &mut report)?;
+    pay(caster, spell, power, item.as_ref(), points, rng, members, inventory, &mut report)?;
     // Retail considers these utility spells affected even on a fizzle.
-    practise(caster, &character, spell, power, item.as_ref(), rng, world);
-    report.improved = std::mem::take(&mut world.improved);
+    report.improved.extend(practise(caster, &character, spell, power, item.as_ref(), rng, members));
     Ok((report, strength))
 }
 
@@ -841,7 +859,7 @@ fn play(
     use_: &ItemUse,
     spell: &SpellDefinition,
     rng: &mut GameRng,
-    world: &mut Field,
+    members: &mut crate::game::party::Members,
 ) -> Result<u8, Refusal> {
     let mut power = MAX_POWER;
     while power > 0
@@ -854,8 +872,7 @@ fn play(
         power -= 1;
         chance = chance.saturating_sub(7);
     }
-    let (mut profile, mut vitals, ..) =
-        world.members.get_mut(caster).map_err(|_| Refusal::CannotAct)?;
+    let (mut profile, mut vitals, ..) = members.get_mut(caster).map_err(|_| Refusal::CannotAct)?;
     vitals.spend_stamina(u32::from(spell.level) * 8 + 20);
     if power == 0 {
         // The refusal carries the practice, since no report follows it.
@@ -875,7 +892,8 @@ fn pay(
     item: Option<&ItemUse>,
     points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
     rng: &mut GameRng,
-    world: &mut Field,
+    members: &mut crate::game::party::Members,
+    inventory: &mut PartyInventory,
     report: &mut Report,
 ) -> Result<(), Refusal> {
     let fatigue = match item {
@@ -887,9 +905,8 @@ fn pay(
         }
         Some(use_) => {
             let consumed = match use_.owner {
-                ItemOwner::Pool => world.inventory.pool.consume_use(use_.id, use_.definition),
-                ItemOwner::Member(owner) => world
-                    .members
+                ItemOwner::Pool => inventory.pool.consume_use(use_.id, use_.definition),
+                ItemOwner::Member(owner) => members
                     .get_mut(owner)
                     .map_err(|_| Refusal::NoItem)?
                     .2
@@ -898,7 +915,7 @@ fn pay(
             if !consumed {
                 return Err(Refusal::NoItem);
             }
-            let (_, vitals, ..) = world.members.get(caster).map_err(|_| Refusal::CannotAct)?;
+            let (_, vitals, ..) = members.get(caster).map_err(|_| Refusal::CannotAct)?;
             report.item = Some(use_.definition.name.clone());
             match use_.definition.use_type {
                 UseType::Thrown => 10,
@@ -912,8 +929,7 @@ fn pay(
         }
     };
     // Action fatigue weighs more under load (retail `FatigueCharacter`).
-    let (_, mut vitals, _, burden) =
-        world.members.get_mut(caster).map_err(|_| Refusal::CannotAct)?;
+    let (_, mut vitals, _, burden) = members.get_mut(caster).map_err(|_| Refusal::CannotAct)?;
     let slowed = vitals.has(Condition::Slowed);
     let hasted = vitals.enchantments.get(crate::content::spells::SpellId::HASTE).is_some();
     vitals.spend_stamina(burden.load.scale_fatigue(fatigue, slowed, hasted));
@@ -930,8 +946,9 @@ fn practise(
     power: u8,
     item: Option<&ItemUse>,
     rng: &mut GameRng,
-    world: &mut Field,
-) {
+    members: &mut crate::game::party::Members,
+) -> Vec<(Entity, Skill)> {
+    let mut improved = Vec::new();
     let practice: Vec<(Skill, u32)> = match item {
         None => {
             let index = u32::from(spell.level) + u32::from(power);
@@ -951,13 +968,14 @@ fn practise(
             .map(|skill| vec![(skill, u32::from(spell.level) + u32::from(power) / 2)])
             .unwrap_or_default(),
     };
-    if let Ok((mut profile, ..)) = world.members.get_mut(caster) {
+    if let Ok((mut profile, ..)) = members.get_mut(caster) {
         for (skill, usage) in practice {
             if profile.practise(skill, usage, rng) {
-                world.improved.push((caster, skill));
+                improved.push((caster, skill));
             }
         }
     }
+    improved
 }
 
 /// The spells and items an actor could use: what menus offer. Execution

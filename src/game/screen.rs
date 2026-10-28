@@ -39,22 +39,34 @@ pub struct Freedom<'w, 's> {
 }
 
 impl Freedom<'_, '_> {
-    pub fn free(&self) -> bool {
+    fn world_unblocked(&self) -> bool {
         !self.levels.is_empty()
             && self.entering.is_empty()
             && *self.screen.get() == Screen::World
             && matches!(*self.next, NextState::Unchanged | NextState::Pending(Screen::World))
-            && self.camp.is_none()
             && self.conversations.is_empty()
             && self.questions.is_empty()
             && self.flights.is_empty()
             && self.interaction.is_empty()
+    }
+
+    pub fn free(&self) -> bool {
+        self.world_unblocked() && self.camp.is_none()
+    }
+    pub fn utility_magic(&self) -> bool {
+        self.world_unblocked()
     }
 }
 
 /// Run condition: the party may move, use, take and rest.
 pub fn party_free(freedom: Freedom) -> bool {
     freedom.free()
+}
+
+/// Utility magic is available while camping, with ordinary transition and
+/// interaction exclusions. Spell/source validation still decides usability.
+pub fn utility_magic(freedom: Freedom) -> bool {
+    freedom.utility_magic()
 }
 
 #[cfg(test)]

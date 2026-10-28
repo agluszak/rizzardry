@@ -55,11 +55,15 @@ pub struct PositionedDevices(Vec<Entity>);
 pub struct LevelState {
     variables: HashMap<VariableName, bool>,
     ambient_sounds: HashMap<String, bool>,
-    lights: HashMap<String, bool>,
     previous_eye: Option<Vec3>,
 }
 
-impl LevelState {
+/// Current named light activation, with its own rendering change boundary.
+#[derive(Component, Clone, Debug, Default)]
+pub struct LightActivation {
+    lights: HashMap<String, bool>,
+}
+impl LightActivation {
     pub fn light_enabled(&self, name: &str, initial: bool) -> bool {
         self.lights
             .get(name)
@@ -72,6 +76,9 @@ impl LevelState {
             })
             .unwrap_or(initial)
     }
+}
+
+impl LevelState {
     pub fn ambient_sound_enabled(&self, name: &str) -> bool {
         self.ambient_sounds.get(&name.to_uppercase()).copied().unwrap_or(true)
     }
@@ -239,7 +246,9 @@ fn drink_fountain(
                     let maximum = profile.stats(&member.enchantments).max_hp();
                     member.heal(amount, maximum);
                 }
-                member.conditions.clear();
+                member.conditions.retain(|(condition, _)| {
+                    *condition == crate::game::characters::Condition::Infatuated
+                });
             }
             Restores::Magic => {
                 let (learned, mut points) = points.unwrap();
@@ -664,7 +673,7 @@ fn execute(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth:
             if sources.is_empty() {
                 return Ran::Declined;
             }
-            let mut state = world.get_mut::<LevelState>(level).unwrap();
+            let mut state = world.get_mut::<LightActivation>(level).unwrap();
             for (name, initial) in sources {
                 let enabled = state.light_enabled(name, *initial);
                 let next = match change {

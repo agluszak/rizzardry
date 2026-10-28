@@ -142,6 +142,11 @@ pub(crate) fn pass_time(
     if battle.is_some() {
         return;
     }
+    // No game-time transition commits until every caster's coupled mana and
+    // personal expiry operation has its mandatory spell definitions.
+    if content.spells().is_none() && roster.iter().any(|actor| points.contains(actor)) {
+        return;
+    }
     let racing = camp.as_ref().is_some_and(|c| c.racing());
     let ticks =
         clock.advance_real(time.delta(), if racing { CAMPING_RATE } else { EXPLORATION_RATE });
@@ -170,11 +175,8 @@ pub(crate) fn pass_time(
         for actor in roster.iter() {
             let Ok((profile, mut vitals)) = members.get_mut(actor) else { continue };
             let mut pool = points.get_mut(actor).ok().filter(|_| ticks.aging > 0);
-            let magic = pool
-                .as_mut()
-                .zip(content.spells())
-                .map(|((known, pool), spells)| (*known, &mut **pool, spells));
-            recovery::pass(profile, &mut vitals, ticks, pace, magic);
+            let magic = pool.as_mut().map(|(known, pool)| (*known, &mut **pool));
+            recovery::pass(profile, &mut vitals, ticks, pace, magic, content.spells());
         }
         if pass > 0 {
             if !enchantments.0.0.is_empty() {
@@ -275,6 +277,20 @@ mod pass_time_tests {
             mana.current[Realm::Divine] -= 2;
             let actor = app.world_mut().spawn((profile, vitals, learned, mana)).id();
             crate::game::party::roster::test_party(app.world_mut(), &[actor]);
+            let data = app.world_mut().remove_resource::<GameData>().unwrap();
+            let before = app.world().get::<SpellPoints>(actor).unwrap().clone();
+            app.update();
+            assert_eq!(app.world().get::<SpellPoints>(actor).unwrap(), &before);
+            assert!(
+                app.world()
+                    .get::<Vitals>(actor)
+                    .unwrap()
+                    .enchantments
+                    .get(SpellId::SUPERMAN)
+                    .is_some()
+            );
+            assert_eq!(app.world().resource::<GameClock>().ms, 0);
+            app.insert_resource(data);
             for _ in 0..updates {
                 app.update();
             }

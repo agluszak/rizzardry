@@ -113,7 +113,7 @@ pub fn light_world_items(
     levels: Query<(
         Entity,
         &LevelAppearance,
-        Option<Ref<crate::game::world::triggers::LevelState>>,
+        Option<Ref<crate::game::world::triggers::LightActivation>>,
     )>,
     geometry: Res<Assets<LevelGeometry>>,
     spatial: SpatialQuery,

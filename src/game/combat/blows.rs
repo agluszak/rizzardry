@@ -194,7 +194,7 @@ fn monster_defence<'a>(
     fight: &Fight,
     monster: Entity,
 ) -> Option<Defence<'a>> {
-    let species = field.species;
+    let species = field.species.expect("physical blows preflight monster content");
     let (body, ..) = field.monsters.monsters().get(monster).ok()?;
     if body.is_dead() || !field.monsters.active(monster) {
         return None;
@@ -292,7 +292,7 @@ pub(super) fn melee_target<'a>(
     fight: &Fight,
 ) -> Option<(Entity, &'a Species)> {
     let formation = &**field.formation;
-    let species = field.species;
+    let species = field.species.expect("physical blows preflight monster content");
     fight
         .combatants
         .iter()
@@ -745,7 +745,7 @@ pub(super) fn monster_attacks(
     news: &mut MessageWriter<CombatNews>,
 ) -> bool {
     let (entity, turn) = battle.this_round.monsters[index];
-    let species = field.species;
+    let species = field.species.expect("physical blows preflight monster content");
     let difficulty = field.difficulty;
     let Ok((monster, at, walker, _)) = field.monsters.monsters().get(entity) else { return false };
     let Some(kind) = species.kind(monster.species) else { return false };

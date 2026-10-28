@@ -15,6 +15,7 @@ pub mod frontend;
 pub mod hover;
 pub mod inventory;
 pub mod journal;
+mod lighting;
 pub mod main_screen;
 pub mod monsters;
 mod morph_picking;
@@ -76,6 +77,7 @@ fn hold_exploration(
 impl Plugin for PresentationPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((
+            lighting::plugin,
             main_screen::MainScreenPlugin,
             conversation::ConversationViewPlugin,
             inventory::InventoryPlugin,

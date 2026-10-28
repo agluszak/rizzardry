@@ -256,7 +256,7 @@ pub fn light_monsters(
     levels: Query<(
         Entity,
         &LevelAppearance,
-        Option<Ref<crate::game::world::triggers::LevelState>>,
+        Option<Ref<crate::game::world::triggers::LightActivation>>,
     )>,
     geometry: Res<Assets<LevelGeometry>>,
     spatial: SpatialQuery,

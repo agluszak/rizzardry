@@ -674,7 +674,7 @@ pub fn cast_device(
         })?;
     }
     let (report, strength) =
-        crate::game::magic::devices::cast_source(world, actor, source, context)?;
+        crate::game::magic::sources::cast_source(world, actor, source, context)?;
     let outcome = report.outcome;
     let spell = report.spell;
     world.write_message(MagicNews::Done(report));

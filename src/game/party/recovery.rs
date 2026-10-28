@@ -58,23 +58,27 @@ pub fn pass(
     member: &mut Mut<Vitals>,
     ticks: Ticks,
     pace: Pace,
-    mut magic: Option<(&LearnedSpells, &mut SpellPoints, &SpellCatalog)>,
+    mut magic: Option<(&LearnedSpells, &mut SpellPoints)>,
+    spells: Option<&SpellCatalog>,
 ) {
+    if ticks.aging > 0 && magic.is_some() && spells.is_none() {
+        return;
+    }
     // GameTurnsPassedChar regenerates before aging personal enchantments.
     // Their expiry then recalculates ceilings and adjusts current points by
     // the difference. No render-frame refresh participates in either step.
-    let maximum = magic
-        .as_ref()
-        .map(|(known, _, spells)| max_points(&profile.stats(&member.enchantments), known, spells));
+    let maximum = magic.as_ref().zip(spells).map(|((known, _), spells)| {
+        max_points(&profile.stats(&member.enchantments), known, spells)
+    });
     if ticks.aging > 0
-        && let (Some((_, pool, _)), Some(maximum)) = (&mut magic, &maximum)
+        && let (Some((_, pool)), Some(maximum)) = (&mut magic, &maximum)
     {
         pool.recover(ticks.aging, recovery_scale(pace.health_scale()), maximum);
     }
     let vitals = member.bypass_change_detection();
     let before = vitals.clone();
     elapse(profile, vitals, ticks, pace);
-    if let (Some((known, pool, spells)), Some(maximum)) = (magic, maximum) {
+    if let (Some((known, pool)), Some(maximum), Some(spells)) = (magic, maximum, spells) {
         let after = max_points(&profile.stats(&vitals.enchantments), known, spells);
         pool.adjust_limits(&maximum, &after);
     }

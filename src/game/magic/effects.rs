@@ -282,7 +282,7 @@ pub struct Field<'a, 'm, 'ms, 'd, 'ds, 'f, 'p> {
     pub formation: &'a mut Mut<'f, Formation>,
     pub party_damage: &'a mut MessageWriter<'p, DamageApplied>,
     pub items: &'a ItemCatalog,
-    pub species: &'a MonsterCatalog,
+    pub species: Option<&'a MonsterCatalog>,
     pub spells: Option<&'a crate::content::spells::SpellCatalog>,
     pub resistances: &'a Query<'a, 'a, &'static Resistances>,
     /// What monster loot tables scale by.
@@ -383,7 +383,7 @@ fn target(
     match victim {
         Victim::Monster(monster) => {
             let (body, ..) = world.monsters.monsters().get(monster).ok()?;
-            let kind = world.species.kind(body.species)?;
+            let kind = world.species?.kind(body.species)?;
             Some(Target {
                 level: u32::from(kind.level),
                 resistance: (i32::from(kind.resistances[realm])
@@ -445,15 +445,25 @@ fn damage(
     rolled: u32,
     against: u32,
 ) -> Option<Effect> {
-    let target = target(world, victim, realm, None)?;
-    if target.dead {
-        return None;
-    }
-    let amount = resist(rng, rolled, target.resistance, target.level, against);
+    let amount = resisted_magnitude(rng, world, victim, realm, rolled, against)?;
     if amount == 0 {
         return Some(Effect::Resisted { victim });
     }
     hurt(rng, world, victim, amount)
+}
+
+/// The post-resistance magnitude remains a transaction input, independent
+/// of absorption, overkill and the HP outcome.
+fn resisted_magnitude(
+    rng: &mut GameRng,
+    world: &Field,
+    victim: Victim,
+    realm: Realm,
+    rolled: u32,
+    against: u32,
+) -> Option<u32> {
+    let target = target(world, victim, realm, None).filter(|target| !target.dead)?;
+    Some(resist(rng, rolled, target.resistance, target.level, against))
 }
 
 /// Take `amount` health from a victim; a member who survives may wake.
@@ -590,7 +600,7 @@ fn afflict(
         Victim::Monster(monster) => {
             condition.is_none() && {
                 let (body, ..) = world.monsters.monsters().get(monster).ok()?;
-                world.species.kind(body.species)?.death_immune
+                world.species?.kind(body.species)?.death_immune
             }
         }
         Victim::Member(_) => false,
@@ -1162,7 +1172,7 @@ pub fn resolve(
         Kind::DamageUndead { banish } => each(&mut |v, rng, world| {
             let Victim::Monster(m) = v else { return None };
             let (body, ..) = world.monsters.monsters().get(m).ok()?;
-            let kind = world.species.kind(body.species)?.kind;
+            let kind = world.species?.kind(body.species)?.kind;
             if !(UNDEAD_KINDS.contains(&kind) || (banish && kind == BANISHED_KIND)) {
                 return Some(Effect::Nothing { victim: v });
             }
@@ -1504,7 +1514,7 @@ pub(crate) fn pulse_clouds(
                             .monsters()
                             .get(actor)
                             .ok()
-                            .and_then(|(body, ..)| world.species.kind(body.species))
+                            .and_then(|(body, ..)| world.species?.kind(body.species))
                             .is_none_or(|kind| kind.death_immune),
                         Victim::Member(_) => false,
                     };
@@ -1519,10 +1529,17 @@ pub(crate) fn pulse_clouds(
                     landed.extend(result);
                 } else {
                     let amount = magnitude(rng, spell.dice, strength);
-                    let hit = damage(rng, world, victim, realm, amount, strength.against);
-                    if id == SpellId::DRAINING_CLOUD
-                        && let Some(Effect::Damaged { amount, .. }) = hit
-                    {
+                    let Some(amount) =
+                        resisted_magnitude(rng, world, victim, realm, amount, strength.against)
+                    else {
+                        continue;
+                    };
+                    let hit = if amount == 0 {
+                        Some(Effect::Resisted { victim })
+                    } else {
+                        hurt(rng, world, victim, amount)
+                    };
+                    if id == SpellId::DRAINING_CLOUD && amount > 0 {
                         match victim {
                             Victim::Member(member) => {
                                 if let Ok((_, mut mana)) = points.get_mut(member) {

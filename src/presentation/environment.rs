@@ -33,7 +33,7 @@ pub(super) fn spell_light(
 /// Change from the immutable rest lighting; activation belongs to the level.
 pub(super) fn light_delta(
     lighting: &crate::content::level::LevelLighting,
-    state: Option<&crate::game::world::triggers::LevelState>,
+    state: Option<&crate::game::world::triggers::LightActivation>,
     at: Vec3,
     normal: Option<Vec3>,
     compiled: bool,
@@ -130,29 +130,18 @@ pub struct AppliedEnvironment(AssetId<LevelGeometry>, u8);
 /// with the phase's sky light.
 pub fn apply_environment(
     clock: Res<GameClock>,
-    party: Query<
-        (&avian3d::prelude::Position, Ref<crate::game::magic::enchantments::PartyEffects>),
-        With<crate::game::party::body::PartyBody>,
-    >,
-    levels: Query<(Ref<LevelAppearance>, Option<Ref<crate::game::world::triggers::LevelState>>)>,
+    levels: Query<Ref<LevelAppearance>>,
     geometry: Res<Assets<LevelGeometry>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut clear: ResMut<ClearColor>,
     mut camera: Query<(Entity, &mut Projection, Option<&AppliedEnvironment>), With<PartyCamera>>,
     mut commands: Commands,
 ) {
-    let Some((level, state)) = levels.iter().next() else { return };
+    let Some(level) = levels.iter().next() else { return };
     let Some(level_geometry) = geometry.get(&level.0) else { return };
     let Ok((camera, mut projection, applied)) = camera.single_mut() else { return };
     let phase = clock.phase();
-    let party = party.single().ok();
-    let torch = party.as_ref().and_then(|(at, effects)| {
-        spell_light(crate::game::party::body::PartyBody::eye(at), effects)
-    });
     if applied.is_some_and(|applied| applied.0 == level.0.id() && applied.1 == phase)
-        && torch.is_none()
-        && !party.as_ref().is_some_and(|(_, effects)| effects.is_changed())
-        && !state.as_ref().is_some_and(|s| s.is_changed())
         && !level.is_changed()
         && !geometry.is_changed()
     {
@@ -179,48 +168,11 @@ pub fn apply_environment(
     ));
 
     let sky = environment.sky_light(phase);
-    let parts = level_geometry.parts.iter().map(|part| (part, Transform::IDENTITY, true)).chain(
-        level_geometry
-            .props
-            .iter()
-            .flat_map(|prop| &prop.parts)
-            .flat_map(|part| part.meshes.iter().map(move |mesh| (mesh, part.transform, false))),
-    );
-    for (part, transform, compiled) in parts {
+    for part in level_geometry.parts.iter().chain(
+        level_geometry.props.iter().flat_map(|prop| &prop.parts).flat_map(|part| &part.meshes),
+    ) {
         if let Some(mut mesh) = meshes.get_mut(&part.mesh) {
-            let mut colours = part.lighting.colours(sky);
-            if let (
-                Some(bevy::mesh::VertexAttributeValues::Float32x3(positions)),
-                Some(bevy::mesh::VertexAttributeValues::Float32x3(normals)),
-            ) =
-                (mesh.attribute(Mesh::ATTRIBUTE_POSITION), mesh.attribute(Mesh::ATTRIBUTE_NORMAL))
-            {
-                for ((colour, position), normal) in colours.iter_mut().zip(positions).zip(normals) {
-                    let delta = light_delta(
-                        &level_geometry.lighting,
-                        state.as_deref(),
-                        transform.transform_point(Vec3::from(*position)),
-                        Some(
-                            transform
-                                .compute_affine()
-                                .transform_vector3(Vec3::from(*normal))
-                                .normalize_or(Vec3::Y),
-                        ),
-                        compiled,
-                    );
-                    let point = transform.transform_point(Vec3::from(*position));
-                    let normal = transform
-                        .compute_affine()
-                        .transform_vector3(Vec3::from(*normal))
-                        .normalize_or(Vec3::Y);
-                    let torch =
-                        torch.as_ref().map_or(Vec3::ZERO, |light| light.at(point, Some(normal)));
-                    for axis in 0..3 {
-                        colour[axis] += delta[axis] + torch[axis];
-                    }
-                }
-            }
-            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colours);
+            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, part.lighting.colours(sky));
         }
     }
 }
@@ -235,14 +187,36 @@ pub fn attach_level_visuals(
     mut commands: Commands,
     levels: Query<(Entity, &LevelAppearance, Option<&LevelEntities>), Without<LevelVisuals>>,
     geometry: Res<Assets<LevelGeometry>>,
+    source_materials: Res<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<super::lighting::SceneMaterial>>,
+    lights: Res<super::lighting::SceneLights>,
     props: Query<(&Prop, &Children)>,
     parts: Query<&PropPart>,
 ) {
     for (root, level, children) in &levels {
         let Some(geometry) = geometry.get(&level.0) else { continue };
+        // Do not mark a partially attached scene complete while material
+        // definitions are still arriving; retry attachment as one operation.
+        if geometry
+            .parts
+            .iter()
+            .chain(geometry.props.iter().flat_map(|prop| &prop.parts).flat_map(|part| &part.meshes))
+            .any(|part| source_materials.get(&part.surface.material).is_none())
+        {
+            continue;
+        }
         commands.entity(root).insert((LevelVisuals, Visibility::default()));
+        let mut instances = bevy::platform::collections::HashMap::new();
         for part in &geometry.parts {
-            commands.spawn((Mesh3d(part.mesh.clone()), part.surface.render(), ChildOf(root)));
+            if let Some(surface) = part.surface.dynamic_instance(
+                true,
+                &lights.0,
+                &mut instances,
+                &source_materials,
+                &mut materials,
+            ) {
+                commands.spawn((Mesh3d(part.mesh.clone()), surface, ChildOf(root)));
+            }
         }
         for &child in children.into_iter().flat_map(LevelEntities::entities) {
             let Ok((prop, prop_parts)) = props.get(child) else { continue };
@@ -269,11 +243,15 @@ pub fn attach_level_visuals(
                     entity
                 };
                 for mesh in &part.meshes {
-                    commands.spawn((
-                        Mesh3d(mesh.mesh.clone()),
-                        mesh.surface.render(),
-                        ChildOf(visual),
-                    ));
+                    if let Some(surface) = mesh.surface.dynamic_instance(
+                        false,
+                        &lights.0,
+                        &mut instances,
+                        &source_materials,
+                        &mut materials,
+                    ) {
+                        commands.spawn((Mesh3d(mesh.mesh.clone()), surface, ChildOf(visual)));
+                    }
                 }
             }
         }
@@ -359,6 +337,9 @@ mod tests {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, TransformPlugin))
             .init_resource::<Assets<LevelGeometry>>()
+            .init_resource::<Assets<StandardMaterial>>()
+            .init_resource::<Assets<super::super::lighting::SceneMaterial>>()
+            .insert_resource(super::super::lighting::SceneLights(default()))
             .add_systems(Update, attach_level_visuals)
             .add_systems(Update, crate::presentation::billboards::face_camera);
         let authored = Transform::from_xyz(3.0, 4.0, 5.0).with_rotation(Quat::from_rotation_y(0.7));

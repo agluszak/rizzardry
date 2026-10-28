@@ -232,10 +232,11 @@ impl Scenario {
     pub(crate) fn remember(&mut self) -> TriggerMemory {
         let mut records = SystemState::<DeviceRecords>::new(&mut self.world);
         let owned = self.world.get::<super::super::level::LevelEntities>(self.root).unwrap();
-        records
-            .get(&self.world)
-            .unwrap()
-            .remember(owned.entities(), self.world.get::<LevelState>(self.root).unwrap())
+        records.get(&self.world).unwrap().remember(
+            owned.entities(),
+            self.world.get::<LevelState>(self.root).unwrap(),
+            self.world.get::<LightActivation>(self.root).unwrap(),
+        )
     }
 }
 
@@ -1283,6 +1284,7 @@ fn restorative_fountains_require_spell_content_before_consuming_a_use() {
         let mut vitals = scene.world.get_mut::<Vitals>(member).unwrap();
         vitals.hp = 1;
         vitals.inflict(Condition::Poisoned, Lasting::Rounds(10));
+        vitals.inflict(Condition::Infatuated, Lasting::Indefinite);
     }
     assert!(!scene.run("TEMPLE").0);
     assert!(scene.world.get::<FountainState>(scene.device("TEMPLE")).unwrap().used.is_none());
@@ -1298,7 +1300,7 @@ fn restorative_fountains_require_spell_content_before_consuming_a_use() {
     assert!(scene.run("TEMPLE").0);
     let vitals = scene.world.get::<Vitals>(member).unwrap();
     assert_eq!(vitals.hp, 2, "out-of-range authored power becomes one, not seven");
-    assert!(vitals.conditions.is_empty());
+    assert_eq!(vitals.conditions, vec![(Condition::Infatuated, Lasting::Indefinite)]);
     assert!(!scene.run("TEMPLE").0);
 }
 
@@ -1367,11 +1369,11 @@ fn light_switches_use_authored_initial_state_and_survive_revisit() {
         &[],
         LevelScript::None,
     );
-    assert!(!scene.world.get::<LevelState>(scene.root).unwrap().light_enabled("laser", false));
+    assert!(!scene.world.get::<LightActivation>(scene.root).unwrap().light_enabled("laser", false));
     assert!(scene.run("TOGGLE").0);
     let memory = scene.remember();
     scene.visit(Some(memory));
-    assert!(scene.world.get::<LevelState>(scene.root).unwrap().light_enabled("laser", false));
+    assert!(scene.world.get::<LightActivation>(scene.root).unwrap().light_enabled("laser", false));
     assert!(scene.run("TOGGLE").0);
-    assert!(!scene.world.get::<LevelState>(scene.root).unwrap().light_enabled("laser", false));
+    assert!(!scene.world.get::<LightActivation>(scene.root).unwrap().light_enabled("laser", false));
 }

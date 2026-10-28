@@ -46,7 +46,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
     if id != SpellId::IDENTIFY_ITEM {
         return Err(Refusal::Unsupported);
     }
-    if !world.run_system_cached(crate::game::screen::party_free).unwrap_or(false)
+    if !world.run_system_cached(crate::game::screen::utility_magic).unwrap_or(false)
         || world.query::<&crate::game::combat::Battle>().iter(world).next().is_some()
     {
         return Err(Refusal::WrongTime);
@@ -86,7 +86,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
     } else {
         choice.source
     };
-    let (report, strength) = super::devices::cast_source(world, caster, source, UseContext::World)?;
+    let (report, strength) = super::sources::cast_source(world, caster, source, UseContext::World)?;
     // Retail ApplyIdentifyAttempt: power*3, adjusted by Power Cast. No item
     // roll or extra RNG draw; success reveals identity, spell and binding.
     let score = u32::from(strength.power) * 3;
@@ -197,6 +197,87 @@ mod tests {
         });
         scene.world.run_system_cached(super::super::accept_magic).unwrap();
         scene.world.resource_mut::<Messages<MagicNews>>().drain().last().unwrap()
+    }
+
+    #[test]
+    fn utility_casting_while_camped_keeps_the_world_input_gate_closed() {
+        let mut scene = scenario();
+        let caster = scene.members[0];
+        scene.world.insert_resource(crate::game::camp::Camp::Resting(
+            crate::game::camp::RestGoal::UntilAble,
+        ));
+        assert!(!scene.world.run_system_cached(crate::game::screen::party_free).unwrap());
+        assert!(
+            matches!(request(&mut scene, SpellId::SET_PORTAL, Aim::Member(caster)), MagicNews::Done(report) if report.outcome == super::super::Outcome::Cast)
+        );
+        assert!(scene.world.get::<Portal>(caster).is_some());
+        assert!(!scene.world.run_system_cached(crate::game::screen::party_free).unwrap());
+    }
+
+    #[test]
+    fn a_pool_potion_heals_without_monster_navigation_or_loot_services() {
+        use crate::content::{
+            items::{Dice, EquipClass, UseType},
+            spells::{ItemSpell, Targeting},
+        };
+        let mut scene = scenario();
+        let caster = scene.members[0];
+        let spells = scene.world.resource::<GameData>().spells.clone();
+        scene.world.resource_mut::<Assets<SpellCatalog>>().get_mut(&spells).unwrap().0[6] =
+            SpellDefinition {
+                id: SpellId::HEAL_WOUNDS,
+                realm: Some(Realm::Fire),
+                targeting: Targeting::Ally,
+                dice: Some(Dice { count: 0, sides: 0, base: 5 }),
+                ..default()
+            };
+        let potion = ItemDefinition {
+            id: ItemId(0),
+            class: EquipClass::Potion,
+            quantity: crate::content::items::QuantityKind::Stack,
+            use_type: UseType::Potion,
+            spell: Some(ItemSpell { spell: SpellId::HEAL_WOUNDS, power: 1 }),
+            ..default()
+        };
+        let stack = ItemStack::new(&potion, &mut ItemIds::default(), 1, true);
+        let id = stack.id;
+        let items =
+            scene.world.resource_mut::<Assets<ItemCatalog>>().add(ItemCatalog(vec![potion]));
+        scene.world.resource_mut::<GameData>().items = items;
+        scene.inventory().pool.stacks.push(stack);
+        scene.world.get_mut::<Vitals>(caster).unwrap().hp = 1;
+        scene.world.remove_resource::<crate::game::factions::Factions>();
+        scene.world.remove_resource::<Assets<MonsterCatalog>>();
+        scene.world.remove_resource::<Assets<crate::content::items::LootTables>>();
+        scene.world.remove_resource::<ItemIds>();
+        scene.world.write_message(MagicRequest {
+            caster,
+            choice: MagicChoice { source: Source::PoolItem(id), aim: Aim::Member(caster) },
+        });
+        scene.world.run_system_cached(super::super::accept_magic).unwrap();
+        assert_eq!(scene.world.get::<Vitals>(caster).unwrap().hp, 6);
+        assert!(scene.inventory().pool.stacks.is_empty());
+    }
+
+    #[test]
+    fn utility_payment_needs_no_monster_damage_or_loot_services() {
+        let mut scene = scenario();
+        let caster = scene.members[0];
+        let party = the_party(&mut scene.world).unwrap();
+        scene.world.remove_resource::<crate::game::factions::Factions>();
+        scene.world.remove_resource::<Assets<MonsterCatalog>>();
+        scene.world.remove_resource::<Assets<crate::content::items::LootTables>>();
+        scene.world.remove_resource::<ItemIds>();
+        scene.world.entity_mut(party).remove::<crate::game::party::formation::Formation>();
+        let (report, _) = super::super::sources::cast_source(
+            &mut scene.world,
+            caster,
+            Source::Spell { spell: SpellId::SET_PORTAL, power: 1 },
+            UseContext::World,
+        )
+        .unwrap();
+        assert_eq!(report.outcome, super::super::Outcome::Cast);
+        assert_eq!(scene.world.get::<SpellPoints>(caster).unwrap().current[Realm::Fire], 99);
     }
 
     #[test]

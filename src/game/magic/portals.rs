@@ -27,7 +27,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, source: Source) -> Result<
     if world.query::<&crate::game::combat::Battle>().iter(world).next().is_some() {
         return Err(Refusal::WrongTime);
     }
-    if !world.run_system_cached(crate::game::screen::party_free).unwrap_or(false) {
+    if !world.run_system_cached(crate::game::screen::utility_magic).unwrap_or(false) {
         return Err(Refusal::WrongTime);
     }
     let (level, path) = world
@@ -67,7 +67,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, source: Source) -> Result<
         }
         _ => None,
     };
-    let (report, _) = super::devices::cast_source(world, caster, source, UseContext::World)?;
+    let (report, _) = super::sources::cast_source(world, caster, source, UseContext::World)?;
     if report.outcome == Outcome::Cast {
         match saved {
             None => {

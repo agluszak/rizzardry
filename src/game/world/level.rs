@@ -295,6 +295,7 @@ impl KeptMonster {
 #[derive(SystemParam)]
 pub struct LevelContents<'w, 's> {
     devices: DeviceRecords<'w, 's>,
+    lights: Query<'w, 's, &'static super::triggers::LightActivation>,
     props: Query<'w, 's, (&'static Prop, &'static PropMotion)>,
     monsters: Query<
         'w,
@@ -317,7 +318,11 @@ impl LevelContents<'_, '_> {
     fn remember(&self, root: Entity, state: &LevelState, children: &[Entity]) -> LevelRecord {
         let notes = self.notes.get(root).ok();
         LevelRecord {
-            triggers: self.devices.remember(children, state),
+            triggers: self.devices.remember(
+                children,
+                state,
+                self.lights.get(root).expect("active levels own light state"),
+            ),
             prop_motion: self
                 .props
                 .iter_many(children)

@@ -61,13 +61,15 @@ pub struct MonsterDamage<'w, 's> {
     levels: Query<'w, 's, (), With<Level>>,
     commands: Commands<'w, 's>,
     content: crate::game::data::Content<'w>,
-    ids: ResMut<'w, ItemIds>,
-    factions: ResMut<'w, crate::game::factions::Factions>,
+    ids: Option<ResMut<'w, ItemIds>>,
+    factions: Option<ResMut<'w, crate::game::factions::Factions>>,
 }
 
 impl<'w, 's> MonsterDamage<'w, 's> {
     pub fn ready(&self) -> bool {
-        self.content.items().is_some()
+        self.ids.is_some()
+            && self.factions.is_some()
+            && self.content.items().is_some()
             && self.content.species().is_some()
             && self.content.loot().is_some()
     }
@@ -167,6 +169,10 @@ impl<'w, 's> MonsterDamage<'w, 's> {
             return Err(DamageRefusal::MissingContent);
         };
         let kind = species.kind(monster.species).ok_or(DamageRefusal::MissingContent)?;
+        let (Some(ids), Some(factions)) = (self.ids.as_deref_mut(), self.factions.as_deref_mut())
+        else {
+            return Err(DamageRefusal::MissingContent);
+        };
         if monster.is_dead() || amount == 0 {
             return Ok(DamageOutcome::default());
         }
@@ -216,7 +222,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         }
         self.commands.entity(target).remove_with_requires::<Crossing>();
         // The kill counts against its faction (retail `RecordFactionOffense`).
-        self.factions.record_offence(kind.faction, kind.npc.is_some());
+        factions.record_offence(kind.faction, kind.npc.is_some());
         let (found, gold) =
             crate::game::loot::monster_loot(kind, tables, catalog, party_level, rng);
         if gold > 0 {
@@ -225,7 +231,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         let items = found
             .into_iter()
             .filter_map(|id| catalog.get(id))
-            .map(|definition| make_item(definition, &mut self.ids, rng, false, false))
+            .map(|definition| make_item(definition, ids, rng, false, false))
             .collect();
         drop_loot(&mut self.commands, level, position, items, catalog);
         Ok(DamageOutcome { damage: lost, died: true, experience: kind.experience })

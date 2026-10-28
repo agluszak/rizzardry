@@ -8,6 +8,36 @@ impl Surface {
         (MeshMaterial3d(self.material.clone()), self.animation.clone())
     }
 
+    /// Per-level render instances share their source and bake policy. The
+    /// dynamic contribution is sampled at the live GPU world pose.
+    pub(super) fn dynamic_instance(
+        &self,
+        compiled: bool,
+        lights: &Handle<bevy::render::storage::ShaderBuffer>,
+        instances: &mut HashMap<
+            (AssetId<StandardMaterial>, bool),
+            Handle<super::lighting::SceneMaterial>,
+        >,
+        source: &Assets<StandardMaterial>,
+        materials: &mut Assets<super::lighting::SceneMaterial>,
+    ) -> Option<impl Bundle> {
+        let handle = match instances.get(&(self.material.id(), compiled)) {
+            Some(handle) => handle.clone(),
+            None => {
+                let handle = materials.add(super::lighting::SceneMaterial {
+                    base: source.get(&self.material)?.clone(),
+                    extension: super::lighting::SceneLighting {
+                        compiled: if compiled { Vec4::X } else { Vec4::ZERO },
+                        lights: lights.clone(),
+                    },
+                });
+                instances.insert((self.material.id(), compiled), handle.clone());
+                handle
+            }
+        };
+        Some((MeshMaterial3d(handle), self.animation.clone()))
+    }
+
     /// Each independently lit visual owns its materials, sharing textures/meshes.
     /// Matching parts within that visual reuse one instance of their source.
     pub fn lit_instance(
