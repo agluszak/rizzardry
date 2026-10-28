@@ -114,10 +114,11 @@ fn arm_confirmation_input(
 
 #[derive(SubStates, Default, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[source(Session = Session::MainMenu)]
-enum MenuPage {
+pub(super) enum MenuPage {
     #[default]
     Main,
     Credits,
+    Options,
 }
 
 const INK: Color = Color::srgb(0.035, 0.045, 0.06);
@@ -219,6 +220,7 @@ enum CreatorChoice {
 #[derive(Component, Clone, Copy, PartialEq)]
 enum Action {
     NewGame,
+    Options,
     Credits,
     Quit,
     Menu,
@@ -302,6 +304,9 @@ struct MenuDown;
 struct MenuStart;
 #[derive(InputAction)]
 #[action_output(bool)]
+struct MenuOptions;
+#[derive(InputAction)]
+#[action_output(bool)]
 struct MenuExit;
 
 fn main_menu(mut commands: Commands, assets: Res<AssetServer>, mut focus: ResMut<InputFocus>) {
@@ -318,7 +323,7 @@ fn main_menu(mut commands: Commands, assets: Res<AssetServer>, mut focus: ResMut
         (140., 187., 362., Some(Action::NewGame)),
         (204., 235., 233., None),
         (239., 284., 165., Some(Action::Credits)),
-        (234., 335., 175., None),
+        (234., 335., 175., Some(Action::Options)),
         (279., 423., 86., Some(Action::Quit)),
     ]
     .into_iter()
@@ -377,8 +382,10 @@ fn main_menu(mut commands: Commands, assets: Res<AssetServer>, mut focus: ResMut
             InputBindingAction::<MenuUp>::new() ActionSettings { consume_input: true, require_reset: true } Bindings [ Binding(KeyCode::ArrowUp) ]
             -- InputBindingAction::<MenuDown>::new() ActionSettings { consume_input: true, require_reset: true } Bindings [ Binding(KeyCode::ArrowDown) ]
             -- InputBindingAction::<MenuStart>::new() ActionSettings { consume_input: true, require_reset: true } Bindings [ Binding(KeyCode::KeyS) ]
+            -- InputBindingAction::<MenuOptions>::new() ActionSettings { consume_input: true, require_reset: true } Bindings [ Binding(KeyCode::KeyO) ]
             -- InputBindingAction::<MenuExit>::new() ActionSettings { consume_input: true, require_reset: true } Bindings [ Binding(KeyCode::Escape) Binding(KeyCode::KeyX) Binding(KeyCode::KeyE) ]
         ]
+        on(|_: On<Start<MenuOptions>>, mut menu: ResMut<NextState<MenuPage>>, mut screen: ResMut<NextState<crate::game::screen::Screen>>| {menu.set(MenuPage::Options);screen.set(crate::game::screen::Screen::Options);})
         on(menu_up)
         on(menu_down)
         on(|_: On<Start<MenuStart>>, mut next: ResMut<NextState<Session>>| { next.set(Session::Creation); })
@@ -489,6 +496,7 @@ fn activate(
     mut sessions: Query<(Entity, &mut Creation)>,
     mut next: ResMut<NextState<Session>>,
     mut menu: ResMut<NextState<MenuPage>>,
+    mut screen: ResMut<NextState<crate::game::screen::Screen>>,
     state: Res<State<Session>>,
     mut focus: ResMut<InputFocus>,
     mut exit: MessageWriter<AppExit>,
@@ -526,6 +534,10 @@ fn activate(
         Action::Quit => {
             exit.write(AppExit::Success);
             return;
+        }
+        Action::Options => {
+            menu.set(MenuPage::Options);
+            screen.set(crate::game::screen::Screen::Options);
         }
         Action::Credits => {
             focus.clear();
@@ -1039,6 +1051,7 @@ mod keyboard_tests {
         .init_asset::<Image>()
         .init_asset::<Font>()
         .init_state::<Session>()
+        .init_state::<crate::game::screen::Screen>()
         .add_message::<crate::game::world::level::LevelEntryFailed>()
         .init_asset::<crate::content::ui::SpriteSheet>()
         .init_asset::<Mesh>()

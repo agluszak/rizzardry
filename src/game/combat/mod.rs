@@ -492,7 +492,6 @@ pub fn start_battle(
     mut news: MessageWriter<CombatNews>,
     mut recognition: GroupRecognition,
     mut rng: ResMut<GameRng>,
-    factions: Res<crate::game::factions::Factions>,
 ) {
     if !battles.is_empty()
         || camp.is_some()
@@ -530,7 +529,7 @@ pub fn start_battle(
             let distance = distance_to_party(party_eye, monster, feet);
             // Authored disposition: some keep to themselves until the party
             // comes close or hurts them.
-            if !provoked && !factions.hostile_on_sight(kind, distance) {
+            if !provoked && !recognition.factions.hostile_on_sight(kind, distance) {
                 return false;
             }
             let eye = feet + Vec3::Y * monster.body.eye_height;
