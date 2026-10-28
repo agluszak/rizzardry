@@ -77,7 +77,7 @@ fn a_locked_chest_opens_once_picked_and_stays_unlocked() {
         [crate::content::characters::Skill::LocksAndTraps] = 100;
     // The lock answers instead of the chest: no "Nothing happens".
     let chest = level.device("CHEST");
-    assert!(!activate(&mut level.world, chest, Some(1.0)));
+    assert!(!activate(&mut level.world, chest, true));
     assert!(level.effects().is_empty());
     let Some(Work::Picking(picking)) = work(&level) else { panic!("picking") };
     assert_eq!(picking.tumblers.len(), 3);

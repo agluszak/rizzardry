@@ -138,10 +138,10 @@ pub fn portraits() -> impl SceneList {
     (0..8_usize).map(|slot| bsn! { @layer() SlotPortrait({slot}) }).collect::<Vec<_>>()
 }
 
-pub fn slots(closed: bool) -> impl SceneList {
+pub fn slots() -> impl SceneList {
     let slots: Vec<_> =
         (0..8_usize).map(|slot| bsn! { @layer() PartySlot { slot: {slot} } }).collect();
-    (slots, closed.then(|| bsn! { @layer() Splats }))
+    slots
 }
 
 /// A bar's fill, 0 to 45 pixels, at least 1 while any is left (retail
@@ -170,8 +170,8 @@ pub fn build_party_parts(
         let slot = overlay.map_or_else(|| portrait.unwrap().0, |slot| slot.slot);
         if portrait.is_some() && !built {
             commands.entity(root).insert(PartyWidgetsBuilt);
-            let back = assets.load("retail://data/main interface/pback.sti");
-            let dragon = assets.load("retail://data/main interface/dragons.sti");
+            let back = assets.load(crate::content::paths::sheet("main interface/pback"));
+            let dragon = assets.load(crate::content::paths::sheet("main interface/dragons"));
             commands
                 .spawn_scene(bsn! { @layer() template(move |_| Ok(EmptySlot(slot))) Children [
                     @picture(back,0,Vec2::new(menu_x(slot)+20.,row_y(slot)))
@@ -202,7 +202,7 @@ pub fn build_party_parts(
         let mut parts: Vec<Box<dyn Scene>> = vec![];
         let pictures = if portrait.is_some() {
             vec![Part::Portrait]
-        } else if closed {
+        } else {
             vec![
                 Part::Bars,
                 Part::Health,
@@ -215,8 +215,6 @@ pub fn build_party_parts(
                 Part::ConditionRim(false),
                 Part::ConditionRim(true),
             ]
-        } else {
-            vec![Part::Bars, Part::Health, Part::Stamina]
         };
         for kind in pictures {
             parts.push(Box::new(part_picture(member, kind, kind.at(slot, closed))));
@@ -230,11 +228,11 @@ pub fn build_party_parts(
                 let at = kind.at(slot, closed);
                 parts.push(Box::new(bsn! { @rect(at,size,colour) template(move |_| Ok(PartyPart { member, kind })) }));
             }
-            for (kind, font, width) in [(Part::HitPoints, art.small_font.clone(), 19.)]
-                .into_iter()
-                .chain(closed.then_some((Part::Armour, art.small_font.clone(), 13.)))
-                .chain(closed.then_some((Part::Name, art.font.clone(), 84.)))
-            {
+            for (kind, font, width) in [
+                (Part::HitPoints, art.small_font.clone(), 19.),
+                (Part::Armour, art.small_font.clone(), 13.),
+                (Part::Name, art.font.clone(), 84.),
+            ] {
                 parts.push(Box::new(part_label(member, kind, font, kind.at(slot, closed), width)));
             }
             parts.push(Box::new(part_picture(
@@ -301,7 +299,6 @@ impl Part {
 pub fn draw_party(
     layout: Res<ScreenLayout>,
     selected: Res<SelectedMember>,
-    art: Res<MainScreenArt>,
     assets: Res<AssetServer>,
     slots: PortraitSlots,
     members: Query<CharacterView>,
@@ -327,11 +324,7 @@ pub fn draw_party(
         let mut source = None;
         let mut value = None;
         let mut hand_x = None;
-        let image = |path: &str, frame| Picture {
-            sheet: assets.load(crate::content::paths::retail(path)),
-            frame,
-            ..default()
-        };
+        let image = |path: &str, frame| (crate::content::paths::retail(path), frame);
         if let Some(view) = actor {
             let armour = view.armour(part.member, catalog, battle.as_deref().copied());
             let CharacterViewItem { profile, vitals, carried, .. } = view;
@@ -343,17 +336,18 @@ pub fn draw_party(
             let condition = condition_icon(vitals);
             match part.kind {
                 Part::Portrait => {
-                    source = Some(image(
-                        &if dead {
-                            format!("data/portraits/medium/{}.sti", skull(profile.race))
-                        } else {
-                            format!("data/portraits/medium/m{}.sti", profile.portrait)
-                        },
+                    let name = if dead { &skull(profile.race)[1..] } else { &profile.portrait };
+                    source = Some((
+                        crate::content::paths::portrait(
+                            crate::content::paths::PortraitSize::Medium,
+                            name,
+                        ),
                         0,
-                    ))
+                    ));
                 }
+
                 Part::Bars => {
-                    source = Some(Picture { sheet: art.column_info.clone(), frame: 3, ..default() })
+                    source = Some(image("data/main interface/main_column_info_normal.sti", 3))
                 }
                 Part::Health | Part::Stamina => {
                     shown = !dead;
@@ -383,11 +377,10 @@ pub fn draw_party(
                 }
                 Part::Alive => shown = !dead,
                 Part::Hands => {
-                    source = Some(Picture {
-                        sheet: art.column_info.clone(),
-                        frame: if two_handed { 2 } else { 0 },
-                        ..default()
-                    })
+                    source = Some(image(
+                        "data/main interface/main_column_info_normal.sti",
+                        if two_handed { 2 } else { 0 },
+                    ))
                 }
                 Part::MainHand | Part::OffHand => {
                     let off = matches!(part.kind, Part::OffHand);
@@ -455,15 +448,30 @@ pub fn draw_party(
                 }
             }
         }
+        shown &= closed
+            || matches!(
+                part.kind,
+                Part::Bars
+                    | Part::Health
+                    | Part::Stamina
+                    | Part::HealthEmpty
+                    | Part::StaminaEmpty
+                    | Part::Alive
+                    | Part::HitPoints
+                    | Part::Selection
+            );
         visible.set_if_neq(visible_if(shown));
         if let Some(mut picture) = picture
-            && let Some(mut source) = source
+            && let Some((path, frame)) = source
         {
-            source.at = at;
-            if let Some(x) = hand_x {
-                source.at.x = x;
+            crate::presentation::screen_art::show_sheet(&mut picture, &assets, path);
+            let at = Vec2::new(hand_x.unwrap_or(at.x), at.y);
+            if picture.at != at {
+                picture.at = at;
             }
-            picture.set_if_neq(source);
+            if picture.frame != frame {
+                picture.frame = frame;
+            }
         }
         if let Some(mut label) = label {
             if label.at != at {
@@ -520,6 +528,17 @@ pub fn place_party_buttons(
         } else {
             617.
         };
+        let size = if layout.mode == LayoutMode::Closed {
+            Vec2::new(82., 72.)
+        } else {
+            Vec2::new(22., 85.)
+        };
+        if node.width != px(size.x) {
+            node.width = px(size.x);
+        }
+        if node.height != px(size.y) {
+            node.height = px(size.y);
+        }
         if node.left != px(x) {
             node.left = px(x);
         }
@@ -817,7 +836,6 @@ mod tests {
                 disposition: 80,
                 greeting_pending: false,
                 paid_topics: vec![],
-                dormant: None,
                 stock: default(),
             })
             .id();

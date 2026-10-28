@@ -46,6 +46,7 @@ impl Plugin for CombatPlugin {
         app.add_message::<CombatNews>()
             .add_message::<CyclePartyMove>()
             .add_message::<StartRound>()
+            .add_message::<CombatControl>()
             .add_message::<GiveOrder>()
             .init_resource::<CombatSettings>()
             .init_resource::<casting::FlightOrder>()
@@ -58,6 +59,7 @@ impl Plugin for CombatPlugin {
                     // Defeat is settled before a fight starts or a round runs,
                     settle_defeat,
                     start_battle,
+                    control_combat,
                     begin_round,
                     run_battle,
                     // and again after the round's damage.
@@ -157,6 +159,35 @@ enum PartyMove {
 /// Start the next round (Enter, or the round button).
 #[derive(Message, Debug, Clone, Copy)]
 pub struct StartRound;
+
+/// Player intent; gameplay interprets the round button using the current battle.
+#[derive(Message, Clone, Copy, Debug)]
+pub enum CombatControl {
+    RoundButton,
+    ToggleContinuous,
+}
+
+fn control_combat(
+    mut requests: MessageReader<CombatControl>,
+    battle: Option<Single<&Battle>>,
+    mut settings: ResMut<CombatSettings>,
+    mut rounds: MessageWriter<StartRound>,
+) {
+    for request in requests.read() {
+        match request {
+            CombatControl::ToggleContinuous => settings.continuous = !settings.continuous,
+            CombatControl::RoundButton => {
+                if let Some(battle) = &battle {
+                    if battle.executing() {
+                        settings.continuous = !settings.continuous;
+                    } else {
+                        rounds.write(StartRound);
+                    }
+                }
+            }
+        }
+    }
+}
 
 /// When an actor acts this round, and how many attacks it has left.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -1418,6 +1449,28 @@ mod tests {
     use crate::content::spells::SpellCatalog;
     use crate::game::data::GameData;
     use crate::game::inventory::{Carried, ItemIds, make_item};
+
+    #[test]
+    fn round_button_is_interpreted_by_the_current_battle() {
+        let mut app = App::new();
+        app.init_resource::<CombatSettings>()
+            .add_message::<CombatControl>()
+            .add_message::<StartRound>()
+            .add_systems(Update, control_combat);
+        app.world_mut().write_message(CombatControl::RoundButton);
+        app.update();
+        assert!(app.world().resource::<Messages<StartRound>>().is_empty());
+        let battle = app.world_mut().spawn(Battle::default()).id();
+        app.world_mut().write_message(CombatControl::RoundButton);
+        app.update();
+        assert_eq!(app.world_mut().resource_mut::<Messages<StartRound>>().drain().count(), 1);
+        let before = app.world().resource::<CombatSettings>().continuous;
+        app.world_mut().write_message(CombatControl::RoundButton);
+        app.world_mut().get_mut::<Battle>(battle).unwrap().phase = RoundPhase::Accepted;
+        app.update();
+        assert_eq!(app.world().resource::<CombatSettings>().continuous, !before);
+        assert!(app.world().resource::<Messages<StartRound>>().is_empty());
+    }
 
     #[test]
     fn sight_reaches_the_far_clip_ahead_and_less_from_behind() {

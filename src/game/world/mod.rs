@@ -102,10 +102,9 @@ impl Plugin for WorldPlugin {
 /// What the player asks of the world under the pointer.
 #[derive(Message, Clone, Copy, Debug, PartialEq)]
 pub enum WorldRequest {
-    /// Use a device from this far away.
+    /// Use a device, validating reach when the request executes.
     Activate {
         device: Entity,
-        distance: f32,
     },
     TakeItem {
         item: Entity,
@@ -122,8 +121,8 @@ pub fn handle_world_requests(world: &mut World) {
     let requests: Vec<_> = world.resource_mut::<Messages<WorldRequest>>().drain().collect();
     for request in requests {
         let refused = match request {
-            WorldRequest::Activate { device, distance } => {
-                triggers::activate(world, device, Some(distance));
+            WorldRequest::Activate { device } => {
+                triggers::activate(world, device, true);
                 None
             }
             WorldRequest::TakeItem { item } => items::take_item(world, item).err(),
