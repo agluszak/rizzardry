@@ -192,10 +192,11 @@ const NO_ROOM: usize = 0x90c;
 const CANNOT_MERGE: usize = 0x161;
 const UNSKILLED_MERGE: usize = 0x162;
 const MERGE_UNIDENTIFIED: usize = 0x163;
-/// The omnigun's first tier; the others follow it (retail
-/// `UpgradeProfessionClassItem`), each naming the owner's possessive
-/// (`g_gender_name_message_rows[gender][2]`).
+/// The omnigun given, then each tier raised to (retail
+/// `UpgradeProfessionClassItem`), naming its owner by pronoun
+/// (`g_gender_name_message_rows[gender][3]` for the gift, `[2]` after).
 const OMNIGUN_TIERS: usize = 0x167;
+const GIFT_PRONOUNS: usize = 0x2da;
 const POSSESSIVES: usize = 0x2d7;
 const SEARCH_ON: usize = 0x78e;
 const SEARCH_OFF: usize = 0x78f;
@@ -462,8 +463,9 @@ pub fn queue_notices(
             ItemNews::Unskilled { member } => string(UNSKILLED_MERGE).replace("%s", member),
             ItemNews::Unidentified => string(MERGE_UNIDENTIFIED),
             ItemNews::Omnigun { member, gender, tier } => {
-                let possessive = string(POSSESSIVES + *gender as usize);
-                let text = string(OMNIGUN_TIERS + tier).replace("%s", &possessive);
+                let pronouns = if *tier == 0 { GIFT_PRONOUNS } else { POSSESSIVES };
+                let pronoun = string(pronouns + *gender as usize);
+                let text = string(OMNIGUN_TIERS + tier).replace("%s", &pronoun);
                 // Retail runs a notice starting with an apostrophe or colon
                 // straight on from the name (`PostCharacterNoticeText`).
                 let separator = if text.starts_with(['\'', ':']) { "" } else { " " };

@@ -61,6 +61,13 @@ impl InventoryOperations<'_, '_> {
     pub fn click_pool(&mut self, row: usize) -> Result<(), Refusal> {
         let anchor = self.party.pool.stacks.get(row).map(|s| s.id);
         if self.party.hand.held.is_some() {
+            // Ammunition over its gun loads it, however many charges that takes.
+            let catalog = self.content.items().ok_or(Refusal::MissingContent)?;
+            if let Some(anchor) = anchor
+                && self.party.load_row(anchor, catalog).is_some()
+            {
+                return Ok(());
+            }
             match self.deposit(anchor.map_or(PoolPosition::End, PoolPosition::Before))? {
                 0 => Err(Refusal::NoRoom),
                 _ => Ok(()),

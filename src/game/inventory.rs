@@ -146,15 +146,17 @@ impl ItemStack {
     }
     /// Load this item from another's uses or units, up to as many as it can
     /// hold (retail `MergeItemUses`), spending them from the other one at a
-    /// time; returns what is left of it. A gun takes the shots its
-    /// ammunition holds. Only items counting uses can be loaded.
+    /// time. A gun takes the shots its ammunition holds. Only items counting
+    /// uses can be loaded.
     pub fn load(
         &mut self,
-        mut from: Self,
+        from: Self,
         definition: &ItemDefinition,
         source: &ItemDefinition,
-    ) -> Option<Self> {
-        let Some(uses) = self.remaining_uses else { return Some(from) };
+    ) -> Loaded {
+        let Some(uses) = self.remaining_uses else {
+            return Loaded { charges: 0, rest: Some(from) };
+        };
         let available = match source.quantity {
             QuantityKind::Stack => from.count(),
             _ => from.remaining_uses.unwrap_or(0),
@@ -163,10 +165,11 @@ impl ItemStack {
         // Retail's unsigned room wraps for an overfull item, taking everything.
         let moved = maximum.checked_sub(uses).map_or(available, |room| room.min(available));
         self.remaining_uses = Some(uses + moved);
+        let mut rest = Some(from);
         for _ in 0..moved {
-            from = from.consume_use(source, source.keeps_empty())?;
+            rest = rest.and_then(|from| from.consume_use(source, source.keeps_empty()));
         }
-        Some(from)
+        Loaded { charges: moved, rest }
     }
     /// Consumption owns its input: exhausted physical stacks never survive as values.
     pub fn consume_use(mut self, definition: &ItemDefinition, keep_empty: bool) -> Option<Self> {
@@ -285,6 +288,14 @@ pub struct ItemRef {
     pub owner: ItemOwner,
     pub id: StackId,
 }
+/// What loading an item came to: the charges it took, and what is left of
+/// the source, which may still be whole when it holds charges.
+#[derive(Debug, PartialEq)]
+pub struct Loaded {
+    pub charges: u16,
+    pub rest: Option<ItemStack>,
+}
+
 /// An item within the reviewed member's reach: the hand, one of their
 /// slots, or a row of the party's pool.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -593,7 +604,8 @@ pub enum ItemNews {
     Unskilled {
         member: String,
     },
-    /// A Gadgeteer's omnigun reached a tier (1 to 11 above the first).
+    /// A Gadgeteer was given their omnigun (tier 0) or it reached a tier
+    /// (1 to 11 above the first).
     Omnigun {
         member: String,
         gender: crate::content::characters::Gender,
@@ -953,6 +965,20 @@ impl PartyInventory {
         }
         Some(given)
     }
+    /// Load a pool row from the held ammunition when it is that row's gun's
+    /// (retail `MergeItemUses` from the pool), returning the charges it took;
+    /// none when the held item does not load it.
+    pub fn load_row(&mut self, id: StackId, catalog: &ItemCatalog) -> Option<u16> {
+        let held = self.hand.held.as_ref()?;
+        let gun = self.pool.stacks.iter_mut().find(|s| s.id == id)?;
+        let (source, definition) = (catalog.get(held.item)?, catalog.get(gun.item)?);
+        if loaded_by(definition.kind) != Some(source.kind) {
+            return None;
+        }
+        let Loaded { charges, rest } = gun.load(self.hand.held.take()?, definition, source);
+        self.hand.held = rest;
+        Some(charges)
+    }
     pub fn take_from_pool(&mut self, id: StackId) -> Result<(), Refusal> {
         if self.hand.held.is_some() {
             return Err(Refusal::HandFull);
@@ -967,15 +993,8 @@ impl PartyInventory {
         catalog: &ItemCatalog,
     ) -> Result<u32, Refusal> {
         self.pool.position(position)?;
-        let Some(held) = self.hand.held.as_ref() else { return Err(Refusal::Nothing) };
-        // Ammunition held over a gun in the pool loads it.
-        if let PoolPosition::Before(id) = position
-            && let Some(gun) = self.pool.stacks.iter_mut().find(|s| s.id == id)
-            && let (Some(source), Some(definition)) =
-                (catalog.get(held.item), catalog.get(gun.item))
-            && loaded_by(definition.kind) == Some(source.kind)
-        {
-            return Ok(self.hand.offer(|held| gun.load(held, definition, source)));
+        if self.hand.held.is_none() {
+            return Err(Refusal::Nothing);
         }
         let pool = &mut self.pool;
         Ok(self.hand.offer(|item| pool.deposit(item, position, catalog)))
@@ -1021,7 +1040,8 @@ impl PartyInventory {
                     return Err(Refusal::DoesNotFit);
                 }
                 let target = carried.stack_mut(slot).unwrap();
-                self.hand.offer(|held| target.load(held, definition, source));
+                let held = self.hand.held.take().unwrap();
+                self.hand.held = target.load(held, definition, source).rest;
                 return Ok(());
             }
         }
@@ -1620,5 +1640,62 @@ mod tests {
         let held = world.get::<PartyInventory>(party).unwrap().hand.held.clone().unwrap();
         assert!(held.identified && held.spell_known && held.curse_known);
         assert_eq!(identify(&mut world), Ok(false), "nothing left to identify");
+    }
+
+    /// A charged source loads a gun in the pool through the pool's click,
+    /// keeping the charges it has left; a full gun takes none. Neither is
+    /// refused, though no physical unit moves.
+    #[test]
+    fn a_charged_source_loads_a_pool_gun_and_keeps_its_rest() {
+        use super::operations::InventoryOperations;
+        use crate::content::items::Dice;
+        use crate::game::data::GameData;
+        use bevy::ecs::system::RunSystemOnce;
+        let gun = ItemDefinition {
+            id: ItemId(0),
+            kind: 114,
+            class: EquipClass::RangedWeapon,
+            quantity: QuantityKind::Shots,
+            initial_quantity: Dice { count: 0, sides: 0, base: 10 },
+            ..default()
+        };
+        let cell = ItemDefinition {
+            id: ItemId(1),
+            kind: 113,
+            class: EquipClass::Ammunition,
+            quantity: QuantityKind::Charges,
+            ..default()
+        };
+        let mut world = World::new();
+        world.init_resource::<Messages<ItemNews>>();
+        let mut ids = ItemIds::default();
+        let (gun_stack, cell_stack) =
+            (ItemStack::new(&gun, &mut ids, 4, true), ItemStack::new(&cell, &mut ids, 8, true));
+        let mut catalogs = Assets::<ItemCatalog>::default();
+        let items = catalogs.add(ItemCatalog(vec![gun, cell]));
+        world.insert_resource(catalogs);
+        world.insert_resource(GameData {
+            items,
+            loot: default(),
+            species: default(),
+            spells: default(),
+        });
+        let member = world.spawn((Vitals::new(&wearer()), wearer(), Carried::default())).id();
+        let party = crate::game::party::roster::test_party(&mut world, &[member]);
+        {
+            let mut inventory = world.get_mut::<PartyInventory>(party).unwrap();
+            inventory.pool.stacks.push(gun_stack);
+            inventory.hand.held = Some(cell_stack.clone());
+        }
+        let click = |world: &mut World| {
+            let result =
+                world.run_system_once(|mut op: InventoryOperations| op.click_pool(0)).unwrap();
+            let inventory = world.get::<PartyInventory>(party).unwrap();
+            let held = inventory.hand.held.as_ref().map(|h| (h.id, h.remaining_uses()));
+            (result, inventory.pool.stacks[0].remaining_uses(), held)
+        };
+        let rest = Some((cell_stack.id, Some(2)));
+        assert_eq!(click(&mut world), (Ok(()), Some(10), rest));
+        assert_eq!(click(&mut world), (Ok(()), Some(10), rest), "a full gun takes none");
     }
 }

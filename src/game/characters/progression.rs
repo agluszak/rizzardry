@@ -317,6 +317,9 @@ pub struct Progression<'w, 's> {
         )>,
     >,
     content: crate::game::data::Content<'w>,
+    ids: ResMut<'w, crate::game::inventory::ItemIds>,
+    rng: ResMut<'w, crate::game::rng::GameRng>,
+    news: MessageWriter<'w, crate::game::inventory::ItemNews>,
 }
 impl Progression<'_, '_> {
     pub fn eligibility(&self, member: Entity) -> Result<(), &'static str> {
@@ -381,6 +384,20 @@ impl Progression<'_, '_> {
         *known = learned;
         *carried = equipment;
         inventory.pool = pool;
+        // A Gadgeteer's omnigun follows the committed level.
+        let character = c.clone();
+        let roster = self.roster.single().map_err(|_| "The party is unavailable.")?;
+        let mut owners = self.members.transmute_lens::<&mut Carried>();
+        let told = crate::game::inventory::omnigun::advance(
+            draft.member,
+            &character,
+            roster,
+            &mut owners.query(),
+            &mut inventory,
+            items,
+            (&mut self.ids, &mut self.rng),
+        );
+        self.news.write_batch(told);
         Ok(())
     }
 }
@@ -545,6 +562,9 @@ mod tests {
     }
     fn world(c: Character, catalog: ItemCatalog) -> (World, Entity, Entity) {
         let mut world = World::new();
+        world.init_resource::<ItemIds>();
+        world.init_resource::<crate::game::rng::GameRng>();
+        world.init_resource::<Messages<crate::game::inventory::ItemNews>>();
         let mut items = Assets::<ItemCatalog>::default();
         let items_handle = items.add(catalog);
         let mut spells = Assets::<SpellCatalog>::default();
@@ -575,6 +595,35 @@ mod tests {
     fn accept(world: &mut World, draft: &Advancement) -> Result<(), &'static str> {
         SystemState::<Progression>::new(world).get_mut(world).unwrap().accept(draft)
     }
+    /// Committing a change to Gadgeteer brings the welcome omnigun (retail
+    /// `CommitCharacter`, `UpgradeProfessionClassItem`).
+    #[test]
+    fn becoming_a_gadgeteer_brings_the_omnigun() {
+        let mut original = character(Profession::Fighter);
+        original.attributes = EnumMap::from_fn(|_| 80);
+        let catalog = ItemCatalog(
+            (0..=599)
+                .map(|id| ItemDefinition {
+                    id: ItemId(id),
+                    kind: if id == 599 { crate::game::inventory::OMNIGUN } else { 0 },
+                    ..default()
+                })
+                .collect(),
+        );
+        let (mut w, member, _) = world(original, catalog);
+        let mut draft = begin(&mut w, member);
+        assert!(draft.choose_profession(Profession::Gadgeteer));
+        complete(&mut draft, &default());
+        accept(&mut w, &draft).unwrap();
+        assert!(w.get::<Carried>(member).unwrap().stacks().any(|s| s.item == ItemId(599)));
+        let news: Vec<_> =
+            w.resource_mut::<Messages<crate::game::inventory::ItemNews>>().drain().collect();
+        assert!(matches!(
+            news.last(),
+            Some(crate::game::inventory::ItemNews::Omnigun { tier: 0, .. })
+        ));
+    }
+
     #[test]
     fn acceptance_revalidates_actor_and_preserves_live_damage_and_conditions() {
         let (mut w, member, _) = world(character(Profession::Fighter), default());
