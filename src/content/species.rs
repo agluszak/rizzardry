@@ -284,6 +284,8 @@ pub struct Species {
     pub death_immune: bool,
     /// Excluded from spell/attack target sweeps.
     pub untargetable: bool,
+    /// Monster Editor concealment rating used outside combat.
+    pub camouflage: u8,
     pub attributes: MonsterAttributes,
     pub hit_points: Dice,
     pub stamina: Dice,

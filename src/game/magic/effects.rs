@@ -89,7 +89,8 @@ fn kind(spell: SpellId) -> Option<Kind> {
         | SpellId::MIND_FLAY
         | SpellId::NUCLEAR_BLAST
         | SpellId::TSUNAMI => Kind::Damage,
-        SpellId::CHAMELEON
+        SpellId::SHADOW_HOUND
+        | SpellId::CHAMELEON
         | SpellId::ACID_BOMB
         | SpellId::DEATH_CLOUD
         | SpellId::TOXIC_CLOUD

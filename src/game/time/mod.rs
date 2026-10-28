@@ -195,7 +195,13 @@ pub(crate) fn pass_time(
         if pass > 0
             && let Ok((position, body, _)) = party.single()
         {
-            affected.p1().detect(PartyBody::eye(position), body.forward(), None, &mut rng);
+            affected.p1().detect(
+                PartyBody::eye(position),
+                body.forward(),
+                None,
+                enchantments.0.get(crate::content::spells::SpellId::SHADOW_HOUND).is_some(),
+                &mut rng,
+            );
         }
     }
 }

@@ -9,6 +9,7 @@ pub mod level;
 pub mod navigation;
 pub mod obstacles;
 pub mod particles;
+pub mod perception;
 pub mod population;
 pub mod props;
 pub mod scripts;

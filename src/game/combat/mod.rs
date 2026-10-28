@@ -12,6 +12,7 @@ use crate::game::world::level::LevelOwned;
 use crate::game::world::level::PlayedLevel;
 use crate::game::world::navigation::{Walker, feet};
 use crate::game::world::obstacles::WorldObstacles;
+use crate::game::world::perception::sight_threshold;
 use avian3d::prelude::Position;
 use bevy::prelude::*;
 
@@ -46,6 +47,7 @@ impl Plugin for CombatPlugin {
             .add_message::<CyclePartyMove>()
             .add_message::<StartRound>()
             .add_message::<CombatControl>()
+            .add_message::<crate::game::camp::CampNews>()
             .add_message::<GiveOrder>()
             .init_resource::<CombatSettings>()
             .init_resource::<casting::FlightOrder>()
@@ -87,9 +89,6 @@ impl Plugin for CombatPlugin {
 const CAMERA_ABOVE_PARTY_POINT: f32 = 2.0;
 /// The party navigator's alternate radius (retail's default, 500 units).
 const PARTY_ALTERNATE_RADIUS: f32 = 1.0;
-/// A monster facing within this of the party sees it as far as anyone can
-/// (retail `g_monster_facing_tolerance`, 45 degrees).
-const FACING_TOLERANCE: f32 = std::f32::consts::FRAC_PI_4;
 
 /// Seconds between actors (retail `combat_delay_ms`, 1000 by default).
 const ACTION_SECONDS: f32 = 1.0;
@@ -288,6 +287,8 @@ struct Round {
 #[derive(Component, Debug, Default)]
 pub struct Battle {
     pub round: u32,
+    /// Accepted encounter history, consumed when the opening round is initialized.
+    opening: Option<SurpriseCause>,
     phase: RoundPhase,
     this_round: Round,
     /// Experience from kills, shared at the end.
@@ -392,10 +393,54 @@ pub enum Announcement {
     Monster { word: AttackWord, mode: AttackMode, named: bool },
 }
 
+/// Why the party loses its opening turn (retail `RollCombatSurprise`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SurpriseCause {
+    Ambush,
+    Running,
+    Searching,
+}
+
+/// Automatic encounters already require a hostile that sees the party.
+/// Test party awareness before combat turns the camera toward that attacker.
+fn opening_surprise<'a>(
+    seen: bool,
+    shadow_hound: bool,
+    camping: bool,
+    running: bool,
+    searching: bool,
+    mut members: impl Iterator<Item = (&'a Character, &'a Vitals)>,
+    rng: &mut GameRng,
+) -> Option<SurpriseCause> {
+    if !shadow_hound {
+        if !seen {
+            return Some(SurpriseCause::Ambush);
+        }
+        if camping {
+            let guard = members.find(|(_, v)| {
+                !v.is_dead() && v.worst_condition().is_none_or(|c| c <= Condition::Infatuated)
+            });
+            let Some((profile, vitals)) = guard else { return Some(SurpriseCause::Ambush) };
+            let senses = profile
+                .stats(&vitals.enchantments)
+                .attribute(crate::content::characters::Attribute::Senses);
+            rng.below(1);
+            if senses / 2 <= rng.below(100) {
+                return Some(SurpriseCause::Ambush);
+            }
+        }
+    }
+    if (running || searching) && rng.below(100) < 20 {
+        return Some(if running { SurpriseCause::Running } else { SurpriseCause::Searching });
+    }
+    None
+}
+
 /// What the fight tells the player.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum CombatNews {
     Began,
+    Surprised(SurpriseCause),
     /// An attack begins (retail `StartCharacterAttack`,
     /// `AnnounceMonsterAttack`).
     Attack {
@@ -454,31 +499,6 @@ fn distance_to_party(party_eye: Vec3, monster: &Monster, feet: Vec3) -> f32 {
     ((feet - party_point).length() - monster.body.radius - PARTY_ALTERNATE_RADIUS).max(0.0)
 }
 
-/// Retail `ComputeSightThreshold`: how far an observer facing away by
-/// `angle` (radians) sees, given its senses, a ranged bonus percent and the
-/// penalty source (the party's lowest level, doubled); within 45 degrees, or
-/// at no distance, the whole `far` clip.
-fn sight_threshold(
-    angle: f32,
-    senses: i32,
-    bonus: u32,
-    penalty: i32,
-    concealment: u32,
-    far: f32,
-    distance: f32,
-) -> f32 {
-    let mut percent = if angle < FACING_TOLERANCE || distance == 0.0 {
-        100
-    } else {
-        ((senses - penalty * 2) as f32 * ((far - distance) / distance)) as i32
-    };
-    percent -= concealment as i32 * 10;
-    if bonus != 0 {
-        percent = (bonus as i32 + 100) * percent / 100;
-    }
-    percent.clamp(2, 100) as f32 * far * 0.01
-}
-
 /// Where the party stands and faces, and its formation, as reach needs them.
 struct PartyView {
     eye: Vec3,
@@ -504,12 +524,16 @@ impl PartyView {
 /// monster is within the far clip, has a line of sight from its eyes to the
 /// party's, and its sight threshold covers the distance; and one of its
 /// attacks reaches, or its best attack is close (touch or short) and it can
-/// walk up. Retail's combat move range and path checks, groups, factions and
-/// the party's own surprise rolls are not modelled yet.
+/// walk up. The opening sight check precedes turning to the nearest attacker.
 pub fn start_battle(
     mut commands: Commands,
     battles: Query<(), With<Battle>>,
-    camp: Option<Res<crate::game::camp::Camp>>,
+    (camp, search): (
+        Option<Res<crate::game::camp::Camp>>,
+        Option<Res<crate::game::world::search::Search>>,
+    ),
+    movement: Query<&crate::game::party::body::PartyMovement>,
+    mut camp_news: MessageWriter<crate::game::camp::CampNews>,
     effects: Query<&crate::game::magic::enchantments::PartyEffects>,
     mut party: Query<(&Position, &mut PartyBody)>,
     level: PlayedLevel,
@@ -529,7 +553,7 @@ pub fn start_battle(
     mut rng: ResMut<GameRng>,
 ) {
     if !battles.is_empty()
-        || camp.is_some()
+        || camp.as_ref().is_some_and(|camp| !camp.racing())
         || !members.iter_many(roster.iter()).matched().any(|(_, v)| !v.is_dead())
     {
         return;
@@ -558,7 +582,11 @@ pub fn start_battle(
         .iter()
         .filter(|(_, monster, at, walker, provoked)| {
             let Some(kind) = catalog.kind(monster.species) else { return false };
-            if kind.npc.is_some() || !monster.can_fight() {
+            if kind.npc.is_some()
+                || !monster.can_fight()
+                || monster.conditions.iter().any(|(c, _)| *c == Condition::Blind)
+                    && kind.kind != crate::content::species::MonsterKind::Monk
+            {
                 return false;
             }
             let feet = feet(at.translation(), *walker);
@@ -595,6 +623,37 @@ pub fn start_battle(
     }
     joined.sort();
     info!("combat: {} monsters", joined.len());
+    let shadow_hound = effects
+        .single()
+        .is_ok_and(|e| e.0.get(crate::content::spells::SpellId::SHADOW_HOUND).is_some());
+    let view =
+        crate::game::world::perception::View { eye: party_eye, forward: body.forward(), far };
+    let seen = joined.iter().any(|&(_, entity)| {
+        let Ok((_, monster, at, ..)) = monsters.get(entity) else { return false };
+        let Some(kind) = catalog.kind(monster.species) else { return false };
+        view.sees(
+            members.iter_many(roster.iter()).matched(),
+            shadow_hound,
+            monster,
+            kind,
+            at.translation(),
+            false,
+            &obstacles,
+        )
+    });
+    let opening = opening_surprise(
+        seen,
+        shadow_hound,
+        camp.is_some(),
+        movement.single().is_ok_and(|m| m.running),
+        search.as_ref().is_some_and(|s| s.on()),
+        members.iter_many(roster.iter()).matched(),
+        &mut rng,
+    );
+    if camp.is_some() {
+        commands.remove_resource::<crate::game::camp::Camp>();
+        camp_news.write(crate::game::camp::CampNews::Interrupted);
+    }
     // The view turns to the nearest of them (retail `beginCombat`).
     let nearest = monsters
         .iter_many(joined.iter().map(|&(_, e)| e))
@@ -605,12 +664,25 @@ pub fn start_battle(
         body.face(nearest - party_eye);
     }
     let joined: Vec<Entity> = joined.into_iter().map(|(_, e)| e).collect();
-    let battle = commands.spawn((Name::new("Battle"), Battle::default(), LevelOwned(root))).id();
+    let battle = commands
+        .spawn((Name::new("Battle"), Battle { opening, ..default() }, LevelOwned(root)))
+        .id();
     for &monster in &joined {
         commands.entity(monster).insert(Combatant(battle));
     }
-    recognition.detect(party_eye, body.forward(), Some(&joined), &mut rng);
+    recognition.detect(
+        party_eye,
+        body.forward(),
+        Some(&joined),
+        effects
+            .single()
+            .is_ok_and(|e| e.0.get(crate::content::spells::SpellId::SHADOW_HOUND).is_some()),
+        &mut rng,
+    );
     news.write(CombatNews::Began);
+    if let Some(cause) = opening {
+        news.write(CombatNews::Surprised(cause));
+    }
 }
 
 /// Whether the party is fighting, for operations that hold the whole world.
@@ -656,7 +728,9 @@ fn accept_round(
 ) {
     use crate::content::characters::{Skill, Trait};
     battle.round += 1;
-    let mut round = Round { pace: battle.party_pace, ..default() };
+    let surprised = battle.opening.take().is_some();
+    let pace = if surprised { None } else { battle.party_pace };
+    let mut round = Round { pace, ..default() };
     // Samurai ready their Lightning Strike with a sword before anyone's
     // initiative is rolled (retail `BeginCombatExecution`).
     let lightning: Vec<bool> = roster
@@ -666,14 +740,15 @@ fn accept_round(
                 return false;
             };
             let stats = character.stats(&vitals.enchantments);
-            orders.get(member).copied().unwrap_or_default() == Order::Attack
+            !surprised
+                && orders.get(member).copied().unwrap_or_default() == Order::Attack
                 && character.has_trait(Trait::LightningStrike)
                 && attack::hands(&stats, carried, items, burden.load).hands[0].weapon_skill
                     == Skill::Sword
                 && rng.below(100) < u32::from(character.scale_by_profession(12.0) as u8)
         })
         .collect();
-    for (member, lightning) in roster.iter().zip(lightning) {
+    for (member, lightning) in roster.iter().zip(lightning).filter(|_| !surprised) {
         let Ok((character, vitals, carried, burden)) = members.get(member) else { continue };
         let stats = character.stats(&vitals.enchantments);
         let hands = attack::hands(&stats, carried, items, burden.load);
@@ -724,7 +799,7 @@ fn accept_round(
     }
     // The party's own move takes the phase its slowest member allows,
     // on a step of ten (retail `InitializePartyMovementPhase`).
-    battle.party_move = match battle.party_pace {
+    battle.party_move = match pace {
         Some(pace) => {
             let latest = roster
                 .iter()
@@ -802,7 +877,7 @@ pub fn begin_round(
     };
     // Between rounds a phased fight waits for the player; a continuous one
     // goes on.
-    if start && !battle.executing() {
+    if (start || battle.opening.is_some()) && !battle.executing() {
         accept(&mut battle, &mut rng);
     }
     // A finished pause is not ticked again: a fight waiting for the player
@@ -901,7 +976,18 @@ pub fn run_battle(
             }
             // Recognition is a required part of this round, before the next
             // accepted action or the battle's end can change its meaning.
-            actors.p1().detect(party.eye, body.forward(), Some(combatants), &mut rng);
+            actors.p1().detect(
+                party.eye,
+                body.forward(),
+                Some(combatants),
+                magic
+                    .context
+                    .enchantments
+                    .0
+                    .get(crate::content::spells::SpellId::SHADOW_HOUND)
+                    .is_some(),
+                &mut rng,
+            );
             if over {
                 magic.context.enchantments.0.end_combat();
                 commands.entity(entity).despawn();
@@ -1405,6 +1491,164 @@ mod tests {
     use enumset::EnumSet;
 
     #[test]
+    fn shadow_hound_prevents_camping_ambush_but_not_running_or_search_distraction() {
+        use crate::content::characters::Attribute;
+        use crate::game::characters::{Gender, Profession, Race};
+        let mut profile = Character::new("Guard", Race::Human, Gender::Male, Profession::Fighter);
+        profile.attributes[Attribute::Senses] = 0;
+        let vitals = Vitals::new(&profile);
+        let mut rng = GameRng::seeded(1);
+        let before = rng.clone();
+        assert_eq!(
+            opening_surprise(
+                false,
+                true,
+                true,
+                false,
+                false,
+                std::iter::once((&profile, &vitals)),
+                &mut rng
+            ),
+            None
+        );
+        assert_eq!(rng, before, "the hound bypasses the guard roll");
+        assert_eq!(
+            opening_surprise(
+                true,
+                false,
+                true,
+                false,
+                false,
+                std::iter::once((&profile, &vitals)),
+                &mut rng
+            ),
+            Some(SurpriseCause::Ambush)
+        );
+        assert_eq!(
+            opening_surprise(false, false, false, false, false, std::iter::empty(), &mut rng),
+            Some(SurpriseCause::Ambush)
+        );
+        assert!((0..100).any(|seed| opening_surprise(
+            true,
+            true,
+            false,
+            false,
+            true,
+            std::iter::once((&profile, &vitals)),
+            &mut GameRng::seeded(seed)
+        ) == Some(SurpriseCause::Searching)));
+        assert!((0..100).any(|seed| opening_surprise(
+            true,
+            true,
+            false,
+            true,
+            true,
+            std::iter::once((&profile, &vitals)),
+            &mut GameRng::seeded(seed)
+        ) == Some(SurpriseCause::Running)));
+    }
+
+    #[test]
+    fn a_camping_encounter_checks_awareness_before_turning_and_removes_camp() {
+        use crate::content::{
+            characters::Attribute,
+            species::{MonsterAttack, MonsterWeapon},
+            spells::SpellId,
+        };
+        use crate::game::{
+            camp::{Camp, CampNews, RestGoal},
+            magic::enchantments::{Enchantment, PartyEffects},
+        };
+        for hound in [false, true] {
+            let (mut app, members) = round_app(false);
+            app.world_mut().resource_mut::<Messages<StartRound>>().clear();
+            let battle = app
+                .world_mut()
+                .query_filtered::<Entity, With<Battle>>()
+                .single(app.world())
+                .unwrap();
+            app.world_mut().despawn(battle);
+            let root = app
+                .world_mut()
+                .query_filtered::<Entity, With<crate::game::world::level::Level>>()
+                .single(app.world())
+                .unwrap();
+            let definition = app
+                .world_mut()
+                .resource_mut::<Assets<crate::content::level::LevelDefinition>>()
+                .add(crate::content::level::LevelDefinition {
+                    sight_distance: Some(60.0),
+                    ..default()
+                });
+            app.world_mut().get_mut::<crate::game::world::level::Level>(root).unwrap().definition =
+                definition;
+            for member in members {
+                app.world_mut().get_mut::<Character>(member).unwrap().attributes
+                    [Attribute::Senses] = 0;
+            }
+            let catalog = app.world().resource::<GameData>().species.clone();
+            app.world_mut().resource_mut::<Assets<MonsterCatalog>>().get_mut(&catalog).unwrap().0
+                [0]
+            .attacks = vec![MonsterAttack {
+                word: AttackWord::Verb,
+                weapon: MonsterWeapon::Unarmed,
+                reach: Reach::Extreme,
+                score: 0,
+                modes: EnumSet::only(AttackMode::Swing),
+                damage: default(),
+                effects: default(),
+            }];
+            let monster = app
+                .world_mut()
+                .query_filtered::<Entity, With<Monster>>()
+                .single(app.world())
+                .unwrap();
+            app.world_mut().entity_mut(monster).insert((
+                Transform::from_translation(Vec3::Z * 30.0),
+                crate::game::world::population::Provoked,
+            ));
+            if hound {
+                let party = crate::game::party::roster::the_party(app.world_mut()).unwrap();
+                app.world_mut().get_mut::<PartyEffects>(party).unwrap().0.apply(Enchantment {
+                    spell: SpellId::SHADOW_HOUND,
+                    power: 1,
+                    boost: 0,
+                    turns: 1,
+                    absorption: 0,
+                });
+            }
+            app.insert_resource(Camp::Resting(RestGoal::Until(u64::MAX)));
+            app.update();
+            assert!(!app.world().contains_resource::<Camp>());
+            let news: Vec<_> =
+                app.world_mut().resource_mut::<Messages<CampNews>>().drain().collect();
+            assert_eq!(news, [CampNews::Interrupted]);
+            assert_eq!(fight(app.world()).unwrap().round, if hound { 0 } else { 1 });
+            let news: Vec<_> =
+                app.world_mut().resource_mut::<Messages<CombatNews>>().drain().collect();
+            assert_eq!(news.contains(&CombatNews::Surprised(SurpriseCause::Ambush)), !hound);
+        }
+    }
+
+    #[test]
+    fn surprise_automatically_spends_only_the_opening_party_turn() {
+        let (mut app, _) = round_app(false);
+        app.world_mut().resource_mut::<Messages<StartRound>>().clear();
+        fight_mut(app.world_mut()).opening = Some(SurpriseCause::Ambush);
+        app.update();
+        assert_eq!(fight(app.world()).unwrap().round, 1);
+        assert!(fight(app.world()).unwrap().this_round.party.is_empty());
+        assert!(fight(app.world()).unwrap().opening.is_none());
+        assert!(attacks(&mut app).is_empty());
+        fight_mut(app.world_mut()).phase = RoundPhase::Waiting;
+        fight_mut(app.world_mut()).wait = default();
+        app.world_mut().write_message(StartRound);
+        app.update();
+        assert_eq!(fight(app.world()).unwrap().this_round.party.len(), 2);
+        assert!(!attacks(&mut app).is_empty());
+    }
+
+    #[test]
     fn party_armour_follows_membership_and_expiry() {
         use crate::game::magic::enchantments::{Enchantment, PartyEffects};
         use crate::game::party::roster::PartyMember;
@@ -1454,6 +1698,7 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<CombatSettings>()
             .add_message::<CombatControl>()
+            .add_message::<crate::game::camp::CampNews>()
             .add_message::<StartRound>()
             .add_systems(Update, control_combat);
         app.world_mut().write_message(CombatControl::RoundButton);

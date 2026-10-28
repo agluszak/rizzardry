@@ -170,11 +170,18 @@ pub fn update_radar(
         &avian3d::prelude::Position,
         &crate::game::party::body::PartyBody,
         Option<&crate::game::magic::enchantments::PartyEffects>,
+        Option<&crate::game::party::roster::PartyRoster>,
     )>,
     camera: Query<(&Projection, &GlobalTransform), With<PartyCamera>>,
     mut rims: Query<&mut UiTransform, With<RadarRim>>,
     layers: Query<Entity, With<RadarBlips>>,
-    monsters: Query<(Entity, &crate::game::world::population::Monster, &GlobalTransform)>,
+    members: Query<(&crate::game::characters::Character, &crate::game::characters::Vitals)>,
+    monsters: Query<(
+        Entity,
+        &crate::game::world::population::Monster,
+        crate::game::world::ActorPose,
+        Has<crate::game::combat::Combatant>,
+    )>,
     views: Query<&RadarView>,
     mut blips: Query<(Entity, &mut Node, &mut BackgroundColor, &mut Visibility), With<RadarBlip>>,
     (mut items, obstacles): (
@@ -183,7 +190,8 @@ pub fn update_radar(
     ),
     content: crate::game::data::Content,
 ) {
-    let (Ok((position, body, effects)), Ok(layer)) = (party.single(), layers.single()) else {
+    let (Ok((position, body, effects, roster)), Ok(layer)) = (party.single(), layers.single())
+    else {
         return;
     };
     for mut rim in &mut rims {
@@ -223,11 +231,28 @@ pub fn update_radar(
             ));
         }
     };
-    for (entity, monster, at) in &monsters {
-        let delta = at.translation() - position.0;
-        if monster.is_dead() || delta.length() > far {
+    let view = crate::game::world::perception::View { eye, forward: body.forward(), far };
+    let shadow_hound = effects.is_some_and(|effects| {
+        effects.0.get(crate::content::spells::SpellId::SHADOW_HOUND).is_some()
+    });
+    for (entity, monster, at, in_combat) in &monsters {
+        let (Some(roster), Some(species)) =
+            (roster, catalog.and_then(|catalog| catalog.kind(monster.species)))
+        else {
+            continue;
+        };
+        if !view.sees(
+            members.iter_many(roster.iter()).matched(),
+            shadow_hound,
+            monster,
+            species,
+            at.translation(),
+            in_combat,
+            &obstacles,
+        ) {
             continue;
         }
+        let delta = at.translation() - position.0;
         let hostile =
             catalog.and_then(|c| c.kind(monster.species)).is_some_and(|s| s.npc.is_none());
         let class = if hostile { HOSTILE_BLIPS } else { NEUTRAL_BLIPS };

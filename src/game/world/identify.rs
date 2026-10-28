@@ -44,10 +44,6 @@ pub struct Identified {
     pub count: usize,
 }
 
-/// Retail's base horizontal field of view; a group is seen when a member
-/// is within it and the far clip (retail asks whether a member is drawn).
-const HALF_VIEW: f32 = 85.0 / 2.0;
-
 /// Whether a member can look (retail: alive, not insane or worse, not
 /// blind).
 fn can_look(member: &Vitals) -> bool {
@@ -114,6 +110,7 @@ pub struct GroupRecognition<'w, 's> {
     roster: Single<'w, 's, &'static PartyRoster>,
     members: Query<'w, 's, (&'static Character, &'static Vitals, &'static mut MonsterKnowledge)>,
     content: crate::game::data::Content<'w>,
+    obstacles: Option<super::obstacles::WorldObstacles<'w, 's>>,
     pub(crate) factions: ResMut<'w, crate::game::factions::Factions>,
     news: MessageWriter<'w, Identified>,
 }
@@ -124,6 +121,7 @@ impl GroupRecognition<'_, '_> {
         from: Vec3,
         forward: Vec3,
         combatants: Option<&[Entity]>,
+        shadow_hound: bool,
         rng: &mut GameRng,
     ) {
         let (Some(level), Some(far)) = (self.level.entity(), self.level.view_distance()) else {
@@ -132,6 +130,8 @@ impl GroupRecognition<'_, '_> {
         let Some(catalog) = self.content.species() else {
             return;
         };
+        let Some(obstacles) = self.obstacles.as_ref() else { return };
+        let view = super::perception::View { eye: from, forward, far };
         let (groups, monsters, roster, members, news) =
             (&mut self.groups, &self.monsters, &self.roster, &mut self.members, &mut self.news);
         // Authored group order determines gameplay RNG use. Membership itself is
@@ -158,9 +158,19 @@ impl GroupRecognition<'_, '_> {
                 }
                 species_id.get_or_insert(monster.species);
                 count += 1;
-                let to = at.translation() - from;
-                in_view |= to.length() < far
-                    && forward.angle_between(to.with_y(0.0)).to_degrees() < HALF_VIEW;
+                let Some(species) = catalog.kind(monster.species) else { continue };
+                in_view |= view.sees(
+                    members
+                        .iter_many(roster.iter())
+                        .matched()
+                        .map(|(profile, vitals, _)| (profile, vitals)),
+                    shadow_hound,
+                    monster,
+                    species,
+                    at.translation(),
+                    combatants.is_some(),
+                    obstacles,
+                );
             }
             if !in_view {
                 continue;
@@ -265,6 +275,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .init_resource::<crate::game::factions::Factions>()
+            .init_resource::<avian3d::collider_tree::ColliderTrees>()
             .init_resource::<Assets<LevelDefinition>>()
             .init_resource::<Assets<MonsterCatalog>>()
             .insert_resource(GameRng::seeded(4))
@@ -275,7 +286,7 @@ mod tests {
                  mut recognition: GroupRecognition,
                  mut rng: ResMut<GameRng>| {
                     let (at, body) = party.single().unwrap();
-                    recognition.detect(PartyBody::eye(at), body.forward(), None, &mut rng);
+                    recognition.detect(PartyBody::eye(at), body.forward(), None, false, &mut rng);
                 },
             );
         let geometry = app

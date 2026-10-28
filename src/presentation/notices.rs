@@ -553,6 +553,11 @@ pub fn queue_notices(
                 log.selected = 1;
                 vec![string(COMBAT)]
             }
+            CombatNews::Surprised(cause) => vec![string(match cause {
+                crate::game::combat::SurpriseCause::Ambush => 0x240,
+                crate::game::combat::SurpriseCause::Running => 0x23e,
+                crate::game::combat::SurpriseCause::Searching => 0x23f,
+            })],
             // Retail notices 0x21b and 0x21c: the party moves, and stops.
             CombatNews::PartyMoves => vec![string(0x21b)],
             CombatNews::PartyStops => vec![string(0x21c)],

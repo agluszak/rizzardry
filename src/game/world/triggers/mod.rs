@@ -65,16 +65,7 @@ pub struct LightActivation {
 }
 impl LightActivation {
     pub fn light_enabled(&self, name: &str, initial: bool) -> bool {
-        self.lights
-            .get(name)
-            .copied()
-            .or_else(|| {
-                self.lights
-                    .iter()
-                    .find(|(key, _)| key.eq_ignore_ascii_case(name))
-                    .map(|(_, value)| *value)
-            })
-            .unwrap_or(initial)
+        self.lights.get(&name.to_uppercase()).copied().unwrap_or(initial)
     }
 }
 
