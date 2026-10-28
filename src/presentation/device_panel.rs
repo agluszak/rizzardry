@@ -15,6 +15,7 @@
 //! movement keys do nothing; portraits stay clickable to choose who works,
 //! as retail allows.
 
+use super::main_screen::magic_view::AttemptCasting;
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::input_focus::tab_navigation::{TabGroup, TabIndex};
 use bevy::input_focus::{FocusedInput, InputFocus};
@@ -247,15 +248,13 @@ fn open_panel(
 /// attempt.
 fn show_panel(
     mut panels: Query<(&PanelOf, &mut Visibility)>,
-    attempts: Query<(&DeviceInteraction, &AttemptOn)>,
-    magic_views: Query<&super::main_screen::magic_view::MagicView>,
+    attempts: Query<(&DeviceInteraction, &AttemptOn, Has<AttemptCasting>)>,
     motions: Query<&PropMotion>,
 ) {
     for (panel, mut visibility) in &mut panels {
-        let Ok((interaction, on)) = attempts.get(panel.0) else { continue };
+        let Ok((interaction, on, casting)) = attempts.get(panel.0) else { continue };
         let settled = !matches!(interaction.work, Work::Looting)
             || motions.get(on.0).is_ok_and(|m| m.frame == m.target);
-        let casting = magic_views.iter().any(|view| view.attempt == Some(panel.0));
         visibility.set_if_neq(visible_if(settled && !casting));
     }
 }

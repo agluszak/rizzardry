@@ -541,7 +541,7 @@ fn press(
     roster: Single<Ref<PartyRoster>>,
     mut inventory: crate::game::inventory::operations::InventoryOperations,
     mut review: crate::presentation::inventory::OpenReview,
-    mut views: Query<&mut super::magic_view::MagicView>,
+    mut views: Query<(&mut super::magic_view::MagicView, Has<super::magic_view::CastsAt>)>,
     conversations: Query<(), With<crate::game::npcs::conversation::Conversation>>,
 ) {
     if click.button != PointerButton::Primary {
@@ -559,7 +559,7 @@ fn press(
     }
     // A spell for one party member is aimed by clicking their portrait
     // (retail `AimAtCharacter`).
-    if let Ok(mut view) = views.single_mut()
+    if let Ok((mut view, false)) = views.single_mut()
         && view.wants_member()
     {
         view.aim_at(member);

@@ -115,8 +115,9 @@ pub fn sync_door_links(
     }
 }
 
-/// A walker crossing a link.
+/// A walker crossing a link, paused by navigation while it does.
 #[derive(Component, Debug)]
+#[require(UsingAnimationLink)]
 pub struct Crossing {
     pub to: Vec3,
 }
@@ -156,9 +157,7 @@ pub fn use_reached_links(
                 }
             }
             LinkKind::Door => {
-                commands
-                    .entity(entity)
-                    .insert((UsingAnimationLink, Crossing { to: reached.end_point }));
+                commands.entity(entity).insert(Crossing { to: reached.end_point });
             }
         }
     }
@@ -180,7 +179,7 @@ pub fn finish_crossings(
         if monster.is_some_and(|m| m.is_dead())
             || feet.with_y(0.0).distance(crossing.to.with_y(0.0)) < 0.4
         {
-            commands.entity(entity).remove::<(Crossing, UsingAnimationLink)>();
+            commands.entity(entity).remove_with_requires::<Crossing>();
         }
     }
 }
