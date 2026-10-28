@@ -120,6 +120,8 @@ impl DialogueScript {
 
 #[derive(Clone, Debug)]
 pub struct FactDefinition {
+    pub highlight_when_true: bool,
+    pub visibility: i8,
     pub id: FactId,
     pub symbol: String,
     pub description: String,

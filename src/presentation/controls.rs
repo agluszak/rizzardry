@@ -121,6 +121,7 @@ pub fn read_controls(
     free_look: Single<&Action<FreeLook>>,
     rest: Single<&ActionEvents, With<Action<Rest>>>,
     search: Single<&ActionEvents, With<Action<SearchKey>>>,
+    preferences: Option<Res<super::settings::Preferences>>,
     mut movement: Single<&mut PartyMovement>,
     mut looks: MessageWriter<PartyLook>,
     mut camps: MessageWriter<CampRequest>,
@@ -128,7 +129,11 @@ pub fn read_controls(
 ) {
     movement.set_if_neq(PartyMovement { walk: ***walk, turn: ***turn, running: ***run });
     if ***free_look {
-        looks.write(PartyLook(-***look * 0.003));
+        let mut delta = -***look * 0.003;
+        if preferences.is_some_and(|p| p.invert_mouse_y) {
+            delta.y = -delta.y;
+        }
+        looks.write(PartyLook(delta));
     }
     if rest.contains(ActionEvents::START) {
         camps.write(CampRequest);

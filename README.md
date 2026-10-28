@@ -84,3 +84,16 @@ Monastery/Arnika branch are the first supported content slice. NPC memory and
 stock survive closure and level travel within this session; disk saves,
 recruitment and further script semantics remain unfinished. Unsupported
 mandatory dialogue operations stop with an explicit content gap.
+
+The HUD journal button (or **J** with no widget focused) opens the journal.
+Use Left/Right or Previous/Next to turn pages, the view button to switch between facts,
+remembered topics and encountered factions, and Escape to return. Fact entries
+retain their original location and description; the difficulty setting filters
+which entries are shown.
+
+Open **Options** from the main menu, the HUD disk button, or **O**. Difficulty,
+phased/continuous combat, master volume, fullscreen and mouse-Y inversion are
+editable. **Apply** saves them; **Cancel** or Escape discards the draft. Settings
+are stored in `rizzardry/settings.ron` under `XDG_CONFIG_HOME`, `APPDATA`, or
+`~/.config` (in that order), and loaded on startup. Campaign saves and Wizardry 7
+party import are not yet available.

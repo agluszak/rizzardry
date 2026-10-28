@@ -4,7 +4,9 @@
 use bevy::prelude::*;
 
 /// Retail's three settings; new games start on Normal (`Gameplay Init.cpp:494`).
-#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(
+    Resource, Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize,
+)]
 pub enum Difficulty {
     Novice,
     #[default]

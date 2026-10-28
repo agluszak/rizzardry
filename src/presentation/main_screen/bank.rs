@@ -1,8 +1,7 @@
 //! The button row (retail `pc.cpp` positions and frames): the button bank,
 //! the combat round button and the round's progress along the roof, the
 //! previous and next character arrows, and the selected member's caption.
-//! Camp, search, the formation panel and the combat orders work; the
-//! journal, items, spells and options are grayed until they exist.
+//! Journal and options open full screens through the shared gameplay gate.
 
 use crate::presentation::retail_controls::{ControlSkin, set_enabled};
 use bevy::prelude::*;
@@ -36,6 +35,8 @@ pub struct RoundProgress;
 enum Bank {
     #[default]
     Camp,
+    Journal,
+    Options,
     Search,
     Formation,
     Order(Order),
@@ -83,8 +84,8 @@ pub fn row(art: &MainScreenArt, _sheets: &Assets<SpriteSheet>) -> impl SceneList
     }).collect();
     let icon = |x, frames, kind| bank_button(art.icons.clone(), Vec2::new(x, 452.0), frames, kind);
     let buttons = bsn_list! {
-        @bank_button(art.options.clone(),Vec2::new(0.0,450.0),[3,0,1,2,2],None)
-        -- @icon(40.0,[0x2b,0x28,0x29,0x2a,0x2c],None)
+        @bank_button(art.options.clone(),Vec2::new(0.0,450.0),[3,0,1,2,2],Some(Bank::Options))
+        -- @icon(40.0,[0x2b,0x28,0x29,0x2a,0x2c],Some(Bank::Journal))
         -- @icon(70.0,[3,0,1,2,4],Some(Bank::Camp))
         -- @icon(100.0,[8,5,6,7,9],Some(Bank::Search))
         -- @icon(130.0,[0x17,0x14,0x15,0x16,0x18],Some(Bank::Magic { items: true }))
@@ -195,6 +196,8 @@ fn press(
     click: On<Activate>,
     buttons: Query<&BankFace, Without<bevy::ui::InteractionDisabled>>,
     mut camp: MessageWriter<CampRequest>,
+    mut journal: MessageWriter<crate::presentation::journal::OpenJournal>,
+    mut options: MessageWriter<crate::presentation::options::OpenOptions>,
     mut search: MessageWriter<ToggleSearch>,
     mut layout: ResMut<ScreenLayout>,
     mut orders: MessageWriter<crate::game::combat::GiveOrder>,
@@ -220,6 +223,12 @@ fn press(
             } else {
                 round.write(StartRound);
             }
+        }
+        Some(Bank::Journal) => {
+            journal.write(crate::presentation::journal::OpenJournal);
+        }
+        Some(Bank::Options) => {
+            options.write(crate::presentation::options::OpenOptions);
         }
         Some(Bank::Camp) => {
             camp.write(CampRequest);

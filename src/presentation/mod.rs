@@ -14,17 +14,20 @@ pub mod environment;
 pub mod frontend;
 pub mod hover;
 pub mod inventory;
+pub mod journal;
 pub mod main_screen;
 pub mod monsters;
 mod morph_picking;
 pub mod music;
 pub mod names;
 pub mod notices;
+pub mod options;
 pub mod party_view;
 mod party_voice;
 pub mod retail_controls;
 pub mod screen_art;
 pub mod selection;
+pub mod settings;
 pub mod sky;
 mod surfaces;
 #[cfg(test)]
@@ -78,6 +81,8 @@ impl Plugin for PresentationPlugin {
             inventory::InventoryPlugin,
             frontend::FrontendPlugin,
             device_panel::plugin,
+            journal::plugin,
+            options::plugin,
         ))
         // Retail's double click.
         .insert_resource(bevy::picking::PickingSettings {

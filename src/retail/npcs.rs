@@ -253,6 +253,8 @@ pub fn read_facts(data: &[u8]) -> Result<FactCatalog, LoadError> {
             return Err(invalid("duplicate fact id"));
         }
         facts.push(FactDefinition {
+            highlight_when_true: r[0x36] != 0,
+            visibility: r[0x37] as i8,
             id,
             symbol: lenient_string(&r[4..0x36]),
             alternate_description: wide(&r[0x38..0x100])?,

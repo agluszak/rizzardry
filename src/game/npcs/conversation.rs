@@ -22,8 +22,21 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 pub struct StoryFacts {
     values: BTreeMap<FactId, u8>,
     pub topics: Vec<(TopicCategory, String)>,
-    pub journal: Vec<String>,
+    pub journal: Vec<JournalEntry>,
     initialized: bool,
+}
+/// A fact transition, retaining its original level and value for journal history.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JournalEntry {
+    pub fact: FactId,
+    pub value: u8,
+    pub level: String,
+}
+impl JournalEntry {
+    pub fn description<'a>(&self, catalog: &'a FactCatalog) -> Option<&'a str> {
+        let fact = catalog.get(self.fact)?;
+        Some(if self.value != 0 { &fact.alternate_description } else { &fact.description })
+    }
 }
 impl StoryFacts {
     /// The keyword notebook outlives a conversation. Learning/discussing a
@@ -69,18 +82,19 @@ impl StoryFacts {
             .get(id)
             .is_some_and(|f| matches!(f.symbol.as_str(), "FACT_BURZ_SAID130" | "FACT_TEMPLAR"))
     }
-    fn set(&mut self, id: FactId, value: u8, catalog: &FactCatalog) -> Result<(), String> {
+    fn set(
+        &mut self,
+        id: FactId,
+        value: u8,
+        catalog: &FactCatalog,
+        level: String,
+    ) -> Result<(), String> {
         if !Self::can_set(id, catalog) {
             return Err(format!("unported fact assignment {id:?}"));
         }
         let previous = self.values.insert(id, value).unwrap_or(0);
-        if previous != value
-            && let Some(fact) = catalog.get(id)
-        {
-            let text = if value == 0 { &fact.alternate_description } else { &fact.description };
-            if !text.is_empty() {
-                self.journal.push(text.clone());
-            }
+        if previous != value {
+            self.journal.push(JournalEntry { fact: id, value, level });
         }
         Ok(())
     }
@@ -538,11 +552,22 @@ fn run(world: &mut World, entity: Entity, c: &mut Conversation) {
                             }
                             DialogueOp::SetFact(id, value) => {
                                 let facts_handle = world.resource::<NpcAssets>().facts.clone();
+                                let level = world
+                                    .query::<&Level>()
+                                    .iter(world)
+                                    .next()
+                                    .map(|level| level.path.clone())
+                                    .unwrap_or_default();
                                 world.resource_scope(
                                     |world, catalogs: Mut<Assets<FactCatalog>>| {
                                         world
                                             .resource_mut::<StoryFacts>()
-                                            .set(*id, *value, catalogs.get(&facts_handle).unwrap())
+                                            .set(
+                                                *id,
+                                                *value,
+                                                catalogs.get(&facts_handle).unwrap(),
+                                                level,
+                                            )
                                             .expect("preflighted fact");
                                     },
                                 );
@@ -981,6 +1006,8 @@ mod tests {
         let facts =
             w.resource_mut::<Assets<FactCatalog>>().add(FactCatalog(vec![FactDefinition {
                 id: FactId(91),
+                highlight_when_true: false,
+                visibility: 0,
                 symbol: "FACT_BURZ_SAID130".into(),
                 description: String::new(),
                 alternate_description: String::new(),
@@ -1027,6 +1054,30 @@ mod tests {
             .id();
         (app, entity, actor)
     }
+    #[test]
+    fn journal_keeps_transitions_and_selects_retail_text_without_rewriting_history() {
+        let catalog = FactCatalog(vec![FactDefinition {
+            id: FactId(91),
+            symbol: "FACT_BURZ_SAID130".into(),
+            description: "Unfinished".into(),
+            alternate_description: "Finished".into(),
+            visibility: 2,
+            highlight_when_true: true,
+        }]);
+        let mut facts = StoryFacts::default();
+        facts.set(FactId(91), 1, &catalog, "first".into()).unwrap();
+        facts.set(FactId(91), 1, &catalog, "second".into()).unwrap();
+        facts.set(FactId(91), 0, &catalog, "second".into()).unwrap();
+        assert_eq!(facts.journal.len(), 2);
+        assert_eq!(facts.journal[0].description(&catalog), Some("Finished"));
+        assert_eq!(facts.journal[0].level, "first");
+        assert_eq!(facts.journal[1].description(&catalog), Some("Unfinished"));
+        assert_eq!(facts.journal[1].level, "second");
+        assert_eq!(facts.get(FactId(91), &catalog), Ok(0));
+        assert!(facts.set(FactId(999), 1, &catalog, "third".into()).is_err());
+        assert_eq!(facts.journal.len(), 2);
+    }
+
     #[test]
     fn discussed_topics_survive_the_session_and_discoveries_are_marked_only_in_it() {
         let (mut app, session, _) = app(DialogueScript {
