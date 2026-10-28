@@ -28,20 +28,41 @@ pub struct Enchantments(pub Vec<Enchantment>);
 pub struct PartyEffects(pub Enchantments);
 
 pub fn personal(spell: SpellId) -> bool {
-    matches!(spell.0, 19 | 21 | 27 | 54 | 56 | 61 | 65)
+    matches!(
+        spell,
+        crate::content::spells::SpellId::DRACON_BREATH
+            | crate::content::spells::SpellId::GUARDIAN_ANGEL
+            | crate::content::spells::SpellId::RAZOR_CLOAK
+            | crate::content::spells::SpellId::EYE_FOR_AN_EYE
+            | crate::content::spells::SpellId::HASTE
+            | crate::content::spells::SpellId::SUPERMAN
+            | crate::content::spells::SpellId::BODY_OF_STONE
+    )
 }
 
 pub fn combat_only(spell: SpellId) -> bool {
-    matches!(spell.0, 2 | 48 | 49 | 53 | 59 | 62 | 76 | 80 | 81 | 93)
+    matches!(
+        spell,
+        crate::content::spells::SpellId::BLESS
+            | crate::content::spells::SpellId::ACID_BOMB
+            | crate::content::spells::SpellId::ARMORMELT
+            | crate::content::spells::SpellId::ELEMENT_SHIELD
+            | crate::content::spells::SpellId::SOUL_SHIELD
+            | crate::content::spells::SpellId::RING_OF_FIRE
+            | crate::content::spells::SpellId::TOXIC_CLOUD
+            | crate::content::spells::SpellId::DRAINING_CLOUD
+            | crate::content::spells::SpellId::FIRESTORM
+            | crate::content::spells::SpellId::DEATH_CLOUD
+    )
 }
 
 impl Enchantments {
-    pub fn get(&self, spell: u8) -> Option<&Enchantment> {
-        self.0.iter().find(|e| e.spell.0 == spell && e.turns > 0)
+    pub fn get(&self, spell: SpellId) -> Option<&Enchantment> {
+        self.0.iter().find(|e| e.spell == spell && e.turns > 0)
     }
 
     pub fn accepts(&self, spell: SpellId, power: u8) -> bool {
-        !personal(spell) || self.get(spell.0).is_none_or(|e| power > e.power)
+        !personal(spell) || self.get(spell).is_none_or(|e| power > e.power)
     }
 
     pub fn apply(&mut self, effect: Enchantment) -> bool {
@@ -68,7 +89,11 @@ impl Enchantments {
 
     /// Retail keeps an exactly exhausted angel until the next nonzero hit.
     pub fn absorb(&mut self, amount: u32) -> u32 {
-        let Some(e) = self.0.iter_mut().find(|e| e.spell.0 == 21 && e.turns > 0) else {
+        let Some(e) = self
+            .0
+            .iter_mut()
+            .find(|e| e.spell == crate::content::spells::SpellId::GUARDIAN_ANGEL && e.turns > 0)
+        else {
             return amount;
         };
         if amount <= e.absorption {
@@ -76,30 +101,44 @@ impl Enchantments {
             return 0;
         }
         let remaining = amount - e.absorption;
-        self.0.retain(|e| e.spell.0 != 21);
+        self.0.retain(|e| e.spell != crate::content::spells::SpellId::GUARDIAN_ANGEL);
         remaining
     }
 
     pub fn armour(&self) -> i32 {
-        self.get(2).map_or(0, |e| e.scaled(2)) as i32
-            + self.get(32).map_or(0, |e| u32::from(e.power).div_ceil(2)) as i32
-            + self.get(65).map_or(0, |e| e.scaled(u32::from(e.power))) as i32
+        self.get(crate::content::spells::SpellId::BLESS).map_or(0, |e| e.scaled(2)) as i32
+            + self
+                .get(crate::content::spells::SpellId::ARMORPLATE)
+                .map_or(0, |e| u32::from(e.power).div_ceil(2)) as i32
+            + self
+                .get(crate::content::spells::SpellId::BODY_OF_STONE)
+                .map_or(0, |e| e.scaled(u32::from(e.power))) as i32
     }
 
     pub fn hit_bonus(&self) -> i32 {
-        self.get(2).map_or(0, |e| e.scaled(2)) as i32
-            + self.get(20).map_or(0, |e| u32::from(e.power).div_ceil(2)) as i32
+        self.get(crate::content::spells::SpellId::BLESS).map_or(0, |e| e.scaled(2)) as i32
+            + self
+                .get(crate::content::spells::SpellId::ENCHANTED_BLADE)
+                .map_or(0, |e| u32::from(e.power).div_ceil(2)) as i32
     }
 
     pub fn resistance(&self, realm: Realm) -> i32 {
-        let shield = if matches!(realm, Realm::Mental | Realm::Divine) { 59 } else { 53 };
-        self.get(40).map_or(0, |e| u32::from(e.power) * 4 + 7) as i32
-            + self.get(shield).map_or(0, |e| u32::from(e.power) * if shield == 59 { 10 } else { 7 })
-                as i32
+        let shield = if matches!(realm, Realm::Mental | Realm::Divine) {
+            crate::content::spells::SpellId::SOUL_SHIELD
+        } else {
+            crate::content::spells::SpellId::ELEMENT_SHIELD
+        };
+        self.get(crate::content::spells::SpellId::MAGIC_SCREEN)
+            .map_or(0, |e| u32::from(e.power) * 4 + 7) as i32
+            + self.get(shield).map_or(0, |e| {
+                u32::from(e.power)
+                    * if shield == crate::content::spells::SpellId::SOUL_SHIELD { 10 } else { 7 }
+            }) as i32
     }
 
     pub fn missile_deflection(&self) -> u32 {
-        self.get(26).map_or(0, |e| (u32::from(e.power) + 5) * 5)
+        self.get(crate::content::spells::SpellId::MISSILE_SHIELD)
+            .map_or(0, |e| (u32::from(e.power) + 5) * 5)
     }
 
     pub fn deflects(
@@ -116,7 +155,11 @@ impl Enchantments {
     }
 
     pub fn counter_slow(&mut self, turns: u32) -> u32 {
-        let Some(haste) = self.0.iter_mut().find(|e| e.spell.0 == 56) else { return turns };
+        let Some(haste) =
+            self.0.iter_mut().find(|e| e.spell == crate::content::spells::SpellId::HASTE)
+        else {
+            return turns;
+        };
         let remaining = turns.saturating_sub(haste.turns);
         haste.turns = haste.turns.saturating_sub(turns);
         self.0.retain(|e| e.turns > 0);
@@ -124,16 +167,20 @@ impl Enchantments {
     }
 
     pub fn attribute_bonus(&self, attribute: crate::content::characters::Attribute) -> u32 {
-        self.get(61).map_or(0, |s| s.scaled(u32::from(s.power) * 5))
+        self.get(crate::content::spells::SpellId::SUPERMAN)
+            .map_or(0, |s| s.scaled(u32::from(s.power) * 5))
             + if attribute == crate::content::characters::Attribute::Speed {
-                self.get(56).map_or(0, |s| s.scaled(u32::from(s.power) * 10))
+                self.get(crate::content::spells::SpellId::HASTE)
+                    .map_or(0, |s| s.scaled(u32::from(s.power) * 10))
             } else {
                 0
             }
     }
 
     pub fn damage_reduction(&self) -> u32 {
-        self.get(65).map_or(0, |e| e.scaled(u32::from(e.power) * 8)).min(100)
+        self.get(crate::content::spells::SpellId::BODY_OF_STONE)
+            .map_or(0, |e| e.scaled(u32::from(e.power) * 8))
+            .min(100)
     }
 
     pub fn physical_damage(&self, amount: u32) -> u32 {
@@ -145,22 +192,25 @@ impl Enchantments {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn effect(spell: u8, power: u8, turns: u32) -> Enchantment {
-        Enchantment { spell: SpellId(spell), power, turns, boost: 0, absorption: 12 }
+    fn effect(spell: SpellId, power: u8, turns: u32) -> Enchantment {
+        Enchantment { spell, power, turns, boost: 0, absorption: 12 }
     }
     #[test]
     fn actors_require_stronger_power_but_party_slots_replace() {
         let mut effects = Enchantments::default();
-        assert!(effects.apply(effect(21, 3, 4)));
+        assert!(effects.apply(effect(crate::content::spells::SpellId::GUARDIAN_ANGEL, 3, 4)));
         assert_eq!(effects.absorb(5), 0);
-        assert!(!effects.apply(effect(21, 3, 20)));
-        assert_eq!(effects.get(21).unwrap().absorption, 7);
-        assert_eq!(effects.get(21).unwrap().turns, 4);
-        assert!(effects.apply(effect(21, 4, 2)));
+        assert!(!effects.apply(effect(crate::content::spells::SpellId::GUARDIAN_ANGEL, 3, 20)));
+        assert_eq!(
+            effects.get(crate::content::spells::SpellId::GUARDIAN_ANGEL).unwrap().absorption,
+            7
+        );
+        assert_eq!(effects.get(crate::content::spells::SpellId::GUARDIAN_ANGEL).unwrap().turns, 4);
+        assert!(effects.apply(effect(crate::content::spells::SpellId::GUARDIAN_ANGEL, 4, 2)));
         assert_eq!(effects.absorb(14), 2);
-        assert!(effects.get(21).is_none());
-        effects.apply(effect(32, 7, 10));
-        effects.apply(effect(32, 1, 2));
+        assert!(effects.get(crate::content::spells::SpellId::GUARDIAN_ANGEL).is_none());
+        effects.apply(effect(crate::content::spells::SpellId::ARMORPLATE, 7, 10));
+        effects.apply(effect(crate::content::spells::SpellId::ARMORPLATE, 1, 2));
         assert_eq!(effects.armour(), 1);
         effects.age(2);
         assert!(effects.0.is_empty());
@@ -171,8 +221,8 @@ mod tests {
         use crate::game::characters::{Character, Gender, Profession, Race};
         let profile = Character::new("Mage", Race::Human, Gender::Male, Profession::Mage);
         let mut effects = Enchantments::default();
-        effects.apply(effect(56, 3, 5));
-        effects.apply(effect(61, 2, 2));
+        effects.apply(effect(crate::content::spells::SpellId::HASTE, 3, 5));
+        effects.apply(effect(crate::content::spells::SpellId::SUPERMAN, 2, 2));
         assert_eq!(
             profile.stats(&effects).attribute(Attribute::Speed),
             profile.attribute(Attribute::Speed) + 40
@@ -184,14 +234,14 @@ mod tests {
         );
         assert_eq!(effects.counter_slow(8), 5);
         assert!(effects.0.is_empty());
-        effects.apply(effect(65, 5, 2));
+        effects.apply(effect(crate::content::spells::SpellId::BODY_OF_STONE, 5, 2));
         assert_eq!(effects.physical_damage(10), 6);
-        effects.apply(effect(40, 4, 10));
-        effects.apply(effect(53, 2, 5));
+        effects.apply(effect(crate::content::spells::SpellId::MAGIC_SCREEN, 4, 10));
+        effects.apply(effect(crate::content::spells::SpellId::ELEMENT_SHIELD, 2, 5));
         assert_eq!(effects.resistance(Realm::Fire), 37);
         assert_eq!(effects.resistance(Realm::Mental), 23);
         effects.end_combat();
         assert_eq!(effects.resistance(Realm::Fire), 23);
-        assert!(effects.get(65).is_some());
+        assert!(effects.get(crate::content::spells::SpellId::BODY_OF_STONE).is_some());
     }
 }

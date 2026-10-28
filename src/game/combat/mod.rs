@@ -846,7 +846,7 @@ pub fn run_battle(
                 .iter()
                 .try_fold(0, |sum, member| {
                     let (_, vitals, ..) = members.get(member).ok()?;
-                    let effect = vitals.enchantments.get(56)?;
+                    let effect = vitals.enchantments.get(crate::content::spells::SpellId::HASTE)?;
                     Some(sum + effect.scaled(u32::from(effect.power) * 10))
                 })
                 .map_or(0.0, |sum| (sum / roster.len().max(1) as u32) as f32 * 0.2);
@@ -1304,7 +1304,7 @@ fn member_acts(
         };
         let cost = attack::swing_stamina(rng, mode, weight, vitals.has(Condition::Diseased));
         let slowed = vitals.has(Condition::Slowed);
-        let hasted = vitals.enchantments.get(56).is_some();
+        let hasted = vitals.enchantments.get(crate::content::spells::SpellId::HASTE).is_some();
         vitals.spend_stamina(burden.load.scale_fatigue(cost, slowed, hasted));
         if casualty.is_some() {
             break;
@@ -1614,7 +1614,7 @@ mod tests {
         let outsider = app.world().get::<Armour>(stranger).unwrap().total;
         let party = crate::game::party::roster::the_party(app.world_mut()).unwrap();
         app.world_mut().get_mut::<PartyEffects>(party).unwrap().0.apply(Enchantment {
-            spell: crate::content::spells::SpellId(32),
+            spell: crate::content::spells::SpellId::ARMORPLATE,
             power: 5,
             boost: 0,
             turns: 2,
@@ -2033,7 +2033,7 @@ mod tests {
                 &mut app,
                 caster,
                 crate::content::spells::SpellDefinition {
-                    id: crate::content::spells::SpellId(12),
+                    id: crate::content::spells::SpellId::SLEEP,
                     realm: Some(crate::content::characters::Realm::Mental),
                     ..energy_blast()
                 },
@@ -2047,7 +2047,11 @@ mod tests {
             app.insert_resource(GameRng::seeded(seed));
             let landed = land(
                 &mut app,
-                vec![missile(caster, crate::content::spells::SpellId(12), Victim::Member(member))],
+                vec![missile(
+                    caster,
+                    crate::content::spells::SpellId::SLEEP,
+                    Victim::Member(member),
+                )],
             );
             let improved =
                 app.world().get::<Character>(member).unwrap().skill_points[Skill::IronWill] > 0;

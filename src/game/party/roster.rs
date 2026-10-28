@@ -206,15 +206,15 @@ pub fn starting_items(character: &Character) -> Vec<ItemId> {
     };
     let skill = |s| character.skill(s);
     let extra = match character.profession {
-        Priest if skill(Skill::MaceAndFlail) > skill(Skill::StaffAndWand) => Some(0x16),
-        Priest => Some(0x52),
-        Fighter if skill(Skill::Axe) > skill(Skill::Sword) => Some(0x12),
-        Fighter => Some(7),
-        Gadgeteer => Some(599),
-        Bard => Some(0x144),
+        Priest if skill(Skill::MaceAndFlail) > skill(Skill::StaffAndWand) => Some(ItemId::MACE),
+        Priest => Some(ItemId::QUARTER_STAFF),
+        Fighter if skill(Skill::Axe) > skill(Skill::Sword) => Some(ItemId::BATTLE_AXE),
+        Fighter => Some(ItemId::LONGSWORD),
+        Gadgeteer => Some(ItemId::OMNIGUN_MK_1),
+        Bard => Some(ItemId::POETS_LUTE),
         _ => None,
     };
-    set.iter().copied().chain(extra).map(ItemId).collect()
+    set.iter().copied().map(ItemId).chain(extra).collect()
 }
 
 #[cfg(test)]

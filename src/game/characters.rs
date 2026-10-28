@@ -583,14 +583,14 @@ impl Character {
             Race::Dwarf => &[DwarfDamageResistance],
             Race::Faerie => &[
                 FaerieArmour,
-                FaerieAbility23,
+                UnusualStartingEquipment,
                 FaerieCarryCapacity,
-                FaerieAbility25,
-                FaerieAbility26,
+                EquippableItemWeightLimit,
+                FastMagicRecovery,
             ],
             Race::Lizardman => &[LizardmanMagicRecovery],
             Race::Dracon => &[Breathe],
-            Race::Android => &[AndroidAbility30, CannotLearn],
+            Race::Android => &[AndroidConditionImmunity, CannotLearn],
             _ => &[],
         };
         racial.iter().copied().collect()
@@ -804,7 +804,7 @@ impl Vitals {
                 }
                 Lasting::Rounds(remaining as u16)
             } else {
-                self.enchantments.0.retain(|e| e.spell.0 != 56);
+                self.enchantments.0.retain(|e| e.spell != crate::content::spells::SpellId::HASTE);
                 lasting
             }
         } else {

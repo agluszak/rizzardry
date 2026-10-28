@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use super::{LearnedSpells, SpellPoints, Strength};
 use crate::content::characters::{Attribute, Realm, Skill};
 use crate::content::items::{Dice, EquipClass, ItemCatalog};
-use crate::content::species::MonsterCatalog;
+use crate::content::species::{MonsterCatalog, MonsterKind};
 use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId};
 use crate::game::characters::{Condition, Lasting, inflict, resistance::resistances, wake_on_hit};
 use crate::game::difficulty::{Difficulty, Side};
@@ -64,50 +64,85 @@ enum Kind {
 /// The spells implemented, by retail id (`spell_ids.h`), and what they do.
 fn kind(spell: SpellId) -> Option<Kind> {
     use Condition::*;
-    Some(match spell.0 {
-        1 | 4 | 5 | 9 | 25 | 28 | 36 | 43 | 47 | 50 | 52 | 55 | 57 | 63 | 66 | 83 | 95 | 96
-        | 97 | 98 | 101 => Kind::Damage,
-        2 | 17 | 20 | 21 | 26 | 32 | 40 | 53 | 56 | 59 | 61 | 65 => Kind::Enchant,
-        22 => Kind::DamageUndead { banish: false },
-        77 => Kind::DamageUndead { banish: true },
-        6 | 68 => Kind::Heal,
-        13 | 44 => Kind::Stamina,
-        100 => Kind::Restoration,
-        7 => Kind::Inflict(Irritated, 100),
-        11 | 37 | 67 => Kind::Inflict(Paralyzed, 100),
-        12 => Kind::Inflict(Asleep, 100),
-        15 => Kind::Inflict(Blind, 100),
-        24 => Kind::Inflict(Insane, 100),
-        29 => Kind::Inflict(Slowed, 100),
-        31 => Kind::Inflict(Webbed, 100),
-        46 => Kind::Inflict(Silenced, 100),
-        69 => Kind::Inflict(Hexed, 100),
-        10 | 71 => Kind::DamageThen(Insane, 25),
-        78 => Kind::DamageThen(Blind, 25),
-        91 => Kind::DamageThen(Insane, 75),
-        92 => Kind::DamageThen(Unconscious, 50),
-        42 => Kind::NoxiousFumes,
-        14 => Kind::Fear { second: Unconscious },
-        30 => Kind::Fear { second: Afraid },
-        85 => Kind::Pandemonium,
-        70 | 87 | 90 | 94 => Kind::Slay,
-        86 | 99 => Kind::Affliction,
-        16 => Kind::Cure(&[Irritated, Nauseated, Afraid, Asleep, Blind]),
-        34 => Kind::Cure(&[Paralyzed, Webbed]),
-        35 => Kind::Cure(&[Poisoned]),
-        51 => Kind::Cure(&[Diseased]),
-        58 => Kind::Cure(&[Hexed]),
-        74 => Kind::Cure(&[Insane, Turncoat]),
-        88 => Kind::Resurrect,
-        82 => Kind::Lifesteal,
-        84 => Kind::MightToMagic,
-        124 => Kind::GoldLoss,
-        125 => Kind::Damage,
-        126 => Kind::DestroyConsumables,
-        127 => Kind::DrainMagic,
-        114 => Kind::RestoreHealth,
-        115 => Kind::RestoreMagic,
-        116 => Kind::Cure(&[Unconscious, Asleep]),
+    Some(match spell {
+        SpellId::ACID_SPLASH
+        | SpellId::FROST
+        | SpellId::ENERGY_BLAST
+        | SpellId::MAKE_WOUNDS
+        | SpellId::MAGIC_MISSILES
+        | SpellId::SHRILL_SOUND
+        | SpellId::FIREBALL
+        | SpellId::PSIONIC_FIRE
+        | SpellId::WHIPPING_ROCKS
+        | SpellId::CRUSH
+        | SpellId::EGO_WHIP
+        | SpellId::FIRE_BOMB
+        | SpellId::ICEBALL
+        | SpellId::WHIRLWIND
+        | SpellId::DEHYDRATE
+        | SpellId::LIGHTNING
+        | SpellId::EARTHQUAKE
+        | SpellId::FALLING_STARS
+        | SpellId::MIND_FLAY
+        | SpellId::NUCLEAR_BLAST
+        | SpellId::TSUNAMI => Kind::Damage,
+        SpellId::BLESS
+        | SpellId::DETECT_SECRETS
+        | SpellId::ENCHANTED_BLADE
+        | SpellId::GUARDIAN_ANGEL
+        | SpellId::MISSILE_SHIELD
+        | SpellId::ARMORPLATE
+        | SpellId::MAGIC_SCREEN
+        | SpellId::ELEMENT_SHIELD
+        | SpellId::HASTE
+        | SpellId::SOUL_SHIELD
+        | SpellId::SUPERMAN
+        | SpellId::BODY_OF_STONE => Kind::Enchant,
+        SpellId::HOLY_WATER => Kind::DamageUndead { banish: false },
+        SpellId::BANISH => Kind::DamageUndead { banish: true },
+        SpellId::HEAL_WOUNDS | SpellId::HEAL_ALL => Kind::Heal,
+        SpellId::STAMINA | SpellId::REST_ALL => Kind::Stamina,
+        SpellId::RESTORATION => Kind::Restoration,
+        SpellId::ITCHING_SKIN => Kind::Inflict(Irritated, 100),
+        SpellId::PARALYZE | SpellId::FREEZE_FLESH | SpellId::FREEZE_ALL => {
+            Kind::Inflict(Paralyzed, 100)
+        }
+        SpellId::SLEEP => Kind::Inflict(Asleep, 100),
+        SpellId::BLINDING_FLASH => Kind::Inflict(Blind, 100),
+        SpellId::INSANITY => Kind::Inflict(Insane, 100),
+        SpellId::SLOW => Kind::Inflict(Slowed, 100),
+        SpellId::WEB => Kind::Inflict(Webbed, 100),
+        SpellId::SILENCE => Kind::Inflict(Silenced, 100),
+        SpellId::HEX => Kind::Inflict(Hexed, 100),
+        SpellId::MIND_STAB | SpellId::PSIONIC_BLAST => Kind::DamageThen(Insane, 25),
+        SpellId::BLIZZARD => Kind::DamageThen(Blind, 25),
+        SpellId::CEREBRAL_HEMORRHAGE => Kind::DamageThen(Insane, 75),
+        SpellId::CONCUSSION => Kind::DamageThen(Unconscious, 50),
+        SpellId::NOXIOUS_FUMES => Kind::NoxiousFumes,
+        SpellId::TERROR => Kind::Fear { second: Unconscious },
+        SpellId::SONIC_BOOM => Kind::Fear { second: Afraid },
+        SpellId::PANDEMONIUM => Kind::Pandemonium,
+        SpellId::INSTANT_DEATH
+        | SpellId::QUICKSAND
+        | SpellId::ASPHYXIATION
+        | SpellId::DEATH_WISH => Kind::Slay,
+        SpellId::PRISMIC_RAY | SpellId::PRISMIC_CHAOS => Kind::Affliction,
+        SpellId::CURE_LESSER_COND => Kind::Cure(&[Irritated, Nauseated, Afraid, Asleep, Blind]),
+        SpellId::CURE_PARALYSIS => Kind::Cure(&[Paralyzed, Webbed]),
+        SpellId::CURE_POISON => Kind::Cure(&[Poisoned]),
+        SpellId::CURE_DISEASE => Kind::Cure(&[Diseased]),
+        SpellId::REMOVE_CURSE => Kind::Cure(&[Hexed]),
+        SpellId::SANE_MIND => Kind::Cure(&[Insane, Turncoat]),
+        SpellId::RESURRECTION => Kind::Resurrect,
+        SpellId::LIFESTEAL => Kind::Lifesteal,
+        SpellId::MIGHT_TO_MAGIC => Kind::MightToMagic,
+        SpellId::PHILOSOPHERS_BANE => Kind::GoldLoss,
+        SpellId::VAMPIRIC_VORTEX => Kind::Damage,
+        SpellId::HEATWAVE => Kind::DestroyConsumables,
+        SpellId::ANTI_MAGIC => Kind::DrainMagic,
+        SpellId::RESTORE_HEALTH => Kind::RestoreHealth,
+        SpellId::RESTORE_MAGIC => Kind::RestoreMagic,
+        SpellId::SMELLING_SALTS => Kind::Cure(&[Unconscious, Asleep]),
         _ => return None,
     })
 }
@@ -229,18 +264,20 @@ const CONDITION_SAVE: [i32; 20] =
 const DEATH_SAVE: i32 = CONDITION_SAVE[18];
 
 /// The monster kinds Dispel Undead harms.
-const UNDEAD_KINDS: [u8; 2] = [0x14, 0x15];
+const UNDEAD_KINDS: [MonsterKind; 2] = [MonsterKind::Undead, MonsterKind::Demon];
 /// The kind only Banish harms besides them.
-const BANISHED_KIND: u8 = 0x1c;
+const BANISHED_KIND: MonsterKind = MonsterKind::Spirit;
 
 /// Whether a monster of `kind` shrugs a condition off (retail
 /// `g_condition_immunities`).
-fn immune(kind: u8, condition: Condition) -> bool {
+fn immune(kind: MonsterKind, condition: Condition) -> bool {
     use Condition::*;
     let immune: &[_] = match kind {
-        20 => &[Diseased, Poisoned, Unconscious, Irritated, Afraid, Insane, Asleep, Nauseated],
-        22 => &[Diseased, Poisoned, Nauseated, Irritated, Afraid, Asleep],
-        17 => &[Insane, Afraid, Nauseated],
+        MonsterKind::Undead => {
+            &[Diseased, Poisoned, Unconscious, Irritated, Afraid, Insane, Asleep, Nauseated]
+        }
+        MonsterKind::Android => &[Diseased, Poisoned, Nauseated, Irritated, Afraid, Asleep],
+        MonsterKind::Plant => &[Insane, Afraid, Nauseated],
         _ => &[],
     };
     immune.contains(&condition)
@@ -432,7 +469,11 @@ fn inflict_on(
                         Lasting::Rounds(remaining as u16)
                     }
                     Lasting::Indefinite => {
-                        world.monsters.enchantments_mut(monster)?.0.retain(|e| e.spell.0 != 56);
+                        world
+                            .monsters
+                            .enchantments_mut(monster)?
+                            .0
+                            .retain(|e| e.spell != crate::content::spells::SpellId::HASTE);
                         lasting
                     }
                 }
@@ -507,12 +548,19 @@ fn slay(
     };
     // A failed death save inflicts Dead; it is not absorbable damage.
     match victim {
-        Victim::Member(member) => {
-            world.members.get_mut(member).ok()?.1.enchantments.0.retain(|e| e.spell.0 != 21)
-        }
-        Victim::Monster(monster) => {
-            world.monsters.enchantments_mut(monster)?.0.retain(|e| e.spell.0 != 21)
-        }
+        Victim::Member(member) => world
+            .members
+            .get_mut(member)
+            .ok()?
+            .1
+            .enchantments
+            .0
+            .retain(|e| e.spell != crate::content::spells::SpellId::GUARDIAN_ANGEL),
+        Victim::Monster(monster) => world
+            .monsters
+            .enchantments_mut(monster)?
+            .0
+            .retain(|e| e.spell != crate::content::spells::SpellId::GUARDIAN_ANGEL),
     }
     hurt(rng, world, victim, hp)
 }
@@ -579,7 +627,7 @@ pub fn resolve(
     }
     let (Some(kind), Some(realm)) = (kind(spell.id), spell.realm) else { return Vec::new() };
     let kind = if backfired && super::enchantments::personal(spell.id) {
-        if spell.id.0 == 56 {
+        if spell.id == SpellId::HASTE {
             Kind::Inflict(Condition::Slowed, 100)
         } else {
             return Vec::new();
@@ -612,7 +660,7 @@ pub fn resolve(
                     if !enchantments.accepts(spell.id, strength.power) {
                         return false;
                     }
-                    let absorption = if spell.id.0 == 21 {
+                    let absorption = if spell.id == SpellId::GUARDIAN_ANGEL {
                         let rolled =
                             spell.dice.map_or(0, |dice| rng.roll(dice)) * u32::from(strength.power);
                         rolled + rolled * strength.boost / 100
@@ -627,7 +675,7 @@ pub fn resolve(
                             if v.is_dead() {
                                 return false;
                             }
-                            if spell.id.0 == 56 {
+                            if spell.id == SpellId::HASTE {
                                 let remaining = counter_haste(&mut v.conditions, turns);
                                 if remaining == 0 {
                                     return true;
@@ -648,7 +696,7 @@ pub fn resolve(
                         apply(world.enchantments)
                     }
                     Victim::Monster(entity) => {
-                        if spell.id.0 == 56 {
+                        if spell.id == SpellId::HASTE {
                             let remaining = world
                                 .monsters
                                 .conditions_mut(entity)

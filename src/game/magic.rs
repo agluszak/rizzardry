@@ -837,7 +837,16 @@ mod tests {
         use crate::game::inventory::{Carried, ItemIds, ItemStack};
         use casting::{Aim, MagicChoice, MagicNews, Source};
 
-        for id in [21, 32, 56, 61, 65, 114, 115, 116] {
+        for id in [
+            SpellId::GUARDIAN_ANGEL,
+            SpellId::ARMORPLATE,
+            SpellId::HASTE,
+            SpellId::SUPERMAN,
+            SpellId::BODY_OF_STONE,
+            SpellId::RESTORE_HEALTH,
+            SpellId::RESTORE_MAGIC,
+            SpellId::SMELLING_SALTS,
+        ] {
             let mut app = App::new();
             app.add_plugins((MinimalPlugins, AssetPlugin::default()))
                 .init_asset::<ItemCatalog>()
@@ -856,13 +865,17 @@ mod tests {
             let definition = ItemDefinition {
                 id: ItemId(0),
                 class: EquipClass::Potion,
-                use_type: if id == 116 { UseType::Thrown } else { UseType::Potion },
+                use_type: if id == SpellId::SMELLING_SALTS {
+                    UseType::Thrown
+                } else {
+                    UseType::Potion
+                },
                 quantity: QuantityKind::Stack,
                 stack_limit: 5,
                 professions: EnumSet::all(),
                 races: EnumSet::all(),
                 genders: EnumSet::all(),
-                spell: Some(ItemSpell { spell: SpellId(id), power: 4 }),
+                spell: Some(ItemSpell { spell: id, power: 4 }),
                 ..default()
             };
             let stack = ItemStack::new(&definition, &mut ItemIds::default(), 2, true);
@@ -874,9 +887,9 @@ mod tests {
                 world.resource_mut::<Assets<MonsterCatalog>>().add(MonsterCatalog::default());
             let loot = world.resource_mut::<Assets<LootTables>>().add(LootTables::default());
             let mut definitions = vec![SpellDefinition::default(); 117];
-            definitions[6] = heal_wounds();
-            definitions[id as usize] = SpellDefinition {
-                id: SpellId(id),
+            definitions[usize::from(SpellId::HEAL_WOUNDS.0)] = heal_wounds();
+            definitions[usize::from(id.0)] = SpellDefinition {
+                id,
                 realm: Some(Realm::Divine),
                 targeting: Targeting::Ally,
                 dice: Some(Dice { base: 0, count: 1, sides: 1 }),
@@ -919,7 +932,7 @@ mod tests {
             app.update();
             let world = app.world_mut();
             let news: Vec<_> = world.resource_mut::<Messages<MagicNews>>().drain().collect();
-            assert!(matches!(news.as_slice(), [MagicNews::Done(_)]), "{id}: {news:?}");
+            assert!(matches!(news.as_slice(), [MagicNews::Done(_)]), "{id:?}: {news:?}");
             assert_eq!(
                 world.get::<Carried>(user).unwrap().backpack[0].as_ref().unwrap().count(),
                 1
@@ -928,16 +941,23 @@ mod tests {
             assert_eq!(user_after.hp, user_before.hp);
             assert_eq!(user_after.conditions, user_before.conditions);
             let fatigue = user_before.stamina - user_after.stamina;
-            if id == 116 {
+            if id == SpellId::SMELLING_SALTS {
                 assert_eq!(fatigue, 10);
             } else {
                 assert!((1..=2).contains(&fatigue), "using an item still pays its normal fatigue");
             }
             let vitals = world.get::<Vitals>(ally).unwrap();
             match id {
-                21 => {
+                SpellId::GUARDIAN_ANGEL => {
                     assert!(world.get::<Vitals>(user).unwrap().enchantments.0.is_empty());
-                    assert_eq!(vitals.enchantments.get(21).unwrap().absorption, 4);
+                    assert_eq!(
+                        vitals
+                            .enchantments
+                            .get(crate::content::spells::SpellId::GUARDIAN_ANGEL)
+                            .unwrap()
+                            .absorption,
+                        4
+                    );
                     let mut vitals = world.get_mut::<Vitals>(ally).unwrap();
                     let stamina = vitals.stamina;
                     assert_eq!(vitals.damage(4), 0);
@@ -946,7 +966,7 @@ mod tests {
                     assert!(vitals.is_dead());
                     assert!(vitals.enchantments.0.is_empty());
                 }
-                32 => {
+                SpellId::ARMORPLATE => {
                     assert!(vitals.enchantments.0.is_empty());
                     let party = crate::game::party::roster::the_party(world).unwrap();
                     assert_eq!(
@@ -954,21 +974,21 @@ mod tests {
                         2
                     );
                 }
-                56 | 61 | 65 => {
+                SpellId::HASTE | SpellId::SUPERMAN | SpellId::BODY_OF_STONE => {
                     let turns = vitals.enchantments.get(id).unwrap().turns;
                     let mut vitals = world.get_mut::<Vitals>(ally).unwrap();
                     vitals.age_conditions(turns);
                     assert!(vitals.enchantments.get(id).is_none());
                 }
-                114 => {
+                SpellId::RESTORE_HEALTH => {
                     assert_eq!(vitals.hp, 5, "power four heals 4d1");
                     assert_eq!(vitals.stamina, 9, "stamina rolls twice the dice, independently");
                 }
-                115 => {
+                SpellId::RESTORE_MAGIC => {
                     assert!(world.get::<SpellPoints>(ally).unwrap().current[Realm::Divine] > 0);
                     assert_eq!((vitals.hp, vitals.stamina), (1, 1));
                 }
-                116 => {
+                SpellId::SMELLING_SALTS => {
                     assert!(!vitals.has(Condition::Asleep) && !vitals.has(Condition::Unconscious))
                 }
                 _ => unreachable!(),
