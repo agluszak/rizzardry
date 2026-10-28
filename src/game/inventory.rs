@@ -753,10 +753,10 @@ pub(crate) fn identify_attempt(
 /// Guns and what loads them (retail `g_compatible_partner_pairs`).
 const LOADED_BY: [(ItemKind, ItemKind); 5] = [
     (ItemKind::MUSKET, ItemKind::POWDER_SHOT),
-    (ItemKind::PHASER, ItemKind::CELL),
-    (ItemKind::POWER_GLOVE, ItemKind::CELL),
+    (ItemKind::PHASER, ItemKind::POWER_PACK),
+    (ItemKind::POWER_GLOVE, ItemKind::POWER_PACK),
     (ItemKind::ROCKET_LAUNCHER, ItemKind::ROCKET),
-    (ItemKind::GUN_0X91, ItemKind::GUN_0X91_LOAD),
+    (ItemKind::FLAME_THROWER, ItemKind::FUEL),
 ];
 
 /// What loads an item of this kind (retail `GetItemMergeKind`).
@@ -788,7 +788,11 @@ fn partners(ranged: &ItemDefinition, other: &ItemDefinition) -> bool {
                 602..=605 => {
                     matches!(
                         kind,
-                        K::SLING_STONE | K::POWDER_SHOT | K::DARTS | K::SHURIKEN | K::SHURIKEN_2
+                        K::SLING_STONE
+                            | K::POWDER_SHOT
+                            | K::DARTS
+                            | K::SHURIKEN
+                            | K::THROWING_SHURIKEN
                     ) || dagger
                 }
                 606..=610 => {
@@ -798,7 +802,7 @@ fn partners(ranged: &ItemDefinition, other: &ItemDefinition) -> bool {
                             | K::POWDER_SHOT
                             | K::DARTS
                             | K::SHURIKEN
-                            | K::SHURIKEN_2
+                            | K::THROWING_SHURIKEN
                             | K::ARROW
                             | K::QUARREL
                     ) || dagger
@@ -1605,7 +1609,7 @@ mod tests {
         let musket = item(0, ItemKind::MUSKET, EquipClass::RangedWeapon);
         let (shot, cells) = (
             item(1, ItemKind::POWDER_SHOT, EquipClass::Ammunition),
-            item(2, ItemKind::CELL, EquipClass::Ammunition),
+            item(2, ItemKind::POWER_PACK, EquipClass::Ammunition),
         );
         assert!(can_hold_together(&musket, &shot) && can_hold_together(&shot, &musket));
         assert!(!can_hold_together(&musket, &cells));

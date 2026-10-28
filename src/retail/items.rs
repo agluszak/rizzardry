@@ -657,7 +657,7 @@ mod tests {
         assert_eq!(
             catalog.0[0].spell,
             Some(crate::content::spells::ItemSpell {
-                spell: crate::content::spells::SpellId(39),
+                spell: crate::content::spells::SpellId::KNOCK_KNOCK,
                 power: 0
             })
         );
