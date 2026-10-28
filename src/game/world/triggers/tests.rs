@@ -1323,3 +1323,55 @@ fn random_teleports_choose_at_execution_and_disabled_devices_do_not_draw() {
     assert!(!scene.run("RANDOM").0);
     assert_eq!(scene.world.resource::<GameRng>().clone().below(1000), expected.below(1000));
 }
+
+#[test]
+fn named_ambient_sound_switches_survive_revisit() {
+    let mut scene = Scenario::new(
+        vec![
+            trigger(
+                "STOP",
+                TriggerAction::AmbientSounds {
+                    names: vec!["SoundHum".into()],
+                    change: StateChange::Clear,
+                },
+            ),
+            trigger(
+                "TOGGLE",
+                TriggerAction::AmbientSounds {
+                    names: vec!["SOUNDHUM".into()],
+                    change: StateChange::Toggle,
+                },
+            ),
+        ],
+        &[],
+        LevelScript::None,
+    );
+    assert!(scene.run("STOP").0);
+    let memory = scene.remember();
+    scene.visit(Some(memory));
+    assert!(!scene.world.get::<LevelState>(scene.root).unwrap().ambient_sound_enabled("soundhum"));
+    assert!(scene.run("TOGGLE").0);
+    assert!(scene.world.get::<LevelState>(scene.root).unwrap().ambient_sound_enabled("SoundHum"));
+}
+
+#[test]
+fn light_switches_use_authored_initial_state_and_survive_revisit() {
+    let mut scene = Scenario::new(
+        vec![trigger(
+            "TOGGLE",
+            TriggerAction::Lights {
+                sources: vec![("LASER".into(), false)],
+                change: StateChange::Toggle,
+            },
+        )],
+        &[],
+        LevelScript::None,
+    );
+    assert!(!scene.world.get::<LevelState>(scene.root).unwrap().light_enabled("laser", false));
+    assert!(scene.run("TOGGLE").0);
+    let memory = scene.remember();
+    scene.visit(Some(memory));
+    assert!(scene.world.get::<LevelState>(scene.root).unwrap().light_enabled("laser", false));
+    assert!(scene.run("TOGGLE").0);
+    assert!(!scene.world.get::<LevelState>(scene.root).unwrap().light_enabled("laser", false));
+}

@@ -1031,6 +1031,7 @@ mod tests {
                 max_hp: 5,
                 stamina: 5,
                 max_stamina: 5,
+                mana: 0,
                 conditions: vec![],
                 body: ScaledBody { scale: 1., radius: 0.5, eye_height: 1., speed: 0. },
             },

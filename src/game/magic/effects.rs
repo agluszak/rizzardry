@@ -88,7 +88,15 @@ fn kind(spell: SpellId) -> Option<Kind> {
         | SpellId::NUCLEAR_BLAST
         | SpellId::TSUNAMI => Kind::Damage,
         SpellId::ACID_BOMB
+        | SpellId::DEATH_CLOUD
+        | SpellId::TOXIC_CLOUD
+        | SpellId::DRAINING_CLOUD
         | SpellId::FIRESTORM
+        | SpellId::RAZOR_CLOAK
+        | SpellId::ARMORMELT
+        | SpellId::RING_OF_FIRE
+        | SpellId::LIGHT
+        | SpellId::X_RAY
         | SpellId::BLESS
         | SpellId::DETECT_SECRETS
         | SpellId::ENCHANTED_BLADE
@@ -574,7 +582,6 @@ fn afflict(
     against: u32,
     rounds: Option<u32>,
 ) -> Option<Effect> {
-    use crate::content::characters::Trait;
     let target = target(world, victim, realm, condition)?;
     if target.dead {
         return None;
@@ -595,27 +602,8 @@ fn afflict(
     if saves(rng, world, victim, &target, base, against) {
         return Some(Effect::Resisted { victim });
     }
-    // Fearless members, Androids' constitution and Psionics' minds.
-    if let (Victim::Member(member), Some(condition)) = (victim, condition) {
-        let (character, ..) = world.members.get(member).ok()?;
-        let android = character.has_trait(Trait::AndroidConditionImmunity);
-        let shrugged = match condition {
-            Condition::Afraid => character.has_trait(Trait::Fearless) || android,
-            Condition::Diseased
-            | Condition::Irritated
-            | Condition::Nauseated
-            | Condition::Poisoned
-            | Condition::Asleep => android,
-            // Lasting insanity gets past a Psionic's mind.
-            Condition::Insane if rounds.is_none() => false,
-            Condition::Insane | Condition::Turncoat => {
-                character.has_trait(Trait::MentalConditionImmunity)
-            }
-            _ => false,
-        };
-        if shrugged {
-            return Some(Effect::Resisted { victim });
-        }
+    if condition.is_some_and(|condition| shrugs(world, victim, condition, rounds.is_none())) {
+        return Some(Effect::Resisted { victim });
     }
     let lasting = rounds.unwrap_or(INDEFINITE);
     let lasting = match resist(rng, lasting, target.resistance, target.level, against) {
@@ -633,6 +621,27 @@ fn afflict(
     };
     inflict_on(world, victim, condition, lasting)?;
     Some(Effect::Inflicted { victim, condition })
+}
+
+/// Constitution and profession immunities are checked after the save.
+fn shrugs(world: &Field, victim: Victim, condition: Condition, indefinite: bool) -> bool {
+    use crate::content::characters::Trait;
+    let Victim::Member(member) = victim else { return false };
+    let Ok((character, ..)) = world.members.get(member) else { return false };
+    let android = character.has_trait(Trait::AndroidConditionImmunity);
+    match condition {
+        Condition::Afraid => character.has_trait(Trait::Fearless) || android,
+        Condition::Diseased
+        | Condition::Irritated
+        | Condition::Nauseated
+        | Condition::Poisoned
+        | Condition::Asleep => android,
+        Condition::Insane if indefinite => false,
+        Condition::Insane | Condition::Turncoat => {
+            character.has_trait(Trait::MentalConditionImmunity)
+        }
+        _ => false,
+    }
 }
 
 /// Retail's marker for a condition without end (`W8_CONDITION_INDEFINITE`),
@@ -777,6 +786,11 @@ fn slay(
     {
         return Some(Effect::Resisted { victim });
     }
+    kill(rng, world, victim)
+}
+
+/// Death bypasses absorption, while retaining the common death/loot transaction.
+fn kill(rng: &mut GameRng, world: &mut Field, victim: Victim) -> Option<Effect> {
     let hp = match victim {
         Victim::Monster(monster) => world.monsters.monsters().get(monster).ok()?.0.hp,
         Victim::Member(member) => world.members.get(member).ok()?.1.hp,
@@ -864,6 +878,8 @@ pub fn resolve(
     let kind = if backfired && super::enchantments::personal(spell.id) {
         if spell.id == SpellId::HASTE {
             Kind::Inflict(Condition::Slowed, 100)
+        } else if spell.id == SpellId::RAZOR_CLOAK {
+            Kind::Damage
         } else {
             return Vec::new();
         }
@@ -1443,15 +1459,23 @@ pub fn all_restored(spell: SpellId, victims: &[Victim], members: &Members) -> bo
 /// than retaining a caster or borrowing a later caster's stats.
 pub(crate) fn pulse_clouds(
     combatants: &[Entity],
+    party_eye: Vec3,
     spells: &crate::content::spells::SpellCatalog,
     rng: &mut GameRng,
     world: &mut Field,
+    points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
 ) -> Vec<(SpellId, Vec<Effect>)> {
     let mut reports = Vec::new();
     let party: Vec<_> = world.party.iter().copied().map(Victim::Member).collect();
     let targets = std::iter::once(None).chain(combatants.iter().copied().map(Some));
     for actor in targets {
-        for id in [SpellId::ACID_BOMB, SpellId::FIRESTORM] {
+        for id in [
+            SpellId::ACID_BOMB,
+            SpellId::TOXIC_CLOUD,
+            SpellId::DRAINING_CLOUD,
+            SpellId::FIRESTORM,
+            SpellId::DEATH_CLOUD,
+        ] {
             let effect = match actor {
                 None => world.enchantments.get(id).copied(),
                 Some(actor) => world
@@ -1471,12 +1495,132 @@ pub(crate) fn pulse_clouds(
                 if target(world, victim, realm, None).is_none_or(|t| t.dead) {
                     continue;
                 }
-                let amount = magnitude(rng, spell.dice, strength);
-                if let Some(hit) = damage(rng, world, victim, realm, amount, strength.against) {
-                    landed.push(hit);
+                if id == SpellId::DEATH_CLOUD {
+                    // TickCombatEffectSlots makes a death save directly: no
+                    // duration roll or duration resistance reduction.
+                    let immune = match victim {
+                        Victim::Monster(actor) => world
+                            .monsters
+                            .monsters()
+                            .get(actor)
+                            .ok()
+                            .and_then(|(body, ..)| world.species.kind(body.species))
+                            .is_none_or(|kind| kind.death_immune),
+                        Victim::Member(_) => false,
+                    };
+                    let target = target(world, victim, realm, None).unwrap();
+                    let result = if immune
+                        || saves(rng, world, victim, &target, DEATH_SAVE, strength.against)
+                    {
+                        Some(Effect::Resisted { victim })
+                    } else {
+                        kill(rng, world, victim)
+                    };
+                    landed.extend(result);
+                } else {
+                    let amount = magnitude(rng, spell.dice, strength);
+                    let hit = damage(rng, world, victim, realm, amount, strength.against);
+                    if id == SpellId::DRAINING_CLOUD
+                        && let Some(Effect::Damaged { amount, .. }) = hit
+                    {
+                        match victim {
+                            Victim::Member(member) => {
+                                if let Ok((_, mut mana)) = points.get_mut(member) {
+                                    for remaining in mana.current.values_mut() {
+                                        *remaining = remaining.saturating_sub(amount);
+                                    }
+                                }
+                                if let Ok((_, mut vitals, ..)) = world.members.get_mut(member) {
+                                    vitals.spend_stamina(amount);
+                                }
+                            }
+                            Victim::Monster(monster) => {
+                                world.monsters.drain_magic(monster, amount / 2);
+                                world.monsters.fatigue(monster, amount);
+                            }
+                        }
+                    }
+                    landed.extend(hit);
+                    if id == SpellId::TOXIC_CLOUD {
+                        let Some(victim_stats) =
+                            target(world, victim, realm, None).filter(|t| !t.dead)
+                        else {
+                            continue;
+                        };
+                        let turns = duration(rng, spell, strength);
+                        let turns = resist(
+                            rng,
+                            turns,
+                            victim_stats.resistance,
+                            victim_stats.level,
+                            strength.against,
+                        );
+                        if turns == 0 {
+                            continue;
+                        }
+                        let lasting = Lasting::Rounds(turns.max(2).min(u32::from(u16::MAX)) as u16);
+                        // One duration reduction, followed by three separate saves.
+                        for condition in
+                            [Condition::Nauseated, Condition::Poisoned, Condition::Unconscious]
+                        {
+                            let Some(target) = target(world, victim, realm, Some(condition)) else {
+                                continue;
+                            };
+                            if target.immune
+                                || saves(
+                                    rng,
+                                    world,
+                                    victim,
+                                    &target,
+                                    CONDITION_SAVE[condition as usize + 1],
+                                    strength.against,
+                                )
+                                || shrugs(world, victim, condition, false)
+                            {
+                                landed.push(Effect::Resisted { victim });
+                            } else if inflict_on(world, victim, condition, lasting).is_some() {
+                                landed.push(Effect::Inflicted { victim, condition });
+                            }
+                        }
+                    }
                 }
             }
             reports.push((id, landed));
+        }
+        // Ring of Fire follows the party and samples current nearby actors on
+        // every pulse, including actors that entered its radius after casting.
+        if actor.is_none()
+            && let (Some(effect), Some(spell)) = (
+                world.enchantments.get(SpellId::RING_OF_FIRE).copied(),
+                spells.get(SpellId::RING_OF_FIRE),
+            )
+            && let Some(realm) = spell.realm
+        {
+            let centre = party_eye - Vec3::Y * crate::game::party::body::EYE_ABOVE_CENTRE;
+            let reach =
+                crate::game::party::body::RADIUS + crate::content::species::Reach::Short.metres();
+            let victims = world.monsters.nearby(centre, reach);
+            let mut landed = Vec::new();
+            for actor in victims {
+                let amount = magnitude(
+                    rng,
+                    spell.dice,
+                    Strength {
+                        power: effect.power,
+                        boost: 0,
+                        against: u32::from(effect.power) * 3,
+                    },
+                );
+                landed.extend(damage(
+                    rng,
+                    world,
+                    Victim::Monster(actor),
+                    realm,
+                    amount,
+                    u32::from(effect.power) * 3,
+                ));
+            }
+            reports.push((spell.id, landed));
         }
     }
     reports

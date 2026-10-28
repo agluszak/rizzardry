@@ -21,6 +21,8 @@ use crate::game::world::scripts::LevelScript;
 pub struct TriggerMemory {
     devices: HashMap<usize, KeptDevice>,
     variables: HashMap<VariableName, bool>,
+    ambient_sounds: HashMap<String, bool>,
+    lights: HashMap<String, bool>,
 }
 
 #[derive(Debug)]
@@ -72,7 +74,12 @@ impl DeviceRecords<'_, '_> {
                 )
             })
             .collect();
-        TriggerMemory { devices, variables: state.variables.clone() }
+        TriggerMemory {
+            devices,
+            variables: state.variables.clone(),
+            ambient_sounds: state.ambient_sounds.clone(),
+            lights: state.lights.clone(),
+        }
     }
 }
 
@@ -102,6 +109,8 @@ pub fn spawn_devices(
     let mut state = LevelState::default();
     if let Some(memory) = &mut memory {
         state.variables = std::mem::take(&mut memory.variables);
+        state.ambient_sounds = std::mem::take(&mut memory.ambient_sounds);
+        state.lights = std::mem::take(&mut memory.lights);
     } else {
         for definition in &geometry.triggers {
             if let (Some((name, _)), Some(value)) =

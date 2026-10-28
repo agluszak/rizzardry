@@ -49,6 +49,7 @@ fn a_fighter_and_a_crab_trade_blows() {
         hp: 10,
         max_hp: 10,
         stamina: 10,
+        mana: crab.spell_points,
         max_stamina: 10,
         conditions: Vec::new(),
         enchantments: Default::default(),

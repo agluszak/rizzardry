@@ -285,6 +285,7 @@ pub struct Species {
     pub attributes: MonsterAttributes,
     pub hit_points: Dice,
     pub stamina: Dice,
+    pub spell_points: u32,
     pub initiative: u8,
     pub attacks_per_round: u8,
     pub swings_per_round: u8,

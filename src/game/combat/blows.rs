@@ -99,6 +99,57 @@ impl Tally {
     }
 }
 
+/// A connecting close-range blow triggers the defender's charge even when
+/// armour stopped its damage. It cannot recursively trigger another cloak.
+fn razor_backlash(
+    rng: &mut GameRng,
+    field: &mut Field,
+    fight: &Fight,
+    battle: &Battle,
+    defender: Victim,
+    attacker: Victim,
+    tally: &mut Tally,
+    news: &mut MessageWriter<CombatNews>,
+) {
+    use crate::content::spells::SpellId;
+    let Some(spell) = field.spells.and_then(|spells| spells.get(SpellId::RAZOR_CLOAK)) else {
+        return;
+    };
+    let charge = match defender {
+        Victim::Member(member) => field
+            .members
+            .get_mut(member)
+            .ok()
+            .and_then(|(_, mut v, ..)| v.enchantments.spend_charge(SpellId::RAZOR_CLOAK)),
+        Victim::Monster(monster) => field
+            .monsters
+            .enchantments_mut(monster)
+            .and_then(|mut effects| effects.spend_charge(SpellId::RAZOR_CLOAK)),
+    };
+    let Some(charge) = charge else { return };
+    let rolled = effects::magnitude(
+        rng,
+        spell.dice,
+        crate::game::magic::Strength { power: charge.power, boost: 0, against: 0 },
+    );
+    let amount = match attacker {
+        Victim::Member(member) => member_defence(battle, field, fight, member)
+            .map(|(_, defence)| defence.reduce(rolled as i32)),
+        Victim::Monster(monster) => {
+            monster_defence(field, fight, monster).map(|defence| defence.reduce(rolled as i32))
+        }
+    };
+    let Some(amount) = amount else { return };
+    let result = effects::hurt(rng, field, attacker, amount);
+    let damage = tally.struck(result, matches!(defender, Victim::Member(_)));
+    news.write(CombatNews::Result {
+        attacker: defender.entity(),
+        target: attacker.entity(),
+        hits: 1,
+        damage,
+    });
+}
+
 /// Where a monster is struck: the middle of its body.
 fn body_centre(feet: Vec3, monster: &crate::game::world::population::Monster) -> Vec3 {
     feet + Vec3::Y * monster.body.eye_height * 0.5
@@ -416,6 +467,18 @@ pub(super) fn member_attacks(
                 (rng, field, fight),
                 &mut tally,
             );
+            if dealt.is_some() && hand.reach < Reach::Long {
+                razor_backlash(
+                    rng,
+                    field,
+                    fight,
+                    battle,
+                    landing.victim,
+                    Victim::Member(member),
+                    &mut tally,
+                    news,
+                );
+            }
             if landing.fumbled {
                 news.write(CombatNews::Result {
                     attacker: member,
@@ -868,6 +931,18 @@ pub(super) fn monster_attacks(
         } else {
             0
         };
+        if attack.reach < Reach::Long {
+            razor_backlash(
+                rng,
+                field,
+                fight,
+                battle,
+                landing.victim,
+                Victim::Monster(entity),
+                &mut tally,
+                news,
+            );
+        }
         if landing.fumbled {
             news.write(CombatNews::Result {
                 attacker: entity,

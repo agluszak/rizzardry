@@ -29,8 +29,11 @@ pub fn level_lighting(lights: &[Light], offset: [f32; 3]) -> LevelLighting {
         offset: Vec3::from(offset),
         lights: lights
             .iter()
-            .filter(|light| !is_sun(light))
+            .filter(|light| !is_sun(light) && (light.runtime || light.enabled))
             .map(|light| PointLightSource {
+                name: light.name.to_uppercase(),
+                runtime: light.runtime,
+                enabled: light.enabled,
                 position: retail_position(light.location),
                 colour: Vec3::from(light.colour) * light.intensity,
                 range: light.range / UNITS_PER_METRE,

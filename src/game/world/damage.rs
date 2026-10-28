@@ -77,6 +77,25 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         &self.monsters
     }
 
+    /// Current live actors intersecting a radius, in authored location order.
+    pub fn nearby(&mut self, centre: Vec3, radius: f32) -> Vec<Entity> {
+        let mut lens = self
+            .monsters
+            .transmute_lens::<(Entity, &super::population::Monster, ActorPose, &LevelOwned)>();
+        let query = lens.query();
+        let mut found: Vec<_> = query
+            .iter()
+            .filter(|(_, body, at, owner)| {
+                self.levels.contains(owner.0)
+                    && !body.is_dead()
+                    && at.translation().distance(centre) - body.body.radius <= radius
+            })
+            .map(|(entity, body, _, _)| (body.location, entity))
+            .collect();
+        found.sort_unstable();
+        found.into_iter().map(|(_, entity)| entity).collect()
+    }
+
     /// A monster's conditions, to inflict, cure or age.
     pub fn conditions_mut(
         &mut self,
@@ -103,6 +122,15 @@ impl<'w, 's> MonsterDamage<'w, 's> {
             );
         }
         taken
+    }
+
+    /// Spell points are live monster history; the species supplies only the
+    /// initial budget. Draining never rerolls or reconstructs that budget.
+    pub fn drain_magic(&mut self, entity: Entity, amount: u32) -> u32 {
+        let Ok((mut monster, ..)) = self.monsters.get_mut(entity) else { return 0 };
+        let lost = monster.mana.min(amount);
+        monster.mana -= lost;
+        lost
     }
 
     pub fn enchantments_mut(

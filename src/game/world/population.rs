@@ -27,6 +27,7 @@ pub struct Monster {
     pub hp: u32,
     pub max_hp: u32,
     pub stamina: u32,
+    pub mana: u32,
     pub max_stamina: u32,
     pub conditions: Vec<(Condition, Lasting)>,
     pub body: ScaledBody,

@@ -794,7 +794,7 @@ impl<'a> Defence<'a> {
 
     /// Damage after the target's own reduction (retail
     /// `ApplyDamageReduction`, `ApplyCharacterDamageReduction`).
-    fn reduce(&self, damage: i32) -> u32 {
+    pub(super) fn reduce(&self, damage: i32) -> u32 {
         let reduction = match self.defender {
             Defender::Monster { species, reduction, .. } => {
                 (i32::from(species.damage_reduction) + reduction).min(100)

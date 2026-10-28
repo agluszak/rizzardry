@@ -166,7 +166,11 @@ pub fn track_radar_items(
 /// and the items once seen, grey to white.
 pub fn update_radar(
     mut commands: Commands,
-    party: Query<(&avian3d::prelude::Position, &crate::game::party::body::PartyBody)>,
+    party: Query<(
+        &avian3d::prelude::Position,
+        &crate::game::party::body::PartyBody,
+        Option<&crate::game::magic::enchantments::PartyEffects>,
+    )>,
     camera: Query<(&Projection, &GlobalTransform), With<PartyCamera>>,
     mut rims: Query<&mut UiTransform, With<RadarRim>>,
     layers: Query<Entity, With<RadarBlips>>,
@@ -179,7 +183,9 @@ pub fn update_radar(
     ),
     content: crate::game::data::Content,
 ) {
-    let (Ok((position, body)), Ok(layer)) = (party.single(), layers.single()) else { return };
+    let (Ok((position, body, effects)), Ok(layer)) = (party.single(), layers.single()) else {
+        return;
+    };
     for mut rim in &mut rims {
         // North stays put while the view turns.
         let rotation = Rot2::radians(body.yaw);
@@ -192,6 +198,8 @@ pub fn update_radar(
         _ => (0.0, position.0),
     };
     let catalog = content.species();
+    let xray = effects
+        .is_some_and(|effects| effects.0.get(crate::content::spells::SpellId::X_RAY).is_some());
     // Each blip's visibility is decided once, so one that stays in view
     // stays clean.
     let mut shown = bevy::ecs::entity::EntityHashSet::default();
@@ -240,7 +248,7 @@ pub fn update_radar(
             let in_sight = Dir3::new(to - eye).is_ok_and(|direction| {
                 obstacles.first_hit(eye, direction, eye.distance(to)).is_none()
             });
-            if !in_sight {
+            if !xray && !in_sight {
                 continue;
             }
             known.seen = true;
@@ -261,6 +269,73 @@ pub fn update_radar(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn xray_marks_an_occluded_item_seen_until_the_level_visit_ends() {
+        use crate::content::spells::SpellId;
+        use crate::game::{
+            inventory::{ItemIds, make_item},
+            magic::enchantments::{Enchantment, PartyEffects},
+            party::body::PartyBody,
+            rng::GameRng,
+            world::{items::WorldItem, obstacles::scenery},
+        };
+        use avian3d::prelude::*;
+        use bevy::ecs::system::RunSystemOnce;
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin::default(),
+            bevy::mesh::MeshPlugin,
+            TransformPlugin,
+            PhysicsPlugins::default(),
+        ));
+        app.finish();
+        app.cleanup();
+        let party = app
+            .world_mut()
+            .spawn((PartyBody::default(), Position::default(), PartyEffects::default()))
+            .id();
+        app.world_mut().spawn((
+            PartyCamera,
+            Projection::Perspective(default()),
+            GlobalTransform::default(),
+        ));
+        app.world_mut().spawn(RadarBlips);
+        app.world_mut().spawn((
+            RigidBody::Static,
+            Collider::cuboid(20.0, 20.0, 1.0),
+            scenery(),
+            Transform::from_xyz(0.0, 0.0, -5.0),
+        ));
+        let stack =
+            make_item(&default(), &mut ItemIds::default(), &mut GameRng::default(), true, true);
+        let item = app
+            .world_mut()
+            .spawn((
+                WorldItem::loose(stack, false),
+                GlobalTransform::from_translation(Vec3::NEG_Z * 10.0),
+                RadarItem::default(),
+            ))
+            .id();
+        app.update();
+        app.update();
+        app.world_mut().run_system_once(update_radar).unwrap();
+        assert!(!app.world().get::<RadarItem>(item).unwrap().seen);
+        app.world_mut().get_mut::<PartyEffects>(party).unwrap().0.apply(Enchantment {
+            spell: SpellId::X_RAY,
+            power: 1,
+            boost: 0,
+            turns: 1,
+            absorption: 0,
+        });
+        app.world_mut().run_system_once(update_radar).unwrap();
+        assert!(app.world().get::<RadarItem>(item).unwrap().seen);
+        app.world_mut().get_mut::<PartyEffects>(party).unwrap().0.age(1);
+        app.world_mut().run_system_once(update_radar).unwrap();
+        assert!(app.world().get::<RadarItem>(item).unwrap().seen);
+        assert!(app.world().get::<RadarView>(item).is_some());
+    }
 
     #[test]
     fn discovery_glows_even_when_the_hud_has_not_been_built() {

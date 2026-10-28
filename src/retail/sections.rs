@@ -13,6 +13,8 @@ use crate::content::UNITS_PER_METRE;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Light {
+    pub runtime: bool,
+    pub enabled: bool,
     pub name: String,
     /// Retail units.
     pub location: [f32; 3],
@@ -53,6 +55,7 @@ pub struct ClipPlane {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct LevelSections {
+    pub positions: Vec<(String, super::trigger::TriggerPlacement)>,
     pub lights: Vec<Light>,
     pub props: Vec<Prop>,
     /// Billboard props: same records, drawn facing the camera.
@@ -102,7 +105,8 @@ fn read_lights(bytes: &mut Bytes) -> Result<Vec<Light>, DecodeError> {
     let mut lights = Vec::with_capacity(count as usize);
     for _ in 0..count {
         let version = bytes.i16()?;
-        bytes.take(2)?; // create, visible
+        let create = bytes.u8()? != 0;
+        let visible = bytes.u8()? != 0;
         let flags = bytes.u32()?;
         let location = bytes.f32s::<3>()?.map(|v| v * UNITS_PER_METRE);
         let colour = bytes.f32s()?;
@@ -120,7 +124,15 @@ fn read_lights(bytes: &mut Bytes) -> Result<Vec<Light>, DecodeError> {
                 }
             }
         }
-        lights.push(Light { name, location, colour, intensity, range });
+        lights.push(Light {
+            runtime: version >= 2 && (create || flags & 2 != 0),
+            enabled: version < 2 || visible,
+            name,
+            location,
+            colour,
+            intensity,
+            range,
+        });
     }
     Ok(lights)
 }
@@ -234,12 +246,16 @@ fn read_sections_of(bytes: &mut Bytes, compiled: bool) -> Result<LevelSections, 
         bytes.take(size)?;
     }
     sentinel(bytes, compiled)?;
-    // Named positions: teleports name trigger placements instead.
+    let mut positions = Vec::new();
     for _ in 0..count(bytes)? {
         if bytes.u8()? != 1 {
             return Err(bytes.invalid("unknown named position version"));
         }
-        bytes.take(0x80 + 12 + 4 + 12)?;
+        let name = text(bytes, 0x80)?.to_uppercase();
+        let position = bytes.f32s::<3>()?.map(|v| v * UNITS_PER_METRE);
+        let angle = bytes.f32()?;
+        let axis = bytes.f32s()?;
+        positions.push((name, super::trigger::TriggerPlacement { position, angle, axis }));
     }
     sentinel(bytes, compiled)?;
     // The automap's cell grid; the automap draws the level's own geometry.
@@ -248,6 +264,7 @@ fn read_sections_of(bytes: &mut Bytes, compiled: bool) -> Result<LevelSections, 
     bytes.records(cells, 4, |b| b.u32())?;
     sentinel(bytes, compiled)?;
     Ok(LevelSections {
+        positions,
         lights,
         props,
         bitmaps,

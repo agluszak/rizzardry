@@ -13,6 +13,43 @@ use crate::game::world::props::PropPart;
 use crate::presentation::billboards::FaceCamera;
 use crate::presentation::party_view::PartyCamera;
 
+/// Retail camera light: warm, 4000 retail units, twice adjusted power plus two.
+pub(super) fn spell_light(
+    eye: Vec3,
+    effects: &crate::game::magic::enchantments::PartyEffects,
+) -> Option<crate::content::level::PointLightSource> {
+    let effect = effects.0.get(crate::content::spells::SpellId::LIGHT)?;
+    let amount = (effect.adjusted(u32::from(effect.power)) as u8).wrapping_mul(2);
+    Some(crate::content::level::PointLightSource {
+        name: String::new(),
+        runtime: true,
+        enabled: true,
+        position: eye,
+        colour: Vec3::new(1.0, 0.85, 0.39) * (f32::from(amount) + 2.0),
+        range: 4000.0 / crate::content::UNITS_PER_METRE,
+    })
+}
+
+/// Change from the immutable rest lighting; activation belongs to the level.
+pub(super) fn light_delta(
+    lighting: &crate::content::level::LevelLighting,
+    state: Option<&crate::game::world::triggers::LevelState>,
+    at: Vec3,
+    normal: Option<Vec3>,
+    compiled: bool,
+) -> Vec3 {
+    lighting
+        .lights
+        .iter()
+        .map(|light| {
+            let enabled = state
+                .map_or(light.enabled, |state| state.light_enabled(&light.name, light.enabled));
+            let baked = light.enabled && !(compiled && light.runtime);
+            (i32::from(enabled) - i32::from(baked)) as f32 * light.at(at, normal)
+        })
+        .sum()
+}
+
 /// Presentation owns the optional render payload for an active level.
 #[derive(Component, Debug)]
 pub struct LevelAppearance(pub Handle<LevelGeometry>);
@@ -93,18 +130,29 @@ pub struct AppliedEnvironment(AssetId<LevelGeometry>, u8);
 /// with the phase's sky light.
 pub fn apply_environment(
     clock: Res<GameClock>,
-    levels: Query<Ref<LevelAppearance>>,
+    party: Query<
+        (&avian3d::prelude::Position, Ref<crate::game::magic::enchantments::PartyEffects>),
+        With<crate::game::party::body::PartyBody>,
+    >,
+    levels: Query<(Ref<LevelAppearance>, Option<Ref<crate::game::world::triggers::LevelState>>)>,
     geometry: Res<Assets<LevelGeometry>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut clear: ResMut<ClearColor>,
     mut camera: Query<(Entity, &mut Projection, Option<&AppliedEnvironment>), With<PartyCamera>>,
     mut commands: Commands,
 ) {
-    let Some(level) = levels.iter().next() else { return };
+    let Some((level, state)) = levels.iter().next() else { return };
     let Some(level_geometry) = geometry.get(&level.0) else { return };
     let Ok((camera, mut projection, applied)) = camera.single_mut() else { return };
     let phase = clock.phase();
+    let party = party.single().ok();
+    let torch = party.as_ref().and_then(|(at, effects)| {
+        spell_light(crate::game::party::body::PartyBody::eye(at), effects)
+    });
     if applied.is_some_and(|applied| applied.0 == level.0.id() && applied.1 == phase)
+        && torch.is_none()
+        && !party.as_ref().is_some_and(|(_, effects)| effects.is_changed())
+        && !state.as_ref().is_some_and(|s| s.is_changed())
         && !level.is_changed()
         && !geometry.is_changed()
     {
@@ -131,13 +179,48 @@ pub fn apply_environment(
     ));
 
     let sky = environment.sky_light(phase);
-    let parts = level_geometry
-        .parts
-        .iter()
-        .chain(level_geometry.props.iter().flat_map(|p| &p.parts).flat_map(|p| &p.meshes));
-    for part in parts {
+    let parts = level_geometry.parts.iter().map(|part| (part, Transform::IDENTITY, true)).chain(
+        level_geometry
+            .props
+            .iter()
+            .flat_map(|prop| &prop.parts)
+            .flat_map(|part| part.meshes.iter().map(move |mesh| (mesh, part.transform, false))),
+    );
+    for (part, transform, compiled) in parts {
         if let Some(mut mesh) = meshes.get_mut(&part.mesh) {
-            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, part.lighting.colours(sky));
+            let mut colours = part.lighting.colours(sky);
+            if let (
+                Some(bevy::mesh::VertexAttributeValues::Float32x3(positions)),
+                Some(bevy::mesh::VertexAttributeValues::Float32x3(normals)),
+            ) =
+                (mesh.attribute(Mesh::ATTRIBUTE_POSITION), mesh.attribute(Mesh::ATTRIBUTE_NORMAL))
+            {
+                for ((colour, position), normal) in colours.iter_mut().zip(positions).zip(normals) {
+                    let delta = light_delta(
+                        &level_geometry.lighting,
+                        state.as_deref(),
+                        transform.transform_point(Vec3::from(*position)),
+                        Some(
+                            transform
+                                .compute_affine()
+                                .transform_vector3(Vec3::from(*normal))
+                                .normalize_or(Vec3::Y),
+                        ),
+                        compiled,
+                    );
+                    let point = transform.transform_point(Vec3::from(*position));
+                    let normal = transform
+                        .compute_affine()
+                        .transform_vector3(Vec3::from(*normal))
+                        .normalize_or(Vec3::Y);
+                    let torch =
+                        torch.as_ref().map_or(Vec3::ZERO, |light| light.at(point, Some(normal)));
+                    for axis in 0..3 {
+                        colour[axis] += delta[axis] + torch[axis];
+                    }
+                }
+            }
+            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colours);
         }
     }
 }
@@ -202,6 +285,30 @@ mod tests {
     use super::*;
     use crate::content::level::{PropVisual, PropVisualPart};
     use crate::game::world::props::PropMotion;
+
+    #[test]
+    fn runtime_light_is_added_to_compiled_geometry_without_doubling_prop_bakes() {
+        use crate::content::level::{LevelLighting, PointLightSource};
+        let lighting = LevelLighting {
+            lights: vec![PointLightSource {
+                name: "LAMP".into(),
+                runtime: true,
+                enabled: true,
+                position: Vec3::Y,
+                colour: Vec3::ONE,
+                range: 2.0,
+            }],
+            ..default()
+        };
+        assert_eq!(light_delta(&lighting, None, Vec3::ZERO, Some(Vec3::Y), true), Vec3::splat(0.5));
+        assert_eq!(light_delta(&lighting, None, Vec3::ZERO, Some(Vec3::Y), false), Vec3::ZERO);
+        let disabled = LevelLighting {
+            lights: vec![PointLightSource { enabled: false, ..lighting.lights[0].clone() }],
+            ..default()
+        };
+        assert_eq!(light_delta(&disabled, None, Vec3::ZERO, None, true), Vec3::ZERO);
+        assert_eq!(disabled.at(Vec3::ZERO, None), Vec3::ZERO);
+    }
 
     #[test]
     fn replacing_a_camera_and_reloading_environment_reapply_fog_at_the_same_phase() {

@@ -79,14 +79,29 @@ pub struct LevelLighting {
     pub sun: Option<Vec3>,
 }
 
-/// A static level light with retail's linear falloff.
-#[derive(Clone, Copy, Debug)]
+/// A level light with retail's linear falloff and authored activation.
+#[derive(Clone, Debug)]
 pub struct PointLightSource {
+    pub name: String,
+    pub runtime: bool,
+    pub enabled: bool,
     pub position: Vec3,
     /// Colour times intensity.
     pub colour: Vec3,
     /// Metres.
     pub range: f32,
+}
+
+impl PointLightSource {
+    pub fn at(&self, position: Vec3, normal: Option<Vec3>) -> Vec3 {
+        let to_light = self.position - position;
+        let distance = to_light.length();
+        if distance >= self.range || distance == 0.0 {
+            return Vec3::ZERO;
+        }
+        let facing = normal.map_or(1.0, |n| n.dot(to_light / distance).max(0.0));
+        self.colour * (1.0 - distance / self.range) * facing
+    }
 }
 
 impl LevelLighting {
@@ -95,14 +110,8 @@ impl LevelLighting {
     /// none.
     pub fn at(&self, position: Vec3, normal: Option<Vec3>) -> Vec3 {
         let mut light = self.offset;
-        for source in &self.lights {
-            let to_light = source.position - position;
-            let distance = to_light.length();
-            if distance >= source.range || distance == 0.0 {
-                continue;
-            }
-            let facing = normal.map_or(1.0, |n| n.dot(to_light / distance).max(0.0));
-            light += source.colour * (1.0 - distance / source.range) * facing;
+        for source in self.lights.iter().filter(|s| s.enabled) {
+            light += source.at(position, normal);
         }
         light
     }
@@ -207,6 +216,7 @@ pub struct ItemPlacement {
 /// A sound a place makes (retail ambient sound).
 #[derive(Clone, Debug)]
 pub struct AmbientSoundModel {
+    pub name: String,
     /// Retail path under `data/sound`.
     pub path: String,
     pub position: Vec3,
@@ -358,6 +368,14 @@ pub enum TriggerAction {
     Relay,
     /// Enable, disable or toggle the linked devices (0x2d..0x2f).
     SetDevices(StateChange),
+    Lights {
+        sources: Vec<(String, bool)>,
+        change: StateChange,
+    },
+    AmbientSounds {
+        names: Vec<String>,
+        change: StateChange,
+    },
     /// Send the party elsewhere (0x34).
     Teleport(Arrival),
     /// Choose one authored destination when the action executes (0x4b).

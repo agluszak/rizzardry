@@ -1297,7 +1297,14 @@ fn end_round(
     // AdvanceTimedEffects applies offensive slots after personal aging and
     // before expiring the slots. Their final remaining turn still pulses.
     if let Ok(reports) = magic.context.resolve(members, damage, |field, spells| {
-        crate::game::magic::effects::pulse_clouds(combatants, spells, rng, field)
+        crate::game::magic::effects::pulse_clouds(
+            combatants,
+            party_eye,
+            spells,
+            rng,
+            field,
+            &mut magic.points,
+        )
     }) {
         for (spell, effects) in reports {
             battle.credit_kills(&effects, news);
@@ -1555,6 +1562,7 @@ mod tests {
                     max_hp: 10000,
                     stamina: 0,
                     max_stamina: 0,
+                    mana: 0,
                     conditions: vec![],
                     body: ScaledBody { scale: 1.0, radius: 1.0, eye_height: 1.0, speed: 0.0 },
                 },
@@ -2538,56 +2546,219 @@ mod tests {
     }
 
     #[test]
-    fn an_offensive_slot_pulses_on_its_last_round_then_expires() {
-        use crate::content::{
-            characters::Realm,
-            spells::{SpellDefinition, SpellId, Spellbook, Targeting, Usable},
-        };
-        let (mut app, [caster, _]) = round_app(false);
-        let monster = order_spell(
-            &mut app,
-            caster,
-            SpellDefinition {
-                id: SpellId::ACID_BOMB,
-                realm: Some(Realm::Fire),
-                cost: 1,
-                books: Spellbook::Wizardry.into(),
-                targeting: Targeting::Enemy,
-                usable: Usable::InCombat,
-                reach: Reach::Long,
-                dice: Some(Dice { count: 0, sides: 0, base: 5 }),
-                duration_base: 2,
-                ..default()
-            },
-        );
-        app.update();
-        {
-            let mut target = app.world_mut().get_mut::<Monster>(monster).unwrap();
-            let effect =
-                target.enchantments.0.iter_mut().find(|e| e.spell == SpellId::ACID_BOMB).unwrap();
-            effect.turns = 1;
+    fn razor_cloak_spends_its_last_charge_on_one_close_range_hit() {
+        use crate::content::spells::{SpellDefinition, SpellId};
+        use crate::game::magic::enchantments::Enchantment;
+        let (mut app, members) = round_app(false);
+        for member in members {
+            let mut profile = app.world_mut().get_mut::<Character>(member).unwrap();
+            profile.level = 30;
+            profile.skill_points[crate::content::characters::Skill::Sword] = 100;
+            for attribute in [
+                crate::content::characters::Attribute::Dexterity,
+                crate::content::characters::Attribute::Senses,
+            ] {
+                profile.attributes[attribute] = 100;
+            }
         }
-        app.world_mut().resource_mut::<Messages<MagicNews>>().clear();
-        finish_round(&mut app);
-        let pulses: Vec<_> =
-            app.world_mut().resource_mut::<Messages<MagicNews>>().drain().collect();
-        assert!(
-            matches!(pulses.as_slice(), [MagicNews::Triggered { spell: SpellId::ACID_BOMB, effects, .. }]
-            if effects.len() == 1)
-        );
+        let mut definitions = vec![SpellDefinition::default(); 28];
+        definitions[27] = SpellDefinition {
+            id: SpellId::RAZOR_CLOAK,
+            dice: Some(Dice { count: 0, sides: 0, base: 5 }),
+            ..default()
+        };
+        let catalog =
+            app.world_mut().resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(definitions));
+        app.world_mut().resource_mut::<GameData>().spells = catalog;
+        let monster =
+            app.world().try_query::<&Combatants>().unwrap().single(app.world()).unwrap().entities()
+                [0];
+        app.world_mut().get_mut::<Monster>(monster).unwrap().enchantments.apply(Enchantment {
+            spell: SpellId::RAZOR_CLOAK,
+            power: 1,
+            boost: 0,
+            turns: 5,
+            absorption: 0,
+        });
+        let health: u32 =
+            members.iter().map(|&member| app.world().get::<Vitals>(member).unwrap().hp).sum();
+        let news = finish_round(&mut app);
+        let responses: Vec<_> = news.iter().filter(|event| matches!(event, CombatNews::Result { attacker, damage: 5, .. } if *attacker == monster)).collect();
+        assert_eq!(responses.len(), 1, "{news:?}");
         assert!(
             app.world()
                 .get::<Monster>(monster)
                 .unwrap()
                 .enchantments
-                .get(SpellId::ACID_BOMB)
+                .get(SpellId::RAZOR_CLOAK)
                 .is_none()
         );
-        app.world_mut().entity_mut(caster).insert(Order::Defend);
-        app.world_mut().write_message(StartRound);
-        app.update();
-        finish_round(&mut app);
-        assert!(app.world_mut().resource_mut::<Messages<MagicNews>>().drain().next().is_none());
+        assert_eq!(
+            members
+                .iter()
+                .map(|&member| app.world().get::<Vitals>(member).unwrap().hp)
+                .sum::<u32>(),
+            health - 5
+        );
+    }
+
+    #[test]
+    fn ring_of_fire_samples_the_partys_current_radius_each_pulse() {
+        use crate::content::{
+            characters::Realm,
+            spells::{SpellDefinition, SpellId},
+        };
+        use crate::game::magic::{
+            MagicContext,
+            enchantments::{Enchantment, PartyEffects},
+        };
+        use bevy::ecs::system::RunSystemOnce;
+        let (mut app, [caster, _]) = round_app(false);
+        let monster = order_spell(
+            &mut app,
+            caster,
+            SpellDefinition {
+                id: SpellId::RING_OF_FIRE,
+                realm: Some(Realm::Fire),
+                dice: Some(Dice { count: 0, sides: 0, base: 5 }),
+                ..default()
+            },
+        );
+        app.world_mut().get_mut::<Transform>(monster).unwrap().translation = Vec3::X * 100.0;
+        let party = crate::game::party::roster::the_party(app.world_mut()).unwrap();
+        app.world_mut().get_mut::<PartyEffects>(party).unwrap().0.apply(Enchantment {
+            spell: SpellId::RING_OF_FIRE,
+            power: 1,
+            boost: 0,
+            turns: 5,
+            absorption: 0,
+        });
+        for (centre, expected_hp) in [(Vec3::ZERO, 10000), (Vec3::X * 100.0, 9995)] {
+            app.world_mut().run_system_once(move |mut context: MagicContext, mut members: Members, mut damage: MonsterDamage, mut rng: ResMut<GameRng>, mut points: Query<(&LearnedSpells, &mut SpellPoints)>| {
+                context.resolve(&mut members, &mut damage, |field, spells| crate::game::magic::effects::pulse_clouds(&[monster], centre + Vec3::Y * crate::game::party::body::EYE_ABOVE_CENTRE, spells, &mut rng, field, &mut points)).unwrap()
+            }).unwrap();
+            assert_eq!(app.world().get::<Monster>(monster).unwrap().hp, expected_hp);
+        }
+    }
+
+    #[test]
+    fn death_cloud_respects_immunity_and_bypasses_guardian_angel() {
+        use crate::content::{
+            characters::Realm,
+            spells::{SpellDefinition, SpellId},
+        };
+        use crate::game::magic::{MagicContext, enchantments::Enchantment};
+        use bevy::ecs::system::RunSystemOnce;
+        for immune in [true, false] {
+            let (mut app, [caster, _]) = round_app(false);
+            let monster = order_spell(
+                &mut app,
+                caster,
+                SpellDefinition { id: SpellId::DEATH_CLOUD, realm: Some(Realm::Air), ..default() },
+            );
+            let species_handle = app.world().resource::<GameData>().species.clone();
+            let species_id = app.world().get::<Monster>(monster).unwrap().species;
+            app.world_mut()
+                .resource_mut::<Assets<MonsterCatalog>>()
+                .get_mut(&species_handle)
+                .unwrap()
+                .0[species_id as usize]
+                .death_immune = immune;
+            {
+                let mut target = app.world_mut().get_mut::<Monster>(monster).unwrap();
+                for (spell, absorption) in
+                    [(SpellId::DEATH_CLOUD, 0), (SpellId::GUARDIAN_ANGEL, u32::MAX)]
+                {
+                    target.enchantments.apply(Enchantment {
+                        spell,
+                        power: 7,
+                        boost: 0,
+                        turns: 2,
+                        absorption,
+                    });
+                }
+            }
+            // Force a failed save even at the maximum allowed save chance.
+            let seed = (0..1000).find(|&seed| GameRng::seeded(seed).below(100) >= 95).unwrap();
+            app.insert_resource(GameRng::seeded(seed));
+            let reports = app
+                .world_mut()
+                .run_system_once(
+                    move |mut context: MagicContext,
+                          mut members: Members,
+                          mut damage: MonsterDamage,
+                          mut rng: ResMut<GameRng>, mut points: Query<(&LearnedSpells, &mut SpellPoints)>| {
+                        context
+                            .resolve(&mut members, &mut damage, |field, spells| {
+                                crate::game::magic::effects::pulse_clouds(
+                                    &[monster],
+                                    Vec3::ZERO,
+                                    spells,
+                                    &mut rng,
+                                    field,
+                                    &mut points,
+                                )
+                            })
+                            .unwrap()
+                    },
+                )
+                .unwrap();
+            assert_eq!(app.world().get::<Monster>(monster).unwrap().is_dead(), !immune);
+            assert!(
+                matches!(reports.as_slice(), [(SpellId::DEATH_CLOUD, effects)] if effects.len() == 1)
+            );
+        }
+    }
+
+    #[test]
+    fn an_offensive_slot_pulses_on_its_last_round_then_expires() {
+        use crate::content::{
+            characters::Realm,
+            spells::{SpellDefinition, SpellId, Spellbook, Targeting, Usable},
+        };
+        for cloud in
+            [SpellId::ACID_BOMB, SpellId::FIRESTORM, SpellId::TOXIC_CLOUD, SpellId::DRAINING_CLOUD]
+        {
+            let (mut app, [caster, _]) = round_app(false);
+            let monster = order_spell(
+                &mut app,
+                caster,
+                SpellDefinition {
+                    id: cloud,
+                    realm: Some(Realm::Fire),
+                    cost: 1,
+                    books: Spellbook::Wizardry.into(),
+                    targeting: Targeting::Enemy,
+                    usable: Usable::InCombat,
+                    reach: Reach::Long,
+                    dice: Some(Dice { count: 0, sides: 0, base: 5 }),
+                    duration_base: 2,
+                    ..default()
+                },
+            );
+            app.world_mut().get_mut::<Monster>(monster).unwrap().mana = 20;
+            app.update();
+            {
+                let mut target = app.world_mut().get_mut::<Monster>(monster).unwrap();
+                let effect = target.enchantments.0.iter_mut().find(|e| e.spell == cloud).unwrap();
+                effect.turns = 1;
+            }
+            app.world_mut().resource_mut::<Messages<MagicNews>>().clear();
+            finish_round(&mut app);
+            let pulses: Vec<_> =
+                app.world_mut().resource_mut::<Messages<MagicNews>>().drain().collect();
+            assert!(matches!(pulses.as_slice(), [MagicNews::Triggered { spell, effects, .. }]
+            if *spell == cloud && !effects.is_empty()));
+            assert!(app.world().get::<Monster>(monster).unwrap().enchantments.get(cloud).is_none());
+            if cloud == SpellId::DRAINING_CLOUD {
+                assert_eq!(app.world().get::<Monster>(monster).unwrap().mana, 18);
+            }
+            app.world_mut().entity_mut(caster).insert(Order::Defend);
+            app.world_mut().write_message(StartRound);
+            app.update();
+            finish_round(&mut app);
+            assert!(app.world_mut().resource_mut::<Messages<MagicNews>>().drain().next().is_none());
+        }
     }
 
     /// A second weapon in the off hand takes its own attacks in the round,

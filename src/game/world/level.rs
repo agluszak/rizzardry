@@ -262,6 +262,7 @@ impl KeptMonster {
                 hp: max_hp,
                 max_hp,
                 stamina: max_stamina,
+                mana: kind.spell_points,
                 max_stamina,
                 conditions: Vec::new(),
                 body,

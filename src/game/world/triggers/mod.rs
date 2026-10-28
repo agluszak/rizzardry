@@ -54,10 +54,27 @@ pub struct PositionedDevices(Vec<Entity>);
 #[derive(Component, Debug, Default)]
 pub struct LevelState {
     variables: HashMap<VariableName, bool>,
+    ambient_sounds: HashMap<String, bool>,
+    lights: HashMap<String, bool>,
     previous_eye: Option<Vec3>,
 }
 
 impl LevelState {
+    pub fn light_enabled(&self, name: &str, initial: bool) -> bool {
+        self.lights
+            .get(name)
+            .copied()
+            .or_else(|| {
+                self.lights
+                    .iter()
+                    .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                    .map(|(_, value)| *value)
+            })
+            .unwrap_or(initial)
+    }
+    pub fn ambient_sound_enabled(&self, name: &str) -> bool {
+        self.ambient_sounds.get(&name.to_uppercase()).copied().unwrap_or(true)
+    }
     /// Rebase walk-in detection after teleporting, without firing destination
     /// triggers or treating an unobserved level as already visited.
     pub(crate) fn arrive(&mut self, eye: Vec3) {
@@ -642,6 +659,36 @@ fn execute(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth:
                 return Ran::Declined;
             }
             execute_links(world, geometry, entity, depth);
+        }
+        TriggerAction::Lights { sources, change } => {
+            if sources.is_empty() {
+                return Ran::Declined;
+            }
+            let mut state = world.get_mut::<LevelState>(level).unwrap();
+            for (name, initial) in sources {
+                let enabled = state.light_enabled(name, *initial);
+                let next = match change {
+                    StateChange::Set => true,
+                    StateChange::Clear => false,
+                    StateChange::Toggle => !enabled,
+                };
+                state.lights.insert(name.to_uppercase(), next);
+            }
+        }
+        TriggerAction::AmbientSounds { names, change } => {
+            if names.is_empty() {
+                return Ran::Declined;
+            }
+            let mut state = world.get_mut::<LevelState>(level).unwrap();
+            for name in names {
+                let enabled = state.ambient_sound_enabled(name);
+                let next = match change {
+                    StateChange::Set => true,
+                    StateChange::Clear => false,
+                    StateChange::Toggle => !enabled,
+                };
+                state.ambient_sounds.insert(name.to_uppercase(), next);
+            }
         }
         TriggerAction::SetDevices(change) => {
             let count = world.get::<Device>(entity).unwrap().recipients.len();

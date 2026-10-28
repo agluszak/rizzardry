@@ -81,6 +81,7 @@ fn species(record: &[u8]) -> Result<Species, DecodeError> {
         },
         hit_points: dice_at(record, 0xd6)?,
         stamina: dice_at(record, 0xda)?,
+        spell_points: i32_at(record, 0x26f)?.max(0) as u32,
         initiative: record[0xe4],
         attacks_per_round: record[0xe5],
         swings_per_round: record[0xe6],

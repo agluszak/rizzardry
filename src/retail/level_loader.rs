@@ -224,11 +224,12 @@ fn sound_path(name: &str) -> String {
 
 /// A level's ambient sound, with Whizzardry `AddAmbientSound`'s defaults:
 /// unset volumes are full (127 of 127), unset times 5 to 20 seconds.
-fn ambient_sound(sound: &AmbientSound) -> AmbientSoundModel {
+fn ambient_sound(name: &str, sound: &AmbientSound) -> AmbientSoundModel {
     let or = |value: i32, default: i32| if value == -1 { default } else { value };
     let volume = |v: i32| or(v, 127).clamp(0, 127) as f32 / 127.0;
     let seconds = |ms: i32| ms.max(0) as f32 / 1000.0;
     AmbientSoundModel {
+        name: name.into(),
         path: sound_path(&sound.wave),
         position: retail_position(sound.position),
         radius: sound.radius / UNITS_PER_METRE,
@@ -404,6 +405,39 @@ fn decode_action(
                 sections.cameras.iter().position(|camera| camera.name.eq_ignore_ascii_case(name))
             })
             .map_or(TriggerAction::Unsupported(code), TriggerAction::CameraPath),
+        action::START_AMBIENT_SOUND | action::STOP_AMBIENT_SOUND | action::TOGGLE_AMBIENT_SOUND => {
+            TriggerAction::AmbientSounds {
+                names: item.recipients().map(str::to_uppercase).collect(),
+                change: match code {
+                    action::START_AMBIENT_SOUND => StateChange::Set,
+                    action::STOP_AMBIENT_SOUND => StateChange::Clear,
+                    _ => StateChange::Toggle,
+                },
+            }
+        }
+        action::TOGGLE_LIGHTS | action::ENABLE_LIGHTS | action::DISABLE_LIGHTS => {
+            TriggerAction::Lights {
+                sources: item
+                    .recipients()
+                    .filter_map(|name| {
+                        sections
+                            .lights
+                            .iter()
+                            .rev()
+                            .find(|light| {
+                                (light.runtime || light.enabled)
+                                    && light.name.eq_ignore_ascii_case(name)
+                            })
+                            .map(|light| (light.name.to_uppercase(), light.enabled))
+                    })
+                    .collect(),
+                change: match code {
+                    action::ENABLE_LIGHTS => StateChange::Set,
+                    action::DISABLE_LIGHTS => StateChange::Clear,
+                    _ => StateChange::Toggle,
+                },
+            }
+        }
         action::RELAY => TriggerAction::Relay,
         action::ENABLE_DEVICES => TriggerAction::SetDevices(StateChange::Set),
         action::DISABLE_DEVICES => TriggerAction::SetDevices(StateChange::Clear),
@@ -596,7 +630,7 @@ impl AssetLoader for PvlLoader {
             ambient_sounds: sections
                 .all_triggers()
                 .filter_map(|trigger| match &trigger.kind {
-                    TriggerKind::AmbientSound(sound) => Some(ambient_sound(sound)),
+                    TriggerKind::AmbientSound(sound) => Some(ambient_sound(&trigger.name, sound)),
                     _ => None,
                 })
                 .collect(),
@@ -768,6 +802,7 @@ mod tests {
             trigger: Some(trigger.clone()),
         };
         let mut sections = LevelSections {
+            positions: vec![],
             lights: vec![],
             props: vec![prop.clone(), prop.clone()],
             bitmaps: vec![prop],
@@ -791,6 +826,26 @@ mod tests {
         assert!(definitions.iter().all(|d| d.recipients == [3]));
         assert!(matches!(definitions[0].initial.action, TriggerAction::OpenDoor));
         assert!(matches!(definitions[3].initial.action, TriggerAction::ToggleDoor));
+        // A named pose can share a trigger's name. Named entities win, and
+        // case-insensitive normal/random lookup must agree without RNG.
+        sections.positions.push((
+            "SAME".into(),
+            super::super::trigger::TriggerPlacement {
+                position: [123.0, 456.0, 789.0],
+                angle: 0.0,
+                axis: [0.0, 1.0, 0.0],
+            },
+        ));
+        let TriggerKind::Item(mut item) = sections.trigger("same").unwrap().kind.clone() else {
+            unreachable!()
+        };
+        item.recipients = "same".into();
+        let ordinary = teleport_arrival(&sections, &item).unwrap();
+        assert!(matches!(ordinary, crate::content::level::Arrival::Here { eye, .. }
+            if eye == retail_position([123.0, 456.0, 789.0])));
+        assert_eq!(super::super::links::random_arrivals(&sections, &item), Some(vec![ordinary]));
+        item.recipients = "not-a-destination".into();
+        assert!(teleport_arrival(&sections, &item).is_none());
         assert!(
             matches!(&sections.trigger("same").unwrap().kind, TriggerKind::Item(item) if item.initial_action == 2)
         );

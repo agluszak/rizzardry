@@ -19,6 +19,9 @@ pub mod action {
     pub const TOGGLE: u32 = 0x03;
     /// Play the named camera path; the party ends at its last key (ladders,
     /// ropes).
+    pub const TOGGLE_LIGHTS: u32 = 0x04;
+    pub const ENABLE_LIGHTS: u32 = 0x30;
+    pub const DISABLE_LIGHTS: u32 = 0x31;
     pub const CAMERA_PATH: u32 = 0x09;
     /// Fire the recipients.
     pub const RELAY: u32 = 0x0f;
@@ -43,6 +46,9 @@ pub mod action {
     pub const SOUND: u32 = 0x36;
     pub const SHAKE: u32 = 0x39;
     pub const DIAL: u32 = 0x40;
+    pub const START_AMBIENT_SOUND: u32 = 0x41;
+    pub const STOP_AMBIENT_SOUND: u32 = 0x42;
+    pub const TOGGLE_AMBIENT_SOUND: u32 = 0x43;
     /// Like [`TELEPORT`] to a randomly chosen recipient.
     pub const RANDOM_TELEPORT: u32 = 0x4b;
 }

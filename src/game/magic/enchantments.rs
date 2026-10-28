@@ -100,6 +100,20 @@ impl Enchantments {
         true
     }
 
+    /// Spend one reactive use and return the strength before spending it.
+    pub fn spend_charge(&mut self, spell: SpellId) -> Option<Enchantment> {
+        let index = self
+            .0
+            .iter()
+            .position(|effect| effect.spell == spell && effect.turns > 0 && effect.power > 0)?;
+        let effect = self.0[index];
+        self.0[index].power -= 1;
+        if self.0[index].power == 0 {
+            self.0.remove(index);
+        }
+        Some(effect)
+    }
+
     pub fn age(&mut self, ticks: u32) {
         self.0.retain_mut(|e| {
             if e.turns < 9999 {
@@ -132,6 +146,9 @@ impl Enchantments {
     }
 
     pub fn armour(&self) -> i32 {
+        // RebuildPartyEffectBlock/RebuildMonsterDerivedStats subtract the
+        // offensive slot's raw amount; Power Cast affects its duration.
+        let melted = self.get(SpellId::ARMORMELT).map_or(0, |effect| i32::from(effect.power));
         self.get(crate::content::spells::SpellId::BLESS).map_or(0, |e| e.adjusted(2)) as i32
             + self
                 .get(crate::content::spells::SpellId::ARMORPLATE)
@@ -139,6 +156,7 @@ impl Enchantments {
             + self
                 .get(crate::content::spells::SpellId::BODY_OF_STONE)
                 .map_or(0, |e| e.scaled(u32::from(e.power))) as i32
+            - melted
     }
 
     pub fn hit_bonus(&self) -> i32 {
@@ -222,6 +240,37 @@ mod tests {
     fn effect(spell: SpellId, power: u8, turns: u32) -> Enchantment {
         Enchantment { spell, power, turns, boost: 0, absorption: 12 }
     }
+    #[test]
+    fn armormelt_penalty_stacks_with_protection_and_expires() {
+        let mut effects = Enchantments::default();
+        effects.apply(Enchantment {
+            spell: SpellId::ARMORPLATE,
+            power: 4,
+            boost: 0,
+            turns: 4,
+            absorption: 0,
+        });
+        effects.apply(Enchantment {
+            spell: SpellId::ARMORMELT,
+            power: 3,
+            boost: 100,
+            turns: 1,
+            absorption: 0,
+        });
+        assert_eq!(effects.armour(), -1);
+        effects.age(1);
+        assert_eq!(effects.armour(), 2);
+        effects.apply(Enchantment {
+            spell: SpellId::ARMORMELT,
+            power: 7,
+            boost: 0,
+            turns: 9,
+            absorption: 0,
+        });
+        effects.end_combat();
+        assert_eq!(effects.armour(), 2);
+    }
+
     #[test]
     fn actors_require_stronger_power_but_party_slots_replace() {
         let mut effects = Enchantments::default();
