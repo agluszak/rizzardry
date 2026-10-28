@@ -403,9 +403,9 @@ fn auto_power(
     let Some((profile, vitals)) = victim else { return 1 };
     let power = if effects::restores(spell.id) {
         let missing = if spell.id == SpellId::STAMINA {
-            profile.max_stamina().saturating_sub(vitals.stamina)
+            profile.stats(&vitals.enchantments).max_stamina().saturating_sub(vitals.stamina)
         } else {
-            profile.max_hp().saturating_sub(vitals.hp)
+            profile.stats(&vitals.enchantments).max_hp().saturating_sub(vitals.hp)
         } as f32;
         let average = |p: u8| {
             spell.dice.map_or(0.0, |d| {
@@ -678,7 +678,15 @@ pub fn perform(
             }
             Vec::new()
         } else {
-            effects::resolve(spell, strength, &victims, rng, world, &mut *points)
+            effects::resolve(
+                outcome == Outcome::Backfired,
+                spell,
+                strength,
+                &victims,
+                rng,
+                world,
+                &mut *points,
+            )
         };
         // Practice follows what the cast did; a missile on its way counts.
         if outcome != Outcome::Fizzled && (flies || effects::affected(&landed)) {
@@ -880,7 +888,8 @@ fn pay(
     let (_, mut vitals, _, burden) =
         world.members.get_mut(caster).map_err(|_| Refusal::CannotAct)?;
     let slowed = vitals.has(Condition::Slowed);
-    vitals.spend_stamina(burden.load.scale_fatigue(fatigue, slowed));
+    let hasted = vitals.enchantments.get(crate::content::spells::SpellId::HASTE).is_some();
+    vitals.spend_stamina(burden.load.scale_fatigue(fatigue, slowed, hasted));
     Ok(())
 }
 

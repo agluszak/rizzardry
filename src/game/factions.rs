@@ -3,27 +3,28 @@
 
 use bevy::prelude::*;
 
+use crate::content::factions::Faction;
 use crate::content::species::{Disposition, Species};
 
-pub const UNALIGNED: i32 = 0;
-pub const PARTY: i32 = 1;
-pub const DARK_SAVANT: i32 = 2;
-pub const COSMIC_LORDS: i32 = 3;
-pub const UMPANI: i32 = 4;
-pub const TRANG: i32 = 5;
-pub const MOOK: i32 = 6;
-pub const RATTKIN_COMMON: i32 = 7;
-pub const RATTKIN_MAFIA: i32 = 8;
-pub const BROTHERHOOD: i32 = 9;
-pub const HIGARDI_BANK: i32 = 10;
-pub const HIGARDI_LUNAR_LEGION: i32 = 11;
-pub const HIGARDI_COMMON: i32 = 12;
-pub const TRYNNIE: i32 = 13;
-pub const MAD_MARTEN: i32 = 14;
-pub const RAPAX_COMMON: i32 = 15;
-pub const RAPAX_TEMPLAR: i32 = 16;
-pub const RAPAX_ARMY: i32 = 17;
-pub const KINGS_ASSASSINS: i32 = 18;
+pub const UNALIGNED: i32 = Faction::Unaligned as i32;
+pub const PARTY: i32 = Faction::Party as i32;
+pub const DARK_SAVANT: i32 = Faction::DarkSavant as i32;
+pub const COSMIC_LORDS: i32 = Faction::CosmicLords as i32;
+pub const UMPANI: i32 = Faction::Umpani as i32;
+pub const TRANG: i32 = Faction::Trang as i32;
+pub const MOOK: i32 = Faction::Mook as i32;
+pub const RATTKIN_COMMON: i32 = Faction::RattkinCommon as i32;
+pub const RATTKIN_MAFIA: i32 = Faction::RattkinMafia as i32;
+pub const BROTHERHOOD: i32 = Faction::Brotherhood as i32;
+pub const HIGARDI_BANK: i32 = Faction::HigardiBank as i32;
+pub const HIGARDI_LUNAR_LEGION: i32 = Faction::HigardiLunarLegion as i32;
+pub const HIGARDI_COMMON: i32 = Faction::HigardiCommon as i32;
+pub const TRYNNIE: i32 = Faction::Trynnie as i32;
+pub const MAD_MARTEN: i32 = Faction::MadMarten as i32;
+pub const RAPAX_COMMON: i32 = Faction::RapaxCommon as i32;
+pub const RAPAX_TEMPLAR: i32 = Faction::RapaxTemplar as i32;
+pub const RAPAX_ARMY: i32 = Faction::RapaxArmy as i32;
+pub const KINGS_ASSASSINS: i32 = Faction::KingsAssassins as i32;
 const HIGARDI: [i32; 3] = [HIGARDI_BANK, HIGARDI_LUNAR_LEGION, HIGARDI_COMMON];
 
 /// How a faction stands toward the party.
@@ -99,6 +100,19 @@ impl Factions {
         usize::try_from(faction).ok().and_then(|f| self.scores.get(f)).copied()
     }
 
+    /// Scripted changes are relative, clamped to 0..99; they are not
+    /// offences. Unaligned and the party itself are unaffected by retail's
+    /// ApplyFactionChange. Return the actual score movement for presentation.
+    pub fn adjust(&mut self, faction: Faction, delta: i8) -> i16 {
+        if matches!(faction, Faction::Unaligned | Faction::Party) {
+            return 0;
+        }
+        let score = &mut self.scores[faction as usize];
+        let before = i16::from(*score);
+        *score = (before + i16::from(delta)).clamp(0, 99) as u8;
+        i16::from(*score) - before
+    }
+
     /// The party killed one of the faction's (retail `RecordFactionOffense`).
     /// Returns whether the band worsened.
     pub fn record_offence(&mut self, faction: i32, npc: bool) -> bool {
@@ -131,6 +145,20 @@ impl Factions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scripted_adjustments_clamp_without_recording_an_offence() {
+        let mut factions = Factions::default();
+        assert_eq!(factions.adjust(Faction::Umpani, -100), -80);
+        assert_eq!(factions.band(UMPANI), Band::Hostile);
+        assert_eq!(factions.adjust(Faction::Umpani, 100), 99);
+        assert_eq!(factions.adjust(Faction::Umpani, 20), 0);
+        assert_eq!(factions.offences[UMPANI as usize], 0);
+        assert_eq!(factions.adjust(Faction::Party, -100), 0);
+        assert_eq!(factions.score(PARTY), Some(100));
+        assert_eq!(Faction::from_script_name("faction_umpani"), Some(Faction::Umpani));
+        assert_eq!(Faction::from_script_name("FACTION_HIGARDI"), None);
+    }
 
     /// Retail's crabs keep to themselves until the party comes within their
     /// fifteen metres; aligned species follow their faction instead.

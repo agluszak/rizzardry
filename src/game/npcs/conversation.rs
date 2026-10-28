@@ -3,7 +3,9 @@ use super::{
     Npc, NpcAssets,
     trade::{self, TradeError, TradeQuote, TradeSource},
 };
+use crate::content::factions::Faction;
 use crate::content::{items::ItemCatalog, npcs::*};
+use crate::game::factions::Factions;
 use crate::game::{
     characters::{Character, Vitals},
     data::GameData,
@@ -147,6 +149,14 @@ pub enum TranscriptLine {
     Npc(String),
     Question(String),
     Reply(String),
+    Reward(QuestReward),
+}
+/// Committed outcomes, not commands. Presentation supplies retail wording.
+#[derive(Clone, Debug, PartialEq)]
+pub enum QuestReward {
+    Gold { giver: String, amount: u32 },
+    Experience { amount_each: u32 },
+    Faction { faction: Faction, improved: bool },
 }
 #[derive(Component, Debug)]
 pub struct Conversation {
@@ -436,6 +446,9 @@ struct QuotePlan {
 enum QuoteEffect {
     SetFact(FactId, u8),
     Mention(TopicCategory, String),
+    Gold { party: Entity, amount: u32 },
+    Experience { members: Vec<Entity>, amount: u32 },
+    Faction { faction: Faction, delta: i8 },
 }
 #[derive(Debug)]
 enum Continuation {
@@ -444,10 +457,12 @@ enum Continuation {
     End,
 }
 fn plan_quote(
-    story: &StoryFacts,
-    catalog: Option<&FactCatalog>,
+    world: &World,
+    party: Option<Entity>,
     q: &Quote,
 ) -> Result<QuotePlan, (usize, String)> {
+    let story = world.resource::<StoryFacts>();
+    let catalog = fact_catalog(world);
     if q.alert {
         return Err((0, "unported alert presentation".into()));
     }
@@ -470,6 +485,42 @@ fn plan_quote(
                 }
                 writes.insert(*id, *value);
                 plan.effects.push(QuoteEffect::SetFact(*id, *value));
+            }
+            DialogueOp::GiveGold(amount) => {
+                let party = party
+                    .filter(|&p| world.get::<PartyInventory>(p).is_some())
+                    .ok_or_else(|| (i, "party purse unavailable".into()))?;
+                plan.effects.push(QuoteEffect::Gold { party, amount: *amount });
+            }
+            DialogueOp::GiveExperience(amount) => {
+                let roster = party
+                    .and_then(|p| world.get::<PartyRoster>(p))
+                    .ok_or_else(|| (i, "party roster unavailable".into()))?;
+                let mut members = Vec::new();
+                for member in roster.iter() {
+                    let vitals = world
+                        .get::<Vitals>(member)
+                        .ok_or_else(|| (i, "party member vitals unavailable".into()))?;
+                    if world.get::<Character>(member).is_none() {
+                        return Err((i, "party member character unavailable".into()));
+                    }
+                    // CanPartySlotParticipate includes the unconscious. Quest
+                    // XP is the authored amount for EACH eligible member.
+                    if !vitals.is_dead() {
+                        members.push(member);
+                    }
+                }
+                plan.effects.push(QuoteEffect::Experience { members, amount: *amount });
+            }
+            DialogueOp::AdjustFaction { name, delta } => {
+                // FindFactionByName returns -1 for unknown names; retail skips
+                // them rather than aliasing the shipped FACTION_HIGARDI typo.
+                if let Some(faction) = Faction::from_script_name(name) {
+                    if !world.contains_resource::<Factions>() {
+                        return Err((i, "faction state unavailable".into()));
+                    }
+                    plan.effects.push(QuoteEffect::Faction { faction, delta: *delta });
+                }
             }
             DialogueOp::Conditional { facts, response } => {
                 let mut matched = true;
@@ -511,6 +562,19 @@ fn plan_quote(
     }
     Ok(plan)
 }
+fn quote_targets_present(world: &World, plan: &QuotePlan) -> bool {
+    plan.effects.iter().all(|effect| match effect {
+        QuoteEffect::Gold { party, .. } => world.get::<PartyInventory>(*party).is_some(),
+        QuoteEffect::Experience { members, .. } => {
+            members.iter().all(|&member| world.get::<Character>(member).is_some())
+        }
+        QuoteEffect::Faction { .. } => world.contains_resource::<Factions>(),
+        QuoteEffect::SetFact(id, _) => {
+            fact_catalog(world).is_some_and(|catalog| StoryFacts::can_set(*id, catalog))
+        }
+        QuoteEffect::Mention(..) => true,
+    })
+}
 fn commit_quote(world: &mut World, entity: Entity, quote: u16, plan: QuotePlan) {
     for effect in plan.effects {
         match effect {
@@ -528,6 +592,38 @@ fn commit_quote(world: &mut World, entity: Entity, quote: u16, plan: QuotePlan) 
                 });
             }
             QuoteEffect::Mention(category, text) => learn_topic(world, entity, category, &text),
+            QuoteEffect::Gold { party, amount } => {
+                let mut purse = world.get_mut::<PartyInventory>(party).unwrap();
+                purse.gold = purse.gold.wrapping_add(amount);
+                let actor = world.get::<Conversation>(entity).unwrap().actor;
+                let giver = definition(world, actor).unwrap().source_name.clone();
+                world
+                    .get_mut::<Conversation>(entity)
+                    .unwrap()
+                    .transcript
+                    .push(TranscriptLine::Reward(QuestReward::Gold { giver, amount }));
+            }
+            QuoteEffect::Experience { members, amount } => {
+                for member in members {
+                    world.get_mut::<Character>(member).unwrap().award_experience(amount);
+                }
+                world
+                    .get_mut::<Conversation>(entity)
+                    .unwrap()
+                    .transcript
+                    .push(TranscriptLine::Reward(QuestReward::Experience { amount_each: amount }));
+            }
+            QuoteEffect::Faction { faction, delta } => {
+                let movement = world.resource_mut::<Factions>().adjust(faction, delta);
+                if movement != 0 {
+                    world.get_mut::<Conversation>(entity).unwrap().transcript.push(
+                        TranscriptLine::Reward(QuestReward::Faction {
+                            faction,
+                            improved: movement > 0,
+                        }),
+                    );
+                }
+            }
         }
     }
     if let Some(following) = plan.following {
@@ -553,15 +649,16 @@ fn run(world: &mut World, entity: Entity) {
         return;
     }
     let handle = c.script.clone();
+    let party = the_party(world);
     world.resource_scope(|world, scripts: Mut<Assets<DialogueScript>>| {
         // Asset loading is not a terminal dialogue error. Keep the queued work
         // and retry when its immutable definition is available.
         if let Some(script) = scripts.get(&handle) {
-            run_script(world, entity, script);
+            run_script(world, entity, script, party);
         }
     });
 }
-fn run_script(world: &mut World, entity: Entity, script: &DialogueScript) {
+fn run_script(world: &mut World, entity: Entity, script: &DialogueScript, party: Option<Entity>) {
     let actor = world.get::<Conversation>(entity).unwrap().actor;
     // Bound immediate authored transitions, including malicious empty-quote loops.
     for _ in 0..256 {
@@ -621,10 +718,7 @@ fn run_script(world: &mut World, entity: Entity, script: &DialogueScript) {
                     });
                     continue;
                 }
-                let plan = match plan.map_or_else(
-                    || plan_quote(world.resource::<StoryFacts>(), fact_catalog(world), q),
-                    Ok,
-                ) {
+                let plan = match plan.map_or_else(|| plan_quote(world, party, q), Ok) {
                     Ok(plan) => plan,
                     Err((entry, reason)) => {
                         let mut c = world.get_mut::<Conversation>(entity).unwrap();
@@ -633,6 +727,12 @@ fn run_script(world: &mut World, entity: Entity, script: &DialogueScript) {
                         return;
                     }
                 };
+                if !quote_targets_present(world, &plan) {
+                    let mut c = world.get_mut::<Conversation>(entity).unwrap();
+                    c.queue.push_front(Step::Quote { quote, subquote, paid, plan: Some(plan) });
+                    block(&mut c, quote, None, "accepted reward recipient unavailable".into());
+                    return;
+                }
                 if quote == 0 {
                     let first = world.get::<Npc>(actor).unwrap().greeting_pending;
                     if first && let Ok(definition) = definition(world, actor) {
@@ -783,19 +883,18 @@ fn answer_price(world: &mut World, entity: Entity, accept: bool) {
             let (next, plan) = if world.get::<PartyInventory>(party).unwrap().gold < gold {
                 (TOO_POOR_QUOTE, None)
             } else {
-                let plan =
-                    match plan_quote(world.resource::<StoryFacts>(), fact_catalog(world), line) {
-                        Ok(plan) => plan,
-                        Err((entry, reason)) => {
-                            block(
-                                &mut world.get_mut::<Conversation>(entity).unwrap(),
-                                quote,
-                                Some(entry),
-                                reason,
-                            );
-                            return;
-                        }
-                    };
+                let plan = match plan_quote(world, Some(party), line) {
+                    Ok(plan) => plan,
+                    Err((entry, reason)) => {
+                        block(
+                            &mut world.get_mut::<Conversation>(entity).unwrap(),
+                            quote,
+                            Some(entry),
+                            reason,
+                        );
+                        return;
+                    }
+                };
                 world.get_mut::<PartyInventory>(party).unwrap().gold -= gold;
                 if !always {
                     world.get_mut::<Npc>(actor).unwrap().paid_topics.push(quote);
@@ -1155,6 +1254,7 @@ mod tests {
             super::super::NpcBody(actor),
             crate::game::world::level::LevelOwned(level),
             Monster {
+                enchantments: default(),
                 location: 1,
                 species: 0,
                 hp: 5,
@@ -1185,6 +1285,134 @@ mod tests {
             .id();
         (app, entity, actor)
     }
+    #[test]
+    fn quest_rewards_commit_once_to_living_roster_members_and_the_faction_owner() {
+        use crate::game::characters::{Condition, Gender, Lasting, Profession, Race};
+        let operations = vec![
+            DialogueOp::GiveGold(500),
+            DialogueOp::GiveExperience(100),
+            DialogueOp::AdjustFaction { name: "FACTION_UMPANI".into(), delta: -50 },
+            DialogueOp::SetFact(FactId(91), 1),
+            DialogueOp::Next(Response::Fixed(1)),
+        ];
+        for blocked in [false, true] {
+            let mut ops = operations.clone();
+            if blocked {
+                ops.insert(
+                    3,
+                    DialogueOp::Unsupported { opcode: 99, operands: [0; 3], subentries: vec![] },
+                );
+            }
+            let (mut app, session, _) = app(DialogueScript {
+                quotes: vec![
+                    Quote { text: vec!["Reward".into()], operations: ops, ..default() },
+                    Quote { text: vec!["Done".into()], ..default() },
+                ],
+                ..default()
+            });
+            app.init_resource::<Factions>();
+            let world = app.world_mut();
+            let party = the_party(world).unwrap();
+            let members: Vec<_> = (0..4)
+                .map(|index| {
+                    let mut character =
+                        Character::new("Member", Race::Human, Gender::Male, Profession::Fighter);
+                    if index == 0 {
+                        character.experience = u32::MAX - 50;
+                    }
+                    let mut vitals = Vitals::new(&character);
+                    if index == 1 {
+                        vitals.conditions.push((Condition::Unconscious, Lasting::Indefinite));
+                    }
+                    if index == 2 {
+                        vitals.hp = 0;
+                    }
+                    let member = world.spawn((character, vitals)).id();
+                    if index != 3 {
+                        crate::game::party::roster::test_join(world, member);
+                    }
+                    member
+                })
+                .collect();
+            app.update();
+            let world = app.world();
+            if blocked {
+                assert!(matches!(
+                    world.get::<Conversation>(session).unwrap().wait,
+                    ConversationWait::Blocked { .. }
+                ));
+                assert_eq!(world.get::<PartyInventory>(party).unwrap().gold, 0);
+                assert_eq!(world.get::<Character>(members[0]).unwrap().experience, u32::MAX - 50);
+                assert_eq!(world.get::<Character>(members[1]).unwrap().experience, 0);
+                assert_eq!(world.resource::<Factions>().score(Faction::Umpani as i32), Some(80));
+                assert!(world.resource::<StoryFacts>().journal.is_empty());
+                continue;
+            }
+            assert_eq!(world.get::<PartyInventory>(party).unwrap().gold, 500);
+            assert_eq!(world.get::<Character>(members[0]).unwrap().experience, u32::MAX);
+            assert_eq!(world.get::<Character>(members[1]).unwrap().experience, 100);
+            assert_eq!(world.get::<Character>(members[2]).unwrap().experience, 0);
+            assert_eq!(world.get::<Character>(members[3]).unwrap().experience, 0);
+            assert_eq!(world.resource::<Factions>().score(Faction::Umpani as i32), Some(30));
+            assert_eq!(world.resource::<StoryFacts>().values[&FactId(91)], 1);
+            let speech = match world.get::<Conversation>(session).unwrap().wait {
+                ConversationWait::Line { speech, .. } => speech,
+                _ => panic!("reward line expected"),
+            };
+            for _ in 0..2 {
+                app.world_mut()
+                    .write_message(ConversationRequest::Advance { conversation: session, speech });
+            }
+            app.update();
+            let world = app.world();
+            assert_eq!(world.get::<PartyInventory>(party).unwrap().gold, 500);
+            assert_eq!(world.get::<Character>(members[1]).unwrap().experience, 100);
+            assert_eq!(
+                world
+                    .get::<Conversation>(session)
+                    .unwrap()
+                    .transcript
+                    .iter()
+                    .filter(|line| matches!(line, TranscriptLine::Reward(_)))
+                    .count(),
+                3
+            );
+        }
+    }
+
+    #[test]
+    fn pending_experience_is_not_redirected_by_roster_changes() {
+        use crate::game::characters::{Gender, Profession, Race};
+        let (mut app, session, _) = app(DialogueScript {
+            quotes: vec![Quote {
+                text: vec!["First".into(), "Last".into()],
+                operations: vec![DialogueOp::GiveExperience(100)],
+                ..default()
+            }],
+            ..default()
+        });
+        let character = Character::new("Recipient", Race::Human, Gender::Male, Profession::Fighter);
+        let vitals = Vitals::new(&character);
+        let member = app.world_mut().spawn((character, vitals)).id();
+        crate::game::party::roster::test_join(app.world_mut(), member);
+        app.update();
+        let speech = match app.world().get::<Conversation>(session).unwrap().wait {
+            ConversationWait::Line { speech, .. } => speech,
+            _ => panic!("first line expected"),
+        };
+        app.world_mut().entity_mut(member).remove::<PartyMember>();
+        let replacement =
+            Character::new("Replacement", Race::Human, Gender::Male, Profession::Fighter);
+        let vitals = Vitals::new(&replacement);
+        let replacement = app.world_mut().spawn((replacement, vitals)).id();
+        crate::game::party::roster::test_join(app.world_mut(), replacement);
+        app.world_mut()
+            .write_message(ConversationRequest::Advance { conversation: session, speech });
+        app.update();
+        assert_eq!(app.world().get::<Character>(member).unwrap().experience, 100);
+        assert_eq!(app.world().get::<Character>(replacement).unwrap().experience, 0);
+    }
+
     #[test]
     fn fact_writes_select_the_validated_branch_before_payment_or_effects() {
         for (initial, assigned) in [(0, 1), (1, 0)] {
@@ -1382,6 +1610,53 @@ mod tests {
         app.update();
         assert!(app.world().get::<Conversation>(session).is_none());
         assert_eq!(app.world().resource::<Lifecycle>().removed, 1);
+    }
+
+    #[test]
+    #[ignore = "requires a retail installation"]
+    fn authored_raven_reward_changes_xp_and_rapax_standing_and_urq_gives_gold() {
+        use crate::game::characters::{Gender, Profession, Race};
+        let files = crate::retail::files::retail_files();
+        for (path, quote, expected_gold, expected_xp, expected_rapax) in [
+            ("data/npc scripts/npc_guard_raven.nsf", 31, 0, 30000, 20),
+            ("data/npc scripts/rpc_urq.nsf", 70, 500, 0, 25),
+        ] {
+            let script =
+                crate::retail::npcs::read_dialogue(&files.read(path).unwrap().unwrap()).unwrap();
+            let line_count = script.quotes[quote as usize].text.len();
+            let (mut app, session, _) = app(script);
+            app.init_resource::<Factions>();
+            let world = app.world_mut();
+            let party = the_party(world).unwrap();
+            let profile =
+                Character::new("Recipient", Race::Human, Gender::Male, Profession::Fighter);
+            let vitals = Vitals::new(&profile);
+            let member = world.spawn((profile, vitals)).id();
+            crate::game::party::roster::test_join(world, member);
+            world.get_mut::<Conversation>(session).unwrap().queue =
+                VecDeque::from([Step::Quote { quote, subquote: 0, paid: true, plan: None }]);
+            app.update();
+            for _ in 1..line_count {
+                let speech = match app.world().get::<Conversation>(session).unwrap().wait {
+                    ConversationWait::Line { speech, .. } => speech,
+                    _ => panic!("retail reward line expected"),
+                };
+                app.world_mut()
+                    .write_message(ConversationRequest::Advance { conversation: session, speech });
+                app.update();
+            }
+            let world = app.world();
+            assert_eq!(world.get::<PartyInventory>(party).unwrap().gold, expected_gold);
+            assert_eq!(world.get::<Character>(member).unwrap().experience, expected_xp);
+            assert_eq!(
+                world.resource::<Factions>().score(Faction::RapaxCommon as i32),
+                Some(expected_rapax)
+            );
+            assert!(!matches!(
+                world.get::<Conversation>(session).unwrap().wait,
+                ConversationWait::Blocked { .. }
+            ));
+        }
     }
 
     #[test]

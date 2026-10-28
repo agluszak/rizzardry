@@ -18,9 +18,7 @@ pub fn combat_rest_amount(profile: &Character, rolled: u32) -> u32 {
     if profile.profession != Profession::Fighter {
         return rolled;
     }
-    let level = profile.profession_levels[profile.profession];
-    let factor = if level > 20 { 3.3 } else { (f32::from(level) * 2.0 + 60.0) * 3.3 * 0.01 };
-    (factor * rolled as f32) as u32
+    (profile.scale_by_profession(3.3) * rolled as f32) as u32
 }
 
 /// How the party spends passing time.
@@ -66,11 +64,18 @@ pub fn pass(profile: &Character, member: &mut Mut<Vitals>, ticks: Ticks, pace: P
 pub fn elapse(profile: &Character, member: &mut Vitals, ticks: Ticks, pace: Pace) {
     let (stamina, health) = pace.scales();
     if ticks.stamina > 0 {
-        member.recover_stamina(ticks.stamina, stamina, profile.max_stamina());
+        member.recover_stamina(
+            ticks.stamina,
+            stamina,
+            profile.stats(&member.enchantments).max_stamina(),
+        );
     }
     if ticks.aging > 0 {
-        member.recover_health(ticks.aging, health, profile.max_hp());
+        member.recover_health(ticks.aging, health, profile.stats(&member.enchantments).max_hp());
         member.age_conditions(ticks.aging);
+        let stats = profile.stats(&member.enchantments);
+        member.hp = member.hp.min(stats.max_hp());
+        member.stamina = member.stamina.min(stats.max_stamina());
     }
 }
 

@@ -303,6 +303,7 @@ pub fn draw_party(
     slots: PortraitSlots,
     members: Query<CharacterView>,
     battle: Option<Single<&crate::game::combat::Battle>>,
+    party_effects: Option<Single<&crate::game::magic::enchantments::PartyEffects>>,
     content: crate::game::data::Content,
     mut parts: Query<(
         &PartyPart,
@@ -326,7 +327,12 @@ pub fn draw_party(
         let mut hand_x = None;
         let image = |path: &str, frame| (crate::content::paths::retail(path), frame);
         if let Some(view) = actor {
-            let armour = view.armour(part.member, catalog, battle.as_deref().copied());
+            let armour = view.armour(
+                part.member,
+                catalog,
+                battle.as_deref().copied(),
+                party_effects.as_deref().copied(),
+            );
             let CharacterViewItem { profile, vitals, carried, .. } = view;
             let dead = vitals.is_dead();
             let worn = |slot| {
@@ -363,11 +369,14 @@ pub fn draw_party(
                 Part::HealthEmpty | Part::StaminaEmpty => {
                     shown = !dead;
                     let amount = if matches!(part.kind, Part::HealthEmpty) {
-                        crate::presentation::screen_art::vital_fill(vitals.hp, profile.max_hp())
+                        crate::presentation::screen_art::vital_fill(
+                            vitals.hp,
+                            profile.stats(&vitals.enchantments).max_hp(),
+                        )
                     } else {
                         crate::presentation::screen_art::vital_fill(
                             vitals.stamina,
-                            profile.max_stamina(),
+                            profile.stats(&vitals.enchantments).max_stamina(),
                         )
                     };
                     let height = px(45 - amount);

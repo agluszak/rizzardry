@@ -10,7 +10,7 @@ use crate::bytes::{
 use enum_map::EnumMap;
 use enumset::EnumSet;
 
-use crate::content::items::ItemId;
+use crate::content::items::{AttackEffects, ItemId};
 use crate::content::species::{
     AttackWord, Disposition, Drop, MonsterAttack, MonsterAttributes, MonsterCatalog, Species,
     Treasure,
@@ -36,9 +36,9 @@ fn species(record: &[u8]) -> Result<Species, DecodeError> {
         .filter(|attack| attack[0] != 0)
         .map(|attack| {
             Ok(MonsterAttack {
-                named: attack[1] != 0,
+                weapon: crate::content::species::MonsterWeapon::try_from(attack[1])
+                    .map_err(|_| DecodeError::Invalid("unknown monster weapon", 1))?,
                 word: if attack[2] == 13 {
-                    // Reserved announcement slot has no text in retail.
                     AttackWord::Silent
                 } else {
                     AttackWord::try_from(attack[2])
@@ -48,6 +48,10 @@ fn species(record: &[u8]) -> Result<Species, DecodeError> {
                 score: attack[4],
                 modes: EnumSet::from_repr_truncated(u16_at(attack, 0x15)?),
                 damage: dice_at(attack, 0x17)?,
+                effects: AttackEffects {
+                    chances: EnumMap::from_array(attack[5..0x15].try_into().unwrap()),
+                    strength: attack[0x1b],
+                },
             })
         })
         .collect::<Result<_, DecodeError>>()?;
@@ -66,6 +70,8 @@ fn species(record: &[u8]) -> Result<Species, DecodeError> {
             .then_some(crate::content::npcs::NpcId(u16::from(record[0xcd]))),
         kind,
         damage_reduction: record[0xcf],
+        vulnerable_from_behind: record[0xd0] & 0x02 != 0,
+        death_immune: record[0x1be] != 0,
         attributes: MonsterAttributes {
             strength: record[0xd1],
             intelligence: record[0xd2],

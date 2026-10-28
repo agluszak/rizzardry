@@ -1022,10 +1022,18 @@ fn project_text(
         }
     }
 }
+const QUEST_GOLD: usize = 0x7e9;
+const QUEST_EXPERIENCE: usize = 0x232;
+const FACTION_NAMES: usize = 0x5a1;
+const FACTION_DECREASED: usize = 0x245;
+const FACTION_INCREASED: usize = 0x246;
+const FACTION_CHANGED: usize = 0x247;
+
 fn sync_transcript(
     views: ViewScope,
     mut commands: Commands,
     assets: Res<AssetServer>,
+    strings: super::screen_art::GameStrings,
     sessions: Query<&Conversation>,
     lists: Query<(Entity, Option<&Children>), With<Summary>>,
     mut rows: Query<(&TranscriptRow, &mut BitmapText)>,
@@ -1045,6 +1053,36 @@ fn sync_transcript(
                 TranscriptLine::Npc(text) => (text.clone(), None),
                 TranscriptLine::Question(text) => (text.clone(), Some("palettebronze")),
                 TranscriptLine::Reply(text) => (text.clone(), Some("palettegreen")),
+                TranscriptLine::Reward(reward) => {
+                    let text = match reward {
+                        QuestReward::Gold { giver, amount } => strings
+                            .get(QUEST_GOLD)
+                            .replacen("%s", giver, 1)
+                            .replace("%d", &amount.to_string()),
+                        QuestReward::Experience { amount_each } => {
+                            strings.get(QUEST_EXPERIENCE).replace("%d", &amount_each.to_string())
+                        }
+                        QuestReward::Faction { faction, improved } => strings
+                            .get(FACTION_CHANGED)
+                            .replacen("%s", strings.get(FACTION_NAMES + *faction as usize), 1)
+                            .replacen(
+                                "%s",
+                                strings.get(if *improved {
+                                    FACTION_INCREASED
+                                } else {
+                                    FACTION_DECREASED
+                                }),
+                                1,
+                            ),
+                    };
+                    let palette = if matches!(reward, QuestReward::Faction { improved: false, .. })
+                    {
+                        "palettered"
+                    } else {
+                        "palettegreen"
+                    };
+                    (text, Some(palette))
+                }
             })
             .collect();
         if let ConversationWait::Blocked { quote, entry, reason } = &c.wait {

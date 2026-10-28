@@ -82,6 +82,14 @@ pub enum DialogueOp {
         words: Vec<String>,
     },
     SetFact(FactId, u8),
+    GiveGold(u32),
+    GiveExperience(u32),
+    /// Keep the authored name: retail silently ignores unrecognized names,
+    /// including the shipped FACTION_HIGARDI typo (not HIGARDI_COMMON).
+    AdjustFaction {
+        name: String,
+        delta: i8,
+    },
     Close,
     Price {
         gold: u32,

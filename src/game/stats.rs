@@ -9,12 +9,14 @@
 use bevy::prelude::*;
 
 use crate::game::GameplaySet;
-use crate::game::characters::Character;
 use crate::game::characters::resistance::{Resistances, resistances};
+use crate::game::characters::{Character, Vitals};
 use crate::game::combat::Battle;
 use crate::game::combat::attack::{Hand, primary_hand};
 use crate::game::inventory::{Burden, Carried, distribute_burden};
+use crate::game::magic::enchantments::PartyEffects;
 use crate::game::magic::sync_spell_points;
+use crate::game::party::roster::PartyRoster;
 use crate::game::world::level::level_active;
 
 pub(crate) fn plugin(app: &mut App) {
@@ -33,27 +35,41 @@ pub(crate) fn plugin(app: &mut App) {
 }
 
 /// Keep each member's main hand and resistances current, recomputing them
-/// only when something they are made of changes: the character, what they
-/// wear or their load.
+/// only when something they are made of changes: the character, the spells
+/// on them or their party, what they wear or their load.
 pub fn sync_stats(
     mut members: Query<(
-        (Ref<Character>, Ref<Carried>, Ref<Burden>),
+        (Entity, Ref<Character>, Ref<Vitals>, Ref<Carried>, Ref<Burden>),
         (&mut Hand, &mut Resistances),
     )>,
+    party: Option<Single<(Ref<PartyRoster>, Ref<PartyEffects>)>>,
     content: crate::game::data::Content,
     mut had_catalog: Local<bool>,
 ) {
     let Some(catalog) = content.items() else { return };
     // Everyone's stats are settled once the item catalog has loaded.
     let loaded = !std::mem::replace(&mut *had_catalog, true);
-    for ((character, carried, burden), (mut hand, mut stored_resistances)) in &mut members {
-        let worn = loaded || character.is_changed() || carried.is_changed();
-        if worn {
-            stored_resistances.set_if_neq(Resistances(resistances(&character, &carried, catalog)));
+    let party = party.as_deref();
+    let party_changed =
+        party.is_some_and(|(roster, effects)| roster.is_changed() || effects.is_changed());
+    for ((entity, character, vitals, carried, burden), (mut hand, mut stored_resistances)) in
+        &mut members
+    {
+        let stats = character.stats(&vitals.enchantments);
+        let worn = loaded || character.is_changed() || vitals.is_changed() || carried.is_changed();
+        if worn || party_changed {
+            let mut scores = resistances(&stats, &carried, catalog);
+            // The party's protections count for its members only.
+            if let Some((_, effects)) = party.filter(|(roster, _)| roster.contains(&entity)) {
+                for (realm, value) in &mut scores {
+                    value.total = (value.total + effects.0.resistance(realm)).min(100);
+                }
+            }
+            stored_resistances.set_if_neq(Resistances(scores));
         }
         if worn || burden.is_changed() {
             let load = burden.load;
-            hand.set_if_neq(primary_hand(&character, &carried, catalog, load));
+            hand.set_if_neq(primary_hand(&stats, &carried, catalog, load));
         }
     }
 }
@@ -63,7 +79,6 @@ mod tests {
     use super::*;
     use crate::content::characters::{Gender, Profession, Race, Realm};
     use crate::content::items::{EquipClass, ItemCatalog, ItemDefinition, ItemId};
-    use crate::game::characters::Vitals;
     use crate::game::data::GameData;
     use crate::game::inventory::{EquipSlot, Equipped, ItemIds, ItemStack};
     use enumset::EnumSet;

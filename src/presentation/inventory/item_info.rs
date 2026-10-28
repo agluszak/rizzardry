@@ -141,6 +141,7 @@ pub(super) fn refresh(
     members: Query<CharacterView>,
     content: crate::game::data::Content,
     battle: Option<Single<&crate::game::combat::Battle>>,
+    party_effects: Option<Single<&crate::game::magic::enchantments::PartyEffects>>,
     art: Option<Res<InventoryArt>>,
     mut values: Query<(&Value, &mut BitmapText)>,
     mut bars: Query<&mut PictureCrop, With<ExperienceBar>>,
@@ -148,16 +149,22 @@ pub(super) fn refresh(
     let (Some(screen), Some(art)) = (screen, art) else { return };
     let Ok(view) = members.get(screen.member) else { return };
     let load = view.load();
-    let armour = view.armour(screen.member, content.items(), battle.as_deref().copied());
+    let armour = view.armour(
+        screen.member,
+        content.items(),
+        battle.as_deref().copied(),
+        party_effects.as_deref().copied(),
+    );
     let CharacterViewItem { profile: character, vitals, burden, .. } = view;
 
     let weight = burden.map(|burden| burden.weight);
+    let stats = character.stats(&vitals.enchantments);
     for (kind, mut text) in &mut values {
         let (value, palette) = match *kind {
             Value::Experience => (format_gold(character.experience), None),
             Value::Goal => (format_gold(character.experience_goal()), None),
-            Value::HitPoints => (format!("{}/{}", vitals.hp, character.max_hp()), None),
-            Value::Stamina => (format!("{}/{}", vitals.stamina, character.max_stamina()), None),
+            Value::HitPoints => (format!("{}/{}", vitals.hp, stats.max_hp()), None),
+            Value::Stamina => (format!("{}/{}", vitals.stamina, stats.max_stamina()), None),
             Value::Load => weight.map_or((String::new(), None), |weight| {
                 let palette = match load {
                     Load::None => None,
@@ -166,7 +173,7 @@ pub(super) fn refresh(
                     Load::Heavy => Some(art.yellow.clone()),
                     Load::Extreme => Some(art.red.clone()),
                 };
-                (format!("{}/{}", weight / 10, character.capacity() / 10), palette)
+                (format!("{}/{}", weight / 10, stats.capacity() / 10), palette)
             }),
             Value::BaseArmour => {
                 (armour.as_ref().map_or(String::new(), |armour| armour.total.to_string()), None)
@@ -174,7 +181,7 @@ pub(super) fn refresh(
             Value::AverageArmour => {
                 (armour.as_ref().map_or(String::new(), |armour| armour.average().to_string()), None)
             }
-            Value::Attribute(attribute) => (character.attribute(attribute).to_string(), None),
+            Value::Attribute(attribute) => (stats.attribute(attribute).to_string(), None),
         };
         if text.value != value {
             text.value = value;
@@ -183,13 +190,9 @@ pub(super) fn refresh(
             text.palette = palette;
         }
     }
-    // The previous experience goal is not stored yet for characters who have
-    // changed profession. Level-one characters always start at zero.
-    let progress = if character.level == 1 {
-        character.experience as f32 / character.experience_goal().max(1) as f32
-    } else {
-        0.0
-    };
+    let progress = character.experience.saturating_sub(character.experience_previous_goal) as f32
+        / character.experience_goal().saturating_sub(character.experience_previous_goal).max(1)
+            as f32;
     for mut bar in &mut bars {
         bar.set_if_neq(PictureCrop::horizontal(0.0, (103.0 * progress.clamp(0.0, 1.0)).floor()));
     }

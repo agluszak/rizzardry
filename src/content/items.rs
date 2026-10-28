@@ -115,13 +115,55 @@ pub enum AttackMode {
     Shoot,
 }
 
-/// What a launcher shoots, and what ammunition is (retail pairs them by
-/// item kind in `CompatiblePartnerItems`).
+/// What a blow may do besides its damage, in retail's order (its attack
+/// effect slots).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Enum)]
+pub enum AttackEffect {
+    Sleep,
+    Paralyze,
+    Poison,
+    Hex,
+    Disease,
+    Kill,
+    KnockOut,
+    Blind,
+    Frighten,
+    Swallow,
+    Possess,
+    DrainHealth,
+    DrainStamina,
+    DrainSpellPoints,
+    Nauseate,
+    Insane,
+}
+
+/// The percent chance of each effect a blow lands with, and its strength
+/// (retail `missile_values` and `missile_magnitude`, which a weapon, its
+/// ammunition and a monster's attack all carry).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AttackEffects {
+    pub chances: EnumMap<AttackEffect, u8>,
+    pub strength: u8,
+}
+
+impl AttackEffects {
+    /// A weapon's effects with its ammunition's, byte by byte as retail
+    /// sums them.
+    pub fn with(mut self, other: &AttackEffects) -> Self {
+        for (effect, chance) in &mut self.chances {
+            *chance = chance.wrapping_add(other.chances[effect]);
+        }
+        self.strength = self.strength.wrapping_add(other.strength);
+        self
+    }
+}
+
+/// What an item is made from (retail `MergeItems`): two ingredients, in
+/// either order, and the skill and level that making it takes, if any.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Ammunition {
-    Arrow,
-    Quarrel,
-    SlingStone,
+pub struct Recipe {
+    pub ingredients: [ItemId; 2],
+    pub skill: Option<(Skill, u8)>,
 }
 
 /// What kind of thing an item is: retail's generic name index
@@ -167,9 +209,11 @@ pub struct ItemDefinition {
     pub name: String,
     /// What it is called before it is identified ("Dagger (Unidentified)").
     pub unidentified_name: String,
+    /// What kind of thing it is: which unidentified name it shows, and what
+    /// it may be held or loaded with.
+    pub kind: ItemKind,
     /// Generic kind without the unidentified annotation (for assay/type labels).
     pub kind_name: String,
-    pub kind: ItemKind,
     /// The item's picture, a retail path such as `data/items/dagger.sti`.
     pub image: String,
     /// Its model lying in the world, such as `data/items3d/dagger.itm`.
@@ -188,13 +232,17 @@ pub struct ItemDefinition {
     pub weapon_skill: Option<Skill>,
     /// How far a weapon attacks; two weapons in one set share it.
     pub reach: Reach,
-    /// The ammunition a launcher shoots.
-    pub shoots: Option<Ammunition>,
-    /// The ammunition this is.
-    pub ammunition: Option<Ammunition>,
     pub damage: Dice,
     /// The ways it strikes; one is chosen per attack.
     pub attack_modes: EnumSet<AttackMode>,
+    /// What its blows may do besides damage.
+    pub effects: AttackEffects,
+    /// The monster kind it slays for an extra damage die.
+    pub slays: Option<super::species::MonsterKind>,
+    /// Swings it adds to each attack.
+    pub extra_swings: i32,
+    /// Thrown, it is not used up.
+    pub never_depletes: bool,
     pub damage_bonus: i8,
     pub hit_bonus: i8,
     pub armor_class_bonus: i8,
@@ -224,6 +272,8 @@ pub struct ItemDefinition {
     pub weight: u16,
     /// Retail's "binds on equip" byte; the assay screen shows it means cursed.
     pub cursed: bool,
+    /// What it is made from, for an item that is made.
+    pub recipe: Option<Recipe>,
 }
 
 impl ItemDefinition {

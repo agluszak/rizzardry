@@ -9,6 +9,7 @@
 mod info;
 mod item_info;
 mod pool_scroll;
+mod progression;
 mod review;
 mod spells;
 
@@ -30,7 +31,7 @@ use crate::content::ui::SpriteSheet;
 use crate::game::characters::{Character, Gender, Race, Vitals};
 use crate::game::combat::attack::Armour;
 use crate::game::inventory::{
-    BACKPACK_SLOTS, Carried, EquipSlot, ItemStack, MemberSlot, PartyInventory, Slot,
+    BACKPACK_SLOTS, Carried, EquipSlot, ItemAt, ItemStack, MemberSlot, PartyInventory, Slot,
 };
 use crate::game::party::roster::PartyRoster;
 use crate::game::screen::Screen;
@@ -84,8 +85,71 @@ fn grid(left: f32, i: usize) -> Vec2 {
 
 /// The open screen, reviewing one member. Absent while exploring.
 #[derive(Component, Debug)]
+#[require(ItemAction)]
 pub struct InventoryScreen {
     pub member: Entity,
+}
+
+/// What clicking an item does besides moving it (retail's item action
+/// buttons, `SetCampItemActionMode`): armed by its button, spent by the
+/// click that carries it out.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ItemAction {
+    #[default]
+    None,
+    /// The party tries to identify the clicked item.
+    Identify,
+    /// The held item is merged with the clicked one.
+    Merge,
+}
+
+/// An item action's button.
+#[derive(Component, Clone, Copy)]
+struct ItemActionButton(ItemAction);
+
+/// An item action button arms its action, or disarms it when armed; with an
+/// item held, Identify tries it at once (retail `OnCampIdentifyItem`,
+/// `OnCampMoveItem`).
+fn press_item_action(
+    click: On<Activate>,
+    buttons: Query<&ItemActionButton>,
+    screen: Option<Single<(&InventoryScreen, &mut ItemAction)>>,
+    mut inventory: crate::game::inventory::operations::InventoryOperations,
+    mut rng: ResMut<crate::game::rng::GameRng>,
+) {
+    let (Ok(&ItemActionButton(pressed)), Some(screen)) = (buttons.get(click.entity), screen) else {
+        return;
+    };
+    let (screen, mut action) = screen.into_inner();
+    *action = if *action == pressed {
+        ItemAction::None
+    } else if pressed == ItemAction::Identify && inventory.holds() {
+        if let Err(refusal) = inventory.identify(screen.member, ItemAt::Hand, &mut rng) {
+            info!("identifying refused: {refusal:?}");
+        }
+        ItemAction::None
+    } else {
+        pressed
+    };
+}
+
+/// The armed action's button shows pressed.
+fn style_item_actions(
+    action: Option<Single<&ItemAction>>,
+    buttons: Query<(Entity, &ItemActionButton, Has<bevy::ui::Selected>)>,
+    mut commands: Commands,
+) {
+    let armed = action.map_or(ItemAction::None, |action| **action);
+    for (entity, button, selected) in &buttons {
+        let active = button.0 == armed;
+        if active != selected {
+            if active {
+                commands.entity(entity).insert(bevy::ui::Selected);
+            } else {
+                commands.entity(entity).remove::<bevy::ui::Selected>();
+            }
+        }
+    }
 }
 
 #[derive(Resource, Default)]
@@ -287,7 +351,7 @@ fn enter_inventory(
         Actions<InventoryRoot> [
             Action::<CloseInventory>::new()
             ActionSettings { consume_input: true }
-            Bindings [ Binding(KeyCode::Escape) Binding(KeyCode::KeyI) ]
+            Bindings [ Binding(KeyCode::Escape) -- Binding(KeyCode::KeyI) ]
         ]
         on(|_: On<Start<CloseInventory>>, mut next: ResMut<NextState<Screen>>| { next.set(Screen::World); })
     }).insert((InventoryScreen { member }, DespawnOnExit(Screen::Inventory)));
@@ -727,8 +791,10 @@ fn draw_vitals(
         visibility.set_if_neq(visible_if(!vitals.is_dead()));
         if let (Some(shade), Some(mut node)) = (shade, node) {
             let (current, maximum) = match shade {
-                VitalShade::Health => (vitals.hp, profile.max_hp()),
-                VitalShade::Stamina => (vitals.stamina, profile.max_stamina()),
+                VitalShade::Health => (vitals.hp, profile.stats(&vitals.enchantments).max_hp()),
+                VitalShade::Stamina => {
+                    (vitals.stamina, profile.stats(&vitals.enchantments).max_stamina())
+                }
             };
             let filled = super::screen_art::vital_fill(current, maximum);
             let height = px((45 - filled) as f32);
@@ -775,13 +841,19 @@ fn draw_header_hands(
     content: crate::game::data::Content,
     members: Query<crate::presentation::character_view::CharacterView>,
     battle: Option<Single<&crate::game::combat::Battle>>,
+    party_effects: Option<Single<&crate::game::magic::enchantments::PartyEffects>>,
     art: Res<InventoryArt>,
     mut parts: Query<(&HeaderHand, &mut Visibility, Option<&mut Picture>, Option<&mut BitmapText>)>,
 ) {
     let Some(screen) = screen else { return };
     let Some(catalog) = content.items() else { return };
     let Ok(view) = members.get(screen.member) else { return };
-    let armour = view.armour(screen.member, Some(catalog), battle.as_deref().copied());
+    let armour = view.armour(
+        screen.member,
+        Some(catalog),
+        battle.as_deref().copied(),
+        party_effects.as_deref().copied(),
+    );
     let profile = view.profile;
     let carried = view.carried;
     let empty = Carried::default();
@@ -1103,12 +1175,16 @@ fn draw_cells(
 fn click_cell(
     click: On<Activate>,
     cells: Query<&ItemCell>,
-    screen: Option<Single<&InventoryScreen>>,
+    screen: Option<Single<(&InventoryScreen, &mut ItemAction)>>,
     mut inventory: crate::game::inventory::operations::InventoryOperations,
     selected: Option<Single<&bevy::ui_widgets::SelectedTab, With<review::PageTabs>>>,
     tabs: Query<&review::PageButton>,
     pool_scroll: Option<Single<&bevy::ui_widgets::SliderValue, With<pool_scroll::PoolScroll>>>,
     conversations: Query<(), With<crate::game::npcs::conversation::Conversation>>,
+    (mut ids, mut rng): (
+        ResMut<crate::game::inventory::ItemIds>,
+        ResMut<crate::game::rng::GameRng>,
+    ),
 ) {
     if !conversations.is_empty() {
         return;
@@ -1122,9 +1198,40 @@ fn click_cell(
     {
         return;
     }
+    let (screen, mut action) = screen.into_inner();
     let destination = cell
         .cell
         .location(screen.member, pool_scroll.as_ref().map_or(0, |value| value.0 as usize * 2));
+    // An armed action takes the click; an empty cell disarms it.
+    let target = match destination {
+        CellLocation::Member(slot) => Some(ItemAt::Slot(slot.slot)),
+        CellLocation::Pool(row) => inventory.pool_row(row).map(ItemAt::Pool),
+    };
+    use crate::game::inventory::{Refusal, merge::Merged};
+    match *action {
+        ItemAction::Identify => {
+            if let Some(at) = target
+                && let Err(refusal) = inventory.identify(screen.member, at, &mut rng)
+                && refusal != Refusal::Nothing
+            {
+                info!("identifying refused: {refusal:?}");
+            }
+            *action = ItemAction::None;
+            return;
+        }
+        // Retail keeps merging armed until something is made or stacked.
+        ItemAction::Merge if inventory.holds() => {
+            match target.map(|at| inventory.merge(screen.member, at, (&mut ids, &mut rng))) {
+                None | Some(Ok(Merged::Made(_) | Merged::Stacked) | Err(Refusal::Nothing)) => {
+                    *action = ItemAction::None;
+                }
+                Some(Ok(_)) => {}
+                Some(Err(refusal)) => info!("merging refused: {refusal:?}"),
+            }
+            return;
+        }
+        _ => {}
+    }
     let result = match destination {
         CellLocation::Member(slot) => inventory.interact_slot(slot),
         CellLocation::Pool(index) => inventory.click_pool(index),
@@ -1196,7 +1303,8 @@ pub struct InventoryPlugin;
 
 impl Plugin for InventoryPlugin {
     fn build(&self, app: &mut App) {
-        app.add_input_context::<InventoryKey>()
+        app.add_plugins(progression::plugin)
+            .add_input_context::<InventoryKey>()
             .add_input_context::<InventoryRoot>()
             .add_input_context::<info::InfoDialog>()
             .add_systems(Startup, (load_inventory_art, spawn_inventory_key, spawn_held_picture))
@@ -1242,6 +1350,7 @@ impl Plugin for InventoryPlugin {
                     review::layout_skills,
                     review::style_info_button,
                     review::style_effect_buttons,
+                    style_item_actions,
                     info::update_scroll,
                     info::initialize_focus,
                     item_info::refresh,
@@ -1284,6 +1393,8 @@ mod tests {
             .init_asset::<ItemCatalog>()
             .init_resource::<UiScale>()
             .add_message::<crate::game::inventory::ItemNews>()
+            .init_resource::<crate::game::inventory::ItemIds>()
+            .init_resource::<crate::game::rng::GameRng>()
             .init_resource::<super::super::main_screen::SelectedMember>()
             .add_plugins(InventoryPlugin)
             .add_observer(crate::presentation::retail_controls::primary_buttons_only)
@@ -1301,6 +1412,8 @@ mod tests {
         app.init_asset::<SpriteSheet>()
             .init_asset::<ItemCatalog>()
             .add_message::<crate::game::inventory::ItemNews>()
+            .init_resource::<ItemIds>()
+            .init_resource::<crate::game::rng::GameRng>()
             .add_systems(Update, draw_cells);
         let definition =
             ItemDefinition { quantity: QuantityKind::Stack, stack_limit: 99, ..default() };

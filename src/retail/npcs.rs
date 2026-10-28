@@ -131,6 +131,11 @@ fn operation(
             u8::try_from(args[1]).map_err(|_| invalid("fact value"))?,
         ),
         8 => DialogueOp::Close,
+        16 if args[0] >= 0 => DialogueOp::GiveGold(args[0] as u32),
+        17 if args[0] >= 0 => DialogueOp::GiveExperience(args[0] as u32),
+        22 if subs.len() == 1 && i8::try_from(args[0]).is_ok() => {
+            DialogueOp::AdjustFaction { name: words()?.remove(0), delta: args[0] as i8 }
+        }
         18 | 30 if args[0] >= 0 => DialogueOp::Price { gold: args[0] as u32, always: kind == 30 },
         23 => DialogueOp::Decline(id(args[0])?),
         25..=28 | 31..=34 if subs.len() == 1 => DialogueOp::Mention {
@@ -311,6 +316,27 @@ mod tests {
         invalid[40..44].copy_from_slice(&2i32.to_le_bytes());
         assert!(read_dialogue(&invalid).is_err(), "out-of-range authored continuation is rejected");
     }
+    #[test]
+    fn decodes_rewards_and_signed_faction_changes_without_guessing_bad_operands() {
+        assert_eq!(operation(16, [6000, 0, 0], vec![]).unwrap(), DialogueOp::GiveGold(6000));
+        assert_eq!(
+            operation(17, [300000, 0, 0], vec![]).unwrap(),
+            DialogueOp::GiveExperience(300000)
+        );
+        assert_eq!(
+            operation(22, [-50, 0, 0], vec![(0, Some("FACTION_UMPANI".into()))]).unwrap(),
+            DialogueOp::AdjustFaction { name: "FACTION_UMPANI".into(), delta: -50 }
+        );
+        assert!(matches!(
+            operation(16, [-1, 0, 0], vec![]).unwrap(),
+            DialogueOp::Unsupported { .. }
+        ));
+        assert!(matches!(
+            operation(22, [256, 0, 0], vec![(0, Some("FACTION_UMPANI".into()))]).unwrap(),
+            DialogueOp::Unsupported { .. }
+        ));
+    }
+
     #[test]
     fn refuses_truncation() {
         assert!(read_npcs(&[1, 0, 0, 0]).is_err());

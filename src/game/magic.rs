@@ -9,6 +9,7 @@
 pub mod casting;
 pub(crate) mod devices;
 pub mod effects;
+pub mod enchantments;
 pub(crate) mod traps;
 
 pub use casting::resolvable;
@@ -44,7 +45,19 @@ pub fn skill_available(
     catalog: Option<&SpellCatalog>,
     skill: Skill,
 ) -> bool {
+    if skill as usize >= Skill::Wizardry as usize
+        && (skill as usize) < Skill::PowerStrike as usize
+        && character.traits().contains(crate::content::characters::Trait::CannotLearn)
+    {
+        return false;
+    }
     if let Some(realm) = skill.realm() {
+        if !profession_books(character.profession)
+            .iter()
+            .any(|book| character.skill_available(book_skill(book)))
+        {
+            return false;
+        }
         return learned.zip(catalog).is_some_and(|(learned, catalog)| {
             learned
                 .0
@@ -202,7 +215,7 @@ pub fn total_caster_level(character: &Character, books: EnumSet<Spellbook>) -> i
     total
 }
 
-fn book_skill(book: Spellbook) -> Skill {
+pub(crate) fn book_skill(book: Spellbook) -> Skill {
     match book {
         Spellbook::Wizardry => Skill::Wizardry,
         Spellbook::Divinity => Skill::Divinity,
@@ -271,7 +284,7 @@ pub fn starting_picks(character: &Character) -> usize {
 /// Spell points per realm (retail `RecalculateRealmSpellPoints`): none in a
 /// realm without a learned spell, and never under its dearest learned spell.
 pub fn max_points(
-    character: &Character,
+    character: &crate::game::characters::CharacterStats<'_>,
     learned: &LearnedSpells,
     spells: &SpellCatalog,
 ) -> EnumMap<Realm, u32> {
@@ -301,20 +314,25 @@ pub fn max_points(
 }
 
 /// Keep each caster's maximum spell points current, recomputing it only when
-/// the character or what they have learned changes (retail
+/// the character, the spells on them or what they have learned changes (retail
 /// `RecalculateRealmSpellPoints`). Points above a lowered maximum stay until
 /// spent or the next recovery tick.
 pub fn sync_spell_points(
-    mut casters: Query<(Ref<Character>, Ref<LearnedSpells>, &mut SpellPoints)>,
+    mut casters: Query<(
+        Ref<Character>,
+        Ref<crate::game::characters::Vitals>,
+        Ref<LearnedSpells>,
+        &mut SpellPoints,
+    )>,
     content: crate::game::data::Content,
     mut had_catalog: Local<bool>,
 ) {
     let Some(spells) = content.spells() else { return };
     // Everyone's maximum is settled once the spell catalog has loaded.
     let loaded = !std::mem::replace(&mut *had_catalog, true);
-    for (character, learned, mut points) in &mut casters {
-        if loaded || character.is_changed() || learned.is_changed() {
-            let maximum = max_points(&character, &learned, spells);
+    for (character, vitals, learned, mut points) in &mut casters {
+        if loaded || character.is_changed() || vitals.is_changed() || learned.is_changed() {
+            let maximum = max_points(&character.stats(&vitals.enchantments), &learned, spells);
             if points.maximum != maximum {
                 points.maximum = maximum;
             }
@@ -463,6 +481,7 @@ pub struct MagicContext<'w, 's> {
     difficulty: Res<'w, crate::game::difficulty::Difficulty>,
     pub formation: Single<'w, 's, &'static mut Formation>,
     pub party_damage: MessageWriter<'w, DamageApplied>,
+    pub enchantments: Single<'w, 's, &'static mut enchantments::PartyEffects>,
     pub inventory: Single<'w, 's, &'static mut PartyInventory>,
     pub news: MessageWriter<'w, casting::MagicNews>,
     level: Single<'w, 's, Entity, With<crate::game::world::level::Level>>,
@@ -485,18 +504,38 @@ impl MagicContext<'_, '_> {
         monsters: &mut MonsterDamage,
         cast: impl FnOnce(&mut Field, &SpellCatalog) -> R,
     ) -> Result<R, casting::Refusal> {
+        self.field(members, monsters, |field, spells| spells.map(|spells| cast(field, spells)))?
+            .ok_or(casting::Refusal::MissingContent)
+    }
+
+    /// The field of members, monsters and party belongings that blows
+    /// change; refused until items and monsters have loaded.
+    pub fn with_field<R>(
+        &mut self,
+        members: &mut Members,
+        monsters: &mut MonsterDamage,
+        act: impl FnOnce(&mut Field) -> R,
+    ) -> Result<R, casting::Refusal> {
+        self.field(members, monsters, |field, _| act(field))
+    }
+
+    fn field<R>(
+        &mut self,
+        members: &mut Members,
+        monsters: &mut MonsterDamage,
+        act: impl FnOnce(&mut Field, Option<&SpellCatalog>) -> R,
+    ) -> Result<R, casting::Refusal> {
         let party: Vec<Entity> = self.roster.iter().collect();
         let party_level = crate::game::party::average_level(
             members.iter_many(self.roster.iter()).matched().map(|(c, ..)| c.level),
         );
-        let (Some(items), Some(species), Some(spells)) =
-            (self.content.items(), self.content.species(), self.content.spells())
-        else {
+        let (Some(items), Some(species)) = (self.content.items(), self.content.species()) else {
             return Err(casting::Refusal::MissingContent);
         };
         let mut field = Field {
             members,
             monsters,
+            enchantments: &mut self.enchantments.0,
             inventory: &mut self.inventory,
             formation: &mut self.formation,
             party_damage: &mut self.party_damage,
@@ -508,7 +547,7 @@ impl MagicContext<'_, '_> {
             party: &party,
             improved: Vec::new(),
         };
-        Ok(cast(&mut field, spells))
+        Ok(act(&mut field, self.content.spells()))
     }
 }
 
@@ -626,8 +665,15 @@ pub fn deliver_spells(
         let landed = context.resolve(&mut members, &mut monsters, |field, spells| {
             let spell = spells.get(flight.spell)?;
             let victims = &flight.victims;
-            let effects =
-                effects::resolve(spell, flight.strength, victims, &mut rng, field, &mut points);
+            let effects = effects::resolve(
+                false,
+                spell,
+                flight.strength,
+                victims,
+                &mut rng,
+                field,
+                &mut points,
+            );
             Some((effects, std::mem::take(&mut field.improved)))
         });
         let Ok(Some((effects, improved))) = landed else { continue };
@@ -826,7 +872,7 @@ mod tests {
         let catalog =
             SpellCatalog((0..=6).map(|i| if i == 6 { heal_wounds() } else { default() }).collect());
         let learned = LearnedSpells([SpellId::HEAL_WOUNDS].into());
-        let points = max_points(&priest, &learned, &catalog);
+        let points = max_points(&priest.base_stats(), &learned, &catalog);
         assert!(points[Realm::Divine] >= 3, "never under the dearest learned spell");
         assert_eq!(points[Realm::Fire], 0, "no spell, no points");
     }
@@ -850,7 +896,7 @@ mod tests {
     }
 
     #[test]
-    fn restoration_items_pay_once_and_help_the_selected_ally_not_the_user() {
+    fn restorative_and_enchantment_items_pay_once_and_keep_their_target() {
         use crate::content::items::{
             Dice, EquipClass, ItemDefinition, ItemId, LootTables, QuantityKind, UseType,
         };
@@ -859,7 +905,16 @@ mod tests {
         use crate::game::inventory::{Carried, ItemIds, ItemStack};
         use casting::{Aim, MagicChoice, MagicNews, Source};
 
-        for id in [114, 115, 116] {
+        for id in [
+            SpellId::GUARDIAN_ANGEL,
+            SpellId::ARMORPLATE,
+            SpellId::HASTE,
+            SpellId::SUPERMAN,
+            SpellId::BODY_OF_STONE,
+            SpellId::RESTORE_HEALTH,
+            SpellId::RESTORE_MAGIC,
+            SpellId::SMELLING_SALTS,
+        ] {
             let mut app = App::new();
             app.add_plugins((MinimalPlugins, AssetPlugin::default()))
                 .init_asset::<ItemCatalog>()
@@ -878,13 +933,17 @@ mod tests {
             let definition = ItemDefinition {
                 id: ItemId(0),
                 class: EquipClass::Potion,
-                use_type: if id == 116 { UseType::Thrown } else { UseType::Potion },
+                use_type: if id == SpellId::SMELLING_SALTS {
+                    UseType::Thrown
+                } else {
+                    UseType::Potion
+                },
                 quantity: QuantityKind::Stack,
                 stack_limit: 5,
                 professions: EnumSet::all(),
                 races: EnumSet::all(),
                 genders: EnumSet::all(),
-                spell: Some(ItemSpell { spell: SpellId(id), power: 4 }),
+                spell: Some(ItemSpell { spell: id, power: 4 }),
                 ..default()
             };
             let stack = ItemStack::new(&definition, &mut ItemIds::default(), 2, true);
@@ -896,9 +955,9 @@ mod tests {
                 world.resource_mut::<Assets<MonsterCatalog>>().add(MonsterCatalog::default());
             let loot = world.resource_mut::<Assets<LootTables>>().add(LootTables::default());
             let mut definitions = vec![SpellDefinition::default(); 117];
-            definitions[6] = heal_wounds();
-            definitions[id as usize] = SpellDefinition {
-                id: SpellId(id),
+            definitions[usize::from(SpellId::HEAL_WOUNDS.0)] = heal_wounds();
+            definitions[usize::from(id.0)] = SpellDefinition {
+                id,
                 realm: Some(Realm::Divine),
                 targeting: Targeting::Ally,
                 dice: Some(Dice { base: 0, count: 1, sides: 1 }),
@@ -941,7 +1000,7 @@ mod tests {
             app.update();
             let world = app.world_mut();
             let news: Vec<_> = world.resource_mut::<Messages<MagicNews>>().drain().collect();
-            assert!(matches!(news.as_slice(), [MagicNews::Done(_)]), "{id}: {news:?}");
+            assert!(matches!(news.as_slice(), [MagicNews::Done(_)]), "{id:?}: {news:?}");
             assert_eq!(
                 world.get::<Carried>(user).unwrap().backpack[0].as_ref().unwrap().count(),
                 1
@@ -950,22 +1009,54 @@ mod tests {
             assert_eq!(user_after.hp, user_before.hp);
             assert_eq!(user_after.conditions, user_before.conditions);
             let fatigue = user_before.stamina - user_after.stamina;
-            if id == 116 {
+            if id == SpellId::SMELLING_SALTS {
                 assert_eq!(fatigue, 10);
             } else {
                 assert!((1..=2).contains(&fatigue), "using an item still pays its normal fatigue");
             }
             let vitals = world.get::<Vitals>(ally).unwrap();
             match id {
-                114 => {
+                SpellId::GUARDIAN_ANGEL => {
+                    assert!(world.get::<Vitals>(user).unwrap().enchantments.0.is_empty());
+                    assert_eq!(
+                        vitals
+                            .enchantments
+                            .get(crate::content::spells::SpellId::GUARDIAN_ANGEL)
+                            .unwrap()
+                            .absorption,
+                        4
+                    );
+                    let mut vitals = world.get_mut::<Vitals>(ally).unwrap();
+                    let stamina = vitals.stamina;
+                    assert_eq!(vitals.damage(4), 0);
+                    assert_eq!(vitals.stamina, stamina, "absorbed damage does not fatigue");
+                    assert_eq!(vitals.damage(2), 1);
+                    assert!(vitals.is_dead());
+                    assert!(vitals.enchantments.0.is_empty());
+                }
+                SpellId::ARMORPLATE => {
+                    assert!(vitals.enchantments.0.is_empty());
+                    let party = crate::game::party::roster::the_party(world).unwrap();
+                    assert_eq!(
+                        world.get::<enchantments::PartyEffects>(party).unwrap().0.armour(),
+                        2
+                    );
+                }
+                SpellId::HASTE | SpellId::SUPERMAN | SpellId::BODY_OF_STONE => {
+                    let turns = vitals.enchantments.get(id).unwrap().turns;
+                    let mut vitals = world.get_mut::<Vitals>(ally).unwrap();
+                    vitals.age_conditions(turns);
+                    assert!(vitals.enchantments.get(id).is_none());
+                }
+                SpellId::RESTORE_HEALTH => {
                     assert_eq!(vitals.hp, 5, "power four heals 4d1");
                     assert_eq!(vitals.stamina, 9, "stamina rolls twice the dice, independently");
                 }
-                115 => {
+                SpellId::RESTORE_MAGIC => {
                     assert!(world.get::<SpellPoints>(ally).unwrap().current[Realm::Divine] > 0);
                     assert_eq!((vitals.hp, vitals.stamina), (1, 1));
                 }
-                116 => {
+                SpellId::SMELLING_SALTS => {
                     assert!(!vitals.has(Condition::Asleep) && !vitals.has(Condition::Unconscious))
                 }
                 _ => unreachable!(),

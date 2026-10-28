@@ -86,6 +86,33 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         Some(monster.map_unchanged(|monster| &mut monster.conditions))
     }
 
+    /// Tire a monster (retail `FatigueMonster`); spent, it drops
+    /// unconscious. Returns the stamina taken.
+    pub fn fatigue(&mut self, monster: Entity, amount: u32) -> u32 {
+        let Ok((mut monster, ..)) = self.monsters.get_mut(monster) else { return 0 };
+        if monster.is_dead() || monster.stamina == 0 {
+            return 0;
+        }
+        let taken = amount.min(monster.stamina);
+        monster.stamina -= taken;
+        if monster.stamina == 0 {
+            crate::game::characters::inflict(
+                &mut monster.conditions,
+                Condition::Unconscious,
+                Lasting::Indefinite,
+            );
+        }
+        taken
+    }
+
+    pub fn enchantments_mut(
+        &mut self,
+        entity: Entity,
+    ) -> Option<Mut<'_, crate::game::magic::enchantments::Enchantments>> {
+        let (monster, ..) = self.monsters.get_mut(entity).ok()?;
+        Some(monster.map_unchanged(|m| &mut m.enchantments))
+    }
+
     pub fn active(&self, target: Entity) -> bool {
         self.monsters.get(target).is_ok_and(|(_, _, _, owner)| self.levels.contains(owner.0))
     }
@@ -115,8 +142,16 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         if monster.is_dead() || amount == 0 {
             return Ok(DamageOutcome::default());
         }
+        // A Guardian Angel's absorption counts before the NPC-death refusal,
+        // and is spent only once the hit is allowed.
+        let mut enchantments = monster.enchantments.clone();
+        let amount = enchantments.absorb(amount);
         if amount >= monster.hp && kind.npc.is_some() {
             return Err(DamageRefusal::UnsupportedNpcDeath);
+        }
+        monster.enchantments = enchantments;
+        if amount == 0 {
+            return Ok(DamageOutcome::default());
         }
         let position = feet(at.translation(), walker);
         let lost = amount.min(monster.hp);
@@ -130,6 +165,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
             );
             return Ok(DamageOutcome { damage: lost, ..default() });
         }
+        monster.enchantments.0.clear();
         // Stop autonomous work, not the body's geometry or vertical physics.
         // Structural removal is applied with this operation's loot commands,
         // before any following movement consumer can run.

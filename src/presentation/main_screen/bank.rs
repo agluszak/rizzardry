@@ -299,12 +299,13 @@ pub fn draw_caption(
                     .unwrap_or_default()
                 {
                     Order::Defend => "Defend".into(),
-                    Order::Attack => {
+                    order @ (Order::Attack | Order::Berserk) => {
                         let weapon = carried
                             .and_then(|c| c.worn(EquipSlot::Primary))
                             .and_then(|i| catalog?.get(i.item))
                             .map_or("Unarmed", |d| d.name.as_str());
-                        format!("Attack - {weapon}")
+                        let verb = if order == Order::Berserk { "Berserk" } else { "Attack" };
+                        format!("{verb} - {weapon}")
                     }
                     Order::Magic(choice) => match choice.source {
                         crate::game::magic::casting::Source::Spell { spell, power } => {
