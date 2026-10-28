@@ -10,7 +10,7 @@ use bevy::prelude::*;
 use bevy_enhanced_input::prelude::*;
 
 use super::{ScreenLayout, SelectedMember};
-use crate::game::combat::{Battle, CombatSettings, StartRound};
+use crate::game::combat::{Battle, StartRound};
 use crate::game::party::Order;
 use crate::game::party::roster::PartyRoster;
 use crate::game::screen::Screen;
@@ -167,8 +167,8 @@ fn spawn_main_screen_keys(mut commands: Commands) {
                 round.write(StartRound);
             }
         })
-        on(|_: On<Start<ToggleContinuous>>, mut settings: ResMut<CombatSettings>| {
-            settings.continuous = !settings.continuous;
+        on(|_: On<Start<ToggleContinuous>>, mut controls: MessageWriter<crate::game::combat::CombatControl>| {
+            controls.write(crate::game::combat::CombatControl::ToggleContinuous);
         })
         on(set_order)
         on(text_box_key)
