@@ -26,6 +26,11 @@ pub mod action {
     /// Fire the recipients.
     pub const RELAY: u32 = 0x0f;
     pub const CAMERA_SWAY: u32 = 0x10;
+    /// These editor placeholders reach the default return in Trigger::Run.
+    pub const NO_RUNTIME_ACTIONS: [u32; 3] = [0x1a, 0x1f, 0x21];
+    pub const START_PARTICLES: u32 = 0x44;
+    pub const STOP_PARTICLES: u32 = 0x45;
+    pub const TOGGLE_PARTICLES: u32 = 0x46;
     /// Hurt whoever stands in it, every few seconds.
     pub const DAMAGE_ZONE: u32 = 0x23;
     /// Hurt the party once by dice in the trigger's data words.

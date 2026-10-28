@@ -8,6 +8,7 @@ pub mod items;
 pub mod level;
 pub mod navigation;
 pub mod obstacles;
+pub mod particles;
 pub mod population;
 pub mod props;
 pub mod scripts;

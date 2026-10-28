@@ -24,6 +24,7 @@ pub struct TriggerMemory {
     devices: HashMap<usize, KeptDevice>,
     variables: HashMap<VariableName, bool>,
     ambient_sounds: HashMap<String, bool>,
+    particles: super::super::particles::ParticleMemory,
     lights: LightActivation,
 }
 
@@ -40,6 +41,7 @@ struct KeptDevice {
 /// Keep the same device values between visits; proximity and zones are transient.
 #[derive(SystemParam)]
 pub struct DeviceRecords<'w, 's> {
+    particles: Query<'w, 's, &'static super::super::particles::Emitter>,
     devices: Query<
         'w,
         's,
@@ -86,6 +88,7 @@ impl DeviceRecords<'_, '_> {
             devices,
             variables: state.variables.clone(),
             ambient_sounds: state.ambient_sounds.clone(),
+            particles: super::super::particles::remember(self.particles.iter_many(owned).matched()),
             lights: lights.clone(),
         }
     }
@@ -101,6 +104,12 @@ pub fn spawn_devices(
     tables: &LootTables,
     mut memory: Option<TriggerMemory>,
 ) -> Vec<Entity> {
+    super::super::particles::spawn_emitters(
+        commands,
+        level,
+        geometry,
+        memory.as_mut().map(|memory| std::mem::take(&mut memory.particles)).unwrap_or_default(),
+    );
     let mut attached = vec![None; geometry.triggers.len()];
     for (index, prop) in geometry.props.iter().enumerate() {
         if let Some(trigger) = prop.trigger {

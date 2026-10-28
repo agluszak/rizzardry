@@ -89,7 +89,8 @@ fn kind(spell: SpellId) -> Option<Kind> {
         | SpellId::MIND_FLAY
         | SpellId::NUCLEAR_BLAST
         | SpellId::TSUNAMI => Kind::Damage,
-        SpellId::ACID_BOMB
+        SpellId::CHAMELEON
+        | SpellId::ACID_BOMB
         | SpellId::DEATH_CLOUD
         | SpellId::TOXIC_CLOUD
         | SpellId::DRAINING_CLOUD
@@ -276,6 +277,8 @@ fn burn_stack(
 
 /// What a spell's effects need from the world.
 pub struct Field<'a, 'm, 'ms, 'd, 'ds, 'f, 'p> {
+    pub underwater: bool,
+    pub visibility: Option<&'a crate::game::world::obstacles::WorldObstacles<'a, 'a>>,
     pub enchantments: &'a mut super::enchantments::Enchantments,
     pub members: &'a mut Members<'m, 'ms>,
     pub monsters: &'a mut MonsterDamage<'d, 'ds>,
@@ -1618,9 +1621,9 @@ pub(crate) fn pulse_clouds(
             let centre = party_eye - Vec3::Y * crate::game::party::body::EYE_ABOVE_CENTRE;
             let reach =
                 crate::game::party::body::RADIUS + crate::content::species::Reach::Short.metres();
-            let victims = world.monsters.nearby(centre, reach);
+            let victims = super::targeting::radius(world, centre, centre, reach, None);
             let mut landed = Vec::new();
-            for actor in victims {
+            for victim in victims {
                 let amount = magnitude(
                     rng,
                     spell.dice,
@@ -1633,7 +1636,7 @@ pub(crate) fn pulse_clouds(
                 landed.extend(damage(
                     rng,
                     world,
-                    Victim::Monster(actor),
+                    victim,
                     realm,
                     amount,
                     u32::from(effect.power) * 3,

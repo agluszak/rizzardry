@@ -25,8 +25,7 @@ use super::props::{Prop, PropMotion};
 use super::scripts::BellButton;
 use crate::content::items::Dice;
 use crate::content::level::{
-    Fountain, LevelDefinition, Restores, StateChange, TriggerAction, TriggerDefinition, TriggerUse,
-    VariableName,
+    Fountain, LevelDefinition, Restores, TriggerAction, TriggerDefinition, TriggerUse, VariableName,
 };
 use crate::game::characters::{Character, Vitals};
 use crate::game::data::GameData;
@@ -639,6 +638,7 @@ fn execute(
     let changes_state = !matches!(chosen.action, TriggerAction::Dial);
     match &chosen.action {
         TriggerAction::Nothing => {}
+        TriggerAction::NoRuntimeAction => return Ran::Declined,
         action @ (TriggerAction::OpenDoor | TriggerAction::ToggleDoor) => {
             match operate_door(
                 world.entity_mut(entity).into_mutable(),
@@ -694,12 +694,30 @@ fn execute(
             let mut state = world.get_mut::<LightActivation>(level).unwrap();
             for (name, initial) in sources {
                 let enabled = state.light_enabled(name, *initial);
-                let next = match change {
-                    StateChange::Set => true,
-                    StateChange::Clear => false,
-                    StateChange::Toggle => !enabled,
-                };
+                let next = change.apply(enabled);
                 state.lights.insert(name.to_uppercase(), next);
+            }
+        }
+        TriggerAction::Particles { sources, change } => {
+            use super::particles::Emitter;
+            let mut query = world.query::<(Entity, &Emitter, &LevelOwned)>();
+            let recipients: Vec<_> = query
+                .iter(world)
+                .filter(|(_, emitter, owner)| {
+                    owner.0 == level && sources.contains(&emitter.definition())
+                })
+                .map(|(entity, ..)| entity)
+                .collect();
+            if recipients.is_empty() {
+                return Ran::Declined;
+            }
+            let now = world
+                .get_resource::<Time<Virtual>>()
+                .map_or(std::time::Duration::ZERO, Time::elapsed);
+            for recipient in recipients {
+                let mut emitter = world.get_mut::<Emitter>(recipient).unwrap();
+                let enabled = change.apply(emitter.emitting());
+                emitter.set_active(enabled, now);
             }
         }
         TriggerAction::AmbientSounds { names, change } => {
@@ -709,11 +727,7 @@ fn execute(
             let mut state = world.get_mut::<LevelState>(level).unwrap();
             for name in names {
                 let enabled = state.ambient_sound_enabled(name);
-                let next = match change {
-                    StateChange::Set => true,
-                    StateChange::Clear => false,
-                    StateChange::Toggle => !enabled,
-                };
+                let next = change.apply(enabled);
                 state.ambient_sounds.insert(name.to_uppercase(), next);
             }
         }
@@ -725,11 +739,7 @@ fn execute(
             for index in 0..count {
                 let recipient = world.get::<Device>(entity).unwrap().recipients[index];
                 let mut state = world.get_mut::<TriggerState>(recipient).unwrap();
-                let on = match change {
-                    StateChange::Set => true,
-                    StateChange::Clear => false,
-                    StateChange::Toggle => !state.on,
-                };
+                let on = change.apply(state.on);
                 if state.on != on {
                     state.on = on;
                 }
@@ -798,11 +808,7 @@ fn execute(
     }
     if changes_state && let Some((name, change)) = &definition.state_change {
         let mut state = world.get_mut::<LevelState>(level).unwrap();
-        let value = match change {
-            StateChange::Set => true,
-            StateChange::Clear => false,
-            StateChange::Toggle => !state.variable(name),
-        };
+        let value = change.apply(state.variable(name));
         if state.variable(name) != value {
             state.set_variable(name, value);
         }

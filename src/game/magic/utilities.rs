@@ -260,6 +260,97 @@ mod tests {
     }
 
     #[test]
+    fn underwater_fire_fizzles_with_normal_payment_for_ordinary_and_utility_casts() {
+        use crate::content::{items::Dice, spells::Targeting};
+        let mut scene = scenario();
+        let caster = scene.members[0];
+        let handle = scene.world.resource::<GameData>().spells.clone();
+        scene.world.resource_mut::<Assets<SpellCatalog>>().get_mut(&handle).unwrap().0
+            [usize::from(SpellId::HEAL_WOUNDS.0)] = SpellDefinition {
+            id: SpellId::HEAL_WOUNDS,
+            realm: Some(Realm::Fire),
+            cost: 1,
+            level: 1,
+            books: Spellbook::Wizardry.into(),
+            targeting: Targeting::Ally,
+            dice: Some(Dice { base: 5, count: 0, sides: 0 }),
+            ..default()
+        };
+        scene.world.get_mut::<LearnedSpells>(caster).unwrap().0.insert(SpellId::HEAL_WOUNDS);
+        scene.world.get_mut::<Vitals>(caster).unwrap().hp = 1;
+        assert!(
+            matches!(request(&mut scene, SpellId::HEAL_WOUNDS, Aim::Member(caster)), MagicNews::Done(report) if report.outcome == super::super::Outcome::Cast)
+        );
+        assert_eq!(scene.world.get::<Vitals>(caster).unwrap().hp, 6);
+        let mana = scene.world.get::<SpellPoints>(caster).unwrap().current[Realm::Fire];
+        let stamina = scene.world.get::<Vitals>(caster).unwrap().stamina;
+        scene
+            .world
+            .get_mut::<crate::game::world::triggers::LevelState>(scene.root)
+            .unwrap()
+            .camera_sway = true;
+        assert!(
+            matches!(request(&mut scene, SpellId::HEAL_WOUNDS, Aim::Member(caster)), MagicNews::Done(report) if report.outcome == super::super::Outcome::Fizzled)
+        );
+        assert_eq!(scene.world.get::<Vitals>(caster).unwrap().hp, 6);
+        assert_eq!(scene.world.get::<SpellPoints>(caster).unwrap().current[Realm::Fire], mana - 1);
+        assert_eq!(scene.world.get::<Vitals>(caster).unwrap().stamina, stamina - 2);
+        assert!(
+            matches!(request(&mut scene, SpellId::SET_PORTAL, Aim::Member(caster)), MagicNews::Done(report) if report.outcome == super::super::Outcome::Fizzled)
+        );
+        assert!(scene.world.get::<Portal>(caster).is_none());
+        assert_eq!(scene.world.get::<SpellPoints>(caster).unwrap().current[Realm::Fire], mana - 2);
+    }
+
+    #[test]
+    fn quiet_fire_items_keep_the_half_failure_adjustment_and_pay_their_use_underwater() {
+        use super::super::Outcome;
+        use crate::content::{
+            items::{EquipClass, QuantityKind, UseType},
+            spells::ItemSpell,
+        };
+        for fizzles in [false, true] {
+            let seed =
+                (0..100).find(|&seed| (GameRng::seeded(seed).below(100) < 50) == fizzles).unwrap();
+            let mut scene = scenario();
+            let caster = scene.members[0];
+            scene
+                .world
+                .get_mut::<crate::game::world::triggers::LevelState>(scene.root)
+                .unwrap()
+                .camera_sway = true;
+            let item = ItemDefinition {
+                id: ItemId(0),
+                class: EquipClass::Bomb,
+                quantity: QuantityKind::Stack,
+                use_type: UseType::Thrown,
+                professions: enumset::EnumSet::all(),
+                races: enumset::EnumSet::all(),
+                genders: enumset::EnumSet::all(),
+                spell: Some(ItemSpell { spell: SpellId::SET_PORTAL, power: 1 }),
+                ..default()
+            };
+            let stack = ItemStack::new(&item, &mut ItemIds::default(), 2, true);
+            let id = stack.id;
+            let handle =
+                scene.world.resource_mut::<Assets<ItemCatalog>>().add(ItemCatalog(vec![item]));
+            scene.world.resource_mut::<GameData>().items = handle;
+            scene.inventory().pool.stacks.push(stack);
+            scene.world.insert_resource(GameRng::seeded(seed));
+            let (report, _) = super::super::sources::cast_source(
+                &mut scene.world,
+                caster,
+                Source::PoolItem(id),
+                UseContext::World,
+            )
+            .unwrap();
+            assert_eq!(report.outcome, if fizzles { Outcome::Fizzled } else { Outcome::Cast });
+            assert_eq!(scene.inventory().pool.stacks[0].count(), 1);
+            assert_eq!(scene.world.get::<SpellPoints>(caster).unwrap().current[Realm::Fire], 100);
+        }
+    }
+
+    #[test]
     fn utility_payment_needs_no_monster_damage_or_loot_services() {
         let mut scene = scenario();
         let caster = scene.members[0];

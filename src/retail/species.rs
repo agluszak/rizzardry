@@ -72,6 +72,7 @@ fn species(record: &[u8]) -> Result<Species, DecodeError> {
         damage_reduction: record[0xcf],
         vulnerable_from_behind: record[0xd0] & 0x02 != 0,
         death_immune: record[0x1be] != 0,
+        untargetable: record[0x24a] != 0,
         attributes: MonsterAttributes {
             strength: record[0xd1],
             intelligence: record[0xd2],

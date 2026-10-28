@@ -18,8 +18,11 @@ use crate::game::inventory::{ItemIds, PartyInventory, make_item};
 use crate::game::rng::GameRng;
 
 /// What [`MonsterDamage`] lets others read of a monster.
-pub type MonsterQuery<'w, 's> =
-    Query<'w, 's, (&'static mut Monster, ActorPose, Option<&'static Walker>, &'static LevelOwned)>;
+pub type MonsterQuery<'w, 's> = Query<
+    'w,
+    's,
+    (&'static mut Monster, ActorPose, Option<&'static Walker>, &'static LevelOwned, Entity),
+>;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DamageOutcome {
@@ -79,25 +82,6 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         &self.monsters
     }
 
-    /// Current live actors intersecting a radius, in authored location order.
-    pub fn nearby(&mut self, centre: Vec3, radius: f32) -> Vec<Entity> {
-        let mut lens = self
-            .monsters
-            .transmute_lens::<(Entity, &super::population::Monster, ActorPose, &LevelOwned)>();
-        let query = lens.query();
-        let mut found: Vec<_> = query
-            .iter()
-            .filter(|(_, body, at, owner)| {
-                self.levels.contains(owner.0)
-                    && !body.is_dead()
-                    && at.translation().distance(centre) - body.body.radius <= radius
-            })
-            .map(|(entity, body, _, _)| (body.location, entity))
-            .collect();
-        found.sort_unstable();
-        found.into_iter().map(|(_, entity)| entity).collect()
-    }
-
     /// A monster's conditions, to inflict, cure or age.
     pub fn conditions_mut(
         &mut self,
@@ -144,7 +128,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
     }
 
     pub fn active(&self, target: Entity) -> bool {
-        self.monsters.get(target).is_ok_and(|(_, _, _, owner)| self.levels.contains(owner.0))
+        self.monsters.get(target).is_ok_and(|(_, _, _, owner, _)| self.levels.contains(owner.0))
     }
 
     /// Hurt a monster; a kill drops its loot and pays its gold into the
@@ -157,7 +141,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         purse: &mut PartyInventory,
         rng: &mut GameRng,
     ) -> Result<DamageOutcome, DamageRefusal> {
-        let (mut monster, at, walker, owner) =
+        let (mut monster, at, walker, owner, _) =
             self.monsters.get_mut(target).map_err(|_| DamageRefusal::MissingTarget)?;
         let level = owner.0;
         if !self.levels.contains(level) {

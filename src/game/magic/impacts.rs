@@ -52,11 +52,7 @@ pub(super) fn resolve(
         });
         let strength = Strength::at(figure, explosion, strength.power, strength.boost);
         let radius = explosion.radius + explosion.radius_per_power * f32::from(strength.power);
-        let mut victims = Vec::new();
-        if party_at.distance(centre) <= radius {
-            victims.extend(world.party.iter().copied().map(Victim::Member));
-        }
-        victims.extend(world.monsters.nearby(centre, radius).into_iter().map(Victim::Monster));
+        let victims = super::targeting::radius(world, centre, centre, radius, Some(party_at));
         effects.extend(effects::resolve(false, explosion, strength, &victims, rng, world, points));
     }
     effects

@@ -24,6 +24,10 @@ pub(crate) fn cast_source(
                   mut points: Query<(&LearnedSpells, &mut SpellPoints)>,
                   mut inventory: Single<&mut PartyInventory>,
                   roster: Single<&PartyRoster>,
+                  levels: Query<
+                &crate::game::world::triggers::LevelState,
+                With<crate::game::world::level::Level>,
+            >,
                   content: Content,
                   difficulty: Res<Difficulty>,
                   mut rng: ResMut<GameRng>| {
@@ -44,6 +48,7 @@ pub(crate) fn cast_source(
                     &mut inventory,
                     items,
                     *difficulty,
+                    levels.single().is_ok_and(|state| state.camera_sway),
                 )
             },
         )

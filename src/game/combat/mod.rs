@@ -463,6 +463,7 @@ fn sight_threshold(
     senses: i32,
     bonus: u32,
     penalty: i32,
+    concealment: u32,
     far: f32,
     distance: f32,
 ) -> f32 {
@@ -471,6 +472,7 @@ fn sight_threshold(
     } else {
         ((senses - penalty * 2) as f32 * ((far - distance) / distance)) as i32
     };
+    percent -= concealment as i32 * 10;
     if bonus != 0 {
         percent = (bonus as i32 + 100) * percent / 100;
     }
@@ -508,6 +510,7 @@ pub fn start_battle(
     mut commands: Commands,
     battles: Query<(), With<Battle>>,
     camp: Option<Res<crate::game::camp::Camp>>,
+    effects: Query<&crate::game::magic::enchantments::PartyEffects>,
     mut party: Query<(&Position, &mut PartyBody)>,
     level: PlayedLevel,
     members: Query<(&Character, &Vitals)>,
@@ -536,6 +539,7 @@ pub fn start_battle(
     };
     let (Some(far), Some(root)) = (level.view_distance(), level.entity()) else { return };
     let party_eye = PartyBody::eye(party_at);
+    let concealment = effects.single().map_or(0, |effects| effects.0.concealment());
     // The party's lowest level among those who can act weakens sight
     // from behind.
     let lowest_level = members
@@ -573,7 +577,9 @@ pub fn start_battle(
             let angle = forward.angle_between(to_party);
             let senses = i32::from(kind.attributes.senses);
             let bonus = if kind.level_sight { (u32::from(kind.level) * 5).min(125) } else { 0 };
-            if sight_threshold(angle, senses, bonus, lowest_level, far, distance) < distance {
+            if sight_threshold(angle, senses, bonus, lowest_level, concealment, far, distance)
+                < distance
+            {
                 return false;
             }
             let reaches = kind.attacks.iter().any(|a| distance <= a.reach.metres());
@@ -1173,7 +1179,7 @@ fn member_casts(
     let in_sight: Vec<(casting::Candidate, Option<Entity>)> = combatants
         .iter()
         .filter_map(|&entity| {
-            let (monster, at, walker, _) = damage.monsters().get(entity).ok()?;
+            let (monster, at, walker, ..) = damage.monsters().get(entity).ok()?;
             if monster.is_dead() || !damage.active(entity) {
                 return None;
             }
@@ -1248,7 +1254,7 @@ fn monster_turn(
         .unwrap_or(false);
     if idle
         && !battle.this_round.moved.contains(&monster)
-        && let Ok((walker_monster, at, walker, _)) = damage.monsters().get(monster)
+        && let Ok((walker_monster, at, walker, ..)) = damage.monsters().get(monster)
         && let Some(budget) =
             approach::move_budget(walker_monster, at.translation(), walker, party.eye, species)
     {
@@ -1358,7 +1364,7 @@ fn end_round(
     battle.wait = Timer::from_seconds(ROUND_SECONDS, TimerMode::Once);
     let monsters = damage.monsters();
     let approaching = combatants.iter().any(|&entity| {
-        monsters.get(entity).is_ok_and(|(monster, at, walker, _)| {
+        monsters.get(entity).is_ok_and(|(monster, at, walker, ..)| {
             approach::needs_approach(monster, at.translation(), walker, party_eye, species)
         })
     });
@@ -1468,13 +1474,34 @@ mod tests {
     #[test]
     fn sight_reaches_the_far_clip_ahead_and_less_from_behind() {
         // Facing the party: the whole far clip.
-        assert_eq!(sight_threshold(0.3, 40, 0, 1, 60.0, 30.0), 60.0);
+        assert_eq!(sight_threshold(0.3, 40, 0, 1, 0, 60.0, 30.0), 60.0);
         // Behind it: (senses - 2 × lowest level) × (far - d) / d percent.
-        let behind = sight_threshold(3.0, 40, 0, 1, 60.0, 30.0);
+        let behind = sight_threshold(3.0, 40, 0, 1, 0, 60.0, 30.0);
         assert!((behind - 0.38 * 60.0).abs() < 1e-3);
         // Never under 2%, and a ranged bonus scales the percent.
-        assert!((sight_threshold(3.0, 0, 0, 10, 60.0, 50.0) - 1.2).abs() < 1e-3);
-        assert!((sight_threshold(3.0, 40, 50, 1, 60.0, 30.0) - 0.57 * 60.0).abs() < 1e-3);
+        assert!((sight_threshold(3.0, 0, 0, 10, 0, 60.0, 50.0) - 1.2).abs() < 1e-3);
+        assert!((sight_threshold(3.0, 40, 50, 1, 0, 60.0, 30.0) - 0.57 * 60.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn chameleon_adjusted_power_reduces_sight_before_ranger_bonus_and_expires_with_its_slot() {
+        use crate::content::spells::SpellId;
+        use crate::game::magic::enchantments::{Enchantment, Enchantments};
+        let mut effects = Enchantments::default();
+        effects.apply(Enchantment {
+            spell: SpellId::CHAMELEON,
+            power: 3,
+            boost: 50,
+            turns: 1,
+            absorption: 0,
+        });
+        let reach = |effects: &Enchantments, bonus| {
+            sight_threshold(0.0, 40, bonus, 1, effects.concealment(), 60.0, 40.0)
+        };
+        assert_eq!(reach(&effects, 0), 30.0);
+        assert_eq!(reach(&effects, 50), 45.0);
+        effects.age(1);
+        assert_eq!(reach(&effects, 0), 60.0);
     }
 
     #[test]
@@ -1486,6 +1513,9 @@ mod tests {
     }
     /// Real battle acceptance and round execution without movement, rendering or UI.
     fn round_app(defending: bool) -> (App, [Entity; 2]) {
+        round_app_with_colliders(defending, false)
+    }
+    fn round_app_with_colliders(defending: bool, colliders: bool) -> (App, [Entity; 2]) {
         use crate::content::characters::Skill;
         use crate::content::items::{ItemDefinition, QuantityKind};
         use crate::content::species::Species;
@@ -1518,6 +1548,14 @@ mod tests {
         app.world_mut()
             .resource_mut::<Time<Virtual>>()
             .set_max_delta(std::time::Duration::from_secs(2));
+        if colliders {
+            app.add_plugins((
+                AssetPlugin::default(),
+                bevy::mesh::MeshPlugin,
+                TransformPlugin,
+                avian3d::prelude::PhysicsPlugins::default(),
+            ));
+        }
         let weapons: Vec<_> = [100, 0]
             .into_iter()
             .enumerate()
@@ -1935,6 +1973,129 @@ mod tests {
             assert_eq!(fight(app.world()).unwrap().kills, kills, "{initial_hp}: {landed:?}");
             assert_eq!(app.world().get::<Monster>(nearby).unwrap().is_dead(), initial_hp <= 1);
             assert_eq!(app.world().get::<Monster>(far).unwrap().hp, 1);
+        }
+    }
+
+    #[test]
+    fn explosions_and_ring_of_fire_respect_closed_scenery_and_targetability() {
+        use crate::{
+            content::spells::{SpellId, Targeting},
+            game::magic::enchantments::{Enchantment, PartyEffects},
+        };
+        use avian3d::prelude::{Collider, RigidBody};
+        use bevy::ecs::system::RunSystemOnce;
+        for ring in [false, true] {
+            let (mut app, [caster, _]) = round_app_with_colliders(true, true);
+            let primary = order_spell(
+                &mut app,
+                caster,
+                crate::content::spells::SpellDefinition {
+                    id: SpellId::BOILING_BLOOD,
+                    dice: Some(Dice { base: 50, count: 0, sides: 0 }),
+                    ..energy_blast()
+                },
+            );
+            let handle = app.world().resource::<GameData>().spells.clone();
+            {
+                let mut catalogs = app.world_mut().resource_mut::<Assets<SpellCatalog>>();
+                let mut catalog = catalogs.get_mut(&handle).unwrap();
+                catalog.0.resize_with(
+                    usize::from(SpellId::BOILING_BLOOD_EXPLOSION.0) + 1,
+                    Default::default,
+                );
+                catalog.0[usize::from(SpellId::BOILING_BLOOD_EXPLOSION.0)] =
+                    crate::content::spells::SpellDefinition {
+                        id: SpellId::BOILING_BLOOD_EXPLOSION,
+                        targeting: Targeting::Radius,
+                        radius: 5.0,
+                        dice: Some(Dice { base: 50, count: 0, sides: 0 }),
+                        ..energy_blast()
+                    };
+                catalog.0[usize::from(SpellId::RING_OF_FIRE.0)] =
+                    crate::content::spells::SpellDefinition {
+                        id: SpellId::RING_OF_FIRE,
+                        dice: Some(Dice { base: 5, count: 0, sides: 0 }),
+                        ..energy_blast()
+                    };
+            }
+            app.world_mut().resource_mut::<Messages<StartRound>>().clear();
+            let centre = if ring { Vec3::ZERO } else { Vec3::NEG_Z * 2.0 };
+            app.world_mut().get_mut::<Transform>(primary).unwrap().translation =
+                if ring { Vec3::X * 100.0 } else { centre };
+            app.world_mut().get_mut::<Monster>(primary).unwrap().hp = 1;
+            let mut body = app.world().get::<Monster>(primary).unwrap().clone();
+            body.hp = 100;
+            body.location += 1;
+            let owner = *app.world().get::<LevelOwned>(primary).unwrap();
+            let clear = app
+                .world_mut()
+                .spawn((body.clone(), Transform::from_translation(centre + Vec3::X * 2.0), owner))
+                .id();
+            body.location += 1;
+            let blocked = app
+                .world_mut()
+                .spawn((
+                    body.clone(),
+                    Transform::from_translation(if ring { Vec3::NEG_Z * 2.0 } else { Vec3::ZERO }),
+                    owner,
+                ))
+                .id();
+            let species = app.world().resource::<GameData>().species.clone();
+            app.world_mut()
+                .resource_mut::<Assets<MonsterCatalog>>()
+                .get_mut(&species)
+                .unwrap()
+                .0
+                .push(crate::content::species::Species { untargetable: true, ..default() });
+            body.location += 1;
+            body.species = 1;
+            let hidden = app
+                .world_mut()
+                .spawn((body, Transform::from_translation(centre + Vec3::NEG_X * 2.0), owner))
+                .id();
+            app.world_mut().spawn((
+                RigidBody::Kinematic,
+                Collider::cuboid(4.0, 4.0, 0.2),
+                crate::game::world::obstacles::scenery(),
+                Transform::from_xyz(0.0, 0.0, -1.0),
+            ));
+            app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::from_millis(100),
+            ));
+            app.update();
+            app.update();
+            let health: Vec<_> =
+                app.world_mut().query::<&Vitals>().iter(app.world()).map(|v| v.hp).collect();
+            if ring {
+                let party = crate::game::party::roster::the_party(app.world_mut()).unwrap();
+                app.world_mut().get_mut::<PartyEffects>(party).unwrap().0.apply(Enchantment {
+                    spell: SpellId::RING_OF_FIRE,
+                    power: 1,
+                    boost: 0,
+                    turns: 1,
+                    absorption: 0,
+                });
+                app.world_mut().run_system_once(|mut context: MagicContext, mut members: Members, mut damage: MonsterDamage, mut rng: ResMut<GameRng>, mut points: Query<(&LearnedSpells, &mut SpellPoints)>| {
+                    context.resolve(&mut members, &mut damage, |field, spells| crate::game::magic::effects::pulse_clouds(&[], Vec3::Y * crate::game::party::body::EYE_ABOVE_CENTRE, spells, &mut rng, field, &mut points)).unwrap()
+                }).unwrap();
+            } else {
+                land(
+                    &mut app,
+                    vec![missile(caster, SpellId::BOILING_BLOOD, Victim::Monster(primary))],
+                );
+            }
+            assert_eq!(app.world().get::<Monster>(clear).unwrap().hp, if ring { 95 } else { 50 });
+            assert_eq!(app.world().get::<Monster>(blocked).unwrap().hp, 100);
+            assert_eq!(app.world().get::<Monster>(hidden).unwrap().hp, 100);
+            assert_eq!(
+                app.world_mut()
+                    .query::<&Vitals>()
+                    .iter(app.world())
+                    .map(|v| v.hp)
+                    .collect::<Vec<_>>(),
+                health,
+                "the blast cannot reach the party through the wall"
+            );
         }
     }
 

@@ -55,6 +55,7 @@ pub struct ClipPlane {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct LevelSections {
+    pub particles: Vec<super::particles::Particle>,
     pub camera_sway: bool,
     pub positions: Vec<(String, super::trigger::TriggerPlacement)>,
     pub lights: Vec<Light>,
@@ -176,8 +177,6 @@ fn read_environment(bytes: &mut Bytes) -> Result<Option<Environment>, DecodeErro
     }))
 }
 
-const PARTICLE_RECORD: [usize; 4] = [0x216, 0x218, 0x21d, 0x225];
-
 /// Read a compiled level's sections, starting where its meshes end.
 pub fn read_sections(bytes: &mut Bytes) -> Result<LevelSections, DecodeError> {
     read_sections_of(bytes, true)
@@ -238,14 +237,9 @@ fn read_sections_of(bytes: &mut Bytes, compiled: bool) -> Result<LevelSections, 
     }
     sentinel(bytes, compiled)?;
     let environment_offset = bytes.f32s()?;
-    // Particle systems are not drawn yet.
-    for _ in 0..count(bytes)? {
-        let version = bytes.u8()?;
-        let size = *PARTICLE_RECORD
-            .get((version as usize).wrapping_sub(1))
-            .ok_or_else(|| bytes.invalid("unknown particle system version"))?;
-        bytes.take(size)?;
-    }
+    let particles = (0..count(bytes)?)
+        .map(|_| super::particles::read_particle(bytes))
+        .collect::<Result<_, _>>()?;
     sentinel(bytes, compiled)?;
     let mut positions = Vec::new();
     for _ in 0..count(bytes)? {
@@ -265,6 +259,7 @@ fn read_sections_of(bytes: &mut Bytes, compiled: bool) -> Result<LevelSections, 
     bytes.records(cells, 4, |b| b.u32())?;
     sentinel(bytes, compiled)?;
     Ok(LevelSections {
+        particles,
         camera_sway,
         positions,
         lights,

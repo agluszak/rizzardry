@@ -28,6 +28,9 @@ struct Args {
     /// List navigation links and party teleports.
     #[arg(long)]
     links: bool,
+    /// List authored particle emitters and their motion/activation settings.
+    #[arg(long)]
+    particles: bool,
 }
 
 fn main() {
@@ -75,6 +78,12 @@ fn main() {
                         item.action_data
                     );
                 }
+            }
+        }
+        if args.particles {
+            let sections = read_sections(&mut Bytes::new(&data[level.end..])).unwrap();
+            for particle in &sections.particles {
+                println!("{name}: particle {:?} material {:?}", particle.config, particle.material);
             }
         }
         if args.props {

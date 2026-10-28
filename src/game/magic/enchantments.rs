@@ -159,6 +159,12 @@ impl Enchantments {
             - melted
     }
 
+    /// Chameleon removes ten sight percentage points per adjusted power.
+    /// The byte is read by retail monster sight only outside a fight.
+    pub fn concealment(&self) -> u32 {
+        self.get(SpellId::CHAMELEON).map_or(0, |effect| effect.adjusted(u32::from(effect.power)))
+    }
+
     pub fn hit_bonus(&self) -> i32 {
         self.get(crate::content::spells::SpellId::BLESS).map_or(0, |e| e.adjusted(2)) as i32
             + self

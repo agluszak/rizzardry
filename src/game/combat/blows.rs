@@ -222,7 +222,9 @@ fn member_bystanders(
         .map(|&m| Victim::Member(m))
         .collect();
     for &entity in fight.combatants {
-        let Ok((monster, at, walker, _)) = field.monsters.monsters().get(entity) else { continue };
+        let Ok((monster, at, walker, ..)) = field.monsters.monsters().get(entity) else {
+            continue;
+        };
         let distance = distance_to_party(fight.party.eye, monster, feet(at.translation(), walker));
         if entity != target
             && !monster.is_dead()
@@ -246,7 +248,7 @@ fn monster_bystanders(
     target: Entity,
 ) -> Vec<Victim> {
     let monsters = field.monsters.monsters();
-    let Ok((monster, at, walker, _)) = monsters.get(attacker) else { return Vec::new() };
+    let Ok((monster, at, walker, ..)) = monsters.get(attacker) else { return Vec::new() };
     let here = feet(at.translation(), walker);
     let distance = distance_to_party(fight.party.eye, monster, here);
     let formation = &**field.formation;
@@ -259,7 +261,7 @@ fn monster_bystanders(
         .map(|&m| Victim::Member(m))
         .collect();
     for &entity in fight.combatants {
-        let Ok((other, other_at, other_walker, _)) = monsters.get(entity) else { continue };
+        let Ok((other, other_at, other_walker, ..)) = monsters.get(entity) else { continue };
         if other.is_dead() || !field.monsters.active(entity) {
             continue;
         }
@@ -297,7 +299,7 @@ pub(super) fn melee_target<'a>(
         .combatants
         .iter()
         .filter_map(|&entity| {
-            let (monster, at, walker, _) = field.monsters.monsters().get(entity).ok()?;
+            let (monster, at, walker, ..) = field.monsters.monsters().get(entity).ok()?;
             let kind = species.kind(monster.species).filter(|kind| kind.npc.is_none())?;
             let distance =
                 distance_to_party(fight.party.eye, monster, feet(at.translation(), walker));
@@ -417,7 +419,9 @@ pub(super) fn member_attacks(
         let aim =
             attack::member_aim(&stats, &vitals, &hand, mode, surprise, Some(&aimed_at), difficulty);
         let landing = if hand.reach >= Reach::Long {
-            let Ok((monster, at, walker, _)) = field.monsters.monsters().get(target) else { break };
+            let Ok((monster, at, walker, ..)) = field.monsters.monsters().get(target) else {
+                break;
+            };
             let centre = body_centre(feet(at.translation(), walker), monster);
             let shot =
                 attack::scatter(rng, fight.party.eye, centre, aim, vitals.has(Condition::Blind));
@@ -747,7 +751,9 @@ pub(super) fn monster_attacks(
     let (entity, turn) = battle.this_round.monsters[index];
     let species = field.species.expect("physical blows preflight monster content");
     let difficulty = field.difficulty;
-    let Ok((monster, at, walker, _)) = field.monsters.monsters().get(entity) else { return false };
+    let Ok((monster, at, walker, ..)) = field.monsters.monsters().get(entity) else {
+        return false;
+    };
     let Some(kind) = species.kind(monster.species) else { return false };
     let distance = distance_to_party(fight.party.eye, monster, feet(at.translation(), walker));
     let position = at.translation();

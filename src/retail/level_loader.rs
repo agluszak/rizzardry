@@ -424,16 +424,31 @@ fn decode_action(
                             .lights
                             .iter()
                             .rev()
-                            .find(|light| {
-                                (light.runtime || light.enabled)
-                                    && light.name.eq_ignore_ascii_case(name)
-                            })
+                            .find(|light| light.name.eq_ignore_ascii_case(name))
                             .map(|light| (light.name.to_uppercase(), light.enabled))
                     })
                     .collect(),
                 change: match code {
                     action::ENABLE_LIGHTS => StateChange::Set,
                     action::DISABLE_LIGHTS => StateChange::Clear,
+                    _ => StateChange::Toggle,
+                },
+            }
+        }
+        action::START_PARTICLES | action::STOP_PARTICLES | action::TOGGLE_PARTICLES => {
+            TriggerAction::Particles {
+                sources: item
+                    .recipients()
+                    .filter_map(|name| {
+                        sections
+                            .particles
+                            .iter()
+                            .position(|p| p.config.name.eq_ignore_ascii_case(name))
+                    })
+                    .collect(),
+                change: match code {
+                    action::START_PARTICLES => StateChange::Set,
+                    action::STOP_PARTICLES => StateChange::Clear,
                     _ => StateChange::Toggle,
                 },
             }
@@ -484,6 +499,7 @@ fn decode_action(
         },
         action::DIAL => TriggerAction::Dial,
         action::SOUND => TriggerAction::Sound,
+        other if action::NO_RUNTIME_ACTIONS.contains(&other) => TriggerAction::NoRuntimeAction,
         other => TriggerAction::Unsupported(other),
     }
 }
@@ -624,7 +640,21 @@ impl AssetLoader for PvlLoader {
         let lighting = PropLighting { ambient, offset: level_lighting.offset };
         let props = sections.props.iter().chain(&sections.bitmaps);
         let props = build_props(context, props, directory, &mut textures, &lighting).await;
+        let mut particles = Vec::with_capacity(sections.particles.len());
+        for (index, particle) in sections.particles.iter().enumerate() {
+            let surface = load_material(
+                context,
+                format!("particle/{index}/material"),
+                directory,
+                &mut textures,
+                1,
+                &particle.material,
+            )
+            .await;
+            particles.push(surface);
+        }
         Ok(LevelGeometry {
+            particles,
             parts,
             environment,
             lighting: level_lighting,
@@ -730,7 +760,42 @@ impl AssetLoader for PvlDefinitionLoader {
                 trigger,
             })
             .collect();
+        // Texture expiry follows frame-list metadata, never image readiness.
+        let mut particles = Vec::with_capacity(sections.particles.len());
+        for particle in &sections.particles {
+            let mut config = particle.config.clone();
+            if particle.texture_expiry {
+                use crate::content::particles::ParticleLifetime;
+                let ParticleLifetime::Timed(fallback) = config.lifetime else { unreachable!() };
+                let frames = if let Some((_, file)) = particle.material.texture()
+                    && file.to_lowercase().ends_with(".ifl")
+                    && let Some(path) = sibling(context, "bitmaps", file)
+                    && let Ok(bytes) = context.read_asset_bytes(path).await
+                {
+                    ifl_frames(&String::from_utf8_lossy(&bytes)).len()
+                } else {
+                    0
+                };
+                config.lifetime = if frames == 0 {
+                    ParticleLifetime::Timed(if fallback.is_zero() {
+                        std::time::Duration::from_secs(1)
+                    } else {
+                        fallback
+                    })
+                } else if particle.material.animation_mode == 2
+                    && particle.material.animation_rate > 0.0
+                {
+                    ParticleLifetime::TextureOnce(std::time::Duration::from_secs_f64(
+                        frames as f64 / f64::from(particle.material.animation_rate),
+                    ))
+                } else {
+                    ParticleLifetime::TextureLoop
+                };
+            }
+            particles.push(config);
+        }
         Ok(LevelDefinition {
+            particles,
             camera_sway: sections.camera_sway,
             collision,
             map_layers,
@@ -804,6 +869,7 @@ mod tests {
             trigger: Some(trigger.clone()),
         };
         let mut sections = LevelSections {
+            particles: vec![],
             camera_sway: false,
             positions: vec![],
             lights: vec![],

@@ -23,6 +23,7 @@ pub mod music;
 pub mod names;
 pub mod notices;
 pub mod options;
+mod particles;
 pub mod party_view;
 mod party_voice;
 pub mod retail_controls;
@@ -79,6 +80,7 @@ impl Plugin for PresentationPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((
             lighting::plugin,
+            particles::plugin,
             main_screen::MainScreenPlugin,
             conversation::ConversationViewPlugin,
             inventory::InventoryPlugin,

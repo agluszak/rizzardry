@@ -120,6 +120,7 @@ impl LevelLighting {
 /// Immutable gameplay content. Loading it never constructs rendering assets.
 #[derive(Asset, TypePath, Clone, Debug, Default)]
 pub struct LevelDefinition {
+    pub particles: Vec<super::particles::ParticleConfig>,
     /// Authored underwater camera distortion, changed by trigger calls.
     pub camera_sway: bool,
     pub collision: CollisionMesh,
@@ -144,6 +145,7 @@ impl LevelDefinition {
 /// Optional presentation content loaded separately from the same retail source.
 #[derive(Asset, TypePath, Clone, Debug, Default)]
 pub struct LevelGeometry {
+    pub particles: Vec<super::surface::Surface>,
     pub parts: Vec<LevelPart>,
     pub environment: Option<LevelEnvironment>,
     pub lighting: LevelLighting,
@@ -356,6 +358,8 @@ pub struct TriggerUse {
 pub enum TriggerAction {
     /// Commit, doing nothing else (0).
     Nothing,
+    /// Known editor placeholders: retail returns without committing an action.
+    NoRuntimeAction,
     /// Open a door (1).
     OpenDoor,
     /// Open or close a door (2, and 0x2c, which retail also unlocks with a
@@ -374,6 +378,10 @@ pub enum TriggerAction {
     SetDevices(StateChange),
     Lights {
         sources: Vec<(String, bool)>,
+        change: StateChange,
+    },
+    Particles {
+        sources: Vec<usize>,
         change: StateChange,
     },
     AmbientSounds {
@@ -443,6 +451,16 @@ pub enum StateChange {
     Set,
     Clear,
     Toggle,
+}
+
+impl StateChange {
+    pub fn apply(self, current: bool) -> bool {
+        match self {
+            Self::Set => true,
+            Self::Clear => false,
+            Self::Toggle => !current,
+        }
+    }
 }
 
 /// A door's lock as authored: whether it starts locked, and the key that

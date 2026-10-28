@@ -22,3 +22,5 @@ pub const UNITS_PER_METRE: f32 = 500.0;
 
 /// The party's eye above its feet, in metres (retail 1000 units).
 pub const EYE_HEIGHT: f32 = 2.0;
+
+pub mod particles;

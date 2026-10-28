@@ -6,7 +6,7 @@ use crate::game::data::GameData;
 use crate::game::inventory::{ItemIds, ItemStack, make_item};
 use crate::game::world::scripts::LevelScript;
 
-use crate::content::level::{Animation, Arrival, DoorLock, PropModel, TriggerSound};
+use crate::content::level::{Animation, Arrival, DoorLock, PropModel, StateChange, TriggerSound};
 use crate::game::characters::{Gender, Profession, Race};
 
 pub(crate) fn act(action: TriggerAction) -> TriggerUse {
@@ -1087,20 +1087,25 @@ fn a_refused_take_leaves_container_receiver_and_identities_untouched() {
 /// the commit fires, sets variables and shows messages.
 #[test]
 fn a_declined_action_advances_the_sequence_but_commits_nothing() {
-    let mut lever = trigger("LEVER", TriggerAction::OpenDoor);
-    lever.initial.message = Some(1);
-    lever.alternate = Some(TriggerUse { action: TriggerAction::Nothing, message: Some(2) });
-    lever.state_change = Some(("PULLED".into(), StateChange::Set));
-    let mut level = Scenario::new(vec![lever], &[], LevelScript::None);
-    assert_eq!(level.run("LEVER"), (false, vec![]));
-    let device = level.device("LEVER");
-    let state = level.world.get::<TriggerState>(device).unwrap();
-    assert!(state.use_alternate && !state.fired);
-    assert!(!level.variable("PULLED"));
-    // The retry runs the alternate, which commits.
-    assert_eq!(level.run("LEVER"), (true, vec![TriggerEffect::Message { source: None, id: 2 }]));
-    assert!(level.variable("PULLED"));
-    assert!(level.world.get::<TriggerState>(device).unwrap().fired);
+    for action in [TriggerAction::OpenDoor, TriggerAction::NoRuntimeAction] {
+        let mut lever = trigger("LEVER", action);
+        lever.initial.message = Some(1);
+        lever.alternate = Some(TriggerUse { action: TriggerAction::Nothing, message: Some(2) });
+        lever.state_change = Some(("PULLED".into(), StateChange::Set));
+        let mut level = Scenario::new(vec![lever], &[], LevelScript::None);
+        assert_eq!(level.run("LEVER"), (false, vec![]));
+        let device = level.device("LEVER");
+        let state = level.world.get::<TriggerState>(device).unwrap();
+        assert!(state.use_alternate && !state.fired);
+        assert!(!level.variable("PULLED"));
+        // The retry runs the alternate, which commits.
+        assert_eq!(
+            level.run("LEVER"),
+            (true, vec![TriggerEffect::Message { source: None, id: 2 }])
+        );
+        assert!(level.variable("PULLED"));
+        assert!(level.world.get::<TriggerState>(device).unwrap().fired);
+    }
 }
 
 #[test]

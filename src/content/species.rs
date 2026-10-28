@@ -282,6 +282,8 @@ pub struct Species {
     pub vulnerable_from_behind: bool,
     /// Nothing kills it outright.
     pub death_immune: bool,
+    /// Excluded from spell/attack target sweeps.
+    pub untargetable: bool,
     pub attributes: MonsterAttributes,
     pub hit_points: Dice,
     pub stamina: Dice,

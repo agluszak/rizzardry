@@ -141,3 +141,5 @@ impl Plugin for RetailPresentationPlugin {
             .init_asset_loader::<texture_loader::RetailTextureLoader>();
     }
 }
+
+mod particles;

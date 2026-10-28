@@ -247,7 +247,6 @@ impl Situation<'_> {
 fn capture(
     caster: Entity,
     spell: &SpellDefinition,
-    power: u8,
     aim: Aim,
     situation: &Situation,
     forced_self: bool,
@@ -314,17 +313,7 @@ fn capture(
         // A blast centred where it lands, the party too if it is that close.
         Targeting::Radius => {
             let target = aimed()?;
-            let radius = spell.radius + spell.radius_per_power * f32::from(power);
-            let mut victims: Vec<_> = situation
-                .monsters
-                .iter()
-                .filter(|c| c.at.distance(target.at) <= radius)
-                .map(|c| Victim::Monster(c.entity))
-                .collect();
-            if situation.party_at.distance(target.at) <= radius {
-                victims.extend(situation.party_victims());
-            }
-            (victims, Some(target.at))
+            (Vec::new(), Some(target.at))
         }
         Targeting::Point | Targeting::Item | Targeting::LockOrTrap => {
             return Err(Refusal::Unsupported);
@@ -612,11 +601,18 @@ pub fn perform(
     }
     // Instruments can pay fatigue while finding power, so validate the target
     // first. Radius changes may widen victims but cannot rescue an invalid aim.
-    let (targets, _) =
-        capture(caster, spell, power.min(MAX_POWER), choice.aim, situation, forced_self)?;
-    if (spell.id == SpellId::BOILING_BLOOD
+    let (targets, _) = capture(caster, spell, choice.aim, situation, forced_self)?;
+    if (spell.targeting == Targeting::Radius
+        || spell.id == SpellId::BOILING_BLOOD
         || targets.iter().any(|victim| matches!(victim, Victim::Monster(_))))
         && (world.species.is_none() || !world.monsters.ready())
+    {
+        return Err(Refusal::MissingContent);
+    }
+    if (spell.targeting == Targeting::Radius
+        || spell.id == SpellId::BOILING_BLOOD
+        || spell.id == SpellId::RING_OF_FIRE)
+        && world.visibility.is_none()
     {
         return Err(Refusal::MissingContent);
     }
@@ -659,12 +655,21 @@ pub fn perform(
                 }
             }
         };
-        let (victims, landing) =
-            capture(caster, spell, cast_power, choice.aim, situation, forced_self)?;
+        let (mut victims, landing) = capture(caster, spell, choice.aim, situation, forced_self)?;
+        if spell.targeting == Targeting::Radius && !forced_self {
+            let centre = landing.ok_or(Refusal::NoTarget)?;
+            victims = super::targeting::radius(
+                world,
+                centre,
+                centre,
+                spell.radius + spell.radius_per_power * f32::from(cast_power),
+                Some(situation.party_at),
+            );
+        }
         // Accepted: roll, then pay whatever the roll.
         let (chance, quiet, strength) =
             attempt(&character, item.as_ref(), spell, cast_power, world.difficulty);
-        let outcome = super::roll(rng, chance, spell, quiet);
+        let outcome = super::roll(rng, chance, spell, quiet, world.underwater);
         pay(
             caster,
             spell,
@@ -792,6 +797,7 @@ pub(crate) fn perform_utility(
     inventory: &mut PartyInventory,
     items: &ItemCatalog,
     difficulty: Difficulty,
+    underwater: bool,
 ) -> Result<(Report, Strength), Refusal> {
     let Prepared { character, spell, power, item, .. } =
         prepare_source(caster, source, false, (spells, items), members, points, inventory)?;
@@ -817,7 +823,7 @@ pub(crate) fn perform_utility(
         return Err(Refusal::NoSpellPoints);
     }
     let (chance, quiet, strength) = attempt(&character, item.as_ref(), spell, power, difficulty);
-    let outcome = super::roll(rng, chance, spell, quiet);
+    let outcome = super::roll(rng, chance, spell, quiet, underwater);
     let mut report = Report {
         caster,
         spell: spell.id,

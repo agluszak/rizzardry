@@ -12,6 +12,7 @@ pub mod enchantments;
 mod impacts;
 pub mod portals;
 pub(crate) mod sources;
+mod targeting;
 pub(crate) mod traps;
 pub(crate) mod utilities;
 
@@ -404,7 +405,17 @@ pub enum Outcome {
 /// Roll a cast against its failure chance (retail `CastSpellFromSource`):
 /// the same roll decides failure and backfire. Ordinary failure chances below
 /// 6% cannot backfire; quiet (thrown) uses backfire whenever they fail and can.
-pub fn roll(rng: &mut GameRng, chance: u32, spell: &SpellDefinition, quiet: bool) -> Outcome {
+/// Underwater Fire first overrides failure to 100%, then quiet halves it;
+/// either case forbids backfire and keeps the ordinary payment transaction.
+pub fn roll(
+    rng: &mut GameRng,
+    chance: u32,
+    spell: &SpellDefinition,
+    quiet: bool,
+    underwater: bool,
+) -> Outcome {
+    let suppressed = underwater && spell.realm == Some(Realm::Fire);
+    let chance = if suppressed { if quiet { 50 } else { 100 } } else { chance };
     if chance == 0 {
         return Outcome::Cast;
     }
@@ -412,7 +423,7 @@ pub fn roll(rng: &mut GameRng, chance: u32, spell: &SpellDefinition, quiet: bool
     if rolled >= chance {
         return Outcome::Cast;
     }
-    let backfire = if !spell.can_backfire() || (!quiet && chance < 6) {
+    let backfire = if suppressed || !spell.can_backfire() || (!quiet && chance < 6) {
         0
     } else if quiet {
         chance
@@ -465,6 +476,8 @@ pub struct MagicContext<'w, 's> {
     pub inventory: Single<'w, 's, &'static mut PartyInventory>,
     pub news: MessageWriter<'w, casting::MagicNews>,
     level: Single<'w, 's, Entity, With<crate::game::world::level::Level>>,
+    level_rules: Query<'w, 's, &'static crate::game::world::triggers::LevelState>,
+    visibility: Option<crate::game::world::obstacles::WorldObstacles<'w, 's>>,
     /// Missiles leave in launch order, so equal arrivals land in it too.
     pub flight_order: ResMut<'w, casting::FlightOrder>,
     resistances: Query<'w, 's, &'static crate::game::characters::resistance::Resistances>,
@@ -516,6 +529,8 @@ impl MagicContext<'_, '_> {
             return Err(casting::Refusal::MissingContent);
         };
         let mut field = Field {
+            visibility: self.visibility.as_ref(),
+            underwater: self.level_rules.get(*self.level).is_ok_and(|state| state.camera_sway),
             members,
             monsters,
             enchantments: &mut self.enchantments.0,
@@ -663,7 +678,9 @@ pub fn deliver_spells(
     let party_at = party.single().ok().map(crate::game::party::body::PartyBody::eye);
     let spells = context.content.spells().unwrap();
     if flights.iter().any(|(_, flight)| {
-        !impacts::ready(flight.spell, spells)
+        spells.get(flight.spell).is_none()
+            || !impacts::ready(flight.spell, spells)
+            || flight.spell == SpellId::BOILING_BLOOD && context.visibility.is_none()
             || flight.spell == SpellId::BOILING_BLOOD && party_at.is_none()
     }) {
         return;
@@ -761,6 +778,22 @@ mod tests {
 
     /// The out-of-combat use path with real requests: a potion stack and a
     /// charged wand, each casting its own spell at its own power.
+    #[test]
+    fn underwater_fire_cannot_backfire_even_for_a_quiet_hostile_spell() {
+        let spell = SpellDefinition {
+            id: SpellId::ENERGY_BLAST,
+            targeting: Targeting::Enemy,
+            realm: Some(Realm::Fire),
+            ..default()
+        };
+        assert!(spell.can_backfire());
+        let mut rng = GameRng::seeded(1);
+        for _ in 0..20 {
+            assert_eq!(roll(&mut rng, 0, &spell, false, true), Outcome::Fizzled);
+            assert_ne!(roll(&mut rng, 100, &spell, true, true), Outcome::Backfired);
+        }
+    }
+
     #[test]
     fn using_items_spends_a_dose_or_a_charge_and_the_last_dose_still_heals() {
         use crate::content::items::{
@@ -877,7 +910,8 @@ mod tests {
         // An untrained priest at power 7: a high failure chance.
         let chance = fail_chance(&priest, &heal, 7);
         assert!(chance > 50, "{chance}");
-        let outcomes: Vec<_> = (0..50).map(|_| roll(&mut rng, chance, &heal, false)).collect();
+        let outcomes: Vec<_> =
+            (0..50).map(|_| roll(&mut rng, chance, &heal, false, false)).collect();
         assert!(outcomes.contains(&Outcome::Fizzled) && outcomes.contains(&Outcome::Cast));
     }
 
@@ -1120,12 +1154,12 @@ mod tests {
         let mut expected = rng.clone();
         let rolled = expected.below(100);
         let outcome = if rolled < 33 { Outcome::Backfired } else { Outcome::Fizzled };
-        assert_eq!(roll(&mut rng, 100, &spell, false), outcome);
+        assert_eq!(roll(&mut rng, 100, &spell, false, false), outcome);
         assert_eq!(rng, expected, "backfire must not consume a second random draw");
-        assert_eq!(roll(&mut rng, 0, &spell, false), Outcome::Cast);
+        assert_eq!(roll(&mut rng, 0, &spell, false, false), Outcome::Cast);
         assert_eq!(rng, expected, "a guaranteed cast consumes no failure draw");
         expected.below(100);
-        assert_eq!(roll(&mut rng, 100, &spell, true), Outcome::Backfired);
+        assert_eq!(roll(&mut rng, 100, &spell, true, false), Outcome::Backfired);
         assert_eq!(rng, expected);
     }
 
@@ -1136,7 +1170,7 @@ mod tests {
         assert!(fail_chance(&priest, &heal, 7) > fail_chance(&priest, &heal, 1));
         let mut rng = GameRng::seeded(1);
         for _ in 0..200 {
-            assert_ne!(roll(&mut rng, 100, &heal, false), Outcome::Backfired);
+            assert_ne!(roll(&mut rng, 100, &heal, false, false), Outcome::Backfired);
         }
     }
 }
