@@ -296,7 +296,7 @@ fn a_chest_keeps_what_is_left_in_it_through_closing_and_revisits() {
     };
     let (quiver, knife) = (stacks[0].id, stacks[1].id);
     let mut container = level.world.get_mut::<Container>(chest).unwrap();
-    container.generated = true;
+    container.table = None;
     container.contents.items = stacks;
     // Several items: the chest opens and its contents are looked through.
     assert!(level.run("CHEST").0);
@@ -467,13 +467,26 @@ fn a_container_opens_its_table_once_and_one_without_a_table_holds_nothing() {
     let handle = level.world.resource::<GameData>().loot.clone();
     level.world.resource_mut::<Assets<LootTables>>().insert(&handle, loot).unwrap();
     level.visit(None);
+    // An item put in before the first opening leaves the table to be drawn.
+    let definition = ItemDefinition { id: ItemId(9), ..default() };
+    let item =
+        make_item(&definition, &mut ItemIds::default(), &mut GameRng::seeded(5), false, true);
+    let deposited = item.id;
+    level.inventory().hand.held = Some(item);
+    // Putting it in answers the use without running the chest.
+    assert_eq!(level.run("CHEST"), (false, vec![]));
+    let chest = level.world.get::<Container>(level.device("CHEST")).unwrap();
+    assert!(chest.table.is_some() && chest.contents.items.iter().any(|i| i.id == deposited));
     assert_eq!(level.run("CHEST"), (true, vec![TriggerEffect::Gold(5)]));
+    assert!(level.world.get::<Container>(level.device("CHEST")).unwrap().table.is_none());
+    let back = level.inventory().hand.held.take().map(|i| i.id);
+    assert_eq!(back, Some(deposited), "its lone item comes to the hand");
     level.settle();
     assert_eq!(level.run("CHEST"), (true, vec![]), "its gold was taken");
     assert_eq!(level.run("LOST"), (true, vec![]));
     let lost = level.device("LOST");
     let lost = level.world.get::<Container>(lost).unwrap();
-    assert!(!lost.generated && lost.contents.items.is_empty(), "no contents are made up");
+    assert!(lost.table.is_none() && lost.contents.items.is_empty(), "no contents are made up");
     assert_eq!(level.inventory().gold, 5);
     let memory = level.remember();
     level.visit(Some(memory));
@@ -482,7 +495,7 @@ fn a_container_opens_its_table_once_and_one_without_a_table_holds_nothing() {
     let chest = level.device("CHEST");
     level.world.entity_mut(chest).remove::<PropMotion>();
     assert!(!level.run("CHEST").0, "a missing prop cannot open a container");
-    assert!(!level.world.get::<Container>(chest).unwrap().generated);
+    assert!(level.world.get::<Container>(chest).unwrap().table.is_some());
     assert_eq!(level.inventory().gold, 5);
 }
 
@@ -1008,7 +1021,7 @@ fn a_refused_take_leaves_container_receiver_and_identities_untouched() {
     let mut second = quiver.clone();
     second.id = level.world.resource_mut::<ItemIds>().allocate();
     let mut container = level.world.get_mut::<Container>(chest).unwrap();
-    container.generated = true;
+    container.table = None;
     container.contents.items = vec![quiver.clone(), second];
     assert!(level.run("CHEST").0);
     let quiver = quiver.id;
