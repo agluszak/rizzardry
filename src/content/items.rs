@@ -12,6 +12,15 @@ use super::species::Reach;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ItemId(pub u16);
 
+impl ItemId {
+    pub const LONGSWORD: Self = Self(7);
+    pub const BATTLE_AXE: Self = Self(18);
+    pub const MACE: Self = Self(22);
+    pub const QUARTER_STAFF: Self = Self(82);
+    pub const POETS_LUTE: Self = Self(324);
+    pub const OMNIGUN_MK_1: Self = Self(599);
+}
+
 /// `count` d `sides` + `base`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Dice {
@@ -23,7 +32,8 @@ pub struct Dice {
 /// Where an item can be worn or wielded, and what it is (retail equipment
 /// class; labels 1087..1119 in the string table).
 /// Declared in retail's order, so its retail number converts both ways.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, IntoPrimitive, TryFromPrimitive)]
+#[derive(Debug, Default, EnumSetType, IntoPrimitive, TryFromPrimitive)]
+#[enumset(repr = "u32")]
 #[repr(u8)]
 pub enum EquipClass {
     ShortWeapon,
@@ -59,6 +69,21 @@ pub enum EquipClass {
     BattleAxe,
     Flail,
     Mace,
+}
+
+impl EquipClass {
+    /// Extra editor-only weapon labels are not merchant equipment classes.
+    pub fn merchant_class(self) -> bool {
+        !matches!(
+            self,
+            Self::Dagger
+                | Self::LongSword
+                | Self::Bipennis
+                | Self::BattleAxe
+                | Self::Flail
+                | Self::Mace
+        )
+    }
 }
 
 /// How an item counts: a stack of identical things, or charges, uses or
