@@ -75,7 +75,7 @@ pub fn shade_clouds(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     const NOON_MS: f32 = 43_200_000.0;
-    let t = (clock.ms % 86_400_000) as f32;
+    let t = (clock.ms % crate::game::time::DAY_MS) as f32;
     let brightness = 1.0 - (t - NOON_MS).abs() / NOON_MS;
     let offset = (time.elapsed_secs() * 0.002).fract();
     for material in &clouds {
@@ -105,7 +105,7 @@ pub fn orbit_sun_and_moon(clock: Res<GameClock>, mut bodies: Query<(&Celestial, 
     let (Some(sun), Some(moon)) = (sun, moon) else { return };
     let centre = (sun + moon) / 2.0;
     let radius = sun.distance(moon) / 2.0;
-    let t = (clock.ms % 86_400_000) as f32;
+    let t = (clock.ms % crate::game::time::DAY_MS) as f32;
     let day = (18_000_000.0..=79_200_000.0).contains(&t) && t > 18_000_000.0;
     let degrees = if day {
         (t - 18_000_000.0) * 80.0 * 1.634e-8

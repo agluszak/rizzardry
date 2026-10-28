@@ -4,11 +4,16 @@ use crate::content::{
     items::{EquipClass, ItemCatalog, ItemDefinition, ItemId, QuantityKind},
     npcs::NpcDefinition,
 };
+use crate::game::time::DAY_MS;
 use crate::game::{
     inventory::{ItemIds, ItemRef, ItemStack, PartyInventory},
     rng::GameRng,
 };
 use bevy::prelude::*;
+
+/// The one restocked item retail holds back until the Templar fact is set
+/// (`RestockNpcItems`).
+pub(crate) const TEMPLAR_GATED: ItemId = ItemId(0x1fc);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StockLotId(pub u64);
 #[derive(Clone, Debug, PartialEq)]
@@ -133,8 +138,8 @@ impl MerchantStock {
             self.maintenance_at = now;
             return Ok(());
         }
-        let daily = now.saturating_sub(self.maintenance_at) >= 86_400_000;
-        if now.saturating_sub(self.restock_at) > 43_200_000 {
+        let daily = now.saturating_sub(self.maintenance_at) >= DAY_MS;
+        if now.saturating_sub(self.restock_at) > DAY_MS / 2 {
             self.replenish(def, catalog, level, true, templar, rng)?;
             self.restock_at = now;
         }
@@ -183,7 +188,7 @@ impl MerchantStock {
             }
             // Retail RestockNpcItems gates only this non-persistent rule.
             // Initial population and persistent replenishment do not use the gate.
-            if !persistent && r.item == ItemId(0x1fc) && !templar {
+            if !persistent && r.item == TEMPLAR_GATED && !templar {
                 continue;
             }
             let held = self.lots.iter().find(|l| l.item == r.item).map_or(0, |l| {
@@ -238,6 +243,28 @@ pub fn price(
     let value = if identified { value } else { value / 4 };
     u32::try_from(value.max(1)).map_err(|_| TradeError::Overflow)
 }
+/// What `quantity` of the lot costs, if the merchant will sell that many.
+pub fn purchase_price(
+    stock: &MerchantStock,
+    def: &NpcDefinition,
+    catalog: &ItemCatalog,
+    lot: StockLotId,
+    quantity: u32,
+    communication: u32,
+) -> Result<u32, TradeError> {
+    let source = stock.lots.iter().find(|l| l.id == lot).ok_or(TradeError::StaleSelection)?;
+    let item = catalog.get(source.item).ok_or(TradeError::MissingContent)?;
+    if source.available_at != 0 || item.merchant_cannot_sell {
+        return Err(TradeError::Unavailable);
+    }
+    if quantity == 0
+        || quantity > source.units
+        || (item.class == EquipClass::Ammunition && quantity != source.units)
+    {
+        return Err(TradeError::InvalidQuantity);
+    }
+    price(def, item, quantity, true, true, communication)
+}
 /// The delivery draft uses existing pool insertion, including partial merging.
 /// No authoritative item, allocator, stock or payment changes until it all fits.
 pub fn buy(
@@ -251,19 +278,10 @@ pub fn buy(
     quoted: u32,
     communication: u32,
 ) -> Result<(), TradeError> {
+    let cost = purchase_price(stock, def, catalog, lot, quantity, communication)?;
     let row = stock.lots.iter().position(|l| l.id == lot).ok_or(TradeError::StaleSelection)?;
     let source = &stock.lots[row];
     let item = catalog.get(source.item).ok_or(TradeError::MissingContent)?;
-    if source.available_at != 0 || item.merchant_cannot_sell {
-        return Err(TradeError::Unavailable);
-    }
-    if quantity == 0
-        || quantity > source.units
-        || (item.class == EquipClass::Ammunition && quantity != source.units)
-    {
-        return Err(TradeError::InvalidQuantity);
-    }
-    let cost = price(def, item, quantity, true, true, communication)?;
     if cost != quoted {
         return Err(TradeError::PriceChanged);
     }
@@ -318,6 +336,25 @@ pub fn validate_sale(
         return Err(TradeError::InvalidQuantity);
     }
     price(def, d, quantity, item.identified, false, communication)
+}
+/// The merchant's stock once it has bought the item at the quoted price.
+/// Nothing changes until the seller gives the item up. The stock template
+/// deliberately does not retain sold charges or knowledge.
+pub fn sell(
+    stock: &MerchantStock,
+    def: &NpcDefinition,
+    item: &ItemStack,
+    quantity: u32,
+    quoted: u32,
+    catalog: &ItemCatalog,
+    communication: u32,
+) -> Result<MerchantStock, TradeError> {
+    if validate_sale(def, item, quantity, catalog, communication)? != quoted {
+        return Err(TradeError::PriceChanged);
+    }
+    let mut stock = stock.clone();
+    stock.add(item.item, quantity, catalog, false)?;
+    Ok(stock)
 }
 
 #[cfg(test)]
@@ -426,23 +463,24 @@ mod tests {
         use crate::content::npcs::StockRule;
         let mut catalog = catalog();
         catalog.0.resize_with(0x1fd, ItemDefinition::default);
-        catalog.0[0x1fc] = ItemDefinition { id: ItemId(0x1fc), ..catalog.0[0].clone() };
+        catalog.0[TEMPLAR_GATED.0 as usize] =
+            ItemDefinition { id: TEMPLAR_GATED, ..catalog.0[0].clone() };
         let def = NpcDefinition {
             stock: vec![
-                StockRule { item: ItemId(0x1fc), quantity: 4, persistent: false },
+                StockRule { item: TEMPLAR_GATED, quantity: 4, persistent: false },
                 StockRule { item: ItemId(0), quantity: 4, persistent: true },
             ],
             ..merchant()
         };
         let mut stock = MerchantStock { initialized: true, ..default() };
         let mut rng = GameRng::seeded(8);
-        stock.maintain(&def, &catalog, 1, 86_400_000, false, &mut rng).unwrap();
-        assert!(stock.lots.iter().all(|lot| lot.item != ItemId(0x1fc)));
+        stock.maintain(&def, &catalog, 1, DAY_MS, false, &mut rng).unwrap();
+        assert!(stock.lots.iter().all(|lot| lot.item != TEMPLAR_GATED));
         assert!(stock.lots.iter().any(|lot| lot.item == ItemId(0) && lot.units > 0));
-        assert_eq!(stock.maintenance_at, 86_400_000);
+        assert_eq!(stock.maintenance_at, DAY_MS);
         for day in 2..=10 {
-            stock.maintain(&def, &catalog, 1, day * 86_400_000, true, &mut rng).unwrap();
-            if stock.lots.iter().any(|lot| lot.item == ItemId(0x1fc) && lot.units > 0) {
+            stock.maintain(&def, &catalog, 1, day * DAY_MS, true, &mut rng).unwrap();
+            if stock.lots.iter().any(|lot| lot.item == TEMPLAR_GATED && lot.units > 0) {
                 return;
             }
         }

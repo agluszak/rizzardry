@@ -347,7 +347,11 @@ fn sync_view(world: &mut World) {
     let text = format!(
         "{name} - {} gold\n{lines}\n{state}\n{}",
         world.get::<PartyInventory>(party).unwrap().gold,
-        c.result.as_deref().unwrap_or("")
+        c.result.map_or_else(String::new, |result| match result {
+            Outcome::NoTopic => "No supported topic matches that input.".into(),
+            Outcome::Traded => "Trade complete.".into(),
+            Outcome::TradeRefused(e) => format!("Trade refused: {e:?}"),
+        })
     );
     let font = world
         .resource::<AssetServer>()
