@@ -42,6 +42,13 @@ impl Plugin for GamePlugin {
             .init_state::<screen::Screen>()
             .add_message::<inventory::ItemNews>()
             .add_systems(Startup, data::load_game_data)
+            .add_systems(
+                Update,
+                inventory::omnigun::upgrade_omnigun
+                    .after(GameplaySet::LevelActivation)
+                    .before(GameplaySet::Combat)
+                    .run_if(world::level::level_active),
+            )
             .configure_sets(Update, (GameplaySet::LevelActivation, GameplaySet::Combat).chain())
             .add_plugins((
                 avian3d::prelude::PhysicsPlugins::default(),

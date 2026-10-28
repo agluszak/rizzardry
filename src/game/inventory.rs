@@ -1,5 +1,7 @@
 //! Owned nonempty stacks, concrete containers, and synchronous inventory moves.
 //! Equipment release belongs to a placement, never to the transferable object.
+pub mod merge;
+pub mod omnigun;
 pub mod operations;
 
 use super::characters::{Character, Load, Vitals};
@@ -142,6 +144,30 @@ impl ItemStack {
         source.count = NonZeroU16::new(source.count() - moved)?;
         Some(source)
     }
+    /// Load this item from another's uses or units, up to as many as it can
+    /// hold (retail `MergeItemUses`), spending them from the other one at a
+    /// time; returns what is left of it. A gun takes the shots its
+    /// ammunition holds. Only items counting uses can be loaded.
+    pub fn load(
+        &mut self,
+        mut from: Self,
+        definition: &ItemDefinition,
+        source: &ItemDefinition,
+    ) -> Option<Self> {
+        let Some(uses) = self.remaining_uses else { return Some(from) };
+        let available = match source.quantity {
+            QuantityKind::Stack => from.count(),
+            _ => from.remaining_uses.unwrap_or(0),
+        };
+        let maximum = definition.initial_quantity.maximum().min(u32::from(u16::MAX)) as u16;
+        // Retail's unsigned room wraps for an overfull item, taking everything.
+        let moved = maximum.checked_sub(uses).map_or(available, |room| room.min(available));
+        self.remaining_uses = Some(uses + moved);
+        for _ in 0..moved {
+            from = from.consume_use(source, source.keeps_empty())?;
+        }
+        Some(from)
+    }
     /// Consumption owns its input: exhausted physical stacks never survive as values.
     pub fn consume_use(mut self, definition: &ItemDefinition, keep_empty: bool) -> Option<Self> {
         if let Some(uses) = &mut self.remaining_uses {
@@ -259,6 +285,14 @@ pub struct ItemRef {
     pub owner: ItemOwner,
     pub id: StackId,
 }
+/// An item within the reviewed member's reach: the hand, one of their
+/// slots, or a row of the party's pool.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ItemAt {
+    Hand,
+    Slot(Slot),
+    Pool(StackId),
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PoolPosition {
     Front,
@@ -374,17 +408,16 @@ impl Carried {
     pub fn stacks(&self) -> impl Iterator<Item = &ItemStack> {
         self.equipment.values().flatten().map(|e| &e.stack).chain(self.backpack.iter().flatten())
     }
+    fn stacks_mut(&mut self) -> impl Iterator<Item = &mut ItemStack> {
+        self.equipment
+            .values_mut()
+            .flatten()
+            .map(|e| &mut e.stack)
+            .chain(self.backpack.iter_mut().flatten())
+    }
     /// Worn stacks, backpack stacks, then the first empty backpack slot.
     pub fn receive(&mut self, incoming: ItemStack, catalog: &ItemCatalog) -> Option<ItemStack> {
-        let rest = fill(
-            self.equipment
-                .values_mut()
-                .flatten()
-                .map(|e| &mut e.stack)
-                .chain(self.backpack.iter_mut().flatten()),
-            incoming,
-            catalog,
-        )?;
+        let rest = fill(self.stacks_mut(), incoming, catalog)?;
         match self.backpack.iter_mut().find(|s| s.is_none()) {
             Some(empty) => {
                 *empty = Some(rest);
@@ -547,8 +580,25 @@ pub struct PartyInventory {
 }
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum ItemNews {
-    Takes { member: Option<String>, item: String },
+    Takes {
+        member: Option<String>,
+        item: String,
+    },
     NoRoom,
+    /// Merging needs both items identified.
+    Unidentified,
+    /// Nothing is made from the two.
+    CannotMerge,
+    /// The member lacks the skill making it takes.
+    Unskilled {
+        member: String,
+    },
+    /// A Gadgeteer's omnigun reached a tier (1 to 11 above the first).
+    Omnigun {
+        member: String,
+        gender: crate::content::characters::Gender,
+        tier: usize,
+    },
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Given {
@@ -634,24 +684,100 @@ pub fn allowed_slots(
     }
 }
 
-/// Whether two items can share a weapon set (retail `CanHoldItemsTogether`).
+/// Whether two items can share a weapon set (retail `CanHoldItemsTogether`):
+/// nothing pairs with a two-handed item, a ranged weapon or ammunition by
+/// what each takes, and two weapons by their reach.
 pub fn can_hold_together(a: &ItemDefinition, b: &ItemDefinition) -> bool {
     use EquipClass::*;
     if a.two_handed || b.two_handed {
         return false;
     }
-    let ranged = |d: &ItemDefinition| matches!(d.class, RangedWeapon | Ammunition);
-    if ranged(a) || ranged(b) {
-        // A launcher with the ammunition it shoots (retail
-        // `CompatiblePartnerItems`).
-        let fits = |launcher: &ItemDefinition, ammunition: &ItemDefinition| {
-            launcher.shoots.is_some() && launcher.shoots == ammunition.ammunition
-        };
-        return fits(a, b) || fits(b, a);
+    if a.class == RangedWeapon || b.class == Ammunition {
+        return partners(a, b);
     }
-    let weapon =
-        |d: &ItemDefinition| matches!(d.class, ShortWeapon | ExtendedWeapon | ThrownWeapon);
-    !(weapon(a) && weapon(b)) || a.reach == b.reach
+    if b.class == RangedWeapon || a.class == Ammunition {
+        return partners(b, a);
+    }
+    if u8::from(a.class) >= u8::from(Ammunition) {
+        return true;
+    }
+    u8::from(b.class) >= u8::from(Ammunition) || a.reach == b.reach
+}
+
+/// What one member's go at identifying an item came to.
+pub(crate) struct Identified {
+    /// Far enough above the item's difficulty to tell whether it binds.
+    pub binding: bool,
+    /// Only just made, which practises Artifacts.
+    pub practises: bool,
+}
+
+/// One member's go at identifying an item of this difficulty (retail
+/// `TryIdentifyItemFor`): someone alive and sane manages it when a sixth of
+/// their Artifacts reaches it. Retail compares signed bytes, so a
+/// difficulty past 127 is always managed.
+pub(crate) fn identify_attempt(
+    character: &Character,
+    vitals: &Vitals,
+    difficulty: u8,
+) -> Option<Identified> {
+    use crate::game::characters::Condition;
+    if vitals.is_dead() || vitals.worst_condition().is_some_and(|c| c >= Condition::Insane) {
+        return None;
+    }
+    let strength = (character.skill(Skill::Artifacts) / 6) as i8;
+    if difficulty as i8 > strength {
+        return None;
+    }
+    let margin = i32::from(strength) - i32::from(difficulty);
+    Some(Identified {
+        binding: difficulty.wrapping_add(3) as i8 <= strength,
+        practises: (0..3).contains(&margin),
+    })
+}
+
+/// Kinds loaded by one other kind (retail `g_compatible_partner_pairs`):
+/// guns and their ammunition.
+const LOADED_BY: [(u16, u16); 5] = [(114, 113), (110, 132), (104, 132), (144, 143), (145, 146)];
+
+/// The kind that loads an item of this kind (retail `GetItemMergeKind`).
+pub fn loaded_by(kind: u16) -> Option<u16> {
+    LOADED_BY.iter().find(|&&(gun, _)| gun == kind).map(|&(_, ammunition)| ammunition)
+}
+
+/// The Gadgeteer's omnigun (retail item kind 0x83), whose twelve tiers are
+/// items 599 to 610.
+pub const OMNIGUN: u16 = 0x83;
+
+/// Whether `other` may be held with the ranged weapon `ranged` (retail
+/// `CompatiblePartnerItems`): bows, crossbows and slings with their
+/// missiles, guns with what loads them, and each omnigun tier with what it
+/// has learnt to fire.
+fn partners(ranged: &ItemDefinition, other: &ItemDefinition) -> bool {
+    let kind = other.kind;
+    match ranged.kind {
+        0x0b | 0x25 => kind == 0x16,
+        0x0c => kind == 0x53,
+        0x0d => kind == 0x17,
+        0x68 | 0x6e | 0x72 => {
+            (u8::from(other.class) > u8::from(EquipClass::RangedWeapon)
+                || ranged.reach == other.reach)
+                && loaded_by(ranged.kind).is_none_or(|loads| loads == kind)
+        }
+        OMNIGUN => {
+            let thrown = other.class == EquipClass::ThrownWeapon && kind == 0;
+            match ranged.id.0 {
+                599 => matches!(kind, 0x17 | 0x71),
+                600 | 601 => matches!(kind, 0x17 | 0x71 | 0x70),
+                602..=605 => matches!(kind, 0x17 | 0x71 | 0x70 | 0x15 | 0x7e) || thrown,
+                606..=610 => {
+                    matches!(kind, 0x17 | 0x71 | 0x70 | 0x15 | 0x7e | 0x16 | 0x53) || thrown
+                }
+                _ => false,
+            }
+        }
+        _ => false,
+    }
 }
 
 /// Starting equipment may equip; ordinary receipt never does.
@@ -841,8 +967,15 @@ impl PartyInventory {
         catalog: &ItemCatalog,
     ) -> Result<u32, Refusal> {
         self.pool.position(position)?;
-        if self.hand.held.is_none() {
-            return Err(Refusal::Nothing);
+        let Some(held) = self.hand.held.as_ref() else { return Err(Refusal::Nothing) };
+        // Ammunition held over a gun in the pool loads it.
+        if let PoolPosition::Before(id) = position
+            && let Some(gun) = self.pool.stacks.iter_mut().find(|s| s.id == id)
+            && let (Some(source), Some(definition)) =
+                (catalog.get(held.item), catalog.get(gun.item))
+            && loaded_by(definition.kind) == Some(source.kind)
+        {
+            return Ok(self.hand.offer(|held| gun.load(held, definition, source)));
         }
         let pool = &mut self.pool;
         Ok(self.hand.offer(|item| pool.deposit(item, position, catalog)))
@@ -879,6 +1012,19 @@ impl PartyInventory {
             }
         }
         carried.check_removal(slot, catalog, vitals.is_dead())?;
+        // Ammunition held over its gun loads it.
+        if let Some((held, target)) = self.hand.held.as_ref().zip(carried.slot(slot)) {
+            let source = catalog.get(held.item).ok_or(Refusal::MissingContent)?;
+            let definition = catalog.get(target.item).ok_or(Refusal::MissingContent)?;
+            if loaded_by(definition.kind) == Some(source.kind) {
+                if matches!(slot, Slot::Equipment(_)) && !character.can_use(source) {
+                    return Err(Refusal::DoesNotFit);
+                }
+                let target = carried.stack_mut(slot).unwrap();
+                self.hand.offer(|held| target.load(held, definition, source));
+                return Ok(());
+            }
+        }
         if let (Slot::Equipment(equip), Some(held)) = (slot, self.hand.held.as_ref()) {
             let definition = catalog.get(held.item).ok_or(Refusal::MissingContent)?;
             if !character.can_use(definition) {
@@ -1368,5 +1514,111 @@ mod tests {
         assert_eq!((rest.id, rest.count()), (id, 3));
         carried.consume_backpack_units(id, 3).unwrap();
         assert!(carried.backpack[3].is_none());
+    }
+
+    /// Ammunition held over its gun loads it up to the shots it holds,
+    /// spending units from the stack; a full gun takes none.
+    #[test]
+    fn ammunition_loads_its_gun_up_to_what_it_holds() {
+        let gun = ItemDefinition {
+            id: ItemId(0),
+            kind: 114,
+            class: EquipClass::RangedWeapon,
+            quantity: QuantityKind::Shots,
+            initial_quantity: crate::content::items::Dice { count: 0, sides: 0, base: 10 },
+            ..default()
+        };
+        let clips = ItemDefinition {
+            id: ItemId(1),
+            kind: 113,
+            class: EquipClass::Ammunition,
+            quantity: QuantityKind::Stack,
+            stack_limit: 99,
+            ..default()
+        };
+        let catalog = ItemCatalog(vec![gun, clips]);
+        let mut ids = ItemIds::default();
+        let (character, mut carried) = (wearer(), Carried::default());
+        let vitals = Vitals::new(&character);
+        carried.backpack[0] = Some(ItemStack::new(&catalog.0[0], &mut ids, 4, true));
+        let mut party = PartyInventory::default();
+        party.hand.held = Some(ItemStack::new(&catalog.0[1], &mut ids, 9, true));
+        let mut load = |party: &mut PartyInventory| {
+            party
+                .interact_slot(&character, &vitals, &mut carried, Slot::Backpack(0), &catalog)
+                .unwrap();
+            let shots = carried.backpack[0].as_ref().unwrap().remaining_uses();
+            (shots, party.hand.held.as_ref().map(ItemStack::count))
+        };
+        assert_eq!(load(&mut party), (Some(10), Some(3)));
+        assert_eq!(load(&mut party), (Some(10), Some(3)), "a full gun takes none");
+    }
+
+    /// Guns hold only what loads them; each omnigun tier what it has learnt
+    /// to fire; bows their arrows.
+    #[test]
+    fn guns_and_omnigun_tiers_hold_only_what_loads_them() {
+        let item =
+            |id: u16, kind: u16, class| ItemDefinition { id: ItemId(id), kind, class, ..default() };
+        let gun = item(0, 114, EquipClass::RangedWeapon);
+        let (clips, cells) =
+            (item(1, 113, EquipClass::Ammunition), item(2, 132, EquipClass::Ammunition));
+        assert!(can_hold_together(&gun, &clips) && can_hold_together(&clips, &gun));
+        assert!(!can_hold_together(&gun, &cells));
+        let arrows = item(3, 0x16, EquipClass::Ammunition);
+        let (first, last) = (
+            item(599, OMNIGUN, EquipClass::RangedWeapon),
+            item(610, OMNIGUN, EquipClass::RangedWeapon),
+        );
+        assert!(!can_hold_together(&first, &arrows) && can_hold_together(&last, &arrows));
+        assert!(can_hold_together(&item(4, 0x0b, EquipClass::RangedWeapon), &arrows));
+    }
+
+    /// The party identifies an item when someone's Artifacts reaches its
+    /// difficulty; well past it, they also tell whether it binds.
+    #[test]
+    fn the_party_identifies_by_its_best_artifacts() {
+        use super::operations::InventoryOperations;
+        use crate::game::data::GameData;
+        use bevy::ecs::system::RunSystemOnce;
+        let mut world = World::new();
+        world.init_resource::<Messages<ItemNews>>();
+        let mut c = catalog();
+        c.0[1].identify_difficulty = 3;
+        let mut ids = ItemIds::default();
+        let mut item = stack(&c, &mut ids, 1, 1);
+        item.identified = false;
+        let mut catalogs = Assets::<ItemCatalog>::default();
+        let items = catalogs.add(c);
+        world.insert_resource(catalogs);
+        world.insert_resource(GameData {
+            items,
+            loot: default(),
+            species: default(),
+            spells: default(),
+        });
+        let member = |world: &mut World, artifacts: u8| {
+            let mut character = wearer();
+            character.skill_points[Skill::Artifacts] = artifacts;
+            world.spawn((Vitals::new(&character), character, Carried::default())).id()
+        };
+        let novice = member(&mut world, 12);
+        let party = crate::game::party::roster::test_party(&mut world, &[novice]);
+        world.get_mut::<PartyInventory>(party).unwrap().hand.held = Some(item);
+        let identify = |world: &mut World| {
+            world
+                .run_system_once(move |mut op: InventoryOperations, mut rng: ResMut<GameRng>| {
+                    op.identify(novice, ItemAt::Hand, &mut rng)
+                })
+                .unwrap()
+        };
+        world.init_resource::<GameRng>();
+        assert_eq!(identify(&mut world), Ok(false));
+        let expert = member(&mut world, 60);
+        crate::game::party::roster::test_join(&mut world, expert);
+        assert_eq!(identify(&mut world), Ok(true));
+        let held = world.get::<PartyInventory>(party).unwrap().hand.held.clone().unwrap();
+        assert!(held.identified && held.spell_known && held.curse_known);
+        assert_eq!(identify(&mut world), Ok(false), "nothing left to identify");
     }
 }

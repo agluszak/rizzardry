@@ -30,7 +30,7 @@ use crate::content::ui::SpriteSheet;
 use crate::game::characters::{Character, Gender, Race, Vitals};
 use crate::game::combat::attack::Armour;
 use crate::game::inventory::{
-    BACKPACK_SLOTS, Carried, EquipSlot, ItemStack, MemberSlot, PartyInventory, Slot,
+    BACKPACK_SLOTS, Carried, EquipSlot, ItemAt, ItemStack, MemberSlot, PartyInventory, Slot,
 };
 use crate::game::party::roster::PartyRoster;
 use crate::game::screen::Screen;
@@ -84,8 +84,71 @@ fn grid(left: f32, i: usize) -> Vec2 {
 
 /// The open screen, reviewing one member. Absent while exploring.
 #[derive(Component, Debug)]
+#[require(ItemAction)]
 pub struct InventoryScreen {
     pub member: Entity,
+}
+
+/// What clicking an item does besides moving it (retail's item action
+/// buttons, `SetCampItemActionMode`): armed by its button, spent by the
+/// click that carries it out.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ItemAction {
+    #[default]
+    None,
+    /// The party tries to identify the clicked item.
+    Identify,
+    /// The held item is merged with the clicked one.
+    Merge,
+}
+
+/// An item action's button.
+#[derive(Component, Clone, Copy)]
+struct ItemActionButton(ItemAction);
+
+/// An item action button arms its action, or disarms it when armed; with an
+/// item held, Identify tries it at once (retail `OnCampIdentifyItem`,
+/// `OnCampMoveItem`).
+fn press_item_action(
+    click: On<Activate>,
+    buttons: Query<&ItemActionButton>,
+    screen: Option<Single<(&InventoryScreen, &mut ItemAction)>>,
+    mut inventory: crate::game::inventory::operations::InventoryOperations,
+    mut rng: ResMut<crate::game::rng::GameRng>,
+) {
+    let (Ok(&ItemActionButton(pressed)), Some(screen)) = (buttons.get(click.entity), screen) else {
+        return;
+    };
+    let (screen, mut action) = screen.into_inner();
+    *action = if *action == pressed {
+        ItemAction::None
+    } else if pressed == ItemAction::Identify && inventory.holds() {
+        if let Err(refusal) = inventory.identify(screen.member, ItemAt::Hand, &mut rng) {
+            info!("identifying refused: {refusal:?}");
+        }
+        ItemAction::None
+    } else {
+        pressed
+    };
+}
+
+/// The armed action's button shows pressed.
+fn style_item_actions(
+    action: Option<Single<&ItemAction>>,
+    buttons: Query<(Entity, &ItemActionButton, Has<bevy::ui::Selected>)>,
+    mut commands: Commands,
+) {
+    let armed = action.map_or(ItemAction::None, |action| **action);
+    for (entity, button, selected) in &buttons {
+        let active = button.0 == armed;
+        if active != selected {
+            if active {
+                commands.entity(entity).insert(bevy::ui::Selected);
+            } else {
+                commands.entity(entity).remove::<bevy::ui::Selected>();
+            }
+        }
+    }
 }
 
 #[derive(Resource, Default)]
@@ -1097,12 +1160,16 @@ fn draw_cells(
 fn click_cell(
     click: On<Activate>,
     cells: Query<&ItemCell>,
-    screen: Option<Single<&InventoryScreen>>,
+    screen: Option<Single<(&InventoryScreen, &mut ItemAction)>>,
     mut inventory: crate::game::inventory::operations::InventoryOperations,
     selected: Option<Single<&bevy::ui_widgets::SelectedTab, With<review::PageTabs>>>,
     tabs: Query<&review::PageButton>,
     pool_scroll: Option<Single<&bevy::ui_widgets::SliderValue, With<pool_scroll::PoolScroll>>>,
     conversations: Query<(), With<crate::game::npcs::conversation::Conversation>>,
+    (mut ids, mut rng): (
+        ResMut<crate::game::inventory::ItemIds>,
+        ResMut<crate::game::rng::GameRng>,
+    ),
 ) {
     if !conversations.is_empty() {
         return;
@@ -1116,9 +1183,40 @@ fn click_cell(
     {
         return;
     }
+    let (screen, mut action) = screen.into_inner();
     let destination = cell
         .cell
         .location(screen.member, pool_scroll.as_ref().map_or(0, |value| value.0 as usize * 2));
+    // An armed action takes the click; an empty cell disarms it.
+    let target = match destination {
+        CellLocation::Member(slot) => Some(ItemAt::Slot(slot.slot)),
+        CellLocation::Pool(row) => inventory.pool_row(row).map(ItemAt::Pool),
+    };
+    use crate::game::inventory::{Refusal, merge::Merged};
+    match *action {
+        ItemAction::Identify => {
+            if let Some(at) = target
+                && let Err(refusal) = inventory.identify(screen.member, at, &mut rng)
+                && refusal != Refusal::Nothing
+            {
+                info!("identifying refused: {refusal:?}");
+            }
+            *action = ItemAction::None;
+            return;
+        }
+        // Retail keeps merging armed until something is made or stacked.
+        ItemAction::Merge if inventory.holds() => {
+            match target.map(|at| inventory.merge(screen.member, at, (&mut ids, &mut rng))) {
+                None | Some(Ok(Merged::Made(_) | Merged::Stacked) | Err(Refusal::Nothing)) => {
+                    *action = ItemAction::None;
+                }
+                Some(Ok(_)) => {}
+                Some(Err(refusal)) => info!("merging refused: {refusal:?}"),
+            }
+            return;
+        }
+        _ => {}
+    }
     let result = match destination {
         CellLocation::Member(slot) => inventory.interact_slot(slot),
         CellLocation::Pool(index) => inventory.click_pool(index),
@@ -1235,6 +1333,7 @@ impl Plugin for InventoryPlugin {
                     review::layout_skills,
                     review::style_info_button,
                     review::style_effect_buttons,
+                    style_item_actions,
                     info::update_scroll,
                     info::initialize_focus,
                     item_info::refresh,
@@ -1276,6 +1375,8 @@ mod tests {
             .init_asset::<ItemCatalog>()
             .init_resource::<UiScale>()
             .add_message::<crate::game::inventory::ItemNews>()
+            .init_resource::<crate::game::inventory::ItemIds>()
+            .init_resource::<crate::game::rng::GameRng>()
             .init_resource::<super::super::main_screen::SelectedMember>()
             .add_plugins(InventoryPlugin)
             .add_observer(crate::presentation::retail_controls::primary_buttons_only)

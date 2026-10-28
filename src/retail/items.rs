@@ -11,8 +11,7 @@ use enumset::EnumSet;
 
 use crate::content::characters::Skill;
 use crate::content::items::{
-    Ammunition, EquipClass, ItemCatalog, ItemDefinition, ItemId, LootTable, LootTables,
-    QuantityKind,
+    EquipClass, ItemCatalog, ItemDefinition, ItemId, LootTable, LootTables, QuantityKind, Recipe,
 };
 
 const RECORD: usize = 0x10d;
@@ -365,20 +364,28 @@ fn minimums<K: enum_map::Enum + TryFrom<u8>>(
     Ok(minimums)
 }
 
-/// What a launcher of this kind shoots, or what ammunition of this kind
-/// is: retail's plain pairs in `CompatiblePartnerItems` (longbow and
-/// greatbow with arrows, crossbow with quarrels, sling with sling stones).
-/// Its guns and the Gadgeteer's omnigun tiers are not ported yet.
-fn launcher_and_ammunition(kind: u16) -> (Option<Ammunition>, Option<Ammunition>) {
-    match kind {
-        0x0b | 0x25 => (Some(Ammunition::Arrow), None),
-        0x0c => (Some(Ammunition::Quarrel), None),
-        0x0d => (Some(Ammunition::SlingStone), None),
-        0x16 => (None, Some(Ammunition::Arrow)),
-        0x53 => (None, Some(Ammunition::Quarrel)),
-        0x17 => (None, Some(Ammunition::SlingStone)),
-        _ => (None, None),
-    }
+/// What an item is made from (retail `MergeItems`): the two ingredient
+/// item numbers at 0xb9 and 0xbd, and the skill (0xc9, -1 for none) and
+/// level (0xca) making it takes. A negative ingredient never matches an
+/// item, so its record is made from nothing.
+fn recipe(index: usize, record: &[u8]) -> Result<Option<Recipe>, LoadError> {
+    let mut fields = Bytes::new(&record[0xb9..]);
+    let (Ok(first), Ok(second)) = (u16::try_from(fields.i32()?), u16::try_from(fields.i32()?))
+    else {
+        return Ok(None);
+    };
+    let mut fields = Bytes::new(&record[0xc9..]);
+    let (skill, level) = (fields.i8()?, fields.u8()?);
+    let skill = match skill {
+        -1 => None,
+        skill => Some((
+            u8::try_from(skill).ok().and_then(|s| Skill::try_from(s).ok()).ok_or_else(|| {
+                LoadError::Invalid(format!("item {index}: unknown recipe skill {skill}"))
+            })?,
+            level,
+        )),
+    };
+    Ok(Some(Recipe { ingredients: [ItemId(first), ItemId(second)], skill }))
 }
 
 /// The item's picture: its own (`video_object_name`), else its kind's
@@ -454,10 +461,10 @@ fn read_item(index: usize, record: &[u8], strings: &[String]) -> Result<ItemDefi
     let cursed = bytes.u8()? != 0;
     let own_image = lenient_string(&record[0xcd..0xcd + 0x18]);
     let string = |index: usize| strings.get(index).map_or("", |s| s.as_str());
-    let (shoots, ammunition) = launcher_and_ammunition(kind);
     let kind_name = KIND_NAMES.get(usize::from(kind)).map_or("", |&k| string(k));
     Ok(ItemDefinition {
         unidentified_name: string(UNIDENTIFIED).replace("%s", kind_name),
+        kind,
         id: ItemId(index as u16),
         name: utf16_string(&record[..60]),
         image: image_path(&own_image, kind)
@@ -475,8 +482,6 @@ fn read_item(index: usize, record: &[u8], strings: &[String]) -> Result<ItemDefi
         container: has(flag::CONTAINER),
         weapon_skill,
         reach,
-        shoots,
-        ammunition,
         damage,
         attack_modes,
         damage_bonus,
@@ -510,6 +515,7 @@ fn read_item(index: usize, record: &[u8], strings: &[String]) -> Result<ItemDefi
         value,
         weight,
         cursed,
+        recipe: recipe(index, record)?,
     })
 }
 
@@ -682,9 +688,11 @@ mod tests {
         assert_eq!(dagger.unidentified_name, "Dagger (Unidentified)");
         assert!(dagger.off_hand && !dagger.two_handed);
         assert!(catalog.0.iter().filter(|i| !i.name.is_empty()).count() > 500);
-        let bows = catalog.0.iter().filter(|i| i.shoots == Some(Ammunition::Arrow)).count();
-        let arrows = catalog.0.iter().filter(|i| i.ammunition == Some(Ammunition::Arrow)).count();
-        assert!(bows > 0 && arrows > 0, "bows and the arrows they shoot");
+        assert!(catalog.0.iter().any(|i| i.recipe.is_some()), "items are made from others");
+        assert!(
+            (599..=610).all(|id| catalog.get(ItemId(id)).is_some_and(|i| i.kind == 0x83)),
+            "the omnigun's twelve tiers"
+        );
         let stacks: Vec<_> =
             catalog.0.iter().filter(|i| i.quantity == QuantityKind::Stack).collect();
         assert!(stacks.len() > 10 && stacks.iter().all(|i| i.stack_limit > 0));

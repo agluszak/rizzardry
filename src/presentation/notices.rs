@@ -187,6 +187,16 @@ pub(super) fn wrap(text: &str, width: u32, measure: impl Fn(&str) -> u32) -> Vec
 const PARTY_TAKES: usize = 0x1e9;
 const TAKES: usize = 0x1e8;
 const NO_ROOM: usize = 0x90c;
+/// Merging: nothing is made from these, "%s lacks the skill", and both must
+/// be identified first (retail `MergeItems`).
+const CANNOT_MERGE: usize = 0x161;
+const UNSKILLED_MERGE: usize = 0x162;
+const MERGE_UNIDENTIFIED: usize = 0x163;
+/// The omnigun's first tier; the others follow it (retail
+/// `UpgradeProfessionClassItem`), each naming the owner's possessive
+/// (`g_gender_name_message_rows[gender][2]`).
+const OMNIGUN_TIERS: usize = 0x167;
+const POSSESSIVES: usize = 0x2d7;
 const SEARCH_ON: usize = 0x78e;
 const SEARCH_OFF: usize = 0x78f;
 const SPOTS_HIDDEN: usize = 0x772;
@@ -444,6 +454,17 @@ pub fn queue_notices(
             }
             ItemNews::Takes { member: None, item } => string(PARTY_TAKES).replace("%s", item),
             ItemNews::NoRoom => string(NO_ROOM),
+            ItemNews::CannotMerge => string(CANNOT_MERGE),
+            ItemNews::Unskilled { member } => string(UNSKILLED_MERGE).replace("%s", member),
+            ItemNews::Unidentified => string(MERGE_UNIDENTIFIED),
+            ItemNews::Omnigun { member, gender, tier } => {
+                let possessive = string(POSSESSIVES + *gender as usize);
+                let text = string(OMNIGUN_TIERS + tier).replace("%s", &possessive);
+                // Retail runs a notice starting with an apostrophe or colon
+                // straight on from the name (`PostCharacterNoticeText`).
+                let separator = if text.starts_with(['\'', ':']) { "" } else { " " };
+                format!("{member}{separator}{text}")
+            }
         };
         log.push(channel, &text, font);
     }
