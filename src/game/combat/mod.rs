@@ -53,16 +53,19 @@ impl Plugin for CombatPlugin {
             .init_resource::<casting::FlightOrder>()
             .add_systems(
                 Update,
-                (
-                    settle_defeat,
-                    start_battle,
-                    track_party_move,
-                    run_battle,
-                    settle_defeat,
-                    approach::close_in,
-                )
+                (settle_defeat, start_battle, run_battle, settle_defeat, approach::close_in)
                     .chain()
                     .in_set(crate::game::GameplaySet::Combat)
+                    .run_if(crate::game::world::level::level_active),
+            )
+            // The party walks on the fixed step; its move is measured on
+            // every step, once physics has moved it, so how frames batch
+            // those steps changes neither the ground counted nor where the
+            // budget runs out.
+            .add_systems(
+                FixedPostUpdate,
+                track_party_move
+                    .after(avian3d::prelude::PhysicsSystems::Writeback)
                     .run_if(crate::game::world::level::level_active),
             );
     }
@@ -707,11 +710,12 @@ pub fn run_battle(
         if let PartyMove::Pending { pace, phase } = battle.party_move
             && phase <= step
         {
+            // Counted from where the party stands as its move begins.
             battle.party_move = PartyMove::Moving {
                 pace,
                 budget: if pace == PartyPace::Run { 30.0 } else { 20.0 },
                 moved: 0.0,
-                last: None,
+                last: Some(position.0),
             };
             news.write(CombatNews::PartyMoves);
             return;
@@ -1839,7 +1843,8 @@ mod tests {
             .query_filtered::<Entity, With<PartyBody>>()
             .single(app.world())
             .unwrap();
-        app.update();
+        // Ground covered from the moment the move begins counts, however
+        // the frames fall.
         app.world_mut().get_mut::<Position>(body).unwrap().0 += Vec3::X * 21.0;
         app.update();
         news.extend(app.world_mut().resource_mut::<Messages<CombatNews>>().drain());
