@@ -142,17 +142,13 @@ pub struct TravelAnswer {
 pub fn answer_travel_questions(
     mut commands: Commands,
     mut answers: MessageReader<TravelAnswer>,
-    questions: Query<(Entity, &TravelQuestion, &LevelOwned)>,
-    levels: Query<(), With<Level>>,
+    questions: Query<(Entity, &TravelQuestion)>,
     battle: Option<Single<&crate::game::combat::Battle>>,
     mut travel: MessageWriter<Travel>,
 ) {
     let answers: Vec<_> = answers.read().copied().collect();
-    for (entity, question, owner) in &questions {
-        if !levels.contains(owner.0) {
-            commands.entity(entity).despawn();
-            continue;
-        }
+    // A departed level's questions went with it.
+    for (entity, question) in &questions {
         let Some(answer) = answers.iter().find(|answer| answer.question == entity) else {
             continue;
         };
@@ -633,7 +629,6 @@ pub fn activate_level(
             let owned = owned.map_or(&[][..], LevelEntities::entities);
             memory.0.insert(source.path.clone(), transition.p0().remember(entity, state, owned));
             npcs.depart(entity, &source.path);
-            commands.queue(crate::game::npcs::conversation::close);
             commands.entity(entity).despawn();
         }
         let mut remembered = memory.0.remove(&level.path);
@@ -800,14 +795,17 @@ mod travel_question_tests {
 
     #[test]
     fn departed_questions_and_answers_during_a_battle_cannot_start_travel() {
+        {
+            // A departed level's question goes with it.
+            let (mut app, level) = app();
+            let question = ask(&mut app, level, "departed");
+            app.world_mut().despawn(level);
+            app.world_mut().write_message(TravelAnswer { question, accept: true });
+            app.update();
+            assert!(app.world().get_entity(question).is_err());
+            assert!(app.world().resource::<Messages<Travel>>().is_empty());
+        }
         let (mut app, level) = app();
-        let question = ask(&mut app, level, "departed");
-        let source = app.world_mut().entity_mut(level).take::<Level>().unwrap();
-        app.world_mut().write_message(TravelAnswer { question, accept: true });
-        app.update();
-        assert!(app.world().get_entity(question).is_err());
-        assert!(app.world().resource::<Messages<Travel>>().is_empty());
-        app.world_mut().entity_mut(level).insert(source);
         app.world_mut().spawn(crate::game::combat::Battle::default());
         let question = ask(&mut app, level, "fighting");
         app.world_mut().write_message(TravelAnswer { question, accept: true });

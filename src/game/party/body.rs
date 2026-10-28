@@ -137,7 +137,7 @@ impl PartyPlacement<'_, '_> {
             at.0 = position;
             transform.translation = position;
             velocity.0 = Vec3::ZERO;
-            commands.entity(party).remove::<(super::walk_in::PathFlight, RigidBodyDisabled)>();
+            commands.entity(party).remove_with_requires::<super::walk_in::PathFlight>();
             return;
         }
         // Entering its first level, the party gets its body.

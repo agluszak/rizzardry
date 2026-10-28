@@ -90,6 +90,7 @@ impl Plugin for PresentationPlugin {
         .add_observer(environment::request_level_visuals)
         .add_observer(sky::request_skies)
         .add_observer(dialog::open_travel_question)
+        .add_observer(automap::close_ended_map)
         .add_systems(Startup, controls::spawn_exploration_controls)
         .add_systems(PreUpdate, controls::read_controls.after(EnhancedInputSystems::Apply))
         .add_message::<voice::SpeechFinished>()
@@ -172,7 +173,6 @@ impl Plugin for PresentationPlugin {
                 party_view::aim_camera.after(crate::game::GameplaySet::Combat),
                 camp::show_camp,
                 (
-                    automap::close_ended_map,
                     automap::request_automap,
                     automap::build_automap.run_if(any_with_component::<automap::Automap>),
                     automap::sync_note_input,
