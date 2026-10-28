@@ -1605,6 +1605,7 @@ mod tests {
             .init_resource::<Assets<Image>>()
             .init_resource::<StoryFacts>()
             .init_resource::<Assets<NpcCatalog>>()
+            .init_resource::<Assets<ItemCatalog>>()
             .init_resource::<NpcAssets>()
             .init_resource::<SelectedMember>()
             .init_resource::<InputFocus>()
