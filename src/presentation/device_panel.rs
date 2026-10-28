@@ -111,9 +111,12 @@ enum Caption {
     Control(Control),
 }
 
-/// The container rows, rebuilt when its contents change.
-#[derive(Component, Debug, Default)]
-struct LootRows(Vec<StackId>);
+/// The container rows of a panel, rebuilt when its contents change.
+#[derive(Component, Debug)]
+struct LootRows {
+    panel: Entity,
+    stacks: Vec<StackId>,
+}
 
 /// Show the panel while an interaction lasts; a container's opens once its
 /// lid has finished moving, as retail's picker does.
@@ -228,7 +231,7 @@ fn sync_device_panel(
         }
         Kind::Loot => {
             commands.spawn((
-                LootRows::default(),
+                LootRows { panel: root, stacks: vec![] },
                 Node { flex_direction: FlexDirection::Column, row_gap: px(2), ..default() },
                 ChildOf(body),
             ));
@@ -277,17 +280,15 @@ fn button(commands: &mut Commands, parent: Entity, font: &Handle<SpriteSheet>, c
 fn sync_loot_rows(
     mut commands: Commands,
     mut panels: Query<&mut DevicePanel>,
-    mut lists: Query<(Entity, &mut LootRows, &ChildOf)>,
-    parents: Query<&ChildOf>,
+    mut lists: Query<(Entity, &mut LootRows)>,
     containers: Query<&Container>,
     art: Res<DevicePanelArt>,
 ) {
-    for (list, mut rows, parent) in &mut lists {
-        let Ok(root) = parents.get(parent.parent()) else { continue };
-        let Ok(mut panel) = panels.get_mut(root.parent()) else { continue };
+    for (list, mut rows) in &mut lists {
+        let Ok(mut panel) = panels.get_mut(rows.panel) else { continue };
         let Ok(container) = containers.get(panel.device) else { continue };
         let stacks: Vec<StackId> = container.contents.items.iter().map(|s| s.id).collect();
-        if rows.0 == stacks {
+        if rows.stacks == stacks {
             continue;
         }
         panel.chosen.retain(|(id, _)| stacks.contains(id));
@@ -299,7 +300,7 @@ fn sync_loot_rows(
             button(&mut commands, line, &art.font, Control::More(id));
             button(&mut commands, line, &art.font, Control::Row(id));
         }
-        rows.0 = stacks;
+        rows.stacks = stacks;
     }
 }
 
