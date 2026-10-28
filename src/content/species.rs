@@ -7,6 +7,46 @@ use enumset::EnumSet;
 use super::characters::BodyPart;
 use super::items::{AttackMode, Dice};
 
+/// Retail monster categories, named by StringData entries 0x578..=0x598.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, num_enum::TryFromPrimitive)]
+#[repr(u8)]
+pub enum MonsterKind {
+    #[default]
+    Fighter = 0,
+    Wizard = 1,
+    Priest = 2,
+    Rogue = 3,
+    Ranger = 4,
+    Alchemist = 5,
+    Bard = 6,
+    Psionic = 7,
+    Valkyrie = 8,
+    Bishop = 9,
+    Lord = 10,
+    Samurai = 11,
+    Monk = 12,
+    Ninja = 13,
+    Giant = 14,
+    Tiny = 15,
+    Beast = 16,
+    Plant = 17,
+    Insect = 18,
+    Vapor = 19,
+    Undead = 20,
+    Demon = 21,
+    Android = 22,
+    SeaMonster = 23,
+    Dragon = 24,
+    Myth = 25,
+    Robot = 26,
+    Deity = 27,
+    Spirit = 28,
+    Flyer = 29,
+    Swimmer = 30,
+    Gadgeteer = 31,
+    Reptile = 32,
+}
+
 /// How far an attack reaches (retail range category).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Reach {
@@ -29,12 +69,35 @@ impl Reach {
     }
 }
 
-/// How an attack is announced: by its mode's verb, or by a word of its own
-/// ("Claws", "Bites"), retail string 0x619 + 2 × the word's number.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Monster attack announcements, named by retail strings 0x618..=0x63d.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, num_enum::TryFromPrimitive)]
+#[repr(u8)]
 pub enum AttackWord {
-    Verb,
-    Word(u8),
+    Silent = 0,
+    Verb = 1,
+    Throw = 2,
+    Shoot = 3,
+    Claw = 4,
+    Bite = 5,
+    TailSweep = 6,
+    Sting = 7,
+    Touch = 8,
+    Grapple = 9,
+    Punch = 10,
+    Kick = 11,
+    Stomp = 12,
+    Stare = 14,
+    Bash = 15,
+    Charge = 16,
+    Peck = 17,
+    Spit = 18,
+}
+
+impl AttackWord {
+    pub fn text_id(self) -> usize {
+        const FIRST_VERB: usize = 0x619;
+        FIRST_VERB + 2 * self as usize
+    }
 }
 
 /// One of a species' attacks.
@@ -71,12 +134,10 @@ pub struct Species {
     pub generic_plural: String,
     /// `data/monsters/<model>.mls`.
     pub model: String,
-    /// Sees the party further by its level (retail species kind 4; what
-    /// the kinds mean is not established).
+    /// Rangers see the party further according to their level.
     pub level_sight: bool,
-    /// Retail's species kind (record 0xcb): 20 is undead; kinds 17, 20 and
-    /// 22 are immune to some conditions.
-    pub kind: u8,
+    /// The creature category used for targeting, slaying and immunities.
+    pub kind: MonsterKind,
     /// An NPC's record: its loot is its NPC's, not the treasure table.
     pub npc: Option<super::npcs::NpcId>,
     /// Percent taken off every hit.
