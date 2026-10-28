@@ -10,21 +10,21 @@ use crate::game::world::{damage::MonsterDamage, interaction::Unable};
 use bevy::{ecs::system::RunSystemOnce, prelude::*};
 
 pub const SPELLS: [SpellId; 15] = [
-    SpellId(121),
-    SpellId(122),
-    SpellId(123),
-    SpellId(24),
-    SpellId(47),
-    SpellId(36),
-    SpellId(37),
-    SpellId(60),
-    SpellId(70),
-    SpellId(124),
-    SpellId(125),
-    SpellId(126),
-    SpellId(86),
-    SpellId(127),
-    SpellId(91),
+    SpellId::DAGGER_SCATTER,
+    SpellId::POISON_DARTS,
+    SpellId::ALARM,
+    SpellId::INSANITY,
+    SpellId::WHIPPING_ROCKS,
+    SpellId::FIREBALL,
+    SpellId::FREEZE_FLESH,
+    SpellId::SUMMON_ELEMENTAL,
+    SpellId::INSTANT_DEATH,
+    SpellId::PHILOSOPHERS_BANE,
+    SpellId::VAMPIRIC_VORTEX,
+    SpellId::HEATWAVE,
+    SpellId::PRISMIC_RAY,
+    SpellId::ANTI_MAGIC,
+    SpellId::CEREBRAL_HEMORRHAGE,
 ];
 
 /// The spell a trap type discharges, if the game can resolve it.

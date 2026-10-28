@@ -139,7 +139,7 @@ fn a_sprung_trap_pays_its_effect_before_opening_and_retains_the_selected_victim(
         with_trap_spell(
             &mut level,
             SpellDefinition {
-                id: SpellId(125),
+                id: SpellId::VAMPIRIC_VORTEX,
                 realm: Some(Realm::Divine),
                 dice: Some(Dice { count: 0, sides: 0, base: 20 }),
                 ..default()
@@ -304,7 +304,7 @@ fn device_casts_revalidate_targets_and_pay_from_the_selected_item_owner() {
     };
     let mut level = chest_level(Some(crate::content::level::Lock::Pickable { difficulty: 8 }), 0);
     let spell = SpellDefinition {
-        id: SpellId(39),
+        id: SpellId::KNOCK_KNOCK,
         realm: Some(Realm::Earth),
         cost: 1,
         targeting: Targeting::LockOrTrap,
@@ -323,7 +323,7 @@ fn device_casts_revalidate_targets_and_pay_from_the_selected_item_owner() {
     level.world.entity_mut(actor).insert((
         Vitals::new(&profile),
         profile,
-        LearnedSpells([SpellId(39)].into()),
+        LearnedSpells([SpellId::KNOCK_KNOCK].into()),
         points,
     ));
     let pool_tool = ItemDefinition {
@@ -334,7 +334,7 @@ fn device_casts_revalidate_targets_and_pay_from_the_selected_item_owner() {
         professions: enumset::EnumSet::all(),
         races: enumset::EnumSet::all(),
         genders: enumset::EnumSet::all(),
-        spell: Some(ItemSpell { spell: SpellId(39), power: 1 }),
+        spell: Some(ItemSpell { spell: SpellId::KNOCK_KNOCK, power: 1 }),
         ..default()
     };
     let worn_tool = ItemDefinition {
@@ -359,7 +359,12 @@ fn device_casts_revalidate_targets_and_pay_from_the_selected_item_owner() {
     let other = level.world.spawn_empty().id();
     let rng = level.world.resource::<GameRng>().clone();
     assert_eq!(
-        cast_device(&mut level.world, actor, other, Source::Spell { spell: SpellId(39), power: 1 }),
+        cast_device(
+            &mut level.world,
+            actor,
+            other,
+            Source::Spell { spell: SpellId::KNOCK_KNOCK, power: 1 }
+        ),
         Err(Refusal::NoTarget)
     );
     assert_eq!(*level.world.resource::<GameRng>(), rng);
@@ -369,7 +374,12 @@ fn device_casts_revalidate_targets_and_pay_from_the_selected_item_owner() {
     );
     let on = attempt(&level);
     assert_eq!(
-        cast_device(&mut level.world, actor, on, Source::Spell { spell: SpellId(39), power: 1 }),
+        cast_device(
+            &mut level.world,
+            actor,
+            on,
+            Source::Spell { spell: SpellId::KNOCK_KNOCK, power: 1 }
+        ),
         Err(Refusal::CannotAct)
     );
     assert_eq!(*level.world.resource::<GameRng>(), rng);
@@ -382,8 +392,13 @@ fn device_casts_revalidate_targets_and_pay_from_the_selected_item_owner() {
     );
     assert_eq!(*level.world.resource::<GameRng>(), rng);
     let on = attempt(&level);
-    cast_device(&mut level.world, actor, on, Source::Spell { spell: SpellId(39), power: 1 })
-        .unwrap();
+    cast_device(
+        &mut level.world,
+        actor,
+        on,
+        Source::Spell { spell: SpellId::KNOCK_KNOCK, power: 1 },
+    )
+    .unwrap();
     assert_eq!(level.world.get::<SpellPoints>(actor).unwrap().current[Realm::Earth], 19);
     let on = attempt(&level);
     cast_device(&mut level.world, actor, on, Source::PoolItem(pool_id)).unwrap();
@@ -436,12 +451,12 @@ fn divine_trap_replaces_its_session_bonus_and_uses_shared_spell_payment() {
         chest_level(Some(crate::content::level::Lock::Trap { difficulty: 7, kind: Some(10) }), 0);
     with_trap_spell(
         &mut level,
-        SpellDefinition { id: SpellId(125), realm: Some(Realm::Divine), ..default() },
+        SpellDefinition { id: SpellId::VAMPIRIC_VORTEX, realm: Some(Realm::Divine), ..default() },
     );
     let handle = level.world.resource::<GameData>().spells.clone();
     level.world.resource_mut::<Assets<SpellCatalog>>().get_mut(&handle).unwrap().0[18] =
         SpellDefinition {
-            id: SpellId(18),
+            id: SpellId::DIVINE_TRAP,
             realm: Some(Realm::Mental),
             cost: 1,
             books: Spellbook::Wizardry.into(),
@@ -458,20 +473,30 @@ fn divine_trap_replaces_its_session_bonus_and_uses_shared_spell_payment() {
     level.world.entity_mut(actor).insert((
         Vitals::new(&profile),
         profile,
-        LearnedSpells([SpellId(18)].into()),
+        LearnedSpells([SpellId::DIVINE_TRAP].into()),
         points,
     ));
     level.run("CHEST");
     let device = level.device("CHEST");
     let on = attempt(&level);
-    cast_device(&mut level.world, actor, on, Source::Spell { spell: SpellId(18), power: 2 })
-        .unwrap();
+    cast_device(
+        &mut level.world,
+        actor,
+        on,
+        Source::Spell { spell: SpellId::DIVINE_TRAP, power: 2 },
+    )
+    .unwrap();
     let Some(Work::Disarming(trap)) = work(&level) else { panic!("disarming") };
     assert_eq!(trap.divine_power, 2);
     let stronger = trap.inspection_chance(Some(25), crate::game::difficulty::Difficulty::Normal);
     let on = attempt(&level);
-    cast_device(&mut level.world, actor, on, Source::Spell { spell: SpellId(18), power: 1 })
-        .unwrap();
+    cast_device(
+        &mut level.world,
+        actor,
+        on,
+        Source::Spell { spell: SpellId::DIVINE_TRAP, power: 1 },
+    )
+    .unwrap();
     let Some(Work::Disarming(trap)) = work(&level) else { panic!("disarming") };
     assert_eq!(trap.divine_power, 1);
     assert!(
