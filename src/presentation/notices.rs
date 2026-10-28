@@ -320,9 +320,13 @@ fn magic_lines(
                 Refusal::WrongTime => "cannot do that now",
                 Refusal::NoTarget => "has no target in reach",
                 Refusal::MissingContent => "cannot do that: data missing",
-                Refusal::PlayedBadly => "fails to play it",
+                Refusal::PlayedBadly { .. } => "fails to play it",
             };
-            vec![format!("{} {why}.", name(*caster))]
+            let mut lines = vec![format!("{} {why}.", name(*caster))];
+            if let Refusal::PlayedBadly { improved: Some(skill) } = refusal {
+                lines.push(format!("{}'s {skill:?} improves.", name(*caster)));
+            }
+            lines
         }
         MagicNews::Triggered { effects, improved, .. }
         | MagicNews::Landed { effects, improved, .. } => {
