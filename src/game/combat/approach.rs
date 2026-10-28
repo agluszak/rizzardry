@@ -13,7 +13,7 @@ use bevy::prelude::*;
 use bevy_landmass::prelude::*;
 
 use super::Combatant;
-use crate::content::species::{MonsterCatalog, Reach};
+use crate::content::species::{MonsterCatalog, Reach, Species};
 use crate::game::characters::Condition;
 use crate::game::party::body::PartyBody;
 use crate::game::world::navigation::Walker;
@@ -29,6 +29,8 @@ const REACH_MARGIN: f32 = 0.3;
 pub struct CombatMove {
     pub budget: f32,
     pub moved: f32,
+    /// Off to here, away from the party, rather than at it.
+    pub away: Option<Vec3>,
 }
 
 /// Whether this living walker still needs to close to attack range. Combat's
@@ -71,6 +73,13 @@ pub(super) fn move_budget(
     }
     let kind = species.kind(monster.species)?;
     let charge = monster.hp * 100 <= monster.max_hp * 95;
+    Some(MoveBudget { metres: move_metres(monster, kind, charge), charge })
+}
+
+/// How far a monster moves in one combat action (retail
+/// `SetUpMonsterTurn`): its move range, half again when charging, raised
+/// by Haste or halved when slowed.
+pub(super) fn move_metres(monster: &Monster, kind: &Species, charge: bool) -> f32 {
     let mut budget = kind.combat_move_range * METRES_PER_MOVE_RANGE;
     if charge {
         budget *= 1.5;
@@ -80,7 +89,14 @@ pub(super) fn move_budget(
     } else if monster.conditions.iter().any(|&(c, _)| c == Condition::Slowed) {
         budget *= 0.5;
     }
-    Some(MoveBudget { metres: budget, charge })
+    budget
+}
+
+/// Where a monster running from the party heads: as far as its move
+/// takes it, straight away from the party over the ground.
+pub(super) fn away_from(feet: Vec3, party_eye: Vec3, metres: f32) -> Vec3 {
+    let away = (feet - party_eye).with_y(0.0).normalize_or(Vec3::X);
+    feet + away * metres
 }
 
 /// Metres per unit of a species' `combat_move_range`.
@@ -102,11 +118,16 @@ pub fn close_in(
         movement.moved += walker.speed * time.delta_secs();
         let continues = monster.can_fight()
             && movement.moved < movement.budget
-            && needs_approach(monster, at.translation(), Some(walker), party_eye, catalog);
+            && (movement.away.is_some()
+                || needs_approach(monster, at.translation(), Some(walker), party_eye, catalog));
+        let heading = match movement.away {
+            Some(point) => AgentTarget3d::Point(point),
+            None => AgentTarget3d::Entity(party),
+        };
         if !continues {
             commands.entity(entity).remove::<CombatMove>();
-        } else if !matches!(*target, AgentTarget3d::Entity(e) if e == party) {
-            *target = AgentTarget3d::Entity(party);
+        } else if *target != heading {
+            *target = heading;
         }
     }
 }

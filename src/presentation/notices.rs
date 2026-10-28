@@ -557,6 +557,21 @@ pub fn queue_notices(
                 .name(*monster)
                 .map(|name| vec![format!("{name} {}", string(if *charge { 0x237 } else { 0x236 }))])
                 .unwrap_or_default(),
+            // Retail `StartMonsterCombatAction`'s notices: 0x23b takes the
+            // monster's name and possessive, 0x23a its name.
+            CombatNews::Flees { monster } => names
+                .name(*monster)
+                .map(|name| {
+                    let pronouns = usize::from(names.pronouns(*monster).unwrap_or(2));
+                    let possessive =
+                        string(if pronouns < 3 { POSSESSIVES + pronouns } else { 0x2df });
+                    vec![string(0x23b).replacen("%s", &name, 1).replacen("%s", &possessive, 1)]
+                })
+                .unwrap_or_default(),
+            CombatNews::Withdraws { monster } => names
+                .name(*monster)
+                .map(|name| vec![string(0x23a).replacen("%s", &name, 1)])
+                .unwrap_or_default(),
             CombatNews::Attack { attacker, target, how, swings, surprise } => {
                 match (names.name(*attacker), names.name(*target)) {
                     (Some(attacker), Some(target)) => {

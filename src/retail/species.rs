@@ -13,7 +13,7 @@ use enumset::EnumSet;
 use crate::content::items::{AttackEffects, ItemId};
 use crate::content::species::{
     AttackWord, Disposition, Drop, MonsterAttack, MonsterAttributes, MonsterCatalog, Species,
-    Treasure,
+    Temper, Treasure,
 };
 
 const RECORD: usize = 0x297;
@@ -121,6 +121,12 @@ fn species(record: &[u8]) -> Result<Species, DecodeError> {
         },
         faction: i32_at(record, 0x25f)?,
         combat_move_range: f32_at(record, 0x1ba)?.max(0.0),
+        pronouns: record[0xcc].min(3),
+        temper: Temper {
+            flee_chance: record[0xe2],
+            craven: record[0x1c0] == 0,
+            camouflaged: record[0x249] != 0,
+        },
     })
 }
 

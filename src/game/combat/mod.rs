@@ -6,6 +6,7 @@
 pub mod approach;
 pub mod attack;
 mod blows;
+mod conduct;
 
 use crate::game::world::level::LevelOwned;
 use crate::game::world::level::PlayedLevel;
@@ -300,6 +301,8 @@ pub struct Battle {
     /// The party's standing choice to walk or run in the next rounds.
     pub party_pace: Option<PartyPace>,
     party_move: PartyMove,
+    /// Monsters running for their lives (retail `pCombat->advancing`).
+    fleeing: Vec<Entity>,
     /// Until the next action.
     wait: Timer,
 }
@@ -442,6 +445,14 @@ pub enum CombatNews {
     Moves {
         monster: Entity,
         charge: bool,
+    },
+    /// A monster runs for its life.
+    Flees {
+        monster: Entity,
+    },
+    /// A monster moves off from the party.
+    Withdraws {
+        monster: Entity,
     },
     /// The party's move begins; it ends when spent or stopped.
     PartyMoves,
@@ -745,6 +756,22 @@ pub fn settle_defeat(
 /// whose living members still sees the party. Returns the combatants that
 /// stay; one outside any group stays. Neutral groups staying to reinforce
 /// a fight are not modelled.
+/// How a monster in the fight stands, through its group; one outside any
+/// group by its species.
+fn fighting_stance(
+    monster: Entity,
+    kind: &Species,
+    (membership, groups, factions, now): (
+        &Query<&GroupMember>,
+        &Query<&MonsterGroup>,
+        &crate::game::factions::Factions,
+        u64,
+    ),
+) -> hostility::Stance {
+    let set = membership.get(monster).ok().and_then(|m| groups.get(m.0).ok()).and_then(|g| g.set);
+    hostility::stance(set, kind, factions, now, true)
+}
+
 fn leave_fight(
     commands: &mut Commands,
     combatants: &[Entity],
@@ -770,9 +797,8 @@ fn leave_fight(
         else {
             continue;
         };
-        let set = groups.get(group).ok().and_then(|g| g.set);
-        let hostile =
-            hostility::stance(set, kind, factions, now, true) == hostility::Stance::Hostile;
+        let hostile = fighting_stance(combatant, kind, (membership, groups, factions, now))
+            == hostility::Stance::Hostile;
         let sees = combatants.iter().filter(|&&c| group_of(c) == Some(group)).any(|&c| {
             monsters.get(c).is_ok_and(|(monster, at, walker, _)| {
                 species.kind(monster.species).is_some_and(|k| sight.sees(monster, &at, walker, k))
@@ -1103,11 +1129,20 @@ pub fn run_battle(
             continue;
         }
         if let Some(index) = battle.this_round.monsters.iter().position(|(_, t)| t.phase == step) {
+            let monster = battle.this_round.monsters[index].0;
+            let stance = damage
+                .monsters()
+                .get(monster)
+                .ok()
+                .and_then(|(m, ..)| species.kind(m.species))
+                .map_or(hostility::Stance::Hostile, |kind| {
+                    fighting_stance(monster, kind, (&magic.groups, &groups, &factions, clock.ms))
+                });
             let acted = monster_turn(
                 &mut commands,
                 &mut battle,
                 (index, step),
-                combatants,
+                (combatants, stance),
                 &mut rng,
                 (&mut members, &mut damage),
                 &party,
@@ -1389,15 +1424,16 @@ fn member_casts(
         .and_then(|performed| performed)
 }
 
-/// A monster's accepted turn comes: it attacks someone it reaches, or with
-/// nobody in reach advances (or charges when hurt) and acts again later in
-/// the round (retail `UpdateMonsterAI`, `StepMonsterCombatAction`). Returns
-/// whether it acted.
+/// A monster's accepted turn comes (retail `UpdateMonsterAI`,
+/// `StepMonsterCombatAction`): it may run for its life, withdraw or hold
+/// back ([`conduct::decide`]); otherwise it attacks someone it reaches, or
+/// with nobody in reach advances (or charges when hurt) and acts again
+/// later in the round. Returns whether it acted.
 fn monster_turn(
     commands: &mut Commands,
     battle: &mut Battle,
     (index, step): (usize, u8),
-    combatants: &[Entity],
+    (combatants, stance): (&[Entity], hostility::Stance),
     rng: &mut GameRng,
     (members, damage): (&mut Members, &mut MonsterDamage),
     party: &PartyView,
@@ -1411,6 +1447,41 @@ fn monster_turn(
     {
         battle.this_round.monsters[index].1 = Turn::default();
         return false;
+    }
+    if let Ok((body, at, walker, _)) = damage.monsters().get(monster)
+        && let Some(kind) = species.kind(body.species)
+    {
+        let feet = feet(at.translation(), walker);
+        let nearest = distance_to_party(party.eye, body, feet);
+        let mut fleeing = battle.fleeing.contains(&monster);
+        let conduct = conduct::decide(rng, body, kind, stance, &mut fleeing, nearest);
+        battle.fleeing.retain(|&m| m != monster);
+        if fleeing {
+            battle.fleeing.push(monster);
+        }
+        if conduct != conduct::Conduct::Fight {
+            battle.this_round.monsters[index].1 = Turn::default();
+            // A monster that cannot walk, or has moved this round, stays.
+            let moves = conduct != conduct::Conduct::Hold
+                && walker.is_some_and(|w| w.speed > 0.0)
+                && !battle.this_round.moved.contains(&monster);
+            if !moves {
+                return false;
+            }
+            battle.this_round.moved.push(monster);
+            let metres = approach::move_metres(body, kind, false);
+            let away = approach::away_from(feet, party.eye, metres);
+            commands.entity(monster).insert(approach::CombatMove {
+                budget: metres,
+                moved: 0.0,
+                away: Some(away),
+            });
+            news.write(match conduct {
+                conduct::Conduct::Flee => CombatNews::Flees { monster },
+                _ => CombatNews::Withdraws { monster },
+            });
+            return true;
+        }
     }
     let turn = battle.this_round.monsters[index].1;
     let BattleMagic { context, points, moving, .. } = magic;
@@ -1434,7 +1505,11 @@ fn monster_turn(
         battle.this_round.monsters[index].1 =
             Turn { phase: (u32::from(step) * 2).min(100) as u8, attacks_left: turn.attacks_left };
         let charge = budget.charge;
-        commands.entity(monster).insert(approach::CombatMove { budget: budget.metres, moved: 0.0 });
+        commands.entity(monster).insert(approach::CombatMove {
+            budget: budget.metres,
+            moved: 0.0,
+            away: None,
+        });
         news.write(CombatNews::Moves { monster, charge });
     }
     true
@@ -2133,6 +2208,44 @@ mod tests {
         app.world_mut().entity_mut(battle).insert(state);
         app.update();
         assert_eq!(fight(app.world()).unwrap().party_pace, None);
+    }
+
+    /// A craven monster runs for its life at its turn, away from the party
+    /// by its whole move, and runs again next round while the party stays
+    /// off (retail `MonsterAdvanceChance`).
+    #[test]
+    fn a_craven_monster_runs_from_the_party() {
+        let (mut app, _) = round_app(true);
+        let monster =
+            app.world().try_query::<&Combatants>().unwrap().single(app.world()).unwrap().entities()
+                [0];
+        app.world_mut().entity_mut(monster).insert((
+            Walker { speed: 2.0, float_height: 1.0 },
+            Transform::from_translation(Vec3::NEG_Z * 20.0),
+        ));
+        let data = app.world().resource::<GameData>().species.clone();
+        {
+            let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
+            let mut species = catalogs.get_mut(&data).unwrap();
+            species.0[0].combat_move_range = 1.0;
+            species.0[0].temper.craven = true;
+        }
+        let mut ran = false;
+        for _ in 0..8 {
+            app.update();
+            let news: Vec<_> =
+                app.world_mut().resource_mut::<Messages<CombatNews>>().drain().collect();
+            if news.contains(&CombatNews::Flees { monster }) {
+                ran = true;
+                break;
+            }
+        }
+        assert!(ran, "it runs");
+        let order = app.world().get::<approach::CombatMove>(monster).unwrap();
+        assert_eq!(order.budget, 20.0);
+        let away = order.away.expect("away from the party");
+        assert!(away.z < -39.0, "a whole move further off: {away}");
+        assert!(fight(app.world()).unwrap().fleeing.contains(&monster));
     }
 
     /// A monster with nothing in reach spends its phase advancing, by its

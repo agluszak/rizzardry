@@ -320,6 +320,26 @@ pub struct Species {
     /// How far it moves in one combat action: this many times 20 metres
     /// (retail `combat_move_range`, `MonsterManager.cpp:620-633`).
     pub combat_move_range: f32,
+    /// Which words name it (retail `name_group`): 0 he, 1 she, 2 it, 3
+    /// they.
+    pub pronouns: u8,
+    /// How it carries itself in a fight.
+    pub temper: Temper,
+}
+
+/// How a species carries itself in a fight (retail `UpdateMonsterAI`,
+/// `MonsterAdvanceChance`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Temper {
+    /// The chance (%) it runs for its life at its turn (retail record byte
+    /// 0xe2); without one, a craven species always runs.
+    pub flee_chance: u8,
+    /// Its Combat Morale is the Monster Editor's first (retail record byte
+    /// 0x1c0 is 0).
+    pub craven: bool,
+    /// It keeps its place hidden rather than withdraw while neutral
+    /// (retail record byte 0x249).
+    pub camouflaged: bool,
 }
 
 /// How a species meets the party before anything provokes it.
