@@ -12,6 +12,7 @@ use crate::game::world::population::Monster;
 use crate::game::world::props::Prop;
 use crate::game::world::triggers::{self, Device};
 use bevy::camera::visibility::RenderLayers;
+use bevy::picking::hover::HoverMap;
 use bevy::picking::mesh_picking::ray_cast::{MeshRayCast, MeshRayCastSettings};
 use bevy::picking::pointer::{PointerId, PointerLocation};
 use bevy::prelude::*;
@@ -41,10 +42,22 @@ pub fn select_world_target(
     parents: Query<&ChildOf>,
     owners: Query<(), Or<(With<Prop>, With<WorldItem>, With<Monster>)>>,
     levels: Query<Entity, With<Level>>,
+    (hovers, ui): (Option<Res<HoverMap>>, Query<(), With<Node>>),
     mut selection: ResMut<WorldSelection>,
 ) {
     *selection = WorldSelection::default();
     if !freedom.free() {
+        return;
+    }
+    // A pointer over a control or panel drawn over the view (the spell
+    // list, a device panel) points at that, not at the world behind it.
+    let over_ui = hovers.as_ref().is_some_and(|hovers| {
+        hovers
+            .iter()
+            .filter(|(id, _)| id.is_mouse())
+            .any(|(_, hovered)| hovered.keys().any(|&entity| ui.contains(entity)))
+    });
+    if over_ui {
         return;
     }
     let Ok((camera, transform)) = camera.single() else { return };
