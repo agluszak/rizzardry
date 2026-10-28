@@ -321,7 +321,6 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
         .get(&app.world().resource::<NpcAssets>().facts)
         .unwrap();
     assert_eq!(app.world().resource::<conversation::StoryFacts>().get(fact, facts), Ok(1));
-    assert!(app.world().get::<rizzardry::game::party::roster::NeedsEquipment>(actor).is_none());
     assert_eq!(
         app.world_mut()
             .query::<&Npc>()

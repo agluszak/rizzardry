@@ -7,7 +7,6 @@ use serde::Deserialize;
 use crate::content::characters::Skill;
 use crate::content::items::{ItemCatalog, ItemId};
 use crate::game::characters::{Character, Gender, Profession, Race};
-use crate::game::data::GameData;
 use crate::game::inventory::{Carried, ItemIds, make_item, place_at_creation};
 use crate::game::rng::GameRng;
 
@@ -104,13 +103,61 @@ impl Recruit {
     }
 }
 
-/// Commit the completed profile, including the player's allocated points.
+/// A new member's starting item that the item catalog lacks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MissingStartingItem {
+    pub member: String,
+    pub item: ItemId,
+}
+
+impl std::fmt::Display for MissingStartingItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}'s starting item {} is not in the item catalog", self.member, self.item.0)
+    }
+}
+
+/// Check that every starting item of these characters exists, before
+/// anything is made.
+pub fn check_starting_items<'a>(
+    characters: impl IntoIterator<Item = &'a Character>,
+    catalog: &ItemCatalog,
+) -> Result<(), MissingStartingItem> {
+    for character in characters {
+        if let Some(item) =
+            starting_items(character).into_iter().find(|&id| catalog.get(id).is_none())
+        {
+            return Err(MissingStartingItem { member: character.name.clone(), item });
+        }
+    }
+    Ok(())
+}
+
+/// Commit a new member complete, as one operation: the profile with the
+/// player's allocated points, vitals, learned spells with full spell
+/// points, starting equipment at full quantity, identified and worn where
+/// it fits (retail `AddCharacterStartingEquipment`), order, membership and
+/// seat. Items are made in the starting set's order, so their identities
+/// and random rolls follow the order members join. The starting items must
+/// have been checked ([`check_starting_items`]).
 pub fn recruit_character(
     commands: &mut Commands,
     party: Entity,
     formation: &mut super::formation::Formation,
-    character: Character,
+    (character, learned): (Character, crate::game::magic::LearnedSpells),
+    (items, spells): (&ItemCatalog, &crate::content::spells::SpellCatalog),
+    (ids, rng): (&mut ItemIds, &mut GameRng),
 ) -> Entity {
+    let mut carried = Carried::default();
+    for id in starting_items(&character) {
+        let definition = items.get(id).expect("starting items are checked before recruiting");
+        let item = make_item(definition, ids, rng, true, true);
+        if place_at_creation(&mut carried, item, items, &character).is_some() {
+            warn!("{}: no room for {}", character.name, definition.name);
+        }
+    }
+    let points = crate::game::magic::SpellPoints::full(crate::game::magic::max_points(
+        &character, &learned, spells,
+    ));
     let vitals = crate::game::characters::Vitals::new(&character);
     let member = commands
         .spawn((
@@ -118,18 +165,15 @@ pub fn recruit_character(
             character,
             vitals,
             super::Order::Attack,
-            crate::game::magic::LearnedSpells::default(),
-            NeedsEquipment,
+            learned,
+            points,
+            carried,
             PartyMember(party),
         ))
         .id();
     formation.seat(member);
     member
 }
-
-/// A new member still to receive their starting equipment.
-#[derive(Component, Debug)]
-pub struct NeedsEquipment;
 
 /// A new character's starting items (retail `g_starting_equipment` and
 /// `AddCharacterStartingEquipment`): their profession's set (Faeries have
@@ -166,31 +210,6 @@ fn starting_items(character: &Character) -> Vec<ItemId> {
         _ => None,
     };
     set.iter().copied().chain(extra).map(ItemId).collect()
-}
-
-/// Hand new members their starting equipment once the items have loaded:
-/// at full quantity, identified, worn where it fits.
-pub fn give_starting_equipment(
-    mut commands: Commands,
-    data: Option<Res<GameData>>,
-    catalogs: Res<Assets<ItemCatalog>>,
-    mut ids: ResMut<ItemIds>,
-    mut rng: ResMut<GameRng>,
-    members: Query<(Entity, &Character), With<NeedsEquipment>>,
-    roster: Single<&PartyRoster>,
-) {
-    let Some(catalog) = data.and_then(|d| catalogs.get(&d.items)) else { return };
-    for (entity, character) in members.iter_many(roster.iter()).matched() {
-        let mut carried = Carried::default();
-        for id in starting_items(character) {
-            let Some(definition) = catalog.get(id) else { continue };
-            let item = make_item(definition, &mut ids, &mut rng, true, true);
-            if place_at_creation(&mut carried, item, catalog, character).is_some() {
-                warn!("{}: no room for {}", character.name, definition.name);
-            }
-        }
-        commands.entity(entity).remove::<NeedsEquipment>().insert(carried);
-    }
 }
 
 #[cfg(test)]
@@ -240,14 +259,30 @@ mod tests {
             profession: Profession::Fighter,
             portrait: String::new(),
         };
+        let items = crate::content::items::ItemCatalog(
+            (0..800u16)
+                .map(|id| crate::content::items::ItemDefinition { id: ItemId(id), ..default() })
+                .collect(),
+        );
+        let spells = crate::content::spells::SpellCatalog::default();
+        let (mut ids, mut rng) = (ItemIds::default(), GameRng::seeded(1));
         let mut operations = SystemState::<(Commands, Single<&mut Formation>)>::new(&mut world);
         let (mut commands, mut formation) = operations.get_mut(&mut world).unwrap();
-        let first = recruit_character(&mut commands, party, &mut formation, definition.character());
+        let first = recruit_character(
+            &mut commands,
+            party,
+            &mut formation,
+            (definition.character(), default()),
+            (&items, &spells),
+            (&mut ids, &mut rng),
+        );
         let second = recruit_character(
             &mut commands,
             party,
             &mut formation,
-            Recruit { name: "Second".into(), ..definition.clone() }.character(),
+            (Recruit { name: "Second".into(), ..definition.clone() }.character(), default()),
+            (&items, &spells),
+            (&mut ids, &mut rng),
         );
         operations.apply(&mut world);
         let place = world.get::<Formation>(party).unwrap().place_of(second);
@@ -258,7 +293,9 @@ mod tests {
             &mut commands,
             party,
             &mut formation,
-            Recruit { name: "Replacement".into(), ..definition }.character(),
+            (Recruit { name: "Replacement".into(), ..definition }.character(), default()),
+            (&items, &spells),
+            (&mut ids, &mut rng),
         );
         operations.apply(&mut world);
         assert_eq!(

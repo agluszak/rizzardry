@@ -67,6 +67,7 @@ impl Plugin for WorldPlugin {
             .init_resource::<population::MonsterBodies>()
             .add_message::<triggers::TriggerEffect>()
             .add_message::<interaction::LockNews>()
+            .add_observer(interaction::end_attempts)
             // Resolve travel intent early; activation owns the later level swap.
             .add_systems(PreUpdate, (level::answer_travel_questions, level::travel).chain())
             .add_systems(First, level::suspend_physics_while_entering)
@@ -74,7 +75,6 @@ impl Plugin for WorldPlugin {
                 Update,
                 (
                     level::activate_level.in_set(crate::game::GameplaySet::LevelActivation),
-                    interaction::end_lost_interaction.after(level::activate_level),
                     (search::toggle_search, search::search_pulse)
                         .chain()
                         .run_if(level::level_active)
