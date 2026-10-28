@@ -143,10 +143,7 @@ pub(super) fn open_info(
             }
         }
     }
-    let line_height = font
-        .frames
-        .first()
-        .map_or(12.0, |frame| (frame.height as i32 + frame.offset[1] as i32).max(1) as f32);
+    let line_height = font.line_height();
     // The first two labels share a line (the differently coloured prefix).
     let count = entries.len().saturating_sub(1);
     let maximum = count.saturating_sub((185.0 / line_height).floor() as usize);
