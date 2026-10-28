@@ -19,7 +19,7 @@ use bevy::ecs::world::EntityMut;
 use bevy::prelude::*;
 
 use super::containers::{Container, ContainerUse, use_container};
-use super::interaction::{DeviceInteraction, Guarded, Work};
+use super::interaction::{Guarded, Work};
 use super::level::{Level, LevelOwned};
 use super::props::{Prop, PropMotion};
 use super::scripts::BellButton;
@@ -306,6 +306,12 @@ fn ready(world: &World, entity: Entity) -> bool {
     GameData::items(world).is_some() && GameData::loot(world).is_some()
 }
 
+/// Choose the use a run performs (retail `Trigger::SelectAction`). As in
+/// retail, choosing is itself a commitment: a matching key unlocks the door
+/// and overcomes its lock, and the initial/alternate sequence advances, even
+/// if the chosen action then declines (retail `Run` returns without undoing
+/// either). Fired flags, location variables, sounds, links and messages
+/// wait for the action's commit.
 fn select_use<'a>(
     mut actor: EntityMut,
     variables: &LevelState,
@@ -432,6 +438,17 @@ fn execute_links(world: &mut World, geometry: &LevelDefinition, entity: Entity, 
     }
 }
 
+/// Whether a device this one runs, or one those run, is mid-animation.
+fn links_moving(world: &World, entity: Entity, depth: usize) -> bool {
+    depth <= MAX_DEPTH
+        && world.get::<Device>(entity).is_some_and(|device| {
+            device.recipients.iter().any(|&recipient| {
+                world.get::<PropMotion>(recipient).is_some_and(|m| m.frame != m.target)
+                    || links_moving(world, recipient, depth + 1)
+            })
+        })
+}
+
 fn execute(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth: usize) -> Ran {
     if !ready(world, entity) {
         return Ran::Declined;
@@ -441,6 +458,11 @@ fn execute(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth:
     let definition = &geometry.triggers[device.definition];
     if depth > MAX_DEPTH {
         warn!("trigger {} recurses too deeply", definition.name);
+        return Ran::Declined;
+    }
+    // A door waits while any device it runs is still moving (retail
+    // `CanRunLinkedTriggers`), before a key is tried.
+    if definition.door.is_some() && links_moving(world, entity, 0) {
         return Ran::Declined;
     }
     let party = crate::game::party::roster::the_party(world);
@@ -501,10 +523,7 @@ fn execute(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth:
                     Ok(ContainerUse::Deposited) => return Ran::Answered,
                     Ok(ContainerUse::Toggle) => {}
                     Ok(ContainerUse::Look { open }) => {
-                        world.insert_resource(DeviceInteraction {
-                            device: entity,
-                            work: Work::Looting,
-                        });
+                        super::interaction::begin(world, entity, Work::Looting);
                         if open {
                             return Ran::Answered;
                         }

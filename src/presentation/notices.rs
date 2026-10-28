@@ -330,12 +330,12 @@ fn magic_lines(
             };
             vec![format!("{} {why}.", name(*caster))]
         }
-        MagicNews::Triggered { effects, improved, .. } => {
+        MagicNews::Triggered { effects, improved, .. }
+        | MagicNews::Landed { effects, improved, .. } => {
             let mut lines: Vec<_> = effects.iter().map(|&e| effect_line(e)).collect();
             lines.extend(improved.iter().map(|&(member, skill)| improves(member, skill)));
             lines
         }
-        MagicNews::Landed { effects, .. } => effects.iter().map(|&e| effect_line(e)).collect(),
         MagicNews::Done(report) => {
             let spell = spells.and_then(|s| s.get(report.spell)).map_or("", |s| s.name.as_str());
             let mut lines = vec![match &report.item {

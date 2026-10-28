@@ -457,10 +457,46 @@ pub struct LevelReady {
     pub level: Entity,
 }
 
-/// The level's collider, or why it has none.
-fn level_collider(geometry: &LevelDefinition) -> Result<Collider, String> {
-    super::props::trimesh(&geometry.collision, TrimeshFlags::FIX_INTERNAL_EDGES)
-        .map_err(|error| format!("level collider: {error:?}"))
+/// A level's collision, built and checked before its entry commits: the
+/// level's own, and each prop part's by prop and part. Sprites have none.
+struct Collision {
+    level: Collider,
+    parts: Vec<Vec<Option<Collider>>>,
+}
+
+/// Build all of a level's collision once its entry is otherwise ready. The
+/// level's and every solid prop part's are mandatory: one that cannot be
+/// built fails the entry before anything changes. A part the party walks
+/// through (a sensor) only shows the way and may be left without.
+fn prepare_collision(geometry: &LevelDefinition) -> Result<Collision, String> {
+    let level = super::props::trimesh(&geometry.collision, TrimeshFlags::FIX_INTERNAL_EDGES)
+        .map_err(|error| format!("level collider: {error:?}"))?;
+    let parts = geometry
+        .props
+        .iter()
+        .map(|prop| {
+            prop.parts
+                .iter()
+                .map(|part| {
+                    // Sprites turn with the view and do not collide.
+                    if prop.face_camera {
+                        return Ok(None);
+                    }
+                    match super::props::trimesh(&part.collision, TrimeshFlags::empty()) {
+                        Ok(collider) => Ok(Some(collider)),
+                        Err(error) if prop.collidable => {
+                            Err(format!("prop {} collider: {error:?}", prop.name))
+                        }
+                        Err(error) => {
+                            warn!("walk-through prop {} has no collider: {error:?}", prop.name);
+                            Ok(None)
+                        }
+                    }
+                })
+                .collect()
+        })
+        .collect::<Result<_, String>>()?;
+    Ok(Collision { level, parts })
 }
 
 /// Build the level's playable world under its root: its collider, its props
@@ -470,7 +506,7 @@ fn build_world(
     commands: &mut Commands,
     root: Entity,
     geometry: &LevelDefinition,
-    collider: Collider,
+    collision: Collision,
     script: super::scripts::LevelScript,
     tables: &LootTables,
     mut remembered: Option<&mut LevelRecord>,
@@ -488,14 +524,22 @@ fn build_world(
     );
     commands.entity(root).insert((
         RigidBody::Static,
-        collider,
+        collision.level,
+        super::obstacles::scenery(),
         remembered.as_deref_mut().map_or_else(MapNotes::default, |r| std::mem::take(&mut r.notes)),
     ));
-    for (index, prop) in geometry.props.iter().enumerate() {
+    for ((index, prop), colliders) in geometry.props.iter().enumerate().zip(collision.parts) {
         let frame =
             remembered.as_ref().and_then(|r| r.prop_frames.get(&index)).copied().unwrap_or(0.0);
         let door = prop.trigger.is_some_and(|index| geometry.triggers[index].door.is_some());
-        super::props::build_prop(&mut commands.entity(props[index]), index, prop, door, frame);
+        super::props::build_prop(
+            &mut commands.entity(props[index]),
+            index,
+            prop,
+            door,
+            frame,
+            colliders,
+        );
     }
     info!(
         "level built: {} props, {} collision triangles",
@@ -545,25 +589,42 @@ pub fn activate_level(
             failures.write(LevelEntryFailed { path: level.path.clone() });
             commands.entity(root).despawn();
         };
-        let collider =
-            match prepare(level, presentation, &geometry, &mut shared, &mut npcs, &assets) {
-                Ok(Some(collider)) => collider,
-                Ok(None) => continue,
-                Err(why) => {
-                    fail(&why);
-                    continue;
-                }
-            };
+        match prepare(level, presentation, &geometry, &mut shared, &mut npcs, &assets) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(why) => {
+                fail(&why);
+                continue;
+            }
+        }
         let geometry = geometry.get(&level.definition).expect("prepared");
         let content = &shared.content;
-        let (Some(items), Some(loot), Some(species)) =
-            (content.items(), content.loot(), content.species())
+        let (Some(items), Some(loot), Some(species), Some(spells)) =
+            (content.items(), content.loot(), content.species(), content.spells())
         else {
             continue;
         };
         let traveller = parties.single().ok();
         if matches!(destination.entry, Entry::Travel) && traveller.is_none() {
             fail("there is no party to travel");
+            continue;
+        }
+        // Built once, now that nothing else is awaited, and before the
+        // source is touched.
+        let collision = match prepare_collision(geometry) {
+            Ok(collision) => collision,
+            Err(error) => {
+                fail(&error);
+                continue;
+            }
+        };
+        if let Entry::NewGame(characters) = &destination.entry
+            && let Err(missing) = crate::game::party::roster::check_starting_items(
+                characters.iter().map(|(character, _)| character),
+                items,
+            )
+        {
+            fail(&missing.to_string());
             continue;
         }
         // Capture the source's state exactly at departure; it has not
@@ -580,7 +641,7 @@ pub fn activate_level(
             &mut commands,
             root,
             geometry,
-            collider,
+            collision,
             level.script,
             loot,
             remembered.as_mut(),
@@ -604,7 +665,7 @@ pub fn activate_level(
                 if let Some(session) = session.as_mut() {
                     session.set(crate::game::session::Session::Playing);
                 }
-                found_party(&mut commands, characters)
+                found_party(&mut commands, characters, (items, spells), (&mut ids, &mut rng))
             }
         };
         transition.p1().place(&mut commands, party, geometry, &destination.start);
@@ -616,9 +677,9 @@ pub fn activate_level(
     }
 }
 
-/// Whether a destination can be entered: its collider once everything it
-/// needs has loaded and checks out, `None` while something is still
-/// loading, or why it never will.
+/// Whether a destination can be entered: once everything it needs has
+/// loaded and checks out, not while something is still loading, or why it
+/// never will.
 fn prepare(
     level: &Level,
     presentation: Option<&PresentationReadiness>,
@@ -626,11 +687,11 @@ fn prepare(
     shared: &mut SharedData,
     npcs: &mut crate::game::npcs::NpcPopulation,
     assets: &AssetServer,
-) -> Result<Option<Collider>, String> {
+) -> Result<bool, String> {
     let failed = |handle: UntypedAssetId| {
         matches!(assets.get_load_state(handle), Some(LoadState::Failed(_)))
     };
-    let Some(data) = shared.data.as_ref() else { return Ok(None) };
+    let Some(data) = shared.data.as_ref() else { return Ok(false) };
     if failed(level.definition.id().untyped())
         || level.navmeshes.iter().any(|h| failed(h.id().untyped()))
         || failed(data.items.id().untyped())
@@ -648,11 +709,11 @@ fn prepare(
         content.loot(),
         content.spells(),
     ) else {
-        return Ok(None);
+        return Ok(false);
     };
     population::check(geometry, species, items)?;
     if !npcs.prepare(species, &geometry.monsters, items, assets)? {
-        return Ok(None);
+        return Ok(false);
     }
     let bodies = shared.monster_bodies.for_level(geometry, species, assets);
     if bodies.iter().any(|body| failed(body.id().untyped())) {
@@ -661,31 +722,33 @@ fn prepare(
     if !bodies.iter().all(|body| shared.bodies.contains(body))
         || !navigation::navmeshes_ready(level, assets)
     {
-        return Ok(None);
+        return Ok(false);
     }
-    let collider = level_collider(geometry)?;
     match presentation {
-        Some(PresentationReadiness::Waiting) => Ok(None),
+        Some(PresentationReadiness::Waiting) => Ok(false),
         Some(PresentationReadiness::Failed(why)) => Err(why.clone()),
-        None => Ok(Some(collider)),
+        None => Ok(true),
     }
 }
 
-/// A new campaign's party, its members joining in order.
+/// A new campaign's party, its members joining complete and in order.
 fn found_party(
     commands: &mut Commands,
     characters: Vec<(crate::game::characters::Character, crate::game::magic::LearnedSpells)>,
+    catalogs: (&crate::content::items::ItemCatalog, &crate::content::spells::SpellCatalog),
+    (ids, rng): (&mut ItemIds, &mut GameRng),
 ) -> Entity {
     let party = commands.spawn((Name::new("Party"), Party)).id();
     let mut formation = crate::game::party::formation::Formation::default();
-    for (character, learned) in characters {
-        let member = crate::game::party::roster::recruit_character(
+    for member in characters {
+        crate::game::party::roster::recruit_character(
             commands,
             party,
             &mut formation,
-            character,
+            member,
+            catalogs,
+            (&mut *ids, &mut *rng),
         );
-        commands.entity(member).insert(learned);
     }
     commands.entity(party).insert(formation);
     party

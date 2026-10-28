@@ -25,6 +25,10 @@ impl ItemIds {
         self.next = self.next.checked_add(1).expect("stack identity exhausted");
         StackId(self.next)
     }
+    /// The identity the next allocation will return.
+    fn upcoming(&self) -> StackId {
+        StackId(self.next.checked_add(1).expect("stack identity exhausted"))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -89,6 +93,31 @@ impl ItemStack {
         split.count = NonZeroU16::new(amount).unwrap();
         self.count = NonZeroU16::new(self.count() - amount).unwrap();
         Some(split)
+    }
+    /// Offer a proper part of this stack to a receiver, which returns what it
+    /// refuses and whether it kept the part as a stack of its own. Refused
+    /// units come back here, so a refusal changes nothing; only a part kept
+    /// as its own stack takes an identity from `ids`. Returns the units moved.
+    pub fn give_part(
+        &mut self,
+        amount: u16,
+        ids: &mut ItemIds,
+        receive: impl FnOnce(ItemStack) -> (Option<ItemStack>, bool),
+    ) -> u16 {
+        if amount == 0 || amount >= self.count() {
+            return 0;
+        }
+        let mut part = self.clone();
+        part.id = ids.upcoming();
+        part.count = NonZeroU16::new(amount).unwrap();
+        self.count = NonZeroU16::new(self.count() - amount).unwrap();
+        let (rest, kept) = receive(part);
+        if kept {
+            ids.allocate();
+        }
+        let refused = rest.map_or(0, |rest| rest.count());
+        self.count = NonZeroU16::new(self.count() + refused).unwrap();
+        amount - refused
     }
     /// Consume up to `amount` physical units, retaining the remainder's identity
     /// and metadata. Callers that settle payment validate the exact quantity first.

@@ -57,6 +57,7 @@ pub fn build_prop(
     prop: &PropModel,
     door: bool,
     frame: f32,
+    colliders: Vec<Option<Collider>>,
 ) {
     let last_frame = prop.parts.iter().map(|p| p.keys.len().saturating_sub(1)).max().unwrap_or(0);
     let centre = prop.parts.iter().map(|part| part.transform.translation).sum::<Vec3>()
@@ -86,26 +87,20 @@ pub fn build_prop(
         entity.insert(doorway);
     }
     entity.with_children(|parts| {
-        for (part_index, part) in prop.parts.iter().enumerate() {
+        for ((part_index, part), collider) in prop.parts.iter().enumerate().zip(colliders) {
             let at = if part.keys.is_empty() { part.transform } else { pose(&part.keys, frame) };
             let mut part_entity =
                 parts.spawn((PropPart { part: part_index, keys: part.keys.clone() }, at));
-            // Sprites turn with the view and do not collide.
-            if prop.face_camera {
-                continue;
-            }
-            match trimesh(&part.collision, TrimeshFlags::empty()) {
-                Ok(collider) => {
-                    // Parts with a path can move (doors, lifts).
-                    let body =
-                        if part.keys.is_empty() { RigidBody::Static } else { RigidBody::Kinematic };
-                    part_entity.insert((body, collider));
-                    // Props the party walks through can still be used.
-                    if !prop.collidable {
-                        part_entity.insert(Sensor);
-                    }
-                }
-                Err(error) => warn!("prop {} collider: {error:?}", prop.name),
+            let Some(collider) = collider else { continue };
+            // Parts with a path can move (doors, lifts).
+            let body = if part.keys.is_empty() { RigidBody::Static } else { RigidBody::Kinematic };
+            part_entity.insert((body, collider));
+            // Props the party walks through can still be used; they are not
+            // scenery that blocks sight or items.
+            if prop.collidable {
+                part_entity.insert(super::obstacles::scenery());
+            } else {
+                part_entity.insert(Sensor);
             }
         }
     });

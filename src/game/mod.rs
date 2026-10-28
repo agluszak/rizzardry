@@ -21,7 +21,6 @@ pub mod world;
 /// state from an earlier operation. Presentation remains independently scheduled.
 #[derive(bevy::prelude::SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GameplaySet {
-    Equipment,
     LevelActivation,
     Combat,
 }
@@ -43,10 +42,7 @@ impl Plugin for GamePlugin {
             .init_state::<screen::Screen>()
             .add_message::<inventory::ItemNews>()
             .add_systems(Startup, data::load_game_data)
-            .configure_sets(
-                Update,
-                (GameplaySet::Equipment, GameplaySet::LevelActivation, GameplaySet::Combat).chain(),
-            )
+            .configure_sets(Update, (GameplaySet::LevelActivation, GameplaySet::Combat).chain())
             .add_plugins((
                 avian3d::prelude::PhysicsPlugins::default(),
                 world::WorldPlugin,

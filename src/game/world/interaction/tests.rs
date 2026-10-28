@@ -15,6 +15,7 @@ fn difficulty_changes_both_displayed_and_authoritative_lock_chances() {
     );
 }
 
+use crate::game::world::triggers::tests::attempt;
 use crate::game::world::triggers::tests::*;
 use crate::game::world::triggers::{TriggerEffect, activate};
 
@@ -43,12 +44,14 @@ fn lock_practice_is_bounded_by_the_device_across_reopening_and_revisit() {
     for remaining in (0..6).rev() {
         level.run("CHEST");
         level.world.insert_resource(opportunity.clone());
-        pick_tumbler(&mut level.world, picker, 0).unwrap();
+        let on = attempt(&level);
+        pick_tumbler(&mut level.world, on, picker, 0).unwrap();
         assert_eq!(
             level.world.get::<Guarded>(level.device("CHEST")).unwrap().practice_left,
             remaining
         );
-        leave(&mut level.world);
+        let on = attempt(&level);
+        leave(&mut level.world, on);
         if remaining == 3 {
             let memory = level.remember();
             level.visit(Some(memory));
@@ -58,7 +61,8 @@ fn lock_practice_is_bounded_by_the_device_across_reopening_and_revisit() {
     let before = level.world.get::<Character>(picker).unwrap().skill_practice;
     level.run("CHEST");
     level.world.insert_resource(opportunity);
-    pick_tumbler(&mut level.world, picker, 0).unwrap();
+    let on = attempt(&level);
+    pick_tumbler(&mut level.world, on, picker, 0).unwrap();
     assert_eq!(level.world.get::<Character>(picker).unwrap().skill_practice, before);
     assert_eq!(level.world.get::<Guarded>(level.device("CHEST")).unwrap().practice_left, 0);
 }
@@ -80,7 +84,8 @@ fn a_locked_chest_opens_once_picked_and_stays_unlocked() {
     assert_eq!(level.motion("CHEST").target, 0.0);
     // At full skill no tumbler falls; the last one opens the chest.
     for tumbler in 0..3 {
-        pick_tumbler(&mut level.world, picker, tumbler).unwrap();
+        let on = attempt(&level);
+        pick_tumbler(&mut level.world, on, picker, tumbler).unwrap();
     }
     assert!(work(&level).is_none());
     assert!(level.world.get::<Guarded>(chest).is_none());
@@ -154,7 +159,8 @@ fn a_sprung_trap_pays_its_effect_before_opening_and_retains_the_selected_victim(
         level.run("CHEST");
         let seed = (0..).find(|&seed| (GameRng::seeded(seed).below(2) == 0) == destroyed).unwrap();
         level.world.insert_resource(GameRng::seeded(seed));
-        spring_trap(&mut level.world, Some(selected)).unwrap();
+        let on = attempt(&level);
+        spring_trap(&mut level.world, on, Some(selected)).unwrap();
         let chest = level.device("CHEST");
         assert_eq!(level.world.get::<Vitals>(first).unwrap().hp, hp);
         assert!(
@@ -242,8 +248,9 @@ fn trap_losses_use_existing_purse_items_and_all_party_spell_points() {
         if spell == 127 {
             let points = level.world.entity_mut(other).take::<SpellPoints>().unwrap();
             let before_rng = level.world.resource::<GameRng>().clone();
+            let on = attempt(&level);
             assert_eq!(
-                spring_trap(&mut level.world, Some(selected)),
+                spring_trap(&mut level.world, on, Some(selected)),
                 Err(super::super::interaction::Unable::MissingContent)
             );
             assert_eq!(*level.world.resource::<GameRng>(), before_rng);
@@ -251,7 +258,8 @@ fn trap_losses_use_existing_purse_items_and_all_party_spell_points() {
             assert_eq!(level.inventory().gold, 1000);
             level.world.entity_mut(other).insert(points);
         }
-        spring_trap(&mut level.world, Some(selected)).unwrap();
+        let on = attempt(&level);
+        spring_trap(&mut level.world, on, Some(selected)).unwrap();
         match spell {
             124 => assert!((600..1000).contains(&level.inventory().gold)),
             126 => {
@@ -348,7 +356,6 @@ fn device_casts_revalidate_targets_and_pay_from_the_selected_item_owner() {
     level.inventory().pool.stacks.push(pooled);
     level.world.get_mut::<Carried>(actor).unwrap().backpack[0] = Some(worn);
     level.run("CHEST");
-    let device = level.device("CHEST");
     let other = level.world.spawn_empty().id();
     let rng = level.world.resource::<GameRng>().clone();
     assert_eq!(
@@ -360,54 +367,58 @@ fn device_casts_revalidate_targets_and_pay_from_the_selected_item_owner() {
         crate::game::characters::Condition::Webbed,
         crate::game::characters::Lasting::Rounds(3),
     );
+    let on = attempt(&level);
     assert_eq!(
-        cast_device(
-            &mut level.world,
-            actor,
-            device,
-            Source::Spell { spell: SpellId(39), power: 1 }
-        ),
+        cast_device(&mut level.world, actor, on, Source::Spell { spell: SpellId(39), power: 1 }),
         Err(Refusal::CannotAct)
     );
     assert_eq!(*level.world.resource::<GameRng>(), rng);
     assert_eq!(level.world.get::<SpellPoints>(actor).unwrap().current[Realm::Earth], 20);
     level.world.get_mut::<Vitals>(actor).unwrap().lift(crate::game::characters::Condition::Webbed);
+    let on = attempt(&level);
     assert_eq!(
-        cast_device(&mut level.world, actor, device, Source::Item(worn_id)),
+        cast_device(&mut level.world, actor, on, Source::Item(worn_id)),
         Err(Refusal::CannotUse)
     );
     assert_eq!(*level.world.resource::<GameRng>(), rng);
-    cast_device(&mut level.world, actor, device, Source::Spell { spell: SpellId(39), power: 1 })
+    let on = attempt(&level);
+    cast_device(&mut level.world, actor, on, Source::Spell { spell: SpellId(39), power: 1 })
         .unwrap();
     assert_eq!(level.world.get::<SpellPoints>(actor).unwrap().current[Realm::Earth], 19);
-    cast_device(&mut level.world, actor, device, Source::PoolItem(pool_id)).unwrap();
+    let on = attempt(&level);
+    cast_device(&mut level.world, actor, on, Source::PoolItem(pool_id)).unwrap();
     assert!(level.inventory().pool.stacks.is_empty(), "a plain exhausted charged tool is consumed");
     assert!(level.world.get::<Carried>(actor).unwrap().find_stack(worn_id).is_some());
+    let on = attempt(&level);
     assert_eq!(
-        cast_device(&mut level.world, actor, device, Source::PoolItem(pool_id)),
+        cast_device(&mut level.world, actor, on, Source::PoolItem(pool_id)),
         Err(Refusal::NoItem)
     );
     let mut carried = level.world.get_mut::<Carried>(actor).unwrap();
     let worn = carried.backpack[0].take().unwrap();
     carried.equipment[EquipSlot::AlternatePrimary] = Some(Equipped::new(worn));
+    let on = attempt(&level);
     assert_eq!(
-        cast_device(&mut level.world, actor, device, Source::Item(worn_id)),
+        cast_device(&mut level.world, actor, on, Source::Item(worn_id)),
         Err(Refusal::CannotUse)
     );
     let mut carried = level.world.get_mut::<Carried>(actor).unwrap();
     carried.equipment[EquipSlot::Primary] = carried.equipment[EquipSlot::AlternatePrimary].take();
-    cast_device(&mut level.world, actor, device, Source::Item(worn_id)).unwrap();
+    let on = attempt(&level);
+    cast_device(&mut level.world, actor, on, Source::Item(worn_id)).unwrap();
     assert_eq!(
         level.world.get::<Carried>(actor).unwrap().find_stack(worn_id).unwrap().remaining_uses(),
         Some(0),
         "a residual AC effect keeps the exhausted item"
     );
     // Cancelling a newly opened selector drops only this actor's magic holds.
-    let mut interaction = level.world.resource_mut::<DeviceInteraction>();
+    let on = attempt(&level);
+    let mut interaction =
+        level.world.get_mut::<super::super::interaction::DeviceInteraction>(on).unwrap();
     let Work::Picking(picking) = &mut interaction.work else { panic!("picking") };
     picking.tumblers[0] = Tumbler::Sealed(actor);
     picking.tumblers[1] = Tumbler::Held(actor);
-    prepare_device_magic(&mut level.world, actor, device).unwrap();
+    prepare_device_magic(&mut level.world, actor, on).unwrap();
     let Some(Work::Picking(picking)) = work(&level) else { panic!("picking") };
     assert_eq!(picking.tumblers[0], Tumbler::Down);
     assert_eq!(picking.tumblers[1], Tumbler::Held(actor));
@@ -452,12 +463,14 @@ fn divine_trap_replaces_its_session_bonus_and_uses_shared_spell_payment() {
     ));
     level.run("CHEST");
     let device = level.device("CHEST");
-    cast_device(&mut level.world, actor, device, Source::Spell { spell: SpellId(18), power: 2 })
+    let on = attempt(&level);
+    cast_device(&mut level.world, actor, on, Source::Spell { spell: SpellId(18), power: 2 })
         .unwrap();
     let Some(Work::Disarming(trap)) = work(&level) else { panic!("disarming") };
     assert_eq!(trap.divine_power, 2);
     let stronger = trap.inspection_chance(Some(25), crate::game::difficulty::Difficulty::Normal);
-    cast_device(&mut level.world, actor, device, Source::Spell { spell: SpellId(18), power: 1 })
+    let on = attempt(&level);
+    cast_device(&mut level.world, actor, on, Source::Spell { spell: SpellId(18), power: 1 })
         .unwrap();
     let Some(Work::Disarming(trap)) = work(&level) else { panic!("disarming") };
     assert_eq!(trap.divine_power, 1);
@@ -465,7 +478,8 @@ fn divine_trap_replaces_its_session_bonus_and_uses_shared_spell_payment() {
         trap.inspection_chance(Some(25), crate::game::difficulty::Difficulty::Normal) < stronger
     );
     assert_eq!(level.world.get::<SpellPoints>(actor).unwrap().current[Realm::Mental], 7);
-    leave(&mut level.world);
+    let on = attempt(&level);
+    leave(&mut level.world, on);
     level.run("CHEST");
     let Some(Work::Disarming(trap)) = work(&level) else { panic!("disarming") };
     assert_eq!(trap.divine_power, 0);
@@ -488,7 +502,8 @@ fn an_unsupported_trap_keeps_its_type_and_refuses_every_discharge_path() {
     let chest = level.device("CHEST");
     assert_eq!(level.world.get::<Guarded>(chest).unwrap().trap, Some(trap));
     // Leaving and returning faces the same trap.
-    leave(&mut level.world);
+    let on = attempt(&level);
+    leave(&mut level.world, on);
     let memory = level.remember();
     level.visit(Some(memory));
     let chest = level.device("CHEST");
@@ -496,9 +511,12 @@ fn an_unsupported_trap_keeps_its_type_and_refuses_every_discharge_path() {
     assert_eq!(level.world.get::<Guarded>(chest).unwrap().trap, Some(trap));
     let wrong = TRAP_COMPONENTS[usize::from(trap)].iter().position(|&p| !p).unwrap();
     let before_rng = level.world.resource::<GameRng>().clone();
-    assert_eq!(disarm_component(&mut level.world, member, wrong), Err(Unable::UnsupportedTrap));
-    assert_eq!(inspect_trap(&mut level.world, member), Err(Unable::UnsupportedTrap));
-    assert_eq!(spring_trap(&mut level.world, Some(member)), Err(Unable::UnsupportedTrap));
+    let on = attempt(&level);
+    assert_eq!(disarm_component(&mut level.world, on, member, wrong), Err(Unable::UnsupportedTrap));
+    let on = attempt(&level);
+    assert_eq!(inspect_trap(&mut level.world, on, member), Err(Unable::UnsupportedTrap));
+    let on = attempt(&level);
+    assert_eq!(spring_trap(&mut level.world, on, Some(member)), Err(Unable::UnsupportedTrap));
     assert_eq!(*level.world.resource::<GameRng>(), before_rng);
     assert!(matches!(work(&level), Some(Work::Disarming(_))));
     assert_eq!(level.world.get::<Guarded>(chest).unwrap().trap, Some(trap));
