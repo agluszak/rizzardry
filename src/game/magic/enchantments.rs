@@ -214,11 +214,6 @@ impl Enchantments {
             .map_or(0, |e| e.scaled(u32::from(e.power) * 8))
             .min(100)
     }
-
-    pub fn physical_damage(&self, amount: u32) -> u32 {
-        let reduction = self.damage_reduction();
-        (amount * (100 - reduction) + 50) / 100
-    }
 }
 
 #[cfg(test)]
@@ -289,7 +284,7 @@ mod tests {
         assert_eq!(effects.counter_slow(8), 5);
         assert!(effects.0.is_empty());
         effects.apply(effect(crate::content::spells::SpellId::BODY_OF_STONE, 5, 2));
-        assert_eq!(effects.physical_damage(10), 6);
+        assert_eq!(effects.damage_reduction(), 40);
         effects.apply(effect(crate::content::spells::SpellId::MAGIC_SCREEN, 4, 10));
         effects.apply(effect(crate::content::spells::SpellId::ELEMENT_SHIELD, 2, 5));
         assert_eq!(effects.resistance(Realm::Fire), 37);

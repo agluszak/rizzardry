@@ -18,9 +18,7 @@ pub fn combat_rest_amount(profile: &Character, rolled: u32) -> u32 {
     if profile.profession != Profession::Fighter {
         return rolled;
     }
-    let level = profile.profession_levels[profile.profession];
-    let factor = if level > 20 { 3.3 } else { (f32::from(level) * 2.0 + 60.0) * 3.3 * 0.01 };
-    (factor * rolled as f32) as u32
+    (profile.scale_by_profession(3.3) * rolled as f32) as u32
 }
 
 /// How the party spends passing time.

@@ -38,6 +38,9 @@ pub struct Formation {
     /// The row each dead member held, to return to when raised (retail
     /// `bOldQuadrant`).
     vacated: EntityHashMap<Row>,
+    /// The sides members turned to face, away from their row's (retail
+    /// `positions[].facing`).
+    turned: EntityHashMap<Row>,
 }
 
 impl Formation {
@@ -76,6 +79,8 @@ impl Formation {
     /// moves the leader to the middle and takes the far seat; a third takes
     /// the lead seat again.
     fn seat_in(&mut self, row: Row, member: Entity) -> bool {
+        // A new seat faces its row's side.
+        self.turned.remove(&member);
         let seats = &mut self.seats[row];
         match seats.iter().flatten().count() {
             0 => seats[0] = Some(member),
@@ -95,6 +100,7 @@ impl Formation {
     /// A member leaves the formation for good.
     pub fn unseat(&mut self, member: Entity) {
         self.vacated.remove(&member);
+        self.turned.remove(&member);
         self.take_seat(member);
     }
 
@@ -121,6 +127,37 @@ impl Formation {
         let returned = self.vacated.remove(&member).is_some_and(|row| self.seat_in(row, member));
         if !returned {
             self.seat(member);
+        }
+    }
+
+    /// The side a member faces: their row's, the center facing front,
+    /// unless they turned (retail `SetFormationPosition`).
+    pub fn facing(&self, member: Entity) -> Option<Row> {
+        let row = self.row_of(member)?;
+        Some(self.turned.get(&member).copied().unwrap_or(match row {
+            Row::Center => Row::Front,
+            side => side,
+        }))
+    }
+
+    /// Turn a member toward a side (retail `TurnCharacterTowardMonster`).
+    pub fn turn(&mut self, member: Entity, side: Row) {
+        if self.row_of(member).is_some() {
+            self.turned.insert(member, side);
+        }
+    }
+
+    /// Whether the center rank stands between two members on opposite
+    /// sides, so a touch-range blow cannot pass (retail `FrontRankScreens`).
+    pub fn screens(&self, from: Entity, to: Entity) -> bool {
+        match (self.row_of(from), self.row_of(to)) {
+            (Some(from), Some(to)) => {
+                from != to
+                    && from != Row::Center
+                    && from.opposite() == Some(to)
+                    && self.occupied(Row::Center)
+            }
+            _ => false,
         }
     }
 

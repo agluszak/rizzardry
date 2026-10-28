@@ -772,7 +772,7 @@ pub fn loaded_by(kind: ItemKind) -> Option<ItemKind> {
 /// `CompatiblePartnerItems`): bows, crossbows and slings with their
 /// missiles, guns with what loads them, and each omnigun tier with what it
 /// has learnt to fire.
-fn partners(ranged: &ItemDefinition, other: &ItemDefinition) -> bool {
+pub(crate) fn partners(ranged: &ItemDefinition, other: &ItemDefinition) -> bool {
     use ItemKind as K;
     let kind = other.kind;
     match ranged.kind {

@@ -600,6 +600,23 @@ impl Character {
         racial.iter().copied().collect()
     }
 
+    pub fn has_trait(&self, ability: crate::content::characters::Trait) -> bool {
+        self.traits().contains(ability)
+    }
+
+    /// A trait's value by the level of the current profession: full past
+    /// twenty levels, 60% at none and two points more a level (retail
+    /// `ScaleValueByProfessionLevel`).
+    pub fn scale_by_profession(&self, value: f32) -> f32 {
+        let level = self.profession_levels[self.profession];
+        if level > 20 { value } else { (f32::from(level) * 2.0 + 60.0) * value * 0.01 }
+    }
+
+    /// Percent taken off every blow that lands on them, without spells.
+    pub fn damage_reduction(&self) -> i32 {
+        self.base_stats().damage_reduction()
+    }
+
     /// The average of a skill's governing attributes' bases.
     fn skill_base(&self, skill: Skill) -> u32 {
         let (a, b) = governing(skill);
@@ -697,6 +714,24 @@ impl Character {
     }
 }
 impl CharacterStats<'_> {
+    /// Percent taken off every blow that lands on them: a Dwarf's toughness,
+    /// a Monk's training, Iron Skin and Body of Stone (retail
+    /// `RecalculateCharacterState`).
+    pub fn damage_reduction(&self) -> i32 {
+        use crate::content::characters::Trait;
+        let mut reduction = 0;
+        if self.has_trait(Trait::DwarfDamageResistance) {
+            reduction += self.attribute(Attribute::Vitality) as i32 / 10;
+        }
+        if self.has_trait(Trait::MonkDamageResistance) {
+            reduction += self.scale_by_profession(15.0) as i32;
+        }
+        if self.skill_available(Skill::IronSkin) {
+            reduction += (self.skill(Skill::IronSkin) >> 2) as i32 + 5;
+        }
+        reduction += self.enchantments.map_or(0, |e| e.damage_reduction() as i32);
+        reduction.min(100)
+    }
     pub fn attribute(&self, attribute: Attribute) -> u32 {
         let bonus = self.enchantments.map_or(0, |e| e.attribute_bonus(attribute));
         (self.profile.attribute(attribute) + bonus).min(125)

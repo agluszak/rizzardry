@@ -115,6 +115,49 @@ pub enum AttackMode {
     Shoot,
 }
 
+/// What a blow may do besides its damage, in retail's order (its attack
+/// effect slots).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Enum)]
+pub enum AttackEffect {
+    Sleep,
+    Paralyze,
+    Poison,
+    Hex,
+    Disease,
+    Kill,
+    KnockOut,
+    Blind,
+    Frighten,
+    Swallow,
+    Possess,
+    DrainHealth,
+    DrainStamina,
+    DrainSpellPoints,
+    Nauseate,
+    Insane,
+}
+
+/// The percent chance of each effect a blow lands with, and its strength
+/// (retail `missile_values` and `missile_magnitude`, which a weapon, its
+/// ammunition and a monster's attack all carry).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AttackEffects {
+    pub chances: EnumMap<AttackEffect, u8>,
+    pub strength: u8,
+}
+
+impl AttackEffects {
+    /// A weapon's effects with its ammunition's, byte by byte as retail
+    /// sums them.
+    pub fn with(mut self, other: &AttackEffects) -> Self {
+        for (effect, chance) in &mut self.chances {
+            *chance = chance.wrapping_add(other.chances[effect]);
+        }
+        self.strength = self.strength.wrapping_add(other.strength);
+        self
+    }
+}
+
 /// What an item is made from (retail `MergeItems`): two ingredients, in
 /// either order, and the skill and level that making it takes, if any.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -192,6 +235,14 @@ pub struct ItemDefinition {
     pub damage: Dice,
     /// The ways it strikes; one is chosen per attack.
     pub attack_modes: EnumSet<AttackMode>,
+    /// What its blows may do besides damage.
+    pub effects: AttackEffects,
+    /// The monster kind it slays for an extra damage die.
+    pub slays: Option<super::species::MonsterKind>,
+    /// Swings it adds to each attack.
+    pub extra_swings: i32,
+    /// Thrown, it is not used up.
+    pub never_depletes: bool,
     pub damage_bonus: i8,
     pub hit_bonus: i8,
     pub armor_class_bonus: i8,

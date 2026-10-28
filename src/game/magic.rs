@@ -504,13 +504,32 @@ impl MagicContext<'_, '_> {
         monsters: &mut MonsterDamage,
         cast: impl FnOnce(&mut Field, &SpellCatalog) -> R,
     ) -> Result<R, casting::Refusal> {
+        self.field(members, monsters, |field, spells| spells.map(|spells| cast(field, spells)))?
+            .ok_or(casting::Refusal::MissingContent)
+    }
+
+    /// The field of members, monsters and party belongings that blows
+    /// change; refused until items and monsters have loaded.
+    pub fn with_field<R>(
+        &mut self,
+        members: &mut Members,
+        monsters: &mut MonsterDamage,
+        act: impl FnOnce(&mut Field) -> R,
+    ) -> Result<R, casting::Refusal> {
+        self.field(members, monsters, |field, _| act(field))
+    }
+
+    fn field<R>(
+        &mut self,
+        members: &mut Members,
+        monsters: &mut MonsterDamage,
+        act: impl FnOnce(&mut Field, Option<&SpellCatalog>) -> R,
+    ) -> Result<R, casting::Refusal> {
         let party: Vec<Entity> = self.roster.iter().collect();
         let party_level = crate::game::party::average_level(
             members.iter_many(self.roster.iter()).matched().map(|(c, ..)| c.level),
         );
-        let (Some(items), Some(species), Some(spells)) =
-            (self.content.items(), self.content.species(), self.content.spells())
-        else {
+        let (Some(items), Some(species)) = (self.content.items(), self.content.species()) else {
             return Err(casting::Refusal::MissingContent);
         };
         let mut field = Field {
@@ -528,7 +547,7 @@ impl MagicContext<'_, '_> {
             party: &party,
             improved: Vec::new(),
         };
-        Ok(cast(&mut field, spells))
+        Ok(act(&mut field, self.content.spells()))
     }
 }
 
