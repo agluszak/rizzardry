@@ -420,6 +420,10 @@ fn target(
     }
 }
 
+pub(super) fn condition_chance(level: u32, resistance: i32, against: u32, base: i32) -> i32 {
+    (level as i32 - against as i32) * 3 + base + resistance
+}
+
 /// Whether a victim saves (retail `TargetResistsCondition`): `(level −
 /// strength)·3 + base + resistance`, scaled by difficulty, within 5..95. A
 /// party member who saves practises Iron Will.
@@ -431,7 +435,7 @@ fn saves(
     base: i32,
     against: u32,
 ) -> bool {
-    let chance = (target.level as i32 - against as i32) * 3 + base + target.resistance;
+    let chance = condition_chance(target.level, target.resistance, against, base);
     let chance = match target.side {
         Some(side) => world.difficulty.for_monster(chance, side),
         None => world.difficulty.for_character(chance, target.turncoat),

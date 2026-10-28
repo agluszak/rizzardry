@@ -7,6 +7,7 @@
 //! item spends a use (see `game::magic::casting`).
 
 pub mod casting;
+pub(crate) mod dialogue;
 pub mod effects;
 pub mod enchantments;
 mod impacts;

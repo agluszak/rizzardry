@@ -153,6 +153,8 @@ pub struct Conversation {
     pub actor: Entity,
     pub script: Handle<DialogueScript>,
     pub revision: u64,
+    /// Charm lasts only for this interaction; closing it clears the modifier.
+    pub(crate) charm: i8,
     pub current: Option<(u16, usize)>,
     pub wait: ConversationWait,
     pub transcript: Vec<TranscriptLine>,
@@ -170,9 +172,30 @@ pub enum Outcome {
     Traded,
     TradeRefused(TradeError),
 }
+pub(crate) enum MagicalReply {
+    Unnoticed,
+    Charmed(i8),
+    Quote(u16),
+}
 impl Conversation {
     pub fn ready(&self) -> bool {
         self.wait == ConversationWait::Ready && self.queue.is_empty()
+    }
+
+    pub(crate) fn magical_reply(&mut self, reply: MagicalReply) {
+        self.revision += 1;
+        self.result = None;
+        match reply {
+            MagicalReply::Unnoticed => {}
+            MagicalReply::Charmed(strength) if strength > self.charm => {
+                self.charm = strength;
+                self.transcript.push(TranscriptLine::Npc("Charmed.".into()));
+            }
+            MagicalReply::Charmed(_) => {}
+            MagicalReply::Quote(quote) => {
+                self.queue.push_back(Step::Quote { quote, subquote: 0, paid: false, plan: None })
+            }
+        }
     }
 
     /// What the last request came to, until the conversation moves on.
@@ -261,7 +284,7 @@ fn average_level(world: &mut World) -> u32 {
         roster.iter().filter_map(|member| world.get::<Character>(member)).map(|c| c.level),
     )
 }
-fn active_body(world: &World, actor: Entity) -> Option<Entity> {
+pub(crate) fn active_body(world: &World, actor: Entity) -> Option<Entity> {
     world.get::<super::NpcBodies>(actor)?.iter().find(|body| {
         world
             .get::<crate::game::world::level::LevelOwned>(*body)
@@ -278,7 +301,13 @@ const TOO_POOR_QUOTE: u16 = 0x14;
 fn available(world: &World, actor: Entity) -> bool {
     active_body(world, actor)
         .is_some_and(|body| world.get::<crate::game::world::population::Provoked>(body).is_none())
-        && world.get::<Npc>(actor).is_some_and(|n| n.disposition >= WILLING_DISPOSITION)
+        && world.get::<Npc>(actor).is_some_and(|n| {
+            let charm = world
+                .try_query::<&Conversation>()
+                .and_then(|mut query| query.iter(world).find(|c| c.actor == actor).map(|c| c.charm))
+                .unwrap_or(0);
+            n.disposition.wrapping_add(charm as u8) >= WILLING_DISPOSITION
+        })
 }
 /// Shared gameplay permission, also used to derive the trade controls.
 pub fn trade_allowed(world: &World, actor: Entity) -> bool {
@@ -383,6 +412,7 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
             actor,
             script,
             revision: 0,
+            charm: 0,
             current: None,
             wait: ConversationWait::Ready,
             transcript: vec![],
@@ -609,6 +639,8 @@ fn run_script(world: &mut World, entity: Entity, script: &DialogueScript) {
                     })
                     && (always || !world.get::<Npc>(actor).unwrap().paid_topics.contains(&quote))
                 {
+                    let charm = world.get::<Conversation>(entity).unwrap().charm.max(0) as u32;
+                    let gold = gold - gold.saturating_mul(charm) / 100;
                     let gold =
                         (gold - gold.saturating_mul(party_communication(world)) / 500).max(1);
                     let mut c = world.get_mut::<Conversation>(entity).unwrap();
@@ -1147,6 +1179,7 @@ mod tests {
                 definition: NpcId(0),
                 disposition: 80,
                 greeting_pending: true,
+                mindread_refusals: 0,
                 paid_topics: vec![],
                 stock: default(),
             },))
@@ -1172,6 +1205,7 @@ mod tests {
                 actor,
                 script,
                 revision: 0,
+                charm: 0,
                 current: None,
                 wait: ConversationWait::Ready,
                 transcript: vec![],
@@ -1187,6 +1221,126 @@ mod tests {
             .id();
         (app, entity, actor)
     }
+    #[test]
+    fn dialogue_magic_validates_before_payment_charm_is_scoped_and_mindread_advances_responses() {
+        use crate::content::{
+            characters::{Realm, Skill},
+            items::ItemCatalog,
+            species::{MonsterCatalog, Species},
+            spells::{SpellCatalog, SpellDefinition, SpellId, Spellbook, Usable},
+        };
+        use crate::game::{
+            characters::{Gender, Profession, Race},
+            difficulty::Difficulty,
+            inventory::Burden,
+            magic::{
+                LearnedSpells, SpellPoints,
+                casting::{Aim, MagicChoice, Refusal, Source},
+            },
+        };
+        let (mut app, session, actor) =
+            app(DialogueScript { quotes: vec![Quote::default(); 106], ..default() });
+        let world = app.world_mut();
+        world.init_resource::<Assets<ItemCatalog>>();
+        world.init_resource::<Assets<MonsterCatalog>>();
+        world.init_resource::<Assets<SpellCatalog>>();
+        world.init_resource::<Difficulty>();
+        world.init_resource::<Messages<crate::game::magic::casting::MagicNews>>();
+        let items = world.resource_mut::<Assets<ItemCatalog>>().add(ItemCatalog::default());
+        let species = world
+            .resource_mut::<Assets<MonsterCatalog>>()
+            .add(MonsterCatalog(vec![Species::default()]));
+        let mut spells = vec![SpellDefinition::default(); 42];
+        for id in [SpellId::CHARM, SpellId::MINDREAD] {
+            spells[id.0 as usize] = SpellDefinition {
+                id,
+                realm: Some(Realm::Mental),
+                cost: 1,
+                usable: Usable::Camped,
+                books: Spellbook::Wizardry.into(),
+                ..default()
+            };
+        }
+        let spells = world.resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(spells));
+        world.insert_resource(GameData { items, species, spells, loot: default() });
+        let mut profile = Character::new("Reader", Race::Human, Gender::Male, Profession::Mage);
+        profile.level = 30;
+        profile.profession_levels[Profession::Mage] = 30;
+        profile.skill_points[Skill::Wizardry] = 100;
+        profile.skill_points[Skill::MentalMagic] = 100;
+        let mut maximum = enum_map::EnumMap::default();
+        maximum[Realm::Mental] = 100;
+        let caster = world
+            .spawn((
+                Vitals::new(&profile),
+                profile,
+                Carried::default(),
+                Burden::default(),
+                LearnedSpells([SpellId::CHARM, SpellId::MINDREAD].into()),
+                SpellPoints::full(maximum),
+            ))
+            .id();
+        crate::game::party::roster::test_join(world, caster);
+        let body = active_body(world, actor).unwrap();
+        let choice = |spell| MagicChoice {
+            source: Source::Spell { spell, power: 1 },
+            aim: Aim::Monster(body),
+        };
+        let rng = world.resource::<GameRng>().clone();
+        assert_eq!(
+            crate::game::magic::dialogue::cast(world, caster, choice(SpellId::CHARM)),
+            Err(Refusal::WrongTime)
+        );
+        assert_eq!(world.resource::<GameRng>(), &rng);
+        assert_eq!(world.get::<SpellPoints>(caster).unwrap().current[Realm::Mental], 100);
+        world.get_mut::<Conversation>(session).unwrap().queue.clear();
+        // Select a successful save roll without assuming retail's RNG sequence.
+        for seed in 0..30 {
+            world.insert_resource(GameRng::seeded(seed));
+            crate::game::magic::dialogue::cast(world, caster, choice(SpellId::CHARM)).unwrap();
+            if world.get::<Conversation>(session).unwrap().charm > 0 {
+                break;
+            }
+        }
+        assert_eq!(world.get::<Conversation>(session).unwrap().charm, 7);
+        assert_eq!(
+            world.get::<Npc>(actor).unwrap().disposition,
+            80,
+            "charm does not overwrite retained opinion"
+        );
+        for expected in [0x67, 0x68, 0x69, 0x69] {
+            for seed in 0..30 {
+                world.insert_resource(GameRng::seeded(seed));
+                crate::game::magic::dialogue::cast(world, caster, choice(SpellId::MINDREAD))
+                    .unwrap();
+                let quote = match world
+                    .get_mut::<Conversation>(session)
+                    .unwrap()
+                    .queue
+                    .pop_front()
+                    .unwrap()
+                {
+                    Step::Quote { quote, .. } => quote,
+                    _ => panic!(),
+                };
+                let required = ((expected - 0x67) as u8 + 1).min(2);
+                if quote == expected
+                    && world.get::<Npc>(actor).unwrap().mindread_refusals == required
+                {
+                    break;
+                }
+                assert_eq!(quote, 0x69, "a resisted attempt uses the refusal quote");
+            }
+            assert_eq!(
+                world.get::<Npc>(actor).unwrap().mindread_refusals,
+                ((expected - 0x67) as u8 + 1).min(2)
+            );
+        }
+        world.despawn(session);
+        assert_eq!(world.get::<Npc>(actor).unwrap().disposition, 80);
+        assert_eq!(world.get::<Npc>(actor).unwrap().mindread_refusals, 2);
+    }
+
     #[test]
     fn fact_writes_select_the_validated_branch_before_payment_or_effects() {
         for (initial, assigned) in [(0, 1), (1, 0)] {

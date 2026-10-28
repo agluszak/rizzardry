@@ -482,6 +482,15 @@ fn build(world: &mut World, session: Entity) -> Entity {
                         },
                     );
                 }
+                (false, 2) => {
+                    world.entity_mut(e).observe(move |_: On<Activate>, roots: Query<&ConversationView>, conversations: Query<&crate::game::npcs::conversation::Conversation>,
+                        selected: Res<crate::presentation::main_screen::SelectedMember>, roster: Single<&crate::game::party::roster::PartyRoster>,
+                        art: Res<crate::presentation::main_screen::magic_view::MagicViewArt>, mut commands: Commands| {
+                        if let Ok(view) = roots.get(root) && conversations.get(view.0).is_ok_and(|c| c.ready()) && let Some(caster) = selected.member(&roster) {
+                            crate::presentation::main_screen::magic_view::open(&mut commands, &art, caster, false, Some(crate::presentation::main_screen::magic_view::ViewTarget::Conversation(view.0)));
+                        }
+                    });
+                }
                 (false, 5) => {
                     world.entity_mut(e).observe(
                         move |_: On<Activate>, roots: Query<&ConversationView>, mut requests: MessageWriter<ConversationRequest>| {

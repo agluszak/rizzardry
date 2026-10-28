@@ -844,6 +844,7 @@ mod tests {
                 definition: crate::content::npcs::NpcId(0),
                 disposition: 80,
                 greeting_pending: false,
+                mindread_refusals: 0,
                 paid_topics: vec![],
                 stock: default(),
             })

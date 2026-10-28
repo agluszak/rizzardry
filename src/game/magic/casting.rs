@@ -192,6 +192,7 @@ pub enum UseContext {
     World,
     Combat,
     Camp,
+    Conversation,
     Lock,
     Trap,
 }
@@ -206,6 +207,7 @@ pub fn resolvable(spell: SpellId) -> bool {
 
 pub fn usable_now(spell: &SpellDefinition, context: UseContext) -> bool {
     match context {
+        UseContext::Conversation => super::dialogue::spell(spell.id),
         UseContext::Lock => spell.id == SpellId::KNOCK_KNOCK,
         UseContext::Trap => matches!(spell.id, SpellId::DIVINE_TRAP | SpellId::KNOCK_KNOCK),
         _ => match spell.usable {

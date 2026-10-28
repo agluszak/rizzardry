@@ -51,6 +51,8 @@ pub struct Npc {
     pub disposition: u8,
     pub greeting_pending: bool,
     pub paid_topics: Vec<u16>,
+    /// Successful Mindread attempts advance through the NPC's three responses.
+    pub mindread_refusals: u8,
     pub stock: trade::MerchantStock,
 }
 #[derive(Resource, Default)]
@@ -153,6 +155,7 @@ impl NpcPopulation<'_, '_> {
                     definition: id,
                     disposition: definition.disposition,
                     greeting_pending: true,
+                    mindread_refusals: 0,
                     paid_topics: vec![],
                     stock,
                 },

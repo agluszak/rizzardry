@@ -142,6 +142,19 @@ impl MagicView {
     }
 }
 
+/// The requested target is a draft; the view retains the actual relationship.
+#[derive(Clone, Copy)]
+pub enum ViewTarget {
+    Device(Entity),
+    Conversation(Entity),
+}
+#[derive(Component)]
+#[relationship(relationship_target = ConversationCasting)]
+pub(super) struct ConversationTarget(Entity);
+#[derive(Component)]
+#[relationship_target(relationship = ConversationTarget, linked_spawn)]
+pub(super) struct ConversationCasting(Vec<Entity>);
+
 /// The device attempt a view casts at; the view closes with it.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 #[relationship(relationship_target = AttemptCasting)]
@@ -228,24 +241,47 @@ pub fn open(
     art: &MagicViewArt,
     caster: Entity,
     items: bool,
-    requested_attempt: Option<Entity>,
+    requested_target: Option<ViewTarget>,
 ) {
     let art = art.clone();
     commands.queue(move |world: &mut World| {
         use crate::game::world::interaction::{DeviceInteraction, DeviceRequest, Work, current};
-        let attempt = match current(world) {
-            Some((attempt, _)) => {
-                if matches!(
-                    world.get::<DeviceInteraction>(attempt).map(|i| &i.work),
-                    Some(Work::Looting)
-                ) || requested_attempt.is_some_and(|requested| requested != attempt)
+        let target = match requested_target {
+            Some(ViewTarget::Conversation(entity)) => {
+                if current(world).is_some()
+                    || !world
+                        .get::<crate::game::npcs::conversation::Conversation>(entity)
+                        .is_some_and(|c| c.ready())
                 {
                     return;
                 }
-                Some(attempt)
+                Some(ViewTarget::Conversation(entity))
             }
-            None if requested_attempt.is_some() => return,
-            None => None,
+            request => {
+                let requested_attempt = request.map(|target| match target {
+                    ViewTarget::Device(entity) => entity,
+                    ViewTarget::Conversation(_) => unreachable!(),
+                });
+                let attempt = match current(world) {
+                    Some((attempt, _)) => {
+                        if matches!(
+                            world.get::<DeviceInteraction>(attempt).map(|i| &i.work),
+                            Some(Work::Looting)
+                        ) || requested_attempt.is_some_and(|requested| requested != attempt)
+                        {
+                            return;
+                        }
+                        Some(attempt)
+                    }
+                    None if requested_attempt.is_some() => return,
+                    None => None,
+                };
+                attempt.map(ViewTarget::Device)
+            }
+        };
+        let attempt = match target {
+            Some(ViewTarget::Device(entity)) => Some(entity),
+            _ => None,
         };
         if let Some(attempt) = attempt {
             world.write_message(DeviceRequest::PrepareMagic { on: attempt, actor: caster });
@@ -267,7 +303,7 @@ pub fn open(
         }
         let mut state = bevy::ecs::system::SystemState::<Commands>::new(world);
         let first =
-            spawn_view(&mut state.get_mut(world).unwrap(), &art, caster, items, attempt, restore);
+            spawn_view(&mut state.get_mut(world).unwrap(), &art, caster, items, target, restore);
         state.apply(world);
         if let Some(mut focus) = world.get_resource_mut::<InputFocus>() {
             focus.set(first, bevy::input_focus::FocusCause::Navigated);
@@ -280,7 +316,7 @@ fn spawn_view(
     art: &MagicViewArt,
     caster: Entity,
     items: bool,
-    attempt: Option<Entity>,
+    target: Option<ViewTarget>,
     restore: Option<Entity>,
 ) -> Entity {
     let root = commands
@@ -312,8 +348,14 @@ fn spawn_view(
             DespawnOnExit(crate::game::screen::Screen::World),
         ))
         .id();
-    if let Some(attempt) = attempt {
-        commands.entity(root).insert(CastsAt(attempt));
+    match target {
+        Some(ViewTarget::Device(entity)) => {
+            commands.entity(root).insert(CastsAt(entity));
+        }
+        Some(ViewTarget::Conversation(entity)) => {
+            commands.entity(root).insert(ConversationTarget(entity));
+        }
+        None => {}
     }
     let picture = |commands: &mut Commands, sheet: &Handle<SpriteSheet>, frame, at| {
         commands
@@ -500,11 +542,20 @@ struct Offer<'a> {
 
 fn context(
     attempt: Option<Entity>,
+    dialogue: Option<Entity>,
+    conversations: &Query<&crate::game::npcs::conversation::Conversation>,
     fighting: bool,
     camped: bool,
     attempts: &Query<&crate::game::world::interaction::DeviceInteraction>,
 ) -> Option<UseContext> {
     use crate::game::world::interaction::Work;
+    if let Some(entity) = dialogue {
+        return conversations
+            .get(entity)
+            .ok()
+            .filter(|c| c.ready())
+            .map(|_| UseContext::Conversation);
+    }
     match attempt {
         Some(attempt) => {
             let interaction = attempts.get(attempt).ok()?;
@@ -574,8 +625,13 @@ fn offers<'a>(
                 let silenced =
                     silenced && definition.use_type == crate::content::items::UseType::Instrument;
                 let available = usable_now(spell, context) && !silenced;
-                if matches!(context, UseContext::Lock | UseContext::Trap | UseContext::Camp)
-                    && !available
+                if matches!(
+                    context,
+                    UseContext::Lock
+                        | UseContext::Trap
+                        | UseContext::Camp
+                        | UseContext::Conversation
+                ) && !available
                 {
                     return None;
                 }
@@ -608,7 +664,7 @@ fn offers<'a>(
             }
         })
         .collect();
-    if matches!(context, UseContext::Lock | UseContext::Trap) {
+    if matches!(context, UseContext::Lock | UseContext::Trap | UseContext::Conversation) {
         offers.retain(|o| usable_now(o.spell, context));
     }
     // Castable first, then the rest (retail's two passes).
@@ -631,7 +687,13 @@ fn rating(chance: u32) -> usize {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn refresh_magic_view(
     mut commands: Commands,
-    mut views: Query<(Entity, &mut MagicView, &MagicScroll, Option<&CastsAt>)>,
+    mut views: Query<(
+        Entity,
+        &mut MagicView,
+        &MagicScroll,
+        Option<&CastsAt>,
+        Option<&ConversationTarget>,
+    )>,
     sliders: Query<(&SliderValue, &SliderRange)>,
     (selected, roster): (Res<super::SelectedMember>, Single<&PartyRoster>),
     members: Query<(&Character, &Vitals, Option<&Carried>)>,
@@ -647,6 +709,10 @@ pub(super) fn refresh_magic_view(
         Single<&PartyInventory>,
     ),
     content: crate::game::data::Content,
+    (conversations, speakers): (
+        Query<&crate::game::npcs::conversation::Conversation>,
+        Query<&crate::game::npcs::NpcBody>,
+    ),
     (art, assets, strings): (
         Res<MagicViewArt>,
         Res<AssetServer>,
@@ -676,7 +742,9 @@ pub(super) fn refresh_magic_view(
         MessageWriter<crate::game::world::interaction::DeviceRequest>,
     ),
 ) {
-    let Ok((root, mut view, scroll, casts_at)) = views.single_mut() else { return };
+    let Ok((root, mut view, scroll, casts_at, conversation_target)) = views.single_mut() else {
+        return;
+    };
     let attempt = casts_at.map(|casts_at| casts_at.0);
     // The selected member casts; choosing another starts over for them.
     if let Some(member) = selected.member(&roster)
@@ -705,7 +773,14 @@ pub(super) fn refresh_magic_view(
     let (Some(spells), Some(items)) = (content.spells(), content.items()) else {
         return;
     };
-    let Some(context) = context(attempt, battle.is_some(), camp.is_some(), &interaction) else {
+    let Some(context) = context(
+        attempt,
+        conversation_target.map(|r| r.0),
+        &conversations,
+        battle.is_some(),
+        camp.is_some(),
+        &interaction,
+    ) else {
         commands.entity(root).despawn();
         return;
     };
@@ -897,7 +972,16 @@ pub(super) fn refresh_magic_view(
     // An item casts at its own power.
     let power = if view.items { Some(1) } else { view.power };
     let Some(power) = power else { return };
-    let aim = if let Some(attempt) = attempt {
+    let aim = if let Some(relation) = conversation_target {
+        let Ok(conversation) = conversations.get(relation.0) else { return };
+        let Some((body, _, _)) = monsters.iter().find(|(entity, monster, _)| {
+            !monster.is_dead()
+                && speakers.get(*entity).is_ok_and(|binding| binding.0 == conversation.actor)
+        }) else {
+            return;
+        };
+        Aim::Monster(body)
+    } else if let Some(attempt) = attempt {
         Aim::Device(attempt)
     } else {
         match spell.targeting {
@@ -963,7 +1047,7 @@ fn choose_realm(
 fn choose_row(
     click: On<Activate>,
     rows: Query<&Row>,
-    mut views: Query<(&mut MagicView, Option<&CastsAt>)>,
+    mut views: Query<(&mut MagicView, Option<&CastsAt>, Option<&ConversationTarget>)>,
     members: Query<(&Character, &Vitals, Option<&Carried>)>,
     casters: Query<(&LearnedSpells, Option<&SpellPoints>)>,
     battle: Option<Single<&Battle>>,
@@ -973,8 +1057,11 @@ fn choose_row(
         Single<&PartyInventory>,
     ),
     content: crate::game::data::Content,
+    conversations: Query<&crate::game::npcs::conversation::Conversation>,
 ) {
-    let (Ok(row), Ok((mut view, casts_at))) = (rows.get(click.entity), views.single_mut()) else {
+    let (Ok(row), Ok((mut view, casts_at, conversation_target))) =
+        (rows.get(click.entity), views.single_mut())
+    else {
         return;
     };
     let (Some(spells), Some(items)) = (content.spells(), content.items()) else {
@@ -991,7 +1078,14 @@ fn choose_row(
         points,
         spells,
         items,
-        match context(casts_at.map(|c| c.0), battle.is_some(), camp.is_some(), &interaction) {
+        match context(
+            casts_at.map(|c| c.0),
+            conversation_target.map(|r| r.0),
+            &conversations,
+            battle.is_some(),
+            camp.is_some(),
+            &interaction,
+        ) {
             Some(c) => c,
             None => return,
         },
