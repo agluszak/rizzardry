@@ -442,10 +442,15 @@ impl Progression<'_, '_> {
             }
         }
         // Preserve deficits, conditions and recovery fractions; advancement is not a full heal.
-        v.hp = resized(v.hp, c.max_hp(), next.max_hp());
-        v.stamina = resized(v.stamina, c.max_stamina(), next.max_stamina());
-        let old_max = magic::max_points(&c, &known, spells);
-        let new_max = magic::max_points(&next, &learned, spells);
+        // The spells on the member count for both maxima.
+        let (old, new) = (c.stats(&v.enchantments), next.stats(&v.enchantments));
+        let (hp, stamina) = (
+            resized(v.hp, old.max_hp(), new.max_hp()),
+            resized(v.stamina, old.max_stamina(), new.max_stamina()),
+        );
+        let old_max = magic::max_points(&old, &known, spells);
+        let new_max = magic::max_points(&new, &learned, spells);
+        (v.hp, v.stamina) = (hp, stamina);
         for realm in EnumSet::<Realm>::all() {
             points.current[realm] = resized(points.current[realm], old_max[realm], new_max[realm]);
         }
@@ -816,7 +821,8 @@ mod tests {
         };
         let catalog = SpellCatalog(vec![SpellDefinition::default(), spell(1), spell(2)]);
         let known = LearnedSpells([SpellId::ACID_SPLASH].into());
-        let old = magic::max_points(w.get::<Character>(member).unwrap(), &known, &catalog);
+        let old =
+            magic::max_points(&w.get::<Character>(member).unwrap().base_stats(), &known, &catalog);
         let mut mana = SpellPoints::full(old);
         mana.current[Realm::Divine] -= 2;
         mana.fraction[Realm::Divine] = 0.25;
@@ -831,7 +837,7 @@ mod tests {
         let c = w.get::<Character>(member).unwrap();
         let learned = w.get::<LearnedSpells>(member).unwrap();
         let maximum = magic::max_points(
-            c,
+            &c.base_stats(),
             learned,
             w.resource::<Assets<SpellCatalog>>().get(&handle).unwrap(),
         );
