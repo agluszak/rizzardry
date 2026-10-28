@@ -93,7 +93,8 @@ pub(crate) fn discharge(
             move |(mut members, mut monsters): (Members, MonsterDamage),
                   mut points: Query<(&LearnedSpells, &mut SpellPoints)>,
                   mut context: MagicContext,
-                  mut rng: ResMut<crate::game::rng::GameRng>|
+                  mut rng: ResMut<crate::game::rng::GameRng>,
+                  clock: Res<crate::game::time::GameClock>|
                   -> Result<bool, Unable> {
                 ready(&context, &members, &monsters, &points, trap)?;
                 if selected.is_some_and(|actor| !context.roster.contains(&actor)) {
@@ -109,7 +110,7 @@ pub(crate) fn discharge(
                     .filter(|&actor| members.get(actor).is_ok_and(|(_, v, ..)| !v.is_dead()))
                     .collect();
                 let (spell, effects, improved, destroyed) = context
-                    .resolve(&mut members, &mut monsters, |field, spells| {
+                    .resolve(clock.ms, &mut members, &mut monsters, |field, spells| {
                         let spell: &SpellDefinition = spells.get(SPELLS[usize::from(trap)])?;
                         let difficulty = difficulty.clamp(1, 7);
                         let destroyed = rng.below(2) == 0;

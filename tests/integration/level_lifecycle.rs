@@ -595,7 +595,7 @@ fn direct_damage_settles_death_once_and_rejection_leaves_the_target_unchanged() 
                 move |mut damage: MonsterDamage,
                       mut purse: Single<&mut rizzardry::game::inventory::PartyInventory>,
                       mut rng: ResMut<GameRng>| {
-                    damage.apply(target, 10, 1, &mut purse, &mut rng)
+                    damage.apply(target, 10, (1, 0), &mut purse, &mut rng)
                 },
             )
             .unwrap()

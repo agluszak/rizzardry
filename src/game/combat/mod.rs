@@ -543,6 +543,8 @@ struct PartyView {
     yaw: f32,
     /// The level's far clip, which bounds monsters' sight.
     far: f32,
+    /// The game time the round's actions happen at.
+    now: u64,
 }
 
 impl PartyView {
@@ -773,37 +775,39 @@ pub fn settle_defeat(
     }
 }
 
+/// How each monster in the fight stands, through its group (one outside
+/// any group by its species), as this update of the fight begins.
+fn fighting_stances(
+    combatants: &[Entity],
+    (monsters, groups, factions): (
+        &Query<(&Monster, Option<&GroupMember>)>,
+        &Query<&MonsterGroup>,
+        &crate::game::factions::Factions,
+    ),
+    now: u64,
+    species: &MonsterCatalog,
+) -> Vec<(Entity, hostility::Stance)> {
+    combatants
+        .iter()
+        .filter_map(|&monster| {
+            let (body, member) = monsters.get(monster).ok()?;
+            let kind = species.kind(body.species)?;
+            let set = member.and_then(|m| groups.get(m.0).ok()).and_then(|g| g.set);
+            Some((monster, hostility::stance(set, kind, factions, now, true)))
+        })
+        .collect()
+}
+
 /// Groups with nothing left to fight leave it as the round ends (retail
 /// `CheckMonsterGroupsLeaveCombat`): one no longer hostile, or none of
 /// whose living members still sees the party. Returns the combatants that
 /// stay; one outside any group stays. Neutral groups staying to reinforce
 /// a fight are not modelled.
-/// How a monster in the fight stands, through its group; one outside any
-/// group by its species.
-fn fighting_stance(
-    monster: Entity,
-    kind: &Species,
-    (membership, groups, factions, now): (
-        &Query<&GroupMember>,
-        &Query<&MonsterGroup>,
-        &crate::game::factions::Factions,
-        u64,
-    ),
-) -> hostility::Stance {
-    let set = membership.get(monster).ok().and_then(|m| groups.get(m.0).ok()).and_then(|g| g.set);
-    hostility::stance(set, kind, factions, now, true)
-}
-
 fn leave_fight(
     commands: &mut Commands,
     combatants: &[Entity],
     monsters: &MonsterQuery,
-    (membership, groups, factions, now): (
-        &Query<&GroupMember>,
-        &Query<&MonsterGroup>,
-        &crate::game::factions::Factions,
-        u64,
-    ),
+    (membership, stances): (&Query<&GroupMember>, &[(Entity, hostility::Stance)]),
     sight: &Sight,
     species: &MonsterCatalog,
 ) -> Vec<Entity> {
@@ -815,12 +819,7 @@ fn leave_fight(
             continue;
         }
         checked.push(group);
-        let Some(kind) = monsters.get(combatant).ok().and_then(|(m, ..)| species.kind(m.species))
-        else {
-            continue;
-        };
-        let hostile = fighting_stance(combatant, kind, (membership, groups, factions, now))
-            == hostility::Stance::Hostile;
+        let hostile = stances.contains(&(combatant, hostility::Stance::Hostile));
         let sees = combatants.iter().filter(|&&c| group_of(c) == Some(group)).any(|&c| {
             monsters.get(c).is_ok_and(|(monster, at, walker, _)| {
                 species.kind(monster.species).is_some_and(|k| sight.sees(monster, &at, walker, k))
@@ -1027,7 +1026,16 @@ pub fn run_battle(
     mut commands: Commands,
     battle: Option<Single<(Entity, &mut Battle, Option<&Combatants>)>>,
     mut rng: ResMut<GameRng>,
-    mut actors: ParamSet<((Members, MonsterDamage, Query<&MonsterGroup>), GroupRecognition)>,
+    mut clock: ResMut<GameClock>,
+    mut actors: ParamSet<(
+        (Members, MonsterDamage),
+        GroupRecognition,
+        (
+            Query<(&Monster, Option<&GroupMember>)>,
+            Query<&MonsterGroup>,
+            Res<crate::game::factions::Factions>,
+        ),
+    )>,
     party_body: Query<(&Position, &PartyBody)>,
     (roster, content, level): (Single<&PartyRoster>, crate::game::data::Content, PlayedLevel),
     mut magic: BattleMagic,
@@ -1035,9 +1043,13 @@ pub fn run_battle(
 ) {
     let Some((entity, mut battle, combatants)) = battle.map(Single::into_inner) else { return };
     let combatants = combatants.map_or(&[][..], Combatants::entities);
-    let (mut members, mut damage, groups) = actors.p0();
     // Content and the party's body exist whenever a level is played.
     let Some(species) = content.species() else { return };
+    let stances = {
+        let (monsters, groups, factions) = actors.p2();
+        fighting_stances(combatants, (&monsters, &groups, &factions), clock.ms, species)
+    };
+    let (mut members, mut damage) = actors.p0();
     let Ok((position, body)) = party_body.single() else { return };
     if !damage.ready() || !battle.executing() || !battle.wait.is_finished() {
         return;
@@ -1050,6 +1062,7 @@ pub fn run_battle(
         eye: PartyBody::eye(position),
         yaw: body.yaw,
         far: level.view_distance().unwrap_or(0.0),
+        now: clock.ms,
     };
     if battle.phase == RoundPhase::Accepted {
         battle.phase = RoundPhase::Executing(1);
@@ -1086,13 +1099,14 @@ pub fn run_battle(
                 &mut commands,
                 combatants,
                 damage.monsters(),
-                (&magic.groups, &groups, damage.factions(), damage.clock().ms),
+                (&magic.groups, &stances),
                 &sight,
                 species,
             );
             let over = end_round(
                 &mut battle,
                 combatants,
+                &mut clock,
                 &mut rng,
                 roster,
                 &mut members,
@@ -1144,18 +1158,10 @@ pub fn run_battle(
         }
         if let Some(index) = battle.this_round.monsters.iter().position(|(_, t)| t.phase == step) {
             let monster = battle.this_round.monsters[index].0;
-            let stance = damage
-                .monsters()
-                .get(monster)
-                .ok()
-                .and_then(|(m, ..)| species.kind(m.species))
-                .map_or(hostility::Stance::Hostile, |kind| {
-                    fighting_stance(
-                        monster,
-                        kind,
-                        (&magic.groups, &groups, damage.factions(), damage.clock().ms),
-                    )
-                });
+            let stance = stances
+                .iter()
+                .find(|&&(m, _)| m == monster)
+                .map_or(hostility::Stance::Hostile, |&(_, stance)| stance);
             let acted = monster_turn(
                 &mut commands,
                 &mut battle,
@@ -1267,7 +1273,7 @@ fn party_turn(
     let armour = |member| armours.iter().find(|&&(m, _)| m == member).map(|&(_, a)| a);
     let mut fight =
         blows::Fight { combatants, party, armour: &armour, advancing: &advancing, points };
-    let attacked = context.with_field(members, damage, |field| {
+    let attacked = context.with_field(party.now, members, damage, |field| {
         blows::member_attacks(battle, index, rng, field, &mut fight, news);
     });
     if attacked.is_err() {
@@ -1436,7 +1442,7 @@ fn member_casts(
         group_of: &group_of,
     };
     context
-        .resolve(members, damage, |field, spells| {
+        .resolve(party.now, members, damage, |field, spells| {
             casting::perform(member, choice, &situation, spells, points, rng, field)
         })
         .and_then(|performed| performed)
@@ -1539,7 +1545,7 @@ fn monster_turn(
     if let Some((spell, power, aim, scene, caster)) = plan {
         battle.this_round.monsters[index].1 = Turn::default();
         battle.this_round.attacked = true;
-        let report = context.with_field(members, damage, |field| {
+        let report = context.with_field(party.now, members, damage, |field| {
             monster_spells::cast((&spell, power, aim), caster, &scene, rng, field, points)
         });
         if let Ok(report) = report {
@@ -1553,7 +1559,7 @@ fn monster_turn(
     let mut fight =
         blows::Fight { combatants, party, armour: &armour, advancing: &advancing, points };
     let idle = context
-        .with_field(members, damage, |field| {
+        .with_field(party.now, members, damage, |field| {
             blows::monster_attacks(battle, index, rng, field, &mut fight, news)
         })
         .unwrap_or(false);
@@ -1652,6 +1658,7 @@ fn spell_scene(
 fn end_round(
     battle: &mut Battle,
     combatants: &[Entity],
+    clock: &mut GameClock,
     rng: &mut GameRng,
     roster: &PartyRoster,
     members: &mut Members,
@@ -1666,7 +1673,7 @@ fn end_round(
     // The round's time passes now, with its meaning: conditions age, spell
     // points come back at half rate and nothing else recovers (retail
     // `AdvanceCombatRound`, `AdvanceTimedEffects`).
-    let ticks = damage.clock_mut().advance(ROUND_MS);
+    let ticks = clock.advance(ROUND_MS);
     enchantments.age(ticks.aging);
     for &entity in combatants {
         if let Some(mut e) = damage.enchantments_mut(entity) {
@@ -2826,7 +2833,7 @@ mod tests {
                           monsters: MonsterQuery,
                           obstacles: WorldObstacles,
                           roster: Single<&PartyRoster>| {
-                        let party = PartyView { eye: Vec3::Y * 1.5, yaw: 0.0, far: 50.0 };
+                        let party = PartyView { eye: Vec3::Y * 1.5, yaw: 0.0, far: 50.0, now: 0 };
                         let sight = party.sight(&members, &roster, &obstacles);
                         let scene = spell_scene(
                             (caster, &kind),

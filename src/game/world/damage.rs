@@ -63,25 +63,9 @@ pub struct MonsterDamage<'w, 's> {
     content: crate::game::data::Content<'w>,
     ids: ResMut<'w, ItemIds>,
     factions: ResMut<'w, crate::game::factions::Factions>,
-    clock: ResMut<'w, crate::game::time::GameClock>,
 }
 
 impl<'w, 's> MonsterDamage<'w, 's> {
-    /// The game's time, which offences are dated by and a fight's rounds
-    /// advance.
-    pub fn clock(&self) -> &crate::game::time::GameClock {
-        &self.clock
-    }
-
-    pub fn clock_mut(&mut self) -> &mut crate::game::time::GameClock {
-        &mut self.clock
-    }
-
-    /// The party's standing with the factions, which offences change.
-    pub fn factions(&self) -> &crate::game::factions::Factions {
-        &self.factions
-    }
-
     pub fn ready(&self) -> bool {
         self.content.items().is_some()
             && self.content.species().is_some()
@@ -133,13 +117,13 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         self.monsters.get(target).is_ok_and(|(_, _, _, owner)| self.levels.contains(owner.0))
     }
 
-    /// Hurt a monster; a kill drops its loot and pays its gold into the
-    /// party's purse.
+    /// Hurt a monster at game time `now`; a kill drops its loot, pays its
+    /// gold into the party's purse and counts against its faction then.
     pub fn apply(
         &mut self,
         target: Entity,
         amount: u32,
-        party_level: u32,
+        (party_level, now): (u32, u64),
         purse: &mut PartyInventory,
         rng: &mut GameRng,
     ) -> Result<DamageOutcome, DamageRefusal> {
@@ -203,7 +187,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         }
         self.commands.entity(target).remove_with_requires::<Crossing>();
         // The kill counts against its faction (retail `RecordFactionOffense`).
-        self.factions.record_offence(kind.faction, kind.npc.is_some(), self.clock.ms);
+        self.factions.record_offence(kind.faction, kind.npc.is_some(), now);
         let (found, gold) =
             crate::game::loot::monster_loot(kind, tables, catalog, party_level, rng);
         if gold > 0 {

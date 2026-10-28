@@ -18,12 +18,13 @@ pub(crate) fn cast_source(
             move |(mut members, mut monsters): (Members, MonsterDamage),
                   mut points: Query<(&LearnedSpells, &mut SpellPoints)>,
                   mut context: MagicContext,
-                  mut rng: ResMut<crate::game::rng::GameRng>| {
+                  mut rng: ResMut<crate::game::rng::GameRng>,
+                  clock: Res<crate::game::time::GameClock>| {
                 if !context.roster.contains(&caster) {
                     return Err(Refusal::CannotAct);
                 }
                 context
-                    .resolve(&mut members, &mut monsters, |field, spells| {
+                    .resolve(clock.ms, &mut members, &mut monsters, |field, spells| {
                         casting::perform_device(
                             caster,
                             source,

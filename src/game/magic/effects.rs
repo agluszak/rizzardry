@@ -299,6 +299,9 @@ pub struct Field<'a, 'm, 'ms, 'd, 'ds, 'f, 'p> {
     pub species: &'a MonsterCatalog,
     /// What monster loot tables scale by.
     pub party_level: u32,
+    /// The game time the action happens at, which a kill's offence is
+    /// dated by.
+    pub now: u64,
     pub difficulty: Difficulty,
     /// The living party, for spells that pick among it.
     pub party: &'a [Entity],
@@ -498,7 +501,7 @@ pub fn hurt(rng: &mut GameRng, world: &mut Field, victim: Victim, amount: u32) -
         Victim::Monster(monster) => {
             let outcome = world
                 .monsters
-                .apply(monster, amount, world.party_level, world.inventory, rng)
+                .apply(monster, amount, (world.party_level, world.now), world.inventory, rng)
                 .ok()?;
             Some(Effect::Damaged { victim, outcome })
         }
