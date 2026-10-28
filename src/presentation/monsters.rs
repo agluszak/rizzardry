@@ -401,8 +401,9 @@ mod tests {
                             max_hp: 1,
                             stamina: 1,
                             max_stamina: 1,
-                            mana: 0,
+
                             conditions: vec![],
+                            spell_points: 0,
                             body: ScaledBody::new(&MonsterBody::default(), 0),
                         },
                         MonsterVisual(model.clone()),

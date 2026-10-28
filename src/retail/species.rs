@@ -12,9 +12,10 @@ use enumset::EnumSet;
 
 use crate::content::items::{AttackEffects, ItemId};
 use crate::content::species::{
-    AttackWord, Disposition, Drop, MonsterAttack, MonsterAttributes, MonsterCatalog, Species,
-    Treasure,
+    AttackWord, Disposition, Drop, MonsterAttack, MonsterAttributes, MonsterCatalog, MonsterMagic,
+    Species, Temper, Treasure,
 };
+use crate::content::spells::SpellId;
 
 const RECORD: usize = 0x297;
 const ATTACKS_AT: usize = 0xe7;
@@ -83,7 +84,6 @@ fn species(record: &[u8]) -> Result<Species, DecodeError> {
         },
         hit_points: dice_at(record, 0xd6)?,
         stamina: dice_at(record, 0xda)?,
-        spell_points: i32_at(record, 0x26f)?.max(0) as u32,
         initiative: record[0xe4],
         attacks_per_round: record[0xe5],
         swings_per_round: record[0xe6],
@@ -124,6 +124,20 @@ fn species(record: &[u8]) -> Result<Species, DecodeError> {
         },
         faction: i32_at(record, 0x25f)?,
         combat_move_range: f32_at(record, 0x1ba)?.max(0.0),
+        pronouns: record[0xcc].min(3),
+        temper: Temper {
+            flee_chance: record[0xe2],
+            craven: record[0x1c0] == 0,
+            camouflaged: record[0x249] != 0,
+            prefers_range: record[0x1b9] != 0,
+        },
+        magic: MonsterMagic {
+            chance: record[0xe0],
+            spells: std::array::from_fn(|slot| {
+                Some(record[0x14d + slot]).filter(|&id| id != 0).map(SpellId)
+            }),
+            budget: i32_at(record, 0x26f)?,
+        },
     })
 }
 

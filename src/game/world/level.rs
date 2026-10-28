@@ -233,7 +233,6 @@ pub struct LevelRecord {
 #[derive(Clone, Debug)]
 pub struct KeptMonster {
     pub group: Option<i32>,
-    pub provoked: bool,
     pub monster: Monster,
     pub feet: Vec3,
     pub yaw: f32,
@@ -254,7 +253,6 @@ impl KeptMonster {
         let max_stamina = rng.roll(kind.stamina);
         let body = super::population::ScaledBody::new(body, rng.below(1000));
         KeptMonster {
-            provoked: false,
             monster: Monster {
                 enchantments: default(),
                 location: placed.location,
@@ -262,9 +260,10 @@ impl KeptMonster {
                 hp: max_hp,
                 max_hp,
                 stamina: max_stamina,
-                mana: kind.spell_points,
+
                 max_stamina,
                 conditions: Vec::new(),
+                spell_points: 0,
                 body,
             },
             group: Some(placed.group),
@@ -279,10 +278,8 @@ impl KeptMonster {
         pose: &super::ActorPoseItem,
         walker: Option<&super::navigation::Walker>,
         group: Option<i32>,
-        provoked: bool,
     ) -> Self {
         KeptMonster {
-            provoked,
             group,
             monster: monster.clone(),
             feet: super::navigation::feet(pose.translation(), walker),
@@ -300,13 +297,7 @@ pub struct LevelContents<'w, 's> {
     monsters: Query<
         'w,
         's,
-        (
-            &'static Monster,
-            super::ActorPose,
-            Option<&'static Walker>,
-            Option<&'static GroupMember>,
-            Has<super::population::Provoked>,
-        ),
+        (&'static Monster, super::ActorPose, Option<&'static Walker>, Option<&'static GroupMember>),
         Without<crate::game::npcs::NpcBody>,
     >,
     items: Query<'w, 's, (&'static WorldItem, &'static Transform)>,
@@ -333,9 +324,9 @@ impl LevelContents<'_, '_> {
                 .monsters
                 .iter_many(children)
                 .matched()
-                .map(|(monster, at, walker, group, provoked)| {
+                .map(|(monster, at, walker, group)| {
                     let group = group.and_then(|m| self.groups.get(m.0).ok()).map(|g| g.authored);
-                    KeptMonster::capture(monster, &at, walker, group, provoked)
+                    KeptMonster::capture(monster, &at, walker, group)
                 })
                 .collect(),
             items: self

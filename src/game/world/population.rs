@@ -27,18 +27,23 @@ pub struct Monster {
     pub hp: u32,
     pub max_hp: u32,
     pub stamina: u32,
-    pub mana: u32,
     pub max_stamina: u32,
     pub conditions: Vec<(Condition, Lasting)>,
     pub body: ScaledBody,
+    /// What has been done to its spell budget since it was met: drained
+    /// away, or raised by Might to Magic (retail `spell_points`, zero at
+    /// first). Its casting stands on this and its species' budget together.
+    pub spell_points: i32,
 }
 
-/// A monster something has hurt: it fights whatever its authored
-/// disposition (retail `MakeTargetGroupHostile`).
-#[derive(Component, Debug, Clone, Copy, Default)]
-pub struct Provoked;
-
 impl Monster {
+    /// What its casting stands on now (retail `ChooseMonsterSpellPowerLevel`,
+    /// `MonsterCastsSpell`): its species' budget and what has been done to
+    /// it, never below nothing.
+    pub fn spell_budget(&self, kind: &crate::content::species::Species) -> u32 {
+        self.spell_points.saturating_add(kind.magic.budget).max(0) as u32
+    }
+
     pub fn is_dead(&self) -> bool {
         self.hp == 0
     }
@@ -171,11 +176,8 @@ pub fn populate(
         let body = kept.monster.body;
         let name =
             format!("{} #{}", species.0[kept.monster.species as usize].name, kept.monster.location);
-        let mut entity = commands.spawn((Name::new(name), kept.monster));
-        if kept.provoked {
-            entity.insert(Provoked);
-        }
-        actors.push((entity.id(), kept.feet, kept.yaw, body, kept.group));
+        let entity = commands.spawn((Name::new(name), kept.monster)).id();
+        actors.push((entity, kept.feet, kept.yaw, body, kept.group));
     }
     let average = npcs.average_level();
     let mut placed_actors = std::collections::HashSet::new();

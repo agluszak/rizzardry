@@ -170,6 +170,36 @@ pub fn modelled(spell: SpellId) -> bool {
     kind(spell).is_some()
 }
 
+/// What a would-be victim lacks or already suffers, as a caster weighs a
+/// spell on it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Standing {
+    pub hurt: bool,
+    pub tired: bool,
+    pub conditions: Vec<Condition>,
+    /// The spells already enchanting it.
+    pub enchanted: Vec<SpellId>,
+}
+
+/// Whether a spell would do anything to a victim (retail
+/// `MonsterSpellTargetOK`): healing only the hurt, rest only the tired,
+/// cures only what they cure, and no condition or enchantment it already
+/// has. Pandemonium still works on the frightened while they are sane.
+pub fn worthwhile(spell: SpellId, standing: &Standing) -> bool {
+    use Condition::*;
+    let has = |condition| standing.conditions.contains(&condition);
+    match kind(spell) {
+        Some(Kind::Heal) => standing.hurt,
+        Some(Kind::Stamina) => standing.tired,
+        Some(Kind::Inflict(condition, _)) => !has(condition),
+        Some(Kind::Fear { .. }) => !has(Afraid),
+        Some(Kind::Pandemonium) => !has(Afraid) || !has(Insane),
+        Some(Kind::Enchant) => !standing.enchanted.contains(&spell),
+        Some(Kind::Cure(conditions)) => conditions.iter().any(|&c| has(c)),
+        _ => true,
+    }
+}
+
 /// Whether a spell restores what is missing, so that "auto" power and
 /// repeating aim at what the victim lacks.
 pub(super) fn restores(spell: SpellId) -> bool {
@@ -292,11 +322,32 @@ pub struct Field<'a, 'm, 'ms, 'd, 'ds, 'f, 'p> {
     pub spells: Option<&'a crate::content::spells::SpellCatalog>,
     /// What monster loot tables scale by.
     pub party_level: u32,
+    /// The game time the action happens at, which a kill's offence is
+    /// dated by.
+    pub now: u64,
     pub difficulty: Difficulty,
     /// The living party, for spells that pick among it.
     pub party: &'a [Entity],
     /// Skills that improved while resolving, for the notices.
     pub improved: Vec<(Entity, Skill)>,
+    /// Monsters the party acted against, eligible to provoke their groups
+    /// when the action was accepted ([`Field::provoke`]).
+    pub provoked: Vec<Entity>,
+}
+
+impl Field<'_, '_, '_, '_, '_, '_, '_> {
+    /// The party acts against this monster. Whether that provokes its group
+    /// is settled now, as the action is accepted, so nothing the action then
+    /// does (a kill, a Turncoat) undoes it (retail `MakeTargetGroupHostile`):
+    /// a living monster not under Turncoat does.
+    pub fn provoke(&mut self, monster: Entity) {
+        let eligible = self.monsters.monsters().get(monster).is_ok_and(|(body, ..)| {
+            !body.is_dead() && !body.conditions.iter().any(|&(c, _)| c == Condition::Turncoat)
+        });
+        if eligible {
+            self.provoked.push(monster);
+        }
+    }
 }
 
 /// The magnitude a spell rolls at `power` (retail `RollEffectMagnitude`): its
@@ -514,7 +565,7 @@ pub fn hurt(rng: &mut GameRng, world: &mut Field, victim: Victim, amount: u32) -
         Victim::Monster(monster) => {
             let outcome = world
                 .monsters
-                .apply(monster, amount, world.party_level, world.inventory, rng)
+                .apply(monster, amount, (world.party_level, world.now), world.inventory, rng)
                 .ok()?;
             Some(Effect::Damaged { victim, outcome })
         }

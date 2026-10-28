@@ -299,15 +299,16 @@ const PRICE_QUOTE: u16 = 0x12;
 /// The script's quote for a party that cannot pay.
 const TOO_POOR_QUOTE: u16 = 0x14;
 fn available(world: &World, actor: Entity) -> bool {
-    active_body(world, actor)
-        .is_some_and(|body| world.get::<crate::game::world::population::Provoked>(body).is_none())
-        && world.get::<Npc>(actor).is_some_and(|n| {
-            let charm = world
-                .try_query::<&Conversation>()
-                .and_then(|mut query| query.iter(world).find(|c| c.actor == actor).map(|c| c.charm))
-                .unwrap_or(0);
-            n.disposition.wrapping_add(charm as u8) >= WILLING_DISPOSITION
-        })
+    active_body(world, actor).is_some_and(|body| {
+        crate::game::world::hostility::monster_stance(world, body)
+            != crate::game::world::hostility::Stance::Hostile
+    }) && world.get::<Npc>(actor).is_some_and(|n| {
+        let charm = world
+            .try_query::<&Conversation>()
+            .and_then(|mut query| query.iter(world).find(|c| c.actor == actor).map(|c| c.charm))
+            .unwrap_or(0);
+        n.disposition.wrapping_add(charm as u8) >= WILLING_DISPOSITION
+    })
 }
 /// Shared gameplay permission, also used to derive the trade controls.
 pub fn trade_allowed(world: &World, actor: Entity) -> bool {
@@ -1195,8 +1196,9 @@ mod tests {
                 max_hp: 5,
                 stamina: 5,
                 max_stamina: 5,
-                mana: 0,
+
                 conditions: vec![],
+                spell_points: 0,
                 body: ScaledBody { scale: 1., radius: 0.5, eye_height: 1., speed: 0. },
             },
         ));

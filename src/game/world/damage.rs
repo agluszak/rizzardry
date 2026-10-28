@@ -110,12 +110,16 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         taken
     }
 
-    /// Spell points are live monster history; the species supplies only the
-    /// initial budget. Draining never rerolls or reconstructs that budget.
+    /// Drain the current effective spell budget; only the change belongs to
+    /// the actor. Casting and draining read the same species-plus-history rule.
     pub fn drain_magic(&mut self, entity: Entity, amount: u32) -> u32 {
         let Ok((mut monster, ..)) = self.monsters.get_mut(entity) else { return 0 };
-        let lost = monster.mana.min(amount);
-        monster.mana -= lost;
+        let Some(kind) = self.content.species().and_then(|catalog| catalog.kind(monster.species))
+        else {
+            return 0;
+        };
+        let lost = monster.spell_budget(kind).min(amount);
+        monster.spell_points = monster.spell_points.saturating_sub(lost as i32);
         lost
     }
 
@@ -131,13 +135,13 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         self.monsters.get(target).is_ok_and(|(_, _, _, owner, _)| self.levels.contains(owner.0))
     }
 
-    /// Hurt a monster; a kill drops its loot and pays its gold into the
-    /// party's purse.
+    /// Hurt a monster at game time `now`; a kill drops its loot, pays its
+    /// gold into the party's purse and counts against its faction then.
     pub fn apply(
         &mut self,
         target: Entity,
         amount: u32,
-        party_level: u32,
+        (party_level, now): (u32, u64),
         purse: &mut PartyInventory,
         rng: &mut GameRng,
     ) -> Result<DamageOutcome, DamageRefusal> {
@@ -174,7 +178,6 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         let position = feet(at.translation(), walker);
         let lost = amount.min(monster.hp);
         monster.hp -= lost;
-        self.commands.entity(target).insert(super::population::Provoked);
         if !monster.is_dead() {
             crate::game::characters::wake_on_hit(
                 &mut monster.conditions,
@@ -206,7 +209,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         }
         self.commands.entity(target).remove_with_requires::<Crossing>();
         // The kill counts against its faction (retail `RecordFactionOffense`).
-        factions.record_offence(kind.faction, kind.npc.is_some());
+        factions.record_offence(kind.faction, kind.npc.is_some(), now);
         let (found, gold) =
             crate::game::loot::monster_loot(kind, tables, catalog, party_level, rng);
         if gold > 0 {

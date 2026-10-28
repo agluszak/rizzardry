@@ -289,7 +289,6 @@ pub struct Species {
     pub attributes: MonsterAttributes,
     pub hit_points: Dice,
     pub stamina: Dice,
-    pub spell_points: u32,
     pub initiative: u8,
     pub attacks_per_round: u8,
     pub swings_per_round: u8,
@@ -325,6 +324,44 @@ pub struct Species {
     /// How far it moves in one combat action: this many times 20 metres
     /// (retail `combat_move_range`, `MonsterManager.cpp:620-633`).
     pub combat_move_range: f32,
+    /// Which words name it (retail `name_group`): 0 he, 1 she, 2 it, 3
+    /// they.
+    pub pronouns: u8,
+    /// How it carries itself in a fight.
+    pub temper: Temper,
+    pub magic: MonsterMagic,
+}
+
+/// The spells a species casts in a fight (retail record 0xe0, 0x14d,
+/// 0x26f).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct MonsterMagic {
+    /// The chance (%) it casts at its turn while it can strike someone;
+    /// none never casts.
+    pub chance: u8,
+    /// Its ten spell slots; later slots weigh more.
+    pub spells: [Option<super::spells::SpellId>; 10],
+    /// What its casting stands on, in place of a caster's skill (retail
+    /// `sp_budget`).
+    pub budget: i32,
+}
+
+/// How a species carries itself in a fight (retail `UpdateMonsterAI`,
+/// `MonsterAdvanceChance`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Temper {
+    /// The chance (%) it runs for its life at its turn (retail record byte
+    /// 0xe2); without one, a craven species always runs.
+    pub flee_chance: u8,
+    /// Its Combat Morale is the Monster Editor's first (retail record byte
+    /// 0x1c0 is 0).
+    pub craven: bool,
+    /// It keeps its place hidden rather than withdraw while neutral
+    /// (retail record byte 0x249).
+    pub camouflaged: bool,
+    /// It stands off and casts rather than close in (retail record byte
+    /// 0x1b9).
+    pub prefers_range: bool,
 }
 
 /// How a species meets the party before anything provokes it.

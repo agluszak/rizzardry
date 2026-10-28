@@ -445,6 +445,7 @@ impl Plugin for MagicPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<MagicRequest>()
             .add_message::<casting::MagicNews>()
+            .add_message::<crate::game::world::hostility::Provocation>()
             .init_resource::<casting::FlightOrder>()
             .add_systems(
                 Update,
@@ -481,6 +482,7 @@ pub struct MagicContext<'w, 's> {
     visibility: Option<crate::game::world::obstacles::WorldObstacles<'w, 's>>,
     /// Missiles leave in launch order, so equal arrivals land in it too.
     pub flight_order: ResMut<'w, casting::FlightOrder>,
+    provocations: MessageWriter<'w, crate::game::world::hostility::Provocation>,
 }
 
 impl MagicContext<'_, '_> {
@@ -489,22 +491,26 @@ impl MagicContext<'_, '_> {
         *self.level
     }
 
-    /// Resolve magic: `cast` gets the field of members, monsters and party
-    /// belongings it changes, and the spells.
+    /// Resolve magic at game time `now`: `cast` gets the field of members,
+    /// monsters and party belongings it changes, and the spells.
     pub fn resolve<R>(
         &mut self,
+        now: u64,
         members: &mut Members,
         monsters: &mut MonsterDamage,
         cast: impl FnOnce(&mut Field, &SpellCatalog) -> R,
     ) -> Result<R, casting::Refusal> {
-        self.field(members, monsters, |field, spells| spells.map(|spells| cast(field, spells)))?
-            .ok_or(casting::Refusal::MissingContent)
+        self.field(now, members, monsters, |field, spells| {
+            spells.map(|spells| cast(field, spells))
+        })?
+        .ok_or(casting::Refusal::MissingContent)
     }
 
     /// The field of members, monsters and party belongings that blows
     /// change; refused until items and monsters have loaded.
     pub fn with_field<R>(
         &mut self,
+        now: u64,
         members: &mut Members,
         monsters: &mut MonsterDamage,
         act: impl FnOnce(&mut Field) -> R,
@@ -512,11 +518,12 @@ impl MagicContext<'_, '_> {
         if self.content.species().is_none() || !monsters.ready() {
             return Err(casting::Refusal::MissingContent);
         }
-        self.field(members, monsters, |field, _| act(field))
+        self.field(now, members, monsters, |field, _| act(field))
     }
 
     fn field<R>(
         &mut self,
+        now: u64,
         members: &mut Members,
         monsters: &mut MonsterDamage,
         act: impl FnOnce(&mut Field, Option<&SpellCatalog>) -> R,
@@ -541,11 +548,16 @@ impl MagicContext<'_, '_> {
             species: self.content.species(),
             spells: self.content.spells(),
             party_level,
+            now,
             difficulty: *self.difficulty,
             party: &party,
             improved: Vec::new(),
+            provoked: Vec::new(),
         };
-        Ok(act(&mut field, self.content.spells()))
+        let result = act(&mut field, self.content.spells());
+        self.provocations
+            .write_batch(field.provoked.drain(..).map(crate::game::world::hostility::Provocation));
+        Ok(result)
     }
 }
 
@@ -563,6 +575,7 @@ pub fn accept_magic(
     mut rng: ResMut<GameRng>,
     party: Query<&avian3d::prelude::Position, With<crate::game::party::body::PartyBody>>,
     mut commands: Commands,
+    clock: Res<crate::game::time::GameClock>,
 ) {
     for &MagicRequest { caster, choice } in requests.read() {
         if !context.roster.contains(&caster) {
@@ -632,7 +645,7 @@ pub fn accept_magic(
         };
         let level = context.level();
         let performed = context
-            .resolve(&mut members, &mut monsters, |field, spells| {
+            .resolve(clock.ms, &mut members, &mut monsters, |field, spells| {
                 casting::perform(caster, choice, &situation, spells, &mut points, &mut rng, field)
             })
             .and_then(|performed| performed);
@@ -660,6 +673,7 @@ pub fn deliver_spells(
     mut battle: Option<Single<&mut crate::game::combat::Battle>>,
     mut combat_news: MessageWriter<crate::game::combat::CombatNews>,
     mut commands: Commands,
+    clock: Res<crate::game::time::GameClock>,
 ) {
     if flights.is_empty() {
         return;
@@ -696,7 +710,7 @@ pub fn deliver_spells(
     for (_, _, entity) in due {
         let flight = flights.get(entity).unwrap().1.clone();
         commands.entity(entity).despawn();
-        let landed = context.resolve(&mut members, &mut monsters, |field, spells| {
+        let landed = context.resolve(clock.ms, &mut members, &mut monsters, |field, spells| {
             let spell = spells.get(flight.spell)?;
             let victims = &flight.victims;
             let effects = impacts::resolve(
@@ -809,6 +823,7 @@ mod tests {
             .init_asset::<SpellCatalog>()
             .init_asset::<LootTables>()
             .init_resource::<crate::game::factions::Factions>()
+            .init_resource::<crate::game::time::GameClock>()
             .init_resource::<ItemIds>()
             .init_resource::<crate::game::difficulty::Difficulty>()
             .init_resource::<casting::FlightOrder>()
@@ -816,6 +831,7 @@ mod tests {
             .add_message::<DamageApplied>()
             .add_message::<MagicRequest>()
             .add_message::<casting::MagicNews>()
+            .add_message::<crate::game::world::hostility::Provocation>()
             .add_systems(Update, accept_magic);
         let potion = ItemDefinition {
             id: ItemId(0),
@@ -976,6 +992,7 @@ mod tests {
                 .init_asset::<SpellCatalog>()
                 .init_asset::<LootTables>()
                 .init_resource::<crate::game::factions::Factions>()
+                .init_resource::<crate::game::time::GameClock>()
                 .init_resource::<ItemIds>()
                 .init_resource::<crate::game::difficulty::Difficulty>()
                 .init_resource::<casting::FlightOrder>()
@@ -983,6 +1000,7 @@ mod tests {
                 .add_message::<DamageApplied>()
                 .add_message::<MagicRequest>()
                 .add_message::<MagicNews>()
+                .add_message::<crate::game::world::hostility::Provocation>()
                 .add_systems(Update, accept_magic);
             let definition = ItemDefinition {
                 id: ItemId(0),

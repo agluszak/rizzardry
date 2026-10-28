@@ -244,6 +244,21 @@ pub struct SpellDefinition {
 }
 
 impl SpellDefinition {
+    /// Whether it is aimed at enemies, which provokes them (retail
+    /// `MonsterCanAimSpell`, `CharacterActionTargetsEnemies`): an enemy,
+    /// group, area or all-enemies spell other than Charm and Mindread.
+    pub fn aimed_at_enemies(&self) -> bool {
+        matches!(
+            self.targeting,
+            Targeting::Enemy
+                | Targeting::EnemyGroup
+                | Targeting::Cone
+                | Targeting::Radius
+                | Targeting::AllEnemies
+        ) && self.id != SpellId::CHARM
+            && self.id != SpellId::MINDREAD
+    }
+
     /// Spell points a cast at `power` costs.
     pub fn cost_at(&self, power: u8) -> u32 {
         self.cost * u32::from(power)

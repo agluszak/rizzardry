@@ -675,6 +675,15 @@ pub fn perform(
                 Some(situation.party_at),
             );
         }
+        // A spell aimed at enemies provokes those it is cast at, whatever
+        // the roll (retail `MakeTargetGroupHostile` as the action starts).
+        if first && spell.aimed_at_enemies() {
+            for victim in &victims {
+                if let Victim::Monster(monster) = *victim {
+                    world.provoke(monster);
+                }
+            }
+        }
         // Accepted: roll, then pay whatever the roll.
         let (chance, quiet, strength) =
             attempt(&character, item.as_ref(), spell, cast_power, world.difficulty);

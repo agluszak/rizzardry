@@ -16,12 +16,15 @@ use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::world::level::PlayedLevel;
 
-/// Knowledge belongs to the identifiable group, not to parallel level tables.
+/// Knowledge belongs to the identifiable group, not to parallel level tables,
+/// and so does its stance toward the party ([`super::hostility`]).
 #[derive(Component, Clone, Copy, Debug, Default)]
 pub struct MonsterGroup {
     pub authored: i32,
     pub identified: bool,
     pub counted: bool,
+    /// The stance last set on the group and when, if anything has set one.
+    pub set: Option<super::hostility::SetStance>,
 }
 
 /// Membership is independent of level lifetime ownership. Replacing this
@@ -322,8 +325,9 @@ mod tests {
                 max_hp: 10,
                 stamina: 0,
                 max_stamina: 0,
-                mana: 0,
+
                 conditions: vec![],
+                spell_points: 0,
                 body: ScaledBody { scale: 1.0, radius: 1.0, eye_height: 1.0, speed: 0.0 },
             },
             Transform::from_translation(Vec3::splat(1000.0)),
