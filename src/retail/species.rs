@@ -122,7 +122,7 @@ fn species(record: &[u8]) -> Result<Species, DecodeError> {
 pub fn read_species(data: &[u8]) -> Result<Vec<Species>, DecodeError> {
     let mut bytes = Bytes::new(data);
     let count = bytes.u32()? as usize;
-    (0..count).map(|_| Ok(species(bytes.take(RECORD)?)?)).collect()
+    (0..count).map(|_| species(bytes.take(RECORD)?)).collect()
 }
 
 #[derive(Default, TypePath)]

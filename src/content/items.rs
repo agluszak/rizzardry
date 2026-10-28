@@ -124,6 +124,43 @@ pub enum Ammunition {
     SlingStone,
 }
 
+/// What kind of thing an item is: retail's generic name index
+/// (`unidentified_name_index`), which picks its unidentified name, picture
+/// and model, and which a few rules single out. Retail has 147 kinds; only
+/// those rules name are named here.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ItemKind(pub u16);
+
+impl ItemKind {
+    pub const DAGGER: Self = Self(0x00);
+    pub const LONGBOW: Self = Self(0x0b);
+    pub const CROSSBOW: Self = Self(0x0c);
+    pub const SLING: Self = Self(0x0d);
+    pub const SHURIKEN: Self = Self(0x15);
+    pub const ARROW: Self = Self(0x16);
+    pub const SLING_STONE: Self = Self(0x17);
+    pub const GREATBOW: Self = Self(0x25);
+    pub const QUARREL: Self = Self(0x53);
+    pub const POWER_GLOVE: Self = Self(0x68);
+    pub const PHASER: Self = Self(0x6e);
+    pub const DARTS: Self = Self(0x70);
+    pub const POWDER_SHOT: Self = Self(0x71);
+    pub const MUSKET: Self = Self(0x72);
+    /// The thrown-weapon category used by Shuriken, Death Star and Boomerang Shuriken.
+    /// The separate SHURIKEN category has no items in the original database.
+    pub const THROWING_SHURIKEN: Self = Self(0x7e);
+    /// The Gadgeteer's omnigun, whose twelve tiers are items 599 to 610.
+    pub const OMNIGUN: Self = Self(0x83);
+    /// Retail generic label "PowerPak".
+    pub const POWER_PACK: Self = Self(0x84);
+    pub const ROCKET: Self = Self(0x8f);
+    pub const ROCKET_LAUNCHER: Self = Self(0x90);
+    /// Retail generic label "Flame Thrower".
+    pub const FLAME_THROWER: Self = Self(0x91);
+    /// Retail generic label "Fuel".
+    pub const FUEL: Self = Self(0x92);
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct ItemDefinition {
     pub id: ItemId,
@@ -132,6 +169,7 @@ pub struct ItemDefinition {
     pub unidentified_name: String,
     /// Generic kind without the unidentified annotation (for assay/type labels).
     pub kind_name: String,
+    pub kind: ItemKind,
     /// The item's picture, a retail path such as `data/items/dagger.sti`.
     pub image: String,
     /// Its model lying in the world, such as `data/items3d/dagger.itm`.
