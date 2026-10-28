@@ -1472,6 +1472,7 @@ mod tests {
             .init_resource::<Assets<LootTables>>()
             .init_resource::<avian3d::collider_tree::ColliderTrees>()
             .init_resource::<crate::game::factions::Factions>()
+            .add_message::<crate::game::factions::FactionNews>()
             .init_resource::<crate::game::difficulty::Difficulty>()
             .add_message::<MagicNews>()
             .init_resource::<ItemIds>()

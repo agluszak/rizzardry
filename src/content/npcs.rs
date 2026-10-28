@@ -1,4 +1,5 @@
 //! NPC definitions and authored dialogue. Numbers are content keys, never runtime slots.
+use super::factions::Faction;
 use super::items::ItemId;
 use bevy::prelude::*;
 
@@ -84,10 +85,10 @@ pub enum DialogueOp {
     SetFact(FactId, u8),
     GiveGold(u32),
     GiveExperience(u32),
-    /// Keep the authored name: retail silently ignores unrecognized names,
-    /// including the shipped FACTION_HIGARDI typo (not HIGARDI_COMMON).
+    /// A change to a faction's standing. Retail ignores a name it does not
+    /// know, such as the shipped `FACTION_HIGARDI`, so none is changed.
     AdjustFaction {
-        name: String,
+        faction: Option<Faction>,
         delta: i8,
     },
     Close,

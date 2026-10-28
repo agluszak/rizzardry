@@ -45,6 +45,7 @@ impl Plugin for GamePlugin {
             .init_resource::<difficulty::Difficulty>()
             .init_state::<screen::Screen>()
             .add_message::<inventory::ItemNews>()
+            .add_message::<factions::FactionNews>()
             .add_systems(Startup, data::load_game_data)
             .configure_sets(
                 Update,

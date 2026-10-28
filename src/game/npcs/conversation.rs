@@ -156,7 +156,6 @@ pub enum TranscriptLine {
 pub enum QuestReward {
     Gold { giver: String, amount: u32 },
     Experience { amount_each: u32 },
-    Faction { faction: Faction, improved: bool },
 }
 #[derive(Component, Debug)]
 pub struct Conversation {
@@ -512,16 +511,14 @@ fn plan_quote(
                 }
                 plan.effects.push(QuoteEffect::Experience { members, amount: *amount });
             }
-            DialogueOp::AdjustFaction { name, delta } => {
-                // FindFactionByName returns -1 for unknown names; retail skips
-                // them rather than aliasing the shipped FACTION_HIGARDI typo.
-                if let Some(faction) = Faction::from_script_name(name) {
-                    if !world.contains_resource::<Factions>() {
-                        return Err((i, "faction state unavailable".into()));
-                    }
-                    plan.effects.push(QuoteEffect::Faction { faction, delta: *delta });
+            DialogueOp::AdjustFaction { faction: Some(faction), delta } => {
+                if !world.contains_resource::<Factions>() {
+                    return Err((i, "faction state unavailable".into()));
                 }
+                plan.effects.push(QuoteEffect::Faction { faction: *faction, delta: *delta });
             }
+            // Retail ignores a faction name it does not know.
+            DialogueOp::AdjustFaction { faction: None, .. } => {}
             DialogueOp::Conditional { facts, response } => {
                 let mut matched = true;
                 for (id, expected) in facts {
@@ -614,14 +611,9 @@ fn commit_quote(world: &mut World, entity: Entity, quote: u16, plan: QuotePlan) 
                     .push(TranscriptLine::Reward(QuestReward::Experience { amount_each: amount }));
             }
             QuoteEffect::Faction { faction, delta } => {
-                let movement = world.resource_mut::<Factions>().adjust(faction, delta);
-                if movement != 0 {
-                    world.get_mut::<Conversation>(entity).unwrap().transcript.push(
-                        TranscriptLine::Reward(QuestReward::Faction {
-                            faction,
-                            improved: movement > 0,
-                        }),
-                    );
+                // Retail announces it in the text box, not the dialogue.
+                if let Some(news) = world.resource_mut::<Factions>().adjust(faction, delta) {
+                    world.write_message(news);
                 }
             }
         }
@@ -1217,6 +1209,7 @@ mod tests {
             ))
             .add_message::<ConversationRequest>()
             .add_message::<LinePlayback>()
+            .add_message::<crate::game::factions::FactionNews>()
             .init_resource::<StoryFacts>()
             .init_resource::<GameRng>()
             .init_resource::<Assets<NpcCatalog>>()
@@ -1291,7 +1284,7 @@ mod tests {
         let operations = vec![
             DialogueOp::GiveGold(500),
             DialogueOp::GiveExperience(100),
-            DialogueOp::AdjustFaction { name: "FACTION_UMPANI".into(), delta: -50 },
+            DialogueOp::AdjustFaction { faction: Some(Faction::Umpani), delta: -50 },
             DialogueOp::SetFact(FactId(91), 1),
             DialogueOp::Next(Response::Fixed(1)),
         ];
@@ -1375,7 +1368,16 @@ mod tests {
                     .iter()
                     .filter(|line| matches!(line, TranscriptLine::Reward(_)))
                     .count(),
-                3
+                2
+            );
+            let news = world.resource::<Messages<crate::game::factions::FactionNews>>();
+            assert_eq!(
+                news.iter_current_update_messages().copied().collect::<Vec<_>>(),
+                [crate::game::factions::FactionNews {
+                    faction: Faction::Umpani as i32,
+                    improved: false
+                }],
+                "the faction notice goes to the text box once"
             );
         }
     }

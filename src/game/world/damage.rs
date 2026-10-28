@@ -63,6 +63,7 @@ pub struct MonsterDamage<'w, 's> {
     content: crate::game::data::Content<'w>,
     ids: ResMut<'w, ItemIds>,
     factions: ResMut<'w, crate::game::factions::Factions>,
+    faction_news: MessageWriter<'w, crate::game::factions::FactionNews>,
 }
 
 impl<'w, 's> MonsterDamage<'w, 's> {
@@ -188,7 +189,9 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         }
         self.commands.entity(target).remove_with_requires::<Crossing>();
         // The kill counts against its faction (retail `RecordFactionOffense`).
-        self.factions.record_offence(kind.faction, kind.npc.is_some());
+        if let Some(news) = self.factions.record_offence(kind.faction, kind.npc.is_some()) {
+            self.faction_news.write(news);
+        }
         let (found, gold) =
             crate::game::loot::monster_loot(kind, tables, catalog, party_level, rng);
         if gold > 0 {

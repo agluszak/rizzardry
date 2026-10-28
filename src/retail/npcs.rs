@@ -3,7 +3,7 @@
 use super::LoadError;
 use crate::{
     bytes::{Bytes, i32_at, lenient_string, u16_at, u32_at, utf16_units},
-    content::{items::ItemId, npcs::*},
+    content::{factions::Faction, items::ItemId, npcs::*},
 };
 use bevy::{
     asset::{AssetLoader, LoadContext, io::Reader},
@@ -133,8 +133,9 @@ fn operation(
         8 => DialogueOp::Close,
         16 if args[0] >= 0 => DialogueOp::GiveGold(args[0] as u32),
         17 if args[0] >= 0 => DialogueOp::GiveExperience(args[0] as u32),
-        22 if subs.len() == 1 && i8::try_from(args[0]).is_ok() => {
-            DialogueOp::AdjustFaction { name: words()?.remove(0), delta: args[0] as i8 }
+        // `AdjustFactionDisposition` takes the operand as a char.
+        22 if subs.len() == 1 => {
+            DialogueOp::AdjustFaction { faction: faction(&words()?[0]), delta: args[0] as i8 }
         }
         18 | 30 if args[0] >= 0 => DialogueOp::Price { gold: args[0] as u32, always: kind == 30 },
         23 => DialogueOp::Decline(id(args[0])?),
@@ -148,6 +149,31 @@ fn operation(
             text: words()?.remove(0),
         },
         _ => unsupported(),
+    })
+}
+/// A faction by its script name, any case (retail `FindFactionByName`).
+fn faction(name: &str) -> Option<Faction> {
+    Some(match name.to_ascii_uppercase().as_str() {
+        "UNALIGNED" => Faction::Unaligned,
+        "FACTION_PARTY" => Faction::Party,
+        "FACTION_DARK_SAVANT" => Faction::DarkSavant,
+        "FACTION_COSMIC_LORDS" => Faction::CosmicLords,
+        "FACTION_UMPANI" => Faction::Umpani,
+        "FACTION_TRANG" => Faction::Trang,
+        "FACTION_MOOK" => Faction::Mook,
+        "FACTION_RATTKIN_COMMON" => Faction::RattkinCommon,
+        "FACTION_RATTKIN_MAFIA" => Faction::RattkinMafia,
+        "FACTION_BROTHERHOOD" => Faction::Brotherhood,
+        "FACTION_HIGARDI_BANK" => Faction::HigardiBank,
+        "FACTION_HIGARDI_HLL" => Faction::HigardiLunarLegion,
+        "FACTION_HIGARDI_COMMON" => Faction::HigardiCommon,
+        "FACTION_TRYNNIE" => Faction::Trynnie,
+        "FACTION_MAD_MARTEN" => Faction::MadMarten,
+        "FACTION_RAPAX_COMMON" => Faction::RapaxCommon,
+        "FACTION_RAPAX_TEMPLAR" => Faction::RapaxTemplar,
+        "FACTION_RAPAX_ARMY" => Faction::RapaxArmy,
+        "FACTION_KINGS_ASSASINS" => Faction::KingsAssassins,
+        _ => return None,
     })
 }
 pub fn read_dialogue(data: &[u8]) -> Result<DialogueScript, LoadError> {
@@ -324,17 +350,23 @@ mod tests {
             DialogueOp::GiveExperience(300000)
         );
         assert_eq!(
-            operation(22, [-50, 0, 0], vec![(0, Some("FACTION_UMPANI".into()))]).unwrap(),
-            DialogueOp::AdjustFaction { name: "FACTION_UMPANI".into(), delta: -50 }
+            operation(22, [-50, 0, 0], vec![(0, Some("faction_umpani".into()))]).unwrap(),
+            DialogueOp::AdjustFaction { faction: Some(Faction::Umpani), delta: -50 }
+        );
+        assert_eq!(
+            operation(22, [5, 0, 0], vec![(0, Some("FACTION_HIGARDI".into()))]).unwrap(),
+            DialogueOp::AdjustFaction { faction: None, delta: 5 },
+            "retail's misspelt name changes nothing"
         );
         assert!(matches!(
             operation(16, [-1, 0, 0], vec![]).unwrap(),
             DialogueOp::Unsupported { .. }
         ));
-        assert!(matches!(
-            operation(22, [256, 0, 0], vec![(0, Some("FACTION_UMPANI".into()))]).unwrap(),
-            DialogueOp::Unsupported { .. }
-        ));
+        assert_eq!(
+            operation(22, [0x1fb, 0, 0], vec![(0, Some("FACTION_UMPANI".into()))]).unwrap(),
+            DialogueOp::AdjustFaction { faction: Some(Faction::Umpani), delta: -5 },
+            "retail truncates the operand to a char"
+        );
     }
 
     #[test]

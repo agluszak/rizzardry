@@ -1024,10 +1024,6 @@ fn project_text(
 }
 const QUEST_GOLD: usize = 0x7e9;
 const QUEST_EXPERIENCE: usize = 0x232;
-const FACTION_NAMES: usize = 0x5a1;
-const FACTION_DECREASED: usize = 0x245;
-const FACTION_INCREASED: usize = 0x246;
-const FACTION_CHANGED: usize = 0x247;
 
 fn sync_transcript(
     views: ViewScope,
@@ -1062,26 +1058,8 @@ fn sync_transcript(
                         QuestReward::Experience { amount_each } => {
                             strings.get(QUEST_EXPERIENCE).replace("%d", &amount_each.to_string())
                         }
-                        QuestReward::Faction { faction, improved } => strings
-                            .get(FACTION_CHANGED)
-                            .replacen("%s", strings.get(FACTION_NAMES + *faction as usize), 1)
-                            .replacen(
-                                "%s",
-                                strings.get(if *improved {
-                                    FACTION_INCREASED
-                                } else {
-                                    FACTION_DECREASED
-                                }),
-                                1,
-                            ),
                     };
-                    let palette = if matches!(reward, QuestReward::Faction { improved: false, .. })
-                    {
-                        "palettered"
-                    } else {
-                        "palettegreen"
-                    };
-                    (text, Some(palette))
+                    (text, Some("palettegreen"))
                 }
             })
             .collect();
