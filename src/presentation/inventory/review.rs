@@ -130,6 +130,7 @@ fn panel(commands: &mut Commands, root: Entity, page: Page) -> Entity {
 }
 
 pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) -> Entity {
+    super::progression::build(commands, root, art);
     // Retail's item actions: Identify, Merge, Split, Use, Drop, Use on Item,
     // Use on Character and Cast. The ones without their gameplay operations
     // yet show retail's disabled art.

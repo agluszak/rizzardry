@@ -9,6 +9,7 @@
 mod info;
 mod item_info;
 mod pool_scroll;
+mod progression;
 mod review;
 mod spells;
 
@@ -350,7 +351,7 @@ fn enter_inventory(
         Actions<InventoryRoot> [
             Action::<CloseInventory>::new()
             ActionSettings { consume_input: true }
-            Bindings [ Binding(KeyCode::Escape) Binding(KeyCode::KeyI) ]
+            Bindings [ Binding(KeyCode::Escape) -- Binding(KeyCode::KeyI) ]
         ]
         on(|_: On<Start<CloseInventory>>, mut next: ResMut<NextState<Screen>>| { next.set(Screen::World); })
     }).insert((InventoryScreen { member }, DespawnOnExit(Screen::Inventory)));
@@ -1288,7 +1289,8 @@ pub struct InventoryPlugin;
 
 impl Plugin for InventoryPlugin {
     fn build(&self, app: &mut App) {
-        app.add_input_context::<InventoryKey>()
+        app.add_plugins(progression::plugin)
+            .add_input_context::<InventoryKey>()
             .add_input_context::<InventoryRoot>()
             .add_input_context::<info::InfoDialog>()
             .add_systems(Startup, (load_inventory_art, spawn_inventory_key, spawn_held_picture))

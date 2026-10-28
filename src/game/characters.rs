@@ -2,6 +2,7 @@
 //! The tables come from the original executable.
 
 pub mod creation;
+pub mod progression;
 pub mod resistance;
 
 use bevy::prelude::*;
@@ -387,11 +388,13 @@ pub struct Character {
     pub level: u8,
     pub profession_levels: EnumMap<Profession, u8>,
     pub experience: u32,
+    /// The threshold actually passed, retaining the prices of earlier professions.
+    pub experience_previous_goal: u32,
     pub attributes: EnumMap<Attribute, u8>,
     /// Points invested per skill.
     pub skill_points: EnumMap<Skill, u8>,
     /// Unspent spell picks carried forward to later character advancement.
-    pub unspent_spell_picks: u8,
+    pub spell_picks: progression::SpellPicks,
     /// Successful practice towards each skill's next point (retail
     /// `practice_count`; eight make a point).
     pub skill_practice: EnumMap<Skill, u8>,
@@ -429,9 +432,10 @@ impl Character {
             level: 1,
             profession_levels,
             experience: 0,
+            experience_previous_goal: 0,
             attributes,
             skill_points: EnumMap::default(),
-            unspent_spell_picks: 0,
+            spell_picks: default(),
             skill_practice: EnumMap::default(),
             portrait: String::new(),
         };
@@ -666,17 +670,11 @@ impl Character {
         initiative - load.penalty()
     }
 
-    /// Experience needed for the next level (retail goals): the weight at
-    /// level 1, doubling increments to level 10, then 20% more each level.
+    /// The passed threshold plus this profession's next increment: doubling
+    /// to level 10, then 20% growth. Prior professions keep their actual cost.
     pub fn experience_goal(&self) -> u32 {
-        let weight = profession_row(self.profession).experience;
-        let mut goal = weight;
-        let mut step = weight;
-        for level in 2..=u32::from(self.level) {
-            step = if level <= 10 { weight << (level - 2) } else { step * 12 / 10 };
-            goal += step;
-        }
-        goal
+        self.experience_previous_goal
+            .saturating_add(progression::experience_increment(self.profession, self.level))
     }
 
     /// Whether the character may use an item (retail `CanCharacterUseItem`):
@@ -924,8 +922,10 @@ mod tests {
     fn experience_goals_double_then_grow_by_a_fifth() {
         let mut mage = Character::new("Mira", Race::Elf, Gender::Female, Profession::Mage);
         mage.level = 3;
+        mage.experience_previous_goal = 2400;
         assert_eq!(mage.experience_goal(), 1200 + 1200 + 2400);
         mage.level = 11;
+        mage.experience_previous_goal = 1200 * (1 + 511);
         // Level 1 is one weight; levels 2 to 10 add 1, 2, ..., 256 weights.
         let at_ten = 1200 * (1 + 511);
         assert_eq!(mage.experience_goal(), at_ten + 256 * 1200 * 12 / 10);

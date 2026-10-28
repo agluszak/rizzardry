@@ -107,6 +107,8 @@ pub struct ItemDefinition {
     /// What kind of thing it is (retail's generic name index): which
     /// unidentified name it shows, and what it may be held or loaded with.
     pub kind: u16,
+    /// Generic kind without the unidentified annotation (for assay/type labels).
+    pub kind_name: String,
     /// The item's picture, a retail path such as `data/items/dagger.sti`.
     pub image: String,
     /// Its model lying in the world, such as `data/items3d/dagger.itm`.
