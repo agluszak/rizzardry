@@ -11,20 +11,34 @@ character, not its C++ architecture.
   frameworks, one-use forwarding layers, mirrored models or compatibility glue.
 - Establish behavior from the original game and decomp; modernized source is
   supporting evidence, not automatically equivalent. Record deliberate deviations.
-- Give each mutable fact one authoritative owner. Assets hold shared definitions;
+- Define state by meaning and lifetime: current fact, draft intent, accepted work,
+  historical snapshot, derived value/index or presentation history. Give each fact
+  one authority and explicit mutation operations; use cohesive structs/enums for
+  coupled values and mutually exclusive alternatives. Assets hold shared definitions;
   entities hold live actors/devices; resources hold genuinely global state;
   ordinary values hold drafts and records. Split components by independent
   behavior/lifetime, not one field per component or old class boundaries.
-- Use relationships for actual relationships. Scene ownership may despawn visual
-  children, never unrelated party members, targets or group members.
+- Share rule functions before storing their results. Caching needs a concrete cost,
+  query or integration benefit. Every stored derivation/index needs named sources,
+  a producer, all invalidation paths (including initialization, missing inputs,
+  removal and restoration), and the boundary at which consumers may trust it.
+  Consumers must not independently patch derived results.
+- Use relationships for actual relationships; Bevy maintains their inverses, not
+  dependencies on other gameplay facts. Required components ensure insertion,
+  not value freshness; hooks observe lifecycle operations, not in-place mutation.
+  Scene ownership may despawn visual children, never unrelated party members,
+  targets or group members.
 - PartyRoster owns membership/order. A Character query is not a party query.
   Retained NPC profiles do not imply active party membership or identical role stats.
 - Gameplay operations validate authoritative state and commit required consequences
   together. Damage/death, item transfers and acceptance must not depend on loosely
-  ordered observer chains. Events/messages suit requests and notifications, not a
-  second authority. Explicit pending state owns work that outlives a frame.
+  ordered observer chains. Define deferred visibility and schedule boundaries when
+  they affect dependent readers. Events/messages suit requests and notifications,
+  not a second authority. Explicit pending state owns work that outlives a frame.
 - Distinguish editing, acceptance, execution and presentation. Accepted work keeps
   actor identity and paid costs; later roster or UI edits cannot redirect it.
+  Before recomputing stored data, preserve whether it means now, at acceptance,
+  at round start or after the last redistribution (including burden during combat).
 - Level preparation is not activation. Reject missing mandatory content; preserve
   map-owned state in dormant records and restore it on revisit. Views cannot
   initialize campaign state or make gameplay readiness depend on artwork.
@@ -39,6 +53,12 @@ character, not its C++ architecture.
   gameplay commits revalidate them. Explicitly gate shortcuts behind focused UI.
 
 ## Verification and workflow
+
+- State refactor PRs include a short ownership note: what each representation means,
+  its authority and mutation operations, why any derived storage is needed and
+  when it is valid, and the fallback/cancellation/removal/restore paths checked.
+  Judge simplification by remaining writable mirrors, mutation paths, invalidation,
+  cleanup, ordering dependencies and opportunities for consumers to disagree.
 
 - Write only meaningful tests: real regressions, important rules, or ownership and
   lifecycle boundaries. Not every helper, UI detail or change needs a test, and

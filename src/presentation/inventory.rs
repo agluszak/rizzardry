@@ -773,13 +773,17 @@ fn draw_header_hands(
     screen: Option<Single<&InventoryScreen>>,
     assets: Res<AssetServer>,
     content: crate::game::data::Content,
-    members: Query<(&Character, Option<&Carried>, Option<&Armour>)>,
+    members: Query<crate::presentation::character_view::CharacterView>,
+    battle: Option<Single<&crate::game::combat::Battle>>,
     art: Res<InventoryArt>,
     mut parts: Query<(&HeaderHand, &mut Visibility, Option<&mut Picture>, Option<&mut BitmapText>)>,
 ) {
     let Some(screen) = screen else { return };
     let Some(catalog) = content.items() else { return };
-    let Ok((profile, carried, armour)) = members.get(screen.member) else { return };
+    let Ok(view) = members.get(screen.member) else { return };
+    let armour = view.armour(screen.member, Some(catalog), battle.as_deref().copied());
+    let profile = view.profile;
+    let carried = view.carried;
     let empty = Carried::default();
     let carried = carried.unwrap_or(&empty);
     let two_handed = carried
@@ -842,7 +846,9 @@ fn draw_header_hands(
                     },
                 );
             }
-            HeaderHand::Armour => value = Some(armour.map_or(0, Armour::average).to_string()),
+            HeaderHand::Armour => {
+                value = Some(armour.as_ref().map_or(0, Armour::average).to_string())
+            }
         }
         visibility.set_if_neq(visible_if(shown));
         if let (Some(mut picture), Some(mut source)) = (picture, source) {

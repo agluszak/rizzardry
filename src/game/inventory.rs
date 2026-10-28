@@ -267,7 +267,7 @@ pub enum PoolPosition {
 }
 
 #[derive(Component, Clone, Debug, Default, PartialEq)]
-#[require(Burden, crate::game::combat::attack::Armour)]
+#[require(Burden)]
 pub struct Carried {
     pub equipment: EnumMap<EquipSlot, Option<Equipped>>,
     pub backpack: [Option<ItemStack>; BACKPACK_SLOTS],

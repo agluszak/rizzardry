@@ -11,10 +11,25 @@ pub struct CharacterView {
     pub vitals: &'static Vitals,
     pub carried: Option<&'static Carried>,
     pub burden: Option<&'static Burden>,
-    pub armour: Option<&'static crate::game::combat::attack::Armour>,
 }
 
 impl CharacterViewItem<'_, '_> {
+    /// Derive the sheet from live equipment/stats and the retained round action.
+    pub fn armour(
+        &self,
+        actor: bevy::prelude::Entity,
+        catalog: Option<&crate::content::items::ItemCatalog>,
+        battle: Option<&crate::game::combat::Battle>,
+    ) -> Option<crate::game::combat::attack::Armour> {
+        Some(crate::game::combat::attack::armour(
+            self.profile,
+            self.carried?,
+            catalog?,
+            self.load(),
+            battle.is_some_and(|battle| battle.defends(actor)),
+        ))
+    }
+
     /// The member's load, none for those who carry nothing.
     pub fn load(&self) -> crate::game::characters::Load {
         self.burden.map_or_else(Default::default, |burden| burden.load)
