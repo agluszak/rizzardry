@@ -87,6 +87,7 @@ pub(super) mod tests {
             stamina: 0,
             max_stamina: 0,
             conditions: vec![],
+            spell_points: 0,
             body: crate::game::world::population::ScaledBody {
                 scale: 1.0,
                 radius: 0.5,

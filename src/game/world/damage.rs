@@ -63,10 +63,25 @@ pub struct MonsterDamage<'w, 's> {
     content: crate::game::data::Content<'w>,
     ids: ResMut<'w, ItemIds>,
     factions: ResMut<'w, crate::game::factions::Factions>,
-    clock: Res<'w, crate::game::time::GameClock>,
+    clock: ResMut<'w, crate::game::time::GameClock>,
 }
 
 impl<'w, 's> MonsterDamage<'w, 's> {
+    /// The game's time, which offences are dated by and a fight's rounds
+    /// advance.
+    pub fn clock(&self) -> &crate::game::time::GameClock {
+        &self.clock
+    }
+
+    pub fn clock_mut(&mut self) -> &mut crate::game::time::GameClock {
+        &mut self.clock
+    }
+
+    /// The party's standing with the factions, which offences change.
+    pub fn factions(&self) -> &crate::game::factions::Factions {
+        &self.factions
+    }
+
     pub fn ready(&self) -> bool {
         self.content.items().is_some()
             && self.content.species().is_some()

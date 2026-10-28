@@ -30,9 +30,20 @@ pub struct Monster {
     pub max_stamina: u32,
     pub conditions: Vec<(Condition, Lasting)>,
     pub body: ScaledBody,
+    /// What has been done to its spell budget since it was met: drained
+    /// away, or raised by Might to Magic (retail `spell_points`, zero at
+    /// first). Its casting stands on this and its species' budget together.
+    pub spell_points: i32,
 }
 
 impl Monster {
+    /// What its casting stands on now (retail `ChooseMonsterSpellPowerLevel`,
+    /// `MonsterCastsSpell`): its species' budget and what has been done to
+    /// it, never below nothing.
+    pub fn spell_budget(&self, kind: &crate::content::species::Species) -> u32 {
+        (self.spell_points + kind.magic.budget).max(0) as u32
+    }
+
     pub fn is_dead(&self) -> bool {
         self.hp == 0
     }

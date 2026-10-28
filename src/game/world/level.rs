@@ -262,6 +262,7 @@ impl KeptMonster {
                 stamina: max_stamina,
                 max_stamina,
                 conditions: Vec::new(),
+                spell_points: 0,
                 body,
             },
             group: Some(placed.group),

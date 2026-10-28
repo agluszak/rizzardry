@@ -233,6 +233,7 @@ mod tests {
             stamina: 10,
             max_stamina: 10,
             conditions: Vec::new(),
+            spell_points: 0,
             body: ScaledBody { scale: 1.0, radius: 0.5, eye_height: 1.0, speed: 1.0 },
         };
         let walker = world

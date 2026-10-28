@@ -44,11 +44,15 @@ pub(super) struct Scene {
     pub caster: Entity,
     /// The living party: who, and what they lack.
     pub members: Vec<(Entity, Standing)>,
-    /// The living monsters in the fight: who, how far from the caster and
-    /// from the party, and what they lack.
+    /// The living monsters in the fight the caster has a clear line to,
+    /// itself among them: who, how far from the caster and from the party,
+    /// and what they lack.
     pub monsters: Vec<(Entity, f32, f32, Standing)>,
     /// How far the party is from the caster.
     pub party: f32,
+    /// Whether the caster sees the party now, as engagement judges it
+    /// (retail `IsVisibleUnderConditions`).
+    pub sees_party: bool,
 }
 
 /// A monster's standing, as a spell on it would find it.
@@ -77,8 +81,9 @@ fn castable(spell: &SpellDefinition, caster: &Monster, kind: &Species) -> bool {
 }
 
 /// Where the spell may be cast (retail `CollectMonsterSpellTargets`): at
-/// itself, at a fellow in reach, at a member in reach, or at the party when
-/// at least half of it would feel the spell. Each is one choice.
+/// itself, at a fellow in reach along a clear line, at a member in reach
+/// of a caster that sees the party, or at the party so seen when at least
+/// half of it would feel the spell. Each is one choice.
 fn aims(spell: &SpellDefinition, scene: &Scene) -> Vec<SpellAim> {
     let reach = spell.reach.metres();
     let worth = |standing: &Standing| effects::worthwhile(spell.id, standing);
@@ -96,14 +101,14 @@ fn aims(spell: &SpellDefinition, scene: &Scene) -> Vec<SpellAim> {
             .filter(|&(_, from_caster, _, standing)| *from_caster <= reach && worth(standing))
             .map(|&(m, ..)| SpellAim::Monster(m))
             .collect(),
-        Targeting::Enemy if scene.party <= reach => scene
+        Targeting::Enemy if scene.sees_party && scene.party <= reach => scene
             .members
             .iter()
             .filter(|(_, standing)| worth(standing))
             .map(|&(m, _)| SpellAim::Member(m))
             .collect(),
         Targeting::EnemyGroup | Targeting::Cone | Targeting::Radius | Targeting::AllEnemies
-            if scene.party <= reach =>
+            if scene.sees_party && scene.party <= reach =>
         {
             let valid = scene.members.iter().filter(|(_, standing)| worth(standing)).count();
             if valid != 0 && scene.members.len().div_ceil(2) <= valid {
@@ -163,8 +168,7 @@ pub(super) fn choose(
 /// while its budget covers the next level's need within 9/70, back one,
 /// then a quarter of the time one less (not below 2) and a quarter one
 /// more.
-pub(super) fn power(rng: &mut GameRng, budget: i32, spell: &SpellDefinition) -> u8 {
-    let budget = budget.max(0) as u32;
+pub(super) fn power(rng: &mut GameRng, budget: u32, spell: &SpellDefinition) -> u8 {
     let mut power = 1;
     loop {
         if crate::game::magic::spell_failure(budget, spell, power) >= 9 {
@@ -226,18 +230,19 @@ fn victims(
 }
 
 /// Cast it (retail `MonsterCastsSpell`): its level sets the strength
-/// victims save against, its budget the failure chance, and the spell
-/// lands at once.
+/// victims save against, its budget ([`Monster::spell_budget`], the one
+/// its power was chosen by) the failure chance, and the spell lands at
+/// once.
 pub(super) fn cast(
     (spell, power, aim): (&SpellDefinition, u8, SpellAim),
-    kind: &Species,
+    (kind, budget): (&Species, u32),
     scene: &Scene,
     rng: &mut GameRng,
     field: &mut Field,
     points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
 ) -> Report {
     let strength = Strength::at(u32::from(kind.level), spell, power, 0);
-    let failure = crate::game::magic::spell_failure(kind.magic.budget.max(0) as u32, spell, power);
+    let failure = crate::game::magic::spell_failure(budget, spell, power);
     let outcome = crate::game::magic::roll(rng, failure, spell, false);
     let effects = match outcome {
         Outcome::Fizzled => Vec::new(),
@@ -283,6 +288,7 @@ mod tests {
             members: vec![(Entity::from_bits(10), Standing::default())],
             monsters: vec![(caster, 0.0, 10.0, standing)],
             party: 10.0,
+            sees_party: true,
         }
     }
 

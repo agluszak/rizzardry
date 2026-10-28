@@ -304,8 +304,24 @@ pub struct Field<'a, 'm, 'ms, 'd, 'ds, 'f, 'p> {
     pub party: &'a [Entity],
     /// Skills that improved while resolving, for the notices.
     pub improved: Vec<(Entity, Skill)>,
-    /// Monsters the party acted against, whose groups this provokes.
+    /// Monsters the party acted against, eligible to provoke their groups
+    /// when the action was accepted ([`Field::provoke`]).
     pub provoked: Vec<Entity>,
+}
+
+impl Field<'_, '_, '_, '_, '_, '_, '_> {
+    /// The party acts against this monster. Whether that provokes its group
+    /// is settled now, as the action is accepted, so nothing the action then
+    /// does (a kill, a Turncoat) undoes it (retail `MakeTargetGroupHostile`):
+    /// a living monster not under Turncoat does.
+    pub fn provoke(&mut self, monster: Entity) {
+        let eligible = self.monsters.monsters().get(monster).is_ok_and(|(body, ..)| {
+            !body.is_dead() && !body.conditions.iter().any(|&(c, _)| c == Condition::Turncoat)
+        });
+        if eligible {
+            self.provoked.push(monster);
+        }
+    }
 }
 
 /// The magnitude a spell rolls at `power` (retail `RollEffectMagnitude`): its

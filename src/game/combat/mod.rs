@@ -541,6 +541,27 @@ fn lowest_level<'a>(party: impl Iterator<Item = (&'a Character, &'a Vitals)>) ->
 struct PartyView {
     eye: Vec3,
     yaw: f32,
+    /// The level's far clip, which bounds monsters' sight.
+    far: f32,
+}
+
+impl PartyView {
+    /// How monsters see the party now.
+    fn sight<'a, 'w, 's>(
+        &self,
+        members: &Members,
+        roster: &PartyRoster,
+        obstacles: &'a WorldObstacles<'w, 's>,
+    ) -> Sight<'a, 'w, 's> {
+        Sight {
+            eye: self.eye,
+            far: self.far,
+            lowest_level: lowest_level(
+                members.iter_many(roster.iter()).matched().map(|(c, v, ..)| (c, v)),
+            ),
+            obstacles,
+        }
+    }
 }
 
 impl PartyView {
@@ -669,10 +690,10 @@ pub fn start_battle(
     );
     let mut joined: Vec<(i32, Entity)> = Vec::new();
     for (_, group, fighters) in units {
+        // Those already fighting stay; the rest of their group may join them.
+        let fighters: Vec<Entity> =
+            fighters.into_iter().filter(|&m| monsters.get(m).is_ok_and(|m| !m.5)).collect();
         let Some(&first) = fighters.first() else { continue };
-        if fighters.iter().any(|&m| monsters.get(m).is_ok_and(|m| m.5)) {
-            continue;
-        }
         let kind = catalog.kind(monsters.get(first).unwrap().1.species).unwrap();
         let looks: Vec<_> = fighters.iter().filter_map(|&m| look(m)).collect();
         let nearest = looks.iter().map(|l| l.0).fold(f32::INFINITY, f32::min);
@@ -1006,11 +1027,7 @@ pub fn run_battle(
     mut commands: Commands,
     battle: Option<Single<(Entity, &mut Battle, Option<&Combatants>)>>,
     mut rng: ResMut<GameRng>,
-    mut clock: ResMut<GameClock>,
-    mut actors: ParamSet<(
-        (Members, MonsterDamage, Query<&MonsterGroup>, Res<crate::game::factions::Factions>),
-        GroupRecognition,
-    )>,
+    mut actors: ParamSet<((Members, MonsterDamage, Query<&MonsterGroup>), GroupRecognition)>,
     party_body: Query<(&Position, &PartyBody)>,
     (roster, content, level): (Single<&PartyRoster>, crate::game::data::Content, PlayedLevel),
     mut magic: BattleMagic,
@@ -1018,7 +1035,7 @@ pub fn run_battle(
 ) {
     let Some((entity, mut battle, combatants)) = battle.map(Single::into_inner) else { return };
     let combatants = combatants.map_or(&[][..], Combatants::entities);
-    let (mut members, mut damage, groups, factions) = actors.p0();
+    let (mut members, mut damage, groups) = actors.p0();
     // Content and the party's body exist whenever a level is played.
     let Some(species) = content.species() else { return };
     let Ok((position, body)) = party_body.single() else { return };
@@ -1029,7 +1046,11 @@ pub fn run_battle(
         return;
     }
     let roster = &**roster;
-    let party = PartyView { eye: PartyBody::eye(position), yaw: body.yaw };
+    let party = PartyView {
+        eye: PartyBody::eye(position),
+        yaw: body.yaw,
+        far: level.view_distance().unwrap_or(0.0),
+    };
     if battle.phase == RoundPhase::Accepted {
         battle.phase = RoundPhase::Executing(1);
     }
@@ -1060,26 +1081,18 @@ pub fn run_battle(
             return;
         }
         if step > 100 {
-            let sight = Sight {
-                eye: party.eye,
-                far: level.view_distance().unwrap_or(0.0),
-                lowest_level: lowest_level(
-                    members.iter_many(roster.iter()).matched().map(|(c, v, ..)| (c, v)),
-                ),
-                obstacles: &magic.obstacles,
-            };
+            let sight = party.sight(&members, roster, &magic.obstacles);
             let staying = leave_fight(
                 &mut commands,
                 combatants,
                 damage.monsters(),
-                (&magic.groups, &groups, &factions, clock.ms),
+                (&magic.groups, &groups, damage.factions(), damage.clock().ms),
                 &sight,
                 species,
             );
             let over = end_round(
                 &mut battle,
                 combatants,
-                &mut clock,
                 &mut rng,
                 roster,
                 &mut members,
@@ -1137,7 +1150,11 @@ pub fn run_battle(
                 .ok()
                 .and_then(|(m, ..)| species.kind(m.species))
                 .map_or(hostility::Stance::Hostile, |kind| {
-                    fighting_stance(monster, kind, (&magic.groups, &groups, &factions, clock.ms))
+                    fighting_stance(
+                        monster,
+                        kind,
+                        (&magic.groups, &groups, damage.factions(), damage.clock().ms),
+                    )
                 });
             let acted = monster_turn(
                 &mut commands,
@@ -1499,29 +1516,31 @@ fn monster_turn(
             && let Some(spells) = magic.context.content.spells()
         {
             let chance = if reaches { u32::from(kind.magic.chance) } else { 100 };
+            let roster = &magic.context.roster;
+            let sight = party.sight(members, roster, &magic.obstacles);
             let scene = spell_scene(
-                monster,
-                feet,
-                (combatants, &magic.context.roster),
+                (monster, kind),
+                (combatants, roster),
                 members,
-                damage,
-                party.eye,
+                damage.monsters(),
+                &sight,
             );
             plan = monster_spells::choose(rng, body, kind, chance, spells, &scene).and_then(
                 |(id, aim)| {
                     let spell = spells.get(id)?.clone();
-                    let power = monster_spells::power(rng, kind.magic.budget, &spell);
-                    Some((spell, power, aim, scene, kind))
+                    let budget = body.spell_budget(kind);
+                    let power = monster_spells::power(rng, budget, &spell);
+                    Some((spell, power, aim, scene, (kind, budget)))
                 },
             );
         }
     }
     let BattleMagic { context, points, moving, .. } = magic;
-    if let Some((spell, power, aim, scene, kind)) = plan {
+    if let Some((spell, power, aim, scene, caster)) = plan {
         battle.this_round.monsters[index].1 = Turn::default();
         battle.this_round.attacked = true;
         let report = context.with_field(members, damage, |field| {
-            monster_spells::cast((&spell, power, aim), kind, &scene, rng, field, points)
+            monster_spells::cast((&spell, power, aim), caster, &scene, rng, field, points)
         });
         if let Ok(report) = report {
             context.news.write(crate::game::magic::casting::MagicNews::Done(report));
@@ -1561,19 +1580,35 @@ fn monster_turn(
 /// The fight as a monster about to cast sees it: the living party and the
 /// living monsters in the fight, how far each is, and what each lacks.
 fn spell_scene(
-    caster: Entity,
-    feet_at: Vec3,
+    (caster, kind): (Entity, &Species),
     (combatants, roster): (&[Entity], &PartyRoster),
     members: &Members,
-    damage: &MonsterDamage,
-    party_eye: Vec3,
+    monsters: &MonsterQuery,
+    sight: &Sight,
 ) -> monster_spells::Scene {
-    let monsters = damage.monsters();
-    let party = monsters
-        .get(caster)
-        .map_or(f32::INFINITY, |(body, ..)| distance_to_party(party_eye, body, feet_at));
+    let party_eye = sight.eye;
+    let Ok((body, at, walker, _)) = monsters.get(caster) else {
+        return monster_spells::Scene {
+            caster,
+            members: vec![],
+            monsters: vec![],
+            party: f32::INFINITY,
+            sees_party: false,
+        };
+    };
+    let feet_at = feet(at.translation(), walker);
+    let eye = feet_at + Vec3::Y * body.body.eye_height;
+    // A fellow is in reach of its spell only along a clear line, as the
+    // party is only where the caster sees it.
+    let clear = |to: Vec3| {
+        Dir3::new(to - eye).map_or(true, |direction| {
+            sight.obstacles.first_hit(eye, direction, eye.distance(to)).is_none()
+        })
+    };
     monster_spells::Scene {
         caster,
+        party: distance_to_party(party_eye, body, feet_at),
+        sees_party: sight.sees(body, &at, walker, kind),
         members: roster
             .iter()
             .filter_map(|member| members.get(member).ok().map(|m| (member, m)))
@@ -1597,6 +1632,9 @@ fn spell_scene(
                     return None;
                 }
                 let at = feet(at.translation(), walker);
+                if entity != caster && !clear(at + Vec3::Y * body.body.eye_height) {
+                    return None;
+                }
                 let from_party = distance_to_party(party_eye, body, at);
                 Some((
                     entity,
@@ -1606,7 +1644,6 @@ fn spell_scene(
                 ))
             })
             .collect(),
-        party,
     }
 }
 
@@ -1615,7 +1652,6 @@ fn spell_scene(
 fn end_round(
     battle: &mut Battle,
     combatants: &[Entity],
-    clock: &mut GameClock,
     rng: &mut GameRng,
     roster: &PartyRoster,
     members: &mut Members,
@@ -1630,7 +1666,7 @@ fn end_round(
     // The round's time passes now, with its meaning: conditions age, spell
     // points come back at half rate and nothing else recovers (retail
     // `AdvanceCombatRound`, `AdvanceTimedEffects`).
-    let ticks = clock.advance(ROUND_MS);
+    let ticks = damage.clock_mut().advance(ROUND_MS);
     enchantments.age(ticks.aging);
     for &entity in combatants {
         if let Some(mut e) = damage.enchantments_mut(entity) {
@@ -1891,6 +1927,7 @@ mod tests {
                     stamina: 0,
                     max_stamina: 0,
                     conditions: vec![],
+                    spell_points: 0,
                     body: ScaledBody { scale: 1.0, radius: 1.0, eye_height: 1.0, speed: 0.0 },
                 },
                 Transform::from_translation(Vec3::NEG_Z),
@@ -1911,6 +1948,20 @@ mod tests {
 
     fn fight_mut(world: &mut World) -> Mut<'_, Battle> {
         world.query::<&mut Battle>().single_mut(world).unwrap()
+    }
+
+    /// Give the played level its definition, which sets how far monsters
+    /// see and lets fights start.
+    fn define_level(app: &mut App) {
+        let world = app.world_mut();
+        let geometry = world
+            .resource_mut::<Assets<crate::content::level::LevelDefinition>>()
+            .add(crate::content::level::LevelDefinition::default());
+        world
+            .query::<&mut crate::game::world::level::Level>()
+            .single_mut(world)
+            .unwrap()
+            .definition = geometry;
     }
 
     /// Make `member` a trained Mage who knows `spell`, with points to cast it,
@@ -2648,6 +2699,7 @@ mod tests {
         use crate::game::world::identify::{GroupMember, MonsterGroup};
         use crate::game::world::level::Level;
         let (mut app, _) = round_app(true);
+        define_level(&mut app);
         let species = app.world().resource::<GameData>().species.clone();
         app.world_mut().resource_mut::<Assets<MonsterCatalog>>().get_mut(&species).unwrap().0.push(
             Species { name: "Bystander".into(), disposition: Disposition::Neutral, ..default() },
@@ -2686,6 +2738,171 @@ mod tests {
         assert!(app.world().get::<Combatant>(companion).is_some(), "the group joins the fight");
         assert_eq!(app.world().get::<MonsterGroup>(untouched).unwrap().set, None);
         assert!(app.world().get::<Combatant>(stranger).is_none());
+    }
+
+    /// A caster in the fight with a wall between it and the party has no
+    /// aim at the party, however close; with the wall gone it has (retail
+    /// `CollectMonsterSpellTargets`' sight gate).
+    #[test]
+    fn cover_keeps_a_caster_from_aiming_at_the_party() {
+        use crate::content::species::{MonsterMagic, Species};
+        use crate::content::spells::{SpellCatalog, SpellId, Targeting};
+        use crate::game::characters::{Gender, Profession, Race};
+        use crate::game::world::obstacles::scenery;
+        use crate::game::world::population::ScaledBody;
+        use avian3d::prelude::{Collider, PhysicsPlugins, RigidBody};
+        use bevy::ecs::system::RunSystemOnce;
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin::default(),
+            bevy::mesh::MeshPlugin,
+            TransformPlugin,
+            PhysicsPlugins::default(),
+        ));
+        app.finish();
+        app.cleanup();
+        let character = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
+        let vitals = Vitals::new(&character);
+        let member = app
+            .world_mut()
+            .spawn((
+                character,
+                vitals,
+                Carried::default(),
+                crate::game::inventory::Burden::default(),
+            ))
+            .id();
+        crate::game::party::roster::test_party(app.world_mut(), &[member]);
+        let level = app.world_mut().spawn_empty().id();
+        let caster = app
+            .world_mut()
+            .spawn((
+                Monster {
+                    enchantments: default(),
+                    location: 0,
+                    species: 0,
+                    hp: 10,
+                    max_hp: 10,
+                    stamina: 10,
+                    max_stamina: 10,
+                    conditions: vec![],
+                    spell_points: 0,
+                    body: ScaledBody { scale: 1.0, radius: 0.5, eye_height: 1.5, speed: 0.0 },
+                },
+                Transform::from_xyz(0.0, 0.0, -10.0).looking_at(Vec3::new(0.0, 0.0, 0.0), Vec3::Y),
+                LevelOwned(level),
+            ))
+            .id();
+        let wall = app
+            .world_mut()
+            .spawn((
+                RigidBody::Static,
+                Collider::cuboid(8.0, 8.0, 0.2),
+                scenery(),
+                Transform::from_xyz(0.0, 0.0, -5.0),
+            ))
+            .id();
+        app.update();
+        app.update();
+        let mut spells = [None; 10];
+        spells[0] = Some(SpellId::ENERGY_BLAST);
+        let kind = Species { magic: MonsterMagic { chance: 100, spells, budget: 50 }, ..default() };
+        let blast = crate::content::spells::SpellDefinition {
+            monsters_cast: true,
+            targeting: Targeting::Enemy,
+            ..energy_blast()
+        };
+        let mut catalog: Vec<_> = (0..=blast.id.0).map(|_| default()).collect();
+        let slot = usize::from(blast.id.0);
+        catalog[slot] = blast;
+        let catalog = std::sync::Arc::new(SpellCatalog(catalog));
+        let aim = |app: &mut App| {
+            let kind = kind.clone();
+            let catalog = std::sync::Arc::clone(&catalog);
+            app.world_mut()
+                .run_system_once(
+                    move |members: Members,
+                          monsters: MonsterQuery,
+                          obstacles: WorldObstacles,
+                          roster: Single<&PartyRoster>| {
+                        let party = PartyView { eye: Vec3::Y * 1.5, yaw: 0.0, far: 50.0 };
+                        let sight = party.sight(&members, &roster, &obstacles);
+                        let scene = spell_scene(
+                            (caster, &kind),
+                            (&[caster], &roster),
+                            &members,
+                            &monsters,
+                            &sight,
+                        );
+                        let (body, ..) = monsters.get(caster).unwrap();
+                        let mut rng = GameRng::seeded(1);
+                        (
+                            scene.sees_party,
+                            monster_spells::choose(&mut rng, body, &kind, 100, &catalog, &scene),
+                        )
+                    },
+                )
+                .unwrap()
+        };
+        assert_eq!(aim(&mut app), (false, None), "the wall hides the party");
+        app.world_mut().despawn(wall);
+        app.update();
+        let (sees, chosen) = aim(&mut app);
+        assert!(sees);
+        assert_eq!(chosen, Some((SpellId::ENERGY_BLAST, monster_spells::SpellAim::Member(member))));
+    }
+
+    /// A spell that kills its target outright still provokes the target's
+    /// group: whether it provokes is settled as the cast is accepted, and
+    /// the surviving member joins the fight.
+    #[test]
+    fn a_lethal_opening_spell_still_provokes_the_victims_group() {
+        use crate::content::species::{Disposition, Species};
+        use crate::game::world::hostility::{SetStance, Stance};
+        use crate::game::world::identify::{GroupMember, MonsterGroup};
+        use crate::game::world::level::Level;
+        let (mut app, [caster, _]) = round_app(true);
+        define_level(&mut app);
+        let species = app.world().resource::<GameData>().species.clone();
+        app.world_mut().resource_mut::<Assets<MonsterCatalog>>().get_mut(&species).unwrap().0.push(
+            Species { name: "Bystander".into(), disposition: Disposition::Neutral, ..default() },
+        );
+        let level =
+            app.world_mut().query_filtered::<Entity, With<Level>>().single(app.world()).unwrap();
+        let target = order_spell(&mut app, caster, energy_blast());
+        {
+            let mut monster = app.world_mut().get_mut::<Monster>(target).unwrap();
+            monster.species = 1;
+            monster.hp = 1;
+        }
+        let group = app
+            .world_mut()
+            .spawn((MonsterGroup { authored: 1, ..default() }, LevelOwned(level)))
+            .id();
+        app.world_mut().entity_mut(target).insert(GroupMember(group));
+        let mut survivor = app.world().get::<Monster>(target).unwrap().clone();
+        survivor.location = 1;
+        survivor.hp = 10;
+        let survivor = app
+            .world_mut()
+            .spawn((
+                survivor,
+                Transform::from_translation(Vec3::NEG_Z * 30.0),
+                GroupMember(group),
+                LevelOwned(level),
+            ))
+            .id();
+        for _ in 0..12 {
+            app.update();
+            if app.world().get::<Combatant>(survivor).is_some() {
+                break;
+            }
+        }
+        assert!(app.world().get::<Monster>(target).unwrap().is_dead(), "the spell kills");
+        let set = app.world().get::<MonsterGroup>(group).unwrap().set;
+        assert!(matches!(set, Some(SetStance { stance: Stance::Hostile, .. })));
+        assert!(app.world().get::<Combatant>(survivor).is_some(), "the survivor joins");
     }
 
     #[test]

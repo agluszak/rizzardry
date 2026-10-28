@@ -12,7 +12,6 @@ use bevy::prelude::*;
 use super::identify::{GroupMember, MonsterGroup};
 use super::population::Monster;
 use crate::content::species::{Disposition, Species};
-use crate::game::characters::Condition;
 use crate::game::factions::{Band, Factions, PARTY, UNALIGNED};
 use crate::game::time::GameClock;
 
@@ -121,10 +120,11 @@ pub fn monster_stance(world: &World, monster: Entity) -> Stance {
 #[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Provocation(pub Entity);
 
-/// Turn the provoked monsters' groups hostile. A monster under Turncoat
-/// is spared, as retail spares it; a group already hostile keeps when it
-/// was set. Entering the fight is the battle's to decide
-/// ([`crate::game::combat::start_battle`]).
+/// Turn the provoked monsters' groups hostile, whatever became of the
+/// monsters since: whether each provokes was settled as the action was
+/// accepted ([`crate::game::magic::effects::Field::provoke`]). A group
+/// already hostile keeps when it was set. Entering the fight is the
+/// battle's to decide ([`crate::game::combat::start_battle`]).
 pub fn provoke(
     mut provocations: MessageReader<Provocation>,
     monsters: Query<(&Monster, Option<&GroupMember>, Has<crate::game::combat::Combatant>)>,
@@ -139,9 +139,6 @@ pub fn provoke(
     };
     for &Provocation(target) in provocations.read() {
         let Ok((monster, Some(member), fighting)) = monsters.get(target) else { continue };
-        if monster.is_dead() || monster.conditions.iter().any(|&(c, _)| c == Condition::Turncoat) {
-            continue;
-        }
         let (Ok(mut group), Some(species)) =
             (groups.get_mut(member.0), catalog.kind(monster.species))
         else {

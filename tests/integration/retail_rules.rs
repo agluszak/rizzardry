@@ -52,6 +52,7 @@ fn a_fighter_and_a_crab_trade_blows() {
         max_stamina: 10,
         conditions: Vec::new(),
         enchantments: Default::default(),
+        spell_points: 0,
         body: ScaledBody { scale: 1.0, radius: 1.0, eye_height: 1.0, speed: 0.0 },
     };
     // Each side's aim lands somewhere a roll of 1-100 sometimes beats and

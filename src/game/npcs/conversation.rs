@@ -1164,6 +1164,7 @@ mod tests {
                 stamina: 5,
                 max_stamina: 5,
                 conditions: vec![],
+                spell_points: 0,
                 body: ScaledBody { scale: 1., radius: 0.5, eye_height: 1., speed: 0. },
             },
         ));

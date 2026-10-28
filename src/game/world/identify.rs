@@ -315,6 +315,7 @@ mod tests {
                 stamina: 0,
                 max_stamina: 0,
                 conditions: vec![],
+                spell_points: 0,
                 body: ScaledBody { scale: 1.0, radius: 1.0, eye_height: 1.0, speed: 0.0 },
             },
             Transform::from_translation(Vec3::splat(1000.0)),

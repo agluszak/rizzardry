@@ -630,10 +630,11 @@ pub fn perform(
         // A spell aimed at enemies provokes those it is cast at, whatever
         // the roll (retail `MakeTargetGroupHostile` as the action starts).
         if first && spell.aimed_at_enemies() {
-            world.provoked.extend(victims.iter().filter_map(|v| match *v {
-                Victim::Monster(m) => Some(m),
-                Victim::Member(_) => None,
-            }));
+            for victim in &victims {
+                if let Victim::Monster(monster) = *victim {
+                    world.provoke(monster);
+                }
+            }
         }
         // Accepted: roll, then pay whatever the roll.
         let (chance, quiet, strength) =
