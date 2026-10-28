@@ -119,9 +119,9 @@ fn fact(world: &World, id: FactId) -> Result<u8, String> {
         .resource::<StoryFacts>()
         .get(id, fact_catalog(world).ok_or_else(|| "fact database unavailable".to_string())?)
 }
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 enum Step {
-    Quote { quote: u16, subquote: usize, paid: bool },
+    Quote { quote: u16, subquote: usize, paid: bool, plan: Option<QuotePlan> },
     Options { quote: u16, words: Vec<String> },
     Price { quote: u16, gold: u32, always: bool },
     End,
@@ -221,6 +221,19 @@ fn definition(world: &World, actor: Entity) -> Result<&NpcDefinition, TradeError
         .and_then(|c| c.get(npc.definition))
         .ok_or(TradeError::MissingContent)
 }
+fn with_definition<T>(
+    world: &mut World,
+    actor: Entity,
+    f: impl FnOnce(&mut World, &NpcDefinition) -> Result<T, TradeError>,
+) -> Result<T, TradeError> {
+    let id = world.get::<Npc>(actor).ok_or(TradeError::Unavailable)?.definition;
+    let handle = world.resource::<NpcAssets>().catalog.clone();
+    world.resource_scope(|world, catalogs: Mut<Assets<NpcCatalog>>| {
+        let def =
+            catalogs.get(&handle).and_then(|c| c.get(id)).ok_or(TradeError::MissingContent)?;
+        f(world, def)
+    })
+}
 fn with_items<T>(
     world: &mut World,
     f: impl FnOnce(&mut World, &ItemCatalog) -> Result<T, TradeError>,
@@ -275,14 +288,6 @@ pub fn trade_allowed(world: &World, actor: Entity) -> bool {
 fn entry_quote(def: &NpcDefinition, npc: &Npc) -> u16 {
     if def.merchant || npc.greeting_pending { 0 } else { 1 }
 }
-fn conditions_match(world: &World, facts: &[(FactId, u8)]) -> Result<bool, String> {
-    for (id, expected) in facts {
-        if fact(world, *id)? != *expected {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
 pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
     let party = the_party(world).ok_or(TradeError::Unavailable)?;
     if !world.run_system_once(crate::game::screen::party_free).map_err(|_| TradeError::Busy)?
@@ -306,7 +311,6 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
         .find(|(p, _)| p.0.distance(at) <= crate::game::world::items::REACH)
         .map(|(p, _)| p.0)
         .ok_or(TradeError::Unavailable)?;
-    let def = definition(world, actor)?.clone();
     if !available(world, actor) {
         return Err(TradeError::Unavailable);
     }
@@ -322,6 +326,8 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
     }
     let now = world.resource::<crate::game::time::GameClock>().ms;
     let average = average_level(world);
+    let def = definition(world, actor)?;
+    let greeting = entry_quote(def, world.get::<Npc>(actor).unwrap());
     if def.owns_stock {
         let stock = &world.get::<Npc>(actor).unwrap().stock;
         let gated = stock.initialized
@@ -339,13 +345,15 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
         } else {
             false
         };
-        with_items(world, |world, items| {
-            world.resource_scope(|world, mut rng: Mut<GameRng>| {
-                world
-                    .get_mut::<Npc>(actor)
-                    .unwrap()
-                    .stock
-                    .maintain(&def, items, average, now, templar, &mut rng)
+        with_definition(world, actor, |world, def| {
+            with_items(world, |world, items| {
+                world.resource_scope(|world, mut rng: Mut<GameRng>| {
+                    world
+                        .get_mut::<Npc>(actor)
+                        .unwrap()
+                        .stock
+                        .maintain(def, items, average, now, templar, &mut rng)
+                })
             })
         })?;
     }
@@ -371,7 +379,6 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
             }
         }
     }
-    let greeting = entry_quote(&def, world.get::<Npc>(actor).unwrap());
     Ok(world
         .spawn(Conversation {
             actor,
@@ -382,7 +389,12 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
             transcript: vec![],
             learned_topics: default(),
             result: None,
-            queue: VecDeque::from([Step::Quote { quote: greeting, subquote: 0, paid: false }]),
+            queue: VecDeque::from([Step::Quote {
+                quote: greeting,
+                subquote: 0,
+                paid: false,
+                plan: None,
+            }]),
         })
         .id())
 }
@@ -414,13 +426,29 @@ fn block(c: &mut Conversation, quote: u16, entry: Option<usize>, reason: String)
 fn script<'w>(world: &'w World, c: &Conversation) -> Option<&'w DialogueScript> {
     world.resource::<Assets<DialogueScript>>().get(&c.script)
 }
-/// A waited-on quote; the wait was set from this same script.
-fn quote(world: &World, c: &Conversation, quote: u16) -> Option<Quote> {
-    script(world, c)?.quotes.get(usize::from(quote)).cloned()
+/// A quote's supported effects and selected control transfer. Planning reads
+/// through preceding assignments, but never changes campaign state or draws RNG.
+#[derive(Debug)]
+struct QuotePlan {
+    effects: Vec<QuoteEffect>,
+    following: Option<Continuation>,
 }
-/// Preflight the operations that actually execute, up to the first authored
-/// control transfer. Unsupported work cannot be skipped after partial effects.
-fn validate_line(world: &World, q: &Quote) -> Result<(), (usize, String)> {
+#[derive(Debug)]
+enum QuoteEffect {
+    SetFact(FactId, u8),
+    Mention(TopicCategory, String),
+}
+#[derive(Debug)]
+enum Continuation {
+    Quote(Response),
+    Options(Vec<String>),
+    End,
+}
+fn plan_quote(
+    story: &StoryFacts,
+    catalog: Option<&FactCatalog>,
+    q: &Quote,
+) -> Result<QuotePlan, (usize, String)> {
     if q.alert {
         return Err((0, "unported alert presentation".into()));
     }
@@ -430,63 +458,145 @@ fn validate_line(world: &World, q: &Quote) -> Result<(), (usize, String)> {
     {
         return Err((0, "unported quote sentinel".into()));
     }
+    let mut writes = BTreeMap::new();
+    let mut plan = QuotePlan { effects: Vec::new(), following: None };
     for (i, op) in q.operations.iter().enumerate() {
         match op {
             DialogueOp::Unsupported { opcode, .. } => {
                 return Err((i, format!("unported mandatory opcode {opcode}")));
             }
-            DialogueOp::SetFact(id, _)
-                if !fact_catalog(world)
-                    .is_some_and(|catalog| StoryFacts::can_set(*id, catalog)) =>
-            {
-                return Err((i, format!("unported fact assignment {id:?}")));
+            DialogueOp::SetFact(id, value) => {
+                if !catalog.is_some_and(|catalog| StoryFacts::can_set(*id, catalog)) {
+                    return Err((i, format!("unported fact assignment {id:?}")));
+                }
+                writes.insert(*id, *value);
+                plan.effects.push(QuoteEffect::SetFact(*id, *value));
             }
-            DialogueOp::Conditional { facts, .. }
-                if conditions_match(world, facts).map_err(|e| (i, e))? =>
-            {
+            DialogueOp::Conditional { facts, response } => {
+                let mut matched = true;
+                for (id, expected) in facts {
+                    let actual = match writes.get(id) {
+                        Some(value) => *value,
+                        None => story
+                            .get(
+                                *id,
+                                catalog
+                                    .ok_or_else(|| (i, "fact database unavailable".to_string()))?,
+                            )
+                            .map_err(|e| (i, e))?,
+                    };
+                    if actual != *expected {
+                        matched = false;
+                        break;
+                    }
+                }
+                if matched {
+                    plan.following = Some(Continuation::Quote(response.clone()));
+                    break;
+                }
+            }
+            DialogueOp::Next(response) => {
+                plan.following = Some(Continuation::Quote(response.clone()));
                 break;
             }
+            DialogueOp::Options(words) => {
+                plan.following = Some(Continuation::Options(words.clone()));
+                break;
+            }
+            DialogueOp::Mention { category, text } => {
+                plan.effects.push(QuoteEffect::Mention(*category, text.clone()))
+            }
+            DialogueOp::Close => plan.following = Some(Continuation::End),
             _ => {}
         }
-        if matches!(op, DialogueOp::Next(_) | DialogueOp::Options(_)) {
-            break;
+    }
+    Ok(plan)
+}
+fn commit_quote(world: &mut World, entity: Entity, quote: u16, plan: QuotePlan) {
+    for effect in plan.effects {
+        match effect {
+            QuoteEffect::SetFact(id, value) => {
+                let level = world
+                    .query::<&Level>()
+                    .single(world)
+                    .map_or_else(|_| String::new(), |level| level.path.clone());
+                let facts = world.resource::<NpcAssets>().facts.clone();
+                world.resource_scope(|world, catalogs: Mut<Assets<FactCatalog>>| {
+                    world
+                        .resource_mut::<StoryFacts>()
+                        .set(id, value, catalogs.get(&facts).unwrap(), level)
+                        .expect("planned fact assignment");
+                });
+            }
+            QuoteEffect::Mention(category, text) => learn_topic(world, entity, category, &text),
         }
     }
-    Ok(())
+    if let Some(following) = plan.following {
+        let next = match following {
+            Continuation::Quote(response) => Step::Quote {
+                quote: select_response(&response, &mut world.resource_mut::<GameRng>()),
+                subquote: 0,
+                paid: false,
+                plan: None,
+            },
+            Continuation::Options(words) => Step::Options { quote, words },
+            Continuation::End => Step::End,
+        };
+        world.get_mut::<Conversation>(entity).unwrap().queue.push_front(next);
+    }
 }
-fn run(world: &mut World, entity: Entity, c: &mut Conversation) {
-    if c.wait != ConversationWait::Ready || c.queue.is_empty() {
+fn run(world: &mut World, entity: Entity) {
+    let c = world.get::<Conversation>(entity).unwrap();
+    if c.wait != ConversationWait::Ready
+        || c.queue.is_empty()
+        || definition(world, c.actor).is_err()
+    {
         return;
     }
-    // Steps change the world, so the script is held apart from it.
-    let Some(script) = script(world, c).cloned() else {
-        block(c, 0, None, "script unavailable".into());
-        return;
-    };
+    let handle = c.script.clone();
+    world.resource_scope(|world, scripts: Mut<Assets<DialogueScript>>| {
+        // Asset loading is not a terminal dialogue error. Keep the queued work
+        // and retry when its immutable definition is available.
+        if let Some(script) = scripts.get(&handle) {
+            run_script(world, entity, script);
+        }
+    });
+}
+fn run_script(world: &mut World, entity: Entity, script: &DialogueScript) {
+    let actor = world.get::<Conversation>(entity).unwrap().actor;
     // Bound immediate authored transitions, including malicious empty-quote loops.
     for _ in 0..256 {
-        if c.wait != ConversationWait::Ready {
+        if world.get::<Conversation>(entity).unwrap().wait != ConversationWait::Ready {
             return;
         }
-        let Some(step) = c.queue.pop_front() else { return };
+        let Some(step) = world.get_mut::<Conversation>(entity).unwrap().queue.pop_front() else {
+            return;
+        };
         match step {
             Step::End => {
-                c.queue.push_front(Step::End);
+                world.get_mut::<Conversation>(entity).unwrap().queue.push_front(Step::End);
                 return;
             }
             Step::Options { quote, words } => {
+                let mut c = world.get_mut::<Conversation>(entity).unwrap();
                 c.wait = ConversationWait::Options { quote, words };
                 c.revision += 1;
                 return;
             }
             Step::Price { quote, gold, always } => {
+                let mut c = world.get_mut::<Conversation>(entity).unwrap();
                 c.wait = ConversationWait::Price { quote, gold, always };
                 c.revision += 1;
                 return;
             }
-            Step::Quote { quote, subquote, paid } => {
+            Step::Quote { quote, subquote, paid, plan } => {
                 let Some(q) = script.quotes.get(quote as usize) else {
-                    block(c, quote, None, "missing quote".into());
+                    block(
+                        &mut world.get_mut::<Conversation>(entity).unwrap(),
+                        quote,
+                        None,
+                        "missing quote".into(),
+                    );
                     return;
                 };
                 if !paid
@@ -498,89 +608,50 @@ fn run(world: &mut World, entity: Entity, c: &mut Conversation) {
                             None
                         }
                     })
-                    && (always || !world.get::<Npc>(c.actor).unwrap().paid_topics.contains(&quote))
+                    && (always || !world.get::<Npc>(actor).unwrap().paid_topics.contains(&quote))
                 {
                     let gold =
                         (gold - gold.saturating_mul(party_communication(world)) / 500).max(1);
+                    let mut c = world.get_mut::<Conversation>(entity).unwrap();
                     c.queue.push_front(Step::Price { quote, gold, always });
-                    c.queue.push_front(Step::Quote { quote: PRICE_QUOTE, subquote: 0, paid: true });
+                    c.queue.push_front(Step::Quote {
+                        quote: PRICE_QUOTE,
+                        subquote: 0,
+                        paid: true,
+                        plan: None,
+                    });
                     continue;
                 }
-                if q.alert {
-                    block(c, quote, None, "alert quote presentation is not ported".into());
-                    return;
-                }
-                if let Err((entry, reason)) = validate_line(world, q) {
-                    block(c, quote, Some(entry), reason);
-                    return;
-                }
+                let plan = match plan.map_or_else(
+                    || plan_quote(world.resource::<StoryFacts>(), fact_catalog(world), q),
+                    Ok,
+                ) {
+                    Ok(plan) => plan,
+                    Err((entry, reason)) => {
+                        let mut c = world.get_mut::<Conversation>(entity).unwrap();
+                        c.queue.push_front(Step::Quote { quote, subquote, paid, plan: None });
+                        block(&mut c, quote, Some(entry), reason);
+                        return;
+                    }
+                };
                 if quote == 0 {
-                    let first = world.get::<Npc>(c.actor).unwrap().greeting_pending;
-                    if first && let Ok(definition) = definition(world, c.actor) {
+                    let first = world.get::<Npc>(actor).unwrap().greeting_pending;
+                    if first && let Ok(definition) = definition(world, actor) {
                         let name = definition.source_name.clone();
-                        learn_topic(world, c, TopicCategory::Person, &name);
+                        learn_topic(world, entity, TopicCategory::Person, &name);
                     }
-                    world.get_mut::<Npc>(c.actor).unwrap().greeting_pending = false;
+                    world.get_mut::<Npc>(actor).unwrap().greeting_pending = false;
                 }
-                c.current = Some((quote, subquote));
+                world.get_mut::<Conversation>(entity).unwrap().current = Some((quote, subquote));
                 if subquote + 1 >= q.text.len() {
-                    let mut following = None;
-                    for op in &q.operations {
-                        match op {
-                            DialogueOp::Next(r) => {
-                                following = Some(Step::Quote {
-                                    quote: select_response(r, &mut world.resource_mut::<GameRng>()),
-                                    subquote: 0,
-                                    paid: false,
-                                });
-                                break;
-                            }
-                            DialogueOp::Conditional { facts, response }
-                                if conditions_match(world, facts)
-                                    .expect("preflighted conditions") =>
-                            {
-                                following = Some(Step::Quote {
-                                    quote: select_response(
-                                        response,
-                                        &mut world.resource_mut::<GameRng>(),
-                                    ),
-                                    subquote: 0,
-                                    paid: false,
-                                });
-                                break;
-                            }
-                            DialogueOp::Options(words) => {
-                                following = Some(Step::Options { quote, words: words.clone() });
-                                break;
-                            }
-                            DialogueOp::SetFact(id, value) => {
-                                let level = world
-                                    .query::<&Level>()
-                                    .single(world)
-                                    .map_or_else(|_| String::new(), |level| level.path.clone());
-                                let facts = world.resource::<NpcAssets>().facts.clone();
-                                world.resource_scope(
-                                    |world, catalogs: Mut<Assets<FactCatalog>>| {
-                                        let catalog = catalogs.get(&facts).unwrap();
-                                        world
-                                            .resource_mut::<StoryFacts>()
-                                            .set(*id, *value, catalog, level)
-                                            .expect("preflighted fact");
-                                    },
-                                );
-                            }
-                            DialogueOp::Mention { category, text } => {
-                                learn_topic(world, c, *category, text);
-                            }
-                            DialogueOp::Close => following = Some(Step::End),
-                            _ => {}
-                        }
-                    }
-                    if let Some(next) = following {
-                        c.queue.push_front(next)
-                    }
+                    commit_quote(world, entity, quote, plan);
                 } else {
-                    c.queue.push_front(Step::Quote { quote, subquote: subquote + 1, paid: true })
+                    world.get_mut::<Conversation>(entity).unwrap().queue.push_front(Step::Quote {
+                        quote,
+                        subquote: subquote + 1,
+                        paid: true,
+                        plan: Some(plan),
+                    })
                 }
                 let text = q.text.get(subquote).cloned().unwrap_or_default();
                 if text.is_empty()
@@ -589,12 +660,13 @@ fn run(world: &mut World, entity: Entity, c: &mut Conversation) {
                 {
                     continue;
                 }
-                if ["UNKNOWN", "CLASSIFIED", "SOUND"].iter().any(|s| text.eq_ignore_ascii_case(s)) {
-                    block(c, quote, None, format!("unported quote sentinel {text}"));
-                    return;
-                }
-                let Ok(def) = definition(world, c.actor) else {
-                    block(c, quote, None, "NPC definition unavailable".into());
+                let Ok(def) = definition(world, actor) else {
+                    block(
+                        &mut world.get_mut::<Conversation>(entity).unwrap(),
+                        quote,
+                        None,
+                        "NPC definition unavailable".into(),
+                    );
                     return;
                 };
                 let suffix = if subquote == 0 {
@@ -604,9 +676,11 @@ fn run(world: &mut World, entity: Entity, c: &mut Conversation) {
                 };
                 let voice = format!("{}_{quote:03}{suffix}", def.voice_stem());
                 let seconds = text.encode_utf16().count() as f32 * 0.06 + 2.0;
-                c.transcript.push(TranscriptLine::Npc(text.clone()));
+                let line = TranscriptLine::Npc(text.clone());
                 let speech =
                     world.spawn((ConversationSpeech { voice, text }, ChildOf(entity))).id();
+                let mut c = world.get_mut::<Conversation>(entity).unwrap();
+                c.transcript.push(line);
                 c.wait = ConversationWait::Line {
                     speech,
                     phase: LinePhase::Text { remaining: seconds },
@@ -616,14 +690,21 @@ fn run(world: &mut World, entity: Entity, c: &mut Conversation) {
             }
         }
     }
-    block(c, c.current.map_or(0, |v| v.0), None, "script made no bounded progress".into());
+    let mut c = world.get_mut::<Conversation>(entity).unwrap();
+    let quote = c.current.map_or(0, |v| v.0);
+    block(&mut c, quote, None, "script made no bounded progress".into());
 }
-fn learn_topic(world: &mut World, c: &mut Conversation, category: TopicCategory, text: &str) {
+fn learn_topic(world: &mut World, entity: Entity, category: TopicCategory, text: &str) {
     if world.resource_mut::<StoryFacts>().remember_topic(category, text) {
-        c.learned_topics.insert(text.trim().to_ascii_lowercase());
+        world
+            .get_mut::<Conversation>(entity)
+            .unwrap()
+            .learned_topics
+            .insert(text.trim().to_ascii_lowercase());
     }
 }
-fn topic(world: &mut World, c: &mut Conversation, text: &str) {
+fn topic(world: &mut World, entity: Entity, text: &str) {
+    let c = world.get::<Conversation>(entity).unwrap();
     if !c.ready() {
         return;
     }
@@ -641,18 +722,20 @@ fn topic(world: &mut World, c: &mut Conversation, text: &str) {
         // The accepted question belongs in the notebook even when its
         // answer first requires payment or another continuation.
         world.resource_mut::<StoryFacts>().remember_topic(TopicCategory::Misc, &cleaned);
+        let mut c = world.get_mut::<Conversation>(entity).unwrap();
         c.transcript.push(TranscriptLine::Question(text.to_owned()));
-        c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false });
+        c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false, plan: None });
         c.revision += 1;
     } else {
-        c.report(Outcome::NoTopic);
+        world.get_mut::<Conversation>(entity).unwrap().report(Outcome::NoTopic);
     }
 }
-fn reply(world: &mut World, c: &mut Conversation, text: &str) {
+fn reply(world: &mut World, entity: Entity, text: &str) {
+    let c = world.get::<Conversation>(entity).unwrap();
     let Some(script) = script(world, c) else { return };
-    if let ConversationWait::Options { quote, words } = c.wait.clone() {
+    if let ConversationWait::Options { quote, words } = &c.wait {
         let matched = words.iter().any(|w| w.eq_ignore_ascii_case(text));
-        let Some(entries) = script.quotes.get(usize::from(quote)).map(|q| &q.operations) else {
+        let Some(entries) = script.quotes.get(usize::from(*quote)).map(|q| &q.operations) else {
             return;
         };
         let response = entries
@@ -676,43 +759,73 @@ fn reply(world: &mut World, c: &mut Conversation, text: &str) {
                 })
             });
         if let Some(quote) = response {
+            let mut c = world.get_mut::<Conversation>(entity).unwrap();
             c.transcript.push(TranscriptLine::Reply(text.to_owned()));
             c.wait = ConversationWait::Ready;
-            c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false });
+            c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false, plan: None });
             c.revision += 1;
         }
     }
 }
-fn answer_price(world: &mut World, c: &mut Conversation, accept: bool) {
+fn answer_price(world: &mut World, entity: Entity, accept: bool) {
     let Some(party) = the_party(world) else { return };
-    if let ConversationWait::Price { quote: id, gold, always } = c.wait.clone() {
-        let Some(line) = quote(world, c, id) else { return };
-        let quote = id;
+    let c = world.get::<Conversation>(entity).unwrap();
+    let ConversationWait::Price { quote, gold, always } = c.wait else { return };
+    let actor = c.actor;
+    if definition(world, actor).is_err() {
+        return;
+    }
+    let handle = c.script.clone();
+    world.resource_scope(|world, scripts: Mut<Assets<DialogueScript>>| {
+        let Some(line) = scripts.get(&handle).and_then(|s| s.quotes.get(usize::from(quote))) else {
+            return;
+        };
         if accept {
-            if world.get::<PartyInventory>(party).unwrap().gold < gold {
-                c.queue.push_back(Step::Quote { quote: TOO_POOR_QUOTE, subquote: 0, paid: true });
+            let (next, plan) = if world.get::<PartyInventory>(party).unwrap().gold < gold {
+                (TOO_POOR_QUOTE, None)
             } else {
-                // Validate the purchased continuation before accepting payment.
-                if let Err((entry, reason)) = validate_line(world, &line) {
-                    block(c, quote, Some(entry), reason);
-                    return;
-                }
+                let plan =
+                    match plan_quote(world.resource::<StoryFacts>(), fact_catalog(world), line) {
+                        Ok(plan) => plan,
+                        Err((entry, reason)) => {
+                            block(
+                                &mut world.get_mut::<Conversation>(entity).unwrap(),
+                                quote,
+                                Some(entry),
+                                reason,
+                            );
+                            return;
+                        }
+                    };
                 world.get_mut::<PartyInventory>(party).unwrap().gold -= gold;
                 if !always {
-                    world.get_mut::<Npc>(c.actor).unwrap().paid_topics.push(quote);
+                    world.get_mut::<Npc>(actor).unwrap().paid_topics.push(quote);
                 }
-                c.queue.push_back(Step::Quote { quote, subquote: 0, paid: true });
-            }
+                (quote, Some(plan))
+            };
+            world.get_mut::<Conversation>(entity).unwrap().queue.push_back(Step::Quote {
+                quote: next,
+                subquote: 0,
+                paid: true,
+                plan,
+            });
         } else {
+            let mut c = world.get_mut::<Conversation>(entity).unwrap();
             for op in &line.operations {
-                if let DialogueOp::Decline(q) = op {
-                    c.queue.push_back(Step::Quote { quote: *q, subquote: 0, paid: false })
+                if let DialogueOp::Decline(quote) = op {
+                    c.queue.push_back(Step::Quote {
+                        quote: *quote,
+                        subquote: 0,
+                        paid: false,
+                        plan: None,
+                    });
                 }
             }
         }
+        let mut c = world.get_mut::<Conversation>(entity).unwrap();
         c.wait = ConversationWait::Ready;
         c.revision += 1;
-    }
+    });
 }
 
 pub fn quote_trade(
@@ -731,21 +844,22 @@ pub fn quote_trade(
     if !available(world, c.actor) || !trade_allowed(world, c.actor) {
         return Err(TradeError::Unavailable);
     }
-    let def = definition(world, c.actor)?.clone();
     let actor = c.actor;
     let revision = c.revision;
     let party = the_party(world).ok_or(TradeError::Unavailable)?;
     let communication = party_communication(world);
-    let gold = with_items(world, |world, catalog| match source {
+    let def = definition(world, actor)?;
+    let catalog = GameData::items(world).ok_or(TradeError::MissingContent)?;
+    let gold = match source {
         TradeSource::Stock(lot) => {
             let stock = &world.get::<Npc>(actor).ok_or(TradeError::Unavailable)?.stock;
-            trade::purchase_price(stock, &def, catalog, lot, quantity, communication)
+            trade::purchase_price(stock, def, catalog, lot, quantity, communication)
         }
         _ => {
             let item = sale_item(world, source, party)?;
-            trade::validate_sale(&def, item, quantity, catalog, communication)
+            trade::validate_sale(def, item, quantity, catalog, communication)
         }
-    })?;
+    }?;
     Ok(TradeQuote { conversation, revision, source, quantity, gold })
 }
 fn sale_item(
@@ -771,79 +885,77 @@ fn sale_item(
     }
     .ok_or(TradeError::StaleSelection)
 }
-fn execute_trade(
-    world: &mut World,
-    c: &mut Conversation,
-    quote: TradeQuote,
-) -> Result<(), TradeError> {
+fn execute_trade(world: &mut World, quote: TradeQuote) -> Result<(), TradeError> {
+    let in_battle = crate::game::combat::in_battle(world);
+    let c = world.get::<Conversation>(quote.conversation).ok_or(TradeError::StaleSelection)?;
     if !c.ready() || c.revision != quote.revision {
         return Err(TradeError::StaleSelection);
     }
-    if !available(world, c.actor)
-        || !trade_allowed(world, c.actor)
-        || crate::game::combat::in_battle(world)
-    {
+    if !available(world, c.actor) || !trade_allowed(world, c.actor) || in_battle {
         return Err(TradeError::Unavailable);
     }
-    let def = definition(world, c.actor)?.clone();
+    let actor = c.actor;
     let party = the_party(world).ok_or(TradeError::Unavailable)?;
     let communication = party_communication(world);
-    with_items(world, |world, catalog| match quote.source {
-        TradeSource::Stock(lot) => world.resource_scope(|world, mut ids: Mut<ItemIds>| {
-            let [mut party_entity, mut actor] =
-                world.get_entity_mut([party, c.actor]).map_err(|_| TradeError::Unavailable)?;
-            let mut inventory =
-                party_entity.get_mut::<PartyInventory>().ok_or(TradeError::Unavailable)?;
-            let mut npc = actor.get_mut::<Npc>().ok_or(TradeError::Unavailable)?;
-            trade::buy(
-                &mut npc.stock,
-                &mut inventory,
-                &mut ids,
-                &def,
-                catalog,
-                lot,
-                quote.quantity,
-                quote.gold,
-                communication,
-            )
-        }),
-        TradeSource::Party(source) => {
-            let item = sale_item(world, TradeSource::Party(source), party)?;
-            let units = u16::try_from(quote.quantity).map_err(|_| TradeError::InvalidQuantity)?;
-            let gold = world
-                .get::<PartyInventory>(party)
-                .ok_or(TradeError::Unavailable)?
-                .gold
-                .checked_add(quote.gold)
-                .ok_or(TradeError::Overflow)?;
-            let merchant = &world.get::<Npc>(c.actor).ok_or(TradeError::Unavailable)?.stock;
-            let stock = trade::sell(
-                merchant,
-                &def,
-                item,
-                quote.quantity,
-                quote.gold,
-                catalog,
-                communication,
-            )?;
-            match source.owner {
-                ItemOwner::Pool => world
-                    .get_mut::<PartyInventory>(party)
-                    .unwrap()
-                    .pool
-                    .consume_units(source.id, units),
-                ItemOwner::Member(member) => world
-                    .get_mut::<Carried>(member)
-                    .unwrap()
-                    .consume_backpack_units(source.id, units),
+    with_definition(world, actor, |world, def| {
+        with_items(world, |world, catalog| match quote.source {
+            TradeSource::Stock(lot) => world.resource_scope(|world, mut ids: Mut<ItemIds>| {
+                let [mut party_entity, mut actor] =
+                    world.get_entity_mut([party, actor]).map_err(|_| TradeError::Unavailable)?;
+                let mut inventory =
+                    party_entity.get_mut::<PartyInventory>().ok_or(TradeError::Unavailable)?;
+                let mut npc = actor.get_mut::<Npc>().ok_or(TradeError::Unavailable)?;
+                trade::buy(
+                    &mut npc.stock,
+                    &mut inventory,
+                    &mut ids,
+                    def,
+                    catalog,
+                    lot,
+                    quote.quantity,
+                    quote.gold,
+                    communication,
+                )
+            }),
+            TradeSource::Party(source) => {
+                let item = sale_item(world, TradeSource::Party(source), party)?;
+                let units =
+                    u16::try_from(quote.quantity).map_err(|_| TradeError::InvalidQuantity)?;
+                let gold = world
+                    .get::<PartyInventory>(party)
+                    .ok_or(TradeError::Unavailable)?
+                    .gold
+                    .checked_add(quote.gold)
+                    .ok_or(TradeError::Overflow)?;
+                let merchant = &world.get::<Npc>(actor).ok_or(TradeError::Unavailable)?.stock;
+                let stock = trade::sell(
+                    merchant,
+                    def,
+                    item,
+                    quote.quantity,
+                    quote.gold,
+                    catalog,
+                    communication,
+                )?;
+                match source.owner {
+                    ItemOwner::Pool => world
+                        .get_mut::<PartyInventory>(party)
+                        .unwrap()
+                        .pool
+                        .consume_units(source.id, units),
+                    ItemOwner::Member(member) => world
+                        .get_mut::<Carried>(member)
+                        .unwrap()
+                        .consume_backpack_units(source.id, units),
+                }
+                .map_err(|_| TradeError::StaleSelection)?;
+                world.get_mut::<Npc>(actor).unwrap().stock = stock;
+                world.get_mut::<PartyInventory>(party).unwrap().gold = gold;
+                Ok(())
             }
-            .map_err(|_| TradeError::StaleSelection)?;
-            world.get_mut::<Npc>(c.actor).unwrap().stock = stock;
-            world.get_mut::<PartyInventory>(party).unwrap().gold = gold;
-            Ok(())
-        }
+        })
     })?;
-    c.revision += 1;
+    world.get_mut::<Conversation>(quote.conversation).unwrap().revision += 1;
     Ok(())
 }
 pub fn update_conversation(world: &mut World) {
@@ -876,102 +988,121 @@ pub fn update_conversation(world: &mut World) {
             close_one(world, entity);
             continue;
         }
-        let Some(mut c) =
-            world.get_entity_mut(entity).ok().and_then(|mut e| e.take::<Conversation>())
-        else {
-            continue;
-        };
+        let in_battle = crate::game::combat::in_battle(world);
+        let Some(c) = world.get::<Conversation>(entity) else { continue };
         if !available(world, c.actor)
-            || crate::game::combat::in_battle(world)
+            || in_battle
             || world.contains_resource::<crate::game::camp::Camp>()
         {
-            world.entity_mut(entity).insert(c);
             close_one(world, entity);
             continue;
         }
+        let revision = c.revision;
         match request {
-            ConversationRequest::Topic { revision, text, .. } if revision == c.revision => {
-                topic(world, &mut c, &text)
+            ConversationRequest::Topic { revision: requested, text, .. }
+                if requested == revision =>
+            {
+                topic(world, entity, &text)
             }
-            ConversationRequest::Reply { revision, text, .. } if revision == c.revision => {
-                reply(world, &mut c, &text)
+            ConversationRequest::Reply { revision: requested, text, .. }
+                if requested == revision =>
+            {
+                reply(world, entity, &text)
             }
-            ConversationRequest::PriceAnswer { revision, accept, .. } if revision == c.revision => {
-                answer_price(world, &mut c, accept)
+            ConversationRequest::PriceAnswer { revision: requested, accept, .. }
+                if requested == revision =>
+            {
+                answer_price(world, entity, accept)
             }
             ConversationRequest::Advance { speech, .. } => {
-                if matches!(c.wait,ConversationWait::Line{speech:s,..} if s==speech) {
+                if matches!(world.get::<Conversation>(entity).unwrap().wait,ConversationWait::Line{speech:s,..} if s==speech)
+                {
                     world.despawn(speech);
+                    let mut c = world.get_mut::<Conversation>(entity).unwrap();
                     c.wait = ConversationWait::Ready;
                     c.revision += 1;
                 }
             }
             ConversationRequest::Trade(q) => {
-                let outcome = match execute_trade(world, &mut c, q) {
+                let outcome = match execute_trade(world, q) {
                     Ok(()) => Outcome::Traded,
                     Err(e) => Outcome::TradeRefused(e),
                 };
-                c.report(outcome);
+                world.get_mut::<Conversation>(entity).unwrap().report(outcome);
             }
             _ => {}
         }
-        world.entity_mut(entity).insert(c);
     }
     let playback: Vec<_> = world.resource_mut::<Messages<LinePlayback>>().drain().collect();
     let delta = world.resource::<Time<Real>>().delta_secs();
     let sessions: Vec<_> =
         world.query_filtered::<Entity, With<Conversation>>().iter(world).collect();
     for entity in sessions {
-        let Some(mut c) =
-            world.get_entity_mut(entity).ok().and_then(|mut e| e.take::<Conversation>())
-        else {
-            continue;
-        };
-        if !available(world, c.actor) || crate::game::combat::in_battle(world) {
-            world.entity_mut(entity).insert(c);
+        let in_battle = crate::game::combat::in_battle(world);
+        let Some(c) = world.get::<Conversation>(entity) else { continue };
+        if !available(world, c.actor) || in_battle {
             close_one(world, entity);
             continue;
         }
-        if let ConversationWait::Line { speech, phase } = &mut c.wait {
-            for event in playback.iter().filter(|e| e.speech == *speech) {
-                match event.event {
-                    PlaybackEvent::Started if matches!(phase, LinePhase::Text { .. }) => {
-                        *phase = LinePhase::Audio
-                    }
-                    PlaybackEvent::Finished if matches!(phase, LinePhase::Audio) => {
-                        *phase = LinePhase::Hold { remaining: 0.7 }
-                    }
-                    PlaybackEvent::Unavailable if !matches!(phase, LinePhase::Hold { .. }) => {
-                        let remaining =
-                            world.get::<ConversationSpeech>(*speech).map_or(2.0, |line| {
-                                line.text.encode_utf16().count() as f32 * 0.06 + 2.0
-                            });
-                        *phase = LinePhase::Text { remaining };
-                    }
-                    _ => {}
-                }
-            }
-            let done = match phase {
-                LinePhase::Text { remaining } | LinePhase::Hold { remaining } => {
-                    *remaining -= delta;
-                    *remaining <= 0.0
-                }
-                LinePhase::Audio => false,
-            };
-            if done {
-                world.despawn(*speech);
-                c.wait = ConversationWait::Ready;
-                c.revision += 1;
+        // No mutable access for an audio wait without a playback event.
+        if let ConversationWait::Line { speech, phase } = &c.wait
+            && (!matches!(phase, LinePhase::Audio) || playback.iter().any(|e| e.speech == *speech))
+        {
+            let fallback = world
+                .get::<ConversationSpeech>(*speech)
+                .map_or(2.0, |line| line.text.encode_utf16().count() as f32 * 0.06 + 2.0);
+            let finished = advance_playback(
+                &mut world.get_mut::<Conversation>(entity).unwrap(),
+                &playback,
+                delta,
+                fallback,
+            );
+            if let Some(speech) = finished {
+                world.despawn(speech);
             }
         }
-        run(world, entity, &mut c);
-        // End can request close while the component is temporarily taken.
+        run(world, entity);
+        let c = world.get::<Conversation>(entity).unwrap();
         if matches!(c.queue.front(), Some(Step::End)) && c.wait == ConversationWait::Ready {
-            world.entity_mut(entity).insert(c);
             close_one(world, entity);
-        } else {
-            world.entity_mut(entity).insert(c);
         }
+    }
+}
+fn advance_playback(
+    c: &mut Conversation,
+    playback: &[LinePlayback],
+    delta: f32,
+    fallback: f32,
+) -> Option<Entity> {
+    let ConversationWait::Line { speech, phase } = &mut c.wait else { return None };
+    for event in playback.iter().filter(|e| e.speech == *speech) {
+        match event.event {
+            PlaybackEvent::Started if matches!(phase, LinePhase::Text { .. }) => {
+                *phase = LinePhase::Audio
+            }
+            PlaybackEvent::Finished if matches!(phase, LinePhase::Audio) => {
+                *phase = LinePhase::Hold { remaining: 0.7 }
+            }
+            PlaybackEvent::Unavailable if !matches!(phase, LinePhase::Hold { .. }) => {
+                *phase = LinePhase::Text { remaining: fallback }
+            }
+            _ => {}
+        }
+    }
+    let done = match phase {
+        LinePhase::Text { remaining } | LinePhase::Hold { remaining } => {
+            *remaining -= delta;
+            *remaining <= 0.0
+        }
+        LinePhase::Audio => false,
+    };
+    if done {
+        let speech = *speech;
+        c.wait = ConversationWait::Ready;
+        c.revision += 1;
+        Some(speech)
+    } else {
+        None
     }
 }
 
@@ -1046,11 +1177,260 @@ mod tests {
                 transcript: vec![],
                 learned_topics: default(),
                 result: None,
-                queue: VecDeque::from([Step::Quote { quote: 0, subquote: 0, paid: false }]),
+                queue: VecDeque::from([Step::Quote {
+                    quote: 0,
+                    subquote: 0,
+                    paid: false,
+                    plan: None,
+                }]),
             })
             .id();
         (app, entity, actor)
     }
+    #[test]
+    fn fact_writes_select_the_validated_branch_before_payment_or_effects() {
+        for (initial, assigned) in [(0, 1), (1, 0)] {
+            for branch_is_taken in [false, true] {
+                let expected = if branch_is_taken { assigned } else { initial };
+                let (mut app, session, actor) = app(DialogueScript {
+                    quotes: vec![Quote {
+                        text: vec!["Purchased answer".into()],
+                        operations: vec![
+                            DialogueOp::SetFact(FactId(91), assigned),
+                            DialogueOp::Conditional {
+                                facts: vec![(FactId(91), expected)],
+                                response: Response::Random { first: 1, last: 2 },
+                            },
+                            DialogueOp::Unsupported {
+                                opcode: 99,
+                                operands: [0; 3],
+                                subentries: vec![],
+                            },
+                        ],
+                        ..default()
+                    }],
+                    ..default()
+                });
+                let world = app.world_mut();
+                let party = the_party(world).unwrap();
+                world.get_mut::<PartyInventory>(party).unwrap().gold = 100;
+                world.resource_mut::<StoryFacts>().values.insert(FactId(91), initial);
+                {
+                    let mut c = world.get_mut::<Conversation>(session).unwrap();
+                    c.queue.clear();
+                    c.wait = ConversationWait::Price { quote: 0, gold: 25, always: false };
+                }
+                let rng = world.resource::<GameRng>().clone();
+                world.write_message(ConversationRequest::PriceAnswer {
+                    conversation: session,
+                    revision: 0,
+                    accept: true,
+                });
+                app.update();
+                let world = app.world();
+                let c = world.get::<Conversation>(session).unwrap();
+                if branch_is_taken {
+                    assert_eq!(world.get::<PartyInventory>(party).unwrap().gold, 75);
+                    assert_eq!(world.get::<Npc>(actor).unwrap().paid_topics, [0]);
+                    assert_eq!(world.resource::<StoryFacts>().values[&FactId(91)], assigned);
+                    assert_eq!(world.resource::<StoryFacts>().journal.len(), 1);
+                    assert!(matches!(c.queue.front(), Some(Step::Quote { quote: 1 | 2, .. })));
+                    assert_eq!(c.transcript.len(), 1);
+                } else {
+                    assert!(matches!(c.wait, ConversationWait::Blocked { entry: Some(2), .. }));
+                    assert_eq!(world.get::<PartyInventory>(party).unwrap().gold, 100);
+                    assert!(world.get::<Npc>(actor).unwrap().paid_topics.is_empty());
+                    assert!(world.get::<Npc>(actor).unwrap().greeting_pending);
+                    assert_eq!(world.resource::<StoryFacts>().values[&FactId(91)], initial);
+                    assert!(world.resource::<StoryFacts>().journal.is_empty());
+                    assert_eq!(world.resource::<GameRng>(), &rng);
+                    assert!(c.queue.is_empty());
+                    assert!(c.transcript.is_empty());
+                    assert_eq!(c.current, None);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn repeated_assignments_keep_order_and_accepted_path_across_subquotes() {
+        let (mut app, session, _) = app(DialogueScript {
+            quotes: vec![Quote {
+                text: vec!["First line".into(), "Last line".into()],
+                operations: vec![
+                    DialogueOp::SetFact(FactId(91), 1),
+                    DialogueOp::Conditional {
+                        facts: vec![(FactId(91), 0)],
+                        response: Response::Fixed(2),
+                    },
+                    DialogueOp::SetFact(FactId(91), 0),
+                    DialogueOp::Conditional {
+                        facts: vec![(FactId(91), 0)],
+                        response: Response::Fixed(1),
+                    },
+                    DialogueOp::Unsupported { opcode: 99, operands: [0; 3], subentries: vec![] },
+                ],
+                ..default()
+            }],
+            ..default()
+        });
+        app.update();
+        assert!(app.world().resource::<StoryFacts>().journal.is_empty());
+        let speech = match app.world().get::<Conversation>(session).unwrap().wait {
+            ConversationWait::Line { speech, .. } => speech,
+            _ => panic!("first line expected"),
+        };
+        app.world_mut().resource_mut::<StoryFacts>().values.insert(FactId(91), 0);
+        app.world_mut()
+            .write_message(ConversationRequest::Advance { conversation: session, speech });
+        app.update();
+        let world = app.world();
+        assert_eq!(
+            world.resource::<StoryFacts>().journal.iter().map(|j| j.was_true).collect::<Vec<_>>(),
+            [true, false]
+        );
+        let c = world.get::<Conversation>(session).unwrap();
+        assert_eq!(c.current, Some((0, 1)));
+        assert!(matches!(c.queue.front(), Some(Step::Quote { quote: 1, .. })));
+    }
+
+    #[test]
+    fn accepted_payment_keeps_its_path_until_the_last_subquote() {
+        let (mut app, session, _) = app(DialogueScript {
+            quotes: vec![Quote {
+                text: vec!["First".into(), "Last".into()],
+                operations: vec![
+                    DialogueOp::Conditional {
+                        facts: vec![(FactId(91), 0)],
+                        response: Response::Fixed(1),
+                    },
+                    DialogueOp::Unsupported { opcode: 99, operands: [0; 3], subentries: vec![] },
+                ],
+                ..default()
+            }],
+            ..default()
+        });
+        let world = app.world_mut();
+        let party = the_party(world).unwrap();
+        world.get_mut::<PartyInventory>(party).unwrap().gold = 100;
+        {
+            let mut c = world.get_mut::<Conversation>(session).unwrap();
+            c.queue.clear();
+            c.wait = ConversationWait::Price { quote: 0, gold: 25, always: false };
+        }
+        answer_price(world, session, true);
+        // Another conversation can change global facts before this accepted
+        // answer runs, and again while its speech is playing.
+        world.resource_mut::<StoryFacts>().values.insert(FactId(91), 1);
+        app.update();
+        let speech = match app.world().get::<Conversation>(session).unwrap().wait {
+            ConversationWait::Line { speech, .. } => speech,
+            _ => panic!("accepted answer must still play"),
+        };
+        app.world_mut()
+            .write_message(ConversationRequest::Advance { conversation: session, speech });
+        app.update();
+        let world = app.world();
+        let c = world.get::<Conversation>(session).unwrap();
+        assert_eq!(c.current, Some((0, 1)));
+        assert!(matches!(c.queue.front(), Some(Step::Quote { quote: 1, .. })));
+        assert_eq!(world.get::<PartyInventory>(party).unwrap().gold, 75);
+    }
+
+    #[test]
+    fn idle_and_delayed_assets_do_not_replace_or_dirty_conversations() {
+        #[derive(Resource, Default)]
+        struct Lifecycle {
+            added: usize,
+            removed: usize,
+            changed: usize,
+        }
+        let (mut app, session, actor) =
+            app(DialogueScript { quotes: vec![Quote::default()], ..default() });
+        app.init_resource::<Lifecycle>()
+            .add_observer(|_: On<Add<Conversation>>, mut counts: ResMut<Lifecycle>| {
+                counts.added += 1
+            })
+            .add_observer(|_: On<Remove<Conversation>>, mut counts: ResMut<Lifecycle>| {
+                counts.removed += 1
+            })
+            .add_systems(
+                Update,
+                (|changed: Query<(), Changed<Conversation>>, mut counts: ResMut<Lifecycle>| {
+                    counts.changed += changed.iter().count()
+                })
+                .after(update_conversation),
+            );
+        let handle = app.world().get::<Conversation>(session).unwrap().script.clone();
+        let script =
+            app.world_mut().resource_mut::<Assets<DialogueScript>>().remove(handle.id()).unwrap();
+        app.update();
+        let changed = app.world().resource::<Lifecycle>().changed;
+        app.update();
+        assert_eq!(app.world().resource::<Lifecycle>().changed, changed);
+        assert_eq!(app.world().get::<Conversation>(session).unwrap().queue.len(), 1);
+        app.world_mut()
+            .resource_mut::<Assets<DialogueScript>>()
+            .insert(handle.id(), script)
+            .unwrap();
+        app.update();
+        assert!(app.world().get::<Conversation>(session).unwrap().ready());
+        let changed = app.world().resource::<Lifecycle>().changed;
+        app.update();
+        let counts = app.world().resource::<Lifecycle>();
+        assert_eq!(counts.changed, changed);
+        assert_eq!((counts.added, counts.removed), (0, 0));
+        app.world_mut().get_mut::<Npc>(actor).unwrap().disposition = 0;
+        app.update();
+        assert!(app.world().get::<Conversation>(session).is_none());
+        assert_eq!(app.world().resource::<Lifecycle>().removed, 1);
+    }
+
+    #[test]
+    #[ignore = "requires a retail installation"]
+    fn burz_retail_arnika_reply_commits_its_authored_fact() {
+        let files = crate::retail::files::retail_files();
+        let script = crate::retail::npcs::read_dialogue(
+            &files.read("data/npc scripts/npc_burz.nsf").unwrap().unwrap(),
+        )
+        .unwrap();
+        let facts = crate::retail::npcs::read_facts(
+            &files.read("data/databases/fact.dbs").unwrap().unwrap(),
+        )
+        .unwrap();
+        let said_arnika = facts.0.iter().find(|f| f.symbol == "FACT_BURZ_SAID130").unwrap().id;
+        // Retail quote 129 asks whether the party has visited Arnika;
+        // answering NO selects quote 130 and records that advice was given.
+        const ASKED_ABOUT_ARNIKA: u16 = 129;
+        const ARNIKA_ADVICE: u16 = 130;
+        let expected = script.quotes[usize::from(ARNIKA_ADVICE)].text[0].clone();
+        let (mut app, session, _) = app(script);
+        let handle = app.world_mut().resource_mut::<Assets<FactCatalog>>().add(facts);
+        app.world_mut().resource_mut::<NpcAssets>().facts = handle;
+        {
+            let mut c = app.world_mut().get_mut::<Conversation>(session).unwrap();
+            c.queue.clear();
+            c.wait = ConversationWait::Options {
+                quote: ASKED_ABOUT_ARNIKA,
+                words: vec!["YES".into(), "NO".into()],
+            };
+        }
+        app.world_mut().write_message(ConversationRequest::Reply {
+            conversation: session,
+            revision: 0,
+            text: "NO".into(),
+        });
+        app.update();
+        let world = app.world();
+        assert_eq!(world.resource::<StoryFacts>().values[&said_arnika], 1);
+        assert_eq!(world.resource::<StoryFacts>().journal.len(), 1);
+        let c = world.get::<Conversation>(session).unwrap();
+        assert_eq!(c.current, Some((ARNIKA_ADVICE, 0)));
+        assert!(
+            matches!(c.transcript.last(), Some(TranscriptLine::Npc(text)) if text == &expected)
+        );
+    }
+
     #[test]
     fn journal_keeps_transitions_and_selects_retail_text_without_rewriting_history() {
         let catalog = FactCatalog(vec![FactDefinition {
@@ -1343,9 +1723,7 @@ mod tests {
         let (mut app, session, actor) = app(DialogueScript::default());
         let world = app.world_mut();
         let party = the_party(world).unwrap();
-        let mut c = world.entity_mut(session).take::<Conversation>().unwrap();
-        c.queue.clear();
-        world.entity_mut(session).insert(c);
+        world.get_mut::<Conversation>(session).unwrap().queue.clear();
         for source in [
             TradeSource::Stock(trade::StockLotId(1)),
             TradeSource::Party(ItemRef {
@@ -1355,7 +1733,7 @@ mod tests {
         ] {
             assert!(!trade_allowed(world, actor));
             assert_eq!(quote_trade(world, session, source, 1), Err(TradeError::Unavailable));
-            let mut c = world.entity_mut(session).take::<Conversation>().unwrap();
+            let c = world.get::<Conversation>(session).unwrap();
             let quote = TradeQuote {
                 conversation: session,
                 revision: c.revision,
@@ -1363,8 +1741,7 @@ mod tests {
                 quantity: 1,
                 gold: 1,
             };
-            assert_eq!(execute_trade(world, &mut c, quote), Err(TradeError::Unavailable));
-            world.entity_mut(session).insert(c);
+            assert_eq!(execute_trade(world, quote), Err(TradeError::Unavailable));
         }
         assert_eq!(world.get::<PartyInventory>(party).unwrap().gold, 0);
         assert!(world.get::<Npc>(actor).unwrap().stock.lots.is_empty());
