@@ -473,8 +473,10 @@ fn a_container_opens_its_table_once_and_one_without_a_table_holds_nothing() {
         make_item(&definition, &mut ItemIds::default(), &mut GameRng::seeded(5), false, true);
     let deposited = item.id;
     level.inventory().hand.held = Some(item);
-    assert!(level.run("CHEST").0);
-    assert!(level.world.get::<Container>(level.device("CHEST")).unwrap().table.is_some());
+    // Putting it in answers the use without running the chest.
+    assert_eq!(level.run("CHEST"), (false, vec![]));
+    let chest = level.world.get::<Container>(level.device("CHEST")).unwrap();
+    assert!(chest.table.is_some() && chest.contents.items.iter().any(|i| i.id == deposited));
     assert_eq!(level.run("CHEST"), (true, vec![TriggerEffect::Gold(5)]));
     assert!(level.world.get::<Container>(level.device("CHEST")).unwrap().table.is_none());
     let back = level.inventory().hand.held.take().map(|i| i.id);
