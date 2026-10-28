@@ -10,13 +10,13 @@ use bevy::prelude::*;
 
 use super::attack::{self, Aim, Defence, Hand, Surprise};
 use super::{
-    AcceptedAction, Announcement, Armour, Battle, CombatNews, HandTurns, PartyPace, PartyView,
+    Announcement, Armour, Battle, CombatNews, HandTurns, PartyPace, PartyView, RoundAction,
     RoundPhase, Turn, distance_to_party,
 };
 use crate::content::characters::{Skill, Trait};
 use crate::content::items::{AttackEffect, AttackMode};
 use crate::content::species::{Reach, Species};
-use crate::game::characters::{Character, Condition, Vitals};
+use crate::game::characters::{Character, CharacterStats, Condition, Vitals};
 use crate::game::magic::effects::{self, Effect, Field, Victim};
 use crate::game::magic::{LearnedSpells, SpellPoints};
 use crate::game::party::body;
@@ -126,15 +126,16 @@ fn member_defence(
     fight: &Fight,
     member: Entity,
 ) -> Option<(Character, Defence<'static>)> {
-    let (character, ..) = field.members.get(member).ok()?;
+    let (character, vitals, ..) = field.members.get(member).ok()?;
     let armour = (fight.armour)(member)?;
     let running = battle.this_round.pace == Some(PartyPace::Run);
     let defending = battle
         .this_round
         .party
         .iter()
-        .any(|p| p.actor == member && matches!(p.action, AcceptedAction::Defend));
-    Some((character.clone(), Defence::member(character, armour, running, defending)))
+        .any(|p| p.actor == member && matches!(p.action, RoundAction::Defend));
+    let stats = character.stats(&vitals.enchantments);
+    Some((character.clone(), Defence::member(&stats, armour, running, defending)))
 }
 
 fn monster_defence<'a>(
@@ -280,7 +281,7 @@ pub(super) fn member_attacks(
 ) {
     let work = battle.this_round.party[index];
     let member = work.actor;
-    let berserk = matches!(work.action, AcceptedAction::Attack { berserk: true, .. });
+    let berserk = matches!(work.action, RoundAction::Attack { berserk: true, .. });
     let step = match battle.phase {
         RoundPhase::Executing(step) => step,
         _ => 1,
@@ -289,7 +290,11 @@ pub(super) fn member_attacks(
     let Ok((character, vitals, carried, burden)) = field.members.get(member) else { return };
     let (character, load) = (character.clone(), burden.load);
     let slowed = vitals.has(Condition::Slowed);
-    let hands = attack::hands(&character, carried, items, load);
+    let mut hands = attack::hands(&character.stats(&vitals.enchantments), carried, items, load);
+    // The party's blessings guide every hand.
+    for hand in &mut hands.hands {
+        hand.to_hit += field.enchantments.hit_bonus();
+    }
     let mut turns = work.hands;
     // The hand due attacks if it still can; a hand that cannot (out of
     // shots, or nothing in its reach) gives up only its own attacks, and
@@ -356,16 +361,10 @@ pub(super) fn member_attacks(
         if !vitals.can_fight() {
             break;
         }
+        let stats = character.stats(&vitals.enchantments);
         let Some(aimed_at) = monster_defence(field, fight, target) else { break };
-        let aim = attack::member_aim(
-            &character,
-            &vitals,
-            &hand,
-            mode,
-            surprise,
-            Some(&aimed_at),
-            difficulty,
-        );
+        let aim =
+            attack::member_aim(&stats, &vitals, &hand, mode, surprise, Some(&aimed_at), difficulty);
         let landing = if hand.reach >= Reach::Long {
             let Ok((monster, at, walker, _)) = field.monsters.monsters().get(target) else { break };
             let centre = body_centre(feet(at.translation(), walker), monster);
@@ -376,13 +375,12 @@ pub(super) fn member_attacks(
                 victim: Victim::Monster(target),
                 roll: rng.below(100) + 1,
                 sure: true,
-                through: attack::sure_penetration(&character, &hand),
+                through: attack::sure_penetration(&stats, &hand),
                 fumbled: false,
             })
         } else {
             let bystanders = member_bystanders(field, fight, member, &hand, target);
-            let odds =
-                attack::member_aim(&character, &vitals, &hand, mode, surprise, None, difficulty);
+            let odds = attack::member_aim(&stats, &vitals, &hand, mode, surprise, None, difficulty);
             let fumble = attack::fumble_chance(bystanders.len(), odds);
             match attack::swing(rng, bystanders.len(), fumble) {
                 Aim::Missed => None,
@@ -411,7 +409,7 @@ pub(super) fn member_attacks(
             }
             let dealt = member_blow(
                 battle,
-                (member, &character, &vitals),
+                (member, &stats, &vitals),
                 (&hands, current, mode),
                 (surprise, aim, backstab_chance),
                 landing,
@@ -435,7 +433,8 @@ pub(super) fn member_attacks(
         let weight = hand.weight;
         let cost =
             attack::swing_stamina(rng, mode, weight, berserk, vitals.has(Condition::Diseased));
-        vitals.spend_stamina(load.scale_fatigue(cost, slowed));
+        let hasted = vitals.enchantments.get(crate::content::spells::SpellId::HASTE).is_some();
+        vitals.spend_stamina(load.scale_fatigue(cost, slowed, hasted));
         // Arrows, bolts and stones are shot away, thrown weapons thrown,
         // and guns spend their shots.
         // A hand with nothing left to fire is done for the round.
@@ -478,7 +477,7 @@ fn spend_shot(
 /// dodged.
 fn member_blow(
     battle: &Battle,
-    (attacker, character, vitals): (Entity, &Character, &Vitals),
+    (attacker, character, vitals): (Entity, &CharacterStats, &Vitals),
     (hands, current, mode): (&attack::Hands, usize, AttackMode),
     (surprise, aim, backstab): (Surprise, i32, i32),
     landing: Landing,
@@ -511,6 +510,16 @@ fn member_blow(
         difficulty,
     );
     if !landing.through && through < landing.roll as i32 {
+        return Some(0);
+    }
+    // Missile Shield turns aside what is shot or thrown.
+    if let Victim::Monster(monster) = landing.victim
+        && field
+            .monsters
+            .monsters()
+            .get(monster)
+            .is_ok_and(|(m, ..)| m.enchantments.deflects(mode, rng))
+    {
         return Some(0);
     }
     let slaying = struck.species().map_or(0, |kind| {
@@ -644,7 +653,7 @@ fn notices(
         .this_round
         .party
         .iter()
-        .any(|p| p.actor == member && matches!(p.action, AcceptedAction::Defend));
+        .any(|p| p.actor == member && matches!(p.action, RoundAction::Defend));
     if !alert || !defending {
         return false;
     }
@@ -810,6 +819,10 @@ pub(super) fn monster_attacks(
         };
         let at = struck.locate(rng, victim_character.as_ref().map(|_| kind));
         if !landing.sure && aim < landing.roll as i32 {
+            continue;
+        }
+        // The party's Missile Shield turns aside what is shot or thrown.
+        if matches!(landing.victim, Victim::Member(_)) && field.enchantments.deflects(mode, rng) {
             continue;
         }
         let through = attack::monster_penetration(

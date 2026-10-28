@@ -5,7 +5,7 @@ use crate::content::characters::{Attribute, Skill};
 use crate::content::items::EquipClass;
 use crate::content::ui::SpriteSheet;
 use crate::game::characters::Character;
-use crate::game::combat::attack::{character_initiative, primary_hand};
+use crate::game::combat::attack::character_initiative;
 use crate::game::inventory::EquipSlot;
 use crate::game::party::roster::PartyRoster;
 use crate::presentation::character_view::{CharacterView, CharacterViewItem};
@@ -130,16 +130,33 @@ fn panel(commands: &mut Commands, root: Entity, page: Page) -> Entity {
 }
 
 pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) -> Entity {
-    // These actions require their gameplay operations; show retail's disabled
-    // art until those operations are available.
+    super::progression::build(commands, root, art);
+    // Retail's item actions: Identify, Merge, Split, Use, Drop, Use on Item,
+    // Use on Character and Cast. The ones without their gameplay operations
+    // yet show retail's disabled art.
     for (i, base) in [0, 10, 5, 15, 20, 30, 35, 25].into_iter().enumerate() {
-        picture(
-            commands,
-            root,
-            art.item_buttons.clone(),
-            base + 3,
-            Vec2::new(i as f32 * 44.0, 450.0),
-        );
+        let at = Vec2::new(i as f32 * 44.0, 450.0);
+        let action = match i {
+            0 => super::ItemAction::Identify,
+            1 => super::ItemAction::Merge,
+            _ => {
+                picture(commands, root, art.item_buttons.clone(), base + 3, at);
+                continue;
+            }
+        };
+        commands
+            .spawn((
+                UiButton,
+                TabIndex(0),
+                super::ItemActionButton(action),
+                ControlSkin::new(base, base + 1, base + 2, base + 4, base + 3),
+                Picture { sheet: art.item_buttons.clone(), frame: base, bounds: Some(base), at },
+                absolute(at, Vec2::new(44.0, 30.0)),
+                Pickable::default(),
+                crate::presentation::retail_controls::FocusRing,
+                ChildOf(root),
+            ))
+            .observe(super::press_item_action);
     }
     let list = commands
         .spawn((
@@ -478,6 +495,7 @@ pub(super) fn show_pages(
 }
 
 pub(super) fn refresh(
+    enchantments: Option<Single<&crate::game::magic::enchantments::PartyEffects>>,
     learned_spells: Query<&crate::game::magic::LearnedSpells>,
     screen: Option<Single<&InventoryScreen>>,
     characters: Query<CharacterView>,
@@ -495,15 +513,11 @@ pub(super) fn refresh(
     let Some(screen) = screen else { return };
     let Ok(view) = characters.get(screen.member) else { return };
     let load = view.load();
-    let CharacterViewItem { profile, vitals, carried, .. } = view;
+    let CharacterViewItem { profile, vitals, carried, hand, .. } = view;
     let armour_view = info.as_ref().is_some_and(|info| info.armour);
     let effect_filter = info.as_ref().map_or(EffectFilter::All, |info| info.filter);
     let show_items = info.as_ref().is_some_and(|info| info.items);
     let catalog = content.items();
-    let hand = carried
-        .as_ref()
-        .zip(catalog)
-        .map(|(carried, catalog)| primary_hand(profile, carried, catalog, load));
     let unidentified = carried
         .as_ref()
         .and_then(|c| c.worn(EquipSlot::Primary))
@@ -597,6 +611,22 @@ pub(super) fn refresh(
             }
         }
     }
+    if effect_filter != EffectFilter::Detrimental && !show_items {
+        for effect in vitals
+            .enchantments
+            .0
+            .iter()
+            .chain(enchantments.as_ref().into_iter().flat_map(|p| p.0.0.iter()))
+        {
+            let name = spell_catalog
+                .and_then(|c| c.get(effect.spell))
+                .map(|s| s.name.as_str())
+                .unwrap_or("Enchantment");
+            effects.push((name.to_owned(), true));
+            effects.push((format!("Power {} · {} turns", effect.power, effect.turns), false));
+            effects.push((String::new(), false));
+        }
+    }
     let maximum = effects.len().saturating_sub(17);
     let offset = slider.as_deref().map_or(0, |(_, value, _)| (value.0 as usize).min(maximum));
     if let Some((entity, value, range)) = slider.as_deref() {
@@ -643,7 +673,9 @@ pub(super) fn refresh(
             Field::InfoString(combat, armour) => {
                 (if armour_view { armour } else { combat }).map_or("", string).to_owned()
             }
-            Field::Attribute(attribute) => profile.attribute(attribute).to_string(),
+            Field::Attribute(attribute) => {
+                profile.stats(&vitals.enchantments).attribute(attribute).to_string()
+            }
             Field::Skill(skill) => profile.skill(skill).to_string(),
             Field::SkillName(skill) => {
                 string(crate::content::ui::SKILL_NAMES + skill as usize).to_owned()
@@ -673,7 +705,7 @@ pub(super) fn refresh(
             }
             Field::CombatValue(_) if armour_view => String::new(),
             Field::CombatValue(index) => {
-                if let Some(hand) = &hand {
+                if let Some(hand) = hand {
                     if unidentified && index != 8 {
                         "?".to_owned()
                     } else {
@@ -693,7 +725,12 @@ pub(super) fn refresh(
                             4 => hand.swings.to_string(),
                             5 => format!("{:+}", hand.to_hit),
                             7 => format!("{:+}%", hand.damage_percent),
-                            8 => character_initiative(profile, hand, load).to_string(),
+                            8 => character_initiative(
+                                &profile.stats(&vitals.enchantments),
+                                hand,
+                                load,
+                            )
+                            .to_string(),
                             _ => String::new(),
                         }
                     }

@@ -478,7 +478,7 @@ pub(super) fn refresh(
             .unwrap_or_default()
     };
     let resistances = crate::game::characters::resistance::resistances(
-        &profile,
+        &profile.base_stats(),
         &crate::game::inventory::Carried::default(),
         &crate::content::items::ItemCatalog::default(),
     );
@@ -630,7 +630,7 @@ pub(super) fn refresh(
             Value::Armour => {
                 if session.choices.race {
                     crate::game::combat::attack::armour(
-                        &profile,
+                        &profile.base_stats(),
                         &crate::game::inventory::Carried::default(),
                         &crate::content::items::ItemCatalog::default(),
                         crate::game::characters::Load::None,
@@ -651,7 +651,7 @@ pub(super) fn refresh(
                                 .iter()
                                 .map(|realm| {
                                     crate::game::magic::max_points(
-                                        &profile,
+                                        &profile.base_stats(),
                                         &crate::game::magic::LearnedSpells(draft.spells()),
                                         catalog,
                                     )[realm]

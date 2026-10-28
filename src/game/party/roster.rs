@@ -16,6 +16,7 @@ use crate::game::rng::GameRng;
 #[derive(Component, Debug, Default)]
 #[require(
     super::formation::Formation,
+    crate::game::magic::enchantments::PartyEffects,
     crate::game::inventory::PartyInventory,
     super::body::PartyMovement
 )]
@@ -158,7 +159,9 @@ pub fn recruit_character(
         }
     }
     let points = crate::game::magic::SpellPoints::full(crate::game::magic::max_points(
-        &character, &learned, spells,
+        &character.base_stats(),
+        &learned,
+        spells,
     ));
     let vitals = crate::game::characters::Vitals::new(&character);
     let member = commands

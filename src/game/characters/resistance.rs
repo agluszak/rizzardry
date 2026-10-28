@@ -1,29 +1,37 @@
 //! Resistance from a character's profile and currently worn equipment.
 use crate::content::characters::{Attribute, Realm, Skill};
 use crate::content::items::ItemCatalog;
-use crate::game::characters::{Character, Profession, Race};
+#[cfg(test)]
+use crate::game::characters::Character;
+use crate::game::characters::{Profession, Race};
 use crate::game::inventory::Carried;
 #[cfg(test)]
 use crate::game::inventory::EquipSlot;
+use bevy::prelude::Component;
 use enum_map::{EnumMap, enum_map};
 
 /// Base resistance and its current value, before unmodelled spell effects.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Resistance {
     pub base: i32,
     pub total: i32,
 }
 
+/// A member's resistance in each realm. Members carry theirs, kept current
+/// by `sync_stats`.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Resistances(pub EnumMap<Realm, Resistance>);
+
 /// Retail `RecalculateCharacterResistances` and equipment modifier accumulation.
 /// Other temporary effects are not represented yet.
 pub fn resistances(
-    character: &Character,
+    character: &crate::game::characters::CharacterStats<'_>,
     carried: &Carried,
     items: &ItemCatalog,
 ) -> EnumMap<Realm, Resistance> {
     use Realm::*;
     let mut racial: EnumMap<Realm, i32> = enum_map! { _ => 0 };
-    let vitality = i32::from(character.attributes[Attribute::Vitality]) / 5;
+    let vitality = character.attribute(Attribute::Vitality) as i32 / 5;
     let changes: &[(Realm, i32)] = match character.race {
         Race::Human => &[],
         Race::Elf => &[(Mental, 20), (Air, 10)],
@@ -98,11 +106,11 @@ mod tests {
         let item = ItemStack::new(&items.0[0], &mut ItemIds::default(), 1, false);
         let mut carried = Carried::default();
         carried.equipment[EquipSlot::AlternatePrimary] = Some(Equipped::new(item.clone()));
-        let base = resistances(&elf, &carried, &items);
+        let base = resistances(&elf.base_stats(), &carried, &items);
         assert_eq!(base[Realm::Air], Resistance { base: 40, total: 40 });
         assert_eq!(base[Realm::Mental], Resistance { base: 50, total: 50 });
         carried.equipment[EquipSlot::Primary] = Some(Equipped::new(item));
-        let worn = resistances(&elf, &carried, &items);
+        let worn = resistances(&elf.base_stats(), &carried, &items);
         assert_eq!(worn[Realm::Air], Resistance { base: 40, total: 52 });
         assert_eq!(worn[Realm::Fire], Resistance { base: 30, total: 23 });
     }

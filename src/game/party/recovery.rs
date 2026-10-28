@@ -64,11 +64,18 @@ pub fn pass(profile: &Character, member: &mut Mut<Vitals>, ticks: Ticks, pace: P
 pub fn elapse(profile: &Character, member: &mut Vitals, ticks: Ticks, pace: Pace) {
     let (stamina, health) = pace.scales();
     if ticks.stamina > 0 {
-        member.recover_stamina(ticks.stamina, stamina, profile.max_stamina());
+        member.recover_stamina(
+            ticks.stamina,
+            stamina,
+            profile.stats(&member.enchantments).max_stamina(),
+        );
     }
     if ticks.aging > 0 {
-        member.recover_health(ticks.aging, health, profile.max_hp());
+        member.recover_health(ticks.aging, health, profile.stats(&member.enchantments).max_hp());
         member.age_conditions(ticks.aging);
+        let stats = profile.stats(&member.enchantments);
+        member.hp = member.hp.min(stats.max_hp());
+        member.stamina = member.stamina.min(stats.max_stamina());
     }
 }
 

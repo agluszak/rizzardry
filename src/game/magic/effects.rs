@@ -9,8 +9,8 @@ use super::{LearnedSpells, SpellPoints, Strength};
 use crate::content::characters::{Attribute, Realm, Skill};
 use crate::content::items::{Dice, EquipClass, ItemCatalog};
 use crate::content::species::{MonsterCatalog, MonsterKind};
-use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId};
-use crate::game::characters::{Condition, Lasting, inflict, resistance::resistances, wake_on_hit};
+use crate::content::spells::{SpellDefinition, SpellId};
+use crate::game::characters::{Condition, Lasting, inflict, resistance::Resistances, wake_on_hit};
 use crate::game::difficulty::{Difficulty, Side};
 use crate::game::party::DamageApplied;
 use crate::game::party::formation::Formation;
@@ -26,6 +26,7 @@ enum Kind {
     DamageUndead {
         banish: bool,
     },
+    Enchant,
     Heal,
     Stamina,
     /// Healing followed by stamina with twice the dice count.
@@ -57,6 +58,7 @@ enum Kind {
     Resurrect,
     /// Drain health; 70% of it heals the most wounded party member.
     Lifesteal,
+    MightToMagic,
 }
 
 /// The spells implemented, by retail id (`spell_ids.h`), and what they do.
@@ -84,6 +86,18 @@ fn kind(spell: SpellId) -> Option<Kind> {
         | SpellId::MIND_FLAY
         | SpellId::NUCLEAR_BLAST
         | SpellId::TSUNAMI => Kind::Damage,
+        SpellId::BLESS
+        | SpellId::DETECT_SECRETS
+        | SpellId::ENCHANTED_BLADE
+        | SpellId::GUARDIAN_ANGEL
+        | SpellId::MISSILE_SHIELD
+        | SpellId::ARMORPLATE
+        | SpellId::MAGIC_SCREEN
+        | SpellId::ELEMENT_SHIELD
+        | SpellId::HASTE
+        | SpellId::SOUL_SHIELD
+        | SpellId::SUPERMAN
+        | SpellId::BODY_OF_STONE => Kind::Enchant,
         SpellId::HOLY_WATER => Kind::DamageUndead { banish: false },
         SpellId::BANISH => Kind::DamageUndead { banish: true },
         SpellId::HEAL_WOUNDS | SpellId::HEAL_ALL => Kind::Heal,
@@ -121,6 +135,7 @@ fn kind(spell: SpellId) -> Option<Kind> {
         SpellId::SANE_MIND => Kind::Cure(&[Insane, Turncoat]),
         SpellId::RESURRECTION => Kind::Resurrect,
         SpellId::LIFESTEAL => Kind::Lifesteal,
+        SpellId::MIGHT_TO_MAGIC => Kind::MightToMagic,
         SpellId::PHILOSOPHERS_BANE => Kind::GoldLoss,
         SpellId::VAMPIRIC_VORTEX => Kind::Damage,
         SpellId::HEATWAVE => Kind::DestroyConsumables,
@@ -162,6 +177,10 @@ impl Victim {
 /// What a spell did to one victim.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Effect {
+    Enchanted {
+        victim: Victim,
+        spell: SpellId,
+    },
     Healed {
         victim: Victim,
         amount: u32,
@@ -240,6 +259,7 @@ fn burn_stack(
 
 /// What a spell's effects need from the world.
 pub struct Field<'a, 'm, 'ms, 'd, 'ds, 'f, 'p> {
+    pub enchantments: &'a mut super::enchantments::Enchantments,
     pub members: &'a mut Members<'m, 'ms>,
     pub monsters: &'a mut MonsterDamage<'d, 'ds>,
     /// The party's pool and purse.
@@ -248,6 +268,7 @@ pub struct Field<'a, 'm, 'ms, 'd, 'ds, 'f, 'p> {
     pub party_damage: &'a mut MessageWriter<'p, DamageApplied>,
     pub items: &'a ItemCatalog,
     pub species: &'a MonsterCatalog,
+    pub resistances: &'a Query<'a, 'a, &'static Resistances>,
     /// What monster loot tables scale by.
     pub party_level: u32,
     pub difficulty: Difficulty,
@@ -314,9 +335,11 @@ fn immune(kind: MonsterKind, condition: Condition) -> bool {
 
 /// Rounds a condition spell inflicts (retail `RollEffectDuration`).
 fn duration(rng: &mut GameRng, spell: &SpellDefinition, strength: Strength) -> u32 {
-    let mut rounds =
-        (spell.duration_per_power * i32::from(strength.power) + spell.duration_base + 1).max(0)
-            as u32;
+    let base = spell.duration_per_power * i32::from(strength.power) + spell.duration_base;
+    if base == 9999 {
+        return 9999;
+    }
+    let mut rounds = (base + 1).max(0) as u32;
     match rng.below(4) {
         0 if rounds > 1 => rounds += 1,
         1 if rounds <= 2 => rounds += 1,
@@ -347,7 +370,9 @@ fn target(
             let kind = world.species.kind(body.species)?;
             Some(Target {
                 level: u32::from(kind.level),
-                resistance: i32::from(kind.resistances[realm]),
+                resistance: (i32::from(kind.resistances[realm])
+                    + body.enchantments.resistance(realm))
+                .min(100),
                 side: Some(Side::Hostile),
                 turncoat: false,
                 immune: condition.is_some_and(|c| immune(kind.kind, c)),
@@ -355,10 +380,10 @@ fn target(
             })
         }
         Victim::Member(member) => {
-            let (character, vitals, carried, ..) = world.members.get(member).ok()?;
+            let (character, vitals, ..) = world.members.get(member).ok()?;
             Some(Target {
                 level: u32::from(character.level),
-                resistance: resistances(character, carried, world.items)[realm].total,
+                resistance: world.resistances.get(member).ok()?.0[realm].total,
                 side: None,
                 turncoat: vitals.has(Condition::Turncoat),
                 immune: false,
@@ -434,13 +459,35 @@ pub fn hurt(rng: &mut GameRng, world: &mut Field, victim: Victim, amount: u32) -
                 amount,
                 world.party_damage,
             );
-            if !vitals.is_dead() {
+            if lost > 0 && !vitals.is_dead() {
                 wake_on_hit(&mut vitals.conditions, character.attribute(Attribute::Senses), rng);
             }
             let outcome = DamageOutcome { damage: lost, died: vitals.is_dead(), experience: 0 };
             Some(Effect::Damaged { victim, amount: lost, outcome })
         }
     }
+}
+
+/// Haste and Slow cancel durations before either may remain.
+fn counter_haste(conditions: &mut Vec<(Condition, Lasting)>, turns: u32) -> u32 {
+    let mut remaining = turns;
+    conditions.retain_mut(|(condition, lasting)| {
+        if *condition != Condition::Slowed {
+            return true;
+        }
+        match lasting {
+            Lasting::Indefinite => {
+                remaining = 0;
+                true
+            }
+            Lasting::Rounds(left) => {
+                remaining = turns.saturating_sub(u32::from(*left));
+                *left = u32::from(*left).saturating_sub(turns) as u16;
+                *left > 0
+            }
+        }
+    });
+    remaining
 }
 
 /// Give a victim a condition for `lasting`.
@@ -452,6 +499,30 @@ fn inflict_on(
 ) -> Option<()> {
     match victim {
         Victim::Monster(monster) => {
+            let lasting = if condition == Condition::Slowed {
+                match lasting {
+                    Lasting::Rounds(turns) => {
+                        let remaining = world
+                            .monsters
+                            .enchantments_mut(monster)?
+                            .counter_slow(u32::from(turns));
+                        if remaining == 0 {
+                            return Some(());
+                        }
+                        Lasting::Rounds(remaining as u16)
+                    }
+                    Lasting::Indefinite => {
+                        world
+                            .monsters
+                            .enchantments_mut(monster)?
+                            .0
+                            .retain(|e| e.spell != crate::content::spells::SpellId::HASTE);
+                        lasting
+                    }
+                }
+            } else {
+                lasting
+            };
             inflict(&mut *world.monsters.conditions_mut(monster)?, condition, lasting)
         }
         Victim::Member(member) => world.members.get_mut(member).ok()?.1.inflict(condition, lasting),
@@ -702,6 +773,22 @@ fn slay(
         Victim::Monster(monster) => world.monsters.monsters().get(monster).ok()?.0.hp,
         Victim::Member(member) => world.members.get(member).ok()?.1.hp,
     };
+    // A failed death save inflicts Dead; it is not absorbable damage.
+    match victim {
+        Victim::Member(member) => world
+            .members
+            .get_mut(member)
+            .ok()?
+            .1
+            .enchantments
+            .0
+            .retain(|e| e.spell != crate::content::spells::SpellId::GUARDIAN_ANGEL),
+        Victim::Monster(monster) => world
+            .monsters
+            .enchantments_mut(monster)?
+            .0
+            .retain(|e| e.spell != crate::content::spells::SpellId::GUARDIAN_ANGEL),
+    }
     hurt(rng, world, victim, hp)
 }
 
@@ -754,14 +841,27 @@ const AFFLICTIONS: [(Option<Condition>, u32); 9] = [
 /// captured order. Victims that died or left since are skipped; nobody new
 /// is added.
 pub fn resolve(
+    backfired: bool,
     spell: &SpellDefinition,
     strength: Strength,
     victims: &[Victim],
     rng: &mut GameRng,
     world: &mut Field,
-    (spells, points): (&SpellCatalog, &mut Query<(&LearnedSpells, &mut SpellPoints)>),
+    points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
 ) -> Vec<Effect> {
+    if victims.is_empty() {
+        return Vec::new();
+    }
     let (Some(kind), Some(realm)) = (kind(spell.id), spell.realm) else { return Vec::new() };
+    let kind = if backfired && super::enchantments::personal(spell.id) {
+        if spell.id == SpellId::HASTE {
+            Kind::Inflict(Condition::Slowed, 100)
+        } else {
+            return Vec::new();
+        }
+    } else {
+        kind
+    };
     let mut effects = Vec::new();
     let mut each = |f: &mut dyn FnMut(Victim, &mut GameRng, &mut Field) -> Option<Effect>| {
         for &victim in victims {
@@ -771,6 +871,100 @@ pub fn resolve(
         }
     };
     match kind {
+        Kind::Enchant => {
+            let turns = duration(rng, spell, strength);
+            let mut party_applied = false;
+            for &victim in victims {
+                let personal = super::enchantments::personal(spell.id);
+                let effect = super::enchantments::Enchantment {
+                    spell: spell.id,
+                    power: strength.power,
+                    boost: strength.boost,
+                    turns,
+                    absorption: 0,
+                };
+                let mut apply = |enchantments: &mut super::enchantments::Enchantments,
+                                 monster: bool| {
+                    let accepts = if monster {
+                        enchantments.monster_accepts(spell.id, strength.power)
+                    } else {
+                        enchantments.accepts(spell.id, strength.power)
+                    };
+                    if !accepts {
+                        return false;
+                    }
+                    let absorption = if spell.id == SpellId::GUARDIAN_ANGEL {
+                        let rolled =
+                            spell.dice.map_or(0, |dice| rng.roll(dice)) * u32::from(strength.power);
+                        rolled + rolled * strength.boost / 100
+                    } else {
+                        0
+                    };
+                    let effect = super::enchantments::Enchantment { absorption, ..effect };
+                    if monster {
+                        enchantments.apply_to_monster(effect)
+                    } else {
+                        enchantments.apply(effect)
+                    }
+                };
+                let changed = match victim {
+                    Victim::Member(member) if personal => {
+                        world.members.get_mut(member).is_ok_and(|(_, mut v, ..)| {
+                            if v.is_dead() {
+                                return false;
+                            }
+                            if spell.id == SpellId::HASTE {
+                                let remaining = counter_haste(&mut v.conditions, turns);
+                                if remaining == 0 {
+                                    return true;
+                                }
+                                return v.enchantments.apply(super::enchantments::Enchantment {
+                                    turns: remaining,
+                                    ..effect
+                                });
+                            }
+                            apply(&mut v.enchantments, false)
+                        })
+                    }
+                    Victim::Member(_) => {
+                        if party_applied {
+                            continue;
+                        }
+                        party_applied = true;
+                        apply(world.enchantments, false)
+                    }
+                    Victim::Monster(entity) => {
+                        if spell.id == SpellId::HASTE {
+                            let remaining = world
+                                .monsters
+                                .conditions_mut(entity)
+                                .map(|mut c| counter_haste(&mut c, turns));
+                            remaining.is_some_and(|turns| {
+                                turns == 0
+                                    || world.monsters.enchantments_mut(entity).is_some_and(
+                                        |mut e| {
+                                            e.apply_to_monster(super::enchantments::Enchantment {
+                                                turns,
+                                                ..effect
+                                            })
+                                        },
+                                    )
+                            })
+                        } else {
+                            world
+                                .monsters
+                                .enchantments_mut(entity)
+                                .is_some_and(|mut e| apply(&mut e, true))
+                        }
+                    }
+                };
+                effects.push(if changed {
+                    Effect::Enchanted { victim, spell: spell.id }
+                } else {
+                    Effect::Nothing { victim }
+                });
+            }
+        }
         Kind::GoldLoss => {
             if victims.iter().any(|v| matches!(v, Victim::Member(_))) {
                 // Retail's second roll when the first is below 100 is intentional.
@@ -834,22 +1028,22 @@ pub fn resolve(
                         effects.push(Effect::Drained { victim: Victim::Member(member), amount });
                     }
                 }
-                // Party enchantment slots are not modelled; no active buffs can exist yet.
+                // Anti-Magic clears persistent party slots, not combat or actor enchantments.
+                world.enchantments.0.retain(|e| super::enchantments::combat_only(e.spell));
             }
         }
         Kind::RestoreMagic => each(&mut |v, rng, world| {
             let Victim::Member(member) = v else { return None };
-            let (character, vitals, ..) = world.members.get(member).ok()?;
+            let (_, vitals, ..) = world.members.get(member).ok()?;
             if vitals.is_dead() {
                 return None;
             }
             // Retail rolls even when every realm is already full.
             let amount = magnitude(rng, spell.dice, strength);
-            let Ok((learned, mut pool)) = points.get_mut(member) else {
+            let Ok((_, mut pool)) = points.get_mut(member) else {
                 return Some(Effect::Nothing { victim: v });
             };
-            let maximum = super::max_points(character, learned, spells);
-            let amount = pool.restore_evenly(&maximum, amount);
+            let amount = pool.restore_evenly(amount);
             Some(if amount == 0 {
                 Effect::Nothing { victim: v }
             } else {
@@ -1028,32 +1222,67 @@ pub fn resolve(
             let share = (character.attribute(Attribute::Piety)
                 + character.attribute(Attribute::Vitality))
                 >> 2;
-            vitals.hp = (character.max_hp() * share / 100).max(1);
-            vitals.stamina = (character.max_stamina() * share / 100).max(1);
+            vitals.hp = (character.stats(&vitals.enchantments).max_hp() * share / 100).max(1);
+            vitals.stamina =
+                (character.stats(&vitals.enchantments).max_stamina() * share / 100).max(1);
             world.formation.update_seat(member, false);
             Some(Effect::Raised { victim: v })
         }),
-        Kind::Lifesteal => each(&mut |v, rng, world| {
-            let target = target(world, v, realm, None)?;
-            if target.dead {
-                return None;
-            }
-            let rolled = magnitude(rng, spell.dice, strength);
-            let effect = damage(rng, world, v, realm, rolled, strength.against)?;
-            if let Effect::Damaged { amount, .. } = effect {
-                let wounded = world.party.iter().copied().min_by_key(|&m| {
-                    world.members.get(m).map_or(u32::MAX, |(c, v, ..)| {
-                        if v.is_dead() { u32::MAX } else { v.hp * 100 / c.max_hp().max(1) }
-                    })
-                });
-                if let Some(member) = wounded
-                    && let Ok((character, mut vitals, ..)) = world.members.get_mut(member)
-                {
-                    vitals.heal(amount * LIFESTEAL_SHARE / 100, character.max_hp());
+        Kind::Lifesteal | Kind::MightToMagic => {
+            let mut drained = 0;
+            each(&mut |v, rng, world| {
+                let target = target(world, v, realm, None)?;
+                if target.dead {
+                    return None;
+                }
+                let rolled = magnitude(rng, spell.dice, strength);
+                let effect = damage(rng, world, v, realm, rolled, strength.against)?;
+                if let Effect::Damaged { amount, .. } = effect {
+                    drained += amount;
+                }
+                Some(effect)
+            });
+            // Retail chooses once after every target has been drained. Do not
+            // heal a different member after each hit or round each share separately.
+            let recipient = world
+                .party
+                .iter()
+                .copied()
+                .filter_map(|m| {
+                    let (c, v, ..) = world.members.get(m).ok()?;
+                    if v.is_dead() {
+                        return None;
+                    }
+                    let percent = if kind == Kind::Lifesteal {
+                        v.hp * 100 / c.stats(&v.enchantments).max_hp().max(1)
+                    } else {
+                        let (_, pool) = points.get(m).ok()?;
+                        let maximum: u32 = pool.maximum.values().sum();
+                        if maximum == 0 {
+                            return None;
+                        }
+                        pool.current.values().sum::<u32>() * 100 / maximum
+                    };
+                    (percent < 100).then_some((m, percent))
+                })
+                .min_by_key(|&(_, percent)| percent)
+                .map(|(m, _)| m);
+            if let Some(member) = recipient {
+                let (c, mut v, ..) = world.members.get_mut(member).unwrap();
+                if kind == Kind::Lifesteal {
+                    let maximum = c.stats(&v.enchantments).max_hp();
+                    let before = v.hp;
+                    v.heal(drained * LIFESTEAL_SHARE / 100, maximum);
+                    effects.push(Effect::Healed {
+                        victim: Victim::Member(member),
+                        amount: v.hp - before,
+                    });
+                } else if let Ok((_, mut pool)) = points.get_mut(member) {
+                    let amount = pool.restore_evenly(drained);
+                    effects.push(Effect::Replenished { victim: Victim::Member(member), amount });
                 }
             }
-            Some(effect)
-        }),
+        }
     }
     effects
 }
@@ -1088,8 +1317,8 @@ fn restore(
         return None;
     }
     let (current, maximum) = match pool {
-        Pool::Health => (vitals.hp, character.max_hp()),
-        Pool::Stamina => (vitals.stamina, character.max_stamina()),
+        Pool::Health => (vitals.hp, character.stats(&vitals.enchantments).max_hp()),
+        Pool::Stamina => (vitals.stamina, character.stats(&vitals.enchantments).max_stamina()),
     };
     let missing = maximum.saturating_sub(current);
     if missing == 0 {
@@ -1117,8 +1346,10 @@ pub fn all_restored(spell: SpellId, victims: &[Victim], members: &Members) -> bo
         members.get(member).is_ok_and(|(character, vitals, ..)| {
             vitals.is_dead()
                 || match kind(spell) {
-                    Some(Kind::Stamina) => vitals.stamina >= character.max_stamina(),
-                    _ => vitals.hp >= character.max_hp(),
+                    Some(Kind::Stamina) => {
+                        vitals.stamina >= character.stats(&vitals.enchantments).max_stamina()
+                    }
+                    _ => vitals.hp >= character.stats(&vitals.enchantments).max_hp(),
                 }
         })
     })

@@ -114,6 +114,7 @@ pub struct GroupRecognition<'w, 's> {
     roster: Single<'w, 's, &'static PartyRoster>,
     members: Query<'w, 's, (&'static Character, &'static Vitals, &'static mut MonsterKnowledge)>,
     content: crate::game::data::Content<'w>,
+    pub(crate) factions: ResMut<'w, crate::game::factions::Factions>,
     news: MessageWriter<'w, Identified>,
 }
 
@@ -166,6 +167,9 @@ impl GroupRecognition<'_, '_> {
             }
             let Some(species_id) = species_id else { continue };
             let Some(species) = catalog.0.get(species_id as usize) else { continue };
+            if members.iter_many(roster.iter()).matched().any(|(_, vitals, _)| can_look(vitals)) {
+                self.factions.encounter(species.faction);
+            }
             if !known {
                 let mut best: Option<(String, i32)> = None;
                 for (profile, vitals, knowledge) in members.iter_many(roster.iter()).matched() {
@@ -260,6 +264,7 @@ mod tests {
         use crate::game::world::population::ScaledBody;
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
+            .init_resource::<crate::game::factions::Factions>()
             .init_resource::<Assets<LevelDefinition>>()
             .init_resource::<Assets<MonsterCatalog>>()
             .insert_resource(GameRng::seeded(4))
@@ -279,7 +284,12 @@ mod tests {
             .add(LevelDefinition { sight_distance: Some(5.0), ..default() });
         let species =
             app.world_mut().resource_mut::<Assets<MonsterCatalog>>().add(MonsterCatalog(vec![
-                Species { name: "Crab".into(), generic_name: "Crustacean".into(), ..default() },
+                Species {
+                    name: "Crab".into(),
+                    generic_name: "Crustacean".into(),
+                    faction: 4,
+                    ..default()
+                },
             ]));
         app.insert_resource(GameData {
             items: default(),
@@ -294,6 +304,7 @@ mod tests {
             .id();
         app.world_mut().spawn((
             Monster {
+                enchantments: default(),
                 location: 1,
                 species: 0,
                 hp: 10,
@@ -325,6 +336,7 @@ mod tests {
             "beyond the level's sight distance"
         );
         assert!(app.world().get::<MonsterKnowledge>(member).unwrap().seen.is_empty());
+        assert!(!app.world().resource::<crate::game::factions::Factions>().encountered(4));
         app.world_mut()
             .resource_mut::<Assets<LevelDefinition>>()
             .get_mut(&geometry)
@@ -333,6 +345,7 @@ mod tests {
         app.world_mut().run_schedule(Update);
         let known = app.world().get::<MonsterGroup>(group).unwrap();
         assert!(known.identified && known.counted);
+        assert!(app.world().resource::<crate::game::factions::Factions>().encountered(4));
         assert_eq!(app.world().get::<MonsterKnowledge>(member).unwrap().seen.get(&0), Some(&1));
         assert!(app.world().get::<MonsterKnowledge>(outsider).unwrap().seen.is_empty());
         // Aging and recognition settle in the same operation: blindness

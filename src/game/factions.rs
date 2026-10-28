@@ -37,6 +37,7 @@ pub enum Band {
 /// Scores 0..99 per faction, and how often the party has offended them.
 #[derive(Resource, Clone, Debug, PartialEq, Eq)]
 pub struct Factions {
+    encountered: [bool; 21],
     scores: [u8; 21],
     offences: [u8; 21],
 }
@@ -46,11 +47,26 @@ impl Default for Factions {
     fn default() -> Self {
         let scores =
             [0, 100, 0, 100, 80, 80, 80, 50, 80, 80, 80, 80, 80, 80, 70, 25, 50, 50, 80, 0, 0];
-        Factions { scores, offences: [0; 21] }
+        Factions { scores, offences: [0; 21], encountered: [false; 21] }
     }
 }
 
 impl Factions {
+    pub fn encounter(&mut self, faction: i32) {
+        if let Ok(index) = usize::try_from(faction)
+            && let Some(known) = self.encountered.get_mut(index)
+        {
+            *known = true;
+        }
+    }
+    pub fn encountered(&self, faction: i32) -> bool {
+        usize::try_from(faction)
+            .ok()
+            .and_then(|i| self.encountered.get(i))
+            .copied()
+            .unwrap_or(false)
+    }
+
     /// Whether a species fights the party at `distance` metres before
     /// anything has provoked it (retail `MonsterGroupCalcDefaultDisposition`):
     /// unaligned species by their hostility radius, others by their

@@ -150,6 +150,8 @@ pub fn search_score(member: &Character, search_mode: bool, running: bool) -> u32
 pub fn search_pulse(
     time: Res<Time>,
     mut search: ResMut<Search>,
+    enchantments: Single<&crate::game::magic::enchantments::PartyEffects>,
+    mut rng: ResMut<crate::game::rng::GameRng>,
     battle: Option<Single<&Battle>>,
     movement: Single<&PartyMovement>,
     party: Query<(&Position, &PartyBody)>,
@@ -169,14 +171,18 @@ pub fn search_pulse(
     let Ok((position, body)) = party.single() else { return };
     let (from, forward) = (PartyBody::eye(position), body.forward());
     let running = movement.running;
-    let best = members
-        .iter_many(roster.iter())
-        .matched()
-        .filter(|(_, vitals)| vitals.can_act())
-        .map(|(m, _)| (search_score(m, search.on(), running), m))
-        .filter(|&(score, _)| score > 0)
-        // The first of equals, as retail keeps the earlier slot.
-        .reduce(|a, b| if b.0 > a.0 { b } else { a });
+    let mut best: Option<(u32, &Character)> = None;
+    for (member, _) in members.iter_many(roster.iter()).matched().filter(|(_, v)| v.can_act()) {
+        let score = search_score(member, search.on(), running);
+        if score > best.map_or(0, |b| b.0) {
+            best = Some((score, member));
+        }
+        if enchantments.0.get(crate::content::spells::SpellId::DETECT_SECRETS).is_some()
+            && !(best.is_some() && rng.below(2) == 0)
+        {
+            best = Some((100, member));
+        }
+    }
     let Some((score, searcher)) = best else { return };
     let catalog = content.items();
     for (target, mut item, at) in &mut items {

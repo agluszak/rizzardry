@@ -133,12 +133,13 @@ pub(crate) fn discharge(
                         }
                         let victims: Vec<_> = targets.into_iter().map(Victim::Member).collect();
                         let effects = effects::resolve(
+                            false,
                             spell,
                             Strength::at(0, spell, power, 0),
                             &victims,
                             &mut rng,
                             field,
-                            (spells, &mut points),
+                            &mut points,
                         );
                         Some((spell.id, effects, std::mem::take(&mut field.improved), destroyed))
                     })

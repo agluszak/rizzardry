@@ -41,8 +41,8 @@ fn a_fighter_and_a_crab_trade_blows() {
         let item = make_item(catalog.get(ItemId(id)).unwrap(), &mut ids, &mut rng, true, true);
         assert!(place_at_creation(&mut carried, item, &catalog, &fighter).is_none());
     }
-    let hand = primary_hand(&fighter, &carried, &catalog, Load::None);
-    let armour = armour(&fighter, &carried, &catalog, Load::None, false);
+    let hand = primary_hand(&fighter.base_stats(), &carried, &catalog, Load::None);
+    let armour = armour(&fighter.base_stats(), &carried, &catalog, Load::None, false);
     let body = Monster {
         location: 0,
         species: 0,
@@ -51,12 +51,13 @@ fn a_fighter_and_a_crab_trade_blows() {
         stamina: 10,
         max_stamina: 10,
         conditions: Vec::new(),
+        enchantments: Default::default(),
         body: ScaledBody { scale: 1.0, radius: 1.0, eye_height: 1.0, speed: 0.0 },
     };
     // Each side's aim lands somewhere a roll of 1-100 sometimes beats and
     // sometimes does not.
     let ours = member_aim(
-        &fighter,
+        &fighter.base_stats(),
         &Vitals::new(&fighter),
         &hand,
         AttackMode::Swing,
@@ -72,7 +73,7 @@ fn a_fighter_and_a_crab_trade_blows() {
         attack,
         mode,
         Surprise::default(),
-        Some(&Defence::member(&fighter, armour, false, false)),
+        Some(&Defence::member(&fighter.base_stats(), armour, false, false)),
         Difficulty::Normal,
     );
     assert!(theirs > 5, "the crab sometimes hits: {theirs}");
