@@ -187,6 +187,7 @@ pub fn populate(
         }) else {
             continue;
         };
+        commands.entity(actor.0).insert(Name::new(format!("{} #{}", kind.name, placed.location)));
         actors.push(actor);
     }
     let monster_count = actors.len();

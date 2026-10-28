@@ -253,20 +253,27 @@ fn masks(layout: &ScreenLayout) -> [(Vec2, Vec2); 6] {
 fn update_frame(
     layout: Res<ScreenLayout>,
     mut nodes: Query<
-        (&mut Node, Option<&FrameVisibility>, Option<&ViewMask>),
+        (Entity, &mut Node, &mut Visibility, Option<&FrameVisibility>, Option<&ViewMask>),
         Or<(With<FrameVisibility>, With<ViewMask>)>,
     >,
+    parents: Query<&ChildOf>,
+    mut focus: ResMut<InputFocus>,
 ) {
     let masks = masks(&layout);
-    for (mut node, visibility, mask) in &mut nodes {
+    for (entity, mut node, mut visible, visibility, mask) in &mut nodes {
         if let Some(visibility) = visibility {
             let shown = match visibility {
                 FrameVisibility::Closed(closed) => *closed == (layout.mode == LayoutMode::Closed),
                 FrameVisibility::Panel(panel) => layout.shows(*panel),
             };
-            let display = if shown { Display::Flex } else { Display::None };
-            if node.display != display {
-                node.display = display;
+            visible.set_if_neq(crate::presentation::screen_art::visible_if(shown));
+            if !shown
+                && focus.get().is_some_and(|focused| {
+                    focused == entity
+                        || parents.iter_ancestors(focused).any(|parent| parent == entity)
+                })
+            {
+                focus.clear();
             }
         }
         if let Some(mask) = mask {
@@ -414,6 +421,21 @@ mod keyboard_tests {
             let node = app.world().get::<Node>(control).unwrap();
             assert_eq!(node.width, px(if mode == LayoutMode::Closed { 82. } else { 22. }));
         }
+        let panel = app
+            .world_mut()
+            .query::<(Entity, &FrameVisibility)>()
+            .iter(app.world())
+            .find_map(|(e, v)| matches!(v, FrameVisibility::Panel(Panel::TextBox)).then_some(e))
+            .unwrap();
+        let child = app.world_mut().spawn((Button, TabIndex(0), ChildOf(panel))).id();
+        app.world_mut()
+            .resource_mut::<InputFocus>()
+            .set(child, bevy::input_focus::FocusCause::Navigated);
+        app.world_mut().resource_mut::<ScreenLayout>().mode = LayoutMode::Full;
+        app.update();
+        assert_eq!(app.world().get::<Visibility>(panel), Some(&Visibility::Hidden));
+        assert_eq!(app.world().resource::<InputFocus>().get(), None);
+        assert!(app.world().get_entity(child).is_ok());
     }
 
     #[test]

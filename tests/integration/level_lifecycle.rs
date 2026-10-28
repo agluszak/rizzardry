@@ -903,6 +903,9 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     }
     app.world_mut().entity_mut(body).insert(rizzardry::game::world::population::Provoked);
     let stock = app.world().get::<Npc>(actor).unwrap().stock.clone();
+    app.world_mut()
+        .entity_mut(body)
+        .insert(rizzardry::game::world::navigation::links::Crossing { to: Vec3::X });
     let mut away = test_level(&mut app, floor());
     away.path = "levels/away/away.pvl".into();
     app.world_mut()
@@ -931,7 +934,10 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     assert!(is_played(&app, back));
     let returned_body = app.world().get::<NpcBodies>(actor).unwrap()[0];
     assert_eq!(returned_body, body);
+    assert!(app.world().get::<bevy_landmass::UsingAnimationLink>(body).is_none());
     assert_eq!(app.world().get::<LevelOwned>(returned_body).unwrap().0, back);
+    assert!(app.world().get::<Collider>(returned_body).is_some());
+    assert!(app.world().get::<bevy::ecs::entity_disabling::Disabled>(returned_body).is_none());
     assert_eq!(app.world().get::<Monster>(returned_body).unwrap().hp, 4);
     assert!(
         app.world().get::<rizzardry::game::world::population::Provoked>(returned_body).is_some()

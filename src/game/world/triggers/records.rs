@@ -126,10 +126,10 @@ pub fn spawn_devices(
     for (index, definition) in geometry.triggers.iter().enumerate() {
         let kept = memory.as_mut().and_then(|m| m.devices.remove(&index));
         let mut entity = commands.entity(devices[index]);
-        entity.insert((Device {
+        entity.insert(Device {
             definition: index,
             recipients: definition.recipients.iter().map(|&i| devices[i]).collect(),
-        },));
+        });
         if let Some(kept) = kept {
             entity.insert(kept.trigger);
             if let Some(value) = kept.door {

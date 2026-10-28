@@ -4,7 +4,7 @@ pub mod trade;
 use crate::content::{npcs::*, species::MonsterCatalog};
 use crate::game::{
     characters::Character,
-    party::roster::PartyRoster,
+    party::{body::PartyBody, roster::PartyRoster},
     world::{ActorPose, level::KeptMonster, navigation::Walker, population::Monster},
 };
 use bevy::{
@@ -78,7 +78,7 @@ pub struct NpcPopulation<'w, 's> {
         'w,
         's,
         (&'static NpcWorldRole, &'static Monster, &'static Transform),
-        With<Disabled>,
+        (With<Disabled>, Without<PartyBody>),
     >,
     bodies: Query<
         'w,
@@ -91,7 +91,7 @@ pub struct NpcPopulation<'w, 's> {
             Option<&'static crate::game::world::identify::GroupMember>,
             &'static mut NpcWorldRole,
         ),
-        (With<NpcBody>, Without<Disabled>),
+        (With<NpcBody>, Without<Disabled>, Without<PartyBody>),
     >,
     groups: Query<'w, 's, &'static crate::game::world::identify::MonsterGroup>,
     pub clock: Res<'w, crate::game::time::GameClock>,
@@ -243,10 +243,10 @@ impl NpcPopulation<'_, '_> {
                 .entity(entity)
                 .remove::<crate::game::world::level::LevelOwned>()
                 .remove::<crate::game::world::identify::GroupMember>()
-                .remove_with_requires::<Collider>()
-                .remove_with_requires::<RigidBody>()
+                .remove_with_requires::<(Collider, RigidBody)>()
                 .remove_with_requires::<bevy_landmass::prelude::Agent3dBundle>()
-                .remove::<(Walker, crate::game::world::navigation::links::Crossing)>()
+                .remove_with_requires::<crate::game::world::navigation::links::Crossing>()
+                .remove::<(Walker, bevy_landmass::prelude::ReachedAnimationLink3d)>()
                 .despawn_related::<Children>()
                 .insert((at, Disabled));
         }

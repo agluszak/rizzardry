@@ -170,8 +170,8 @@ pub fn build_party_parts(
         let slot = overlay.map_or_else(|| portrait.unwrap().0, |slot| slot.slot);
         if portrait.is_some() && !built {
             commands.entity(root).insert(PartyWidgetsBuilt);
-            let back = assets.load("retail://data/main interface/pback.sti");
-            let dragon = assets.load("retail://data/main interface/dragons.sti");
+            let back = assets.load(crate::content::paths::sheet("main interface/pback"));
+            let dragon = assets.load(crate::content::paths::sheet("main interface/dragons"));
             commands
                 .spawn_scene(bsn! { @layer() template(move |_| Ok(EmptySlot(slot))) Children [
                     @picture(back,0,Vec2::new(menu_x(slot)+20.,row_y(slot)))
@@ -228,11 +228,11 @@ pub fn build_party_parts(
                 let at = kind.at(slot, closed);
                 parts.push(Box::new(bsn! { @rect(at,size,colour) template(move |_| Ok(PartyPart { member, kind })) }));
             }
-            for (kind, font, width) in [(Part::HitPoints, art.small_font.clone(), 19.)]
-                .into_iter()
-                .chain(Some((Part::Armour, art.small_font.clone(), 13.)))
-                .chain(Some((Part::Name, art.font.clone(), 84.)))
-            {
+            for (kind, font, width) in [
+                (Part::HitPoints, art.small_font.clone(), 19.),
+                (Part::Armour, art.small_font.clone(), 13.),
+                (Part::Name, art.font.clone(), 84.),
+            ] {
                 parts.push(Box::new(part_label(member, kind, font, kind.at(slot, closed), width)));
             }
             parts.push(Box::new(part_picture(
