@@ -256,6 +256,7 @@ impl KeptMonster {
         KeptMonster {
             provoked: false,
             monster: Monster {
+                enchantments: default(),
                 location: placed.location,
                 species: placed.species,
                 hp: max_hp,

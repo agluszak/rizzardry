@@ -9,6 +9,7 @@
 pub mod casting;
 pub(crate) mod devices;
 pub mod effects;
+pub mod enchantments;
 pub(crate) mod traps;
 
 pub use casting::resolvable;
@@ -263,7 +264,7 @@ pub fn starting_picks(character: &Character) -> usize {
 /// Spell points per realm (retail `RecalculateRealmSpellPoints`): none in a
 /// realm without a learned spell, and never under its dearest learned spell.
 pub fn max_points(
-    character: &Character,
+    character: &crate::game::characters::CharacterStats<'_>,
     learned: &LearnedSpells,
     spells: &SpellCatalog,
 ) -> EnumMap<Realm, u32> {
@@ -433,6 +434,7 @@ pub struct MagicContext<'w, 's> {
     difficulty: Res<'w, crate::game::difficulty::Difficulty>,
     pub formation: Single<'w, 's, &'static mut Formation>,
     pub party_damage: MessageWriter<'w, DamageApplied>,
+    pub enchantments: Single<'w, 's, &'static mut enchantments::PartyEffects>,
     pub inventory: Single<'w, 's, &'static mut PartyInventory>,
     pub news: MessageWriter<'w, casting::MagicNews>,
     level: Single<'w, 's, Entity, With<crate::game::world::level::Level>>,
@@ -466,6 +468,7 @@ impl MagicContext<'_, '_> {
         let mut field = Field {
             members,
             monsters,
+            enchantments: &mut self.enchantments.0,
             inventory: &mut self.inventory,
             formation: &mut self.formation,
             party_damage: &mut self.party_damage,
@@ -595,6 +598,7 @@ pub fn deliver_spells(
             let spell = spells.get(flight.spell)?;
             let victims = &flight.victims;
             let effects = effects::resolve(
+                false,
                 spell,
                 flight.strength,
                 victims,
@@ -800,7 +804,7 @@ mod tests {
         let catalog =
             SpellCatalog((0..=6).map(|i| if i == 6 { heal_wounds() } else { default() }).collect());
         let learned = LearnedSpells([SpellId::HEAL_WOUNDS].into());
-        let points = max_points(&priest, &learned, &catalog);
+        let points = max_points(&priest.base_stats(), &learned, &catalog);
         assert!(points[Realm::Divine] >= 3, "never under the dearest learned spell");
         assert_eq!(points[Realm::Fire], 0, "no spell, no points");
     }
@@ -824,7 +828,7 @@ mod tests {
     }
 
     #[test]
-    fn restoration_items_pay_once_and_help_the_selected_ally_not_the_user() {
+    fn restorative_and_enchantment_items_pay_once_and_keep_their_target() {
         use crate::content::items::{
             Dice, EquipClass, ItemDefinition, ItemId, LootTables, QuantityKind, UseType,
         };
@@ -833,7 +837,7 @@ mod tests {
         use crate::game::inventory::{Carried, ItemIds, ItemStack};
         use casting::{Aim, MagicChoice, MagicNews, Source};
 
-        for id in [114, 115, 116] {
+        for id in [21, 32, 56, 61, 65, 114, 115, 116] {
             let mut app = App::new();
             app.add_plugins((MinimalPlugins, AssetPlugin::default()))
                 .init_asset::<ItemCatalog>()
@@ -931,6 +935,31 @@ mod tests {
             }
             let vitals = world.get::<Vitals>(ally).unwrap();
             match id {
+                21 => {
+                    assert!(world.get::<Vitals>(user).unwrap().enchantments.0.is_empty());
+                    assert_eq!(vitals.enchantments.get(21).unwrap().absorption, 4);
+                    let mut vitals = world.get_mut::<Vitals>(ally).unwrap();
+                    let stamina = vitals.stamina;
+                    assert_eq!(vitals.damage(4), 0);
+                    assert_eq!(vitals.stamina, stamina, "absorbed damage does not fatigue");
+                    assert_eq!(vitals.damage(2), 1);
+                    assert!(vitals.is_dead());
+                    assert!(vitals.enchantments.0.is_empty());
+                }
+                32 => {
+                    assert!(vitals.enchantments.0.is_empty());
+                    let party = crate::game::party::roster::the_party(world).unwrap();
+                    assert_eq!(
+                        world.get::<enchantments::PartyEffects>(party).unwrap().0.armour(),
+                        2
+                    );
+                }
+                56 | 61 | 65 => {
+                    let turns = vitals.enchantments.get(id).unwrap().turns;
+                    let mut vitals = world.get_mut::<Vitals>(ally).unwrap();
+                    vitals.age_conditions(turns);
+                    assert!(vitals.enchantments.get(id).is_none());
+                }
                 114 => {
                     assert_eq!(vitals.hp, 5, "power four heals 4d1");
                     assert_eq!(vitals.stamina, 9, "stamina rolls twice the dice, independently");

@@ -133,6 +133,7 @@ pub(crate) fn pass_time(
         GroupRecognition,
         Query<&mut crate::game::world::population::Monster>,
     )>,
+    mut enchantments: Single<&mut crate::game::magic::enchantments::PartyEffects>,
     mut clock: ResMut<GameClock>,
     mut rng: ResMut<GameRng>,
     (content, mut points): (
@@ -173,14 +174,21 @@ pub(crate) fn pass_time(
             recovery::pass(profile, &mut vitals, ticks, pace);
         }
         if pass > 0 {
+            if !enchantments.0.0.is_empty() {
+                enchantments.0.age(1);
+            }
             // Spell points come back at least at half rate (retail `spellScale`).
             if let Some(spells) = spells {
                 let scale = crate::game::magic::recovery_scale(pace.health_scale());
                 let members = affected.p0();
                 for member in roster.iter() {
-                    let Ok((profile, _)) = members.get(member) else { continue };
+                    let Ok((profile, vitals)) = members.get(member) else { continue };
                     let Ok((learned, mut pool)) = points.get_mut(member) else { continue };
-                    let maximum = crate::game::magic::max_points(profile, learned, spells);
+                    let maximum = crate::game::magic::max_points(
+                        &profile.stats(&vitals.enchantments),
+                        learned,
+                        spells,
+                    );
                     if maximum.iter().any(|(realm, &max)| pool.current[realm] < max) {
                         pool.recover(&maximum, 1, scale);
                     }
@@ -188,6 +196,9 @@ pub(crate) fn pass_time(
             }
             // Monsters' conditions run out in the world too.
             for mut monster in &mut affected.p2() {
+                if !monster.enchantments.0.is_empty() {
+                    monster.enchantments.age(1);
+                }
                 if crate::game::characters::any_timed(&monster.conditions) {
                     crate::game::characters::age(&mut monster.conditions, 1);
                 }

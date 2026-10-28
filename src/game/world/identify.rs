@@ -294,6 +294,7 @@ mod tests {
             .id();
         app.world_mut().spawn((
             Monster {
+                enchantments: default(),
                 location: 1,
                 species: 0,
                 hp: 10,

@@ -10,7 +10,9 @@ use enumset::EnumSet;
 use crate::content::characters::{Attribute, BodyPart, Skill};
 use crate::content::items::{AttackMode, Dice, EquipClass, ItemCatalog, ItemDefinition};
 use crate::content::species::{MonsterAttack, Reach, Species};
-use crate::game::characters::{Character, Load, Race, Vitals};
+#[cfg(test)]
+use crate::game::characters::Character;
+use crate::game::characters::{Load, Race, Vitals};
 use crate::game::inventory::{Carried, EquipSlot};
 use crate::game::rng::GameRng;
 
@@ -104,18 +106,28 @@ fn location<L: Copy>(
 
 /// Senses + speed + dexterity + intelligence, which the attribute term
 /// compares.
-fn character_ssdi(c: &Character) -> i32 {
+fn character_ssdi(c: &crate::game::characters::CharacterStats<'_>) -> i32 {
     use Attribute::*;
     [Senses, Speed, Dexterity, Intelligence].map(|a| c.attribute(a) as i32).iter().sum()
 }
 
-fn species_ssdi(s: &Species) -> i32 {
+fn species_ssdi(s: &Species, effects: &crate::game::magic::enchantments::Enchantments) -> i32 {
     let a = s.attributes;
-    [a.senses, a.speed, a.dexterity, a.intelligence].map(i32::from).iter().sum()
+    [
+        (Attribute::Senses, a.senses),
+        (Attribute::Speed, a.speed),
+        (Attribute::Dexterity, a.dexterity),
+        (Attribute::Intelligence, a.intelligence),
+    ]
+    .map(|(attribute, base)| {
+        (u32::from(base) + effects.attribute_bonus(attribute)).clamp(1, 125) as i32
+    })
+    .iter()
+    .sum()
 }
 
 /// To-hit penalty by the share of stamina spent.
-fn fatigue_penalty(c: &Character, vitals: &Vitals) -> i32 {
+fn fatigue_penalty(c: &crate::game::characters::CharacterStats<'_>, vitals: &Vitals) -> i32 {
     match vitals.stamina_spent(c.max_stamina()) {
         0..50 => 0,
         50..70 => 5,
@@ -165,7 +177,12 @@ fn unarmed_dice(martial_arts: u32) -> Dice {
 }
 
 /// The primary hand's numbers, without a second weapon (retail `CalcAttacks`).
-pub fn primary_hand(c: &Character, carried: &Carried, catalog: &ItemCatalog, load: Load) -> Hand {
+pub fn primary_hand(
+    c: &crate::game::characters::CharacterStats<'_>,
+    carried: &Carried,
+    catalog: &ItemCatalog,
+    load: Load,
+) -> Hand {
     let weapon = carried
         .worn(EquipSlot::Primary)
         .and_then(|i| catalog.get(i.item))
@@ -248,7 +265,7 @@ impl Armour {
 /// A character's armour (retail `CalcArmorClasses`). Defending adds 2
 /// everywhere and lets Shield skill count for more.
 pub fn armour(
-    c: &Character,
+    c: &crate::game::characters::CharacterStats<'_>,
     carried: &Carried,
     catalog: &ItemCatalog,
     load: Load,
@@ -317,21 +334,24 @@ fn resolve(roll: u32, to_hit: i32, penetration: i32) -> Option<bool> {
 /// retail's draw order: the roll, the location, the damage dice.
 pub fn character_swing(
     rng: &mut GameRng,
-    attacker: &Character,
+    attacker: &crate::game::characters::CharacterStats<'_>,
     vitals: &Vitals,
     hand: &Hand,
     mode: AttackMode,
     species: &Species,
+    effects: &crate::game::magic::enchantments::Enchantments,
 ) -> Swing {
-    let attributes = (character_ssdi(attacker) - species_ssdi(species)) / 10;
+    let attributes = (character_ssdi(attacker) - species_ssdi(species, effects)) / 10;
     let base =
         hand.attack_rating + 5 * hand.to_hit - fatigue_penalty(attacker, vitals) + attributes;
-    let to_hit = base + mode_to_hit(mode) - 5 * (10 - i32::from(species.evasion));
+    let to_hit =
+        base + mode_to_hit(mode) - 5 * (10 - i32::from(species.evasion) + effects.armour());
     let roll = rng.below(100) + 1;
     let location = location(rng, species.hit_locations.into_iter().enumerate(), MONSTER_BODY);
     let armour_at = 10
         - i32::from(species.armour_by_mode[mode])
-        - i32::from(species.armour_by_location[location]);
+        - i32::from(species.armour_by_location[location])
+        + effects.armour();
     let penetration = base + mode_penetration(mode) - 5 * armour_at;
     match resolve(roll, to_hit, penetration) {
         None => Swing::Missed,
@@ -339,7 +359,8 @@ pub fn character_swing(
         Some(true) => {
             let rolled = rng.roll(hand.dice) as i32;
             let damage = (((100 + hand.damage_percent) * rolled + 50) / 100).max(1);
-            let reduction = i32::from(species.damage_reduction);
+            let reduction =
+                (i32::from(species.damage_reduction) + effects.damage_reduction() as i32).min(100);
             let damage = (((100 - reduction) * damage + 50) / 100).max(0) as u32;
             Swing::Hit(damage)
         }
@@ -352,11 +373,12 @@ pub fn monster_swing(
     species: &Species,
     attack: &MonsterAttack,
     mode: AttackMode,
-    target: &Character,
+    target: &crate::game::characters::CharacterStats<'_>,
     armour: &Armour,
+    effects: &crate::game::magic::enchantments::Enchantments,
 ) -> Swing {
-    let attributes = (species_ssdi(species) - character_ssdi(target)) / 10;
-    let base = i32::from(attack.score) + attributes;
+    let attributes = (species_ssdi(species, effects) - character_ssdi(target)) / 10;
+    let base = i32::from(attack.score) + attributes + 5 * effects.hit_bonus();
     let to_hit = base + mode_to_hit(mode) - 5 * armour.total;
     let roll = rng.below(100) + 1;
     let location = location(rng, species.hits_on_party, BodyPart::Body);
@@ -376,7 +398,11 @@ pub fn phase(rng: &mut GameRng, initiative: i32) -> u8 {
 }
 
 /// The character's initiative before the roll, weapon included.
-pub fn character_initiative(c: &Character, hand: &Hand, load: Load) -> i32 {
+pub fn character_initiative(
+    c: &crate::game::characters::CharacterStats<'_>,
+    hand: &Hand,
+    load: Load,
+) -> i32 {
     c.initiative(load) + hand.initiative
 }
 
@@ -445,8 +471,8 @@ mod tests {
         carried.equipment[EquipSlot::Secondary] = Some(Equipped::new(stack));
         let mut bearer = Character::new("A", Race::Human, Gender::Male, Profession::Mage);
         let gain = |bearer: &Character| {
-            let standing = armour(bearer, &carried, &catalog, Load::None, false);
-            let defending = armour(bearer, &carried, &catalog, Load::None, true);
+            let standing = armour(&bearer.base_stats(), &carried, &catalog, Load::None, false);
+            let defending = armour(&bearer.base_stats(), &carried, &catalog, Load::None, true);
             for (part, armour) in &defending.by_location {
                 assert_eq!(armour - standing.by_location[part], defending.total - standing.total);
             }

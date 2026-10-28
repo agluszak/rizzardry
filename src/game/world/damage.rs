@@ -86,6 +86,14 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         Some(monster.map_unchanged(|monster| &mut monster.conditions))
     }
 
+    pub fn enchantments_mut(
+        &mut self,
+        entity: Entity,
+    ) -> Option<Mut<'_, crate::game::magic::enchantments::Enchantments>> {
+        let (monster, ..) = self.monsters.get_mut(entity).ok()?;
+        Some(monster.map_unchanged(|m| &mut m.enchantments))
+    }
+
     pub fn active(&self, target: Entity) -> bool {
         self.monsters.get(target).is_ok_and(|(_, _, _, owner)| self.levels.contains(owner.0))
     }
@@ -118,6 +126,10 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         if amount >= monster.hp && kind.npc.is_some() {
             return Err(DamageRefusal::UnsupportedNpcDeath);
         }
+        let amount = monster.enchantments.absorb(amount);
+        if amount == 0 {
+            return Ok(DamageOutcome::default());
+        }
         let position = feet(at.translation(), walker);
         let lost = amount.min(monster.hp);
         monster.hp -= lost;
@@ -130,6 +142,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
             );
             return Ok(DamageOutcome { damage: lost, ..default() });
         }
+        monster.enchantments.0.clear();
         // Stop autonomous work, not the body's geometry or vertical physics.
         // Structural removal is applied with this operation's loot commands,
         // before any following movement consumer can run.

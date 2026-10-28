@@ -206,7 +206,7 @@ pub(super) fn refresh(
         let skill = Skill::try_from(Skill::FireMagic as u8 + role.0 as u8).unwrap();
         let value = if role.1 {
             let points = crate::game::magic::max_points(
-                &profile,
+                &profile.base_stats(),
                 &crate::game::magic::LearnedSpells(draft.spells()),
                 catalog,
             )[role.0];

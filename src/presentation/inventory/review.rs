@@ -478,6 +478,7 @@ pub(super) fn show_pages(
 }
 
 pub(super) fn refresh(
+    enchantments: Option<Single<&crate::game::magic::enchantments::PartyEffects>>,
     learned_spells: Query<&crate::game::magic::LearnedSpells>,
     screen: Option<Single<&InventoryScreen>>,
     characters: Query<CharacterView>,
@@ -500,10 +501,9 @@ pub(super) fn refresh(
     let effect_filter = info.as_ref().map_or(EffectFilter::All, |info| info.filter);
     let show_items = info.as_ref().is_some_and(|info| info.items);
     let catalog = content.items();
-    let hand = carried
-        .as_ref()
-        .zip(catalog)
-        .map(|(carried, catalog)| primary_hand(profile, carried, catalog, load));
+    let hand = carried.as_ref().zip(catalog).map(|(carried, catalog)| {
+        primary_hand(&profile.stats(&vitals.enchantments), carried, catalog, load)
+    });
     let unidentified = carried
         .as_ref()
         .and_then(|c| c.worn(EquipSlot::Primary))
@@ -597,6 +597,22 @@ pub(super) fn refresh(
             }
         }
     }
+    if effect_filter != EffectFilter::Detrimental && !show_items {
+        for effect in vitals
+            .enchantments
+            .0
+            .iter()
+            .chain(enchantments.as_ref().into_iter().flat_map(|p| p.0.0.iter()))
+        {
+            let name = spell_catalog
+                .and_then(|c| c.get(effect.spell))
+                .map(|s| s.name.as_str())
+                .unwrap_or("Enchantment");
+            effects.push((name.to_owned(), true));
+            effects.push((format!("Power {} · {} turns", effect.power, effect.turns), false));
+            effects.push((String::new(), false));
+        }
+    }
     let maximum = effects.len().saturating_sub(17);
     let offset = slider.as_deref().map_or(0, |(_, value, _)| (value.0 as usize).min(maximum));
     if let Some((entity, value, range)) = slider.as_deref() {
@@ -643,7 +659,9 @@ pub(super) fn refresh(
             Field::InfoString(combat, armour) => {
                 (if armour_view { armour } else { combat }).map_or("", string).to_owned()
             }
-            Field::Attribute(attribute) => profile.attribute(attribute).to_string(),
+            Field::Attribute(attribute) => {
+                profile.stats(&vitals.enchantments).attribute(attribute).to_string()
+            }
             Field::Skill(skill) => profile.skill(skill).to_string(),
             Field::SkillName(skill) => {
                 string(crate::content::ui::SKILL_NAMES + skill as usize).to_owned()
@@ -693,7 +711,12 @@ pub(super) fn refresh(
                             4 => hand.swings.to_string(),
                             5 => format!("{:+}", hand.to_hit),
                             7 => format!("{:+}%", hand.damage_percent),
-                            8 => character_initiative(profile, hand, load).to_string(),
+                            8 => character_initiative(
+                                &profile.stats(&vitals.enchantments),
+                                hand,
+                                load,
+                            )
+                            .to_string(),
                             _ => String::new(),
                         }
                     }

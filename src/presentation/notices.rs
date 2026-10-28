@@ -282,6 +282,7 @@ fn magic_lines(
         Victim::Member(e) | Victim::Monster(e) => name(e),
     };
     let effect_line = |effect: Effect| match effect {
+        Effect::Enchanted { victim: v, .. } => format!("{} is enchanted.", victim(v)),
         Effect::Healed { victim: v, amount } => {
             format!("{} heals {amount}.", victim(v))
         }
