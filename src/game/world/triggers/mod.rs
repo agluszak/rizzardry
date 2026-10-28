@@ -79,7 +79,7 @@ impl LevelState {
     }
 }
 
-#[derive(Component, Debug)]
+#[derive(Component, Clone, Debug)]
 pub struct TriggerState {
     pub on: bool,
     pub fired: bool,
@@ -238,12 +238,10 @@ pub enum PartyMove {
 #[derive(Component, Clone, Debug)]
 pub struct PendingPartyMove(pub PartyMove);
 
-/// Complete a device request synchronously. A hit distance means player use;
+/// Complete a device request synchronously. Player use revalidates current reach;
 /// linked/script activation does not apply the player's reach/usable gate.
-pub fn activate(world: &mut World, entity: Entity, distance: Option<f32>) -> bool {
-    if distance.is_some()
-        && !world.run_system_cached(crate::game::screen::party_free).unwrap_or(false)
-    {
+pub fn activate(world: &mut World, entity: Entity, player: bool) -> bool {
+    if player && !world.run_system_cached(crate::game::screen::party_free).unwrap_or(false) {
         return false;
     }
     if world.get::<Device>(entity).is_none() {
@@ -257,20 +255,47 @@ pub fn activate(world: &mut World, entity: Entity, distance: Option<f32>) -> boo
     world.resource_scope(|world, geometry: Mut<Assets<LevelDefinition>>| {
         let Some(geometry) = geometry.get(&handle) else { return false };
         let definition = &geometry.triggers[world.get::<Device>(entity).unwrap().definition];
-        if distance.is_some_and(|distance| {
-            !distance.is_finite()
-                || !usable(world, entity, definition)
-                || !(definition.range.0..=definition.range.1).contains(&distance)
-        }) || !ready(world, entity)
+        if (player
+            && (!usable(world, entity, definition)
+                || player_distance(world, entity).is_none_or(|distance| {
+                    !distance.is_finite()
+                        || !(definition.range.0..=definition.range.1).contains(&distance)
+                })))
+            || !ready(world, entity)
         {
             return false;
         }
         let ran = execute(world, geometry, entity, 0);
-        if distance.is_some() && ran == Ran::Declined {
+        if player && ran == Ran::Declined {
             world.write_message(TriggerEffect::NothingHappened);
         }
         ran == Ran::Committed
     })
+}
+
+/// Reach uses the current gameplay geometry, independent of the last pointer hit.
+/// Colliderless props fall back to their authored centre.
+fn player_distance(world: &mut World, entity: Entity) -> Option<f32> {
+    use crate::game::party::body::PartyBody;
+    use avian3d::prelude::{Collider, Position};
+    let eye = world
+        .query_filtered::<&Position, With<PartyBody>>()
+        .single(world)
+        .ok()
+        .map(PartyBody::eye)?;
+    let prop = world.get::<Prop>(entity)?;
+    let distance = world
+        .get::<Children>(entity)
+        .into_iter()
+        .flatten()
+        .filter_map(|child| {
+            world.get::<super::props::PropPart>(*child)?;
+            let at = world.get::<Transform>(*child)?;
+            let collider = world.get::<Collider>(*child)?;
+            Some(collider.distance_to_point(at.translation, at.rotation, eye, true))
+        })
+        .min_by(f32::total_cmp);
+    Some(distance.unwrap_or_else(|| eye.distance(prop.centre)))
 }
 
 /// How running a device went.
