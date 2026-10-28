@@ -323,7 +323,7 @@ impl CharacterDraft {
         character.full_name = self.name.trim().to_owned();
         character.personality = self.personality;
         character.voice = self.voice;
-        character.unspent_spell_picks = self.spell_remaining() as u8;
+        character.spell_picks.grant(self.profession, self.spell_remaining() as u16);
         character.portrait.clone_from(&self.portrait);
         for a in EnumSet::<Attribute>::all() {
             character.attributes[a] += self.attributes[a];
@@ -421,7 +421,7 @@ mod tests {
         assert!(!draft.toggle_spell(&catalog, SpellId(3)));
         assert!(draft.toggle_spell(&catalog, SpellId(1)));
         assert!(draft.skill_available(Skill::FireMagic));
-        assert_eq!(draft.preview().unspent_spell_picks, 1);
+        assert_eq!(draft.preview().spell_picks.total(), 1);
         assert!(draft.adjust_skill(Skill::FireMagic, true));
         assert!(draft.toggle_spell(&catalog, SpellId(2)));
         draft.name = "A spellcaster".into();
@@ -499,7 +499,7 @@ mod tests {
         draft.choose(Race::Human, Gender::Male, Profession::Mage).unwrap();
         assert!(draft.finish().is_err());
         complete_allocations(&mut draft);
-        assert_eq!(draft.finish().unwrap().unspent_spell_picks, 2);
+        assert_eq!(draft.finish().unwrap().spell_picks.total(), 2);
         draft.reset_skills();
         assert!(draft.finish().is_err());
     }

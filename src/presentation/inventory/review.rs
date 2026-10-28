@@ -130,6 +130,7 @@ fn panel(commands: &mut Commands, root: Entity, page: Page) -> Entity {
 }
 
 pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) -> Entity {
+    super::progression::build(commands, root, art);
     // These actions require their gameplay operations; show retail's disabled
     // art until those operations are available.
     for (i, base) in [0, 10, 5, 15, 20, 30, 35, 25].into_iter().enumerate() {
