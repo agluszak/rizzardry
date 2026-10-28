@@ -85,6 +85,15 @@ stock survive closure and level travel within this session; disk saves,
 recruitment and further script semantics remain unfinished. Unsupported
 mandatory dialogue operations stop with an explicit content gap.
 
+When a living party member has enough experience, open their character review
+with **I** and choose **Level up**. Allocate six attribute points and nine skill
+points (up to three per attribute or skill), then choose any available spells.
+Unused spell picks are saved for later levels in their original school.
+**Change profession** cycles through eligible professions and resets the draft's
+allocations. **Accept level** commits the advancement; **Cancel** or Escape
+discards it. If enough experience remains for another level, its review opens
+straight away. Level-up is unavailable during combat or level travel.
+
 The HUD journal button (or **J** with no widget focused) opens the journal.
 Use Left/Right or Previous/Next to turn pages, the view button to switch between facts,
 remembered topics and encountered factions, and Escape to return. Fact entries

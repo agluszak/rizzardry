@@ -44,7 +44,19 @@ pub fn skill_available(
     catalog: Option<&SpellCatalog>,
     skill: Skill,
 ) -> bool {
+    if skill as usize >= Skill::Wizardry as usize
+        && (skill as usize) < Skill::PowerStrike as usize
+        && character.traits().contains(crate::content::characters::Trait::CannotLearn)
+    {
+        return false;
+    }
     if let Some(realm) = skill.realm() {
+        if !profession_books(character.profession)
+            .iter()
+            .any(|book| character.skill_available(book_skill(book)))
+        {
+            return false;
+        }
         return learned.zip(catalog).is_some_and(|(learned, catalog)| {
             learned
                 .0
@@ -202,7 +214,7 @@ pub fn total_caster_level(character: &Character, books: EnumSet<Spellbook>) -> i
     total
 }
 
-fn book_skill(book: Spellbook) -> Skill {
+pub(crate) fn book_skill(book: Spellbook) -> Skill {
     match book {
         Spellbook::Wizardry => Skill::Wizardry,
         Spellbook::Divinity => Skill::Divinity,
