@@ -372,6 +372,12 @@ impl GameStrings<'_> {
         self.tables.as_ref()?.get(&self.table.as_ref()?.0)
     }
 
+    /// Whether the table was chosen or has (re)loaded since last looked at.
+    pub fn is_changed(&self) -> bool {
+        self.table.as_ref().is_some_and(|t| t.is_changed())
+            || self.tables.as_ref().is_some_and(|t| t.is_changed())
+    }
+
     pub fn failed(&self, assets: &AssetServer) -> bool {
         self.table.as_ref().is_some_and(|table| {
             assets.get_load_state(&table.0).is_some_and(|state| state.is_failed())

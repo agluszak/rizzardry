@@ -118,8 +118,19 @@ impl DialogueScript {
     }
 }
 
+/// Which difficulty settings include this historical entry in the journal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JournalVisibility {
+    AllDifficulties,
+    NoviceAndNormal,
+    NoviceOnly,
+    Hidden,
+}
+
 #[derive(Clone, Debug)]
 pub struct FactDefinition {
+    pub highlight_when_true: bool,
+    pub visibility: JournalVisibility,
     pub id: FactId,
     pub symbol: String,
     pub description: String,

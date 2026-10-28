@@ -71,6 +71,7 @@ pub fn play_ambient_sounds(
         Option<&mut AudioSink>,
         Option<&mut PlaybackSettings>,
     )>,
+    master: Option<Res<bevy::audio::GlobalVolume>>,
     mut rng: ResMut<PresentationRng>,
 ) {
     let Ok(listener) = listener.single() else { return };
@@ -95,7 +96,7 @@ pub fn play_ambient_sounds(
         if sound.looping {
             let volume = Volume::Linear(sound.volume.end() * loudness);
             if let Some(mut sink) = sink {
-                sink.set_volume(volume);
+                sink.set_volume(volume * master.as_ref().map_or(Volume::Linear(1.), |v| v.volume));
             } else if let Some(mut settings) = settings {
                 // The listener can move while decoding audio. Its first sample
                 // must use the current gain, not the gain at the initial request.
