@@ -23,8 +23,8 @@ use crate::game::rng::GameRng;
 /// party leaves or puts in it stays.
 #[derive(Component, Clone, Debug)]
 pub struct Container {
+    /// The loot table still to be drawn; the first opening uses it up.
     pub(crate) table: Option<usize>,
-    pub(crate) generated: bool,
     pub contents: Contents,
 }
 
@@ -32,7 +32,7 @@ pub struct Container {
 impl Container {
     /// An opened container holding these stacks.
     pub(crate) fn holding(items: Vec<ItemStack>) -> Self {
-        Container { table: None, generated: true, contents: Contents { items, gold: 0 } }
+        Container { table: None, contents: Contents { items, gold: 0 } }
     }
 }
 
@@ -79,9 +79,7 @@ pub(crate) fn use_container(
     }
     // Devices with containers run only once the databases have loaded.
     let catalog = content.items().unwrap();
-    if !container.generated
-        && let Some(table) = container.table
-    {
+    if let Some(table) = container.table {
         let loot = content.loot().unwrap();
         // Level-scaled tables draw for the party's average level (retail
         // `GetAveragePartyLevel`). Retail reseeds its generator from the
@@ -100,7 +98,7 @@ pub(crate) fn use_container(
                 .map(|d| make_item(d, &mut ids, &mut rng, false, false)),
         );
         contents.gold += gold;
-        container.generated = true;
+        container.table = None;
     }
     let contents = &mut container.contents;
     if contents.gold > 0 {

@@ -1643,7 +1643,7 @@ mod tests {
         assert_eq!(report.caster, caster);
         assert!(matches!(
             report.effects.as_slice(),
-            [Effect::Damaged { victim: Victim::Monster(m), amount, .. }] if *m == monster && *amount > 0
+            [Effect::Damaged { victim: Victim::Monster(m), outcome }] if *m == monster && outcome.damage > 0
         ));
         let monster = app.world().get::<Monster>(monster).unwrap();
         assert!(monster.hp < monster.max_hp);

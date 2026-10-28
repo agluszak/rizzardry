@@ -303,8 +303,8 @@ fn effect_line(names: &super::names::ActorNames, effect: crate::game::magic::Eff
         Effect::Healed { victim: v, amount } => {
             format!("{} heals {amount}.", victim(v))
         }
-        Effect::Damaged { victim: v, amount, .. } => {
-            format!("{} takes {amount} damage.", victim(v))
+        Effect::Damaged { victim: v, outcome } => {
+            format!("{} takes {} damage.", victim(v), outcome.damage)
         }
         Effect::Inflicted { victim: v, condition } => {
             format!("{} is {}.", victim(v), condition_word(condition))

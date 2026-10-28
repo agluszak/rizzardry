@@ -1,7 +1,6 @@
 //! The retail magic review page and the resistances of the reviewed actor.
 use super::{InventoryArt, InventoryScreen, RetailLabel, absolute, review};
 use crate::content::characters::Realm;
-use crate::game::characters::resistance::Resistances;
 use crate::presentation::screen_art::spawn_picture as picture;
 use crate::presentation::screen_art::{BitmapText, Picture, PictureCrop};
 use bevy::prelude::*;
@@ -85,12 +84,17 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) {
 
 pub(super) fn refresh(
     screen: Option<Single<&InventoryScreen>>,
-    characters: Query<&Resistances>,
+    characters: Query<crate::presentation::character_view::CharacterView>,
+    party: Option<Single<&crate::game::magic::enchantments::PartyEffects>>,
+    content: crate::game::data::Content,
     mut values: Query<(&Value, &mut BitmapText)>,
     mut segments: Query<(&Segment, &mut PictureCrop, &mut Picture)>,
 ) {
     let Some(screen) = screen else { return };
-    let Ok(Resistances(scores)) = characters.get(screen.member) else { return };
+    let (Ok(view), Some(catalog)) = (characters.get(screen.member), content.items()) else {
+        return;
+    };
+    let scores = view.resistances(catalog, party.as_deref().copied());
     for (value, mut text) in &mut values {
         let desired = scores[value.0].total.to_string();
         if text.value != desired {
