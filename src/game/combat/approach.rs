@@ -116,7 +116,9 @@ pub(super) fn end_move(remove: On<Remove<Combatant>>, mut commands: Commands) {
     commands.entity(remove.entity).try_remove::<CombatMove>();
 }
 
-/// A monster whose move ends stops walking.
+/// A monster whose move ends stops walking: without a target, neither its
+/// navigation nor a doorway crossing it began moves it
+/// ([`crate::game::world::navigation::walking`]).
 pub(super) fn stop_walking(remove: On<Remove<CombatMove>>, mut targets: Query<&mut AgentTarget3d>) {
     if let Ok(mut target) = targets.get_mut(remove.entity)
         && !matches!(*target, AgentTarget3d::None)
