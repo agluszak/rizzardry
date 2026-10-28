@@ -1,7 +1,7 @@
 //! Retail character information dialogs, owned by the review screen.
 use super::{InventoryArt, InventoryScreen, absolute};
 use crate::content::characters::{Attribute, Skill};
-use crate::content::ui::{SpriteSheet, TextTable};
+use crate::content::ui::SpriteSheet;
 use crate::game::characters::{Character, governing};
 use crate::game::party::roster::PartyRoster;
 use crate::presentation::screen_art::spawn_picture as image;
@@ -57,11 +57,7 @@ const DETAILS: [usize; 41] = [
 
 pub(super) fn open_info(
     click: On<PointerClick>,
-    spell_state: (
-        Query<&crate::game::magic::LearnedSpells>,
-        Option<Res<crate::game::data::GameData>>,
-        Option<Res<Assets<crate::content::spells::SpellCatalog>>>,
-    ),
+    spell_state: (Query<&crate::game::magic::LearnedSpells>, crate::game::data::Content),
     targets: Query<&InfoTarget>,
     screen: Single<&InventoryScreen>,
     profiles: Query<&Character>,
@@ -69,7 +65,7 @@ pub(super) fn open_info(
     existing: Query<(), With<InfoDialog>>,
     art: Res<InventoryArt>,
     sheets: Res<Assets<SpriteSheet>>,
-    tables: Res<Assets<TextTable>>,
+    strings: crate::presentation::screen_art::GameStrings,
     mut commands: Commands,
     mut focus: Option<ResMut<InputFocus>>,
 ) {
@@ -80,19 +76,16 @@ pub(super) fn open_info(
         targets.get(click.entity),
         profiles.get(screen.member),
         sheets.get(&art.font),
-        tables.get(&art.strings),
+        strings.table(),
     ) else {
         return;
     };
     let learned = spell_state.0.get(screen.member).ok();
-    let spell_catalog = spell_state
-        .1
-        .as_ref()
-        .and_then(|data| spell_state.2.as_ref().and_then(|catalogs| catalogs.get(&data.spells)));
+    let spell_catalog = spell_state.1.spells();
     let string = |id| strings.get(id).unwrap_or("");
     let (title_id, detail_id) = match target.subject {
         Subject::Skill(skill) => {
-            (crate::retail::strings::SKILL_NAMES + skill as usize, DETAILS[skill as usize])
+            (crate::content::ui::SKILL_NAMES + skill as usize, DETAILS[skill as usize])
         }
         Subject::Attribute(attribute) => (0x274 + attribute as usize, 0x6a0 + attribute as usize),
         Subject::Secondary(index) => (0x6ac + index, 0x6a7 + index),

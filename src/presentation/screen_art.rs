@@ -354,7 +354,7 @@ pub fn show_sheet(picture: &mut Mut<Picture>, assets: &AssetServer, path: String
 
 /// The game's string table, loaded at startup.
 #[derive(Resource)]
-pub struct StringTable(Handle<crate::content::ui::TextTable>);
+pub struct StringTable(pub(super) Handle<crate::content::ui::TextTable>);
 
 pub fn load_string_table(mut commands: Commands, assets: Res<AssetServer>) {
     commands.insert_resource(StringTable(assets.load(crate::content::paths::STRINGS)));
@@ -364,13 +364,23 @@ pub fn load_string_table(mut commands: Commands, assets: Res<AssetServer>) {
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct GameStrings<'w> {
     table: Option<Res<'w, StringTable>>,
-    tables: Res<'w, Assets<crate::content::ui::TextTable>>,
+    tables: Option<Res<'w, Assets<crate::content::ui::TextTable>>>,
 }
 
 impl GameStrings<'_> {
+    pub fn table(&self) -> Option<&crate::content::ui::TextTable> {
+        self.tables.as_ref()?.get(&self.table.as_ref()?.0)
+    }
+
+    pub fn failed(&self, assets: &AssetServer) -> bool {
+        self.table.as_ref().is_some_and(|table| {
+            assets.get_load_state(&table.0).is_some_and(|state| state.is_failed())
+        })
+    }
+
     /// The string, trimmed; empty until the table has loaded.
     pub fn get(&self, id: usize) -> &str {
-        let table = self.table.as_ref().and_then(|t| self.tables.get(&t.0));
+        let table = self.table();
         table.and_then(|t| t.get(id)).map_or("", str::trim)
     }
 }

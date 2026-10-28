@@ -5,18 +5,13 @@ use super::main_screen::SelectedMember;
 use super::retail_controls::{ControlSkin, FocusRing};
 use super::screen_art::{BitmapInk, BitmapText, BitmapWrap, Picture, absolute};
 use crate::content::npcs::TopicCategory;
-use crate::content::{
-    items::{EquipClass, ItemCatalog},
-    npcs::NpcCatalog,
-    ui::{SpriteSheet, TextTable},
-};
+use crate::content::{items::EquipClass, npcs::NpcCatalog, ui::SpriteSheet};
 use crate::game::npcs::{
     Npc, NpcAssets,
     conversation::*,
     trade::{self, TradeQuote, TradeSource},
 };
 use crate::game::{
-    data::GameData,
     inventory::{Carried, ItemOwner, ItemRef, PartyInventory},
     party::roster::PartyRoster,
 };
@@ -158,7 +153,6 @@ struct Offer;
 #[derive(Component, PartialEq)]
 struct Choices {
     font: Handle<SpriteSheet>,
-    strings: Handle<TextTable>,
 }
 #[derive(Component, Default)]
 struct ChoiceOverlay {
@@ -638,7 +632,6 @@ fn build(world: &mut World, session: Entity) -> Entity {
                 .spawn((
                     Choices {
                         font: assets.load("retail://data/fonts/wiz_text_font_monopalette.sti"),
-                        strings: assets.load("retail://data/strings/stringdata.dat"),
                     },
                     absolute(Vec2::new(220., 184.), Vec2::new(200., 70.)),
                     ChildOf(overlay),
@@ -1375,7 +1368,7 @@ fn sync_choices(
     views: ViewScope,
     mut commands: Commands,
     sheets: Res<Assets<SpriteSheet>>,
-    tables: Res<Assets<TextTable>>,
+    strings: super::screen_art::GameStrings,
     sessions: Query<&Conversation>,
     parties: Query<&PartyInventory, With<crate::game::party::roster::Party>>,
     mut focus: ResMut<InputFocus>,
@@ -1393,7 +1386,7 @@ fn sync_choices(
     for (list, art, parent, mut node, children) in &mut lists {
         let font = &art.font;
         let string = |id, fallback: &str| {
-            tables.get(&art.strings).and_then(|s| s.get(id)).unwrap_or(fallback).to_owned()
+            strings.table().and_then(|s| s.get(id)).unwrap_or(fallback).to_owned()
         };
         let Some((_, session)) = views.owner(list) else { continue };
         let Ok(c) = sessions.get(session) else { continue };
@@ -1583,8 +1576,7 @@ fn sync_trade_rows(
     views: ViewScope,
     mut commands: Commands,
     assets: Res<AssetServer>,
-    data: Option<Res<GameData>>,
-    catalogs: Res<Assets<ItemCatalog>>,
+    content: crate::game::data::Content,
     sessions: Query<&Conversation>,
     npcs: Query<&Npc>,
     parties: Query<(&PartyRoster, &PartyInventory), With<crate::game::party::roster::Party>>,
@@ -1602,7 +1594,7 @@ fn sync_trade_rows(
         controls,
         mut previews,
     } = widgets;
-    let Some(items) = data.and_then(|d| catalogs.get(&d.items)) else { return };
+    let Some(items) = content.items() else { return };
     let Ok((roster, party)) = parties.single() else { return };
     for (list, children) in &lists {
         let Some((root, session)) = views.owner(list) else { continue };
@@ -1975,6 +1967,7 @@ fn watch_playback(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::content::{items::ItemCatalog, ui::TextTable};
 
     #[test]
     fn session_ownership_rejects_stale_choices_and_cleans_only_its_views() {
@@ -2128,23 +2121,20 @@ pub(crate) fn inspect_trade(world: &mut World) {
     };
     let Some(canvas) = world.get::<Children>(view).and_then(|c| c.first().copied()) else { return };
     set_mode(&mut world.get_mut::<DialogueState>(view).unwrap(), Mode::Buy);
-    let item = world
-        .get_resource::<GameData>()
-        .and_then(|d| world.resource::<Assets<ItemCatalog>>().get(&d.items))
-        .and_then(|items| {
-            world
-                .get::<Npc>(actor)?
-                .stock
-                .lots
-                .iter()
-                .find(|lot| {
-                    items.get(lot.item).is_some_and(|d| {
-                        trade::on_sale(lot, d)
-                            && (!split || (lot.units > 1 && d.class != EquipClass::Ammunition))
-                    })
+    let item = crate::game::data::GameData::items(world).and_then(|items| {
+        world
+            .get::<Npc>(actor)?
+            .stock
+            .lots
+            .iter()
+            .find(|lot| {
+                items.get(lot.item).is_some_and(|d| {
+                    trade::on_sale(lot, d)
+                        && (!split || (lot.units > 1 && d.class != EquipClass::Ammunition))
                 })
-                .map(|lot| (lot.id, trade::trade_quantity(items.get(lot.item).unwrap(), lot.units)))
-        });
+            })
+            .map(|lot| (lot.id, trade::trade_quantity(items.get(lot.item).unwrap(), lot.units)))
+    });
     if let Some((lot, count)) = item {
         select(world, view, session, TradeSource::Stock(lot), count);
         if split {

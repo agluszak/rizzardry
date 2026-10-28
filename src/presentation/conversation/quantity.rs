@@ -1,5 +1,8 @@
 //! Retail split-item presentation. This edits a quote, never inventory itself.
 use super::*;
+use crate::content::ui::TextTable;
+use crate::game::data::GameData;
+use crate::presentation::screen_art::StringTable;
 use bevy::text::{EditableTextFilter, TextEdit};
 use bevy::ui_widgets::ModalDialog;
 
@@ -68,11 +71,7 @@ pub(super) fn open(world: &mut World, view: Entity, canvas: Entity) {
         return;
     }
     let Some((item, maximum)) = stack(world, q) else { return };
-    let Some(items) = world.get_resource::<GameData>().map(|d| d.items.clone()) else { return };
-    let Some(item) = world.resource::<Assets<ItemCatalog>>().get(&items).and_then(|c| c.get(item))
-    else {
-        return;
-    };
+    let Some(item) = GameData::items(world).and_then(|items| items.get(item)) else { return };
     if maximum < 2 || item.class == EquipClass::Ammunition {
         return;
     }
@@ -125,10 +124,9 @@ pub(super) fn open(world: &mut World, view: Entity, canvas: Entity) {
         ChildOf(panel),
     ));
     label(world, panel, &name, Vec2::new(72., 15.), 226.);
-    let strings = assets.load::<TextTable>("retail://data/strings/stringdata.dat");
     let class_name = world
-        .resource::<Assets<TextTable>>()
-        .get(&strings)
+        .get_resource::<StringTable>()
+        .and_then(|strings| world.get_resource::<Assets<TextTable>>()?.get(&strings.0))
         .and_then(|s| s.get(1087 + u8::from(class) as usize))
         .unwrap_or("")
         .to_owned();

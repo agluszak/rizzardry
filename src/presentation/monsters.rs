@@ -18,8 +18,6 @@ use avian3d::prelude::{SpatialQuery, SpatialQueryFilter};
 use super::environment::LevelAppearance;
 use crate::content::level::LevelGeometry;
 use crate::content::monster::MonsterModel;
-use crate::content::species::MonsterCatalog;
-use crate::game::data::GameData;
 use crate::game::time::GameClock;
 use crate::game::world::navigation::Walker;
 use crate::game::world::population::Monster;
@@ -54,11 +52,10 @@ pub struct MonsterVisual(pub Handle<MonsterModel>);
 pub fn request_monster_visuals(
     mut commands: Commands,
     actors: Query<(Entity, &Monster), Without<MonsterVisual>>,
-    data: Option<Res<GameData>>,
-    species: Res<Assets<MonsterCatalog>>,
+    content: crate::game::data::Content,
     assets: Res<AssetServer>,
 ) {
-    let Some(catalog) = data.and_then(|d| species.get(&d.species)) else { return };
+    let Some(catalog) = content.species() else { return };
     for (entity, monster) in &actors {
         let Some(kind) = catalog.kind(monster.species) else { continue };
         let model = assets.load(crate::content::paths::monster(&kind.model));

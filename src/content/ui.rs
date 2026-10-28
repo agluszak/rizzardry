@@ -235,6 +235,15 @@ impl TextTable {
     }
 }
 
+/// Where name lists start in the game's string table, each indexed by its
+/// enum's retail order.
+pub const RACE_NAMES: usize = 0x284;
+pub const PROFESSION_NAMES: usize = 0x2a4;
+pub const GENDER_NAMES: usize = 0x2d1;
+pub const SKILL_NAMES: usize = 0x2e2;
+pub const ABILITY_NAMES: usize = 0x328;
+pub const TRAP_NAMES: usize = 0x542;
+
 #[cfg(test)]
 mod bitmap_layout_tests {
     use super::*;
