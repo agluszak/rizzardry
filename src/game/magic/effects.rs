@@ -9,7 +9,7 @@ use super::{LearnedSpells, SpellPoints, Strength};
 use crate::content::characters::{Attribute, Realm, Skill};
 use crate::content::items::{Dice, EquipClass, ItemCatalog};
 use crate::content::species::{MonsterCatalog, MonsterKind};
-use crate::content::spells::{SpellDefinition, SpellId};
+use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId};
 use crate::game::characters::{Condition, Lasting, inflict, wake_on_hit};
 use crate::game::difficulty::{Difficulty, Side};
 use crate::game::party::DamageApplied;
@@ -851,7 +851,7 @@ pub fn resolve(
     victims: &[Victim],
     rng: &mut GameRng,
     world: &mut Field,
-    points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
+    (spells, points): (&SpellCatalog, &mut Query<(&LearnedSpells, &mut SpellPoints)>),
 ) -> Vec<Effect> {
     if victims.is_empty() {
         return Vec::new();
@@ -1038,16 +1038,18 @@ pub fn resolve(
         }
         Kind::RestoreMagic => each(&mut |v, rng, world| {
             let Victim::Member(member) = v else { return None };
-            let (_, vitals, ..) = world.members.get(member).ok()?;
+            let (character, vitals, ..) = world.members.get(member).ok()?;
             if vitals.is_dead() {
                 return None;
             }
             // Retail rolls even when every realm is already full.
             let amount = magnitude(rng, spell.dice, strength);
-            let Ok((_, mut pool)) = points.get_mut(member) else {
+            let Ok((learned, mut pool)) = points.get_mut(member) else {
                 return Some(Effect::Nothing { victim: v });
             };
-            let amount = pool.restore_evenly(amount);
+            let maximum =
+                super::max_points(&character.stats(&vitals.enchantments), learned, spells);
+            let amount = pool.restore_evenly(&maximum, amount);
             Some(if amount == 0 {
                 Effect::Nothing { victim: v }
             } else {
@@ -1260,8 +1262,11 @@ pub fn resolve(
                     let percent = if kind == Kind::Lifesteal {
                         v.hp * 100 / c.stats(&v.enchantments).max_hp().max(1)
                     } else {
-                        let (_, pool) = points.get(m).ok()?;
-                        let maximum: u32 = pool.maximum.values().sum();
+                        let (learned, pool) = points.get(m).ok()?;
+                        let maximum: u32 =
+                            super::max_points(&c.stats(&v.enchantments), learned, spells)
+                                .values()
+                                .sum();
                         if maximum == 0 {
                             return None;
                         }
@@ -1281,8 +1286,9 @@ pub fn resolve(
                         victim: Victim::Member(member),
                         amount: v.hp - before,
                     });
-                } else if let Ok((_, mut pool)) = points.get_mut(member) {
-                    let amount = pool.restore_evenly(drained);
+                } else if let Ok((learned, mut pool)) = points.get_mut(member) {
+                    let maximum = super::max_points(&c.stats(&v.enchantments), learned, spells);
+                    let amount = pool.restore_evenly(&maximum, drained);
                     effects.push(Effect::Replenished { victim: Victim::Member(member), amount });
                 }
             }

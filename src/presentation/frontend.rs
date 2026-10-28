@@ -1059,7 +1059,10 @@ mod keyboard_tests {
         .add_message::<bevy::picking::events::PointerRelease>()
         .init_resource::<bevy::picking::events::PointerState>()
         .init_resource::<UiScale>()
-        .insert_resource(crate::game::session::NewGameDestination { path: String::new(), start: default() })
+        .insert_resource(crate::game::session::NewGameDestination {
+            path: String::new(),
+            start: default(),
+        })
         .add_message::<AppExit>()
         .add_plugins(FrontendPlugin)
         .add_observer(crate::presentation::retail_controls::primary_buttons_only)

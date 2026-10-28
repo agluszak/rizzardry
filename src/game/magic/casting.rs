@@ -685,7 +685,7 @@ pub fn perform(
                 &victims,
                 rng,
                 world,
-                &mut *points,
+                (spells, &mut *points),
             )
         };
         // Practice follows what the cast did; a missile on its way counts.

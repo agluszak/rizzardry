@@ -709,9 +709,11 @@ pub(super) fn refresh_magic_view(
         commands.entity(root).despawn();
         return;
     };
-    let Ok((character, _, carried)) = members.get(view.caster) else { return };
+    let Ok((character, vitals, carried)) = members.get(view.caster) else { return };
     let (learned, points) = casters.get(view.caster).map_or((None, None), |(l, p)| (Some(l), p));
-    let maximum = points.map(|p| p.maximum).unwrap_or_default();
+    let maximum = learned
+        .map(|l| crate::game::magic::max_points(&character.stats(&vitals.enchantments), l, spells))
+        .unwrap_or_default();
     // Realms: their points, the chosen one latched; the first with points
     // chosen when none is.
     if !view.items {

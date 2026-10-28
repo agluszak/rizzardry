@@ -23,7 +23,7 @@ use crate::content::species::{MonsterCatalog, Reach};
 use crate::game::characters::{Character, Condition, Vitals};
 use crate::game::inventory::{EquipSlot, StackId};
 use crate::game::magic::casting::{self, MagicChoice, MagicNews};
-use crate::game::magic::{Effect, LearnedSpells, MagicContext, SpellPoints, Victim};
+use crate::game::magic::{Effect, LearnedSpells, MagicContext, SpellPoints, Victim, max_points};
 use crate::game::party::Members;
 use crate::game::party::Order;
 use crate::game::party::body::PartyBody;
@@ -881,7 +881,7 @@ pub fn run_battle(
                 party.eye,
                 species,
                 &mut news,
-                &mut magic.points,
+                (&mut magic.points, content.spells()),
                 &mut magic.context.enchantments.0,
             );
             if over {
@@ -1273,7 +1273,10 @@ fn end_round(
     party_eye: Vec3,
     species: &MonsterCatalog,
     news: &mut MessageWriter<CombatNews>,
-    points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
+    (points, spells): (
+        &mut Query<(&LearnedSpells, &mut SpellPoints)>,
+        Option<&crate::content::spells::SpellCatalog>,
+    ),
     enchantments: &mut crate::game::magic::enchantments::Enchantments,
 ) -> bool {
     // The round's time passes now, with its meaning: conditions age, spell
@@ -1291,9 +1294,17 @@ fn end_round(
             crate::game::characters::age(&mut conditions, ticks.aging);
         }
     }
-    for (_, mut pool) in points.iter_many_unique_mut(roster.iter()).matched() {
-        if pool.short() {
-            pool.recover(ticks.aging, crate::game::magic::recovery_scale(0.0));
+    // Spell points come back to the maximum each member has before their
+    // own spells run out (retail recovers before aging).
+    if let Some(spells) = spells {
+        for member in roster.iter() {
+            let (Ok((character, vitals, ..)), Ok((learned, mut pool))) =
+                (members.get(member), points.get_mut(member))
+            else {
+                continue;
+            };
+            let maximum = max_points(&character.stats(&vitals.enchantments), learned, spells);
+            pool.recover(&maximum, ticks.aging, crate::game::magic::recovery_scale(0.0));
         }
     }
     for (profile, mut vitals, ..) in members.iter_many_unique_mut(roster.iter()).matched() {
