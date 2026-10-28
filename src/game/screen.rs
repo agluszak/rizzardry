@@ -20,6 +20,8 @@ pub enum Screen {
     World,
     Automap,
     Inventory,
+    Journal,
+    Options,
 }
 
 /// What decides whether the party is free to act.

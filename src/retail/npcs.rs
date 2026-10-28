@@ -253,6 +253,13 @@ pub fn read_facts(data: &[u8]) -> Result<FactCatalog, LoadError> {
             return Err(invalid("duplicate fact id"));
         }
         facts.push(FactDefinition {
+            highlight_when_true: r[0x36] != 0,
+            visibility: match r[0x37] as i8 {
+                ..=0 => crate::content::npcs::JournalVisibility::AllDifficulties,
+                1 => crate::content::npcs::JournalVisibility::NoviceAndNormal,
+                2 => crate::content::npcs::JournalVisibility::NoviceOnly,
+                _ => crate::content::npcs::JournalVisibility::Hidden,
+            },
             id,
             symbol: lenient_string(&r[4..0x36]),
             alternate_description: wide(&r[0x38..0x100])?,

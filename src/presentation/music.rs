@@ -47,6 +47,7 @@ pub fn play_music(
     levels: Query<&Level>,
     camp: Option<Res<Camp>>,
     playlists: Res<Assets<Playlist>>,
+    master: Option<Res<bevy::audio::GlobalVolume>>,
     mut music: ResMut<Music>,
     mut rng: ResMut<PresentationRng>,
     mut songs: Query<(Entity, &mut Song, Option<&mut AudioSink>)>,
@@ -78,7 +79,10 @@ pub fn play_music(
     if let Some((_, mut song, sink)) = songs.iter_mut().next() {
         song.fade_in.tick(time.delta());
         if let Some(mut sink) = sink {
-            sink.set_volume(Volume::Linear(VOLUME * song.fade_in.fraction()));
+            sink.set_volume(
+                Volume::Linear(VOLUME * song.fade_in.fraction())
+                    * master.as_ref().map_or(Volume::Linear(1.), |v| v.volume),
+            );
         }
         return;
     }

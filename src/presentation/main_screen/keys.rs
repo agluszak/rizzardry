@@ -22,6 +22,12 @@ pub struct MainScreenKeys;
 #[derive(InputAction)]
 #[action_output(bool)]
 struct FocusHud;
+#[derive(InputAction)]
+#[action_output(bool)]
+struct JournalKey;
+#[derive(InputAction)]
+#[action_output(bool)]
+struct OptionsKey;
 
 #[derive(InputAction)]
 #[action_output(bool)]
@@ -77,7 +83,9 @@ struct TextBoxKeyCommand(TextBoxCommand);
 /// The keys, held each frame once focus has been dispatched and before
 /// their bindings are read.
 pub(super) fn plugin(app: &mut App) {
-    app.add_input_context::<MainScreenKeys>()
+    app.add_message::<crate::presentation::journal::OpenJournal>()
+        .add_message::<crate::presentation::options::OpenOptions>()
+        .add_input_context::<MainScreenKeys>()
         .add_systems(Startup, spawn_main_screen_keys)
         .add_systems(
             PreUpdate,
@@ -116,7 +124,9 @@ fn spawn_main_screen_keys(mut commands: Commands) {
     commands.spawn_scene(bsn! {
         MainScreenKeys
         Actions<MainScreenKeys> [
-            Action::<FocusHud>::new() Bindings [ Binding(KeyCode::F6) ]
+            Action::<JournalKey>::new() Bindings [ Binding(KeyCode::KeyJ) ]
+            -- Action::<OptionsKey>::new() Bindings [ Binding(KeyCode::KeyO) ]
+            -- Action::<FocusHud>::new() Bindings [ Binding(KeyCode::F6) ]
             --
             Action::<CycleLayoutBack>::new()
             ActionSettings { consume_input: true }
@@ -149,6 +159,8 @@ fn spawn_main_screen_keys(mut commands: Commands) {
                 focus.set(target,bevy::input_focus::FocusCause::Navigated);visible.0=true;
             }
         })
+        on(|_: On<Start<JournalKey>>, mut open: MessageWriter<crate::presentation::journal::OpenJournal>| {open.write(crate::presentation::journal::OpenJournal);})
+        on(|_: On<Start<OptionsKey>>, mut open: MessageWriter<crate::presentation::options::OpenOptions>| {open.write(crate::presentation::options::OpenOptions);})
         on(select_member)
         on(|_: On<Start<BeginRound>>, battle: Option<Single<&Battle>>, mut round: MessageWriter<StartRound>| {
             if battle.is_some() {
