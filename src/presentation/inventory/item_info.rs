@@ -190,13 +190,9 @@ pub(super) fn refresh(
             text.palette = palette;
         }
     }
-    // The previous experience goal is not stored yet for characters who have
-    // changed profession. Level-one characters always start at zero.
-    let progress = if character.level == 1 {
-        character.experience as f32 / character.experience_goal().max(1) as f32
-    } else {
-        0.0
-    };
+    let progress = character.experience.saturating_sub(character.experience_previous_goal) as f32
+        / character.experience_goal().saturating_sub(character.experience_previous_goal).max(1)
+            as f32;
     for mut bar in &mut bars {
         bar.set_if_neq(PictureCrop::horizontal(0.0, (103.0 * progress.clamp(0.0, 1.0)).floor()));
     }
