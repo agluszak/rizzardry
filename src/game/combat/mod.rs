@@ -52,6 +52,8 @@ impl Plugin for CombatPlugin {
             .add_message::<GiveOrder>()
             .init_resource::<CombatSettings>()
             .init_resource::<casting::FlightOrder>()
+            .add_observer(approach::end_move)
+            .add_observer(approach::stop_walking)
             .add_systems(
                 Update,
                 // A fight keeps the loads it began with (retail
@@ -535,32 +537,20 @@ pub fn in_battle(world: &mut World) -> bool {
     world.query_filtered::<(), With<Battle>>().iter(world).next().is_some()
 }
 
-/// End the fight: its combatants stop closing in (the movement it gave
-/// them) and are no longer in a fight; they themselves remain.
-fn end_battle(commands: &mut Commands, battle: Entity, combatants: &[Entity]) {
-    for &monster in combatants {
-        commands
-            .entity(monster)
-            .remove::<approach::CombatMove>()
-            .entry::<bevy_landmass::prelude::AgentTarget3d>()
-            .and_modify(|mut target| *target = bevy_landmass::prelude::AgentTarget3d::None);
-    }
-    commands.entity(battle).despawn();
-}
-
 /// Terminal state is settled independently of whose action dealt the damage.
 /// Used before/after combat execution and at the end of environmental damage.
 pub fn settle_defeat(
     mut commands: Commands,
-    battle: Option<Single<(Entity, Option<&Combatants>), With<Battle>>>,
+    battle: Option<Single<Entity, With<Battle>>>,
     roster: Single<&PartyRoster>,
     members: Query<&Vitals>,
     mut news: MessageWriter<CombatNews>,
 ) {
-    let Some((battle, combatants)) = battle.map(Single::into_inner) else { return };
+    let Some(battle) = battle.map(Single::into_inner) else { return };
     if !members.iter_many(roster.iter()).matched().any(|v| !v.is_dead()) {
         news.write(CombatNews::Lost);
-        end_battle(&mut commands, battle, combatants.map_or(&[][..], Combatants::entities));
+        // Its combatants leave the fight and stop closing in; they remain.
+        commands.entity(battle).despawn();
     }
 }
 
@@ -839,7 +829,7 @@ pub fn run_battle(
             // accepted action or the battle's end can change its meaning.
             actors.p1().detect(party.eye, body.forward(), Some(combatants), &mut rng);
             if over {
-                end_battle(&mut commands, entity, combatants);
+                commands.entity(entity).despawn();
             }
             return;
         }
@@ -1300,7 +1290,7 @@ fn monster_turn(
         battle.this_round.monsters[index].1 =
             Turn { phase: (u32::from(step) * 2).min(100) as u8, attacks_left: turn.attacks_left };
         let charge = budget.charge;
-        commands.entity(monster).insert(budget.movement);
+        commands.entity(monster).insert(approach::CombatMove { budget: budget.metres, moved: 0.0 });
         news.write(CombatNews::Moves { monster, charge });
     }
     true
