@@ -146,7 +146,7 @@ pub(super) fn refresh(
     let (Some(screen), Some(art)) = (screen, art) else { return };
     let Ok(view) = members.get(screen.member) else { return };
     let load = view.load();
-    let CharacterViewItem { profile: character, vitals, carried, burden, armour } = view;
+    let CharacterViewItem { profile: character, vitals, carried, burden, armour, .. } = view;
     // Armour is shown only for someone who carries things.
     let armour = carried.and(armour);
 

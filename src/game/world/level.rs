@@ -633,7 +633,6 @@ pub fn activate_level(
             let owned = owned.map_or(&[][..], LevelEntities::entities);
             memory.0.insert(source.path.clone(), transition.p0().remember(entity, state, owned));
             npcs.depart(entity, &source.path);
-            commands.queue(crate::game::npcs::conversation::close);
             commands.entity(entity).despawn();
         }
         let mut remembered = memory.0.remove(&level.path);

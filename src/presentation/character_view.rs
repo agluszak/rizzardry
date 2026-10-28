@@ -12,6 +12,7 @@ pub struct CharacterView {
     pub carried: Option<&'static Carried>,
     pub burden: Option<&'static Burden>,
     pub armour: Option<&'static crate::game::combat::attack::Armour>,
+    pub hand: Option<&'static crate::game::combat::attack::Hand>,
 }
 
 impl CharacterViewItem<'_, '_> {
