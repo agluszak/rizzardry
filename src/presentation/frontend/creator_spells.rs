@@ -1,7 +1,7 @@
 //! The retail creation spell lists, grouped by realm.
 use super::{Action, Creation, Page, creator_stats};
 use crate::content::characters::{Realm, Skill};
-use crate::content::spells::{SpellCatalog, SpellId};
+use crate::content::spells::SpellId;
 use crate::content::ui::SpriteSheet;
 use crate::presentation::retail_controls::set_enabled;
 use crate::presentation::screen_art::visible_if;
@@ -13,7 +13,6 @@ use bevy::ui_widgets::{Activate, Button};
 
 #[derive(Component)]
 pub(super) struct SpellArt {
-    pub(super) catalog: Handle<SpellCatalog>,
     selected: Handle<SpriteSheet>,
 }
 #[derive(Component)]
@@ -35,9 +34,7 @@ pub(super) fn build(commands: &mut Commands, root: Entity, assets: &AssetServer)
     let bottom: Handle<SpriteSheet> = load("char generation/cg_bottombuttons");
     let font: Handle<SpriteSheet> = load("fonts/wiz_text_font");
     let blue: Handle<SpriteSheet> = load("fonts/paletteblue");
-    commands
-        .entity(root)
-        .insert(SpellArt { catalog: assets.load(crate::content::paths::SPELLS), selected: blue });
+    commands.entity(root).insert(SpellArt { selected: blue });
     spawn_picture(commands, root, background, 0, Vec2::new(195., 43.));
     let pieces: Handle<SpriteSheet> = load("char generation/cg_pieces");
     spawn_picture(commands, root, pieces, 5, Vec2::new(143., 371.));
@@ -172,12 +169,11 @@ pub(super) fn build(commands: &mut Commands, root: Entity, assets: &AssetServer)
 fn select_spell(
     event: On<Activate>,
     choices: Query<&SpellOption, Without<InteractionDisabled>>,
-    art: Single<&SpellArt>,
-    catalogs: Res<Assets<SpellCatalog>>,
+    content: crate::game::data::Content,
     mut session: Single<&mut Creation>,
 ) {
     let (Ok(choice), Some(catalog), Some(draft)) =
-        (choices.get(event.entity), catalogs.get(&art.catalog), session.mode.draft_mut())
+        (choices.get(event.entity), content.spells(), session.mode.draft_mut())
     else {
         return;
     };
@@ -187,7 +183,7 @@ fn select_spell(
 pub(super) fn refresh(
     session: Option<Single<Ref<Creation>>>,
     art: Option<Single<&SpellArt>>,
-    catalogs: Res<Assets<SpellCatalog>>,
+    content: crate::game::data::Content,
     mut rows: Query<(
         Entity,
         &SpellOption,
@@ -201,7 +197,7 @@ pub(super) fn refresh(
     mut commands: Commands,
 ) {
     let (Some(session), Some(art)) = (session, art) else { return };
-    let (Some(draft), Some(catalog)) = (session.mode.draft(), catalogs.get(&art.catalog)) else {
+    let (Some(draft), Some(catalog)) = (session.mode.draft(), content.spells()) else {
         return;
     };
     let profile = draft.preview();

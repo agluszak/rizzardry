@@ -25,17 +25,16 @@ use enumset::EnumSet;
 use super::screen_art::{
     BitmapText, Picture, absolute, centred, empty_hands, label, picture, rect, screen, sprite,
 };
-use crate::content::items::{ItemCatalog, QuantityKind};
-use crate::content::ui::{SpriteSheet, TextTable};
+use crate::content::items::QuantityKind;
+use crate::content::ui::SpriteSheet;
 use crate::game::characters::{Character, Gender, Race, Vitals};
 use crate::game::combat::attack::Armour;
-use crate::game::data::GameData;
 use crate::game::inventory::{
     BACKPACK_SLOTS, Carried, EquipSlot, ItemStack, MemberSlot, PartyInventory, Slot,
 };
 use crate::game::party::roster::PartyRoster;
 use crate::game::screen::Screen;
-use crate::presentation::screen_art::visible_if;
+use crate::presentation::screen_art::{show_sheet, visible_if};
 
 const CELL: Vec2 = Vec2::new(46.0, 54.0);
 /// Pool cells shown at once.
@@ -113,7 +112,6 @@ pub struct InventoryArt {
     left_plug: Handle<SpriteSheet>,
     right_plug: Handle<SpriteSheet>,
     condition_rim: Handle<SpriteSheet>,
-    strings: Handle<TextTable>,
     gold_icon: Handle<SpriteSheet>,
     highlights: Handle<SpriteSheet>,
     unusable: Handle<SpriteSheet>,
@@ -160,7 +158,6 @@ pub fn load_inventory_art(mut commands: Commands, assets: Res<AssetServer>) {
         left_plug: load("main interface/leftplug.sti"),
         right_plug: load("main interface/rightplug.sti"),
         condition_rim: load("main interface/condition_highlight.sti"),
-        strings: assets.load(crate::content::paths::STRINGS),
         gold_icon: load("review/reviewgoldicon.sti"),
         highlights: load("review/reviewitemhighlights.sti"),
         unusable: load("review/itemusablebackground.sti"),
@@ -560,6 +557,7 @@ pub fn spawn_inventory_screen(
     focus: Option<ResMut<bevy::input_focus::InputFocus>>,
     sheets: Res<Assets<SpriteSheet>>,
     roots: Query<Entity, (With<InventoryRoot>, Without<InventoryBuilt>)>,
+    strings: crate::presentation::screen_art::GameStrings,
 ) {
     let Ok(root) = roots.single() else { return };
     if [
@@ -606,7 +604,7 @@ pub fn spawn_inventory_screen(
     .into_iter()
     .chain(art.realms.iter())
     .any(|handle| matches!(assets.get_load_state(handle), Some(bevy::asset::LoadState::Failed(_))))
-        || matches!(assets.get_load_state(&art.strings), Some(bevy::asset::LoadState::Failed(_)))
+        || strings.failed(&assets)
         || matches!(assets.get_load_state(&art.fill), Some(bevy::asset::LoadState::Failed(_)))
     {
         warn!("inventory artwork failed to load; returning to the world");
@@ -754,12 +752,14 @@ fn draw_header_condition(
     for (display, mut picture, mut visibility) in &mut displays {
         match *display {
             HeaderCondition::Icon => {
-                let sheet = condition
-                    .as_ref()
-                    .map(|name| assets.load(format!("retail://data/icons/conditions/{name}.sti")))
-                    .unwrap_or_else(|| art.left_plug.clone());
-                if picture.sheet != sheet {
-                    picture.sheet = sheet;
+                if let Some(name) = &condition {
+                    show_sheet(
+                        &mut picture,
+                        &assets,
+                        format!("retail://data/icons/conditions/{name}.sti"),
+                    );
+                } else if picture.sheet != art.left_plug {
+                    picture.sheet = art.left_plug.clone();
                 }
             }
             HeaderCondition::Rim => {
@@ -772,14 +772,13 @@ fn draw_header_condition(
 fn draw_header_hands(
     screen: Option<Single<&InventoryScreen>>,
     assets: Res<AssetServer>,
-    data: Option<Res<GameData>>,
-    catalogs: Res<Assets<ItemCatalog>>,
+    content: crate::game::data::Content,
     members: Query<(&Character, Option<&Carried>, Option<&Armour>)>,
     art: Res<InventoryArt>,
     mut parts: Query<(&HeaderHand, &mut Visibility, Option<&mut Picture>, Option<&mut BitmapText>)>,
 ) {
     let Some(screen) = screen else { return };
-    let Some(catalog) = data.and_then(|data| catalogs.get(&data.items)) else { return };
+    let Some(catalog) = content.items() else { return };
     let Ok((profile, carried, armour)) = members.get(screen.member) else { return };
     let empty = Carried::default();
     let carried = carried.unwrap_or(&empty);
@@ -789,6 +788,7 @@ fn draw_header_hands(
         .is_some_and(|item| item.two_handed);
     for (part, mut visibility, picture, text) in &mut parts {
         let mut source = None;
+        let mut path = None;
         let mut value = None;
         let mut shown = true;
         match *part {
@@ -804,7 +804,7 @@ fn draw_header_hands(
                 shown = !(off && two_handed);
                 let slot = if off { EquipSlot::Secondary } else { EquipSlot::Primary };
                 let item = carried.worn(slot).and_then(|item| catalog.get(item.item));
-                let (path, frame, x) = if let Some(item) = item {
+                let (hand_path, frame, x) = if let Some(item) = item {
                     (item.image.clone(), 2, 132.0)
                 } else {
                     (
@@ -816,8 +816,9 @@ fn draw_header_hands(
                         133.0,
                     )
                 };
+                path = Some(crate::content::paths::retail(&hand_path));
                 source = Some(Picture {
-                    sheet: assets.load(crate::content::paths::retail(&path)),
+                    sheet: default(),
                     frame,
                     at: Vec2::new(x, if off { 58.0 } else { 34.0 }),
                     ..default()
@@ -844,7 +845,11 @@ fn draw_header_hands(
             HeaderHand::Armour => value = Some(armour.map_or(0, Armour::average).to_string()),
         }
         visibility.set_if_neq(visible_if(shown));
-        if let (Some(mut picture), Some(source)) = (picture, source) {
+        if let (Some(mut picture), Some(mut source)) = (picture, source) {
+            if let Some(path) = path {
+                show_sheet(&mut picture, &assets, path);
+                source.sheet = picture.sheet.clone();
+            }
             picture.set_if_neq(source);
         }
         if let (Some(mut text), Some(value)) = (text, value)
@@ -886,19 +891,21 @@ fn sync_member_portraits(
     }
     for (slot, member) in roster.iter().enumerate() {
         let Ok((profile, vitals)) = members.get(member) else { continue };
-        let path = if vitals.is_some_and(Vitals::is_dead) {
-            format!("data/portraits/small/s{}.sti", &super::screen_art::skull(profile.race)[1..])
+        let name = if vitals.is_some_and(Vitals::is_dead) {
+            &super::screen_art::skull(profile.race)[1..]
         } else {
-            format!("data/portraits/small/s{}.sti", profile.portrait)
+            &profile.portrait
         };
-        let source = Picture {
-            sheet: assets.load(crate::content::paths::retail(&path)),
-            at: member_position(slot) + Vec2::ONE,
-            ..default()
-        };
+        let path =
+            crate::content::paths::portrait(crate::content::paths::PortraitSize::Small, name);
+        let at = member_position(slot) + Vec2::ONE;
         if let Some((_, _, mut picture)) = buttons.iter_mut().find(|(_, b, _)| b.0 == member) {
-            picture.set_if_neq(source);
+            show_sheet(&mut picture, &assets, path);
+            if picture.at != at {
+                picture.at = at;
+            }
         } else {
+            let source = Picture { sheet: assets.load(path), at, ..default() };
             commands
                 .spawn_scene(bsn! {
                     template(move |_| Ok(source.clone()))
@@ -919,10 +926,9 @@ fn sync_member_portraits(
 /// Update the existing header controls from their actual dependencies.
 fn draw_header(
     screen: Option<Single<&InventoryScreen>>,
-    art: Res<InventoryArt>,
     assets: Res<AssetServer>,
     members: Query<(&Character, Option<&Vitals>)>,
-    tables: Res<Assets<TextTable>>,
+    strings: crate::presentation::screen_art::GameStrings,
     mut displays: Query<(&HeaderDisplay, Option<&mut Picture>, Option<&mut BitmapText>)>,
 ) {
     let Some(screen) = screen else { return };
@@ -930,62 +936,48 @@ fn draw_header(
     for (display, picture, label) in &mut displays {
         let mut source = None;
         let mut value = None;
-        let image = |path: String, frame| Picture {
-            sheet: assets.load(crate::content::paths::retail(&path)),
-            frame,
-            ..default()
-        };
         match display.0 {
             HeaderPart::Portrait => {
-                let portrait = if vitals.as_ref().is_some_and(|v| v.is_dead()) {
-                    super::screen_art::skull(profile.race).to_owned()
+                let name = if vitals.as_ref().is_some_and(|v| v.is_dead()) {
+                    &super::screen_art::skull(profile.race)[1..]
                 } else {
-                    format!("m{}", profile.portrait)
+                    &profile.portrait
                 };
-                source = Some(image(format!("data/portraits/medium/{portrait}.sti"), 0))
+                source = Some(crate::content::paths::portrait(
+                    crate::content::paths::PortraitSize::Medium,
+                    name,
+                ));
             }
             HeaderPart::Statue => {
-                source = Some(image(
-                    format!("data/review/{}.sti", statue(profile.race, profile.gender)),
-                    0,
-                ))
+                source = Some(crate::content::paths::sheet(&format!(
+                    "review/{}",
+                    statue(profile.race, profile.gender)
+                )));
             }
             HeaderPart::Name => value = Some(profile.name.clone()),
             HeaderPart::Race => {
                 let gender = if profile.gender == Gender::Male { 0x2d1 } else { 0x2d2 };
-                let table = tables.get(&art.strings);
-                let gender = table.and_then(|t| t.get(gender)).unwrap_or("");
-                let race = table
-                    .and_then(|t| t.get(crate::retail::strings::RACE_NAMES + profile.race as usize))
-                    .unwrap_or("");
+                let gender = strings.get(gender);
+                let race = strings.get(crate::content::ui::RACE_NAMES + profile.race as usize);
                 value = Some(format!("{gender} {race}").trim().to_owned());
             }
             HeaderPart::Profession => {
                 value = Some(
-                    tables
-                        .get(&art.strings)
-                        .and_then(|t| {
-                            t.get(
-                                crate::retail::strings::PROFESSION_NAMES
-                                    + profile.profession as usize,
-                            )
-                        })
-                        .unwrap_or("")
+                    strings
+                        .get(crate::content::ui::PROFESSION_NAMES + profile.profession as usize)
                         .to_owned(),
-                )
+                );
             }
             HeaderPart::Level => {
-                let table = tables.get(&art.strings);
-                let title = table.and_then(|t| t.get(profession_title(profile))).unwrap_or("");
-                let level = table.and_then(|t| t.get(0x91a)).unwrap_or("");
+                let title = strings.get(profession_title(profile));
+                let level = strings.get(0x91a);
                 value = Some(format!("{level} {} ({title})", profile.level));
             }
         }
         if let Some(mut picture) = picture
-            && let Some(mut source) = source
+            && let Some(path) = source
         {
-            source.at = picture.at;
-            picture.set_if_neq(source);
+            show_sheet(&mut picture, &assets, path);
         }
         if let Some(mut label) = label
             && let Some(value) = value
@@ -997,19 +989,11 @@ fn draw_header(
 }
 
 fn draw_retail_labels(
-    art: Res<InventoryArt>,
-    tables: Res<Assets<TextTable>>,
+    strings: crate::presentation::screen_art::GameStrings,
     mut labels: Query<(Ref<RetailLabel>, &mut BitmapText)>,
 ) {
-    if !art.is_changed()
-        && !tables.is_changed()
-        && !labels.iter().any(|(label, _)| label.is_added())
-    {
-        return;
-    }
-    let Some(table) = tables.get(&art.strings) else { return };
     for (label, mut text) in &mut labels {
-        let value = table.get(label.0).unwrap_or("");
+        let value = strings.get(label.0);
         if text.value != value {
             text.value = value.to_owned();
         }
@@ -1034,8 +1018,7 @@ fn draw_gold(
 fn draw_cells(
     screen: Option<Single<&InventoryScreen>>,
     assets: Res<AssetServer>,
-    data: Option<Res<GameData>>,
-    catalogs: Res<Assets<ItemCatalog>>,
+    content: crate::game::data::Content,
     members: Query<(&Character, Option<&Carried>)>,
     party: Single<&PartyInventory>,
     pool_scroll: Option<Single<&bevy::ui_widgets::SliderValue, With<pool_scroll::PoolScroll>>>,
@@ -1048,7 +1031,7 @@ fn draw_cells(
     )>,
 ) {
     let Some(screen) = screen else { return };
-    let Some(catalog) = data.and_then(|d| catalogs.get(&d.items)) else { return };
+    let Some(catalog) = content.items() else { return };
     let Ok((profile, carried)) = members.get(screen.member) else { return };
     let empty = Carried::default();
     let carried = carried.unwrap_or(&empty);
@@ -1076,9 +1059,14 @@ fn draw_cells(
                     if let Some((_, definition)) = definition
                         && let Some(mut picture) = picture
                     {
+                        show_sheet(
+                            &mut picture,
+                            &assets,
+                            crate::content::paths::retail(&definition.image),
+                        );
                         let at = picture.at;
                         picture.set_if_neq(Picture {
-                            sheet: assets.load(crate::content::paths::retail(&definition.image)),
+                            sheet: picture.sheet.clone(),
                             frame: if grid { 0 } else { 1 },
                             at,
                             bounds: None,
@@ -1163,13 +1151,12 @@ pub fn follow_held(
     scale: Res<UiScale>,
     assets: Res<AssetServer>,
     sheets: Res<Assets<SpriteSheet>>,
-    data: Option<Res<GameData>>,
-    catalogs: Res<Assets<ItemCatalog>>,
+    content: crate::game::data::Content,
     mut picture: Single<(&mut ImageNode, &mut Node, &mut Visibility), With<HeldPicture>>,
     mut loading: Local<Option<(String, Handle<SpriteSheet>)>>,
 ) {
     let (image, node, visibility) = &mut *picture;
-    let catalog = data.and_then(|d| catalogs.get(&d.items));
+    let catalog = content.items();
     let definition = party.hand.held.as_ref().zip(catalog).and_then(|(h, c)| c.get(h.item));
     let cursor = pointers
         .iter()
@@ -1276,6 +1263,8 @@ fn format_gold(gold: u32) -> String {
 mod tests {
     use super::*;
     use crate::content::items::ItemDefinition;
+    use crate::content::{items::ItemCatalog, ui::TextTable};
+    use crate::game::data::GameData;
 
     /// The inventory screen as the game installs it, over keyboard input.
     fn inventory_app() -> App {
@@ -1557,12 +1546,11 @@ mod tests {
             images: vec![Handle::default(); 100],
             palette: None,
         });
-        let strings = app.world_mut().resource_mut::<Assets<TextTable>>().add(TextTable(vec![
-            Some(
-                String::new()
-            );
-            0xa00
-        ]));
+        let strings = app
+            .world_mut()
+            .resource_mut::<Assets<crate::content::ui::TextTable>>()
+            .add(crate::content::ui::TextTable(vec![Some(String::new()); 0xa00]));
+        app.insert_resource(crate::presentation::screen_art::StringTable(strings));
         app.world_mut().insert_resource(InventoryArt {
             corner: sheet.clone(),
             page: sheet.clone(),
@@ -1570,7 +1558,6 @@ mod tests {
             gold_icon: sheet.clone(),
             exit: sheet.clone(),
             font: sheet,
-            strings,
             ..default()
         });
         tap(&mut app, window, KeyCode::KeyI);

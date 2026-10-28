@@ -1,7 +1,7 @@
 //! Retail spell information, shared by the creator's spell choices.
 use super::creator_spells::{SpellArt, SpellOption};
-use crate::content::spells::{PowerChoice, SpellCatalog, SpellId, SpellText, Spellbook};
-use crate::content::ui::{SpriteSheet, TextTable};
+use crate::content::spells::{PowerChoice, SpellId, SpellText, Spellbook};
+use crate::content::ui::SpriteSheet;
 use crate::presentation::retail_controls::{ControlSkin, FocusRing, ScrollWheel, step_scrollbar};
 use crate::presentation::screen_art::{BitmapText, Picture, absolute, spawn_picture};
 use bevy::input::keyboard::KeyboardInput;
@@ -19,8 +19,6 @@ use bevy::ui_widgets::{Activate, Button, ModalDialog, SliderValue};
 #[derive(Component)]
 pub(super) struct SpellInfo {
     id: SpellId,
-    catalog: Handle<SpellCatalog>,
-    strings: Handle<TextTable>,
     effects: Handle<SpellText>,
     descriptions: Handle<SpellText>,
     font: Handle<SpriteSheet>,
@@ -54,8 +52,6 @@ pub(super) fn open(
         .spawn((
             SpellInfo {
                 id: option.0,
-                catalog: page.1.catalog.clone(),
-                strings: assets.load(crate::content::paths::STRINGS),
                 effects: assets.load(crate::content::paths::SPELL_EFFECTS),
                 descriptions: assets.load(crate::content::paths::SPELL_DESCRIPTIONS),
                 font: assets.load("retail://data/fonts/wiz_text_font.sti"),
@@ -172,8 +168,8 @@ fn label(
 pub(super) fn populate(
     mut dialogs: Query<(Entity, &mut SpellInfo)>,
     assets: Res<AssetServer>,
-    catalogs: Res<Assets<SpellCatalog>>,
-    texts: Res<Assets<TextTable>>,
+    content: crate::game::data::Content,
+    game_strings: crate::presentation::screen_art::GameStrings,
     spell_texts: Res<Assets<SpellText>>,
     sheets: Res<Assets<SpriteSheet>>,
     mut commands: Commands,
@@ -183,8 +179,8 @@ pub(super) fn populate(
             continue;
         }
         let (Some(spell), Some(strings), Some(effects), Some(descriptions), Some(font)) = (
-            catalogs.get(&info.catalog).and_then(|c| c.get(info.id)),
-            texts.get(&info.strings),
+            content.spells().and_then(|c| c.get(info.id)),
+            game_strings.table(),
             spell_texts.get(&info.effects),
             spell_texts.get(&info.descriptions),
             sheets.get(&info.font),
