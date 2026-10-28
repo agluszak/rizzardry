@@ -151,6 +151,7 @@ pub(crate) fn draw_note_input(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::text::{FontCx, LayoutCx};
     #[test]
     fn escape_cancels_the_editor_before_a_second_escape_closes_the_map() {
         use crate::presentation::test_input::{input_app, tap};
