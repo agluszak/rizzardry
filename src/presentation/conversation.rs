@@ -12,7 +12,7 @@ use crate::content::{
 use crate::game::npcs::{
     Npc, NpcAssets,
     conversation::*,
-    trade::{TradeQuote, TradeSource},
+    trade::{self, TradeQuote, TradeSource},
 };
 use crate::game::{
     data::GameData,
@@ -1052,8 +1052,13 @@ fn sync_transcript(
                 Some("palettered"),
             ));
         }
-        if let Some(result) = &c.result {
-            lines.push((result.clone(), Some("palettebronze")));
+        if let Some(outcome) = c.outcome() {
+            let text = match outcome {
+                Outcome::NoTopic => "No supported topic matches that input.".into(),
+                Outcome::Traded => "Trade complete.".into(),
+                Outcome::TradeRefused(error) => format!("Trade refused: {error:?}"),
+            };
+            lines.push((text, Some("palettebronze")));
         }
         let old: Vec<_> = children
             .into_iter()
@@ -1595,16 +1600,14 @@ fn sync_trade_rows(
         let mut rows = Vec::new();
         if state.mode == Mode::Buy {
             for lot in &npc.stock.lots {
-                if lot.units > 0
-                    && lot.available_at == 0
-                    && let Some(d) = items.get(lot.item)
-                    && !d.merchant_cannot_sell
+                if let Some(d) = items.get(lot.item)
+                    && trade::on_sale(lot, d)
                     && allows(d)
                 {
                     rows.push((
                         TradeSource::Stock(lot.id),
                         format!("{} ({})", d.name, lot.units),
-                        if d.class == EquipClass::Ammunition { lot.units } else { 1 },
+                        trade::trade_quantity(d, lot.units),
                     ));
                 }
             }
@@ -1628,7 +1631,7 @@ fn sync_trade_rows(
                     rows.push((
                         TradeSource::Party(ItemRef { owner, id: item.id }),
                         item.display_name(d, true),
-                        if d.class == EquipClass::Ammunition { item.units() } else { 1 },
+                        trade::trade_quantity(d, item.units()),
                     ));
                 }
             }

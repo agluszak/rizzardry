@@ -20,12 +20,12 @@ use crate::content::ui::SpriteSheet;
 #[cfg(test)]
 use crate::game::characters::Race;
 use crate::game::characters::{Character, Vitals};
-use crate::game::combat::attack::armour;
 use crate::game::data::GameData;
-use crate::game::inventory::{EquipSlot, ItemNews};
+use crate::game::inventory::EquipSlot;
 use crate::game::party::DamageApplied;
 use crate::game::party::roster::PartyRoster;
 use crate::presentation::PresentationRng;
+use crate::presentation::screen_art::visible_if;
 use crate::presentation::screen_art::{
     BitmapText, Picture, absolute, condition_icon, label, picture, rect, skull,
 };
@@ -148,10 +148,6 @@ pub fn slots(closed: bool) -> impl SceneList {
 
 /// A bar's fill, 0 to 45 pixels, at least 1 while any is left (retail
 /// `SyncPartyPortraitVitalsBars`).
-fn fill(now: u32, max: u32) -> u32 {
-    if now == 0 || max == 0 { 0 } else { (now * 45 / max).max(1) }
-}
-
 /// Create controls once for this layout. Gameplay updates their properties.
 pub fn build_party_parts(
     mut commands: Commands,
@@ -334,11 +330,12 @@ pub fn draw_party(
         let mut value = None;
         let mut hand_x = None;
         let image = |path: &str, frame| Picture {
-            sheet: assets.load(format!("retail://{path}")),
+            sheet: assets.load(crate::content::paths::retail(path)),
             frame,
             ..default()
         };
-        if let Some(CharacterViewItem { profile, vitals, carried }) = actor {
+        if let Some(view) = actor {
+            let CharacterViewItem { profile, vitals, carried, armour, .. } = view;
             let dead = vitals.is_dead();
             let worn = |slot| {
                 carried.as_ref().and_then(|c| c.worn(slot)).and_then(|i| catalog?.get(i.item))
@@ -373,9 +370,12 @@ pub fn draw_party(
                 Part::HealthEmpty | Part::StaminaEmpty => {
                     shown = !dead;
                     let amount = if matches!(part.kind, Part::HealthEmpty) {
-                        fill(vitals.hp, profile.max_hp())
+                        crate::presentation::screen_art::vital_fill(vitals.hp, profile.max_hp())
                     } else {
-                        fill(vitals.stamina, profile.max_stamina())
+                        crate::presentation::screen_art::vital_fill(
+                            vitals.stamina,
+                            profile.max_stamina(),
+                        )
                     };
                     let height = px(45 - amount);
                     if node.height != height {
@@ -414,11 +414,7 @@ pub fn draw_party(
                 Part::Armour => {
                     shown = !dead;
                     value = Some(
-                        match (carried.as_ref(), catalog) {
-                            (Some(c), Some(catalog)) => armour(profile, c, catalog).average(),
-                            _ => 0,
-                        }
-                        .to_string(),
+                        armour.map_or(0, crate::game::combat::attack::Armour::average).to_string(),
                     );
                 }
                 Part::Name => value = Some(profile.name.clone()),
@@ -457,7 +453,7 @@ pub fn draw_party(
                 }
             }
         }
-        visible.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
+        visible.set_if_neq(visible_if(shown));
         if let Some(mut picture) = picture
             && let Some(mut source) = source
         {
@@ -547,7 +543,6 @@ fn press(
     mut selected: ResMut<SelectedMember>,
     roster: Single<Ref<PartyRoster>>,
     mut inventory: crate::game::inventory::operations::InventoryOperations,
-    mut news: MessageWriter<ItemNews>,
     mut review: crate::presentation::inventory::OpenReview,
     mut views: Query<&mut super::magic_view::MagicView>,
     conversations: Query<(), With<crate::game::npcs::conversation::Conversation>>,
@@ -574,9 +569,8 @@ fn press(
         return;
     }
     match inventory.give_to(member) {
-        Ok(Some(outcome)) => {
+        Ok(true) => {
             button.review_armed = false;
-            news.write(outcome);
             return;
         }
         Err(reason) => {
@@ -584,7 +578,7 @@ fn press(
             info!("giving item refused: {reason:?}");
             return;
         }
-        Ok(None) => {}
+        Ok(false) => {}
     }
     let already_selected = selected.0 == Some(member);
     selected.0 = Some(member);
@@ -624,7 +618,6 @@ fn release_right(
     time: Res<Time<Real>>,
     keys: Option<Res<ButtonInput<KeyCode>>>,
     mut inventory: crate::game::inventory::operations::InventoryOperations,
-    mut news: MessageWriter<ItemNews>,
     mut review: crate::presentation::inventory::OpenReview,
     mut selected: ResMut<SelectedMember>,
     mut commands: Commands,
@@ -642,15 +635,12 @@ fn release_right(
         // Retail's right-release give always offers the party pool first
         // (`force_to_party`); this uses the left click's pool rule.
         match inventory.give_to(member) {
-            Ok(Some(outcome)) => {
-                news.write(outcome);
-                return;
-            }
+            Ok(true) => return,
             Err(reason) => {
                 info!("giving item refused: {reason:?}");
                 return;
             }
-            Ok(None) => {}
+            Ok(false) => {}
         }
     }
     if review.open(member) {
@@ -786,11 +776,7 @@ pub fn play_splats(
                 picture.set_if_neq(Picture { sheet: sheet.clone(), frame, at, bounds: None });
             }
             if let Ok((mut visible, mut label)) = numbers.get_mut(part) {
-                visible.set_if_neq(if frame < 6 {
-                    Visibility::Inherited
-                } else {
-                    Visibility::Hidden
-                });
+                visible.set_if_neq(visible_if(frame < 6));
                 let value = splat.damage.to_string();
                 if label.value != value {
                     label.value = value;
@@ -850,7 +836,7 @@ mod tests {
             .init_asset::<ItemCatalog>()
             .init_resource::<SelectedMember>()
             .init_resource::<ButtonInput<MouseButton>>()
-            .add_message::<ItemNews>()
+            .add_message::<crate::game::inventory::ItemNews>()
             .insert_resource(State::new(Screen::World))
             .init_resource::<NextState<Screen>>()
             .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(Duration::from_millis(
@@ -979,7 +965,7 @@ mod tests {
         world.init_resource::<ScreenLayout>();
         world.init_resource::<Assets<ItemCatalog>>();
         world.init_resource::<SelectedMember>();
-        world.init_resource::<Messages<ItemNews>>();
+        world.init_resource::<Messages<crate::game::inventory::ItemNews>>();
         world.insert_resource(State::new(Screen::World));
         world.init_resource::<NextState<Screen>>();
         let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);

@@ -2,26 +2,9 @@
 
 use std::collections::HashMap;
 
-use super::STEP_HEIGHT;
-use super::navigation::{LevelNavigation, Walker, WalkerMotion, WalkerMotionConfig};
+use super::navigation::{LevelNavigation, WalkerMotionConfig};
 use crate::game::world::level::LevelOwned;
-use avian3d::prelude::*;
 use bevy::prelude::*;
-use bevy_landmass::prelude::*;
-use bevy_tnua::builtins::TnuaBuiltinWalkConfig;
-use bevy_tnua::prelude::*;
-use bevy_tnua_avian3d::prelude::*;
-
-/// Half the height of a monster's body. Bodies are flat cylinders as wide
-/// as the model's walk radius, however tall the model.
-const HALF_HEIGHT: f32 = 0.5;
-/// The ground sensor's radius: the ground under the body's centre decides
-/// its height, not the highest point anywhere under a wide body.
-const SENSOR_RADIUS: f32 = 0.3;
-/// Wider monsters navigate the narrowest navmesh that still fits this much:
-/// the wider navmeshes lose narrow ground (beaches, ledges) to erosion, so
-/// big monsters may brush corners instead.
-pub(super) const MAX_NAVIGATION_RADIUS: f32 = 1.0;
 
 use super::identify::{GroupMember, MonsterGroup};
 use super::level::{KeptMonster, LevelRecord};
@@ -56,6 +39,10 @@ pub struct Provoked;
 impl Monster {
     pub fn is_dead(&self) -> bool {
         self.hp == 0
+    }
+
+    pub fn can_fight(&self) -> bool {
+        crate::game::characters::can_fight(self.hp, &self.conditions)
     }
 }
 
@@ -104,10 +91,11 @@ impl MonsterBodies {
             .monsters
             .iter()
             .filter_map(|placed| {
-                let kind = species.0.get(placed.species as usize)?;
-                let body = self.0.entry(placed.species).or_insert_with(|| {
-                    assets.load(format!("retail://data/monsters/{}.mls", kind.model))
-                });
+                let kind = species.kind(placed.species)?;
+                let body = self
+                    .0
+                    .entry(placed.species)
+                    .or_insert_with(|| assets.load(crate::content::paths::monster(&kind.model)));
                 Some(body.clone())
             })
             .collect()
@@ -122,9 +110,7 @@ pub fn check(
     species: &MonsterCatalog,
     items: &ItemCatalog,
 ) -> Result<(), String> {
-    if let Some(placed) =
-        geometry.monsters.iter().find(|p| species.0.get(p.species as usize).is_none())
-    {
+    if let Some(placed) = geometry.monsters.iter().find(|p| species.kind(p.species).is_none()) {
         return Err(format!(
             "monster {} is of unknown species {}",
             placed.location, placed.species
@@ -166,30 +152,8 @@ pub fn populate(
             .filter(|placed| species.0[placed.species as usize].npc.is_none())
             .map(|placed| {
                 let kind = &species.0[placed.species as usize];
-                let body_definition = &handles[&placed.species];
-                let max_hp = rng.roll(kind.hit_points).max(1);
-                let max_stamina = rng.roll(kind.stamina);
-                // Retail draws Random(1000) for the size; its left-handed
-                // mirror draw, presentation only, is not taken from
-                // gameplay's stream.
-                let size_roll = rng.below(1000);
-                let body = ScaledBody::new(bodies.get(body_definition).unwrap(), size_roll);
-                KeptMonster {
-                    provoked: false,
-                    monster: Monster {
-                        location: placed.location,
-                        species: placed.species,
-                        hp: max_hp,
-                        max_hp,
-                        stamina: max_stamina,
-                        max_stamina,
-                        conditions: Vec::new(),
-                        body,
-                    },
-                    group: Some(placed.group),
-                    feet: placed.position,
-                    yaw: placed.yaw,
-                }
+                let body = bodies.get(&handles[&placed.species]).unwrap();
+                KeptMonster::rolled(placed, kind, body, rng)
             })
             .collect(),
     };
@@ -197,75 +161,16 @@ pub fn populate(
     let mut identities = HashMap::new();
     let mut placed_actors = std::collections::HashSet::new();
     for placed in &geometry.monsters {
-        let Some(kind) = species.0.get(placed.species as usize) else { continue };
+        let Some(kind) = species.kind(placed.species) else { continue };
         let Some(id) = kind.npc else { continue };
-        let definition = npcs
-            .definitions
-            .get(&npcs.assets.catalog)
-            .and_then(|c| c.get(id))
-            .expect("NPC preparation validated definition");
-        let key = crate::game::npcs::ActorId::for_placement(id, definition, map, placed.location);
-        if !placed_actors.insert(key.clone()) {
+        let body = bodies.get(&handles[&placed.species]).unwrap();
+        let place = crate::game::npcs::Placing { placed, id, map, average };
+        let Some((entity, kept)) =
+            npcs.place(commands, place, items, &mut placed_actors, rng, |rng| {
+                KeptMonster::rolled(placed, kind, body, rng)
+            })
+        else {
             continue;
-        }
-        let existing = npcs.npcs.iter().find(|(_, identity, _, _)| **identity == key).map(|v| v.0);
-        let entity = if let Some(entity) = existing {
-            entity
-        } else {
-            let mut stock = crate::game::npcs::trade::MerchantStock::default();
-            if definition.owns_stock {
-                stock
-                    .maintain(definition, items, average, npcs.clock.ms, false, rng)
-                    .expect("validated NPC stock");
-            }
-            commands
-                .spawn((
-                    key.clone(),
-                    crate::game::npcs::Npc {
-                        definition: id,
-                        disposition: definition.disposition,
-                        greeting_pending: true,
-                        paid_topics: vec![],
-                        dormant: None,
-                        stock,
-                    },
-                ))
-                .id()
-        };
-        let kept = if let Ok((_, _, mut npc, active)) = npcs.npcs.get_mut(entity) {
-            if active.is_some_and(|bodies| !bodies.is_empty()) && npc.dormant.is_none() {
-                continue;
-            }
-            match npc.dormant.take() {
-                Some(role) if role.map == map => role.body,
-                other => {
-                    npc.dormant = other;
-                    continue;
-                }
-            }
-        } else {
-            let max_hp = rng.roll(kind.hit_points).max(1);
-            let max_stamina = rng.roll(kind.stamina);
-            let body = ScaledBody::new(
-                bodies.get(handles.get(&placed.species).unwrap()).unwrap(),
-                rng.below(1000),
-            );
-            KeptMonster {
-                provoked: false,
-                monster: Monster {
-                    location: placed.location,
-                    species: placed.species,
-                    hp: max_hp,
-                    max_hp,
-                    stamina: max_stamina,
-                    max_stamina,
-                    conditions: vec![],
-                    body,
-                },
-                group: Some(placed.group),
-                feet: placed.position,
-                yaw: placed.yaw,
-            }
         };
         identities.insert(kept.monster.location, entity);
         monsters.push(kept);
@@ -287,7 +192,7 @@ pub fn populate(
             })
         });
         let ScaledBody { radius, speed, .. } = monster.body;
-        let float_height = if speed > 0.0 { STEP_HEIGHT + HALF_HEIGHT } else { 0.0 };
+        let float_height = super::navigation::float_height(speed);
         let actor = identities.get(&monster.location).copied();
         let mut entity = commands.spawn_empty();
         entity.insert((
@@ -307,42 +212,13 @@ pub fn populate(
             entity.insert(GroupMember(group));
         }
         if speed > 0.0 {
-            let config = configs.add(WalkerMotionConfig {
-                basis: TnuaBuiltinWalkConfig {
-                    speed,
-                    float_height,
-                    max_slope: 50f32.to_radians(),
-                    ..default()
-                },
-            });
-            entity.insert((
-                RigidBody::Dynamic,
-                Position(kept.feet + Vec3::Y * float_height),
-                Rotation(Quat::from_rotation_y(kept.yaw)),
-                Collider::cylinder(radius, 2.0 * HALF_HEIGHT),
-                LockedAxes::ROTATION_LOCKED,
-                TnuaController::<WalkerMotion>::default(),
-                TnuaConfig::<WalkerMotion>(config),
-                TnuaAvian3dSensorShape(Collider::cylinder(SENSOR_RADIUS.min(radius), 0.0)),
-                Walker { speed, float_height },
-                AgentTarget3d::None,
-                Velocity3d::default(),
-            ));
-            // Synthetic worlds can omit navigation; production activation
-            // requires every requested navmesh before constructing actors.
-            if !navigation.archipelagos.is_empty() {
-                entity.insert(Agent3dBundle {
-                    agent: default(),
-                    settings: AgentSettings {
-                        radius: radius.min(MAX_NAVIGATION_RADIUS),
-                        desired_speed: speed * 0.8,
-                        max_speed: speed,
-                    },
-                    archipelago_ref: ArchipelagoRef3d::new(
-                        navigation.archipelago_for(radius.min(MAX_NAVIGATION_RADIUS)),
-                    ),
-                });
-            }
+            super::navigation::insert_walker(
+                &mut entity,
+                (kept.feet, kept.yaw),
+                (radius, speed),
+                navigation,
+                configs,
+            );
         }
     }
     let lying: Vec<(WorldItem, Vec3)> = match remembered_items {

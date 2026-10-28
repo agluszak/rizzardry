@@ -4,45 +4,43 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use super::*;
-use crate::game::data::GameData;
+use crate::game::data::Content;
 use crate::game::party::roster::PartyRoster;
 
 #[derive(SystemParam)]
 pub struct InventoryOperations<'w, 's> {
     party: Single<'w, 's, &'static mut PartyInventory>,
     roster: Single<'w, 's, &'static PartyRoster>,
-    members: Query<'w, 's, (&'static Character, &'static Vitals, &'static mut Carried)>,
-    data: Option<Res<'w, GameData>>,
-    catalogs: Res<'w, Assets<ItemCatalog>>,
+    members: Members<'w, 's>,
+    content: Content<'w>,
     battle: Option<Single<'w, 's, &'static crate::game::combat::Battle>>,
+    news: MessageWriter<'w, ItemNews>,
 }
 
 impl InventoryOperations<'_, '_> {
-    /// Give the held item to an identified actor. Eligibility and battle pool
-    /// precedence are rules here; the clicked portrait only supplies its target.
-    pub fn give_to(&mut self, member: Entity) -> Result<Option<ItemNews>, Refusal> {
-        let Some(held) = self.party.hand.held.as_ref() else { return Ok(None) };
-        if !self.roster.contains(&member) {
-            return Err(Refusal::NotMember);
-        }
-        let catalog = self
-            .data
-            .as_ref()
-            .and_then(|d| self.catalogs.get(&d.items))
-            .ok_or(Refusal::MissingContent)?;
-        let (profile, vitals, mut carried) =
-            self.members.get_mut(member).map_err(|_| Refusal::NotMember)?;
+    /// Give the held item to an identified actor, telling who took it.
+    /// Eligibility and battle pool precedence are rules here; the clicked
+    /// portrait only supplies its target. False when nothing was held.
+    pub fn give_to(&mut self, member: Entity) -> Result<bool, Refusal> {
+        let Some(held) = self.party.hand.held.as_ref() else { return Ok(false) };
+        let catalog = self.content.items().ok_or(Refusal::MissingContent)?;
+        let (profile, vitals, mut carried) = self::member(&self.roster, &mut self.members, member)?;
         let definition = catalog.get(held.item).ok_or(Refusal::MissingContent)?;
         let item = held.display_name(definition, false);
         let name = profile.name.clone();
-        let eligible = crate::game::camp::can_act(vitals);
+        let eligible = vitals.can_act();
         let pool_first = !eligible || self.battle.is_some();
-        let result = self.party.give_held(eligible.then_some(&mut *carried), pool_first, catalog);
-        Ok(result.map(|given| match given {
+        let Some(given) =
+            self.party.give_held(eligible.then_some(&mut *carried), pool_first, catalog)
+        else {
+            return Ok(false);
+        };
+        self.news.write(match given {
             Given::Member => ItemNews::Takes { member: Some(name), item },
             Given::Pool => ItemNews::Takes { member: None, item },
             Given::NoRoom => ItemNews::NoRoom,
-        }))
+        });
+        Ok(true)
     }
 
     /// Return the hand to the reviewed member, falling back to the pool. A
@@ -51,18 +49,9 @@ impl InventoryOperations<'_, '_> {
         if self.party.hand.held.is_none() {
             return Ok(());
         }
-        let catalog = self
-            .data
-            .as_ref()
-            .and_then(|d| self.catalogs.get(&d.items))
-            .ok_or(Refusal::MissingContent)?;
-        if self.roster.contains(&member)
-            && let Ok((_, _, mut carried)) = self.members.get_mut(member)
-        {
-            self.party.give_held(Some(&mut carried), false, catalog);
-        } else {
-            self.party.give_held(None, false, catalog);
-        }
+        let catalog = self.content.items().ok_or(Refusal::MissingContent)?;
+        let mut carried = self::member(&self.roster, &mut self.members, member).ok();
+        self.party.give_held(carried.as_mut().map(|(_, _, c)| &mut **c), false, catalog);
         Ok(())
     }
 
@@ -80,37 +69,18 @@ impl InventoryOperations<'_, '_> {
         }
     }
     pub fn deposit(&mut self, position: PoolPosition) -> Result<u32, Refusal> {
-        let catalog = self
-            .data
-            .as_ref()
-            .and_then(|d| self.catalogs.get(&d.items))
-            .ok_or(Refusal::MissingContent)?;
+        let catalog = self.content.items().ok_or(Refusal::MissingContent)?;
         self.party.deposit_hand(position, catalog)
     }
     pub fn interact_slot(&mut self, destination: MemberSlot) -> Result<(), Refusal> {
-        if !self.roster.contains(&destination.member) {
-            return Err(Refusal::NotMember);
-        }
-        let catalog = self
-            .data
-            .as_ref()
-            .and_then(|d| self.catalogs.get(&d.items))
-            .ok_or(Refusal::MissingContent)?;
+        let catalog = self.content.items().ok_or(Refusal::MissingContent)?;
         let (character, vitals, mut carried) =
-            self.members.get_mut(destination.member).map_err(|_| Refusal::NotMember)?;
+            member(&self.roster, &mut self.members, destination.member)?;
         self.party.interact_slot(character, vitals, &mut carried, destination.slot, catalog)
     }
     pub fn switch_weapon_sets(&mut self, member: Entity) -> Result<(), Refusal> {
-        if !self.roster.contains(&member) {
-            return Err(Refusal::NotMember);
-        }
-        let catalog = self
-            .data
-            .as_ref()
-            .and_then(|d| self.catalogs.get(&d.items))
-            .ok_or(Refusal::MissingContent)?;
-        let (_, vitals, mut carried) =
-            self.members.get_mut(member).map_err(|_| Refusal::NotMember)?;
+        let catalog = self.content.items().ok_or(Refusal::MissingContent)?;
+        let (_, vitals, mut carried) = self::member(&self.roster, &mut self.members, member)?;
         carried.switch_weapon_sets(catalog, vitals.is_dead())
     }
     pub fn take(&mut self, source: ItemRef) -> Result<(), Refusal> {
@@ -120,10 +90,7 @@ impl InventoryOperations<'_, '_> {
         match source.owner {
             ItemOwner::Pool => self.party.take_from_pool(source.id),
             ItemOwner::Member(member) => {
-                if !self.roster.contains(&member) {
-                    return Err(Refusal::NotMember);
-                }
-                let (_, _, carried) = self.members.get(member).map_err(|_| Refusal::NotMember)?;
+                let (_, _, carried) = self::member(&self.roster, &mut self.members, member)?;
                 let slot = carried.find(source.id).ok_or(Refusal::Nothing)?;
                 self.interact_slot(MemberSlot { member, slot })
             }
@@ -135,11 +102,7 @@ impl InventoryOperations<'_, '_> {
         amount: u16,
         ids: &mut ItemIds,
     ) -> Result<(), Refusal> {
-        let catalog = self
-            .data
-            .as_ref()
-            .and_then(|d| self.catalogs.get(&d.items))
-            .ok_or(Refusal::MissingContent)?;
+        let catalog = self.content.items().ok_or(Refusal::MissingContent)?;
         let PartyInventory { hand, pool, .. } = &mut **self.party;
         match source.owner {
             ItemOwner::Pool => {
@@ -154,11 +117,8 @@ impl InventoryOperations<'_, '_> {
                 }
             }
             ItemOwner::Member(member) => {
-                if !self.roster.contains(&member) {
-                    return Err(Refusal::NotMember);
-                }
                 let (_, vitals, mut carried) =
-                    self.members.get_mut(member).map_err(|_| Refusal::NotMember)?;
+                    self::member(&self.roster, &mut self.members, member)?;
                 let slot = carried.find(source.id).ok_or(Refusal::Nothing)?;
                 let stack = carried.slot(slot).unwrap();
                 let definition = catalog.get(stack.item).ok_or(Refusal::MissingContent)?;
@@ -171,4 +131,18 @@ impl InventoryOperations<'_, '_> {
         }
         Ok(())
     }
+}
+
+type Members<'w, 's> = Query<'w, 's, (&'static Character, &'static Vitals, &'static mut Carried)>;
+
+/// A party member's inventory; anyone else is refused.
+fn member<'a>(
+    roster: &PartyRoster,
+    members: &'a mut Members,
+    member: Entity,
+) -> Result<(&'a Character, &'a Vitals, Mut<'a, Carried>), Refusal> {
+    if !roster.contains(&member) {
+        return Err(Refusal::NotMember);
+    }
+    members.get_mut(member).map_err(|_| Refusal::NotMember)
 }

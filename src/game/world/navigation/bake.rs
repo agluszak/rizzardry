@@ -12,7 +12,6 @@ use crate::content::level::CollisionMesh;
 use rerecast::{
     AreaType, ConfigBuilder, DetailNavmesh, HeightfieldBuilder, PolygonNavmesh, TriMesh,
 };
-use serde::{Deserialize, Serialize};
 
 /// Walker radius classes, in metres: each level gets one navmesh per class,
 /// and a walker uses the smallest class that fits it. Wider walkers navigate
@@ -29,7 +28,7 @@ pub fn size_class(radius: f32) -> usize {
 
 /// Parameters of one navmesh bake. Part of the cache key, so changing a
 /// default re-bakes cached navmeshes.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct NavmeshBakeSettings {
     /// Walkers are kept this far from walls. The bake of each size class
     /// replaces it with the class radius.
@@ -261,23 +260,17 @@ pub fn repair(mesh: &mut NavigationMesh3d) -> Result<RepairReport, String> {
                 }
             }
         }
-        let mut index = 0;
-        height.polygons.retain(|_| {
-            index += 1;
-            keep[index - 1]
-        });
+        retain_kept(&mut height.polygons, &keep);
     }
-    let mut index = 0;
-    mesh.polygons.retain(|_| {
-        index += 1;
-        keep[index - 1]
-    });
-    let mut index = 0;
-    mesh.polygon_type_indices.retain(|_| {
-        index += 1;
-        keep[index - 1]
-    });
+    retain_kept(&mut mesh.polygons, &keep);
+    retain_kept(&mut mesh.polygon_type_indices, &keep);
     Ok(report)
+}
+
+/// Keep the entries whose polygon survived.
+fn retain_kept<T>(entries: &mut Vec<T>, keep: &[bool]) {
+    let mut kept = keep.iter();
+    entries.retain(|_| *kept.next().unwrap());
 }
 
 #[cfg(test)]

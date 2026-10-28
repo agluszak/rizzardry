@@ -6,10 +6,10 @@ use bevy::asset::{AssetLoader, LoadContext, io::Reader};
 use bevy::prelude::*;
 use bevy::reflect::TypePath;
 
-use super::level_loader::{LoadedTextures, PvlLoadError, load_material};
+use super::LoadError;
+use super::level_loader::{LoadedTextures, load_material};
 use super::mesh_record::read_mesh_record;
 use super::prop_loader::{PropLighting, record_meshes};
-use super::pvl::invalid;
 use crate::bytes::Bytes;
 use crate::content::items::{ItemModel, ItemModelPart};
 
@@ -19,19 +19,19 @@ pub struct ItmLoader;
 impl AssetLoader for ItmLoader {
     type Asset = ItemModel;
     type Settings = ();
-    type Error = PvlLoadError;
+    type Error = LoadError;
 
     async fn load(
         &self,
         reader: &mut dyn Reader,
         _: &(),
         context: &mut LoadContext<'_>,
-    ) -> Result<ItemModel, PvlLoadError> {
+    ) -> Result<ItemModel, LoadError> {
         let mut data = Vec::new();
         reader.read_to_end(&mut data).await?;
         let mut bytes = Bytes::new(data.get(1..).unwrap_or_default());
         if data.first() != Some(&2) {
-            return Err(invalid("item model is not version 2", &bytes).into());
+            return Err(bytes.invalid("item model is not version 2").into());
         }
         let record = read_mesh_record(&mut bytes)?;
         let mut textures = LoadedTextures::default();

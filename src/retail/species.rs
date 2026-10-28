@@ -2,78 +2,61 @@
 
 use bevy::asset::{AssetLoader, LoadContext, io::Reader};
 use bevy::reflect::TypePath;
-use thiserror::Error;
 
-use super::pvl::PvlError;
-use crate::bytes::Bytes;
+use super::record::{dice_at, reach};
+use crate::bytes::{
+    Bytes, DecodeError, Truncated, f32_at, i16_at, i32_at, lenient_string, u16_at, u32_at,
+    utf16_string,
+};
 use enum_map::EnumMap;
 use enumset::EnumSet;
 
-use crate::content::items::{Dice, ItemId};
+use crate::content::items::ItemId;
 use crate::content::species::{
-    AttackWord, Disposition, Drop, MonsterAttack, MonsterAttributes, MonsterCatalog, Reach,
-    Species, Treasure,
+    AttackWord, Disposition, Drop, MonsterAttack, MonsterAttributes, MonsterCatalog, Species,
+    Treasure,
 };
 
 const RECORD: usize = 0x297;
 const ATTACKS_AT: usize = 0xe7;
 const ATTACK: usize = 0x22;
 
-fn dice(record: &[u8], at: usize) -> Dice {
-    Dice {
-        base: i16::from_le_bytes([record[at], record[at + 1]]),
-        count: record[at + 2],
-        sides: record[at + 3],
-    }
-}
-
-fn u32_at(record: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(record[at..at + 4].try_into().unwrap())
-}
-
 /// A name of UTF-16 text up to a NUL; retail drops anything after `#`.
 fn name(raw: &[u8]) -> String {
-    let units: Vec<u16> = raw
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|&c| u16::from_le_bytes(c))
-        .take_while(|&u| u != 0)
-        .collect();
-    let name = String::from_utf16_lossy(&units);
+    let name = utf16_string(raw);
     name.split('#').next().unwrap_or_default().trim().to_owned()
 }
 
-fn species(record: &[u8]) -> Species {
+fn species(record: &[u8]) -> Result<Species, Truncated> {
     let bytes = |at: usize, n: usize| &record[at..at + n];
     let signed = |at: usize| record[at] as i8;
-    let model = bytes(0x189, 48);
-    let model_end = model.iter().position(|&b| b == 0).unwrap_or(model.len());
     let attacks = (0..3)
         .map(|i| &record[ATTACKS_AT + ATTACK * i..ATTACKS_AT + ATTACK * (i + 1)])
         .filter(|attack| attack[0] != 0)
-        .map(|attack| MonsterAttack {
-            named: attack[1] != 0,
-            word: match attack[2] {
-                1 => AttackWord::Verb,
-                word => AttackWord::Word(word),
-            },
-            reach: Reach::from_retail(attack[3]),
-            score: attack[4],
-            modes: EnumSet::from_repr_truncated(u16::from_le_bytes([attack[0x15], attack[0x16]])),
-            damage: dice(attack, 0x17),
+        .map(|attack| {
+            Ok(MonsterAttack {
+                named: attack[1] != 0,
+                word: match attack[2] {
+                    1 => AttackWord::Verb,
+                    word => AttackWord::Word(word),
+                },
+                reach: reach(attack[3]),
+                score: attack[4],
+                modes: EnumSet::from_repr_truncated(u16_at(attack, 0x15)?),
+                damage: dice_at(attack, 0x17)?,
+            })
         })
-        .collect();
-    let experience = match u32_at(record, 0x26b) {
-        0 => u32_at(record, 0x181),
+        .collect::<Result<_, Truncated>>()?;
+    let experience = match u32_at(record, 0x26b)? {
+        0 => u32_at(record, 0x181)?,
         over => over,
     };
-    Species {
+    Ok(Species {
         name: name(bytes(0, 48)),
         name_plural: name(bytes(0x30, 48)),
         generic_name: name(bytes(0x60, 48)),
         generic_plural: name(bytes(0x90, 48)),
-        model: String::from_utf8_lossy(&model[..model_end]).to_lowercase(),
+        model: lenient_string(bytes(0x189, 48)).to_lowercase(),
         level_sight: record[0xcb] == 4,
         npc: (record[0xd0] & 1 != 0)
             .then_some(crate::content::npcs::NpcId(u16::from(record[0xcd]))),
@@ -86,8 +69,8 @@ fn species(record: &[u8]) -> Species {
             speed: record[0xd4],
             senses: record[0xd5],
         },
-        hit_points: dice(record, 0xd6),
-        stamina: dice(record, 0xda),
+        hit_points: dice_at(record, 0xd6)?,
+        stamina: dice_at(record, 0xda)?,
         initiative: record[0xe4],
         attacks_per_round: record[0xe5],
         swings_per_round: record[0xe6],
@@ -100,70 +83,58 @@ fn species(record: &[u8]) -> Species {
         experience,
         level: record[0x24f],
         display_level: record[0x251],
-        gold: dice(record, 0x243),
+        gold: dice_at(record, 0x243)?,
         // Eight 10-byte slots; a zero count disables one.
         treasure: (0..8)
             .map(|slot| &record[0x1f3 + slot * 10..0x1f3 + slot * 10 + 10])
-            .filter(|slot| i16::from_le_bytes([slot[1], slot[2]]) != 0)
+            .filter(|slot| i16_at(slot, 1).is_ok_and(|count| count != 0))
             .map(|slot| {
-                let id = u16::from_le_bytes([slot[3], slot[4]]);
-                Treasure {
+                let id = u16_at(slot, 3)?;
+                Ok(Treasure {
                     drop: match slot[0] {
                         0 => Drop::Item(ItemId(id)),
                         1 => Drop::Table(id),
                         _ => Drop::Nothing,
                     },
                     chance: slot[5],
-                    dice: dice(slot, 6),
-                }
+                    dice: dice_at(slot, 6)?,
+                })
             })
-            .collect(),
+            .collect::<Result<_, Truncated>>()?,
         resistances: EnumMap::from_array(bytes(0x176, 6).try_into().unwrap()),
         // Metres (retail scales it by its world scale). Unused records hold
         // 0xcdcdcdcd filler, read as hostile.
-        disposition: match i32_at(record, 0x25b) {
+        disposition: match i32_at(record, 0x25b)? {
             -1 => Disposition::Neutral,
             radius if radius > 0 => Disposition::HostileWithin(radius as f32),
             _ => Disposition::Hostile,
         },
-        faction: i32_at(record, 0x25f),
-        combat_move_range: f32::from_le_bytes(record[0x1ba..0x1be].try_into().unwrap()).max(0.0),
-    }
-}
-
-fn i32_at(record: &[u8], at: usize) -> i32 {
-    i32::from_le_bytes(record[at..at + 4].try_into().unwrap())
+        faction: i32_at(record, 0x25f)?,
+        combat_move_range: f32_at(record, 0x1ba)?.max(0.0),
+    })
 }
 
 /// Every species record.
-pub fn read_species(data: &[u8]) -> Result<Vec<Species>, PvlError> {
+pub fn read_species(data: &[u8]) -> Result<Vec<Species>, DecodeError> {
     let mut bytes = Bytes::new(data);
     let count = bytes.u32()? as usize;
-    (0..count).map(|_| Ok(species(bytes.take(RECORD)?))).collect()
+    (0..count).map(|_| Ok(species(bytes.take(RECORD)?)?)).collect()
 }
 
 #[derive(Default, TypePath)]
 pub struct MonsterCatalogLoader;
 
-#[derive(Debug, Error)]
-pub enum SpeciesLoadError {
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-    #[error(transparent)]
-    Data(#[from] PvlError),
-}
-
 impl AssetLoader for MonsterCatalogLoader {
     type Asset = MonsterCatalog;
     type Settings = ();
-    type Error = SpeciesLoadError;
+    type Error = super::LoadError;
 
     async fn load(
         &self,
         reader: &mut dyn Reader,
         _: &(),
         _: &mut LoadContext<'_>,
-    ) -> Result<MonsterCatalog, SpeciesLoadError> {
+    ) -> Result<MonsterCatalog, super::LoadError> {
         let mut data = Vec::new();
         reader.read_to_end(&mut data).await?;
         Ok(MonsterCatalog(read_species(&data)?))
@@ -177,6 +148,7 @@ impl AssetLoader for MonsterCatalogLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::content::items::Dice;
 
     #[test]
     #[ignore = "requires a retail installation"]

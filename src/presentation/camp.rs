@@ -7,6 +7,7 @@ use bevy_enhanced_input::prelude::*;
 
 use crate::content::ui::SpriteSheet;
 use crate::game::camp::{Camp, FADE_SECONDS, LeaveCamp};
+use crate::presentation::screen_art::visible_if;
 
 #[derive(Resource)]
 pub struct CampArt(Handle<SpriteSheet>);
@@ -93,14 +94,16 @@ pub fn show_camp(
     }
     let (darkness, picture_shown) = look(&camp);
     for mut fade in &mut fades {
-        fade.0 = Color::BLACK.with_alpha(darkness);
+        fade.set_if_neq(BackgroundColor(Color::BLACK.with_alpha(darkness)));
     }
     let picture = sheets.get(&art.0).and_then(|sheet| sheet.images.first());
     for (mut image, mut visibility) in &mut pictures {
-        if let Some(picture) = picture {
+        if let Some(picture) = picture
+            && image.image != *picture
+        {
             image.image = picture.clone();
         }
-        *visibility = if picture_shown { Visibility::Inherited } else { Visibility::Hidden };
+        visibility.set_if_neq(visible_if(picture_shown));
     }
 }
 

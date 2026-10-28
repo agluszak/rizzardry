@@ -50,10 +50,14 @@ pub struct BellButton {
     pub dial: Entity,
 }
 
-/// The puzzle changes only its button and dial; playback interprets the outcome.
+/// The dial position whose bell completes the puzzle.
+const LAST_BELL: usize = 2;
+
+/// The puzzle changes only its button and dial; playback interprets the
+/// outcome (retail `Monastery2BellButton`).
 pub(crate) fn ring_bell(mut button: EntityMut, mut dial: EntityMut) -> TriggerEffect {
     let position = dial.get::<DialState>().unwrap().position;
-    if position == 2 {
+    if position == LAST_BELL {
         dial.get_mut::<TriggerState>().unwrap().on = false;
         button.get_mut::<TriggerState>().unwrap().on = false;
     }

@@ -17,18 +17,16 @@ use super::identify::{GroupMember, MonsterGroup};
 use super::items::WorldItem;
 use super::navigation::Walker;
 use super::navigation::bake::SIZE_CLASSES;
-use super::navigation::links::DoorLink;
 use super::population::{Monster, MonsterBodies};
-use super::props::{Prop, PropMotion, pose};
+use super::props::{Prop, PropMotion};
 use super::scripts::LevelScript;
 use super::triggers::{DeviceRecords, LevelState, TriggerMemory, spawn_devices};
 use super::{navigation, population};
-use crate::content::items::{ItemCatalog, LootTables};
+use crate::content::items::LootTables;
 use crate::content::level::LevelDefinition;
 use crate::content::levels::LevelInfo;
 use crate::content::monster::MonsterBody;
 use crate::content::navmesh::navmesh_path;
-use crate::content::species::MonsterCatalog;
 use crate::content::ui::TextTable;
 use crate::game::automap::MapNotes;
 use crate::game::data::GameData;
@@ -36,6 +34,12 @@ use crate::game::inventory::ItemIds;
 use crate::game::party::body::{PartyPlacement, PartyStart};
 use crate::game::party::roster::Party;
 use crate::game::rng::GameRng;
+
+/// Whether the party is on its way into a level, for operations that hold
+/// the whole world.
+pub fn entering(world: &mut World) -> bool {
+    world.query_filtered::<(), With<Destination>>().iter(world).next().is_some()
+}
 
 /// The root of the level being played, including during travel preparation. A level
 /// becomes one only by [`activate_level`]; until then its root is a
@@ -45,7 +49,7 @@ use crate::game::rng::GameRng;
 pub struct Level {
     /// The retail path of its `.pvl`, which identifies it.
     pub path: String,
-    pub geometry: Handle<LevelDefinition>,
+    pub definition: Handle<LevelDefinition>,
     /// One navmesh per walker size class (`navigation::bake::SIZE_CLASSES`).
     pub navmeshes: Vec<Handle<NavMesh3d>>,
     pub script: LevelScript,
@@ -56,17 +60,17 @@ pub struct Level {
 impl Level {
     /// The level at a retail `.pvl` path, with its gameplay prerequisites.
     pub fn load(path: &str, assets: &AssetServer) -> Self {
+        let info = LevelInfo::for_path(path);
         Level {
             path: path.to_owned(),
-            geometry: assets.load(format!("retail://{path}")),
+            definition: assets.load(crate::content::paths::retail(path)),
             navmeshes: (0..SIZE_CLASSES.len())
                 .map(|class| assets.load(navmesh_path(path, class)))
                 .collect(),
-            script: LevelInfo::for_path(path)
+            script: info
                 .map_or_else(LevelScript::default, |info| LevelScript::for_location(info.location)),
-            messages: LevelInfo::for_path(path).map(|info| {
-                assets.load(format!("retail://data/messages/{}.msg", info.folder.to_lowercase()))
-            }),
+            messages: info
+                .map(|info| assets.load(crate::content::paths::level_messages(info.folder))),
         }
     }
 }
@@ -75,10 +79,10 @@ impl Level {
 /// `Default`: a `Level` exists only once [`activate_level`] says so.
 #[cfg(test)]
 impl Level {
-    pub fn test(geometry: Handle<LevelDefinition>) -> Self {
+    pub fn test(definition: Handle<LevelDefinition>) -> Self {
         Level {
             path: "test".into(),
-            geometry,
+            definition,
             navmeshes: vec![],
             script: default(),
             messages: None,
@@ -239,6 +243,56 @@ pub struct KeptMonster {
     pub yaw: f32,
 }
 
+impl KeptMonster {
+    /// A placed monster met for the first time: health and stamina rolled
+    /// from its species, then its size. Retail draws Random(1000) for the
+    /// size; its left-handed mirror draw, presentation only, is not taken
+    /// from gameplay's stream.
+    pub fn rolled(
+        placed: &crate::content::level::MonsterPlacement,
+        kind: &crate::content::species::Species,
+        body: &crate::content::monster::MonsterBody,
+        rng: &mut crate::game::rng::GameRng,
+    ) -> Self {
+        let max_hp = rng.roll(kind.hit_points).max(1);
+        let max_stamina = rng.roll(kind.stamina);
+        let body = super::population::ScaledBody::new(body, rng.below(1000));
+        KeptMonster {
+            provoked: false,
+            monster: Monster {
+                location: placed.location,
+                species: placed.species,
+                hp: max_hp,
+                max_hp,
+                stamina: max_stamina,
+                max_stamina,
+                conditions: Vec::new(),
+                body,
+            },
+            group: Some(placed.group),
+            feet: placed.position,
+            yaw: placed.yaw,
+        }
+    }
+
+    /// A monster as it stands now, to keep while its level is away.
+    pub fn capture(
+        monster: &Monster,
+        pose: &super::ActorPoseItem,
+        walker: Option<&super::navigation::Walker>,
+        group: Option<i32>,
+        provoked: bool,
+    ) -> Self {
+        KeptMonster {
+            provoked,
+            group,
+            monster: monster.clone(),
+            feet: super::navigation::feet(pose.translation(), walker),
+            yaw: pose.rotation().to_euler(EulerRot::YXZ).0,
+        }
+    }
+}
+
 /// What travel reads to remember the level it leaves.
 #[derive(SystemParam)]
 pub struct LevelContents<'w, 's> {
@@ -276,12 +330,9 @@ impl LevelContents<'_, '_> {
                 .monsters
                 .iter_many(children)
                 .matched()
-                .map(|(monster, at, walker, group, provoked)| KeptMonster {
-                    provoked,
-                    group: group.and_then(|m| self.groups.get(m.0).ok()).map(|g| g.authored),
-                    monster: monster.clone(),
-                    feet: super::navigation::feet(at.translation(), walker),
-                    yaw: at.rotation().to_euler(EulerRot::YXZ).0,
+                .map(|(monster, at, walker, group, provoked)| {
+                    let group = group.and_then(|m| self.groups.get(m.0).ok()).map(|g| g.authored);
+                    KeptMonster::capture(monster, &at, walker, group, provoked)
                 })
                 .collect(),
             items: self
@@ -351,7 +402,7 @@ pub struct LevelEntryFailed {
 #[derive(SystemParam)]
 pub struct PlayedLevel<'w, 's> {
     levels: Query<'w, 's, (Entity, &'static Level)>,
-    geometry: Res<'w, Assets<LevelDefinition>>,
+    definitions: Res<'w, Assets<LevelDefinition>>,
 }
 
 impl PlayedLevel<'_, '_> {
@@ -359,12 +410,17 @@ impl PlayedLevel<'_, '_> {
         self.levels.single().ok().map(|(entity, _)| entity)
     }
 
-    pub fn geometry(&self) -> Option<&LevelDefinition> {
-        self.geometry.get(&self.levels.single().ok()?.1.geometry)
+    pub fn definition(&self) -> Option<&LevelDefinition> {
+        self.definitions.get(&self.levels.single().ok()?.1.definition)
+    }
+
+    /// A level's definition, by the level.
+    pub fn of(&self, level: Entity) -> Option<&LevelDefinition> {
+        self.definitions.get(&self.levels.get(level).ok()?.1.definition)
     }
 
     pub fn view_distance(&self) -> Option<f32> {
-        self.geometry().map(LevelDefinition::view_distance)
+        self.definition().map(LevelDefinition::view_distance)
     }
 }
 
@@ -379,25 +435,20 @@ pub fn level_active(
 
 /// Physics stands still while an entry is prepared, like the rest of
 /// gameplay (whose systems [`level_active`] gates).
-pub fn suspend_physics_while_entering(
+pub fn suspend_physics_for_entry(_: On<Add<Destination>>, mut time: ResMut<Time<Physics>>) {
+    time.pause();
+}
+
+/// Physics resumes once no entry is being prepared.
+pub fn resume_physics_after_entry(
+    _: On<Remove<Destination>>,
     entering: Query<(), With<Destination>>,
     mut time: ResMut<Time<Physics>>,
 ) {
-    match (entering.is_empty(), time.is_paused()) {
-        (false, false) => time.pause(),
-        (true, true) => time.unpause(),
-        _ => {}
+    // The entry going away still counts while it is removed.
+    if entering.iter().count() <= 1 {
+        time.unpause();
     }
-}
-
-/// One rigid part of a placed prop, with its animation poses.
-#[derive(Component, Debug)]
-pub struct PropPart {
-    /// Its place among its prop's parts (`PropModel::parts`).
-    pub part: usize,
-    /// Poses along the part's path, starting with the rest pose; empty if
-    /// the part does not move.
-    pub keys: Vec<Transform>,
 }
 
 /// A level has become active, with the party in it.
@@ -406,7 +457,6 @@ pub struct LevelReady {
     pub level: Entity,
 }
 
-/// The level's collider, or why it has none.
 /// A level's collision, built and checked before its entry commits: the
 /// level's own, and each prop part's by prop and part. Sprites have none.
 struct Collision {
@@ -419,14 +469,8 @@ struct Collision {
 /// built fails the entry before anything changes. A part the party walks
 /// through (a sensor) only shows the way and may be left without.
 fn prepare_collision(geometry: &LevelDefinition) -> Result<Collision, String> {
-    let level = Collider::try_trimesh_with_config(
-        geometry.collision.vertices.clone(),
-        geometry.collision.triangles.clone(),
-        TrimeshFlags::MERGE_DUPLICATE_VERTICES
-            | TrimeshFlags::DELETE_DEGENERATE_TRIANGLES
-            | TrimeshFlags::FIX_INTERNAL_EDGES,
-    )
-    .map_err(|error| format!("level collider: {error:?}"))?;
+    let level = super::props::trimesh(&geometry.collision, TrimeshFlags::FIX_INTERNAL_EDGES)
+        .map_err(|error| format!("level collider: {error:?}"))?;
     let parts = geometry
         .props
         .iter()
@@ -438,12 +482,7 @@ fn prepare_collision(geometry: &LevelDefinition) -> Result<Collision, String> {
                     if prop.face_camera {
                         return Ok(None);
                     }
-                    match Collider::try_trimesh_with_config(
-                        part.collision.vertices.clone(),
-                        part.collision.triangles.clone(),
-                        TrimeshFlags::MERGE_DUPLICATE_VERTICES
-                            | TrimeshFlags::DELETE_DEGENERATE_TRIANGLES,
-                    ) {
+                    match super::props::trimesh(&part.collision, TrimeshFlags::empty()) {
                         Ok(collider) => Ok(Some(collider)),
                         Err(error) if prop.collidable => {
                             Err(format!("prop {} collider: {error:?}", prop.name))
@@ -492,60 +531,15 @@ fn build_world(
     for ((index, prop), colliders) in geometry.props.iter().enumerate().zip(collision.parts) {
         let frame =
             remembered.as_ref().and_then(|r| r.prop_frames.get(&index)).copied().unwrap_or(0.0);
-        let last_frame =
-            prop.parts.iter().map(|p| p.keys.len().saturating_sub(1)).max().unwrap_or(0);
         let door = prop.trigger.is_some_and(|index| geometry.triggers[index].door.is_some());
-        let centre = prop.parts.iter().map(|part| part.transform.translation).sum::<Vec3>()
-            / prop.parts.len().max(1) as f32;
-        // A door's doorway, from its closed shape (each part at its
-        // first pose), for walkers' links while it is open.
-        let doorway = door
-            .then(|| {
-                DoorLink::around(prop.parts.iter().flat_map(|part| {
-                    let closed = part.keys.first().copied().unwrap_or(part.transform);
-                    part.collision.vertices.iter().map(move |&v| closed.transform_point(v))
-                }))
-            })
-            .flatten();
-        let mut prop_entity = commands.entity(props[index]);
-        prop_entity.insert((
-            Name::new(prop.name.clone()),
-            Prop {
-                definition: index,
-                centre,
-                door,
-                frames_per_second: prop.frames_per_second,
-                last_frame,
-                wraps: prop.wraps,
-                slots: prop.slots.clone(),
-            },
-            PropMotion { frame, target: frame },
-            Transform::default(),
-        ));
-        if let Some(doorway) = doorway {
-            prop_entity.insert(doorway);
-        }
-        prop_entity.with_children(|prop_entity| {
-            for ((part_index, part), collider) in prop.parts.iter().enumerate().zip(colliders) {
-                let at =
-                    if part.keys.is_empty() { part.transform } else { pose(&part.keys, frame) };
-                let mut part_entity =
-                    prop_entity.spawn((PropPart { part: part_index, keys: part.keys.clone() }, at));
-                if let Some(collider) = collider {
-                    // Parts with a path can move (doors, lifts).
-                    let body =
-                        if part.keys.is_empty() { RigidBody::Static } else { RigidBody::Kinematic };
-                    part_entity.insert((body, collider));
-                    // Props the party walks through can still be used;
-                    // they are not scenery that blocks sight or items.
-                    if prop.collidable {
-                        part_entity.insert(super::obstacles::scenery());
-                    } else {
-                        part_entity.insert(Sensor);
-                    }
-                }
-            }
-        });
+        super::props::build_prop(
+            &mut commands.entity(props[index]),
+            index,
+            prop,
+            door,
+            frame,
+            colliders,
+        );
     }
     info!(
         "level built: {} props, {} collision triangles",
@@ -558,10 +552,7 @@ fn build_world(
 #[derive(SystemParam)]
 pub struct SharedData<'w> {
     data: Option<Res<'w, GameData>>,
-    items: Res<'w, Assets<ItemCatalog>>,
-    loot: Res<'w, Assets<LootTables>>,
-    species: Res<'w, Assets<MonsterCatalog>>,
-    spells: Res<'w, Assets<crate::content::spells::SpellCatalog>>,
+    content: crate::game::data::Content<'w>,
     bodies: Res<'w, Assets<MonsterBody>>,
     monster_bodies: ResMut<'w, MonsterBodies>,
     motion_configs: ResMut<'w, Assets<navigation::WalkerMotionConfig>>,
@@ -598,61 +589,21 @@ pub fn activate_level(
             failures.write(LevelEntryFailed { path: level.path.clone() });
             commands.entity(root).despawn();
         };
-        let failed = |handle: UntypedAssetId| {
-            matches!(assets.get_load_state(handle), Some(LoadState::Failed(_)))
-        };
-        let Some(data) = shared.data.as_ref() else { continue };
-        if failed(level.geometry.id().untyped())
-            || level.navmeshes.iter().any(|h| failed(h.id().untyped()))
-            || failed(data.items.id().untyped())
-            || failed(data.loot.id().untyped())
-            || failed(data.species.id().untyped())
-            || failed(data.spells.id().untyped())
-        {
-            fail("an asset it needs failed to load");
-            continue;
-        }
-        let (Some(geometry), Some(items), Some(loot), Some(species)) = (
-            geometry.get(&level.geometry),
-            shared.items.get(&data.items),
-            shared.loot.get(&data.loot),
-            shared.species.get(&data.species),
-        ) else {
-            continue;
-        };
-        if !shared.spells.contains(&data.spells) {
-            continue;
-        }
-        if let Err(error) = population::check(geometry, species, items) {
-            fail(&error);
-            continue;
-        }
-        match npcs.prepare(species, &geometry.monsters, items, &assets) {
+        match prepare(level, presentation, &geometry, &mut shared, &mut npcs, &assets) {
             Ok(true) => {}
             Ok(false) => continue,
-            Err(reason) => {
-                fail(&reason);
+            Err(why) => {
+                fail(&why);
                 continue;
             }
         }
-        let bodies = shared.monster_bodies.for_level(geometry, species, &assets);
-        if bodies.iter().any(|body| failed(body.id().untyped())) {
-            fail("a monster's body definition failed to load");
+        let geometry = geometry.get(&level.definition).expect("prepared");
+        let content = &shared.content;
+        let (Some(items), Some(loot), Some(species), Some(spells)) =
+            (content.items(), content.loot(), content.species(), content.spells())
+        else {
             continue;
-        }
-        if !bodies.iter().all(|body| shared.bodies.contains(body))
-            || !navigation::navmeshes_ready(level, &assets)
-        {
-            continue;
-        }
-        match presentation {
-            Some(PresentationReadiness::Waiting) => continue,
-            Some(PresentationReadiness::Failed(why)) => {
-                fail(why);
-                continue;
-            }
-            None => {}
-        }
+        };
         let traveller = parties.single().ok();
         if matches!(destination.entry, Entry::Travel) && traveller.is_none() {
             fail("there is no party to travel");
@@ -714,7 +665,6 @@ pub fn activate_level(
                 if let Some(session) = session.as_mut() {
                     session.set(crate::game::session::Session::Playing);
                 }
-                let spells = shared.spells.get(&data.spells).unwrap();
                 found_party(&mut commands, characters, (items, spells), (&mut ids, &mut rng))
             }
         };
@@ -727,11 +677,65 @@ pub fn activate_level(
     }
 }
 
+/// Whether a destination can be entered: once everything it needs has
+/// loaded and checks out, not while something is still loading, or why it
+/// never will.
+fn prepare(
+    level: &Level,
+    presentation: Option<&PresentationReadiness>,
+    geometry: &Assets<LevelDefinition>,
+    shared: &mut SharedData,
+    npcs: &mut crate::game::npcs::NpcPopulation,
+    assets: &AssetServer,
+) -> Result<bool, String> {
+    let failed = |handle: UntypedAssetId| {
+        matches!(assets.get_load_state(handle), Some(LoadState::Failed(_)))
+    };
+    let Some(data) = shared.data.as_ref() else { return Ok(false) };
+    if failed(level.definition.id().untyped())
+        || level.navmeshes.iter().any(|h| failed(h.id().untyped()))
+        || failed(data.items.id().untyped())
+        || failed(data.loot.id().untyped())
+        || failed(data.species.id().untyped())
+        || failed(data.spells.id().untyped())
+    {
+        return Err("an asset it needs failed to load".into());
+    }
+    let content = &shared.content;
+    let (Some(geometry), Some(items), Some(species), Some(_), Some(_)) = (
+        geometry.get(&level.definition),
+        content.items(),
+        content.species(),
+        content.loot(),
+        content.spells(),
+    ) else {
+        return Ok(false);
+    };
+    population::check(geometry, species, items)?;
+    if !npcs.prepare(species, &geometry.monsters, items, assets)? {
+        return Ok(false);
+    }
+    let bodies = shared.monster_bodies.for_level(geometry, species, assets);
+    if bodies.iter().any(|body| failed(body.id().untyped())) {
+        return Err("a monster's body definition failed to load".into());
+    }
+    if !bodies.iter().all(|body| shared.bodies.contains(body))
+        || !navigation::navmeshes_ready(level, assets)
+    {
+        return Ok(false);
+    }
+    match presentation {
+        Some(PresentationReadiness::Waiting) => Ok(false),
+        Some(PresentationReadiness::Failed(why)) => Err(why.clone()),
+        None => Ok(true),
+    }
+}
+
 /// A new campaign's party, its members joining complete and in order.
 fn found_party(
     commands: &mut Commands,
     characters: Vec<(crate::game::characters::Character, crate::game::magic::LearnedSpells)>,
-    catalogs: (&ItemCatalog, &crate::content::spells::SpellCatalog),
+    catalogs: (&crate::content::items::ItemCatalog, &crate::content::spells::SpellCatalog),
     (ids, rng): (&mut ItemIds, &mut GameRng),
 ) -> Entity {
     let party = commands.spawn((Name::new("Party"), Party)).id();

@@ -15,6 +15,15 @@ impl SpellId {
     pub const ENERGY_BLAST: SpellId = SpellId(5);
     pub const HEAL_WOUNDS: SpellId = SpellId(6);
     pub const SLEEP: SpellId = SpellId(12);
+    pub const STAMINA: SpellId = SpellId(13);
+    pub const DIVINE_TRAP: SpellId = SpellId(18);
+    pub const KNOCK_KNOCK: SpellId = SpellId(39);
+    pub const INSTANT_DEATH: SpellId = SpellId(70);
+    pub const QUICKSAND: SpellId = SpellId(87);
+    pub const ASPHYXIATION: SpellId = SpellId(90);
+    pub const DEATH_CLOUD: SpellId = SpellId(93);
+    pub const DEATH_WISH: SpellId = SpellId(94);
+    pub const ANTI_MAGIC: SpellId = SpellId(127);
     /// Spells a character can learn are numbered below this (retail
     /// `spell_learned` covers 0..0x72).
     pub const LEARNABLE: u8 = 0x72;

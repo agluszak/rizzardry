@@ -96,7 +96,7 @@ fn test_level(app: &mut App, collision: CollisionMesh) -> Level {
     });
     Level {
         path: "levels/test/test.pvl".into(),
-        geometry,
+        definition: geometry,
         navmeshes: vec![],
         script: default(),
         messages: None,
@@ -313,12 +313,16 @@ fn a_solid_prop_without_collision_fails_entry_and_keeps_the_source() {
     };
     let enter = |app: &mut App, collidable: bool| {
         let level = test_level(app, floor());
-        let mut definition =
-            app.world().resource::<Assets<LevelDefinition>>().get(&level.geometry).unwrap().clone();
+        let mut definition = app
+            .world()
+            .resource::<Assets<LevelDefinition>>()
+            .get(&level.definition)
+            .unwrap()
+            .clone();
         definition.props = vec![prop(collidable)];
         app.world_mut()
             .resource_mut::<Assets<LevelDefinition>>()
-            .insert(&level.geometry, definition)
+            .insert(&level.definition, definition)
             .unwrap();
         app.world_mut().spawn(Destination::new(level, default(), Entry::Travel)).id()
     };
@@ -591,9 +595,13 @@ fn direct_damage_settles_death_once_and_rejection_leaves_the_target_unchanged() 
     let target = world.query_filtered::<Entity, With<Monster>>().single(world).unwrap();
     let hit = |world: &mut World| {
         world
-            .run_system_once(move |mut damage: MonsterDamage, mut rng: ResMut<GameRng>| {
-                damage.apply(target, 10, 1, &mut rng)
-            })
+            .run_system_once(
+                move |mut damage: MonsterDamage,
+                      mut purse: Single<&mut rizzardry::game::inventory::PartyInventory>,
+                      mut rng: ResMut<GameRng>| {
+                    damage.apply(target, 10, 1, &mut purse, &mut rng)
+                },
+            )
             .unwrap()
     };
     use avian3d::prelude::{LinearVelocity, Position};
@@ -659,7 +667,7 @@ fn entry_suspends_gameplay_and_departure_captures_the_source_at_commit() {
     let loading = app.world_mut().resource_mut::<Assets<LevelDefinition>>().reserve_handle();
     let mut destination = test_level(&mut app, floor());
     destination.path = "destination".into();
-    destination.geometry = loading.clone();
+    destination.definition = loading.clone();
     let target =
         app.world_mut().spawn(Destination::new(destination, default(), Entry::Travel)).id();
     app.update();
@@ -699,7 +707,7 @@ fn preparation_keeps_the_source_live_and_commit_captures_its_latest_state() {
     use bevy::ecs::system::RunSystemOnce;
     use rizzardry::game::party::walk_in::{PathFlight, move_party};
     use rizzardry::game::world::triggers::PartyMove;
-    let handle = app.world().get::<Level>(source).unwrap().geometry.clone();
+    let handle = app.world().get::<Level>(source).unwrap().definition.clone();
     app.world_mut()
         .resource_mut::<Assets<LevelDefinition>>()
         .get_mut(&handle)
@@ -715,9 +723,9 @@ fn preparation_keeps_the_source_live_and_commit_captures_its_latest_state() {
     assert!(app.world().get::<PathFlight>(party).is_some());
     let mut next = app.world().get::<Level>(source).unwrap().clone();
     let geometry =
-        app.world().resource::<Assets<LevelDefinition>>().get(&next.geometry).unwrap().clone();
+        app.world().resource::<Assets<LevelDefinition>>().get(&next.definition).unwrap().clone();
     let loading = app.world_mut().resource_mut::<Assets<LevelDefinition>>().reserve_handle();
-    next.geometry = loading.clone();
+    next.definition = loading.clone();
     let mut destination = Destination::new(next.clone(), default(), Entry::Travel);
     destination.start.eye = Some(Vec3::new(9.0, 4.0, 2.0));
     let destination = app.world_mut().spawn(destination).id();
@@ -785,13 +793,22 @@ fn retail_level_definitions_load_without_render_asset_resources() {
     oct.extend([-1i32, 0, -1, -1, -1, 1].into_iter().flat_map(i32::to_le_bytes));
     oct.extend([0; 100]); // empty collision tables and bounds
     oct.extend((-1i32).to_le_bytes());
-    let directory =
-        std::env::temp_dir().join(format!("rizzardry-level-loader-{}", std::process::id()));
-    std::fs::create_dir_all(&directory).unwrap();
+    /// Removed however the test ends.
+    struct TempDir(std::path::PathBuf);
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let directory = TempDir(
+        std::env::temp_dir().join(format!("rizzardry-level-loader-{}", std::process::id())),
+    );
+    let directory = &directory.0;
+    std::fs::create_dir_all(directory).unwrap();
     std::fs::write(directory.join("empty.pvl"), pvl).unwrap();
     std::fs::write(directory.join("empty.oct"), oct).unwrap();
     let files =
-        std::sync::Arc::new(rizzardry::retail::files::RetailFiles::open(&directory).unwrap());
+        std::sync::Arc::new(rizzardry::retail::files::RetailFiles::open(directory).unwrap());
     let mut app = App::new();
     app.register_asset_source("retail", rizzardry::retail::source::retail_source(files))
         .add_plugins((MinimalPlugins, AssetPlugin::default()))
@@ -813,7 +830,6 @@ fn retail_level_definitions_load_without_render_asset_resources() {
     assert!(!app.world().contains_resource::<Assets<Mesh>>());
     assert!(!app.world().contains_resource::<Assets<StandardMaterial>>());
     assert!(app.world().resource::<Assets<LevelGeometry>>().is_empty());
-    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
@@ -891,7 +907,7 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     away.path = "levels/away/away.pvl".into();
     app.world_mut()
         .resource_mut::<Assets<LevelDefinition>>()
-        .get_mut(&away.geometry)
+        .get_mut(&away.definition)
         .unwrap()
         .monsters
         .clear();

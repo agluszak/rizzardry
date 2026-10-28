@@ -2,41 +2,21 @@
 //! count, then 269-byte records after Whizzardry `ItemDatabaseRecord`) and
 //! loot tables (`itemtables.dbs`), decoded straight into the content types.
 
+use super::LoadError;
+use super::record::{dice, reach, use_type as use_type_of};
+use crate::bytes::{Bytes, DecodeError, lenient_string, utf16_string};
 use bevy::asset::{AssetLoader, LoadContext, io::Reader};
 use bevy::reflect::TypePath;
-use thiserror::Error;
-
-use super::pvl::{PvlError, invalid};
-use crate::bytes::{Bytes, Truncated};
 use enumset::EnumSet;
 
 use crate::content::characters::Skill;
 use crate::content::items::{
-    Ammunition, Dice, EquipClass, ItemCatalog, ItemDefinition, ItemId, LootTable, LootTables,
+    Ammunition, EquipClass, ItemCatalog, ItemDefinition, ItemId, LootTable, LootTables,
     QuantityKind,
 };
-use crate::content::species::Reach;
 
 const RECORD: usize = 0x10d;
 const TABLE_RECORD: usize = 256 + 4 + 40 * 5 + 1 + 4 + 4 + 4 + 0x18;
-
-#[derive(Debug, Error)]
-pub enum ItemLoadError {
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-    #[error(transparent)]
-    Data(#[from] PvlError),
-    #[error(transparent)]
-    Truncated(#[from] Truncated),
-    #[error("item {0}: unknown equipment class {1}")]
-    EquipClass(usize, u8),
-    #[error("item {0}: unknown use type {1}")]
-    UseType(usize, u8),
-    #[error("item {0}: unknown quantity kind {1}")]
-    QuantityKind(usize, u8),
-    #[error("item {0}: kind {1} has no image")]
-    Image(usize, u16),
-}
 
 /// Images for items without their own, by kind (unidentified name), from
 /// Whizzardry's `g_item_video_object_fallback_names` (hard-coded in retail).
@@ -363,26 +343,23 @@ mod flag {
     pub const NO_DISCARD: u8 = 0x02;
     pub const TWO_HANDED: u8 = 0x04;
     pub const OFF_HAND_ALLOWED: u8 = 0x08;
+    pub const MERCHANT_CANNOT_SELL: u8 = 0x10;
     pub const CONTAINER: u8 = 0x20;
-}
-
-fn dice(bytes: &mut Bytes) -> Result<Dice, PvlError> {
-    let base = bytes.u16()? as i16;
-    Ok(Dice { base, count: bytes.u8()?, sides: bytes.u8()? })
+    pub const MUST_EQUIP_TO_USE: u8 = 0x40;
 }
 
 /// Two (id, minimum) pairs in the typed attribute or skill domain. Only
 /// 0xff marks none; invalid constraints must not become unrestricted items.
 fn minimums<K: enum_map::Enum + TryFrom<u8>>(
     bytes: &mut Bytes,
-) -> Result<enum_map::EnumMap<K, u8>, PvlError> {
+) -> Result<enum_map::EnumMap<K, u8>, DecodeError> {
     let mut minimums = enum_map::EnumMap::default();
     for _ in 0..2 {
         let (id, minimum) = (bytes.u8()?, bytes.u8()?);
         if id == u8::MAX {
             continue;
         }
-        let of = K::try_from(id).map_err(|_| invalid("unknown item requirement", bytes))?;
+        let of = K::try_from(id).map_err(|_| bytes.invalid("unknown item requirement"))?;
         minimums[of] = minimum;
     }
     Ok(minimums)
@@ -402,11 +379,6 @@ fn launcher_and_ammunition(kind: u16) -> (Option<Ammunition>, Option<Ammunition>
         0x17 => (None, Some(Ammunition::SlingStone)),
         _ => (None, None),
     }
-}
-
-fn ascii(raw: &[u8]) -> String {
-    let end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
-    String::from_utf8_lossy(&raw[..end]).into_owned()
 }
 
 /// The item's picture: its own (`video_object_name`), else its kind's
@@ -433,14 +405,7 @@ fn model_path(own: &str, kind: u16) -> String {
     format!("data/items3d/{name}.itm")
 }
 
-fn read_item(
-    index: usize,
-    record: &[u8],
-    strings: &[String],
-) -> Result<ItemDefinition, ItemLoadError> {
-    let units: Vec<u16> =
-        record[..60].as_chunks::<2>().0.iter().map(|&pair| u16::from_le_bytes(pair)).collect();
-    let name_end = units.iter().position(|&u| u == 0).unwrap_or(units.len());
+fn read_item(index: usize, record: &[u8], strings: &[String]) -> Result<ItemDefinition, LoadError> {
     let mut bytes = Bytes::new(&record[0x3c..]);
     bytes.u16()?; // Wizardry 7 item number
     let equip_class = bytes.u8()?;
@@ -448,11 +413,11 @@ fn read_item(
     let flags = bytes.u8()?;
     let has = |bit| flags & bit != 0;
     let use_type = bytes.u8()?;
-    let use_type = crate::content::items::UseType::from_retail(use_type)
-        .ok_or(ItemLoadError::UseType(index, use_type))?;
+    let use_type = use_type_of(use_type)
+        .ok_or_else(|| LoadError::Invalid(format!("item {index}: unknown use type {use_type}")))?;
     bytes.take(3)?; // not established
     let weapon_skill = u8::try_from(bytes.i8()?).ok().and_then(|s| Skill::try_from(s).ok());
-    let reach = Reach::from_retail(bytes.u8()?);
+    let reach = reach(bytes.u8()?);
     let damage_bonus = bytes.i8()?;
     let hit_bonus = bytes.i8()?;
     let damage = dice(&mut bytes)?;
@@ -487,21 +452,23 @@ fn read_item(
     let value = bytes.u32()?;
     let weight = bytes.u16()?;
     let cursed = bytes.u8()? != 0;
-    let own_image = ascii(&record[0xcd..0xcd + 0x18]);
+    let own_image = lenient_string(&record[0xcd..0xcd + 0x18]);
     let string = |index: usize| strings.get(index).map_or("", |s| s.as_str());
     let (shoots, ammunition) = launcher_and_ammunition(kind);
     let kind_name = KIND_NAMES.get(usize::from(kind)).map_or("", |&k| string(k));
     Ok(ItemDefinition {
         unidentified_name: string(UNIDENTIFIED).replace("%s", kind_name),
         id: ItemId(index as u16),
-        name: String::from_utf16_lossy(&units[..name_end]),
-        image: image_path(&own_image, kind).ok_or(ItemLoadError::Image(index, kind))?,
-        model: model_path(&ascii(&record[0x8d..0x8d + 0x20]), kind),
-        class: EquipClass::try_from(equip_class)
-            .map_err(|_| ItemLoadError::EquipClass(index, equip_class))?,
+        name: utf16_string(&record[..60]),
+        image: image_path(&own_image, kind)
+            .ok_or_else(|| LoadError::Invalid(format!("item {index}: kind {kind} has no image")))?,
+        model: model_path(&lenient_string(&record[0x8d..0x8d + 0x20]), kind),
+        class: EquipClass::try_from(equip_class).map_err(|_| {
+            LoadError::Invalid(format!("item {index}: unknown equipment class {equip_class}"))
+        })?,
         auto_identify: has(flag::AUTO_IDENTIFY),
         crucial: has(flag::NO_DISCARD),
-        merchant_cannot_sell: has(0x10),
+        merchant_cannot_sell: has(flag::MERCHANT_CANNOT_SELL),
         identify_difficulty,
         two_handed: has(flag::TWO_HANDED),
         off_hand: has(flag::OFF_HAND_ALLOWED),
@@ -517,7 +484,7 @@ fn read_item(
         armor_class_bonus,
         spell,
         use_type,
-        must_equip_to_use: has(0x40),
+        must_equip_to_use: has(flag::MUST_EQUIP_TO_USE),
         regeneration,
         resistance_bonus,
         quantity: match quantity_kind {
@@ -527,7 +494,11 @@ fn read_item(
             3 => QuantityKind::Uses,
             4 => QuantityKind::Shots,
             5 => QuantityKind::Unlabelled,
-            other => return Err(ItemLoadError::QuantityKind(index, other)),
+            other => {
+                return Err(LoadError::Invalid(format!(
+                    "item {index}: unknown quantity kind {other}"
+                )));
+            }
         },
         initial_quantity,
         stack_limit,
@@ -545,11 +516,11 @@ fn read_item(
 /// Every item definition, indexed by item number.
 /// The item definitions, with their unidentified names from the string
 /// table (`data/strings/stringdata.dat`).
-pub fn read_item_catalog(data: &[u8], strings: &[String]) -> Result<ItemCatalog, ItemLoadError> {
+pub fn read_item_catalog(data: &[u8], strings: &[String]) -> Result<ItemCatalog, LoadError> {
     let mut bytes = Bytes::new(data);
     let count = bytes.u32()? as usize;
     if data.len() - 4 < count * RECORD {
-        return Err(invalid("item database shorter than its count", &bytes).into());
+        return Err(bytes.invalid("item database shorter than its count").into());
     }
     let records = data[4..4 + count * RECORD].as_chunks::<RECORD>().0;
     Ok(ItemCatalog(
@@ -563,7 +534,7 @@ pub fn read_item_catalog(data: &[u8], strings: &[String]) -> Result<ItemCatalog,
 
 /// The loot tables (Whizzardry `W8ItemTableRecord`), after their category
 /// names.
-pub fn read_loot_tables(data: &[u8]) -> Result<LootTables, PvlError> {
+pub fn read_loot_tables(data: &[u8]) -> Result<LootTables, DecodeError> {
     let mut bytes = Bytes::new(data);
     let categories = bytes.u32()? as usize;
     bytes.take(categories * 256)?;
@@ -585,9 +556,15 @@ pub fn read_loot_tables(data: &[u8]) -> Result<LootTables, PvlError> {
             let item_count = dice(&mut fields)?;
             fields.take(4)?;
             let gold = dice(&mut fields)?;
-            Ok(LootTable { name: ascii(&record[..256]), entries, level_scaled, item_count, gold })
+            Ok(LootTable {
+                name: lenient_string(&record[..256]),
+                entries,
+                level_scaled,
+                item_count,
+                gold,
+            })
         })
-        .collect::<Result<_, PvlError>>()?;
+        .collect::<Result<_, DecodeError>>()?;
     Ok(LootTables(tables))
 }
 
@@ -597,14 +574,14 @@ pub struct ItemCatalogLoader;
 impl AssetLoader for ItemCatalogLoader {
     type Asset = ItemCatalog;
     type Settings = ();
-    type Error = ItemLoadError;
+    type Error = LoadError;
 
     async fn load(
         &self,
         reader: &mut dyn Reader,
         _: &(),
         context: &mut LoadContext<'_>,
-    ) -> Result<ItemCatalog, ItemLoadError> {
+    ) -> Result<ItemCatalog, LoadError> {
         let mut data = Vec::new();
         reader.read_to_end(&mut data).await?;
         let strings = context
@@ -625,14 +602,14 @@ pub struct LootTablesLoader;
 impl AssetLoader for LootTablesLoader {
     type Asset = LootTables;
     type Settings = ();
-    type Error = ItemLoadError;
+    type Error = LoadError;
 
     async fn load(
         &self,
         reader: &mut dyn Reader,
         _: &(),
         _: &mut LoadContext<'_>,
-    ) -> Result<LootTables, ItemLoadError> {
+    ) -> Result<LootTables, LoadError> {
         let mut data = Vec::new();
         reader.read_to_end(&mut data).await?;
         Ok(read_loot_tables(&data)?)

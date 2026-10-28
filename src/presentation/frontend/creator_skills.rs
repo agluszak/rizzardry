@@ -3,6 +3,7 @@ use super::{Action, Creation, Page, absolute, creator_stats};
 use crate::content::characters::Skill;
 use crate::content::ui::SpriteSheet;
 use crate::presentation::screen_art::spawn_picture;
+use crate::presentation::screen_art::visible_if;
 use bevy::prelude::*;
 use enumset::EnumSet;
 
@@ -21,7 +22,7 @@ fn category(skill: Skill) -> usize {
 
 pub(super) fn build(commands: &mut Commands, root: Entity, assets: &AssetServer) {
     creator_stats::frame(commands, root, assets, Page::Skills);
-    let load = |path: &str| assets.load(format!("retail://data/{path}.sti"));
+    let load = |path: &str| assets.load(crate::content::paths::sheet(path));
     let background: Handle<SpriteSheet> = load("char generation/cg_skills");
     let buttons: Handle<SpriteSheet> = load("char generation/cg_buttons");
     let bottom: Handle<SpriteSheet> = load("char generation/cg_bottombuttons");
@@ -125,7 +126,7 @@ pub(super) fn refresh(
     let profile = draft.preview();
     for (row, mut node, mut visibility) in &mut rows {
         let shown = draft.skill_available(row.0) || profile.skill_points[row.0] > 0;
-        visibility.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
+        visibility.set_if_neq(visible_if(shown));
         let display = if shown { Display::Flex } else { Display::None };
         if node.display != display {
             node.display = display;

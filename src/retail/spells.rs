@@ -7,27 +7,20 @@ use bevy::asset::{AssetLoader, LoadContext, io::Reader};
 use bevy::reflect::TypePath;
 use enumset::EnumSet;
 
-use super::pvl::{PvlError, invalid};
-use crate::bytes::{Bytes, c_string};
+use super::record::{dice_at, reach};
+use crate::bytes::{Bytes, DecodeError, c_string, f32_at, i32_at, utf16_string};
 use crate::content::UNITS_PER_METRE;
 use crate::content::characters::Realm;
-use crate::content::items::Dice;
 use crate::content::spells::{
-    PowerChoice, Reach, SpellCatalog, SpellDefinition, SpellId, Spellbook, Targeting, Usable,
+    PowerChoice, SpellCatalog, SpellDefinition, SpellId, Spellbook, Targeting, Usable,
 };
 
 const RECORD: usize = 0x2c0;
 const PREFIX: usize = 0x101;
 
-fn read_spell(index: usize, record: &[u8]) -> Result<SpellDefinition, PvlError> {
+fn read_spell(index: usize, record: &[u8]) -> Result<SpellDefinition, DecodeError> {
     let r = &record[PREFIX..];
-    let i32_at = |at: usize| i32::from_le_bytes(r[at..at + 4].try_into().unwrap());
-    let f32_at = |at: usize| f32::from_le_bytes(r[at..at + 4].try_into().unwrap());
-    let mut dice = Bytes::new(&r[0x51..0x55]);
-    let dice = Dice { base: dice.i16()?, count: dice.u8()?, sides: dice.u8()? };
-    let units: Vec<u16> =
-        r[0x9b..0x9b + 128].as_chunks::<2>().0.iter().map(|&p| u16::from_le_bytes(p)).collect();
-    let name_end = units.iter().position(|&u| u == 0).unwrap_or(units.len());
+    let dice = dice_at(r, 0x51)?;
     let mut books = EnumSet::empty();
     for (at, book) in [
         (0x5a, Spellbook::Wizardry),
@@ -39,22 +32,22 @@ fn read_spell(index: usize, record: &[u8]) -> Result<SpellDefinition, PvlError> 
             books.insert(book);
         }
     }
-    let missile = i32_at(0x140);
+    let missile = i32_at(r, 0x140)?;
     Ok(SpellDefinition {
         id: SpellId(index as u8),
-        name: String::from_utf16_lossy(&units[..name_end]),
-        realm: u8::try_from(i32_at(0x133)).ok().and_then(|r| Realm::try_from(r).ok()),
-        level: i32_at(0x56).clamp(0, 7) as u8,
-        cost: i32_at(0x49).max(0) as u32,
+        name: utf16_string(&r[0x9b..0x9b + 128]),
+        realm: u8::try_from(i32_at(r, 0x133)?).ok().and_then(|r| Realm::try_from(r).ok()),
+        level: i32_at(r, 0x56)?.clamp(0, 7) as u8,
+        cost: i32_at(r, 0x49)?.max(0) as u32,
         books,
-        power: match i32_at(0x12b) {
+        power: match i32_at(r, 0x12b)? {
             1 => PowerChoice::ChosenOrRepeat,
             2 => PowerChoice::Maximum,
             3 => PowerChoice::Fixed,
             _ => PowerChoice::Chosen,
         },
-        reach: Reach::from_retail(i32_at(0x12f).clamp(0, 3) as u8),
-        targeting: match i32_at(0x137) {
+        reach: reach(i32_at(r, 0x12f)?.clamp(0, 3) as u8),
+        targeting: match i32_at(r, 0x137)? {
             0 => Targeting::Caster,
             1 => Targeting::Ally,
             2 => Targeting::Party,
@@ -67,7 +60,7 @@ fn read_spell(index: usize, record: &[u8]) -> Result<SpellDefinition, PvlError> 
             9 => Targeting::Item,
             _ => Targeting::LockOrTrap,
         },
-        usable: match i32_at(0x13b) {
+        usable: match i32_at(r, 0x13b)? {
             1 => Usable::InCombat,
             2 => Usable::OutOfCombat,
             3 => Usable::Camped,
@@ -75,14 +68,14 @@ fn read_spell(index: usize, record: &[u8]) -> Result<SpellDefinition, PvlError> 
             _ => Usable::Always,
         },
         dice: (dice.base != 0 || (dice.count > 0 && dice.sides > 0)).then_some(dice),
-        show_effect_dice: i32_at(0x147) != 0,
+        show_effect_dice: i32_at(r, 0x147)? != 0,
         // The header names these two the other way round; retail's own use
         // (`CastSpellFromSource`, `SpellAffectedTarget`) multiplies 0x44 by
         // power and adds 0x4d.
-        duration_per_power: i32_at(0x44),
-        duration_base: i32_at(0x4d),
-        radius: f32_at(0x121) / UNITS_PER_METRE,
-        radius_per_power: f32_at(0x127) / UNITS_PER_METRE,
+        duration_per_power: i32_at(r, 0x44)?,
+        duration_base: i32_at(r, 0x4d)?,
+        radius: f32_at(r, 0x121)? / UNITS_PER_METRE,
+        radius_per_power: f32_at(r, 0x127)? / UNITS_PER_METRE,
         missile: (r[0x13f] != 0).then(|| u32::try_from(missile).ok()).flatten(),
         after_visuals: r[0x144] != 0,
         monsters_cast: r[0x126] != 0,
@@ -90,12 +83,12 @@ fn read_spell(index: usize, record: &[u8]) -> Result<SpellDefinition, PvlError> 
     })
 }
 
-pub fn read_spell_catalog(data: &[u8]) -> Result<SpellCatalog, PvlError> {
+pub fn read_spell_catalog(data: &[u8]) -> Result<SpellCatalog, DecodeError> {
     let mut bytes = Bytes::new(data);
     let count = bytes.u32()? as usize;
     bytes.u32()?; // version
     if bytes.remaining() < count * RECORD {
-        return Err(invalid("spell database shorter than its count", &bytes));
+        return Err(bytes.invalid("spell database shorter than its count"));
     }
     let records = data[8..8 + count * RECORD].as_chunks::<RECORD>().0;
     Ok(SpellCatalog(
@@ -109,7 +102,7 @@ pub struct SpellCatalogLoader;
 impl AssetLoader for SpellCatalogLoader {
     type Asset = SpellCatalog;
     type Settings = ();
-    type Error = super::items::ItemLoadError;
+    type Error = super::LoadError;
 
     async fn load(
         &self,
@@ -130,6 +123,7 @@ impl AssetLoader for SpellCatalogLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::content::items::Dice;
 
     /// The three spells the first casting slice exercises, as retail authors them.
     #[test]
@@ -167,18 +161,18 @@ pub struct SpellTextLoader;
 impl AssetLoader for SpellTextLoader {
     type Asset = crate::content::spells::SpellText;
     type Settings = ();
-    type Error = super::text_loader::TextLoadError;
+    type Error = super::LoadError;
     async fn load(
         &self,
         reader: &mut dyn Reader,
         _: &(),
         _: &mut LoadContext<'_>,
-    ) -> Result<crate::content::spells::SpellText, super::text_loader::TextLoadError> {
+    ) -> Result<crate::content::spells::SpellText, super::LoadError> {
         let mut data = Vec::new();
         reader.read_to_end(&mut data).await?;
         crate::retail::strings::read_messages(&data)
             .map(crate::content::spells::SpellText)
-            .ok_or(super::text_loader::TextLoadError::Messages)
+            .ok_or_else(super::text_loader::malformed_messages)
     }
     fn extensions(&self) -> &[&str] {
         &["dbs"]

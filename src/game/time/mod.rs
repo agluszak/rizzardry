@@ -1,6 +1,6 @@
 //! Simulation time.
 
-use crate::game::camp::{self, Camp, CampNews};
+use crate::game::camp::Camp;
 use crate::game::characters::{Character, Vitals};
 use crate::game::party::{
     body::{PartyBody, WALK_SPEED},
@@ -16,7 +16,8 @@ use bevy::prelude::*;
 const RESTING_BELOW: f32 = 0.05;
 const RUNNING_ABOVE: f32 = WALK_SPEED * 1.1;
 
-const DAY_MS: u64 = 86_400_000;
+/// One game day in milliseconds.
+pub const DAY_MS: u64 = 86_400_000;
 
 /// The game clock. Retail starts a new game at noon and runs the clock at 12
 /// times real time while exploring (`g_view_distance`, despite its name), so
@@ -89,24 +90,13 @@ pub struct TimePlugin;
 
 impl Plugin for TimePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<GameClock>()
-            .add_message::<CampNews>()
-            .add_message::<camp::CampRequest>()
-            .add_message::<camp::LeaveCamp>()
-            .add_systems(
-                Update,
-                (camp::request_camp, camp::force_camp, camp::leave_camp)
-                    .chain()
-                    .after(crate::game::GameplaySet::Combat)
-                    .run_if(level_active),
-            )
-            .add_systems(
-                FixedPostUpdate,
-                pass_time
-                    .after(crate::game::party::walk_in::move_party)
-                    .after(avian3d::prelude::PhysicsSystems::Writeback)
-                    .run_if(level_active),
-            );
+        app.init_resource::<GameClock>().add_systems(
+            FixedPostUpdate,
+            pass_time
+                .after(crate::game::party::walk_in::move_party)
+                .after(avian3d::prelude::PhysicsSystems::Writeback)
+                .run_if(level_active),
+        );
     }
 }
 
@@ -133,10 +123,8 @@ mod tests {
 /// Exploring and camping: the clock runs on the fixed step and the party
 /// recovers as it passes. In a fight only its rounds pass time.
 pub(crate) fn pass_time(
-    mut commands: Commands,
     time: Res<Time>,
-    mut camp: Option<ResMut<Camp>>,
-    mut news: MessageWriter<CampNews>,
+    camp: Option<Res<Camp>>,
     battle: Option<Single<&crate::game::combat::Battle>>,
     party: Query<(&Position, &PartyBody, &LinearVelocity)>,
     roster: Single<&PartyRoster>,
@@ -183,9 +171,7 @@ pub(crate) fn pass_time(
         };
         let mut members = affected.p0();
         for (profile, mut vitals) in members.iter_many_unique_mut(roster.iter()).matched() {
-            if recovery::has_work(profile, &vitals, ticks, pace) {
-                recovery::elapse(profile, &mut vitals, ticks, pace);
-            }
+            recovery::pass(profile, &mut vitals, ticks, pace);
         }
         if pass > 0 {
             // Spell points come back at least at half rate (retail `spellScale`).
@@ -214,20 +200,12 @@ pub(crate) fn pass_time(
             affected.p1().detect(PartyBody::eye(position), body.forward(), None, &mut rng);
         }
     }
-    let anyone_able =
-        affected.p0().iter_many(roster.iter()).matched().any(|(_, vitals)| camp::can_act(vitals));
-    if let Some(camp) = camp.as_mut()
-        && let Some(outcome) = camp.advance(time.delta(), clock.ms, anyone_able)
-    {
-        news.write(outcome);
-        commands.remove_resource::<Camp>();
-    }
 }
 
 #[cfg(test)]
 mod pass_time_tests {
     use super::*;
-    use crate::game::camp::RestGoal;
+    use crate::game::camp::{CampNews, RestGoal, advance_camp};
     use crate::game::characters::{Condition, Gender, Lasting, Profession, Race};
     use bevy::time::TimeUpdateStrategy;
     use std::time::Duration;
@@ -245,7 +223,7 @@ mod pass_time_tests {
             .init_resource::<Assets<crate::content::level::LevelDefinition>>()
             .add_message::<crate::game::world::identify::Identified>()
             .add_message::<CampNews>()
-            .add_systems(FixedUpdate, pass_time);
+            .add_systems(FixedUpdate, (pass_time, advance_camp).chain());
         app.world_mut().resource_mut::<Time<Virtual>>().set_max_delta(step);
         app.update();
         app

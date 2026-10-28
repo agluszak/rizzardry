@@ -7,11 +7,8 @@ use crate::game::world::obstacles::WorldObstacles;
 use bevy::prelude::*;
 
 use crate::content::characters::{Attribute, Skill};
-use crate::content::items::ItemCatalog;
-use crate::game::camp::can_act;
 use crate::game::characters::{Character, Profession, Vitals};
 use crate::game::combat::Battle;
-use crate::game::data::GameData;
 use avian3d::prelude::Position;
 
 use crate::game::party::body::{PartyBody, PartyMovement};
@@ -75,6 +72,30 @@ pub enum SearchNews {
     },
 }
 
+/// A fight switches search mode off (retail `InitializeCombat`)...
+pub fn suspend_search(
+    _: On<Add<Battle>>,
+    mut search: ResMut<Search>,
+    mut news: MessageWriter<SearchNews>,
+) {
+    if search.mode == SearchMode::On {
+        *search = Search::new(SearchMode::Suspended);
+        news.write(SearchNews::Off);
+    }
+}
+
+/// ...and its end back on (retail `EndCombat`).
+pub fn resume_search(
+    _: On<Remove<Battle>>,
+    mut search: ResMut<Search>,
+    mut news: MessageWriter<SearchNews>,
+) {
+    if search.mode == SearchMode::Suspended {
+        *search = Search::new(SearchMode::On);
+        news.write(SearchNews::On);
+    }
+}
+
 pub fn toggle_search(
     mut requests: MessageReader<ToggleSearch>,
     freedom: crate::game::screen::Freedom,
@@ -82,19 +103,6 @@ pub fn toggle_search(
     mut search: ResMut<Search>,
     mut news: MessageWriter<SearchNews>,
 ) {
-    // A fight switches search mode off, and the end of the fight back on
-    // (retail `InitializeCombat`, `EndCombat`).
-    match (battle.is_some(), search.mode) {
-        (true, SearchMode::On) => {
-            *search = Search::new(SearchMode::Suspended);
-            news.write(SearchNews::Off);
-        }
-        (false, SearchMode::Suspended) => {
-            *search = Search::new(SearchMode::On);
-            news.write(SearchNews::On);
-        }
-        _ => {}
-    }
     for ToggleSearch in requests.read() {
         if !freedom.free() {
             continue;
@@ -149,7 +157,7 @@ pub fn search_pulse(
     members: Query<(&Character, &Vitals)>,
     mut items: Query<(Entity, &mut WorldItem, &Transform)>,
     obstacles: WorldObstacles,
-    (data, catalogs): (Option<Res<GameData>>, Res<Assets<ItemCatalog>>),
+    content: crate::game::data::Content,
     mut news: MessageWriter<SearchNews>,
 ) {
     if !search.pulse.tick(time.delta()).just_finished() {
@@ -164,13 +172,13 @@ pub fn search_pulse(
     let best = members
         .iter_many(roster.iter())
         .matched()
-        .filter(|(_, vitals)| can_act(vitals))
+        .filter(|(_, vitals)| vitals.can_act())
         .map(|(m, _)| (search_score(m, search.on(), running), m))
         .filter(|&(score, _)| score > 0)
         // The first of equals, as retail keeps the earlier slot.
         .reduce(|a, b| if b.0 > a.0 { b } else { a });
     let Some((score, searcher)) = best else { return };
-    let catalog = data.and_then(|d| catalogs.get(&d.items));
+    let catalog = content.items();
     for (target, mut item, at) in &mut items {
         if !item.hidden {
             continue;
@@ -211,6 +219,8 @@ mod tests {
             .init_resource::<Search>()
             .add_message::<ToggleSearch>()
             .add_message::<SearchNews>()
+            .add_observer(suspend_search)
+            .add_observer(resume_search)
             .add_systems(Update, toggle_search);
         app.world_mut().spawn(Level::test(default()));
         app.world_mut().write_message(ToggleSearch);

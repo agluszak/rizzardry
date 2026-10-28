@@ -6,7 +6,8 @@ use bevy::asset::{AssetLoader, LoadContext, io::Reader};
 use bevy::prelude::*;
 use bevy::reflect::TypePath;
 
-use super::level_loader::{LoadedTextures, PvlLoadError, build_props, load_material};
+use super::LoadError;
+use super::level_loader::{LoadedTextures, build_props, load_material};
 use super::mesh_record::read_mesh_record;
 use super::prop_loader::{PropLighting, record_meshes};
 use super::sections::read_uncompiled_sections;
@@ -20,14 +21,14 @@ pub struct LvlLoader;
 impl AssetLoader for LvlLoader {
     type Asset = LevelGeometry;
     type Settings = ();
-    type Error = PvlLoadError;
+    type Error = LoadError;
 
     async fn load(
         &self,
         reader: &mut dyn Reader,
         _: &(),
         context: &mut LoadContext<'_>,
-    ) -> Result<LevelGeometry, PvlLoadError> {
+    ) -> Result<LevelGeometry, LoadError> {
         let mut data = Vec::new();
         reader.read_to_end(&mut data).await?;
         let mut bytes = Bytes::new(&data);

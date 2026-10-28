@@ -17,6 +17,12 @@ pub struct SpriteSheet {
 }
 
 impl SpriteSheet {
+    /// How far apart lines of text are in this font: its first glyph's
+    /// height below the baseline offset, 12 for an empty font.
+    pub fn line_height(&self) -> f32 {
+        self.frames.first().map_or(12.0, |f| (f.height as i32 + f.offset[1] as i32).max(1) as f32)
+    }
+
     /// How wide a line of text is in this font.
     pub fn text_width(&self, text: &str) -> u32 {
         text_width(&self.frames, text)

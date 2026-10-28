@@ -1,12 +1,11 @@
 //! Navmeshes, baked when a level asks for them and cached on disk.
 //!
 //! Each retail level has a `navmesh://` input per walker size class: the
-//! class and the level's collision files. [`NavmeshLoader`] keys the cache
-//! by those bytes, the bake settings and this format's version; on a miss
-//! it decodes the collision (through a decoder the app supplies, since the
-//! retail formats are not the game's to read), bakes off the main thread
-//! and writes the result whole, so concurrent games and tests can share
-//! the cache. Only the levels entered are baked.
+//! level's collision as walkers of that class meet it. [`NavmeshLoader`]
+//! keys the cache by those bytes, the bake settings and this format's
+//! version; on a miss it bakes off the main thread and writes the result
+//! whole, so concurrent games and tests can share the cache. Only the levels
+//! entered are baked.
 
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -29,7 +28,7 @@ pub enum NavmeshAssetError {
     #[error(transparent)]
     Truncated(#[from] Truncated),
     #[error("navmesh input: {0}")]
-    Input(String),
+    Input(#[from] crate::bytes::DecodeError),
     #[error("navmesh bake failed: {0}")]
     Bake(String),
     #[error("not a navmesh file of format version {VERSION}")]
@@ -134,13 +133,9 @@ pub const CACHE: &str = "imported_assets/navmesh";
 pub struct NavmeshLoader {
     /// Where baked navmeshes are kept, by input path and key.
     pub cache: PathBuf,
-    /// Reads a navmesh input's collision.
-    pub decode: fn(&[u8]) -> Result<LevelCollision, String>,
 }
 
 impl NavmeshLoader {
-    /// The cached file for an input: a re-bake follows any change to the
-    /// level, the settings or the format. (A changed hasher only re-bakes.)
     /// The navmesh of an input (at `input_path` under `navmesh://`): from
     /// the cache, or baked and cached, replacing what the input's earlier
     /// versions left there.
@@ -172,7 +167,7 @@ impl NavmeshLoader {
     }
 
     fn bake(&self, input: &[u8]) -> Result<NavigationMesh3d, NavmeshAssetError> {
-        let level = (self.decode)(input).map_err(NavmeshAssetError::Input)?;
+        let level = LevelCollision::decode(input)?;
         let agent_radius = *SIZE_CLASSES.get(level.class).ok_or(NavmeshAssetError::Format)?;
         let settings = NavmeshBakeSettings { agent_radius, ..default() };
         let (mesh, report) = bake(&level.collision, &settings).map_err(NavmeshAssetError::Bake)?;

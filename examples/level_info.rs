@@ -9,7 +9,7 @@ use rizzardry::retail::prop_loader::part_transforms;
 use rizzardry::retail::sections::read_sections;
 use rizzardry::retail::space::retail_position;
 use rizzardry::retail::trigger::{TriggerKind, action};
-use rizzardry::retail::{files::RetailFiles, pvl::read_level_geometry};
+use rizzardry::retail::{files::RetailFiles, pvl::read_compiled_level};
 
 #[derive(clap::Parser)]
 #[command(about = "Print a summary of retail levels' compiled geometry.")]
@@ -36,7 +36,7 @@ fn main() {
     };
     for name in names {
         let data = files.read(&name).expect("level exists").unwrap();
-        let level = read_level_geometry(&data).unwrap();
+        let level = read_compiled_level(&data).unwrap();
         if args.links {
             let sections = read_sections(&mut Bytes::new(&data[level.end..])).unwrap();
             for link in level_links(&sections) {
@@ -74,7 +74,7 @@ fn main() {
                         item.fallback_action,
                         item.recipients,
                         item.data,
-                        item.door.as_ref().map(|d| (d.open, d.locked, d.item))
+                        item.door.as_ref().map(|d| (d.locked, d.item))
                     ),
                     other => format!("{} {other:?}", t.name),
                 });

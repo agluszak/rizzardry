@@ -5669,6 +5669,7 @@ dependencies = [
  "bevy-tnua-avian3d",
  "bevy_enhanced_input",
  "bevy_landmass",
+ "blocking",
  "clap",
  "enum-map",
  "enumset",

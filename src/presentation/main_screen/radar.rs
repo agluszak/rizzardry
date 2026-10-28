@@ -222,9 +222,8 @@ pub fn update_radar(
         if monster.is_dead() || delta.length() > far {
             continue;
         }
-        let hostile = catalog
-            .and_then(|c| c.0.get(monster.species as usize))
-            .is_some_and(|s| s.npc.is_none());
+        let hostile =
+            catalog.and_then(|c| c.kind(monster.species)).is_some_and(|s| s.npc.is_none());
         let class = if hostile { HOSTILE_BLIPS } else { NEUTRAL_BLIPS };
         let at = blip_position(delta, body.yaw, false) - Vec2::ONE;
         show(entity, at, class.at(delta.y));
