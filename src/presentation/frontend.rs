@@ -7,6 +7,7 @@ use crate::game::characters::creation::{
     identity,
 };
 use crate::game::session::{Campaign, NewGameDestination, Session, begin_adventure};
+use crate::presentation::screen_art::visible_if;
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::input_focus::{
     InputFocus,
@@ -899,7 +900,7 @@ fn show_editor(
         if node.display != display {
             node.display = display;
         }
-        visibility.set_if_neq(crate::presentation::screen_art::shown(shown));
+        visibility.set_if_neq(visible_if(shown));
     }
 }
 
@@ -914,7 +915,7 @@ fn refresh(
         if node.display != display {
             node.display = display;
         }
-        visibility.set_if_neq(crate::presentation::screen_art::shown(shown));
+        visibility.set_if_neq(visible_if(shown));
     }
 }
 // Retail portrait catalog; any portrait may be selected for any character.

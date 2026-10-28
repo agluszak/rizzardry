@@ -36,6 +36,7 @@ use crate::game::world::population::Monster;
 use crate::presentation::retail_controls::{
     ControlSkin, ScrollWheel, scroll_wheel, set_scroll_maximum, step_scrollbar,
 };
+use crate::presentation::screen_art::visible_if;
 use crate::presentation::screen_art::{BitmapText, Picture, absolute};
 
 /// The view's art (retail catalog entries 0x190-0x198, 0x86, 0x8e, 0x97).
@@ -676,8 +677,7 @@ pub(super) fn refresh_magic_view(
     let offset = (scroll_value.0 as usize).min(maximum);
     let hovered = rows_hovered.iter().find(|(_, h)| h.get()).map(|(r, _)| r.0);
     for (row, mut visibility) in &mut parts.p2() {
-        visibility
-            .set_if_neq(crate::presentation::screen_art::shown(row.0 + offset < offers.len()));
+        visibility.set_if_neq(visible_if(row.0 + offset < offers.len()));
     }
     let chosen = |offer: &Offer| match (view.source, offer.source) {
         (Some(Source::Spell { spell: a, .. }), Source::Spell { spell: b, .. }) => a == b,
@@ -733,7 +733,7 @@ pub(super) fn refresh_magic_view(
                 (7 | 8, _) => false,
                 _ => true,
             };
-            visibility.set_if_neq(crate::presentation::screen_art::shown(shown));
+            visibility.set_if_neq(visible_if(shown));
             let frame = match spell {
                 Some(spell) if pip.0 >= 7 || pip.0 < affordable => {
                     let rated = if pip.0 >= 7 {
@@ -787,7 +787,7 @@ pub(super) fn refresh_magic_view(
             })
             .and_then(|stack| items.get(stack.item));
         for (mut picture, mut visibility) in &mut parts.p7() {
-            visibility.set_if_neq(crate::presentation::screen_art::shown(icon.is_some()));
+            visibility.set_if_neq(visible_if(icon.is_some()));
             if let Some(definition) = icon {
                 let sheet = assets.load(crate::content::paths::retail(&definition.image));
                 if picture.sheet != sheet {

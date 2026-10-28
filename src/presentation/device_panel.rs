@@ -26,7 +26,7 @@ use crate::game::world::interaction::{
     self, COMPONENTS, DeviceInteraction, Observation, TRAP_COMPONENTS, Work,
 };
 use crate::game::world::props::PropMotion;
-use crate::presentation::screen_art::shown;
+use crate::presentation::screen_art::visible_if;
 
 const WIDTH: f32 = 380.0;
 const BUTTON: Color = Color::srgb(0.22, 0.17, 0.11);
@@ -134,8 +134,8 @@ fn sync_device_panel(
             *kind != Kind::Loot || motions.get(*device).is_ok_and(|m| m.frame == m.target)
         });
     for (entity, panel, mut visibility) in &mut panels {
-        visibility
-            .set_if_neq(shown(!(magic_views.iter().any(|view| view.device == Some(panel.device)))));
+        let casting = magic_views.iter().any(|view| view.device == Some(panel.device));
+        visibility.set_if_neq(visible_if(!casting));
         if wanted != Some((panel.device, panel.kind)) {
             commands.entity(entity).despawn();
         }

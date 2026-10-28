@@ -81,9 +81,12 @@ pub type Members<'w, 's> = Query<
 >;
 
 /// The party's average level (retail `GetAveragePartyLevel`), over every
-/// member, dead or alive: what loot tables scale by.
-pub fn average_level(roster: &roster::PartyRoster, members: &Members) -> u32 {
-    roster.average_level(|member| members.get(member).ok().map(|(c, ..)| c.level))
+/// member, dead or alive: what loot and stock scale by. 1 for an empty
+/// party, where retail divides by zero.
+pub fn average_level(levels: impl IntoIterator<Item = u8>) -> u32 {
+    let (sum, count) =
+        levels.into_iter().fold((0, 0), |(sum, count), level| (sum + u32::from(level), count + 1));
+    sum.checked_div(count).unwrap_or(1)
 }
 
 /// Actual damage to an actor, after its gameplay consequences have settled.

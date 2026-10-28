@@ -3,6 +3,7 @@ use super::{Action, Creation, Page, absolute, creator_stats};
 use crate::content::characters::Skill;
 use crate::content::ui::SpriteSheet;
 use crate::presentation::screen_art::spawn_picture;
+use crate::presentation::screen_art::visible_if;
 use bevy::prelude::*;
 use enumset::EnumSet;
 
@@ -125,7 +126,7 @@ pub(super) fn refresh(
     let profile = draft.preview();
     for (row, mut node, mut visibility) in &mut rows {
         let shown = draft.skill_available(row.0) || profile.skill_points[row.0] > 0;
-        visibility.set_if_neq(crate::presentation::screen_art::shown(shown));
+        visibility.set_if_neq(visible_if(shown));
         let display = if shown { Display::Flex } else { Display::None };
         if node.display != display {
             node.display = display;

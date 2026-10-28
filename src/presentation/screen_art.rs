@@ -299,7 +299,7 @@ pub fn vital_fill(now: u32, max: u32) -> u32 {
 }
 
 /// Inherited visibility when shown, hidden otherwise.
-pub fn shown(visible: bool) -> Visibility {
+pub fn visible_if(visible: bool) -> Visibility {
     if visible { Visibility::Inherited } else { Visibility::Hidden }
 }
 
@@ -311,25 +311,26 @@ pub fn show_sheet(picture: &mut Mut<Picture>, assets: &AssetServer, path: String
     }
 }
 
-/// The game's string table, for views that name things the way retail does.
-#[derive(bevy::ecs::system::SystemParam)]
-pub struct GameStrings<'w, 's> {
-    assets: Option<Res<'w, AssetServer>>,
-    tables: Res<'w, Assets<crate::content::ui::TextTable>>,
-    table: Local<'s, Option<Handle<crate::content::ui::TextTable>>>,
+/// The game's string table, loaded at startup.
+#[derive(Resource)]
+pub struct StringTable(Handle<crate::content::ui::TextTable>);
+
+pub fn load_string_table(mut commands: Commands, assets: Res<AssetServer>) {
+    commands.insert_resource(StringTable(assets.load(crate::content::paths::STRINGS)));
 }
 
-impl GameStrings<'_, '_> {
+/// The game's strings, for views that name things the way retail does.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct GameStrings<'w> {
+    table: Option<Res<'w, StringTable>>,
+    tables: Res<'w, Assets<crate::content::ui::TextTable>>,
+}
+
+impl GameStrings<'_> {
     /// The string, trimmed; empty until the table has loaded.
-    pub fn get(&mut self, id: usize) -> &str {
-        if self.table.is_none() {
-            *self.table = self.assets.as_ref().map(|a| a.load(crate::content::paths::STRINGS));
-        }
-        self.table
-            .as_ref()
-            .and_then(|t| self.tables.get(t))
-            .and_then(|t| t.get(id))
-            .map_or("", str::trim)
+    pub fn get(&self, id: usize) -> &str {
+        let table = self.table.as_ref().and_then(|t| self.tables.get(&t.0));
+        table.and_then(|t| t.get(id)).map_or("", str::trim)
     }
 }
 

@@ -12,6 +12,7 @@ use crate::game::party::roster::PartyRoster;
 use crate::presentation::character_view::{CharacterView, CharacterViewItem};
 use crate::presentation::retail_controls::ControlSkin;
 use crate::presentation::screen_art::spawn_picture as picture;
+use crate::presentation::screen_art::visible_if;
 use bevy::input_focus::tab_navigation::TabIndex;
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
@@ -473,7 +474,7 @@ pub(super) fn show_pages(
         if node.display != display {
             node.display = display;
         }
-        visibility.set_if_neq(crate::presentation::screen_art::shown(shown));
+        visibility.set_if_neq(visible_if(shown));
     }
 }
 
@@ -761,7 +762,7 @@ pub(super) fn layout_skills(
         if node.display != display {
             node.display = display;
         }
-        visibility.set_if_neq(crate::presentation::screen_art::shown(shown));
+        visibility.set_if_neq(visible_if(shown));
         if shown {
             let (x, y) = origins[category];
             let top = px(y + counts[category] as f32 * 14.0);
@@ -783,7 +784,7 @@ pub(super) fn layout_skills(
         }
     }
     for (icon, mut visibility) in &mut icons {
-        visibility.set_if_neq(crate::presentation::screen_art::shown(icon.0 != 4 || counts[4] > 0));
+        visibility.set_if_neq(visible_if(icon.0 != 4 || counts[4] > 0));
     }
     for (bar, mut crop) in &mut bars {
         let (start, end) = match *bar {

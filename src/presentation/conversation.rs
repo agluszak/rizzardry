@@ -362,12 +362,13 @@ fn sync_view(world: &mut World) {
         .next()
         .and_then(|c| c.first().copied());
     // The summary's own font wraps it.
-    let font = summary.and_then(|e| world.get::<BitmapText>(e)).map(|t| t.font.clone());
-    let text = font
-        .and_then(|font| world.resource::<Assets<SpriteSheet>>().get(&font))
-        .map_or(text.clone(), |font| {
-            super::notices::wrap(&text, 510, |s| font.text_width(s)).join("\n")
-        });
+    let font = summary
+        .and_then(|e| world.get::<BitmapText>(e))
+        .and_then(|t| world.resource::<Assets<SpriteSheet>>().get(&t.font));
+    let text = match font {
+        Some(font) => super::notices::wrap(&text, 510, |s| font.text_width(s)).join("\n"),
+        None => text,
+    };
     if let Some(e) = summary
         && let Some(mut t) = world.get_mut::<BitmapText>(e)
         && t.value != text

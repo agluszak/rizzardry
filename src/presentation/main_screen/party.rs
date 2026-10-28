@@ -26,6 +26,7 @@ use crate::game::inventory::{EquipSlot, ItemNews};
 use crate::game::party::DamageApplied;
 use crate::game::party::roster::PartyRoster;
 use crate::presentation::PresentationRng;
+use crate::presentation::screen_art::visible_if;
 use crate::presentation::screen_art::{
     BitmapText, Picture, absolute, condition_icon, label, picture, rect, skull,
 };
@@ -430,7 +431,7 @@ pub fn draw_party(
                 }
             }
         }
-        visible.set_if_neq(crate::presentation::screen_art::shown(shown));
+        visible.set_if_neq(visible_if(shown));
         if let Some(mut picture) = picture
             && let Some(mut source) = source
         {
@@ -480,9 +481,8 @@ pub fn place_party_buttons(
     mut empty: Query<(&EmptySlot, &mut Visibility)>,
 ) {
     for (slot, mut visible) in &mut empty {
-        visible.set_if_neq(crate::presentation::screen_art::shown(
-            roster.get_index(slot.0).is_none_or(|e| !members.contains(*e)),
-        ));
+        visible
+            .set_if_neq(visible_if(roster.get_index(slot.0).is_none_or(|e| !members.contains(*e))));
     }
     for (button, mut node) in &mut buttons {
         let Some(slot) = roster.get_index_of(&button.member) else { continue };
@@ -753,7 +753,7 @@ pub fn play_splats(
                 picture.set_if_neq(Picture { sheet: sheet.clone(), frame, at, bounds: None });
             }
             if let Ok((mut visible, mut label)) = numbers.get_mut(part) {
-                visible.set_if_neq(crate::presentation::screen_art::shown(frame < 6));
+                visible.set_if_neq(visible_if(frame < 6));
                 let value = splat.damage.to_string();
                 if label.value != value {
                     label.value = value;

@@ -23,7 +23,7 @@ use crate::game::data::GameData;
 use crate::game::time::GameClock;
 use crate::game::world::navigation::Walker;
 use crate::game::world::population::Monster;
-use crate::presentation::screen_art::shown;
+use crate::presentation::screen_art::visible_if;
 
 /// Seconds into its first cycle a monster starts at. Retail starts each
 /// idle at a random frame; here it varies by location.
@@ -215,7 +215,7 @@ pub fn animate_monsters(
                     continue;
                 };
                 let active = cycle_name.0 == name;
-                visibility.set_if_neq(shown(active));
+                visibility.set_if_neq(visible_if(active));
                 if !active {
                     continue;
                 }

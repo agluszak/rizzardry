@@ -30,7 +30,7 @@ use crate::content::ui::{SpriteSheet, ui_image};
 use crate::game::automap::{MapNote, MapNotes, NoteDraft};
 use crate::game::party::body::{FLOAT_HEIGHT, PartyBody};
 use crate::game::world::level::{Level, PlayedLevel};
-use crate::presentation::screen_art::shown;
+use crate::presentation::screen_art::visible_if;
 use crate::presentation::screen_art::{SCREEN, absolute, centred, screen};
 
 const VIEWPORT_AT: Vec2 = Vec2::new(12.0, 32.0);
@@ -677,11 +677,11 @@ pub fn draw_notes(
             views.iter_mut().find(|(_, v, _, _, _)| v.0 == key)
         {
             node.set_if_neq(absolute(at - MARKER / 2.0, Vec2::splat(MARKER)));
-            visible.set_if_neq(shown(!(key.is_some() && key == hidden)));
+            visible.set_if_neq(visible_if(key.is_none() || key != hidden));
             for child in children.iter() {
                 let Ok((mut label, mut visible)) = labels.get_mut(child) else { continue };
                 label.set_if_neq(text.clone());
-                visible.set_if_neq(shown(show));
+                visible.set_if_neq(visible_if(show));
             }
         } else {
             let marker = commands
@@ -697,7 +697,7 @@ pub fn draw_notes(
             commands.spawn((
                 text,
                 UiTransform::from_translation(bevy::ui::Val2::new(px(0), percent(-50))),
-                shown(show),
+                visible_if(show),
                 ChildOf(marker),
             ));
         }

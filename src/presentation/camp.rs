@@ -7,7 +7,7 @@ use bevy_enhanced_input::prelude::*;
 
 use crate::content::ui::SpriteSheet;
 use crate::game::camp::{Camp, FADE_SECONDS, LeaveCamp};
-use crate::presentation::screen_art::shown;
+use crate::presentation::screen_art::visible_if;
 
 #[derive(Resource)]
 pub struct CampArt(Handle<SpriteSheet>);
@@ -103,7 +103,7 @@ pub fn show_camp(
         {
             image.image = picture.clone();
         }
-        visibility.set_if_neq(shown(picture_shown));
+        visibility.set_if_neq(visible_if(picture_shown));
     }
 }
 

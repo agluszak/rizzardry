@@ -167,7 +167,9 @@ impl NpcPopulation<'_, '_> {
 
     pub fn average_level(&self) -> u32 {
         self.roster.single().map_or(1, |roster| {
-            roster.average_level(|member| self.profiles.get(member).ok().map(|c| c.level))
+            crate::game::party::average_level(
+                self.profiles.iter_many(roster.iter()).matched().map(|c| c.level),
+            )
         })
     }
     /// Preparation changes only asset requests. Missing mandatory NPC content

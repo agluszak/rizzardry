@@ -848,7 +848,9 @@ fn party_turn(
     else {
         return false;
     };
-    let party_level = crate::game::party::average_level(&magic.context.roster, members);
+    let party_level = crate::game::party::average_level(
+        members.iter_many(magic.context.roster.iter()).matched().map(|(c, ..)| c.level),
+    );
     let purse = &mut *magic.context.inventory;
     member_acts(
         battle,

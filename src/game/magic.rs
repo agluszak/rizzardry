@@ -453,7 +453,9 @@ impl MagicContext<'_, '_> {
         cast: impl FnOnce(&mut Field, &SpellCatalog) -> R,
     ) -> Result<R, casting::Refusal> {
         let party: Vec<Entity> = self.roster.iter().collect();
-        let party_level = crate::game::party::average_level(&self.roster, members);
+        let party_level = crate::game::party::average_level(
+            members.iter_many(self.roster.iter()).matched().map(|(c, ..)| c.level),
+        );
         let (Some(items), Some(species), Some(spells)) =
             (self.content.items(), self.content.species(), self.content.spells())
         else {

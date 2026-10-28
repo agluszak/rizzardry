@@ -20,7 +20,7 @@ use crate::game::inventory::{Carried, EquipSlot};
 use crate::game::party::Order;
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::search::{Search, ToggleSearch};
-use crate::presentation::screen_art::shown;
+use crate::presentation::screen_art::visible_if;
 use crate::presentation::screen_art::{BitmapText, Picture, PictureCrop, label, picture};
 use bevy::picking::hover::Hovered;
 
@@ -132,7 +132,7 @@ pub fn draw_bank(
         selected.member(&roster).and_then(|m| orders.get(m).ok()).copied().unwrap_or_default();
     for (entity, face, skin, selected, disabled, mut picture, mut visible) in &mut buttons {
         let combat_only = matches!(face.kind, Some(Bank::Order(_) | Bank::Round | Bank::PartyMove));
-        visible.set_if_neq(shown(!(combat_only && !fighting)));
+        visible.set_if_neq(visible_if(!combat_only || fighting));
         let enabled = face.kind.is_some_and(|kind| {
             !matches!(kind, Bank::EndCombat)
                 && !(fighting && matches!(kind, Bank::Camp | Bank::Search))
@@ -285,7 +285,7 @@ pub fn draw_caption(
     orders: Query<&Order>,
     mut captions: Query<(&CaptionLine, &mut BitmapText)>,
     spells: Res<Assets<crate::content::spells::SpellCatalog>>,
-    mut strings: crate::presentation::screen_art::GameStrings,
+    strings: crate::presentation::screen_art::GameStrings,
 ) {
     let spells = data.as_ref().and_then(|d| spells.get(&d.spells));
     let catalog = data.and_then(|d| catalogs.get(&d.items));
