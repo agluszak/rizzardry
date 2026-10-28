@@ -135,6 +135,14 @@ pub struct BitmapWrap {
     pub line_spacing: u32,
 }
 
+/// Retail monochrome text uses an explicit foreground index and optional
+/// shadow, unlike multicolour bitmap labels (PortraitQuote / mprintf).
+#[derive(Component, Clone, Copy, PartialEq)]
+pub struct BitmapInk {
+    pub foreground: u8,
+    pub shadow: Option<u8>,
+}
+
 /// Spawn a retained image; callers attach screen-specific roles.
 pub fn spawn_picture(
     commands: &mut Commands,
@@ -237,8 +245,16 @@ pub fn render_text(
     mut events: MessageReader<AssetEvent<SpriteSheet>>,
     mut images: ResMut<Assets<Image>>,
     mut removed_wraps: RemovedComponents<BitmapWrap>,
+    mut removed_inks: RemovedComponents<BitmapInk>,
     mut labels: Query<
-        (Entity, Ref<BitmapText>, Option<Ref<BitmapWrap>>, &mut ImageNode, &mut Node),
+        (
+            Entity,
+            Ref<BitmapText>,
+            Option<Ref<BitmapWrap>>,
+            Option<Ref<BitmapInk>>,
+            &mut ImageNode,
+            &mut Node,
+        ),
         Without<Picture>,
     >,
 ) {
@@ -252,11 +268,12 @@ pub fn render_text(
             AssetEvent::Unused { .. } => None,
         })
         .collect();
-    let removed: Vec<_> = removed_wraps.read().collect();
-    for (entity, text, wrap, mut image, mut node) in &mut labels {
+    let removed: Vec<_> = removed_wraps.read().chain(removed_inks.read()).collect();
+    for (entity, text, wrap, ink, mut image, mut node) in &mut labels {
         if !text.is_changed()
             && !removed.contains(&entity)
             && !wrap.as_ref().is_some_and(|wrap| wrap.is_changed())
+            && !ink.as_ref().is_some_and(|ink| ink.is_changed())
             && !changed.contains(&text.font.id())
             && !text.palette.as_ref().is_some_and(|palette| changed.contains(&palette.id()))
         {
@@ -279,8 +296,12 @@ pub fn render_text(
         } else {
             None
         };
-        let raster =
-            font.text_image_spaced(&value, wrap.as_ref().map_or(0, |w| w.line_spacing), palette);
+        let raster = font.text_image_spaced(
+            &value,
+            wrap.as_ref().map_or(0, |w| w.line_spacing),
+            palette,
+            ink.as_ref().map(|i| (i.foreground, i.shadow)),
+        );
         let size = raster.size_f32();
         image.image = images.add(raster);
         image.color.set_alpha(1.0);
@@ -366,5 +387,119 @@ mod tests {
         app.update();
         assert_eq!(app.world().get::<ImageNode>(entity).unwrap().rect, None);
         assert_eq!(app.world().get::<Node>(entity).unwrap().width, px(125));
+    }
+}
+
+/// An authored sprite tiled into a layout-owned rectangle instead of resizing
+/// the rectangle to the sprite. Shared by retail dialog backgrounds and borders.
+#[derive(Component)]
+pub struct TiledPicture {
+    pub sheet: Handle<SpriteSheet>,
+    pub frame: usize,
+}
+pub fn spawn_dialog_frame(
+    commands: &mut Commands,
+    assets: &AssetServer,
+    panel: Entity,
+    inner_edge: bool,
+) {
+    commands.spawn((
+        TiledPicture { sheet: assets.load("retail://data/dialogs/dialogbackground.sti"), frame: 0 },
+        Node {
+            position_type: PositionType::Absolute,
+            width: percent(100),
+            height: percent(100),
+            ..default()
+        },
+        ImageNode {
+            image_mode: bevy::ui::widget::NodeImageMode::Tiled {
+                tile_x: true,
+                tile_y: true,
+                stretch_value: 1.,
+            },
+            ..default()
+        },
+        Visibility::Hidden,
+        Pickable::IGNORE,
+        ChildOf(panel),
+    ));
+    for (path, inset, thickness) in [
+        ("retail://data/dialogs/dialogborder.sti", 0., 9.),
+        ("retail://data/dialogs/dialogedge.sti", 9., 3.),
+    ] {
+        if inset > 0. && !inner_edge {
+            continue;
+        }
+        let sheet = assets.load(path);
+        for frame in 0..8 {
+            let mut node = Node { position_type: PositionType::Absolute, ..default() };
+            match frame {
+                0 | 2 | 5 | 7 => {
+                    node.width = px(thickness);
+                    node.height = px(thickness);
+                    if frame == 0 || frame == 5 {
+                        node.left = px(inset);
+                    } else {
+                        node.right = px(inset);
+                    }
+                    if frame == 0 || frame == 2 {
+                        node.top = px(inset);
+                    } else {
+                        node.bottom = px(inset);
+                    }
+                }
+                1 | 6 => {
+                    node.left = px(inset + thickness);
+                    node.right = px(inset + thickness);
+                    node.height = px(thickness);
+                    if frame == 1 {
+                        node.top = px(inset);
+                    } else {
+                        node.bottom = px(inset);
+                    }
+                }
+                3 | 4 => {
+                    node.top = px(inset + thickness);
+                    node.bottom = px(inset + thickness);
+                    node.width = px(thickness);
+                    if frame == 3 {
+                        node.left = px(inset);
+                    } else {
+                        node.right = px(inset);
+                    }
+                }
+                _ => unreachable!(),
+            }
+            commands.spawn((
+                TiledPicture { sheet: sheet.clone(), frame },
+                node,
+                ImageNode {
+                    image_mode: bevy::ui::widget::NodeImageMode::Tiled {
+                        tile_x: true,
+                        tile_y: true,
+                        stretch_value: 1.,
+                    },
+                    ..default()
+                },
+                Visibility::Hidden,
+                Pickable::IGNORE,
+                ChildOf(panel),
+            ));
+        }
+    }
+}
+pub fn render_tiled_pictures(
+    sheets: Res<Assets<SpriteSheet>>,
+    mut borders: Query<(&TiledPicture, &mut ImageNode, &mut Visibility), Without<Picture>>,
+) {
+    for (border, mut image, mut visibility) in &mut borders {
+        if let Some(handle) =
+            sheets.get(&border.sheet).and_then(|sheet| sheet.images.get(border.frame))
+        {
+            if image.image != *handle {
+                image.image = handle.clone();
+            }
+            visibility.set_if_neq(Visibility::Inherited);
+        }
     }
 }

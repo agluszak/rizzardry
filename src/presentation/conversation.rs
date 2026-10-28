@@ -2,12 +2,12 @@
 //! resolves item/stock identities again when a confirmation executes.
 use super::main_screen::SelectedMember;
 use super::retail_controls::{ControlSkin, FocusRing};
-use super::screen_art::{BitmapText, BitmapWrap, Picture, absolute};
+use super::screen_art::{BitmapInk, BitmapText, BitmapWrap, Picture, absolute};
 use crate::content::npcs::TopicCategory;
 use crate::content::{
     items::{EquipClass, ItemCatalog},
     npcs::NpcCatalog,
-    ui::SpriteSheet,
+    ui::{SpriteSheet, TextTable},
 };
 use crate::game::npcs::{
     Npc, NpcAssets,
@@ -104,7 +104,6 @@ enum Caption {
     Name,
     Gold,
     Quote,
-    Transcript,
 }
 #[derive(Component)]
 struct TopicList;
@@ -128,11 +127,34 @@ struct CategoryButton(Option<TopicCategory>);
 struct TradeAvailable;
 
 #[derive(Component)]
+struct RadioMark;
+#[derive(Component)]
+struct SortToggle;
+/// A text button's authored chrome is separate from its hit rectangle.
+#[derive(Component)]
+struct WellChrome {
+    size: Vec2,
+    hover: usize,
+    pressed: usize,
+    pressed_hover: usize,
+}
+
+#[derive(Component)]
 struct Summary;
+#[derive(Component)]
+struct TranscriptRow(usize);
+#[derive(Component)]
+struct ScrollToNewest;
 #[derive(Component)]
 struct Offer;
 #[derive(Component, PartialEq)]
 struct Choices;
+#[derive(Component, Default)]
+struct ChoiceOverlay {
+    previous_focus: Option<Entity>,
+}
+#[derive(Component)]
+struct ChoiceCaption(bool);
 #[derive(Clone, PartialEq)]
 enum Answer {
     Reply(String),
@@ -170,8 +192,15 @@ impl Plugin for ConversationViewPlugin {
                 Update,
                 (
                     create_views,
-                    (project_text, project_modes, sync_choices, sync_trade_rows, sync_topic_rows),
-                    (sync_bubble_geometry, sync_topic_geometry, route_mode_focus),
+                    (
+                        project_text,
+                        project_modes,
+                        sync_choices,
+                        sync_trade_rows,
+                        sync_topic_rows,
+                        sync_transcript,
+                    ),
+                    (sync_bubble_geometry, sync_topic_geometry, route_mode_focus, paint_wells),
                 )
                     .chain()
                     .after(crate::game::npcs::conversation::update_conversation),
@@ -184,7 +213,12 @@ impl Plugin for ConversationViewPlugin {
             )
             .add_systems(
                 PostUpdate,
-                (submit_topic.after(bevy::text::EditableTextSystems), colour_selections),
+                (
+                    submit_topic.after(bevy::text::EditableTextSystems),
+                    colour_selections,
+                    paint_topic_text.before(super::screen_art::render_text),
+                    scroll_to_newest.after(bevy::ui::UiSystems::Layout),
+                ),
             );
     }
 }
@@ -223,7 +257,7 @@ fn button(world: &mut World, parent: Entity, text: &str) -> Entity {
             Button,
             FocusRing,
             TabIndex(0),
-            Node { min_height: px(14), flex_shrink: 0.0, ..default() },
+            Node { min_height: px(12), flex_shrink: 0.0, ..default() },
             ChildOf(parent),
         ))
         .id();
@@ -232,7 +266,24 @@ fn button(world: &mut World, parent: Entity, text: &str) -> Entity {
 }
 fn action(world: &mut World, parent: Entity, text: &str, at: Vec2, size: Vec2) -> Entity {
     let e = button(world, parent, text);
-    world.entity_mut(e).insert(absolute(at, size));
+    let mut node = absolute(at, size);
+    node.justify_content = JustifyContent::Center;
+    node.align_items = AlignItems::Center;
+    world.entity_mut(e).insert(node);
+    if let Some(label) = world.get::<Children>(e).and_then(|c| c.first().copied()) {
+        world.entity_mut(label).insert(ZIndex(1));
+    }
+    let frames = if size == Vec2::new(67., 16.) {
+        Some((10, 12, 11))
+    } else if size == Vec2::new(123., 16.) {
+        Some((14, 15, 15))
+    } else {
+        None
+    };
+    if let Some((hover, pressed, pressed_hover)) = frames {
+        let child = picture(world, e, "npc_bottompanel", usize::MAX, Vec2::ZERO);
+        world.entity_mut(child).insert(WellChrome { size, hover, pressed, pressed_hover });
+    }
     // Normal button wells are already in the panel artwork; avoid scaling
     // a pressed-state sprite into an unrelated control's hit rectangle.
     world.entity_mut(e).insert(bevy::picking::hover::Hovered::default());
@@ -262,6 +313,65 @@ fn scroll_arrows(world: &mut World, parent: Entity, target: Entity, at: Vec2, ga
                     scroll.0.y = (scroll.0.y + step * 14.).max(0.);
                 }
             });
+    }
+}
+fn add_radio(world: &mut World, button: Entity) {
+    if let Some(mut node) = world.get_mut::<Node>(button) {
+        node.justify_content = JustifyContent::Start;
+        node.padding.left = px(10);
+    }
+    let image = picture(world, button, "npc_bottompanel", 8, Vec2::new(0., 2.));
+    world.entity_mut(image).insert(RadioMark);
+}
+fn paint_wells(
+    sheets: Res<Assets<SpriteSheet>>,
+    controls: Query<
+        (
+            Option<&bevy::picking::hover::Hovered>,
+            Has<bevy::ui::Pressed>,
+            Has<InteractionDisabled>,
+            Has<bevy::ui::Selected>,
+        ),
+        With<Button>,
+    >,
+    mut parts: Query<
+        (&ChildOf, &mut Picture, Option<&WellChrome>, Has<RadioMark>),
+        Or<(With<WellChrome>, With<RadioMark>)>,
+    >,
+) {
+    for (parent, mut picture, well, radio) in &mut parts {
+        let Ok((hover, pressed, disabled, selected)) = controls.get(parent.parent()) else {
+            continue;
+        };
+        let hover = hover.is_some_and(|h| h.get());
+        let frame = if radio {
+            if selected { 9 } else { 8 }
+        } else if let Some(well) = well {
+            if disabled {
+                usize::MAX
+            } else if pressed && hover {
+                well.pressed_hover
+            } else if pressed {
+                well.pressed
+            } else if hover {
+                well.hover
+            } else {
+                usize::MAX
+            }
+        } else {
+            continue;
+        };
+        let at = well
+            .and_then(|well| {
+                sheets.get(&picture.sheet)?.frames.get(frame).map(|f| {
+                    ((well.size - Vec2::new(f.width as f32, f.height as f32)) / 2.).floor()
+                })
+            })
+            .unwrap_or(picture.at);
+        if picture.frame != frame || picture.at != at {
+            picture.frame = frame;
+            picture.at = at;
+        }
     }
 }
 fn set_mode(state: &mut DialogueState, mode: Mode) {
@@ -479,9 +589,9 @@ fn build(world: &mut World, session: Entity) -> Entity {
                 Node {
                     position_type: PositionType::Absolute,
                     left: px(4),
-                    top: px(4),
-                    width: px(294),
-                    height: px(if trade { 83 } else { 62 }),
+                    top: px(8),
+                    width: px(284),
+                    height: px(76),
                     flex_direction: FlexDirection::Column,
                     overflow: Overflow::scroll_y(),
                     ..default()
@@ -494,26 +604,38 @@ fn build(world: &mut World, session: Entity) -> Entity {
             scroll_arrows(world, centre, list, Vec2::new(298., 4.), 71.);
         } else {
             world.entity_mut(list).insert(Summary);
-            scroll_arrows(world, centre, list, Vec2::new(298., 4.), 48.);
-            let text = bitmap(world, list, String::new(), 290.);
-            world
-                .entity_mut(text)
-                .insert((Caption::Transcript, BitmapWrap { width: 290, line_spacing: 0 }));
-            world.spawn((
-                Choices,
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: px(4),
-                    top: px(67),
-                    width: px(300),
-                    height: px(22),
-                    overflow: Overflow::scroll_x(),
-                    column_gap: px(6),
-                    ..default()
-                },
-                ScrollArea,
-                ChildOf(centre),
-            ));
+            scroll_arrows(world, centre, list, Vec2::new(298., 4.), 71.);
+            let overlay = world
+                .spawn((
+                    ChoiceOverlay::default(),
+                    Node { display: Display::None, ..absolute(Vec2::ZERO, Vec2::new(640., 480.)) },
+                    GlobalZIndex(100),
+                    Pickable::default(),
+                    ChildOf(group),
+                ))
+                .id();
+            // Retail option/price dialogs require an answer; Escape must not
+            // bubble through and close the conversation underneath them.
+            world.entity_mut(overlay).observe(|mut event: On<FocusedInput<KeyboardInput>>| {
+                if event.input.logical_key == Key::Escape {
+                    event.propagate(false);
+                }
+            });
+            let choices = world
+                .spawn((
+                    Choices,
+                    absolute(Vec2::new(220., 184.), Vec2::new(200., 70.)),
+                    ChildOf(overlay),
+                ))
+                .id();
+            let assets = world.resource::<AssetServer>().clone();
+            super::screen_art::spawn_dialog_frame(&mut world.commands(), &assets, choices, false);
+            for purse in [false, true] {
+                let text =
+                    label(world, choices, "", Vec2::new(10., if purse { 55. } else { 10. }), 180.);
+                world.entity_mut(text).insert(ChoiceCaption(purse));
+                world.get_mut::<BitmapText>(text).unwrap().justify = bevy::text::Justify::Center;
+            }
         }
         if trade {
             let right = panel(world, group, Vec2::new(476., 358.), Vec2::new(141., 92.), 6);
@@ -603,6 +725,8 @@ fn build(world: &mut World, session: Entity) -> Entity {
                 Vec2::new(6., 2.),
                 Vec2::new(130., 12.),
             );
+            add_radio(world, sort);
+            world.entity_mut(sort).insert(SortToggle);
             world.entity_mut(sort).observe(
                 move |_: On<Activate>, mut states: Query<&mut DialogueState>| {
                     if let Ok(mut state) = states.get_mut(root) {
@@ -628,6 +752,7 @@ fn build(world: &mut World, session: Entity) -> Entity {
                     Vec2::new(61., 12.),
                 );
                 world.entity_mut(e).insert(CategoryButton(category));
+                add_radio(world, e);
                 world.entity_mut(e).observe(
                     move |_: On<Activate>, mut states: Query<&mut DialogueState>| {
                         if let Ok(mut state) = states.get_mut(root)
@@ -678,6 +803,22 @@ fn build(world: &mut World, session: Entity) -> Entity {
                     at,
                     Vec2::new(if i < 2 { 17. } else { 123. }, 16.),
                 );
+                if i < 2 {
+                    let children: Vec<_> =
+                        world.get::<Children>(e).into_iter().flatten().copied().collect();
+                    for child in children {
+                        world.despawn(child);
+                    }
+                    let first = if i == 0 { 5 } else { 10 };
+                    let sheet = world
+                        .resource::<AssetServer>()
+                        .load("retail://data/npc interaction/npc_buttons.sti");
+                    world.entity_mut(e).insert((
+                        Picture { sheet, frame: first, at, bounds: Some(first) },
+                        ControlSkin::new(first, first + 1, first + 4, first + 2, first + 3),
+                        Pickable::default(),
+                    ));
+                }
                 match i {
                     2 => {
                         world.entity_mut(e).observe(
@@ -750,7 +891,11 @@ fn build(world: &mut World, session: Entity) -> Entity {
     let text = bitmap(world, bubble, String::new(), 256.);
     let font = world.resource::<AssetServer>().load("retail://data/fonts/font12point1.sti");
     world.get_mut::<BitmapText>(text).unwrap().font = font;
-    world.entity_mut(text).insert((Caption::Quote, BitmapWrap { width: 256, line_spacing: 2 }));
+    world.entity_mut(text).insert((
+        Caption::Quote,
+        BitmapWrap { width: 256, line_spacing: 2 },
+        BitmapInk { foreground: 208, shadow: None },
+    ));
     world.entity_mut(bubble).observe(
         move |_: On<Activate>,
               bubbles: Query<&QuoteBubble>,
@@ -860,22 +1005,92 @@ fn project_text(
                     String::new()
                 }
             }
-            Caption::Transcript => {
-                let error = if let ConversationWait::Blocked { quote, entry, reason } = &c.wait {
-                    format!("Content gap at quote {quote}, entry {entry:?}: {reason}")
-                } else {
-                    String::new()
-                };
-                [c.transcript.join("\n"), error, c.result.clone().unwrap_or_default()]
-                    .into_iter()
-                    .filter(|s| !s.is_empty())
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            }
         };
         if text.value != value {
             text.value = value;
         }
+    }
+}
+fn sync_transcript(
+    views: ViewScope,
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+    sessions: Query<&Conversation>,
+    lists: Query<(Entity, Option<&Children>), With<Summary>>,
+    mut rows: Query<(&TranscriptRow, &mut BitmapText)>,
+) {
+    for (list, children) in &lists {
+        let Some((_, session)) = views.owner(list) else { continue };
+        let Ok(c) = sessions.get(session) else { continue };
+        // The current line is still in its speech bubble. Do not print it a
+        // second time in the transcript before playback has finished.
+        let count = c
+            .transcript
+            .len()
+            .saturating_sub(usize::from(matches!(c.wait, ConversationWait::Line { .. })));
+        let mut lines: Vec<_> = c.transcript[..count]
+            .iter()
+            .map(|line| match line {
+                TranscriptLine::Npc(text) => (text.clone(), None),
+                TranscriptLine::Question(text) => (text.clone(), Some("palettebronze")),
+                TranscriptLine::Reply(text) => (text.clone(), Some("palettegreen")),
+            })
+            .collect();
+        if let ConversationWait::Blocked { quote, entry, reason } = &c.wait {
+            lines.push((
+                format!("Content gap at quote {quote}, entry {entry:?}: {reason}"),
+                Some("palettered"),
+            ));
+        }
+        if let Some(result) = &c.result {
+            lines.push((result.clone(), Some("palettebronze")));
+        }
+        let old: Vec<_> = children
+            .into_iter()
+            .flatten()
+            .filter_map(|e| rows.get(*e).ok().map(|(row, _)| (*e, row.0)))
+            .collect();
+        let mut changed = old.len() != lines.len();
+        for (entity, index) in &old {
+            if *index >= lines.len() {
+                commands.entity(*entity).despawn();
+            }
+        }
+        for (index, (value, palette)) in lines.into_iter().enumerate() {
+            let text = BitmapText {
+                font: assets.load("retail://data/fonts/wiz_text_font.sti"),
+                palette: palette.map(|name| assets.load(format!("retail://data/fonts/{name}.sti"))),
+                value,
+                width: 284.,
+                ..default()
+            };
+            if let Some((entity, _)) = old.iter().find(|(_, i)| *i == index) {
+                if let Ok((_, mut current)) = rows.get_mut(*entity) {
+                    changed |= *current != text;
+                    current.set_if_neq(text);
+                }
+            } else {
+                commands.spawn((
+                    TranscriptRow(index),
+                    text,
+                    BitmapWrap { width: 284, line_spacing: 0 },
+                    Node { position_type: PositionType::Relative, flex_shrink: 0., ..default() },
+                    ChildOf(list),
+                ));
+            }
+        }
+        if changed {
+            commands.entity(list).insert(ScrollToNewest);
+        }
+    }
+}
+fn scroll_to_newest(
+    mut commands: Commands,
+    mut lists: Query<(Entity, &ComputedNode, &mut ScrollPosition), With<ScrollToNewest>>,
+) {
+    for (entity, node, mut scroll) in &mut lists {
+        scroll.0.y = (node.content_size().y - node.size().y).max(0.) * node.inverse_scale_factor();
+        commands.entity(entity).remove::<ScrollToNewest>();
     }
 }
 fn set_enabled(commands: &mut Commands, entity: Entity, enabled: bool, disabled: bool) {
@@ -908,6 +1123,7 @@ fn project_modes(
             Option<&CategoryButton>,
             Option<&ItemFilter>,
             Has<TradeAvailable>,
+            Has<SortToggle>,
         ),
         Or<(
             With<ModeButton>,
@@ -915,6 +1131,7 @@ fn project_modes(
             With<CategoryButton>,
             With<ItemFilter>,
             With<TradeAvailable>,
+            With<SortToggle>,
         )>,
     >,
 ) {
@@ -939,7 +1156,7 @@ fn project_modes(
             node.display = display;
         }
     }
-    for (entity, disabled, was_selected, mode, pool, category, filter, trade) in &controls {
+    for (entity, disabled, was_selected, mode, pool, category, filter, trade, sort) in &controls {
         let Some((root, session)) = views.owner(entity) else { continue };
         let (Ok(state), Ok(c)) = (views.states.get(root), sessions.get(session)) else { continue };
         if trade {
@@ -952,7 +1169,8 @@ fn project_modes(
         } else if pool.is_some() {
             set_enabled(&mut commands, entity, state.mode == Mode::Sell, disabled);
         }
-        let selected = mode.is_some_and(|m| state.mode == m.0)
+        let selected = (sort && state.alphabetical)
+            || mode.is_some_and(|m| state.mode == m.0)
             || pool.is_some_and(|p| state.pool == p.0)
             || category.is_some_and(|c| state.category == c.0)
             || filter.is_some_and(|f| match f {
@@ -971,18 +1189,55 @@ fn project_modes(
 /// Paint labels from the native selection state; sprite controls use ControlSkin.
 fn colour_selections(
     views: ViewScope,
-    controls: Query<Has<bevy::ui::Selected>, With<Button>>,
+    controls: Query<(Has<bevy::ui::Selected>, Has<InteractionDisabled>), With<Button>>,
     mut labels: Query<(Entity, &ChildOf, &mut ImageNode), With<BitmapText>>,
 ) {
     for (entity, parent, mut image) in &mut labels {
         if views.owner(entity).is_none() {
             continue;
         }
-        if let Ok(selected) = controls.get(parent.parent()) {
-            let color = if selected { Color::srgb(1., 0.9, 0.4) } else { Color::WHITE }
-                .with_alpha(image.color.alpha());
+        if let Ok((selected, disabled)) = controls.get(parent.parent()) {
+            let color = if disabled {
+                Color::srgb(0.5, 0.5, 0.5)
+            } else if selected {
+                Color::srgb(1., 0.9, 0.4)
+            } else {
+                Color::WHITE
+            };
+            let color = color.with_alpha(image.color.alpha());
             if image.color != color {
                 image.color = color;
+            }
+        }
+    }
+}
+/// DialogTextEntry uses brown keywords, white selection and yellow hover.
+fn paint_topic_text(
+    views: ViewScope,
+    assets: Res<AssetServer>,
+    rows: Query<(Entity, &TopicRow, &bevy::picking::hover::Hovered, &Children)>,
+    inputs: Query<(Entity, &EditableText), With<TopicInput>>,
+    mut texts: Query<&mut BitmapText>,
+) {
+    for (entity, row, hovered, children) in &rows {
+        let Some((root, _)) = views.owner(entity) else { continue };
+        let selected = inputs.iter().any(|(input, text)| {
+            views.owner(input).is_some_and(|(owner, _)| owner == root)
+                && text.value().to_string().eq_ignore_ascii_case(&row.0)
+        });
+        let name = if hovered.0 {
+            "paletteyellow"
+        } else if selected {
+            "palettewhite"
+        } else {
+            "palettebrown"
+        };
+        let palette = Some(assets.load(format!("retail://data/fonts/{name}.sti")));
+        for child in children.iter() {
+            if let Ok(mut text) = texts.get_mut(child)
+                && text.palette != palette
+            {
+                text.palette = palette.clone();
             }
         }
     }
@@ -1020,7 +1275,7 @@ fn row_button(
             Button,
             FocusRing,
             TabIndex(0),
-            Node { min_height: px(14), flex_shrink: 0., ..default() },
+            Node { min_height: px(12), flex_shrink: 0., ..default() },
             ChildOf(parent),
         ))
         .id();
@@ -1094,58 +1349,141 @@ fn sync_choices(
     views: ViewScope,
     mut commands: Commands,
     assets: Res<AssetServer>,
+    sheets: Res<Assets<SpriteSheet>>,
+    tables: Res<Assets<TextTable>>,
     sessions: Query<&Conversation>,
-    lists: Query<(Entity, Option<&Children>), With<Choices>>,
-    mut choices: Query<(&mut Choice, &Children)>,
-    mut labels: Query<&mut BitmapText>,
+    parties: Query<&PartyInventory, With<crate::game::party::roster::Party>>,
+    mut focus: ResMut<InputFocus>,
+    mut overlays: Query<(Entity, &mut Node, &mut ChoiceOverlay), Without<Choices>>,
+    mut lists: Query<
+        (Entity, &ChildOf, &mut Node, Option<&Children>),
+        (With<Choices>, Without<ChoiceOverlay>, Without<Choice>),
+    >,
+    mut choices: Query<
+        (&mut Choice, &Children, &mut Node),
+        (Without<Choices>, Without<ChoiceOverlay>),
+    >,
+    mut labels: Query<(&mut BitmapText, Option<&ChoiceCaption>)>,
 ) {
-    for (list, children) in &lists {
+    let font = assets.load("retail://data/fonts/wiz_text_font_monopalette.sti");
+    let strings = assets.load("retail://data/strings/stringdata.dat");
+    let string = |id, fallback: &str| {
+        tables.get(&strings).and_then(|s| s.get(id)).unwrap_or(fallback).to_owned()
+    };
+    for (list, parent, mut node, children) in &mut lists {
         let Some((_, session)) = views.owner(list) else { continue };
         let Ok(c) = sessions.get(session) else { continue };
         let answers: Vec<(String, Answer)> = match &c.wait {
             ConversationWait::Options { words, .. } => {
                 words.iter().map(|w| (w.clone(), Answer::Reply(w.clone()))).collect()
             }
-            ConversationWait::Price { gold, .. } => vec![
-                (format!("Pay {gold} gold"), Answer::Price(true)),
-                ("Decline".into(), Answer::Price(false)),
+            ConversationWait::Price { .. } => vec![
+                (string(0x7df, "Pay"), Answer::Price(true)),
+                (string(0x7e0, "Decline"), Answer::Price(false)),
             ],
             _ => vec![],
         };
+        let Ok((overlay, mut overlay_node, mut state)) = overlays.get_mut(parent.parent()) else {
+            continue;
+        };
+        let visible = !answers.is_empty();
+        let was_visible = overlay_node.display != Display::None;
+        if visible != was_visible {
+            overlay_node.display = if visible { Display::Flex } else { Display::None };
+            if visible {
+                state.previous_focus = focus.get();
+                commands.entity(overlay).insert((TabGroup::modal(), bevy::ui_widgets::ModalDialog));
+            } else {
+                commands.entity(overlay).remove::<(TabGroup, bevy::ui_widgets::ModalDialog)>();
+                if let Some(previous) = state.previous_focus.take() {
+                    focus.set(previous, FocusCause::Navigated);
+                }
+            }
+        }
+        let price = matches!(c.wait, ConversationWait::Price { .. });
+        let button_width = sheets.get(&font).map_or(70., |f| {
+            answers.iter().map(|(t, _)| f.text_width(t)).max().unwrap_or(0) as f32 + 6.
+        });
+        let width = if price {
+            (button_width * 2. + 50.).max(200.)
+        } else {
+            let width = (button_width + 10.) * answers.len() as f32 + 30.;
+            if answers.len() == 2 { width.max(200.) } else { width }
+        };
+        let layout = absolute(
+            Vec2::new((640. - width) / 2., 184.),
+            Vec2::new(width, if price { 80. } else { 70. }),
+        );
+        node.set_if_neq(layout);
+        if let Some(children) = children {
+            for child in children.iter() {
+                if let Ok((mut text, Some(caption))) = labels.get_mut(child) {
+                    let value = if caption.0 {
+                        if price {
+                            format!(
+                                "{} {}g",
+                                string(0x7e6, "Party gold:"),
+                                parties.single().map_or(0, |p| p.gold)
+                            )
+                        } else {
+                            String::new()
+                        }
+                    } else if let ConversationWait::Price { gold, .. } = c.wait {
+                        string(0x7e5, "Price: %d gold").replace("%d", &gold.to_string())
+                    } else {
+                        string(0x7e4, "Choose a response")
+                    };
+                    if text.value != value {
+                        text.value = value;
+                    }
+                    if text.width != width - 20. {
+                        text.width = width - 20.;
+                    }
+                }
+            }
+        }
         let old: Vec<_> = children
             .into_iter()
             .flatten()
-            .filter_map(|e| choices.get(*e).ok().map(|(c, _)| (*e, c.index)))
+            .filter_map(|e| choices.get(*e).ok().map(|(c, _, _)| (*e, c.index)))
             .collect();
         for (entity, index) in &old {
             if *index >= answers.len() {
                 commands.entity(*entity).despawn();
             }
         }
+        let left = (width - ((button_width + 10.) * answers.len() as f32 - 10.)) / 2.;
         for (index, (label, answer)) in answers.into_iter().enumerate() {
             let value = Choice { session, index, revision: c.revision, answer };
+            let mut layout = absolute(
+                Vec2::new(
+                    left + index as f32 * (button_width + 10.),
+                    if price { 30. } else { 35. },
+                ),
+                Vec2::new(button_width, 20.),
+            );
+            layout.justify_content = JustifyContent::Center;
+            layout.align_items = AlignItems::Center;
             if let Some((entity, _)) = old.iter().find(|(_, i)| *i == index) {
-                if let Ok((mut choice, children)) = choices.get_mut(*entity) {
+                if let Ok((mut choice, children, mut node)) = choices.get_mut(*entity) {
                     choice.set_if_neq(value);
+                    node.set_if_neq(layout);
                     if let Some(child) = children.first()
-                        && let Ok(mut text) = labels.get_mut(*child)
+                        && let Ok((mut text, _)) = labels.get_mut(*child)
                         && text.value != label
                     {
                         text.value = label;
                     }
                 }
             } else {
-                let (entity, _) = row_button(
-                    &mut commands,
-                    list,
-                    assets.load("retail://data/fonts/wiz_text_font.sti"),
-                    label,
-                );
-                commands.entity(entity).insert(value);
+                let (entity, text) = row_button(&mut commands, list, font.clone(), label);
+                commands.entity(text).insert(BitmapInk { foreground: 4, shadow: Some(5) });
+                commands.entity(entity).insert((value, layout));
             }
         }
     }
 }
+
 fn sync_topic_rows(
     views: ViewScope,
     mut commands: Commands,
@@ -1187,8 +1525,17 @@ fn sync_topic_rows(
                     assets.load("retail://data/fonts/wiz_text_font.sti"),
                     text.clone(),
                 );
+                commands.entity(entity).insert(Node {
+                    height: px(12),
+                    min_height: px(12),
+                    flex_shrink: 0.,
+                    align_items: AlignItems::Center,
+                    ..default()
+                });
                 ordered.push(entity);
-                commands.entity(entity).insert(TopicRow(text.clone()));
+                commands
+                    .entity(entity)
+                    .insert((TopicRow(text.clone()), bevy::picking::hover::Hovered::default()));
             }
         }
         if children.is_none_or(|c| c.iter().ne(ordered.iter().copied())) {
@@ -1605,6 +1952,7 @@ mod tests {
             .init_resource::<Assets<Image>>()
             .init_resource::<StoryFacts>()
             .init_resource::<Assets<NpcCatalog>>()
+            .init_resource::<Assets<TextTable>>()
             .init_resource::<Assets<ItemCatalog>>()
             .init_resource::<NpcAssets>()
             .init_resource::<SelectedMember>()
@@ -1652,6 +2000,11 @@ mod tests {
         app.world_mut()
             .resource_mut::<Assets<SpriteSheet>>()
             .insert(font.id(), SpriteSheet { frames, images: vec![], palette: None })
+            .unwrap();
+        let palette = app.world().get::<BitmapText>(label).unwrap().palette.clone().unwrap();
+        app.world_mut()
+            .resource_mut::<Assets<SpriteSheet>>()
+            .insert(palette.id(), SpriteSheet { frames: vec![], images: vec![], palette: None })
             .unwrap();
         app.world_mut()
             .resource_mut::<StoryFacts>()

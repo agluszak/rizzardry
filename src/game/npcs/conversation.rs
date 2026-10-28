@@ -112,6 +112,14 @@ pub enum ConversationWait {
     Price { quote: u16, gold: u32, always: bool },
     Blocked { quote: u16, entry: Option<usize>, reason: String },
 }
+/// Accepted dialogue history, including the party's input. Presentation chooses
+/// the retail palette without guessing speakers from the text.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TranscriptLine {
+    Npc(String),
+    Question(String),
+    Reply(String),
+}
 #[derive(Component, Debug)]
 pub struct Conversation {
     pub actor: Entity,
@@ -119,7 +127,7 @@ pub struct Conversation {
     pub revision: u64,
     pub current: Option<(u16, usize)>,
     pub wait: ConversationWait,
-    pub transcript: Vec<String>,
+    pub transcript: Vec<TranscriptLine>,
     pub result: Option<String>,
     queue: VecDeque<Step>,
 }
@@ -244,13 +252,12 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
         .ok()
         .flatten()
         .ok_or(TradeError::Unavailable)?;
-    let near = world
+    let party_at = world
         .query::<(&avian3d::prelude::Position, &crate::game::party::body::PartyBody)>()
         .iter(world)
-        .any(|(p, _)| p.0.distance(at) <= crate::game::world::items::REACH);
-    if !near {
-        return Err(TradeError::Unavailable);
-    }
+        .find(|(p, _)| p.0.distance(at) <= crate::game::world::items::REACH)
+        .map(|(p, _)| p.0)
+        .ok_or(TradeError::Unavailable)?;
     let def = definition(world, actor)?;
     if !available(world, actor) {
         return Err(TradeError::Unavailable);
@@ -303,6 +310,22 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
         world.resource_mut::<StoryFacts>().initialize(catalog);
         Ok::<_, TradeError>(())
     })?;
+    // OpenNpcDialoguePanel / MonsterForwardReferencePosition: the accepted
+    // speaker faces the party. Physics rotation owns a moving body's facing.
+    {
+        let delta = (party_at - at).with_y(0.);
+        if delta.length_squared() > 0.0001 {
+            let facing = Quat::from_rotation_y((-delta.x).atan2(-delta.z));
+            if let Some(mut rotation) = world.get_mut::<avian3d::prelude::Rotation>(body) {
+                rotation.0 = facing;
+            }
+            // Set the corresponding engine transform in the same accepted
+            // teleport, so Avian input synchronization cannot restore its old yaw.
+            if let Some(mut transform) = world.get_mut::<Transform>(body) {
+                transform.rotation = facing;
+            }
+        }
+    }
     let greeting = entry_quote(&def, world.get::<Npc>(actor).unwrap());
     Ok(world
         .spawn(Conversation {
@@ -435,6 +458,17 @@ fn run(world: &mut World, entity: Entity, c: &mut Conversation) {
                     return;
                 }
                 if quote == 0 {
+                    let first = world.get::<Npc>(c.actor).unwrap().greeting_pending;
+                    if first && let Ok(definition) = definition(world, c.actor) {
+                        let mut facts = world.resource_mut::<StoryFacts>();
+                        if !facts
+                            .topics
+                            .iter()
+                            .any(|(_, text)| text.eq_ignore_ascii_case(&definition.source_name))
+                        {
+                            facts.topics.push((TopicCategory::Person, definition.source_name));
+                        }
+                    }
                     world.get_mut::<Npc>(c.actor).unwrap().greeting_pending = false;
                 }
                 c.current = Some((quote, subquote));
@@ -521,7 +555,7 @@ fn run(world: &mut World, entity: Entity, c: &mut Conversation) {
                 };
                 let voice = format!("{}_{quote:03}{suffix}", def.voice_stem());
                 let seconds = text.encode_utf16().count() as f32 * 0.06 + 2.0;
-                c.transcript.push(text.clone());
+                c.transcript.push(TranscriptLine::Npc(text.clone()));
                 let speech =
                     world.spawn((ConversationSpeech { voice, text }, ChildOf(entity))).id();
                 c.wait = ConversationWait::Line {
@@ -550,6 +584,7 @@ fn topic(world: &mut World, c: &mut Conversation, text: &str) {
         .or_else(|| words.windows(2).find_map(|pair| script.topic(&pair.join(" "))))
         .or_else(|| words.iter().find_map(|word| script.topic(word)));
     if let Some(quote) = matched {
+        c.transcript.push(TranscriptLine::Question(text.to_owned()));
         c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false });
         c.revision += 1;
         c.result = None;
@@ -583,6 +618,7 @@ fn reply(world: &mut World, c: &mut Conversation, text: &str) {
                 })
             });
         if let Some(quote) = response {
+            c.transcript.push(TranscriptLine::Reply(text.to_owned()));
             c.wait = ConversationWait::Ready;
             c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false });
             c.revision += 1;
@@ -1177,7 +1213,9 @@ mod tests {
                 Some((response, 0))
             );
             assert_eq!(app.world().resource::<StoryFacts>().values.get(&FactId(91)), Some(&value));
-            assert_eq!(app.world().get::<Conversation>(session).unwrap().transcript.len(), 2);
+            let history = &app.world().get::<Conversation>(session).unwrap().transcript;
+            assert_eq!(history.len(), 3);
+            assert_eq!(history[1], TranscriptLine::Reply(word.into()));
         }
     }
     #[test]

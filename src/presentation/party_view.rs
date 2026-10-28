@@ -39,7 +39,11 @@ pub fn aim_camera(
     conversations: Query<&crate::game::npcs::conversation::Conversation>,
     npc_bodies: Query<&crate::game::npcs::NpcBodies>,
     actors: Query<
-        (crate::game::world::ActorPose, &crate::game::world::population::Monster),
+        (
+            crate::game::world::ActorPose,
+            &crate::game::world::population::Monster,
+            Option<&crate::game::world::navigation::Walker>,
+        ),
         Without<PartyCamera>,
     >,
     mut camera: Query<&mut Transform, With<PartyCamera>>,
@@ -51,8 +55,9 @@ pub fn aim_camera(
             .ok()
             .and_then(|c| npc_bodies.get(c.actor).ok())
             .and_then(|bodies| bodies.iter().find_map(|body| actors.get(body).ok()))
-            .map_or(ordinary, |(target, monster)| {
-                let direction = target.translation() + Vec3::Y * monster.body.eye_height
+            .map_or(ordinary, |(target, monster, walker)| {
+                let direction = crate::game::world::navigation::feet(target.translation(), walker)
+                    + Vec3::Y * monster.body.eye_height
                     - (pose.translation() + camera.translation);
                 if direction.length_squared() < 0.0001 {
                     ordinary

@@ -24,7 +24,7 @@ impl SpriteSheet {
 
     /// Draw text using a retail replacement palette.
     pub fn text_image_with_palette(&self, text: &str, palette: &SpriteSheet) -> Image {
-        self.text_image_spaced(text, 0, Some(palette))
+        self.text_image_spaced(text, 0, Some(palette), None)
     }
 
     pub fn text_image_spaced(
@@ -32,9 +32,26 @@ impl SpriteSheet {
         text: &str,
         spacing: u32,
         palette: Option<&SpriteSheet>,
+        ink: Option<(u8, Option<u8>)>,
     ) -> Image {
         let (width, height, mut rgba) = render_text_spaced(&self.frames, text, spacing);
-        if let (Some(source), Some(target)) =
+        if let (Some(source), Some((foreground, shadow))) = (&self.palette, ink) {
+            // Retail mprintf/MonoShadow: index 0 is background, index 1 is
+            // shadow, other opaque pixels use the chosen foreground index.
+            for pixel in rgba.as_chunks_mut::<4>().0.iter_mut().filter(|p| p[3] != 0) {
+                if pixel[..3] == source[0] {
+                    pixel[3] = 0;
+                } else if pixel[..3] == source[1] {
+                    if let Some(shadow) = shadow {
+                        pixel[..3].copy_from_slice(&source[shadow as usize]);
+                    } else {
+                        pixel[3] = 0;
+                    }
+                } else {
+                    pixel[..3].copy_from_slice(&source[foreground as usize]);
+                }
+            }
+        } else if let (Some(source), Some(target)) =
             (&self.palette, palette.and_then(|p| p.palette.as_ref()))
         {
             let mut colours = std::collections::HashMap::new();
@@ -215,6 +232,28 @@ impl TextTable {
 #[cfg(test)]
 mod bitmap_layout_tests {
     use super::*;
+    #[test]
+    fn monochrome_quote_font_uses_white_ink_without_its_green_shadow() {
+        let mut palette = vec![[0, 0, 0]; 256];
+        palette[1] = [0, 54, 0];
+        palette[208] = [255, 255, 255];
+        palette[209] = [222, 222, 222];
+        let font = SpriteSheet {
+            frames: vec![Frame {
+                offset: [0, 0],
+                width: 2,
+                height: 1,
+                rgba: vec![0, 54, 0, 255, 222, 222, 222, 255],
+            }],
+            images: vec![],
+            palette: Some(palette),
+        };
+        let image = font.text_image_spaced("A", 0, None, Some((208, None)));
+        let pixels = image.data.unwrap();
+        assert_eq!(pixels[3], 0);
+        assert_eq!(&pixels[4..8], &[255; 4]);
+    }
+
     #[test]
     fn paragraphs_and_wrapped_words_have_real_pixel_height() {
         let font = vec![Frame { offset: [0, 0], width: 2, height: 3, rgba: vec![255; 24] }; 150];
