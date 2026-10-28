@@ -66,35 +66,27 @@ pub fn drop_loot(
     if !items.is_empty() {
         info!("loot: {} item(s) at {feet:.1}", items.len());
     }
-    let lying = match items.len() {
-        0 => return,
-        1 => WorldItem::loose(items.remove(0), false),
-        _ if catalog.get(BAG_OF_ITEMS).is_some() => WorldItem {
+    let mut lay = |lying| {
+        commands.spawn((
+            Name::new("loot"),
+            lying,
+            Transform::from_translation(feet + Vec3::Y * CLEARANCE),
+            LevelOwned(level),
+        ));
+    };
+    match (items.len(), catalog.get(BAG_OF_ITEMS)) {
+        (0, _) => {}
+        (1, _) => lay(WorldItem::loose(items.remove(0), false)),
+        (_, Some(bag)) => lay(WorldItem {
             loot: GroundLoot::Pile {
                 appearance: BAG_OF_ITEMS,
-                identified: catalog.get(BAG_OF_ITEMS).unwrap().auto_identify,
+                identified: bag.auto_identify,
                 contents: items,
             },
             hidden: false,
-        },
-        _ => {
-            for item in items {
-                commands.spawn((
-                    Name::new("loot"),
-                    WorldItem::loose(item, false),
-                    Transform::from_translation(feet + Vec3::Y * CLEARANCE),
-                    LevelOwned(level),
-                ));
-            }
-            return;
-        }
-    };
-    commands.spawn((
-        Name::new("loot"),
-        lying,
-        Transform::from_translation(feet + Vec3::Y * CLEARANCE),
-        LevelOwned(level),
-    ));
+        }),
+        (_, None) => items.into_iter().for_each(|item| lay(WorldItem::loose(item, false))),
+    }
 }
 
 /// Retail takes an item from at most this far from the eye

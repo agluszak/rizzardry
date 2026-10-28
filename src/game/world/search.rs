@@ -219,6 +219,8 @@ mod tests {
             .init_resource::<Search>()
             .add_message::<ToggleSearch>()
             .add_message::<SearchNews>()
+            .add_observer(suspend_search)
+            .add_observer(resume_search)
             .add_systems(Update, toggle_search);
         app.world_mut().spawn(Level::test(default()));
         app.world_mut().write_message(ToggleSearch);

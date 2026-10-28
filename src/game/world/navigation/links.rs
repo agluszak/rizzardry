@@ -170,13 +170,13 @@ pub fn finish_crossings(
     walkers: Query<(
         Entity,
         &Crossing,
-        &Transform,
+        crate::game::world::ActorPose,
         &super::Walker,
         Option<&crate::game::world::population::Monster>,
     )>,
 ) {
-    for (entity, crossing, transform, walker, monster) in &walkers {
-        let feet = transform.translation - Vec3::Y * walker.float_height;
+    for (entity, crossing, pose, walker, monster) in &walkers {
+        let feet = super::feet(pose.translation(), Some(walker));
         if monster.is_some_and(|m| m.is_dead())
             || feet.with_y(0.0).distance(crossing.to.with_y(0.0)) < 0.4
         {

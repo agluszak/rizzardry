@@ -334,13 +334,19 @@ fn member(world: &mut World, actor: Entity) -> Result<(&Character, &Vitals), Una
         return Err(Unable::NotMember);
     }
     let entity = world.get_entity(actor).map_err(|_| Unable::NotMember)?;
-    if !entity.get::<Vitals>().ok_or(Unable::NotMember)?.can_act() {
+    let vitals = entity.get::<Vitals>().ok_or(Unable::NotMember)?;
+    if !vitals.can_act() {
         return Err(Unable::CannotAct);
     }
-    Ok((
-        entity.get::<Character>().ok_or(Unable::NotMember)?,
-        entity.get().ok_or(Unable::NotMember)?,
-    ))
+    Ok((entity.get::<Character>().ok_or(Unable::NotMember)?, vitals))
+}
+
+/// Whether the device is still guarded and on the loaded level.
+fn guarded_on_level(world: &World, device: Entity) -> bool {
+    world.get::<Guarded>(device).is_some()
+        && world
+            .get::<super::level::LevelOwned>(device)
+            .is_some_and(|owner| world.get::<super::level::Level>(owner.0).is_some())
 }
 
 fn rng(world: &mut World) -> Mut<'_, GameRng> {
@@ -386,16 +392,7 @@ pub fn pick_tumbler(world: &mut World, actor: Entity, tumbler: usize) -> Result<
             && guarded.practice_left > 0
         {
             guarded.practice_left -= 1;
-            let improved = world.resource_scope(|world, mut rng: Mut<GameRng>| {
-                world.get_mut::<Character>(actor).unwrap().practise(
-                    Skill::LocksAndTraps,
-                    1,
-                    &mut rng,
-                )
-            });
-            if improved {
-                world.write_message(LockNews::SkillImproved { member: actor });
-            }
+            practise_locks(world, actor);
         }
     }
     world.write_message(LockNews::Tumbler { dropped });
@@ -446,11 +443,7 @@ fn ready_trap(world: &mut World) -> Result<Disarming, Unable> {
     let interaction = world.get_resource::<DeviceInteraction>().ok_or(Unable::NotNow)?;
     let device = interaction.device;
     let trap = disarming(world)?.clone();
-    if world.get::<Guarded>(device).is_none()
-        || world
-            .get::<super::level::LevelOwned>(device)
-            .is_none_or(|owner| world.get::<super::level::Level>(owner.0).is_none())
-    {
+    if !guarded_on_level(world, device) {
         return Err(Unable::NotNow);
     }
     if let Err(error) = crate::game::magic::traps::validate(world, trap.trap) {
@@ -462,7 +455,7 @@ fn ready_trap(world: &mut World) -> Result<Disarming, Unable> {
     Ok(trap)
 }
 
-fn practise_traps(world: &mut World, actor: Entity) {
+fn practise_locks(world: &mut World, actor: Entity) {
     let improved = world.resource_scope(|world, mut rng: Mut<GameRng>| {
         world.get_mut::<Character>(actor).unwrap().practise(Skill::LocksAndTraps, 1, &mut rng)
     });
@@ -481,7 +474,7 @@ pub fn inspect_trap(world: &mut World, actor: Entity) -> Result<(), Unable> {
         return spring_trap(world, Some(actor));
     }
     // Practice may increase this very inspection's observation chance.
-    practise_traps(world, actor);
+    practise_locks(world, actor);
     let (character, vitals) = member(world, actor)?;
     let chance = trap.inspection_chance(lock_skill(character, vitals), setting);
     let seen = std::array::from_fn(|column| {
@@ -522,7 +515,7 @@ pub fn disarm_component(world: &mut World, actor: Entity, component: usize) -> R
         .iter()
         .zip(work.disarmed)
         .all(|(&required, disarmed)| !required || disarmed);
-    practise_traps(world, actor);
+    practise_locks(world, actor);
     world.write_message(LockNews::ComponentDisarmed { member: actor, component });
     if done {
         world.write_message(LockNews::Disarmed { trap: trap.trap });
@@ -566,8 +559,10 @@ pub fn prepare_device_magic(
     Ok(())
 }
 
+/// Per mille that Knock-Knock moves each tumbler it reaches, by power.
+const KNOCK_CHANCE: [u32; 8] = [0, 344, 459, 516, 550, 573, 589, 602];
+
 fn knock(world: &mut World, actor: Entity, power: u8, backfire: bool) {
-    const CHANCE: [u32; 8] = [0, 344, 459, 516, 550, 573, 589, 602];
     let (done, dropped) = world.resource_scope(|world, mut rng: Mut<GameRng>| {
         let mut interaction = world.resource_mut::<DeviceInteraction>();
         let Work::Picking(picking) = &mut interaction.work else { unreachable!() };
@@ -579,7 +574,7 @@ fn knock(world: &mut World, actor: Entity, power: u8, backfire: bool) {
         }
         let mut dropped = false;
         for index in order.into_iter().take(usize::from(power) + 1) {
-            if rng.below(1000) < CHANCE[usize::from(power)] {
+            if rng.below(1000) < KNOCK_CHANCE[usize::from(power)] {
                 let pin = &mut picking.tumblers[index];
                 if backfire {
                     dropped |= pin.raised();
@@ -612,12 +607,7 @@ pub fn cast_device(
     };
     member(world, actor).map_err(|_| Refusal::CannotAct)?;
     let interaction = world.get_resource::<DeviceInteraction>().ok_or(Refusal::NoTarget)?;
-    if interaction.device != device
-        || world.get::<Guarded>(device).is_none()
-        || world
-            .get::<super::level::LevelOwned>(device)
-            .is_none_or(|owner| world.get::<super::level::Level>(owner.0).is_none())
-    {
+    if interaction.device != device || !guarded_on_level(world, device) {
         return Err(Refusal::NoTarget);
     }
     let context = match interaction.work {
@@ -666,14 +656,13 @@ pub fn cast_device(
     Ok(())
 }
 
-/// The lock or trap is overcome: the interaction ends and the device runs.
+/// The lock or trap is overcome: the interaction ends and the device runs
+/// (retail `CompleteItemInteraction` then `Run`).
 fn complete(world: &mut World) {
-    let interaction = world.remove_resource::<DeviceInteraction>().unwrap();
-    finish(world, interaction.device);
-}
-
-/// Retail `CompleteItemInteraction` then `Run`.
-fn finish(world: &mut World, device: Entity) {
+    let Some(DeviceInteraction { device, .. }) = world.remove_resource::<DeviceInteraction>()
+    else {
+        return;
+    };
     let Ok(mut entity) = world.get_entity_mut(device) else { return };
     entity.remove::<Guarded>();
     if let Some(mut door) = entity.get_mut::<DoorState>() {

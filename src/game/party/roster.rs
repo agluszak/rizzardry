@@ -42,7 +42,7 @@ impl PartyRoster {
     pub fn average_level(&self, level_of: impl Fn(Entity) -> Option<u8>) -> u32 {
         let (sum, count) = self
             .iter()
-            .filter_map(|member| level_of(member))
+            .filter_map(level_of)
             .fold((0, 0), |(sum, count), level| (sum + u32::from(level), count + 1));
         sum.checked_div(count).unwrap_or(1)
     }
