@@ -736,7 +736,11 @@ pub(super) fn monster_attacks(
     for _ in 0..swings {
         let Ok((monster, ..)) = field.monsters.monsters().get(entity) else { break };
         let monster = monster.clone();
-        if monster.is_dead() {
+        // One that its own blows knocked out or held stops swinging, as a
+        // member does. Retail stops only a dead monster
+        // (`hp_current == 0 && highest_condition > WEBBED`, where the member
+        // check has `||`); this follows the member rule deliberately.
+        if !monster.can_fight() {
             break;
         }
         let Some((_, aimed_at)) = member_defence(battle, field, fight, member)

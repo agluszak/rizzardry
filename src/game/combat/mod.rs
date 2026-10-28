@@ -2432,4 +2432,88 @@ mod tests {
         let fired = app.world().get::<Carried>(a).unwrap().worn(EquipSlot::Secondary).unwrap();
         assert!(fired.remaining_uses() < off.remaining_uses(), "the loaded gun fired");
     }
+
+    /// A monster that knocks itself out with a fumbled blow swings no more
+    /// in that attack.
+    #[test]
+    fn a_monster_its_own_fumble_knocks_out_stops_swinging() {
+        use crate::content::items::{AttackEffect, AttackEffects};
+        use crate::content::species::{AttackWord, MonsterAttack, Species};
+        let mut found = false;
+        for seed in 0..40 {
+            let (mut app, [a, _]) = round_app(true);
+            app.world_mut().entity_mut(a).insert(Order::Defend);
+            app.insert_resource(GameRng::seeded(seed));
+            let species = app.world().resource::<GameData>().species.clone();
+            {
+                let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
+                let mut catalog = catalogs.get_mut(&species).unwrap();
+                // Aim at 0 less fatigue: most swings stray onto a bystander.
+                // Its own armour gives way, and every blow knocks out.
+                let mut effects = AttackEffects::default();
+                effects.chances[AttackEffect::KnockOut] = 100;
+                let fighter = &mut catalog.0[0];
+                fighter.attacks = vec![MonsterAttack {
+                    word: AttackWord::Verb,
+                    weapon_name: 0,
+                    reach: Reach::Short,
+                    score: 0,
+                    modes: EnumSet::only(AttackMode::Swing),
+                    damage: Dice { count: 0, sides: 0, base: 1 },
+                    effects,
+                }];
+                fighter.attacks_per_round = 1;
+                fighter.swings_per_round = 50;
+                fighter.level = 50;
+                fighter.evasion = 10;
+                fighter.armour_by_location = [100; 7];
+                catalog.0.push(Species { name: "Bystander".into(), ..default() });
+            }
+            let fighter = app
+                .world_mut()
+                .query_filtered::<Entity, With<Monster>>()
+                .single(app.world())
+                .unwrap();
+            let (battle, root, body) = {
+                let world = app.world();
+                let monster = world.get::<Monster>(fighter).unwrap();
+                (
+                    world.get::<Combatant>(fighter).unwrap().0,
+                    world.get::<LevelOwned>(fighter).unwrap().0,
+                    monster.clone(),
+                )
+            };
+            for _ in 0..20 {
+                app.world_mut().spawn((
+                    Monster { species: 1, ..body.clone() },
+                    Transform::from_translation(Vec3::NEG_Z),
+                    LevelOwned(root),
+                    Combatant(battle),
+                ));
+            }
+            let news = finish_round(&mut app);
+            let fumbles: Vec<_> = news
+                .iter()
+                .filter_map(|n| match n {
+                    CombatNews::Fumble { attacker, victim } if *attacker == fighter => {
+                        Some(*victim)
+                    }
+                    _ => None,
+                })
+                .collect();
+            let knocked_out = app
+                .world()
+                .get::<Monster>(fighter)
+                .unwrap()
+                .conditions
+                .iter()
+                .any(|&(c, _)| c == Condition::Unconscious);
+            if knocked_out && fumbles.contains(&Victim::Monster(fighter)) {
+                found = true;
+                // Its last fumble was the blow that knocked it out.
+                assert_eq!(fumbles.last(), Some(&Victim::Monster(fighter)), "seed {seed}");
+            }
+        }
+        assert!(found, "some seed has the monster knock itself out");
+    }
 }
