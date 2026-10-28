@@ -40,6 +40,7 @@ fn app() -> App {
         .init_resource::<LevelMemory>()
         .init_resource::<MonsterBodies>()
         .init_resource::<rizzardry::game::factions::Factions>()
+        .add_message::<rizzardry::game::factions::FactionNews>()
         .init_resource::<ItemIds>()
         .init_resource::<GameRng>()
         .add_message::<LevelReady>()
