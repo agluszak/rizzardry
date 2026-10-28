@@ -325,6 +325,21 @@ pub struct Species {
     pub pronouns: u8,
     /// How it carries itself in a fight.
     pub temper: Temper,
+    pub magic: MonsterMagic,
+}
+
+/// The spells a species casts in a fight (retail record 0xe0, 0x14d,
+/// 0x26f).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct MonsterMagic {
+    /// The chance (%) it casts at its turn while it can strike someone;
+    /// none never casts.
+    pub chance: u8,
+    /// Its ten spell slots; later slots weigh more.
+    pub spells: [Option<super::spells::SpellId>; 10],
+    /// What its casting stands on, in place of a caster's skill (retail
+    /// `sp_budget`).
+    pub budget: i32,
 }
 
 /// How a species carries itself in a fight (retail `UpdateMonsterAI`,
@@ -340,6 +355,9 @@ pub struct Temper {
     /// It keeps its place hidden rather than withdraw while neutral
     /// (retail record byte 0x249).
     pub camouflaged: bool,
+    /// It stands off and casts rather than close in (retail record byte
+    /// 0x1b9).
+    pub prefers_range: bool,
 }
 
 /// How a species meets the party before anything provokes it.

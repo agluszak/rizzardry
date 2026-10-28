@@ -7,6 +7,7 @@ pub mod approach;
 pub mod attack;
 mod blows;
 mod conduct;
+mod monster_spells;
 
 use crate::game::world::level::LevelOwned;
 use crate::game::world::level::PlayedLevel;
@@ -1448,8 +1449,14 @@ fn monster_turn(
         battle.this_round.monsters[index].1 = Turn::default();
         return false;
     }
+    let turn = battle.this_round.monsters[index].1;
+    let mut plan = None;
+    // A monster decides as its round's action begins, not again between
+    // its attacks.
     if let Ok((body, at, walker, _)) = damage.monsters().get(monster)
         && let Some(kind) = species.kind(body.species)
+        && turn.attacks_left == u32::from(kind.attacks_per_round)
+        && !battle.this_round.moved.contains(&monster)
     {
         let feet = feet(at.translation(), walker);
         let nearest = distance_to_party(party.eye, body, feet);
@@ -1482,9 +1489,45 @@ fn monster_turn(
             });
             return true;
         }
+        // One that would close in on the party to strike does so rather
+        // than cast; one that can strike casts at its chance, and one that
+        // cannot always tries.
+        let reaches = kind.attacks.iter().any(|a| nearest <= a.reach.metres());
+        let closes_in = !kind.temper.prefers_range && !kind.attacks.is_empty() && !reaches;
+        if kind.magic.chance != 0
+            && !closes_in
+            && let Some(spells) = magic.context.content.spells()
+        {
+            let chance = if reaches { u32::from(kind.magic.chance) } else { 100 };
+            let scene = spell_scene(
+                monster,
+                feet,
+                (combatants, &magic.context.roster),
+                members,
+                damage,
+                party.eye,
+            );
+            plan = monster_spells::choose(rng, body, kind, chance, spells, &scene).and_then(
+                |(id, aim)| {
+                    let spell = spells.get(id)?.clone();
+                    let power = monster_spells::power(rng, kind.magic.budget, &spell);
+                    Some((spell, power, aim, scene, kind))
+                },
+            );
+        }
     }
-    let turn = battle.this_round.monsters[index].1;
     let BattleMagic { context, points, moving, .. } = magic;
+    if let Some((spell, power, aim, scene, kind)) = plan {
+        battle.this_round.monsters[index].1 = Turn::default();
+        battle.this_round.attacked = true;
+        let report = context.with_field(members, damage, |field| {
+            monster_spells::cast((&spell, power, aim), kind, &scene, rng, field, points)
+        });
+        if let Ok(report) = report {
+            context.news.write(crate::game::magic::casting::MagicNews::Done(report));
+        }
+        return true;
+    }
     let advancing = |monster| moving.contains(monster);
     let armours = party_armours(battle, members, context);
     let armour = |member| armours.iter().find(|&&(m, _)| m == member).map(|&(_, a)| a);
@@ -1513,6 +1556,58 @@ fn monster_turn(
         news.write(CombatNews::Moves { monster, charge });
     }
     true
+}
+
+/// The fight as a monster about to cast sees it: the living party and the
+/// living monsters in the fight, how far each is, and what each lacks.
+fn spell_scene(
+    caster: Entity,
+    feet_at: Vec3,
+    (combatants, roster): (&[Entity], &PartyRoster),
+    members: &Members,
+    damage: &MonsterDamage,
+    party_eye: Vec3,
+) -> monster_spells::Scene {
+    let monsters = damage.monsters();
+    let party = monsters
+        .get(caster)
+        .map_or(f32::INFINITY, |(body, ..)| distance_to_party(party_eye, body, feet_at));
+    monster_spells::Scene {
+        caster,
+        members: roster
+            .iter()
+            .filter_map(|member| members.get(member).ok().map(|m| (member, m)))
+            .filter(|(_, (_, vitals, ..))| !vitals.is_dead())
+            .map(|(member, (character, vitals, ..))| {
+                let stats = character.stats(&vitals.enchantments);
+                let standing = crate::game::magic::effects::Standing {
+                    hurt: vitals.hp < stats.max_hp(),
+                    tired: vitals.stamina < stats.max_stamina(),
+                    conditions: vitals.conditions.iter().map(|&(c, _)| c).collect(),
+                    enchanted: vitals.enchantments.0.iter().map(|e| e.spell).collect(),
+                };
+                (member, standing)
+            })
+            .collect(),
+        monsters: combatants
+            .iter()
+            .filter_map(|&entity| {
+                let (body, at, walker, _) = monsters.get(entity).ok()?;
+                if body.is_dead() {
+                    return None;
+                }
+                let at = feet(at.translation(), walker);
+                let from_party = distance_to_party(party_eye, body, at);
+                Some((
+                    entity,
+                    at.distance(feet_at),
+                    from_party,
+                    monster_spells::monster_standing(body),
+                ))
+            })
+            .collect(),
+        party,
+    }
 }
 
 /// The round is over: a round's game time passes. Returns whether the fight
@@ -1875,6 +1970,62 @@ mod tests {
             dice: Some(Dice { base: 0, count: 1, sides: 7 }),
             ..default()
         }
+    }
+
+    /// A monster with a spell it can aim at the party casts it at its turn:
+    /// it lands on a member at once and spends nothing (retail
+    /// `UpdateMonsterAI`, `MonsterCastsSpell`).
+    #[test]
+    fn a_monster_casts_its_spell_at_a_member() {
+        use crate::content::spells::SpellCatalog;
+        use crate::game::magic::casting::MagicNews;
+        use crate::game::magic::effects::{Effect, Victim};
+        let (mut app, members) = round_app(true);
+        let monster =
+            app.world().try_query::<&Combatants>().unwrap().single(app.world()).unwrap().entities()
+                [0];
+        let blast =
+            crate::content::spells::SpellDefinition { monsters_cast: true, ..energy_blast() };
+        let id = blast.id;
+        let mut catalog: Vec<_> = (0..=id.0).map(|_| default()).collect();
+        catalog[usize::from(id.0)] = blast;
+        let handle =
+            app.world_mut().resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(catalog));
+        app.world_mut().resource_mut::<GameData>().spells = handle;
+        let data = app.world().resource::<GameData>().species.clone();
+        {
+            let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
+            let mut species = catalogs.get_mut(&data).unwrap();
+            species.0[0].level = 5;
+            species.0[0].magic.chance = 100;
+            species.0[0].magic.budget = 200;
+            species.0[0].magic.spells[0] = Some(id);
+        }
+        let mut cast = None;
+        for _ in 0..12 {
+            app.update();
+            let news: Vec<_> =
+                app.world_mut().resource_mut::<Messages<MagicNews>>().drain().collect();
+            cast = news.into_iter().find_map(|n| match n {
+                MagicNews::Done(report) if report.caster == monster => Some(report),
+                _ => None,
+            });
+            if cast.is_some() {
+                break;
+            }
+        }
+        let report = cast.expect("the monster casts");
+        assert_eq!(report.spell, id);
+        assert!(report.power >= 6, "a large budget casts hard: {}", report.power);
+        assert!(
+            report.effects.iter().any(|e| matches!(
+                e,
+                Effect::Damaged { victim: Victim::Member(m), .. } | Effect::Resisted { victim: Victim::Member(m) }
+                    if members.contains(m)
+            )),
+            "{:?}",
+            report.effects
+        );
     }
 
     /// A cast waits for its caster's initiative, is revalidated then, spends

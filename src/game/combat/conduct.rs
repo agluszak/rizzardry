@@ -73,11 +73,11 @@ pub(super) fn decide(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::content::species::Temper;
 
-    fn monster(hp: u32) -> Monster {
+    pub(crate) fn monster(hp: u32) -> Monster {
         Monster {
             enchantments: default(),
             location: 0,

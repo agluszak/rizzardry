@@ -153,6 +153,36 @@ pub fn modelled(spell: SpellId) -> bool {
     kind(spell).is_some()
 }
 
+/// What a would-be victim lacks or already suffers, as a caster weighs a
+/// spell on it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Standing {
+    pub hurt: bool,
+    pub tired: bool,
+    pub conditions: Vec<Condition>,
+    /// The spells already enchanting it.
+    pub enchanted: Vec<SpellId>,
+}
+
+/// Whether a spell would do anything to a victim (retail
+/// `MonsterSpellTargetOK`): healing only the hurt, rest only the tired,
+/// cures only what they cure, and no condition or enchantment it already
+/// has. Pandemonium still works on the frightened while they are sane.
+pub fn worthwhile(spell: SpellId, standing: &Standing) -> bool {
+    use Condition::*;
+    let has = |condition| standing.conditions.contains(&condition);
+    match kind(spell) {
+        Some(Kind::Heal) => standing.hurt,
+        Some(Kind::Stamina) => standing.tired,
+        Some(Kind::Inflict(condition, _)) => !has(condition),
+        Some(Kind::Fear { .. }) => !has(Afraid),
+        Some(Kind::Pandemonium) => !has(Afraid) || !has(Insane),
+        Some(Kind::Enchant) => !standing.enchanted.contains(&spell),
+        Some(Kind::Cure(conditions)) => conditions.iter().any(|&c| has(c)),
+        _ => true,
+    }
+}
+
 /// Whether a spell restores what is missing, so that "auto" power and
 /// repeating aim at what the victim lacks.
 pub(super) fn restores(spell: SpellId) -> bool {

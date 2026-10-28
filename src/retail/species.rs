@@ -12,9 +12,10 @@ use enumset::EnumSet;
 
 use crate::content::items::{AttackEffects, ItemId};
 use crate::content::species::{
-    AttackWord, Disposition, Drop, MonsterAttack, MonsterAttributes, MonsterCatalog, Species,
-    Temper, Treasure,
+    AttackWord, Disposition, Drop, MonsterAttack, MonsterAttributes, MonsterCatalog, MonsterMagic,
+    Species, Temper, Treasure,
 };
+use crate::content::spells::SpellId;
 
 const RECORD: usize = 0x297;
 const ATTACKS_AT: usize = 0xe7;
@@ -126,6 +127,14 @@ fn species(record: &[u8]) -> Result<Species, DecodeError> {
             flee_chance: record[0xe2],
             craven: record[0x1c0] == 0,
             camouflaged: record[0x249] != 0,
+            prefers_range: record[0x1b9] != 0,
+        },
+        magic: MonsterMagic {
+            chance: record[0xe0],
+            spells: std::array::from_fn(|slot| {
+                Some(record[0x14d + slot]).filter(|&id| id != 0).map(SpellId)
+            }),
+            budget: i32_at(record, 0x26f)?,
         },
     })
 }
