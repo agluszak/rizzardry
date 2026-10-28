@@ -1,10 +1,7 @@
 //! The character values on the retail item page.
 use super::{InventoryArt, InventoryScreen, RetailLabel, absolute, format_gold, info};
 use crate::content::characters::Attribute;
-use crate::content::items::ItemCatalog;
 use crate::game::characters::Load;
-use crate::game::combat::attack::armour;
-use crate::game::data::GameData;
 #[cfg(test)]
 use crate::game::inventory::Carried;
 use crate::presentation::character_view::{CharacterView, CharacterViewItem};
@@ -141,27 +138,19 @@ pub(super) fn build(commands: &mut Commands, panel: Entity, root: Entity, art: &
 
 pub(super) fn refresh(
     screen: Option<Single<&InventoryScreen>>,
-    data: Option<Res<GameData>>,
-    catalogs: Option<Res<Assets<ItemCatalog>>>,
     members: Query<CharacterView>,
     art: Option<Res<InventoryArt>>,
     mut values: Query<(&Value, &mut BitmapText)>,
     mut bars: Query<&mut PictureCrop, With<ExperienceBar>>,
-    battle: Option<Single<&crate::game::combat::Battle>>,
 ) {
     let (Some(screen), Some(art)) = (screen, art) else { return };
     let Ok(view) = members.get(screen.member) else { return };
     let load = view.load();
-    let CharacterViewItem { profile: character, vitals, carried, burden } = view;
+    let CharacterViewItem { profile: character, vitals, carried, burden, armour } = view;
+    // Armour is shown only for someone who carries things.
+    let armour = carried.and(armour);
 
-    let catalog = data
-        .as_ref()
-        .and_then(|data| catalogs.as_ref().and_then(|catalogs| catalogs.get(&data.items)));
     let weight = burden.map(|burden| burden.weight);
-    let armour = carried.zip(catalog).map(|(carried, catalog)| {
-        let defending = battle.as_ref().is_some_and(|b| b.defends(screen.member));
-        armour(character, carried, catalog, load, defending)
-    });
     for (kind, mut text) in &mut values {
         let (value, palette) = match *kind {
             Value::Experience => (format_gold(character.experience), None),
@@ -208,7 +197,9 @@ pub(super) fn refresh(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::content::items::ItemCatalog;
     use crate::game::characters::{Character, Gender, Profession, Race, Vitals};
+    use crate::game::data::GameData;
 
     #[test]
     fn removing_carried_items_clears_all_equipment_derived_labels() {

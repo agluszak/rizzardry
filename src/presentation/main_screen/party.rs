@@ -20,7 +20,6 @@ use crate::content::ui::SpriteSheet;
 #[cfg(test)]
 use crate::game::characters::Race;
 use crate::game::characters::{Character, Vitals};
-use crate::game::combat::attack::armour;
 use crate::game::data::GameData;
 use crate::game::inventory::EquipSlot;
 use crate::game::party::DamageApplied;
@@ -290,7 +289,6 @@ pub fn draw_party(
         Option<&mut BitmapText>,
         Option<&mut ImageNode>,
     )>,
-    battle: Option<Single<&crate::game::combat::Battle>>,
 ) {
     let catalog = data.as_ref().and_then(|d| catalogs.get(&d.items));
     let closed = layout.mode == LayoutMode::Closed;
@@ -309,8 +307,7 @@ pub fn draw_party(
             ..default()
         };
         if let Some(view) = actor {
-            let load = view.load();
-            let CharacterViewItem { profile, vitals, carried, .. } = view;
+            let CharacterViewItem { profile, vitals, carried, armour, .. } = view;
             let dead = vitals.is_dead();
             let worn = |slot| {
                 carried.as_ref().and_then(|c| c.worn(slot)).and_then(|i| catalog?.get(i.item))
@@ -389,15 +386,7 @@ pub fn draw_party(
                 Part::Armour => {
                     shown = !dead;
                     value = Some(
-                        match (carried.as_ref(), catalog) {
-                            (Some(c), Some(catalog)) => {
-                                let defending =
-                                    battle.as_ref().is_some_and(|b| b.defends(part.member));
-                                armour(profile, c, catalog, load, defending).average()
-                            }
-                            _ => 0,
-                        }
-                        .to_string(),
+                        armour.map_or(0, crate::game::combat::attack::Armour::average).to_string(),
                     );
                 }
                 Part::Name => value = Some(profile.name.clone()),

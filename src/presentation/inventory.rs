@@ -28,10 +28,10 @@ use super::screen_art::{
 use crate::content::items::{ItemCatalog, QuantityKind};
 use crate::content::ui::{SpriteSheet, TextTable};
 use crate::game::characters::{Character, Gender, Race, Vitals};
-use crate::game::combat::attack::armour;
+use crate::game::combat::attack::Armour;
 use crate::game::data::GameData;
 use crate::game::inventory::{
-    BACKPACK_SLOTS, Burden, Carried, EquipSlot, ItemStack, MemberSlot, PartyInventory, Slot,
+    BACKPACK_SLOTS, Carried, EquipSlot, ItemStack, MemberSlot, PartyInventory, Slot,
 };
 use crate::game::party::roster::PartyRoster;
 use crate::game::screen::Screen;
@@ -774,15 +774,13 @@ fn draw_header_hands(
     assets: Res<AssetServer>,
     data: Option<Res<GameData>>,
     catalogs: Res<Assets<ItemCatalog>>,
-    members: Query<(&Character, Option<&Carried>, Option<&Burden>)>,
+    members: Query<(&Character, Option<&Carried>, Option<&Armour>)>,
     art: Res<InventoryArt>,
     mut parts: Query<(&HeaderHand, &mut Visibility, Option<&mut Picture>, Option<&mut BitmapText>)>,
-    battle: Option<Single<&crate::game::combat::Battle>>,
 ) {
     let Some(screen) = screen else { return };
     let Some(catalog) = data.and_then(|data| catalogs.get(&data.items)) else { return };
-    let Ok((profile, carried, burden)) = members.get(screen.member) else { return };
-    let load = burden.map_or_else(Default::default, |burden| burden.load);
+    let Ok((profile, carried, armour)) = members.get(screen.member) else { return };
     let empty = Carried::default();
     let carried = carried.unwrap_or(&empty);
     let two_handed = carried
@@ -843,11 +841,7 @@ fn draw_header_hands(
                     },
                 );
             }
-            HeaderHand::Armour => {
-                let defending = battle.as_ref().is_some_and(|b| b.defends(screen.member));
-                value =
-                    Some(armour(profile, carried, catalog, load, defending).average().to_string())
-            }
+            HeaderHand::Armour => value = Some(armour.map_or(0, Armour::average).to_string()),
         }
         visibility.set_if_neq(visible_if(shown));
         if let (Some(mut picture), Some(source)) = (picture, source) {
