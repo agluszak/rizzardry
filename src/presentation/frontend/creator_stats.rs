@@ -634,7 +634,6 @@ pub(super) fn refresh(
                         &crate::game::inventory::Carried::default(),
                         &crate::content::items::ItemCatalog::default(),
                         crate::game::characters::Load::None,
-                        false,
                     )
                     .average()
                     .to_string()

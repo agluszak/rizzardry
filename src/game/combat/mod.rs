@@ -20,10 +20,9 @@ use crate::content::species::AttackWord;
 
 use crate::content::items::{Dice, ItemCatalog};
 use crate::content::species::{MonsterCatalog, Reach, Species};
-use crate::game::characters::resistance::{self, Resistances};
 use crate::game::characters::{Character, Condition, Vitals};
 use crate::game::inventory::PartyInventory;
-use crate::game::inventory::{Carried, EquipSlot, StackId};
+use crate::game::inventory::{EquipSlot, StackId};
 use crate::game::magic::casting::{self, MagicChoice, MagicNews};
 use crate::game::magic::{Effect, LearnedSpells, MagicContext, SpellPoints, Victim};
 use crate::game::party::Members;
@@ -37,9 +36,7 @@ use crate::game::time::GameClock;
 use crate::game::world::damage::{MonsterDamage, MonsterQuery};
 use crate::game::world::identify::{GroupMember, GroupMembers, GroupRecognition};
 use crate::game::world::population::Monster;
-use attack::{
-    Armour, Hand, Swing, character_initiative, character_swing, monster_swing, phase, primary_hand,
-};
+use attack::{Armour, Hand, Swing, character_initiative, character_swing, monster_swing, phase};
 use bevy::ecs::relationship::RelationshipTarget;
 
 pub struct CombatPlugin;
@@ -56,23 +53,13 @@ impl Plugin for CombatPlugin {
             .add_observer(approach::stop_walking)
             .add_systems(
                 Update,
-                // A fight keeps the loads it began with (retail
-                // `RedistributePartyEncumbrance` defers while in combat).
-                crate::game::inventory::distribute_burden
-                    .before(crate::game::GameplaySet::Combat)
-                    .run_if(not(any_with_component::<Battle>)),
-            )
-            .add_systems(
-                Update,
                 (
                     give_orders,
                     // Defeat is settled before a fight starts or a round runs,
                     settle_defeat,
                     start_battle,
                     track_party_move,
-                    sync_stats,
                     begin_round,
-                    sync_defence,
                     run_battle,
                     // and again after the round's damage.
                     settle_defeat,
@@ -715,62 +702,6 @@ pub fn begin_round(
     }
 }
 
-/// Keep each member's armour, main hand and resistances current, recomputing
-/// them only when something they are made of changes: the character, what
-/// they wear or their load. Runs before a round is accepted, which reads the
-/// hand.
-pub fn sync_stats(
-    mut members: Query<(
-        (Ref<Character>, Ref<Carried>, Ref<crate::game::inventory::Burden>, Has<Defends>),
-        (&mut Armour, &mut Hand, &mut Resistances),
-    )>,
-    content: crate::game::data::Content,
-    mut had_catalog: Local<bool>,
-) {
-    let Some(catalog) = content.items() else { return };
-    // Everyone's stats are settled once the item catalog has loaded.
-    let loaded = !std::mem::replace(&mut *had_catalog, true);
-    for ((character, carried, burden, defending), (mut armour, mut hand, mut resistances)) in
-        &mut members
-    {
-        let worn = loaded || character.is_changed() || carried.is_changed();
-        if worn {
-            resistances
-                .set_if_neq(Resistances(resistance::resistances(&character, &carried, catalog)));
-        }
-        if worn || burden.is_changed() {
-            let load = burden.load;
-            hand.set_if_neq(primary_hand(&character, &carried, catalog, load));
-            armour.set_if_neq(attack::armour(&character, &carried, catalog, load, defending));
-        }
-    }
-}
-
-/// Armour also follows whether the member defends, from the round's
-/// acceptance, before its first blow.
-pub fn sync_defence(
-    mut members: Query<(
-        &Character,
-        &Carried,
-        &crate::game::inventory::Burden,
-        Has<Defends>,
-        &mut Armour,
-    )>,
-    defending: Query<Entity, Added<Defends>>,
-    mut undefended: RemovedComponents<Defends>,
-    content: crate::game::data::Content,
-) {
-    let Some(catalog) = content.items() else { return };
-    let changed: bevy::ecs::entity::EntityHashSet =
-        defending.iter().chain(undefended.read()).collect();
-    for member in changed {
-        let Ok((character, carried, burden, defends, mut armour)) = members.get_mut(member) else {
-            continue;
-        };
-        armour.set_if_neq(attack::armour(character, carried, catalog, burden.load, defends));
-    }
-}
-
 /// Carry out the round's actions, one per pause, once nothing is in flight.
 pub fn run_battle(
     mut commands: Commands,
@@ -780,7 +711,7 @@ pub fn run_battle(
     mut actors: ParamSet<((Members, MonsterDamage), GroupRecognition)>,
     party_body: Query<(&Position, &PartyBody)>,
     (roster, content): (Single<&PartyRoster>, crate::game::data::Content),
-    (armours, hands): (Query<&Armour>, Query<&Hand>),
+    (armours, hands): (Query<(&Armour, Has<Defends>)>, Query<&Hand>),
     mut magic: BattleMagic,
     mut news: MessageWriter<CombatNews>,
 ) {
@@ -1255,7 +1186,7 @@ fn monster_turn(
     rng: &mut GameRng,
     roster: &PartyRoster,
     members: &mut Members,
-    armours: &Query<&Armour>,
+    armours: &Query<(&Armour, Has<Defends>)>,
     damage: &MonsterDamage,
     party: &PartyView,
     context: &mut MagicContext,
@@ -1307,7 +1238,7 @@ fn monster_acts(
     rng: &mut GameRng,
     roster: &PartyRoster,
     members: &mut Members,
-    armours: &Query<&Armour>,
+    armours: &Query<(&Armour, Has<Defends>)>,
     monsters: &MonsterQuery,
     party: &PartyView,
     formation: &mut Mut<Formation>,
@@ -1346,7 +1277,8 @@ fn monster_acts(
     let Ok((character, mut vitals, ..)) = members.get_mut(member) else {
         return false;
     };
-    let armour = armours.get(member).copied().unwrap_or_default();
+    // Defending counts from the round's acceptance until the next.
+    let armour = armours.get(member).map_or_else(|_| Armour::default(), |(a, d)| a.defending(d));
     let swings = rng.below(u32::from(kind.swings_per_round.max(1))) + 1;
     news.write(CombatNews::Attack {
         attacker: entity,
@@ -1529,7 +1461,11 @@ mod tests {
             .add_message::<DamageApplied>()
             .init_resource::<Assets<crate::content::level::LevelDefinition>>()
             .add_message::<crate::game::world::identify::Identified>()
-            .add_plugins(CombatPlugin);
+            .configure_sets(
+                Update,
+                (crate::game::GameplaySet::Stats, crate::game::GameplaySet::Combat).chain(),
+            )
+            .add_plugins((CombatPlugin, crate::game::stats::plugin));
         app.world_mut()
             .resource_mut::<Time<Virtual>>()
             .set_max_delta(std::time::Duration::from_secs(2));

@@ -783,7 +783,7 @@ pub(crate) fn plugin(app: &mut App) {
     app.add_message::<DeviceRequest>().add_systems(
         Update,
         handle_device_requests
-            .after(crate::game::GameplaySet::LevelActivation)
+            .after(crate::game::GameplaySet::Stats)
             .before(crate::game::GameplaySet::Combat),
     );
 }

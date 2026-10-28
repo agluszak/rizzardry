@@ -40,7 +40,7 @@ fn a_fighter_and_a_crab_trade_blows() {
         assert!(place_at_creation(&mut carried, item, &catalog, &fighter).is_none());
     }
     let hand = primary_hand(&fighter, &carried, &catalog, Load::None);
-    let armour = armour(&fighter, &carried, &catalog, Load::None, false);
+    let armour = armour(&fighter, &carried, &catalog, Load::None);
     let tally = |swings: Vec<Swing>| {
         let hits: Vec<u32> = swings
             .iter()

@@ -56,7 +56,8 @@ pub fn skill_available(
 }
 
 /// Spell points left per realm, recovery not yet whole points, and the
-/// maximum ([`max_points`]), kept current by [`sync_spell_points`].
+/// maximum ([`max_points`]), a derived stat kept current by
+/// [`sync_spell_points`] (`crate::game::stats`).
 #[derive(Component, Clone, Debug, Default, PartialEq)]
 pub struct SpellPoints {
     pub current: EnumMap<Realm, u32>,
@@ -437,9 +438,9 @@ impl Plugin for MagicPlugin {
             .init_resource::<casting::FlightOrder>()
             .add_systems(
                 Update,
-                (sync_spell_points, accept_magic, deliver_spells)
+                (accept_magic, deliver_spells)
                     .chain()
-                    .after(crate::game::GameplaySet::LevelActivation)
+                    .after(crate::game::GameplaySet::Stats)
                     .before(crate::game::GameplaySet::Combat)
                     .run_if(crate::game::world::level::level_active),
             );

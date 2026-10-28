@@ -332,7 +332,8 @@ pub fn draw_party(
             ..default()
         };
         if let Some(view) = actor {
-            let CharacterViewItem { profile, vitals, carried, armour, .. } = view;
+            let armour = view.armour();
+            let CharacterViewItem { profile, vitals, carried, .. } = view;
             let dead = vitals.is_dead();
             let worn = |slot| {
                 carried.as_ref().and_then(|c| c.worn(slot)).and_then(|i| catalog?.get(i.item))
@@ -411,7 +412,10 @@ pub fn draw_party(
                 Part::Armour => {
                     shown = !dead;
                     value = Some(
-                        armour.map_or(0, crate::game::combat::attack::Armour::average).to_string(),
+                        armour
+                            .as_ref()
+                            .map_or(0, crate::game::combat::attack::Armour::average)
+                            .to_string(),
                     );
                 }
                 Part::Name => value = Some(profile.name.clone()),
