@@ -1,4 +1,4 @@
-//! Shared cast/payment transaction for an already validated device target.
+//! Shared cast/payment transaction for an already validated utility or device target.
 use super::{
     LearnedSpells, MagicContext, SpellPoints, Strength,
     casting::{self, Refusal, Report, Source, UseContext},
@@ -24,7 +24,7 @@ pub(crate) fn cast_source(
                 }
                 context
                     .resolve(&mut members, &mut monsters, |field, spells| {
-                        casting::perform_device(
+                        casting::perform_utility(
                             caster,
                             source,
                             use_context,

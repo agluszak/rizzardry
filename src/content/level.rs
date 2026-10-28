@@ -356,9 +356,12 @@ pub enum TriggerAction {
     CameraPath(usize),
     /// Run the recipients (0xf).
     Relay,
-    /// Send the party elsewhere (0x34, and 0x4b, whose random choice is
-    /// not ported).
+    /// Enable, disable or toggle the linked devices (0x2d..0x2f).
+    SetDevices(StateChange),
+    /// Send the party elsewhere (0x34).
     Teleport(Arrival),
+    /// Choose one authored destination when the action executes (0x4b).
+    RandomTeleport(Vec<Arrival>),
     /// Hurt everyone in the party by their own roll (0x24).
     HurtParty(Dice),
     /// Hurt everyone in the party every half second while it stays (0x23).
@@ -385,7 +388,7 @@ pub enum Animation {
     Stop,
 }
 
-/// A fountain restoring each member (retail actions 0x25 and 0x26).
+/// A fountain restoring each member (retail actions 0x25..0x27 and 0x2b).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Fountain {
     pub restores: Restores,
@@ -400,6 +403,9 @@ pub struct Fountain {
 pub enum Restores {
     Stamina,
     Health,
+    Magic,
+    /// Heal All at the authored power, then remove conditions.
+    Restoration,
 }
 
 #[derive(Clone, Debug)]

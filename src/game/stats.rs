@@ -1,6 +1,6 @@
 //! Members' derived stats: what follows from their profile, belongings and
 //! load and is read throughout fights and spells (their load itself, main
-//! hand, resistances and spell-point maximum), kept on them and refreshed at
+//! hand and resistances), kept on them and refreshed at
 //! one point in each update, [`GameplaySet::Stats`]. Everything after it in
 //! the update reads them current; a change made later shows from the next
 //! update's refresh. Armour, which also depends on the round's action, is
@@ -15,7 +15,6 @@ use crate::game::combat::Battle;
 use crate::game::combat::attack::{Hand, primary_hand};
 use crate::game::inventory::{Burden, Carried, distribute_burden};
 use crate::game::magic::enchantments::PartyEffects;
-use crate::game::magic::sync_spell_points;
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::level::level_active;
 
@@ -26,7 +25,7 @@ pub(crate) fn plugin(app: &mut App) {
             // A fight keeps the loads it began with (retail
             // `RedistributePartyEncumbrance` defers while in combat).
             distribute_burden.run_if(not(any_with_component::<Battle>)),
-            (sync_stats, sync_spell_points),
+            sync_stats,
         )
             .chain()
             .in_set(GameplaySet::Stats)

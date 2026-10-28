@@ -7,7 +7,9 @@
 
 use bevy::prelude::*;
 
+use crate::content::spells::SpellCatalog;
 use crate::game::characters::{Character, Vitals};
+use crate::game::magic::{LearnedSpells, SpellPoints, max_points, recovery_scale};
 use crate::game::time::Ticks;
 
 /// Apply the Fighter's combat-rest trait to an already rolled recovery amount.
@@ -51,10 +53,31 @@ impl Pace {
 
 /// [`elapse`] on a tracked member, which counts as changed only when
 /// something did change.
-pub fn pass(profile: &Character, member: &mut Mut<Vitals>, ticks: Ticks, pace: Pace) {
+pub fn pass(
+    profile: &Character,
+    member: &mut Mut<Vitals>,
+    ticks: Ticks,
+    pace: Pace,
+    mut magic: Option<(&LearnedSpells, &mut SpellPoints, &SpellCatalog)>,
+) {
+    // GameTurnsPassedChar regenerates before aging personal enchantments.
+    // Their expiry then recalculates ceilings and adjusts current points by
+    // the difference. No render-frame refresh participates in either step.
+    let maximum = magic
+        .as_ref()
+        .map(|(known, _, spells)| max_points(&profile.stats(&member.enchantments), known, spells));
+    if ticks.aging > 0
+        && let (Some((_, pool, _)), Some(maximum)) = (&mut magic, &maximum)
+    {
+        pool.recover(ticks.aging, recovery_scale(pace.health_scale()), maximum);
+    }
     let vitals = member.bypass_change_detection();
     let before = vitals.clone();
     elapse(profile, vitals, ticks, pace);
+    if let (Some((known, pool, spells)), Some(maximum)) = (magic, maximum) {
+        let after = max_points(&profile.stats(&vitals.enchantments), known, spells);
+        pool.adjust_limits(&maximum, &after);
+    }
     if *vitals != before {
         member.set_changed();
     }

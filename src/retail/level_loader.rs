@@ -405,25 +405,43 @@ fn decode_action(
             })
             .map_or(TriggerAction::Unsupported(code), TriggerAction::CameraPath),
         action::RELAY => TriggerAction::Relay,
-        action::TELEPORT | action::RANDOM_TELEPORT => teleport_arrival(sections, item)
+        action::ENABLE_DEVICES => TriggerAction::SetDevices(StateChange::Set),
+        action::DISABLE_DEVICES => TriggerAction::SetDevices(StateChange::Clear),
+        action::TOGGLE_DEVICES => TriggerAction::SetDevices(StateChange::Toggle),
+        action::TELEPORT => teleport_arrival(sections, item)
             .map_or(TriggerAction::Unsupported(code), TriggerAction::Teleport),
+        action::RANDOM_TELEPORT => super::links::random_arrivals(sections, item)
+            .map_or(TriggerAction::Unsupported(code), TriggerAction::RandomTeleport),
         action::HURT_PARTY => TriggerAction::HurtParty(Dice {
             count: or(first, 1) as u8,
             sides: or(second, 6) as u8,
             base: or(third, 2) as i16,
         }),
         action::DAMAGE_ZONE => TriggerAction::DamageZone,
-        action::STAMINA_FOUNTAIN | action::HEALTH_FOUNTAIN => TriggerAction::Fountain(Fountain {
-            restores: if code == action::HEALTH_FOUNTAIN {
-                Restores::Health
-            } else {
-                Restores::Stamina
-            },
-            amount: third.max(0) as u32,
-            uses: (first != -1).then_some(first.max(0) as u32),
-            // Its second word counts retail's 720-second game hours.
-            refills_after: (second > 0).then(|| second as u64 * 720 * 1000),
-        }),
+        action::STAMINA_FOUNTAIN
+        | action::HEALTH_FOUNTAIN
+        | action::MAGIC_FOUNTAIN
+        | action::RESTORATIVE_FOUNTAIN => {
+            TriggerAction::Fountain(Fountain {
+                restores: match code {
+                    action::HEALTH_FOUNTAIN => Restores::Health,
+                    action::MAGIC_FOUNTAIN => Restores::Magic,
+                    action::RESTORATIVE_FOUNTAIN => Restores::Restoration,
+                    _ => Restores::Stamina,
+                },
+                // RestorePartySpellPoints treats a negative amount as full.
+                amount: if matches!(code, action::MAGIC_FOUNTAIN | action::RESTORATIVE_FOUNTAIN)
+                    && third < 0
+                {
+                    u32::MAX
+                } else {
+                    third.max(0) as u32
+                },
+                uses: (first != -1).then_some(first.max(0) as u32),
+                // Its second word counts retail's 720-second game hours.
+                refills_after: (second > 0).then(|| second as u64 * 720 * 1000),
+            })
+        }
         action::SHAKE => TriggerAction::Shake {
             seconds: if third == -1 { 1.0 } else { third.unsigned_abs() as f32 / 1000.0 },
             intensity: if first == -1 { 800.0 } else { first as f32 },

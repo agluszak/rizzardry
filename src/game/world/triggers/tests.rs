@@ -1086,7 +1086,7 @@ fn a_refused_take_leaves_container_receiver_and_identities_untouched() {
 /// the commit fires, sets variables and shows messages.
 #[test]
 fn a_declined_action_advances_the_sequence_but_commits_nothing() {
-    let mut lever = trigger("LEVER", TriggerAction::Unsupported(0x7f));
+    let mut lever = trigger("LEVER", TriggerAction::OpenDoor);
     lever.initial.message = Some(1);
     lever.alternate = Some(TriggerUse { action: TriggerAction::Nothing, message: Some(2) });
     lever.state_change = Some(("PULLED".into(), StateChange::Set));
@@ -1169,4 +1169,157 @@ fn player_reach_uses_only_prop_colliders_then_one_centre_fallback() {
     assert!((player_distance(&mut world, prop).unwrap() - 9.0).abs() < 0.001);
     world.entity_mut(surface).remove::<Collider>();
     assert!((player_distance(&mut world, prop).unwrap() - 20.0).abs() < 0.001);
+}
+
+#[test]
+fn missing_actions_preserve_selection_and_keys_until_supported() {
+    let mut lever = trigger("MISSING", TriggerAction::Unsupported(0x7f));
+    lever.alternate = Some(act(TriggerAction::Nothing));
+    lever.door = Some(DoorLock { locked: true, key: Some(ItemId(7)) });
+    let mut level = Scenario::new(vec![lever], &[], LevelScript::None);
+    let item = make_item(
+        &ItemDefinition { id: ItemId(7), ..default() },
+        &mut ItemIds::default(),
+        &mut GameRng::seeded(5),
+        false,
+        true,
+    );
+    level.inventory().hand.held = Some(item);
+    for _ in 0..2 {
+        assert_eq!(
+            level.run("MISSING"),
+            (false, vec![TriggerEffect::Unsupported { device: "MISSING".into(), code: 0x7f }])
+        );
+        let entity = level.device("MISSING");
+        let state = level.world.get::<TriggerState>(entity).unwrap();
+        assert!(!state.fired && !state.use_alternate);
+        assert!(level.world.get::<DoorState>(entity).unwrap().locked);
+    }
+}
+
+#[test]
+fn linked_device_switches_use_the_persisted_device_state() {
+    let mut definitions = vec![
+        trigger("OFF", TriggerAction::SetDevices(StateChange::Clear)),
+        trigger("ON", TriggerAction::SetDevices(StateChange::Set)),
+        trigger("TOGGLE", TriggerAction::SetDevices(StateChange::Toggle)),
+        trigger("TARGET", TriggerAction::Nothing),
+    ];
+    link(&mut definitions, &[("OFF", &["TARGET"]), ("ON", &["TARGET"]), ("TOGGLE", &["TARGET"])]);
+    let mut level = Scenario::new(definitions, &[], LevelScript::None);
+    assert!(level.run("OFF").0);
+    assert!(!level.run("TARGET").0);
+    let memory = level.remember();
+    level.visit(Some(memory));
+    assert!(!level.run("TARGET").0);
+    assert!(level.run("ON").0);
+    assert!(level.run("TARGET").0);
+    assert!(level.run("TOGGLE").0);
+    assert!(!level.run("TARGET").0);
+}
+
+#[test]
+fn mana_fountains_share_use_and_refill_history_and_restore_deficits() {
+    use crate::content::characters::Realm;
+    use crate::game::magic::SpellPoints;
+    let mut scene = Scenario::new(
+        vec![trigger(
+            "MANA",
+            TriggerAction::Fountain(Fountain {
+                restores: Restores::Magic,
+                amount: 3,
+                uses: Some(1),
+                refills_after: Some(1000),
+            }),
+        )],
+        &[],
+        LevelScript::None,
+    );
+    let member = scene.members[0];
+    let mut points = SpellPoints::default();
+    use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId};
+    use crate::game::magic::LearnedSpells;
+    scene.world.init_resource::<Assets<SpellCatalog>>();
+    let spells = scene.world.resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(vec![
+        SpellDefinition::default(),
+        SpellDefinition { id: SpellId(1), realm: Some(Realm::Fire), cost: 8, ..default() },
+        SpellDefinition { id: SpellId(2), realm: Some(Realm::Water), cost: 6, ..default() },
+    ]));
+    scene.world.resource_mut::<GameData>().spells = spells;
+    scene.world.entity_mut(member).insert(LearnedSpells([SpellId(1), SpellId(2)].into()));
+    points.fraction[Realm::Fire] = 0.25;
+    scene.world.entity_mut(member).insert(points);
+    assert!(scene.run("MANA").0);
+    let points = scene.world.get::<SpellPoints>(member).unwrap();
+    assert_eq!(points.current.values().sum::<u32>(), 3);
+    assert_eq!(points.fraction[Realm::Fire], 0.25);
+    let memory = scene.remember();
+    scene.visit(Some(memory));
+    assert!(!scene.run("MANA").0);
+    scene.world.resource_mut::<GameClock>().ms = 1000;
+    assert!(scene.run("MANA").0);
+    assert_eq!(scene.world.get::<SpellPoints>(member).unwrap().current.values().sum::<u32>(), 6);
+}
+
+#[test]
+fn restorative_fountains_require_spell_content_before_consuming_a_use() {
+    use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId};
+    use crate::game::characters::{Condition, Lasting};
+    let mut scene = Scenario::new(
+        vec![trigger(
+            "TEMPLE",
+            TriggerAction::Fountain(Fountain {
+                restores: Restores::Restoration,
+                amount: 15,
+                uses: Some(1),
+                refills_after: None,
+            }),
+        )],
+        &[],
+        LevelScript::None,
+    );
+    let member = scene.members[0];
+    {
+        let mut vitals = scene.world.get_mut::<Vitals>(member).unwrap();
+        vitals.hp = 1;
+        vitals.inflict(Condition::Poisoned, Lasting::Rounds(10));
+    }
+    assert!(!scene.run("TEMPLE").0);
+    assert!(scene.world.get::<FountainState>(scene.device("TEMPLE")).unwrap().used.is_none());
+    scene.world.init_resource::<Assets<SpellCatalog>>();
+    let mut definitions = vec![SpellDefinition::default(); 69];
+    definitions[68] = SpellDefinition {
+        id: SpellId::HEAL_ALL,
+        dice: Some(Dice { count: 1, sides: 1, base: 0 }),
+        ..default()
+    };
+    let spells = scene.world.resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(definitions));
+    scene.world.resource_mut::<GameData>().spells = spells;
+    assert!(scene.run("TEMPLE").0);
+    let vitals = scene.world.get::<Vitals>(member).unwrap();
+    assert_eq!(vitals.hp, 2, "out-of-range authored power becomes one, not seven");
+    assert!(vitals.conditions.is_empty());
+    assert!(!scene.run("TEMPLE").0);
+}
+
+#[test]
+fn random_teleports_choose_at_execution_and_disabled_devices_do_not_draw() {
+    let destinations: Vec<_> = [10.0, 20.0, 30.0]
+        .into_iter()
+        .map(|x| Arrival::Here { eye: Vec3::X * x, yaw: 0.0 })
+        .collect();
+    let mut scene = Scenario::new(
+        vec![trigger("RANDOM", TriggerAction::RandomTeleport(destinations.clone()))],
+        &[],
+        LevelScript::None,
+    );
+    let mut expected = scene.world.resource::<GameRng>().clone();
+    let index = expected.below(3) as usize;
+    assert!(scene.run("RANDOM").0);
+    let pending = scene.world.entity_mut(scene.root).take::<PendingPartyMove>().unwrap();
+    assert!(matches!(pending.0, PartyMove::Teleport(ref actual) if actual == &destinations[index]));
+    let entity = scene.device("RANDOM");
+    scene.world.get_mut::<TriggerState>(entity).unwrap().on = false;
+    assert!(!scene.run("RANDOM").0);
+    assert_eq!(scene.world.resource::<GameRng>().clone().below(1000), expected.below(1000));
 }

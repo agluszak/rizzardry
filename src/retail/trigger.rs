@@ -28,8 +28,13 @@ pub mod action {
     pub const HURT_PARTY: u32 = 0x24;
     pub const STAMINA_FOUNTAIN: u32 = 0x25;
     pub const HEALTH_FOUNTAIN: u32 = 0x26;
+    pub const MAGIC_FOUNTAIN: u32 = 0x27;
+    pub const RESTORATIVE_FOUNTAIN: u32 = 0x2b;
     /// A second door toggle.
     pub const TOGGLE_DOOR_2: u32 = 0x2c;
+    pub const ENABLE_DEVICES: u32 = 0x2d;
+    pub const DISABLE_DEVICES: u32 = 0x2e;
+    pub const TOGGLE_DEVICES: u32 = 0x2f;
     pub const START_ANIMATION: u32 = 0x32;
     pub const STOP_ANIMATION: u32 = 0x33;
     /// Move the party to the recipients: a local trigger or named position,

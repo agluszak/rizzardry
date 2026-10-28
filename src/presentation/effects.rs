@@ -55,6 +55,7 @@ pub fn play_trigger_effects(
             }
             // Shown as notices.
             TriggerEffect::Message { .. }
+            | TriggerEffect::Unsupported { .. }
             | TriggerEffect::NothingHappened
             | TriggerEffect::Locked => None,
         };

@@ -709,9 +709,13 @@ pub(super) fn refresh_magic_view(
         commands.entity(root).despawn();
         return;
     };
-    let Ok((character, _, carried)) = members.get(view.caster) else { return };
+    let Ok((character, vitals, carried)) = members.get(view.caster) else { return };
     let (learned, points) = casters.get(view.caster).map_or((None, None), |(l, p)| (Some(l), p));
-    let maximum = points.map(|p| p.maximum).unwrap_or_default();
+    let maximum = learned
+        .map(|learned| {
+            crate::game::magic::max_points(&character.stats(&vitals.enchantments), learned, spells)
+        })
+        .unwrap_or_default();
     // Realms: their points, the chosen one latched; the first with points
     // chosen when none is.
     if !view.items {
@@ -754,9 +758,7 @@ pub(super) fn refresh_magic_view(
             }
         }
     }
-    let silenced = members
-        .get(view.caster)
-        .is_ok_and(|(_, v, _)| v.has(crate::game::characters::Condition::Silenced));
+    let silenced = vitals.has(crate::game::characters::Condition::Silenced);
     let offers =
         offers(&view, character, carried, learned, points, spells, items, context, &pool, silenced);
     let Ok((scroll_value, scroll_range)) = sliders.get(scroll.0) else { return };
@@ -899,6 +901,10 @@ pub(super) fn refresh_magic_view(
         Aim::Device(attempt)
     } else {
         match spell.targeting {
+            Targeting::Item => match pool.hand.held.as_ref() {
+                Some(stack) => Aim::Item(stack.id),
+                None => return,
+            },
             Targeting::Ally => match view.member {
                 Some(member) => Aim::Member(member),
                 None => return,
@@ -974,11 +980,9 @@ fn choose_row(
     let (Some(spells), Some(items)) = (content.spells(), content.items()) else {
         return;
     };
-    let Ok((character, _, carried)) = members.get(view.caster) else { return };
+    let Ok((character, vitals, carried)) = members.get(view.caster) else { return };
     let (learned, points) = casters.get(view.caster).map_or((None, None), |(l, p)| (Some(l), p));
-    let silenced = members
-        .get(view.caster)
-        .is_ok_and(|(_, v, _)| v.has(crate::game::characters::Condition::Silenced));
+    let silenced = vitals.has(crate::game::characters::Condition::Silenced);
     let offers = offers(
         &view,
         character,

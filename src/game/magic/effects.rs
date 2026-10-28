@@ -59,6 +59,7 @@ enum Kind {
     /// Drain health; 70% of it heals the most wounded party member.
     Lifesteal,
     MightToMagic,
+    Purify,
 }
 
 /// The spells implemented, by retail id (`spell_ids.h`), and what they do.
@@ -86,7 +87,9 @@ fn kind(spell: SpellId) -> Option<Kind> {
         | SpellId::MIND_FLAY
         | SpellId::NUCLEAR_BLAST
         | SpellId::TSUNAMI => Kind::Damage,
-        SpellId::BLESS
+        SpellId::ACID_BOMB
+        | SpellId::FIRESTORM
+        | SpellId::BLESS
         | SpellId::DETECT_SECRETS
         | SpellId::ENCHANTED_BLADE
         | SpellId::GUARDIAN_ANGEL
@@ -136,6 +139,7 @@ fn kind(spell: SpellId) -> Option<Kind> {
         SpellId::RESURRECTION => Kind::Resurrect,
         SpellId::LIFESTEAL => Kind::Lifesteal,
         SpellId::MIGHT_TO_MAGIC => Kind::MightToMagic,
+        SpellId::PURIFY_AIR => Kind::Purify,
         SpellId::PHILOSOPHERS_BANE => Kind::GoldLoss,
         SpellId::VAMPIRIC_VORTEX => Kind::Damage,
         SpellId::HEATWAVE => Kind::DestroyConsumables,
@@ -177,6 +181,9 @@ impl Victim {
 /// What a spell did to one victim.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Effect {
+    Purified {
+        victim: Victim,
+    },
     Enchanted {
         victim: Victim,
         spell: SpellId,
@@ -268,6 +275,7 @@ pub struct Field<'a, 'm, 'ms, 'd, 'ds, 'f, 'p> {
     pub party_damage: &'a mut MessageWriter<'p, DamageApplied>,
     pub items: &'a ItemCatalog,
     pub species: &'a MonsterCatalog,
+    pub spells: Option<&'a crate::content::spells::SpellCatalog>,
     pub resistances: &'a Query<'a, 'a, &'static Resistances>,
     /// What monster loot tables scale by.
     pub party_level: u32,
@@ -280,7 +288,7 @@ pub struct Field<'a, 'm, 'ms, 'd, 'ds, 'f, 'p> {
 
 /// The magnitude a spell rolls at `power` (retail `RollEffectMagnitude`): its
 /// dice count times power, then raised by the boost percent.
-fn magnitude(rng: &mut GameRng, dice: Option<Dice>, strength: Strength) -> u32 {
+pub(crate) fn magnitude(rng: &mut GameRng, dice: Option<Dice>, strength: Strength) -> u32 {
     let Some(dice) = dice else { return 0 };
     let count = (u32::from(dice.count) * u32::from(strength.power)).min(255) as u8;
     let rolled = rng.roll(Dice { count, ..dice });
@@ -871,6 +879,52 @@ pub fn resolve(
         }
     };
     match kind {
+        Kind::Purify => {
+            let Some(catalog) = world.spells else { return effects };
+            // Purify rolls from power alone, rather than its authored duration.
+            let base = u32::from(strength.power) + 1;
+            let amount = match rng.below(4) {
+                0 if base > 1 => base + 1,
+                1 if base < 3 => base + 1,
+                _ => base,
+            };
+            let amount = amount + amount * strength.boost / 100;
+            let mut party_done = false;
+            for &victim in victims {
+                let purify = |slots: &mut super::enchantments::Enchantments| {
+                    slots.0.retain_mut(|slot| {
+                        if matches!(
+                            slot.spell,
+                            SpellId::ACID_BOMB
+                                | SpellId::TOXIC_CLOUD
+                                | SpellId::DRAINING_CLOUD
+                                | SpellId::FIRESTORM
+                                | SpellId::DEATH_CLOUD
+                        ) && let Some(cloud) = catalog.get(slot.spell)
+                        {
+                            let removed = (amount + u32::from(spell.level))
+                                .saturating_sub(u32::from(cloud.level));
+                            slot.turns = slot.turns.saturating_sub(removed);
+                        }
+                        slot.turns > 0
+                    });
+                };
+                match victim {
+                    Victim::Member(_) if !party_done => {
+                        purify(world.enchantments);
+                        party_done = true;
+                    }
+                    Victim::Member(_) => continue,
+                    Victim::Monster(actor) => {
+                        let Some(mut slots) = world.monsters.enchantments_mut(actor) else {
+                            continue;
+                        };
+                        purify(&mut slots);
+                    }
+                }
+                effects.push(Effect::Purified { victim });
+            }
+        }
         Kind::Enchant => {
             let turns = duration(rng, spell, strength);
             let mut party_applied = false;
@@ -909,7 +963,7 @@ pub fn resolve(
                 };
                 let changed = match victim {
                     Victim::Member(member) if personal => {
-                        world.members.get_mut(member).is_ok_and(|(_, mut v, ..)| {
+                        world.members.get_mut(member).is_ok_and(|(profile, mut v, ..)| {
                             if v.is_dead() {
                                 return false;
                             }
@@ -923,7 +977,28 @@ pub fn resolve(
                                     ..effect
                                 });
                             }
-                            apply(&mut v.enchantments, false)
+                            let maximum = world.spells.and_then(|spells| {
+                                points.get(member).ok().map(|(known, _)| {
+                                    super::max_points(
+                                        &profile.stats(&v.enchantments),
+                                        known,
+                                        spells,
+                                    )
+                                })
+                            });
+                            let changed = apply(&mut v.enchantments, false);
+                            if changed
+                                && let (Some(before), Some(spells), Ok((known, mut pool))) =
+                                    (maximum, world.spells, points.get_mut(member))
+                            {
+                                let after = super::max_points(
+                                    &profile.stats(&v.enchantments),
+                                    known,
+                                    spells,
+                                );
+                                pool.adjust_limits(&before, &after);
+                            }
+                            changed
                         })
                     }
                     Victim::Member(_) => {
@@ -1034,16 +1109,18 @@ pub fn resolve(
         }
         Kind::RestoreMagic => each(&mut |v, rng, world| {
             let Victim::Member(member) = v else { return None };
-            let (_, vitals, ..) = world.members.get(member).ok()?;
+            let (profile, vitals, ..) = world.members.get(member).ok()?;
             if vitals.is_dead() {
                 return None;
             }
             // Retail rolls even when every realm is already full.
             let amount = magnitude(rng, spell.dice, strength);
-            let Ok((_, mut pool)) = points.get_mut(member) else {
+            let Ok((learned, mut pool)) = points.get_mut(member) else {
                 return Some(Effect::Nothing { victim: v });
             };
-            let amount = pool.restore_evenly(amount);
+            let maximum =
+                super::max_points(&profile.stats(&vitals.enchantments), learned, world.spells?);
+            let amount = pool.restore_evenly(amount, &maximum);
             Some(if amount == 0 {
                 Effect::Nothing { victim: v }
             } else {
@@ -1256,8 +1333,11 @@ pub fn resolve(
                     let percent = if kind == Kind::Lifesteal {
                         v.hp * 100 / c.stats(&v.enchantments).max_hp().max(1)
                     } else {
-                        let (_, pool) = points.get(m).ok()?;
-                        let maximum: u32 = pool.maximum.values().sum();
+                        let (learned, pool) = points.get(m).ok()?;
+                        let maximum: u32 =
+                            super::max_points(&c.stats(&v.enchantments), learned, world.spells?)
+                                .values()
+                                .sum();
                         if maximum == 0 {
                             return None;
                         }
@@ -1277,8 +1357,11 @@ pub fn resolve(
                         victim: Victim::Member(member),
                         amount: v.hp - before,
                     });
-                } else if let Ok((_, mut pool)) = points.get_mut(member) {
-                    let amount = pool.restore_evenly(drained);
+                } else if let (Ok((learned, mut pool)), Some(spells)) =
+                    (points.get_mut(member), world.spells)
+                {
+                    let maximum = super::max_points(&c.stats(&v.enchantments), learned, spells);
+                    let amount = pool.restore_evenly(drained, &maximum);
                     effects.push(Effect::Replenished { victim: Victim::Member(member), amount });
                 }
             }
@@ -1353,4 +1436,48 @@ pub fn all_restored(spell: SpellId, victims: &[Victim], members: &Members) -> bo
                 }
         })
     })
+}
+
+/// Retail offensive slots follow their affected actors; they are not stationary
+/// geometry. Tick before slot expiry, using indirect-source difficulty rather
+/// than retaining a caster or borrowing a later caster's stats.
+pub(crate) fn pulse_clouds(
+    combatants: &[Entity],
+    spells: &crate::content::spells::SpellCatalog,
+    rng: &mut GameRng,
+    world: &mut Field,
+) -> Vec<(SpellId, Vec<Effect>)> {
+    let mut reports = Vec::new();
+    let party: Vec<_> = world.party.iter().copied().map(Victim::Member).collect();
+    let targets = std::iter::once(None).chain(combatants.iter().copied().map(Some));
+    for actor in targets {
+        for id in [SpellId::ACID_BOMB, SpellId::FIRESTORM] {
+            let effect = match actor {
+                None => world.enchantments.get(id).copied(),
+                Some(actor) => world
+                    .monsters
+                    .monsters()
+                    .get(actor)
+                    .ok()
+                    .filter(|(monster, ..)| !monster.is_dead())
+                    .and_then(|(monster, ..)| monster.enchantments.get(id).copied()),
+            };
+            let (Some(effect), Some(spell)) = (effect, spells.get(id)) else { continue };
+            let Some(realm) = spell.realm else { continue };
+            let strength = Strength::at(0, spell, effect.power, effect.boost);
+            let victims = actor.map_or_else(|| party.clone(), |a| vec![Victim::Monster(a)]);
+            let mut landed = Vec::new();
+            for victim in victims {
+                if target(world, victim, realm, None).is_none_or(|t| t.dead) {
+                    continue;
+                }
+                let amount = magnitude(rng, spell.dice, strength);
+                if let Some(hit) = damage(rng, world, victim, realm, amount, strength.against) {
+                    landed.push(hit);
+                }
+            }
+            reports.push((id, landed));
+        }
+    }
+    reports
 }

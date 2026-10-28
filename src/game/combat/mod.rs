@@ -881,8 +881,7 @@ pub fn run_battle(
                 party.eye,
                 species,
                 &mut news,
-                &mut magic.points,
-                &mut magic.context.enchantments.0,
+                &mut magic,
             );
             if over {
                 for &actor in combatants {
@@ -1273,31 +1272,48 @@ fn end_round(
     party_eye: Vec3,
     species: &MonsterCatalog,
     news: &mut MessageWriter<CombatNews>,
-    points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
-    enchantments: &mut crate::game::magic::enchantments::Enchantments,
+    magic: &mut BattleMagic,
 ) -> bool {
     // The round's time passes now, with its meaning: conditions age, spell
     // points come back at half rate and nothing else recovers (retail
     // `AdvanceCombatRound`, `AdvanceTimedEffects`).
     let ticks = clock.advance(ROUND_MS);
-    enchantments.age(ticks.aging);
     for &entity in combatants {
-        if let Some(mut e) = damage.enchantments_mut(entity) {
-            e.age(ticks.aging);
-        }
         if let Some(mut conditions) = damage.conditions_mut(entity)
             && crate::game::characters::any_timed(&conditions)
         {
             crate::game::characters::age(&mut conditions, ticks.aging);
         }
     }
-    for (_, mut pool) in points.iter_many_unique_mut(roster.iter()).matched() {
-        if pool.short() {
-            pool.recover(ticks.aging, crate::game::magic::recovery_scale(0.0));
+    for actor in roster.iter() {
+        let Ok((profile, mut vitals, ..)) = members.get_mut(actor) else { continue };
+        let mut pool = magic.points.get_mut(actor).ok();
+        let mana = pool
+            .as_mut()
+            .zip(magic.context.content.spells())
+            .map(|((known, pool), spells)| (*known, &mut **pool, spells));
+        recovery::pass(&profile, &mut vitals, ticks, recovery::Pace::Fighting, mana);
+    }
+    // AdvanceTimedEffects applies offensive slots after personal aging and
+    // before expiring the slots. Their final remaining turn still pulses.
+    if let Ok(reports) = magic.context.resolve(members, damage, |field, spells| {
+        crate::game::magic::effects::pulse_clouds(combatants, spells, rng, field)
+    }) {
+        for (spell, effects) in reports {
+            battle.credit_kills(&effects, news);
+            battle.this_round.attacked |= crate::game::magic::effects::affected(&effects);
+            magic.context.news.write(casting::MagicNews::Triggered {
+                spell,
+                effects,
+                improved: vec![],
+            });
         }
     }
-    for (profile, mut vitals, ..) in members.iter_many_unique_mut(roster.iter()).matched() {
-        recovery::pass(&profile, &mut vitals, ticks, recovery::Pace::Fighting);
+    magic.context.enchantments.0.age(ticks.aging);
+    for &entity in combatants {
+        if let Some(mut effects) = damage.enchantments_mut(entity) {
+            effects.age(ticks.aging);
+        }
     }
     battle.phase = RoundPhase::Waiting;
     // Recover after aging conditions, in accepted actor order.
@@ -2465,6 +2481,113 @@ mod tests {
         }
         assert!(!fight(app.world()).unwrap().executing());
         news
+    }
+
+    #[test]
+    fn purify_air_reduces_the_party_slot_once_without_touching_monster_slots() {
+        use crate::content::{
+            characters::Realm,
+            spells::{SpellDefinition, SpellId, Spellbook, Targeting, Usable},
+        };
+        use crate::game::magic::enchantments::{Enchantment, PartyEffects};
+        let (mut app, [caster, _]) = round_app(false);
+        let monster = order_spell(
+            &mut app,
+            caster,
+            SpellDefinition {
+                id: SpellId::PURIFY_AIR,
+                realm: Some(Realm::Fire),
+                cost: 1,
+                books: Spellbook::Wizardry.into(),
+                targeting: Targeting::Party,
+                usable: Usable::InCombat,
+                ..default()
+            },
+        );
+        let handle = app.world().resource::<GameData>().spells.clone();
+        app.world_mut().resource_mut::<Assets<SpellCatalog>>().get_mut(&handle).unwrap().0[48] =
+            SpellDefinition { id: SpellId::ACID_BOMB, ..default() };
+        let effect =
+            Enchantment { spell: SpellId::ACID_BOMB, power: 1, boost: 0, turns: 10, absorption: 0 };
+        let party = crate::game::party::roster::the_party(app.world_mut()).unwrap();
+        app.world_mut().get_mut::<PartyEffects>(party).unwrap().0.apply(effect);
+        app.world_mut().get_mut::<Monster>(monster).unwrap().enchantments.apply(effect);
+        app.update();
+        let remaining = app
+            .world()
+            .get::<PartyEffects>(party)
+            .unwrap()
+            .0
+            .get(SpellId::ACID_BOMB)
+            .unwrap()
+            .turns;
+        assert!(
+            (7..=8).contains(&remaining),
+            "one 2..3 turn reduction for the party, not one per member"
+        );
+        assert_eq!(
+            app.world()
+                .get::<Monster>(monster)
+                .unwrap()
+                .enchantments
+                .get(SpellId::ACID_BOMB)
+                .unwrap()
+                .turns,
+            10
+        );
+    }
+
+    #[test]
+    fn an_offensive_slot_pulses_on_its_last_round_then_expires() {
+        use crate::content::{
+            characters::Realm,
+            spells::{SpellDefinition, SpellId, Spellbook, Targeting, Usable},
+        };
+        let (mut app, [caster, _]) = round_app(false);
+        let monster = order_spell(
+            &mut app,
+            caster,
+            SpellDefinition {
+                id: SpellId::ACID_BOMB,
+                realm: Some(Realm::Fire),
+                cost: 1,
+                books: Spellbook::Wizardry.into(),
+                targeting: Targeting::Enemy,
+                usable: Usable::InCombat,
+                reach: Reach::Long,
+                dice: Some(Dice { count: 0, sides: 0, base: 5 }),
+                duration_base: 2,
+                ..default()
+            },
+        );
+        app.update();
+        {
+            let mut target = app.world_mut().get_mut::<Monster>(monster).unwrap();
+            let effect =
+                target.enchantments.0.iter_mut().find(|e| e.spell == SpellId::ACID_BOMB).unwrap();
+            effect.turns = 1;
+        }
+        app.world_mut().resource_mut::<Messages<MagicNews>>().clear();
+        finish_round(&mut app);
+        let pulses: Vec<_> =
+            app.world_mut().resource_mut::<Messages<MagicNews>>().drain().collect();
+        assert!(
+            matches!(pulses.as_slice(), [MagicNews::Triggered { spell: SpellId::ACID_BOMB, effects, .. }]
+            if effects.len() == 1)
+        );
+        assert!(
+            app.world()
+                .get::<Monster>(monster)
+                .unwrap()
+                .enchantments
+                .get(SpellId::ACID_BOMB)
+                .is_none()
+        );
+        app.world_mut().entity_mut(caster).insert(Order::Defend);
+        app.world_mut().write_message(StartRound);
+        app.update();
+        finish_round(&mut app);
+        assert!(app.world_mut().resource_mut::<Messages<MagicNews>>().drain().next().is_none());
     }
 
     /// A second weapon in the off hand takes its own attacks in the round,

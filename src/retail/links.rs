@@ -34,11 +34,10 @@ pub fn level_entrances(sections: &LevelSections) -> Vec<Entrance> {
         .collect()
 }
 
-/// Where a teleport trigger (action 0x34/0x4b) takes the party: a trigger
+/// Where a teleport trigger (action 0x34) takes the party: a trigger
 /// in this level, or another level's entrance named by location code and
 /// number, e.g. `MO201` (Whizzardry `RunDestination`). Named positions are
-/// not handled. A random teleport takes the first destination until the game
-/// has a random source for it.
+/// not handled. Random teleports decode all destinations with `random_arrivals`.
 pub fn teleport_arrival(sections: &LevelSections, item: &ItemTrigger) -> Option<Arrival> {
     let name = item.recipients().next()?;
     let here = item.recipients().find_map(|name| match &sections.trigger(name)?.kind {
@@ -57,6 +56,27 @@ pub fn teleport_arrival(sections: &LevelSections, item: &ItemTrigger) -> Option<
         }),
         None => None,
     }
+}
+
+/// Decode each destination without dropping invalid entries or making a
+/// random selection during content loading.
+pub fn random_arrivals(sections: &LevelSections, item: &ItemTrigger) -> Option<Vec<Arrival>> {
+    let arrivals: Option<Vec<_>> = item
+        .recipients()
+        .map(|name| {
+            if let Some(TriggerKind::Item(target)) = sections.trigger(name).map(|t| &t.kind) {
+                let place = target.placement?;
+                Some(Arrival::Here {
+                    eye: retail_position(place.position),
+                    yaw: retail_yaw(place.angle, place.axis),
+                })
+            } else {
+                crate::content::levels::LevelInfo::for_entrance(name)?;
+                Some(Arrival::Entrance { entrance: name.to_uppercase(), ask: item.data[0] > 0 })
+            }
+        })
+        .collect();
+    arrivals.filter(|arrivals| !arrivals.is_empty())
 }
 
 /// The links walkers use: teleports to a trigger in this level, and climbs

@@ -299,6 +299,7 @@ fn effect_line(names: &super::names::ActorNames, effect: crate::game::magic::Eff
     use crate::game::magic::{Effect, Victim};
     let victim = |victim: Victim| names.name(victim.entity()).unwrap_or_default();
     match effect {
+        Effect::Purified { victim: v } => format!("The air around {} clears.", victim(v)),
         Effect::Enchanted { victim: v, .. } => format!("{} is enchanted.", victim(v)),
         Effect::Healed { victim: v, amount } => {
             format!("{} heals {amount}.", victim(v))
@@ -434,6 +435,9 @@ pub fn queue_notices(
                 .and_then(|source| tables.get(source))
                 .and_then(|messages| messages.get(usize::try_from(*id).ok()?))
                 .map(str::to_owned),
+            TriggerEffect::Unsupported { device, code } => {
+                Some(format!("{device}: action {code:#x} is not implemented."))
+            }
             TriggerEffect::NothingHappened => Some(string(NOTHING_HAPPENS)),
             // Whizzardry's notice for a locked door without its key.
             TriggerEffect::Locked => Some("Your party doesn't have required key.".to_owned()),

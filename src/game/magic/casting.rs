@@ -46,6 +46,26 @@ pub enum Source {
     PoolItem(StackId),
 }
 
+impl Source {
+    /// Resolve an item source by its stable stack identity. This is routing,
+    /// not acceptance: the cast revalidates eligibility and payment.
+    pub fn spell_id(
+        self,
+        carried: Option<&Carried>,
+        inventory: &PartyInventory,
+        items: &ItemCatalog,
+    ) -> Option<SpellId> {
+        match self {
+            Self::Spell { spell, .. } => Some(spell),
+            Self::Item(id) => items.get(carried?.find_stack(id)?.item)?.spell.map(|s| s.spell),
+            Self::PoolItem(id) => items
+                .get(inventory.pool.stacks.iter().find(|s| s.id == id)?.item)?
+                .spell
+                .map(|s| s.spell),
+        }
+    }
+}
+
 /// Whom the actor aimed at; group, area, party and self spells widen or
 /// replace it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,6 +74,8 @@ pub enum Aim {
     Monster(Entity),
     /// The device attempt under way (its lock or trap), by the attempt.
     Device(Entity),
+    /// The selected stack, retained across any delayed request.
+    Item(StackId),
 }
 
 /// An accepted magic action: the source and the aim, nothing resolved yet.
@@ -177,7 +199,9 @@ pub enum UseContext {
 /// Whether the game can resolve a spell: its effect is modelled, or it is
 /// one of the device spells the device interaction resolves.
 pub fn resolvable(spell: SpellId) -> bool {
-    effects::modelled(spell) || matches!(spell, SpellId::DIVINE_TRAP | SpellId::KNOCK_KNOCK)
+    effects::modelled(spell)
+        || super::utilities::spell(spell)
+        || matches!(spell, SpellId::DIVINE_TRAP | SpellId::KNOCK_KNOCK)
 }
 
 pub fn usable_now(spell: &SpellDefinition, context: UseContext) -> bool {
@@ -233,7 +257,7 @@ fn capture(
     }
     let aimed = || match aim {
         Aim::Monster(m) => situation.candidate(m, spell).copied().ok_or(Refusal::NoTarget),
-        Aim::Member(_) | Aim::Device(_) => Err(Refusal::NoTarget),
+        Aim::Member(_) | Aim::Device(_) | Aim::Item(_) => Err(Refusal::NoTarget),
     };
     let reach = spell.reach.metres();
     Ok(match spell.targeting {
@@ -617,7 +641,7 @@ pub fn perform(
                 if auto {
                     let victim = match choice.aim {
                         Aim::Member(m) => world.members.get(m).ok(),
-                        Aim::Monster(_) | Aim::Device(_) => None,
+                        Aim::Monster(_) | Aim::Device(_) | Aim::Item(_) => None,
                     };
                     auto_power(&character, spell, victim.map(|(c, v, ..)| (c, v)), affordable)
                 } else {
@@ -724,9 +748,9 @@ pub fn perform(
     Ok((report, flights))
 }
 
-/// Execute the shared source side of a device operation while the exclusive
-/// caller owns target validation and applies the device consequence immediately.
-pub(crate) fn perform_device(
+/// Execute the source side of a utility or device cast. The exclusive caller
+/// validates its target first and applies the consequence immediately.
+pub(crate) fn perform_utility(
     caster: Entity,
     source: Source,
     context: UseContext,
@@ -744,7 +768,10 @@ pub(crate) fn perform_device(
         points,
         world.inventory,
     )?;
-    if !matches!(context, UseContext::Lock | UseContext::Trap) || !usable_now(spell, context) {
+    if !(matches!(context, UseContext::Lock | UseContext::Trap)
+        || super::utilities::spell(spell.id))
+        || !usable_now(spell, context)
+    {
         return Err(Refusal::WrongTime);
     }
     if spell.realm.is_none() {

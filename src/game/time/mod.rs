@@ -136,7 +136,8 @@ pub(crate) fn pass_time(
     mut enchantments: Single<&mut crate::game::magic::enchantments::PartyEffects>,
     mut clock: ResMut<GameClock>,
     mut rng: ResMut<GameRng>,
-    mut points: Query<&mut crate::game::magic::SpellPoints>,
+    mut points: Query<(&crate::game::magic::LearnedSpells, &mut crate::game::magic::SpellPoints)>,
+    content: crate::game::data::Content,
 ) {
     if battle.is_some() {
         return;
@@ -166,19 +167,18 @@ pub(crate) fn pass_time(
             Ticks { stamina: 0, aging: 1 }
         };
         let mut members = affected.p0();
-        for (profile, mut vitals) in members.iter_many_unique_mut(roster.iter()).matched() {
-            recovery::pass(profile, &mut vitals, ticks, pace);
+        for actor in roster.iter() {
+            let Ok((profile, mut vitals)) = members.get_mut(actor) else { continue };
+            let mut pool = points.get_mut(actor).ok().filter(|_| ticks.aging > 0);
+            let magic = pool
+                .as_mut()
+                .zip(content.spells())
+                .map(|((known, pool), spells)| (*known, &mut **pool, spells));
+            recovery::pass(profile, &mut vitals, ticks, pace, magic);
         }
         if pass > 0 {
             if !enchantments.0.0.is_empty() {
                 enchantments.0.age(1);
-            }
-            // Spell points come back at least at half rate (retail `spellScale`).
-            let scale = crate::game::magic::recovery_scale(pace.health_scale());
-            for mut pool in points.iter_many_unique_mut(roster.iter()).matched() {
-                if pool.short() {
-                    pool.recover(1, scale);
-                }
             }
             // Monsters' conditions run out in the world too.
             for mut monster in &mut affected.p2() {
@@ -224,6 +224,80 @@ mod pass_time_tests {
         app.world_mut().resource_mut::<Time<Virtual>>().set_max_delta(step);
         app.update();
         app
+    }
+
+    #[test]
+    fn mana_recovery_settles_enchantment_expiry_in_the_same_fixed_step() {
+        use crate::content::{
+            characters::Realm,
+            spells::{SpellCatalog, SpellDefinition, SpellId},
+        };
+        use crate::game::{
+            data::GameData,
+            magic::{LearnedSpells, SpellPoints, enchantments::Enchantment, max_points},
+        };
+        let simulate = |per_update, per_step, updates| {
+            let step = Duration::from_millis(AGING_TICK_MS * per_update / EXPLORATION_RATE);
+            let mut app = fixed_app(step);
+            app.insert_resource(Time::<Fixed>::from_duration(Duration::from_millis(
+                AGING_TICK_MS * per_step / EXPLORATION_RATE,
+            )));
+            let spell = SpellDefinition {
+                id: SpellId::HEAL_WOUNDS,
+                realm: Some(Realm::Divine),
+                cost: 3,
+                ..default()
+            };
+            let mut definitions = vec![SpellDefinition::default(); 7];
+            definitions[6] = spell;
+            let catalog = SpellCatalog(definitions);
+            let profile = Character::new("Caster", Race::Human, Gender::Male, Profession::Priest);
+            let learned = LearnedSpells([SpellId::HEAL_WOUNDS].into());
+            let mut vitals = Vitals::new(&profile);
+            let normal = max_points(&profile.stats(&vitals.enchantments), &learned, &catalog);
+            vitals.enchantments.apply(Enchantment {
+                spell: SpellId::SUPERMAN,
+                power: 7,
+                boost: 0,
+                turns: 1,
+                absorption: 0,
+            });
+            let boosted = max_points(&profile.stats(&vitals.enchantments), &learned, &catalog);
+            assert!(boosted[Realm::Divine] > normal[Realm::Divine]);
+            let spells = app.world_mut().resource_mut::<Assets<SpellCatalog>>().add(catalog);
+            app.insert_resource(GameData {
+                spells,
+                items: default(),
+                loot: default(),
+                species: default(),
+            });
+            let mut mana = SpellPoints::full(boosted);
+            mana.current[Realm::Divine] -= 2;
+            let actor = app.world_mut().spawn((profile, vitals, learned, mana)).id();
+            crate::game::party::roster::test_party(app.world_mut(), &[actor]);
+            for _ in 0..updates {
+                app.update();
+            }
+            assert!(
+                app.world()
+                    .get::<Vitals>(actor)
+                    .unwrap()
+                    .enchantments
+                    .get(SpellId::SUPERMAN)
+                    .is_none()
+            );
+            let result = app.world().get::<SpellPoints>(actor).unwrap().clone();
+            assert_eq!(result.current[Realm::Divine], normal[Realm::Divine] - 2);
+            assert!(result.fraction[Realm::Divine] > 0.0);
+            // Missing content cannot invent a zero maximum and erase live points.
+            app.world_mut().remove_resource::<GameData>();
+            app.update();
+            assert_eq!(app.world().get::<SpellPoints>(actor).unwrap(), &result);
+            result
+        };
+        let together = simulate(2, 2, 1);
+        assert_eq!(together, simulate(2, 1, 1));
+        assert_eq!(together, simulate(1, 1, 2));
     }
 
     #[test]

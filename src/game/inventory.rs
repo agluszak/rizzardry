@@ -392,6 +392,10 @@ impl Carried {
     pub fn find_stack(&self, id: StackId) -> Option<&ItemStack> {
         self.slot(self.find(id)?)
     }
+    /// Edit metadata of an existing stack without moving or rebinding it.
+    pub(crate) fn find_stack_mut(&mut self, id: StackId) -> Option<&mut ItemStack> {
+        self.stack_mut(self.find(id)?)
+    }
     /// Trade and other unworn-item operations cannot extract equipment.
     pub fn backpack_stack(&self, id: StackId) -> Option<&ItemStack> {
         self.backpack.iter().flatten().find(|stack| stack.id == id)

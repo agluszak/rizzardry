@@ -22,6 +22,9 @@ struct Args {
     /// List props with their triggers and paths.
     #[arg(long)]
     props: bool,
+    /// List all authored trigger actions and their parameters.
+    #[arg(long)]
+    triggers: bool,
     /// List navigation links and party teleports.
     #[arg(long)]
     links: bool,
@@ -53,6 +56,23 @@ fn main() {
                     println!(
                         "  teleport {}{usable} flags {:#x} at {at:.1} range {:?} -> {arrival:?}",
                         trigger.name, item.flags, item.range
+                    );
+                }
+            }
+        }
+        if args.triggers {
+            let sections = read_sections(&mut Bytes::new(&data[level.end..])).unwrap();
+            for trigger in sections.all_triggers() {
+                if let TriggerKind::Item(item) = &trigger.kind {
+                    println!(
+                        "{name}: {} actions {:#x}/{:#x}/{:#x} recipients {:?} data {:?} payload {:?}",
+                        trigger.name,
+                        item.initial_action,
+                        item.alternate_action,
+                        item.fallback_action,
+                        item.recipients,
+                        item.data,
+                        item.action_data
                     );
                 }
             }

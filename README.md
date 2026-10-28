@@ -106,3 +106,9 @@ editable. **Apply** saves them; **Cancel** or Escape discards the draft. Setting
 are stored in `rizzardry/settings.ron` under `XDG_CONFIG_HOME`, `APPDATA`, or
 `~/.config` (in that order), and loaded on startup. Campaign saves and Wizardry 7
 party import are not yet available.
+
+To cast **Identify Item**, pick up the target item into the inventory hand, then
+select the spell. Auto power chooses the lowest sufficient power, limited by
+available mana. **Set Portal** records a separate location for each caster;
+**Return to Portal** uses that caster's saved location, including across levels.
+These portal records currently last for the session, like the campaign itself.

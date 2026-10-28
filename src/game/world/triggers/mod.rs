@@ -150,9 +150,28 @@ fn drink_fountain(
     mut fountains: Query<&mut FountainState>,
     clock: Res<GameClock>,
     roster: Single<&PartyRoster>,
-    mut members: Query<(&Character, &mut Vitals)>,
+    mut members: Query<(
+        &Character,
+        &mut Vitals,
+        Option<(&crate::game::magic::LearnedSpells, &mut crate::game::magic::SpellPoints)>,
+    )>,
+    content: crate::game::data::Content,
+    mut rng: ResMut<GameRng>,
     mut outcomes: MessageWriter<TriggerEffect>,
 ) -> bool {
+    if fountain.restores == Restores::Magic && content.spells().is_none() {
+        return false;
+    }
+    let restoration = if fountain.restores == Restores::Restoration {
+        let Some(spell) =
+            content.spells().and_then(|s| s.get(crate::content::spells::SpellId::HEAL_ALL))
+        else {
+            return false;
+        };
+        Some(spell)
+    } else {
+        None
+    };
     let mut state = fountains.get_mut(entity).unwrap();
     let now = clock.ms;
     // A dry fountain is assessed without marking it changed.
@@ -172,9 +191,11 @@ fn drink_fountain(
             state.refills_at = fountain.refills_after.map(|after| now + after);
         }
     }
-    for (profile, mut member) in members.iter_many_unique_mut(roster.iter()).matched() {
+    for (profile, mut member, points) in members.iter_many_unique_mut(roster.iter()).matched() {
         if member.is_dead()
             || match fountain.restores {
+                Restores::Restoration => false,
+                Restores::Magic => points.is_none(),
                 Restores::Health => member.hp >= profile.stats(&member.enchantments).max_hp(),
                 Restores::Stamina => {
                     member.stamina >= profile.stats(&member.enchantments).max_stamina()
@@ -188,6 +209,30 @@ fn drink_fountain(
             continue;
         }
         match fountain.restores {
+            Restores::Restoration => {
+                // PointCastSpell: zero does not cast, values above seven use
+                // power one (the retail temple fountain authors fifteen).
+                let power = if fountain.amount > 7 { 1 } else { fountain.amount as u8 };
+                if power > 0 {
+                    let amount = crate::game::magic::effects::magnitude(
+                        &mut rng,
+                        restoration.unwrap().dice,
+                        crate::game::magic::Strength { power, ..default() },
+                    );
+                    let maximum = profile.stats(&member.enchantments).max_hp();
+                    member.heal(amount, maximum);
+                }
+                member.conditions.clear();
+            }
+            Restores::Magic => {
+                let (learned, mut points) = points.unwrap();
+                let maximum = crate::game::magic::max_points(
+                    &profile.stats(&member.enchantments),
+                    learned,
+                    content.spells().unwrap(),
+                );
+                points.restore_evenly(fountain.amount, &maximum);
+            }
             Restores::Health => {
                 let maximum = profile.stats(&member.enchantments).max_hp();
                 member.heal(fountain.amount, maximum)
@@ -223,6 +268,11 @@ pub enum TriggerEffect {
     },
     /// The party used something and nothing came of it.
     NothingHappened,
+    /// A mandatory authored action has no implementation.
+    Unsupported {
+        device: String,
+        code: u32,
+    },
     Gold(u32),
     FountainUsed {
         at: Option<Vec3>,
@@ -319,7 +369,7 @@ enum Ran {
 enum Selected<'a> {
     /// `keyed` when a key just unlocked it, which overcomes its lock too
     /// (retail marks the lock completed).
-    Use { chosen: &'a TriggerUse, keyed: bool },
+    Use { chosen: &'a TriggerUse, keyed: bool, next: Option<bool> },
     /// A lock or trap must be overcome first.
     Guarded,
 }
@@ -327,7 +377,7 @@ enum Selected<'a> {
 fn usable(world: &World, entity: Entity, definition: &TriggerDefinition) -> bool {
     world
         .get::<TriggerState>(entity)
-        .is_some_and(|state| definition.usable && !(definition.once && state.fired))
+        .is_some_and(|state| definition.usable && state.on && !(definition.once && state.fired))
 }
 
 fn ready(world: &World, entity: Entity) -> bool {
@@ -338,13 +388,14 @@ fn ready(world: &World, entity: Entity) -> bool {
 }
 
 /// Choose the use a run performs (retail `Trigger::SelectAction`). As in
-/// retail, choosing is itself a commitment: a matching key unlocks the door
+/// retail, executing a supported selection commits before its action: a key unlocks the door
 /// and overcomes its lock, and the initial/alternate sequence advances, even
 /// if the chosen action then declines (retail `Run` returns without undoing
 /// either). Fired flags, location variables, sounds, links and messages
-/// wait for the action's commit.
+/// wait for the action's commit. Selection is pure so an unsupported action
+/// can be reported without any of those mutations.
 fn select_use<'a>(
-    mut actor: EntityMut,
+    actor: &bevy::ecs::world::EntityRef,
     variables: &LevelState,
     definition: &'a TriggerDefinition,
     offered: Option<crate::content::items::ItemId>,
@@ -359,35 +410,36 @@ fn select_use<'a>(
         return None;
     }
     if !definition.required_states.iter().all(|name| variables.variable(name)) {
-        return definition.fallback.as_ref().map(|chosen| Selected::Use { chosen, keyed: false });
+        return definition.fallback.as_ref().map(|chosen| Selected::Use {
+            chosen,
+            keyed: false,
+            next: None,
+        });
     }
     let mut keyed = false;
-    if let Some(mut door) = actor.get_mut::<DoorState>()
+    if let Some(door) = actor.get::<DoorState>()
         && door.locked
         && let Some(key) = definition.door.and_then(|d| d.key)
     {
         if offered == Some(key) {
-            door.locked = false;
             keyed = true;
         } else {
-            return definition
-                .fallback
-                .as_ref()
-                .map(|chosen| Selected::Use { chosen, keyed: false });
+            return definition.fallback.as_ref().map(|chosen| Selected::Use {
+                chosen,
+                keyed: false,
+                next: None,
+            });
         }
     }
     if !keyed && actor.contains::<Guarded>() {
         return Some(Selected::Guarded);
     }
-    let mut state = actor.get_mut::<TriggerState>()?;
+    let state = actor.get::<TriggerState>()?;
     let (chosen, next) = match &definition.alternate {
         Some(alternate) if state.use_alternate => (alternate, !definition.alternate_toggles),
         alternate => (&definition.initial, alternate.is_some()),
     };
-    if state.use_alternate != next {
-        state.use_alternate = next;
-    }
-    Some(Selected::Use { chosen, keyed })
+    Some(Selected::Use { chosen, keyed, next: Some(next) })
 }
 
 fn operate_door(mut device: EntityMut, open_only: bool) -> Result<bool, TriggerEffect> {
@@ -501,10 +553,12 @@ fn execute(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth:
         .and_then(|party| world.get::<PartyInventory>(party))
         .and_then(|p| p.hand.held.as_ref())
         .map(|h| h.item);
-    let chosen = {
-        let [actor, owner] = world.get_entity_mut([entity, level]).unwrap();
-        select_use(actor, owner.get::<LevelState>().unwrap(), definition, offered)
-    };
+    let chosen = select_use(
+        &world.entity(entity),
+        world.get::<LevelState>(level).unwrap(),
+        definition,
+        offered,
+    );
     let chosen = match chosen {
         None => return Ran::Declined,
         Some(Selected::Guarded) => {
@@ -513,9 +567,25 @@ fn execute(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth:
             }
             return Ran::Answered;
         }
-        Some(Selected::Use { chosen, keyed }) => {
+        Some(Selected::Use { chosen, keyed, next }) => {
+            // Missing implementation is not a retail action failure. Preserve
+            // selection and locks so installing support cannot skip this action.
+            if let TriggerAction::Unsupported(code) = chosen.action {
+                world.write_message(TriggerEffect::Unsupported {
+                    device: definition.name.clone(),
+                    code,
+                });
+                return Ran::Answered;
+            }
             if keyed {
+                world.get_mut::<DoorState>(entity).unwrap().locked = false;
                 world.entity_mut(entity).remove::<Guarded>();
+            }
+            if let Some(next) = next {
+                let mut state = world.get_mut::<TriggerState>(entity).unwrap();
+                if state.use_alternate != next {
+                    state.use_alternate = next;
+                }
             }
             chosen
         }
@@ -573,6 +643,35 @@ fn execute(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth:
             }
             execute_links(world, geometry, entity, depth);
         }
+        TriggerAction::SetDevices(change) => {
+            let count = world.get::<Device>(entity).unwrap().recipients.len();
+            if count == 0 {
+                return Ran::Declined;
+            }
+            for index in 0..count {
+                let recipient = world.get::<Device>(entity).unwrap().recipients[index];
+                let mut state = world.get_mut::<TriggerState>(recipient).unwrap();
+                let on = match change {
+                    StateChange::Set => true,
+                    StateChange::Clear => false,
+                    StateChange::Toggle => !state.on,
+                };
+                if state.on != on {
+                    state.on = on;
+                }
+            }
+        }
+        TriggerAction::RandomTeleport(arrivals) => {
+            if arrivals.is_empty() {
+                return Ran::Declined;
+            }
+            // Retail uses wall-clock modulo. The simulation RNG makes replay
+            // and continuation independent of rendering and machine timing.
+            let index = world.resource_mut::<GameRng>().below(arrivals.len() as u32) as usize;
+            world
+                .entity_mut(level)
+                .insert(PendingPartyMove(PartyMove::Teleport(arrivals[index].clone())));
+        }
         TriggerAction::Teleport(arrival) => {
             world.entity_mut(level).insert(PendingPartyMove(PartyMove::Teleport(arrival.clone())));
         }
@@ -615,10 +714,7 @@ fn execute(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth:
                 return Ran::Declined;
             }
         }
-        TriggerAction::Unsupported(code) => {
-            debug!("trigger {}: action {code:#x} is not implemented", definition.name);
-            return Ran::Declined;
-        }
+        TriggerAction::Unsupported(_) => unreachable!("checked before selection commits"),
     }
     if definition.sound_on_commit {
         play_authored_sound(world, entity, definition);
