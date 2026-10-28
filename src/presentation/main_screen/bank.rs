@@ -13,7 +13,7 @@ use super::{MainScreenArt, Panel, ScreenLayout, SelectedMember, layer};
 use crate::content::ui::SpriteSheet;
 use crate::game::camp::CampRequest;
 use crate::game::characters::{Character, Vitals};
-use crate::game::combat::{Battle, CombatSettings, StartRound};
+use crate::game::combat::{Battle, CombatSettings};
 use crate::game::inventory::{Carried, EquipSlot};
 use crate::game::party::Order;
 use crate::game::party::roster::PartyRoster;
@@ -200,8 +200,7 @@ fn press(
     mut orders: MessageWriter<crate::game::combat::GiveOrder>,
     roster: Single<&PartyRoster>,
     selected: Res<SelectedMember>,
-    mut round: MessageWriter<StartRound>,
-    mut settings: ResMut<CombatSettings>,
+    mut controls: MessageWriter<crate::game::combat::CombatControl>,
     battle: Option<Single<&Battle>>,
     mut commands: Commands,
     views: Query<Entity, With<super::magic_view::MagicView>>,
@@ -214,12 +213,8 @@ fn press(
                 orders.write(crate::game::combat::GiveOrder { member, order });
             }
         }
-        Some(Bank::Round) if battle.is_some() => {
-            if battle.is_some_and(|b| b.executing()) {
-                settings.continuous = !settings.continuous;
-            } else {
-                round.write(StartRound);
-            }
+        Some(Bank::Round) => {
+            controls.write(crate::game::combat::CombatControl::RoundButton);
         }
         Some(Bank::Camp) => {
             camp.write(CampRequest);

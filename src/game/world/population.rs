@@ -144,7 +144,7 @@ pub fn populate(
         Some(record) => (Some(record.monsters), Some(record.items), record.groups),
         None => (None, None, default()),
     };
-    let mut monsters: Vec<KeptMonster> = match remembered_monsters {
+    let monsters: Vec<KeptMonster> = match remembered_monsters {
         Some(monsters) => monsters,
         None => geometry
             .monsters
@@ -157,64 +157,60 @@ pub fn populate(
             })
             .collect(),
     };
+    let mut groups: HashMap<i32, Entity> = groups
+        .into_iter()
+        .map(|group| (group.authored, commands.spawn((group, LevelOwned(root))).id()))
+        .collect();
+    let mut actors = Vec::new();
+    for kept in monsters {
+        if kept.monster.is_dead() {
+            continue;
+        }
+        let body = kept.monster.body;
+        let name =
+            format!("{} #{}", species.0[kept.monster.species as usize].name, kept.monster.location);
+        let mut entity = commands.spawn((Name::new(name), kept.monster));
+        if kept.provoked {
+            entity.insert(Provoked);
+        }
+        actors.push((entity.id(), kept.feet, kept.yaw, body, kept.group));
+    }
     let average = npcs.average_level();
-    let mut identities = HashMap::new();
     let mut placed_actors = std::collections::HashSet::new();
     for placed in &geometry.monsters {
         let Some(kind) = species.kind(placed.species) else { continue };
         let Some(id) = kind.npc else { continue };
         let body = bodies.get(&handles[&placed.species]).unwrap();
         let place = crate::game::npcs::Placing { placed, id, map, average };
-        let Some((entity, kept)) =
-            npcs.place(commands, place, items, &mut placed_actors, rng, |rng| {
-                KeptMonster::rolled(placed, kind, body, rng)
-            })
-        else {
+        let Some(actor) = npcs.place(commands, place, items, &mut placed_actors, rng, |rng| {
+            KeptMonster::rolled(placed, kind, body, rng)
+        }) else {
             continue;
         };
-        identities.insert(kept.monster.location, entity);
-        monsters.push(kept);
+        commands.entity(actor.0).insert(Name::new(format!("{} #{}", kind.name, placed.location)));
+        actors.push(actor);
     }
-    let mut groups: HashMap<i32, Entity> = groups
-        .into_iter()
-        .map(|group| (group.authored, commands.spawn((group, LevelOwned(root))).id()))
-        .collect();
-    let monster_count = monsters.iter().filter(|m| !m.monster.is_dead()).count();
-    for kept in monsters {
-        let monster = kept.monster;
-        if monster.is_dead() {
-            continue;
-        }
-        let kind = &species.0[monster.species as usize];
-        let group = kept.group.map(|authored| {
+    let monster_count = actors.len();
+    for (actor, feet, yaw, body, group) in actors {
+        let group = group.map(|authored| {
             *groups.entry(authored).or_insert_with(|| {
                 commands.spawn((MonsterGroup { authored, ..default() }, LevelOwned(root))).id()
             })
         });
-        let ScaledBody { radius, speed, .. } = monster.body;
-        let float_height = super::navigation::float_height(speed);
-        let actor = identities.get(&monster.location).copied();
-        let mut entity = commands.spawn_empty();
+        let ScaledBody { radius, speed, .. } = body;
+        let mut entity = commands.entity(actor);
         entity.insert((
-            Name::new(format!("{} #{}", kind.name, monster.location)),
-            monster,
-            Transform::from_translation(kept.feet + Vec3::Y * float_height)
-                .with_rotation(Quat::from_rotation_y(kept.yaw)),
+            Transform::from_translation(feet + Vec3::Y * super::navigation::float_height(speed))
+                .with_rotation(Quat::from_rotation_y(yaw)),
             LevelOwned(root),
         ));
-        if let Some(actor) = actor {
-            entity.insert(crate::game::npcs::NpcBody(actor));
-        }
-        if kept.provoked {
-            entity.insert(Provoked);
-        }
         if let Some(group) = group {
             entity.insert(GroupMember(group));
         }
         if speed > 0.0 {
             super::navigation::insert_walker(
                 &mut entity,
-                (kept.feet, kept.yaw),
+                (feet, yaw),
                 (radius, speed),
                 navigation,
                 configs,

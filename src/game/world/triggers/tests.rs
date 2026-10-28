@@ -101,7 +101,13 @@ impl Scenario {
         world.init_resource::<crate::game::difficulty::Difficulty>();
         world.init_resource::<crate::game::magic::casting::FlightOrder>();
         world.init_resource::<ItemIds>();
-        crate::game::party::roster::test_party(&mut world, &[]);
+        let party = crate::game::party::roster::test_party(&mut world, &[]);
+        world.entity_mut(party).insert((
+            crate::game::party::body::PartyBody::default(),
+            avian3d::prelude::Position(
+                Vec3::X - Vec3::Y * crate::game::party::body::EYE_ABOVE_CENTRE,
+            ),
+        ));
         world.insert_resource(GameClock::at(0));
         world.insert_resource(GameRng::seeded(5));
         let items = world.resource_mut::<Assets<ItemCatalog>>().add(ItemCatalog::default());
@@ -200,7 +206,7 @@ impl Scenario {
 
     pub(crate) fn run(&mut self, name: &str) -> (bool, Vec<TriggerEffect>) {
         let device = self.device(name);
-        let committed = activate(&mut self.world, device, None);
+        let committed = activate(&mut self.world, device, false);
         (committed, self.effects())
     }
 
@@ -373,6 +379,7 @@ fn a_door_opens_then_toggles_and_a_locked_one_stays_shut() {
     locked.door = Some(DoorLock { locked: true, key: None });
     let mut plain = trigger("PLAIN", TriggerAction::OpenDoor);
     plain.usable = true;
+    plain.range = (0.5, 2.0);
     let mut level = Scenario::new(
         vec![door, locked, plain],
         &[
@@ -395,9 +402,17 @@ fn a_door_opens_then_toggles_and_a_locked_one_stays_shut() {
     assert_eq!(level.run("LOCKED"), (false, vec![TriggerEffect::Locked]));
     assert_eq!(level.motion("LOCKED").target, 0.0);
     let plain = level.device("PLAIN");
-    assert!(!activate(&mut level.world, plain, Some(100.0)), "out of reach");
+    let party = crate::game::party::roster::the_party(&mut level.world).unwrap();
+    level.world.init_resource::<Messages<crate::game::world::WorldRequest>>();
+    level.world.write_message(crate::game::world::WorldRequest::Activate { device: plain });
+    // Move after queuing the click: execution must use the new position.
+    level.world.get_mut::<avian3d::prelude::Position>(party).unwrap().x = 100.0;
+    crate::game::world::handle_world_requests(&mut level.world);
     assert_eq!(level.motion("PLAIN").target, 0.0);
-    assert!(activate(&mut level.world, plain, Some(1.0)));
+    level.world.get_mut::<avian3d::prelude::Position>(party).unwrap().x = 0.1;
+    assert!(!activate(&mut level.world, plain, true), "minimum range still applies");
+    level.world.get_mut::<avian3d::prelude::Position>(party).unwrap().x = 1.0;
+    assert!(activate(&mut level.world, plain, true));
     level.settle();
     assert!(!level.run("PLAIN").0, "opening an open door does nothing");
     assert_eq!(level.motion("PLAIN").target, 10.0);
@@ -935,7 +950,7 @@ fn same_named_props_keep_their_own_device_state_and_animation() {
     let [first, second] = level.devices[..] else { panic!("two devices") };
     assert!(level.world.get::<Prop>(first).is_some());
     level.world.get_mut::<Prop>(second).unwrap().centre = Vec3::X;
-    assert!(activate(&mut level.world, first, None));
+    assert!(activate(&mut level.world, first, false));
     assert_eq!(
         level.effects(),
         [TriggerEffect::Sound { path: "FIRST".into(), volume: 1.0, at: Some(Vec3::ZERO) }]
@@ -943,7 +958,7 @@ fn same_named_props_keep_their_own_device_state_and_animation() {
     assert_eq!(level.world.get::<PropMotion>(first).unwrap().target, 10.0);
     assert_eq!(level.world.get::<PropMotion>(second).unwrap().target, 0.0);
     assert!(!level.world.get::<TriggerState>(second).unwrap().fired);
-    assert!(activate(&mut level.world, second, None));
+    assert!(activate(&mut level.world, second, false));
     assert_eq!(
         level.effects(),
         [TriggerEffect::Sound { path: "SECOND".into(), volume: 1.0, at: Some(Vec3::X) }]
@@ -1115,4 +1130,43 @@ fn a_door_waits_for_the_doors_it_runs_before_its_key_is_tried() {
     assert!(level.run("DOOR").0);
     assert!(!level.world.get::<DoorState>(level.device("DOOR")).unwrap().locked);
     assert_eq!(level.motion("DOOR").target, 15.0);
+}
+
+#[test]
+fn player_reach_uses_only_prop_colliders_then_one_centre_fallback() {
+    use crate::game::party::body::PartyBody;
+    use crate::game::world::props::PropPart;
+    use avian3d::prelude::{Collider, Position};
+    let mut world = World::new();
+    let position = Position::default();
+    let eye = PartyBody::eye(&position);
+    world.spawn((PartyBody::default(), position));
+    let prop = world
+        .spawn(Prop {
+            definition: 0,
+            centre: eye + Vec3::X * 20.0,
+            frames_per_second: 0.0,
+            last_frame: 0,
+            wraps: false,
+            slots: vec![],
+        })
+        .id();
+    let surface = world
+        .spawn((
+            PropPart { part: 0, keys: vec![] },
+            Transform::from_translation(eye + Vec3::X * 10.0),
+            Collider::sphere(1.0),
+            ChildOf(prop),
+        ))
+        .id();
+    // Neither a colliderless part nor a helper collider is gameplay reach geometry.
+    world.spawn((
+        PropPart { part: 1, keys: vec![] },
+        Transform::from_translation(eye),
+        ChildOf(prop),
+    ));
+    world.spawn((Collider::sphere(1.0), Transform::from_translation(eye), ChildOf(prop)));
+    assert!((player_distance(&mut world, prop).unwrap() - 9.0).abs() < 0.001);
+    world.entity_mut(surface).remove::<Collider>();
+    assert!((player_distance(&mut world, prop).unwrap() - 20.0).abs() < 0.001);
 }

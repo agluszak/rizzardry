@@ -213,7 +213,12 @@ pub fn talk_to_npc(world: &mut World) {
     let actor = world
         .query::<(Entity, &Npc, &NpcBodies)>()
         .iter(world)
-        .find(|(_, npc, bodies)| npc.definition.0 as usize == definition && !bodies.is_empty())
+        .find(|(_, npc, bodies)| {
+            npc.definition.0 as usize == definition
+                && bodies
+                    .iter()
+                    .any(|body| world.get::<crate::game::world::level::LevelOwned>(body).is_some())
+        })
         .map(|(entity, _, _)| entity);
     let Some(actor) = actor else { return };
     match conversation::begin(world, actor) {

@@ -904,6 +904,22 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     }
     app.world_mut().entity_mut(body).insert(rizzardry::game::world::population::Provoked);
     let stock = app.world().get::<Npc>(actor).unwrap().stock.clone();
+    // Replacing the current map departs and reuses this role in the same
+    // activation, before its queued Disabled insertion is applied.
+    let replacement = spawn_level(&mut app, floor());
+    app.update();
+    assert!(is_played(&app, replacement));
+    assert!(app.world().get_entity(source).is_err());
+    assert_eq!(app.world().get::<NpcBodies>(actor).unwrap()[0], body);
+    assert_eq!(app.world().get::<LevelOwned>(body).unwrap().0, replacement);
+    assert!(app.world().get::<bevy::ecs::entity_disabling::Disabled>(body).is_none());
+    assert!(app.world().get::<Collider>(body).is_some());
+    assert_eq!(app.world().get::<Monster>(body).unwrap().hp, 4);
+    assert_eq!(app.world().get::<Npc>(actor).unwrap().stock, stock);
+    let source = replacement;
+    app.world_mut()
+        .entity_mut(body)
+        .insert(rizzardry::game::world::navigation::links::Crossing { link: source, to: Vec3::X });
     let mut away = test_level(&mut app, floor());
     away.path = "levels/away/away.pvl".into();
     app.world_mut()
@@ -917,17 +933,25 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     assert!(is_played(&app, away));
     assert!(app.world().get_entity(source).is_err());
     assert!(app.world().get::<Monster>(actor).is_none());
-    assert!(app.world().get_entity(body).is_err());
-    assert!(app.world().get::<NpcBodies>(actor).is_none_or(|b| b.is_empty()));
-    assert_eq!(app.world().get::<Npc>(actor).unwrap().dormant.as_ref().unwrap().body.monster.hp, 4);
+    assert!(app.world().get::<bevy::ecs::entity_disabling::Disabled>(body).is_some());
+    assert_eq!(app.world().get::<NpcBodies>(actor).unwrap()[0], body);
+    assert_eq!(app.world().get::<Monster>(body).unwrap().hp, 4);
+    assert!(app.world().get::<Collider>(body).is_none());
+    assert!(app.world().get::<avian3d::prelude::RigidBody>(body).is_none());
+    assert!(
+        app.world_mut().query::<(Entity, &Monster)>().iter(app.world()).all(|(e, _)| e != body)
+    );
     app.update();
     assert_eq!(app.world().get::<Npc>(actor).unwrap().stock, stock);
     let back = spawn_level(&mut app, floor());
     app.update();
     assert!(is_played(&app, back));
     let returned_body = app.world().get::<NpcBodies>(actor).unwrap()[0];
-    assert_ne!(returned_body, body);
+    assert_eq!(returned_body, body);
+    assert!(app.world().get::<bevy_landmass::UsingAnimationLink>(body).is_none());
     assert_eq!(app.world().get::<LevelOwned>(returned_body).unwrap().0, back);
+    assert!(app.world().get::<Collider>(returned_body).is_some());
+    assert!(app.world().get::<bevy::ecs::entity_disabling::Disabled>(returned_body).is_none());
     assert_eq!(app.world().get::<Monster>(returned_body).unwrap().hp, 4);
     assert!(
         app.world().get::<rizzardry::game::world::population::Provoked>(returned_body).is_some()
@@ -968,4 +992,55 @@ fn a_rendered_entry_waits_for_its_looks_and_fails_without_them() {
     app.update();
     assert!(failed(&app, unshowable));
     assert!(is_played(&app, shown), "a failed appearance leaves the level being played");
+}
+
+#[test]
+fn prop_motion_resumes_from_its_actual_frame_after_a_revisit() {
+    use rizzardry::content::level::{PropModel, PropModelPart};
+    use rizzardry::game::world::props::{Prop, PropMotion};
+    let (mut app, source) = playing();
+    let definition = app.world().get::<Level>(source).unwrap().definition.clone();
+    app.world_mut()
+        .resource_mut::<Assets<LevelDefinition>>()
+        .get_mut(&definition)
+        .unwrap()
+        .props
+        .push(PropModel {
+            name: "moving".into(),
+            collidable: false,
+            face_camera: false,
+            frames_per_second: 1.,
+            wraps: false,
+            slots: vec![],
+            trigger: None,
+            parts: vec![PropModelPart {
+                transform: Transform::IDENTITY,
+                collision: CollisionMesh::default(),
+                keys: vec![Transform::IDENTITY, Transform::from_translation(Vec3::X)],
+            }],
+        });
+    // This is the live motion at departure, independent of the authored starting pose.
+    app.world_mut().spawn((
+        Prop {
+            definition: 0,
+            centre: Vec3::ZERO,
+            frames_per_second: 1.,
+            last_frame: 1,
+            wraps: false,
+            slots: vec![],
+        },
+        PropMotion { frame: 0.25, target: 1. },
+        LevelOwned(source),
+    ));
+    let mut destination = app.world().get::<Level>(source).unwrap().clone();
+    let mut away = test_level(&mut app, floor());
+    away.path = "levels/away/away.pvl".into();
+    app.world_mut().spawn(Destination::new(away, default(), Entry::Travel));
+    app.update();
+    // The source asset remains the source of shared definitions on the return.
+    destination.definition = definition;
+    app.world_mut().spawn(Destination::new(destination, default(), Entry::Travel));
+    app.update();
+    let motion = app.world_mut().query::<&PropMotion>().single(app.world()).unwrap();
+    assert_eq!((motion.frame, motion.target), (0.25, 1.));
 }
