@@ -5,7 +5,7 @@ use enum_map::EnumMap;
 use enumset::EnumSet;
 
 use super::characters::BodyPart;
-use super::items::{AttackMode, Dice};
+use super::items::{AttackEffects, AttackMode, Dice};
 
 /// How far an attack reaches (retail range category).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -41,13 +41,31 @@ pub enum AttackWord {
 #[derive(Clone, Debug, PartialEq)]
 pub struct MonsterAttack {
     pub word: AttackWord,
-    /// The attack has a weapon name of its own, which adds a preposition
-    /// to its announcement.
-    pub named: bool,
+    /// The attack's weapon name (retail `ubWeaponNameIndex`), 0 for none.
+    /// A named attack adds a preposition to its announcement.
+    pub weapon_name: u8,
     pub reach: Reach,
     pub score: u8,
     pub modes: EnumSet<AttackMode>,
     pub damage: Dice,
+    /// What its blows may do besides damage.
+    pub effects: AttackEffects,
+}
+
+impl MonsterAttack {
+    pub fn named(&self) -> bool {
+        self.weapon_name != 0
+    }
+
+    /// Natural weapons that tire their user less: fatigue counts half
+    /// against their aim (retail `g_low_fatigue_attack_verbs`).
+    pub fn tires_little(&self) -> bool {
+        const LOW_FATIGUE: [u8; 18] = [
+            0x07, 0x0d, 0x0e, 0x0f, 0x15, 0x19, 0x21, 0x2b, 0x31, 0x32, 0x34, 0x35, 0x36, 0x38,
+            0x3b, 0x55, 0x56, 0x57,
+        ];
+        LOW_FATIGUE.contains(&self.weapon_name)
+    }
 }
 
 /// A species' attributes, which the attack rolls compare with a
@@ -81,6 +99,11 @@ pub struct Species {
     pub npc: Option<super::npcs::NpcId>,
     /// Percent taken off every hit.
     pub damage_reduction: u8,
+    /// Easier to hit from behind, and it blocks blows that barely land
+    /// (retail monster flag 0x02).
+    pub vulnerable_from_behind: bool,
+    /// Nothing kills it outright.
+    pub death_immune: bool,
     pub attributes: MonsterAttributes,
     pub hit_points: Dice,
     pub stamina: Dice,

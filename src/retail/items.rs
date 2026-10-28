@@ -11,8 +11,8 @@ use enumset::EnumSet;
 
 use crate::content::characters::Skill;
 use crate::content::items::{
-    Ammunition, EquipClass, ItemCatalog, ItemDefinition, ItemId, LootTable, LootTables,
-    QuantityKind,
+    Ammunition, AttackEffects, EquipClass, ItemCatalog, ItemDefinition, ItemId, LootTable,
+    LootTables, QuantityKind,
 };
 
 const RECORD: usize = 0x10d;
@@ -346,6 +346,7 @@ mod flag {
     pub const MERCHANT_CANNOT_SELL: u8 = 0x10;
     pub const CONTAINER: u8 = 0x20;
     pub const MUST_EQUIP_TO_USE: u8 = 0x40;
+    pub const NEVER_DEPLETES: u8 = 0x80;
 }
 
 /// Two (id, minimum) pairs in the typed attribute or skill domain. Only
@@ -422,7 +423,10 @@ fn read_item(index: usize, record: &[u8], strings: &[String]) -> Result<ItemDefi
     let hit_bonus = bytes.i8()?;
     let damage = dice(&mut bytes)?;
     let attack_modes = EnumSet::from_repr_truncated(bytes.u16()?);
-    bytes.take(16 + 1 + 1)?; // effect chances, magnitude, slays
+    let chances = bytes.array::<16>()?;
+    let effects =
+        AttackEffects { chances: enum_map::EnumMap::from_array(chances), strength: bytes.u8()? };
+    let slays = Some(bytes.u8()?).filter(|&kind| kind != u8::MAX);
     let armor_class_bonus = bytes.i8()?;
     let (spell, power) = (bytes.u8()?, bytes.u8()?);
     bytes.u8()?; // not established
@@ -452,6 +456,7 @@ fn read_item(index: usize, record: &[u8], strings: &[String]) -> Result<ItemDefi
     let value = bytes.u32()?;
     let weight = bytes.u16()?;
     let cursed = bytes.u8()? != 0;
+    let extra_swings = i32::from_le_bytes(record[0xad..0xb1].try_into().unwrap());
     let own_image = lenient_string(&record[0xcd..0xcd + 0x18]);
     let string = |index: usize| strings.get(index).map_or("", |s| s.as_str());
     let (shoots, ammunition) = launcher_and_ammunition(kind);
@@ -479,6 +484,11 @@ fn read_item(index: usize, record: &[u8], strings: &[String]) -> Result<ItemDefi
         ammunition,
         damage,
         attack_modes,
+        effects,
+        slays,
+        extra_swings,
+        kind,
+        never_depletes: has(flag::NEVER_DEPLETES),
         damage_bonus,
         hit_bonus,
         armor_class_bonus,

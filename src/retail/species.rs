@@ -11,7 +11,7 @@ use crate::bytes::{
 use enum_map::EnumMap;
 use enumset::EnumSet;
 
-use crate::content::items::ItemId;
+use crate::content::items::{AttackEffects, ItemId};
 use crate::content::species::{
     AttackWord, Disposition, Drop, MonsterAttack, MonsterAttributes, MonsterCatalog, Species,
     Treasure,
@@ -35,7 +35,7 @@ fn species(record: &[u8]) -> Result<Species, Truncated> {
         .filter(|attack| attack[0] != 0)
         .map(|attack| {
             Ok(MonsterAttack {
-                named: attack[1] != 0,
+                weapon_name: attack[1],
                 word: match attack[2] {
                     1 => AttackWord::Verb,
                     word => AttackWord::Word(word),
@@ -44,6 +44,10 @@ fn species(record: &[u8]) -> Result<Species, Truncated> {
                 score: attack[4],
                 modes: EnumSet::from_repr_truncated(u16_at(attack, 0x15)?),
                 damage: dice_at(attack, 0x17)?,
+                effects: AttackEffects {
+                    chances: EnumMap::from_array(attack[5..0x15].try_into().unwrap()),
+                    strength: attack[0x1b],
+                },
             })
         })
         .collect::<Result<_, Truncated>>()?;
@@ -62,6 +66,8 @@ fn species(record: &[u8]) -> Result<Species, Truncated> {
             .then_some(crate::content::npcs::NpcId(u16::from(record[0xcd]))),
         kind: record[0xcb],
         damage_reduction: record[0xcf],
+        vulnerable_from_behind: record[0xd0] & 0x02 != 0,
+        death_immune: record[0x1be] != 0,
         attributes: MonsterAttributes {
             strength: record[0xd1],
             intelligence: record[0xd2],
