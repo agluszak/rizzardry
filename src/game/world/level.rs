@@ -214,14 +214,14 @@ impl LevelMemory {
 }
 
 /// A level the party has left (retail keeps it in the level's state image):
-/// what its triggers keep, where its props were heading, its monsters (the
+/// what its triggers keep, its props’ motion, its monsters (the
 /// dead too, so they stay dead), the items lying about, what the party
 /// knows of its groups, and its map notes. Activation consumes it.
 #[derive(Debug)]
 pub struct LevelRecord {
     triggers: TriggerMemory,
     /// By prop definition index.
-    prop_frames: HashMap<usize, f32>,
+    prop_motion: HashMap<usize, PropMotion>,
     pub(super) monsters: Vec<KeptMonster>,
     pub(super) items: Vec<(WorldItem, Vec3)>,
     pub(super) groups: Vec<MonsterGroup>,
@@ -317,11 +317,11 @@ impl LevelContents<'_, '_> {
         let notes = self.notes.get(root).ok();
         LevelRecord {
             triggers: self.devices.remember(children, state),
-            prop_frames: self
+            prop_motion: self
                 .props
                 .iter_many(children)
                 .matched()
-                .map(|(prop, motion)| (prop.definition, motion.target))
+                .map(|(prop, motion)| (prop.definition, *motion))
                 .collect(),
             monsters: self
                 .monsters
@@ -526,15 +526,18 @@ fn build_world(
         remembered.as_deref_mut().map_or_else(MapNotes::default, |r| std::mem::take(&mut r.notes)),
     ));
     for ((index, prop), colliders) in geometry.props.iter().enumerate().zip(collision.parts) {
-        let frame =
-            remembered.as_ref().and_then(|r| r.prop_frames.get(&index)).copied().unwrap_or(0.0);
+        let motion = remembered
+            .as_ref()
+            .and_then(|r| r.prop_motion.get(&index))
+            .copied()
+            .unwrap_or_default();
         let door = prop.trigger.is_some_and(|index| geometry.triggers[index].door.is_some());
         super::props::build_prop(
             &mut commands.entity(props[index]),
             index,
             prop,
             door,
-            frame,
+            motion,
             colliders,
         );
     }
@@ -629,7 +632,7 @@ pub fn activate_level(
         for (entity, source, state, owned) in &current {
             let owned = owned.map_or(&[][..], LevelEntities::entities);
             memory.0.insert(source.path.clone(), transition.p0().remember(entity, state, owned));
-            npcs.depart(entity, &source.path);
+            npcs.depart(&mut commands, entity);
             commands.entity(entity).despawn();
         }
         let mut remembered = memory.0.remove(&level.path);

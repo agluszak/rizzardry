@@ -49,6 +49,19 @@ impl CycleRequest {
 #[derive(Component, Debug)]
 pub struct MonsterVisual(pub Handle<MonsterModel>);
 
+/// A durable NPC keeps its rules, but its map-owned visual embodiment ends.
+pub fn remove_monster_visuals(
+    removed: On<Remove<crate::game::world::level::LevelOwned>>,
+    actors: Query<(), With<Monster>>,
+    mut commands: Commands,
+) {
+    if actors.contains(removed.entity) {
+        commands
+            .entity(removed.entity)
+            .try_remove::<(MonsterVisual, MonsterPlayback, MonsterLight, CycleRequest)>();
+    }
+}
+
 pub fn request_monster_visuals(
     mut commands: Commands,
     actors: Query<(Entity, &Monster), Without<MonsterVisual>>,

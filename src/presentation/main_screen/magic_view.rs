@@ -659,7 +659,7 @@ pub(super) fn refresh_magic_view(
     mut parts: ParamSet<(
         Query<(&RealmButton, Has<Selected>, Entity)>,
         Query<(&RealmText, &mut BitmapText)>,
-        Query<(&mut Row, &mut Visibility)>,
+        Query<(&mut Row, &mut Visibility, &Hovered)>,
         Query<(&RowText, &mut BitmapText)>,
         Query<(&RowCost, &mut BitmapText)>,
         Query<(&Pip, &Hovered, &mut Picture, &mut Visibility), (Without<Row>, Without<RealmIcon>)>,
@@ -671,7 +671,6 @@ pub(super) fn refresh_magic_view(
     )>,
     mut icons: Query<(&RealmIcon, &mut Picture), (Without<ItemIcon>, Without<Pip>)>,
     time: Res<Time<Real>>,
-    rows_hovered: Query<(&Row, &Hovered)>,
     (mut requests, mut devices): (
         MessageWriter<MagicRequest>,
         MessageWriter<crate::game::world::interaction::DeviceRequest>,
@@ -766,8 +765,8 @@ pub(super) fn refresh_magic_view(
     let maximum = offers.len().saturating_sub(ROWS);
     set_scroll_maximum(&mut commands, scroll.0, scroll_value, scroll_range, maximum as f32);
     let offset = (scroll_value.0 as usize).min(maximum);
-    let hovered = rows_hovered.iter().find(|(_, h)| h.get()).map(|(r, _)| r.0);
-    for (mut row, mut visibility) in &mut parts.p2() {
+    let hovered = parts.p2().iter().find(|(_, _, h)| h.get()).map(|(r, _, _)| r.0);
+    for (mut row, mut visibility, _) in &mut parts.p2() {
         let shown = offers.get(row.0 + offset).map(|offer| offer.source);
         if row.1 != shown {
             row.1 = shown;
@@ -1029,6 +1028,13 @@ fn cancel_view(_: On<Activate>, views: Query<Entity, With<MagicView>>, mut comma
 mod tests {
     use super::*;
     use crate::presentation::test_input::{input_app, tap};
+
+    #[test]
+    fn refresh_can_initialize_its_row_queries() {
+        let mut world = World::new();
+        let mut system = IntoSystem::into_system(refresh_magic_view);
+        system.initialize(&mut world);
+    }
 
     #[derive(Component, Clone, Default)]
     struct Beneath;

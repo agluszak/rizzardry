@@ -994,7 +994,6 @@ mod tests {
                 disposition: 80,
                 greeting_pending: true,
                 paid_topics: vec![],
-                dormant: None,
                 stock: default(),
             },))
             .id();
