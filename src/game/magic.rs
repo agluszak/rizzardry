@@ -55,17 +55,19 @@ pub fn skill_available(
     character.skill_available(skill)
 }
 
-/// Spell points left per realm, and recovery not yet whole points. The
-/// maximum is derived from the profile and learned spells ([`max_points`]).
+/// Spell points left per realm, recovery not yet whole points, and the
+/// maximum ([`max_points`]), a derived stat kept current by
+/// [`sync_spell_points`] (`crate::game::stats`).
 #[derive(Component, Clone, Debug, Default, PartialEq)]
 pub struct SpellPoints {
     pub current: EnumMap<Realm, u32>,
     pub fraction: EnumMap<Realm, f32>,
+    pub maximum: EnumMap<Realm, u32>,
 }
 
 impl SpellPoints {
     pub fn full(maximum: EnumMap<Realm, u32>) -> Self {
-        SpellPoints { current: maximum, ..default() }
+        SpellPoints { current: maximum, maximum, ..default() }
     }
 
     /// Drain randomly chosen realms, at most fifty draws (retail
@@ -87,8 +89,9 @@ impl SpellPoints {
     /// Restore the largest realm deficits first (retail
     /// `RestoreCharacterSpellPointsEvenly`). Ties keep the initial deficit order
     /// (initial ties use realm order). Excess is wasted; recovery fractions stay.
-    pub fn restore_evenly(&mut self, maximum: &EnumMap<Realm, u32>, amount: u32) -> u32 {
-        let mut deficits: Vec<_> = maximum
+    pub fn restore_evenly(&mut self, amount: u32) -> u32 {
+        let mut deficits: Vec<_> = self
+            .maximum
             .iter()
             .map(|(realm, &max)| (realm, max.saturating_sub(self.current[realm])))
             .collect();
@@ -117,10 +120,15 @@ impl SpellPoints {
         (self.current[realm] / spell.cost).min(u32::from(MAX_POWER)) as u8
     }
 
+    /// Whether any realm is short of its maximum.
+    pub fn short(&self) -> bool {
+        self.maximum.iter().any(|(realm, &max)| self.current[realm] < max)
+    }
+
     /// Recover over `ticks` aging ticks at `(0.65·max + 20)/240` per tick
     /// times `scale` (retail aging, `GameplayTime.cpp`).
-    pub fn recover(&mut self, maximum: &EnumMap<Realm, u32>, ticks: u32, scale: f32) {
-        for (realm, &max) in maximum {
+    pub fn recover(&mut self, ticks: u32, scale: f32) {
+        for (realm, &max) in &self.maximum {
             if max == 0 || self.current[realm] >= max {
                 self.fraction[realm] = 0.0;
                 self.current[realm] = self.current[realm].min(max);
@@ -292,6 +300,28 @@ pub fn max_points(
     })
 }
 
+/// Keep each caster's maximum spell points current, recomputing it only when
+/// the character or what they have learned changes (retail
+/// `RecalculateRealmSpellPoints`). Points above a lowered maximum stay until
+/// spent or the next recovery tick.
+pub fn sync_spell_points(
+    mut casters: Query<(Ref<Character>, Ref<LearnedSpells>, &mut SpellPoints)>,
+    content: crate::game::data::Content,
+    mut had_catalog: Local<bool>,
+) {
+    let Some(spells) = content.spells() else { return };
+    // Everyone's maximum is settled once the spell catalog has loaded.
+    let loaded = !std::mem::replace(&mut *had_catalog, true);
+    for (character, learned, mut points) in &mut casters {
+        if loaded || character.is_changed() || learned.is_changed() {
+            let maximum = max_points(&character, &learned, spells);
+            if points.maximum != maximum {
+                points.maximum = maximum;
+            }
+        }
+    }
+}
+
 /// The skill threshold a spell's difficulty band needs at power 7 (retail
 /// `g_combat_effect_slot_spells_and_cast_success`).
 const CAST_THRESHOLDS: [u32; 17] =
@@ -410,7 +440,7 @@ impl Plugin for MagicPlugin {
                 Update,
                 (accept_magic, deliver_spells)
                     .chain()
-                    .after(crate::game::GameplaySet::LevelActivation)
+                    .after(crate::game::GameplaySet::Stats)
                     .before(crate::game::GameplaySet::Combat)
                     .run_if(crate::game::world::level::level_active),
             );
@@ -438,6 +468,7 @@ pub struct MagicContext<'w, 's> {
     level: Single<'w, 's, Entity, With<crate::game::world::level::Level>>,
     /// Missiles leave in launch order, so equal arrivals land in it too.
     pub flight_order: ResMut<'w, casting::FlightOrder>,
+    resistances: Query<'w, 's, &'static crate::game::characters::resistance::Resistances>,
 }
 
 impl MagicContext<'_, '_> {
@@ -471,6 +502,7 @@ impl MagicContext<'_, '_> {
             party_damage: &mut self.party_damage,
             items,
             species,
+            resistances: &self.resistances,
             party_level,
             difficulty: *self.difficulty,
             party: &party,
@@ -594,14 +626,8 @@ pub fn deliver_spells(
         let landed = context.resolve(&mut members, &mut monsters, |field, spells| {
             let spell = spells.get(flight.spell)?;
             let victims = &flight.victims;
-            let effects = effects::resolve(
-                spell,
-                flight.strength,
-                victims,
-                &mut rng,
-                field,
-                (spells, &mut points),
-            );
+            let effects =
+                effects::resolve(spell, flight.strength, victims, &mut rng, field, &mut points);
             Some((effects, std::mem::take(&mut field.improved)))
         });
         let Ok(Some((effects, improved))) = landed else { continue };
@@ -811,16 +837,16 @@ mod tests {
         maximum[Realm::Fire] = 10;
         maximum[Realm::Water] = 5;
         maximum[Realm::Air] = 3;
-        let mut points = SpellPoints::default();
+        let mut points = SpellPoints { maximum, ..default() };
         points.fraction[Realm::Fire] = 0.75;
-        assert_eq!(points.restore_evenly(&maximum, 8), 8);
+        assert_eq!(points.restore_evenly(8), 8);
         // Five go to Fire; then the equal deficits share, in realm order.
         assert_eq!((points.current[Realm::Fire], points.current[Realm::Water]), (7, 1));
         assert_eq!(points.current[Realm::Air], 0);
-        assert_eq!(points.restore_evenly(&maximum, 100), 10);
+        assert_eq!(points.restore_evenly(100), 10);
         assert_eq!(points.current, maximum);
         assert_eq!(points.fraction[Realm::Fire], 0.75);
-        assert_eq!(points.restore_evenly(&maximum, 5), 0);
+        assert_eq!(points.restore_evenly(5), 0);
     }
 
     #[test]
@@ -848,7 +874,7 @@ mod tests {
                 .add_message::<DamageApplied>()
                 .add_message::<MagicRequest>()
                 .add_message::<MagicNews>()
-                .add_systems(Update, accept_magic);
+                .add_systems(Update, (sync_spell_points, accept_magic).chain());
             let definition = ItemDefinition {
                 id: ItemId(0),
                 class: EquipClass::Potion,
@@ -951,11 +977,11 @@ mod tests {
     fn points_recover_by_retail_rate_and_never_beyond_the_maximum() {
         let mut maximum = EnumMap::default();
         maximum[Realm::Divine] = 20;
-        let mut points = SpellPoints::default();
+        let mut points = SpellPoints { maximum, ..default() };
         // (0.65·20 + 20)/240 = 0.1375 a tick at half rate: 0.06875.
-        points.recover(&maximum, 100, recovery_scale(0.0));
+        points.recover(100, recovery_scale(0.0));
         assert_eq!(points.current[Realm::Divine], 6);
-        points.recover(&maximum, 10_000, 1.0);
+        points.recover(10_000, 1.0);
         assert_eq!(points.current[Realm::Divine], 20);
         assert_eq!(points.fraction[Realm::Divine], 0.0);
     }
