@@ -53,6 +53,7 @@ impl Plugin for GamePlugin {
                 npcs::NpcPlugin,
                 party::PartyPlugin,
                 time::TimePlugin,
+                camp::CampPlugin,
                 combat::CombatPlugin,
                 magic::MagicPlugin,
             ))

@@ -249,7 +249,9 @@ impl Plugin for NpcPlugin {
             .add_systems(Startup, load_npcs)
             .add_systems(
                 Update,
-                conversation::initialize_facts.before(crate::game::GameplaySet::LevelActivation),
+                conversation::initialize_facts
+                    .run_if(on_message::<AssetEvent<crate::content::npcs::FactCatalog>>)
+                    .before(crate::game::GameplaySet::LevelActivation),
             )
             .add_systems(
                 Update,

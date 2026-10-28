@@ -878,7 +878,7 @@ fn practise(
             let index = u32::from(spell.level) + u32::from(power);
             let mut practice = vec![(super::best_book(character, spell), (index + 2) >> 2)];
             if let Some(realm) = spell.realm {
-                practice.push((super::realm_skill(realm), index));
+                practice.push((realm.skill(), index));
             }
             if character.skill_available(Skill::PowerCast) {
                 practice.push((Skill::PowerCast, (index + 2) >> 2));

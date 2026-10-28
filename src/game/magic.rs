@@ -44,8 +44,7 @@ pub fn skill_available(
     catalog: Option<&SpellCatalog>,
     skill: Skill,
 ) -> bool {
-    if (Skill::FireMagic as u8..Skill::PowerStrike as u8).contains(&(skill as u8)) {
-        let realm = Realm::try_from(skill as u8 - Skill::FireMagic as u8).unwrap();
+    if let Some(realm) = skill.realm() {
         return learned.zip(catalog).is_some_and(|(learned, catalog)| {
             learned
                 .0
@@ -204,17 +203,6 @@ fn book_skill(book: Spellbook) -> Skill {
     }
 }
 
-pub(crate) fn realm_skill(realm: Realm) -> Skill {
-    match realm {
-        Realm::Fire => Skill::FireMagic,
-        Realm::Water => Skill::WaterMagic,
-        Realm::Air => Skill::AirMagic,
-        Realm::Earth => Skill::EarthMagic,
-        Realm::Mental => Skill::MentalMagic,
-        Realm::Divine => Skill::DivineMagic,
-    }
-}
-
 /// The books the character has ever cast from.
 fn character_books(character: &Character) -> EnumSet<Spellbook> {
     character
@@ -236,7 +224,7 @@ pub(crate) fn best_book(character: &Character, spell: &SpellDefinition) -> Skill
 /// Retail `GetSpellCastingSkillLevel`: the book counts once, the realm four
 /// times.
 fn casting_skill(character: &Character, spell: &SpellDefinition) -> u32 {
-    let realm = spell.realm.map_or(0, |r| character.skill(realm_skill(r)));
+    let realm = spell.realm.map_or(0, |r| character.skill(r.skill()));
     (character.skill(best_book(character, spell)) + realm * 4) / 5
 }
 
@@ -256,7 +244,7 @@ pub fn can_learn(character: &Character, spell: &SpellDefinition) -> bool {
     }
     let caster = total_caster_level(character, spell.books);
     let by_level = (1..=7u8).filter(|&l| min_caster_level(l) <= caster).max().unwrap_or(0);
-    let realm_points = spell.realm.map_or(0, |r| u32::from(character.skill_points[realm_skill(r)]));
+    let realm_points = spell.realm.map_or(0, |r| u32::from(character.skill_points[r.skill()]));
     let book = [Spellbook::Wizardry, Spellbook::Divinity, Spellbook::Alchemy, Spellbook::Psionics]
         .into_iter()
         .filter(|book| spell.books.contains(*book))
@@ -297,7 +285,7 @@ pub fn max_points(
         if known.is_empty() {
             return 0;
         }
-        let skill = character.skill(realm_skill(realm)) as f32;
+        let skill = character.skill(realm.skill()) as f32;
         let levels = (known.len() + usize::from(character.level) + 1) as f32;
         let points = ((weight + 3.0 * skill + piety) * 0.02 * levels + 0.5) as u32;
         points.max(known.iter().map(|s| s.cost).max().unwrap_or(0))

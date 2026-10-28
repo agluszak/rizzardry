@@ -268,8 +268,7 @@ impl CharacterDraft {
         if index >= Skill::PowerStrike as usize {
             return false;
         }
-        if index >= Skill::FireMagic as usize {
-            let realm = Realm::try_from((index - Skill::FireMagic as usize) as u8).unwrap();
+        if let Some(realm) = skill.realm() {
             return !self.learned_spells[realm].is_empty();
         }
         if SKILL_AVAILABILITY[index] & (1 << self.profession as usize) == 0 {

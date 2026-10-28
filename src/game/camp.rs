@@ -10,6 +10,8 @@ use bevy::prelude::*;
 use crate::game::characters::Vitals;
 use crate::game::party::body::PartyBody;
 use crate::game::party::roster::PartyRoster;
+use crate::game::time::GameClock;
+use crate::game::world::level::level_active;
 use std::time::Duration;
 
 /// How long a requested rest lasts, in game milliseconds.
@@ -111,6 +113,49 @@ pub enum CampNews {
     Done,
     Interrupted,
     Recovered,
+}
+
+pub struct CampPlugin;
+
+impl Plugin for CampPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_message::<CampNews>()
+            .add_message::<CampRequest>()
+            .add_message::<LeaveCamp>()
+            .add_systems(
+                Update,
+                (request_camp, force_camp, leave_camp)
+                    .chain()
+                    .after(crate::game::GameplaySet::Combat)
+                    .run_if(level_active),
+            )
+            .add_systems(
+                FixedPostUpdate,
+                advance_camp.after(crate::game::time::pass_time).run_if(level_active),
+            );
+    }
+}
+
+/// Move the camp on once this step's time and recovery have passed.
+pub(crate) fn advance_camp(
+    mut commands: Commands,
+    time: Res<Time>,
+    clock: Res<GameClock>,
+    camp: Option<ResMut<Camp>>,
+    battle: Option<Single<&crate::game::combat::Battle>>,
+    roster: Single<&PartyRoster>,
+    members: Query<&Vitals>,
+    mut news: MessageWriter<CampNews>,
+) {
+    let Some(mut camp) = camp else { return };
+    if battle.is_some() {
+        return;
+    }
+    let anyone_able = members.iter_many(roster.iter()).matched().any(Vitals::can_act);
+    if let Some(outcome) = camp.advance(time.delta(), clock.ms, anyone_able) {
+        news.write(outcome);
+        commands.remove_resource::<Camp>();
+    }
 }
 
 /// The Camp button (retail `RequestCamp`, as the key does).
