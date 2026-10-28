@@ -13,10 +13,7 @@ use super::items::drop_loot;
 use super::level::Level;
 use super::navigation::{Walker, feet};
 use super::population::Monster;
-use crate::content::items::{ItemCatalog, LootTables};
-use crate::content::species::MonsterCatalog;
 use crate::game::characters::{Condition, Lasting};
-use crate::game::data::GameData;
 use crate::game::inventory::{ItemIds, PartyInventory, make_item};
 use crate::game::rng::GameRng;
 
@@ -63,21 +60,16 @@ pub struct MonsterDamage<'w, 's> {
     >,
     levels: Query<'w, 's, (), With<Level>>,
     commands: Commands<'w, 's>,
-    data: Option<Res<'w, GameData>>,
-    catalogs: Res<'w, Assets<ItemCatalog>>,
-    species: Res<'w, Assets<MonsterCatalog>>,
-    tables: Res<'w, Assets<LootTables>>,
+    content: crate::game::data::Content<'w>,
     ids: ResMut<'w, ItemIds>,
     factions: ResMut<'w, crate::game::factions::Factions>,
 }
 
 impl<'w, 's> MonsterDamage<'w, 's> {
     pub fn ready(&self) -> bool {
-        self.data.as_ref().is_some_and(|d| {
-            self.catalogs.contains(&d.items)
-                && self.species.contains(&d.species)
-                && self.tables.contains(&d.loot)
-        })
+        self.content.items().is_some()
+            && self.content.species().is_some()
+            && self.content.loot().is_some()
     }
 
     /// The monsters, to look at.
@@ -114,12 +106,9 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         if !self.levels.contains(level) {
             return Err(DamageRefusal::InactiveLevel);
         }
-        let data = self.data.as_ref().ok_or(DamageRefusal::MissingContent)?;
-        let (Some(catalog), Some(species), Some(tables)) = (
-            self.catalogs.get(&data.items),
-            self.species.get(&data.species),
-            self.tables.get(&data.loot),
-        ) else {
+        let (Some(catalog), Some(species), Some(tables)) =
+            (self.content.items(), self.content.species(), self.content.loot())
+        else {
             return Err(DamageRefusal::MissingContent);
         };
         let kind = species.kind(monster.species).ok_or(DamageRefusal::MissingContent)?;

@@ -83,9 +83,7 @@ pub type Members<'w, 's> = Query<
 /// The party's average level (retail `GetAveragePartyLevel`), over every
 /// member, dead or alive: what loot tables scale by.
 pub fn average_level(roster: &roster::PartyRoster, members: &Members) -> u32 {
-    let levels: u32 =
-        members.iter_many(roster.iter()).matched().map(|(c, ..)| u32::from(c.level)).sum();
-    levels / roster.len().max(1) as u32
+    roster.average_level(|member| members.get(member).ok().map(|(c, ..)| c.level))
 }
 
 /// Actual damage to an actor, after its gameplay consequences have settled.

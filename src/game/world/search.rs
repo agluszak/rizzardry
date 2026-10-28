@@ -7,10 +7,8 @@ use crate::game::world::obstacles::WorldObstacles;
 use bevy::prelude::*;
 
 use crate::content::characters::{Attribute, Skill};
-use crate::content::items::ItemCatalog;
 use crate::game::characters::{Character, Profession, Vitals};
 use crate::game::combat::Battle;
-use crate::game::data::GameData;
 use avian3d::prelude::Position;
 
 use crate::game::party::body::{PartyBody, PartyMovement};
@@ -148,7 +146,7 @@ pub fn search_pulse(
     members: Query<(&Character, &Vitals)>,
     mut items: Query<(Entity, &mut WorldItem, &Transform)>,
     obstacles: WorldObstacles,
-    (data, catalogs): (Option<Res<GameData>>, Res<Assets<ItemCatalog>>),
+    content: crate::game::data::Content,
     mut news: MessageWriter<SearchNews>,
 ) {
     if !search.pulse.tick(time.delta()).just_finished() {
@@ -169,7 +167,7 @@ pub fn search_pulse(
         // The first of equals, as retail keeps the earlier slot.
         .reduce(|a, b| if b.0 > a.0 { b } else { a });
     let Some((score, searcher)) = best else { return };
-    let catalog = data.and_then(|d| catalogs.get(&d.items));
+    let catalog = content.items();
     for (target, mut item, at) in &mut items {
         if !item.hidden {
             continue;

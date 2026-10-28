@@ -622,11 +622,10 @@ pub fn deliver_spells(
 /// the spell catalog has loaded.
 pub fn fill_spell_points(
     mut commands: Commands,
-    data: Option<Res<crate::game::data::GameData>>,
-    spells: Res<Assets<SpellCatalog>>,
+    content: crate::game::data::Content,
     members: Query<(Entity, &Character, &LearnedSpells), Without<SpellPoints>>,
 ) {
-    let Some(catalog) = data.and_then(|d| spells.get(&d.spells)) else { return };
+    let Some(catalog) = content.spells() else { return };
     for (entity, character, learned) in &members {
         commands.entity(entity).insert(SpellPoints::full(max_points(character, learned, catalog)));
     }

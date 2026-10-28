@@ -91,15 +91,84 @@ pub struct NpcPopulation<'w, 's> {
     roster: Query<'w, 's, &'static PartyRoster>,
     profiles: Query<'w, 's, &'static Character>,
 }
+/// An NPC's placement as a level's population meets it.
+pub struct Placing<'a> {
+    pub placed: &'a crate::content::level::MonsterPlacement,
+    pub id: NpcId,
+    /// The level's map, which identifies the placement.
+    pub map: &'a str,
+    /// The party's average level, which stock scales by.
+    pub average: u32,
+}
+
 impl NpcPopulation<'_, '_> {
+    /// The actor an NPC placement embodies, created on first meeting, and
+    /// the body it takes here: kept from when it was last here, or rolled
+    /// fresh with `roll`. `None` when the actor stands elsewhere, or already
+    /// stands here.
+    pub fn place(
+        &mut self,
+        commands: &mut Commands,
+        Placing { placed, id, map, average }: Placing,
+        items: &crate::content::items::ItemCatalog,
+        placed_actors: &mut std::collections::HashSet<ActorId>,
+        rng: &mut crate::game::rng::GameRng,
+        roll: impl FnOnce(&mut crate::game::rng::GameRng) -> KeptMonster,
+    ) -> Option<(Entity, KeptMonster)> {
+        let definition = self
+            .definitions
+            .get(&self.assets.catalog)
+            .and_then(|c| c.get(id))
+            .expect("NPC preparation validated definition");
+        let key = ActorId::for_placement(id, definition, map, placed.location);
+        if !placed_actors.insert(key.clone()) {
+            return None;
+        }
+        let existing = self.npcs.iter().find(|(_, identity, _, _)| **identity == key).map(|v| v.0);
+        let entity = if let Some(entity) = existing {
+            entity
+        } else {
+            let mut stock = trade::MerchantStock::default();
+            if definition.owns_stock {
+                stock
+                    .maintain(definition, items, average, self.clock.ms, false, rng)
+                    .expect("validated NPC stock");
+            }
+            commands
+                .spawn((
+                    key,
+                    Npc {
+                        definition: id,
+                        disposition: definition.disposition,
+                        greeting_pending: true,
+                        paid_topics: vec![],
+                        dormant: None,
+                        stock,
+                    },
+                ))
+                .id()
+        };
+        let kept = if let Ok((_, _, mut npc, active)) = self.npcs.get_mut(entity) {
+            if active.is_some_and(|bodies| !bodies.is_empty()) && npc.dormant.is_none() {
+                return None;
+            }
+            match npc.dormant.take() {
+                Some(role) if role.map == map => role.body,
+                other => {
+                    npc.dormant = other;
+                    return None;
+                }
+            }
+        } else {
+            roll(rng)
+        };
+        Some((entity, kept))
+    }
+
     pub fn average_level(&self) -> u32 {
-        let levels: Vec<_> = self
-            .profiles
-            .iter_many(self.roster.iter().flat_map(|r| r.iter()))
-            .matched()
-            .map(|c| u32::from(c.level))
-            .collect();
-        if levels.is_empty() { 1 } else { levels.iter().sum::<u32>() / levels.len() as u32 }
+        self.roster.single().map_or(1, |roster| {
+            roster.average_level(|member| self.profiles.get(member).ok().map(|c| c.level))
+        })
     }
     /// Preparation changes only asset requests. Missing mandatory NPC content
     /// fails activation without touching the currently played world.
@@ -156,13 +225,13 @@ impl NpcPopulation<'_, '_> {
             let Ok((_, _, mut npc, _)) = self.npcs.get_mut(body.0) else { continue };
             npc.dormant = Some(NpcWorldRole {
                 map: map.into(),
-                body: KeptMonster {
+                body: KeptMonster::capture(
+                    monster,
+                    &pose,
+                    walker,
+                    group.and_then(|g| self.groups.get(g.0).ok()).map(|g| g.authored),
                     provoked,
-                    monster: monster.clone(),
-                    group: group.and_then(|g| self.groups.get(g.0).ok()).map(|g| g.authored),
-                    feet: crate::game::world::navigation::feet(pose.translation(), walker),
-                    yaw: pose.rotation().to_euler(EulerRot::YXZ).0,
-                },
+                ),
             });
         }
     }

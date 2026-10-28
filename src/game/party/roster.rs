@@ -35,6 +35,19 @@ pub struct PartyMember(pub Entity);
 #[relationship_target(relationship = PartyMember)]
 pub struct PartyRoster(EntityIndexSet);
 
+impl PartyRoster {
+    /// The members' average level (retail `GetAveragePartyLevel`), which
+    /// loot and stock scale by; 1 for an empty party, where retail divides
+    /// by zero.
+    pub fn average_level(&self, level_of: impl Fn(Entity) -> Option<u8>) -> u32 {
+        let (sum, count) = self
+            .iter()
+            .filter_map(|member| level_of(member))
+            .fold((0, 0), |(sum, count), level| (sum + u32::from(level), count + 1));
+        sum.checked_div(count).unwrap_or(1)
+    }
+}
+
 impl std::ops::Deref for PartyRoster {
     type Target = EntityIndexSet;
 

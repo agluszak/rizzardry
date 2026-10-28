@@ -89,3 +89,9 @@ impl Plugin for WorldPlugin {
             );
     }
 }
+
+/// Whether the party is entering a level or fighting, when device, loot and
+/// trade operations wait.
+pub fn party_occupied(world: &mut World) -> bool {
+    level::entering(world) || crate::game::combat::in_battle(world)
+}

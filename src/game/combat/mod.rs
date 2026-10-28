@@ -21,7 +21,6 @@ use crate::content::species::AttackWord;
 use crate::content::items::{Dice, ItemCatalog};
 use crate::content::species::{MonsterCatalog, Reach, Species};
 use crate::game::characters::{Character, Condition, Vitals};
-use crate::game::data::GameData;
 use crate::game::inventory::PartyInventory;
 use crate::game::inventory::{EquipSlot, StackId};
 use crate::game::magic::casting::{self, MagicChoice, MagicNews};
@@ -401,8 +400,7 @@ pub fn start_battle(
         Has<crate::game::world::population::Provoked>,
     )>,
     obstacles: WorldObstacles,
-    data: Option<Res<GameData>>,
-    species: Res<Assets<MonsterCatalog>>,
+    content: crate::game::data::Content,
     roster: Single<&PartyRoster>,
     mut news: MessageWriter<CombatNews>,
     mut recognition: GroupRecognition,
@@ -415,9 +413,7 @@ pub fn start_battle(
     {
         return;
     }
-    let (Ok((party_at, mut body)), Some(catalog)) =
-        (party.single_mut(), data.and_then(|d| species.get(&d.species)))
-    else {
+    let (Ok((party_at, mut body)), Some(catalog)) = (party.single_mut(), content.species()) else {
         return;
     };
     let (Some(far), Some(root)) = (level.view_distance(), level.entity()) else { return };
@@ -491,6 +487,11 @@ pub fn start_battle(
     }
     recognition.detect(party_eye, body.forward(), Some(&joined), &mut rng);
     news.write(CombatNews::Began);
+}
+
+/// Whether the party is fighting, for operations that hold the whole world.
+pub fn in_battle(world: &mut World) -> bool {
+    world.query_filtered::<(), With<Battle>>().iter(world).next().is_some()
 }
 
 /// End the fight: its combatants stop closing in (the movement it gave
@@ -1364,6 +1365,7 @@ mod tests {
     use super::*;
     use crate::content::items::{ItemId, LootTables};
     use crate::content::spells::SpellCatalog;
+    use crate::game::data::GameData;
     use crate::game::inventory::{Carried, ItemIds, make_item};
 
     #[test]

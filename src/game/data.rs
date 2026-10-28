@@ -29,33 +29,38 @@ pub fn load_game_data(mut commands: Commands, assets: Res<AssetServer>) {
 #[derive(SystemParam)]
 pub struct Content<'w> {
     data: Option<Res<'w, GameData>>,
-    items: Res<'w, Assets<ItemCatalog>>,
-    loot: Res<'w, Assets<LootTables>>,
-    species: Res<'w, Assets<MonsterCatalog>>,
-    spells: Res<'w, Assets<SpellCatalog>>,
+    items: Option<Res<'w, Assets<ItemCatalog>>>,
+    loot: Option<Res<'w, Assets<LootTables>>>,
+    species: Option<Res<'w, Assets<MonsterCatalog>>>,
+    spells: Option<Res<'w, Assets<SpellCatalog>>>,
 }
 
 impl Content<'_> {
     pub fn items(&self) -> Option<&ItemCatalog> {
-        self.items.get(&self.data.as_ref()?.items)
+        self.items.as_ref()?.get(&self.data.as_ref()?.items)
     }
 
     pub fn loot(&self) -> Option<&LootTables> {
-        self.loot.get(&self.data.as_ref()?.loot)
+        self.loot.as_ref()?.get(&self.data.as_ref()?.loot)
     }
 
     pub fn species(&self) -> Option<&MonsterCatalog> {
-        self.species.get(&self.data.as_ref()?.species)
+        self.species.as_ref()?.get(&self.data.as_ref()?.species)
     }
 
     pub fn spells(&self) -> Option<&SpellCatalog> {
-        self.spells.get(&self.data.as_ref()?.spells)
+        self.spells.as_ref()?.get(&self.data.as_ref()?.spells)
     }
 }
 
 impl GameData {
     /// The item catalog, for operations that hold the whole world.
     pub fn items(world: &World) -> Option<&ItemCatalog> {
-        world.resource::<Assets<ItemCatalog>>().get(&world.get_resource::<GameData>()?.items)
+        world.get_resource::<Assets<ItemCatalog>>()?.get(&world.get_resource::<GameData>()?.items)
+    }
+
+    /// The loot tables, for operations that hold the whole world.
+    pub fn loot(world: &World) -> Option<&LootTables> {
+        world.get_resource::<Assets<LootTables>>()?.get(&world.get_resource::<GameData>()?.loot)
     }
 }

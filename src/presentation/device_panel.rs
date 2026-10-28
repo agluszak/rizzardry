@@ -20,12 +20,12 @@ use crate::game::characters::{Character, Vitals};
 use crate::game::data::GameData;
 use crate::game::inventory::StackId;
 use crate::game::party::roster::PartyRoster;
+use crate::game::world::containers::Container;
 use crate::game::world::containers::{self, Recipient};
 use crate::game::world::interaction::{
     self, COMPONENTS, DeviceInteraction, Observation, TRAP_COMPONENTS, Work,
 };
 use crate::game::world::props::PropMotion;
-use crate::game::world::triggers::Container;
 
 /// The trap types' names in the game's string table.
 const TRAP_NAMES: usize = 0x542;

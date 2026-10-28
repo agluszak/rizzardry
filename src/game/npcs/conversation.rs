@@ -189,11 +189,7 @@ pub fn party_communication(world: &mut World) -> u32 {
 fn average_level(world: &mut World) -> u32 {
     let Some(party) = the_party(world) else { return 1 };
     let Some(roster) = world.get::<PartyRoster>(party) else { return 1 };
-    let (sum, count) = roster
-        .iter()
-        .filter_map(|e| world.get::<Character>(e))
-        .fold((0, 0), |(s, n), c| (s + u32::from(c.level), n + 1));
-    sum.checked_div(count).unwrap_or(1)
+    roster.average_level(|member| world.get::<Character>(member).map(|c| c.level))
 }
 fn active_body(world: &World, actor: Entity) -> Option<Entity> {
     world.get::<super::NpcBodies>(actor)?.iter().find(|body| {
@@ -226,11 +222,7 @@ fn conditions_match(world: &World, facts: &[(FactId, u8)]) -> Result<bool, Strin
 pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
     let party = the_party(world).ok_or(TradeError::Unavailable)?;
     if !world.run_system_once(crate::game::screen::party_free).map_err(|_| TradeError::Busy)?
-        || world
-            .query_filtered::<Entity, With<crate::game::combat::Battle>>()
-            .iter(world)
-            .next()
-            .is_some()
+        || crate::game::combat::in_battle(world)
     {
         return Err(TradeError::Busy);
     }
@@ -626,7 +618,7 @@ pub fn quote_trade(
     source: TradeSource,
     quantity: u32,
 ) -> Result<TradeQuote, TradeError> {
-    if world.query::<&crate::game::world::level::Destination>().iter(world).next().is_some() {
+    if crate::game::world::level::entering(world) {
         return Err(TradeError::Busy);
     }
     let c = world.get::<Conversation>(conversation).ok_or(TradeError::StaleSelection)?;
@@ -703,11 +695,7 @@ fn execute_trade(
     }
     if !available(world, c.actor)
         || !trade_allowed(world, c.actor)
-        || world
-            .query_filtered::<Entity, With<crate::game::combat::Battle>>()
-            .iter(world)
-            .next()
-            .is_some()
+        || crate::game::combat::in_battle(world)
     {
         return Err(TradeError::Unavailable);
     }
@@ -773,7 +761,7 @@ fn execute_trade(
     Ok(())
 }
 pub fn update_conversation(world: &mut World) {
-    if world.query::<&crate::game::world::level::Destination>().iter(world).next().is_some() {
+    if crate::game::world::level::entering(world) {
         // An accepted entry ends presentation-only dialogue before any queued
         // payment, trade or authored effect can alter the departing campaign.
         close(world);
@@ -808,11 +796,7 @@ pub fn update_conversation(world: &mut World) {
             continue;
         };
         if !available(world, c.actor)
-            || world
-                .query_filtered::<Entity, With<crate::game::combat::Battle>>()
-                .iter(world)
-                .next()
-                .is_some()
+            || crate::game::combat::in_battle(world)
             || world.contains_resource::<crate::game::camp::Camp>()
         {
             world.entity_mut(entity).insert(c);
@@ -856,13 +840,7 @@ pub fn update_conversation(world: &mut World) {
         else {
             continue;
         };
-        if !available(world, c.actor)
-            || world
-                .query_filtered::<Entity, With<crate::game::combat::Battle>>()
-                .iter(world)
-                .next()
-                .is_some()
-        {
+        if !available(world, c.actor) || crate::game::combat::in_battle(world) {
             world.entity_mut(entity).insert(c);
             close_one(world, entity);
             continue;

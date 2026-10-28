@@ -719,11 +719,10 @@ pub struct Burden {
 pub fn distribute_burden(
     party: Single<(Ref<PartyRoster>, Ref<PartyInventory>)>,
     mut members: Query<(Ref<Character>, Ref<Vitals>, Ref<Carried>, &mut Burden)>,
-    data: Option<Res<crate::game::data::GameData>>,
-    catalogs: Res<Assets<ItemCatalog>>,
+    content: crate::game::data::Content,
 ) {
     let (roster, inventory) = party.into_inner();
-    let Some(catalog) = data.and_then(|data| catalogs.get(&data.items)) else { return };
+    let Some(catalog) = content.items() else { return };
     let changed = roster.is_changed()
         || inventory.is_changed()
         || members

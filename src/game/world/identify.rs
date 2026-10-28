@@ -11,9 +11,7 @@ use bevy::prelude::*;
 
 use super::population::Monster;
 use crate::content::characters::{Attribute, Skill};
-use crate::content::species::MonsterCatalog;
 use crate::game::characters::{Character, Condition, MonsterKnowledge, Vitals};
-use crate::game::data::GameData;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::world::level::PlayedLevel;
@@ -115,8 +113,7 @@ pub struct GroupRecognition<'w, 's> {
     level: PlayedLevel<'w, 's>,
     roster: Single<'w, 's, &'static PartyRoster>,
     members: Query<'w, 's, (&'static Character, &'static Vitals, &'static mut MonsterKnowledge)>,
-    data: Option<Res<'w, GameData>>,
-    catalogs: Res<'w, Assets<MonsterCatalog>>,
+    content: crate::game::data::Content<'w>,
     news: MessageWriter<'w, Identified>,
 }
 
@@ -131,7 +128,7 @@ impl GroupRecognition<'_, '_> {
         let (Some(level), Some(far)) = (self.level.entity(), self.level.view_distance()) else {
             return;
         };
-        let Some(catalog) = self.data.as_ref().and_then(|d| self.catalogs.get(&d.species)) else {
+        let Some(catalog) = self.content.species() else {
             return;
         };
         let (groups, monsters, roster, members, news) =
@@ -212,7 +209,9 @@ impl GroupRecognition<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::content::species::MonsterCatalog;
     use crate::game::characters::{Gender, Profession, Race};
+    use crate::game::data::GameData;
     use crate::game::party::body::PartyBody;
     use avian3d::prelude::Position;
 

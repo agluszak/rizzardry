@@ -277,12 +277,7 @@ pub(crate) fn confront(world: &mut World, device: Entity, lock: Lock) {
     if world.contains_resource::<DeviceInteraction>() {
         return;
     }
-    if world
-        .query_filtered::<Entity, With<crate::game::combat::Battle>>()
-        .iter(world)
-        .next()
-        .is_some()
-    {
+    if crate::game::combat::in_battle(world) {
         world.write_message(LockNews::NotInCombat);
         return;
     }
@@ -332,9 +327,7 @@ fn roll_trap(difficulty: u8, rng: &mut GameRng) -> u8 {
 
 /// The member's character and vitals, if they are in the party.
 fn member(world: &mut World, actor: Entity) -> Result<(&Character, &Vitals), Unable> {
-    if world.query::<&super::level::Destination>().iter(world).next().is_some()
-        || world.query::<&crate::game::combat::Battle>().iter(world).next().is_some()
-    {
+    if crate::game::world::party_occupied(world) {
         return Err(Unable::NotNow);
     }
     if world.get::<PartyMember>(actor).is_none() {
@@ -447,9 +440,7 @@ fn disarming(world: &World) -> Result<&Disarming, Unable> {
 
 /// Check the source, level and dependencies before any failure can discharge.
 fn ready_trap(world: &mut World) -> Result<Disarming, Unable> {
-    if world.query::<&super::level::Destination>().iter(world).next().is_some()
-        || world.query::<&crate::game::combat::Battle>().iter(world).next().is_some()
-    {
+    if crate::game::world::party_occupied(world) {
         return Err(Unable::NotNow);
     }
     let interaction = world.get_resource::<DeviceInteraction>().ok_or(Unable::NotNow)?;
@@ -712,23 +703,4 @@ pub(crate) fn end_lost_interaction(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::game::characters::{Gender, Profession, Race};
-
-    #[test]
-    fn difficulty_changes_both_displayed_and_authoritative_lock_chances() {
-        let mut character =
-            Character::new("Fighter", Race::Human, Gender::Male, Profession::Fighter);
-        character.attributes[Attribute::Strength] = 85;
-        let vitals = Vitals::new(&character);
-        assert!(
-            force_chance(&character, &vitals, 4, Difficulty::Novice)
-                > force_chance(&character, &vitals, 4, Difficulty::Expert)
-        );
-        assert!(
-            trap_chance(Some(25), 8, Difficulty::Novice)
-                > trap_chance(Some(25), 8, Difficulty::Expert)
-        );
-    }
-}
+mod tests;

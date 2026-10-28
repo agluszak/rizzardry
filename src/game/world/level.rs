@@ -37,6 +37,12 @@ use crate::game::party::body::{PartyPlacement, PartyStart};
 use crate::game::party::roster::Party;
 use crate::game::rng::GameRng;
 
+/// Whether the party is on its way into a level, for operations that hold
+/// the whole world.
+pub fn entering(world: &mut World) -> bool {
+    world.query_filtered::<(), With<Destination>>().iter(world).next().is_some()
+}
+
 /// The root of the level being played, including during travel preparation. A level
 /// becomes one only by [`activate_level`]; until then its root is a
 /// [`Destination`].
@@ -239,6 +245,56 @@ pub struct KeptMonster {
     pub yaw: f32,
 }
 
+impl KeptMonster {
+    /// A placed monster met for the first time: health and stamina rolled
+    /// from its species, then its size. Retail draws Random(1000) for the
+    /// size; its left-handed mirror draw, presentation only, is not taken
+    /// from gameplay's stream.
+    pub fn rolled(
+        placed: &crate::content::level::MonsterPlacement,
+        kind: &crate::content::species::Species,
+        body: &crate::content::monster::MonsterBody,
+        rng: &mut crate::game::rng::GameRng,
+    ) -> Self {
+        let max_hp = rng.roll(kind.hit_points).max(1);
+        let max_stamina = rng.roll(kind.stamina);
+        let body = super::population::ScaledBody::new(body, rng.below(1000));
+        KeptMonster {
+            provoked: false,
+            monster: Monster {
+                location: placed.location,
+                species: placed.species,
+                hp: max_hp,
+                max_hp,
+                stamina: max_stamina,
+                max_stamina,
+                conditions: Vec::new(),
+                body,
+            },
+            group: Some(placed.group),
+            feet: placed.position,
+            yaw: placed.yaw,
+        }
+    }
+
+    /// A monster as it stands now, to keep while its level is away.
+    pub fn capture(
+        monster: &Monster,
+        pose: &super::ActorPoseItem,
+        walker: Option<&super::navigation::Walker>,
+        group: Option<i32>,
+        provoked: bool,
+    ) -> Self {
+        KeptMonster {
+            provoked,
+            group,
+            monster: monster.clone(),
+            feet: super::navigation::feet(pose.translation(), walker),
+            yaw: pose.rotation().to_euler(EulerRot::YXZ).0,
+        }
+    }
+}
+
 /// What travel reads to remember the level it leaves.
 #[derive(SystemParam)]
 pub struct LevelContents<'w, 's> {
@@ -276,12 +332,9 @@ impl LevelContents<'_, '_> {
                 .monsters
                 .iter_many(children)
                 .matched()
-                .map(|(monster, at, walker, group, provoked)| KeptMonster {
-                    provoked,
-                    group: group.and_then(|m| self.groups.get(m.0).ok()).map(|g| g.authored),
-                    monster: monster.clone(),
-                    feet: super::navigation::feet(at.translation(), walker),
-                    yaw: at.rotation().to_euler(EulerRot::YXZ).0,
+                .map(|(monster, at, walker, group, provoked)| {
+                    let group = group.and_then(|m| self.groups.get(m.0).ok()).map(|g| g.authored);
+                    KeptMonster::capture(monster, &at, walker, group, provoked)
                 })
                 .collect(),
             items: self
