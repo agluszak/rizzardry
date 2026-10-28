@@ -337,8 +337,7 @@ pub fn validate_sale(
     communication: u32,
 ) -> Result<u32, TradeError> {
     let d = catalog.get(item.item).ok_or(TradeError::MissingContent)?;
-    if d.crucial || u8::from(d.class) >= 26 || def.accepted_classes & (1 << u8::from(d.class)) == 0
-    {
+    if d.crucial || !d.class.merchant_class() || !def.accepted_classes.contains(d.class) {
         return Err(TradeError::Rejected);
     }
     if quantity == 0
@@ -385,7 +384,12 @@ mod tests {
         }])
     }
     fn merchant() -> NpcDefinition {
-        NpcDefinition { buy_factor: 0.8, sell_factor: 1.2, accepted_classes: u32::MAX, ..default() }
+        NpcDefinition {
+            buy_factor: 0.8,
+            sell_factor: 1.2,
+            accepted_classes: enumset::EnumSet::all(),
+            ..default()
+        }
     }
     #[test]
     fn purchase_revalidates_and_settles_complete_delivery() {

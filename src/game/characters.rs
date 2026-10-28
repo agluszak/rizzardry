@@ -576,14 +576,14 @@ impl Character {
             Race::Dwarf => &[DwarfDamageResistance],
             Race::Faerie => &[
                 FaerieArmour,
-                FaerieAbility23,
+                UnusualStartingEquipment,
                 FaerieCarryCapacity,
-                FaerieAbility25,
-                FaerieAbility26,
+                EquippableItemWeightLimit,
+                FastMagicRecovery,
             ],
             Race::Lizardman => &[LizardmanMagicRecovery],
             Race::Dracon => &[Breathe],
-            Race::Android => &[AndroidAbility30, CannotLearn],
+            Race::Android => &[AndroidConditionImmunity, CannotLearn],
             _ => &[],
         };
         racial.iter().copied().collect()

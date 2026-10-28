@@ -1897,7 +1897,7 @@ mod tests {
                 &mut app,
                 caster,
                 crate::content::spells::SpellDefinition {
-                    id: crate::content::spells::SpellId(12),
+                    id: crate::content::spells::SpellId::SLEEP,
                     realm: Some(crate::content::characters::Realm::Mental),
                     ..energy_blast()
                 },
@@ -1911,7 +1911,11 @@ mod tests {
             app.insert_resource(GameRng::seeded(seed));
             let landed = land(
                 &mut app,
-                vec![missile(caster, crate::content::spells::SpellId(12), Victim::Member(member))],
+                vec![missile(
+                    caster,
+                    crate::content::spells::SpellId::SLEEP,
+                    Victim::Member(member),
+                )],
             );
             let improved =
                 app.world().get::<Character>(member).unwrap().skill_points[Skill::IronWill] > 0;
