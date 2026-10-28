@@ -421,18 +421,16 @@ impl Plugin for MagicPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<MagicRequest>()
             .add_message::<casting::MagicNews>()
+            .init_resource::<casting::FlightOrder>()
             .init_resource::<crate::game::factions::Factions>()
             .init_resource::<crate::game::difficulty::Difficulty>()
             .add_systems(
                 Update,
-                (
-                    fill_spell_points.in_set(crate::game::GameplaySet::Equipment),
-                    (accept_magic, deliver_spells)
-                        .chain()
-                        .after(crate::game::GameplaySet::LevelActivation)
-                        .before(crate::game::GameplaySet::Combat)
-                        .run_if(crate::game::world::level::level_active),
-                ),
+                ((accept_magic, deliver_spells)
+                    .chain()
+                    .after(crate::game::GameplaySet::LevelActivation)
+                    .before(crate::game::GameplaySet::Combat)
+                    .run_if(crate::game::world::level::level_active),),
             );
     }
 }
@@ -459,6 +457,7 @@ pub struct MagicContext<'w, 's> {
     rng: ResMut<'w, GameRng>,
     news: MessageWriter<'w, casting::MagicNews>,
     level: Single<'w, 's, Entity, With<crate::game::world::level::Level>>,
+    flight_order: ResMut<'w, casting::FlightOrder>,
 }
 
 impl MagicContext<'_, '_> {
@@ -478,7 +477,7 @@ pub fn accept_magic(
     mut requests: MessageReader<MagicRequest>,
     battle: Option<Single<&crate::game::combat::Battle>>,
     camp: Option<Res<crate::game::camp::Camp>>,
-    interaction: Option<Res<crate::game::world::interaction::DeviceInteraction>>,
+    interaction: Query<(), With<crate::game::world::interaction::DeviceInteraction>>,
     mut orders: Query<&mut crate::game::party::Order>,
     (mut members, mut monsters): (Members, MonsterDamage),
     mut points: Query<(&LearnedSpells, &mut SpellPoints)>,
@@ -490,12 +489,12 @@ pub fn accept_magic(
         if !context.roster.contains(&caster) {
             continue;
         }
-        if let casting::Aim::Device(device) = choice.aim {
+        if let casting::Aim::Device(attempt) = choice.aim {
             commands.queue(move |world: &mut World| {
                 if let Err(refusal) = crate::game::world::interaction::cast_device(
                     world,
                     caster,
-                    device,
+                    attempt,
                     choice.source,
                 ) {
                     world.write_message(casting::MagicNews::Refused { caster, refusal });
@@ -503,7 +502,7 @@ pub fn accept_magic(
             });
             continue;
         }
-        if interaction.is_some() {
+        if !interaction.is_empty() {
             context.news.write(casting::MagicNews::Refused {
                 caster,
                 refusal: casting::Refusal::WrongTime,
@@ -529,6 +528,7 @@ pub fn accept_magic(
             rng,
             news,
             level,
+            flight_order,
             ..
         } = &mut context;
         let catalogs = data.as_ref().and_then(|d| {
@@ -572,9 +572,7 @@ pub fn accept_magic(
             match casting::perform(caster, choice, &situation, spells, &mut points, rng, &mut field)
             {
                 Ok((report, flights)) => {
-                    for flight in flights {
-                        commands.spawn((flight, crate::game::world::level::LevelOwned(**level)));
-                    }
+                    flight_order.launch(&mut commands, flights, **level);
                     casting::MagicNews::Done(report)
                 }
                 Err(refusal) => casting::MagicNews::Refused { caster, refusal },
@@ -618,10 +616,17 @@ pub fn deliver_spells(
     });
     let Some((items, species, spells)) = catalogs else { return };
     let living: Vec<Entity> = roster.iter().collect();
+    // Every impact due in this update, in the order they arrive.
+    let mut due = Vec::new();
     for (entity, mut flight) in &mut flights {
-        if !flight.arrives.tick(time.delta()).is_finished() {
-            continue;
+        let left = flight.arrives.remaining();
+        if flight.arrives.tick(time.delta()).is_finished() {
+            due.push((left, flight.launched, entity));
         }
+    }
+    due.sort_unstable_by_key(|&(left, launched, _)| (left, launched));
+    for (_, _, entity) in due {
+        let flight = flights.get(entity).unwrap().1.clone();
         commands.entity(entity).despawn();
         let Some(spell) = spells.get(flight.spell) else { continue };
         let mut field = Field {
@@ -644,35 +649,16 @@ pub fn deliver_spells(
             &mut field,
             (spells, &mut points),
         );
+        let improved = std::mem::take(&mut field.improved);
         if let Some(battle) = battle.as_mut() {
-            for effect in &effects {
-                if let Effect::Damaged { victim: Victim::Monster(target), outcome, .. } = *effect
-                    && outcome.died
-                {
-                    battle.credit_kill(target, outcome.experience);
-                    combat_news.write(crate::game::combat::CombatNews::Killed { actor: target });
-                }
-            }
+            battle.credit_magic_kills(&effects, &mut combat_news);
         }
         news.write(casting::MagicNews::Landed {
             caster: flight.caster,
             spell: flight.spell,
             effects,
+            improved,
         });
-    }
-}
-
-/// Give new members whose spells are known their full spell points once
-/// the spell catalog has loaded.
-pub fn fill_spell_points(
-    mut commands: Commands,
-    data: Option<Res<crate::game::data::GameData>>,
-    spells: Res<Assets<SpellCatalog>>,
-    members: Query<(Entity, &Character, &LearnedSpells), Without<SpellPoints>>,
-) {
-    let Some(catalog) = data.and_then(|d| spells.get(&d.spells)) else { return };
-    for (entity, character, learned) in &members {
-        commands.entity(entity).insert(SpellPoints::full(max_points(character, learned, catalog)));
     }
 }
 
@@ -720,6 +706,7 @@ mod tests {
             .init_resource::<crate::game::factions::Factions>()
             .init_resource::<ItemIds>()
             .init_resource::<crate::game::difficulty::Difficulty>()
+            .init_resource::<casting::FlightOrder>()
             .insert_resource(GameRng::seeded(3))
             .add_message::<DamageApplied>()
             .add_message::<MagicRequest>()
@@ -872,6 +859,7 @@ mod tests {
                 .init_resource::<crate::game::factions::Factions>()
                 .init_resource::<ItemIds>()
                 .init_resource::<crate::game::difficulty::Difficulty>()
+                .init_resource::<casting::FlightOrder>()
                 .insert_resource(GameRng::seeded(3))
                 .add_message::<DamageApplied>()
                 .add_message::<MagicRequest>()

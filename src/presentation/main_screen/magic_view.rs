@@ -80,7 +80,8 @@ pub(super) fn load_magic_view_art(mut commands: Commands, assets: Res<AssetServe
 pub struct MagicView {
     pub caster: Entity,
     pub items: bool,
-    pub device: Option<Entity>,
+    /// The device attempt it casts at, if any.
+    pub attempt: Option<Entity>,
     pool: bool,
     realm: Option<Realm>,
     source: Option<Source>,
@@ -93,7 +94,7 @@ pub struct MagicView {
 impl MagicView {
     /// Whether a portrait click now aims the spell rather than selects.
     pub fn wants_member(&self) -> bool {
-        self.device.is_none() && self.source.is_some() && self.member.is_none()
+        self.attempt.is_none() && self.source.is_some() && self.member.is_none()
     }
 
     pub fn aim_at(&mut self, member: Entity) {
@@ -166,26 +167,29 @@ pub fn open(
     art: &MagicViewArt,
     caster: Entity,
     items: bool,
-    requested_device: Option<Entity>,
+    requested_attempt: Option<Entity>,
 ) {
     let art = art.clone();
     commands.queue(move |world: &mut World| {
-        use crate::game::world::interaction::{DeviceInteraction, Work, prepare_device_magic};
-        let device = match world.get_resource::<DeviceInteraction>() {
-            Some(interaction) => {
-                if matches!(interaction.work, Work::Looting) {
+        use crate::game::world::interaction::{
+            DeviceInteraction, Work, current, prepare_device_magic,
+        };
+        let attempt = match current(world) {
+            Some((attempt, _)) => {
+                if matches!(
+                    world.get::<DeviceInteraction>(attempt).map(|i| &i.work),
+                    Some(Work::Looting)
+                ) || requested_attempt.is_some_and(|requested| requested != attempt)
+                {
                     return;
                 }
-                if requested_device.is_some_and(|device| device != interaction.device) {
-                    return;
-                }
-                Some(interaction.device)
+                Some(attempt)
             }
-            None if requested_device.is_some() => return,
+            None if requested_attempt.is_some() => return,
             None => None,
         };
-        if let Some(device) = device
-            && prepare_device_magic(world, caster, device).is_err()
+        if let Some(attempt) = attempt
+            && prepare_device_magic(world, caster, attempt).is_err()
         {
             return;
         }
@@ -196,7 +200,7 @@ pub fn open(
             world.despawn(view);
         }
         let mut state = bevy::ecs::system::SystemState::<Commands>::new(world);
-        spawn_view(&mut state.get_mut(world).unwrap(), &art, caster, items, device);
+        spawn_view(&mut state.get_mut(world).unwrap(), &art, caster, items, attempt);
         state.apply(world);
     });
 }
@@ -206,14 +210,14 @@ fn spawn_view(
     art: &MagicViewArt,
     caster: Entity,
     items: bool,
-    device: Option<Entity>,
+    attempt: Option<Entity>,
 ) {
     let root = commands
         .spawn((
             MagicView {
                 caster,
                 items,
-                device,
+                attempt,
                 pool: false,
                 realm: None,
                 source: None,
@@ -401,12 +405,12 @@ fn context(
     view: &MagicView,
     fighting: bool,
     camped: bool,
-    interaction: Option<&crate::game::world::interaction::DeviceInteraction>,
+    attempts: &Query<&crate::game::world::interaction::DeviceInteraction>,
 ) -> Option<UseContext> {
     use crate::game::world::interaction::Work;
-    match view.device {
-        Some(device) => {
-            let interaction = interaction.filter(|i| i.device == device)?;
+    match view.attempt {
+        Some(attempt) => {
+            let interaction = attempts.get(attempt).ok()?;
             match interaction.work {
                 Work::Picking(_) => Some(UseContext::Lock),
                 Work::Disarming(_) => Some(UseContext::Trap),
@@ -545,7 +549,7 @@ pub(super) fn refresh_magic_view(
     ),
     (camp, interaction, pool): (
         Option<Res<crate::game::camp::Camp>>,
-        Option<Res<crate::game::world::interaction::DeviceInteraction>>,
+        Query<&crate::game::world::interaction::DeviceInteraction>,
         Single<&PartyInventory>,
     ),
     data: Option<Res<GameData>>,
@@ -591,16 +595,16 @@ pub(super) fn refresh_magic_view(
     if let Some(member) = selected.member(&roster)
         && member != view.caster
     {
-        if let Some(device) = view.device {
+        if let Some(attempt) = view.attempt {
             commands.queue(move |world: &mut World| {
                 let _ =
-                    crate::game::world::interaction::prepare_device_magic(world, member, device);
+                    crate::game::world::interaction::prepare_device_magic(world, member, attempt);
             });
         }
         *view = MagicView {
             caster: member,
             items: view.items,
-            device: view.device,
+            attempt: view.attempt,
             pool: view.pool,
             realm: None,
             source: None,
@@ -608,7 +612,7 @@ pub(super) fn refresh_magic_view(
             member: None,
         };
     }
-    if view.device.is_some()
+    if view.attempt.is_some()
         && !members.get(view.caster).is_ok_and(|(_, v, _)| crate::game::camp::can_act(v))
     {
         commands.entity(root).despawn();
@@ -620,8 +624,7 @@ pub(super) fn refresh_magic_view(
     ) else {
         return;
     };
-    let Some(context) = context(&view, battle.is_some(), camp.is_some(), interaction.as_deref())
-    else {
+    let Some(context) = context(&view, battle.is_some(), camp.is_some(), &interaction) else {
         commands.entity(root).despawn();
         return;
     };
@@ -823,8 +826,8 @@ pub(super) fn refresh_magic_view(
     // An item casts at its own power.
     let power = if view.items { Some(1) } else { view.power };
     let Some(power) = power else { return };
-    let aim = if let Some(device) = view.device {
-        Aim::Device(device)
+    let aim = if let Some(attempt) = view.attempt {
+        Aim::Device(attempt)
     } else {
         match spell.targeting {
             Targeting::Ally => match view.member {
@@ -896,7 +899,7 @@ fn choose_row(
     battle: Option<Single<&Battle>>,
     (camp, interaction, pool): (
         Option<Res<crate::game::camp::Camp>>,
-        Option<Res<crate::game::world::interaction::DeviceInteraction>>,
+        Query<&crate::game::world::interaction::DeviceInteraction>,
         Single<&PartyInventory>,
     ),
     data: Option<Res<GameData>>,
@@ -924,7 +927,7 @@ fn choose_row(
         points,
         spells,
         items,
-        match context(&view, battle.is_some(), camp.is_some(), interaction.as_deref()) {
+        match context(&view, battle.is_some(), camp.is_some(), &interaction) {
             Some(c) => c,
             None => return,
         },
