@@ -56,7 +56,7 @@ fn app() -> App {
 /// loaded.
 fn with_data(app: &mut App) {
     let world = app.world_mut();
-    let items = world.resource_mut::<Assets<ItemCatalog>>().add(ItemCatalog::default());
+    let items = world.resource_mut::<Assets<ItemCatalog>>().add(starting_catalog());
     let loot = world.resource_mut::<Assets<LootTables>>().add(LootTables::default());
     let crab = Species { name: "Crab".into(), model: "crab".into(), ..default() };
     let species = world.resource_mut::<Assets<MonsterCatalog>>().add(MonsterCatalog(vec![crab]));
@@ -67,6 +67,23 @@ fn with_data(app: &mut App) {
     // Required body metadata is available without a visual asset or renderer.
     let body = world.resource_mut::<Assets<MonsterBody>>().add(MonsterBody::default());
     world.resource_mut::<MonsterBodies>().0.insert(0, body);
+}
+
+/// Plain items under every id a new character can start with.
+fn starting_catalog() -> ItemCatalog {
+    use rizzardry::content::items::{ItemDefinition, ItemId};
+    ItemCatalog(
+        (0..800u16)
+            .map(|id| ItemDefinition {
+                id: ItemId(id),
+                name: format!("item {id}"),
+                professions: enumset::EnumSet::all(),
+                races: enumset::EnumSet::all(),
+                genders: enumset::EnumSet::all(),
+                ..default()
+            })
+            .collect(),
+    )
 }
 
 fn test_level(app: &mut App, collision: CollisionMesh) -> Level {
@@ -189,6 +206,73 @@ fn travel_dialogs_end_with_their_question_without_a_cleanup_system() {
     let dialog = app.world_mut().spawn(QuestionDialog(question)).id();
     app.world_mut().despawn(level);
     assert!(app.world().get_entity(dialog).is_err(), "leaving ends the pending view");
+}
+
+/// A new game's party is complete the moment its level is ready: within the
+/// same update, a system after activation finds every member equipped, with
+/// spell points, vitals and a seat.
+#[test]
+fn a_new_party_is_complete_when_its_first_level_is_ready() {
+    use rizzardry::game::inventory::Carried;
+    use rizzardry::game::magic::SpellPoints;
+    #[derive(Resource, Default)]
+    struct Seen(Vec<(bool, bool, bool, bool)>);
+    let mut app = app();
+    with_data(&mut app);
+    app.init_resource::<Seen>().add_systems(
+        Update,
+        (|mut ready: MessageReader<LevelReady>,
+          members: Query<(
+            Entity,
+            Option<&Carried>,
+            Option<&SpellPoints>,
+            Option<&rizzardry::game::characters::Vitals>,
+            &rizzardry::game::party::roster::PartyMember,
+        )>,
+          formations: Query<&rizzardry::game::party::formation::Formation>,
+          mut seen: ResMut<Seen>| {
+            if ready.read().next().is_some() {
+                for (member, carried, points, vitals, party) in &members {
+                    let seated =
+                        formations.get(party.0).is_ok_and(|f| f.place_of(member).is_some());
+                    seen.0.push((
+                        carried.is_some_and(|c| c.stacks().next().is_some()),
+                        points.is_some(),
+                        vitals.is_some(),
+                        seated,
+                    ));
+                }
+            }
+        })
+        .after(activate_level),
+    );
+    spawn_level(&mut app, floor());
+    app.update();
+    assert_eq!(app.world().resource::<Seen>().0, [(true, true, true, true)]);
+}
+
+/// A starting item the catalog lacks refuses the new game's entry rather
+/// than making an incomplete member.
+#[test]
+fn a_new_game_missing_a_starting_item_does_not_begin() {
+    let mut app = app();
+    with_data(&mut app);
+    let handle = app.world().resource::<GameData>().items.clone();
+    app.world_mut()
+        .resource_mut::<Assets<ItemCatalog>>()
+        .insert(&handle, ItemCatalog::default())
+        .unwrap();
+    let destination = spawn_level(&mut app, floor());
+    app.update();
+    assert!(failed(&app, destination));
+    assert!(app.world_mut().query::<&Party>().iter(app.world()).next().is_none());
+    assert!(
+        app.world_mut()
+            .query::<&rizzardry::game::party::roster::PartyMember>()
+            .iter(app.world())
+            .next()
+            .is_none()
+    );
 }
 
 #[test]

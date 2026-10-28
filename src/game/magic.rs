@@ -425,14 +425,11 @@ impl Plugin for MagicPlugin {
             .init_resource::<crate::game::difficulty::Difficulty>()
             .add_systems(
                 Update,
-                (
-                    fill_spell_points.in_set(crate::game::GameplaySet::Equipment),
-                    (accept_magic, deliver_spells)
-                        .chain()
-                        .after(crate::game::GameplaySet::LevelActivation)
-                        .before(crate::game::GameplaySet::Combat)
-                        .run_if(crate::game::world::level::level_active),
-                ),
+                ((accept_magic, deliver_spells)
+                    .chain()
+                    .after(crate::game::GameplaySet::LevelActivation)
+                    .before(crate::game::GameplaySet::Combat)
+                    .run_if(crate::game::world::level::level_active),),
             );
     }
 }
@@ -659,20 +656,6 @@ pub fn deliver_spells(
             spell: flight.spell,
             effects,
         });
-    }
-}
-
-/// Give new members whose spells are known their full spell points once
-/// the spell catalog has loaded.
-pub fn fill_spell_points(
-    mut commands: Commands,
-    data: Option<Res<crate::game::data::GameData>>,
-    spells: Res<Assets<SpellCatalog>>,
-    members: Query<(Entity, &Character, &LearnedSpells), Without<SpellPoints>>,
-) {
-    let Some(catalog) = data.and_then(|d| spells.get(&d.spells)) else { return };
-    for (entity, character, learned) in &members {
-        commands.entity(entity).insert(SpellPoints::full(max_points(character, learned, catalog)));
     }
 }
 

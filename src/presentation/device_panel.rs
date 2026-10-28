@@ -680,15 +680,15 @@ mod tests {
             bevy::input_focus::InputDispatchPlugin,
             bevy::input_focus::tab_navigation::TabNavigationPlugin,
         ))
-            .add_observer(crate::game::world::interaction::end_attempts)
-            .init_asset::<SpriteSheet>()
-            .init_asset::<TextTable>()
-            .init_asset::<ItemCatalog>()
-            .init_resource::<SelectedMember>()
-            .init_resource::<ItemIds>()
-            .init_resource::<crate::game::difficulty::Difficulty>()
-            .insert_resource(crate::game::rng::GameRng::seeded(1))
-            .add_message::<LockNews>();
+        .add_observer(crate::game::world::interaction::end_attempts)
+        .init_asset::<SpriteSheet>()
+        .init_asset::<TextTable>()
+        .init_asset::<ItemCatalog>()
+        .init_resource::<SelectedMember>()
+        .init_resource::<ItemIds>()
+        .init_resource::<crate::game::difficulty::Difficulty>()
+        .insert_resource(crate::game::rng::GameRng::seeded(1))
+        .add_message::<LockNews>();
         let mut profile = Character::new("A", Race::Human, Gender::Male, Profession::Rogue);
         profile.skill_points[Skill::LocksAndTraps] = 100;
         let member = app.world_mut().spawn((Vitals::new(&profile), profile)).id();

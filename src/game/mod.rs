@@ -21,7 +21,6 @@ pub mod world;
 /// state from an earlier operation. Presentation remains independently scheduled.
 #[derive(bevy::prelude::SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GameplaySet {
-    Equipment,
     LevelActivation,
     Combat,
 }

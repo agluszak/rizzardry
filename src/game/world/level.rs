@@ -633,6 +633,15 @@ pub fn activate_level(
             fail("there is no party to travel");
             continue;
         }
+        if let Entry::NewGame(characters) = &destination.entry
+            && let Err(missing) = crate::game::party::roster::check_starting_items(
+                characters.iter().map(|(character, _)| character),
+                items,
+            )
+        {
+            fail(&missing.to_string());
+            continue;
+        }
         // Capture the source's state exactly at departure; it has not
         // changed since travel was accepted.
         for (entity, source, state, owned) in &current {
@@ -671,7 +680,8 @@ pub fn activate_level(
                 if let Some(session) = session.as_mut() {
                     session.set(crate::game::session::Session::Playing);
                 }
-                found_party(&mut commands, characters)
+                let spells = shared.spells.get(&data.spells).unwrap();
+                found_party(&mut commands, characters, (items, spells), (&mut ids, &mut rng))
             }
         };
         transition.p1().place(&mut commands, party, geometry, &destination.start);
@@ -683,21 +693,24 @@ pub fn activate_level(
     }
 }
 
-/// A new campaign's party, its members joining in order.
+/// A new campaign's party, its members joining complete and in order.
 fn found_party(
     commands: &mut Commands,
     characters: Vec<(crate::game::characters::Character, crate::game::magic::LearnedSpells)>,
+    catalogs: (&ItemCatalog, &crate::content::spells::SpellCatalog),
+    (ids, rng): (&mut ItemIds, &mut GameRng),
 ) -> Entity {
     let party = commands.spawn((Name::new("Party"), Party)).id();
     let mut formation = crate::game::party::formation::Formation::default();
-    for (character, learned) in characters {
-        let member = crate::game::party::roster::recruit_character(
+    for member in characters {
+        crate::game::party::roster::recruit_character(
             commands,
             party,
             &mut formation,
-            character,
+            member,
+            catalogs,
+            (&mut *ids, &mut *rng),
         );
-        commands.entity(member).insert(learned);
     }
     commands.entity(party).insert(formation);
     party

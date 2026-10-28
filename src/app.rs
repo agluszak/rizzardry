@@ -235,12 +235,7 @@ pub fn build(options: &Options) -> Result<App, String> {
         .add_systems(Startup, crate::game::data::load_game_data)
         .configure_sets(
             Update,
-            (
-                crate::game::GameplaySet::Equipment,
-                crate::game::GameplaySet::LevelActivation,
-                crate::game::GameplaySet::Combat,
-            )
-                .chain(),
+            (crate::game::GameplaySet::LevelActivation, crate::game::GameplaySet::Combat).chain(),
         );
     app.add_plugins((
         PhysicsPlugins::default(),
