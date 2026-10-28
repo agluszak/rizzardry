@@ -79,8 +79,11 @@ pub enum Refusal {
     WrongTime,
     NoTarget,
     /// An instrument or gadget that could not be brought to play: its
-    /// fatigue is paid, the item is not (retail string 0x1f3).
-    PlayedBadly,
+    /// fatigue is paid, the item is not (retail string 0x1f3). The attempt
+    /// is practice, and `improved` is the skill it raised, if any.
+    PlayedBadly {
+        improved: Option<Skill>,
+    },
     MissingContent,
 }
 
@@ -820,12 +823,10 @@ fn play(
         world.members.get_mut(caster).map_err(|_| Refusal::CannotAct)?;
     vitals.spend_stamina(u32::from(spell.level) * 8 + 20);
     if power == 0 {
-        if let Some(skill) = use_.definition.use_type.skill()
-            && profile.practise(skill, 1, rng)
-        {
-            world.improved.push((caster, skill));
-        }
-        return Err(Refusal::PlayedBadly);
+        // The refusal carries the practice, since no report follows it.
+        let improved =
+            use_.definition.use_type.skill().filter(|&skill| profile.practise(skill, 1, rng));
+        return Err(Refusal::PlayedBadly { improved });
     }
     Ok(power)
 }

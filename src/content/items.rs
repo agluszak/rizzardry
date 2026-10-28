@@ -12,6 +12,15 @@ use super::species::Reach;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ItemId(pub u16);
 
+impl ItemId {
+    pub const LONGSWORD: Self = Self(7);
+    pub const BATTLE_AXE: Self = Self(18);
+    pub const MACE: Self = Self(22);
+    pub const QUARTER_STAFF: Self = Self(82);
+    pub const POETS_LUTE: Self = Self(324);
+    pub const OMNIGUN_MK_1: Self = Self(599);
+}
+
 /// `count` d `sides` + `base`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Dice {
@@ -23,7 +32,8 @@ pub struct Dice {
 /// Where an item can be worn or wielded, and what it is (retail equipment
 /// class; labels 1087..1119 in the string table).
 /// Declared in retail's order, so its retail number converts both ways.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, IntoPrimitive, TryFromPrimitive)]
+#[derive(Debug, Default, EnumSetType, IntoPrimitive, TryFromPrimitive)]
+#[enumset(repr = "u32")]
 #[repr(u8)]
 pub enum EquipClass {
     ShortWeapon,
@@ -61,6 +71,21 @@ pub enum EquipClass {
     Mace,
 }
 
+impl EquipClass {
+    /// Extra editor-only weapon labels are not merchant equipment classes.
+    pub fn merchant_class(self) -> bool {
+        !matches!(
+            self,
+            Self::Dagger
+                | Self::LongSword
+                | Self::Bipennis
+                | Self::BattleAxe
+                | Self::Flail
+                | Self::Mace
+        )
+    }
+}
+
 /// How an item counts: a stack of identical things, or charges, uses or
 /// shots left in one thing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -88,46 +113,6 @@ pub enum AttackMode {
     Kick,
     Lash,
     Shoot,
-}
-
-/// An item's generic kind (retail `unidentified_name_index`), which names it
-/// until it is identified. The kinds rules single out are named as retail's
-/// own item art and models name them (`g_item_video_object_fallback_names`,
-/// `g_item_model_fallback_names`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct ItemKind(pub u16);
-
-impl ItemKind {
-    pub const LONGBOW: ItemKind = ItemKind(0x0b);
-    pub const CROSSBOW: ItemKind = ItemKind(0x0c);
-    pub const SLING: ItemKind = ItemKind(0x0d);
-    pub const ARROWS: ItemKind = ItemKind(0x16);
-    pub const SLING_STONES: ItemKind = ItemKind(0x17);
-    pub const GREATBOW: ItemKind = ItemKind(0x25);
-    pub const QUARRELS: ItemKind = ItemKind(0x53);
-    pub const POWER_GLOVE: ItemKind = ItemKind(0x68);
-    pub const PHASER: ItemKind = ItemKind(0x6e);
-    pub const MUSKET: ItemKind = ItemKind(0x72);
-    pub const OMNIGUN: ItemKind = ItemKind(0x83);
-    pub const ROCKET_LAUNCHER: ItemKind = ItemKind(0x90);
-
-    /// Shoots what the other hand holds (retail
-    /// `ItemHasSingledOutGenericName`): bows, crossbows, slings and the
-    /// omnigun.
-    pub fn launcher(self) -> bool {
-        matches!(
-            self,
-            Self::LONGBOW | Self::CROSSBOW | Self::SLING | Self::GREATBOW | Self::OMNIGUN
-        )
-    }
-
-    /// The guns, whose blows strength does not help (retail `CalcAttacks`).
-    pub fn gun(self) -> bool {
-        matches!(
-            self,
-            Self::POWER_GLOVE | Self::PHASER | Self::MUSKET | Self::OMNIGUN | Self::ROCKET_LAUNCHER
-        )
-    }
 }
 
 /// What a blow may do besides its damage, in retail's order (its attack
@@ -182,12 +167,52 @@ pub enum Ammunition {
     SlingStone,
 }
 
+/// What kind of thing an item is: retail's generic name index
+/// (`unidentified_name_index`), which picks its unidentified name, picture
+/// and model, and which a few rules single out. Retail has 147 kinds; only
+/// those rules name are named here.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ItemKind(pub u16);
+
+impl ItemKind {
+    pub const DAGGER: Self = Self(0x00);
+    pub const LONGBOW: Self = Self(0x0b);
+    pub const CROSSBOW: Self = Self(0x0c);
+    pub const SLING: Self = Self(0x0d);
+    pub const SHURIKEN: Self = Self(0x15);
+    pub const ARROW: Self = Self(0x16);
+    pub const SLING_STONE: Self = Self(0x17);
+    pub const GREATBOW: Self = Self(0x25);
+    pub const QUARREL: Self = Self(0x53);
+    pub const POWER_GLOVE: Self = Self(0x68);
+    pub const PHASER: Self = Self(0x6e);
+    pub const DARTS: Self = Self(0x70);
+    pub const POWDER_SHOT: Self = Self(0x71);
+    pub const MUSKET: Self = Self(0x72);
+    /// The thrown-weapon category used by Shuriken, Death Star and Boomerang Shuriken.
+    /// The separate SHURIKEN category has no items in the original database.
+    pub const THROWING_SHURIKEN: Self = Self(0x7e);
+    /// The Gadgeteer's omnigun, whose twelve tiers are items 599 to 610.
+    pub const OMNIGUN: Self = Self(0x83);
+    /// Retail generic label "PowerPak".
+    pub const POWER_PACK: Self = Self(0x84);
+    pub const ROCKET: Self = Self(0x8f);
+    pub const ROCKET_LAUNCHER: Self = Self(0x90);
+    /// Retail generic label "Flame Thrower".
+    pub const FLAME_THROWER: Self = Self(0x91);
+    /// Retail generic label "Fuel".
+    pub const FUEL: Self = Self(0x92);
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct ItemDefinition {
     pub id: ItemId,
     pub name: String,
     /// What it is called before it is identified ("Dagger (Unidentified)").
     pub unidentified_name: String,
+    /// Generic kind without the unidentified annotation (for assay/type labels).
+    pub kind_name: String,
+    pub kind: ItemKind,
     /// The item's picture, a retail path such as `data/items/dagger.sti`.
     pub image: String,
     /// Its model lying in the world, such as `data/items3d/dagger.itm`.
@@ -219,8 +244,6 @@ pub struct ItemDefinition {
     pub slays: Option<super::species::MonsterKind>,
     /// Swings it adds to each attack.
     pub extra_swings: i32,
-    /// What kind of item it is, as its unidentified name says.
-    pub kind: ItemKind,
     /// Thrown, it is not used up.
     pub never_depletes: bool,
     pub damage_bonus: i8,

@@ -60,7 +60,7 @@ pub fn read_npcs(data: &[u8]) -> Result<NpcCatalog, LoadError> {
             faction: r[0x5f],
             buy_factor,
             sell_factor,
-            accepted_classes: u32_at(r, 0x2d6)?,
+            accepted_classes: enumset::EnumSet::from_repr_truncated(u32_at(r, 0x2d6)?),
             voice_script: r[0x2ea] != 0,
             stock,
         });

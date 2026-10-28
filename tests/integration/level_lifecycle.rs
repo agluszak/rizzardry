@@ -611,11 +611,12 @@ fn direct_damage_settles_death_once_and_rejection_leaves_the_target_unchanged() 
     let physical = Vec3::new(20.0, 3.0, 40.0);
     let mut controller = TnuaController::<WalkerMotion>::default();
     controller.basis.desired_motion = Vec3::X;
+    let link = world.spawn_empty().id();
     world.entity_mut(target).insert((
         Position(physical),
         LinearVelocity(Vec3::new(2.0, -1.0, 3.0)),
         Walker { speed: 2.0, float_height: 1.0 },
-        Crossing { to: Vec3::splat(100.0) },
+        Crossing { link, to: Vec3::splat(100.0) },
         UsingAnimationLink,
         AgentTarget3d::Point(Vec3::splat(100.0)),
         controller,

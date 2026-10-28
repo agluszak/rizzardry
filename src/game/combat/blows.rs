@@ -707,8 +707,11 @@ pub(super) fn monster_attacks(
     let mode = attack::choose_mode(rng, enumset::EnumSet::only(mode));
     let swings = rng.below(u32::from(kind.swings_per_round.max(1))) + 1;
     // A natural ambusher strikes from hiding at arm's length.
-    let mut surprise =
-        Surprise { unaware: false, natural: kind.kind.ambusher() && attack.reach <= Reach::Touch };
+    let mut surprise = Surprise {
+        unaware: false,
+        natural: kind.kind == crate::content::species::MonsterKind::Rogue
+            && attack.reach <= Reach::Touch,
+    };
     // A member not facing it may turn in time, or be struck from behind.
     if attack.reach <= Reach::Short
         && let Ok((character, vitals, ..)) = field.members.get(member)
@@ -727,7 +730,7 @@ pub(super) fn monster_attacks(
     news.write(CombatNews::Attack {
         attacker: entity,
         target: member,
-        how: Announcement::Monster { word: attack.word, mode, named: attack.named },
+        how: Announcement::Monster { word: attack.word, mode, named: attack.named() },
         swings,
         surprise,
     });
@@ -736,10 +739,7 @@ pub(super) fn monster_attacks(
     for _ in 0..swings {
         let Ok((monster, ..)) = field.monsters.monsters().get(entity) else { break };
         let monster = monster.clone();
-        // One that its own blows knocked out or held stops swinging, as a
-        // member does. Retail stops only a dead monster
-        // (`hp_current == 0 && highest_condition > WEBBED`, where the member
-        // check has `||`); this follows the member rule deliberately.
+        // A fumble may incapacitate the attacker between its swings.
         if !monster.can_fight() {
             break;
         }

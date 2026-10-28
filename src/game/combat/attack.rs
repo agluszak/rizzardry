@@ -166,6 +166,28 @@ pub enum Holds {
     Other,
 }
 
+/// The weapons that need ammunition from the other hand (retail
+/// `ItemHasSingledOutGenericName`): longbow, crossbow, sling, greatbow and
+/// omnigun.
+fn is_launcher(kind: ItemKind) -> bool {
+    matches!(
+        kind,
+        ItemKind::LONGBOW
+            | ItemKind::CROSSBOW
+            | ItemKind::SLING
+            | ItemKind::GREATBOW
+            | ItemKind::OMNIGUN
+    )
+}
+/// Throwing weapons and guns that strength does not help.
+const NO_STRENGTH: [ItemKind; 5] = [
+    ItemKind::POWER_GLOVE,
+    ItemKind::PHASER,
+    ItemKind::MUSKET,
+    ItemKind::OMNIGUN,
+    ItemKind::ROCKET_LAUNCHER,
+];
+
 /// One hand's attack, as the character sheet works it out (retail
 /// `W8HandAttack`).
 #[derive(Clone, Debug, PartialEq)]
@@ -200,7 +222,7 @@ pub struct Hand {
     pub paired: bool,
     /// What swinging it weighs, for its stamina.
     pub weight: Option<u16>,
-    /// What kind of weapon it is.
+    /// The weapon's retail kind.
     pub kind: Option<ItemKind>,
 }
 
@@ -297,7 +319,7 @@ pub fn hands(c: &Character, carried: &Carried, catalog: &ItemCatalog, load: Load
     let loaded = |hand: usize| {
         let Some((stack, d)) = worn[hand] else { return true };
         let other = definition(1 - hand);
-        (!d.kind.launcher()
+        (!is_launcher(d.kind)
             || other.is_some_and(|o| d.shoots.is_some() && d.shoots == o.ammunition))
             && !(d.quantity == QuantityKind::Shots && stack.remaining_uses() == Some(0))
     };
@@ -325,7 +347,7 @@ pub fn hands(c: &Character, carried: &Carried, catalog: &ItemCatalog, load: Load
         let ranged = ranged[index] == Some(true);
         let d = definition(index);
         // A launcher takes its damage, effects and slaying from what it shoots.
-        let paired = d.is_some_and(|d| d.kind.launcher()) && in_play[index];
+        let paired = d.is_some_and(|d| is_launcher(d.kind)) && in_play[index];
         let ammunition = if paired { definition(1 - index) } else { None };
         let mut hand = Hand {
             holds: holds[index],
@@ -411,7 +433,6 @@ pub fn hands(c: &Character, carried: &Carried, catalog: &ItemCatalog, load: Load
         let score =
             (speed + hand.initiative * 10 + dual_penalty + physical + load_penalty + combined) / 3;
         hand.swings = 1 + u32::from(score > 66) + u32::from(score > 99);
-        // A rocket launcher in the main hand fires once an attack.
         if definition(0).is_some_and(|d| d.kind == ItemKind::ROCKET_LAUNCHER) {
             hand.swings = 1;
         }
@@ -424,12 +445,12 @@ pub fn hands(c: &Character, carried: &Carried, catalog: &ItemCatalog, load: Load
             {
                 hand.to_hit += i32::from(o.hit_bonus);
             }
-            if d.kind.launcher() {
+            if is_launcher(d.kind) {
                 hand.damage_percent += i32::from(d.damage.base) * 10;
             }
             // Weapons only thrown, lashed or shot.
             if d.attack_modes.is_subset(AttackMode::Throw | AttackMode::Lash | AttackMode::Shoot) {
-                if d.kind.gun() {
+                if NO_STRENGTH.contains(&d.kind) {
                     strength_helps = false;
                 } else {
                     strength_divisor = 2;
@@ -782,7 +803,7 @@ pub fn monster_aim(
     difficulty: Difficulty,
 ) -> i32 {
     let mut fatigue = monster_fatigue(monster);
-    if attack.tires_little {
+    if attack.tires_little() {
         fatigue >>= 1;
     }
     let mut score = i32::from(attack.score)
@@ -811,7 +832,7 @@ pub fn monster_penetration(
     difficulty: Difficulty,
 ) -> i32 {
     let mut score = i32::from(attack.score) + mode_penetration(mode);
-    if attack.tires_little {
+    if attack.tires_little() {
         score -= monster_fatigue(monster);
     }
     score -= target.armour_at(mode, surprise, at) * 5;

@@ -33,9 +33,10 @@ pub fn screenshot_and_exit(
     offscreen: Option<Res<Offscreen>>,
     dialogue: Option<Res<TalkTo>>,
     question: Option<Res<AskAbout>>,
+    trade: Option<Res<crate::presentation::conversation::InspectTrade>>,
     mut exit: MessageWriter<AppExit>,
 ) {
-    if party.is_empty() || dialogue.is_some() || question.is_some() {
+    if party.is_empty() || dialogue.is_some() || question.is_some() || trade.is_some() {
         return;
     }
     if !request.wait.tick(time.delta()).is_finished() {
