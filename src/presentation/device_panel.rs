@@ -27,8 +27,6 @@ use crate::game::world::interaction::{
 };
 use crate::game::world::props::PropMotion;
 
-/// The trap types' names in the game's string table.
-const TRAP_NAMES: usize = 0x542;
 const WIDTH: f32 = 380.0;
 const BUTTON: Color = Color::srgb(0.22, 0.17, 0.11);
 const BUTTON_OFF: Color = Color::srgb(0.1, 0.08, 0.06);
@@ -329,7 +327,11 @@ fn draw_device_panel(
     let skill = member.and_then(|(_, (c, v))| interaction::lock_skill(c, v));
     let strings = tables.get(&art.strings);
     let trap_name = |trap: usize| {
-        strings.and_then(|s| s.get(TRAP_NAMES + trap)).unwrap_or("Trap").trim().to_owned()
+        strings
+            .and_then(|s| s.get(crate::retail::strings::TRAP_NAMES + trap))
+            .unwrap_or("Trap")
+            .trim()
+            .to_owned()
     };
     let catalog = data.as_ref().and_then(|d| catalogs.get(&d.items));
     let stacks = containers.get(interaction.device).map_or(&[][..], |c| &c.contents.items[..]);

@@ -29,7 +29,7 @@ pub(super) enum SpellText {
 
 pub(super) fn build(commands: &mut Commands, root: Entity, assets: &AssetServer) {
     creator_stats::frame(commands, root, assets, Page::Magic);
-    let load = |path: &str| assets.load(format!("retail://data/{path}.sti"));
+    let load = |path: &str| assets.load(crate::content::paths::sheet(path));
     let background: Handle<SpriteSheet> = load("char generation/cg_magic");
     let bottom: Handle<SpriteSheet> = load("char generation/cg_bottombuttons");
     let font: Handle<SpriteSheet> = load("fonts/wiz_text_font");

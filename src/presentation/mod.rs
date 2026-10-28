@@ -79,6 +79,11 @@ impl Plugin for PresentationPlugin {
             frontend::FrontendPlugin,
             device_panel::plugin,
         ))
+        // Retail's double click.
+        .insert_resource(bevy::picking::PickingSettings {
+            multi_click_interval: std::time::Duration::from_millis(400),
+            ..default()
+        })
         .add_input_context::<Exploration>()
         .add_observer(retail_controls::primary_buttons_only)
         .add_observer(party_view::attach_camera)
@@ -161,7 +166,7 @@ impl Plugin for PresentationPlugin {
         .add_systems(
             Update,
             (
-                automap::scale_ui,
+                screen_art::scale_ui,
                 party_view::aim_camera.after(crate::game::GameplaySet::Combat),
                 camp::show_camp,
                 (

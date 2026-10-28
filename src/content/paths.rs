@@ -5,6 +5,11 @@ pub fn retail(path: &str) -> String {
     format!("retail://{path}")
 }
 
+/// A sprite sheet under the retail data folder, by its path without `.sti`.
+pub fn sheet(path: &str) -> String {
+    format!("retail://data/{path}.sti")
+}
+
 pub const ITEMS: &str = "retail://data/databases/items.dbs";
 pub const LOOT_TABLES: &str = "retail://data/databases/itemtables.dbs";
 pub const SPECIES: &str = "retail://data/databases/monsters.dbs";

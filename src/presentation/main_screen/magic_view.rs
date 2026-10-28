@@ -56,7 +56,7 @@ pub struct MagicViewArt {
 }
 
 pub(super) fn load_magic_view_art(mut commands: Commands, assets: Res<AssetServer>) {
-    let sheet = |path: &str| assets.load(format!("retail://data/{path}.sti"));
+    let sheet = |path: &str| assets.load(crate::content::paths::sheet(path));
     commands.insert_resource(MagicViewArt {
         spell_panels: sheet("spell casting/magicbottomnew"),
         realm_buttons: sheet("spell casting/realmhighlightnew"),

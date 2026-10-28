@@ -104,7 +104,7 @@ fn action_button(
 }
 
 pub(super) fn build(commands: &mut Commands, root: Entity, assets: &AssetServer) {
-    let load = |path: &str| assets.load(format!("retail://data/{path}.sti"));
+    let load = |path: &str| assets.load(crate::content::paths::sheet(path));
     let back = load("party generation/back");
     let buttons = load("party generation/listbuttons");
     let detail = load("party generation/detailbox");
@@ -225,7 +225,7 @@ pub(super) fn sync_views(
             commands.entity(entity).despawn();
         }
     }
-    let load = |path: &str| assets.load(format!("retail://data/{path}.sti"));
+    let load = |path: &str| assets.load(crate::content::paths::sheet(path));
     for joined in [false, true] {
         let ids: Vec<_> = if joined {
             session.party.clone()

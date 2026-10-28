@@ -21,7 +21,7 @@ fn category(skill: Skill) -> usize {
 
 pub(super) fn build(commands: &mut Commands, root: Entity, assets: &AssetServer) {
     creator_stats::frame(commands, root, assets, Page::Skills);
-    let load = |path: &str| assets.load(format!("retail://data/{path}.sti"));
+    let load = |path: &str| assets.load(crate::content::paths::sheet(path));
     let background: Handle<SpriteSheet> = load("char generation/cg_skills");
     let buttons: Handle<SpriteSheet> = load("char generation/cg_buttons");
     let bottom: Handle<SpriteSheet> = load("char generation/cg_bottombuttons");

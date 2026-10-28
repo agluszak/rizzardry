@@ -18,6 +18,9 @@ fn decode(units: &[u8], encoded: bool) -> String {
     String::from_utf16_lossy(&units)
 }
 
+/// The trap types' names in the game's string table, by trap type.
+pub const TRAP_NAMES: usize = 0x542;
+
 /// The game's strings, by index.
 pub fn read_string_table(data: &[u8]) -> Result<Vec<String>, DecodeError> {
     let mut bytes = Bytes::new(data);

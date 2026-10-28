@@ -24,7 +24,6 @@ use crate::game::world::triggers::TriggerEffect;
 const LOCK_PICKED: usize = 0x7ac;
 const LOCK_NOT_FORCED: usize = 0x7ad;
 const LOCK_FORCED: usize = 0x7ae;
-const TRAP_NAMES: usize = 0x542;
 const TRAP_DISARMED: usize = 0x7b2;
 /// Retail's "Nothing happens." in the game's string table.
 const NOTHING_HAPPENS: usize = 0x964;
@@ -193,7 +192,6 @@ const TAKES: usize = 0x1e8;
 const NO_ROOM: usize = 0x90c;
 const SEARCH_ON: usize = 0x78e;
 const SEARCH_OFF: usize = 0x78f;
-const NOT_IN_COMBAT_SEARCH: usize = 0x774;
 const SPOTS_HIDDEN: usize = 0x772;
 const IDENTIFIES: usize = 0x1ca;
 const ITS_A: usize = 0x1cb;
@@ -433,7 +431,7 @@ pub fn queue_notices(
         let text = match news {
             SearchNews::On => string(SEARCH_ON),
             SearchNews::Off => string(SEARCH_OFF),
-            SearchNews::NotInCombat => string(NOT_IN_COMBAT_SEARCH),
+            SearchNews::NotInCombat => string(NOT_IN_COMBAT),
             SearchNews::Spotted { member, item, .. } => {
                 format!("{member} {}", string(SPOTS_HIDDEN).replace("%s", item))
             }
@@ -453,7 +451,7 @@ pub fn queue_notices(
     // Retail's lock and trap notices (`AttemptForce`, `ResolvePick`,
     // `CompleteTrapDisarm`, `ResolveSprungTrap`); the rest are voices.
     let member = |entity: &Entity| members.get(*entity).map(|c| c.name.clone()).unwrap_or_default();
-    let trap = |trap: &u8| string(TRAP_NAMES + usize::from(*trap));
+    let trap = |trap: &u8| string(crate::retail::strings::TRAP_NAMES + usize::from(*trap));
     for news in locks.read() {
         let text = match news {
             LockNews::Picked => string(LOCK_PICKED),

@@ -29,9 +29,6 @@ pub struct MainScreenPlugin;
 
 impl Plugin for MainScreenPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<bevy::picking::PickingSettings>();
-        app.world_mut().resource_mut::<bevy::picking::PickingSettings>().multi_click_interval =
-            std::time::Duration::from_millis(400);
         app.init_resource::<ScreenLayout>()
             .init_resource::<SelectedMember>()
             .add_plugins(keys::plugin)
@@ -72,7 +69,7 @@ impl Plugin for MainScreenPlugin {
                     ),
                 )
                     .chain()
-                    .after(super::automap::scale_ui)
+                    .after(super::screen_art::scale_ui)
                     .after(super::notices::queue_notices),
             );
     }
@@ -131,7 +128,7 @@ pub struct MainScreenArt {
 pub fn load_main_screen_art(mut commands: Commands, assets: Res<AssetServer>) {
     let mut all = vec![];
     let mut load = |path: &str| {
-        let handle: Handle<SpriteSheet> = assets.load(format!("retail://data/{path}.sti"));
+        let handle: Handle<SpriteSheet> = assets.load(crate::content::paths::sheet(path));
         all.push(handle.clone());
         handle
     };

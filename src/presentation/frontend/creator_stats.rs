@@ -200,7 +200,7 @@ pub(super) fn frame(commands: &mut Commands, parent: Entity, assets: &AssetServe
 }
 
 pub(super) fn build(commands: &mut Commands, parent: Entity, assets: &AssetServer) {
-    let load = |path: &str| assets.load(format!("retail://data/{path}.sti"));
+    let load = |path: &str| assets.load(crate::content::paths::sheet(path));
     let stats = load("char generation/cg_profession");
     let controls = load("char generation/cg_buttons");
     let bottom = load("char generation/cg_bottombuttons");

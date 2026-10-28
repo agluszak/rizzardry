@@ -278,6 +278,20 @@ pub fn render_text(
     }
 }
 
+/// Fit the 640×480 screen layout into what the interface draws into (the
+/// window, or an offscreen image).
+pub fn scale_ui(
+    interface: Query<&Camera, With<bevy::ui::IsDefaultUiCamera>>,
+    mut scale: ResMut<UiScale>,
+) {
+    if let Some(size) = interface.single().ok().and_then(Camera::logical_target_size) {
+        let fit = (size.x / SCREEN.x).min(size.y / SCREEN.y);
+        if scale.0 != fit {
+            scale.0 = fit;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

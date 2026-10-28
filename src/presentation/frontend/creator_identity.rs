@@ -347,7 +347,7 @@ fn select(
 
 pub(super) fn build(commands: &mut Commands, root: Entity, assets: &AssetServer) {
     creator_stats::frame(commands, root, assets, Page::Review);
-    let load = |path: &str| assets.load(format!("retail://data/{path}.sti"));
+    let load = |path: &str| assets.load(crate::content::paths::sheet(path));
     let art = load("char generation/cg_personality");
     let buttons = load("char generation/cg_buttons");
     let bottom = load("char generation/cg_bottombuttons");
