@@ -5,7 +5,7 @@ use crate::content::ui::SpriteSheet;
 use crate::game::characters::creation::{
     CharacterDraft, PARTY_LIMIT, PLAYABLE_RACES, admit, default_gender, identity,
 };
-use crate::game::session::{Campaign, NewGameDestination, Session, begin_adventure};
+use crate::game::session::{Session, begin_adventure};
 use crate::presentation::screen_art::visible_if;
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::input_focus::{
@@ -497,13 +497,10 @@ fn activate(
     mut next: ResMut<NextState<Session>>,
     mut menu: ResMut<NextState<MenuPage>>,
     mut screen: ResMut<NextState<crate::game::screen::Screen>>,
-    state: Res<State<Session>>,
     mut focus: ResMut<InputFocus>,
     mut exit: MessageWriter<AppExit>,
     mut commands: Commands,
-    campaign: Campaign,
     assets: Res<AssetServer>,
-    destination: Res<NewGameDestination>,
     mut names: Query<
         (Entity, &mut EditableText, Has<NicknameInput>),
         Or<(With<NameInput>, With<NicknameInput>)>,
@@ -671,11 +668,13 @@ fn activate(
                 session.message = "A party member is no longer available.".into();
                 return;
             };
-            if let Err(message) =
-                begin_adventure(&drafts, &state, &campaign, &mut commands, &assets, &destination)
-            {
-                session.message = message.into();
-            }
+            commands.queue(move |world: &mut World| {
+                if let Err(message) = begin_adventure(world, &drafts)
+                    && let Some(mut session) = world.get_mut::<Creation>(session_entity)
+                {
+                    session.message = message.into();
+                }
+            });
         }
         action => {
             let choices = session.choices;
@@ -1060,7 +1059,7 @@ mod keyboard_tests {
         .add_message::<bevy::picking::events::PointerRelease>()
         .init_resource::<bevy::picking::events::PointerState>()
         .init_resource::<UiScale>()
-        .insert_resource(NewGameDestination { path: String::new(), start: default() })
+        .insert_resource(crate::game::session::NewGameDestination { path: String::new(), start: default() })
         .add_message::<AppExit>()
         .add_plugins(FrontendPlugin)
         .add_observer(crate::presentation::retail_controls::primary_buttons_only)
