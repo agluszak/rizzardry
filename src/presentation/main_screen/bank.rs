@@ -10,12 +10,10 @@ use bevy::ui::Selected;
 use bevy::ui_widgets::Activate;
 
 use super::{MainScreenArt, Panel, ScreenLayout, SelectedMember, layer};
-use crate::content::items::ItemCatalog;
 use crate::content::ui::SpriteSheet;
 use crate::game::camp::CampRequest;
 use crate::game::characters::{Character, Vitals};
 use crate::game::combat::{Battle, CombatSettings, StartRound};
-use crate::game::data::GameData;
 use crate::game::inventory::{Carried, EquipSlot};
 use crate::game::party::Order;
 use crate::game::party::roster::PartyRoster;
@@ -208,7 +206,7 @@ fn press(
     mut commands: Commands,
     views: Query<Entity, With<super::magic_view::MagicView>>,
     magic_art: Res<super::magic_view::MagicViewArt>,
-    mut party_moves: MessageWriter<crate::game::combat::ChoosePartyMove>,
+    mut party_moves: MessageWriter<crate::game::combat::CyclePartyMove>,
 ) {
     match buttons.get(click.entity).ok().and_then(|face| face.kind) {
         Some(Bank::Order(order)) if battle.is_some() => {
@@ -232,13 +230,7 @@ fn press(
         // The Party Formation button opens and closes the formation panel.
         Some(Bank::Formation) => layout.toggle(Panel::Formation),
         Some(Bank::PartyMove) if battle.is_some() => {
-            use crate::game::combat::PartyPace;
-            let next = match battle.as_ref().and_then(|b| b.party_pace) {
-                None => Some(PartyPace::Walk),
-                Some(PartyPace::Walk) => Some(PartyPace::Run),
-                Some(PartyPace::Run) => None,
-            };
-            party_moves.write(crate::game::combat::ChoosePartyMove(next));
+            party_moves.write(crate::game::combat::CyclePartyMove);
         }
         Some(Bank::Magic { items }) => {
             // The same button closes its view (retail toggles it).
@@ -279,23 +271,21 @@ pub fn draw_caption(
     selected: Res<SelectedMember>,
     roster: Single<&PartyRoster>,
     members: Query<(&Character, &Vitals, Option<&Carried>)>,
-    data: Option<Res<GameData>>,
-    catalogs: Res<Assets<ItemCatalog>>,
+    content: crate::game::data::Content,
     battle: Option<Single<&Battle>>,
     orders: Query<&Order>,
     mut captions: Query<(&CaptionLine, &mut BitmapText)>,
-    spells: Res<Assets<crate::content::spells::SpellCatalog>>,
     strings: crate::presentation::screen_art::GameStrings,
 ) {
-    let spells = data.as_ref().and_then(|d| spells.get(&d.spells));
-    let catalog = data.and_then(|d| catalogs.get(&d.items));
+    let spells = content.spells();
+    let catalog = content.items();
     let (first, second) = match selected.member(&roster).and_then(|m| members.get(m).ok()) {
         None => (String::new(), String::new()),
         Some((profile, vitals, carried)) => {
             let first = format!(
                 "{} - {}",
                 profile.name,
-                strings.get(crate::retail::strings::PROFESSION_NAMES + profile.profession as usize)
+                strings.get(crate::content::ui::PROFESSION_NAMES + profile.profession as usize)
             );
             let mut second = if battle.is_some() {
                 match selected

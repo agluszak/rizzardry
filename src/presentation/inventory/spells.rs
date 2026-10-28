@@ -1,9 +1,7 @@
 //! The retail magic review page and the resistances of the reviewed actor.
 use super::{InventoryArt, InventoryScreen, RetailLabel, absolute, review};
 use crate::content::characters::Realm;
-use crate::content::items::ItemCatalog;
 use crate::game::characters::{Character, resistance::resistances};
-use crate::game::data::GameData;
 use crate::game::inventory::Carried;
 use crate::presentation::screen_art::spawn_picture as picture;
 use crate::presentation::screen_art::{BitmapText, Picture, PictureCrop};
@@ -89,8 +87,7 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) {
 pub(super) fn refresh(
     screen: Option<Single<&InventoryScreen>>,
     characters: Query<(&Character, Option<&Carried>)>,
-    data: Option<Res<GameData>>,
-    catalogs: Option<Res<Assets<ItemCatalog>>>,
+    content: crate::game::data::Content,
     mut values: Query<(&Value, &mut BitmapText)>,
     mut segments: Query<(&Segment, &mut PictureCrop, &mut Picture)>,
 ) {
@@ -98,10 +95,7 @@ pub(super) fn refresh(
     let Ok((character, carried)) = characters.get(screen.member) else { return };
     let empty = Carried::default();
     let carried = carried.unwrap_or(&empty);
-    let Some(catalog) = data
-        .as_ref()
-        .and_then(|data| catalogs.as_ref().and_then(|catalogs| catalogs.get(&data.items)))
-    else {
+    let Some(catalog) = content.items() else {
         return;
     };
     let scores = resistances(character, carried, catalog);

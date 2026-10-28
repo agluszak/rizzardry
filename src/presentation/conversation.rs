@@ -4,18 +4,13 @@ use super::main_screen::SelectedMember;
 use super::retail_controls::{ControlSkin, FocusRing};
 use super::screen_art::{BitmapInk, BitmapText, BitmapWrap, Picture, absolute};
 use crate::content::npcs::TopicCategory;
-use crate::content::{
-    items::{EquipClass, ItemCatalog},
-    npcs::NpcCatalog,
-    ui::{SpriteSheet, TextTable},
-};
+use crate::content::{items::EquipClass, npcs::NpcCatalog, ui::SpriteSheet};
 use crate::game::npcs::{
     Npc, NpcAssets,
     conversation::*,
     trade::{self, TradeQuote, TradeSource},
 };
 use crate::game::{
-    data::GameData,
     inventory::{Carried, ItemOwner, ItemRef, PartyInventory},
     party::roster::PartyRoster,
 };
@@ -150,7 +145,6 @@ struct Offer;
 #[derive(Component, PartialEq)]
 struct Choices {
     font: Handle<SpriteSheet>,
-    strings: Handle<TextTable>,
 }
 #[derive(Component, Default)]
 struct ChoiceOverlay {
@@ -629,7 +623,6 @@ fn build(world: &mut World, session: Entity) -> Entity {
                 .spawn((
                     Choices {
                         font: assets.load("retail://data/fonts/wiz_text_font_monopalette.sti"),
-                        strings: assets.load("retail://data/strings/stringdata.dat"),
                     },
                     absolute(Vec2::new(220., 184.), Vec2::new(200., 70.)),
                     ChildOf(overlay),
@@ -1367,7 +1360,7 @@ fn sync_choices(
     views: ViewScope,
     mut commands: Commands,
     sheets: Res<Assets<SpriteSheet>>,
-    tables: Res<Assets<TextTable>>,
+    strings: super::screen_art::GameStrings,
     sessions: Query<&Conversation>,
     parties: Query<&PartyInventory, With<crate::game::party::roster::Party>>,
     mut focus: ResMut<InputFocus>,
@@ -1385,7 +1378,7 @@ fn sync_choices(
     for (list, art, parent, mut node, children) in &mut lists {
         let font = &art.font;
         let string = |id, fallback: &str| {
-            tables.get(&art.strings).and_then(|s| s.get(id)).unwrap_or(fallback).to_owned()
+            strings.table().and_then(|s| s.get(id)).unwrap_or(fallback).to_owned()
         };
         let Some((_, session)) = views.owner(list) else { continue };
         let Ok(c) = sessions.get(session) else { continue };
@@ -1563,8 +1556,7 @@ fn sync_trade_rows(
     views: ViewScope,
     mut commands: Commands,
     assets: Res<AssetServer>,
-    data: Option<Res<GameData>>,
-    catalogs: Res<Assets<ItemCatalog>>,
+    content: crate::game::data::Content,
     sessions: Query<&Conversation>,
     npcs: Query<&Npc>,
     parties: Query<(&PartyRoster, &PartyInventory), With<crate::game::party::roster::Party>>,
@@ -1577,7 +1569,7 @@ fn sync_trade_rows(
     controls: Query<(Entity, Has<InteractionDisabled>), With<Confirm>>,
     mut previews: Query<(Entity, &mut Picture, &mut Visibility), With<ItemPreview>>,
 ) {
-    let Some(items) = data.and_then(|d| catalogs.get(&d.items)) else { return };
+    let Some(items) = content.items() else { return };
     let Ok((roster, party)) = parties.single() else { return };
     for (list, children) in &lists {
         let Some((root, session)) = views.owner(list) else { continue };
@@ -1914,6 +1906,7 @@ fn watch_playback(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::content::{items::ItemCatalog, ui::TextTable};
 
     #[test]
     fn session_ownership_rejects_stale_choices_and_cleans_only_its_views() {

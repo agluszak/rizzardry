@@ -6,7 +6,7 @@ use bevy::prelude::*;
 use bevy_enhanced_input::prelude::*;
 
 use crate::content::levels::LevelInfo;
-use crate::content::ui::{SpriteSheet, TextTable};
+use crate::content::ui::SpriteSheet;
 use crate::game::world::level::{TravelAnswer, TravelQuestion};
 use crate::presentation::screen_art::{BitmapText, centred};
 
@@ -22,7 +22,6 @@ pub struct DialogArt {
     ok: Handle<SpriteSheet>,
     cancel: Handle<SpriteSheet>,
     font: Handle<SpriteSheet>,
-    strings: Handle<TextTable>,
 }
 
 pub fn load_dialog_art(mut commands: Commands, assets: Res<AssetServer>) {
@@ -31,7 +30,6 @@ pub fn load_dialog_art(mut commands: Commands, assets: Res<AssetServer>) {
         ok: art("ok.sti"),
         cancel: art("cancel.sti"),
         font: assets.load("retail://data/fonts/wiz_text_font.sti"),
-        strings: assets.load(crate::content::paths::STRINGS),
     });
 }
 
@@ -95,25 +93,22 @@ pub fn show_travel_question(
     mut answers: MessageWriter<TravelAnswer>,
     art: Res<DialogArt>,
     sheets: Res<Assets<SpriteSheet>>,
-    tables: Res<Assets<TextTable>>,
+    game_strings: crate::presentation::screen_art::GameStrings,
 ) {
     let Ok((dialog, owner)) = dialogs.single() else { return };
     let question_id = owner.0;
     let Ok(question) = questions.get(question_id) else { return };
     if [&art.ok, &art.cancel, &art.font].into_iter().any(|handle| {
         matches!(assets.get_load_state(handle), Some(bevy::asset::LoadState::Failed(_)))
-    }) || matches!(assets.get_load_state(&art.strings), Some(bevy::asset::LoadState::Failed(_)))
+    }) || game_strings.failed(&assets)
     {
         warn!("travel confirmation artwork failed; declining travel");
         answers.write(TravelAnswer { question: question_id, accept: false });
         return;
     }
-    let (Some(ok), Some(cancel), Some(_font), Some(strings)) = (
-        sheets.get(&art.ok),
-        sheets.get(&art.cancel),
-        sheets.get(&art.font),
-        tables.get(&art.strings),
-    ) else {
+    let (Some(ok), Some(cancel), Some(_font), Some(strings)) =
+        (sheets.get(&art.ok), sheets.get(&art.cancel), sheets.get(&art.font), game_strings.table())
+    else {
         return;
     };
     let level = LevelInfo::for_entrance(&question.entrance)
@@ -172,6 +167,7 @@ pub fn focus_ready_question(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::content::ui::TextTable;
     use crate::presentation::test_input::tap;
 
     fn input_app() -> App {
@@ -187,12 +183,7 @@ mod tests {
         .init_asset::<SpriteSheet>()
         .init_asset::<TextTable>()
         .init_asset::<Image>()
-        .insert_resource(DialogArt {
-            ok: default(),
-            cancel: default(),
-            font: default(),
-            strings: default(),
-        })
+        .insert_resource(DialogArt { ok: default(), cancel: default(), font: default() })
         .add_systems(Update, (show_travel_question, focus_ready_question).chain())
         .add_observer(open_travel_question);
         app.finish();
@@ -243,12 +234,8 @@ mod tests {
             palette: None,
         });
         let strings = app.world_mut().resource_mut::<Assets<TextTable>>().add(TextTable(vec![]));
-        app.insert_resource(DialogArt {
-            ok: sheet.clone(),
-            cancel: sheet.clone(),
-            font: sheet,
-            strings,
-        });
+        app.insert_resource(crate::presentation::screen_art::StringTable(strings));
+        app.insert_resource(DialogArt { ok: sheet.clone(), cancel: sheet.clone(), font: sheet });
         // Scene spawning is deferred; wait for that actual readiness boundary.
         for _ in 0..4 {
             app.update();

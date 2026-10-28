@@ -8,9 +8,8 @@ use bevy::prelude::*;
 use avian3d::prelude::SpatialQuery;
 
 use super::environment::LevelAppearance;
-use crate::content::items::{ItemCatalog, ItemModel};
+use crate::content::items::ItemModel;
 use crate::content::level::LevelGeometry;
-use crate::game::data::GameData;
 use crate::game::time::GameClock;
 use crate::game::world::items::WorldItem;
 use crate::presentation::monsters::sunlit;
@@ -34,11 +33,10 @@ pub struct ItemShown {
 pub fn show_world_items(
     mut commands: Commands,
     items: Query<(Entity, &WorldItem, Option<&ItemShown>)>,
-    data: Option<Res<GameData>>,
-    catalogs: Res<Assets<ItemCatalog>>,
+    content: crate::game::data::Content,
     assets: Res<AssetServer>,
 ) {
-    let Some(catalog) = data.and_then(|d| catalogs.get(&d.items)) else { return };
+    let Some(catalog) = content.items() else { return };
     for (entity, item, shown) in &items {
         let model = match shown {
             _ if item.hidden => continue,

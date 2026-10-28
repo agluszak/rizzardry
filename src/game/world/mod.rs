@@ -109,7 +109,6 @@ pub enum WorldRequest {
     },
     TakeItem {
         item: Entity,
-        distance: f32,
     },
     DropHeld {
         level: Entity,
@@ -127,9 +126,7 @@ pub fn handle_world_requests(world: &mut World) {
                 triggers::activate(world, device, Some(distance));
                 None
             }
-            WorldRequest::TakeItem { item, distance } => {
-                items::take_item(world, item, distance).err()
-            }
+            WorldRequest::TakeItem { item } => items::take_item(world, item).err(),
             WorldRequest::DropHeld { level, at } => items::drop_held(world, level, at).err(),
         };
         if let Some(why) = refused {
