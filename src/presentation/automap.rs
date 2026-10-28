@@ -371,7 +371,7 @@ pub fn build_automap(
         sheets.get(&art.layer_buttons),
     )
     else {
-        warn!("the automap's art is still loading");
+        // The art is still loading; build once it has.
         return;
     };
     let feet = party.translation - Vec3::Y * FLOAT_HEIGHT;

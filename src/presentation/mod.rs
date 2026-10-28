@@ -168,7 +168,11 @@ impl Plugin for PresentationPlugin {
             (
                 screen_art::scale_ui,
                 party_view::aim_camera.after(crate::game::GameplaySet::Combat),
-                camp::show_camp,
+                // The removal check runs first so it sees every frame.
+                camp::show_camp.run_if(
+                    resource_removed::<crate::game::camp::Camp>
+                        .or_else(resource_exists_and_changed::<crate::game::camp::Camp>),
+                ),
                 (
                     automap::close_ended_map,
                     automap::request_automap,
