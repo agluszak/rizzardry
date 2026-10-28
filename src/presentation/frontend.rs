@@ -1037,6 +1037,7 @@ mod keyboard_tests {
         .init_asset::<crate::content::spells::SpellCatalog>()
         .init_asset::<crate::content::spells::SpellText>()
         .init_asset::<Image>()
+        .init_asset::<Font>()
         .init_state::<Session>()
         .add_message::<crate::game::world::level::LevelEntryFailed>()
         .init_asset::<crate::content::ui::SpriteSheet>()

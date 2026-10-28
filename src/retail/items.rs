@@ -458,6 +458,7 @@ fn read_item(index: usize, record: &[u8], strings: &[String]) -> Result<ItemDefi
     let kind_name = KIND_NAMES.get(usize::from(kind)).map_or("", |&k| string(k));
     Ok(ItemDefinition {
         unidentified_name: string(UNIDENTIFIED).replace("%s", kind_name),
+        kind_name: kind_name.to_owned(),
         id: ItemId(index as u16),
         name: utf16_string(&record[..60]),
         image: image_path(&own_image, kind)
@@ -680,6 +681,7 @@ mod tests {
         let dagger = catalog.get(ItemId(0)).unwrap();
         assert_eq!((dagger.name.as_str(), dagger.class), ("Dagger", EquipClass::ShortWeapon));
         assert_eq!(dagger.unidentified_name, "Dagger (Unidentified)");
+        assert_eq!(dagger.kind_name, "Dagger");
         assert!(dagger.off_hand && !dagger.two_handed);
         assert!(catalog.0.iter().filter(|i| !i.name.is_empty()).count() > 500);
         let bows = catalog.0.iter().filter(|i| i.shoots == Some(Ammunition::Arrow)).count();

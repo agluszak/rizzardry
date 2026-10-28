@@ -9,12 +9,13 @@ use super::interaction::{AttemptOn, DeviceAttempt, DeviceInteraction, Work};
 use super::props::PropMotion;
 use super::triggers::TriggerEffect;
 use crate::content::items::ItemCatalog;
+use crate::game::characters::Character;
 use crate::game::data::GameData;
 use crate::game::inventory::{
     Carried, ItemIds, ItemNews, ItemStack, PartyInventory, Refusal, StackId, make_item,
 };
 use crate::game::loot::roll_loot;
-use crate::game::party::roster::{PartyMember, the_party};
+use crate::game::party::roster::{PartyMember, PartyRoster, the_party};
 use crate::game::rng::GameRng;
 
 /// A container's contents, drawn from its loot table the first time it is
@@ -63,6 +64,7 @@ pub(crate) fn use_container(
     content: crate::game::data::Content,
     attempts: Query<&DeviceAttempt>,
     mut party: Single<&mut PartyInventory>,
+    (roster, profiles): (Single<&PartyRoster>, Query<&Character>),
     mut ids: ResMut<ItemIds>,
     mut rng: ResMut<GameRng>,
     mut outcomes: MessageWriter<TriggerEffect>,
@@ -81,7 +83,15 @@ pub(crate) fn use_container(
         && let Some(table) = container.table
     {
         let loot = content.loot().unwrap();
-        let (found, gold) = roll_loot(&loot.0[table], catalog, 1, &mut rng);
+        // Level-scaled tables draw for the party's average level (retail
+        // `GetAveragePartyLevel`). Retail reseeds its generator from the
+        // trigger's own seed first; here the draw comes from the shared
+        // gameplay generator, so contents depend on when the chest is first
+        // opened.
+        let party_level = crate::game::party::average_level(
+            profiles.iter_many(roster.iter()).matched().map(|c| c.level),
+        );
+        let (found, gold) = roll_loot(&loot.0[table], catalog, party_level, &mut rng);
         let contents = &mut container.contents;
         contents.items.extend(
             found
@@ -160,7 +170,11 @@ pub fn take_from_container(
         .and_then(|catalogs| catalogs.get(&handle))
         .ok_or(Refusal::MissingContent)?;
     let container = world.get::<Container>(device).ok_or(Refusal::Nothing)?;
-    for &(id, amount) in picks {
+    for (index, &(id, amount)) in picks.iter().enumerate() {
+        // One pick per stack: two would be checked against the same count.
+        if picks[..index].iter().any(|&(earlier, _)| earlier == id) {
+            return Err(Refusal::Nothing);
+        }
         let stack = container.contents.items.iter().find(|s| s.id == id).ok_or(Refusal::Nothing)?;
         catalog.get(stack.item).ok_or(Refusal::MissingContent)?;
         if amount == 0 || amount > stack.count() {
@@ -174,6 +188,7 @@ pub fn take_from_container(
     let mut container = world.entity_mut(device).take::<Container>().unwrap();
     let mut news = Vec::new();
     let mut refused = false;
+    let mut moved_any = false;
     world.resource_scope(|world, catalogs: Mut<Assets<ItemCatalog>>| {
         world.resource_scope(|world, mut ids: Mut<ItemIds>| {
             let catalog = catalogs.get(&handle).unwrap();
@@ -213,6 +228,7 @@ pub fn take_from_container(
                 } else {
                     items[index].give_part(amount, &mut ids, receive)
                 };
+                moved_any |= moved > 0;
                 if moved > 0 {
                     news.push(ItemNews::Takes {
                         member: match to {
@@ -241,7 +257,8 @@ pub fn take_from_container(
     if empty {
         close_container(world, on);
     }
-    Ok(())
+    // Some of it moving is a take; none of it is a refusal.
+    if moved_any { Ok(()) } else { Err(Refusal::NoRoom) }
 }
 
 /// Stop looking through the container, leaving the rest in it.

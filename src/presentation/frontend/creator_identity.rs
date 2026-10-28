@@ -9,19 +9,15 @@ use crate::content::ui::TextTable;
 use crate::presentation::retail_controls::{ControlSkin, FocusHighlight};
 use crate::presentation::screen_art::{BitmapText, Picture, spawn_picture};
 use bevy::audio::{AudioPlayer, PlaybackSettings};
-use bevy::input::keyboard::{Key, KeyboardInput};
+use bevy::input::keyboard::KeyboardInput;
 use bevy::input_focus::{
     FocusCause, FocusedInput, InputFocus,
     tab_navigation::{TabGroup, TabIndex},
 };
-use bevy::picking::{
-    events::{PointerClick, PointerDrag, PointerPress},
-    hover::Hovered,
-    pointer::PointerButton,
-};
+use bevy::picking::{events::PointerPress, hover::Hovered};
 use bevy::prelude::*;
-use bevy::text::{EditableText, EditableTextFilter, FontCx, LayoutCx, TextCursorStyle};
-use bevy::ui::{Checked, ComputedUiRenderTargetInfo, Pressed, UiGlobalTransform};
+use bevy::text::{EditableText, EditableTextFilter, TextCursorStyle};
+use bevy::ui::{Checked, Pressed};
 use bevy::ui_widgets::{Activate, Button, ModalDialog};
 use bevy::ui_widgets::{RadioButton, RadioGroup, TextInput, ValueChange};
 
@@ -40,26 +36,7 @@ pub(super) enum Choice {
     Personality(Personality),
     Voice(Voice),
 }
-#[derive(Component)]
-pub(super) struct InputHit;
-#[derive(Component)]
-pub(super) struct InputText;
-#[derive(Component)]
-pub(super) struct InputCaret;
-#[derive(Component)]
-pub(super) struct InputSelection;
-#[derive(Component)]
-pub(super) struct BitmapInput {
-    font: Handle<SpriteSheet>,
-}
-
-fn input(
-    commands: &mut Commands,
-    parent: Entity,
-    font: Handle<SpriteSheet>,
-    y: f32,
-    nickname: bool,
-) {
+fn input(commands: &mut Commands, parent: Entity, font: Handle<Font>, y: f32, nickname: bool) {
     let filter = EditableTextFilter::new(|c| {
         !c.is_control()
             && !"\\/:*?\"<>|".contains(c)
@@ -79,18 +56,16 @@ fn input(
             ..EditableText::new("")
         },
         filter,
-        TextFont { font_size: 11.0.into(), ..default() },
-        TextColor(Color::NONE),
+        TextFont { font: font.into(), font_size: 11.0.into(), ..default() },
+        TextColor(Color::WHITE),
         TextCursorStyle {
-            color: Color::NONE,
-            selection_color: Color::NONE,
-            unfocused_selection_color: Color::NONE,
-            selected_text_color: Some(Color::NONE),
+            color: Color::WHITE,
+            selection_color: Color::srgba(0.45, 0.55, 0.9, 0.5),
             ..default()
         },
-        BitmapInput { font: font.clone() },
-        absolute(Vec2::new(346., y), Vec2::new(264., 16.)),
-        Pickable::IGNORE,
+        Node { padding: UiRect::all(px(2)), ..absolute(Vec2::new(346., y), Vec2::new(264., 16.)) },
+        BackgroundColor(Color::NONE),
+        Pickable::default(),
         ChildOf(parent),
     ));
     if nickname {
@@ -98,43 +73,9 @@ fn input(
     } else {
         entity.insert(NameInput);
     }
-    let input = entity.observe(update_name).observe(finish_name).id();
-    let hit = commands
-        .spawn((
-            InputHit,
-            absolute(Vec2::ZERO, Vec2::new(264., 16.)),
-            BackgroundColor(Color::NONE),
-            Pickable::default(),
-            ChildOf(input),
-        ))
-        .observe(press_input)
-        .observe(drag_input)
-        .observe(|mut event: On<PointerClick>| {
-            if event.button == PointerButton::Primary {
-                event.propagate(false);
-            }
-        })
-        .id();
-    commands.spawn((
-        InputSelection,
-        Node::default(),
-        BackgroundColor(Color::srgba(0.45, 0.55, 0.9, 0.5)),
-        Pickable::IGNORE,
-        ChildOf(hit),
-    ));
-    commands.spawn((
-        InputText,
-        BitmapText { font, at: Vec2::new(2., 2.), ..default() },
-        ChildOf(hit),
-    ));
-    commands.spawn((
-        InputCaret,
-        Node::default(),
-        BackgroundColor(Color::WHITE),
-        Pickable::IGNORE,
-        ChildOf(hit),
-    ));
+    entity.observe(update_name).observe(finish_name);
 }
+
 fn choice_group(commands: &mut Commands, root: Entity, assets: &AssetServer, personality: bool) {
     let font: Handle<SpriteSheet> = assets.load("retail://data/fonts/wiz_text_font.sti");
     let icons: Handle<SpriteSheet> =
@@ -293,8 +234,9 @@ pub(super) fn build(commands: &mut Commands, root: Entity, assets: &AssetServer)
             ChildOf(root),
         ));
     }
-    input(commands, root, font.clone(), 214., false);
-    input(commands, root, font, 242., true);
+    let input_font = assets.load("retail://data/fonts/wiz_text_font.sti#font");
+    input(commands, root, input_font.clone(), 214., false);
+    input(commands, root, input_font, 242., true);
     choice_group(commands, root, assets, true);
     choice_group(commands, root, assets, false);
     commands
@@ -326,108 +268,11 @@ pub(super) fn build(commands: &mut Commands, root: Entity, assets: &AssetServer)
     creator_stats::button(commands, root, bottom, Vec2::new(596., 450.), 16, Action::Finish);
 }
 
-fn nearest_byte(font: &SpriteSheet, value: &str, x: f32) -> usize {
-    value
-        .char_indices()
-        .map(|(i, _)| i)
-        .chain(std::iter::once(value.len()))
-        .min_by(|a, b| {
-            ((font.text_width(&value[..*a]) as f32) - x)
-                .abs()
-                .total_cmp(&((font.text_width(&value[..*b]) as f32) - x).abs())
-        })
-        .unwrap_or(0)
-}
-fn press_input(
-    mut event: On<PointerPress>,
-    hits: Query<&ChildOf, With<InputHit>>,
-    mut inputs: Query<(&mut EditableText, &BitmapInput)>,
-    sheets: Res<Assets<SpriteSheet>>,
-    nodes: Query<(&ComputedNode, &UiGlobalTransform, &ComputedUiRenderTargetInfo)>,
-    scale: Res<UiScale>,
-    keys: Res<ButtonInput<Key>>,
-    mut fonts: ResMut<FontCx>,
-    mut layouts: ResMut<LayoutCx>,
-    mut focus: ResMut<InputFocus>,
-) {
-    if event.button != PointerButton::Primary {
-        return;
-    }
-    event.propagate(false);
-    let (Ok(parent), Ok((node, transform, target))) =
-        (hits.get(event.entity), nodes.get(event.entity))
-    else {
-        return;
-    };
-    let Ok((mut input, art)) = inputs.get_mut(parent.parent()) else { return };
-    if input.is_composing() {
-        return;
-    }
-    let (Some(font), Some(inverse)) = (sheets.get(&art.font), transform.try_inverse()) else {
-        return;
-    };
-    let x = inverse.transform_point2(event.pointer.position * target.scale_factor() / scale.0).x
-        - node.content_box().min.x
-        - 2.;
-    let index = nearest_byte(font, input.editor.raw_text(), x);
-    let mut driver = input.editor.driver(&mut fonts, &mut layouts.0);
-    if event.count == 2 {
-        driver.move_to_byte(index);
-        if let Some(caret) = driver.editor.cursor_geometry(1.0) {
-            driver.select_word_at_point(caret.x0 as f32, ((caret.y0 + caret.y1) / 2.) as f32);
-        }
-    } else if event.count > 2 {
-        driver.select_all();
-    } else if keys.pressed(Key::Shift) {
-        driver.extend_selection_to_byte(index);
-    } else {
-        driver.move_to_byte(index);
-    }
-    focus.set(parent.parent(), FocusCause::Pressed);
-}
-fn drag_input(
-    mut event: On<PointerDrag>,
-    hits: Query<&ChildOf, With<InputHit>>,
-    mut inputs: Query<(&mut EditableText, &BitmapInput)>,
-    sheets: Res<Assets<SpriteSheet>>,
-    nodes: Query<(&ComputedNode, &UiGlobalTransform, &ComputedUiRenderTargetInfo)>,
-    scale: Res<UiScale>,
-    mut fonts: ResMut<FontCx>,
-    mut layouts: ResMut<LayoutCx>,
-) {
-    if event.button != PointerButton::Primary {
-        return;
-    }
-    event.propagate(false);
-    let (Ok(parent), Ok((node, transform, target))) =
-        (hits.get(event.entity), nodes.get(event.entity))
-    else {
-        return;
-    };
-    let Ok((mut input, art)) = inputs.get_mut(parent.parent()) else { return };
-    if input.is_composing() {
-        return;
-    }
-    let (Some(font), Some(inverse)) = (sheets.get(&art.font), transform.try_inverse()) else {
-        return;
-    };
-    let x = inverse.transform_point2(event.pointer.position * target.scale_factor() / scale.0).x
-        - node.content_box().min.x
-        - 2.;
-    let index = nearest_byte(font, input.editor.raw_text(), x);
-    input.editor.driver(&mut fonts, &mut layouts.0).extend_selection_to_byte(index);
-}
-
 pub(super) fn refresh(
     session: Option<Single<Ref<Creation>>>,
     assets: Res<AssetServer>,
-    sheets: Res<Assets<SpriteSheet>>,
-    inputs: Query<(Entity, &EditableText, &BitmapInput, &Children)>,
-    mut hits: Query<(&Children, &mut BackgroundColor), With<InputHit>>,
-    mut text: Query<&mut BitmapText, With<InputText>>,
-    mut marks: Query<(&mut Node, Has<InputCaret>), Or<(With<InputCaret>, With<InputSelection>)>>,
+    mut inputs: Query<(Entity, &mut BackgroundColor), Or<(With<NameInput>, With<NicknameInput>)>>,
     focus: Res<InputFocus>,
-    time: Res<Time<Real>>,
     choices: Query<(Entity, &Choice, &Hovered, Has<Pressed>, Has<Checked>, &Children)>,
     mut pictures: Query<&mut Picture, Without<Portrait>>,
     mut portraits: Query<&mut Picture, With<Portrait>>,
@@ -435,43 +280,12 @@ pub(super) fn refresh(
 ) {
     let Some(session) = session else { return };
     let Some(draft) = session.mode.draft() else { return };
-    for (entity, input, art, children) in &inputs {
-        let Some(font) = sheets.get(&art.font) else { continue };
-        let value = input.editor.raw_text();
-        let selection = input.editor.raw_selection();
-        let range = selection.text_range();
-        let prefix = |i| font.text_width(value.get(..i).unwrap_or(value)) as f32 + 2.;
-        for child in children.iter() {
-            let Ok((kids, mut background)) = hits.get_mut(child) else { continue };
-            background.set_if_neq(BackgroundColor(if focus.get() == Some(entity) {
-                Color::srgb_u8(25, 41, 96)
-            } else {
-                Color::NONE
-            }));
-            for kid in kids.iter() {
-                if let Ok(mut label) = text.get_mut(kid)
-                    && label.value != value
-                {
-                    label.value = value.to_owned();
-                }
-                if let Ok((mut node, caret)) = marks.get_mut(kid) {
-                    let (left, width) = if caret {
-                        (prefix(selection.focus().index()), 1.)
-                    } else {
-                        (prefix(range.start), prefix(range.end) - prefix(range.start))
-                    };
-                    let mut desired = absolute(Vec2::new(left, 2.), Vec2::new(width, 12.));
-                    desired.display = if focus.get() == Some(entity)
-                        && (!caret || time.elapsed_secs() % 1.0 < 0.5)
-                    {
-                        Display::Flex
-                    } else {
-                        Display::None
-                    };
-                    node.set_if_neq(desired);
-                }
-            }
-        }
+    for (entity, mut background) in &mut inputs {
+        background.set_if_neq(BackgroundColor(if focus.get() == Some(entity) {
+            Color::srgb_u8(25, 41, 96)
+        } else {
+            Color::NONE
+        }));
     }
     for (entity, choice, hover, pressed, checked, children) in &choices {
         let selected = match choice {
