@@ -303,7 +303,7 @@ pub fn max_points(
 /// Keep each caster's maximum spell points current, recomputing it only when
 /// the character or what they have learned changes (retail
 /// `RecalculateRealmSpellPoints`). Points above a lowered maximum stay until
-/// spent.
+/// spent or the next recovery tick.
 pub fn sync_spell_points(
     mut casters: Query<(Ref<Character>, Ref<LearnedSpells>, &mut SpellPoints)>,
     content: crate::game::data::Content,
