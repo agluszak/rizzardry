@@ -13,7 +13,7 @@ use crate::game::{
     world::{ActorPose, level::Level, population::Monster},
 };
 use bevy::{ecs::system::RunSystemOnce, prelude::*};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// Engine semantics refer to the database's symbolic keys; script operands and
 /// campaign storage keep the actual decoded identifiers. No Burz record or
@@ -26,6 +26,18 @@ pub struct StoryFacts {
     initialized: bool,
 }
 impl StoryFacts {
+    /// The keyword notebook outlives a conversation. Learning/discussing a
+    /// keyword does not consume it; only the explicit minus button removes it.
+    pub fn remember_topic(&mut self, category: TopicCategory, text: &str) -> bool {
+        let text = text.trim();
+        if text.is_empty() || self.topics.iter().any(|(_, known)| known.eq_ignore_ascii_case(text))
+        {
+            return false;
+        }
+        self.topics.push((category, text.to_owned()));
+        true
+    }
+
     pub fn initialize(&mut self, catalog: &FactCatalog) {
         if self.initialized {
             return;
@@ -112,6 +124,14 @@ pub enum ConversationWait {
     Price { quote: u16, gold: u32, always: bool },
     Blocked { quote: u16, entry: Option<usize>, reason: String },
 }
+/// Accepted dialogue history, including the party's input. Presentation chooses
+/// the retail palette without guessing speakers from the text.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TranscriptLine {
+    Npc(String),
+    Question(String),
+    Reply(String),
+}
 #[derive(Component, Debug)]
 pub struct Conversation {
     pub actor: Entity,
@@ -119,8 +139,11 @@ pub struct Conversation {
     pub revision: u64,
     pub current: Option<(u16, usize)>,
     pub wait: ConversationWait,
-    pub transcript: Vec<String>,
-    /// The last request's outcome and the revision it belongs to.
+    pub transcript: Vec<TranscriptLine>,
+    /// Keywords discovered during this conversation are green. Reopening
+    /// imports the persistent notebook without the transient discovery marks.
+    pub learned_topics: BTreeSet<String>,
+    /// Revision-scoped gameplay outcome; presentation owns its wording.
     result: Option<(u64, Outcome)>,
     queue: VecDeque<Step>,
 }
@@ -260,13 +283,12 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
         .ok()
         .flatten()
         .ok_or(TradeError::Unavailable)?;
-    let near = world
+    let party_at = world
         .query::<(&avian3d::prelude::Position, &crate::game::party::body::PartyBody)>()
         .iter(world)
-        .any(|(p, _)| p.0.distance(at) <= crate::game::world::items::REACH);
-    if !near {
-        return Err(TradeError::Unavailable);
-    }
+        .find(|(p, _)| p.0.distance(at) <= crate::game::world::items::REACH)
+        .map(|(p, _)| p.0)
+        .ok_or(TradeError::Unavailable)?;
     let def = definition(world, actor)?.clone();
     if !available(world, actor) {
         return Err(TradeError::Unavailable);
@@ -316,6 +338,22 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
         world.resource_mut::<StoryFacts>().initialize(catalog);
         Ok::<_, TradeError>(())
     })?;
+    // OpenNpcDialoguePanel / MonsterForwardReferencePosition: the accepted
+    // speaker faces the party. Physics rotation owns a moving body's facing.
+    {
+        let delta = (party_at - at).with_y(0.);
+        if delta.length_squared() > 0.0001 {
+            let facing = Quat::from_rotation_y((-delta.x).atan2(-delta.z));
+            if let Some(mut rotation) = world.get_mut::<avian3d::prelude::Rotation>(body) {
+                rotation.0 = facing;
+            }
+            // Set the corresponding engine transform in the same accepted
+            // teleport, so Avian input synchronization cannot restore its old yaw.
+            if let Some(mut transform) = world.get_mut::<Transform>(body) {
+                transform.rotation = facing;
+            }
+        }
+    }
     let greeting = entry_quote(&def, world.get::<Npc>(actor).unwrap());
     Ok(world
         .spawn(Conversation {
@@ -325,6 +363,7 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
             current: None,
             wait: ConversationWait::Ready,
             transcript: vec![],
+            learned_topics: default(),
             result: None,
             queue: VecDeque::from([Step::Quote { quote: greeting, subquote: 0, paid: false }]),
         })
@@ -459,6 +498,11 @@ fn run(world: &mut World, entity: Entity, c: &mut Conversation) {
                     return;
                 }
                 if quote == 0 {
+                    let first = world.get::<Npc>(c.actor).unwrap().greeting_pending;
+                    if first && let Ok(definition) = definition(world, c.actor) {
+                        let name = definition.source_name.clone();
+                        learn_topic(world, c, TopicCategory::Person, &name);
+                    }
                     world.get_mut::<Npc>(c.actor).unwrap().greeting_pending = false;
                 }
                 c.current = Some((quote, subquote));
@@ -504,14 +548,7 @@ fn run(world: &mut World, entity: Entity, c: &mut Conversation) {
                                 );
                             }
                             DialogueOp::Mention { category, text } => {
-                                let mut facts = world.resource_mut::<StoryFacts>();
-                                if !facts
-                                    .topics
-                                    .iter()
-                                    .any(|(cat, t)| cat == category && t.eq_ignore_ascii_case(text))
-                                {
-                                    facts.topics.push((*category, text.clone()));
-                                }
+                                learn_topic(world, c, *category, text);
                             }
                             DialogueOp::Close => following = Some(Step::End),
                             _ => {}
@@ -545,7 +582,7 @@ fn run(world: &mut World, entity: Entity, c: &mut Conversation) {
                 };
                 let voice = format!("{}_{quote:03}{suffix}", def.voice_stem());
                 let seconds = text.encode_utf16().count() as f32 * 0.06 + 2.0;
-                c.transcript.push(text.clone());
+                c.transcript.push(TranscriptLine::Npc(text.clone()));
                 let speech =
                     world.spawn((ConversationSpeech { voice, text }, ChildOf(entity))).id();
                 c.wait = ConversationWait::Line {
@@ -558,6 +595,11 @@ fn run(world: &mut World, entity: Entity, c: &mut Conversation) {
         }
     }
     block(c, c.current.map_or(0, |v| v.0), None, "script made no bounded progress".into());
+}
+fn learn_topic(world: &mut World, c: &mut Conversation, category: TopicCategory, text: &str) {
+    if world.resource_mut::<StoryFacts>().remember_topic(category, text) {
+        c.learned_topics.insert(text.trim().to_ascii_lowercase());
+    }
 }
 fn topic(world: &mut World, c: &mut Conversation, text: &str) {
     if !c.ready() {
@@ -574,6 +616,10 @@ fn topic(world: &mut World, c: &mut Conversation, text: &str) {
         .or_else(|| words.windows(2).find_map(|pair| script.topic(&pair.join(" "))))
         .or_else(|| words.iter().find_map(|word| script.topic(word)));
     if let Some(quote) = matched {
+        // The accepted question belongs in the notebook even when its
+        // answer first requires payment or another continuation.
+        world.resource_mut::<StoryFacts>().remember_topic(TopicCategory::Misc, &cleaned);
+        c.transcript.push(TranscriptLine::Question(text.to_owned()));
         c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false });
         c.revision += 1;
     } else {
@@ -608,6 +654,7 @@ fn reply(world: &mut World, c: &mut Conversation, text: &str) {
                 })
             });
         if let Some(quote) = response {
+            c.transcript.push(TranscriptLine::Reply(text.to_owned()));
             c.wait = ConversationWait::Ready;
             c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false });
             c.revision += 1;
@@ -973,12 +1020,56 @@ mod tests {
                 current: None,
                 wait: ConversationWait::Ready,
                 transcript: vec![],
+                learned_topics: default(),
                 result: None,
                 queue: VecDeque::from([Step::Quote { quote: 0, subquote: 0, paid: false }]),
             })
             .id();
         (app, entity, actor)
     }
+    #[test]
+    fn discussed_topics_survive_the_session_and_discoveries_are_marked_only_in_it() {
+        let (mut app, session, _) = app(DialogueScript {
+            quotes: vec![
+                Quote::default(),
+                Quote {
+                    text: vec!["The ship came from Arnika.".into()],
+                    operations: vec![
+                        DialogueOp::Keywords(vec!["SHIP".into()]),
+                        DialogueOp::Mention {
+                            category: TopicCategory::Place,
+                            text: "Arnika".into(),
+                        },
+                    ],
+                    ..default()
+                },
+            ],
+            ..default()
+        });
+        app.update();
+        let revision = app.world().get::<Conversation>(session).unwrap().revision;
+        for text in ["SHIP", "ship"] {
+            app.world_mut().write_message(ConversationRequest::Topic {
+                conversation: session,
+                revision,
+                text: text.into(),
+            });
+        }
+        app.update();
+        let facts = app.world().resource::<StoryFacts>();
+        assert_eq!(facts.topics.iter().filter(|(_, t)| t.eq_ignore_ascii_case("ship")).count(), 1);
+        let session_state = app.world().get::<Conversation>(session).unwrap();
+        assert!(session_state.learned_topics.contains("arnika"));
+        assert!(!session_state.learned_topics.contains("ship"));
+        app.world_mut().despawn(session);
+        assert!(app.world().resource::<StoryFacts>().topics.iter().any(|(_, t)| t == "SHIP"));
+        assert!(
+            !app.world_mut()
+                .resource_mut::<StoryFacts>()
+                .remember_topic(TopicCategory::Misc, "ship")
+        );
+    }
+
     #[test]
     fn unknown_mandatory_operation_blocks_before_any_effect_or_successful_line() {
         let q = Quote {
@@ -1174,7 +1265,9 @@ mod tests {
                 Some((response, 0))
             );
             assert_eq!(app.world().resource::<StoryFacts>().values.get(&FactId(91)), Some(&value));
-            assert_eq!(app.world().get::<Conversation>(session).unwrap().transcript.len(), 2);
+            let history = &app.world().get::<Conversation>(session).unwrap().transcript;
+            assert_eq!(history.len(), 3);
+            assert_eq!(history[1], TranscriptLine::Reply(word.into()));
         }
     }
     #[test]

@@ -3,8 +3,7 @@ use super::screen_art::{BitmapText, Picture, absolute, spawn_picture};
 use crate::content::characters::{Attribute, Gender, Profession, Race, Skill};
 use crate::content::ui::SpriteSheet;
 use crate::game::characters::creation::{
-    CharacterDraft, NAME_LIMIT, NICKNAME_LIMIT, PARTY_LIMIT, PLAYABLE_RACES, admit, default_gender,
-    identity,
+    CharacterDraft, PARTY_LIMIT, PLAYABLE_RACES, admit, default_gender, identity,
 };
 use crate::game::session::{Campaign, NewGameDestination, Session, begin_adventure};
 use crate::presentation::screen_art::visible_if;
@@ -806,11 +805,10 @@ fn activate(
         && let Some(draft) = session.mode.draft()
     {
         for (_, mut name, nickname) in &mut names {
-            *name = EditableText {
-                max_characters: Some(if nickname { NICKNAME_LIMIT } else { NAME_LIMIT }),
-                allow_newlines: false,
-                ..EditableText::new(if nickname { &draft.nickname } else { &draft.name })
-            };
+            name.clear();
+            name.queue_edit(bevy::text::TextEdit::Insert(
+                (if nickname { &draft.nickname } else { &draft.name }).as_str().into(),
+            ));
         }
     }
 }
