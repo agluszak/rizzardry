@@ -7,6 +7,10 @@ character, not its C++ architecture.
 
 - Prefer deletion, ordinary Rust and existing Bevy features. Fix the data model
   instead of layering flags, adapters and synchronization over a bad boundary.
+- Name domain concepts by meaning. Decode categorical bytes and masks into named
+  types; use shared named content IDs in rules. Keep raw encodings at the retail
+  boundary. Investigate uncertain meanings instead of inventing numbered abilities
+  or propagating unexplained values into gameplay/UI.
 - Every abstraction or dependency must simplify a real use case. No speculative
   frameworks, one-use forwarding layers, mirrored models or compatibility glue.
 - Establish behavior from the original game and decomp; modernized source is
