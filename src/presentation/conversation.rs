@@ -1,15 +1,11 @@
 //! Native dialogue widgets. All selected rows and quotes are drafts; gameplay
 //! resolves item/stock identities again when a confirmation executes.
 use super::screen_art::BitmapText;
-use crate::content::{
-    items::{EquipClass, ItemCatalog},
-    npcs::NpcCatalog,
-    ui::SpriteSheet,
-};
+use crate::content::{items::ItemCatalog, npcs::NpcCatalog, ui::SpriteSheet};
 use crate::game::npcs::{
     Npc, NpcAssets,
     conversation::*,
-    trade::{TradeQuote, TradeSource},
+    trade::{self, TradeQuote, TradeSource},
 };
 use crate::game::{
     data::GameData,
@@ -67,7 +63,14 @@ impl Plugin for ConversationViewPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Update,
-            (sync_view, play_lines, watch_playback)
+            (
+                sync_view.run_if(
+                    any_with_component::<Conversation>
+                        .or_else(any_with_component::<ConversationView>),
+                ),
+                play_lines,
+                watch_playback,
+            )
                 .chain()
                 .after(crate::game::npcs::conversation::update_conversation),
         )
@@ -313,7 +316,7 @@ fn sync_view(world: &mut World) {
         .next()
         .unwrap_or_else(|| build(world, session));
     let Some(party) = crate::game::party::roster::the_party(world) else { return };
-    let c = world.get::<Conversation>(session).unwrap();
+    let Some(c) = world.get::<Conversation>(session) else { return };
     let revision = c.revision;
     let answers: Vec<(String, Answer)> = match &c.wait {
         ConversationWait::Options { words, .. } => {
@@ -346,7 +349,7 @@ fn sync_view(world: &mut World) {
     let lines = c.transcript.last().cloned().unwrap_or_default();
     let text = format!(
         "{name} - {} gold\n{lines}\n{state}\n{}",
-        world.get::<PartyInventory>(party).unwrap().gold,
+        world.get::<PartyInventory>(party).map_or(0, |p| p.gold),
         c.result.map_or_else(String::new, |result| match result {
             Outcome::NoTopic => "No supported topic matches that input.".into(),
             Outcome::Traded => "Trade complete.".into(),
@@ -371,7 +374,9 @@ fn sync_view(world: &mut World) {
     {
         t.value = text;
     }
-    let choices = world.query_filtered::<Entity, With<Choices>>().iter(world).next().unwrap();
+    let Some(choices) = world.query_filtered::<Entity, With<Choices>>().iter(world).next() else {
+        return;
+    };
     let old_choices: Vec<_> =
         world.query::<(Entity, &Choice)>().iter(world).map(|(e, c)| (e, c.index)).collect();
     for (entity, index) in &old_choices {
@@ -426,26 +431,23 @@ fn sync_view(world: &mut World) {
     let mut rows = Vec::new();
     if let Some(npc) = world.get::<Npc>(actor) {
         for lot in &npc.stock.lots {
-            if lot.units == 0 || lot.available_at != 0 {
-                continue;
-            }
             if let Some(d) = items.get(lot.item)
-                && !d.merchant_cannot_sell
+                && trade::on_sale(lot, d)
             {
                 rows.push((
                     TradeSource::Stock(lot.id),
                     format!("Buy: {} ({})", d.name, lot.units),
-                    if d.class == EquipClass::Ammunition { lot.units } else { 1 },
+                    trade::trade_quantity(d, lot.units),
                 ));
             }
         }
     }
-    for item in &world.get::<PartyInventory>(party).unwrap().pool.stacks {
+    for item in world.get::<PartyInventory>(party).into_iter().flat_map(|p| &p.pool.stacks) {
         if let Some(d) = items.get(item.item) {
             rows.push((
                 TradeSource::Party(ItemRef { owner: ItemOwner::Pool, id: item.id }),
                 format!("Sell from party pool: {}", item.display_name(d, true)),
-                if d.class == EquipClass::Ammunition { item.units() } else { 1 },
+                trade::trade_quantity(d, item.units()),
             ));
         }
     }
@@ -465,13 +467,13 @@ fn sync_view(world: &mut World) {
                                 .map_or("member", |c| c.name.as_str()),
                             item.display_name(d, true)
                         ),
-                        if d.class == EquipClass::Ammunition { item.units() } else { 1 },
+                        trade::trade_quantity(d, item.units()),
                     ));
                 }
             }
         }
     }
-    let view = world.get::<ConversationView>(root).unwrap();
+    let Some(view) = world.get::<ConversationView>(root) else { return };
     let offer = if let Some(err) = &view.error {
         err.clone()
     } else if let Some(q) = view.selected {
@@ -502,7 +504,9 @@ fn sync_view(world: &mut World) {
             world.despawn(*e);
         }
     }
-    let list = world.query_filtered::<Entity, With<TradeList>>().iter(world).next().unwrap();
+    let Some(list) = world.query_filtered::<Entity, With<TradeList>>().iter(world).next() else {
+        return;
+    };
     for (source, text, quantity) in rows {
         if let Some((e, _)) = old.iter().find(|(_, s)| *s == source) {
             let child = world.get::<Children>(*e).and_then(|c| c.first().copied());

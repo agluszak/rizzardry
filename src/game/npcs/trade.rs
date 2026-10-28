@@ -243,6 +243,15 @@ pub fn price(
     let value = if identified { value } else { value / 4 };
     u32::try_from(value.max(1)).map_err(|_| TradeError::Overflow)
 }
+/// Whether the merchant offers this lot now.
+pub fn on_sale(lot: &StockLot, item: &ItemDefinition) -> bool {
+    lot.units > 0 && lot.available_at == 0 && !item.merchant_cannot_sell
+}
+/// How much of `units` one trade moves: ammunition goes as a whole stack,
+/// anything else one at a time.
+pub fn trade_quantity(item: &ItemDefinition, units: u32) -> u32 {
+    if item.class == EquipClass::Ammunition { units } else { 1 }
+}
 /// What `quantity` of the lot costs, if the merchant will sell that many.
 pub fn purchase_price(
     stock: &MerchantStock,
