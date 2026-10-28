@@ -341,9 +341,10 @@ pub(super) fn refresh(
     for (entity, action, disabled) in &controls {
         let enabled = match *action {
             Action::Add => session.candidates.len() < 6,
-            Action::ToggleCandidate => session
-                .selected
-                .is_some_and(|id| session.party.contains(&id) || session.party.len() < 6),
+            Action::ToggleCandidate => session.selected.is_some_and(|id| {
+                session.party.contains(&id)
+                    || session.party.len() < crate::game::characters::creation::PARTY_LIMIT
+            }),
             Action::DeleteCandidate => session.selected.is_some(),
             Action::SelectCandidate(id) => id.is_some(),
             Action::Begin => !session.party.is_empty(),

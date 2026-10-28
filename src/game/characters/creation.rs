@@ -1,4 +1,6 @@
 //! New-character drafts. No live actor exists until the party is accepted.
+
+pub mod identity;
 use super::*;
 use crate::content::spells::{SpellCatalog, SpellId, Spellbook};
 use enumset::EnumSet;
@@ -50,6 +52,34 @@ impl Default for CharacterDraft {
             last_spell: None,
         }
     }
+}
+
+/// The most characters a new party starts with.
+pub const PARTY_LIMIT: usize = 6;
+/// The longest full name and nickname, in characters.
+pub const NAME_LIMIT: usize = 39;
+pub const NICKNAME_LIMIT: usize = 9;
+
+/// The gender a profession gives a character whose gender is not chosen
+/// yet: Valkyries are women.
+pub fn default_gender(profession: Profession, gender: Gender, chosen: bool) -> Gender {
+    if profession == Profession::Valkyrie && !chosen { Gender::Female } else { gender }
+}
+
+/// Whether the finished draft may join the candidates: it must have a
+/// nickname no other candidate has.
+pub fn admit<'a>(
+    draft: &CharacterDraft,
+    mut candidates: impl Iterator<Item = &'a CharacterDraft>,
+) -> Result<(), &'static str> {
+    if draft.nickname.trim().is_empty() {
+        return Err("Enter a nickname.");
+    }
+    draft.finish()?;
+    if candidates.any(|candidate| candidate.display_name() == draft.display_name()) {
+        return Err("A character with that nickname already exists.");
+    }
+    Ok(())
 }
 
 impl CharacterDraft {
@@ -308,12 +338,12 @@ impl CharacterDraft {
     pub fn finish(&self) -> Result<Character, &'static str> {
         Self::budget(self.race, self.gender, self.profession)?;
         if self.name.trim().is_empty()
-            || self.name.chars().count() > 39
+            || self.name.chars().count() > NAME_LIMIT
             || self.name.chars().any(|c| c.is_control() || "\\/:*?\"<>|".contains(c))
         {
             return Err("Enter a valid full name of 1–39 characters.");
         }
-        if self.nickname.chars().count() > 9
+        if self.nickname.chars().count() > NICKNAME_LIMIT
             || self.nickname.chars().any(|c| c.is_control() || "\\/:*?\"<>|".contains(c))
         {
             return Err("Enter a valid nickname of at most nine characters.");
