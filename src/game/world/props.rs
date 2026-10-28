@@ -47,7 +47,7 @@ pub fn trimesh(
     )
 }
 
-/// Make `entity` the level's prop number `index`, posed at `frame`, with its
+/// Make `entity` the level's prop number `index`, posed at `motion.frame`, with its
 /// moving parts and their colliders; a door also gets its doorway, from its
 /// closed shape (each part at its first pose), for walkers' links while it
 /// is open.
@@ -56,9 +56,10 @@ pub fn build_prop(
     index: usize,
     prop: &PropModel,
     door: bool,
-    frame: f32,
+    motion: PropMotion,
     colliders: Vec<Option<Collider>>,
 ) {
+    let frame = motion.frame;
     let last_frame = prop.parts.iter().map(|p| p.keys.len().saturating_sub(1)).max().unwrap_or(0);
     let centre = prop.parts.iter().map(|part| part.transform.translation).sum::<Vec3>()
         / prop.parts.len().max(1) as f32;
@@ -80,7 +81,7 @@ pub fn build_prop(
             wraps: prop.wraps,
             slots: prop.slots.clone(),
         },
-        PropMotion { frame, target: frame },
+        motion,
         Transform::default(),
     ));
     if let Some(doorway) = doorway {
@@ -107,7 +108,7 @@ pub fn build_prop(
 }
 
 /// Where a prop is along its path and where it is heading.
-#[derive(Component, Debug, Default)]
+#[derive(Component, Clone, Copy, Debug, Default)]
 pub struct PropMotion {
     pub frame: f32,
     pub target: f32,

@@ -3,11 +3,7 @@
 //! and button row, in retail's three layout modes.
 //! The 3D view renders into the viewport the layout leaves open.
 //!
-//! The frame holds what the layout alone decides and is built again when
-//! the layout changes. Each part showing game state (the party's slots, the
-//! text box, the radar, the formation board, the button bank) has its own
-//! node in the frame. Controls and markers persist; their source data and
-//! geometry change in place.
+//! Layout changes update the retained frame and controls in place.
 
 mod bank;
 mod formation;
@@ -47,6 +43,8 @@ impl Plugin for MainScreenPlugin {
                 (
                     layout::fit_viewport,
                     build_frame.run_if(in_state(crate::game::session::Session::Playing)),
+                    update_frame,
+                    layout::draw_buttons,
                     (
                         (
                             party::build_party_parts,
@@ -89,6 +87,7 @@ impl SelectedMember {
 }
 
 #[derive(Resource)]
+#[cfg_attr(test, derive(Default))]
 pub struct MainScreenArt {
     roof: Handle<SpriteSheet>,
     columns: Handle<SpriteSheet>,
@@ -115,7 +114,6 @@ pub struct MainScreenArt {
     combat_stop: Handle<SpriteSheet>,
     cont_start: Handle<SpriteSheet>,
     progress: Handle<SpriteSheet>,
-    column_info: Handle<SpriteSheet>,
     font: Handle<SpriteSheet>,
     small_font: Handle<SpriteSheet>,
     bold_font: Handle<SpriteSheet>,
@@ -159,7 +157,6 @@ pub fn load_main_screen_art(mut commands: Commands, assets: Res<AssetServer>) {
         combat_stop: load("main interface/combat_stop"),
         cont_start: load("main interface/cont_start"),
         progress: load("main interface/progressbar"),
-        column_info: load("main interface/main_column_info_normal"),
         font: load("fonts/wiz_text_font"),
         small_font: load("fonts/smfnt"),
         bold_font: load("fonts/wiz_text_font_bold"),
@@ -196,9 +193,9 @@ fn button(sheet: Handle<SpriteSheet>, frame: usize, at: Vec2) -> impl Scene {
     )
 }
 
-/// The screen's root, with the layout its frame was built for.
+/// The retained screen root.
 #[derive(Component, Clone, Default)]
-pub struct MainScreen(ScreenLayout);
+pub struct MainScreen;
 
 fn leave_hud_focus(
     mut event: On<bevy::input_focus::FocusedInput<bevy::input::keyboard::KeyboardInput>>,
@@ -231,30 +228,19 @@ fn route_hud_focus(
     }
 }
 
-/// Build the frame for the layout, once the art has loaded: black around
-/// the viewport, the roof, the columns, the bottom posts and panels, and a
-/// node for each part. Building it again gives every part an empty node.
-fn build_frame(
-    mut commands: Commands,
-    layout: Res<ScreenLayout>,
-    art: Res<MainScreenArt>,
-    sheets: Res<Assets<SpriteSheet>>,
-    screens: Query<(Entity, &MainScreen)>,
-) {
-    if screens.iter().any(|(_, built)| built.0 == *layout)
-        || !art.all.iter().all(|h| sheets.contains(h))
-    {
-        return;
-    }
-    for (screen, _) in &screens {
-        commands.entity(screen).despawn();
-    }
-    let sheet = |handle| loaded(&sheets, handle);
-    // Black wherever the 3D view is not: outside the screen (the sky
-    // camera's clear covers the whole window) and behind the art.
+#[derive(Component, Clone)]
+enum FrameVisibility {
+    Closed(bool),
+    Panel(Panel),
+}
+
+#[derive(Component, Clone, Default)]
+struct ViewMask(usize);
+
+fn masks(layout: &ScreenLayout) -> [(Vec2, Vec2); 6] {
     let view = layout.viewport();
     const FAR: f32 = 10_000.0;
-    let masks: Vec<_> = [
+    [
         (Vec2::new(-FAR, -FAR), Vec2::new(FAR, SCREEN.y + 2.0 * FAR)),
         (Vec2::new(SCREEN.x, -FAR), Vec2::new(FAR, SCREEN.y + 2.0 * FAR)),
         (Vec2::new(0.0, -FAR), Vec2::new(SCREEN.x, FAR + view.min.y)),
@@ -262,69 +248,106 @@ fn build_frame(
         (Vec2::new(0.0, view.min.y), Vec2::new(view.min.x, view.height())),
         (Vec2::new(view.max.x, view.min.y), Vec2::new(SCREEN.x - view.max.x, view.height())),
     ]
-    .into_iter()
-    .map(|(at, size)| {
-        let node = absolute(at, size);
-        bsn! { node BackgroundColor(Color::BLACK) Pickable::IGNORE }
-    })
-    .collect();
-    let closed = layout.mode == LayoutMode::Closed;
-    let (columns, bar) = (sheet(&art.columns), sheet(&art.bottom_bar));
-    let mut parts = vec![sprite(sheet(&art.roof), 0, Vec2::ZERO)];
-    // Party columns: four rows of 85 pixels from y 18.
-    for row in 0..4 {
-        let y = 18.0 + 85.0 * row as f32;
-        if closed {
-            parts.push(sprite(columns, 1 + 4 * row, Vec2::new(0.0, y)));
-            parts.push(sprite(columns, 2 + 4 * row, Vec2::new(512.0, y)));
-            // The arch over each portrait.
-            parts.push(sprite(columns, 16, Vec2::new(23.0, y)));
-            parts.push(sprite(columns, 16, Vec2::new(535.0, y)));
-        } else {
-            parts.push(sprite(columns, 4 * row, Vec2::new(0.0, y)));
-            parts.push(sprite(columns, 3 + 4 * row, Vec2::new(617.0, y)));
+}
+
+fn update_frame(
+    layout: Res<ScreenLayout>,
+    mut nodes: Query<
+        (&mut Node, Option<&FrameVisibility>, Option<&ViewMask>),
+        Or<(With<FrameVisibility>, With<ViewMask>)>,
+    >,
+) {
+    let masks = masks(&layout);
+    for (mut node, visibility, mask) in &mut nodes {
+        if let Some(visibility) = visibility {
+            let shown = match visibility {
+                FrameVisibility::Closed(closed) => *closed == (layout.mode == LayoutMode::Closed),
+                FrameVisibility::Panel(panel) => layout.shows(*panel),
+            };
+            let display = if shown { Display::Flex } else { Display::None };
+            if node.display != display {
+                node.display = display;
+            }
+        }
+        if let Some(mask) = mask {
+            let (at, size) = masks[mask.0];
+            node.set_if_neq(absolute(at, size));
         }
     }
-    // The bottom posts and panels.
-    parts.push(sprite(bar, 0, Vec2::new(0.0, 358.0)));
-    parts.push(sprite(bar, 1, Vec2::new(617.0, 358.0)));
-    for (panel, back, x) in [
-        (Panel::Radar, &art.radar_back, 23.0),
-        (Panel::TextBox, &art.textbox_back, 128.0),
-        (Panel::Formation, &art.formation_back, 512.0),
-    ] {
-        if layout.shows(panel) {
-            parts.push(sprite(sheet(back), 0, Vec2::new(x, 358.0)));
-        }
+}
+
+/// Build once. Decorations may be hidden, but controls retain their identities.
+fn build_frame(
+    mut commands: Commands,
+    layout: Res<ScreenLayout>,
+    art: Res<MainScreenArt>,
+    sheets: Res<Assets<SpriteSheet>>,
+    screens: Query<(), With<MainScreen>>,
+) {
+    if !screens.is_empty() || !art.all.iter().all(|h| sheets.contains(h)) {
+        return;
     }
-    // The button row's sockets.
+    let sheet = |handle| loaded(&sheets, handle);
+    let masks: Vec<_> = masks(&layout)
+        .into_iter()
+        .enumerate()
+        .map(|(index, (at, size))| {
+            let node = absolute(at, size);
+            bsn! { node ViewMask({index}) BackgroundColor(Color::BLACK) Pickable::IGNORE }
+        })
+        .collect();
+    let columns: Vec<_> = [true, false].into_iter().map(|closed| {
+        let mut parts = vec![];
+        for row in 0..4 {
+            let y = 18.0 + 85.0 * row as f32;
+            let columns = sheet(&art.columns);
+            if closed {
+                parts.push(sprite(columns, 1 + 4 * row, Vec2::new(0.0, y)));
+                parts.push(sprite(columns, 2 + 4 * row, Vec2::new(512.0, y)));
+                parts.push(sprite(columns, 16, Vec2::new(23.0, y)));
+                parts.push(sprite(columns, 16, Vec2::new(535.0, y)));
+            } else {
+                parts.push(sprite(columns, 4 * row, Vec2::new(0.0, y)));
+                parts.push(sprite(columns, 3 + 4 * row, Vec2::new(617.0, y)));
+            }
+        }
+        bsn! { @layer() template(move |_| Ok(FrameVisibility::Closed(closed))) Children [{parts}] }
+    }).collect();
+    let bar = sheet(&art.bottom_bar);
+    let mut parts = vec![
+        sprite(sheet(&art.roof), 0, Vec2::ZERO),
+        sprite(bar, 0, Vec2::new(0.0, 358.0)),
+        sprite(bar, 1, Vec2::new(617.0, 358.0)),
+    ];
     for (frame, x) in
         [(2, 0.0), (4, 30.0), (8, 196.0), (5, 292.0), (6, 343.0), (7, 528.0), (3, 610.0)]
     {
         parts.push(sprite(bar, frame, Vec2::new(x, 450.0)));
     }
-    let shown = |panel| layout.shows(panel).then_some(());
     commands.spawn_scene(bsn! {
-        @centred()
-        MainScreen({layout.clone()})
-        TabGroup::modal()
-        on(leave_hud_focus)
-        GlobalZIndex(-5)
-        Pickable::IGNORE
+        @centred() MainScreen TabGroup::modal() on(leave_hud_focus) GlobalZIndex(-5) Pickable::IGNORE
         Children [
-            @screen()
-            Pickable::IGNORE
-            Children [
+            @screen() Pickable::IGNORE Children [
                 {masks}
-                // Portraits sit under the column art, which frames them.
-                -- {closed.then(party::portraits)}
+                -- @layer() template(|_| Ok(FrameVisibility::Closed(true))) Children [{party::portraits()}]
+                -- {columns}
                 -- {parts}
-                -- {party::slots(closed)}
-                -- {layout::buttons(&layout, &art, &sheets)}
-                -- {shown(Panel::TextBox).map(|()| text_box::panel())}
-                -- {shown(Panel::Radar).map(|()| radar::panel(&art, &sheets))}
-                -- {shown(Panel::Formation).map(|()| formation::panel(&art, &sheets))}
-                -- {bank::row(&art, &sheets)}
+                -- {party::slots()}
+                -- @layer() template(|_| Ok(FrameVisibility::Closed(true))) Children [@layer() party::Splats]
+                -- {layout::buttons(&art)}
+                -- @layer() template(|_| Ok(FrameVisibility::Panel(Panel::TextBox))) Children [
+                    {vec![sprite(sheet(&art.textbox_back), 0, Vec2::new(128.0,358.0))]}
+                    -- {text_box::panel()}
+                ]
+                -- @layer() template(|_| Ok(FrameVisibility::Panel(Panel::Radar))) Children [
+                    {vec![sprite(sheet(&art.radar_back), 0, Vec2::new(23.0,358.0))]}
+                    -- {radar::panel(&art,&sheets)}
+                ]
+                -- @layer() template(|_| Ok(FrameVisibility::Panel(Panel::Formation))) Children [
+                    {vec![sprite(sheet(&art.formation_back), 0, Vec2::new(512.0,358.0))]}
+                    -- {formation::panel(&art,&sheets)}
+                ]
+                -- {bank::row(&art,&sheets)}
             ]
         ]
     });
@@ -340,6 +363,58 @@ mod keyboard_tests {
     use bevy::ui_widgets::ButtonPlugin;
     use bevy::window::PrimaryWindow;
     use bevy_enhanced_input::prelude::*;
+
+    #[test]
+    fn layout_changes_keep_hud_controls_and_focus() {
+        use crate::game::characters::{Character, Gender, Profession, Race, Vitals};
+        let mut app = crate::presentation::test_input::input_app();
+        app.init_asset::<SpriteSheet>()
+            .init_resource::<ScreenLayout>()
+            .init_resource::<MainScreenArt>()
+            .add_systems(
+                Update,
+                (build_frame, update_frame, party::build_party_parts, party::place_party_buttons)
+                    .chain(),
+            );
+        app.world_mut()
+            .resource_mut::<Assets<SpriteSheet>>()
+            .insert(
+                Handle::<SpriteSheet>::default().id(),
+                SpriteSheet { frames: vec![], images: vec![], palette: None },
+            )
+            .unwrap();
+        let character = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
+        let member = app.world_mut().spawn((Vitals::new(&character), character)).id();
+        crate::game::party::roster::test_party(app.world_mut(), &[member]);
+        app.update();
+        let root = app
+            .world_mut()
+            .query_filtered::<Entity, With<MainScreen>>()
+            .single(app.world())
+            .unwrap();
+        let control = app
+            .world_mut()
+            .query_filtered::<Entity, With<party::SlotButton>>()
+            .single(app.world())
+            .unwrap();
+        app.world_mut()
+            .resource_mut::<InputFocus>()
+            .set(control, bevy::input_focus::FocusCause::Navigated);
+        let panels: Vec<Entity> = app
+            .world_mut()
+            .query_filtered::<Entity, With<FrameVisibility>>()
+            .iter(app.world())
+            .collect();
+        for mode in [LayoutMode::Closed, LayoutMode::Full, LayoutMode::Wide] {
+            app.world_mut().resource_mut::<ScreenLayout>().mode = mode;
+            app.update();
+            assert!(app.world().get_entity(root).is_ok());
+            assert_eq!(app.world().resource::<InputFocus>().get(), Some(control));
+            assert!(panels.iter().all(|&e| app.world().get_entity(e).is_ok()));
+            let node = app.world().get::<Node>(control).unwrap();
+            assert_eq!(node.width, px(if mode == LayoutMode::Closed { 82. } else { 22. }));
+        }
+    }
 
     #[test]
     fn f6_enters_hud_without_stealing_the_worlds_map_binding() {
@@ -361,11 +436,8 @@ mod keyboard_tests {
             .add_systems(Startup, spawn_map_key)
             .add_plugins(keys::plugin);
         let window = app.world_mut().spawn((Window::default(), PrimaryWindow)).id();
-        let root = app
-            .world_mut()
-            .spawn((MainScreen::default(), TabGroup::modal()))
-            .observe(leave_hud_focus)
-            .id();
+        let root =
+            app.world_mut().spawn((MainScreen, TabGroup::modal())).observe(leave_hud_focus).id();
         let first = app.world_mut().spawn((Button, TabIndex(0), ChildOf(root))).id();
         let second = app.world_mut().spawn((Button, TabIndex(0), ChildOf(root))).id();
         app.finish();

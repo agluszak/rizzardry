@@ -87,6 +87,7 @@ impl Plugin for PresentationPlugin {
         .add_input_context::<Exploration>()
         .add_observer(retail_controls::primary_buttons_only)
         .add_observer(party_view::attach_camera)
+        .add_observer(monsters::remove_monster_visuals)
         .add_observer(environment::request_level_visuals)
         .add_observer(sky::request_skies)
         .add_observer(dialog::open_travel_question)

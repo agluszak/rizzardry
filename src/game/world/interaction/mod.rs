@@ -715,7 +715,7 @@ fn complete(world: &mut World, on: Entity) {
     if let Some(mut door) = entity.get_mut::<DoorState>() {
         door.locked = false;
     }
-    super::triggers::activate(world, device, None);
+    super::triggers::activate(world, device, false);
 }
 
 /// Leave the device as it is, forgetting the attempt in progress. Leaving

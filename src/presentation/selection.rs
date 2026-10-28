@@ -87,7 +87,7 @@ pub fn activate_selection(
         && let Ok(device) = props.get(hit.entity)
     {
         if device {
-            requests.write(WorldRequest::Activate { device: hit.entity, distance: hit.distance });
+            requests.write(WorldRequest::Activate { device: hit.entity });
         }
         return;
     }

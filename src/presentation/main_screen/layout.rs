@@ -7,10 +7,9 @@ use bevy::ui::IsDefaultUiCamera;
 use bevy::ui_widgets::Activate;
 use enumset::{EnumSet, EnumSetType};
 
-use super::{MainScreenArt, button, loaded};
-use crate::content::ui::SpriteSheet;
+use super::{MainScreenArt, button};
 use crate::presentation::party_view::PartyCamera;
-use crate::presentation::screen_art::{SCREEN, sprite};
+use crate::presentation::screen_art::SCREEN;
 use crate::presentation::sky::SkyCamera;
 
 /// Retail's layout modes (`g_settings.main_ui_mode`; the roof tooltips call
@@ -165,46 +164,84 @@ pub fn fit_viewport(
 /// The roof's mode buttons, the current mode pressed, and the left post's
 /// arrows: hide a panel while shown, show it while hidden; Closed keeps the
 /// radar and formation (grayed).
-pub fn buttons(
-    layout: &ScreenLayout,
-    art: &MainScreenArt,
-    sheets: &Assets<SpriteSheet>,
-) -> impl SceneList {
-    let modes: Vec<_> =
-        [(LayoutMode::Closed, 10.0), (LayoutMode::Wide, 39.0), (LayoutMode::Full, 68.0)]
-            .into_iter()
-            .enumerate()
-            .map(|(i, (mode, x))| {
-                let image = if mode == layout.mode { 3 + i } else { i };
-                bsn! {
-                    @button(art.roof_buttons.clone(), image, Vec2::new(x, 1.0))
-                    on(move |_: On<Activate>, mut layout: ResMut<ScreenLayout>| {
-                        layout.mode = mode;
-                    })
-                }
-            })
-            .collect();
-    let closed = layout.mode == LayoutMode::Closed;
-    let arrows = loaded(sheets, &art.layout_arrows);
-    // In order: neighbouring arrows overlap.
-    let mut panels: Vec<Box<dyn Scene>> = vec![];
-    for (panel, y, hide, show, gray) in [
-        (Panel::Radar, 371.0, 0, 3, 6),
-        (Panel::TextBox, 394.0, 8, 11, 14),
-        (Panel::Formation, 417.0, 16, 19, 22),
-    ] {
-        let at = Vec2::new(0.0, y);
-        if closed && panel != Panel::TextBox {
-            panels.push(Box::new(sprite(arrows, gray, at)));
-            continue;
+#[derive(Component, Clone)]
+pub(super) enum LayoutButton {
+    Mode(LayoutMode, usize),
+    Panel(Panel, usize),
+}
+
+pub fn buttons(art: &MainScreenArt) -> impl SceneList {
+    let modes: Vec<_> = [
+        (LayoutMode::Closed, 10.0),
+        (LayoutMode::Wide, 39.0),
+        (LayoutMode::Full, 68.0),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(i, (mode, x))| {
+        bsn! {
+            @button(art.roof_buttons.clone(),i,Vec2::new(x,1.0))
+            template(move |_| Ok(LayoutButton::Mode(mode,i)))
+            on(move |_: On<Activate>, mut layout: ResMut<ScreenLayout>| { layout.mode=mode; })
         }
-        let image = if layout.shows(panel) { hide } else { show };
-        panels.push(Box::new(bsn! {
-            @button(art.layout_arrows.clone(), image, at)
+    })
+    .collect();
+    let panels: Vec<_> = [
+        (Panel::Radar, 371.0, 0),
+        (Panel::TextBox, 394.0, 8),
+        (Panel::Formation, 417.0, 16),
+    ]
+    .into_iter()
+    .map(|(panel, y, base)| {
+        bsn! {
+            @button(art.layout_arrows.clone(),base,Vec2::new(0.0,y))
+            template(move |_| Ok(LayoutButton::Panel(panel,base)))
             on(move |_: On<Activate>, mut layout: ResMut<ScreenLayout>| layout.toggle(panel))
-        }));
-    }
+        }
+    })
+    .collect();
     (modes, panels)
+}
+
+pub fn draw_buttons(
+    mut commands: Commands,
+    layout: Res<ScreenLayout>,
+    mut buttons: Query<(
+        Entity,
+        &LayoutButton,
+        &mut crate::presentation::retail_controls::ControlSkin,
+        Has<bevy::ui::InteractionDisabled>,
+    )>,
+) {
+    use crate::presentation::retail_controls::ControlSkin;
+    for (entity, button, mut skin, disabled) in &mut buttons {
+        let (frame, inactive) = match *button {
+            LayoutButton::Mode(mode, index) => {
+                (index + if mode == layout.mode { 3 } else { 0 }, false)
+            }
+            LayoutButton::Panel(panel, base) => {
+                let inactive = layout.mode == LayoutMode::Closed && panel != Panel::TextBox;
+                (
+                    base + if inactive {
+                        6
+                    } else if layout.shows(panel) {
+                        0
+                    } else {
+                        3
+                    },
+                    inactive,
+                )
+            }
+        };
+        skin.set_if_neq(ControlSkin::new(frame, frame, frame, frame, frame));
+        if inactive != disabled {
+            if inactive {
+                commands.entity(entity).insert(bevy::ui::InteractionDisabled);
+            } else {
+                commands.entity(entity).remove::<bevy::ui::InteractionDisabled>();
+            }
+        }
+    }
 }
 
 #[cfg(test)]
