@@ -1293,6 +1293,49 @@ mod tests {
     }
 
     #[test]
+    fn accepted_payment_keeps_its_path_until_the_last_subquote() {
+        let (mut app, session, _) = app(DialogueScript {
+            quotes: vec![Quote {
+                text: vec!["First".into(), "Last".into()],
+                operations: vec![
+                    DialogueOp::Conditional {
+                        facts: vec![(FactId(91), 0)],
+                        response: Response::Fixed(1),
+                    },
+                    DialogueOp::Unsupported { opcode: 99, operands: [0; 3], subentries: vec![] },
+                ],
+                ..default()
+            }],
+            ..default()
+        });
+        let world = app.world_mut();
+        let party = the_party(world).unwrap();
+        world.get_mut::<PartyInventory>(party).unwrap().gold = 100;
+        {
+            let mut c = world.get_mut::<Conversation>(session).unwrap();
+            c.queue.clear();
+            c.wait = ConversationWait::Price { quote: 0, gold: 25, always: false };
+        }
+        answer_price(world, session, true);
+        // Another conversation can change global facts before this accepted
+        // answer runs, and again while its speech is playing.
+        world.resource_mut::<StoryFacts>().values.insert(FactId(91), 1);
+        app.update();
+        let speech = match app.world().get::<Conversation>(session).unwrap().wait {
+            ConversationWait::Line { speech, .. } => speech,
+            _ => panic!("accepted answer must still play"),
+        };
+        app.world_mut()
+            .write_message(ConversationRequest::Advance { conversation: session, speech });
+        app.update();
+        let world = app.world();
+        let c = world.get::<Conversation>(session).unwrap();
+        assert_eq!(c.current, Some((0, 1)));
+        assert!(matches!(c.queue.front(), Some(Step::Quote { quote: 1, .. })));
+        assert_eq!(world.get::<PartyInventory>(party).unwrap().gold, 75);
+    }
+
+    #[test]
     fn idle_and_delayed_assets_do_not_replace_or_dirty_conversations() {
         #[derive(Resource, Default)]
         struct Lifecycle {
@@ -1300,7 +1343,8 @@ mod tests {
             removed: usize,
             changed: usize,
         }
-        let (mut app, session, actor) = app(DialogueScript::default());
+        let (mut app, session, actor) =
+            app(DialogueScript { quotes: vec![Quote::default()], ..default() });
         app.init_resource::<Lifecycle>()
             .add_observer(|_: On<Add<Conversation>>, mut counts: ResMut<Lifecycle>| {
                 counts.added += 1

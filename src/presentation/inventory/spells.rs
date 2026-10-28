@@ -1,8 +1,7 @@
 //! The retail magic review page and the resistances of the reviewed actor.
 use super::{InventoryArt, InventoryScreen, RetailLabel, absolute, review};
 use crate::content::characters::Realm;
-use crate::game::characters::{Character, resistance::resistances};
-use crate::game::inventory::Carried;
+use crate::game::characters::resistance::Resistances;
 use crate::presentation::screen_art::spawn_picture as picture;
 use crate::presentation::screen_art::{BitmapText, Picture, PictureCrop};
 use bevy::prelude::*;
@@ -86,19 +85,12 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) {
 
 pub(super) fn refresh(
     screen: Option<Single<&InventoryScreen>>,
-    characters: Query<(&Character, Option<&Carried>)>,
-    content: crate::game::data::Content,
+    characters: Query<&Resistances>,
     mut values: Query<(&Value, &mut BitmapText)>,
     mut segments: Query<(&Segment, &mut PictureCrop, &mut Picture)>,
 ) {
     let Some(screen) = screen else { return };
-    let Ok((character, carried)) = characters.get(screen.member) else { return };
-    let empty = Carried::default();
-    let carried = carried.unwrap_or(&empty);
-    let Some(catalog) = content.items() else {
-        return;
-    };
-    let scores = resistances(character, carried, catalog);
+    let Ok(Resistances(scores)) = characters.get(screen.member) else { return };
     for (value, mut text) in &mut values {
         let desired = scores[value.0].total.to_string();
         if text.value != desired {
