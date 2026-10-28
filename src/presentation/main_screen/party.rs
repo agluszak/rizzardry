@@ -30,6 +30,34 @@ use crate::presentation::screen_art::{
     BitmapText, Picture, absolute, condition_icon, label, picture, rect, skull,
 };
 
+/// Display slots are not roster order: RPCs occupy the top pair and the
+/// six player characters occupy the remaining rows. Derive this projection
+/// from membership and NPC identity without reordering gameplay/RNG iteration.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct PortraitSlots<'w, 's> {
+    roster: Single<'w, 's, &'static PartyRoster>,
+    npcs: Query<'w, 's, (), With<crate::game::npcs::Npc>>,
+}
+impl PortraitSlots<'_, '_> {
+    fn member(&self, slot: usize) -> Option<Entity> {
+        let rpc = slot < 2;
+        self.roster.iter().filter(|e| self.npcs.contains(*e) == rpc).nth(if rpc {
+            slot
+        } else {
+            slot - 2
+        })
+    }
+    fn slot(&self, member: Entity) -> Option<usize> {
+        let rpc = self.npcs.contains(member);
+        let index = self
+            .roster
+            .iter()
+            .filter(|e| self.npcs.contains(*e) == rpc)
+            .position(|e| e == member)?;
+        (index < if rpc { 2 } else { 6 }).then_some(index + if rpc { 0 } else { 2 })
+    }
+}
+
 /// Where a slot's row starts: four rows of 85 pixels from y 18.
 fn row_y(slot: usize) -> f32 {
     18.0 + 85.0 * (slot / 2) as f32
@@ -126,7 +154,7 @@ pub fn build_party_parts(
     layout: Res<ScreenLayout>,
     art: Res<MainScreenArt>,
     assets: Res<AssetServer>,
-    roster: Single<&PartyRoster>,
+    slots: PortraitSlots,
     members: Query<(), (With<Character>, With<Vitals>)>,
     views: Query<(Entity, &PartyMemberView, &ChildOf)>,
     roots: Query<
@@ -136,7 +164,7 @@ pub fn build_party_parts(
 ) {
     let closed = layout.mode == LayoutMode::Closed;
     for (entity, view, _) in &views {
-        if !roster.contains(&view.member) || !members.contains(view.member) {
+        if !slots.roster.contains(&view.member) || !members.contains(view.member) {
             commands.entity(entity).despawn();
         }
     }
@@ -153,7 +181,7 @@ pub fn build_party_parts(
                 ] })
                 .insert(ChildOf(root));
         }
-        let Some(member) = roster.get_index(slot).copied().filter(|e| members.contains(*e)) else {
+        let Some(member) = slots.member(slot).filter(|e| members.contains(*e)) else {
             continue;
         };
         if let Some((entity, _, parent)) = views
@@ -277,7 +305,7 @@ pub fn draw_party(
     selected: Res<SelectedMember>,
     art: Res<MainScreenArt>,
     assets: Res<AssetServer>,
-    roster: Single<Ref<PartyRoster>>,
+    slots: PortraitSlots,
     members: Query<CharacterView>,
     data: Option<Res<GameData>>,
     catalogs: Res<Assets<ItemCatalog>>,
@@ -293,7 +321,7 @@ pub fn draw_party(
     let catalog = data.as_ref().and_then(|d| catalogs.get(&d.items));
     let closed = layout.mode == LayoutMode::Closed;
     for (part, mut node, mut visible, picture, label, image_node) in &mut parts {
-        let Some(slot) = roster.get_index_of(&part.member) else { continue };
+        let Some(slot) = slots.slot(part.member) else { continue };
         let member = Some(part.member);
         let actor = members.get(part.member).ok();
         let at = part.kind.at(slot, closed);
@@ -413,7 +441,7 @@ pub fn draw_party(
                     source = Some(image("data/main interface/condition_highlight.sti", 0));
                 }
                 Part::Selection => {
-                    shown = member == selected.member(&roster);
+                    shown = member == selected.member(&slots.roster);
                     source = Some(image(
                         if closed {
                             "data/main interface/charselect.sti"
@@ -468,18 +496,21 @@ pub fn draw_party(
 
 /// Move retained controls; never change which actor a press means.
 pub fn place_party_buttons(
-    roster: Single<&PartyRoster>,
+    slots: PortraitSlots,
     layout: Res<ScreenLayout>,
     members: Query<(), (With<Character>, With<Vitals>)>,
     mut buttons: Query<(&SlotButton, &mut Node)>,
     mut empty: Query<(&EmptySlot, &mut Visibility)>,
 ) {
     for (slot, mut visible) in &mut empty {
-        visible
-            .set_if_neq(visible_if(roster.get_index(slot.0).is_none_or(|e| !members.contains(*e))));
+        visible.set_if_neq(if slots.member(slot.0).is_none_or(|e| !members.contains(e)) {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        });
     }
     for (button, mut node) in &mut buttons {
-        let Some(slot) = roster.get_index_of(&button.member) else { continue };
+        let Some(slot) = slots.slot(button.member) else { continue };
         let x = if layout.mode == LayoutMode::Closed {
             menu_x(slot) + 23.
         } else if slot.is_multiple_of(2) {
@@ -516,12 +547,17 @@ fn press(
     mut views: Query<&mut super::magic_view::MagicView>,
     conversations: Query<(), With<crate::game::npcs::conversation::Conversation>>,
 ) {
-    if click.button != PointerButton::Primary || !conversations.is_empty() {
+    if click.button != PointerButton::Primary {
         return;
     }
     let Ok(mut button) = buttons.get_mut(click.entity) else { return };
     let member = button.member;
     if !roster.contains(&member) {
+        return;
+    }
+    if !conversations.is_empty() {
+        selected.set_if_neq(SelectedMember(Some(member)));
+        button.review_armed = false;
         return;
     }
     // A spell for one party member is aimed by clicking their portrait
@@ -710,15 +746,14 @@ pub fn play_splats(
     mut commands: Commands,
     time: Res<Time>,
     art: Res<MainScreenArt>,
-    roster: Single<Ref<PartyRoster>>,
+    slots: PortraitSlots,
     mut splats: Query<(Entity, &mut Splat, &mut Node, &Children)>,
     mut pictures: Query<&mut Picture>,
     mut numbers: Query<(&mut Visibility, &mut BitmapText), With<SplatNumber>>,
 ) {
     for (entity, mut splat, mut node, parts) in &mut splats {
         splat.timer.tick(time.delta());
-        let Some(slot) = roster.get_index_of(&splat.actor).filter(|_| !splat.timer.is_finished())
-        else {
+        let Some(slot) = slots.slot(splat.actor).filter(|_| !splat.timer.is_finished()) else {
             commands.entity(entity).despawn();
             continue;
         };
@@ -763,6 +798,34 @@ mod tests {
     /// Retail's right-button portrait gestures: a quick release gives the
     /// held item, or opens the review with nothing held; a held press opens
     /// it after a second.
+    #[test]
+    fn rpc_slots_are_reserved_without_reordering_the_roster() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut world = World::new();
+        let pcs: Vec<_> = (0..6).map(|_| world.spawn_empty().id()).collect();
+        let party = crate::game::party::roster::test_party(&mut world, &pcs);
+        let project = |slots: PortraitSlots| (0..8).map(|i| slots.member(i)).collect::<Vec<_>>();
+        let expected = [vec![None, None], pcs.iter().copied().map(Some).collect()].concat();
+        assert_eq!(world.run_system_once(project).unwrap(), expected);
+        let rpc = world
+            .spawn(crate::game::npcs::Npc {
+                definition: crate::content::npcs::NpcId(0),
+                disposition: 80,
+                greeting_pending: false,
+                paid_topics: vec![],
+                dormant: None,
+                stock: default(),
+            })
+            .id();
+        crate::game::party::roster::test_join(&mut world, rpc);
+        let projected = world.run_system_once(project).unwrap();
+        assert_eq!(projected[0], Some(rpc));
+        assert_eq!(&projected[2..], &expected[2..]);
+        assert_eq!(world.get::<PartyRoster>(party).unwrap().get_index(0), Some(&pcs[0]));
+        world.entity_mut(rpc).remove::<crate::game::party::roster::PartyMember>();
+        assert_eq!(world.run_system_once(project).unwrap(), expected);
+    }
+
     #[test]
     fn right_button_gives_or_opens_review_like_retail() {
         use crate::content::items::ItemDefinition;

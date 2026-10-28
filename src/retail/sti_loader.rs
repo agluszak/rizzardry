@@ -23,6 +23,15 @@ impl AssetLoader for StiLoader {
         let mut data = Vec::new();
         reader.read_to_end(&mut data).await?;
         let frames = read_stci(&data)?;
+        if frames.len() >= 93
+            && context.path().path().parent().is_some_and(|p| p.ends_with("fonts"))
+        {
+            let name =
+                context.path().path().file_stem().and_then(|n| n.to_str()).unwrap_or("retail-font");
+            let font =
+                super::bitmap_font::import(&frames, name).map_err(super::LoadError::Invalid)?;
+            context.add_labeled_asset("font", font);
+        }
         let images = frames
             .iter()
             .enumerate()

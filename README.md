@@ -39,6 +39,8 @@ Developer options:
   that much play, `--seed <n>` fixes gameplay's random numbers.
 - `--screenshot <file.png>` (with `--screenshot-after <s>`): capture the view
   after entering, then exit; with `--headless`, rendered offscreen.
+- `--talk-to <name>`: open a nearby NPC conversation through normal gameplay validation.
+  Combine with `--start` and `--screenshot`; it does not bypass distance or payment checks.
 - `--say <line>`: speak a retail voice line, e.g. `npc_aletheides_000`.
 - `--nav-debug`: draw the navmeshes, paths and avoidance.
 - `--overhead <metres>`: view the party from straight above.
@@ -49,9 +51,9 @@ Entering a level the first time bakes its navmeshes, one per monster size
 class (up to a few seconds); results are cached in `imported_assets/`.
 `cargo run --release --example navmesh_prebake` bakes every level ahead of play.
 
-Controls: WASD or arrow keys to walk, Q/E or Left/Right to turn, hold Shift to
-run, hold the right mouse button to look around, Space or left click to use
-the prop in front of you, Tab to open the automap (Escape closes it; Tab navigates its controls).
+Controls: Up/Down arrows walk, Left/Right arrows turn, Numpad 0/Decimal
+strafe, and Shift runs. Hold the right mouse button to look around; left click
+interacts with the world. S toggles Search and C camps. Tab opens the automap (Escape closes it; Tab navigates its controls).
 On the map, use the magnifying glasses to zoom, arrows to pan, and the centre
 button to recenter on the party. Keyboard arrows also pan; clicking empty map
 space zooms in and right-clicking zooms out. Use the quill buttons to add or

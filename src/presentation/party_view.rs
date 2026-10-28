@@ -34,9 +34,37 @@ pub fn attach_camera(add: On<Add<PartyBody>>, mut commands: Commands) {
 }
 
 /// Point the camera along the party's facing.
-pub fn aim_camera(party: Query<&PartyBody>, mut camera: Query<&mut Transform, With<PartyCamera>>) {
-    if let (Ok(body), Ok(mut camera)) = (party.single(), camera.single_mut()) {
-        let rotation = Quat::from_rotation_y(body.yaw) * Quat::from_rotation_x(body.pitch);
+pub fn aim_camera(
+    party: Query<(&PartyBody, crate::game::world::ActorPose), Without<PartyCamera>>,
+    conversations: Query<&crate::game::npcs::conversation::Conversation>,
+    npc_bodies: Query<&crate::game::npcs::NpcBodies>,
+    actors: Query<
+        (
+            crate::game::world::ActorPose,
+            &crate::game::world::population::Monster,
+            Option<&crate::game::world::navigation::Walker>,
+        ),
+        Without<PartyCamera>,
+    >,
+    mut camera: Query<&mut Transform, With<PartyCamera>>,
+) {
+    if let (Ok((body, pose)), Ok(mut camera)) = (party.single(), camera.single_mut()) {
+        let ordinary = Quat::from_rotation_y(body.yaw) * Quat::from_rotation_x(body.pitch);
+        let rotation = conversations
+            .single()
+            .ok()
+            .and_then(|c| npc_bodies.get(c.actor).ok())
+            .and_then(|bodies| bodies.iter().find_map(|body| actors.get(body).ok()))
+            .map_or(ordinary, |(target, monster, walker)| {
+                let direction = crate::game::world::navigation::feet(target.translation(), walker)
+                    + Vec3::Y * monster.body.eye_height
+                    - (pose.translation() + camera.translation);
+                if direction.length_squared() < 0.0001 {
+                    ordinary
+                } else {
+                    Transform::IDENTITY.looking_to(direction, Vec3::Y).rotation
+                }
+            });
         if camera.rotation != rotation {
             camera.rotation = rotation;
         }
