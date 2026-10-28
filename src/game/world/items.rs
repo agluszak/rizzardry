@@ -147,13 +147,14 @@ pub fn take_item(world: &mut World, target: Entity, distance: f32) -> Result<(),
             let catalog = catalogs.get(&handle).unwrap();
             world.get_mut::<PartyInventory>(party).unwrap().pool.collect(contents, catalog)
         });
+        let moved = !taken.is_empty();
         for (name, _) in taken {
             world.write_message(ItemNews::Takes { member: None, item: name });
         }
         if !contents.is_empty() {
             world.entity_mut(target).insert(item);
             world.write_message(ItemNews::NoRoom);
-            return Ok(());
+            return if moved { Ok(()) } else { Err(Refusal::NoRoom) };
         }
     } else if let GroundLoot::Loose(stack) = item.loot {
         world.get_mut::<PartyInventory>(party).unwrap().hand.held = Some(stack);

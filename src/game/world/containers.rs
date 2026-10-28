@@ -67,7 +67,11 @@ pub fn take_from_container(
         .and_then(|catalogs| catalogs.get(&handle))
         .ok_or(Refusal::MissingContent)?;
     let container = world.get::<Container>(device).ok_or(Refusal::Nothing)?;
-    for &(id, amount) in picks {
+    for (index, &(id, amount)) in picks.iter().enumerate() {
+        // One pick per stack: two would be checked against the same count.
+        if picks[..index].iter().any(|&(earlier, _)| earlier == id) {
+            return Err(Refusal::Nothing);
+        }
         let stack = container.contents.items.iter().find(|s| s.id == id).ok_or(Refusal::Nothing)?;
         catalog.get(stack.item).ok_or(Refusal::MissingContent)?;
         if amount == 0 || amount > stack.count() {
@@ -81,6 +85,7 @@ pub fn take_from_container(
     let mut container = world.entity_mut(device).take::<Container>().unwrap();
     let mut news = Vec::new();
     let mut refused = false;
+    let mut moved_any = false;
     world.resource_scope(|world, catalogs: Mut<Assets<ItemCatalog>>| {
         world.resource_scope(|world, mut ids: Mut<ItemIds>| {
             let catalog = catalogs.get(&handle).unwrap();
@@ -120,6 +125,7 @@ pub fn take_from_container(
                 } else {
                     items[index].give_part(amount, &mut ids, receive)
                 };
+                moved_any |= moved > 0;
                 if moved > 0 {
                     news.push(ItemNews::Takes {
                         member: match to {
@@ -148,7 +154,8 @@ pub fn take_from_container(
     if empty {
         close_container(world, on);
     }
-    Ok(())
+    // Some of it moving is a take; none of it is a refusal.
+    if moved_any { Ok(()) } else { Err(Refusal::NoRoom) }
 }
 
 /// Stop looking through the container, leaving the rest in it.
