@@ -82,8 +82,6 @@ pub(super) fn load_magic_view_art(mut commands: Commands, assets: Res<AssetServe
 pub struct MagicView {
     pub caster: Entity,
     pub items: bool,
-    /// The device attempt it casts at, if any.
-    pub attempt: Option<Entity>,
     pool: bool,
     realm: Option<Realm>,
     source: Option<Source>,
@@ -94,15 +92,26 @@ pub struct MagicView {
 }
 
 impl MagicView {
-    /// Whether a portrait click now aims the spell rather than selects.
+    /// Whether a portrait click now aims the spell rather than selects, for
+    /// a view not casting at a device.
     pub fn wants_member(&self) -> bool {
-        self.attempt.is_none() && self.source.is_some() && self.member.is_none()
+        self.source.is_some() && self.member.is_none()
     }
 
     pub fn aim_at(&mut self, member: Entity) {
         self.member = Some(member);
     }
 }
+
+/// The device attempt a view casts at; the view closes with it.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+#[relationship(relationship_target = AttemptCasting)]
+pub struct CastsAt(pub Entity);
+
+/// The view casting at an attempt, despawned with it.
+#[derive(Component, Debug)]
+#[relationship_target(relationship = CastsAt, linked_spawn)]
+pub struct AttemptCasting(Entity);
 
 #[derive(Component)]
 pub(super) struct MagicScroll(Entity);
@@ -222,7 +231,6 @@ fn spawn_view(
             MagicView {
                 caster,
                 items,
-                attempt,
                 pool: false,
                 realm: None,
                 source: None,
@@ -235,6 +243,9 @@ fn spawn_view(
             DespawnOnExit(crate::game::screen::Screen::World),
         ))
         .id();
+    if let Some(attempt) = attempt {
+        commands.entity(root).insert(CastsAt(attempt));
+    }
     let picture = |commands: &mut Commands, sheet: &Handle<SpriteSheet>, frame, at| {
         commands
             .spawn((Picture { sheet: sheet.clone(), frame, at, bounds: None }, ChildOf(root)))
@@ -407,13 +418,13 @@ struct Offer<'a> {
 }
 
 fn context(
-    view: &MagicView,
+    attempt: Option<Entity>,
     fighting: bool,
     camped: bool,
     attempts: &Query<&crate::game::world::interaction::DeviceInteraction>,
 ) -> Option<UseContext> {
     use crate::game::world::interaction::Work;
-    match view.attempt {
+    match attempt {
         Some(attempt) => {
             let interaction = attempts.get(attempt).ok()?;
             match interaction.work {
@@ -539,7 +550,7 @@ fn rating(chance: u32) -> usize {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn refresh_magic_view(
     mut commands: Commands,
-    mut views: Query<(Entity, &mut MagicView, &MagicScroll)>,
+    mut views: Query<(Entity, &mut MagicView, &MagicScroll, Option<&CastsAt>)>,
     sliders: Query<(&SliderValue, &SliderRange)>,
     (selected, roster): (Res<super::SelectedMember>, Single<&PartyRoster>),
     members: Query<(&Character, &Vitals, Option<&Carried>)>,
@@ -588,12 +599,13 @@ pub(super) fn refresh_magic_view(
         ResMut<InputFocus>,
     ),
 ) {
-    let Ok((root, mut view, scroll)) = views.single_mut() else { return };
+    let Ok((root, mut view, scroll, casts_at)) = views.single_mut() else { return };
+    let attempt = casts_at.map(|casts_at| casts_at.0);
     // The selected member casts; choosing another starts over for them.
     if let Some(member) = selected.member(&roster)
         && member != view.caster
     {
-        if let Some(attempt) = view.attempt {
+        if let Some(attempt) = attempt {
             devices.write(crate::game::world::interaction::DeviceRequest::PrepareMagic {
                 on: attempt,
                 actor: member,
@@ -602,7 +614,6 @@ pub(super) fn refresh_magic_view(
         *view = MagicView {
             caster: member,
             items: view.items,
-            attempt: view.attempt,
             pool: view.pool,
             realm: None,
             source: None,
@@ -610,7 +621,7 @@ pub(super) fn refresh_magic_view(
             member: None,
         };
     }
-    if view.attempt.is_some() && !members.get(view.caster).is_ok_and(|(_, v, _)| v.can_act()) {
+    if attempt.is_some() && !members.get(view.caster).is_ok_and(|(_, v, _)| v.can_act()) {
         commands.entity(root).despawn();
         return;
     }
@@ -620,7 +631,7 @@ pub(super) fn refresh_magic_view(
     ) else {
         return;
     };
-    let Some(context) = context(&view, battle.is_some(), camp.is_some(), &interaction) else {
+    let Some(context) = context(attempt, battle.is_some(), camp.is_some(), &interaction) else {
         commands.entity(root).despawn();
         return;
     };
@@ -814,7 +825,7 @@ pub(super) fn refresh_magic_view(
     // An item casts at its own power.
     let power = if view.items { Some(1) } else { view.power };
     let Some(power) = power else { return };
-    let aim = if let Some(attempt) = view.attempt {
+    let aim = if let Some(attempt) = attempt {
         Aim::Device(attempt)
     } else {
         match spell.targeting {
@@ -877,7 +888,7 @@ fn choose_realm(
 fn choose_row(
     click: On<Activate>,
     rows: Query<&Row>,
-    mut views: Query<(&mut MagicView, &MagicScroll)>,
+    mut views: Query<(&mut MagicView, &MagicScroll, Option<&CastsAt>)>,
     sliders: Query<&SliderValue>,
     members: Query<(&Character, &Vitals, Option<&Carried>)>,
     casters: Query<(&LearnedSpells, Option<&SpellPoints>)>,
@@ -890,7 +901,8 @@ fn choose_row(
     data: Option<Res<GameData>>,
     (spells, items): (Res<Assets<SpellCatalog>>, Res<Assets<ItemCatalog>>),
 ) {
-    let (Ok(row), Ok((mut view, scroll))) = (rows.get(click.entity), views.single_mut()) else {
+    let (Ok(row), Ok((mut view, scroll, casts_at))) = (rows.get(click.entity), views.single_mut())
+    else {
         return;
     };
     let (Some(spells), Some(items)) = (
@@ -912,7 +924,7 @@ fn choose_row(
         points,
         spells,
         items,
-        match context(&view, battle.is_some(), camp.is_some(), &interaction) {
+        match context(casts_at.map(|c| c.0), battle.is_some(), camp.is_some(), &interaction) {
             Some(c) => c,
             None => return,
         },
