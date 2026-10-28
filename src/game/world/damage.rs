@@ -6,7 +6,7 @@ use crate::game::world::level::LevelOwned;
 use avian3d::prelude::LinearVelocity;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
-use bevy_landmass::{AgentTarget3d, Velocity3d};
+use bevy_landmass::{AgentTarget3d, UsingAnimationLink, Velocity3d};
 use bevy_tnua::{TnuaController, TnuaMotor};
 
 use super::items::drop_loot;
@@ -150,7 +150,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         if let Some(mut velocity) = navigation_velocity {
             velocity.velocity = Vec3::ZERO;
         }
-        self.commands.entity(target).remove_with_requires::<Crossing>();
+        self.commands.entity(target).remove::<(Crossing, UsingAnimationLink)>();
         // The kill counts against its faction (retail `RecordFactionOffense`).
         self.factions.record_offence(kind.faction, kind.npc.is_some());
         let (found, gold) =

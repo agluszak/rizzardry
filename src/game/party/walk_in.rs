@@ -21,7 +21,6 @@ pub fn run_walk_in_triggers(
 /// The party's eye flying along a camera path; input and physics wait
 /// until it lands (retail `UpdateCameraPathState`).
 #[derive(Component, Debug)]
-#[require(RigidBodyDisabled)]
 pub struct PathFlight {
     path: usize,
     frame: f32,
@@ -71,7 +70,7 @@ pub fn move_party(
                 return;
             };
             info!("flying camera path {}", camera.name);
-            commands.entity(entity).insert(PathFlight { path, frame: 0.0 });
+            commands.entity(entity).insert((PathFlight { path, frame: 0.0 }, RigidBodyDisabled));
         }
     }
 }
@@ -98,7 +97,7 @@ pub fn fly_party(
     };
     let Some(path) = level.definition().and_then(|level| level.camera_paths.get(flight.path))
     else {
-        commands.entity(entity).remove_with_requires::<PathFlight>();
+        commands.entity(entity).remove::<(PathFlight, RigidBodyDisabled)>();
         return;
     };
     let last = path.keys.len().saturating_sub(1) as f32;
@@ -110,7 +109,7 @@ pub fn fly_party(
     velocity.0 = Vec3::ZERO;
     if flight.frame >= last {
         body.pitch = 0.0;
-        commands.entity(entity).remove_with_requires::<PathFlight>();
+        commands.entity(entity).remove::<(PathFlight, RigidBodyDisabled)>();
     }
 }
 

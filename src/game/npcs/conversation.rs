@@ -369,14 +369,11 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
         })
         .id())
 }
-/// Travel ends the conversation; the speaker stays.
-pub(crate) fn end_conversations(
-    _: On<Add<crate::game::world::level::Destination>>,
-    conversations: Query<Entity, With<Conversation>>,
-    mut commands: Commands,
-) {
-    for conversation in &conversations {
-        commands.entity(conversation).despawn();
+pub fn close(world: &mut World) {
+    let sessions: Vec<_> =
+        world.query_filtered::<Entity, With<Conversation>>().iter(world).collect();
+    for entity in sessions {
+        close_one(world, entity)
     }
 }
 fn close_one(world: &mut World, entity: Entity) {
@@ -826,9 +823,9 @@ fn execute_trade(
 }
 pub fn update_conversation(world: &mut World) {
     if crate::game::world::level::entering(world) {
-        // An accepted entry has ended the dialogue (`end_conversations`);
-        // no queued payment, trade or authored effect may alter the
-        // departing campaign.
+        // An accepted entry ends presentation-only dialogue before any queued
+        // payment, trade or authored effect can alter the departing campaign.
+        close(world);
         world.resource_mut::<Messages<ConversationRequest>>().clear();
         world.resource_mut::<Messages<LinePlayback>>().clear();
         return;
@@ -971,7 +968,6 @@ mod tests {
             .init_resource::<Assets<NpcCatalog>>()
             .init_resource::<Assets<DialogueScript>>()
             .init_resource::<Assets<FactCatalog>>()
-            .add_observer(end_conversations)
             .add_systems(Update, update_conversation);
         let w = app.world_mut();
         crate::game::party::roster::test_party(w, &[]);

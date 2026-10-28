@@ -12,7 +12,7 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy_landmass::prelude::*;
 
-use super::Combatant;
+use super::{Battle, Combatant};
 use crate::content::species::{MonsterCatalog, Reach};
 use crate::game::characters::Condition;
 use crate::game::party::body::PartyBody;
@@ -52,7 +52,7 @@ pub(super) fn needs_approach(
 
 /// A monster's move this round, and whether it is a charge.
 pub(super) struct MoveBudget {
-    pub metres: f32,
+    pub movement: CombatMove,
     pub charge: bool,
 }
 
@@ -78,47 +78,49 @@ pub(super) fn move_budget(
     if monster.conditions.iter().any(|&(c, _)| c == Condition::Slowed) {
         budget *= 0.5;
     }
-    Some(MoveBudget { metres: budget, charge })
+    Some(MoveBudget { movement: CombatMove { budget, moved: 0.0 }, charge })
 }
 
 /// Metres per unit of a species' `combat_move_range`.
 const METRES_PER_MOVE_RANGE: f32 = 20.0;
 
 /// Walk monsters on their move toward the party; the move ends when they
-/// arrive, spend it or fall.
+/// arrive, spend it, fall, or the fight ends.
 pub fn close_in(
     mut commands: Commands,
     time: Res<Time>,
+    battle: Option<Single<&Battle>>,
     party: Query<(Entity, &Position), With<PartyBody>>,
-    mut walkers: Query<(Entity, &Monster, ActorPose, &Walker, &mut AgentTarget3d, &mut CombatMove)>,
+    mut walkers: Query<
+        (Entity, &Monster, ActorPose, &Walker, &mut AgentTarget3d, Option<&mut CombatMove>),
+        With<Combatant>,
+    >,
     content: crate::game::data::Content,
 ) {
     let Some(catalog) = content.species() else { return };
     let Ok((party, party_at)) = party.single() else { return };
     let party_eye = PartyBody::eye(party_at);
-    for (entity, monster, at, walker, mut target, mut movement) in &mut walkers {
-        movement.moved += walker.speed * time.delta_secs();
-        let continues = monster.can_fight()
-            && movement.moved < movement.budget
-            && needs_approach(monster, at.translation(), Some(walker), party_eye, catalog);
-        if !continues {
-            commands.entity(entity).remove::<CombatMove>();
-        } else if !matches!(*target, AgentTarget3d::Entity(e) if e == party) {
-            *target = AgentTarget3d::Entity(party);
+    for (entity, monster, at, walker, mut target, movement) in &mut walkers {
+        let here = at.translation();
+        let going = match movement {
+            Some(mut movement) => {
+                movement.moved += walker.speed * time.delta_secs();
+                let continues = battle.is_some()
+                    && monster.can_fight()
+                    && movement.moved < movement.budget
+                    && needs_approach(monster, here, Some(walker), party_eye, catalog);
+                if !continues {
+                    commands.entity(entity).remove::<CombatMove>();
+                }
+                continues
+            }
+            None => false,
+        };
+        // Only a real change of target counts as one.
+        match (&*target, going) {
+            (AgentTarget3d::Entity(e), true) if *e == party => {}
+            (AgentTarget3d::None, false) => {}
+            _ => *target = if going { AgentTarget3d::Entity(party) } else { AgentTarget3d::None },
         }
-    }
-}
-
-/// Leaving the fight, as its end does, ends the monster's move.
-pub(super) fn end_move(remove: On<Remove<Combatant>>, mut commands: Commands) {
-    commands.entity(remove.entity).try_remove::<CombatMove>();
-}
-
-/// A monster whose move ends stops walking.
-pub(super) fn stop_walking(remove: On<Remove<CombatMove>>, mut targets: Query<&mut AgentTarget3d>) {
-    if let Ok(mut target) = targets.get_mut(remove.entity)
-        && !matches!(*target, AgentTarget3d::None)
-    {
-        *target = AgentTarget3d::None;
     }
 }
