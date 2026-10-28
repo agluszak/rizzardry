@@ -15,9 +15,26 @@ use bevy_enhanced_input::prelude::*;
 struct Journal {
     page: usize,
     count: usize,
-    mode: u8,
+    mode: JournalMode,
     previous_focus: Option<Entity>,
 }
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum JournalMode {
+    #[default]
+    Events,
+    Topics,
+    Factions,
+}
+impl JournalMode {
+    fn next(self) -> Self {
+        match self {
+            Self::Events => Self::Topics,
+            Self::Topics => Self::Factions,
+            Self::Factions => Self::Events,
+        }
+    }
+}
+
 #[derive(Component)]
 struct Row(usize, bool);
 #[derive(Component)]
@@ -210,7 +227,7 @@ fn activate(
         Choice::Previous => view.page = view.page.saturating_sub(1),
         Choice::Next => view.page = (view.page + 1).min(view.count.saturating_sub(1) / 12),
         Choice::Topics => {
-            view.mode = (view.mode + 1) % 3;
+            view.mode = view.mode.next();
             view.count = usize::MAX;
         }
         Choice::Close => close(view, &mut next, &mut focus),
@@ -233,20 +250,24 @@ fn refresh(
 ) {
     let Some(view) = view.as_mut() else { return };
     let Some(catalog) = catalogs.get(&assets.facts) else { return };
-    let visibility = match *difficulty {
-        Difficulty::Novice => 2,
-        Difficulty::Normal => 1,
-        Difficulty::Expert => 0,
-    };
     let mut entries: Vec<(String, String, bool)> = Vec::new();
     match view.mode {
-        0 => {
+        JournalMode::Events => {
             for entry in &facts.journal {
                 let Some(fact) = catalog.get(entry.fact) else { continue };
                 let Some(text) = entry.description(catalog).filter(|text| !text.is_empty()) else {
                     continue;
                 };
-                if fact.visibility > visibility {
+                if !match fact.visibility {
+                    crate::content::npcs::JournalVisibility::AllDifficulties => true,
+                    crate::content::npcs::JournalVisibility::NoviceAndNormal => {
+                        *difficulty != Difficulty::Expert
+                    }
+                    crate::content::npcs::JournalVisibility::NoviceOnly => {
+                        *difficulty == Difficulty::Novice
+                    }
+                    crate::content::npcs::JournalVisibility::Hidden => false,
+                } {
                     continue;
                 }
                 let location = crate::content::levels::LevelInfo::for_path(&entry.level)
@@ -261,13 +282,29 @@ fn refresh(
                 ));
             }
         }
-        1 => {
+        JournalMode::Topics => {
             for (category, text) in &facts.topics {
                 entries.push((format!("{category:?}"), text.clone(), false));
             }
         }
-        _ => {
-            for (i, faction) in [4, 5, 6, 7, 8, 9, 12, 11, 13, 15, 16].into_iter().enumerate() {
+        JournalMode::Factions => {
+            use crate::game::factions::*;
+            for (i, faction) in [
+                UMPANI,
+                TRANG,
+                MOOK,
+                RATTKIN_COMMON,
+                RATTKIN_MAFIA,
+                BROTHERHOOD,
+                HIGARDI_COMMON,
+                HIGARDI_LUNAR_LEGION,
+                TRYNNIE,
+                RAPAX_COMMON,
+                RAPAX_TEMPLAR,
+            ]
+            .into_iter()
+            .enumerate()
+            {
                 if factions.encountered(faction) {
                     use crate::game::factions::Band;
                     let id = match factions.band(faction) {
@@ -295,7 +332,10 @@ fn refresh(
         text.value = entry
             .map(|(left, right, _)| {
                 if row.1 {
-                    if view.mode == 0 && row.0 > 0 && entries[index - 1].0 == *left {
+                    if view.mode == JournalMode::Events
+                        && row.0 > 0
+                        && entries[index - 1].0 == *left
+                    {
                         String::new()
                     } else {
                         left.clone()
@@ -310,12 +350,12 @@ fn refresh(
     }
     for (heading, mut text) in &mut headings {
         text.value = match (view.mode, heading.0) {
-            (0, true) => "Location",
-            (0, false) => "Journal",
-            (1, true) => "Category",
-            (1, false) => "Topic",
-            (_, true) => "Disposition",
-            (_, false) => "Faction",
+            (JournalMode::Events, true) => "Location",
+            (JournalMode::Events, false) => "Journal",
+            (JournalMode::Topics, true) => "Category",
+            (JournalMode::Topics, false) => "Topic",
+            (JournalMode::Factions, true) => "Disposition",
+            (JournalMode::Factions, false) => "Faction",
         }
         .into();
     }
@@ -352,7 +392,7 @@ mod tests {
                 symbol: "FACT_BURZ_SAID130".into(),
                 description: "Before".into(),
                 alternate_description: "After".into(),
-                visibility: 0,
+                visibility: crate::content::npcs::JournalVisibility::AllDifficulties,
                 highlight_when_true: false,
             },
             FactDefinition {
@@ -360,7 +400,7 @@ mod tests {
                 symbol: "FACT_TEMPLAR".into(),
                 description: "Novice hint".into(),
                 alternate_description: String::new(),
-                visibility: 2,
+                visibility: crate::content::npcs::JournalVisibility::NoviceOnly,
                 highlight_when_true: false,
             },
         ]));

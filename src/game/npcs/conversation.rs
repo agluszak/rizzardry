@@ -1007,7 +1007,7 @@ mod tests {
             w.resource_mut::<Assets<FactCatalog>>().add(FactCatalog(vec![FactDefinition {
                 id: FactId(91),
                 highlight_when_true: false,
-                visibility: 0,
+                visibility: crate::content::npcs::JournalVisibility::AllDifficulties,
                 symbol: "FACT_BURZ_SAID130".into(),
                 description: String::new(),
                 alternate_description: String::new(),
@@ -1061,7 +1061,7 @@ mod tests {
             symbol: "FACT_BURZ_SAID130".into(),
             description: "Unfinished".into(),
             alternate_description: "Finished".into(),
-            visibility: 2,
+            visibility: crate::content::npcs::JournalVisibility::NoviceOnly,
             highlight_when_true: true,
         }]);
         let mut facts = StoryFacts::default();

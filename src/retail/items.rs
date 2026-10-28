@@ -458,6 +458,7 @@ fn read_item(index: usize, record: &[u8], strings: &[String]) -> Result<ItemDefi
     let kind_name = KIND_NAMES.get(usize::from(kind)).map_or("", |&k| string(k));
     Ok(ItemDefinition {
         unidentified_name: string(UNIDENTIFIED).replace("%s", kind_name),
+        kind: crate::content::items::ItemKind(kind),
         kind_name: kind_name.to_owned(),
         id: ItemId(index as u16),
         name: utf16_string(&record[..60]),
@@ -650,7 +651,7 @@ mod tests {
         assert_eq!(
             catalog.0[0].spell,
             Some(crate::content::spells::ItemSpell {
-                spell: crate::content::spells::SpellId(39),
+                spell: crate::content::spells::SpellId::KNOCK_KNOCK,
                 power: 0
             })
         );

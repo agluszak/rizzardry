@@ -7,9 +7,24 @@ use crate::content::species::{Disposition, Species};
 
 pub const UNALIGNED: i32 = 0;
 pub const PARTY: i32 = 1;
-const MOOK: usize = 6;
-const RATTKIN_MAFIA: usize = 8;
-const HIGARDI: [usize; 3] = [10, 11, 12];
+pub const DARK_SAVANT: i32 = 2;
+pub const COSMIC_LORDS: i32 = 3;
+pub const UMPANI: i32 = 4;
+pub const TRANG: i32 = 5;
+pub const MOOK: i32 = 6;
+pub const RATTKIN_COMMON: i32 = 7;
+pub const RATTKIN_MAFIA: i32 = 8;
+pub const BROTHERHOOD: i32 = 9;
+pub const HIGARDI_BANK: i32 = 10;
+pub const HIGARDI_LUNAR_LEGION: i32 = 11;
+pub const HIGARDI_COMMON: i32 = 12;
+pub const TRYNNIE: i32 = 13;
+pub const MAD_MARTEN: i32 = 14;
+pub const RAPAX_COMMON: i32 = 15;
+pub const RAPAX_TEMPLAR: i32 = 16;
+pub const RAPAX_ARMY: i32 = 17;
+pub const KINGS_ASSASSINS: i32 = 18;
+const HIGARDI: [i32; 3] = [HIGARDI_BANK, HIGARDI_LUNAR_LEGION, HIGARDI_COMMON];
 
 /// How a faction stands toward the party.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,7 +108,7 @@ impl Factions {
         }
         let before = self.band(faction);
         self.offences[index] = self.offences[index].saturating_add(1).min(250);
-        if index == MOOK || index == RATTKIN_MAFIA || HIGARDI.contains(&index) {
+        if faction == MOOK || faction == RATTKIN_MAFIA || HIGARDI.contains(&faction) {
             if before != Band::Hostile {
                 self.scores[index] = 25;
             }
@@ -138,8 +153,8 @@ mod tests {
         assert_eq!(factions.band(4), Band::Friendly, "Umpani");
         assert_eq!(factions.band(15), Band::Hostile, "common Rapax");
         assert_eq!(factions.band(7), Band::Neutral, "common Rattkin");
-        assert!(factions.record_offence(MOOK as i32, false), "Mook turn at once");
-        assert_eq!(factions.band(MOOK as i32), Band::Hostile);
+        assert!(factions.record_offence(MOOK, false), "Mook turn at once");
+        assert_eq!(factions.band(MOOK), Band::Hostile);
         factions.record_offence(4, false);
         assert_eq!(factions.score(4), Some(78));
         factions.record_offence(4, true);

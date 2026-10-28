@@ -19,7 +19,7 @@ pub struct NpcDefinition {
     pub faction: u8,
     pub buy_factor: f32,
     pub sell_factor: f32,
-    pub accepted_classes: u32,
+    pub accepted_classes: enumset::EnumSet<super::items::EquipClass>,
     pub voice_script: bool,
     pub stock: Vec<StockRule>,
 }
@@ -118,10 +118,19 @@ impl DialogueScript {
     }
 }
 
+/// Which difficulty settings include this historical entry in the journal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JournalVisibility {
+    AllDifficulties,
+    NoviceAndNormal,
+    NoviceOnly,
+    Hidden,
+}
+
 #[derive(Clone, Debug)]
 pub struct FactDefinition {
     pub highlight_when_true: bool,
-    pub visibility: i8,
+    pub visibility: JournalVisibility,
     pub id: FactId,
     pub symbol: String,
     pub description: String,
