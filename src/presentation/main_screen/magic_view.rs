@@ -12,6 +12,7 @@
 //! their shared ownership through selection and payment.
 
 use bevy::input_focus::InputFocus;
+use bevy::input_focus::tab_navigation::{TabGroup, TabIndex};
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::ui::Selected;
@@ -33,7 +34,7 @@ use crate::game::magic::{LearnedSpells, MagicRequest, SpellPoints, resolvable};
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::population::Monster;
 use crate::presentation::retail_controls::{
-    ControlSkin, ScrollWheel, scroll_wheel, set_scroll_maximum, step_scrollbar,
+    ControlSkin, FocusRing, ScrollWheel, scroll_wheel, set_scroll_maximum, step_scrollbar,
 };
 use crate::presentation::screen_art::visible_if;
 use crate::presentation::screen_art::{BitmapText, Picture, absolute};
@@ -72,6 +73,47 @@ pub(super) fn load_magic_view_art(mut commands: Commands, assets: Res<AssetServe
         blue: sheet("fonts/paletteblue"),
         yellow: sheet("fonts/paletteyellow"),
     });
+}
+
+/// The view's keys: Escape closes it, ahead of every screen beneath it (a
+/// camp's Escape would end the rest). Its controls are tab stops and it
+/// takes focus when it opens, so the world's keys and the panel it may
+/// cover do not act while it is up; it gives focus back when it closes.
+#[derive(Component, Clone, Default)]
+pub struct MagicKeys;
+
+#[derive(InputAction)]
+#[action_output(bool)]
+struct CloseMagic;
+
+/// What had focus when the view opened, to have it back when it closes.
+#[derive(Component, Debug)]
+struct RestoreFocus(Option<Entity>);
+
+pub(super) fn plugin(app: &mut App) {
+    app.add_input_context::<MagicKeys>().add_observer(give_focus_back);
+}
+
+fn close_by_key(event: On<Start<CloseMagic>>, mut commands: Commands) {
+    commands.entity(event.context).despawn();
+}
+
+/// However the view closes, focus goes back where it was, if that is
+/// still there.
+fn give_focus_back(
+    remove: On<Remove<MagicView>>,
+    views: Query<&RestoreFocus>,
+    exists: Query<()>,
+    mut focus: Option<ResMut<InputFocus>>,
+) {
+    let (Ok(RestoreFocus(previous)), Some(focus)) = (views.get(remove.entity), focus.as_mut())
+    else {
+        return;
+    };
+    match previous.filter(|&entity| exists.contains(entity)) {
+        Some(entity) => focus.set(entity, bevy::input_focus::FocusCause::Navigated),
+        None => focus.clear(),
+    }
 }
 
 /// The open view and its unconfirmed choice.
@@ -119,8 +161,19 @@ pub(super) struct RealmButton(Realm);
 pub(super) struct RealmText(Realm);
 #[derive(Component, Clone, Copy)]
 pub(super) struct RealmIcon(Realm);
+/// A list row: its place, and the offer it shows, which a click chooses
+/// (a row's place can hold another offer by the time the click lands).
 #[derive(Component, Clone, Copy)]
-pub(super) struct Row(usize);
+pub(super) struct Row(usize, Option<Source>);
+
+/// Whether two sources are the same spell or stack, whatever the power.
+fn same_source(a: Source, b: Source) -> bool {
+    match (a, b) {
+        (Source::Spell { spell: a, .. }, Source::Spell { spell: b, .. }) => a == b,
+        (Source::Item(a), Source::Item(b)) | (Source::PoolItem(a), Source::PoolItem(b)) => a == b,
+        _ => false,
+    }
+}
 #[derive(Component, Clone, Copy)]
 pub(super) struct RowText(usize);
 #[derive(Component, Clone, Copy)]
@@ -198,14 +251,27 @@ pub fn open(
             world.write_message(DeviceRequest::PrepareMagic { on: attempt, actor: caster });
         }
         // Serialize replacements, including multiple opens queued in one frame.
-        let previous: Vec<_> =
-            world.query_filtered::<Entity, With<MagicView>>().iter(world).collect();
-        for view in previous {
+        // A replacement gives focus back to what the first view took it from.
+        let previous: Vec<_> = world
+            .query::<(Entity, &RestoreFocus)>()
+            .iter(world)
+            .map(|(view, restore)| (view, restore.0))
+            .collect();
+        let restore = match previous.first() {
+            Some(&(_, restore)) => restore,
+            None => world.get_resource::<InputFocus>().and_then(InputFocus::get),
+        };
+        for (view, _) in previous {
+            world.entity_mut(view).remove::<RestoreFocus>();
             world.despawn(view);
         }
         let mut state = bevy::ecs::system::SystemState::<Commands>::new(world);
-        spawn_view(&mut state.get_mut(world).unwrap(), &art, caster, items, attempt);
+        let first =
+            spawn_view(&mut state.get_mut(world).unwrap(), &art, caster, items, attempt, restore);
         state.apply(world);
+        if let Some(mut focus) = world.get_resource_mut::<InputFocus>() {
+            focus.set(first, bevy::input_focus::FocusCause::Navigated);
+        }
     });
 }
 
@@ -215,16 +281,22 @@ fn spawn_view(
     caster: Entity,
     items: bool,
     attempt: Option<Entity>,
-) {
+    restore: Option<Entity>,
+) -> Entity {
     let root = commands
         .spawn_scene(bsn! {
-            ContextPriority::<MagicView>::new(1)
-            Actions<MagicView> [
-                Action::<Dismiss>::new() ActionSettings { consume_input: true } Bindings [ Binding(KeyCode::Escape) ]
+            MagicKeys
+            ContextPriority::<MagicKeys>::new(2)
+            Actions<MagicKeys> [
+                Action::<CloseMagic>::new()
+                ActionSettings { consume_input: true }
+                Bindings [ Binding(KeyCode::Escape) ]
             ]
-            on(dismiss)
+            on(close_by_key)
         })
         .insert((
+            RestoreFocus(restore),
+            TabGroup::modal(),
             MagicView {
                 caster,
                 items,
@@ -256,6 +328,8 @@ fn spawn_view(
         commands
             .spawn((
                 UiButton,
+                TabIndex(0),
+                FocusRing,
                 Hovered::default(),
                 skin,
                 Picture { sheet: sheet.clone(), frame: skin.normal, at, bounds: None },
@@ -277,10 +351,13 @@ fn spawn_view(
     let left = bevy::text::Justify::Left;
     let rows_at = if items { Vec2::new(168.0, 366.0) } else { Vec2::new(234.0, 366.0) };
     let rows_width = if items { 284.0 } else { 162.0 };
-    if items {
+    // The view's first focus: its cancel button, which every view has.
+    let cancel = if items {
         commands
             .spawn((
                 UiButton,
+                TabIndex(0),
+                FocusRing,
                 Hovered::default(),
                 absolute(Vec2::new(27.0, 430.0), Vec2::new(130.0, 16.0)),
                 BackgroundColor(Color::srgb(0.15, 0.12, 0.08)),
@@ -321,6 +398,7 @@ fn spawn_view(
             ControlSkin::new(4, 5, 6, 6, 7),
         );
         commands.entity(cancel).observe(cancel_view);
+        cancel
     } else {
         for (frame, x) in [(0, 23.0), (1, 230.0), (2, 420.0)] {
             picture(commands, &art.spell_panels, frame, Vec2::new(x, 358.0));
@@ -354,6 +432,8 @@ fn spawn_view(
                 .spawn((
                     Pip(pip),
                     UiButton,
+                    TabIndex(0),
+                    FocusRing,
                     Hovered::default(),
                     Picture {
                         sheet: art.pips.clone(),
@@ -380,13 +460,16 @@ fn spawn_view(
             ControlSkin::new(4, 5, 6, 6, 7),
         );
         commands.entity(cancel).observe(cancel_view);
-    }
+        cancel
+    };
     for i in 0..ROWS {
         let at = rows_at + Vec2::Y * ROW_HEIGHT * i as f32;
         commands
             .spawn((
-                Row(i),
+                Row(i, None),
                 UiButton,
+                TabIndex(0),
+                FocusRing,
                 Hovered::default(),
                 absolute(at, Vec2::new(rows_width, ROW_HEIGHT)),
                 Pickable::default(),
@@ -400,6 +483,7 @@ fn spawn_view(
             ChildOf(root),
         ));
     }
+    cancel
 }
 
 /// A row's offer: the source, its spell, its label and cost, and whether
@@ -575,7 +659,7 @@ pub(super) fn refresh_magic_view(
     mut parts: ParamSet<(
         Query<(&RealmButton, Has<Selected>, Entity)>,
         Query<(&RealmText, &mut BitmapText)>,
-        Query<(&Row, &mut Visibility)>,
+        Query<(&mut Row, &mut Visibility)>,
         Query<(&RowText, &mut BitmapText)>,
         Query<(&RowCost, &mut BitmapText)>,
         Query<(&Pip, &Hovered, &mut Picture, &mut Visibility), (Without<Row>, Without<RealmIcon>)>,
@@ -588,10 +672,9 @@ pub(super) fn refresh_magic_view(
     mut icons: Query<(&RealmIcon, &mut Picture), (Without<ItemIcon>, Without<Pip>)>,
     time: Res<Time<Real>>,
     rows_hovered: Query<(&Row, &Hovered)>,
-    (mut requests, mut devices, mut focus): (
+    (mut requests, mut devices): (
         MessageWriter<MagicRequest>,
         MessageWriter<crate::game::world::interaction::DeviceRequest>,
-        ResMut<InputFocus>,
     ),
 ) {
     let Ok((root, mut view, scroll, casts_at)) = views.single_mut() else { return };
@@ -682,15 +765,15 @@ pub(super) fn refresh_magic_view(
     set_scroll_maximum(&mut commands, scroll.0, scroll_value, scroll_range, maximum as f32);
     let offset = (scroll_value.0 as usize).min(maximum);
     let hovered = rows_hovered.iter().find(|(_, h)| h.get()).map(|(r, _)| r.0);
-    for (row, mut visibility) in &mut parts.p2() {
-        visibility.set_if_neq(visible_if(row.0 + offset < offers.len()));
+    for (mut row, mut visibility) in &mut parts.p2() {
+        let shown = offers.get(row.0 + offset).map(|offer| offer.source);
+        if row.1 != shown {
+            row.1 = shown;
+        }
+        visibility.set_if_neq(visible_if(shown.is_some()));
     }
-    let chosen = |offer: &Offer| match (view.source, offer.source) {
-        (Some(Source::Spell { spell: a, .. }), Source::Spell { spell: b, .. }) => a == b,
-        (Some(Source::Item(a)), Source::Item(b))
-        | (Some(Source::PoolItem(a)), Source::PoolItem(b)) => a == b,
-        _ => false,
-    };
+    let chosen =
+        |offer: &Offer| view.source.is_some_and(|source| same_source(source, offer.source));
     let palette = |i: usize, offer: &Offer| {
         if chosen(offer) {
             Some(art.blue.clone())
@@ -847,7 +930,6 @@ pub(super) fn refresh_magic_view(
     };
     requests.write(MagicRequest { caster: view.caster, choice: MagicChoice { source, aim } });
     commands.entity(root).despawn();
-    focus.clear();
 }
 
 fn toggle_pool(_: On<Activate>, mut views: Query<&mut MagicView>) {
@@ -876,8 +958,7 @@ fn choose_realm(
 fn choose_row(
     click: On<Activate>,
     rows: Query<&Row>,
-    mut views: Query<(&mut MagicView, &MagicScroll, Option<&CastsAt>)>,
-    sliders: Query<&SliderValue>,
+    mut views: Query<(&mut MagicView, Option<&CastsAt>)>,
     members: Query<(&Character, &Vitals, Option<&Carried>)>,
     casters: Query<(&LearnedSpells, Option<&SpellPoints>)>,
     battle: Option<Single<&Battle>>,
@@ -888,8 +969,7 @@ fn choose_row(
     ),
     content: crate::game::data::Content,
 ) {
-    let (Ok(row), Ok((mut view, scroll, casts_at))) = (rows.get(click.entity), views.single_mut())
-    else {
+    let (Ok(row), Ok((mut view, casts_at))) = (rows.get(click.entity), views.single_mut()) else {
         return;
     };
     let (Some(spells), Some(items)) = (content.spells(), content.items()) else {
@@ -915,16 +995,11 @@ fn choose_row(
         &pool,
         silenced,
     );
-    // Unavailable rows only explain themselves in retail; here they do nothing.
-    if let Some(offer) = offers
-        .get(
-            row.0
-                + sliders
-                    .get(scroll.0)
-                    .map_or(0, |v| v.0 as usize)
-                    .min(offers.len().saturating_sub(ROWS)),
-        )
-        .filter(|o| o.available)
+    // The offer the row showed, as it stands now. Unavailable rows only
+    // explain themselves in retail; here they do nothing.
+    let Some(shown) = row.1 else { return };
+    if let Some(offer) =
+        offers.iter().find(|o| same_source(o.source, shown)).filter(|o| o.available)
     {
         view.source = Some(offer.source);
         view.power = None;
@@ -942,21 +1017,84 @@ fn choose_power(click: On<Activate>, pips: Query<&Pip>, mut views: Query<&mut Ma
     view.power = if view.power == Some(power) { None } else { Some(power) };
 }
 
-pub(super) fn plugin(app: &mut App) {
-    app.add_input_context::<MagicView>();
-}
-
-/// Escape closes the view before the other screens' keys see it.
-#[derive(InputAction)]
-#[action_output(bool)]
-struct Dismiss;
-
-fn dismiss(dismiss: On<Start<Dismiss>>, mut commands: Commands) {
-    commands.entity(dismiss.context).despawn();
-}
-
 fn cancel_view(_: On<Activate>, views: Query<Entity, With<MagicView>>, mut commands: Commands) {
     for view in &views {
         commands.entity(view).despawn();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::presentation::test_input::{input_app, tap};
+
+    #[derive(Component, Clone, Default)]
+    struct Beneath;
+
+    #[derive(InputAction)]
+    #[action_output(bool)]
+    struct LeaveBeneath;
+
+    #[derive(Resource, Default)]
+    struct Left(u32);
+
+    /// Escape closes the view and nothing beneath it (a camp's Escape ends
+    /// the rest), and focus goes back to what had it, such as a device
+    /// panel's button, rather than staying on a hidden control.
+    #[test]
+    fn escape_closes_only_the_view_and_gives_focus_back() {
+        let mut app = input_app();
+        app.add_plugins((
+            plugin,
+            bevy::input_focus::InputDispatchPlugin,
+            bevy::input_focus::tab_navigation::TabNavigationPlugin,
+        ))
+        .add_input_context::<Beneath>()
+        .init_asset::<SpriteSheet>()
+        .init_resource::<Left>()
+        .insert_resource(MagicViewArt {
+            spell_panels: default(),
+            realm_buttons: default(),
+            realms: default(),
+            pips: default(),
+            cancel: default(),
+            scroll: default(),
+            item_panels: default(),
+            font: default(),
+            red: default(),
+            orange: default(),
+            blue: default(),
+            yellow: default(),
+        });
+        app.finish();
+        app.cleanup();
+        let window = app.world_mut().spawn((Window::default(), bevy::window::PrimaryWindow)).id();
+        app.world_mut().commands().spawn_scene(bsn! {
+            Beneath
+            ContextPriority::<Beneath>::new(1)
+            Actions<Beneath> [
+                Action::<LeaveBeneath>::new()
+                ActionSettings { consume_input: true }
+                Bindings [ Binding(KeyCode::Escape) ]
+            ]
+            on(|_: On<Start<LeaveBeneath>>, mut left: ResMut<Left>| left.0 += 1)
+        });
+        let before = app.world_mut().spawn((UiButton, TabIndex(0))).id();
+        app.world_mut()
+            .resource_mut::<InputFocus>()
+            .set(before, bevy::input_focus::FocusCause::Navigated);
+        let caster = app.world_mut().spawn_empty().id();
+        let art = app.world().resource::<MagicViewArt>().clone();
+        open(&mut app.world_mut().commands(), &art, caster, false, None);
+        app.update();
+        app.update();
+        let focused = app.world().resource::<InputFocus>().get().unwrap();
+        assert_ne!(focused, before, "the view takes focus");
+        assert_eq!(app.world_mut().query::<&MagicView>().iter(app.world()).count(), 1);
+        tap(&mut app, window, KeyCode::Escape);
+        app.update();
+        assert_eq!(app.world_mut().query::<&MagicView>().iter(app.world()).count(), 0);
+        assert_eq!(app.world().resource::<InputFocus>().get(), Some(before));
+        assert_eq!(app.world().resource::<Left>().0, 0, "what lies beneath keeps its Escape");
     }
 }

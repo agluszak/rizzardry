@@ -3,7 +3,6 @@
 //! effects are not modelled yet; missiles hit by the same roll as melee
 //! (a deliberate approximation of retail's scattered aim point).
 
-use bevy::prelude::Component;
 use enum_map::EnumMap;
 use enumset::EnumSet;
 
@@ -127,7 +126,7 @@ fn fatigue_penalty(c: &Character, vitals: &Vitals) -> i32 {
 
 /// A member's main hand, as the character sheet works it out. Members carry
 /// theirs, kept current by `sync_stats`.
-#[derive(Component, Clone, Debug, Default, PartialEq)]
+#[derive(bevy::prelude::Component, Clone, Debug, Default, PartialEq)]
 pub struct Hand {
     pub reach: Reach,
     pub dice: Dice,
@@ -224,15 +223,11 @@ pub fn primary_hand(c: &Character, carried: &Carried, catalog: &ItemCatalog, loa
 }
 
 /// A member's total and per-location armour, without skills, spells or
-/// conditions, and what defending would add to it. Members carry theirs,
-/// kept current by `sync_stats`; defending is applied where it is used.
-#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// conditions. Calculated from current inputs, never stored on the member.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Armour {
     pub total: i32,
     pub by_location: EnumMap<BodyPart, i32>,
-    /// What the defensive action adds everywhere: 2, and Shield skill
-    /// counting for more.
-    pub defence: i32,
 }
 
 impl Armour {
@@ -248,33 +243,25 @@ impl Armour {
         let total: i32 = self.by_location.iter().map(|(part, value)| value * weight(part)).sum();
         (total as f32 / 100.0).round() as i32
     }
-
-    /// This armour while its wearer defends (retail `CalcArmorClasses` with
-    /// the defensive action), or as it is.
-    pub fn defending(self, defends: bool) -> Self {
-        if !defends {
-            return self;
-        }
-        Armour {
-            total: self.total + self.defence,
-            by_location: self.by_location.map(|_, value| value + self.defence),
-            ..self
-        }
-    }
 }
 
-/// A character's armour (retail `CalcArmorClasses`), and what defending adds:
-/// 2 everywhere, and a shield's Shield skill bonus at skill/15 up to half as
-/// much again as the shield, instead of skill/25 up to the shield.
-pub fn armour(c: &Character, carried: &Carried, catalog: &ItemCatalog, load: Load) -> Armour {
+/// A character's armour (retail `CalcArmorClasses`). Defending adds 2
+/// everywhere and lets Shield skill count for more.
+pub fn armour(
+    c: &Character,
+    carried: &Carried,
+    catalog: &ItemCatalog,
+    load: Load,
+    defending: bool,
+) -> Armour {
     let definition = |slot| carried.worn(slot).and_then(|i| catalog.get(i.item));
     let speed = c.attribute(Attribute::Speed);
     let mut total =
         i32::from(c.race == Race::Faerie) * 2 + i32::from(speed > 79) + i32::from(speed > 89)
             - i32::from(speed < 20)
             - i32::from(speed < 10)
-            - load.armour_penalty();
-    let mut defence = 2;
+            - load.armour_penalty()
+            + if defending { 2 } else { 0 };
     // Shields and magic items worn in the misc, cloak and hand slots.
     for slot in [
         EquipSlot::Misc1,
@@ -288,9 +275,11 @@ pub fn armour(c: &Character, carried: &Carried, catalog: &ItemCatalog, load: Loa
             if d.class == EquipClass::Shield {
                 let shield = i32::from(d.armor_class_bonus);
                 let skill = c.skill(Skill::Shield) as i32;
-                let bonus = (skill / 25).min(shield);
-                total += bonus;
-                defence += (skill / 15).min(shield * 3 / 2) - bonus;
+                total += if defending {
+                    (skill / 15).min(shield * 3 / 2)
+                } else {
+                    (skill / 25).min(shield)
+                };
             }
         }
     }
@@ -298,7 +287,7 @@ pub fn armour(c: &Character, carried: &Carried, catalog: &ItemCatalog, load: Loa
         let worn = definition(armour_slot(part));
         total + worn.map_or(0, |d: &ItemDefinition| i32::from(d.armor_class_bonus))
     });
-    Armour { total, by_location, defence }
+    Armour { total, by_location }
 }
 
 /// What one swing did.
@@ -456,9 +445,8 @@ mod tests {
         carried.equipment[EquipSlot::Secondary] = Some(Equipped::new(stack));
         let mut bearer = Character::new("A", Race::Human, Gender::Male, Profession::Mage);
         let gain = |bearer: &Character| {
-            let standing = armour(bearer, &carried, &catalog, Load::None);
-            let defending = standing.defending(true);
-            assert_eq!(standing.defending(false), standing);
+            let standing = armour(bearer, &carried, &catalog, Load::None, false);
+            let defending = armour(bearer, &carried, &catalog, Load::None, true);
             for (part, armour) in &defending.by_location {
                 assert_eq!(armour - standing.by_location[part], defending.total - standing.total);
             }

@@ -139,6 +139,8 @@ pub(super) fn build(commands: &mut Commands, panel: Entity, root: Entity, art: &
 pub(super) fn refresh(
     screen: Option<Single<&InventoryScreen>>,
     members: Query<CharacterView>,
+    content: crate::game::data::Content,
+    battle: Option<Single<&crate::game::combat::Battle>>,
     art: Option<Res<InventoryArt>>,
     mut values: Query<(&Value, &mut BitmapText)>,
     mut bars: Query<&mut PictureCrop, With<ExperienceBar>>,
@@ -146,10 +148,8 @@ pub(super) fn refresh(
     let (Some(screen), Some(art)) = (screen, art) else { return };
     let Ok(view) = members.get(screen.member) else { return };
     let load = view.load();
-    let armour = view.armour();
-    let CharacterViewItem { profile: character, vitals, carried, burden, .. } = view;
-    // Armour is shown only for someone who carries things.
-    let armour = carried.and(armour);
+    let armour = view.armour(screen.member, content.items(), battle.as_deref().copied());
+    let CharacterViewItem { profile: character, vitals, burden, .. } = view;
 
     let weight = burden.map(|burden| burden.weight);
     for (kind, mut text) in &mut values {
@@ -203,7 +203,7 @@ mod tests {
     use crate::game::data::GameData;
 
     #[test]
-    fn removing_carried_items_clears_all_equipment_derived_labels() {
+    fn armour_labels_follow_live_inputs_and_clear_without_equipment() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .init_resource::<Assets<ItemCatalog>>()
@@ -223,9 +223,13 @@ mod tests {
         let base = app.world_mut().spawn((Value::BaseArmour, BitmapText::default())).id();
         let average = app.world_mut().spawn((Value::AverageArmour, BitmapText::default())).id();
         app.update();
-        assert!(!app.world().get::<BitmapText>(base).unwrap().value.is_empty());
-        assert!(!app.world().get::<BitmapText>(average).unwrap().value.is_empty());
+        assert_eq!(app.world().get::<BitmapText>(base).unwrap().value, "0");
+        assert_eq!(app.world().get::<BitmapText>(average).unwrap().value, "0");
+        // No combat plugin or synchronization pass is needed for live stats.
+        app.world_mut().get_mut::<Character>(actor).unwrap().race = Race::Faerie;
         app.update();
+        assert_eq!(app.world().get::<BitmapText>(base).unwrap().value, "2");
+        assert_eq!(app.world().get::<BitmapText>(average).unwrap().value, "2");
         app.world_mut().entity_mut(actor).remove::<Carried>();
         app.update();
         assert!(app.world().get::<BitmapText>(base).unwrap().value.is_empty());

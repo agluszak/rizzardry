@@ -1036,7 +1036,16 @@ fn a_refused_take_leaves_container_receiver_and_identities_untouched() {
     }
     level.world.entity_mut(member).insert(stuffed.clone());
     let on = attempt(&level);
-    take_from_container(&mut level.world, on, &[(quiver, 4)], Recipient::Member(member)).unwrap();
+    assert_eq!(
+        take_from_container(&mut level.world, on, &[(quiver, 4)], Recipient::Member(member)),
+        Err(Refusal::NoRoom),
+        "a take that moves nothing is refused"
+    );
+    // Two picks of one stack would each be checked against its whole count.
+    assert_eq!(
+        take_from_container(&mut level.world, on, &[(quiver, 6), (quiver, 6)], Recipient::Party),
+        Err(Refusal::Nothing)
+    );
     assert_eq!(contents(&level), before);
     assert_eq!(level.world.get::<Carried>(member), Some(&stuffed));
     assert_eq!(next_id(&level), ids_before);

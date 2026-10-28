@@ -36,7 +36,7 @@ use crate::game::time::GameClock;
 use crate::game::world::damage::{MonsterDamage, MonsterQuery};
 use crate::game::world::identify::{GroupMember, GroupMembers, GroupRecognition};
 use crate::game::world::population::Monster;
-use attack::{Armour, Hand, Swing, character_initiative, character_swing, monster_swing, phase};
+use attack::{Hand, Swing, character_initiative, character_swing, monster_swing, phase};
 use bevy::ecs::relationship::RelationshipTarget;
 
 pub struct CombatPlugin;
@@ -58,7 +58,6 @@ impl Plugin for CombatPlugin {
                     // Defeat is settled before a fight starts or a round runs,
                     settle_defeat,
                     start_battle,
-                    track_party_move,
                     begin_round,
                     run_battle,
                     // and again after the round's damage.
@@ -67,6 +66,16 @@ impl Plugin for CombatPlugin {
                 )
                     .chain()
                     .in_set(crate::game::GameplaySet::Combat)
+                    .run_if(crate::game::world::level::level_active),
+            )
+            // The party walks on the fixed step; its move is measured on
+            // every step, once physics has moved it, so how frames batch
+            // those steps changes neither the ground counted nor where the
+            // budget runs out.
+            .add_systems(
+                FixedPostUpdate,
+                track_party_move
+                    .after(avian3d::prelude::PhysicsSystems::Writeback)
                     .run_if(crate::game::world::level::level_active),
             );
     }
@@ -157,12 +166,13 @@ struct Turn {
     attacks_left: u32,
 }
 
-/// Accepted round work identifies the actor and weapon, never a roster slot.
-/// Order, weapon identity, initiative and attack count are locked at acceptance.
+/// Effective round work identifies the actor and weapon, never a roster slot.
+/// The action starts from the accepted order; execution may replace a refused
+/// spell with Defend. Weapon identity, initiative and attack count stay locked.
 /// Execution revalidates membership, ability, weapon presence and current reach;
 /// damage profiles and fatigue use the actor's live stats and accepted weapon.
 #[derive(Clone, Copy, Debug)]
-enum AcceptedAction {
+enum RoundAction {
     Attack {
         weapon: Option<StackId>,
     },
@@ -174,7 +184,7 @@ enum AcceptedAction {
 #[derive(Clone, Copy, Debug)]
 struct PartyTurn {
     actor: Entity,
-    action: AcceptedAction,
+    action: RoundAction,
     turn: Turn,
 }
 
@@ -183,18 +193,6 @@ struct PartyTurn {
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 #[relationship(relationship_target = Combatants)]
 pub struct Combatant(pub Entity);
-
-/// A member defends in the current round: from the round's acceptance until
-/// the next one, ending with the fight (retail's defensive action in
-/// `CalcArmorClasses`).
-#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
-#[relationship(relationship_target = Defenders)]
-pub struct Defends(pub Entity);
-
-/// The members defending in a fight, maintained by Bevy from [`Defends`].
-#[derive(Component, Debug, Default)]
-#[relationship_target(relationship = Defends)]
-pub struct Defenders(Vec<Entity>);
 
 /// The monsters in a fight, in the order they joined (by location id),
 /// maintained by Bevy from [`Combatant`].
@@ -257,6 +255,15 @@ impl Battle {
         self.phase != RoundPhase::Waiting
     }
 
+    /// The effective action retained until the next round or battle removal.
+    /// Spending or losing a turn does not end defense; a refused spell starts it.
+    pub fn defends(&self, actor: Entity) -> bool {
+        self.this_round
+            .party
+            .iter()
+            .any(|work| work.actor == actor && matches!(work.action, RoundAction::Defend))
+    }
+
     /// Whether the party may walk: in a fight, only during its own move.
     pub fn party_may_move(&self) -> bool {
         matches!(self.party_move, PartyMove::Moving { .. })
@@ -285,14 +292,20 @@ impl Battle {
         news.write(CombatNews::Killed { actor: monster });
     }
 
-    /// Credit and announce the monsters a spell's effects killed, whether it
+    /// Credit and announce the kills a spell's effects made, whether it
     /// landed at once or as a missile: the one place spell kills are counted.
+    /// A member it killed is announced as one a monster's blow kills is.
     pub fn credit_kills(&mut self, effects: &[Effect], news: &mut MessageWriter<CombatNews>) {
         for effect in effects {
-            if let Effect::Damaged { victim: Victim::Monster(target), outcome, .. } = *effect
-                && outcome.died
-            {
-                self.credit_kill(target, outcome.experience, news);
+            let Effect::Damaged { victim, outcome, .. } = *effect else { continue };
+            if !outcome.died {
+                continue;
+            }
+            match victim {
+                Victim::Monster(target) => self.credit_kill(target, outcome.experience, news),
+                Victim::Member(member) => {
+                    news.write(CombatNews::Killed { actor: member });
+                }
             }
         }
     }
@@ -545,8 +558,6 @@ pub fn settle_defeat(
 /// and weapon, and everyone's initiative and attacks, the party first, then
 /// the combatants in order. Pacing delays only its execution.
 fn accept_round(
-    commands: &mut Commands,
-    entity: Entity,
     battle: &mut Battle,
     combatants: &[Entity],
     roster: &PartyRoster,
@@ -566,26 +577,21 @@ fn accept_round(
         };
         let action = match orders.get(member).copied().unwrap_or_default() {
             Order::Attack => {
-                AcceptedAction::Attack { weapon: carried.worn(EquipSlot::Primary).map(|i| i.id) }
+                RoundAction::Attack { weapon: carried.worn(EquipSlot::Primary).map(|i| i.id) }
             }
-            Order::Defend => AcceptedAction::Defend,
-            Order::Magic(choice) => AcceptedAction::Magic(choice),
+            Order::Defend => RoundAction::Defend,
+            Order::Magic(choice) => RoundAction::Magic(choice),
         };
         let turn = match action {
-            AcceptedAction::Attack { .. } if vitals.can_fight() => Turn {
+            RoundAction::Attack { .. } if vitals.can_fight() => Turn {
                 phase: phase(rng, character_initiative(character, hand, burden.load)),
                 attacks_left: hand.attacks,
             },
-            AcceptedAction::Magic(_) if vitals.can_fight() => {
+            RoundAction::Magic(_) if vitals.can_fight() => {
                 Turn { phase: phase(rng, character.initiative(burden.load)), attacks_left: 1 }
             }
             _ => Turn::default(),
         };
-        if matches!(action, AcceptedAction::Defend) {
-            commands.entity(member).insert(Defends(entity));
-        } else {
-            commands.entity(member).remove::<Defends>();
-        }
         round.party.push(PartyTurn { actor: member, action, turn });
     }
     for &entity in combatants {
@@ -626,9 +632,8 @@ fn accept_round(
 /// (retail `UpdateCombat`, `BeginCombatExecution`). Choosing the party's
 /// pace between rounds is taken here too.
 pub fn begin_round(
-    mut commands: Commands,
     time: Res<Time>,
-    battle: Option<Single<(Entity, &mut Battle, Option<&Combatants>)>>,
+    battle: Option<Single<(&mut Battle, Option<&Combatants>)>>,
     mut rng: ResMut<GameRng>,
     (mut members, damage, hands): (Members, MonsterDamage, Query<&Hand>),
     (roster, orders, settings): (Single<&PartyRoster>, Query<&Order>, Res<CombatSettings>),
@@ -640,7 +645,7 @@ pub fn begin_round(
     mut news: MessageWriter<CombatNews>,
     (mut starts, mut moves): (MessageReader<StartRound>, MessageReader<CyclePartyMove>),
 ) {
-    let Some((entity, mut battle, combatants)) = battle.map(Single::into_inner) else {
+    let Some((mut battle, combatants)) = battle.map(Single::into_inner) else {
         starts.clear();
         moves.clear();
         return;
@@ -668,10 +673,8 @@ pub fn begin_round(
         return;
     }
     let roster = &**roster;
-    let mut accept = |battle: &mut Battle, rng: &mut GameRng| {
+    let accept = |battle: &mut Battle, rng: &mut GameRng| {
         accept_round(
-            &mut commands,
-            entity,
             battle,
             combatants,
             roster,
@@ -711,7 +714,7 @@ pub fn run_battle(
     mut actors: ParamSet<((Members, MonsterDamage), GroupRecognition)>,
     party_body: Query<(&Position, &PartyBody)>,
     (roster, content): (Single<&PartyRoster>, crate::game::data::Content),
-    (armours, hands): (Query<(&Armour, Has<Defends>)>, Query<&Hand>),
+    hands: Query<&Hand>,
     mut magic: BattleMagic,
     mut news: MessageWriter<CombatNews>,
 ) {
@@ -742,8 +745,13 @@ pub fn run_battle(
         if let PartyMove::Pending { pace, phase } = battle.party_move
             && phase <= step
         {
-            battle.party_move =
-                PartyMove::Moving { pace, budget: pace.combat_budget(), moved: 0.0, last: None };
+            // Counted from where the party stands as its move begins.
+            battle.party_move = PartyMove::Moving {
+                pace,
+                budget: pace.combat_budget(),
+                moved: 0.0,
+                last: Some(position.0),
+            };
             news.write(CombatNews::PartyMoves);
             return;
         }
@@ -806,7 +814,6 @@ pub fn run_battle(
                 &mut rng,
                 roster,
                 &mut members,
-                &armours,
                 &damage,
                 &party,
                 &mut magic.context,
@@ -843,18 +850,18 @@ fn party_turn(
         && members.get(member).is_ok_and(|(_, vitals, carried, _)| {
             vitals.can_fight()
                 && match work.action {
-                    AcceptedAction::Attack { weapon } => {
+                    RoundAction::Attack { weapon } => {
                         weapon == carried.worn(EquipSlot::Primary).map(|i| i.id)
                     }
-                    AcceptedAction::Magic(_) => true,
-                    AcceptedAction::Defend => false,
+                    RoundAction::Magic(_) => true,
+                    RoundAction::Defend => false,
                 }
         });
     if !able_now {
         battle.this_round.party[index].turn = Turn::default();
         return false;
     }
-    if let AcceptedAction::Magic(choice) = work.action {
+    if let RoundAction::Magic(choice) = work.action {
         battle.this_round.party[index].turn = Turn::default();
         match member_casts(combatants, member, choice, rng, members, damage, party, magic) {
             Ok((report, flights)) => {
@@ -868,7 +875,7 @@ fn party_turn(
             // `ExecuteCharacterAction`), its turn spent.
             Err(refusal) => {
                 info!("magic refused: {refusal:?}");
-                battle.this_round.party[index].action = AcceptedAction::Defend;
+                battle.this_round.party[index].action = RoundAction::Defend;
                 magic.context.news.write(MagicNews::Refused { caster: member, refusal });
             }
         }
@@ -1186,7 +1193,6 @@ fn monster_turn(
     rng: &mut GameRng,
     roster: &PartyRoster,
     members: &mut Members,
-    armours: &Query<(&Armour, Has<Defends>)>,
     damage: &MonsterDamage,
     party: &PartyView,
     context: &mut MagicContext,
@@ -1208,11 +1214,10 @@ fn monster_turn(
         rng,
         roster,
         members,
-        armours,
         damage.monsters(),
         party,
         formation,
-        catalogs.1,
+        catalogs,
         news,
         party_damage,
     );
@@ -1238,11 +1243,10 @@ fn monster_acts(
     rng: &mut GameRng,
     roster: &PartyRoster,
     members: &mut Members,
-    armours: &Query<(&Armour, Has<Defends>)>,
     monsters: &MonsterQuery,
     party: &PartyView,
     formation: &mut Mut<Formation>,
-    species: &MonsterCatalog,
+    (items, species): (&ItemCatalog, &MonsterCatalog),
     news: &mut MessageWriter<CombatNews>,
     damage: &mut MessageWriter<DamageApplied>,
 ) -> bool {
@@ -1274,11 +1278,10 @@ fn monster_acts(
     let attack = &kind.attacks[a];
     // Retail draws for the mode again, from just the one chosen.
     let mode = attack::choose_mode(rng, EnumSet::only(mode));
-    let Ok((character, mut vitals, ..)) = members.get_mut(member) else {
+    let Ok((character, mut vitals, carried, burden)) = members.get_mut(member) else {
         return false;
     };
-    // Defending counts from the round's acceptance until the next.
-    let armour = armours.get(member).map_or_else(|_| Armour::default(), |(a, d)| a.defending(d));
+    let armour = attack::armour(&character, &carried, items, burden.load, battle.defends(member));
     let swings = rng.below(u32::from(kind.swings_per_round.max(1))) + 1;
     news.write(CombatNews::Attack {
         attacker: entity,
@@ -1359,7 +1362,7 @@ fn end_round(
             continue;
         }
         let Ok((character, mut vitals, ..)) = members.get_mut(member) else { continue };
-        let resting = matches!(work.action, AcceptedAction::Defend)
+        let resting = battle.defends(member)
             || matches!(vitals.worst_condition(), Some(Condition::Asleep | Condition::Unconscious));
         if vitals.is_dead() || !resting {
             continue;
@@ -1630,6 +1633,62 @@ mod tests {
         assert!(!attackers.contains(&"A".to_owned()), "casting replaces the attack");
     }
 
+    #[test]
+    fn refused_spell_defends_for_armour_and_recovery_until_the_next_round() {
+        use crate::content::characters::Realm;
+        use crate::game::inventory::Burden;
+        let (mut app, [caster, _]) = round_app(true);
+        order_spell(&mut app, caster, energy_blast());
+        app.world_mut().get_mut::<Vitals>(caster).unwrap().stamina -= 10;
+        let before = app.world().get::<Vitals>(caster).unwrap().stamina;
+        // Accept the spell but delay execution, then invalidate its payment.
+        fight_mut(app.world_mut()).wait = Timer::from_seconds(3.0, TimerMode::Once);
+        app.update();
+        assert!(matches!(
+            fight(app.world()).unwrap().this_round.party[0].action,
+            RoundAction::Magic(_)
+        ));
+        assert!(!fight(app.world()).unwrap().defends(caster));
+        app.world_mut().get_mut::<SpellPoints>(caster).unwrap().current[Realm::Fire] = 0;
+        let mut refused = false;
+        for _ in 0..12 {
+            app.update();
+            refused |= app.world_mut().resource_mut::<Messages<MagicNews>>().drain().any(
+                |news| matches!(news, MagicNews::Refused { caster: actor, .. } if actor == caster),
+            );
+            if refused {
+                break;
+            }
+        }
+        assert!(refused);
+        let battle = fight(app.world()).unwrap();
+        assert!(battle.defends(caster));
+        assert_eq!(battle.this_round.party[0].turn, Turn::default());
+        let world = app.world();
+        let character = world.get::<Character>(caster).unwrap();
+        let carried = world.get::<Carried>(caster).unwrap();
+        let load = world.get::<Burden>(caster).unwrap().load;
+        let items = GameData::items(world).unwrap();
+        let baseline = attack::armour(character, carried, items, load, false);
+        let defended = attack::armour(character, carried, items, load, battle.defends(caster));
+        assert_eq!(defended.total, baseline.total + 2);
+        assert_eq!(defended.average(), baseline.average() + 2);
+        // Draft edits and a spent turn cannot undo the effective defense.
+        app.world_mut().entity_mut(caster).insert(Order::Attack);
+        for _ in 0..12 {
+            if !fight(app.world()).unwrap().executing() {
+                break;
+            }
+            app.update();
+        }
+        assert!(!fight(app.world()).unwrap().executing());
+        assert!(fight(app.world()).unwrap().defends(caster));
+        assert!(app.world().get::<Vitals>(caster).unwrap().stamina > before);
+        app.world_mut().write_message(StartRound);
+        app.update();
+        assert!(!fight(app.world()).unwrap().defends(caster));
+    }
+
     /// A spell missile flies before it lands: the cast reports at once, the
     /// damage when it arrives, and the fight's next actor waits for it.
     #[test]
@@ -1783,6 +1842,32 @@ mod tests {
         assert_eq!(killed, [CombatNews::Killed { actor: monster }]);
     }
 
+    /// A member killed by magic is announced as one killed in melee is.
+    #[test]
+    fn a_member_killed_by_magic_is_announced() {
+        let (mut app, [caster, member]) = round_app(true);
+        order_spell(
+            &mut app,
+            caster,
+            crate::content::spells::SpellDefinition {
+                dice: Some(Dice { base: 1000, count: 0, sides: 0 }),
+                ..energy_blast()
+            },
+        );
+        app.world_mut().resource_mut::<Messages<CombatNews>>().clear();
+        let id = crate::content::spells::SpellId::ENERGY_BLAST;
+        land(&mut app, vec![missile(caster, id, Victim::Member(member))]);
+        assert!(app.world().get::<Vitals>(member).unwrap().is_dead());
+        let killed: Vec<_> = app
+            .world_mut()
+            .resource_mut::<Messages<CombatNews>>()
+            .drain()
+            .filter(|n| matches!(n, CombatNews::Killed { .. }))
+            .collect();
+        assert_eq!(killed, [CombatNews::Killed { actor: member }]);
+        assert_eq!(fight(app.world()).unwrap().kills, 0, "a member is no kill");
+    }
+
     /// Skills an impact improves (a member resisting, practising Iron Will)
     /// are reported with the landing, exactly when they improved.
     #[test]
@@ -1912,7 +1997,8 @@ mod tests {
             .query_filtered::<Entity, With<PartyBody>>()
             .single(app.world())
             .unwrap();
-        app.update();
+        // Ground covered from the moment the move begins counts, however
+        // the frames fall.
         app.world_mut().get_mut::<Position>(body).unwrap().0 += Vec3::X * 21.0;
         app.update();
         news.extend(app.world_mut().resource_mut::<Messages<CombatNews>>().drain());

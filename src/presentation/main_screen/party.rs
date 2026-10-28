@@ -305,6 +305,7 @@ pub fn draw_party(
     assets: Res<AssetServer>,
     slots: PortraitSlots,
     members: Query<CharacterView>,
+    battle: Option<Single<&crate::game::combat::Battle>>,
     content: crate::game::data::Content,
     mut parts: Query<(
         &PartyPart,
@@ -332,7 +333,7 @@ pub fn draw_party(
             ..default()
         };
         if let Some(view) = actor {
-            let armour = view.armour();
+            let armour = view.armour(part.member, catalog, battle.as_deref().copied());
             let CharacterViewItem { profile, vitals, carried, .. } = view;
             let dead = vitals.is_dead();
             let worn = |slot| {

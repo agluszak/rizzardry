@@ -1,9 +1,10 @@
 //! Members' derived stats: what follows from their profile, belongings and
-//! load (their load itself, armour, main hand, resistances and spell-point
-//! maximum), kept on them and refreshed at one point in each update,
-//! [`GameplaySet::Stats`]. Everything after it in the update reads them
-//! current; a change made later shows from the next update's refresh.
-//! Transient modifiers, such as defending, are applied where they are used.
+//! load and is read throughout fights and spells (their load itself, main
+//! hand, resistances and spell-point maximum), kept on them and refreshed at
+//! one point in each update, [`GameplaySet::Stats`]. Everything after it in
+//! the update reads them current; a change made later shows from the next
+//! update's refresh. Armour, which also depends on the round's action, is
+//! calculated where it is used.
 
 use bevy::prelude::*;
 
@@ -11,7 +12,7 @@ use crate::game::GameplaySet;
 use crate::game::characters::Character;
 use crate::game::characters::resistance::{Resistances, resistances};
 use crate::game::combat::Battle;
-use crate::game::combat::attack::{Armour, Hand, armour, primary_hand};
+use crate::game::combat::attack::{Hand, primary_hand};
 use crate::game::inventory::{Burden, Carried, distribute_burden};
 use crate::game::magic::sync_spell_points;
 use crate::game::world::level::level_active;
@@ -31,13 +32,13 @@ pub(crate) fn plugin(app: &mut App) {
     );
 }
 
-/// Keep each member's armour, main hand and resistances current, recomputing
-/// them only when something they are made of changes: the character, what
-/// they wear or their load.
+/// Keep each member's main hand and resistances current, recomputing them
+/// only when something they are made of changes: the character, what they
+/// wear or their load.
 pub fn sync_stats(
     mut members: Query<(
         (Ref<Character>, Ref<Carried>, Ref<Burden>),
-        (&mut Armour, &mut Hand, &mut Resistances),
+        (&mut Hand, &mut Resistances),
     )>,
     content: crate::game::data::Content,
     mut had_catalog: Local<bool>,
@@ -45,9 +46,7 @@ pub fn sync_stats(
     let Some(catalog) = content.items() else { return };
     // Everyone's stats are settled once the item catalog has loaded.
     let loaded = !std::mem::replace(&mut *had_catalog, true);
-    for ((character, carried, burden), (mut stored_armour, mut hand, mut stored_resistances)) in
-        &mut members
-    {
+    for ((character, carried, burden), (mut hand, mut stored_resistances)) in &mut members {
         let worn = loaded || character.is_changed() || carried.is_changed();
         if worn {
             stored_resistances.set_if_neq(Resistances(resistances(&character, &carried, catalog)));
@@ -55,7 +54,6 @@ pub fn sync_stats(
         if worn || burden.is_changed() {
             let load = burden.load;
             hand.set_if_neq(primary_hand(&character, &carried, catalog, load));
-            stored_armour.set_if_neq(armour(&character, &carried, catalog, load));
         }
     }
 }
