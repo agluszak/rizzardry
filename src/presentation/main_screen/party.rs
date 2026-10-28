@@ -431,7 +431,7 @@ pub fn draw_party(
                 }
             }
         }
-        visible.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
+        visible.set_if_neq(crate::presentation::screen_art::shown(shown));
         if let Some(mut picture) = picture
             && let Some(mut source) = source
         {
@@ -481,11 +481,9 @@ pub fn place_party_buttons(
     mut empty: Query<(&EmptySlot, &mut Visibility)>,
 ) {
     for (slot, mut visible) in &mut empty {
-        visible.set_if_neq(if roster.get_index(slot.0).is_none_or(|e| !members.contains(*e)) {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        });
+        visible.set_if_neq(crate::presentation::screen_art::shown(
+            roster.get_index(slot.0).is_none_or(|e| !members.contains(*e)),
+        ));
     }
     for (button, mut node) in &mut buttons {
         let Some(slot) = roster.get_index_of(&button.member) else { continue };
@@ -756,11 +754,7 @@ pub fn play_splats(
                 picture.set_if_neq(Picture { sheet: sheet.clone(), frame, at, bounds: None });
             }
             if let Ok((mut visible, mut label)) = numbers.get_mut(part) {
-                visible.set_if_neq(if frame < 6 {
-                    Visibility::Inherited
-                } else {
-                    Visibility::Hidden
-                });
+                visible.set_if_neq(crate::presentation::screen_art::shown(frame < 6));
                 let value = splat.damage.to_string();
                 if label.value != value {
                     label.value = value;

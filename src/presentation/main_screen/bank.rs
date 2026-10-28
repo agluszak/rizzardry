@@ -20,6 +20,7 @@ use crate::game::inventory::{Carried, EquipSlot};
 use crate::game::party::Order;
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::search::{Search, ToggleSearch};
+use crate::presentation::screen_art::shown;
 use crate::presentation::screen_art::{BitmapText, Picture, PictureCrop, label, picture};
 use bevy::picking::hover::Hovered;
 
@@ -131,11 +132,7 @@ pub fn draw_bank(
         selected.member(&roster).and_then(|m| orders.get(m).ok()).copied().unwrap_or_default();
     for (entity, face, skin, selected, disabled, mut picture, mut visible) in &mut buttons {
         let combat_only = matches!(face.kind, Some(Bank::Order(_) | Bank::Round | Bank::PartyMove));
-        visible.set_if_neq(if combat_only && !fighting {
-            Visibility::Hidden
-        } else {
-            Visibility::Inherited
-        });
+        visible.set_if_neq(shown(!(combat_only && !fighting)));
         let enabled = face.kind.is_some_and(|kind| {
             !matches!(kind, Bank::EndCombat)
                 && !(fighting && matches!(kind, Bank::Camp | Bank::Search))

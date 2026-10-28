@@ -292,6 +292,11 @@ pub fn scale_ui(
     }
 }
 
+/// Inherited visibility when shown, hidden otherwise.
+pub fn shown(visible: bool) -> Visibility {
+    if visible { Visibility::Inherited } else { Visibility::Hidden }
+}
+
 /// Point a picture at the sheet on `path`, loading it only when the path
 /// changes rather than every frame.
 pub fn show_sheet(picture: &mut Mut<Picture>, assets: &AssetServer, path: String) {

@@ -4,6 +4,7 @@ use crate::content::characters::{Attribute, Gender, Profession, Realm, Skill};
 use crate::content::spells::SpellCatalog;
 use crate::content::ui::{SpriteSheet, TextTable};
 use crate::presentation::retail_controls::{ControlSkin, FocusHighlight, set_enabled};
+use crate::presentation::screen_art::shown;
 use crate::presentation::screen_art::{BitmapText, Picture, spawn_picture};
 use bevy::input_focus::tab_navigation::TabIndex;
 use bevy::prelude::*;
@@ -826,6 +827,6 @@ pub(super) fn refresh(
         if node.display != display {
             node.display = display;
         }
-        visibility.set_if_neq(if show { Visibility::Inherited } else { Visibility::Hidden });
+        visibility.set_if_neq(shown(show));
     }
 }

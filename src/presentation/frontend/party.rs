@@ -357,11 +357,7 @@ pub(super) fn refresh(
             Portrait::Candidate(id) | Portrait::Member(id) => candidate(&session, *id),
             Portrait::Selected => session.selected.and_then(|id| candidate(&session, id)),
         };
-        visible.set_if_neq(if draft.is_some() {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        });
+        visible.set_if_neq(crate::presentation::screen_art::shown(draft.is_some()));
         if let Some(draft) = draft {
             use crate::content::paths::{PortraitSize, portrait as path};
             let size = match portrait {
@@ -378,23 +374,19 @@ pub(super) fn refresh(
     }
     for (row, mut picture, mut visible) in &mut rows {
         let id = candidate(&session, row.0).map(|_| row.0);
-        visible.set_if_neq(if id.is_some() { Visibility::Inherited } else { Visibility::Hidden });
+        visible.set_if_neq(crate::presentation::screen_art::shown(id.is_some()));
         let frame = usize::from(id.is_some() && id == session.selected);
         if picture.frame != frame {
             picture.frame = frame;
         }
     }
     for mut visible in &mut details {
-        visible.set_if_neq(if session.selected.is_some() {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        });
+        visible.set_if_neq(crate::presentation::screen_art::shown(session.selected.is_some()));
     }
     for (frame, mut visible) in &mut frames {
         let id = session.party.contains(&frame.candidate).then_some(frame.candidate);
         let shown = id.is_some() && (!frame.highlight || id == session.selected);
-        visible.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
+        visible.set_if_neq(crate::presentation::screen_art::shown(shown));
     }
     let preview =
         session.selected.and_then(|id| candidate(&session, id)).map(CharacterDraft::preview);

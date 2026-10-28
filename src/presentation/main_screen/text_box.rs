@@ -2,6 +2,7 @@
 
 use super::{MainScreenArt, layer};
 use crate::presentation::notices::{TextLog, VISIBLE_LINES};
+use crate::presentation::screen_art::shown;
 use crate::presentation::screen_art::{BitmapText, Picture, absolute, label, picture};
 use bevy::input::mouse::MouseScrollUnit;
 use bevy::picking::events::{
@@ -288,11 +289,7 @@ pub fn draw_text_box(
             text.justify = justify;
         }
         let value = log.visible().get(line.0);
-        visibility.set_if_neq(if value.is_some() {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        });
+        visibility.set_if_neq(shown(value.is_some()));
         if let Some(value) = value
             && text.value != *value
         {
@@ -304,11 +301,7 @@ pub fn draw_text_box(
             picture.reborrow().map_unchanged(|p| &mut p.frame).set_if_neq(log.selected());
         }
         if thumb.is_some() {
-            visibility.set_if_neq(if log.thumb().is_some() {
-                Visibility::Inherited
-            } else {
-                Visibility::Hidden
-            });
+            visibility.set_if_neq(shown(log.thumb().is_some()));
             if let Some(thumb) = log.thumb() {
                 picture
                     .reborrow()

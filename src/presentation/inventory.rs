@@ -499,11 +499,8 @@ fn draw_portrait_highlights(
             } else {
                 None
             };
-            visibility.set_if_neq(if occupied && frame.is_some() {
-                Visibility::Inherited
-            } else {
-                Visibility::Hidden
-            });
+            visibility
+                .set_if_neq(crate::presentation::screen_art::shown(occupied && frame.is_some()));
             if let Some(frame) = frame
                 && picture.frame != frame
             {
@@ -537,7 +534,7 @@ fn cell_controls(cell: Cell, art: &InventoryArt) -> impl Scene {
         Children [
             template(move |_| Ok(ImageNode { image: fill.clone(), rect: Some(Rect::new(0.0, 0.0, 46.0, 54.0)), ..default() }))
             Node { position_type: PositionType::Absolute, width: px(46), height: px(54) }
-            template(move |_| Ok(if grid { Visibility::Inherited } else { Visibility::Hidden }))
+            template(move |_| Ok(crate::presentation::screen_art::shown(grid)))
             Pickable::IGNORE
             -- @picture(art.unusable.clone(),0,Vec2::ZERO)
             template(|_| Ok(CellPart::Unusable))
@@ -729,11 +726,7 @@ fn draw_vitals(
     let Some(screen) = screen else { return };
     let Ok((profile, vitals)) = members.get(screen.member) else { return };
     for (_, shade, node, mut visibility) in &mut art {
-        visibility.set_if_neq(if vitals.is_dead() {
-            Visibility::Hidden
-        } else {
-            Visibility::Inherited
-        });
+        visibility.set_if_neq(crate::presentation::screen_art::shown(!(vitals.is_dead())));
         if let (Some(shade), Some(mut node)) = (shade, node) {
             let (current, maximum) = match shade {
                 VitalShade::Health => (vitals.hp, profile.max_hp()),
@@ -770,11 +763,7 @@ fn draw_header_condition(
                 }
             }
             HeaderCondition::Rim => {
-                visibility.set_if_neq(if condition.is_some() {
-                    Visibility::Inherited
-                } else {
-                    Visibility::Hidden
-                });
+                visibility.set_if_neq(crate::presentation::screen_art::shown(condition.is_some()));
             }
         };
     }
@@ -857,7 +846,7 @@ fn draw_header_hands(
                 value = Some(armour(profile, carried, catalog, load).average().to_string())
             }
         }
-        visibility.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
+        visibility.set_if_neq(crate::presentation::screen_art::shown(shown));
         if let (Some(mut picture), Some(source)) = (picture, source) {
             picture.set_if_neq(source);
         }
@@ -891,7 +880,7 @@ fn sync_member_portraits(
     let Ok(root) = roots.single() else { return };
     for (slot, mut visible) in &mut empty {
         let occupied = roster.get_index(slot.0).is_some_and(|e| members.contains(*e));
-        visible.set_if_neq(if occupied { Visibility::Hidden } else { Visibility::Inherited });
+        visible.set_if_neq(crate::presentation::screen_art::shown(!(occupied)));
     }
     for (entity, button, _) in &buttons {
         if !roster.contains(&button.0) || !members.contains(button.0) {
@@ -1084,7 +1073,7 @@ fn draw_cells(
                 CellPart::Unidentified => definition.is_some_and(|(i, _)| !i.identified),
                 CellPart::Rim => !grid && definition.is_some(),
             };
-            visible.set_if_neq(if show { Visibility::Inherited } else { Visibility::Hidden });
+            visible.set_if_neq(crate::presentation::screen_art::shown(show));
             match *part {
                 CellPart::Picture => {
                     if let Some((_, definition)) = definition

@@ -1,5 +1,6 @@
 //! Retail appearance and small compositions of Bevy's native controls.
 use super::screen_art::Picture;
+use crate::presentation::screen_art::shown;
 use bevy::input_focus::{InputFocus, InputFocusVisible, tab_navigation::TabIndex};
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
@@ -256,11 +257,7 @@ pub fn sync_scrollbars(
     for (thumb, mut picture, mut visibility) in &mut thumbs {
         let Ok((scroll, value, range)) = sliders.get(thumb.0) else { continue };
         let extent = range.end() - range.start();
-        visibility.set_if_neq(if extent > 0.0 {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        });
+        visibility.set_if_neq(shown(extent > 0.0));
         let y = if extent > 0.0 {
             ((scroll.height - 10.0) * (1.0 - ((value.0 - range.start()) / extent).clamp(0.0, 1.0)))
                 .floor()

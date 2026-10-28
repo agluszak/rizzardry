@@ -473,7 +473,7 @@ pub(super) fn show_pages(
         if node.display != display {
             node.display = display;
         }
-        visibility.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
+        visibility.set_if_neq(crate::presentation::screen_art::shown(shown));
     }
 }
 
@@ -761,7 +761,7 @@ pub(super) fn layout_skills(
         if node.display != display {
             node.display = display;
         }
-        visibility.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
+        visibility.set_if_neq(crate::presentation::screen_art::shown(shown));
         if shown {
             let (x, y) = origins[category];
             let top = px(y + counts[category] as f32 * 14.0);
@@ -783,11 +783,7 @@ pub(super) fn layout_skills(
         }
     }
     for (icon, mut visibility) in &mut icons {
-        visibility.set_if_neq(if icon.0 != 4 || counts[4] > 0 {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        });
+        visibility.set_if_neq(crate::presentation::screen_art::shown(icon.0 != 4 || counts[4] > 0));
     }
     for (bar, mut crop) in &mut bars {
         let (start, end) = match *bar {

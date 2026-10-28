@@ -899,7 +899,7 @@ fn show_editor(
         if node.display != display {
             node.display = display;
         }
-        visibility.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
+        visibility.set_if_neq(crate::presentation::screen_art::shown(shown));
     }
 }
 
@@ -914,7 +914,7 @@ fn refresh(
         if node.display != display {
             node.display = display;
         }
-        visibility.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
+        visibility.set_if_neq(crate::presentation::screen_art::shown(shown));
     }
 }
 // Retail portrait catalog; any portrait may be selected for any character.

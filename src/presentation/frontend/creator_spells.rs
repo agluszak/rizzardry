@@ -238,7 +238,7 @@ pub(super) fn refresh(
         counts[realm] += 1;
         // Retail shows seven rows per realm. Creation has at most seven eligible level-one spells per realm.
         let shown = index < 7;
-        visibility.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
+        visibility.set_if_neq(crate::presentation::screen_art::shown(shown));
         let left = px(195. + 13. + (realm % 2) as f32 * 215. + 26.);
         let top = px(43. + 8. + (realm / 2) as f32 * 130. + 26. + index as f32 * 13.);
         if node.left != left {
@@ -265,10 +265,7 @@ pub(super) fn refresh(
         set_enabled(&mut commands, entity, true, disabled);
     }
     for (header, mut visibility) in &mut headers {
-        visibility.set_if_neq(if counts[header.0 as usize] > 0 {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        });
+        visibility
+            .set_if_neq(crate::presentation::screen_art::shown(counts[header.0 as usize] > 0));
     }
 }
