@@ -2,16 +2,28 @@
 //! components, or a container's contents (retail's lock and trap panels and
 //! `W8TriggerItemPickerDialog`), in native Bevy UI with the retail text font.
 //!
-//! The panel shows the [`DeviceInteraction`] and submits attempts for the
-//! selected member; the game decides what comes of them. It owns only
-//! drafts: which trap type the party takes it for, and which stacks, and
-//! how much of each, are chosen to take.
+//! The panel shows one [`DeviceInteraction`] attempt and lives exactly as
+//! long ([`PanelOf`]); everything it submits names that attempt, so a click
+//! left over from an attempt that has ended changes nothing. It submits for
+//! the selected member, and the game decides what comes of it. It owns only
+//! drafts: which trap type the party takes it for, and which stacks, and how
+//! much of each, are chosen to take.
+//!
+//! Input: the panel takes keyboard focus when it opens. Tab and Shift+Tab move
+//! among its enabled controls, Enter or Space activates one, and Escape leaves
+//! (closes a container). The party stays put while it is up, so world
+//! movement keys do nothing; portraits stay clickable to choose who works,
+//! as retail allows.
 
+use bevy::input::keyboard::{Key, KeyboardInput};
+use bevy::input_focus::tab_navigation::{TabGroup, TabIndex};
+use bevy::input_focus::{FocusedInput, InputFocus};
 use bevy::prelude::*;
 use bevy::ui::InteractionDisabled;
 use bevy::ui_widgets::{Activate, Button};
 
 use super::main_screen::SelectedMember;
+use super::retail_controls::FocusRing;
 use super::screen_art::BitmapText;
 use crate::content::items::ItemCatalog;
 use crate::content::level::TRAP_TYPES;
@@ -22,7 +34,7 @@ use crate::game::inventory::StackId;
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::containers::{self, Recipient};
 use crate::game::world::interaction::{
-    self, COMPONENTS, DeviceInteraction, Observation, TRAP_COMPONENTS, Work,
+    self, AttemptOn, COMPONENTS, DeviceInteraction, Observation, TRAP_COMPONENTS, Work,
 };
 use crate::game::world::props::PropMotion;
 use crate::game::world::triggers::Container;
@@ -35,9 +47,9 @@ const BUTTON_OFF: Color = Color::srgb(0.1, 0.08, 0.06);
 const CHOSEN: Color = Color::srgb(0.4, 0.3, 0.12);
 
 pub fn plugin(app: &mut App) {
-    app.add_systems(Startup, load_device_panel_art).add_systems(
+    app.add_systems(Startup, load_device_panel_art).add_observer(open_panel).add_systems(
         Update,
-        (sync_device_panel, sync_loot_rows, draw_device_panel)
+        (show_panel, sync_loot_rows, draw_device_panel)
             .chain()
             .after(crate::game::GameplaySet::LevelActivation),
     );
@@ -56,26 +68,19 @@ fn load_device_panel_art(mut commands: Commands, assets: Res<AssetServer>) {
     });
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Kind {
-    Lock,
-    Trap,
-    Loot,
-}
+/// The attempt a panel shows.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+#[relationship(relationship_target = AttemptPanel)]
+pub struct PanelOf(pub Entity);
 
-fn kind(work: &Work) -> Kind {
-    match work {
-        Work::Picking(_) => Kind::Lock,
-        Work::Disarming(_) => Kind::Trap,
-        Work::Looting => Kind::Loot,
-    }
-}
-
-/// The panel for one interaction, with its drafts.
+/// An attempt's panel, despawned with it.
 #[derive(Component, Debug)]
+#[relationship_target(relationship = PanelOf, linked_spawn)]
+pub struct AttemptPanel(Entity);
+
+/// A panel's drafts.
+#[derive(Component, Debug, Default)]
 struct DevicePanel {
-    device: Entity,
-    kind: Kind,
     /// The trap type the party takes the trap for (retail's list of trap
     /// names): it picks which components can be worked on.
     guess: usize,
@@ -113,45 +118,30 @@ enum Caption {
     Control(Control),
 }
 
-/// The container rows, rebuilt when its contents change.
-#[derive(Component, Debug, Default)]
-struct LootRows(Vec<StackId>);
+/// The list of a container's stacks.
+#[derive(Component, Debug)]
+struct LootRows;
 
-/// Show the panel while an interaction lasts; a container's opens once its
-/// lid has finished moving, as retail's picker does.
-fn sync_device_panel(
+/// One stack's row, kept while the stack stays in the container.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+struct LootRow(StackId);
+
+/// Build an attempt's panel when the attempt begins.
+fn open_panel(
+    add: On<Add<DeviceInteraction>>,
+    attempts: Query<&DeviceInteraction>,
+    art: Option<Res<DevicePanelArt>>,
+    focus: Option<ResMut<InputFocus>>,
     mut commands: Commands,
-    interaction: Option<Res<DeviceInteraction>>,
-    mut panels: Query<(Entity, &DevicePanel, &mut Visibility)>,
-    magic_views: Query<&super::main_screen::magic_view::MagicView>,
-    motions: Query<&PropMotion>,
-    art: Res<DevicePanelArt>,
 ) {
-    let wanted =
-        interaction.as_ref().map(|i| (i.device, kind(&i.work))).filter(|(device, kind)| {
-            *kind != Kind::Loot || motions.get(*device).is_ok_and(|m| m.frame == m.target)
-        });
-    for (entity, panel, mut visibility) in &mut panels {
-        visibility.set_if_neq(
-            if magic_views.iter().any(|view| view.device == Some(panel.device)) {
-                Visibility::Hidden
-            } else {
-                Visibility::Inherited
-            },
-        );
-        if wanted != Some((panel.device, panel.kind)) {
-            commands.entity(entity).despawn();
-        }
-    }
-    let Some((device, kind)) = wanted else { return };
-    if panels.iter().any(|(_, p, _)| (p.device, p.kind) == (device, kind)) {
-        return;
-    }
+    let attempt = add.entity;
+    let (Ok(interaction), Some(art)) = (attempts.get(attempt), art) else { return };
     let font = art.font.clone();
     let root = commands
         .spawn((
             Name::new("Device panel"),
-            DevicePanel { device, kind, guess: 0, chosen: vec![] },
+            PanelOf(attempt),
+            DevicePanel::default(),
             Node {
                 position_type: PositionType::Absolute,
                 width: percent(100),
@@ -161,6 +151,7 @@ fn sync_device_panel(
                 ..default()
             },
             GlobalZIndex(10),
+            Visibility::Hidden,
             Pickable::IGNORE,
         ))
         .id();
@@ -177,8 +168,15 @@ fn sync_device_panel(
             },
             BackgroundColor(Color::srgba(0.05, 0.04, 0.03, 0.92)),
             BorderColor::all(Color::srgb(0.55, 0.45, 0.3)),
+            TabGroup::modal(),
             ChildOf(root),
         ))
+        .observe(move |mut key: On<FocusedInput<KeyboardInput>>, mut commands: Commands| {
+            if key.input.state.is_pressed() && key.input.logical_key == Key::Escape {
+                key.propagate(false);
+                commands.queue(move |world: &mut World| interaction::leave(world, attempt));
+            }
+        })
         .id();
     caption(&mut commands, body, &font, Caption::Title);
     caption(&mut commands, body, &font, Caption::Status);
@@ -196,23 +194,20 @@ fn sync_device_panel(
             ))
             .id()
     };
-    match kind {
-        Kind::Lock => {
-            let count = match interaction.as_ref().map(|i| &i.work) {
-                Some(Work::Picking(picking)) => picking.tumblers.len(),
-                _ => 0,
-            };
+    let first = match &interaction.work {
+        Work::Picking(picking) => {
             let tumblers = row(&mut commands);
-            for index in 0..count {
-                button(&mut commands, tumblers, &font, Control::Tumbler(index));
-            }
+            let first: Vec<_> = (0..picking.tumblers.len())
+                .map(|index| button(&mut commands, tumblers, &font, Control::Tumbler(index)))
+                .collect();
             let actions = row(&mut commands);
-            button(&mut commands, actions, &font, Control::Force);
+            let force = button(&mut commands, actions, &font, Control::Force);
             button(&mut commands, actions, &font, Control::Cast);
             button(&mut commands, actions, &font, Control::UseItem);
             button(&mut commands, actions, &font, Control::Leave);
+            first.first().copied().unwrap_or(force)
         }
-        Kind::Trap => {
+        Work::Disarming(_) => {
             let guess = row(&mut commands);
             button(&mut commands, guess, &font, Control::PreviousTrap);
             caption(&mut commands, guess, &font, Caption::Guess);
@@ -222,24 +217,51 @@ fn sync_device_panel(
                 button(&mut commands, components, &font, Control::Component(index));
             }
             let actions = row(&mut commands);
-            button(&mut commands, actions, &font, Control::Inspect);
+            let inspect = button(&mut commands, actions, &font, Control::Inspect);
             button(&mut commands, actions, &font, Control::Cast);
             button(&mut commands, actions, &font, Control::UseItem);
             button(&mut commands, actions, &font, Control::Spring);
             button(&mut commands, actions, &font, Control::Leave);
+            inspect
         }
-        Kind::Loot => {
+        Work::Looting => {
             commands.spawn((
-                LootRows::default(),
+                LootRows,
                 Node { flex_direction: FlexDirection::Column, row_gap: px(2), ..default() },
                 ChildOf(body),
             ));
             let actions = row(&mut commands);
-            button(&mut commands, actions, &font, Control::All);
+            let all = button(&mut commands, actions, &font, Control::All);
             button(&mut commands, actions, &font, Control::TakeToParty);
             button(&mut commands, actions, &font, Control::TakeToMember);
             button(&mut commands, actions, &font, Control::Leave);
+            all
         }
+    };
+    if let Some(mut focus) = focus {
+        focus.set(first, bevy::input_focus::FocusCause::Navigated);
+    }
+}
+
+/// A container's panel shows once its lid has stopped moving, as retail's
+/// picker does; a panel hides while a spell or item is being chosen for its
+/// attempt.
+fn show_panel(
+    mut panels: Query<(&PanelOf, &mut Visibility)>,
+    attempts: Query<(&DeviceInteraction, &AttemptOn)>,
+    magic_views: Query<&super::main_screen::magic_view::MagicView>,
+    motions: Query<&PropMotion>,
+) {
+    for (panel, mut visibility) in &mut panels {
+        let Ok((interaction, on)) = attempts.get(panel.0) else { continue };
+        let settled = !matches!(interaction.work, Work::Looting)
+            || motions.get(on.0).is_ok_and(|m| m.frame == m.target);
+        let casting = magic_views.iter().any(|view| view.attempt == Some(panel.0));
+        visibility.set_if_neq(if settled && !casting {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        });
     }
 }
 
@@ -254,10 +276,19 @@ fn caption(commands: &mut Commands, parent: Entity, font: &Handle<SpriteSheet>, 
     commands.spawn((label(font), role, ChildOf(parent)));
 }
 
-fn button(commands: &mut Commands, parent: Entity, font: &Handle<SpriteSheet>, control: Control) {
+/// A text button composed like the other retail controls: native button,
+/// tab stop and focus ring.
+fn button(
+    commands: &mut Commands,
+    parent: Entity,
+    font: &Handle<SpriteSheet>,
+    control: Control,
+) -> Entity {
     let button = commands
         .spawn((
             Button,
+            TabIndex(0),
+            FocusRing,
             control,
             Node {
                 padding: UiRect::axes(px(5), px(2)),
@@ -272,36 +303,84 @@ fn button(commands: &mut Commands, parent: Entity, font: &Handle<SpriteSheet>, c
         .observe(press)
         .id();
     commands.spawn((label(font), Caption::Control(control), ChildOf(button)));
+    button
 }
 
-/// Keep one row per stack in the container, dropping choices of stacks
-/// that have gone.
+/// Keep one row per stack in the container, in its order: rows of stacks
+/// that stay are kept as they are (with their focus and hover), rows of
+/// stacks that went are removed, new stacks get new rows. Choices of
+/// stacks that went are dropped, and focus on a removed row moves to the
+/// row that took its place, or to the panel's first action.
 fn sync_loot_rows(
     mut commands: Commands,
-    mut panels: Query<&mut DevicePanel>,
-    mut lists: Query<(Entity, &mut LootRows, &ChildOf)>,
+    mut panels: Query<(&PanelOf, &mut DevicePanel)>,
+    attempts: Query<&AttemptOn>,
+    lists: Query<(Entity, &ChildOf, Option<&Children>), With<LootRows>>,
     parents: Query<&ChildOf>,
-    containers: Query<&Container>,
+    rows: Query<&LootRow>,
+    controls: Query<(Entity, &Control)>,
+    children: Query<&Children>,
+    containers: Query<Ref<Container>>,
+    mut focus: Option<ResMut<InputFocus>>,
     art: Res<DevicePanelArt>,
 ) {
-    for (list, mut rows, parent) in &mut lists {
-        let Ok(root) = parents.get(parent.parent()) else { continue };
-        let Ok(mut panel) = panels.get_mut(root.parent()) else { continue };
-        let Ok(container) = containers.get(panel.device) else { continue };
+    for (list, body, existing) in &lists {
+        let Ok(root) = parents.get(body.parent()) else { continue };
+        let Ok((panel_of, mut panel)) = panels.get_mut(root.parent()) else { continue };
+        let Ok(on) = attempts.get(panel_of.0) else { continue };
+        let Ok(container) = containers.get(on.0) else { continue };
+        let existing: Vec<(Entity, StackId)> = existing
+            .map(|c| c.iter().filter_map(|r| rows.get(r).ok().map(|row| (r, row.0))).collect())
+            .unwrap_or_default();
         let stacks: Vec<StackId> = container.contents.items.iter().map(|s| s.id).collect();
-        if rows.0 == stacks {
+        if existing.iter().map(|(_, id)| *id).eq(stacks.iter().copied()) {
             continue;
         }
-        panel.chosen.retain(|(id, _)| stacks.contains(id));
-        commands.entity(list).despawn_related::<Children>();
-        for &id in &stacks {
-            let line =
-                commands.spawn((Node { column_gap: px(4), ..default() }, ChildOf(list))).id();
-            button(&mut commands, line, &art.font, Control::Less(id));
-            button(&mut commands, line, &art.font, Control::More(id));
-            button(&mut commands, line, &art.font, Control::Row(id));
+        if panel.chosen.iter().any(|(id, _)| !stacks.contains(id)) {
+            panel.chosen.retain(|(id, _)| stacks.contains(id));
         }
-        rows.0 = stacks;
+        let focused = focus.as_ref().and_then(|f| f.get());
+        let mut lost_focus_at = None;
+        for (index, &(row, id)) in existing.iter().enumerate() {
+            if !stacks.contains(&id) {
+                let holds_focus = focused
+                    .is_some_and(|f| f == row || children.iter_descendants(row).any(|d| d == f));
+                if holds_focus {
+                    lost_focus_at = Some(index);
+                }
+                commands.entity(row).despawn();
+            }
+        }
+        let mut ordered = Vec::with_capacity(stacks.len());
+        for &id in &stacks {
+            match existing.iter().find(|(_, existing)| *existing == id) {
+                Some(&(row, _)) => ordered.push(row),
+                None => {
+                    let row =
+                        commands.spawn((LootRow(id), Node { column_gap: px(4), ..default() })).id();
+                    button(&mut commands, row, &art.font, Control::Less(id));
+                    button(&mut commands, row, &art.font, Control::More(id));
+                    button(&mut commands, row, &art.font, Control::Row(id));
+                    ordered.push(row);
+                }
+            }
+        }
+        commands.entity(list).replace_children(&ordered);
+        if let (Some(at), Some(focus)) = (lost_focus_at, focus.as_mut()) {
+            // The stack that now stands where the focused one stood, if any.
+            let survivor = stacks
+                .get(at.min(stacks.len().saturating_sub(1)))
+                .filter(|_| !stacks.is_empty())
+                .and_then(|&id| {
+                    controls.iter().find(|(_, c)| **c == Control::Row(id)).map(|(e, _)| e)
+                });
+            let fallback = controls.iter().find(|(_, c)| **c == Control::All).map(|(e, _)| e);
+            if let Some(target) = survivor.or(fallback) {
+                focus.set(target, bevy::input_focus::FocusCause::Navigated);
+            } else {
+                focus.clear();
+            }
+        }
     }
 }
 
@@ -310,8 +389,8 @@ fn sync_loot_rows(
 fn draw_device_panel(
     difficulty: Res<crate::game::difficulty::Difficulty>,
     mut commands: Commands,
-    interaction: Option<Res<DeviceInteraction>>,
-    panels: Query<&DevicePanel>,
+    attempts: Query<(&DeviceInteraction, &AttemptOn)>,
+    panels: Query<(&PanelOf, &DevicePanel)>,
     selected: Res<SelectedMember>,
     roster: Single<&PartyRoster>,
     members: Query<(&Character, &Vitals)>,
@@ -323,7 +402,8 @@ fn draw_device_panel(
     mut captions: Query<(&Caption, &mut BitmapText)>,
     mut buttons: Query<(Entity, &Control, &mut BackgroundColor, Has<InteractionDisabled>)>,
 ) {
-    let (Some(interaction), Ok(panel)) = (interaction, panels.single()) else { return };
+    let Ok((panel_of, panel)) = panels.single() else { return };
+    let Ok((interaction, on)) = attempts.get(panel_of.0) else { return };
     let member = selected.member(&roster).and_then(|m| Some((m, members.get(m).ok()?)));
     let name = member.map_or(String::new(), |(_, (c, _))| c.name.clone());
     let skill = member.and_then(|(_, (c, v))| interaction::lock_skill(c, v));
@@ -332,7 +412,7 @@ fn draw_device_panel(
         strings.and_then(|s| s.get(TRAP_NAMES + trap)).unwrap_or("Trap").trim().to_owned()
     };
     let catalog = data.as_ref().and_then(|d| catalogs.get(&d.items));
-    let stacks = containers.get(interaction.device).map_or(&[][..], |c| &c.contents.items[..]);
+    let stacks = containers.get(on.0).map_or(&[][..], |c| &c.contents.items[..]);
     let percent = |value: Option<i64>| value.map_or("-".to_owned(), |v| format!("{v}%"));
 
     let text = |role: Caption| -> String {
@@ -468,27 +548,31 @@ fn press(
     click: On<Activate>,
     magic_art: Option<Res<super::main_screen::magic_view::MagicViewArt>>,
     controls: Query<&Control, Without<InteractionDisabled>>,
-    mut panels: Query<&mut DevicePanel>,
+    mut panels: Query<(&PanelOf, &mut DevicePanel)>,
+    attempts: Query<&AttemptOn>,
     containers: Query<&Container>,
     selected: Res<SelectedMember>,
     roster: Single<&PartyRoster>,
     mut commands: Commands,
 ) {
-    let (Ok(&control), Ok(mut panel)) = (controls.get(click.entity), panels.single_mut()) else {
+    let (Ok(&control), Ok((&PanelOf(on), mut panel))) =
+        (controls.get(click.entity), panels.single_mut())
+    else {
         return;
     };
+    let Ok(&AttemptOn(device)) = attempts.get(on) else { return };
     let actor = selected.member(&roster);
     let count = |id: StackId| {
         containers
-            .get(panel.device)
+            .get(device)
             .ok()
             .and_then(|c| c.contents.items.iter().find(|s| s.id == id))
             .map_or(0, |s| s.count())
     };
-    let attempt = move |run: fn(&mut World, Entity) -> Result<(), interaction::Unable>| {
+    let attempt = move |run: fn(&mut World, Entity, Entity) -> Result<(), interaction::Unable>| {
         move |world: &mut World| {
             if let Some(actor) = actor
-                && let Err(unable) = run(world, actor)
+                && let Err(unable) = run(world, on, actor)
             {
                 debug!("device attempt refused: {unable:?}");
             }
@@ -497,20 +581,19 @@ fn press(
     match control {
         Control::Cast | Control::UseItem => {
             if let (Some(actor), Some(art)) = (actor, magic_art.as_deref()) {
-                let device = panel.device;
                 super::main_screen::magic_view::open(
                     &mut commands,
                     art,
                     actor,
                     control == Control::UseItem,
-                    Some(device),
+                    Some(on),
                 );
             }
         }
         Control::Tumbler(index) => {
             if let Some(actor) = actor {
                 commands.queue(move |world: &mut World| {
-                    let _ = interaction::pick_tumbler(world, actor, index);
+                    let _ = interaction::pick_tumbler(world, on, actor, index);
                 });
             }
         }
@@ -519,12 +602,12 @@ fn press(
         Control::Component(index) => {
             if let Some(actor) = actor {
                 commands.queue(move |world: &mut World| {
-                    let _ = interaction::disarm_component(world, actor, index);
+                    let _ = interaction::disarm_component(world, on, actor, index);
                 });
             }
         }
         Control::Spring => commands.queue(move |world: &mut World| {
-            let _ = interaction::spring_trap(world, actor);
+            let _ = interaction::spring_trap(world, on, actor);
         }),
         Control::PreviousTrap => panel.guess = (panel.guess + TRAP_TYPES - 1) % TRAP_TYPES,
         Control::NextTrap => panel.guess = (panel.guess + 1) % TRAP_TYPES,
@@ -556,7 +639,7 @@ fn press(
         }
         Control::All => {
             let ids: Vec<(StackId, u16)> = containers
-                .get(panel.device)
+                .get(device)
                 .map(|c| c.contents.items.iter().map(|s| (s.id, s.count())).collect())
                 .unwrap_or_default();
             panel.chosen = if panel.chosen.len() == ids.len() { vec![] } else { ids };
@@ -571,12 +654,12 @@ fn press(
             };
             let picks = std::mem::take(&mut panel.chosen);
             commands.queue(move |world: &mut World| {
-                if let Err(refusal) = containers::take_from_container(world, &picks, to) {
+                if let Err(refusal) = containers::take_from_container(world, on, &picks, to) {
                     debug!("taking from the container refused: {refusal:?}");
                 }
             });
         }
-        Control::Leave => commands.queue(interaction::leave),
+        Control::Leave => commands.queue(move |world: &mut World| interaction::leave(world, on)),
     }
 }
 
@@ -584,20 +667,25 @@ fn press(
 mod tests {
     use super::*;
     use crate::content::characters::Skill;
+    use crate::content::items::{ItemDefinition, ItemId, QuantityKind};
     use crate::content::level::Lock;
     use crate::game::characters::{Gender, Profession, Race};
-    use crate::game::world::interaction::LockNews;
+    use crate::game::inventory::{ItemIds, ItemStack};
+    use crate::game::world::interaction::{LockNews, Unable};
 
-    /// The panel follows the interaction and submits the selected member's
-    /// picks; the game, not the panel, decides when the lock opens.
-    #[test]
-    fn the_lock_panel_picks_for_the_selected_member_and_closes_with_the_lock() {
+    fn app() -> (App, Entity) {
         let mut app = crate::presentation::test_input::input_app();
-        app.add_plugins(plugin)
+        app.add_plugins((
+            plugin,
+            bevy::input_focus::InputDispatchPlugin,
+            bevy::input_focus::tab_navigation::TabNavigationPlugin,
+        ))
+            .add_observer(crate::game::world::interaction::end_attempts)
             .init_asset::<SpriteSheet>()
             .init_asset::<TextTable>()
             .init_asset::<ItemCatalog>()
             .init_resource::<SelectedMember>()
+            .init_resource::<ItemIds>()
             .init_resource::<crate::game::difficulty::Difficulty>()
             .insert_resource(crate::game::rng::GameRng::seeded(1))
             .add_message::<LockNews>();
@@ -606,39 +694,184 @@ mod tests {
         let member = app.world_mut().spawn((Vitals::new(&profile), profile)).id();
         crate::game::party::roster::test_party(app.world_mut(), &[member]);
         app.world_mut().resource_mut::<SelectedMember>().0 = Some(member);
-        let lock = Lock::Pickable { difficulty: 2 };
-        let device = app.world_mut().spawn(interaction::Guarded::new(lock)).id();
+        app.init_resource::<crate::game::time::GameClock>();
         app.finish();
         app.cleanup();
+        // Startup loads the panel's art.
+        app.update();
+        (app, member)
+    }
+
+    fn controls(app: &mut App, wanted: impl Fn(Control) -> bool) -> Vec<Entity> {
+        app.world_mut()
+            .query::<(Entity, &Control)>()
+            .iter(app.world())
+            .filter(|(_, c)| wanted(**c))
+            .map(|(e, _)| e)
+            .collect()
+    }
+
+    fn work(app: &App) -> Option<&Work> {
+        let (on, _) = interaction::current(app.world())?;
+        app.world().get::<DeviceInteraction>(on).map(|i| &i.work)
+    }
+
+    fn device(app: &mut App, lock: Lock) -> Entity {
+        app.world_mut()
+            .spawn((
+                crate::game::world::triggers::Device { definition: 0, recipients: vec![] },
+                interaction::Guarded::new(lock),
+            ))
+            .id()
+    }
+
+    /// The panel follows the attempt and submits the selected member's
+    /// picks; the game, not the panel, decides when the lock opens.
+    #[test]
+    fn the_lock_panel_picks_for_the_selected_member_and_closes_with_the_lock() {
+        let (mut app, member) = app();
+        let lock = Lock::Pickable { difficulty: 2 };
+        let device = device(&mut app, lock);
         interaction::confront(app.world_mut(), device, lock);
         app.update();
         app.update();
-        let tumblers: Vec<(Entity, usize)> = app
-            .world_mut()
-            .query::<(Entity, &Control)>()
-            .iter(app.world())
-            .filter_map(|(e, c)| match c {
-                Control::Tumbler(i) => Some((e, *i)),
-                _ => None,
-            })
-            .collect();
+        let tumblers = controls(&mut app, |c| matches!(c, Control::Tumbler(_)));
         assert_eq!(tumblers.len(), 2);
-        app.world_mut().trigger(Activate { entity: tumblers[0].0 });
+        // The panel takes focus so that its keys work at once.
+        let focus = app.world().resource::<InputFocus>().get();
+        assert!(focus.is_some_and(|f| tumblers.contains(&f)));
+        app.world_mut().trigger(Activate { entity: tumblers[0] });
         app.update();
-        let Some(Work::Picking(picking)) =
-            app.world().get_resource::<DeviceInteraction>().map(|i| &i.work)
-        else {
-            panic!("still picking")
-        };
+        let Some(Work::Picking(picking)) = work(&app) else { panic!("still picking") };
         assert_eq!(
             picking.tumblers.iter().filter(|t| **t == interaction::Tumbler::Held(member)).count(),
             1
         );
-        app.world_mut().trigger(Activate { entity: tumblers[1].0 });
+        app.world_mut().trigger(Activate { entity: tumblers[1] });
         app.update();
         app.update();
-        assert!(!app.world().contains_resource::<DeviceInteraction>());
+        assert!(interaction::current(app.world()).is_none());
         assert!(app.world().get::<interaction::Guarded>(device).is_none());
         assert!(app.world_mut().query::<&DevicePanel>().iter(app.world()).next().is_none());
+    }
+
+    /// Escape on the focused panel leaves the attempt, as its Leave button does.
+    #[test]
+    fn escape_leaves_the_attempt_the_panel_shows() {
+        let (mut app, _) = app();
+        let window = app.world_mut().spawn((Window::default(), bevy::window::PrimaryWindow)).id();
+        let lock = Lock::Pickable { difficulty: 2 };
+        let device = device(&mut app, lock);
+        interaction::confront(app.world_mut(), device, lock);
+        app.update();
+        crate::presentation::test_input::tap(&mut app, window, KeyCode::Escape);
+        app.update();
+        assert!(interaction::current(app.world()).is_none());
+        assert!(app.world().get::<interaction::Guarded>(device).is_some());
+        assert!(app.world_mut().query::<&DevicePanel>().iter(app.world()).next().is_none());
+    }
+
+    /// A request names its attempt: one left over from an attempt that has
+    /// ended does nothing to the attempt that replaced it.
+    #[test]
+    fn a_stale_request_cannot_reach_a_replacement_attempt() {
+        let (mut app, member) = app();
+        let lock = Lock::Pickable { difficulty: 2 };
+        let device = device(&mut app, lock);
+        interaction::confront(app.world_mut(), device, lock);
+        let (first, _) = interaction::current(app.world()).unwrap();
+        interaction::leave(app.world_mut(), first);
+        interaction::confront(app.world_mut(), device, lock);
+        let (second, _) = interaction::current(app.world()).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(
+            interaction::pick_tumbler(app.world_mut(), first, member, 0),
+            Err(Unable::NotNow)
+        );
+        let Some(Work::Picking(picking)) = work(&app) else { panic!("picking") };
+        assert!(picking.tumblers.iter().all(|t| !t.raised()));
+        // Leaving the ended attempt again leaves the new one alone.
+        interaction::leave(app.world_mut(), first);
+        assert_eq!(interaction::current(app.world()).map(|(a, _)| a), Some(second));
+    }
+
+    /// The attempt and its panel go with their device, and a fight ends
+    /// them; nothing polls for either.
+    #[test]
+    fn an_attempt_and_its_panel_end_with_the_device_or_a_fight() {
+        let (mut app, _) = app();
+        let lock = Lock::Trap { difficulty: 1, kind: Some(0) };
+        let device = device(&mut app, lock);
+        interaction::confront(app.world_mut(), device, lock);
+        app.update();
+        assert!(app.world_mut().query::<&DevicePanel>().iter(app.world()).next().is_some());
+        app.world_mut().despawn(device);
+        assert!(interaction::current(app.world()).is_none());
+        app.update();
+        assert!(app.world_mut().query::<&DevicePanel>().iter(app.world()).next().is_none());
+        let device = self::device(&mut app, lock);
+        interaction::confront(app.world_mut(), device, lock);
+        app.update();
+        app.world_mut().spawn(crate::game::combat::Battle::default());
+        app.update();
+        assert!(interaction::current(app.world()).is_none());
+        assert!(app.world_mut().query::<&DevicePanel>().iter(app.world()).next().is_none());
+        assert!(app.world().get::<interaction::Guarded>(device).is_some());
+    }
+
+    /// Taking one stack keeps the other rows as they were; focus on a row
+    /// that went moves to the row that took its place.
+    #[test]
+    fn container_rows_outlive_the_stacks_taken_around_them() {
+        let (mut app, _) = app();
+        let mut arrows = ItemDefinition { id: ItemId(0), name: "arrow".into(), ..default() };
+        arrows.quantity = QuantityKind::Stack;
+        arrows.stack_limit = 99;
+        let stacks: Vec<ItemStack> = {
+            let mut ids = app.world_mut().resource_mut::<ItemIds>();
+            (1..=3).map(|n| ItemStack::new(&arrows, &mut ids, n, true)).collect()
+        };
+        let ids: Vec<StackId> = stacks.iter().map(|s| s.id).collect();
+        let chest = app
+            .world_mut()
+            .spawn((
+                crate::game::world::triggers::Device { definition: 0, recipients: vec![] },
+                Container::holding(stacks),
+            ))
+            .id();
+        interaction::begin(app.world_mut(), chest, Work::Looting);
+        app.update();
+        app.update();
+        let rows = |app: &mut App| {
+            app.world_mut()
+                .query::<(Entity, &LootRow)>()
+                .iter(app.world())
+                .map(|(e, r)| (r.0, e))
+                .collect::<std::collections::HashMap<_, _>>()
+        };
+        let before = rows(&mut app);
+        assert_eq!(before.len(), 3);
+        let middle = controls(&mut app, |c| c == Control::Row(ids[1]))[0];
+        app.world_mut()
+            .resource_mut::<InputFocus>()
+            .set(middle, bevy::input_focus::FocusCause::Navigated);
+        app.world_mut().get_mut::<Container>(chest).unwrap().contents.items.remove(1);
+        app.update();
+        let after = rows(&mut app);
+        assert_eq!(after.len(), 2);
+        assert_eq!(after[&ids[0]], before[&ids[0]]);
+        assert_eq!(after[&ids[2]], before[&ids[2]]);
+        assert!(app.world().get_entity(before[&ids[1]]).is_err());
+        let third = controls(&mut app, |c| c == Control::Row(ids[2]))[0];
+        assert_eq!(app.world().resource::<InputFocus>().get(), Some(third));
+        // Rows stay in the container's order.
+        let list = app
+            .world_mut()
+            .query_filtered::<&Children, With<LootRows>>()
+            .single(app.world())
+            .unwrap();
+        let order: Vec<_> =
+            list.iter().filter_map(|e| app.world().get::<LootRow>(e)).map(|r| r.0).collect();
+        assert_eq!(order, [ids[0], ids[2]]);
     }
 }

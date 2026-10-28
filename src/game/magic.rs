@@ -478,7 +478,7 @@ pub fn accept_magic(
     mut requests: MessageReader<MagicRequest>,
     battle: Option<Single<&crate::game::combat::Battle>>,
     camp: Option<Res<crate::game::camp::Camp>>,
-    interaction: Option<Res<crate::game::world::interaction::DeviceInteraction>>,
+    interaction: Query<(), With<crate::game::world::interaction::DeviceInteraction>>,
     mut orders: Query<&mut crate::game::party::Order>,
     (mut members, mut monsters): (Members, MonsterDamage),
     mut points: Query<(&LearnedSpells, &mut SpellPoints)>,
@@ -490,12 +490,12 @@ pub fn accept_magic(
         if !context.roster.contains(&caster) {
             continue;
         }
-        if let casting::Aim::Device(device) = choice.aim {
+        if let casting::Aim::Device(attempt) = choice.aim {
             commands.queue(move |world: &mut World| {
                 if let Err(refusal) = crate::game::world::interaction::cast_device(
                     world,
                     caster,
-                    device,
+                    attempt,
                     choice.source,
                 ) {
                     world.write_message(casting::MagicNews::Refused { caster, refusal });
@@ -503,7 +503,7 @@ pub fn accept_magic(
             });
             continue;
         }
-        if interaction.is_some() {
+        if !interaction.is_empty() {
             context.news.write(casting::MagicNews::Refused {
                 caster,
                 refusal: casting::Refusal::WrongTime,

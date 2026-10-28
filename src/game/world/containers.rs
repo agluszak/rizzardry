@@ -5,7 +5,7 @@
 
 use bevy::prelude::*;
 
-use super::interaction::{DeviceInteraction, Work};
+use super::interaction::{AttemptOn, DeviceInteraction, Work};
 use super::triggers::Container;
 use crate::content::items::ItemCatalog;
 use crate::game::data::GameData;
@@ -22,10 +22,12 @@ pub enum Recipient {
     Member(Entity),
 }
 
-/// The container being looked through, if any.
-pub fn looting(world: &World) -> Option<Entity> {
-    match world.get_resource::<DeviceInteraction>() {
-        Some(DeviceInteraction { device, work: Work::Looting }) => Some(*device),
+/// The container the named attempt looks through, if that attempt is
+/// still under way.
+pub fn looting(world: &World, on: Entity) -> Option<Entity> {
+    let entity = world.get_entity(on).ok()?;
+    match (entity.get::<DeviceInteraction>()?, entity.get::<AttemptOn>()?) {
+        (DeviceInteraction { work: Work::Looting }, AttemptOn(device)) => Some(*device),
         _ => None,
     }
 }
@@ -39,6 +41,7 @@ pub fn looting(world: &World) -> Option<Entity> {
 /// act to receive anything.
 pub fn take_from_container(
     world: &mut World,
+    on: Entity,
     picks: &[(StackId, u16)],
     to: Recipient,
 ) -> Result<(), Refusal> {
@@ -47,7 +50,7 @@ pub fn take_from_container(
     {
         return Err(Refusal::Nothing);
     }
-    let device = looting(world).ok_or(Refusal::Nothing)?;
+    let device = looting(world, on).ok_or(Refusal::Nothing)?;
     let party = the_party(world).ok_or(Refusal::NotMember)?;
     if let Recipient::Member(member) = to {
         if !world.get::<PartyMember>(member).is_some_and(|m| m.0 == party) {
@@ -143,14 +146,14 @@ pub fn take_from_container(
         world.write_message(ItemNews::NoRoom);
     }
     if empty {
-        close_container(world);
+        close_container(world, on);
     }
     Ok(())
 }
 
 /// Stop looking through the container, leaving the rest in it.
-pub fn close_container(world: &mut World) {
-    if looting(world).is_some() {
-        world.remove_resource::<DeviceInteraction>();
+pub fn close_container(world: &mut World, on: Entity) {
+    if looting(world, on).is_some() {
+        world.despawn(on);
     }
 }

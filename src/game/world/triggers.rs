@@ -12,7 +12,7 @@ use bevy::ecs::system::SystemParam;
 use bevy::ecs::world::EntityMut;
 use bevy::prelude::*;
 
-use super::interaction::{DeviceInteraction, Guarded, Work};
+use super::interaction::{DeviceAttempt, Guarded, Work};
 use super::level::{Level, LevelOwned};
 use super::props::{Prop, PropMotion};
 use super::scripts::{BellButton, LevelScript};
@@ -108,6 +108,14 @@ pub struct Container {
     table: Option<usize>,
     generated: bool,
     pub contents: Contents,
+}
+
+#[cfg(test)]
+impl Container {
+    /// An opened container holding these stacks.
+    pub(crate) fn holding(items: Vec<ItemStack>) -> Self {
+        Container { table: None, generated: true, contents: Contents { items, gold: 0 } }
+    }
 }
 
 #[derive(Component, Clone, Debug, Default)]
@@ -329,7 +337,7 @@ fn use_container(
     data: Res<GameData>,
     catalogs: Res<Assets<ItemCatalog>>,
     tables: Res<Assets<LootTables>>,
-    interaction: Option<Res<DeviceInteraction>>,
+    attempts: Query<&DeviceAttempt>,
     mut party: Single<&mut PartyInventory>,
     mut ids: ResMut<ItemIds>,
     mut rng: ResMut<GameRng>,
@@ -340,7 +348,7 @@ fn use_container(
         container.contents.items.push(held);
         return ContainerUse::Deposited;
     }
-    if interaction.is_some_and(|i| i.device == entity) {
+    if attempts.contains(entity) {
         return ContainerUse::Busy;
     }
     let catalog = catalogs.get(&data.items).unwrap();
@@ -781,10 +789,7 @@ fn execute(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth:
                     ContainerUse::Busy => return Ran::Declined,
                     ContainerUse::Toggle => {}
                     ContainerUse::Look { open } => {
-                        world.insert_resource(DeviceInteraction {
-                            device: entity,
-                            work: Work::Looting,
-                        });
+                        super::interaction::begin(world, entity, Work::Looting);
                         if open {
                             return Ran::Answered;
                         }
@@ -1221,7 +1226,13 @@ mod tests {
     }
 
     fn work(level: &Scenario) -> Option<&super::super::interaction::Work> {
-        level.world.get_resource::<DeviceInteraction>().map(|i| &i.work)
+        let (on, _) = super::super::interaction::current(&level.world)?;
+        level.world.get::<super::super::interaction::DeviceInteraction>(on).map(|i| &i.work)
+    }
+
+    /// The attempt under way.
+    fn attempt(level: &Scenario) -> Entity {
+        super::super::interaction::current(&level.world).expect("an attempt").0
     }
 
     #[test]
@@ -1246,12 +1257,14 @@ mod tests {
         for remaining in (0..6).rev() {
             level.run("CHEST");
             level.world.insert_resource(opportunity.clone());
-            pick_tumbler(&mut level.world, picker, 0).unwrap();
+            let on = attempt(&level);
+            pick_tumbler(&mut level.world, on, picker, 0).unwrap();
             assert_eq!(
                 level.world.get::<Guarded>(level.device("CHEST")).unwrap().practice_left,
                 remaining
             );
-            leave(&mut level.world);
+            let on = attempt(&level);
+            leave(&mut level.world, on);
             if remaining == 3 {
                 let memory = level.remember();
                 level.visit(Some(memory));
@@ -1264,7 +1277,8 @@ mod tests {
         let before = level.world.get::<Character>(picker).unwrap().skill_practice;
         level.run("CHEST");
         level.world.insert_resource(opportunity);
-        pick_tumbler(&mut level.world, picker, 0).unwrap();
+        let on = attempt(&level);
+        pick_tumbler(&mut level.world, on, picker, 0).unwrap();
         assert_eq!(level.world.get::<Character>(picker).unwrap().skill_practice, before);
         assert_eq!(level.world.get::<Guarded>(level.device("CHEST")).unwrap().practice_left, 0);
     }
@@ -1286,7 +1300,8 @@ mod tests {
         assert_eq!(level.motion("CHEST").target, 0.0);
         // At full skill no tumbler falls; the last one opens the chest.
         for tumbler in 0..3 {
-            pick_tumbler(&mut level.world, picker, tumbler).unwrap();
+            let on = attempt(&level);
+            pick_tumbler(&mut level.world, on, picker, tumbler).unwrap();
         }
         assert!(work(&level).is_none());
         assert!(level.world.get::<Guarded>(chest).is_none());
@@ -1361,7 +1376,8 @@ mod tests {
             let seed =
                 (0..).find(|&seed| (GameRng::seeded(seed).below(2) == 0) == destroyed).unwrap();
             level.world.insert_resource(GameRng::seeded(seed));
-            spring_trap(&mut level.world, Some(selected)).unwrap();
+            let on = attempt(&level);
+            spring_trap(&mut level.world, on, Some(selected)).unwrap();
             let chest = level.device("CHEST");
             assert_eq!(level.world.get::<Vitals>(first).unwrap().hp, hp);
             assert!(
@@ -1453,8 +1469,9 @@ mod tests {
             if spell == 127 {
                 let points = level.world.entity_mut(other).take::<SpellPoints>().unwrap();
                 let before_rng = level.world.resource::<GameRng>().clone();
+                let on = attempt(&level);
                 assert_eq!(
-                    spring_trap(&mut level.world, Some(selected)),
+                    spring_trap(&mut level.world, on, Some(selected)),
                     Err(super::super::interaction::Unable::MissingContent)
                 );
                 assert_eq!(*level.world.resource::<GameRng>(), before_rng);
@@ -1462,7 +1479,8 @@ mod tests {
                 assert_eq!(level.inventory().gold, 1000);
                 level.world.entity_mut(other).insert(points);
             }
-            spring_trap(&mut level.world, Some(selected)).unwrap();
+            let on = attempt(&level);
+            spring_trap(&mut level.world, on, Some(selected)).unwrap();
             match spell {
                 124 => assert!((600..1000).contains(&level.inventory().gold)),
                 126 => {
@@ -1560,7 +1578,6 @@ mod tests {
         level.inventory().pool.stacks.push(pooled);
         level.world.get_mut::<Carried>(actor).unwrap().backpack[0] = Some(worn);
         level.run("CHEST");
-        let device = level.device("CHEST");
         let other = level.world.spawn_empty().id();
         let rng = level.world.resource::<GameRng>().clone();
         assert_eq!(
@@ -1577,11 +1594,12 @@ mod tests {
             crate::game::characters::Condition::Webbed,
             crate::game::characters::Lasting::Rounds(3),
         );
+        let on = attempt(&level);
         assert_eq!(
             cast_device(
                 &mut level.world,
                 actor,
-                device,
+                on,
                 Source::Spell { spell: SpellId(39), power: 1 }
             ),
             Err(Refusal::CannotAct)
@@ -1593,40 +1611,41 @@ mod tests {
             .get_mut::<Vitals>(actor)
             .unwrap()
             .lift(crate::game::characters::Condition::Webbed);
+        let on = attempt(&level);
         assert_eq!(
-            cast_device(&mut level.world, actor, device, Source::Item(worn_id)),
+            cast_device(&mut level.world, actor, on, Source::Item(worn_id)),
             Err(Refusal::CannotUse)
         );
         assert_eq!(*level.world.resource::<GameRng>(), rng);
-        cast_device(
-            &mut level.world,
-            actor,
-            device,
-            Source::Spell { spell: SpellId(39), power: 1 },
-        )
-        .unwrap();
+        let on = attempt(&level);
+        cast_device(&mut level.world, actor, on, Source::Spell { spell: SpellId(39), power: 1 })
+            .unwrap();
         assert_eq!(level.world.get::<SpellPoints>(actor).unwrap().current[Realm::Earth], 19);
-        cast_device(&mut level.world, actor, device, Source::PoolItem(pool_id)).unwrap();
+        let on = attempt(&level);
+        cast_device(&mut level.world, actor, on, Source::PoolItem(pool_id)).unwrap();
         assert!(
             level.inventory().pool.stacks.is_empty(),
             "a plain exhausted charged tool is consumed"
         );
         assert!(level.world.get::<Carried>(actor).unwrap().find_stack(worn_id).is_some());
+        let on = attempt(&level);
         assert_eq!(
-            cast_device(&mut level.world, actor, device, Source::PoolItem(pool_id)),
+            cast_device(&mut level.world, actor, on, Source::PoolItem(pool_id)),
             Err(Refusal::NoItem)
         );
         let mut carried = level.world.get_mut::<Carried>(actor).unwrap();
         let worn = carried.backpack[0].take().unwrap();
         carried.equipment[EquipSlot::AlternatePrimary] = Some(Equipped::new(worn));
+        let on = attempt(&level);
         assert_eq!(
-            cast_device(&mut level.world, actor, device, Source::Item(worn_id)),
+            cast_device(&mut level.world, actor, on, Source::Item(worn_id)),
             Err(Refusal::CannotUse)
         );
         let mut carried = level.world.get_mut::<Carried>(actor).unwrap();
         carried.equipment[EquipSlot::Primary] =
             carried.equipment[EquipSlot::AlternatePrimary].take();
-        cast_device(&mut level.world, actor, device, Source::Item(worn_id)).unwrap();
+        let on = attempt(&level);
+        cast_device(&mut level.world, actor, on, Source::Item(worn_id)).unwrap();
         assert_eq!(
             level
                 .world
@@ -1639,11 +1658,13 @@ mod tests {
             "a residual AC effect keeps the exhausted item"
         );
         // Cancelling a newly opened selector drops only this actor's magic holds.
-        let mut interaction = level.world.resource_mut::<DeviceInteraction>();
+        let on = attempt(&level);
+        let mut interaction =
+            level.world.get_mut::<super::super::interaction::DeviceInteraction>(on).unwrap();
         let Work::Picking(picking) = &mut interaction.work else { panic!("picking") };
         picking.tumblers[0] = Tumbler::Sealed(actor);
         picking.tumblers[1] = Tumbler::Held(actor);
-        prepare_device_magic(&mut level.world, actor, device).unwrap();
+        prepare_device_magic(&mut level.world, actor, on).unwrap();
         let Some(Work::Picking(picking)) = work(&level) else { panic!("picking") };
         assert_eq!(picking.tumblers[0], Tumbler::Down);
         assert_eq!(picking.tumblers[1], Tumbler::Held(actor));
@@ -1690,24 +1711,16 @@ mod tests {
         ));
         level.run("CHEST");
         let device = level.device("CHEST");
-        cast_device(
-            &mut level.world,
-            actor,
-            device,
-            Source::Spell { spell: SpellId(18), power: 2 },
-        )
-        .unwrap();
+        let on = attempt(&level);
+        cast_device(&mut level.world, actor, on, Source::Spell { spell: SpellId(18), power: 2 })
+            .unwrap();
         let Some(Work::Disarming(trap)) = work(&level) else { panic!("disarming") };
         assert_eq!(trap.divine_power, 2);
         let stronger =
             trap.inspection_chance(Some(25), crate::game::difficulty::Difficulty::Normal);
-        cast_device(
-            &mut level.world,
-            actor,
-            device,
-            Source::Spell { spell: SpellId(18), power: 1 },
-        )
-        .unwrap();
+        let on = attempt(&level);
+        cast_device(&mut level.world, actor, on, Source::Spell { spell: SpellId(18), power: 1 })
+            .unwrap();
         let Some(Work::Disarming(trap)) = work(&level) else { panic!("disarming") };
         assert_eq!(trap.divine_power, 1);
         assert!(
@@ -1715,7 +1728,8 @@ mod tests {
                 < stronger
         );
         assert_eq!(level.world.get::<SpellPoints>(actor).unwrap().current[Realm::Mental], 7);
-        leave(&mut level.world);
+        let on = attempt(&level);
+        leave(&mut level.world, on);
         level.run("CHEST");
         let Some(Work::Disarming(trap)) = work(&level) else { panic!("disarming") };
         assert_eq!(trap.divine_power, 0);
@@ -1738,7 +1752,8 @@ mod tests {
         let chest = level.device("CHEST");
         assert_eq!(level.world.get::<Guarded>(chest).unwrap().trap, Some(trap));
         // Leaving and returning faces the same trap.
-        leave(&mut level.world);
+        let on = attempt(&level);
+        leave(&mut level.world, on);
         let memory = level.remember();
         level.visit(Some(memory));
         let chest = level.device("CHEST");
@@ -1746,9 +1761,15 @@ mod tests {
         assert_eq!(level.world.get::<Guarded>(chest).unwrap().trap, Some(trap));
         let wrong = TRAP_COMPONENTS[usize::from(trap)].iter().position(|&p| !p).unwrap();
         let before_rng = level.world.resource::<GameRng>().clone();
-        assert_eq!(disarm_component(&mut level.world, member, wrong), Err(Unable::UnsupportedTrap));
-        assert_eq!(inspect_trap(&mut level.world, member), Err(Unable::UnsupportedTrap));
-        assert_eq!(spring_trap(&mut level.world, Some(member)), Err(Unable::UnsupportedTrap));
+        let on = attempt(&level);
+        assert_eq!(
+            disarm_component(&mut level.world, on, member, wrong),
+            Err(Unable::UnsupportedTrap)
+        );
+        let on = attempt(&level);
+        assert_eq!(inspect_trap(&mut level.world, on, member), Err(Unable::UnsupportedTrap));
+        let on = attempt(&level);
+        assert_eq!(spring_trap(&mut level.world, on, Some(member)), Err(Unable::UnsupportedTrap));
         assert_eq!(*level.world.resource::<GameRng>(), before_rng);
         assert!(matches!(work(&level), Some(Work::Disarming(_))));
         assert_eq!(level.world.get::<Guarded>(chest).unwrap().trap, Some(trap));
@@ -1787,8 +1808,9 @@ mod tests {
         level.settle();
         let before = level.world.get::<Container>(chest).unwrap().contents.items.clone();
         for picks in [&[(quiver, 0)][..], &[(quiver, 11)], &[(knife, 1), (knife, 2)], &[]] {
+            let on = attempt(&level);
             assert_eq!(
-                take_from_container(&mut level.world, picks, Recipient::Party),
+                take_from_container(&mut level.world, on, picks, Recipient::Party),
                 Err(crate::game::inventory::Refusal::Nothing)
             );
         }
@@ -1802,14 +1824,16 @@ mod tests {
                 super::super::level::Entry::Travel,
             ))
             .id();
+        let on = attempt(&level);
         assert_eq!(
-            take_from_container(&mut level.world, &[(quiver, 4)], Recipient::Party),
+            take_from_container(&mut level.world, on, &[(quiver, 4)], Recipient::Party),
             Err(crate::game::inventory::Refusal::Nothing)
         );
         assert_eq!(level.world.get::<Container>(chest).unwrap().contents.items, before);
         assert!(level.inventory().pool.stacks.is_empty());
         level.world.despawn(entering);
-        take_from_container(&mut level.world, &[(quiver, 4)], Recipient::Party).unwrap();
+        let on = attempt(&level);
+        take_from_container(&mut level.world, on, &[(quiver, 4)], Recipient::Party).unwrap();
         let pool = &level.inventory().pool.stacks;
         assert_eq!(pool.iter().map(ItemStack::count).collect::<Vec<_>>(), [4]);
         let left = |level: &Scenario| {
@@ -1819,7 +1843,8 @@ mod tests {
             left(&level).iter().map(|s| (s.id, s.count())).collect::<Vec<_>>(),
             [(quiver, 6), (knife, 1)]
         );
-        close_container(&mut level.world);
+        let on = attempt(&level);
+        close_container(&mut level.world, on);
         assert!(work(&level).is_none());
         // Using the open chest looks again without closing it.
         level.run("CHEST");
@@ -1827,10 +1852,13 @@ mod tests {
         assert_eq!(level.motion("CHEST").target, 5.0);
         let member = level.members[0];
         level.world.entity_mut(member).insert(crate::game::inventory::Carried::default());
-        take_from_container(&mut level.world, &[(knife, 1)], Recipient::Member(member)).unwrap();
+        let on = attempt(&level);
+        take_from_container(&mut level.world, on, &[(knife, 1)], Recipient::Member(member))
+            .unwrap();
         let carried = level.world.get::<crate::game::inventory::Carried>(member).unwrap();
         assert_eq!(carried.stacks().map(|s| s.id).collect::<Vec<_>>(), [knife]);
-        close_container(&mut level.world);
+        let on = attempt(&level);
+        close_container(&mut level.world, on);
         // Nothing is rolled again on return; the last stack goes to the hand.
         let memory = level.remember();
         level.visit(Some(memory));
@@ -1882,8 +1910,9 @@ mod tests {
         let before = contents(&level);
 
         // Content not loaded yet: refused, not a silent success.
+        let on = attempt(&level);
         assert_eq!(
-            take_from_container(&mut level.world, &[(quiver, 4)], Recipient::Party),
+            take_from_container(&mut level.world, on, &[(quiver, 4)], Recipient::Party),
             Err(Refusal::MissingContent)
         );
         level.world.resource_mut::<Assets<ItemCatalog>>().insert(&handle, catalog).unwrap();
@@ -1914,20 +1943,25 @@ mod tests {
             stuffed.receive(ItemStack::new(&arrows, &mut ids, 4, true), &catalog);
         }
         level.world.entity_mut(member).insert(stuffed.clone());
-        take_from_container(&mut level.world, &[(quiver, 4)], Recipient::Member(member)).unwrap();
+        let on = attempt(&level);
+        take_from_container(&mut level.world, on, &[(quiver, 4)], Recipient::Member(member))
+            .unwrap();
         assert_eq!(contents(&level), before);
         assert_eq!(level.world.get::<Carried>(member), Some(&stuffed));
         assert_eq!(next_id(&level), ids_before);
 
         // Room only to top up a stack: units merge, the rest stays, no new identity.
         level.world.entity_mut(member).insert(full);
-        take_from_container(&mut level.world, &[(quiver, 6)], Recipient::Member(member)).unwrap();
+        let on = attempt(&level);
+        take_from_container(&mut level.world, on, &[(quiver, 6)], Recipient::Member(member))
+            .unwrap();
         assert_eq!(contents(&level).iter().map(ItemStack::count).collect::<Vec<_>>(), [6, 10]);
         assert_eq!(contents(&level)[0].id, quiver);
         assert_eq!(next_id(&level), ids_before);
 
         // A part kept as a stack of its own takes exactly one new identity.
-        take_from_container(&mut level.world, &[(quiver, 2)], Recipient::Party).unwrap();
+        let on = attempt(&level);
+        take_from_container(&mut level.world, on, &[(quiver, 2)], Recipient::Party).unwrap();
         let pool = level.inventory().pool.stacks.clone();
         assert_eq!(pool.iter().map(|s| (s.id, s.count())).collect::<Vec<_>>(), [(ids_before, 2)]);
         assert_eq!(contents(&level)[0].count(), 4);

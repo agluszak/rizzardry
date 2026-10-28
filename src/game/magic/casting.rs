@@ -52,6 +52,7 @@ pub enum Source {
 pub enum Aim {
     Member(Entity),
     Monster(Entity),
+    /// The device attempt under way (its lock or trap), by the attempt.
     Device(Entity),
 }
 
