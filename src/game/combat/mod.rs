@@ -2895,7 +2895,9 @@ mod tests {
             .world_mut()
             .spawn((
                 survivor,
-                Transform::from_translation(Vec3::NEG_Z * 30.0),
+                // Close and facing the party, so its group does not leave the
+                // fight as the round ends; it has no attack to join by sight.
+                Transform::from_translation(Vec3::NEG_Z * 3.0).looking_at(Vec3::ZERO, Vec3::Y),
                 GroupMember(group),
                 LevelOwned(level),
             ))
