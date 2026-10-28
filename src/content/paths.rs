@@ -10,6 +10,23 @@ pub fn sheet(path: &str) -> String {
     format!("retail://data/{path}.sti")
 }
 
+/// A character portrait at a size retail draws it.
+pub fn portrait(size: PortraitSize, name: &str) -> String {
+    let (directory, prefix) = match size {
+        PortraitSize::Small => ("small", 's'),
+        PortraitSize::Medium => ("medium", 'm'),
+        PortraitSize::Large => ("large", 'l'),
+    };
+    format!("retail://data/portraits/{directory}/{prefix}{name}.sti")
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PortraitSize {
+    Small,
+    Medium,
+    Large,
+}
+
 pub const ITEMS: &str = "retail://data/databases/items.dbs";
 pub const LOOT_TABLES: &str = "retail://data/databases/itemtables.dbs";
 pub const SPECIES: &str = "retail://data/databases/monsters.dbs";

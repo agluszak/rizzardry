@@ -500,13 +500,14 @@ pub(super) fn refresh(
             }
         }
     }
-    let handle: Handle<SpriteSheet> =
-        assets.load(format!("retail://data/portraits/large/l{}.sti", draft.portrait));
+    use crate::content::paths::{PortraitSize, portrait};
     // The portrait itself keeps the selected sheet alive.
     for mut picture in &mut portraits {
-        if picture.sheet != handle {
-            picture.sheet = handle.clone();
-        }
+        crate::presentation::screen_art::show_sheet(
+            &mut picture,
+            &assets,
+            portrait(PortraitSize::Large, &draft.portrait),
+        );
     }
 }
 
@@ -606,7 +607,10 @@ fn open_summary(
     spawn_picture(
         &mut commands,
         panel,
-        assets.load(format!("retail://data/portraits/medium/m{}.sti", draft.portrait)),
+        assets.load(crate::content::paths::portrait(
+            crate::content::paths::PortraitSize::Medium,
+            &draft.portrait,
+        )),
         0,
         Vec2::new(11., 11.),
     );

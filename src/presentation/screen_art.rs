@@ -292,6 +292,14 @@ pub fn scale_ui(
     }
 }
 
+/// Point a picture at the sheet on `path`, loading it only when the path
+/// changes rather than every frame.
+pub fn show_sheet(picture: &mut Mut<Picture>, assets: &AssetServer, path: String) {
+    if picture.sheet.path().is_none_or(|current| current.to_string() != path) {
+        picture.sheet = assets.load(path);
+    }
+}
+
 /// The game's string table, for views that name things the way retail does.
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct GameStrings<'w, 's> {

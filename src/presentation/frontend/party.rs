@@ -363,18 +363,17 @@ pub(super) fn refresh(
             Visibility::Hidden
         });
         if let Some(draft) = draft {
-            let (directory, prefix) = match portrait {
-                Portrait::Candidate(_) => ("small", "s"),
-                Portrait::Member(_) => ("medium", "m"),
-                Portrait::Selected => ("large", "l"),
+            use crate::content::paths::{PortraitSize, portrait as path};
+            let size = match portrait {
+                Portrait::Candidate(_) => PortraitSize::Small,
+                Portrait::Member(_) => PortraitSize::Medium,
+                Portrait::Selected => PortraitSize::Large,
             };
-            let sheet = assets.load(format!(
-                "retail://data/portraits/{directory}/{prefix}{}.sti",
-                draft.portrait
-            ));
-            if picture.sheet != sheet {
-                picture.sheet = sheet;
-            }
+            crate::presentation::screen_art::show_sheet(
+                &mut picture,
+                &assets,
+                path(size, &draft.portrait),
+            );
         }
     }
     for (row, mut picture, mut visible) in &mut rows {

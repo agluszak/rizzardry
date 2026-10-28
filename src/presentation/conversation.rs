@@ -356,18 +356,18 @@ fn sync_view(world: &mut World) {
             Outcome::TradeRefused(e) => format!("Trade refused: {e:?}"),
         })
     );
-    let font = world
-        .resource::<AssetServer>()
-        .load::<SpriteSheet>("retail://data/fonts/wiz_text_font.sti");
-    let text = world.resource::<Assets<SpriteSheet>>().get(&font).map_or_else(
-        || text.clone(),
-        |font| super::notices::wrap(&text, 510, |s| font.text_width(s)).join("\n"),
-    );
     let summary = world
         .query_filtered::<&Children, With<Summary>>()
         .iter(world)
         .next()
         .and_then(|c| c.first().copied());
+    // The summary's own font wraps it.
+    let font = summary.and_then(|e| world.get::<BitmapText>(e)).map(|t| t.font.clone());
+    let text = font
+        .and_then(|font| world.resource::<Assets<SpriteSheet>>().get(&font))
+        .map_or(text.clone(), |font| {
+            super::notices::wrap(&text, 510, |s| font.text_width(s)).join("\n")
+        });
     if let Some(e) = summary
         && let Some(mut t) = world.get_mut::<BitmapText>(e)
         && t.value != text
