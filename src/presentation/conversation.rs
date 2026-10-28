@@ -1,5 +1,6 @@
 //! Native dialogue widgets. All selected rows and quotes are drafts; gameplay
 //! resolves item/stock identities again when a confirmation executes.
+mod quantity;
 use super::main_screen::SelectedMember;
 use super::retail_controls::{ControlSkin, FocusRing};
 use super::screen_art::{BitmapInk, BitmapText, BitmapWrap, Picture, absolute};
@@ -104,6 +105,7 @@ enum Caption {
     Name,
     Gold,
     Quote,
+    TradeAction,
 }
 #[derive(Component)]
 struct TopicList;
@@ -117,6 +119,12 @@ struct QuoteBubble {
 struct ItemPreview;
 #[derive(Component)]
 struct Confirm;
+#[derive(Component)]
+struct QuantityControl;
+#[derive(Component)]
+struct TradePrice;
+#[derive(Component)]
+struct TradeCount;
 #[derive(Component)]
 struct ModeButton(Mode);
 #[derive(Component)]
@@ -221,6 +229,7 @@ impl Plugin for ConversationViewPlugin {
                     colour_selections,
                     paint_topic_text.before(super::screen_art::render_text),
                     scroll_to_newest.after(bevy::ui::UiSystems::Layout),
+                    quantity::sync.after(bevy::text::EditableTextSystems),
                 ),
             );
     }
@@ -646,57 +655,57 @@ fn build(world: &mut World, session: Entity) -> Entity {
         }
         if trade {
             let right = panel(world, group, Vec2::new(476., 358.), Vec2::new(141., 92.), 6);
-            let offer = label(world, right, "Select an item", Vec2::new(5., 4.), 130.);
-            world.entity_mut(offer).insert((Offer, BitmapWrap { width: 130, line_spacing: 0 }));
-            let preview = world.spawn((ItemPreview, Picture::default(), ChildOf(right))).id();
-            world.entity_mut(preview).insert(Visibility::Hidden);
-            for (i, (text, delta)) in [("-", -1), ("+", 1), ("Confirm", 0)].into_iter().enumerate()
-            {
-                let e = action(
-                    world,
-                    right,
-                    text,
-                    Vec2::new(
-                        54. + if i < 2 { i as f32 * 25. } else { 0. },
-                        if i < 2 { 36. } else { 55. },
-                    ),
-                    Vec2::new(if i < 2 { 22. } else { 78. }, 16.),
-                );
-                world.entity_mut(e).insert(Confirm);
-                world.entity_mut(e).observe(
-                    move |_: On<Activate>,
-                          states: Query<&DialogueState>,
-                          roots: Query<&ConversationView>,
-                          mut requests: MessageWriter<ConversationRequest>,
-                          mut commands: Commands| {
-                        let Some(q) = states.get(root).ok().and_then(|v| v.selected) else {
-                            return;
-                        };
-                        if !roots.get(root).is_ok_and(|v| v.0 == q.conversation) {
-                            return;
-                        }
-                        if delta == 0 {
-                            requests.write(ConversationRequest::Trade(q));
-                        } else {
-                            commands.queue(move |world: &mut World| {
-                                select(
-                                    world,
-                                    root,
-                                    q.conversation,
-                                    q.source,
-                                    if delta > 0 {
-                                        q.quantity.saturating_add(1)
-                                    } else {
-                                        q.quantity.saturating_sub(1).max(1)
-                                    },
-                                )
-                            });
-                        }
+            let offer = label(world, right, "", Vec2::new(4., 4.), 132.);
+            world.entity_mut(offer).insert(Offer);
+            world.get_mut::<BitmapText>(offer).unwrap().justify = bevy::text::Justify::Center;
+            world.spawn((ItemPreview, Picture::default(), Visibility::Hidden, ChildOf(right)));
+            let count = label(world, right, "", Vec2::new(5., 62.), 45.);
+            world.entity_mut(count).insert(TradeCount);
+            world.get_mut::<BitmapText>(count).unwrap().justify = bevy::text::Justify::Right;
+            let price = label(world, right, "", Vec2::new(83., 58.), 51.);
+            world.entity_mut(price).insert(TradePrice);
+            world.get_mut::<BitmapText>(price).unwrap().justify = bevy::text::Justify::Right;
+            world
+                .spawn((
+                    Button,
+                    FocusRing,
+                    TabIndex(0),
+                    QuantityControl,
+                    Pickable::default(),
+                    Picture {
+                        sheet: world
+                            .resource::<AssetServer>()
+                            .load("retail://data/npc interaction/npc_buttons.sti"),
+                        frame: 30,
+                        at: Vec2::new(53., 54.),
+                        bounds: Some(30),
                     },
-                );
-            }
-            let gold = label(world, right, "", Vec2::new(5., 78.), 130.);
+                    ControlSkin::new(30, 31, 34, 32, 33),
+                    ChildOf(right),
+                ))
+                .observe(move |_: On<Activate>, mut commands: Commands| {
+                    commands.queue(move |world: &mut World| quantity::open(world, root, canvas));
+                });
+            let confirm = action(world, right, "", Vec2::new(56., 34.), Vec2::new(80., 18.));
+            world.entity_mut(confirm).insert(Confirm);
+            let caption = world.get::<Children>(confirm).unwrap()[0];
+            world.entity_mut(caption).insert(Caption::TradeAction);
+            world.entity_mut(confirm).observe(
+                move |_: On<Activate>,
+                      states: Query<&DialogueState>,
+                      roots: Query<&ConversationView>,
+                      mut requests: MessageWriter<ConversationRequest>| {
+                    if let Some(q) = states.get(root).ok().and_then(|s| s.selected)
+                        && roots.get(root).is_ok_and(|v| v.0 == q.conversation)
+                    {
+                        requests.write(ConversationRequest::Trade(q));
+                    }
+                },
+            );
+            label(world, right, "Party gold:", Vec2::new(5., 77.), 76.);
+            let gold = label(world, right, "", Vec2::new(83., 77.), 51.);
             world.entity_mut(gold).insert(Caption::Gold);
+            world.get_mut::<BitmapText>(gold).unwrap().justify = bevy::text::Justify::Right;
         } else {
             let topics = world
                 .spawn((
@@ -1005,9 +1014,8 @@ fn project_text(
                 Mode::Buy => "Buy".into(),
                 Mode::Sell => "Sell".into(),
             },
-            Caption::Gold => {
-                parties.single().map(|p| format!("Party gold: {}", p.gold)).unwrap_or_default()
-            }
+            Caption::Gold => parties.single().map(|p| format!("{}g", p.gold)).unwrap_or_default(),
+            Caption::TradeAction => if state.mode == Mode::Buy { "Buy" } else { "Sell" }.into(),
             Caption::Quote => {
                 if let ConversationWait::Line { speech: entity, .. } = c.wait {
                     speech.get(entity).map(|s| s.text.clone()).unwrap_or_default()
@@ -1559,6 +1567,18 @@ fn sync_topic_rows(
         }
     }
 }
+#[derive(bevy::ecs::system::SystemParam)]
+struct TradeWidgets<'w, 's> {
+    lists: Query<'w, 's, (Entity, Option<&'static Children>), With<TradeList>>,
+    row_data: Query<'w, 's, (&'static mut TradeRow, &'static Children)>,
+    offers: Query<'w, 's, Entity, With<Offer>>,
+    captions: Query<'w, 's, (Entity, Has<TradeCount>), Or<(With<TradeCount>, With<TradePrice>)>>,
+    quantities: Query<'w, 's, (Entity, Has<InteractionDisabled>), With<QuantityControl>>,
+    texts: Query<'w, 's, &'static mut BitmapText>,
+    controls: Query<'w, 's, (Entity, Has<InteractionDisabled>), With<Confirm>>,
+    previews:
+        Query<'w, 's, (Entity, &'static mut Picture, &'static mut Visibility), With<ItemPreview>>,
+}
 fn sync_trade_rows(
     views: ViewScope,
     mut commands: Commands,
@@ -1570,13 +1590,18 @@ fn sync_trade_rows(
     parties: Query<(&PartyRoster, &PartyInventory), With<crate::game::party::roster::Party>>,
     members: Query<(&crate::game::characters::Character, &Carried)>,
     selection: Res<SelectedMember>,
-    lists: Query<(Entity, Option<&Children>), With<TradeList>>,
-    mut row_data: Query<(&mut TradeRow, &Children)>,
-    offers: Query<Entity, With<Offer>>,
-    mut texts: Query<&mut BitmapText>,
-    controls: Query<(Entity, Has<InteractionDisabled>), With<Confirm>>,
-    mut previews: Query<(Entity, &mut Picture, &mut Visibility), With<ItemPreview>>,
+    widgets: TradeWidgets,
 ) {
+    let TradeWidgets {
+        lists,
+        mut row_data,
+        offers,
+        captions,
+        quantities,
+        mut texts,
+        controls,
+        mut previews,
+    } = widgets;
     let Some(items) = data.and_then(|d| catalogs.get(&d.items)) else { return };
     let Ok((roster, party)) = parties.single() else { return };
     for (list, children) in &lists {
@@ -1641,31 +1666,6 @@ fn sync_trade_rows(
                 && q.revision == c.revision
                 && rows.iter().any(|r| r.0 == q.source)
         });
-        let offer = if let Some(error) = &state.error {
-            error.clone()
-        } else if let Some(q) = quote {
-            format!(
-                "{}\n{} x  {} gold",
-                rows.iter().find(|r| r.0 == q.source).unwrap().1,
-                q.quantity,
-                q.gold
-            )
-        } else {
-            "Select an item".into()
-        };
-        for entity in &offers {
-            if views.owner(entity).is_some_and(|(owner, _)| owner == root)
-                && let Ok(mut text) = texts.get_mut(entity)
-                && text.value != offer
-            {
-                text.value = offer.clone();
-            }
-        }
-        for (entity, disabled) in &controls {
-            if views.owner(entity).is_some_and(|(owner, _)| owner == root) {
-                set_enabled(&mut commands, entity, quote.is_some(), disabled);
-            }
-        }
         let item = quote
             .and_then(|q| match q.source {
                 TradeSource::Stock(id) => {
@@ -1681,6 +1681,67 @@ fn sync_trade_rows(
                 },
             })
             .and_then(|id| items.get(id));
+        let offer = if let Some(error) = &state.error {
+            error.clone()
+        } else if let Some(item) = item {
+            item.name.clone()
+        } else {
+            String::new()
+        };
+        for entity in &offers {
+            if views.owner(entity).is_some_and(|(owner, _)| owner == root)
+                && let Ok(mut text) = texts.get_mut(entity)
+                && text.value != offer
+            {
+                text.value = offer.clone();
+            }
+        }
+        let units = quote
+            .and_then(|q| match q.source {
+                TradeSource::Stock(id) => {
+                    npc.stock.lots.iter().find(|l| l.id == id).map(|l| l.units)
+                }
+                TradeSource::Party(r) => match r.owner {
+                    ItemOwner::Pool => {
+                        party.pool.stacks.iter().find(|s| s.id == r.id).map(|s| s.units())
+                    }
+                    ItemOwner::Member(e) => {
+                        members.get(e).ok()?.1.find_stack(r.id).map(|s| s.units())
+                    }
+                },
+            })
+            .unwrap_or(0);
+        for (entity, count) in &captions {
+            if views.owner(entity).is_some_and(|(owner, _)| owner == root)
+                && let Ok(mut text) = texts.get_mut(entity)
+            {
+                let value = quote.map_or_else(String::new, |q| {
+                    if count {
+                        if units > 1 { q.quantity.to_string() } else { String::new() }
+                    } else {
+                        format!("{}g", q.gold)
+                    }
+                });
+                if text.value != value {
+                    text.value = value;
+                }
+            }
+        }
+        for (entity, disabled) in &quantities {
+            if views.owner(entity).is_some_and(|(owner, _)| owner == root) {
+                set_enabled(
+                    &mut commands,
+                    entity,
+                    units > 1 && item.is_some_and(|d| d.class != EquipClass::Ammunition),
+                    disabled,
+                );
+            }
+        }
+        for (entity, disabled) in &controls {
+            if views.owner(entity).is_some_and(|(owner, _)| owner == root) {
+                set_enabled(&mut commands, entity, quote.is_some(), disabled);
+            }
+        }
         for (entity, mut picture, mut visibility) in &mut previews {
             if !views.owner(entity).is_some_and(|(owner, _)| owner == root) {
                 continue;
@@ -1694,7 +1755,7 @@ fn sync_trade_rows(
                 picture.set_if_neq(Picture {
                     sheet: assets.load(format!("retail://{}", item.image)),
                     frame: 1,
-                    at: Vec2::new(5., 28.),
+                    at: Vec2::new(5., 20.),
                     bounds: None,
                 });
             }
@@ -2035,4 +2096,62 @@ mod tests {
         assert!(app.world().get_entity(row).is_err());
         assert!(app.world().get_entity(other_row).is_ok());
     }
+}
+
+/// Reproducible inspection only: use normal conversation/quote validation and
+/// never submit a purchase. Used by `--inspect-trade` with offscreen captures.
+#[derive(Resource)]
+pub struct InspectTrade(pub bool);
+pub(crate) fn inspect_trade(world: &mut World) {
+    let Some(split) = world.get_resource::<InspectTrade>().map(|s| s.0) else { return };
+    let Some((session, actor, wait, ready)) = world
+        .query::<(Entity, &Conversation)>()
+        .iter(world)
+        .next()
+        .map(|(e, c)| (e, c.actor, c.wait.clone(), c.ready()))
+    else {
+        return;
+    };
+    if !ready {
+        if let ConversationWait::Line { speech, .. } = wait {
+            world.write_message(ConversationRequest::Advance { conversation: session, speech });
+        }
+        return;
+    }
+    let Some(view) = world
+        .query::<(Entity, &ConversationView)>()
+        .iter(world)
+        .find(|(_, v)| v.0 == session)
+        .map(|(e, _)| e)
+    else {
+        return;
+    };
+    let Some(canvas) = world.get::<Children>(view).and_then(|c| c.first().copied()) else { return };
+    set_mode(&mut world.get_mut::<DialogueState>(view).unwrap(), Mode::Buy);
+    let item = world
+        .get_resource::<GameData>()
+        .and_then(|d| world.resource::<Assets<ItemCatalog>>().get(&d.items))
+        .and_then(|items| {
+            world
+                .get::<Npc>(actor)?
+                .stock
+                .lots
+                .iter()
+                .find(|lot| {
+                    items.get(lot.item).is_some_and(|d| {
+                        trade::on_sale(lot, d)
+                            && (!split || (lot.units > 1 && d.class != EquipClass::Ammunition))
+                    })
+                })
+                .map(|lot| (lot.id, trade::trade_quantity(items.get(lot.item).unwrap(), lot.units)))
+        });
+    if let Some((lot, count)) = item {
+        select(world, view, session, TradeSource::Stock(lot), count);
+        if split {
+            quantity::open(world, view, canvas);
+        }
+    } else {
+        warn!("no matching stock for --inspect-trade");
+    }
+    world.remove_resource::<InspectTrade>();
 }
