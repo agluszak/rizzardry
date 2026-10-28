@@ -20,6 +20,7 @@ use bevy::prelude::*;
 use super::triggers::{Device, DoorState};
 use crate::content::characters::{Attribute, Skill};
 use crate::content::level::{Lock, TRAP_TYPES};
+use crate::content::spells::SpellId;
 use crate::game::characters::{Character, Vitals};
 use crate::game::difficulty::Difficulty;
 use crate::game::party::roster::PartyMember;
@@ -650,7 +651,7 @@ pub fn cast_device(
     }
     let power =
         (u32::from(strength.power) + u32::from(strength.power) * strength.boost / 100).min(7) as u8;
-    if spell.0 == 18 {
+    if spell == SpellId::DIVINE_TRAP {
         let mut interaction = world.resource_mut::<DeviceInteraction>();
         let Work::Disarming(trap) = &mut interaction.work else { unreachable!() };
         trap.divine_power = power;

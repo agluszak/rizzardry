@@ -183,9 +183,7 @@ pub(crate) fn pass_time(
         };
         let mut members = affected.p0();
         for (profile, mut vitals) in members.iter_many_unique_mut(roster.iter()).matched() {
-            if recovery::has_work(profile, &vitals, ticks, pace) {
-                recovery::elapse(profile, &mut vitals, ticks, pace);
-            }
+            recovery::pass(profile, &mut vitals, ticks, pace);
         }
         if pass > 0 {
             // Spell points come back at least at half rate (retail `spellScale`).

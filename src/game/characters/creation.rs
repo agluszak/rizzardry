@@ -105,19 +105,19 @@ impl CharacterDraft {
         Self::budget(self.race, self.gender, self.profession).unwrap()
             - self.attributes.values().copied().sum::<u8>()
     }
+    /// The books first spells come from: the profession's, for those who
+    /// pick any (retail `FinalizeSpellPointPool`: none below caster level 1,
+    /// so hybrids learn theirs later).
     pub fn spell_books(&self) -> EnumSet<Spellbook> {
-        match self.profession {
-            Profession::Mage => Spellbook::Wizardry.into(),
-            Profession::Priest => Spellbook::Divinity.into(),
-            Profession::Alchemist => Spellbook::Alchemy.into(),
-            Profession::Psionic => Spellbook::Psionics.into(),
-            Profession::Bishop => EnumSet::all(),
-            _ => EnumSet::empty(),
+        if self.spell_points_total() == 0 {
+            return EnumSet::empty();
         }
+        crate::game::magic::profession_books(self.profession)
     }
 
     pub fn spell_points_total(&self) -> usize {
-        if self.spell_books().is_empty() { 0 } else { 2 }
+        let character = Character::new("", self.race, self.gender, self.profession);
+        crate::game::magic::starting_picks(&character)
     }
 
     pub fn spell_remaining(&self) -> usize {

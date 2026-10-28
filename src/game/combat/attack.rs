@@ -163,8 +163,8 @@ fn unarmed_dice(martial_arts: u32) -> Dice {
     Dice { base: base + 2, count, sides }
 }
 
-/// The primary hand's numbers, without a second weapon or load.
-pub fn primary_hand(c: &Character, carried: &Carried, catalog: &ItemCatalog) -> Hand {
+/// The primary hand's numbers, without a second weapon (retail `CalcAttacks`).
+pub fn primary_hand(c: &Character, carried: &Carried, catalog: &ItemCatalog, load: Load) -> Hand {
     let weapon = carried
         .worn(EquipSlot::Primary)
         .and_then(|i| catalog.get(i.item))
@@ -180,7 +180,10 @@ pub fn primary_hand(c: &Character, carried: &Carried, catalog: &ItemCatalog) -> 
         [Attribute::Strength, Attribute::Dexterity, Attribute::Speed, Attribute::Senses]
             .map(|a| c.attribute(a) as i32);
     let attack_rating = (dex / 2 + 2 * combined + physical) / 3 + 60;
-    let s = ((spd + dex) / 2 + physical + combined) / 3;
+    // Modern weapons feel load half as much.
+    let modern = weapon_skill == Skill::ModernWeapon;
+    let halved = |penalty: i32| if modern { penalty / 2 } else { penalty };
+    let s = ((spd + dex) / 2 + physical - halved(load.attack_penalty()) + combined) / 3;
     let attacks = 1 + u32::from(s > 49) + u32::from(s > 99);
     let damage_bonus = weapon.map_or(combined / 10, |d| i32::from(d.damage_bonus));
     let swing_score = (spd + 10 * damage_bonus + physical + combined) / 3;
@@ -194,7 +197,8 @@ pub fn primary_hand(c: &Character, carried: &Carried, catalog: &ItemCatalog) -> 
     } else {
         0
     };
-    let to_hit = weapon.map_or(0, |d| i32::from(d.hit_bonus)) + str_hit + (dex - 50) / 10 + sen_hit;
+    let to_hit = weapon.map_or(0, |d| i32::from(d.hit_bonus)) + str_hit + (dex - 50) / 10 + sen_hit
+        - halved(load.penalty());
     Hand {
         reach: weapon.map_or(Reach::Touch, |d| d.reach),
         dice: weapon.map_or_else(|| unarmed_dice(c.skill(Skill::MartialArts)), |d| d.damage),
@@ -218,7 +222,7 @@ pub fn primary_hand(c: &Character, carried: &Carried, catalog: &ItemCatalog) -> 
 }
 
 /// A member's total and per-location armour, without skills, spells,
-/// conditions, defending or load.
+/// conditions or defending.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Armour {
     pub total: i32,
@@ -226,6 +230,12 @@ pub struct Armour {
 }
 
 impl Armour {
+    /// Defending adds 2 everywhere.
+    pub fn defend(&mut self) {
+        self.total += 2;
+        self.by_location.values_mut().for_each(|a| *a += 2);
+    }
+
     /// Hit-location-weighted average displayed on the character portrait.
     pub fn average(&self) -> i32 {
         let weight = |part| match part {
@@ -240,13 +250,14 @@ impl Armour {
     }
 }
 
-pub fn armour(c: &Character, carried: &Carried, catalog: &ItemCatalog) -> Armour {
+pub fn armour(c: &Character, carried: &Carried, catalog: &ItemCatalog, load: Load) -> Armour {
     let definition = |slot| carried.worn(slot).and_then(|i| catalog.get(i.item));
     let speed = c.attribute(Attribute::Speed);
     let mut total =
         i32::from(c.race == Race::Faerie) * 2 + i32::from(speed > 79) + i32::from(speed > 89)
             - i32::from(speed < 20)
-            - i32::from(speed < 10);
+            - i32::from(speed < 10)
+            - load.armour_penalty();
     // Shields and magic items worn in the misc, cloak and hand slots.
     for slot in [
         EquipSlot::Misc1,
@@ -355,8 +366,8 @@ pub fn phase(rng: &mut GameRng, initiative: i32) -> u8 {
 }
 
 /// The character's initiative before the roll, weapon included.
-pub fn character_initiative(c: &Character, hand: &Hand) -> i32 {
-    c.initiative(Load::None) + hand.initiative
+pub fn character_initiative(c: &Character, hand: &Hand, load: Load) -> i32 {
+    c.initiative(load) + hand.initiative
 }
 
 #[cfg(test)]

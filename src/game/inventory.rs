@@ -2,7 +2,8 @@
 //! Equipment release belongs to a placement, never to the transferable object.
 pub mod operations;
 
-use super::characters::{Character, Vitals};
+use super::characters::{Character, Load, Vitals};
+use super::party::roster::PartyRoster;
 use super::rng::GameRng;
 use crate::content::characters::Skill;
 use crate::content::items::{EquipClass, ItemCatalog, ItemDefinition, ItemId, QuantityKind};
@@ -237,6 +238,7 @@ pub enum PoolPosition {
 }
 
 #[derive(Component, Clone, Debug, Default, PartialEq)]
+#[require(Burden)]
 pub struct Carried {
     pub equipment: EnumMap<EquipSlot, Option<Equipped>>,
     pub backpack: [Option<ItemStack>; BACKPACK_SLOTS],
@@ -701,6 +703,54 @@ fn creation_slot(
     })
 }
 
+/// What a member carries, counting their share of the pool's weight (retail
+/// `total_carried_weight` and `load_category`), as the last redistribution
+/// left it.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Burden {
+    /// Tenths of a pound.
+    pub weight: u32,
+    pub load: Load,
+}
+
+/// Share the pool's weight among the members and settle each member's load
+/// (retail `RedistributePartyEncumbrance`). It does not run in a fight, so a
+/// fight keeps the loads it began with until it ends.
+pub fn distribute_burden(
+    party: Single<(Ref<PartyRoster>, Ref<PartyInventory>)>,
+    mut members: Query<(Ref<Character>, Ref<Vitals>, Ref<Carried>, &mut Burden)>,
+    data: Option<Res<crate::game::data::GameData>>,
+    catalogs: Res<Assets<ItemCatalog>>,
+) {
+    let (roster, inventory) = party.into_inner();
+    let Some(catalog) = data.and_then(|data| catalogs.get(&data.items)) else { return };
+    let changed = roster.is_changed()
+        || inventory.is_changed()
+        || members
+            .iter_many(roster.iter())
+            .matched()
+            .any(|(c, v, carried, _)| c.is_changed() || v.is_changed() || carried.is_changed());
+    if !changed {
+        return;
+    }
+    let own: Vec<_> = members
+        .iter_many(roster.iter())
+        .matched()
+        .map(|(character, vitals, carried, _)| {
+            (carried_weight(&carried, catalog), (!vitals.is_dead()).then(|| character.capacity()))
+        })
+        .collect();
+    let pool = inventory.pool.stacks.iter().map(|item| item_weight(item, catalog)).sum();
+    let eligible: Vec<_> =
+        own.iter().map(|&(weight, capacity)| capacity.map(|c| (weight, c))).collect();
+    let shares = pool_shares(pool, &eligible);
+    let members = members.iter_many_unique_mut(roster.iter()).matched();
+    for ((character, _, _, mut burden), (&(own, _), share)) in members.zip(own.iter().zip(shares)) {
+        let weight = own + share;
+        burden.set_if_neq(Burden { weight, load: character.load(weight) });
+    }
+}
+
 /// How the pool's weight is shared among the members (retail
 /// `DistributePartyWeight`): half of it, a tenth of a pound at a time, each
 /// to the member with the largest share of their capacity still free (the
@@ -891,6 +941,44 @@ impl Hand {
 mod tests {
     use super::*;
     use crate::content::characters::{Gender, Profession, Race};
+
+    /// The pool's weight lands on whoever has room, and their load follows
+    /// it.
+    #[test]
+    fn the_pool_weighs_on_the_members_with_room() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut world = World::new();
+        let rock = ItemDefinition {
+            id: ItemId(0),
+            weight: 100,
+            quantity: QuantityKind::Stack,
+            stack_limit: 99,
+            ..default()
+        };
+        let mut ids = ItemIds::default();
+        let mut catalogs = Assets::<ItemCatalog>::default();
+        let items = catalogs.add(ItemCatalog(vec![rock.clone()]));
+        world.insert_resource(catalogs);
+        world.insert_resource(crate::game::data::GameData {
+            items,
+            loot: default(),
+            species: default(),
+            spells: default(),
+        });
+        let strong = Character::new("Strong", Race::Dwarf, Gender::Male, Profession::Fighter);
+        let weak = Character::new("Weak", Race::Faerie, Gender::Female, Profession::Mage);
+        let members =
+            [strong, weak].map(|c| world.spawn((Vitals::new(&c), c, Carried::default())).id());
+        let party = crate::game::party::roster::test_party(&mut world, &members);
+        let mut inventory = PartyInventory::default();
+        inventory.pool.stacks.push(ItemStack::new(&rock, &mut ids, 60, true));
+        world.entity_mut(party).insert(inventory);
+        world.run_system_once(distribute_burden).unwrap();
+        let [strong, weak] = members.map(|m| *world.get::<Burden>(m).unwrap());
+        assert_eq!(strong.weight + weak.weight, 3000, "half the pool is shared");
+        assert!(strong.weight > weak.weight, "the stronger has more room");
+        assert!(strong.load > Load::None);
+    }
     use crate::content::items::Dice;
     use enumset::EnumSet;
 

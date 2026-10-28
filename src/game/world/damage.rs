@@ -15,9 +15,14 @@ use super::navigation::{Walker, feet};
 use super::population::Monster;
 use crate::content::items::{ItemCatalog, LootTables};
 use crate::content::species::MonsterCatalog;
+use crate::game::characters::{Condition, Lasting};
 use crate::game::data::GameData;
 use crate::game::inventory::{ItemIds, PartyInventory, make_item};
 use crate::game::rng::GameRng;
+
+/// What [`MonsterDamage`] lets others read of a monster.
+pub type MonsterQuery<'w, 's> =
+    Query<'w, 's, (&'static mut Monster, ActorPose, Option<&'static Walker>, &'static LevelOwned)>;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DamageOutcome {
@@ -36,16 +41,15 @@ pub enum DamageRefusal {
     UnsupportedNpcDeath,
 }
 
-/// A synchronous operation over the actual target and its owning level. It
-/// creates loot and transfers gold before returning a death outcome. Calling
-/// it again on the corpse produces no second reward or drop.
+/// Monsters in play, changed only through its operations. [`apply`] is
+/// synchronous over the actual target and its owning level: it creates loot
+/// and transfers gold before returning a death outcome. Calling it again on
+/// the corpse produces no second reward or drop.
+///
+/// [`apply`]: MonsterDamage::apply
 #[derive(SystemParam)]
 pub struct MonsterDamage<'w, 's> {
-    pub monsters: Query<
-        'w,
-        's,
-        (&'static mut Monster, ActorPose, Option<&'static Walker>, &'static LevelOwned),
-    >,
+    monsters: MonsterQuery<'w, 's>,
     motion: Query<
         'w,
         's,
@@ -63,12 +67,11 @@ pub struct MonsterDamage<'w, 's> {
     catalogs: Res<'w, Assets<ItemCatalog>>,
     species: Res<'w, Assets<MonsterCatalog>>,
     tables: Res<'w, Assets<LootTables>>,
-    pub(crate) inventory: Single<'w, 's, &'static mut PartyInventory>,
     ids: ResMut<'w, ItemIds>,
     factions: ResMut<'w, crate::game::factions::Factions>,
 }
 
-impl MonsterDamage<'_, '_> {
+impl<'w, 's> MonsterDamage<'w, 's> {
     pub fn ready(&self) -> bool {
         self.data.as_ref().is_some_and(|d| {
             self.catalogs.contains(&d.items)
@@ -77,15 +80,32 @@ impl MonsterDamage<'_, '_> {
         })
     }
 
+    /// The monsters, to look at.
+    pub fn monsters(&self) -> &MonsterQuery<'w, 's> {
+        &self.monsters
+    }
+
+    /// A monster's conditions, to inflict, cure or age.
+    pub fn conditions_mut(
+        &mut self,
+        monster: Entity,
+    ) -> Option<Mut<'_, Vec<(Condition, Lasting)>>> {
+        let (monster, ..) = self.monsters.get_mut(monster).ok()?;
+        Some(monster.map_unchanged(|monster| &mut monster.conditions))
+    }
+
     pub fn active(&self, target: Entity) -> bool {
         self.monsters.get(target).is_ok_and(|(_, _, _, owner)| self.levels.contains(owner.0))
     }
 
+    /// Hurt a monster; a kill drops its loot and pays its gold into the
+    /// party's purse.
     pub fn apply(
         &mut self,
         target: Entity,
         amount: u32,
         party_level: u32,
+        purse: &mut PartyInventory,
         rng: &mut GameRng,
     ) -> Result<DamageOutcome, DamageRefusal> {
         let (mut monster, at, walker, owner) =
@@ -102,7 +122,7 @@ impl MonsterDamage<'_, '_> {
         ) else {
             return Err(DamageRefusal::MissingContent);
         };
-        let kind = species.0.get(monster.species as usize).ok_or(DamageRefusal::MissingContent)?;
+        let kind = species.kind(monster.species).ok_or(DamageRefusal::MissingContent)?;
         if monster.is_dead() || amount == 0 {
             return Ok(DamageOutcome::default());
         }
@@ -147,7 +167,7 @@ impl MonsterDamage<'_, '_> {
         let (found, gold) =
             crate::game::loot::monster_loot(kind, tables, catalog, party_level, rng);
         if gold > 0 {
-            self.inventory.gold += gold;
+            purse.gold += gold;
         }
         let items = found
             .into_iter()

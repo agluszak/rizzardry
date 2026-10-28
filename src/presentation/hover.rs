@@ -112,7 +112,7 @@ pub fn show_tooltip(
         } else if let Ok(monster) = monsters.get(entity) {
             // "Crustacean (?/12)" (retail `SetCombatSelection`).
             let catalog = data.as_ref().and_then(|d| species.get(&d.species));
-            let kind = catalog.and_then(|c| c.0.get(monster.species as usize))?;
+            let kind = catalog.and_then(|c| c.kind(monster.species))?;
             let identified = memberships
                 .get(entity)
                 .ok()

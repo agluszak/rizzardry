@@ -289,14 +289,72 @@ pub(crate) fn governing(skill: Skill) -> (Attribute, Attribute) {
     }
 }
 
-/// How heavily a member is loaded.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// How heavily a member is loaded (retail `load_category`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Load {
+    #[default]
     None,
     Light,
     Medium,
     Heavy,
     Extreme,
+}
+
+impl Load {
+    /// Initiative and to-hit lost (retail `CalcInitiative`, `CalcAttacks`).
+    pub fn penalty(self) -> i32 {
+        match self {
+            Load::None => 0,
+            Load::Light => 1,
+            Load::Medium => 2,
+            Load::Heavy => 4,
+            Load::Extreme => 8,
+        }
+    }
+
+    /// Lost from the attack-count score (retail `CalcAttacks`).
+    pub fn attack_penalty(self) -> i32 {
+        self.penalty() * 15
+    }
+
+    /// Armour lost (retail `CalcArmorClasses`).
+    pub fn armour_penalty(self) -> i32 {
+        match self {
+            Load::None | Load::Light => 0,
+            Load::Medium => 1,
+            Load::Heavy => 2,
+            Load::Extreme => 4,
+        }
+    }
+
+    /// The percent added to load-scaled fatigue (retail `FatigueCharacter`).
+    pub fn fatigue_percent(self) -> u32 {
+        match self {
+            Load::None => 0,
+            Load::Light => 25,
+            Load::Medium => 50,
+            Load::Heavy => 100,
+            Load::Extreme => 200,
+        }
+    }
+
+    /// Fatigue scaled by load, less a quarter when slowed (retail
+    /// `FatigueCharacter`; Haste is not modelled yet).
+    pub fn scale_fatigue(self, amount: u32, slowed: bool) -> u32 {
+        let percent = self.fatigue_percent() as i32 - if slowed { 25 } else { 0 };
+        (amount as i32 + percent * amount as i32 / 100).max(0) as u32
+    }
+
+    /// How much more walking tires (retail `HandlePartyMovement`).
+    pub fn movement_factor(self) -> f32 {
+        match self {
+            Load::None => 1.0,
+            Load::Light => 1.25,
+            Load::Medium => 1.5,
+            Load::Heavy => 2.0,
+            Load::Extreme => 3.0,
+        }
+    }
 }
 
 /// The load band of carrying `weight` with room for `capacity` (both in
@@ -605,14 +663,7 @@ impl Character {
         if self.skill_points[Skill::SnakeSpeed] > 0 {
             initiative += self.skill(Skill::SnakeSpeed) as i32 / 10 + 1;
         }
-        initiative
-            - match load {
-                Load::None => 0,
-                Load::Light => 1,
-                Load::Medium => 2,
-                Load::Heavy => 4,
-                Load::Extreme => 8,
-            }
+        initiative - load.penalty()
     }
 
     /// Experience needed for the next level (retail goals): the weight at
@@ -759,36 +810,52 @@ impl Vitals {
     /// `(0.9·max + 20)/240` per tick times `scale` (retail
     /// `RegenCharacterStamina`).
     pub fn recover_stamina(&mut self, ticks: u32, scale: f32, maximum: u32) {
-        let max = maximum;
-        if self.is_dead() || scale <= 0.0 || self.stamina >= max {
-            self.stamina_fraction = 0.0;
-            return;
-        }
-        self.stamina_fraction += ticks as f32 * (0.9 * max as f32 + 20.0) / 240.0 * scale;
-        let whole = self.stamina_fraction.trunc();
-        self.stamina_fraction -= whole;
-        self.restore_stamina(whole as u32, maximum);
-        if self.stamina >= max {
-            self.stamina_fraction = 0.0;
+        let dead = self.is_dead();
+        if let Some(whole) =
+            regenerate(dead, self.stamina, &mut self.stamina_fraction, ticks, scale, maximum, 0.9)
+        {
+            self.restore_stamina(whole, maximum);
+            if self.stamina >= maximum {
+                self.stamina_fraction = 0.0;
+            }
         }
     }
 
     /// Passive healing over `ticks` 120-second aging ticks, at
     /// `(0.4·max + 20)/240` per tick times `scale` (retail aging).
     pub fn recover_health(&mut self, ticks: u32, scale: f32, maximum: u32) {
-        let max = maximum;
-        if self.is_dead() || scale <= 0.0 || self.hp >= max {
-            self.hp_fraction = 0.0;
-            return;
-        }
-        self.hp_fraction += ticks as f32 * (0.4 * max as f32 + 20.0) / 240.0 * scale;
-        let whole = self.hp_fraction.trunc();
-        self.hp_fraction -= whole;
-        self.heal(whole as u32, maximum);
-        if self.hp >= max {
-            self.hp_fraction = 0.0;
+        let dead = self.is_dead();
+        if let Some(whole) =
+            regenerate(dead, self.hp, &mut self.hp_fraction, ticks, scale, maximum, 0.4)
+        {
+            self.heal(whole, maximum);
+            if self.hp >= maximum {
+                self.hp_fraction = 0.0;
+            }
         }
     }
+}
+
+/// Regeneration over `ticks` at `(factor·max + 20)/240` a tick times
+/// `scale`: the whole points now due, carrying the rest in `fraction`; none,
+/// with the fraction dropped, for the dead, at no rate, or when full.
+fn regenerate(
+    dead: bool,
+    value: u32,
+    fraction: &mut f32,
+    ticks: u32,
+    scale: f32,
+    max: u32,
+    factor: f32,
+) -> Option<u32> {
+    if dead || scale <= 0.0 || value >= max {
+        *fraction = 0.0;
+        return None;
+    }
+    *fraction += ticks as f32 * (factor * max as f32 + 20.0) / 240.0 * scale;
+    let whole = fraction.trunc();
+    *fraction -= whole;
+    Some(whole as u32)
 }
 
 #[cfg(test)]

@@ -2,10 +2,10 @@
 //! settle consequences synchronously, before the device may unlock.
 
 use super::{
-    Field, LearnedSpells, MagicContext, Members, SpellPoints, Strength, Victim, casting::MagicNews,
-    effects,
+    LearnedSpells, MagicContext, SpellPoints, Strength, Victim, casting::MagicNews, effects,
 };
 use crate::content::spells::{SpellDefinition, SpellId};
+use crate::game::party::Members;
 use crate::game::world::{damage::MonsterDamage, interaction::Unable};
 use bevy::{ecs::system::RunSystemOnce, prelude::*};
 
@@ -27,12 +27,18 @@ pub const SPELLS: [SpellId; 15] = [
     SpellId(91),
 ];
 
-/// No attempted inspection/disarm may roll if its failure cannot be paid.
-pub(crate) fn validate(world: &mut World, trap: u8) -> Result<(), Unable> {
+/// The spell a trap type discharges, if the game can resolve it.
+fn trap_spell(trap: u8) -> Result<SpellId, Unable> {
     let id = *SPELLS.get(usize::from(trap)).ok_or(Unable::UnsupportedTrap)?;
     if !effects::modelled(id) {
         return Err(Unable::UnsupportedTrap);
     }
+    Ok(id)
+}
+
+/// No attempted inspection/disarm may roll if its failure cannot be paid.
+pub(crate) fn validate(world: &mut World, trap: u8) -> Result<(), Unable> {
+    trap_spell(trap)?;
     world
         .run_system_once(
             move |members: Members,
@@ -52,27 +58,22 @@ fn ready(
     points: &Query<(&LearnedSpells, &mut SpellPoints)>,
     trap: u8,
 ) -> Result<(), Unable> {
-    let id = *SPELLS.get(usize::from(trap)).ok_or(Unable::UnsupportedTrap)?;
-    if !effects::modelled(id) {
-        return Err(Unable::UnsupportedTrap);
-    }
-    let data = context.data.as_ref().ok_or(Unable::MissingContent)?;
-    let spell =
-        context.spells.get(&data.spells).and_then(|s| s.get(id)).ok_or(Unable::MissingContent)?;
-    let items = context.items.get(&data.items).ok_or(Unable::MissingContent)?;
+    let id = trap_spell(trap)?;
+    let spell = context.content.spells().and_then(|s| s.get(id)).ok_or(Unable::MissingContent)?;
+    let items = context.content.items().ok_or(Unable::MissingContent)?;
     if spell.id != id || spell.realm.is_none() || !monsters.ready() {
         return Err(Unable::MissingContent);
     }
     for actor in context.roster.iter() {
-        let (_, vitals, carried) = members.get(actor).map_err(|_| Unable::MissingContent)?;
-        if id == SpellId(127) && !vitals.is_dead() && points.get(actor).is_err() {
+        let (_, vitals, carried, ..) = members.get(actor).map_err(|_| Unable::MissingContent)?;
+        if id == SpellId::ANTI_MAGIC && !vitals.is_dead() && points.get(actor).is_err() {
             return Err(Unable::MissingContent);
         }
         if carried.stacks().any(|stack| items.get(stack.item).is_none()) {
             return Err(Unable::MissingContent);
         }
     }
-    if monsters.inventory.pool.stacks.iter().any(|stack| items.get(stack.item).is_none()) {
+    if context.inventory.pool.stacks.iter().any(|stack| items.get(stack.item).is_none()) {
         return Err(Unable::MissingContent);
     }
     Ok(())
@@ -86,95 +87,65 @@ pub(crate) fn discharge(
     difficulty: u8,
     selected: Option<Entity>,
 ) -> Result<bool, Unable> {
+    trap_spell(trap)?;
     world
         .run_system_once(
             move |(mut members, mut monsters): (Members, MonsterDamage),
                   mut points: Query<(&LearnedSpells, &mut SpellPoints)>,
-                  mut context: MagicContext|
+                  mut context: MagicContext,
+                  mut rng: ResMut<crate::game::rng::GameRng>|
                   -> Result<bool, Unable> {
                 ready(&context, &members, &monsters, &points, trap)?;
-                let party_level = context.party_level(&members);
-                let MagicContext {
-                    roster,
-                    data,
-                    items,
-                    species,
-                    spells,
-                    difficulty: setting,
-                    formation,
-                    party_damage,
-                    rng,
-                    news,
-                    ..
-                } = &mut context;
-                let data = data.as_ref().ok_or(Unable::MissingContent)?;
-                let (Some(items), Some(species), Some(spells)) =
-                    (items.get(&data.items), species.get(&data.species), spells.get(&data.spells))
-                else {
-                    return Err(Unable::MissingContent);
-                };
-                let spell: &SpellDefinition =
-                    spells.get(SPELLS[usize::from(trap)]).ok_or(Unable::MissingContent)?;
-                // Validate all effect dependencies before the first consequence roll.
-                if !monsters.ready() {
-                    return Err(Unable::MissingContent);
-                }
-                let party: Vec<Entity> = roster.iter().collect();
-                if selected.is_some_and(|actor| !roster.contains(&actor)) {
+                if selected.is_some_and(|actor| !context.roster.contains(&actor)) {
                     return Err(Unable::NotMember);
                 }
+                let party: Vec<Entity> = context.roster.iter().collect();
                 if party.iter().any(|&actor| members.get(actor).is_err()) {
                     return Err(Unable::MissingContent);
                 }
                 let mut targets: Vec<Entity> = party
                     .iter()
                     .copied()
-                    .filter(|&actor| members.get(actor).is_ok_and(|(_, v, _)| !v.is_dead()))
+                    .filter(|&actor| members.get(actor).is_ok_and(|(_, v, ..)| !v.is_dead()))
                     .collect();
-                let difficulty = difficulty.clamp(1, 7);
-                let destroyed = rng.below(2) == 0;
-                let mut count = u32::from(difficulty) - rng.below(u32::from(difficulty / 2));
-                let extra = difficulty.saturating_sub(
-                    crate::game::world::interaction::TRAP_GRADE[usize::from(trap)] as u8,
-                );
-                let power = (extra + 4).min(7);
-                if extra > 3 {
-                    count += rng.below(u32::from(extra - 3));
-                }
-                // Retail deletes random slots from roster order, retaining the selected
-                // living actor. Sleeping/unconscious members can be victims too.
-                while targets.len() > count as usize {
-                    let index = rng.below(targets.len() as u32) as usize;
-                    if Some(targets[index]) != selected {
-                        targets.remove(index);
-                    }
-                }
-                let victims: Vec<_> = targets.into_iter().map(Victim::Member).collect();
-                let mut field = Field {
-                    members: &mut members,
-                    monsters: &mut monsters,
-                    formation,
-                    party_damage,
-                    items,
-                    species,
-                    party_level,
-                    difficulty: **setting,
-                    party: &party,
-                    improved: Vec::new(),
-                };
-                let effects = effects::resolve(
-                    spell,
-                    Strength::at(0, spell, power, 0),
-                    &victims,
-                    rng,
-                    &mut field,
-                    (spells, &mut points),
-                );
-                news.write(MagicNews::Triggered {
-                    spell: spell.id,
-                    effects,
-                    improved: field.improved,
-                });
+                let (spell, effects, improved, destroyed) = context
+                    .resolve(&mut members, &mut monsters, |field, spells| {
+                        let spell: &SpellDefinition = spells.get(SPELLS[usize::from(trap)])?;
+                        let difficulty = difficulty.clamp(1, 7);
+                        let destroyed = rng.below(2) == 0;
+                        let mut count =
+                            u32::from(difficulty) - rng.below(u32::from(difficulty / 2));
+                        let extra = difficulty.saturating_sub(
+                            crate::game::world::interaction::TRAP_GRADE[usize::from(trap)] as u8,
+                        );
+                        let power = (extra + 4).min(7);
+                        if extra > 3 {
+                            count += rng.below(u32::from(extra - 3));
+                        }
+                        // Retail deletes random slots from roster order, retaining the
+                        // selected living actor. Sleeping/unconscious members can be
+                        // victims too.
+                        while targets.len() > count as usize {
+                            let index = rng.below(targets.len() as u32) as usize;
+                            if Some(targets[index]) != selected {
+                                targets.remove(index);
+                            }
+                        }
+                        let victims: Vec<_> = targets.into_iter().map(Victim::Member).collect();
+                        let effects = effects::resolve(
+                            spell,
+                            Strength::at(0, spell, power, 0),
+                            &victims,
+                            &mut rng,
+                            field,
+                            (spells, &mut points),
+                        );
+                        Some((spell.id, effects, std::mem::take(&mut field.improved), destroyed))
+                    })
+                    .ok()
+                    .flatten()
+                    .ok_or(Unable::MissingContent)?;
+                context.news.write(MagicNews::Triggered { spell, effects, improved });
                 Ok(destroyed)
             },
         )

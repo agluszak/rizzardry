@@ -498,7 +498,8 @@ pub(super) fn refresh(
 ) {
     let Some(screen) = screen else { return };
     let Ok(view) = characters.get(screen.member) else { return };
-    let CharacterViewItem { profile, vitals, carried } = view;
+    let load = view.load();
+    let CharacterViewItem { profile, vitals, carried, .. } = view;
     let armour_view = info.as_ref().is_some_and(|info| info.armour);
     let effect_filter = info.as_ref().map_or(EffectFilter::All, |info| info.filter);
     let show_items = info.as_ref().is_some_and(|info| info.items);
@@ -508,7 +509,7 @@ pub(super) fn refresh(
     let hand = carried
         .as_ref()
         .zip(catalog)
-        .map(|(carried, catalog)| primary_hand(profile, carried, catalog));
+        .map(|(carried, catalog)| primary_hand(profile, carried, catalog, load));
     let unidentified = carried
         .as_ref()
         .and_then(|c| c.worn(EquipSlot::Primary))
@@ -695,7 +696,7 @@ pub(super) fn refresh(
                             4 => hand.swings.to_string(),
                             5 => format!("{:+}", hand.to_hit),
                             7 => format!("{:+}%", hand.damage_percent),
-                            8 => character_initiative(profile, hand).to_string(),
+                            8 => character_initiative(profile, hand, load).to_string(),
                             _ => String::new(),
                         }
                     }

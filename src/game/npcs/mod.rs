@@ -110,10 +110,8 @@ impl NpcPopulation<'_, '_> {
         items: &crate::content::items::ItemCatalog,
         server: &AssetServer,
     ) -> Result<bool, String> {
-        let ids: Vec<_> = placements
-            .iter()
-            .filter_map(|p| species.0.get(p.species as usize).and_then(|s| s.npc))
-            .collect();
+        let ids: Vec<_> =
+            placements.iter().filter_map(|p| species.kind(p.species).and_then(|s| s.npc)).collect();
         if ids.is_empty() {
             return Ok(true);
         }

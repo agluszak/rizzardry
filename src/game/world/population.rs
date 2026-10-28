@@ -108,7 +108,7 @@ impl MonsterBodies {
             .monsters
             .iter()
             .filter_map(|placed| {
-                let kind = species.0.get(placed.species as usize)?;
+                let kind = species.kind(placed.species)?;
                 let body = self
                     .0
                     .entry(placed.species)
@@ -127,9 +127,7 @@ pub fn check(
     species: &MonsterCatalog,
     items: &ItemCatalog,
 ) -> Result<(), String> {
-    if let Some(placed) =
-        geometry.monsters.iter().find(|p| species.0.get(p.species as usize).is_none())
-    {
+    if let Some(placed) = geometry.monsters.iter().find(|p| species.kind(p.species).is_none()) {
         return Err(format!(
             "monster {} is of unknown species {}",
             placed.location, placed.species
@@ -202,7 +200,7 @@ pub fn populate(
     let mut identities = HashMap::new();
     let mut placed_actors = std::collections::HashSet::new();
     for placed in &geometry.monsters {
-        let Some(kind) = species.0.get(placed.species as usize) else { continue };
+        let Some(kind) = species.kind(placed.species) else { continue };
         let Some(id) = kind.npc else { continue };
         let definition = npcs
             .definitions

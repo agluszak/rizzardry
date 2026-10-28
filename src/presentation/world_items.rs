@@ -50,7 +50,7 @@ pub fn show_world_items(
         };
         if let Some(model) = model {
             commands.entity(entity).insert(ItemShown {
-                model: assets.load(crate::content::paths::retail(&model)),
+                model: assets.load(crate::content::paths::retail(model)),
                 lit_at: None,
             });
         }

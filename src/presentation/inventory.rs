@@ -31,7 +31,7 @@ use crate::game::characters::{Character, Gender, Race, Vitals};
 use crate::game::combat::attack::armour;
 use crate::game::data::GameData;
 use crate::game::inventory::{
-    BACKPACK_SLOTS, Carried, EquipSlot, ItemStack, MemberSlot, PartyInventory, Slot,
+    BACKPACK_SLOTS, Burden, Carried, EquipSlot, ItemStack, MemberSlot, PartyInventory, Slot,
 };
 use crate::game::party::roster::PartyRoster;
 use crate::game::screen::Screen;
@@ -785,13 +785,14 @@ fn draw_header_hands(
     assets: Res<AssetServer>,
     data: Option<Res<GameData>>,
     catalogs: Res<Assets<ItemCatalog>>,
-    members: Query<(&Character, Option<&Carried>)>,
+    members: Query<(&Character, Option<&Carried>, Option<&Burden>)>,
     art: Res<InventoryArt>,
     mut parts: Query<(&HeaderHand, &mut Visibility, Option<&mut Picture>, Option<&mut BitmapText>)>,
 ) {
     let Some(screen) = screen else { return };
     let Some(catalog) = data.and_then(|data| catalogs.get(&data.items)) else { return };
-    let Ok((profile, carried)) = members.get(screen.member) else { return };
+    let Ok((profile, carried, burden)) = members.get(screen.member) else { return };
+    let load = burden.map_or_else(Default::default, |burden| burden.load);
     let empty = Carried::default();
     let carried = carried.unwrap_or(&empty);
     let two_handed = carried
@@ -853,7 +854,7 @@ fn draw_header_hands(
                 );
             }
             HeaderHand::Armour => {
-                value = Some(armour(profile, carried, catalog).average().to_string())
+                value = Some(armour(profile, carried, catalog, load).average().to_string())
             }
         }
         visibility.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });

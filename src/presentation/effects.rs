@@ -30,7 +30,7 @@ pub fn play_trigger_effects(
     for effect in effects.read() {
         let sound = match effect {
             TriggerEffect::Sound { path, volume, at } => {
-                Some((crate::content::paths::retail(&path), *volume, *at))
+                Some((crate::content::paths::retail(path), *volume, *at))
             }
             TriggerEffect::FountainUsed { at } => {
                 Some(("retail://data/sound/misc/fountain_magic.wav".to_owned(), 1.0, *at))

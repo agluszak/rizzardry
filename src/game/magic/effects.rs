@@ -10,11 +10,8 @@ use crate::content::characters::{Attribute, Realm, Skill};
 use crate::content::items::{Dice, EquipClass, ItemCatalog};
 use crate::content::species::MonsterCatalog;
 use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId};
-use crate::game::characters::{
-    Character, Condition, Lasting, Vitals, inflict, resistance::resistances, wake_on_hit,
-};
+use crate::game::characters::{Condition, Lasting, inflict, resistance::resistances, wake_on_hit};
 use crate::game::difficulty::{Difficulty, Side};
-use crate::game::inventory::Carried;
 use crate::game::party::DamageApplied;
 use crate::game::party::formation::Formation;
 use crate::game::rng::GameRng;
@@ -147,10 +144,8 @@ pub enum Effect {
     Nothing { victim: Victim },
 }
 
-/// The party members' profile, vitals and belongings, as spells and combat
-/// change them.
-pub type Members<'w, 's> =
-    Query<'w, 's, (&'static mut Character, &'static mut Vitals, &'static mut Carried)>;
+use crate::game::inventory::PartyInventory;
+use crate::game::party::Members;
 
 /// Consume physical units, not charges, in place; remaining identity and
 /// equipment binding metadata belong to the existing owner.
@@ -177,6 +172,8 @@ fn burn_stack(
 pub struct Field<'a, 'm, 'ms, 'd, 'ds, 'f, 'p> {
     pub members: &'a mut Members<'m, 'ms>,
     pub monsters: &'a mut MonsterDamage<'d, 'ds>,
+    /// The party's pool and purse.
+    pub inventory: &'a mut PartyInventory,
     pub formation: &'a mut Mut<'f, Formation>,
     pub party_damage: &'a mut MessageWriter<'p, DamageApplied>,
     pub items: &'a ItemCatalog,
@@ -225,6 +222,11 @@ const CONDITION_SAVE: [i32; 20] =
     [0, 1, 2, 3, 4, 4, 5, 6, 7, 8, 9, 10, 12, 14, 16, 20, 18, 22, 24, 22];
 const DEATH_SAVE: i32 = CONDITION_SAVE[18];
 
+/// The monster kinds Dispel Undead harms.
+const UNDEAD_KINDS: [u8; 2] = [0x14, 0x15];
+/// The kind only Banish harms besides them.
+const BANISHED_KIND: u8 = 0x1c;
+
 /// Whether a monster of `kind` shrugs a condition off (retail
 /// `g_condition_immunities`).
 fn immune(kind: u8, condition: Condition) -> bool {
@@ -269,8 +271,8 @@ fn target(
 ) -> Option<Target> {
     match victim {
         Victim::Monster(monster) => {
-            let (body, ..) = world.monsters.monsters.get(monster).ok()?;
-            let kind = world.species.0.get(body.species as usize)?;
+            let (body, ..) = world.monsters.monsters().get(monster).ok()?;
+            let kind = world.species.kind(body.species)?;
             Some(Target {
                 level: u32::from(kind.level),
                 resistance: i32::from(kind.resistances[realm]),
@@ -281,7 +283,7 @@ fn target(
             })
         }
         Victim::Member(member) => {
-            let (character, vitals, carried) = world.members.get(member).ok()?;
+            let (character, vitals, carried, ..) = world.members.get(member).ok()?;
             Some(Target {
                 level: u32::from(character.level),
                 resistance: resistances(character, carried, world.items)[realm].total,
@@ -338,13 +340,21 @@ fn damage(
     if amount == 0 {
         return Some(Effect::Resisted { victim });
     }
+    hurt(rng, world, victim, amount)
+}
+
+/// Take `amount` health from a victim; a member who survives may wake.
+fn hurt(rng: &mut GameRng, world: &mut Field, victim: Victim, amount: u32) -> Option<Effect> {
     match victim {
         Victim::Monster(monster) => {
-            let outcome = world.monsters.apply(monster, amount, world.party_level, rng).ok()?;
+            let outcome = world
+                .monsters
+                .apply(monster, amount, world.party_level, world.inventory, rng)
+                .ok()?;
             Some(Effect::Damaged { victim, amount: outcome.damage, outcome })
         }
         Victim::Member(member) => {
-            let (character, mut vitals, _) = world.members.get_mut(member).ok()?;
+            let (character, mut vitals, ..) = world.members.get_mut(member).ok()?;
             let lost = crate::game::party::damage_member(
                 member,
                 &mut vitals,
@@ -359,6 +369,22 @@ fn damage(
             Some(Effect::Damaged { victim, amount: lost, outcome })
         }
     }
+}
+
+/// Give a victim a condition for `lasting`.
+fn inflict_on(
+    world: &mut Field,
+    victim: Victim,
+    condition: Condition,
+    lasting: Lasting,
+) -> Option<()> {
+    match victim {
+        Victim::Monster(monster) => {
+            inflict(&mut *world.monsters.conditions_mut(monster)?, condition, lasting)
+        }
+        Victim::Member(member) => world.members.get_mut(member).ok()?.1.inflict(condition, lasting),
+    }
+    Some(())
 }
 
 /// Retail `InflictConditionAttack` on one victim: the chance, a fresh
@@ -392,16 +418,7 @@ fn attack(
         rounds => rounds,
     };
     let lasting = Lasting::Rounds(rounds.min(u32::from(u16::MAX)) as u16);
-    match victim {
-        Victim::Monster(monster) => {
-            let (mut body, ..) = world.monsters.monsters.get_mut(monster).ok()?;
-            inflict(&mut body.conditions, condition, lasting);
-        }
-        Victim::Member(member) => {
-            let (_, mut vitals, _) = world.members.get_mut(member).ok()?;
-            vitals.inflict(condition, lasting);
-        }
-    }
+    inflict_on(world, victim, condition, lasting)?;
     Some(Effect::Inflicted { victim, condition })
 }
 
@@ -426,27 +443,10 @@ fn slay(
         return Some(Effect::Resisted { victim });
     }
     let hp = match victim {
-        Victim::Monster(monster) => world.monsters.monsters.get(monster).ok()?.0.hp,
+        Victim::Monster(monster) => world.monsters.monsters().get(monster).ok()?.0.hp,
         Victim::Member(member) => world.members.get(member).ok()?.1.hp,
     };
-    match victim {
-        Victim::Monster(monster) => {
-            let outcome = world.monsters.apply(monster, hp, world.party_level, rng).ok()?;
-            Some(Effect::Damaged { victim, amount: outcome.damage, outcome })
-        }
-        Victim::Member(member) => {
-            let (_, mut vitals, _) = world.members.get_mut(member).ok()?;
-            let lost = crate::game::party::damage_member(
-                member,
-                &mut vitals,
-                world.formation,
-                hp,
-                world.party_damage,
-            );
-            let outcome = DamageOutcome { damage: lost, died: true, experience: 0 };
-            Some(Effect::Damaged { victim, amount: lost, outcome })
-        }
-    }
+    hurt(rng, world, victim, hp)
 }
 
 /// Retail `TryCureConditionOnTargets`: a timed condition loses `power²`
@@ -520,7 +520,7 @@ pub fn resolve(
                 // Retail's second roll when the first is below 100 is intentional.
                 let first = magnitude(rng, spell.dice, strength);
                 let percent = if first < 100 { magnitude(rng, spell.dice, strength) } else { 100 };
-                let inventory = &mut world.monsters.inventory;
+                let inventory = &mut world.inventory;
                 // Malformed/modded percentages cannot wrap the unsigned purse.
                 let lost = (u64::from(inventory.gold) * u64::from(percent.min(100)) / 100) as u32;
                 inventory.gold -= lost;
@@ -532,7 +532,7 @@ pub fn resolve(
             let chance = u32::from(strength.power) * 10;
             for &victim in victims {
                 let Victim::Member(member) = victim else { continue };
-                let Ok((_, _, mut carried)) = world.members.get_mut(member) else { continue };
+                let Ok((_, _, mut carried, ..)) = world.members.get_mut(member) else { continue };
                 // Retail visits all twelve equipped slots, including alternate hands.
                 for (_, slot) in &mut carried.equipment {
                     if let Some(equipped) = slot.take() {
@@ -550,7 +550,7 @@ pub fn resolve(
                 }
             }
             if victims.iter().any(|v| matches!(v, Victim::Member(_))) {
-                let pool = &mut world.monsters.inventory.pool.stacks;
+                let pool = &mut world.inventory.pool.stacks;
                 *pool = std::mem::take(pool)
                     .into_iter()
                     .filter_map(|stack| burn_stack(stack, world.items, chance, rng, &mut totals))
@@ -571,7 +571,7 @@ pub fn resolve(
                 let amount = base + base * strength.boost / 100;
                 // Anti-Magic drains the whole living party, not only captured victims.
                 for &member in world.party {
-                    if world.members.get(member).is_ok_and(|(_, v, _)| !v.is_dead())
+                    if world.members.get(member).is_ok_and(|(_, v, ..)| !v.is_dead())
                         && let Ok((_, mut pool)) = points.get_mut(member)
                     {
                         let amount = pool.drain(amount, rng);
@@ -583,7 +583,7 @@ pub fn resolve(
         }
         Kind::RestoreMagic => each(&mut |v, rng, world| {
             let Victim::Member(member) = v else { return None };
-            let (character, vitals, _) = world.members.get(member).ok()?;
+            let (character, vitals, ..) = world.members.get(member).ok()?;
             if vitals.is_dead() {
                 return None;
             }
@@ -603,33 +603,12 @@ pub fn resolve(
         Kind::RestoreHealth => {
             // Separate passes preserve retail target and RNG order.
             each(&mut |v, rng, world| {
-                let Victim::Member(member) = v else { return None };
-                let (character, mut vitals, _) = world.members.get_mut(member).ok()?;
-                if vitals.is_dead() {
-                    return None;
-                }
-                let missing = character.max_hp().saturating_sub(vitals.hp);
-                if missing == 0 {
-                    return None;
-                }
-                let amount = magnitude(rng, spell.dice, strength).min(missing);
-                vitals.heal(amount, character.max_hp());
+                let amount = restore(rng, world, v, Pool::Health, spell.dice, strength)?;
                 Some(Effect::Healed { victim: v, amount })
             });
+            let dice = spell.dice.map(|dice| Dice { count: dice.count.saturating_mul(2), ..dice });
             each(&mut |v, rng, world| {
-                let Victim::Member(member) = v else { return None };
-                let (character, mut vitals, _) = world.members.get_mut(member).ok()?;
-                if vitals.is_dead() {
-                    return None;
-                }
-                let missing = character.max_stamina().saturating_sub(vitals.stamina);
-                if missing == 0 {
-                    return None;
-                }
-                let dice =
-                    spell.dice.map(|dice| Dice { count: dice.count.saturating_mul(2), ..dice });
-                let amount = magnitude(rng, dice, strength).min(missing);
-                vitals.restore_stamina(amount, character.max_stamina());
+                let amount = restore(rng, world, v, Pool::Stamina, dice, strength)?;
                 Some(Effect::Refreshed { victim: v, amount })
             });
         }
@@ -639,9 +618,9 @@ pub fn resolve(
         }),
         Kind::DamageUndead { banish } => each(&mut |v, rng, world| {
             let Victim::Monster(m) = v else { return None };
-            let (body, ..) = world.monsters.monsters.get(m).ok()?;
-            let kind = world.species.0.get(body.species as usize)?.kind;
-            if !(kind == 0x14 || kind == 0x15 || (banish && kind == 0x1c)) {
+            let (body, ..) = world.monsters.monsters().get(m).ok()?;
+            let kind = world.species.kind(body.species)?.kind;
+            if !(UNDEAD_KINDS.contains(&kind) || (banish && kind == BANISHED_KIND)) {
                 return Some(Effect::Nothing { victim: v });
             }
             let rolled = magnitude(rng, spell.dice, strength);
@@ -649,39 +628,23 @@ pub fn resolve(
         }),
         Kind::Heal | Kind::Stamina | Kind::Restoration => each(&mut |v, rng, world| {
             let Victim::Member(member) = v else { return None };
-            let (character, mut vitals, _) = world.members.get_mut(member).ok()?;
-            if vitals.is_dead() {
+            if world.members.get(member).ok()?.1.is_dead() {
                 return None;
             }
+            let dice = if kind == Kind::Restoration { Some(RESTORATION_DICE) } else { spell.dice };
             let mut effect = Effect::Nothing { victim: v };
-            if kind != Kind::Stamina {
-                let dice = if kind == Kind::Restoration {
-                    Some(Dice { base: 0, count: 8, sides: 8 })
-                } else {
-                    spell.dice
-                };
-                let missing = character.max_hp().saturating_sub(vitals.hp);
-                if missing > 0 {
-                    let amount = magnitude(rng, dice, strength).min(missing);
-                    vitals.heal(amount, character.max_hp());
-                    effect = Effect::Healed { victim: v, amount };
-                }
+            if kind != Kind::Stamina
+                && let Some(amount) = restore(rng, world, v, Pool::Health, dice, strength)
+            {
+                effect = Effect::Healed { victim: v, amount };
             }
-            if kind != Kind::Heal {
-                let dice = if kind == Kind::Restoration {
-                    Some(Dice { base: 0, count: 8, sides: 8 })
-                } else {
-                    spell.dice
-                };
-                let missing = character.max_stamina().saturating_sub(vitals.stamina);
-                if missing > 0 {
-                    let amount = magnitude(rng, dice, strength).min(missing);
-                    vitals.restore_stamina(amount, character.max_stamina());
-                    if kind == Kind::Stamina {
-                        effect = Effect::Refreshed { victim: v, amount };
-                    }
-                }
+            if kind != Kind::Heal
+                && let Some(amount) = restore(rng, world, v, Pool::Stamina, dice, strength)
+                && kind == Kind::Stamina
+            {
+                effect = Effect::Refreshed { victim: v, amount };
             }
+            let (_, mut vitals, ..) = world.members.get_mut(member).ok()?;
             if kind == Kind::Restoration {
                 use Condition::*;
                 let all = [
@@ -713,11 +676,11 @@ pub fn resolve(
                 let rolled = magnitude(rng, spell.dice, strength);
                 damage(rng, world, v, realm, rolled, strength.against)
             });
-            let attacks: &[(Condition, u32)] = match kind {
-                Kind::DamageThen(..) => &[(condition_of(kind), chance_of(kind))],
-                _ => &[(Condition::Nauseated, 90), (Condition::Unconscious, 25)],
+            let attacks = match kind {
+                Kind::DamageThen(condition, chance) => vec![(condition, chance)],
+                _ => vec![(Condition::Nauseated, 90), (Condition::Unconscious, 25)],
             };
-            for &(condition, chance) in attacks {
+            for (condition, chance) in attacks {
                 each(&mut |v, rng, world| {
                     attack(rng, world, spell, v, realm, condition, chance, strength)
                 });
@@ -754,16 +717,7 @@ pub fn resolve(
                     return Some(Effect::Resisted { victim: v });
                 }
                 let lasting = Lasting::Rounds(rounds.max(2).min(u32::from(u16::MAX)) as u16);
-                match v {
-                    Victim::Monster(m) => inflict(
-                        &mut world.monsters.monsters.get_mut(m).ok()?.0.conditions,
-                        Condition::Afraid,
-                        lasting,
-                    ),
-                    Victim::Member(m) => {
-                        world.members.get_mut(m).ok()?.1.inflict(Condition::Afraid, lasting)
-                    }
-                }
+                inflict_on(world, v, Condition::Afraid, lasting)?;
                 Some(Effect::Inflicted { victim: v, condition: Condition::Afraid })
             }
             other => other,
@@ -795,12 +749,11 @@ pub fn resolve(
         Kind::Cure(conditions) => each(&mut |v, rng, world| {
             let lifted = match v {
                 Victim::Member(m) => {
-                    let (_, mut vitals, _) = world.members.get_mut(m).ok()?;
+                    let (_, mut vitals, ..) = world.members.get_mut(m).ok()?;
                     cure(rng, &mut vitals.conditions, conditions, strength, false)
                 }
                 Victim::Monster(m) => {
-                    let (mut body, ..) = world.monsters.monsters.get_mut(m).ok()?;
-                    cure(rng, &mut body.conditions, conditions, strength, false)
+                    cure(rng, &mut *world.monsters.conditions_mut(m)?, conditions, strength, false)
                 }
             };
             Some(match lifted.first() {
@@ -810,7 +763,7 @@ pub fn resolve(
         }),
         Kind::Resurrect => each(&mut |v, _, world| {
             let Victim::Member(member) = v else { return None };
-            let (character, mut vitals, _) = world.members.get_mut(member).ok()?;
+            let (character, mut vitals, ..) = world.members.get_mut(member).ok()?;
             if !vitals.is_dead() {
                 return Some(Effect::Nothing { victim: v });
             }
@@ -833,14 +786,14 @@ pub fn resolve(
             let effect = damage(rng, world, v, realm, rolled, strength.against)?;
             if let Effect::Damaged { amount, .. } = effect {
                 let wounded = world.party.iter().copied().min_by_key(|&m| {
-                    world.members.get(m).map_or(u32::MAX, |(c, v, _)| {
+                    world.members.get(m).map_or(u32::MAX, |(c, v, ..)| {
                         if v.is_dead() { u32::MAX } else { v.hp * 100 / c.max_hp().max(1) }
                     })
                 });
                 if let Some(member) = wounded
-                    && let Ok((character, mut vitals, _)) = world.members.get_mut(member)
+                    && let Ok((character, mut vitals, ..)) = world.members.get_mut(member)
                 {
-                    vitals.heal(amount * 7 / 10, character.max_hp());
+                    vitals.heal(amount * LIFESTEAL_SHARE / 100, character.max_hp());
                 }
             }
             Some(effect)
@@ -849,18 +802,49 @@ pub fn resolve(
     effects
 }
 
-fn condition_of(kind: Kind) -> Condition {
-    match kind {
-        Kind::DamageThen(condition, _) => condition,
-        _ => Condition::Nauseated,
-    }
+/// What Restoration restores health and stamina by, whatever its record says.
+const RESTORATION_DICE: Dice = Dice { base: 0, count: 8, sides: 8 };
+
+/// The share of Lifesteal's damage that heals the most wounded member, in
+/// percent.
+const LIFESTEAL_SHARE: u32 = 70;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pool {
+    Health,
+    Stamina,
 }
 
-fn chance_of(kind: Kind) -> u32 {
-    match kind {
-        Kind::DamageThen(_, chance) => chance,
-        _ => 0,
+/// Restore a living member's health or stamina by rolled `dice`, up to the
+/// maximum: the amount, or `None` (nothing rolled) when the member lacks
+/// none or cannot be restored.
+fn restore(
+    rng: &mut GameRng,
+    world: &mut Field,
+    victim: Victim,
+    pool: Pool,
+    dice: Option<Dice>,
+    strength: Strength,
+) -> Option<u32> {
+    let Victim::Member(member) = victim else { return None };
+    let (character, mut vitals, ..) = world.members.get_mut(member).ok()?;
+    if vitals.is_dead() {
+        return None;
     }
+    let (current, maximum) = match pool {
+        Pool::Health => (vitals.hp, character.max_hp()),
+        Pool::Stamina => (vitals.stamina, character.max_stamina()),
+    };
+    let missing = maximum.saturating_sub(current);
+    if missing == 0 {
+        return None;
+    }
+    let amount = magnitude(rng, dice, strength).min(missing);
+    match pool {
+        Pool::Health => vitals.heal(amount, maximum),
+        Pool::Stamina => vitals.restore_stamina(amount, maximum),
+    }
+    Some(amount)
 }
 
 /// Whether anything the spell did counts as affecting a victim, which is
@@ -874,7 +858,7 @@ pub fn affected(effects: &[Effect]) -> bool {
 pub fn all_restored(spell: SpellId, victims: &[Victim], members: &Members) -> bool {
     victims.iter().all(|&victim| {
         let Victim::Member(member) = victim else { return true };
-        members.get(member).is_ok_and(|(character, vitals, _)| {
+        members.get(member).is_ok_and(|(character, vitals, ..)| {
             vitals.is_dead()
                 || match kind(spell) {
                     Some(Kind::Stamina) => vitals.stamina >= character.max_stamina(),

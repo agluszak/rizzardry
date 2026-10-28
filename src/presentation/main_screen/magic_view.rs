@@ -29,7 +29,7 @@ use crate::game::inventory::{Carried, PartyInventory};
 use crate::game::magic::casting::{
     AUTO_POWER, Aim, MagicChoice, Source, UseContext, can_activate, usable_items, usable_now,
 };
-use crate::game::magic::{LearnedSpells, MagicRequest, SpellPoints, max_points, modelled};
+use crate::game::magic::{LearnedSpells, MagicRequest, SpellPoints, max_points, resolvable};
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::population::Monster;
 use crate::presentation::retail_controls::{
@@ -454,7 +454,7 @@ fn offers<'a>(
                     let spell = definition.spell?.spell;
                     (can_activate(character, definition, false)
                         && stack.remaining_uses() != Some(0)
-                        && (modelled(spell) || matches!(spell.0, 18 | 39)))
+                        && resolvable(spell))
                     .then_some((Source::PoolItem(stack.id), stack, spell))
                 })
                 .collect()
@@ -502,10 +502,7 @@ fn offers<'a>(
                 spell: s,
                 label: format!("{} {}", glyph(s.targeting), s.name),
                 cost: s.cost.to_string(),
-                available: affordable
-                    && (modelled(s.id) || matches!(s.id.0, 18 | 39))
-                    && usable_now(s, context)
-                    && !silenced,
+                available: affordable && resolvable(s.id) && usable_now(s, context) && !silenced,
                 silenced,
             }
         })

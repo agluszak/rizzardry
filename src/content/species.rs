@@ -167,3 +167,10 @@ pub enum Drop {
 /// Every species, by retail record number.
 #[derive(Asset, TypePath, Debug, Default)]
 pub struct MonsterCatalog(pub Vec<Species>);
+
+impl MonsterCatalog {
+    /// The species of record number `species`.
+    pub fn kind(&self, species: u32) -> Option<&Species> {
+        self.0.get(species as usize)
+    }
+}

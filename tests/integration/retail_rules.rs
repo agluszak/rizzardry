@@ -2,7 +2,7 @@
 //! them with `RIZZARDRY_RETAIL` set.
 
 use rizzardry::content::items::{AttackMode, ItemCatalog, ItemId};
-use rizzardry::game::characters::{Character, Gender, Profession, Race, Vitals};
+use rizzardry::game::characters::{Character, Gender, Load, Profession, Race, Vitals};
 use rizzardry::game::combat::attack::*;
 use rizzardry::game::inventory::{Carried, EquipSlot, ItemIds, make_item, place_at_creation};
 use rizzardry::game::party::roster::starting_items;
@@ -39,8 +39,8 @@ fn a_fighter_and_a_crab_trade_blows() {
         let item = make_item(catalog.get(ItemId(id)).unwrap(), &mut ids, &mut rng, true, true);
         assert!(place_at_creation(&mut carried, item, &catalog, &fighter).is_none());
     }
-    let hand = primary_hand(&fighter, &carried, &catalog);
-    let armour = armour(&fighter, &carried, &catalog);
+    let hand = primary_hand(&fighter, &carried, &catalog, Load::None);
+    let armour = armour(&fighter, &carried, &catalog, Load::None);
     let tally = |swings: Vec<Swing>| {
         let hits: Vec<u32> = swings
             .iter()

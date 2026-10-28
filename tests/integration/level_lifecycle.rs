@@ -463,9 +463,13 @@ fn direct_damage_settles_death_once_and_rejection_leaves_the_target_unchanged() 
     let target = world.query_filtered::<Entity, With<Monster>>().single(world).unwrap();
     let hit = |world: &mut World| {
         world
-            .run_system_once(move |mut damage: MonsterDamage, mut rng: ResMut<GameRng>| {
-                damage.apply(target, 10, 1, &mut rng)
-            })
+            .run_system_once(
+                move |mut damage: MonsterDamage,
+                      mut purse: Single<&mut rizzardry::game::inventory::PartyInventory>,
+                      mut rng: ResMut<GameRng>| {
+                    damage.apply(target, 10, 1, &mut purse, &mut rng)
+                },
+            )
             .unwrap()
     };
     use avian3d::prelude::{LinearVelocity, Position};

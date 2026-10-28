@@ -306,11 +306,13 @@ pub fn draw_party(
         let mut value = None;
         let mut hand_x = None;
         let image = |path: &str, frame| Picture {
-            sheet: assets.load(crate::content::paths::retail(&path)),
+            sheet: assets.load(crate::content::paths::retail(path)),
             frame,
             ..default()
         };
-        if let Some(CharacterViewItem { profile, vitals, carried }) = actor {
+        if let Some(view) = actor {
+            let load = view.load();
+            let CharacterViewItem { profile, vitals, carried, .. } = view;
             let dead = vitals.is_dead();
             let worn = |slot| {
                 carried.as_ref().and_then(|c| c.worn(slot)).and_then(|i| catalog?.get(i.item))
@@ -387,7 +389,7 @@ pub fn draw_party(
                     shown = !dead;
                     value = Some(
                         match (carried.as_ref(), catalog) {
-                            (Some(c), Some(catalog)) => armour(profile, c, catalog).average(),
+                            (Some(c), Some(catalog)) => armour(profile, c, catalog, load).average(),
                             _ => 0,
                         }
                         .to_string(),
