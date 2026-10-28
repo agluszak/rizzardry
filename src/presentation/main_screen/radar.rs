@@ -9,7 +9,6 @@ use bevy::ui_widgets::Activate;
 
 use super::{MainScreenArt, layer, loaded};
 use crate::content::ui::SpriteSheet;
-use crate::game::data::GameData;
 use crate::presentation::automap::OpenAutomap;
 use crate::presentation::party_view::PartyCamera;
 use crate::presentation::screen_art::{absolute, sprite};
@@ -178,8 +177,7 @@ pub fn update_radar(
         Query<(Entity, &crate::game::world::items::WorldItem, &GlobalTransform, &mut RadarItem)>,
         WorldObstacles,
     ),
-    data: Option<Res<GameData>>,
-    species: Res<Assets<crate::content::species::MonsterCatalog>>,
+    content: crate::game::data::Content,
 ) {
     let (Ok((position, body)), Ok(layer)) = (party.single(), layers.single()) else { return };
     for mut rim in &mut rims {
@@ -193,7 +191,7 @@ pub fn update_radar(
         Ok((Projection::Perspective(p), eye)) => (p.far, eye.translation()),
         _ => (0.0, position.0),
     };
-    let catalog = data.and_then(|d| species.get(&d.species));
+    let catalog = content.species();
     // Each blip's visibility is decided once, so one that stays in view
     // stays clean.
     let mut shown = bevy::ecs::entity::EntityHashSet::default();

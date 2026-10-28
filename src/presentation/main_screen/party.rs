@@ -15,12 +15,10 @@ use bevy::prelude::*;
 use rand::Rng;
 
 use super::{LayoutMode, MainScreenArt, ScreenLayout, SelectedMember, layer};
-use crate::content::items::ItemCatalog;
 use crate::content::ui::SpriteSheet;
 #[cfg(test)]
 use crate::game::characters::Race;
 use crate::game::characters::{Character, Vitals};
-use crate::game::data::GameData;
 use crate::game::inventory::EquipSlot;
 use crate::game::party::DamageApplied;
 use crate::game::party::roster::PartyRoster;
@@ -279,8 +277,7 @@ pub fn draw_party(
     assets: Res<AssetServer>,
     roster: Single<Ref<PartyRoster>>,
     members: Query<CharacterView>,
-    data: Option<Res<GameData>>,
-    catalogs: Res<Assets<ItemCatalog>>,
+    content: crate::game::data::Content,
     mut parts: Query<(
         &PartyPart,
         &mut Node,
@@ -290,7 +287,7 @@ pub fn draw_party(
         Option<&mut ImageNode>,
     )>,
 ) {
-    let catalog = data.as_ref().and_then(|d| catalogs.get(&d.items));
+    let catalog = content.items();
     let closed = layout.mode == LayoutMode::Closed;
     for (part, mut node, mut visible, picture, label, image_node) in &mut parts {
         let Some(slot) = roster.get_index_of(&part.member) else { continue };
@@ -754,6 +751,8 @@ pub fn play_splats(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::content::items::ItemCatalog;
+    use crate::game::data::GameData;
     use crate::game::{
         characters::{Gender, Profession},
         screen::Screen,

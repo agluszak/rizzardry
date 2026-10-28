@@ -22,10 +22,9 @@ use enumset::EnumSet;
 use crate::content::characters::Realm;
 use crate::content::items::ItemCatalog;
 use crate::content::spells::{MAX_POWER, PowerChoice, SpellCatalog, SpellDefinition, Targeting};
-use crate::content::ui::{SpriteSheet, TextTable};
+use crate::content::ui::SpriteSheet;
 use crate::game::characters::{Character, Vitals};
 use crate::game::combat::Battle;
-use crate::game::data::GameData;
 use crate::game::inventory::{Carried, PartyInventory};
 use crate::game::magic::casting::{
     AUTO_POWER, Aim, MagicChoice, Source, UseContext, can_activate, usable_items, usable_now,
@@ -54,7 +53,6 @@ pub struct MagicViewArt {
     orange: Handle<SpriteSheet>,
     blue: Handle<SpriteSheet>,
     yellow: Handle<SpriteSheet>,
-    strings: Handle<TextTable>,
 }
 
 pub(super) fn load_magic_view_art(mut commands: Commands, assets: Res<AssetServer>) {
@@ -73,7 +71,6 @@ pub(super) fn load_magic_view_art(mut commands: Commands, assets: Res<AssetServe
         orange: sheet("fonts/paletteorange"),
         blue: sheet("fonts/paletteblue"),
         yellow: sheet("fonts/paletteyellow"),
-        strings: assets.load(crate::content::paths::STRINGS),
     });
 }
 
@@ -554,13 +551,11 @@ pub(super) fn refresh_magic_view(
         Query<&crate::game::world::interaction::DeviceInteraction>,
         Single<&PartyInventory>,
     ),
-    data: Option<Res<GameData>>,
-    (spells, items, art, assets, tables): (
-        Res<Assets<SpellCatalog>>,
-        Res<Assets<ItemCatalog>>,
+    content: crate::game::data::Content,
+    (art, assets, strings): (
         Res<MagicViewArt>,
         Res<AssetServer>,
-        Res<Assets<TextTable>>,
+        crate::presentation::screen_art::GameStrings,
     ),
     mut captions: Query<
         &mut BitmapText,
@@ -614,10 +609,7 @@ pub(super) fn refresh_magic_view(
         commands.entity(root).despawn();
         return;
     }
-    let (Some(spells), Some(items)) = (
-        data.as_ref().and_then(|d| spells.get(&d.spells)),
-        data.as_ref().and_then(|d| items.get(&d.items)),
-    ) else {
+    let (Some(spells), Some(items)) = (content.spells(), content.items()) else {
         return;
     };
     let Some(context) = context(&view, battle.is_some(), camp.is_some(), &interaction) else {
@@ -798,11 +790,7 @@ pub(super) fn refresh_magic_view(
                 }
             }
         }
-        let caption = if view.pool {
-            "Party pool"
-        } else {
-            tables.get(&art.strings).and_then(|t| t.get(0x77a)).unwrap_or("")
-        };
+        let caption = if view.pool { "Party pool" } else { strings.get(0x77a) };
         for mut label in &mut captions {
             if label.value != caption {
                 label.value = caption.to_owned();
@@ -887,16 +875,12 @@ fn choose_row(
         Query<&crate::game::world::interaction::DeviceInteraction>,
         Single<&PartyInventory>,
     ),
-    data: Option<Res<GameData>>,
-    (spells, items): (Res<Assets<SpellCatalog>>, Res<Assets<ItemCatalog>>),
+    content: crate::game::data::Content,
 ) {
     let (Ok(row), Ok((mut view, scroll))) = (rows.get(click.entity), views.single_mut()) else {
         return;
     };
-    let (Some(spells), Some(items)) = (
-        data.as_ref().and_then(|d| spells.get(&d.spells)),
-        data.as_ref().and_then(|d| items.get(&d.items)),
-    ) else {
+    let (Some(spells), Some(items)) = (content.spells(), content.items()) else {
         return;
     };
     let Ok((character, _, carried)) = members.get(view.caster) else { return };

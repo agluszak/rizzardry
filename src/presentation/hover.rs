@@ -5,11 +5,8 @@ use bevy::picking::pointer::{PointerId, PointerLocation};
 use bevy::prelude::*;
 use bevy::time::Stopwatch;
 
-use crate::content::items::ItemCatalog;
-use crate::content::species::MonsterCatalog;
 use crate::content::ui::SpriteSheet;
 use crate::game::characters::{Character, Vitals};
-use crate::game::data::GameData;
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::identify::{GroupMember, MonsterGroup, health_known};
 use crate::game::world::items::{REACH, WorldItem};
@@ -80,10 +77,8 @@ pub fn show_tooltip(
     pointers: Query<(&PointerId, &PointerLocation)>,
     scale: Res<UiScale>,
     cameras: Query<&Camera, With<bevy::ui::IsDefaultUiCamera>>,
-    (data, catalogs, species, sheets, assets): (
-        Option<Res<GameData>>,
-        Res<Assets<ItemCatalog>>,
-        Res<Assets<MonsterCatalog>>,
+    (content, sheets, assets): (
+        crate::game::data::Content,
         Res<Assets<SpriteSheet>>,
         Res<AssetServer>,
     ),
@@ -106,12 +101,12 @@ pub fn show_tooltip(
         let sheet = sheets.get(&*font)?;
         let text = if let Ok(item) = items.get(entity) {
             // "Bullets (Unidentified) (16)".
-            let catalog = data.as_ref().and_then(|d| catalogs.get(&d.items));
+            let catalog = content.items();
             let definition = catalog.and_then(|c| c.get(item.appearance()))?;
             item.display_name(definition, true)
         } else if let Ok(monster) = monsters.get(entity) {
             // "Crustacean (?/12)" (retail `SetCombatSelection`).
-            let catalog = data.as_ref().and_then(|d| species.get(&d.species));
+            let catalog = content.species();
             let kind = catalog.and_then(|c| c.kind(monster.species))?;
             let identified = memberships
                 .get(entity)

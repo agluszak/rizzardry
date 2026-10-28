@@ -1,7 +1,7 @@
 //! Native dialogue widgets. All selected rows and quotes are drafts; gameplay
 //! resolves item/stock identities again when a confirmation executes.
 use super::screen_art::BitmapText;
-use crate::content::{items::ItemCatalog, npcs::NpcCatalog, ui::SpriteSheet};
+use crate::content::{npcs::NpcCatalog, ui::SpriteSheet};
 use crate::game::npcs::{
     Npc, NpcAssets,
     conversation::*,
@@ -425,9 +425,7 @@ fn sync_view(world: &mut World) {
     if !can_trade {
         return;
     }
-    let items = world
-        .get_resource::<GameData>()
-        .and_then(|d| world.resource::<Assets<ItemCatalog>>().get(&d.items));
+    let items = GameData::items(world);
     let Some(items) = items else { return };
     let mut rows = Vec::new();
     if let Some(npc) = world.get::<Npc>(actor) {

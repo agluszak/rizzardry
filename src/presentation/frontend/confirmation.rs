@@ -1,6 +1,6 @@
 //! Confirm consequential choices in the character creator.
 use super::{Creation, Page, Session};
-use crate::content::ui::{SpriteSheet, TextTable};
+use crate::content::ui::SpriteSheet;
 use crate::presentation::retail_controls::ControlSkin;
 use crate::presentation::screen_art::{BitmapText, Picture};
 use bevy::input_focus::{
@@ -26,7 +26,6 @@ pub(super) struct ConfirmDialog {
 pub(super) struct QuestionText {
     purpose: Purpose,
     line: usize,
-    strings: Handle<TextTable>,
 }
 #[derive(Component)]
 pub(super) struct ConfirmationButton(usize);
@@ -182,11 +181,7 @@ fn open_dialog(
     }
     for line in 0..3 {
         commands.spawn((
-            QuestionText {
-                purpose: purpose.clone(),
-                line,
-                strings: assets.load(crate::content::paths::STRINGS),
-            },
+            QuestionText { purpose: purpose.clone(), line },
             BitmapText {
                 font: assets.load("retail://data/fonts/wiz_text_font.sti"),
                 at: Vec2::new(4., 20. + line as f32 * 11.),
@@ -267,7 +262,7 @@ pub(super) fn resolve(
 
 pub(super) fn show_text(
     mut commands: Commands,
-    tables: Res<Assets<TextTable>>,
+    game_strings: crate::presentation::screen_art::GameStrings,
     sheets: Res<Assets<SpriteSheet>>,
     mut texts: Query<(Entity, &QuestionText, &mut BitmapText), Without<Measured>>,
     mut panels: Query<&mut Node, (With<Panel>, Without<ConfirmationButton>)>,
@@ -276,7 +271,7 @@ pub(super) fn show_text(
 ) {
     let mut size = None;
     for (entity, question, mut text) in &mut texts {
-        let Some(table) = tables.get(&question.strings) else { continue };
+        let Some(table) = game_strings.table() else { continue };
         let message = match &question.purpose {
             Purpose::Delete { name, .. } => format!(
                 "{} {} {}?",

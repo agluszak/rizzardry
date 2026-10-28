@@ -3,9 +3,7 @@
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
-use crate::content::species::MonsterCatalog;
 use crate::game::characters::Character;
-use crate::game::data::GameData;
 use crate::game::world::identify::{GroupMember, MonsterGroup};
 use crate::game::world::population::Monster;
 
@@ -15,8 +13,7 @@ pub struct ActorNames<'w, 's> {
     characters: Query<'w, 's, &'static Character>,
     monsters: Query<'w, 's, (&'static Monster, Option<&'static GroupMember>)>,
     groups: Query<'w, 's, &'static MonsterGroup>,
-    data: Option<Res<'w, GameData>>,
-    species: Res<'w, Assets<MonsterCatalog>>,
+    content: crate::game::data::Content<'w>,
 }
 
 impl ActorNames<'_, '_> {
@@ -25,7 +22,7 @@ impl ActorNames<'_, '_> {
             return Some(profile.name.clone());
         }
         let (monster, membership) = self.monsters.get(actor).ok()?;
-        let catalog = self.species.get(&self.data.as_ref()?.species)?;
+        let catalog = self.content.species()?;
         let kind = catalog.kind(monster.species)?;
         let known =
             membership.and_then(|m| self.groups.get(m.0).ok()).is_some_and(|g| g.identified);

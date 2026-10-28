@@ -135,13 +135,12 @@ pub(crate) fn pass_time(
     )>,
     mut clock: ResMut<GameClock>,
     mut rng: ResMut<GameRng>,
-    (data, spells, mut points): (
-        Option<Res<crate::game::data::GameData>>,
-        Res<Assets<crate::content::spells::SpellCatalog>>,
+    (content, mut points): (
+        crate::game::data::Content,
         Query<(&crate::game::magic::LearnedSpells, &mut crate::game::magic::SpellPoints)>,
     ),
 ) {
-    let spells = data.as_ref().and_then(|d| spells.get(&d.spells));
+    let spells = content.spells();
     if battle.is_some() {
         return;
     }
