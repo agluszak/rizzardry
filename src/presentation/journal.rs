@@ -417,8 +417,7 @@ mod tests {
         facts.journal.push(JournalEntry { fact: FactId(2), value: 1, level: String::new() });
         app.insert_resource(facts);
         let view = app.world_mut().spawn(Journal::default()).id();
-        let row =
-            app.world_mut().spawn((Row(JournalMode::Events, false), BitmapText::default())).id();
+        let row = app.world_mut().spawn((Row(0, false), BitmapText::default())).id();
         app.update();
         let journal = app.world().get::<Journal>(view).unwrap();
         assert_eq!((journal.page, journal.count), (1, 13));
