@@ -5,14 +5,118 @@
 
 use bevy::prelude::*;
 
-use super::interaction::{AttemptOn, DeviceInteraction, Work};
-use super::triggers::Container;
+use super::interaction::{AttemptOn, DeviceAttempt, DeviceInteraction, Work};
+use super::props::PropMotion;
+use super::triggers::TriggerEffect;
 use crate::content::items::ItemCatalog;
+use crate::game::characters::Character;
 use crate::game::data::GameData;
 use crate::game::inventory::{
-    Carried, ItemIds, ItemNews, ItemStack, PartyInventory, Refusal, StackId,
+    Carried, ItemIds, ItemNews, ItemStack, PartyInventory, Refusal, StackId, make_item,
 };
-use crate::game::party::roster::{PartyMember, the_party};
+use crate::game::loot::roll_loot;
+use crate::game::party::roster::{PartyMember, PartyRoster, the_party};
+use crate::game::rng::GameRng;
+
+/// A container's contents, drawn from its loot table the first time it is
+/// opened and kept from then on (retail `GenerateItemGroup`); whatever the
+/// party leaves or puts in it stays.
+#[derive(Component, Clone, Debug)]
+pub struct Container {
+    pub(crate) table: Option<usize>,
+    pub(crate) generated: bool,
+    pub contents: Contents,
+}
+
+#[cfg(test)]
+impl Container {
+    /// An opened container holding these stacks.
+    pub(crate) fn holding(items: Vec<ItemStack>) -> Self {
+        Container { table: None, generated: true, contents: Contents { items, gold: 0 } }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Contents {
+    pub items: Vec<ItemStack>,
+    pub gold: u32,
+}
+
+/// What using a container came to (retail action 3 with an item table).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ContainerUse {
+    /// The held item went in; nothing else happens.
+    Deposited,
+    /// Its contents are already being looked through.
+    Busy,
+    /// Empty, or its one item went to the hand: it opens or closes.
+    Toggle,
+    /// Look through its contents, opening it first if it is shut.
+    Look { open: bool },
+}
+
+/// Retail `Trigger::RunAction` case 3: a held item goes in; otherwise the
+/// contents are drawn once, their gold goes to the party, a lone item to
+/// the hand, and several are looked through.
+pub(crate) fn use_container(
+    In(entity): In<Entity>,
+    mut containers: Query<(&mut Container, &PropMotion)>,
+    content: crate::game::data::Content,
+    attempts: Query<&DeviceAttempt>,
+    mut party: Single<&mut PartyInventory>,
+    (roster, profiles): (Single<&PartyRoster>, Query<&Character>),
+    mut ids: ResMut<ItemIds>,
+    mut rng: ResMut<GameRng>,
+    mut outcomes: MessageWriter<TriggerEffect>,
+) -> ContainerUse {
+    let (mut container, motion) = containers.get_mut(entity).unwrap();
+    if let Some(held) = party.hand.held.take() {
+        container.contents.items.push(held);
+        return ContainerUse::Deposited;
+    }
+    if attempts.contains(entity) {
+        return ContainerUse::Busy;
+    }
+    // Devices with containers run only once the databases have loaded.
+    let catalog = content.items().unwrap();
+    if !container.generated
+        && let Some(table) = container.table
+    {
+        let loot = content.loot().unwrap();
+        // Level-scaled tables draw for the party's average level (retail
+        // `GetAveragePartyLevel`). Retail reseeds its generator from the
+        // trigger's own seed first; here the draw comes from the shared
+        // gameplay generator, so contents depend on when the chest is first
+        // opened.
+        let party_level = crate::game::party::average_level(
+            profiles.iter_many(roster.iter()).matched().map(|c| c.level),
+        );
+        let (found, gold) = roll_loot(&loot.0[table], catalog, party_level, &mut rng);
+        let contents = &mut container.contents;
+        contents.items.extend(
+            found
+                .into_iter()
+                .filter_map(|id| catalog.get(id))
+                .map(|d| make_item(d, &mut ids, &mut rng, false, false)),
+        );
+        contents.gold += gold;
+        container.generated = true;
+    }
+    let contents = &mut container.contents;
+    if contents.gold > 0 {
+        party.gold += contents.gold;
+        outcomes.write(TriggerEffect::Gold(contents.gold));
+        contents.gold = 0;
+    }
+    match contents.items.len() {
+        0 => ContainerUse::Toggle,
+        1 => {
+            party.hand.held = contents.items.pop();
+            ContainerUse::Toggle
+        }
+        _ => ContainerUse::Look { open: motion.target > 0.0 },
+    }
+}
 
 /// Where taken items go.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,9 +149,7 @@ pub fn take_from_container(
     picks: &[(StackId, u16)],
     to: Recipient,
 ) -> Result<(), Refusal> {
-    if world.query::<&super::level::Destination>().iter(world).next().is_some()
-        || world.query::<&crate::game::combat::Battle>().iter(world).next().is_some()
-    {
+    if crate::game::world::party_occupied(world) {
         return Err(Refusal::Nothing);
     }
     let device = looting(world, on).ok_or(Refusal::Nothing)?;
@@ -56,8 +158,9 @@ pub fn take_from_container(
         if !world.get::<PartyMember>(member).is_some_and(|m| m.0 == party) {
             return Err(Refusal::NotMember);
         }
-        let vitals = world.get(member).ok_or(Refusal::NotMember)?;
-        if !crate::game::camp::can_act(vitals) || world.get::<Carried>(member).is_none() {
+        let vitals =
+            world.get::<crate::game::characters::Vitals>(member).ok_or(Refusal::NotMember)?;
+        if !vitals.can_act() || world.get::<Carried>(member).is_none() {
             return Err(Refusal::DoesNotFit);
         }
     }

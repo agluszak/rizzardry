@@ -8,12 +8,12 @@
 use bevy::asset::{AssetLoader, LoadContext, RenderAssetUsages, io::Reader};
 use bevy::image::{
     CompressedImageFormats, ImageAddressMode, ImageFilterMode, ImageSampler,
-    ImageSamplerDescriptor, ImageType, TextureError,
+    ImageSamplerDescriptor, ImageType,
 };
 use bevy::prelude::*;
 use bevy::reflect::TypePath;
 
-use crate::presentation::mipmaps::generate_mipmaps;
+use super::mipmaps::generate_mipmaps;
 
 /// A retail texture file; its decoded image is the `image` sub-asset.
 #[derive(Asset, TypePath, Debug)]
@@ -24,25 +24,17 @@ pub struct RetailTexture {
 #[derive(Default, TypePath)]
 pub struct RetailTextureLoader;
 
-#[derive(Debug, thiserror::Error)]
-pub enum RetailTextureError {
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-    #[error(transparent)]
-    Decode(#[from] TextureError),
-}
-
 impl AssetLoader for RetailTextureLoader {
     type Asset = RetailTexture;
     type Settings = ();
-    type Error = RetailTextureError;
+    type Error = super::LoadError;
 
     async fn load(
         &self,
         reader: &mut dyn Reader,
         _: &(),
         context: &mut LoadContext<'_>,
-    ) -> Result<RetailTexture, RetailTextureError> {
+    ) -> Result<RetailTexture, super::LoadError> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
         let extension = context.path().get_full_extension().unwrap_or_default().to_lowercase();

@@ -1,7 +1,6 @@
 //! Who stands where in a level: the monster placements of its `.sts` file.
 
-use super::pvl::{PvlError, invalid};
-use crate::bytes::{Bytes, lenient_string};
+use crate::bytes::{Bytes, DecodeError, lenient_string, u32_at};
 use crate::content::level::TRAP_TYPES;
 
 /// One placed monster (a `MONS` monster record).
@@ -21,26 +20,28 @@ pub struct Placement {
 }
 
 const GROUP_VERSION_AT: usize = 0xc4;
+/// Where a monster record's position and yaw start.
+const MONSTER_POSITION_AT: usize = 0x17;
 
-fn chunk<'a>(bytes: &mut Bytes<'a>) -> Result<([u8; 4], &'a [u8]), PvlError> {
-    let id: [u8; 4] = bytes.take(4)?.try_into().unwrap();
+fn chunk<'a>(bytes: &mut Bytes<'a>) -> Result<([u8; 4], &'a [u8]), DecodeError> {
+    let id = bytes.array::<4>()?;
     bytes.take(2)?; // grouped, at end
     let extent = bytes.u32()? as usize;
     Ok((id, bytes.take(extent)?))
 }
 
 /// A level state chunk's payload, if the file has it.
-fn level_chunk<'a>(data: &'a [u8], wanted: &[u8; 4]) -> Result<Option<&'a [u8]>, PvlError> {
+fn level_chunk<'a>(data: &'a [u8], wanted: &[u8; 4]) -> Result<Option<&'a [u8]>, DecodeError> {
     let mut bytes = Bytes::new(data);
     let (id, root) = chunk(&mut bytes)?;
     if &id != b"RIFF" {
-        return Err(invalid("level state is not a RIFF chunk", &bytes));
+        return Err(bytes.invalid("level state is not a RIFF chunk"));
     }
     let mut root = Bytes::new(root);
     root.u32()?; // children
     let (id, level) = chunk(&mut root)?;
     if &id != b"LVLS" {
-        return Err(invalid("level state has no LVLS chunk", &root));
+        return Err(root.invalid("level state has no LVLS chunk"));
     }
     let mut level = Bytes::new(level);
     let children = level.u32()?;
@@ -55,7 +56,7 @@ fn level_chunk<'a>(data: &'a [u8], wanted: &[u8; 4]) -> Result<Option<&'a [u8]>,
 }
 
 /// The monsters placed in a level's `.sts` file.
-pub fn read_placements(data: &[u8]) -> Result<Vec<Placement>, PvlError> {
+pub fn read_placements(data: &[u8]) -> Result<Vec<Placement>, DecodeError> {
     level_chunk(data, b"MONS")?.map_or(Ok(Vec::new()), read_monsters)
 }
 
@@ -81,24 +82,24 @@ const WORLD_ITEM_HIDDEN: u32 = 1;
 /// The items lying in a level's `.sts` file. An entry may chain more items
 /// into a pile (retail builds those at runtime for its item picker); no
 /// retail level has one, and the chained items are skipped.
-pub fn read_world_items(data: &[u8]) -> Result<Vec<WorldItemRecord>, PvlError> {
+pub fn read_world_items(data: &[u8]) -> Result<Vec<WorldItemRecord>, DecodeError> {
     let Some(payload) = level_chunk(data, b"ITEM")? else { return Ok(Vec::new()) };
     let mut bytes = Bytes::new(payload);
     let count = bytes.u32()?;
     (0..count)
         .map(|_| {
             let image = bytes.take(WORLD_ITEM_SIZE)?;
-            let mut at = Bytes::new(&image[0x09..]);
+            let mut at = Bytes::at(image, 0x09)?;
             let item = at.u32()?;
             let (stack, uses, identified) = (at.u8()?, at.u8()?, at.u8()? != 0);
-            let position = Bytes::new(&image[0x15..]).f32s::<3>()?;
-            let mut at = Bytes::new(&image[0x29..]);
+            let position = Bytes::at(image, 0x15)?.f32s::<3>()?;
+            let mut at = Bytes::at(image, 0x29)?;
             let hidden = at.u32()? & WORLD_ITEM_HIDDEN != 0;
             at.u32()?; // saved marker
             let mut chained = at.u32()? != 0;
             while chained {
                 let next = bytes.take(WORLD_ITEM_SIZE)?;
-                chained = Bytes::new(&next[0x31..]).u32()? != 0;
+                chained = Bytes::at(next, 0x31)?.u32()? != 0;
             }
             Ok(WorldItemRecord { item, stack, uses, identified, position, hidden })
         })
@@ -132,14 +133,14 @@ pub enum LockKind {
 /// The authored locks and traps of a level's `.sts` file. Level state files
 /// carry the full records the editor writes; the shorter runtime records a
 /// saved game uses (`LCKS`) are not authored content.
-pub fn read_locks(data: &[u8]) -> Result<Vec<LockRecord>, PvlError> {
+pub fn read_locks(data: &[u8]) -> Result<Vec<LockRecord>, DecodeError> {
     let Some(payload) = level_chunk(data, b"LOCK")? else { return Ok(Vec::new()) };
     let mut bytes = Bytes::new(payload);
     let version = bytes.i32()?;
     let count = bytes.i32()?.max(0);
     let full = bytes.i32()? != 0;
     if !full && version > 1 {
-        return Err(invalid("level locks hold runtime records only", &bytes));
+        return Err(bytes.invalid("level locks hold runtime records only"));
     }
     let mut locks = Vec::new();
     for _ in 0..count {
@@ -170,16 +171,15 @@ pub fn read_locks(data: &[u8]) -> Result<Vec<LockRecord>, PvlError> {
     Ok(locks)
 }
 
-fn read_monsters(data: &[u8]) -> Result<Vec<Placement>, PvlError> {
+fn read_monsters(data: &[u8]) -> Result<Vec<Placement>, DecodeError> {
     let mut bytes = Bytes::new(data);
     let groups = bytes.u32()?;
     let monsters = bytes.u32()?;
     for _ in 0..groups {
         let size = bytes.u32()? as usize;
         let image = bytes.take(size)?;
-        let version = image
-            .get(GROUP_VERSION_AT..GROUP_VERSION_AT + 4)
-            .map_or(0, |v| u32::from_le_bytes(v.try_into().unwrap()));
+        // Records too short to carry a version are version 0.
+        let version = u32_at(image, GROUP_VERSION_AT).unwrap_or(0);
         if version >= 2 {
             bytes.u8()?; // encounter
         }
@@ -193,9 +193,9 @@ fn read_monsters(data: &[u8]) -> Result<Vec<Placement>, PvlError> {
             let location = fields.i32()?;
             let group = fields.i32()?;
             let species = fields.u32()?;
-            let mut at = Bytes::new(&image[0x17..]);
-            let position = at.f32s::<3>()?;
-            let yaw = at.f32()?;
+            fields.take(MONSTER_POSITION_AT - fields.offset())?;
+            let position = fields.f32s::<3>()?;
+            let yaw = fields.f32()?;
             if bytes.u8()? != 0 {
                 bytes.take(64 + 4 + 4)?; // script name, wait, line
                 let conditions = bytes.i32()?.max(0) as usize;
@@ -295,10 +295,9 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{name}: {e}"));
             let level = name.replace(".sts", ".pvl");
             let Some(Ok(data)) = files.read(&level) else { continue };
-            let geometry = super::super::pvl::read_level_geometry(&data).unwrap();
+            let start = super::super::pvl::compiled_level_end(&data).unwrap();
             let sections =
-                super::super::sections::read_sections(&mut Bytes::new(&data[geometry.end..]))
-                    .unwrap();
+                super::super::sections::read_sections(&mut Bytes::new(&data[start..])).unwrap();
             for lock in &locks {
                 assert!(sections.trigger(&lock.trigger).is_some(), "{name}: {lock:?}");
                 if name.contains("monastery") {

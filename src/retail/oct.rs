@@ -8,12 +8,11 @@
 
 use std::collections::HashMap;
 
-use super::pvl::{PvlError, invalid};
 use super::space::retail_position;
-use crate::bytes::Bytes;
+use crate::bytes::{Bytes, DecodeError, u16_at, u32_at};
 use crate::content::level::CollisionMesh;
 
-const VERSION: usize = 0x22;
+const VERSION: u16 = 0x22;
 const HEADER: usize = 0xF5;
 const TERMINATOR: u32 = 0xFFFF_FFFF;
 const PACKED_BITS_MAGIC: u32 = 0xDEAD_D00D;
@@ -78,56 +77,50 @@ impl Collision {
     }
 }
 
-fn u32_at(header: &[u8], at: usize) -> usize {
-    u32::from_le_bytes(header[at..at + 4].try_into().unwrap()) as usize
-}
-
-fn u16_at(header: &[u8], at: usize) -> usize {
-    u16::from_le_bytes(header[at..at + 2].try_into().unwrap()) as usize
-}
-
-fn terminator(bytes: &mut Bytes) -> Result<(), PvlError> {
+fn terminator(bytes: &mut Bytes) -> Result<(), DecodeError> {
     if bytes.u32()? != TERMINATOR {
-        return Err(invalid("octree section has the wrong length", bytes));
+        return Err(bytes.invalid("octree section has the wrong length"));
     }
     Ok(())
 }
 
-fn skip_packed_bits(bytes: &mut Bytes) -> Result<(), PvlError> {
+fn skip_packed_bits(bytes: &mut Bytes) -> Result<(), DecodeError> {
     let magic = bytes.u32()?;
     let _bits = bytes.u32()?;
     let size = bytes.u32()? as usize;
     bytes.take(size)?;
     if magic != PACKED_BITS_MAGIC || bytes.u32()? != PACKED_BITS_MAGIC {
-        return Err(invalid("bad packed bits", bytes));
+        return Err(bytes.invalid("bad packed bits"));
     }
     Ok(())
 }
 
-pub fn read_collision(data: &[u8]) -> Result<Collision, PvlError> {
+pub fn read_collision(data: &[u8]) -> Result<Collision, DecodeError> {
     let mut bytes = Bytes::new(data);
     let header = bytes.take(HEADER)?;
-    if u16_at(header, 0) != VERSION {
-        return Err(invalid("unsupported octree version", &bytes));
+    if u16_at(header, 0)? != VERSION {
+        return Err(bytes.invalid("unsupported octree version"));
     }
     terminator(&mut bytes)?;
-    let grid = u32_at(header, 0x56) * u32_at(header, 0x5A) * u32_at(header, 0x5E);
-    let submeshes = u32_at(header, 0x66);
-    let branches = u32_at(header, 0x6A);
-    let leaves = u32_at(header, 0x6E);
-    let polygons = u32_at(header, 0x72);
-    let path_nodes = u32_at(header, 0x7E);
-    let leaf_polygon_stream = u32_at(header, 0x82);
-    let surface_stream = u32_at(header, 0x86);
-    let triggers = u32_at(header, 0x8A);
-    let region_list = u32_at(header, 0x92);
-    let regions = u16_at(header, 0x96);
-    let mesh_total = u32_at(header, 0x9E);
+    let grid = u32_at(header, 0x56)? as usize
+        * u32_at(header, 0x5A)? as usize
+        * u32_at(header, 0x5E)? as usize;
+    let submeshes = u32_at(header, 0x66)? as usize;
+    let branches = u32_at(header, 0x6A)? as usize;
+    let leaves = u32_at(header, 0x6E)? as usize;
+    let polygons = u32_at(header, 0x72)? as usize;
+    let path_nodes = u32_at(header, 0x7E)? as usize;
+    let leaf_polygon_stream = u32_at(header, 0x82)? as usize;
+    let surface_stream = u32_at(header, 0x86)? as usize;
+    let triggers = u32_at(header, 0x8A)? as usize;
+    let region_list = u32_at(header, 0x92)? as usize;
+    let regions = u16_at(header, 0x96)? as usize;
+    let mesh_total = u32_at(header, 0x9E)? as usize;
     let prop_sun_bits = header[0xB8] != 0;
-    let props = u32_at(header, 0xBD);
-    let particles = u32_at(header, 0xC1);
-    let particle_links = u16_at(header, 0xC5);
-    let prop_links = u16_at(header, 0xC7);
+    let props = u32_at(header, 0xBD)? as usize;
+    let particles = u32_at(header, 0xC1)? as usize;
+    let particle_links = u16_at(header, 0xC5)? as usize;
+    let prop_links = u16_at(header, 0xC7)? as usize;
 
     // The render octree: branches, leaves, polygon and region streams.
     bytes.take(branches * 36 + leaves * 40 + leaf_polygon_stream * 4)?;
@@ -168,7 +161,7 @@ pub fn read_collision(data: &[u8]) -> Result<Collision, PvlError> {
     }
     terminator(&mut bytes)?;
     if surface_stream == 0 {
-        return Err(invalid("level has no collision geometry", &bytes));
+        return Err(bytes.invalid("level has no collision geometry"));
     }
 
     let version = bytes.u32()?;
@@ -183,7 +176,7 @@ pub fn read_collision(data: &[u8]) -> Result<Collision, PvlError> {
     let environments = bytes.i32()?.max(0) as usize;
     bytes.take(36)?;
     if version != 1 {
-        return Err(invalid("unsupported collision version", &bytes));
+        return Err(bytes.invalid("unsupported collision version"));
     }
     let vertices = bytes.records(vertex_count, 12, |b| b.f32s::<3>())?;
     let surfaces = bytes.records(surface_count, 0x4C, |b| {
@@ -199,7 +192,7 @@ pub fn read_collision(data: &[u8]) -> Result<Collision, PvlError> {
         Ok(Surface { flags, trigger_index, vertices, footstep_material })
     })?;
     if surfaces.iter().any(|s| s.vertices.iter().any(|&v| v as usize >= vertices.len())) {
-        return Err(invalid("collision vertex out of range", &bytes));
+        return Err(bytes.invalid("collision vertex out of range"));
     }
     bytes.take(interfaces * 12 + states * 12 + conditional * 4 + environments * 0x44)?;
     terminator(&mut bytes)?;

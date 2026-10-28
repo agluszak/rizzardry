@@ -5,12 +5,13 @@ use super::controls::Interact;
 use super::morph_picking::MorphRayCast;
 use super::party_view::PartyCamera;
 use crate::game::inventory::PartyInventory;
-use crate::game::world::items::{CLEARANCE, THROW, WorldItem, drop_held, take_item};
+use crate::game::world::WorldRequest;
+use crate::game::world::items::{CLEARANCE, THROW, WorldItem};
 use crate::game::world::level::Level;
 use crate::game::world::obstacles::WorldObstacles;
 use crate::game::world::population::Monster;
 use crate::game::world::props::Prop;
-use crate::game::world::triggers::{self, Device};
+use crate::game::world::triggers::Device;
 use bevy::camera::visibility::RenderLayers;
 use bevy::picking::hover::HoverMap;
 use bevy::picking::mesh_picking::ray_cast::{MeshRayCast, MeshRayCastSettings};
@@ -82,7 +83,7 @@ pub fn activate_selection(
     npcs: Query<&crate::game::npcs::NpcBody>,
     mut conversations: MessageWriter<crate::game::npcs::conversation::ConversationRequest>,
     obstacles: WorldObstacles,
-    mut commands: Commands,
+    mut requests: MessageWriter<WorldRequest>,
 ) {
     if !interact.contains(ActionEvents::START) {
         return;
@@ -99,23 +100,17 @@ pub fn activate_selection(
         && let Ok(device) = props.get(hit.entity)
     {
         if device {
-            commands.queue(move |world: &mut World| {
-                triggers::activate(world, hit.entity, Some(hit.distance));
-            });
+            requests.write(WorldRequest::Activate { device: hit.entity, distance: hit.distance });
         }
         return;
     }
     if held.hand.held.is_some() {
         let (Some(level), Some(ray)) = (selection.level, selection.ray) else { return };
         if let Some(at) = drop_point(&obstacles, ray) {
-            commands.queue(move |world: &mut World| {
-                let _ = drop_held(world, level, at);
-            });
+            requests.write(WorldRequest::DropHeld { level, at });
         }
     } else if let Some(hit) = selection.hit {
-        commands.queue(move |world: &mut World| {
-            let _ = take_item(world, hit.entity, hit.distance);
-        });
+        requests.write(WorldRequest::TakeItem { item: hit.entity, distance: hit.distance });
     }
 }
 

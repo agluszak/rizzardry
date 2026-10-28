@@ -2,4 +2,5 @@
 //! suites share it.
 
 mod level_lifecycle;
+mod retail_rules;
 mod scenarios;

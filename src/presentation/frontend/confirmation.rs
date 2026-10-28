@@ -2,7 +2,7 @@
 use super::{Creation, Page, Session};
 use crate::content::ui::{SpriteSheet, TextTable};
 use crate::presentation::retail_controls::ControlSkin;
-use crate::presentation::screen_art::{BitmapText, Picture};
+use crate::presentation::screen_art::{BitmapText, Picture, spawn_dialog_frame};
 use bevy::input_focus::{
     FocusCause, InputFocus,
     tab_navigation::{TabGroup, TabIndex},
@@ -34,11 +34,6 @@ pub(super) struct ConfirmationButton(usize);
 pub(super) struct Panel;
 #[derive(Component)]
 pub(super) struct Measured;
-#[derive(Component)]
-pub(super) struct BorderPiece {
-    sheet: Handle<SpriteSheet>,
-    frame: usize,
-}
 #[derive(Event)]
 pub(super) struct Answer {
     dialog: Entity,
@@ -99,93 +94,13 @@ fn open_dialog(
             ChildOf(dialog),
         ))
         .id();
-    commands.spawn((
-        BorderPiece { sheet: assets.load("retail://data/dialogs/dialogbackground.sti"), frame: 0 },
-        Node {
-            position_type: PositionType::Absolute,
-            width: percent(100),
-            height: percent(100),
-            ..default()
-        },
-        ImageNode {
-            image_mode: bevy::ui::widget::NodeImageMode::Tiled {
-                tile_x: true,
-                tile_y: true,
-                stretch_value: 1.,
-            },
-            ..default()
-        },
-        Visibility::Hidden,
-        Pickable::IGNORE,
-        ChildOf(panel),
-    ));
-    for (path, inset, thickness) in [
-        ("retail://data/dialogs/dialogborder.sti", 0., 9.),
-        ("retail://data/dialogs/dialogedge.sti", 9., 3.),
-    ] {
-        let sheet = assets.load(path);
-        for frame in 0..8 {
-            let mut node = Node { position_type: PositionType::Absolute, ..default() };
-            match frame {
-                0 | 2 | 5 | 7 => {
-                    node.width = px(thickness);
-                    node.height = px(thickness);
-                    if frame == 0 || frame == 5 {
-                        node.left = px(inset);
-                    } else {
-                        node.right = px(inset);
-                    }
-                    if frame == 0 || frame == 2 {
-                        node.top = px(inset);
-                    } else {
-                        node.bottom = px(inset);
-                    }
-                }
-                1 | 6 => {
-                    node.left = px(inset + thickness);
-                    node.right = px(inset + thickness);
-                    node.height = px(thickness);
-                    if frame == 1 {
-                        node.top = px(inset);
-                    } else {
-                        node.bottom = px(inset);
-                    }
-                }
-                3 | 4 => {
-                    node.top = px(inset + thickness);
-                    node.bottom = px(inset + thickness);
-                    node.width = px(thickness);
-                    if frame == 3 {
-                        node.left = px(inset);
-                    } else {
-                        node.right = px(inset);
-                    }
-                }
-                _ => unreachable!(),
-            }
-            commands.spawn((
-                BorderPiece { sheet: sheet.clone(), frame },
-                node,
-                ImageNode {
-                    image_mode: bevy::ui::widget::NodeImageMode::Tiled {
-                        tile_x: true,
-                        tile_y: true,
-                        stretch_value: 1.,
-                    },
-                    ..default()
-                },
-                Visibility::Hidden,
-                Pickable::IGNORE,
-                ChildOf(panel),
-            ));
-        }
-    }
+    spawn_dialog_frame(commands, assets, panel, true);
     for line in 0..3 {
         commands.spawn((
             QuestionText {
                 purpose: purpose.clone(),
                 line,
-                strings: assets.load("retail://data/strings/stringdata.dat"),
+                strings: assets.load(crate::content::paths::STRINGS),
             },
             BitmapText {
                 font: assets.load("retail://data/fonts/wiz_text_font.sti"),
@@ -272,7 +187,6 @@ pub(super) fn show_text(
     mut texts: Query<(Entity, &QuestionText, &mut BitmapText), Without<Measured>>,
     mut panels: Query<&mut Node, (With<Panel>, Without<ConfirmationButton>)>,
     mut buttons: Query<(&ConfirmationButton, &mut Picture), Without<Panel>>,
-    mut borders: Query<(&BorderPiece, &mut ImageNode, &mut Visibility), Without<Picture>>,
 ) {
     let mut size = None;
     for (entity, question, mut text) in &mut texts {
@@ -331,16 +245,6 @@ pub(super) fn show_text(
             if picture.at != Vec2::new(left, top) {
                 picture.at = Vec2::new(left, top);
             }
-        }
-    }
-    for (border, mut image, mut visibility) in &mut borders {
-        if let Some(handle) =
-            sheets.get(&border.sheet).and_then(|sheet| sheet.images.get(border.frame))
-        {
-            if image.image != *handle {
-                image.image = handle.clone();
-            }
-            visibility.set_if_neq(Visibility::Inherited);
         }
     }
 }

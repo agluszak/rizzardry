@@ -74,6 +74,75 @@ impl LevelNavigation {
     }
 }
 
+/// The share of its top speed a walker cruises at along a path.
+const CRUISING_SHARE: f32 = 0.8;
+/// Half the height of a monster's body. Bodies are flat cylinders as wide
+/// as the model's walk radius, however tall the model.
+const HALF_HEIGHT: f32 = 0.5;
+/// The ground sensor's radius: the ground under the body's centre decides
+/// its height, not the highest point anywhere under a wide body.
+const SENSOR_RADIUS: f32 = 0.3;
+/// Wider monsters navigate the narrowest navmesh that still fits this much,
+/// the largest size class: the wider navmeshes lose narrow ground (beaches,
+/// ledges) to erosion, so big monsters may brush corners instead.
+const MAX_NAVIGATION_RADIUS: f32 = bake::SIZE_CLASSES[bake::SIZE_CLASSES.len() - 1];
+
+/// How far above its feet a body of `speed` floats: walkers ride over steps,
+/// standing monsters sit on the ground.
+pub fn float_height(speed: f32) -> f32 {
+    if speed > 0.0 { crate::game::world::STEP_HEIGHT + HALF_HEIGHT } else { 0.0 }
+}
+
+/// Make a monster a walker: its physics body, Tnua controller and, where
+/// the level has navmeshes, its Landmass agent.
+pub fn insert_walker(
+    entity: &mut EntityCommands,
+    (feet, yaw): (Vec3, f32),
+    (radius, speed): (f32, f32),
+    navigation: &LevelNavigation,
+    configs: &mut Assets<WalkerMotionConfig>,
+) {
+    let float_height = float_height(speed);
+    let config = configs.add(WalkerMotionConfig {
+        basis: bevy_tnua::builtins::TnuaBuiltinWalkConfig {
+            speed,
+            float_height,
+            max_slope: 50f32.to_radians(),
+            ..default()
+        },
+    });
+    entity.insert((
+        RigidBody::Dynamic,
+        Position(feet + Vec3::Y * float_height),
+        Rotation(Quat::from_rotation_y(yaw)),
+        Collider::cylinder(radius, 2.0 * HALF_HEIGHT),
+        LockedAxes::ROTATION_LOCKED,
+        TnuaController::<WalkerMotion>::default(),
+        TnuaConfig::<WalkerMotion>(config),
+        bevy_tnua_avian3d::prelude::TnuaAvian3dSensorShape(Collider::cylinder(
+            SENSOR_RADIUS.min(radius),
+            0.0,
+        )),
+        Walker { speed, float_height },
+        AgentTarget3d::None,
+        Velocity3d::default(),
+    ));
+    // Synthetic worlds can omit navigation; production activation requires
+    // every requested navmesh before constructing actors.
+    if !navigation.archipelagos.is_empty() {
+        let radius = radius.min(MAX_NAVIGATION_RADIUS);
+        entity.insert(Agent3dBundle {
+            agent: default(),
+            settings: AgentSettings {
+                radius,
+                desired_speed: speed * CRUISING_SHARE,
+                max_speed: speed,
+            },
+            archipelago_ref: ArchipelagoRef3d::new(navigation.archipelago_for(radius)),
+        });
+    }
+}
+
 /// A world actor moved by Landmass desired velocities through Tnua.
 /// `speed` is the walk config's top speed, used to scale desired velocity
 /// into Tnua's normalized motion input.
@@ -211,7 +280,7 @@ fn steer_walkers(
                 Some(crossing) => {
                     (crossing.to - transform.translation).with_y(0.0).normalize_or_zero()
                         * walker.speed
-                        * 0.8
+                        * CRUISING_SHARE
                 }
                 None => desired.map_or(Vec3::ZERO, |d| d.velocity().with_y(0.0)),
             }

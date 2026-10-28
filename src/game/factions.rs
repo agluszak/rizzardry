@@ -3,6 +3,8 @@
 
 use bevy::prelude::*;
 
+use crate::content::species::{Disposition, Species};
+
 pub const UNALIGNED: i32 = 0;
 pub const PARTY: i32 = 1;
 const MOOK: usize = 6;
@@ -34,6 +36,21 @@ impl Default for Factions {
 }
 
 impl Factions {
+    /// Whether a species fights the party at `distance` metres before
+    /// anything has provoked it (retail `MonsterGroupCalcDefaultDisposition`):
+    /// unaligned species by their hostility radius, others by their
+    /// faction's band.
+    pub fn hostile_on_sight(&self, species: &Species, distance: f32) -> bool {
+        if species.faction != UNALIGNED {
+            return self.band(species.faction) == Band::Hostile;
+        }
+        match species.disposition {
+            Disposition::Hostile => true,
+            Disposition::Neutral => false,
+            Disposition::HostileWithin(radius) => distance <= radius,
+        }
+    }
+
     /// Hostile under 34, neutral under 67, friendly above; the party is
     /// always friendly to itself.
     pub fn band(&self, faction: i32) -> Band {
@@ -83,6 +100,21 @@ impl Factions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Retail's crabs keep to themselves until the party comes within their
+    /// fifteen metres; aligned species follow their faction instead.
+    #[test]
+    fn a_hostility_radius_makes_an_unaligned_species_hostile_only_up_close() {
+        let factions = Factions::default();
+        let crab = Species { disposition: Disposition::HostileWithin(15.0), ..default() };
+        assert!(!factions.hostile_on_sight(&crab, 20.0) && factions.hostile_on_sight(&crab, 10.0));
+        let neutral = Species { disposition: Disposition::Neutral, ..default() };
+        assert!(!factions.hostile_on_sight(&neutral, 0.0));
+        let rapax = Species { faction: 15, ..crab.clone() };
+        assert!(factions.hostile_on_sight(&rapax, 20.0), "common Rapax start hostile");
+        let umpani = Species { faction: 4, ..crab };
+        assert!(!factions.hostile_on_sight(&umpani, 0.0), "Umpani are friends");
+    }
 
     #[test]
     fn retail_starting_bands_and_offences() {

@@ -31,12 +31,13 @@ use crate::game::inventory::{Carried, PartyInventory};
 use crate::game::magic::casting::{
     AUTO_POWER, Aim, MagicChoice, Source, UseContext, can_activate, usable_items, usable_now,
 };
-use crate::game::magic::{LearnedSpells, MagicRequest, SpellPoints, max_points, modelled};
+use crate::game::magic::{LearnedSpells, MagicRequest, SpellPoints, max_points, resolvable};
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::population::Monster;
 use crate::presentation::retail_controls::{
     ControlSkin, FocusRing, ScrollWheel, scroll_wheel, set_scroll_maximum, step_scrollbar,
 };
+use crate::presentation::screen_art::visible_if;
 use crate::presentation::screen_art::{BitmapText, Picture, absolute};
 
 /// The view's art (retail catalog entries 0x190-0x198, 0x86, 0x8e, 0x97).
@@ -58,7 +59,7 @@ pub struct MagicViewArt {
 }
 
 pub(super) fn load_magic_view_art(mut commands: Commands, assets: Res<AssetServer>) {
-    let sheet = |path: &str| assets.load(format!("retail://data/{path}.sti"));
+    let sheet = |path: &str| assets.load(crate::content::paths::sheet(path));
     commands.insert_resource(MagicViewArt {
         spell_panels: sheet("spell casting/magicbottomnew"),
         realm_buttons: sheet("spell casting/realmhighlightnew"),
@@ -73,7 +74,7 @@ pub(super) fn load_magic_view_art(mut commands: Commands, assets: Res<AssetServe
         orange: sheet("fonts/paletteorange"),
         blue: sheet("fonts/paletteblue"),
         yellow: sheet("fonts/paletteyellow"),
-        strings: assets.load("retail://data/strings/stringdata.dat"),
+        strings: assets.load(crate::content::paths::STRINGS),
     });
 }
 
@@ -92,7 +93,7 @@ struct CloseMagic;
 #[derive(Component, Debug)]
 struct RestoreFocus(Option<Entity>);
 
-pub fn magic_keys(app: &mut App) {
+pub(super) fn plugin(app: &mut App) {
     app.add_input_context::<MagicKeys>().add_observer(give_focus_back);
 }
 
@@ -225,9 +226,7 @@ pub fn open(
 ) {
     let art = art.clone();
     commands.queue(move |world: &mut World| {
-        use crate::game::world::interaction::{
-            DeviceInteraction, Work, current, prepare_device_magic,
-        };
+        use crate::game::world::interaction::{DeviceInteraction, DeviceRequest, Work, current};
         let attempt = match current(world) {
             Some((attempt, _)) => {
                 if matches!(
@@ -242,10 +241,8 @@ pub fn open(
             None if requested_attempt.is_some() => return,
             None => None,
         };
-        if let Some(attempt) = attempt
-            && prepare_device_magic(world, caster, attempt).is_err()
-        {
-            return;
+        if let Some(attempt) = attempt {
+            world.write_message(DeviceRequest::PrepareMagic { on: attempt, actor: caster });
         }
         // Serialize replacements, including multiple opens queued in one frame.
         // A replacement gives focus back to what the first view took it from.
@@ -550,7 +547,7 @@ fn offers<'a>(
                     let spell = definition.spell?.spell;
                     (can_activate(character, definition, false)
                         && stack.remaining_uses() != Some(0)
-                        && (modelled(spell) || matches!(spell.0, 18 | 39)))
+                        && resolvable(spell))
                     .then_some((Source::PoolItem(stack.id), stack, spell))
                 })
                 .collect()
@@ -598,10 +595,7 @@ fn offers<'a>(
                 spell: s,
                 label: format!("{} {}", glyph(s.targeting), s.name),
                 cost: s.cost.to_string(),
-                available: affordable
-                    && (modelled(s.id) || matches!(s.id.0, 18 | 39))
-                    && usable_now(s, context)
-                    && !silenced,
+                available: affordable && resolvable(s.id) && usable_now(s, context) && !silenced,
                 silenced,
             }
         })
@@ -672,7 +666,10 @@ pub(super) fn refresh_magic_view(
     mut icons: Query<(&RealmIcon, &mut Picture), (Without<ItemIcon>, Without<Pip>)>,
     time: Res<Time<Real>>,
     rows_hovered: Query<(&Row, &Hovered)>,
-    mut requests: MessageWriter<MagicRequest>,
+    (mut requests, mut devices): (
+        MessageWriter<MagicRequest>,
+        MessageWriter<crate::game::world::interaction::DeviceRequest>,
+    ),
 ) {
     let Ok((root, mut view, scroll)) = views.single_mut() else { return };
     // The selected member casts; choosing another starts over for them.
@@ -680,9 +677,9 @@ pub(super) fn refresh_magic_view(
         && member != view.caster
     {
         if let Some(attempt) = view.attempt {
-            commands.queue(move |world: &mut World| {
-                let _ =
-                    crate::game::world::interaction::prepare_device_magic(world, member, attempt);
+            devices.write(crate::game::world::interaction::DeviceRequest::PrepareMagic {
+                on: attempt,
+                actor: member,
             });
         }
         *view = MagicView {
@@ -696,9 +693,7 @@ pub(super) fn refresh_magic_view(
             member: None,
         };
     }
-    if view.attempt.is_some()
-        && !members.get(view.caster).is_ok_and(|(_, v, _)| crate::game::camp::can_act(v))
-    {
+    if view.attempt.is_some() && !members.get(view.caster).is_ok_and(|(_, v, _)| v.can_act()) {
         commands.entity(root).despawn();
         return;
     }
@@ -772,11 +767,7 @@ pub(super) fn refresh_magic_view(
         if row.1 != shown {
             row.1 = shown;
         }
-        visibility.set_if_neq(if shown.is_some() {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        });
+        visibility.set_if_neq(visible_if(shown.is_some()));
     }
     let chosen =
         |offer: &Offer| view.source.is_some_and(|source| same_source(source, offer.source));
@@ -828,7 +819,7 @@ pub(super) fn refresh_magic_view(
                 (7 | 8, _) => false,
                 _ => true,
             };
-            visibility.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
+            visibility.set_if_neq(visible_if(shown));
             let frame = match spell {
                 Some(spell) if pip.0 >= 7 || pip.0 < affordable => {
                     let rated = if pip.0 >= 7 {
@@ -882,13 +873,9 @@ pub(super) fn refresh_magic_view(
             })
             .and_then(|stack| items.get(stack.item));
         for (mut picture, mut visibility) in &mut parts.p7() {
-            visibility.set_if_neq(if icon.is_some() {
-                Visibility::Inherited
-            } else {
-                Visibility::Hidden
-            });
+            visibility.set_if_neq(visible_if(icon.is_some()));
             if let Some(definition) = icon {
-                let sheet = assets.load(format!("retail://{}", definition.image));
+                let sheet = assets.load(crate::content::paths::retail(&definition.image));
                 if picture.sheet != sheet {
                     picture.sheet = sheet;
                 }
@@ -919,24 +906,21 @@ pub(super) fn refresh_magic_view(
                 None => return,
             },
             Targeting::Enemy | Targeting::EnemyGroup | Targeting::Cone | Targeting::Radius => {
-                // Retail's auto-targeting: the nearest fighting monster ahead.
                 let Ok(eye) = party.single() else { return };
-                let ahead = eye.forward().with_y(0.0);
-                let target = battle
+                let fighting = battle
                     .iter()
                     .flat_map(|b| b.1.into_iter().flat_map(|c| c.entities().iter().copied()))
                     .filter_map(|m| {
                         let (_, monster, at) = monsters.get(m).ok()?;
-                        let to = (at.translation() - eye.translation()).with_y(0.0);
-                        (!monster.is_dead()
-                            && to.length() <= spell.reach.metres() + monster.body.radius)
-                            .then_some((m, to.angle_between(ahead), to.length()))
+                        Some((m, monster, at.translation()))
                     });
-                let nearest = target.min_by(|a, b| a.1.total_cmp(&b.1).then(a.2.total_cmp(&b.2)));
-                match nearest {
-                    Some((monster, ..)) => Aim::Monster(monster),
-                    None => Aim::Member(view.caster),
-                }
+                let ahead = crate::game::magic::target_ahead(
+                    eye.translation(),
+                    eye.forward().into(),
+                    spell.reach.metres(),
+                    fighting,
+                );
+                ahead.map_or(Aim::Member(view.caster), Aim::Monster)
             }
             _ => Aim::Member(view.caster),
         }
@@ -1066,7 +1050,7 @@ mod tests {
     fn escape_closes_only_the_view_and_gives_focus_back() {
         let mut app = input_app();
         app.add_plugins((
-            magic_keys,
+            plugin,
             bevy::input_focus::InputDispatchPlugin,
             bevy::input_focus::tab_navigation::TabNavigationPlugin,
         ))

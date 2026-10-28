@@ -4,8 +4,7 @@
 //! After Whizzardry `ReadStringTable` and `GetStringFromStringDatabase`.
 //! Text is UTF-16LE, each unit stored as `!unit + 0x9697`.
 
-use super::pvl::{PvlError, invalid};
-use crate::bytes::Bytes;
+use crate::bytes::{Bytes, DecodeError};
 
 fn decode(units: &[u8], encoded: bool) -> String {
     let units: Vec<u16> = units
@@ -19,18 +18,27 @@ fn decode(units: &[u8], encoded: bool) -> String {
     String::from_utf16_lossy(&units)
 }
 
+/// Where name lists start in the game's string table, each indexed by its
+/// enum's retail order.
+pub const RACE_NAMES: usize = 0x284;
+pub const PROFESSION_NAMES: usize = 0x2a4;
+pub const GENDER_NAMES: usize = 0x2d1;
+pub const SKILL_NAMES: usize = 0x2e2;
+pub const ABILITY_NAMES: usize = 0x328;
+pub const TRAP_NAMES: usize = 0x542;
+
 /// The game's strings, by index.
-pub fn read_string_table(data: &[u8]) -> Result<Vec<String>, PvlError> {
+pub fn read_string_table(data: &[u8]) -> Result<Vec<String>, DecodeError> {
     let mut bytes = Bytes::new(data);
     let count = bytes.i32()?;
     if !(0..=100_000).contains(&count) {
-        return Err(invalid("string table count out of range", &bytes));
+        return Err(bytes.invalid("string table count out of range"));
     }
     (0..count)
         .map(|_| {
             let length = bytes.i32()?;
             if length < 0 || length % 2 != 0 {
-                return Err(invalid("string length out of range", &bytes));
+                return Err(bytes.invalid("string length out of range"));
             }
             Ok(decode(bytes.take(length as usize)?, true))
         })

@@ -12,6 +12,7 @@ use crate::game::party::roster::PartyRoster;
 use crate::presentation::character_view::{CharacterView, CharacterViewItem};
 use crate::presentation::retail_controls::ControlSkin;
 use crate::presentation::screen_art::spawn_picture as picture;
+use crate::presentation::screen_art::visible_if;
 use bevy::input_focus::tab_navigation::TabIndex;
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
@@ -473,7 +474,7 @@ pub(super) fn show_pages(
         if node.display != display {
             node.display = display;
         }
-        visibility.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
+        visibility.set_if_neq(visible_if(shown));
     }
 }
 
@@ -498,7 +499,8 @@ pub(super) fn refresh(
 ) {
     let Some(screen) = screen else { return };
     let Ok(view) = characters.get(screen.member) else { return };
-    let CharacterViewItem { profile, vitals, carried } = view;
+    let load = view.load();
+    let CharacterViewItem { profile, vitals, carried, .. } = view;
     let armour_view = info.as_ref().is_some_and(|info| info.armour);
     let effect_filter = info.as_ref().map_or(EffectFilter::All, |info| info.filter);
     let show_items = info.as_ref().is_some_and(|info| info.items);
@@ -508,7 +510,7 @@ pub(super) fn refresh(
     let hand = carried
         .as_ref()
         .zip(catalog)
-        .map(|(carried, catalog)| primary_hand(profile, carried, catalog));
+        .map(|(carried, catalog)| primary_hand(profile, carried, catalog, load));
     let unidentified = carried
         .as_ref()
         .and_then(|c| c.worn(EquipSlot::Primary))
@@ -653,9 +655,15 @@ pub(super) fn refresh(
             }
             Field::Attribute(attribute) => profile.attribute(attribute).to_string(),
             Field::Skill(skill) => profile.skill(skill).to_string(),
-            Field::SkillName(skill) => string(0x2e2 + skill as usize).to_owned(),
+            Field::SkillName(skill) => {
+                string(crate::retail::strings::SKILL_NAMES + skill as usize).to_owned()
+            }
             Field::Bonus => {
-                format!("{} {}", string(0x2e2 + profile.bonus_skill() as usize), string(0x8c5))
+                format!(
+                    "{} {}",
+                    string(crate::retail::strings::SKILL_NAMES + profile.bonus_skill() as usize),
+                    string(0x8c5)
+                )
             }
             Field::Effect(index) => {
                 effects.get(index + offset).map(|(value, _)| value.clone()).unwrap_or_default()
@@ -695,7 +703,7 @@ pub(super) fn refresh(
                             4 => hand.swings.to_string(),
                             5 => format!("{:+}", hand.to_hit),
                             7 => format!("{:+}%", hand.damage_percent),
-                            8 => character_initiative(profile, hand).to_string(),
+                            8 => character_initiative(profile, hand, load).to_string(),
                             _ => String::new(),
                         }
                     }
@@ -754,7 +762,7 @@ pub(super) fn layout_skills(
         if node.display != display {
             node.display = display;
         }
-        visibility.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
+        visibility.set_if_neq(visible_if(shown));
         if shown {
             let (x, y) = origins[category];
             let top = px(y + counts[category] as f32 * 14.0);
@@ -776,11 +784,7 @@ pub(super) fn layout_skills(
         }
     }
     for (icon, mut visibility) in &mut icons {
-        visibility.set_if_neq(if icon.0 != 4 || counts[4] > 0 {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        });
+        visibility.set_if_neq(visible_if(icon.0 != 4 || counts[4] > 0));
     }
     for (bar, mut crop) in &mut bars {
         let (start, end) = match *bar {

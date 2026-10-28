@@ -30,7 +30,7 @@ pub const RADIUS: f32 = 500.0 / UNITS_PER_METRE;
 pub const FLOAT_HEIGHT: f32 = 500.0 / UNITS_PER_METRE;
 pub const EYE_ABOVE_CENTRE: f32 = 500.0 / UNITS_PER_METRE;
 /// The eye above the feet.
-pub const EYE_HEIGHT: f32 = 1000.0 / UNITS_PER_METRE;
+pub const EYE_HEIGHT: f32 = crate::content::EYE_HEIGHT;
 pub const WALK_SPEED: f32 = 3750.0 / UNITS_PER_METRE;
 const RUN_SPEED: f32 = 7500.0 / UNITS_PER_METRE;
 /// Maximum yaw speed, 0.349 rad per tick.

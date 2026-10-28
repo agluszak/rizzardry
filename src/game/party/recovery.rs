@@ -5,6 +5,8 @@
 //! Whatever passes time applies this at once, with its own pace:
 //! exploring and camping in `game::time`, a combat round when it ends.
 
+use bevy::prelude::*;
+
 use crate::game::characters::{Character, Vitals};
 use crate::game::time::Ticks;
 
@@ -49,19 +51,15 @@ impl Pace {
     }
 }
 
-/// A read-only assessment keeps full, unaffected members out of the write
-/// query path while still clearing recovery fractions when the policy changes.
-pub fn has_work(profile: &Character, member: &Vitals, ticks: Ticks, pace: Pace) -> bool {
-    let (stamina, health) = pace.scales();
-    (ticks.stamina > 0
-        && (member.stamina_fraction != 0.0
-            || (!member.is_dead() && stamina > 0.0 && member.stamina < profile.max_stamina())))
-        || (ticks.aging > 0
-            && (member.hp_fraction != 0.0
-                || (!member.is_dead() && health > 0.0 && member.hp < profile.max_hp())
-                || member.conditions.iter().any(|(_, lasting)| {
-                    matches!(lasting, crate::game::characters::Lasting::Rounds(_))
-                })))
+/// [`elapse`] on a tracked member, which counts as changed only when
+/// something did change.
+pub fn pass(profile: &Character, member: &mut Mut<Vitals>, ticks: Ticks, pace: Pace) {
+    let vitals = member.bypass_change_detection();
+    let before = vitals.clone();
+    elapse(profile, vitals, ticks, pace);
+    if *vitals != before {
+        member.set_changed();
+    }
 }
 
 /// What the ticks passed at `pace` do to one member.

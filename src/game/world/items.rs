@@ -5,6 +5,8 @@ use crate::game::party::roster::the_party;
 use crate::game::world::level::LevelOwned;
 use bevy::prelude::*;
 
+use crate::game::data::GameData;
+
 use crate::content::items::{ItemCatalog, ItemDefinition, ItemId, QuantityKind};
 use crate::content::level::ItemPlacement;
 use crate::game::inventory::{ItemIds, ItemNews, ItemStack, PartyInventory, Refusal};
@@ -64,35 +66,27 @@ pub fn drop_loot(
     if !items.is_empty() {
         info!("loot: {} item(s) at {feet:.1}", items.len());
     }
-    let lying = match items.len() {
-        0 => return,
-        1 => WorldItem::loose(items.remove(0), false),
-        _ if catalog.get(BAG_OF_ITEMS).is_some() => WorldItem {
+    let mut lay = |lying| {
+        commands.spawn((
+            Name::new("loot"),
+            lying,
+            Transform::from_translation(feet + Vec3::Y * CLEARANCE),
+            LevelOwned(level),
+        ));
+    };
+    match (items.len(), catalog.get(BAG_OF_ITEMS)) {
+        (0, _) => {}
+        (1, _) => lay(WorldItem::loose(items.remove(0), false)),
+        (_, Some(bag)) => lay(WorldItem {
             loot: GroundLoot::Pile {
                 appearance: BAG_OF_ITEMS,
-                identified: catalog.get(BAG_OF_ITEMS).unwrap().auto_identify,
+                identified: bag.auto_identify,
                 contents: items,
             },
             hidden: false,
-        },
-        _ => {
-            for item in items {
-                commands.spawn((
-                    Name::new("loot"),
-                    WorldItem::loose(item, false),
-                    Transform::from_translation(feet + Vec3::Y * CLEARANCE),
-                    LevelOwned(level),
-                ));
-            }
-            return;
-        }
-    };
-    commands.spawn((
-        Name::new("loot"),
-        lying,
-        Transform::from_translation(feet + Vec3::Y * CLEARANCE),
-        LevelOwned(level),
-    ));
+        }),
+        (_, None) => items.into_iter().for_each(|item| lay(WorldItem::loose(item, false))),
+    }
 }
 
 /// Retail takes an item from at most this far from the eye
@@ -122,15 +116,7 @@ pub fn take_item(world: &mut World, target: Entity, distance: f32) -> Result<(),
     if !distance.is_finite() || !(0.0..=REACH).contains(&distance) {
         return Err(Refusal::DoesNotFit);
     }
-    let handle = world
-        .get_resource::<crate::game::data::GameData>()
-        .ok_or(Refusal::MissingContent)?
-        .items
-        .clone();
-    let catalog = world
-        .get_resource::<Assets<ItemCatalog>>()
-        .and_then(|c| c.get(&handle))
-        .ok_or(Refusal::MissingContent)?;
+    let catalog = GameData::items(world).ok_or(Refusal::MissingContent)?;
     let item = world.get::<WorldItem>(target).ok_or(Refusal::Nothing)?;
     let owner = world.get::<LevelOwned>(target).ok_or(Refusal::Nothing)?.0;
     if world.get::<super::level::Level>(owner).is_none() || item.hidden {
@@ -143,6 +129,7 @@ pub fn take_item(world: &mut World, target: Entity, distance: f32) -> Result<(),
     }
     let mut item = world.entity_mut(target).take::<WorldItem>().unwrap();
     if let GroundLoot::Pile { contents, .. } = &mut item.loot {
+        let handle = world.resource::<GameData>().items.clone();
         let taken = world.resource_scope(|world, catalogs: Mut<Assets<ItemCatalog>>| {
             let catalog = catalogs.get(&handle).unwrap();
             world.get_mut::<PartyInventory>(party).unwrap().pool.collect(contents, catalog)
@@ -183,13 +170,8 @@ pub fn drop_held(world: &mut World, level: Entity, at: Vec3) -> Result<Entity, R
     let party = the_party(world).ok_or(Refusal::Nothing)?;
     let held =
         world.get::<PartyInventory>(party).unwrap().hand.held.as_ref().ok_or(Refusal::Nothing)?;
-    let data =
-        world.get_resource::<crate::game::data::GameData>().ok_or(Refusal::MissingContent)?;
-    let definition = world
-        .get_resource::<Assets<ItemCatalog>>()
-        .and_then(|c| c.get(&data.items))
-        .and_then(|c| c.get(held.item))
-        .ok_or(Refusal::MissingContent)?;
+    let definition =
+        GameData::items(world).and_then(|c| c.get(held.item)).ok_or(Refusal::MissingContent)?;
     if definition.crucial {
         return Err(Refusal::Crucial);
     }

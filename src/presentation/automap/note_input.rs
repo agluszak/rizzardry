@@ -157,6 +157,7 @@ pub(crate) fn finish_note_input(
     inputs: Query<(Entity, &EditableText, &FinishNote)>,
     map: Option<Single<&mut Automap>>,
     mut commands: Commands,
+    mut notes: MessageWriter<crate::game::automap::CommitNote>,
 ) {
     let Some(mut map) = map else { return };
     for (entity, input, outcome) in &inputs {
@@ -169,9 +170,7 @@ pub(crate) fn finish_note_input(
             && *outcome == FinishNote::Accept
         {
             draft.note.text = input.value().to_string();
-            commands.queue(move |world: &mut World| {
-                let _ = crate::game::automap::commit_note(world, draft);
-            });
+            notes.write(crate::game::automap::CommitNote(draft));
         }
         commands.entity(entity).despawn();
     }
@@ -339,7 +338,7 @@ mod tests {
         let mut app = input_app();
         app.add_plugins(InputDispatchPlugin)
             .init_state::<Screen>()
-            .init_asset::<LevelDefinition>()
+            .init_asset::<crate::content::level::LevelDefinition>()
             .add_input_context::<AutomapScreen>()
             .add_systems(OnEnter(Screen::Automap), enter_automap)
             .add_systems(
@@ -348,6 +347,7 @@ mod tests {
                     .after(InputFocusSystems::Dispatch)
                     .before(EnhancedInputSystems::Update),
             )
+            .add_message::<crate::game::automap::CommitNote>()
             .add_systems(PostUpdate, finish_note_input);
         let window = app.world_mut().spawn((Window::default(), PrimaryWindow)).id();
         app.world_mut().spawn((PartyBody::default(), Transform::default()));
@@ -386,6 +386,8 @@ mod tests {
                 .init_resource::<FontCx>()
                 .init_resource::<LayoutCx>()
                 .init_resource::<bevy::clipboard::Clipboard>()
+                .add_message::<crate::game::automap::CommitNote>()
+                .add_systems(Update, crate::game::automap::commit_notes)
                 .add_systems(PostUpdate, (bevy::text::apply_text_edits, finish_note_input).chain());
             app.world_mut().resource_mut::<FontCx>().collection.register_fonts(
                 bevy::text::Font::from_bytes(bevy::text::DEFAULT_FONT_DATA.to_vec()).data,
@@ -424,6 +426,8 @@ mod tests {
             ));
             app.update();
             assert!(app.world().get::<Automap>(root).unwrap().editing.is_none());
+            // The accepted draft is committed by the game on the next frame.
+            app.update();
             let notes = &app.world().get::<MapNotes>(level).unwrap().notes;
             assert_eq!(notes.len(), usize::from(accept));
             if accept {

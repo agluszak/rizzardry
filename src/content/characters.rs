@@ -187,6 +187,27 @@ pub enum Realm {
     Divine,
 }
 
+impl Realm {
+    /// The skill casting in this realm trains.
+    pub fn skill(self) -> Skill {
+        match self {
+            Realm::Fire => Skill::FireMagic,
+            Realm::Water => Skill::WaterMagic,
+            Realm::Air => Skill::AirMagic,
+            Realm::Earth => Skill::EarthMagic,
+            Realm::Mental => Skill::MentalMagic,
+            Realm::Divine => Skill::DivineMagic,
+        }
+    }
+}
+
+impl Skill {
+    /// The realm this skill casts in, if it is a realm skill.
+    pub fn realm(self) -> Option<Realm> {
+        (self as u8).checked_sub(Skill::FireMagic as u8).and_then(|i| Realm::try_from(i).ok())
+    }
+}
+
 /// Where a blow lands on a character (strings 0x429..0x431).
 #[derive(Debug, Enum, EnumSetType)]
 pub enum BodyPart {

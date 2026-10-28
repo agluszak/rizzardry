@@ -2,36 +2,36 @@
 
 use bevy::asset::{AssetLoader, LoadContext, io::Reader};
 use bevy::reflect::TypePath;
-use thiserror::Error;
 
-use super::stci::{StciError, read_stci};
+use super::stci::{palette, read_stci};
 use crate::content::ui::{SpriteSheet, ui_image};
 
 #[derive(Default, TypePath)]
 pub struct StiLoader;
 
-#[derive(Debug, Error)]
-pub enum StiLoadError {
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-    #[error(transparent)]
-    Stci(#[from] StciError),
-}
-
 impl AssetLoader for StiLoader {
     type Asset = SpriteSheet;
     type Settings = ();
-    type Error = StiLoadError;
+    type Error = super::LoadError;
 
     async fn load(
         &self,
         reader: &mut dyn Reader,
         _: &(),
         context: &mut LoadContext<'_>,
-    ) -> Result<SpriteSheet, StiLoadError> {
+    ) -> Result<SpriteSheet, super::LoadError> {
         let mut data = Vec::new();
         reader.read_to_end(&mut data).await?;
         let frames = read_stci(&data)?;
+        if frames.len() >= 93
+            && context.path().path().parent().is_some_and(|p| p.ends_with("fonts"))
+        {
+            let name =
+                context.path().path().file_stem().and_then(|n| n.to_str()).unwrap_or("retail-font");
+            let font =
+                super::bitmap_font::import(&frames, name).map_err(super::LoadError::Invalid)?;
+            context.add_labeled_asset("font", font);
+        }
         let images = frames
             .iter()
             .enumerate()
@@ -40,10 +40,7 @@ impl AssetLoader for StiLoader {
                 context.add_labeled_asset(format!("frame/{index}"), image)
             })
             .collect();
-        // `read_stci` has already validated the header and indexed palette.
-        let flags = u32::from_le_bytes(data[16..20].try_into().unwrap());
-        let palette = (flags & 0x08 != 0).then(|| data[64..832].as_chunks::<3>().0.to_vec());
-        Ok(SpriteSheet { frames, images, palette })
+        Ok(SpriteSheet { frames, images, palette: palette(&data) })
     }
 
     fn extensions(&self) -> &[&str] {

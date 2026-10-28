@@ -17,6 +17,7 @@ bevy_landmass = "0.13.0"
 # Rerecast 0.5.0 still lacks our contour fixes; see third_party/README.md.
 rerecast = { path = "third_party/rerecast" }
 thiserror = "2"
+blocking = "1.7"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 serde = { version = "1.0.229", features = ["derive"] }
 num_enum = "0.7.6"
@@ -25,6 +26,9 @@ rand_chacha = "0.9"
 enum-map = "3.1.0"
 enumset = "1.1.15"
 ron = "0.12"
+# Import retail bitmap glyphs into native Bevy text/IME, without a custom editor.
+write-fonts = "0.52.0"
+png = "0.18"
 
 # Dependencies compile with optimisations so the game stays playable in debug.
 # The binary has no unit tests; don't link a test harness for it.

@@ -3,6 +3,7 @@
 //! effects are not modelled yet; missiles hit by the same roll as melee
 //! (a deliberate approximation of retail's scattered aim point).
 
+use bevy::prelude::Component;
 use enum_map::EnumMap;
 use enumset::EnumSet;
 
@@ -163,8 +164,8 @@ fn unarmed_dice(martial_arts: u32) -> Dice {
     Dice { base: base + 2, count, sides }
 }
 
-/// The primary hand's numbers, without a second weapon or load.
-pub fn primary_hand(c: &Character, carried: &Carried, catalog: &ItemCatalog) -> Hand {
+/// The primary hand's numbers, without a second weapon (retail `CalcAttacks`).
+pub fn primary_hand(c: &Character, carried: &Carried, catalog: &ItemCatalog, load: Load) -> Hand {
     let weapon = carried
         .worn(EquipSlot::Primary)
         .and_then(|i| catalog.get(i.item))
@@ -180,7 +181,10 @@ pub fn primary_hand(c: &Character, carried: &Carried, catalog: &ItemCatalog) -> 
         [Attribute::Strength, Attribute::Dexterity, Attribute::Speed, Attribute::Senses]
             .map(|a| c.attribute(a) as i32);
     let attack_rating = (dex / 2 + 2 * combined + physical) / 3 + 60;
-    let s = ((spd + dex) / 2 + physical + combined) / 3;
+    // Modern weapons feel load half as much.
+    let modern = weapon_skill == Skill::ModernWeapon;
+    let halved = |penalty: i32| if modern { penalty / 2 } else { penalty };
+    let s = ((spd + dex) / 2 + physical - halved(load.attack_penalty()) + combined) / 3;
     let attacks = 1 + u32::from(s > 49) + u32::from(s > 99);
     let damage_bonus = weapon.map_or(combined / 10, |d| i32::from(d.damage_bonus));
     let swing_score = (spd + 10 * damage_bonus + physical + combined) / 3;
@@ -194,7 +198,8 @@ pub fn primary_hand(c: &Character, carried: &Carried, catalog: &ItemCatalog) -> 
     } else {
         0
     };
-    let to_hit = weapon.map_or(0, |d| i32::from(d.hit_bonus)) + str_hit + (dex - 50) / 10 + sen_hit;
+    let to_hit = weapon.map_or(0, |d| i32::from(d.hit_bonus)) + str_hit + (dex - 50) / 10 + sen_hit
+        - halved(load.penalty());
     Hand {
         reach: weapon.map_or(Reach::Touch, |d| d.reach),
         dice: weapon.map_or_else(|| unarmed_dice(c.skill(Skill::MartialArts)), |d| d.damage),
@@ -217,9 +222,9 @@ pub fn primary_hand(c: &Character, carried: &Carried, catalog: &ItemCatalog) -> 
     }
 }
 
-/// A member's total and per-location armour, without skills, spells,
-/// conditions, defending or load.
-#[derive(Clone, Debug, PartialEq)]
+/// A member's total and per-location armour, without skills, spells or
+/// conditions. Members carry theirs, kept current by `sync_armour`.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Armour {
     pub total: i32,
     pub by_location: EnumMap<BodyPart, i32>,
@@ -240,13 +245,23 @@ impl Armour {
     }
 }
 
-pub fn armour(c: &Character, carried: &Carried, catalog: &ItemCatalog) -> Armour {
+/// A character's armour (retail `CalcArmorClasses`). Defending adds 2
+/// everywhere and lets Shield skill count for more.
+pub fn armour(
+    c: &Character,
+    carried: &Carried,
+    catalog: &ItemCatalog,
+    load: Load,
+    defending: bool,
+) -> Armour {
     let definition = |slot| carried.worn(slot).and_then(|i| catalog.get(i.item));
     let speed = c.attribute(Attribute::Speed);
     let mut total =
         i32::from(c.race == Race::Faerie) * 2 + i32::from(speed > 79) + i32::from(speed > 89)
             - i32::from(speed < 20)
-            - i32::from(speed < 10);
+            - i32::from(speed < 10)
+            - load.armour_penalty()
+            + if defending { 2 } else { 0 };
     // Shields and magic items worn in the misc, cloak and hand slots.
     for slot in [
         EquipSlot::Misc1,
@@ -258,7 +273,13 @@ pub fn armour(c: &Character, carried: &Carried, catalog: &ItemCatalog) -> Armour
         if let Some(d) = definition(slot) {
             total += i32::from(d.armor_class_bonus);
             if d.class == EquipClass::Shield {
-                total += (c.skill(Skill::Shield) as i32 / 25).min(i32::from(d.armor_class_bonus));
+                let shield = i32::from(d.armor_class_bonus);
+                let skill = c.skill(Skill::Shield) as i32;
+                total += if defending {
+                    (skill / 15).min(shield * 3 / 2)
+                } else {
+                    (skill / 25).min(shield)
+                };
             }
         }
     }
@@ -355,8 +376,8 @@ pub fn phase(rng: &mut GameRng, initiative: i32) -> u8 {
 }
 
 /// The character's initiative before the roll, weapon included.
-pub fn character_initiative(c: &Character, hand: &Hand) -> i32 {
-    c.initiative(Load::None) + hand.initiative
+pub fn character_initiative(c: &Character, hand: &Hand, load: Load) -> i32 {
+    c.initiative(load) + hand.initiative
 }
 
 #[cfg(test)]
@@ -409,6 +430,37 @@ mod tests {
     }
 
     #[test]
+    fn defending_adds_two_everywhere_and_lets_shield_skill_count_for_more() {
+        use crate::game::characters::{Gender, Profession};
+        use crate::game::inventory::{Equipped, ItemIds};
+        let shield = ItemDefinition {
+            class: EquipClass::Shield,
+            armor_class_bonus: 4,
+            ..ItemDefinition::default()
+        };
+        let catalog = ItemCatalog(vec![shield.clone()]);
+        let mut carried = Carried::default();
+        let stack =
+            crate::game::inventory::ItemStack::new(&shield, &mut ItemIds::default(), 1, true);
+        carried.equipment[EquipSlot::Secondary] = Some(Equipped::new(stack));
+        let mut bearer = Character::new("A", Race::Human, Gender::Male, Profession::Mage);
+        let gain = |bearer: &Character| {
+            let standing = armour(bearer, &carried, &catalog, Load::None, false);
+            let defending = armour(bearer, &carried, &catalog, Load::None, true);
+            for (part, armour) in &defending.by_location {
+                assert_eq!(armour - standing.by_location[part], defending.total - standing.total);
+            }
+            defending.total - standing.total
+        };
+        // Shield 60: 60 / 25 = 2 standing, 60 / 15 = 4 defending.
+        bearer.skill_points[Skill::Shield] = 60;
+        assert_eq!(gain(&bearer), 2 + (4 - 2));
+        // Shield 125: capped at the shield's 4 standing, at 6 (1.5×) defending.
+        bearer.skill_points[Skill::Shield] = 125;
+        assert_eq!(gain(&bearer), 2 + (6 - 4));
+    }
+
+    #[test]
     fn early_phases_go_to_high_initiative() {
         let mut rng = GameRng::seeded(1);
         for _ in 0..20 {
@@ -416,69 +468,5 @@ mod tests {
             assert!(phase(&mut rng, -50) == 100);
             assert!((87..=90).contains(&phase(&mut rng, 0)));
         }
-    }
-}
-
-#[cfg(test)]
-mod retail_tests {
-    use super::*;
-    use crate::content::items::ItemId;
-    use crate::game::characters::{Gender, Profession};
-    use crate::game::inventory::{ItemIds, make_item, place_at_creation};
-
-    #[test]
-    #[ignore = "requires a retail installation"]
-    fn a_fighter_and_a_crab_trade_blows() {
-        let files = crate::retail::files::retail_files();
-        let catalog = crate::retail::items::retail_catalog(&files);
-        let species = crate::retail::species::read_species(
-            &files.read("data/databases/monsters.dbs").unwrap().unwrap(),
-        )
-        .unwrap();
-        let crab = species.iter().find(|s| s.name.contains("Crab")).unwrap();
-        let fighter = Character::new("Ragnar", Race::Human, Gender::Male, Profession::Fighter);
-        let (mut ids, mut rng) = (ItemIds::default(), GameRng::seeded(9));
-        let mut carried = Carried::default();
-        for id in [143, 153, 203, 246, 7] {
-            let item = make_item(catalog.get(ItemId(id)).unwrap(), &mut ids, &mut rng, true, true);
-            assert!(place_at_creation(&mut carried, item, &catalog, &fighter).is_none());
-        }
-        let hand = primary_hand(&fighter, &carried, &catalog);
-        let armour = armour(&fighter, &carried, &catalog);
-        let tally = |swings: Vec<Swing>| {
-            let hits: Vec<u32> = swings
-                .iter()
-                .filter_map(|s| match s {
-                    Swing::Hit(damage) => Some(*damage),
-                    _ => None,
-                })
-                .collect();
-            (hits.len(), hits.iter().sum::<u32>() as f32 / hits.len().max(1) as f32)
-        };
-        let ours = tally(
-            (0..1000)
-                .map(|_| {
-                    character_swing(
-                        &mut rng,
-                        &fighter,
-                        &Vitals::new(&fighter),
-                        &hand,
-                        AttackMode::Swing,
-                        crab,
-                    )
-                })
-                .collect(),
-        );
-        let attack = &crab.attacks[0];
-        let theirs = tally(
-            (0..1000)
-                .map(|_| {
-                    let mode = choose_mode(&mut rng, attack.modes);
-                    monster_swing(&mut rng, crab, attack, mode, &fighter, &armour)
-                })
-                .collect(),
-        );
-        assert!(ours.0 > 100 && ours.0 < 1000, "the fighter sometimes hits and sometimes misses");
-        assert!(theirs.0 > 50 && theirs.0 < 1000);
     }
 }

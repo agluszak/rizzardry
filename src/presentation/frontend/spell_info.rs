@@ -55,9 +55,9 @@ pub(super) fn open(
             SpellInfo {
                 id: option.0,
                 catalog: page.1.catalog.clone(),
-                strings: assets.load("retail://data/strings/stringdata.dat"),
-                effects: assets.load("retail://data/databases/spelleffect.dbs"),
-                descriptions: assets.load("retail://data/databases/spelldesc.dbs"),
+                strings: assets.load(crate::content::paths::STRINGS),
+                effects: assets.load(crate::content::paths::SPELL_EFFECTS),
+                descriptions: assets.load(crate::content::paths::SPELL_DESCRIPTIONS),
                 font: assets.load("retail://data/fonts/wiz_text_font.sti"),
                 previous_focus: focus.get(),
                 populated: false,
@@ -350,10 +350,7 @@ pub(super) fn populate(
                 lines.push((heading, body, index + 1 == count));
             }
         }
-        let line_height = font
-            .frames
-            .first()
-            .map_or(12., |f| (f.height as i32 + f.offset[1] as i32).max(1) as f32);
+        let line_height = font.line_height();
         let viewport = commands
             .spawn((
                 Node {
@@ -430,8 +427,7 @@ pub(super) fn scroll(
 ) {
     let (Ok(dialog), Ok(info)) = (dialogs.single(), infos.single()) else { return };
     let (Ok(value), Some(font)) = (sliders.get(dialog.0), sheets.get(&info.font)) else { return };
-    let height =
-        font.frames.first().map_or(12., |f| (f.height as i32 + f.offset[1] as i32).max(1) as f32);
+    let height = font.line_height();
     for mut node in &mut lines {
         let top = px(-value.0 * height);
         if node.top != top {

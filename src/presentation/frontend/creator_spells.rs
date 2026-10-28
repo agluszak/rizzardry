@@ -4,6 +4,7 @@ use crate::content::characters::{Realm, Skill};
 use crate::content::spells::{SpellCatalog, SpellId};
 use crate::content::ui::SpriteSheet;
 use crate::presentation::retail_controls::set_enabled;
+use crate::presentation::screen_art::visible_if;
 use crate::presentation::screen_art::{BitmapText, absolute, spawn_picture};
 use bevy::input_focus::tab_navigation::TabIndex;
 use bevy::prelude::*;
@@ -29,15 +30,14 @@ pub(super) enum SpellText {
 
 pub(super) fn build(commands: &mut Commands, root: Entity, assets: &AssetServer) {
     creator_stats::frame(commands, root, assets, Page::Magic);
-    let load = |path: &str| assets.load(format!("retail://data/{path}.sti"));
+    let load = |path: &str| assets.load(crate::content::paths::sheet(path));
     let background: Handle<SpriteSheet> = load("char generation/cg_magic");
     let bottom: Handle<SpriteSheet> = load("char generation/cg_bottombuttons");
     let font: Handle<SpriteSheet> = load("fonts/wiz_text_font");
     let blue: Handle<SpriteSheet> = load("fonts/paletteblue");
-    commands.entity(root).insert(SpellArt {
-        catalog: assets.load("retail://data/databases/spelltables.dbs"),
-        selected: blue,
-    });
+    commands
+        .entity(root)
+        .insert(SpellArt { catalog: assets.load(crate::content::paths::SPELLS), selected: blue });
     spawn_picture(commands, root, background, 0, Vec2::new(195., 43.));
     let pieces: Handle<SpriteSheet> = load("char generation/cg_pieces");
     spawn_picture(commands, root, pieces, 5, Vec2::new(143., 371.));
@@ -239,7 +239,7 @@ pub(super) fn refresh(
         counts[realm] += 1;
         // Retail shows seven rows per realm. Creation has at most seven eligible level-one spells per realm.
         let shown = index < 7;
-        visibility.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
+        visibility.set_if_neq(visible_if(shown));
         let left = px(195. + 13. + (realm % 2) as f32 * 215. + 26.);
         let top = px(43. + 8. + (realm / 2) as f32 * 130. + 26. + index as f32 * 13.);
         if node.left != left {
@@ -266,10 +266,6 @@ pub(super) fn refresh(
         set_enabled(&mut commands, entity, true, disabled);
     }
     for (header, mut visibility) in &mut headers {
-        visibility.set_if_neq(if counts[header.0 as usize] > 0 {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        });
+        visibility.set_if_neq(visible_if(counts[header.0 as usize] > 0));
     }
 }

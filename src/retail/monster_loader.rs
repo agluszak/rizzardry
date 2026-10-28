@@ -13,7 +13,8 @@ use bevy::mesh::{
 use bevy::prelude::*;
 use bevy::reflect::TypePath;
 
-use super::level_loader::{LoadedTextures, PvlLoadError, load_material, sibling};
+use super::LoadError;
+use super::level_loader::{LoadedTextures, load_material, sibling};
 use super::mesh_record::FACE_TWO_SIDED;
 use super::monster::{MonsterCycle, read_cycle, read_species};
 use super::space::retail_position;
@@ -91,21 +92,23 @@ fn morph_targets(mesh: &mut Mesh, frames: &[Vec<Vec3>], source: &[u32]) -> Aabb 
 impl AssetLoader for MlsLoader {
     type Asset = MonsterModel;
     type Settings = ();
-    type Error = PvlLoadError;
+    type Error = LoadError;
 
     async fn load(
         &self,
         reader: &mut dyn Reader,
         _: &(),
         context: &mut LoadContext<'_>,
-    ) -> Result<MonsterModel, PvlLoadError> {
+    ) -> Result<MonsterModel, LoadError> {
         let mut text = Vec::new();
         reader.read_to_end(&mut text).await?;
         let species = read_species(&String::from_utf8_lossy(&text));
         let mut textures = LoadedTextures::default();
         let mut cycles = bevy::platform::collections::HashMap::new();
         for (name, file, fps) in &species.cycles {
-            let path = sibling(context, ".", &format!("{file}.mon")).ok_or(PvlLoadError::Path)?;
+            let path = sibling(context, ".", &format!("{file}.mon")).ok_or_else(|| {
+                LoadError::Invalid(format!("cannot name a file beside {}", context.path()))
+            })?;
             let cycle = match context.read_asset_bytes(path).await {
                 Ok(bytes) => read_cycle(&bytes)?,
                 Err(error) => {
@@ -114,7 +117,10 @@ impl AssetLoader for MlsLoader {
                 }
             };
             if cycle.frames.len() > MAX_MORPH_WEIGHTS {
-                return Err(PvlLoadError::MorphTargets(cycle.frames.len()));
+                return Err(LoadError::Invalid(format!(
+                    "monster cycle has {} frames, exceeding native morph target capacity",
+                    cycle.frames.len()
+                )));
             }
             let frames: Vec<Vec<Vec3>> = cycle
                 .frames

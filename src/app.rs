@@ -3,20 +3,16 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy_enhanced_input::EnhancedInputPlugin;
 
 use crate::dev::{
     OverheadView, SayLine, ScreenshotAndExit, overhead_view, say_line, screenshot_and_exit,
 };
-use crate::game::party::PartyPlugin;
 use crate::game::party::body::PartyStart;
 use crate::game::party::roster::Recruit;
-use crate::game::time::{GameClock, TimePlugin};
-use crate::game::world::WorldPlugin;
+use crate::game::time::GameClock;
 use crate::game::world::level::{Destination, Level};
-use crate::game::world::navigation::asset::NavmeshLoader;
 use crate::game::world::navigation::bake::SIZE_CLASSES;
 use crate::presentation::PresentationPlugin;
 use crate::retail::RetailPlugin;
@@ -84,6 +80,13 @@ pub struct Options {
     /// `npc_aletheides_000`.
     #[arg(long, value_name = "LINE")]
     pub say: Option<String>,
+    /// Developer: open a nearby named NPC's real conversation after entering.
+    /// Combine with --start and --screenshot for reproducible UI captures.
+    #[arg(long)]
+    pub talk_to: Option<String>,
+    /// Developer: ask a topic after the greeting finishes, through normal validation.
+    #[arg(long, requires = "talk_to")]
+    pub ask_about: Option<String>,
     /// Developer: draw the navmesh, agent paths and avoidance.
     #[arg(long)]
     pub nav_debug: bool,
@@ -225,38 +228,11 @@ pub fn build(options: &Options) -> Result<App, String> {
         app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(FIXED_STEP))
             .add_systems(Update, crate::dev::log_news);
     }
-    // Shared campaign services are composed here, not owned by world loading.
-    app.init_resource::<crate::game::rng::GameRng>()
-        .init_resource::<crate::game::inventory::ItemIds>()
-        .init_resource::<crate::game::factions::Factions>()
-        .init_resource::<crate::game::difficulty::Difficulty>()
-        .init_state::<crate::game::screen::Screen>()
-        .add_message::<crate::game::inventory::ItemNews>()
-        .add_systems(Startup, crate::game::data::load_game_data)
-        .configure_sets(
-            Update,
-            (crate::game::GameplaySet::LevelActivation, crate::game::GameplaySet::Combat).chain(),
-        );
-    app.add_plugins((
-        PhysicsPlugins::default(),
-        WorldPlugin,
-        crate::game::npcs::NpcPlugin,
-        PartyPlugin,
-        TimePlugin,
-        crate::game::combat::CombatPlugin,
-        crate::game::magic::MagicPlugin,
-    ));
-    // Navmeshes: retail decodes a level's collision, navigation bakes it on
-    // request and caches the result.
-    app.register_asset_loader(NavmeshLoader {
-        cache: bevy::asset::io::file::FileAssetReader::get_base_path()
-            .join(crate::game::world::navigation::asset::CACHE),
-        decode: crate::retail::navmesh::decode_input,
-    });
+    app.add_plugins(crate::game::GamePlugin);
     // What the player sees and hears: with the window, or offscreen for a
     // headless screenshot. After the gameplay plugins, whose input and
     // messages it uses.
-    if !options.headless || options.screenshot.is_some() {
+    if rendered {
         app.add_plugins((
             EnhancedInputPlugin,
             crate::retail::RetailPresentationPlugin,
@@ -283,6 +259,18 @@ pub fn build(options: &Options) -> Result<App, String> {
         let after = options.screenshot_after.unwrap_or(2.0);
         app.insert_resource(ScreenshotAndExit::new(path, after))
             .add_systems(Update, screenshot_and_exit);
+    }
+    if let Some(name) = options.talk_to.clone() {
+        app.insert_resource(crate::dev::TalkTo(name)).add_systems(
+            Update,
+            crate::dev::talk_to_npc.after(crate::game::GameplaySet::LevelActivation),
+        );
+    }
+    if let Some(topic) = options.ask_about.clone() {
+        app.insert_resource(crate::dev::AskAbout(topic)).add_systems(
+            Update,
+            crate::dev::ask_about.after(crate::game::npcs::conversation::update_conversation),
+        );
     }
     if let Some(line) = options.say.clone() {
         app.insert_resource(SayLine { line, started: None }).add_systems(Update, say_line);

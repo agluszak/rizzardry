@@ -8,7 +8,7 @@ use super::keyframes::PathKey;
 use super::mesh_record::{FACE_TWO_SIDED, MeshRecord};
 use super::prop::Prop;
 use super::sections::Light;
-use super::space::{retail_direction, retail_position};
+use super::space::{retail_position, retail_rotation};
 use crate::content::UNITS_PER_METRE;
 use crate::content::level::{CollisionMesh, LevelLighting, PointLightSource, VertexLighting};
 
@@ -45,11 +45,9 @@ pub fn level_lighting(lights: &[Light], offset: [f32; 3]) -> LevelLighting {
 
 /// A path key as a Bevy transform.
 pub fn key_transform(key: &PathKey) -> Transform {
-    let axis = retail_direction(key.axis).normalize_or(Vec3::Y);
     Transform {
         translation: retail_position(key.position),
-        // Mirroring Z reverses the sense of rotation.
-        rotation: Quat::from_axis_angle(axis, -key.angle),
+        rotation: retail_rotation(key.angle, key.axis),
         scale: key.scale.map_or(Vec3::ONE, Vec3::from),
     }
 }

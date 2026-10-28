@@ -11,9 +11,7 @@ use bevy::prelude::*;
 
 use super::population::Monster;
 use crate::content::characters::{Attribute, Skill};
-use crate::content::species::MonsterCatalog;
 use crate::game::characters::{Character, Condition, MonsterKnowledge, Vitals};
-use crate::game::data::GameData;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::world::level::PlayedLevel;
@@ -85,7 +83,7 @@ pub fn health_known(
 ) -> String {
     let mythology = party
         .iter()
-        .filter(|(_, v)| crate::game::camp::can_act(v))
+        .filter(|(_, v)| v.can_act())
         .map(|(m, _)| m.skill(Skill::Mythology))
         .max()
         .unwrap_or(0);
@@ -115,8 +113,7 @@ pub struct GroupRecognition<'w, 's> {
     level: PlayedLevel<'w, 's>,
     roster: Single<'w, 's, &'static PartyRoster>,
     members: Query<'w, 's, (&'static Character, &'static Vitals, &'static mut MonsterKnowledge)>,
-    data: Option<Res<'w, GameData>>,
-    catalogs: Res<'w, Assets<MonsterCatalog>>,
+    content: crate::game::data::Content<'w>,
     news: MessageWriter<'w, Identified>,
 }
 
@@ -131,7 +128,7 @@ impl GroupRecognition<'_, '_> {
         let (Some(level), Some(far)) = (self.level.entity(), self.level.view_distance()) else {
             return;
         };
-        let Some(catalog) = self.data.as_ref().and_then(|d| self.catalogs.get(&d.species)) else {
+        let Some(catalog) = self.content.species() else {
             return;
         };
         let (groups, monsters, roster, members, news) =
@@ -212,7 +209,9 @@ impl GroupRecognition<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::content::species::MonsterCatalog;
     use crate::game::characters::{Gender, Profession, Race};
+    use crate::game::data::GameData;
     use crate::game::party::body::PartyBody;
     use avian3d::prelude::Position;
 
@@ -316,14 +315,6 @@ mod tests {
         let member = app.world_mut().spawn((Vitals::new(&sage), sage.clone())).id();
         let outsider = app.world_mut().spawn((Vitals::new(&sage), sage)).id();
         crate::game::party::roster::test_party(app.world_mut(), &[member]);
-        let camera = app
-            .world_mut()
-            .spawn((
-                crate::presentation::party_view::PartyCamera,
-                Projection::Perspective(PerspectiveProjection { far: 1000.0, ..default() }),
-                Transform::from_translation(Vec3::splat(1000.0)),
-            ))
-            .id();
         app.finish();
         app.cleanup();
         app.update();
@@ -331,7 +322,7 @@ mod tests {
         app.world_mut().run_schedule(Update);
         assert!(
             !app.world().get::<MonsterGroup>(group).unwrap().counted,
-            "the rendering far plane does not make the group visible"
+            "beyond the level's sight distance"
         );
         assert!(app.world().get::<MonsterKnowledge>(member).unwrap().seen.is_empty());
         app.world_mut()
@@ -339,9 +330,6 @@ mod tests {
             .get_mut(&geometry)
             .unwrap()
             .sight_distance = Some(20.0);
-        app.world_mut()
-            .entity_mut(camera)
-            .insert(Projection::Perspective(PerspectiveProjection { far: 1.0, ..default() }));
         app.world_mut().run_schedule(Update);
         let known = app.world().get::<MonsterGroup>(group).unwrap();
         assert!(known.identified && known.counted);

@@ -23,6 +23,7 @@ use crate::game::data::GameData;
 use crate::game::time::GameClock;
 use crate::game::world::navigation::Walker;
 use crate::game::world::population::Monster;
+use crate::presentation::screen_art::visible_if;
 
 /// Seconds into its first cycle a monster starts at. Retail starts each
 /// idle at a random frame; here it varies by location.
@@ -59,8 +60,8 @@ pub fn request_monster_visuals(
 ) {
     let Some(catalog) = data.and_then(|d| species.get(&d.species)) else { return };
     for (entity, monster) in &actors {
-        let Some(kind) = catalog.0.get(monster.species as usize) else { continue };
-        let model = assets.load(format!("retail://data/monsters/{}.mls", kind.model));
+        let Some(kind) = catalog.kind(monster.species) else { continue };
+        let model = assets.load(crate::content::paths::monster(&kind.model));
         commands.entity(entity).insert(MonsterVisual(model));
     }
 }
@@ -214,11 +215,7 @@ pub fn animate_monsters(
                     continue;
                 };
                 let active = cycle_name.0 == name;
-                visibility.set_if_neq(if active {
-                    Visibility::Inherited
-                } else {
-                    Visibility::Hidden
-                });
+                visibility.set_if_neq(visible_if(active));
                 if !active {
                     continue;
                 }

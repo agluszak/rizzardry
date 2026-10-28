@@ -10,7 +10,7 @@ use bevy::asset::io::{
 use bevy::tasks::futures_lite::stream;
 
 use super::files::RetailFiles;
-use crate::content::navmesh::{NAVMESH_EXTENSION, navmesh_input_path};
+use crate::content::navmesh::{LevelCollision, NAVMESH_EXTENSION, navmesh_input_path};
 
 pub const RETAIL_SOURCE: &str = "retail";
 
@@ -22,7 +22,9 @@ fn name(path: &Path) -> String {
 
 impl AssetReader for RetailReader {
     async fn read<'a>(&'a self, path: &'a Path) -> Result<impl Reader + 'a, AssetReaderError> {
-        match self.0.read(&name(path)) {
+        let (files, name) = (self.0.clone(), name(path));
+        // File reads block; keep them off the asset tasks.
+        match blocking::unblock(move || files.read(&name)).await {
             Some(Ok(bytes)) => Ok(VecReader::new(bytes)),
             Some(Err(error)) => Err(AssetReaderError::Io(Arc::new(error))),
             None => Err(AssetReaderError::NotFound(path.to_owned())),
@@ -58,10 +60,9 @@ pub fn retail_source(files: Arc<RetailFiles>) -> AssetSourceBuilder {
 }
 
 /// Every retail level `<path>.pvl` as `<path>_class<n>.navmesh`, one per
-/// walker size class, whose bytes are the class and the level's collision
-/// (`.oct`) and placement (`.pvl`) files; see [`navmesh_input`]. The
-/// navmesh loader bakes them on request, keyed by these bytes, so a change
-/// to either file re-bakes.
+/// walker size class: the level's collision for that class, as
+/// [`LevelCollision`] encodes it. The navmesh loader bakes them on request,
+/// keyed by these bytes, so a change to the level's collision re-bakes.
 struct NavmeshInputReader {
     files: Arc<RetailFiles>,
     classes: usize,
@@ -73,20 +74,6 @@ fn level_and_class(path: &Path) -> Option<(String, u8)> {
     let stem = stem.strip_suffix(&format!(".{NAVMESH_EXTENSION}"))?;
     let (level, class) = stem.rsplit_once("_class")?;
     Some((level.to_owned(), class.parse().ok()?))
-}
-
-const NAVMESH_INPUT_MAGIC: &[u8; 4] = b"RZN2";
-
-/// A navmesh input's size class and its `.oct` and `.pvl` bytes.
-pub fn navmesh_input(bytes: &[u8]) -> Option<(u8, &[u8], &[u8])> {
-    let rest = bytes.strip_prefix(NAVMESH_INPUT_MAGIC)?;
-    let (&class, rest) = rest.split_first()?;
-    let (length, rest) = rest.split_first_chunk::<4>()?;
-    let length = u32::from_le_bytes(*length) as usize;
-    (length <= rest.len()).then(|| {
-        let (octree, level) = rest.split_at(length);
-        (class, octree, level)
-    })
 }
 
 /// The navmesh input of a level (`levels/x/y.pvl`) for a size class, or
@@ -102,12 +89,11 @@ pub fn navmesh_input_bytes(
         (Ok(octree), Ok(level)) => (octree, level),
         (Err(error), _) | (_, Err(error)) => return Some(Err(error)),
     };
-    let mut bytes = NAVMESH_INPUT_MAGIC.to_vec();
-    bytes.push(class);
-    bytes.extend((octree.len() as u32).to_le_bytes());
-    bytes.extend(octree);
-    bytes.extend(level);
-    Some(Ok(bytes))
+    Some(
+        super::navmesh::level_collision(&octree, &level)
+            .map(|collision| LevelCollision { collision, class: class.into() }.encode())
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error)),
+    )
 }
 
 impl AssetReader for NavmeshInputReader {
@@ -117,7 +103,8 @@ impl AssetReader for NavmeshInputReader {
         if class as usize >= self.classes {
             return Err(not_found());
         }
-        match navmesh_input_bytes(&self.files, &stem, class) {
+        let files = self.files.clone();
+        match blocking::unblock(move || navmesh_input_bytes(&files, &stem, class)).await {
             Some(Ok(bytes)) => Ok(VecReader::new(bytes)),
             Some(Err(error)) => Err(AssetReaderError::Io(Arc::new(error))),
             None => Err(not_found()),

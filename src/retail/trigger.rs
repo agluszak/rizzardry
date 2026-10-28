@@ -1,30 +1,45 @@
 //! Level trigger records (Whizzardry `Trigger::CreateAndLoadLevelTrigger`).
 //!
 //! Records appear in a level's trigger section and attached to props and
-//! items. Retail ships types 3 (ambient sound) and 4; types 1 and 2 are
-//! decoded from the reference code only.
+//! items. Retail ships only types 3 (ambient sound) and 4.
 
-use super::mesh_record::RECORD_SCALE;
-use super::pvl::{PvlError, invalid, text};
-use crate::bytes::{Bytes, lenient_string};
+use super::pvl::text;
+use crate::bytes::{Bytes, DecodeError, lenient_string};
+use crate::content::UNITS_PER_METRE;
 
 const NAME: usize = 0x80;
 const LONG_TEXT: usize = 0x100;
 
-/// Retail trigger action codes used so far.
+/// The retail trigger action codes the game decodes.
 pub mod action {
-    /// Move the party to the recipients: a local trigger or named position,
-    /// or `<3-letter location><2-digit entrance>` on another level.
-    pub const TELEPORT: u32 = 0x34;
-    /// Like [`TELEPORT`] to a randomly chosen recipient.
-    pub const RANDOM_TELEPORT: u32 = 0x4b;
+    pub const NOTHING: u32 = 0x00;
+    pub const OPEN_DOOR: u32 = 0x01;
+    pub const TOGGLE_DOOR: u32 = 0x02;
+    /// Toggle a prop's animation; with a loot table, a container.
+    pub const TOGGLE: u32 = 0x03;
     /// Play the named camera path; the party ends at its last key (ladders,
     /// ropes).
     pub const CAMERA_PATH: u32 = 0x09;
     /// Fire the recipients.
     pub const RELAY: u32 = 0x0f;
-    /// Toggle a prop's animation; with a loot table, a container.
-    pub const TOGGLE: u32 = 0x03;
+    /// Hurt whoever stands in it, every few seconds.
+    pub const DAMAGE_ZONE: u32 = 0x23;
+    /// Hurt the party once by dice in the trigger's data words.
+    pub const HURT_PARTY: u32 = 0x24;
+    pub const STAMINA_FOUNTAIN: u32 = 0x25;
+    pub const HEALTH_FOUNTAIN: u32 = 0x26;
+    /// A second door toggle.
+    pub const TOGGLE_DOOR_2: u32 = 0x2c;
+    pub const START_ANIMATION: u32 = 0x32;
+    pub const STOP_ANIMATION: u32 = 0x33;
+    /// Move the party to the recipients: a local trigger or named position,
+    /// or `<3-letter location><2-digit entrance>` on another level.
+    pub const TELEPORT: u32 = 0x34;
+    pub const SOUND: u32 = 0x36;
+    pub const SHAKE: u32 = 0x39;
+    pub const DIAL: u32 = 0x40;
+    /// Like [`TELEPORT`] to a randomly chosen recipient.
+    pub const RANDOM_TELEPORT: u32 = 0x4b;
 }
 
 /// A position in retail units with a rotation of `angle` radians about
@@ -38,19 +53,9 @@ pub struct TriggerPlacement {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct DoorData {
-    pub open: bool,
-    pub lockable: bool,
     pub locked: bool,
-    pub auto_locking: bool,
-    pub one_way: bool,
-    pub secret: bool,
-    pub found: bool,
-    pub jammable: bool,
-    pub jammed: bool,
     /// The key item, 0 for none.
     pub item: u16,
-    pub position: Option<[f32; 3]>,
-    pub linked_trigger: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -62,10 +67,6 @@ pub struct Trigger {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum TriggerKind {
-    /// Type 1: a switch fired by range.
-    Switch { action: u32, recipients: String, door: Option<DoorData> },
-    /// Type 2: a positioned prop trigger.
-    Prop { placement: TriggerPlacement, action: u32, recipients: String },
     /// Type 3: an ambient sound emitter.
     AmbientSound(AmbientSound),
     /// Type 4: the general trigger used by retail levels.
@@ -110,6 +111,13 @@ pub struct ItemTrigger {
     pub door: Option<DoorData>,
 }
 
+impl ItemTrigger {
+    /// The recipients' names, in authored order.
+    pub fn recipients(&self) -> impl Iterator<Item = &str> {
+        self.recipients.split(',').map(str::trim).filter(|r| !r.is_empty())
+    }
+}
+
 /// Packed trigger flag bits (Whizzardry `World::loadTrigger`).
 pub mod flag {
     /// Backed by a prop rather than a place.
@@ -129,109 +137,40 @@ pub enum StateMode {
     Toggle,
 }
 
-fn read_door(bytes: &mut Bytes) -> Result<DoorData, PvlError> {
+fn read_door(bytes: &mut Bytes) -> Result<DoorData, DecodeError> {
     let _version = bytes.u8()?;
-    let mut flags = [false; 9];
-    for flag in &mut flags {
-        *flag = bytes.u8()? & 1 != 0;
-    }
-    let [open, lockable, locked, auto_locking, one_way, secret, found, jammable, jammed] = flags;
+    // Open, lockable, locked, auto-locking, one-way, secret, found, jammable
+    // and jammed, one byte each.
+    let flags = bytes.array::<9>()?;
     let item = bytes.u16()?;
-    let has_position = bytes.u8()? != 0;
-    let position = bytes.f32s::<3>()?.map(|v| v * RECORD_SCALE);
-    Ok(DoorData {
-        open,
-        lockable,
-        locked,
-        auto_locking,
-        one_way,
-        secret,
-        found,
-        jammable,
-        jammed,
-        item,
-        position: has_position.then_some(position),
-        linked_trigger: text(bytes, NAME)?.to_uppercase(),
-    })
+    // Whether it has a position, the position, and its linked trigger.
+    bytes.take(1 + 12 + NAME)?;
+    Ok(DoorData { locked: flags[2] & 1 != 0, item })
 }
 
 /// Older records can carry a 36-vertex blocking shape; retail discards it.
-fn skip_legacy_geometry(bytes: &mut Bytes) -> Result<(), PvlError> {
+fn skip_legacy_geometry(bytes: &mut Bytes) -> Result<(), DecodeError> {
     bytes.take(1 + 36 * 12 + 2)?;
     Ok(())
 }
 
-fn placement(bytes: &mut Bytes) -> Result<TriggerPlacement, PvlError> {
+fn placement(bytes: &mut Bytes) -> Result<TriggerPlacement, DecodeError> {
     Ok(TriggerPlacement {
-        position: bytes.f32s::<3>()?.map(|v| v * RECORD_SCALE),
+        position: bytes.f32s::<3>()?.map(|v| v * UNITS_PER_METRE),
         angle: bytes.f32()?,
         axis: bytes.f32s()?,
     })
 }
 
-pub fn read_trigger(bytes: &mut Bytes) -> Result<Trigger, PvlError> {
+pub fn read_trigger(bytes: &mut Bytes) -> Result<Trigger, DecodeError> {
     let _record_version = bytes.u8()?;
     match bytes.u8()? {
-        1 => read_switch(bytes),
-        2 => read_prop_trigger(bytes),
+        // Types 1 and 2 (range switches and prop triggers) are older formats
+        // no retail level uses.
         3 => read_ambient_sound(bytes),
         4 => read_item_trigger(bytes),
-        _ => Err(invalid("invalid trigger type", bytes)),
+        _ => Err(bytes.invalid("invalid trigger type")),
     }
-}
-
-fn read_switch(bytes: &mut Bytes) -> Result<Trigger, PvlError> {
-    let version = bytes.u8()?;
-    // Cycle bounce, state count, animate states, range.
-    bytes.take(16)?;
-    let action = bytes.i32()? as u32;
-    // Value, animate action, packed flags, enabled.
-    bytes.take(4 + 4 + 2)?;
-    let name = text(bytes, NAME)?.to_uppercase();
-    let recipients = text(bytes, LONG_TEXT)?.to_uppercase();
-    let _sound = text(bytes, NAME)?;
-    if version > 1 {
-        // Minimum range, surface id.
-        bytes.take(4 + 0x40)?;
-    }
-    let mut door = None;
-    if version > 2 && bytes.u8()? != 0 && bytes.u8()? == 1 {
-        door = Some(read_door(bytes)?);
-    }
-    if version > 3 {
-        bytes.i32()?;
-    }
-    Ok(Trigger { name, kind: TriggerKind::Switch { action, recipients, door } })
-}
-
-fn read_prop_trigger(bytes: &mut Bytes) -> Result<Trigger, PvlError> {
-    let version = bytes.u8()?;
-    let _range = bytes.f32()?;
-    let position = bytes.f32s::<3>()?.map(|v| v * RECORD_SCALE);
-    let action = bytes.i32()? as u32;
-    // Searchable, fire linked, enabled.
-    bytes.take(4 + 2)?;
-    let name = text(bytes, NAME)?.to_uppercase();
-    let recipients = text(bytes, LONG_TEXT)?.to_uppercase();
-    if version > 1 {
-        // Plane flag and four representation vectors.
-        bytes.take(1 + 4 * 12)?;
-    }
-    let (mut angle, mut axis) = (0.0, [0.0, 1.0, 0.0]);
-    if version > 2 {
-        angle = bytes.f32()?;
-        axis = bytes.f32s()?;
-        bytes.u8()?;
-        text(bytes, NAME)?;
-    }
-    if version > 3 {
-        bytes.take(1 + 4)?;
-    }
-    if version > 4 && bytes.u8()? != 0 && bytes.u8()? == 2 {
-        skip_legacy_geometry(bytes)?;
-    }
-    let placement = TriggerPlacement { position, angle, axis };
-    Ok(Trigger { name, kind: TriggerKind::Prop { placement, action, recipients } })
 }
 
 /// A sound a place makes (type 3 record): looping, or now and then.
@@ -243,19 +182,18 @@ pub struct AmbientSound {
     pub radius: f32,
     pub looping: bool,
     pub volume: [i32; 2],
-    pub speed: [i32; 2],
     /// Milliseconds between plays of a one-shot sound; -1 when unset.
     pub interval: [i32; 2],
 }
 
-fn read_ambient_sound(bytes: &mut Bytes) -> Result<Trigger, PvlError> {
+fn read_ambient_sound(bytes: &mut Bytes) -> Result<Trigger, DecodeError> {
     let version = bytes.u8()?;
     let volume = bytes.i32s::<2>()?;
-    let speed = bytes.i32s::<2>()?;
+    bytes.i32s::<2>()?; // playback speed
     let interval = bytes.i32s::<2>()?;
     bytes.i32()?; // unbounded
-    let radius = bytes.f32()? * RECORD_SCALE;
-    let position = bytes.f32s::<3>()?.map(|v| v * RECORD_SCALE);
+    let radius = bytes.f32()? * UNITS_PER_METRE;
+    let position = bytes.f32s::<3>()?.map(|v| v * UNITS_PER_METRE);
     // Region u and v.
     bytes.take(2 * 12)?;
     let wave = text(bytes, NAME)?;
@@ -280,13 +218,12 @@ fn read_ambient_sound(bytes: &mut Bytes) -> Result<Trigger, PvlError> {
             radius,
             looping,
             volume,
-            speed,
             interval,
         }),
     })
 }
 
-fn read_item_trigger(bytes: &mut Bytes) -> Result<Trigger, PvlError> {
+fn read_item_trigger(bytes: &mut Bytes) -> Result<Trigger, DecodeError> {
     let version = bytes.u8()?;
     let name = text(bytes, NAME)?.to_uppercase();
     let packed_flags = bytes.u8()?;
@@ -333,7 +270,7 @@ fn read_item_trigger(bytes: &mut Bytes) -> Result<Trigger, PvlError> {
         3 => StateMode::Toggle,
         _ => StateMode::Keep,
     };
-    let range = [bytes.f32()? * RECORD_SCALE, bytes.f32()? * RECORD_SCALE];
+    let range = [bytes.f32()? * UNITS_PER_METRE, bytes.f32()? * UNITS_PER_METRE];
     let action_data = lenient_string(bytes.take(LONG_TEXT)?).to_uppercase();
     bytes.i32()?;
     if version > 2 {
