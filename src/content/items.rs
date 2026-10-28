@@ -214,22 +214,6 @@ pub enum UseType {
 }
 
 impl UseType {
-    pub fn from_retail(value: u8) -> Option<Self> {
-        Some(match value {
-            0 => UseType::None,
-            1 => UseType::Charged,
-            2 => UseType::Scroll,
-            3 => UseType::Spellbook,
-            4 => UseType::Food,
-            5 => UseType::Potion,
-            6 => UseType::Instrument,
-            7 => UseType::Thrown,
-            8 => UseType::Gadget,
-            9 => UseType::Flamethrower,
-            _ => return None,
-        })
-    }
-
     /// The skill its spell is cast with; none for potions and food, whose
     /// spells never fail.
     pub fn skill(self) -> Option<Skill> {

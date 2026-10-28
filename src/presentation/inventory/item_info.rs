@@ -1,14 +1,9 @@
 //! The character values on the retail item page.
 use super::{InventoryArt, InventoryScreen, RetailLabel, absolute, format_gold, info};
 use crate::content::characters::Attribute;
-use crate::content::items::ItemCatalog;
 use crate::game::characters::Load;
-use crate::game::combat::attack::armour;
-use crate::game::data::GameData;
 #[cfg(test)]
 use crate::game::inventory::Carried;
-use crate::game::inventory::{PartyInventory, carried_weight, item_weight, pool_shares};
-use crate::game::party::roster::PartyRoster;
 use crate::presentation::character_view::{CharacterView, CharacterViewItem};
 use crate::presentation::screen_art::{BitmapText, Picture, PictureCrop};
 use bevy::prelude::*;
@@ -143,10 +138,6 @@ pub(super) fn build(commands: &mut Commands, panel: Entity, root: Entity, art: &
 
 pub(super) fn refresh(
     screen: Option<Single<&InventoryScreen>>,
-    party: Option<Single<&PartyRoster>>,
-    inventory: Option<Single<&PartyInventory>>,
-    data: Option<Res<GameData>>,
-    catalogs: Option<Res<Assets<ItemCatalog>>>,
     members: Query<CharacterView>,
     art: Option<Res<InventoryArt>>,
     mut values: Query<(&Value, &mut BitmapText)>,
@@ -154,38 +145,12 @@ pub(super) fn refresh(
 ) {
     let (Some(screen), Some(art)) = (screen, art) else { return };
     let Ok(view) = members.get(screen.member) else { return };
-    let CharacterViewItem { profile: character, vitals, carried } = view;
+    let load = view.load();
+    let CharacterViewItem { profile: character, vitals, carried, burden, armour } = view;
+    // Armour is shown only for someone who carries things.
+    let armour = carried.and(armour);
 
-    let catalog = data
-        .as_ref()
-        .and_then(|data| catalogs.as_ref().and_then(|catalogs| catalogs.get(&data.items)));
-    let weight = party.as_ref().zip(inventory.as_ref()).zip(catalog).and_then(
-        |((roster, inventory), catalog)| {
-            let member_data: Vec<_> = roster
-                .iter()
-                .map(|entity| {
-                    members.get(entity).ok().and_then(
-                        |CharacterViewItem { profile, vitals, carried }| {
-                            if vitals.is_dead() {
-                                None
-                            } else {
-                                Some((
-                                    carried.map_or(0, |carried| carried_weight(carried, catalog)),
-                                    profile.capacity(),
-                                ))
-                            }
-                        },
-                    )
-                })
-                .collect();
-            let pool = inventory.pool.stacks.iter().map(|item| item_weight(item, catalog)).sum();
-            let shares = pool_shares(pool, &member_data);
-            let index = roster.get_index_of(&screen.member)?;
-            let own = carried.map_or(0, |carried| carried_weight(carried, catalog));
-            Some(own + shares[index])
-        },
-    );
-    let armour = carried.zip(catalog).map(|(carried, catalog)| armour(character, carried, catalog));
+    let weight = burden.map(|burden| burden.weight);
     for (kind, mut text) in &mut values {
         let (value, palette) = match *kind {
             Value::Experience => (format_gold(character.experience), None),
@@ -193,7 +158,7 @@ pub(super) fn refresh(
             Value::HitPoints => (format!("{}/{}", vitals.hp, character.max_hp()), None),
             Value::Stamina => (format!("{}/{}", vitals.stamina, character.max_stamina()), None),
             Value::Load => weight.map_or((String::new(), None), |weight| {
-                let palette = match character.load(weight) {
+                let palette = match load {
                     Load::None => None,
                     Load::Light => Some(art.blue.clone()),
                     Load::Medium => Some(art.green.clone()),
@@ -232,7 +197,9 @@ pub(super) fn refresh(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::content::items::ItemCatalog;
     use crate::game::characters::{Character, Gender, Profession, Race, Vitals};
+    use crate::game::data::GameData;
 
     #[test]
     fn removing_carried_items_clears_all_equipment_derived_labels() {

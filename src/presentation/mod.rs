@@ -15,7 +15,6 @@ pub mod frontend;
 pub mod hover;
 pub mod inventory;
 pub mod main_screen;
-pub mod mipmaps;
 pub mod monsters;
 mod morph_picking;
 pub mod music;
@@ -80,6 +79,11 @@ impl Plugin for PresentationPlugin {
             frontend::FrontendPlugin,
             device_panel::plugin,
         ))
+        // Retail's double click.
+        .insert_resource(bevy::picking::PickingSettings {
+            multi_click_interval: std::time::Duration::from_millis(400),
+            ..default()
+        })
         .add_input_context::<Exploration>()
         .add_observer(retail_controls::primary_buttons_only)
         .add_observer(party_view::attach_camera)
@@ -155,6 +159,7 @@ impl Plugin for PresentationPlugin {
                 automap::spawn_map_key,
                 automap::load_automap_art,
                 notices::load_notice_art,
+                screen_art::load_string_table,
                 dialog::load_dialog_art,
                 camp::load_camp_art,
             ),
@@ -162,21 +167,25 @@ impl Plugin for PresentationPlugin {
         .add_systems(
             Update,
             (
-                automap::scale_ui,
+                screen_art::scale_ui,
                 party_view::aim_camera.after(crate::game::GameplaySet::Combat),
                 camp::show_camp,
                 (
                     automap::close_ended_map,
                     automap::request_automap,
-                    automap::build_automap,
+                    automap::build_automap.run_if(any_with_component::<automap::Automap>),
                     automap::sync_note_input,
                     automap::draw_note_input,
-                    automap::paint_buttons,
-                    automap::update_map_view,
-                    automap::draw_notes,
-                    automap::draw_layer_label,
+                    (
+                        automap::paint_buttons,
+                        automap::update_map_view,
+                        automap::draw_notes,
+                        automap::draw_layer_label,
+                    )
+                        .chain()
+                        .run_if(any_with_component::<automap::Automap>),
                     automap::update_map_cursor,
-                    automap::glow_note_markers,
+                    automap::glow_note_markers.run_if(any_with_component::<automap::NoteMarker>),
                 )
                     .chain(),
             ),

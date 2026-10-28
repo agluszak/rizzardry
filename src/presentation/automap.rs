@@ -25,11 +25,12 @@ use crate::presentation::screen_art::BitmapText;
 use bevy::ui::Selected;
 use bevy_enhanced_input::prelude::*;
 
-use crate::content::level::{CollisionMesh, LevelDefinition};
+use crate::content::level::CollisionMesh;
 use crate::content::ui::{SpriteSheet, ui_image};
-use crate::game::automap::{MapNote, MapNotes, NoteDraft};
+use crate::game::automap::{CommitNote, MapNote, MapNotes, NoteDraft};
 use crate::game::party::body::{FLOAT_HEIGHT, PartyBody};
-use crate::game::world::level::Level;
+use crate::game::world::level::{Level, PlayedLevel};
+use crate::presentation::screen_art::visible_if;
 use crate::presentation::screen_art::{SCREEN, absolute, centred, screen};
 
 const VIEWPORT_AT: Vec2 = Vec2::new(12.0, 32.0);
@@ -257,20 +258,6 @@ enum ButtonAction {
     Exit,
 }
 
-/// Fit the 640×480 screen layout into what the interface draws into (the
-/// window, or an offscreen image).
-pub fn scale_ui(
-    interface: Query<&Camera, With<bevy::ui::IsDefaultUiCamera>>,
-    mut scale: ResMut<UiScale>,
-) {
-    if let Some(size) = interface.single().ok().and_then(Camera::logical_target_size) {
-        let fit = (size.x / SCREEN.x).min(size.y / SCREEN.y);
-        if scale.0 != fit {
-            scale.0 = fit;
-        }
-    }
-}
-
 /// Open the automap from elsewhere (the main screen's radar).
 #[derive(Message, Debug, Clone, Copy)]
 pub struct OpenAutomap;
@@ -297,14 +284,14 @@ pub fn request_automap(
 pub fn enter_automap(
     mut commands: Commands,
     party: Query<&Transform, With<PartyBody>>,
-    played: crate::game::world::level::PlayedLevel,
+    played: PlayedLevel,
     mut next: ResMut<NextState<Screen>>,
 ) {
     let (Ok(party), Some(level)) = (party.single(), played.entity()) else {
         next.set(Screen::World);
         return;
     };
-    let collision = played.geometry();
+    let collision = played.definition();
     let layers = collision.map_or(&[][..], |g| g.map_layers.as_slice());
     let mut map = Automap::new(
         collision.map(|g| &g.collision),
@@ -363,8 +350,7 @@ pub fn build_automap(
     sheets: Res<Assets<SpriteSheet>>,
     mut images: ResMut<Assets<Image>>,
     party: Query<&Transform, With<PartyBody>>,
-    level: Query<&Level>,
-    geometry: Res<Assets<LevelDefinition>>,
+    levels: PlayedLevel,
     roots: Query<(Entity, &Automap), Without<AutomapBuilt>>,
 ) {
     let Ok((root, automap)) = roots.single() else { return };
@@ -385,11 +371,11 @@ pub fn build_automap(
         sheets.get(&art.layer_buttons),
     )
     else {
-        warn!("the automap's art is still loading");
+        // The art is still loading; build once it has.
         return;
     };
     let feet = party.translation - Vec3::Y * FLOAT_HEIGHT;
-    let collision = level.get(automap.level).ok().and_then(|level| geometry.get(&level.geometry));
+    let collision = levels.of(automap.level);
     let plan = collision
         .map(|level| images.add(floor_plan(&level.collision, &level.map_layers, automap)))
         .map(|plan| {
@@ -531,18 +517,13 @@ fn action_enabled(action: ButtonAction, map: &Automap, layers: Option<usize>) ->
 fn press_button(
     click: On<Activate>,
     buttons: Query<&SheetButton>,
-    level: Query<&Level>,
-    geometry: Res<Assets<LevelDefinition>>,
+    levels: PlayedLevel,
     party: Query<&Transform, With<PartyBody>>,
     automap: Option<Single<&mut Automap>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
     let (Some(mut automap), Ok(button)) = (automap, buttons.get(click.entity)) else { return };
-    let layers = level
-        .get(automap.level)
-        .ok()
-        .and_then(|l| geometry.get(&l.geometry))
-        .map(|g| g.map_layers.len());
+    let layers = levels.of(automap.level).map(|g| g.map_layers.len());
     if !action_enabled(button.action, &automap, layers) {
         return;
     }
@@ -568,9 +549,7 @@ fn press_button(
         }
         ButtonAction::LayerPrevious => automap.layer = automap.layer.saturating_sub(1),
         ButtonAction::LayerNext => {
-            if let Some(level) =
-                level.get(automap.level).ok().and_then(|level| geometry.get(&level.geometry))
-            {
+            if let Some(level) = levels.of(automap.level) {
                 automap.layer = (automap.layer + 1).min(level.map_layers.len());
             }
         }
@@ -580,18 +559,13 @@ fn press_button(
 
 /// Off, highlighted while hovered, on while its tool is selected.
 pub fn paint_buttons(
-    level: Query<&Level>,
-    geometry: Res<Assets<LevelDefinition>>,
+    levels: PlayedLevel,
     mut commands: Commands,
     buttons: Query<(Entity, &SheetButton, Has<InteractionDisabled>, Has<Selected>)>,
     automap: Option<Single<Ref<Automap>>>,
 ) {
     let Some(automap) = automap else { return };
-    let layers = level
-        .get(automap.level)
-        .ok()
-        .and_then(|l| geometry.get(&l.geometry))
-        .map(|g| g.map_layers.len());
+    let layers = levels.of(automap.level).map(|g| g.map_layers.len());
     for (entity, button, disabled, selected) in &buttons {
         let on = matches!(button.action, ButtonAction::Tool(tool) if automap.tool == Some(tool));
         set_enabled(
@@ -614,7 +588,8 @@ pub fn paint_buttons(
 fn click_map(
     click: On<PointerClick>,
     map: Option<Single<&mut Automap>>,
-    mut levels: Query<&mut MapNotes>,
+    levels: Query<&MapNotes>,
+    mut commits: MessageWriter<CommitNote>,
     mut commands: Commands,
     editors: Query<Entity, With<note_input::NoteInput>>,
 ) {
@@ -632,12 +607,12 @@ fn click_map(
         return;
     }
     map.editing = None;
-    let Ok(mut notes) = levels.get_mut(map.level) else { return };
+    let Ok(notes) = levels.get(map.level) else { return };
     let point = map.unproject((hit.truncate() + 0.5) * VIEWPORT);
     let reach = MARKER / map.pixels_per_metre();
     let original = notes.nearest(point, reach, map.layer);
     match map.tool {
-        Some(MapTool::AddNote) if notes.notes.len() < crate::game::automap::MAX_NOTES => {
+        Some(MapTool::AddNote) if notes.has_room() => {
             map.editing = Some(NoteDraft {
                 level: map.level,
                 original: None,
@@ -646,8 +621,14 @@ fn click_map(
         }
         Some(MapTool::AddNote) => {}
         Some(MapTool::EraseNote) => {
+            // A note committed empty is erased.
             if let Some(index) = original {
-                notes.notes.remove(index);
+                let note = notes.notes[index].clone();
+                commits.write(CommitNote(NoteDraft {
+                    level: map.level,
+                    original: Some((index, note.clone())),
+                    note: MapNote { text: String::new(), ..note },
+                }));
             }
         }
         None => {
@@ -703,15 +684,11 @@ pub fn draw_notes(
             views.iter_mut().find(|(_, v, _, _, _)| v.0 == key)
         {
             node.set_if_neq(absolute(at - MARKER / 2.0, Vec2::splat(MARKER)));
-            visible.set_if_neq(if key.is_some() && key == hidden {
-                Visibility::Hidden
-            } else {
-                Visibility::Inherited
-            });
+            visible.set_if_neq(visible_if(key.is_none() || key != hidden));
             for child in children.iter() {
                 let Ok((mut label, mut visible)) = labels.get_mut(child) else { continue };
                 label.set_if_neq(text.clone());
-                visible.set_if_neq(if show { Visibility::Inherited } else { Visibility::Hidden });
+                visible.set_if_neq(visible_if(show));
             }
         } else {
             let marker = commands
@@ -727,7 +704,7 @@ pub fn draw_notes(
             commands.spawn((
                 text,
                 UiTransform::from_translation(bevy::ui::Val2::new(px(0), percent(-50))),
-                if show { Visibility::Inherited } else { Visibility::Hidden },
+                visible_if(show),
                 ChildOf(marker),
             ));
         }
@@ -752,8 +729,7 @@ pub fn glow_note_markers(time: Res<Time>, mut markers: Query<&mut ImageNode, Wit
 /// Redraw the raster only when its view changes, not while typing or glowing.
 pub fn update_map_view(
     automap: Option<Single<Ref<Automap>>>,
-    level: Query<&Level>,
-    geometry: Res<Assets<LevelDefinition>>,
+    levels: PlayedLevel,
     plans: Query<(Entity, &ImageNode), With<FloorPlan>>,
     mut images: ResMut<Assets<Image>>,
     party: Query<&Transform, With<PartyBody>>,
@@ -761,7 +737,7 @@ pub fn update_map_view(
     mut previous: Local<Option<(Entity, Vec2, f32, usize)>>,
 ) {
     let Some(automap) = automap else { return };
-    let Some(level) = level.get(automap.level).ok().and_then(|l| geometry.get(&l.geometry)) else {
+    let Some(level) = levels.of(automap.level) else {
         return;
     };
     if let Ok(party) = party.single() {
@@ -785,12 +761,11 @@ pub fn update_map_view(
 
 pub fn draw_layer_label(
     automap: Option<Single<&Automap>>,
-    level: Query<&Level>,
-    geometry: Res<Assets<LevelDefinition>>,
+    levels: PlayedLevel,
     mut labels: Query<&mut BitmapText, With<LayerLabel>>,
 ) {
     let Some(map) = automap else { return };
-    let Some(level) = level.get(map.level).ok().and_then(|l| geometry.get(&l.geometry)) else {
+    let Some(level) = levels.of(map.level) else {
         return;
     };
     let value = format!("Layer {}/{}", map.layer + 1, level.map_layers.len() + 1);
@@ -876,7 +851,7 @@ mod tests {
         use bevy::input_focus::{FocusedInput, InputFocus};
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, bevy::ui_widgets::ButtonPlugin))
-            .init_resource::<Assets<LevelDefinition>>()
+            .init_resource::<Assets<crate::content::level::LevelDefinition>>()
             .init_resource::<NextState<Screen>>()
             .init_resource::<InputFocus>();
         let mut map = Automap::new(None, &[], Vec3::ZERO);

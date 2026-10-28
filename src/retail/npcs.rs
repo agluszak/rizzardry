@@ -1,7 +1,8 @@
 //! Checked NPC database and NSF decoding. See the original ReadNpcScriptQuote
 //! (0x0055a140), LoadNpcScriptFile (0x0055a480) and packed database records.
+use super::LoadError;
 use crate::{
-    bytes::{Bytes, Truncated, lenient_string},
+    bytes::{Bytes, i32_at, lenient_string, u16_at, u32_at, utf16_units},
     content::{items::ItemId, npcs::*},
 };
 use bevy::{
@@ -9,29 +10,13 @@ use bevy::{
     reflect::TypePath,
 };
 
-#[derive(Debug, thiserror::Error)]
-pub enum NpcLoadError {
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-    #[error(transparent)]
-    Truncated(#[from] Truncated),
-    #[error("invalid NPC content: {0}")]
-    Invalid(String),
+fn invalid(text: &str) -> LoadError {
+    LoadError::Invalid(format!("invalid NPC content: {text}"))
 }
-fn invalid(text: &str) -> NpcLoadError {
-    NpcLoadError::Invalid(text.into())
+fn wide(bytes: &[u8]) -> Result<String, LoadError> {
+    String::from_utf16(&utf16_units(bytes)).map_err(|_| invalid("invalid UTF-16"))
 }
-fn wide(bytes: &[u8]) -> Result<String, NpcLoadError> {
-    let units: Vec<_> = bytes
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|p| u16::from_le_bytes(*p))
-        .take_while(|&u| u != 0)
-        .collect();
-    String::from_utf16(&units).map_err(|_| invalid("invalid UTF-16"))
-}
-pub fn read_npcs(data: &[u8]) -> Result<NpcCatalog, NpcLoadError> {
+pub fn read_npcs(data: &[u8]) -> Result<NpcCatalog, LoadError> {
     let mut b = Bytes::new(data);
     let count = b.u32()? as usize;
     if count > u16::MAX as usize || count > b.remaining() / 0x309 {
@@ -40,8 +25,7 @@ pub fn read_npcs(data: &[u8]) -> Result<NpcCatalog, NpcLoadError> {
     let mut out = Vec::with_capacity(count);
     for _ in 0..count {
         let r = b.take(0x309)?;
-        let u32_at = |at| u32::from_le_bytes(r[at..at + 4].try_into().unwrap());
-        let version = u16::from_le_bytes(r[..2].try_into().unwrap());
+        let version = u16_at(r, 0)?;
         if !(1..=2).contains(&version) {
             return Err(invalid("NPC record version"));
         }
@@ -58,10 +42,10 @@ pub fn read_npcs(data: &[u8]) -> Result<NpcCatalog, NpcLoadError> {
                         persistent: persistent != 0,
                     })
                 })
-                .collect::<Result<_, NpcLoadError>>()?;
+                .collect::<Result<_, LoadError>>()?;
         }
-        let buy_factor = f32::from_bits(u32_at(0x2ce));
-        let sell_factor = f32::from_bits(u32_at(0x2d2));
+        let buy_factor = f32::from_bits(u32_at(r, 0x2ce)?);
+        let sell_factor = f32::from_bits(u32_at(r, 0x2d2)?);
         if !buy_factor.is_finite() || !sell_factor.is_finite() {
             return Err(invalid("price factor"));
         }
@@ -76,7 +60,7 @@ pub fn read_npcs(data: &[u8]) -> Result<NpcCatalog, NpcLoadError> {
             faction: r[0x5f],
             buy_factor,
             sell_factor,
-            accepted_classes: u32_at(0x2d6),
+            accepted_classes: u32_at(r, 0x2d6)?,
             voice_script: r[0x2ea] != 0,
             stock,
         });
@@ -86,7 +70,7 @@ pub fn read_npcs(data: &[u8]) -> Result<NpcCatalog, NpcLoadError> {
     }
     Ok(NpcCatalog(out))
 }
-fn narrow(b: &mut Bytes) -> Result<String, NpcLoadError> {
+fn narrow(b: &mut Bytes) -> Result<String, LoadError> {
     let n = b.u16()? as usize;
     // NSF narrow strings in the shipped English corpus are ASCII.
     let raw = b.take(n)?;
@@ -96,14 +80,14 @@ fn operation(
     kind: u8,
     args: [i32; 3],
     subs: Vec<(i32, Option<String>)>,
-) -> Result<DialogueOp, NpcLoadError> {
+) -> Result<DialogueOp, LoadError> {
     let id = |v| u16::try_from(v).map_err(|_| invalid("negative/out-of-range reference"));
     let words = || {
         subs.iter()
             .map(|(_, s)| s.clone().ok_or_else(|| invalid("missing keyword")))
             .collect::<Result<Vec<_>, _>>()
     };
-    let response = || -> Result<Response, NpcLoadError> {
+    let response = || -> Result<Response, LoadError> {
         match (args[1], args[2]) {
             (2, last) if last >= args[0] => {
                 Ok(Response::Random { first: id(args[0])?, last: id(last)? })
@@ -131,7 +115,7 @@ fn operation(
                         u8::try_from(p[1].0).map_err(|_| invalid("fact value"))?,
                     ))
                 })
-                .collect::<Result<_, NpcLoadError>>()?;
+                .collect::<Result<_, LoadError>>()?;
             match response() {
                 Ok(response) => DialogueOp::Conditional { facts, response },
                 Err(_) => unsupported(),
@@ -161,10 +145,10 @@ fn operation(
         _ => unsupported(),
     })
 }
-pub fn read_dialogue(data: &[u8]) -> Result<DialogueScript, NpcLoadError> {
+pub fn read_dialogue(data: &[u8]) -> Result<DialogueScript, LoadError> {
     let mut b = Bytes::new(data);
     let h = b.take(14)?;
-    let count = u16::from_le_bytes(h[4..6].try_into().unwrap()) as usize;
+    let count = u16_at(h, 4)? as usize;
     let name = if h[6..10] != [0; 4] { Some(narrow(&mut b)?) } else { None };
     if count > b.remaining() / 12 {
         return Err(invalid("quote count"));
@@ -180,16 +164,14 @@ pub fn read_dialogue(data: &[u8]) -> Result<DialogueScript, NpcLoadError> {
                 text.push(wide(b.take(len * 2)?)?);
             }
         }
-        let count = u16::from_le_bytes(r[9..11].try_into().unwrap()) as usize;
+        let count = u16_at(r, 9)? as usize;
         if count > b.remaining() / 18 {
             return Err(invalid("entry count"));
         }
         let mut operations = Vec::with_capacity(count);
         for _ in 0..count {
             let e = b.take(18)?;
-            let args = std::array::from_fn(|i| {
-                i32::from_le_bytes(e[1 + i * 4..5 + i * 4].try_into().unwrap())
-            });
+            let args = [i32_at(e, 1)?, i32_at(e, 5)?, i32_at(e, 9)?];
             let mut subs = Vec::new();
             for _ in 0..e[13] {
                 let value = b.i32()?;
@@ -229,13 +211,13 @@ pub struct DialogueLoader;
 impl AssetLoader for NpcCatalogLoader {
     type Asset = NpcCatalog;
     type Settings = ();
-    type Error = NpcLoadError;
+    type Error = LoadError;
     async fn load(
         &self,
         reader: &mut dyn Reader,
         _: &(),
         _: &mut LoadContext<'_>,
-    ) -> Result<NpcCatalog, NpcLoadError> {
+    ) -> Result<NpcCatalog, LoadError> {
         let mut b = Vec::new();
         reader.read_to_end(&mut b).await?;
         read_npcs(&b)
@@ -244,13 +226,13 @@ impl AssetLoader for NpcCatalogLoader {
 impl AssetLoader for DialogueLoader {
     type Asset = DialogueScript;
     type Settings = ();
-    type Error = NpcLoadError;
+    type Error = LoadError;
     async fn load(
         &self,
         reader: &mut dyn Reader,
         _: &(),
         _: &mut LoadContext<'_>,
-    ) -> Result<DialogueScript, NpcLoadError> {
+    ) -> Result<DialogueScript, LoadError> {
         let mut b = Vec::new();
         reader.read_to_end(&mut b).await?;
         read_dialogue(&b)
@@ -259,17 +241,15 @@ impl AssetLoader for DialogueLoader {
         &["nsf"]
     }
 }
-pub fn read_facts(data: &[u8]) -> Result<FactCatalog, NpcLoadError> {
+pub fn read_facts(data: &[u8]) -> Result<FactCatalog, LoadError> {
     let mut b = Bytes::new(data);
     let n = b.u32()? as usize;
     let records = b.records(n, 0x1d8, |b| b.take(0x1d8))?;
     let mut facts = Vec::with_capacity(n);
+    let mut ids = std::collections::HashSet::new();
     for r in records {
-        let id = FactId(
-            u16::try_from(u32::from_le_bytes(r[..4].try_into().unwrap()))
-                .map_err(|_| invalid("fact id"))?,
-        );
-        if facts.iter().any(|f: &FactDefinition| f.id == id) {
+        let id = FactId(u16::try_from(u32_at(r, 0)?).map_err(|_| invalid("fact id"))?);
+        if !ids.insert(id) {
             return Err(invalid("duplicate fact id"));
         }
         facts.push(FactDefinition {
@@ -289,13 +269,13 @@ pub struct FactCatalogLoader;
 impl AssetLoader for FactCatalogLoader {
     type Asset = FactCatalog;
     type Settings = ();
-    type Error = NpcLoadError;
+    type Error = LoadError;
     async fn load(
         &self,
         reader: &mut dyn Reader,
         _: &(),
         _: &mut LoadContext<'_>,
-    ) -> Result<FactCatalog, NpcLoadError> {
+    ) -> Result<FactCatalog, LoadError> {
         let mut b = Vec::new();
         reader.read_to_end(&mut b).await?;
         read_facts(&b)

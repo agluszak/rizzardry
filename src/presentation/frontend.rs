@@ -2,8 +2,12 @@
 use super::screen_art::{BitmapText, Picture, absolute, spawn_picture};
 use crate::content::characters::{Attribute, Gender, Profession, Race, Skill};
 use crate::content::ui::SpriteSheet;
-use crate::game::characters::creation::{CharacterDraft, PLAYABLE_RACES};
+use crate::game::characters::creation::{
+    CharacterDraft, NAME_LIMIT, NICKNAME_LIMIT, PARTY_LIMIT, PLAYABLE_RACES, admit, default_gender,
+    identity,
+};
 use crate::game::session::{Campaign, NewGameDestination, Session, begin_adventure};
+use crate::presentation::screen_art::visible_if;
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::input_focus::{
     InputFocus,
@@ -70,7 +74,8 @@ impl Plugin for FrontendPlugin {
                     credits::populate,
                     credits::scroll,
                 )
-                    .chain(),
+                    .chain()
+                    .run_if(not(in_state(crate::game::session::Session::Playing))),
             );
     }
 }
@@ -555,7 +560,7 @@ fn activate(
             if let Some(id) = session.selected {
                 if let Some(index) = session.party.iter().position(|member| *member == id) {
                     session.party.remove(index);
-                } else if session.party.len() < 6 {
+                } else if session.party.len() < PARTY_LIMIT {
                     session.party.push(id);
                 }
             }
@@ -619,7 +624,7 @@ fn activate(
             }) {
                 if !session.choices.identity_initialized {
                     if let Some(draft) = session.mode.draft_mut() {
-                        creator_identity::initialize(draft);
+                        identity::initialize(draft);
                     }
                     session.choices.identity_initialized = true;
                 }
@@ -714,27 +719,15 @@ fn activate(
                     let choice = (1..=15)
                         .map(|offset| professions[(i + direction * offset).rem_euclid(15) as usize])
                         .find(|&p| {
-                            let gender = if p == Profession::Valkyrie && !choices.gender {
-                                Gender::Female
-                            } else {
-                                draft.gender()
-                            };
+                            let gender = default_gender(p, draft.gender(), choices.gender);
                             CharacterDraft::budget(draft.race(), gender, p).is_ok()
                         })
                         .unwrap();
-                    let gender = if choice == Profession::Valkyrie && !choices.gender {
-                        Gender::Female
-                    } else {
-                        draft.gender()
-                    };
+                    let gender = default_gender(choice, draft.gender(), choices.gender);
                     draft.choose(draft.race(), gender, choice)
                 }
                 Action::ChooseProfession(profession) => {
-                    let gender = if profession == Profession::Valkyrie && !choices.gender {
-                        Gender::Female
-                    } else {
-                        draft.gender()
-                    };
+                    let gender = default_gender(profession, draft.gender(), choices.gender);
                     draft.choose(draft.race(), gender, profession)
                 }
                 Action::ChooseRace(race) => draft.choose(race, draft.gender(), draft.profession()),
@@ -742,13 +735,12 @@ fn activate(
                     draft.choose(draft.race(), gender, draft.profession())
                 }
                 Action::Portrait(direction) => {
-                    draft.portrait =
-                        creator_identity::next_portrait(&draft.portrait, direction).into();
+                    draft.portrait = identity::next_portrait(&draft.portrait, direction).into();
                     Ok(())
                 }
                 Action::PortraitGroup(direction) => {
                     draft.portrait =
-                        creator_identity::next_portrait_group(&draft.portrait, direction).into();
+                        identity::next_portrait_group(&draft.portrait, direction).into();
                     Ok(())
                 }
                 Action::Attribute(a, increase) => {
@@ -815,7 +807,7 @@ fn activate(
     {
         for (_, mut name, nickname) in &mut names {
             *name = EditableText {
-                max_characters: Some(if nickname { 9 } else { 39 }),
+                max_characters: Some(if nickname { NICKNAME_LIMIT } else { NAME_LIMIT }),
                 allow_newlines: false,
                 ..EditableText::new(if nickname { &draft.nickname } else { &draft.name })
             };
@@ -849,20 +841,8 @@ fn commit_creation(
                 draft.name = input.value().to_string();
             }
         }
-        let result = if draft.nickname.trim().is_empty() {
-            Err("Enter a nickname.")
-        } else {
-            draft.finish().map(|_| ())
-        };
-        let result = result.and_then(|()| {
-            let name = session.mode.draft().unwrap().display_name();
-            if session.candidates.iter().any(|(_, candidate)| candidate.display_name() == name) {
-                Err("A character with that nickname already exists.")
-            } else {
-                Ok(())
-            }
-        });
-        match result {
+        let draft = session.mode.draft().unwrap();
+        match admit(draft, session.candidates.iter().map(|(_, candidate)| candidate)) {
             Err(message) => session.message = message.into(),
             Ok(()) => {
                 let draft = session.mode.take_draft().unwrap();
@@ -920,7 +900,7 @@ fn show_editor(
         if node.display != display {
             node.display = display;
         }
-        visibility.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
+        visibility.set_if_neq(visible_if(shown));
     }
 }
 
@@ -935,21 +915,10 @@ fn refresh(
         if node.display != display {
             node.display = display;
         }
-        visibility.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
+        visibility.set_if_neq(visible_if(shown));
     }
 }
 // Retail portrait catalog; any portrait may be selected for any character.
-const PORTRAITS: &[&str] = &[
-    "hummf", "hummn", "hummm", "humm1", "humm2", "humm3", "humff", "humfn", "humfm", "humf1",
-    "humf2", "humf3", "elfmf", "elfmn", "elfmm", "elfff", "elffn", "elffm", "dwarfmf", "dwarfmn",
-    "dwarfmm", "dwarfff", "dwarffn", "dwarffm", "gnomemn", "gnomemm", "gnomeff", "gnomefn",
-    "hobmf", "hobmn", "hobff", "hobfn", "fairymf", "fairymm", "fairyff", "fairyfn", "lizmf",
-    "lizmn", "lizff", "lizfn", "dracmf", "dracmn", "dracff", "dracfn", "felpmf", "felpmn",
-    "felpff", "felpfn", "rawmn", "rawmm", "rawff", "rawfn", "mookmf", "mookmn", "mookff", "mookfn",
-    "ninmf", "ninff", "mook", "trynm1", "trynm2", "trynm3", "trang", "umpani", "sexus", "urq",
-    "madras", "sparkle", "myles", "vi", "drazic", "tantris", "rodan", "glumph", "saxx", "humm4",
-    "humf4", "elfm1", "elff1",
-];
 
 #[cfg(test)]
 mod keyboard_tests {

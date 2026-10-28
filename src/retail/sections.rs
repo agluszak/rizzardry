@@ -5,11 +5,11 @@
 //! unread zero bytes.
 
 use super::keyframes::{PathKey, read_path};
-use super::mesh_record::RECORD_SCALE;
 use super::prop::{Prop, read_prop};
-use super::pvl::{PvlError, invalid, text};
+use super::pvl::text;
 use super::trigger::{Trigger, read_trigger};
-use crate::bytes::{Bytes, lenient_string};
+use crate::bytes::{Bytes, DecodeError, lenient_string};
+use crate::content::UNITS_PER_METRE;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Light {
@@ -44,20 +44,6 @@ pub struct Environment {
     pub ambient_colours: Option<Box<[[u8; 3]; 256]>>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct NamedPosition {
-    pub name: String,
-    pub position: [f32; 3],
-    pub angle: f32,
-    pub direction: [f32; 3],
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct ParticleSystem {
-    pub name: String,
-    pub location: [f32; 3],
-}
-
 /// A named horizontal clipping plane, at a height in retail units.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ClipPlane {
@@ -74,14 +60,9 @@ pub struct LevelSections {
     pub cameras: Vec<CameraPath>,
     pub environment: Option<Environment>,
     pub triggers: Vec<Trigger>,
-    pub camera_sway: bool,
     pub clip_planes: Vec<ClipPlane>,
     /// Added to every baked vertex colour.
     pub environment_offset: [f32; 3],
-    pub particles: Vec<ParticleSystem>,
-    pub named_positions: Vec<NamedPosition>,
-    pub automap_cell_size: f32,
-    pub automap_cells: Vec<u32>,
 }
 
 impl LevelSections {
@@ -101,32 +82,32 @@ impl LevelSections {
 
 /// Compiled levels (`.pvl`) end each section with `-1`; uncompiled ones
 /// (`.lvl`, e.g. skies) do not.
-fn sentinel(bytes: &mut Bytes, compiled: bool) -> Result<(), PvlError> {
+fn sentinel(bytes: &mut Bytes, compiled: bool) -> Result<(), DecodeError> {
     if compiled && bytes.i32()? != -1 {
-        return Err(invalid("section has the wrong length", bytes));
+        return Err(bytes.invalid("section has the wrong length"));
     }
     Ok(())
 }
 
-fn count(bytes: &mut Bytes) -> Result<usize, PvlError> {
+fn count(bytes: &mut Bytes) -> Result<usize, DecodeError> {
     let count = bytes.i32()?;
     if !(0..100_000).contains(&count) {
-        return Err(invalid("invalid record count", bytes));
+        return Err(bytes.invalid("invalid record count"));
     }
     Ok(count as usize)
 }
 
-fn read_lights(bytes: &mut Bytes) -> Result<Vec<Light>, PvlError> {
+fn read_lights(bytes: &mut Bytes) -> Result<Vec<Light>, DecodeError> {
     let count = bytes.i16()?.max(0);
     let mut lights = Vec::with_capacity(count as usize);
     for _ in 0..count {
         let version = bytes.i16()?;
         bytes.take(2)?; // create, visible
         let flags = bytes.u32()?;
-        let location = bytes.f32s::<3>()?.map(|v| v * RECORD_SCALE);
+        let location = bytes.f32s::<3>()?.map(|v| v * UNITS_PER_METRE);
         let colour = bytes.f32s()?;
         let intensity = bytes.f32()?;
-        let range = bytes.f32()? * RECORD_SCALE;
+        let range = bytes.f32()? * UNITS_PER_METRE;
         let mut name = String::new();
         if version >= 2 {
             name = lenient_string(bytes.take(20)?);
@@ -144,14 +125,14 @@ fn read_lights(bytes: &mut Bytes) -> Result<Vec<Light>, PvlError> {
     Ok(lights)
 }
 
-fn read_environment(bytes: &mut Bytes) -> Result<Option<Environment>, PvlError> {
+fn read_environment(bytes: &mut Bytes) -> Result<Option<Environment>, DecodeError> {
     if bytes.i32()? == 0 {
         return Ok(None);
     }
     let fog_enabled = bytes.u8()? != 0;
     let [start, end, _] = bytes.f32s::<3>()?;
     let intensity = bytes.f32()?;
-    let view_distance = bytes.f32()? * RECORD_SCALE;
+    let view_distance = bytes.f32()? * UNITS_PER_METRE;
     match bytes.u8()? {
         1 => {
             bytes.take(12)?;
@@ -161,7 +142,7 @@ fn read_environment(bytes: &mut Bytes) -> Result<Option<Environment>, PvlError> 
         }
         _ => {}
     }
-    let table = |bytes: &mut Bytes| -> Result<Option<Box<[[u8; 3]; 256]>>, PvlError> {
+    let table = |bytes: &mut Bytes| -> Result<Option<Box<[[u8; 3]; 256]>>, DecodeError> {
         if bytes.u8()? == 0 {
             return Ok(None);
         }
@@ -185,16 +166,16 @@ fn read_environment(bytes: &mut Bytes) -> Result<Option<Environment>, PvlError> 
 const PARTICLE_RECORD: [usize; 4] = [0x216, 0x218, 0x21d, 0x225];
 
 /// Read a compiled level's sections, starting where its meshes end.
-pub fn read_sections(bytes: &mut Bytes) -> Result<LevelSections, PvlError> {
+pub fn read_sections(bytes: &mut Bytes) -> Result<LevelSections, DecodeError> {
     read_sections_of(bytes, true)
 }
 
 /// Read an uncompiled level's sections, starting after its mesh record.
-pub fn read_uncompiled_sections(bytes: &mut Bytes) -> Result<LevelSections, PvlError> {
+pub fn read_uncompiled_sections(bytes: &mut Bytes) -> Result<LevelSections, DecodeError> {
     read_sections_of(bytes, false)
 }
 
-fn read_sections_of(bytes: &mut Bytes, compiled: bool) -> Result<LevelSections, PvlError> {
+fn read_sections_of(bytes: &mut Bytes, compiled: bool) -> Result<LevelSections, DecodeError> {
     let lights = read_lights(bytes)?;
     sentinel(bytes, compiled)?;
     for _ in 0..count(bytes)? {
@@ -231,7 +212,7 @@ fn read_sections_of(bytes: &mut Bytes, compiled: bool) -> Result<LevelSections, 
     sentinel(bytes, compiled)?;
     let triggers = (0..count(bytes)?).map(|_| read_trigger(bytes)).collect::<Result<_, _>>()?;
     sentinel(bytes, compiled)?;
-    let camera_sway = bytes.i32()? != 0;
+    bytes.i32()?; // camera sway
     let clip_count = count(bytes)?;
     let mut clip_planes = Vec::with_capacity(clip_count);
     if clip_count > 0 {
@@ -239,41 +220,32 @@ fn read_sections_of(bytes: &mut Bytes, compiled: bool) -> Result<LevelSections, 
         for _ in 0..clip_count {
             let name = text(bytes, 64)?.to_uppercase();
             let position = bytes.f32s::<4>()?;
-            clip_planes.push(ClipPlane { name, height: position[1] * RECORD_SCALE });
+            clip_planes.push(ClipPlane { name, height: position[1] * UNITS_PER_METRE });
         }
     }
     sentinel(bytes, compiled)?;
     let environment_offset = bytes.f32s()?;
-    let mut particles = Vec::new();
+    // Particle systems are not drawn yet.
     for _ in 0..count(bytes)? {
         let version = bytes.u8()?;
         let size = *PARTICLE_RECORD
             .get((version as usize).wrapping_sub(1))
-            .ok_or_else(|| invalid("unknown particle system version", bytes))?;
-        let record = bytes.take(size)?;
-        let mut location = Bytes::new(&record[0x40..0x4c]);
-        particles.push(ParticleSystem {
-            name: lenient_string(&record[..64]),
-            location: location.f32s::<3>()?.map(|v| v * RECORD_SCALE),
-        });
+            .ok_or_else(|| bytes.invalid("unknown particle system version"))?;
+        bytes.take(size)?;
     }
     sentinel(bytes, compiled)?;
-    let mut named_positions = Vec::new();
+    // Named positions: teleports name trigger placements instead.
     for _ in 0..count(bytes)? {
         if bytes.u8()? != 1 {
-            return Err(invalid("unknown named position version", bytes));
+            return Err(bytes.invalid("unknown named position version"));
         }
-        named_positions.push(NamedPosition {
-            name: text(bytes, 0x80)?.to_uppercase(),
-            position: bytes.f32s::<3>()?.map(|v| v * RECORD_SCALE),
-            angle: bytes.f32()?,
-            direction: bytes.f32s()?,
-        });
+        bytes.take(0x80 + 12 + 4 + 12)?;
     }
     sentinel(bytes, compiled)?;
-    let automap_cell_size = bytes.f32()?;
+    // The automap's cell grid; the automap draws the level's own geometry.
+    bytes.f32()?;
     let cells = bytes.u32()? as usize;
-    let automap_cells = bytes.records(cells, 4, |b| b.u32())?;
+    bytes.records(cells, 4, |b| b.u32())?;
     sentinel(bytes, compiled)?;
     Ok(LevelSections {
         lights,
@@ -282,13 +254,8 @@ fn read_sections_of(bytes: &mut Bytes, compiled: bool) -> Result<LevelSections, 
         cameras,
         environment,
         triggers,
-        camera_sway,
         clip_planes,
         environment_offset,
-        particles,
-        named_positions,
-        automap_cell_size,
-        automap_cells,
     })
 }
 
@@ -296,7 +263,7 @@ fn read_sections_of(bytes: &mut Bytes, compiled: bool) -> Result<LevelSections, 
 mod tests {
     use super::*;
     use crate::retail::files::retail_files;
-    use crate::retail::pvl::read_level_geometry;
+    use crate::retail::pvl::{compiled_level_end, read_compiled_level};
     use crate::retail::trigger::TriggerKind;
 
     #[test]
@@ -308,8 +275,9 @@ mod tests {
         assert_eq!(levels.len(), 34);
         for level in levels {
             let data = files.read(&level).unwrap().unwrap();
-            let geometry = read_level_geometry(&data).unwrap_or_else(|e| panic!("{level}: {e}"));
+            let geometry = read_compiled_level(&data).unwrap_or_else(|e| panic!("{level}: {e}"));
             assert!(!geometry.meshes.is_empty(), "{level}");
+            assert_eq!(compiled_level_end(&data).unwrap(), geometry.end, "{level}");
             let mut bytes = Bytes::new(&data[geometry.end..]);
             let sections = read_sections(&mut bytes).unwrap_or_else(|e| panic!("{level}: {e}"));
             assert_eq!(bytes.remaining(), 72, "{level}");
@@ -336,7 +304,7 @@ mod tests {
         use crate::retail::trigger::{StateMode, action, flag};
         let files = retail_files();
         let data = files.read("levels/monastery/monastery2.pvl").unwrap().unwrap();
-        let start = read_level_geometry(&data).unwrap().end;
+        let start = compiled_level_end(&data).unwrap();
         let sections = read_sections(&mut Bytes::new(&data[start..])).unwrap();
         let item = |name: &str| match &sections.trigger(name).unwrap().kind {
             TriggerKind::Item(item) => item.clone(),

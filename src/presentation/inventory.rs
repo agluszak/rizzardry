@@ -28,13 +28,14 @@ use super::screen_art::{
 use crate::content::items::{ItemCatalog, QuantityKind};
 use crate::content::ui::{SpriteSheet, TextTable};
 use crate::game::characters::{Character, Gender, Race, Vitals};
-use crate::game::combat::attack::armour;
+use crate::game::combat::attack::Armour;
 use crate::game::data::GameData;
 use crate::game::inventory::{
     BACKPACK_SLOTS, Carried, EquipSlot, ItemStack, MemberSlot, PartyInventory, Slot,
 };
 use crate::game::party::roster::PartyRoster;
 use crate::game::screen::Screen;
+use crate::presentation::screen_art::visible_if;
 
 const CELL: Vec2 = Vec2::new(46.0, 54.0);
 /// Pool cells shown at once.
@@ -159,7 +160,7 @@ pub fn load_inventory_art(mut commands: Commands, assets: Res<AssetServer>) {
         left_plug: load("main interface/leftplug.sti"),
         right_plug: load("main interface/rightplug.sti"),
         condition_rim: load("main interface/condition_highlight.sti"),
-        strings: assets.load("retail://data/strings/stringdata.dat"),
+        strings: assets.load(crate::content::paths::STRINGS),
         gold_icon: load("review/reviewgoldicon.sti"),
         highlights: load("review/reviewitemhighlights.sti"),
         unusable: load("review/itemusablebackground.sti"),
@@ -499,11 +500,7 @@ fn draw_portrait_highlights(
             } else {
                 None
             };
-            visibility.set_if_neq(if occupied && frame.is_some() {
-                Visibility::Inherited
-            } else {
-                Visibility::Hidden
-            });
+            visibility.set_if_neq(visible_if(occupied && frame.is_some()));
             if let Some(frame) = frame
                 && picture.frame != frame
             {
@@ -537,7 +534,7 @@ fn cell_controls(cell: Cell, art: &InventoryArt) -> impl Scene {
         Children [
             template(move |_| Ok(ImageNode { image: fill.clone(), rect: Some(Rect::new(0.0, 0.0, 46.0, 54.0)), ..default() }))
             Node { position_type: PositionType::Absolute, width: px(46), height: px(54) }
-            template(move |_| Ok(if grid { Visibility::Inherited } else { Visibility::Hidden }))
+            template(move |_| Ok(visible_if(grid)))
             Pickable::IGNORE
             -- @picture(art.unusable.clone(),0,Vec2::ZERO)
             template(|_| Ok(CellPart::Unusable))
@@ -729,17 +726,13 @@ fn draw_vitals(
     let Some(screen) = screen else { return };
     let Ok((profile, vitals)) = members.get(screen.member) else { return };
     for (_, shade, node, mut visibility) in &mut art {
-        visibility.set_if_neq(if vitals.is_dead() {
-            Visibility::Hidden
-        } else {
-            Visibility::Inherited
-        });
+        visibility.set_if_neq(visible_if(!vitals.is_dead()));
         if let (Some(shade), Some(mut node)) = (shade, node) {
             let (current, maximum) = match shade {
                 VitalShade::Health => (vitals.hp, profile.max_hp()),
                 VitalShade::Stamina => (vitals.stamina, profile.max_stamina()),
             };
-            let filled = current.min(maximum).saturating_mul(45) / maximum.max(1);
+            let filled = super::screen_art::vital_fill(current, maximum);
             let height = px((45 - filled) as f32);
             if node.height != height {
                 node.height = height;
@@ -770,11 +763,7 @@ fn draw_header_condition(
                 }
             }
             HeaderCondition::Rim => {
-                visibility.set_if_neq(if condition.is_some() {
-                    Visibility::Inherited
-                } else {
-                    Visibility::Hidden
-                });
+                visibility.set_if_neq(visible_if(condition.is_some()));
             }
         };
     }
@@ -785,13 +774,13 @@ fn draw_header_hands(
     assets: Res<AssetServer>,
     data: Option<Res<GameData>>,
     catalogs: Res<Assets<ItemCatalog>>,
-    members: Query<(&Character, Option<&Carried>)>,
+    members: Query<(&Character, Option<&Carried>, Option<&Armour>)>,
     art: Res<InventoryArt>,
     mut parts: Query<(&HeaderHand, &mut Visibility, Option<&mut Picture>, Option<&mut BitmapText>)>,
 ) {
     let Some(screen) = screen else { return };
     let Some(catalog) = data.and_then(|data| catalogs.get(&data.items)) else { return };
-    let Ok((profile, carried)) = members.get(screen.member) else { return };
+    let Ok((profile, carried, armour)) = members.get(screen.member) else { return };
     let empty = Carried::default();
     let carried = carried.unwrap_or(&empty);
     let two_handed = carried
@@ -828,7 +817,7 @@ fn draw_header_hands(
                     )
                 };
                 source = Some(Picture {
-                    sheet: assets.load(format!("retail://{path}")),
+                    sheet: assets.load(crate::content::paths::retail(&path)),
                     frame,
                     at: Vec2::new(x, if off { 58.0 } else { 34.0 }),
                     ..default()
@@ -852,11 +841,9 @@ fn draw_header_hands(
                     },
                 );
             }
-            HeaderHand::Armour => {
-                value = Some(armour(profile, carried, catalog).average().to_string())
-            }
+            HeaderHand::Armour => value = Some(armour.map_or(0, Armour::average).to_string()),
         }
-        visibility.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
+        visibility.set_if_neq(visible_if(shown));
         if let (Some(mut picture), Some(source)) = (picture, source) {
             picture.set_if_neq(source);
         }
@@ -890,7 +877,7 @@ fn sync_member_portraits(
     let Ok(root) = roots.single() else { return };
     for (slot, mut visible) in &mut empty {
         let occupied = roster.get_index(slot.0).is_some_and(|e| members.contains(*e));
-        visible.set_if_neq(if occupied { Visibility::Hidden } else { Visibility::Inherited });
+        visible.set_if_neq(visible_if(!occupied));
     }
     for (entity, button, _) in &buttons {
         if !roster.contains(&button.0) || !members.contains(button.0) {
@@ -905,7 +892,7 @@ fn sync_member_portraits(
             format!("data/portraits/small/s{}.sti", profile.portrait)
         };
         let source = Picture {
-            sheet: assets.load(format!("retail://{path}")),
+            sheet: assets.load(crate::content::paths::retail(&path)),
             at: member_position(slot) + Vec2::ONE,
             ..default()
         };
@@ -944,7 +931,7 @@ fn draw_header(
         let mut source = None;
         let mut value = None;
         let image = |path: String, frame| Picture {
-            sheet: assets.load(format!("retail://{path}")),
+            sheet: assets.load(crate::content::paths::retail(&path)),
             frame,
             ..default()
         };
@@ -968,14 +955,21 @@ fn draw_header(
                 let gender = if profile.gender == Gender::Male { 0x2d1 } else { 0x2d2 };
                 let table = tables.get(&art.strings);
                 let gender = table.and_then(|t| t.get(gender)).unwrap_or("");
-                let race = table.and_then(|t| t.get(0x284 + profile.race as usize)).unwrap_or("");
+                let race = table
+                    .and_then(|t| t.get(crate::retail::strings::RACE_NAMES + profile.race as usize))
+                    .unwrap_or("");
                 value = Some(format!("{gender} {race}").trim().to_owned());
             }
             HeaderPart::Profession => {
                 value = Some(
                     tables
                         .get(&art.strings)
-                        .and_then(|t| t.get(0x2a4 + profile.profession as usize))
+                        .and_then(|t| {
+                            t.get(
+                                crate::retail::strings::PROFESSION_NAMES
+                                    + profile.profession as usize,
+                            )
+                        })
                         .unwrap_or("")
                         .to_owned(),
                 )
@@ -1076,7 +1070,7 @@ fn draw_cells(
                 CellPart::Unidentified => definition.is_some_and(|(i, _)| !i.identified),
                 CellPart::Rim => !grid && definition.is_some(),
             };
-            visible.set_if_neq(if show { Visibility::Inherited } else { Visibility::Hidden });
+            visible.set_if_neq(visible_if(show));
             match *part {
                 CellPart::Picture => {
                     if let Some((_, definition)) = definition
@@ -1084,7 +1078,7 @@ fn draw_cells(
                     {
                         let at = picture.at;
                         picture.set_if_neq(Picture {
-                            sheet: assets.load(format!("retail://{}", definition.image)),
+                            sheet: assets.load(crate::content::paths::retail(&definition.image)),
                             frame: if grid { 0 } else { 1 },
                             at,
                             bounds: None,
@@ -1187,7 +1181,7 @@ pub fn follow_held(
         return;
     };
     if loading.as_ref().is_none_or(|(path, _)| *path != definition.image) {
-        let handle = assets.load(format!("retail://{}", definition.image));
+        let handle = assets.load(crate::content::paths::retail(&definition.image));
         *loading = Some((definition.image.clone(), handle));
     }
     let Some((_, handle)) = &*loading else { return };
@@ -1241,7 +1235,8 @@ impl Plugin for InventoryPlugin {
                         draw_gold,
                         draw_cells,
                     )
-                        .after(spawn_inventory_screen),
+                        .after(spawn_inventory_screen)
+                        .run_if(any_with_component::<InventoryScreen>),
                     follow_held,
                 ),
             )
@@ -1291,6 +1286,7 @@ mod tests {
             .init_asset::<Image>()
             .init_asset::<ItemCatalog>()
             .init_resource::<UiScale>()
+            .add_message::<crate::game::inventory::ItemNews>()
             .init_resource::<super::super::main_screen::SelectedMember>()
             .add_plugins(InventoryPlugin)
             .add_observer(crate::presentation::retail_controls::primary_buttons_only)
@@ -1305,7 +1301,10 @@ mod tests {
             inventory::ItemIds,
         };
         let mut app = crate::presentation::test_input::input_app();
-        app.init_asset::<SpriteSheet>().init_asset::<ItemCatalog>().add_systems(Update, draw_cells);
+        app.init_asset::<SpriteSheet>()
+            .init_asset::<ItemCatalog>()
+            .add_message::<crate::game::inventory::ItemNews>()
+            .add_systems(Update, draw_cells);
         let definition =
             ItemDefinition { quantity: QuantityKind::Stack, stack_limit: 99, ..default() };
         let items = app

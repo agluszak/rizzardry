@@ -8,6 +8,7 @@ use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use super::path::{RetailPathError, normalize};
+use crate::bytes::{Truncated, u32_at};
 
 const HEADER_SIZE: u64 = 532;
 const ENTRY_SIZE: u64 = 280;
@@ -45,15 +46,13 @@ pub enum SlfError {
     Duplicate(String),
     #[error(transparent)]
     Path(#[from] RetailPathError),
+    #[error(transparent)]
+    Truncated(#[from] Truncated),
 }
 
 fn text(field: &[u8]) -> Result<&[u8], SlfError> {
     let end = field.iter().position(|&b| b == 0).ok_or(SlfError::Unterminated)?;
     Ok(&field[..end])
-}
-
-fn u32_at(bytes: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
 }
 
 impl SlfArchive {
@@ -70,8 +69,8 @@ impl SlfArchive {
         text(&header[..256])?;
         let prefix = String::from_utf8_lossy(text(&header[256..512])?).into_owned();
         let prefix = if prefix.is_empty() { String::new() } else { normalize(&prefix)? };
-        let entries = u32_at(&header, 512) as i32;
-        let used = u32_at(&header, 516) as i32;
+        let entries = u32_at(&header, 512)? as i32;
+        let used = u32_at(&header, 516)? as i32;
         if entries < 0 || used < 0 || used > entries || used > i32::from(u16::MAX) {
             return Err(SlfError::Counts { entries, used });
         }
@@ -93,8 +92,8 @@ impl SlfArchive {
             let raw = String::from_utf8_lossy(text(&record[..256])?).into_owned();
             let member = normalize(&raw)?;
             let name = if prefix.is_empty() { member } else { format!("{prefix}/{member}") };
-            let offset = u64::from(u32_at(record, 256));
-            let length = u64::from(u32_at(record, 260));
+            let offset = u64::from(u32_at(record, 256)?);
+            let length = u64::from(u32_at(record, 260)?);
             if offset < HEADER_SIZE || offset > table_start || length > table_start - offset {
                 return Err(SlfError::EntryBounds { name });
             }

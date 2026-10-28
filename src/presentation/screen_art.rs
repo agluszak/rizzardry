@@ -278,6 +278,62 @@ pub fn render_text(
     }
 }
 
+/// Fit the 640×480 screen layout into what the interface draws into (the
+/// window, or an offscreen image).
+pub fn scale_ui(
+    interface: Query<&Camera, With<bevy::ui::IsDefaultUiCamera>>,
+    mut scale: ResMut<UiScale>,
+) {
+    if let Some(size) = interface.single().ok().and_then(Camera::logical_target_size) {
+        let fit = (size.x / SCREEN.x).min(size.y / SCREEN.y);
+        if scale.0 != fit {
+            scale.0 = fit;
+        }
+    }
+}
+
+/// How many of a vital bar's 45 pixels are full: any of `now` shows at
+/// least one.
+pub fn vital_fill(now: u32, max: u32) -> u32 {
+    if now == 0 || max == 0 { 0 } else { (now.min(max) * 45 / max).max(1) }
+}
+
+/// Inherited visibility when shown, hidden otherwise.
+pub fn visible_if(visible: bool) -> Visibility {
+    if visible { Visibility::Inherited } else { Visibility::Hidden }
+}
+
+/// Point a picture at the sheet on `path`, loading it only when the path
+/// changes rather than every frame.
+pub fn show_sheet(picture: &mut Mut<Picture>, assets: &AssetServer, path: String) {
+    if picture.sheet.path().is_none_or(|current| current.to_string() != path) {
+        picture.sheet = assets.load(path);
+    }
+}
+
+/// The game's string table, loaded at startup.
+#[derive(Resource)]
+pub struct StringTable(Handle<crate::content::ui::TextTable>);
+
+pub fn load_string_table(mut commands: Commands, assets: Res<AssetServer>) {
+    commands.insert_resource(StringTable(assets.load(crate::content::paths::STRINGS)));
+}
+
+/// The game's strings, for views that name things the way retail does.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct GameStrings<'w> {
+    table: Option<Res<'w, StringTable>>,
+    tables: Res<'w, Assets<crate::content::ui::TextTable>>,
+}
+
+impl GameStrings<'_> {
+    /// The string, trimmed; empty until the table has loaded.
+    pub fn get(&self, id: usize) -> &str {
+        let table = self.table.as_ref().and_then(|t| self.tables.get(&t.0));
+        table.and_then(|t| t.get(id)).map_or("", str::trim)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

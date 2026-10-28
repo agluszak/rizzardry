@@ -24,7 +24,7 @@ use bevy::ui_widgets::{Activate, Button};
 
 use super::main_screen::SelectedMember;
 use super::retail_controls::FocusRing;
-use super::screen_art::BitmapText;
+use super::screen_art::{BitmapText, visible_if};
 use crate::content::items::ItemCatalog;
 use crate::content::level::TRAP_TYPES;
 use crate::content::ui::{SpriteSheet, TextTable};
@@ -32,15 +32,13 @@ use crate::game::characters::{Character, Vitals};
 use crate::game::data::GameData;
 use crate::game::inventory::StackId;
 use crate::game::party::roster::PartyRoster;
-use crate::game::world::containers::{self, Recipient};
+use crate::game::world::containers::{Container, Recipient};
 use crate::game::world::interaction::{
-    self, AttemptOn, COMPONENTS, DeviceInteraction, Observation, TRAP_COMPONENTS, Work,
+    self, AttemptOn, COMPONENTS, DeviceInteraction, DeviceRequest, Observation, TRAP_COMPONENTS,
+    Work,
 };
 use crate::game::world::props::PropMotion;
-use crate::game::world::triggers::Container;
 
-/// The trap types' names in the game's string table.
-const TRAP_NAMES: usize = 0x542;
 const WIDTH: f32 = 380.0;
 const BUTTON: Color = Color::srgb(0.22, 0.17, 0.11);
 const BUTTON_OFF: Color = Color::srgb(0.1, 0.08, 0.06);
@@ -64,7 +62,7 @@ struct DevicePanelArt {
 fn load_device_panel_art(mut commands: Commands, assets: Res<AssetServer>) {
     commands.insert_resource(DevicePanelArt {
         font: assets.load("retail://data/fonts/wiz_text_font.sti"),
-        strings: assets.load("retail://data/strings/stringdata.dat"),
+        strings: assets.load(crate::content::paths::STRINGS),
     });
 }
 
@@ -118,9 +116,11 @@ enum Caption {
     Control(Control),
 }
 
-/// The list of a container's stacks.
+/// The list of a container's stacks, on the panel it belongs to.
 #[derive(Component, Debug)]
-struct LootRows;
+struct LootRows {
+    panel: Entity,
+}
 
 /// One stack's row, kept while the stack stays in the container.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,12 +171,15 @@ fn open_panel(
             TabGroup::modal(),
             ChildOf(root),
         ))
-        .observe(move |mut key: On<FocusedInput<KeyboardInput>>, mut commands: Commands| {
-            if key.input.state.is_pressed() && key.input.logical_key == Key::Escape {
-                key.propagate(false);
-                commands.queue(move |world: &mut World| interaction::leave(world, attempt));
-            }
-        })
+        .observe(
+            move |mut key: On<FocusedInput<KeyboardInput>>,
+                  mut requests: MessageWriter<DeviceRequest>| {
+                if key.input.state.is_pressed() && key.input.logical_key == Key::Escape {
+                    key.propagate(false);
+                    requests.write(DeviceRequest::Leave { on: attempt });
+                }
+            },
+        )
         .id();
     caption(&mut commands, body, &font, Caption::Title);
     caption(&mut commands, body, &font, Caption::Status);
@@ -226,7 +229,7 @@ fn open_panel(
         }
         Work::Looting => {
             commands.spawn((
-                LootRows,
+                LootRows { panel: root },
                 Node { flex_direction: FlexDirection::Column, row_gap: px(2), ..default() },
                 ChildOf(body),
             ));
@@ -257,11 +260,7 @@ fn show_panel(
         let settled = !matches!(interaction.work, Work::Looting)
             || motions.get(on.0).is_ok_and(|m| m.frame == m.target);
         let casting = magic_views.iter().any(|view| view.attempt == Some(panel.0));
-        visibility.set_if_neq(if settled && !casting {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        });
+        visibility.set_if_neq(visible_if(settled && !casting));
     }
 }
 
@@ -315,8 +314,7 @@ fn sync_loot_rows(
     mut commands: Commands,
     mut panels: Query<(&PanelOf, &mut DevicePanel)>,
     attempts: Query<&AttemptOn>,
-    lists: Query<(Entity, &ChildOf, Option<&Children>), With<LootRows>>,
-    parents: Query<&ChildOf>,
+    lists: Query<(Entity, &LootRows, Option<&Children>)>,
     rows: Query<&LootRow>,
     controls: Query<(Entity, &Control)>,
     children: Query<&Children>,
@@ -324,9 +322,8 @@ fn sync_loot_rows(
     mut focus: Option<ResMut<InputFocus>>,
     art: Res<DevicePanelArt>,
 ) {
-    for (list, body, existing) in &lists {
-        let Ok(root) = parents.get(body.parent()) else { continue };
-        let Ok((panel_of, mut panel)) = panels.get_mut(root.parent()) else { continue };
+    for (list, rows_of, existing) in &lists {
+        let Ok((panel_of, mut panel)) = panels.get_mut(rows_of.panel) else { continue };
         let Ok(on) = attempts.get(panel_of.0) else { continue };
         let Ok(container) = containers.get(on.0) else { continue };
         let existing: Vec<(Entity, StackId)> = existing
@@ -409,7 +406,11 @@ fn draw_device_panel(
     let skill = member.and_then(|(_, (c, v))| interaction::lock_skill(c, v));
     let strings = tables.get(&art.strings);
     let trap_name = |trap: usize| {
-        strings.and_then(|s| s.get(TRAP_NAMES + trap)).unwrap_or("Trap").trim().to_owned()
+        strings
+            .and_then(|s| s.get(crate::retail::strings::TRAP_NAMES + trap))
+            .unwrap_or("Trap")
+            .trim()
+            .to_owned()
     };
     let catalog = data.as_ref().and_then(|d| catalogs.get(&d.items));
     let stacks = containers.get(on.0).map_or(&[][..], |c| &c.contents.items[..]);
@@ -513,7 +514,7 @@ fn draw_device_panel(
             }
             (Control::Inspect, _) => skill.is_some(),
             (Control::Cast | Control::UseItem, _) => {
-                member.is_some_and(|(_, (_, vitals))| crate::game::camp::can_act(vitals))
+                member.is_some_and(|(_, (_, vitals))| vitals.can_act())
             }
             (Control::Less(id) | Control::More(id), _) => {
                 stacks.iter().find(|s| s.id == id).is_some_and(|s| s.count() > 1)
@@ -554,6 +555,7 @@ fn press(
     selected: Res<SelectedMember>,
     roster: Single<&PartyRoster>,
     mut commands: Commands,
+    mut requests: MessageWriter<DeviceRequest>,
 ) {
     let (Ok(&control), Ok((&PanelOf(on), mut panel))) =
         (controls.get(click.entity), panels.single_mut())
@@ -569,15 +571,6 @@ fn press(
             .and_then(|c| c.contents.items.iter().find(|s| s.id == id))
             .map_or(0, |s| s.count())
     };
-    let attempt = move |run: fn(&mut World, Entity, Entity) -> Result<(), interaction::Unable>| {
-        move |world: &mut World| {
-            if let Some(actor) = actor
-                && let Err(unable) = run(world, on, actor)
-            {
-                debug!("device attempt refused: {unable:?}");
-            }
-        }
-    };
     match control {
         Control::Cast | Control::UseItem => {
             if let (Some(actor), Some(art)) = (actor, magic_art.as_deref()) {
@@ -590,25 +583,29 @@ fn press(
                 );
             }
         }
-        Control::Tumbler(index) => {
+        Control::Tumbler(tumbler) => {
             if let Some(actor) = actor {
-                commands.queue(move |world: &mut World| {
-                    let _ = interaction::pick_tumbler(world, on, actor, index);
-                });
+                requests.write(DeviceRequest::Pick { on, actor, tumbler });
             }
         }
-        Control::Force => commands.queue(attempt(interaction::force_lock)),
-        Control::Inspect => commands.queue(attempt(interaction::inspect_trap)),
-        Control::Component(index) => {
+        Control::Force => {
             if let Some(actor) = actor {
-                commands.queue(move |world: &mut World| {
-                    let _ = interaction::disarm_component(world, on, actor, index);
-                });
+                requests.write(DeviceRequest::Force { on, actor });
             }
         }
-        Control::Spring => commands.queue(move |world: &mut World| {
-            let _ = interaction::spring_trap(world, on, actor);
-        }),
+        Control::Inspect => {
+            if let Some(actor) = actor {
+                requests.write(DeviceRequest::Inspect { on, actor });
+            }
+        }
+        Control::Component(component) => {
+            if let Some(actor) = actor {
+                requests.write(DeviceRequest::Disarm { on, actor, component });
+            }
+        }
+        Control::Spring => {
+            requests.write(DeviceRequest::Spring { on, actor });
+        }
         Control::PreviousTrap => panel.guess = (panel.guess + TRAP_TYPES - 1) % TRAP_TYPES,
         Control::NextTrap => panel.guess = (panel.guess + 1) % TRAP_TYPES,
         Control::Row(id) => {
@@ -653,13 +650,11 @@ fn press(
                 },
             };
             let picks = std::mem::take(&mut panel.chosen);
-            commands.queue(move |world: &mut World| {
-                if let Err(refusal) = containers::take_from_container(world, on, &picks, to) {
-                    debug!("taking from the container refused: {refusal:?}");
-                }
-            });
+            requests.write(DeviceRequest::Take { on, picks, to });
         }
-        Control::Leave => commands.queue(move |world: &mut World| interaction::leave(world, on)),
+        Control::Leave => {
+            requests.write(DeviceRequest::Leave { on });
+        }
     }
 }
 
@@ -677,6 +672,7 @@ mod tests {
         let mut app = crate::presentation::test_input::input_app();
         app.add_plugins((
             plugin,
+            crate::game::world::interaction::plugin,
             bevy::input_focus::InputDispatchPlugin,
             bevy::input_focus::tab_navigation::TabNavigationPlugin,
         ))

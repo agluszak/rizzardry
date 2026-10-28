@@ -91,7 +91,9 @@ pub(super) fn open_info(
         .and_then(|data| spell_state.2.as_ref().and_then(|catalogs| catalogs.get(&data.spells)));
     let string = |id| strings.get(id).unwrap_or("");
     let (title_id, detail_id) = match target.subject {
-        Subject::Skill(skill) => (0x2e2 + skill as usize, DETAILS[skill as usize]),
+        Subject::Skill(skill) => {
+            (crate::retail::strings::SKILL_NAMES + skill as usize, DETAILS[skill as usize])
+        }
         Subject::Attribute(attribute) => (0x274 + attribute as usize, 0x6a0 + attribute as usize),
         Subject::Secondary(index) => (0x6ac + index, 0x6a7 + index),
     };
@@ -141,10 +143,7 @@ pub(super) fn open_info(
             }
         }
     }
-    let line_height = font
-        .frames
-        .first()
-        .map_or(12.0, |frame| (frame.height as i32 + frame.offset[1] as i32).max(1) as f32);
+    let line_height = font.line_height();
     // The first two labels share a line (the differently coloured prefix).
     let count = entries.len().saturating_sub(1);
     let maximum = count.saturating_sub((185.0 / line_height).floor() as usize);

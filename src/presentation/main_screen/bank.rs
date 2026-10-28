@@ -20,6 +20,7 @@ use crate::game::inventory::{Carried, EquipSlot};
 use crate::game::party::Order;
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::search::{Search, ToggleSearch};
+use crate::presentation::screen_art::visible_if;
 use crate::presentation::screen_art::{BitmapText, Picture, PictureCrop, label, picture};
 use bevy::picking::hover::Hovered;
 
@@ -131,11 +132,7 @@ pub fn draw_bank(
         selected.member(&roster).and_then(|m| orders.get(m).ok()).copied().unwrap_or_default();
     for (entity, face, skin, selected, disabled, mut picture, mut visible) in &mut buttons {
         let combat_only = matches!(face.kind, Some(Bank::Order(_) | Bank::Round | Bank::PartyMove));
-        visible.set_if_neq(if combat_only && !fighting {
-            Visibility::Hidden
-        } else {
-            Visibility::Inherited
-        });
+        visible.set_if_neq(visible_if(!combat_only || fighting));
         let enabled = face.kind.is_some_and(|kind| {
             !matches!(kind, Bank::EndCombat)
                 && !(fighting && matches!(kind, Bank::Camp | Bank::Search))
@@ -202,7 +199,7 @@ fn press(
     mut camp: MessageWriter<CampRequest>,
     mut search: MessageWriter<ToggleSearch>,
     mut layout: ResMut<ScreenLayout>,
-    mut orders: Query<&mut Order>,
+    mut orders: MessageWriter<crate::game::combat::GiveOrder>,
     roster: Single<&PartyRoster>,
     selected: Res<SelectedMember>,
     mut round: MessageWriter<StartRound>,
@@ -215,10 +212,8 @@ fn press(
 ) {
     match buttons.get(click.entity).ok().and_then(|face| face.kind) {
         Some(Bank::Order(order)) if battle.is_some() => {
-            if let Some(member) = selected.member(&roster)
-                && let Ok(mut current) = orders.get_mut(member)
-            {
-                current.set_if_neq(order);
+            if let Some(member) = selected.member(&roster) {
+                orders.write(crate::game::combat::GiveOrder { member, order });
             }
         }
         Some(Bank::Round) if battle.is_some() => {
@@ -290,13 +285,18 @@ pub fn draw_caption(
     orders: Query<&Order>,
     mut captions: Query<(&CaptionLine, &mut BitmapText)>,
     spells: Res<Assets<crate::content::spells::SpellCatalog>>,
+    strings: crate::presentation::screen_art::GameStrings,
 ) {
     let spells = data.as_ref().and_then(|d| spells.get(&d.spells));
     let catalog = data.and_then(|d| catalogs.get(&d.items));
     let (first, second) = match selected.member(&roster).and_then(|m| members.get(m).ok()) {
         None => (String::new(), String::new()),
         Some((profile, vitals, carried)) => {
-            let first = format!("{} - {:?}", profile.name, profile.profession);
+            let first = format!(
+                "{} - {}",
+                profile.name,
+                strings.get(crate::retail::strings::PROFESSION_NAMES + profile.profession as usize)
+            );
             let mut second = if battle.is_some() {
                 match selected
                     .member(&roster)

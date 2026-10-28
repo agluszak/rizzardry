@@ -12,6 +12,7 @@ pub mod keyframes;
 pub mod level_loader;
 pub mod links;
 pub mod mesh_record;
+pub mod mipmaps;
 pub mod monster;
 pub mod monster_loader;
 pub mod navmesh;
@@ -24,6 +25,7 @@ pub mod population;
 pub mod prop;
 pub mod prop_loader;
 pub mod pvl;
+pub mod record;
 pub mod sections;
 pub mod sky_loader;
 pub mod slf;
@@ -43,7 +45,30 @@ use std::sync::Arc;
 use bevy::asset::AssetApp;
 use bevy::prelude::*;
 
+use crate::bytes::{DecodeError, Truncated};
 use crate::content::level::{LevelDefinition, LevelGeometry};
+
+/// Why a retail asset failed to load.
+#[derive(Debug, thiserror::Error)]
+pub enum LoadError {
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Read(#[from] bevy::asset::ReadAssetBytesError),
+    #[error(transparent)]
+    Decode(#[from] DecodeError),
+    #[error(transparent)]
+    Texture(#[from] bevy::image::TextureError),
+    /// Well-formed data the game cannot use.
+    #[error("{0}")]
+    Invalid(String),
+}
+
+impl From<Truncated> for LoadError {
+    fn from(error: Truncated) -> Self {
+        LoadError::Decode(error.into())
+    }
+}
 
 /// Registers the `retail://` and `navmesh://` asset sources and retail
 /// format loaders.

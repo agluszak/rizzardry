@@ -2,6 +2,7 @@
 //! decide who reaches whom in melee (wizardry-8-decomp
 //! `FormationAndFacing.cpp`, `Combat Range.cpp`).
 
+use bevy::ecs::entity::EntityHashMap;
 use bevy::prelude::*;
 use enum_map::{Enum, EnumMap};
 
@@ -34,6 +35,9 @@ impl Row {
 #[derive(Component, Debug, Default, Clone, PartialEq)]
 pub struct Formation {
     seats: EnumMap<Row, [Option<Entity>; 3]>,
+    /// The row each dead member held, to return to when raised (retail
+    /// `bOldQuadrant`).
+    vacated: EntityHashMap<Row>,
 }
 
 impl Formation {
@@ -55,38 +59,68 @@ impl Formation {
     }
 
     /// Seat a member without a place in the first row with room, front, then
-    /// center, then rear (retail `PlaceCharacterInFormation`). Within a row
-    /// (`MakeRoomInFormationRow`): the first takes the lead seat; a second
-    /// moves the leader to the middle and takes the far seat; a third takes
-    /// the lead seat again.
+    /// center, then rear (retail `PlaceCharacterInFormation`).
     pub fn seat(&mut self, member: Entity) {
         if self.row_of(member).is_some() {
             return;
         }
         for row in [Row::Front, Row::Center, Row::Rear] {
-            let seats = &mut self.seats[row];
-            match seats.iter().flatten().count() {
-                0 => seats[0] = Some(member),
-                1 if seats[0].is_some() => {
-                    seats[1] = seats[0].take();
-                    seats[2] = Some(member);
-                }
-                3 => continue,
-                _ => match seats.iter_mut().find(|s| s.is_none()) {
-                    Some(free) => *free = Some(member),
-                    None => continue,
-                },
+            if self.seat_in(row, member) {
+                return;
             }
-            return;
         }
     }
 
-    /// The dead hold no place.
-    pub fn unseat(&mut self, member: Entity) {
-        for seat in self.seats.values_mut().flatten() {
-            if *seat == Some(member) {
-                *seat = None;
+    /// Seat a member in `row` if it has room (retail
+    /// `MakeRoomInFormationRow`): the first takes the lead seat; a second
+    /// moves the leader to the middle and takes the far seat; a third takes
+    /// the lead seat again.
+    fn seat_in(&mut self, row: Row, member: Entity) -> bool {
+        let seats = &mut self.seats[row];
+        match seats.iter().flatten().count() {
+            0 => seats[0] = Some(member),
+            1 if seats[0].is_some() => {
+                seats[1] = seats[0].take();
+                seats[2] = Some(member);
             }
+            3 => return false,
+            _ => match seats.iter_mut().find(|s| s.is_none()) {
+                Some(free) => *free = Some(member),
+                None => return false,
+            },
+        }
+        true
+    }
+
+    /// A member leaves the formation for good.
+    pub fn unseat(&mut self, member: Entity) {
+        self.vacated.remove(&member);
+        self.take_seat(member);
+    }
+
+    fn take_seat(&mut self, member: Entity) -> Option<Row> {
+        let (row, seat) = self.place_of(member)?;
+        self.seats[row][seat] = None;
+        Some(row)
+    }
+
+    /// Keep a member's seat in step with its life (retail
+    /// `UpdateFormationSlotState`): the dead give up their place and remember
+    /// its row; the raised return to that row when it has room, or are
+    /// seated like a joiner.
+    pub fn update_seat(&mut self, member: Entity, dead: bool) {
+        if dead {
+            if let Some(row) = self.take_seat(member) {
+                self.vacated.insert(member, row);
+            }
+            return;
+        }
+        if self.row_of(member).is_some() {
+            return;
+        }
+        let returned = self.vacated.remove(&member).is_some_and(|row| self.seat_in(row, member));
+        if !returned {
+            self.seat(member);
         }
     }
 
@@ -165,6 +199,26 @@ mod tests {
         assert_eq!(formation.row_of(members[2]), Some(Row::Front));
         assert_eq!(formation.row_of(members[3]), Some(Row::Center));
         assert_eq!(formation.row_of(members[5]), Some(Row::Center));
+    }
+
+    #[test]
+    fn the_raised_return_to_the_row_they_died_in() {
+        let mut world = World::new();
+        let members: Vec<_> = (0..7).map(|_| world.spawn_empty().id()).collect();
+        let mut formation = Formation::default();
+        for &member in &members[..6] {
+            formation.seat(member);
+        }
+        formation.update_seat(members[4], true);
+        assert_eq!(formation.row_of(members[4]), None);
+        formation.update_seat(members[4], false);
+        assert_eq!(formation.row_of(members[4]), Some(Row::Center));
+        // Someone took the dead member's place: the raised are seated anew.
+        formation.update_seat(members[0], true);
+        formation.seat(members[6]);
+        formation.update_seat(members[0], false);
+        assert_eq!(formation.row_of(members[6]), Some(Row::Front));
+        assert_eq!(formation.row_of(members[0]), Some(Row::Rear));
     }
 
     #[test]

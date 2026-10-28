@@ -171,10 +171,16 @@ pub enum UseContext {
     Trap,
 }
 
+/// Whether the game can resolve a spell: its effect is modelled, or it is
+/// one of the device spells the device interaction resolves.
+pub fn resolvable(spell: SpellId) -> bool {
+    effects::modelled(spell) || matches!(spell, SpellId::DIVINE_TRAP | SpellId::KNOCK_KNOCK)
+}
+
 pub fn usable_now(spell: &SpellDefinition, context: UseContext) -> bool {
     match context {
-        UseContext::Lock => spell.id == SpellId(39),
-        UseContext::Trap => matches!(spell.id.0, 18 | 39),
+        UseContext::Lock => spell.id == SpellId::KNOCK_KNOCK,
+        UseContext::Trap => matches!(spell.id, SpellId::DIVINE_TRAP | SpellId::KNOCK_KNOCK),
         _ => match spell.usable {
             Usable::Always => true,
             Usable::InCombat => context == UseContext::Combat,
@@ -393,7 +399,7 @@ fn auto_power(
     let fail = |p| super::fail_chance(character, spell, p);
     let Some((profile, vitals)) = victim else { return 1 };
     let power = if effects::restores(spell.id) {
-        let missing = if spell.id == SpellId(13) {
+        let missing = if spell.id == SpellId::STAMINA {
             profile.max_stamina().saturating_sub(vitals.stamina)
         } else {
             profile.max_hp().saturating_sub(vitals.hp)
@@ -473,8 +479,8 @@ fn prepare_source<'a>(
     points: &Query<(&LearnedSpells, &mut SpellPoints)>,
     inventory: &PartyInventory,
 ) -> Result<Prepared<'a>, Refusal> {
-    let (profile, vitals, carried) = members.get(caster).map_err(|_| Refusal::CannotAct)?;
-    if vitals.is_dead() || vitals.worst_condition().is_some_and(|c| c >= Condition::Asleep) {
+    let (profile, vitals, carried, ..) = members.get(caster).map_err(|_| Refusal::CannotAct)?;
+    if !vitals.can_fight() {
         return Err(Refusal::CannotAct);
     }
     let character = profile.clone();
@@ -560,7 +566,7 @@ pub fn perform(
         (spells, world.items),
         world.members,
         points,
-        &world.monsters.inventory,
+        world.inventory,
     )?;
     if !effects::modelled(spell.id) {
         return Err(Refusal::Unsupported);
@@ -610,7 +616,7 @@ pub fn perform(
                         Aim::Member(m) => world.members.get(m).ok(),
                         Aim::Monster(_) | Aim::Device(_) => None,
                     };
-                    auto_power(&character, spell, victim.map(|(c, v, _)| (c, v)), affordable)
+                    auto_power(&character, spell, victim.map(|(c, v, ..)| (c, v)), affordable)
                 } else {
                     power.min(affordable)
                 }
@@ -619,24 +625,8 @@ pub fn perform(
         let (victims, landing) =
             capture(caster, spell, cast_power, choice.aim, situation, forced_self)?;
         // Accepted: roll, then pay whatever the roll.
-        let (chance, quiet) = match &item {
-            Some(use_) => item_failure(
-                &character,
-                use_.definition,
-                spell,
-                cast_power,
-                use_.identified,
-                world.difficulty,
-            ),
-            None => {
-                let chance = super::fail_chance(&character, spell, cast_power);
-                (world.difficulty.scale_by_pace(chance, 0), false)
-            }
-        };
-        let strength = match &item {
-            Some(use_) => item_strength(&character, use_.definition, spell, cast_power),
-            None => Strength::of(&character, spell, cast_power),
-        };
+        let (chance, quiet, strength) =
+            attempt(&character, item.as_ref(), spell, cast_power, world.difficulty);
         let outcome = super::roll(rng, chance, spell, quiet);
         pay(caster, spell, cast_power, item.as_ref(), points, rng, world, &mut report)?;
         let victims = match outcome {
@@ -703,7 +693,7 @@ pub fn perform(
         report.effects.extend(landed);
         // An auto cast tries again while it fizzles, and auto recast goes on
         // until its victim is whole, while stamina and points last.
-        let stamina = world.members.get(caster).map_or(0, |(_, v, _)| v.stamina);
+        let stamina = world.members.get(caster).map_or(0, |(_, v, ..)| v.stamina);
         let left = points.get(caster).map_or(0, |(_, p)| spell.realm.map_or(0, |r| p.current[r]));
         let again = auto
             && stamina > u32::from(spell.level)
@@ -741,7 +731,7 @@ pub(crate) fn perform_device(
         (spells, world.items),
         world.members,
         points,
-        &world.monsters.inventory,
+        world.inventory,
     )?;
     if !matches!(context, UseContext::Lock | UseContext::Trap) || !usable_now(spell, context) {
         return Err(Refusal::WrongTime);
@@ -761,24 +751,8 @@ pub(crate) fn perform_device(
     if power == 0 {
         return Err(Refusal::NoSpellPoints);
     }
-    let (chance, quiet, strength) = match &item {
-        Some(use_) => {
-            let (chance, quiet) = item_failure(
-                &character,
-                use_.definition,
-                spell,
-                power,
-                use_.identified,
-                world.difficulty,
-            );
-            (chance, quiet, item_strength(&character, use_.definition, spell, power))
-        }
-        None => (
-            world.difficulty.scale_by_pace(super::fail_chance(&character, spell, power), 0),
-            false,
-            Strength::of(&character, spell, power),
-        ),
-    };
+    let (chance, quiet, strength) =
+        attempt(&character, item.as_ref(), spell, power, world.difficulty);
     let outcome = super::roll(rng, chance, spell, quiet);
     let mut report = Report {
         caster,
@@ -795,6 +769,30 @@ pub(crate) fn perform_device(
     practise(caster, &character, spell, power, item.as_ref(), rng, world);
     report.improved = std::mem::take(&mut world.improved);
     Ok((report, strength))
+}
+
+/// An attempt at `power`: its failure chance, whether it is quiet (a
+/// thrown item), and the strength it casts with, from a learned spell or an
+/// item.
+fn attempt(
+    character: &Character,
+    item: Option<&ItemUse>,
+    spell: &SpellDefinition,
+    power: u8,
+    difficulty: Difficulty,
+) -> (u32, bool, Strength) {
+    match item {
+        Some(use_) => {
+            let (chance, quiet) =
+                item_failure(character, use_.definition, spell, power, use_.identified, difficulty);
+            (chance, quiet, item_strength(character, use_.definition, spell, power))
+        }
+        None => (
+            difficulty.scale_by_pace(super::fail_chance(character, spell, power), 0),
+            false,
+            Strength::of(character, spell, power),
+        ),
+    }
 }
 
 /// Instruments and gadgets find the power their player can manage, paying
@@ -818,7 +816,7 @@ fn play(
         power -= 1;
         chance = chance.saturating_sub(7);
     }
-    let (mut profile, mut vitals, _) =
+    let (mut profile, mut vitals, ..) =
         world.members.get_mut(caster).map_err(|_| Refusal::CannotAct)?;
     vitals.spend_stamina(u32::from(spell.level) * 8 + 20);
     if power == 0 {
@@ -853,9 +851,7 @@ fn pay(
         }
         Some(use_) => {
             let consumed = match use_.owner {
-                ItemOwner::Pool => {
-                    world.monsters.inventory.pool.consume_use(use_.id, use_.definition)
-                }
+                ItemOwner::Pool => world.inventory.pool.consume_use(use_.id, use_.definition),
                 ItemOwner::Member(owner) => world
                     .members
                     .get_mut(owner)
@@ -866,7 +862,7 @@ fn pay(
             if !consumed {
                 return Err(Refusal::NoItem);
             }
-            let (_, vitals, _) = world.members.get(caster).map_err(|_| Refusal::CannotAct)?;
+            let (_, vitals, ..) = world.members.get(caster).map_err(|_| Refusal::CannotAct)?;
             report.item = Some(use_.definition.name.clone());
             match use_.definition.use_type {
                 UseType::Thrown => 10,
@@ -879,7 +875,11 @@ fn pay(
             }
         }
     };
-    world.members.get_mut(caster).map_err(|_| Refusal::CannotAct)?.1.spend_stamina(fatigue);
+    // Action fatigue weighs more under load (retail `FatigueCharacter`).
+    let (_, mut vitals, _, burden) =
+        world.members.get_mut(caster).map_err(|_| Refusal::CannotAct)?;
+    let slowed = vitals.has(Condition::Slowed);
+    vitals.spend_stamina(burden.load.scale_fatigue(fatigue, slowed));
     Ok(())
 }
 
@@ -900,7 +900,7 @@ fn practise(
             let index = u32::from(spell.level) + u32::from(power);
             let mut practice = vec![(super::best_book(character, spell), (index + 2) >> 2)];
             if let Some(realm) = spell.realm {
-                practice.push((super::realm_skill(realm), index));
+                practice.push((realm.skill(), index));
             }
             if character.skill_available(Skill::PowerCast) {
                 practice.push((Skill::PowerCast, (index + 2) >> 2));
@@ -939,10 +939,7 @@ pub fn usable_items(
                 carried.active_equipment().any(|(_, equipped)| equipped.stack.id == stack.id);
             let usable = can_activate(character, definition, worn);
             let charged = stack.remaining_uses() != Some(0);
-            (usable
-                && charged
-                && (effects::modelled(cast.spell) || matches!(cast.spell.0, 18 | 39)))
-            .then_some((stack.id, cast.spell))
+            (usable && charged && resolvable(cast.spell)).then_some((stack.id, cast.spell))
         })
         .collect()
 }

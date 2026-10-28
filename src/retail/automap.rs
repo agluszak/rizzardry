@@ -57,7 +57,7 @@ mod tests {
     fn retail_layers_and_cursor_hotspots_match_authored_data() {
         use crate::bytes::Bytes;
         use crate::retail::{
-            files::retail_files, pvl::read_level_geometry, sections::read_sections,
+            files::retail_files, pvl::read_compiled_level, sections::read_sections,
         };
         let files = retail_files();
         let filters = files.read("data/automap/mapfilters.txt").unwrap().unwrap();
@@ -75,7 +75,7 @@ mod tests {
             let Some(data) = files.read(&level.path()) else { continue };
             let data = data.unwrap();
             checked += 1;
-            let geometry = read_level_geometry(&data).unwrap();
+            let geometry = read_compiled_level(&data).unwrap();
             let sections = read_sections(&mut Bytes::new(&data[geometry.end..])).unwrap();
             let layers = layer_heights(&sections.clip_planes, &filters, Some(index)).unwrap();
             assert!(

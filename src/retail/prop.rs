@@ -2,10 +2,11 @@
 //! `ReadAnimatedMesh`): placed scenery, doors, levers, lifts and billboards.
 
 use super::keyframes::{PathKey, read_path};
-use super::mesh_record::{MeshRecord, MeshVertices, RECORD_SCALE, read_mesh_record};
-use super::pvl::{PvlError, invalid, text};
+use super::mesh_record::{MeshRecord, MeshVertices, read_mesh_record};
+use super::pvl::text;
 use super::trigger::{Trigger, read_trigger};
-use crate::bytes::Bytes;
+use crate::bytes::{Bytes, DecodeError};
+use crate::content::UNITS_PER_METRE;
 
 /// Prop flag: the party and monsters collide with the prop.
 pub const PROP_COLLIDABLE: u32 = 1;
@@ -64,11 +65,11 @@ impl Prop {
     }
 }
 
-pub fn read_animated_mesh(bytes: &mut Bytes) -> Result<AnimatedMesh, PvlError> {
+pub fn read_animated_mesh(bytes: &mut Bytes) -> Result<AnimatedMesh, DecodeError> {
     let count = bytes.u8()? as usize;
     let first_frame = bytes.u8()? as usize;
     if count == 0 || first_frame >= count {
-        return Err(invalid("invalid animated mesh frame count", bytes));
+        return Err(bytes.invalid("invalid animated mesh frame count"));
     }
     let first = read_mesh_record(bytes)?;
     let vertex_frames = matches!(first.vertices, MeshVertices::Frames(_));
@@ -76,7 +77,7 @@ pub fn read_animated_mesh(bytes: &mut Bytes) -> Result<AnimatedMesh, PvlError> {
     if !vertex_frames {
         for _ in 1..count {
             if bytes.u8()? as usize >= count {
-                return Err(invalid("animated mesh frame index out of range", bytes));
+                return Err(bytes.invalid("animated mesh frame index out of range"));
             }
             frames.push(read_mesh_record(bytes)?);
         }
@@ -98,10 +99,10 @@ pub struct Animation {
 
 /// Skip an animation's embedded lights. Props may not carry any; monster
 /// cycles can.
-fn skip_lights(bytes: &mut Bytes, allowed: bool) -> Result<(), PvlError> {
+fn skip_lights(bytes: &mut Bytes, allowed: bool) -> Result<(), DecodeError> {
     let count = bytes.u8()?;
     if count != 0 && !allowed {
-        return Err(invalid("prop animation carries lights", bytes));
+        return Err(bytes.invalid("prop animation carries lights"));
     }
     for _ in 0..count {
         let version = bytes.u8()?;
@@ -125,7 +126,7 @@ fn skip_lights(bytes: &mut Bytes, allowed: bool) -> Result<(), PvlError> {
     Ok(())
 }
 
-pub fn read_animation(bytes: &mut Bytes, lights_allowed: bool) -> Result<Animation, PvlError> {
+pub fn read_animation(bytes: &mut Bytes, lights_allowed: bool) -> Result<Animation, DecodeError> {
     let version = bytes.u8()?;
     let groups = bytes.u8()? as usize;
     bytes.u8()?; // playing
@@ -144,7 +145,7 @@ pub fn read_animation(bytes: &mut Bytes, lights_allowed: bool) -> Result<Animati
     }
     bytes.take(50)?;
     if groups > 3 {
-        return Err(invalid("more than three animation groups", bytes));
+        return Err(bytes.invalid("more than three animation groups"));
     }
     bytes.take(groups)?; // channel bytes
     if version > 6 {
@@ -167,7 +168,7 @@ pub fn read_animation(bytes: &mut Bytes, lights_allowed: bool) -> Result<Animati
         for _ in 0..count {
             let channel = bytes.i8()?;
             if !(0..3).contains(&channel) {
-                return Err(invalid("animation channel out of range", bytes));
+                return Err(bytes.invalid("animation channel out of range"));
             }
             let mesh = read_animated_mesh(bytes)?;
             let channel = &mut channels[channel as usize];
@@ -181,7 +182,7 @@ pub fn read_animation(bytes: &mut Bytes, lights_allowed: bool) -> Result<Animati
     Ok(Animation { frames_per_second, wraps, path, channels })
 }
 
-pub fn read_prop(bytes: &mut Bytes) -> Result<Prop, PvlError> {
+pub fn read_prop(bytes: &mut Bytes) -> Result<Prop, DecodeError> {
     let version = bytes.i8()?;
     let mut prop = Prop {
         name: String::new(),
@@ -205,7 +206,7 @@ pub fn read_prop(bytes: &mut Bytes) -> Result<Prop, PvlError> {
         bytes.u8()?; // frame count
         if version > 4 {
             prop.face_camera = bytes.u8()? != 0;
-            prop.location = bytes.f32s::<3>()?.map(|v| v * RECORD_SCALE);
+            prop.location = bytes.f32s::<3>()?.map(|v| v * UNITS_PER_METRE);
         }
         if version > 5 {
             prop.flags = bytes.u32()?;

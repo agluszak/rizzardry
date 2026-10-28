@@ -7,10 +7,9 @@ use crate::content::level::LevelGeometry;
 use crate::game::time::GameClock;
 use bevy::asset::{LoadState, RecursiveDependencyLoadState};
 
-use crate::game::world::level::{
-    Destination, Level, LevelEntities, PresentationReadiness, PropPart,
-};
+use crate::game::world::level::{Destination, Level, LevelEntities, PresentationReadiness};
 use crate::game::world::props::Prop;
+use crate::game::world::props::PropPart;
 use crate::presentation::billboards::FaceCamera;
 use crate::presentation::party_view::PartyCamera;
 
@@ -33,7 +32,7 @@ pub fn prepare_appearance(
 ) {
     for (entity, destination, prepared) in &entries {
         let Some(PreparedAppearance(handle)) = prepared else {
-            let handle = assets.load(format!("retail://{}", destination.level.path));
+            let handle = assets.load(crate::content::paths::retail(&destination.level.path));
             commands
                 .entity(entity)
                 .insert((PreparedAppearance(handle), PresentationReadiness::Waiting));
@@ -74,7 +73,7 @@ pub fn request_level_visuals(
 ) {
     let Ok((level, prepared)) = levels.get(add.entity) else { return };
     let handle = prepared.map_or_else(
-        || assets.load(format!("retail://{}", level.path)),
+        || assets.load(crate::content::paths::retail(&level.path)),
         |prepared| prepared.0.clone(),
     );
     commands
@@ -271,7 +270,6 @@ mod tests {
                 Prop {
                     definition: 0,
                     centre: authored.translation,
-                    door: false,
                     frames_per_second: 1.0,
                     last_frame: 0,
                     wraps: false,

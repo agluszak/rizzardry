@@ -64,6 +64,28 @@ impl Plugin for PartyPlugin {
     }
 }
 
+/// Party members' profiles, vitals, belongings and burdens, as rules use and
+/// change them. Membership itself is the roster's.
+pub type Members<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static mut crate::game::characters::Character,
+        &'static mut crate::game::characters::Vitals,
+        &'static mut crate::game::inventory::Carried,
+        &'static crate::game::inventory::Burden,
+    ),
+>;
+
+/// The party's average level (retail `GetAveragePartyLevel`), over every
+/// member, dead or alive: what loot and stock scale by. 1 for an empty
+/// party, where retail divides by zero.
+pub fn average_level(levels: impl IntoIterator<Item = u8>) -> u32 {
+    let (sum, count) =
+        levels.into_iter().fold((0, 0), |(sum, count), level| (sum + u32::from(level), count + 1));
+    sum.checked_div(count).unwrap_or(1)
+}
+
 /// Actual damage to an actor, after its gameplay consequences have settled.
 /// Presentation can retain this result even if healing follows before it draws.
 #[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,7 +107,7 @@ pub fn damage_member(
 ) -> u32 {
     let lost = vitals.damage(amount);
     if vitals.is_dead() && formation.row_of(member).is_some() {
-        formation.unseat(member);
+        formation.update_seat(member, true);
     }
     if lost > 0 {
         damage.write(DamageApplied { member, amount: lost, died: vitals.is_dead() });

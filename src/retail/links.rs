@@ -10,14 +10,10 @@ use super::trigger::{ItemTrigger, TriggerKind, TriggerPlacement, action};
 use crate::content::level::{Arrival, Entrance, LevelLink, LinkKind};
 
 /// The eye above the feet, in retail units.
-const EYE_HEIGHT: f32 = 1000.0;
+const EYE_HEIGHT: f32 = crate::content::EYE_HEIGHT * crate::content::UNITS_PER_METRE;
 
 fn feet(eye: [f32; 3]) -> Vec3 {
     retail_position([eye[0], eye[1] - EYE_HEIGHT, eye[2]])
-}
-
-fn recipients(trigger: &ItemTrigger) -> impl Iterator<Item = &str> {
-    trigger.recipients.split(',').map(str::trim).filter(|r| !r.is_empty())
 }
 
 /// Every positioned trigger as a place to enter the level.
@@ -44,8 +40,8 @@ pub fn level_entrances(sections: &LevelSections) -> Vec<Entrance> {
 /// not handled. A random teleport takes the first destination until the game
 /// has a random source for it.
 pub fn teleport_arrival(sections: &LevelSections, item: &ItemTrigger) -> Option<Arrival> {
-    let name = recipients(item).next()?;
-    let here = recipients(item).find_map(|name| match &sections.trigger(name)?.kind {
+    let name = item.recipients().next()?;
+    let here = item.recipients().find_map(|name| match &sections.trigger(name)?.kind {
         TriggerKind::Item(item) => item.placement,
         _ => None,
     });
@@ -80,7 +76,7 @@ pub fn level_links(sections: &LevelSections) -> Vec<LevelLink> {
         match item.initial_action {
             action::TELEPORT | action::RANDOM_TELEPORT => {
                 let Some(from) = item.placement else { continue };
-                for destination in recipients(item).filter_map(|name| positioned.get(name)) {
+                for destination in item.recipients().filter_map(|name| positioned.get(name)) {
                     links.push(LevelLink {
                         kind: LinkKind::Teleport,
                         from: feet(from.position),
@@ -89,7 +85,7 @@ pub fn level_links(sections: &LevelSections) -> Vec<LevelLink> {
                 }
             }
             action::CAMERA_PATH => {
-                for name in recipients(item) {
+                for name in item.recipients() {
                     let Some(camera) = sections.cameras.iter().find(|c| c.name == name) else {
                         continue;
                     };
@@ -114,7 +110,7 @@ pub fn level_links(sections: &LevelSections) -> Vec<LevelLink> {
 mod tests {
     use super::*;
     use crate::bytes::Bytes;
-    use crate::retail::pvl::read_level_geometry;
+    use crate::retail::pvl::compiled_level_end;
     use crate::retail::sections::read_sections;
 
     #[test]
@@ -126,7 +122,7 @@ mod tests {
         let mut travel = Vec::new();
         for level in files.names().filter(|n| n.ends_with(".pvl")) {
             let data = files.read(level).unwrap().unwrap();
-            let start = read_level_geometry(&data).unwrap().end;
+            let start = compiled_level_end(&data).unwrap();
             let sections = read_sections(&mut Bytes::new(&data[start..])).unwrap();
             let links = level_links(&sections);
             teleports += links.iter().filter(|l| l.kind == LinkKind::Teleport).count();
