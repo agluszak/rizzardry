@@ -157,8 +157,9 @@ pub(super) fn refresh(
         .as_ref()
         .and_then(|data| catalogs.as_ref().and_then(|catalogs| catalogs.get(&data.items)));
     let weight = burden.map(|burden| burden.weight);
-    let armour =
-        carried.zip(catalog).map(|(carried, catalog)| armour(character, carried, catalog, load));
+    let armour = carried
+        .zip(catalog)
+        .map(|(carried, catalog)| armour(character, carried, catalog, load, false));
     for (kind, mut text) in &mut values {
         let (value, palette) = match *kind {
             Value::Experience => (format_gold(character.experience), None),

@@ -389,7 +389,9 @@ pub fn draw_party(
                     shown = !dead;
                     value = Some(
                         match (carried.as_ref(), catalog) {
-                            (Some(c), Some(catalog)) => armour(profile, c, catalog, load).average(),
+                            (Some(c), Some(catalog)) => {
+                                armour(profile, c, catalog, load, false).average()
+                            }
                             _ => 0,
                         }
                         .to_string(),

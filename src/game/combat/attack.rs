@@ -230,12 +230,6 @@ pub struct Armour {
 }
 
 impl Armour {
-    /// Defending adds 2 everywhere.
-    pub fn defend(&mut self) {
-        self.total += 2;
-        self.by_location.values_mut().for_each(|a| *a += 2);
-    }
-
     /// Hit-location-weighted average displayed on the character portrait.
     pub fn average(&self) -> i32 {
         let weight = |part| match part {
@@ -250,14 +244,23 @@ impl Armour {
     }
 }
 
-pub fn armour(c: &Character, carried: &Carried, catalog: &ItemCatalog, load: Load) -> Armour {
+/// A character's armour (retail `CalcArmorClasses`). Defending adds 2
+/// everywhere and lets Shield skill count for more.
+pub fn armour(
+    c: &Character,
+    carried: &Carried,
+    catalog: &ItemCatalog,
+    load: Load,
+    defending: bool,
+) -> Armour {
     let definition = |slot| carried.worn(slot).and_then(|i| catalog.get(i.item));
     let speed = c.attribute(Attribute::Speed);
     let mut total =
         i32::from(c.race == Race::Faerie) * 2 + i32::from(speed > 79) + i32::from(speed > 89)
             - i32::from(speed < 20)
             - i32::from(speed < 10)
-            - load.armour_penalty();
+            - load.armour_penalty()
+            + if defending { 2 } else { 0 };
     // Shields and magic items worn in the misc, cloak and hand slots.
     for slot in [
         EquipSlot::Misc1,
@@ -269,7 +272,13 @@ pub fn armour(c: &Character, carried: &Carried, catalog: &ItemCatalog, load: Loa
         if let Some(d) = definition(slot) {
             total += i32::from(d.armor_class_bonus);
             if d.class == EquipClass::Shield {
-                total += (c.skill(Skill::Shield) as i32 / 25).min(i32::from(d.armor_class_bonus));
+                let shield = i32::from(d.armor_class_bonus);
+                let skill = c.skill(Skill::Shield) as i32;
+                total += if defending {
+                    (skill / 15).min(shield * 3 / 2)
+                } else {
+                    (skill / 25).min(shield)
+                };
             }
         }
     }
@@ -417,6 +426,37 @@ mod tests {
         assert_eq!(resolve(60, 50, 80), None);
         assert_eq!(resolve(40, 50, 30), Some(false));
         assert_eq!(resolve(40, 50, 45), Some(true));
+    }
+
+    #[test]
+    fn defending_adds_two_everywhere_and_lets_shield_skill_count_for_more() {
+        use crate::game::characters::{Gender, Profession};
+        use crate::game::inventory::{Equipped, ItemIds};
+        let shield = ItemDefinition {
+            class: EquipClass::Shield,
+            armor_class_bonus: 4,
+            ..ItemDefinition::default()
+        };
+        let catalog = ItemCatalog(vec![shield.clone()]);
+        let mut carried = Carried::default();
+        let stack =
+            crate::game::inventory::ItemStack::new(&shield, &mut ItemIds::default(), 1, true);
+        carried.equipment[EquipSlot::Secondary] = Some(Equipped::new(stack));
+        let mut bearer = Character::new("A", Race::Human, Gender::Male, Profession::Mage);
+        let gain = |bearer: &Character| {
+            let standing = armour(bearer, &carried, &catalog, Load::None, false);
+            let defending = armour(bearer, &carried, &catalog, Load::None, true);
+            for (part, armour) in &defending.by_location {
+                assert_eq!(armour - standing.by_location[part], defending.total - standing.total);
+            }
+            defending.total - standing.total
+        };
+        // Shield 60: 60 / 25 = 2 standing, 60 / 15 = 4 defending.
+        bearer.skill_points[Skill::Shield] = 60;
+        assert_eq!(gain(&bearer), 2 + (4 - 2));
+        // Shield 125: capped at the shield's 4 standing, at 6 (1.5×) defending.
+        bearer.skill_points[Skill::Shield] = 125;
+        assert_eq!(gain(&bearer), 2 + (6 - 4));
     }
 
     #[test]

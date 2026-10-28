@@ -843,7 +843,7 @@ fn draw_header_hands(
                 );
             }
             HeaderHand::Armour => {
-                value = Some(armour(profile, carried, catalog, load).average().to_string())
+                value = Some(armour(profile, carried, catalog, load, false).average().to_string())
             }
         }
         visibility.set_if_neq(visible_if(shown));
