@@ -131,6 +131,24 @@ pub struct SpellInFlight {
     pub strength: Strength,
     pub victims: Vec<Victim>,
     pub arrives: Timer,
+    /// Its place in the order flights were launched ([`FlightOrder`]).
+    pub launched: u64,
+}
+
+/// Launches flights in the order casts are accepted. Impacts land by
+/// arrival time, and impacts arriving together in this order, so the
+/// outcome never depends on how updates batch time or on entity order.
+#[derive(Resource, Debug, Default)]
+pub struct FlightOrder(u64);
+
+impl FlightOrder {
+    pub fn launch(&mut self, commands: &mut Commands, flights: Vec<SpellInFlight>, level: Entity) {
+        for mut flight in flights {
+            self.0 += 1;
+            flight.launched = self.0;
+            commands.spawn((flight, crate::game::world::level::LevelOwned(level)));
+        }
+    }
 }
 
 /// A monster the actor may aim at: alive, in the fight if there is one, in
@@ -641,6 +659,7 @@ pub fn perform(
                     strength,
                     victims: victims.clone(),
                     arrives: arrives(to),
+                    launched: 0,
                 });
             } else {
                 for &victim in &victims {
@@ -659,6 +678,7 @@ pub fn perform(
                         strength,
                         victims,
                         arrives: arrives(to),
+                        launched: 0,
                     });
                 }
             }

@@ -50,6 +50,7 @@ impl Plugin for CombatPlugin {
             .add_message::<ChoosePartyMove>()
             .add_message::<StartRound>()
             .init_resource::<CombatSettings>()
+            .init_resource::<casting::FlightOrder>()
             .add_systems(
                 Update,
                 (
@@ -785,9 +786,7 @@ pub fn run_battle(
                                 news.write(CombatNews::Killed { actor: target });
                             }
                         }
-                        for flight in flights {
-                            commands.spawn((flight, LevelOwned(level.0)));
-                        }
+                        magic.flight_order.launch(&mut commands, flights, level.0);
                         magic_news.write(MagicNews::Done(report));
                     }
                     // A refused action falls back to defending (retail
@@ -998,6 +997,7 @@ pub struct BattleMagic<'w, 's> {
     /// monsters still advancing.
     in_flight: Query<'w, 's, (), With<casting::SpellInFlight>>,
     moving: Query<'w, 's, (), With<approach::CombatMove>>,
+    flight_order: ResMut<'w, casting::FlightOrder>,
 }
 
 /// A member casts or uses an item at their initiative. The monsters it may
@@ -1603,6 +1603,62 @@ mod tests {
                 if matches!(effects.as_slice(), [Effect::Damaged { victim: Victim::Monster(m), .. }] if *m == monster))
         });
         assert!(cast.is_some() && landed.is_some() && cast < landed, "{news:?}");
+    }
+
+    /// Impacts due in the same update land in the order they arrive, ties
+    /// in launch order, whatever the entity order: one long update and many
+    /// short ones give the same impacts and leave the RNG in the same state.
+    #[test]
+    fn due_spell_impacts_land_in_arrival_order_however_time_is_batched() {
+        use crate::game::magic::Strength;
+        use crate::game::magic::casting::SpellInFlight;
+        use std::time::Duration;
+        let run = |steps: u32| {
+            let (mut app, [caster, _]) = round_app(true);
+            let monster = order_spell(&mut app, caster, energy_blast());
+            let level = app.world_mut().query::<&LevelOwned>().iter(app.world()).next().unwrap().0;
+            // Markers: spawned in an order unlike their arrival.
+            let markers: Vec<Entity> = (0..4).map(|_| app.world_mut().spawn_empty().id()).collect();
+            let flights = [(0.3, 0), (0.1, 1), (0.2, 2), (0.1, 3)]
+                .map(|(seconds, marker)| SpellInFlight {
+                    caster: markers[marker],
+                    spell: crate::content::spells::SpellId::ENERGY_BLAST,
+                    strength: Strength { power: 1, against: 1, boost: 0 },
+                    victims: vec![Victim::Monster(monster)],
+                    arrives: Timer::from_seconds(seconds, TimerMode::Once),
+                    launched: 0,
+                })
+                .to_vec();
+            let world = app.world_mut();
+            let mut commands = world.commands();
+            let mut order = casting::FlightOrder::default();
+            order.launch(&mut commands, flights, level);
+            world.flush();
+            world.resource_mut::<Messages<MagicNews>>().clear();
+            for _ in 0..steps {
+                world
+                    .resource_mut::<Time<Virtual>>()
+                    .advance_by(Duration::from_secs_f32(0.4) / steps);
+                world.run_system_cached(crate::game::magic::deliver_spells).unwrap();
+                world.flush();
+            }
+            let landed: Vec<(usize, Vec<Effect>)> = world
+                .resource_mut::<Messages<MagicNews>>()
+                .drain()
+                .filter_map(|news| match news {
+                    MagicNews::Landed { caster, effects, .. } => {
+                        Some((markers.iter().position(|&m| m == caster).unwrap(), effects))
+                    }
+                    _ => None,
+                })
+                .collect();
+            (landed, world.resource::<GameRng>().clone())
+        };
+        let (once, rng_once) = run(1);
+        let (stepped, rng_stepped) = run(40);
+        assert_eq!(once.iter().map(|(m, _)| *m).collect::<Vec<_>>(), [1, 3, 2, 0]);
+        assert_eq!(once, stepped);
+        assert_eq!(rng_once, rng_stepped);
     }
 
     /// A monster with nothing in reach spends its phase advancing, by its

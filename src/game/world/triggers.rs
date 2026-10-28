@@ -1063,6 +1063,7 @@ mod tests {
             world.init_resource::<Messages<crate::game::inventory::ItemNews>>();
             world.init_resource::<Messages<super::super::interaction::LockNews>>();
             world.init_resource::<crate::game::difficulty::Difficulty>();
+            world.init_resource::<crate::game::magic::casting::FlightOrder>();
             world.init_resource::<ItemIds>();
             crate::game::party::roster::test_party(&mut world, &[]);
             world.insert_resource(GameClock::at(0));

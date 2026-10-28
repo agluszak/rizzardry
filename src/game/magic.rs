@@ -421,6 +421,7 @@ impl Plugin for MagicPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<MagicRequest>()
             .add_message::<casting::MagicNews>()
+            .init_resource::<casting::FlightOrder>()
             .init_resource::<crate::game::factions::Factions>()
             .init_resource::<crate::game::difficulty::Difficulty>()
             .add_systems(
@@ -456,6 +457,7 @@ pub struct MagicContext<'w, 's> {
     rng: ResMut<'w, GameRng>,
     news: MessageWriter<'w, casting::MagicNews>,
     level: Single<'w, 's, Entity, With<crate::game::world::level::Level>>,
+    flight_order: ResMut<'w, casting::FlightOrder>,
 }
 
 impl MagicContext<'_, '_> {
@@ -526,6 +528,7 @@ pub fn accept_magic(
             rng,
             news,
             level,
+            flight_order,
             ..
         } = &mut context;
         let catalogs = data.as_ref().and_then(|d| {
@@ -569,9 +572,7 @@ pub fn accept_magic(
             match casting::perform(caster, choice, &situation, spells, &mut points, rng, &mut field)
             {
                 Ok((report, flights)) => {
-                    for flight in flights {
-                        commands.spawn((flight, crate::game::world::level::LevelOwned(**level)));
-                    }
+                    flight_order.launch(&mut commands, flights, **level);
                     casting::MagicNews::Done(report)
                 }
                 Err(refusal) => casting::MagicNews::Refused { caster, refusal },
@@ -615,10 +616,17 @@ pub fn deliver_spells(
     });
     let Some((items, species, spells)) = catalogs else { return };
     let living: Vec<Entity> = roster.iter().collect();
+    // Every impact due in this update, in the order they arrive.
+    let mut due = Vec::new();
     for (entity, mut flight) in &mut flights {
-        if !flight.arrives.tick(time.delta()).is_finished() {
-            continue;
+        let left = flight.arrives.remaining();
+        if flight.arrives.tick(time.delta()).is_finished() {
+            due.push((left, flight.launched, entity));
         }
+    }
+    due.sort_unstable_by_key(|&(left, launched, _)| (left, launched));
+    for (_, _, entity) in due {
+        let flight = flights.get(entity).unwrap().1.clone();
         commands.entity(entity).despawn();
         let Some(spell) = spells.get(flight.spell) else { continue };
         let mut field = Field {
@@ -703,6 +711,7 @@ mod tests {
             .init_resource::<crate::game::factions::Factions>()
             .init_resource::<ItemIds>()
             .init_resource::<crate::game::difficulty::Difficulty>()
+            .init_resource::<casting::FlightOrder>()
             .insert_resource(GameRng::seeded(3))
             .add_message::<DamageApplied>()
             .add_message::<MagicRequest>()
@@ -855,6 +864,7 @@ mod tests {
                 .init_resource::<crate::game::factions::Factions>()
                 .init_resource::<ItemIds>()
                 .init_resource::<crate::game::difficulty::Difficulty>()
+                .init_resource::<casting::FlightOrder>()
                 .insert_resource(GameRng::seeded(3))
                 .add_message::<DamageApplied>()
                 .add_message::<MagicRequest>()
