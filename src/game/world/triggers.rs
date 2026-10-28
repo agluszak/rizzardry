@@ -567,6 +567,12 @@ fn ready(world: &World, entity: Entity) -> bool {
     })
 }
 
+/// Choose the use a run performs (retail `Trigger::SelectAction`). As in
+/// retail, choosing is itself a commitment: a matching key unlocks the door
+/// and overcomes its lock, and the initial/alternate sequence advances, even
+/// if the chosen action then declines (retail `Run` returns without undoing
+/// either). Fired flags, location variables, sounds, links and messages
+/// wait for the action's commit.
 fn select_use<'a>(
     mut actor: EntityMut,
     variables: &LevelState,
@@ -693,6 +699,17 @@ fn execute_links(world: &mut World, geometry: &LevelDefinition, entity: Entity, 
     }
 }
 
+/// Whether a device this one runs, or one those run, is mid-animation.
+fn links_moving(world: &World, entity: Entity, depth: usize) -> bool {
+    depth <= MAX_DEPTH
+        && world.get::<Device>(entity).is_some_and(|device| {
+            device.recipients.iter().any(|&recipient| {
+                world.get::<PropMotion>(recipient).is_some_and(|m| m.frame != m.target)
+                    || links_moving(world, recipient, depth + 1)
+            })
+        })
+}
+
 fn execute(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth: usize) -> Ran {
     if !ready(world, entity) {
         return Ran::Declined;
@@ -702,6 +719,11 @@ fn execute(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth:
     let definition = &geometry.triggers[device.definition];
     if depth > MAX_DEPTH {
         warn!("trigger {} recurses too deeply", definition.name);
+        return Ran::Declined;
+    }
+    // A door waits while any device it runs is still moving (retail
+    // `CanRunLinkedTriggers`), before a key is tried.
+    if definition.door.is_some() && links_moving(world, entity, 0) {
         return Ran::Declined;
     }
     let party = crate::game::party::roster::the_party(world);
@@ -1947,6 +1969,60 @@ mod tests {
         level.settle();
         assert!(!level.run("PLAIN").0, "opening an open door does nothing");
         assert_eq!(level.motion("PLAIN").target, 10.0);
+    }
+
+    /// Retail `SelectAction` advances the sequence before the action runs, and
+    /// `Run` returns from an action that cannot run without undoing it; only
+    /// the commit fires, sets variables and shows messages.
+    #[test]
+    fn a_declined_action_advances_the_sequence_but_commits_nothing() {
+        let mut lever = trigger("LEVER", TriggerAction::Unsupported(0x7f));
+        lever.initial.message = Some(1);
+        lever.alternate = Some(TriggerUse { action: TriggerAction::Nothing, message: Some(2) });
+        lever.state_change = Some(("PULLED".into(), StateChange::Set));
+        let mut level = Scenario::new(vec![lever], &[], LevelScript::None);
+        assert_eq!(level.run("LEVER"), (false, vec![]));
+        let device = level.device("LEVER");
+        let state = level.world.get::<TriggerState>(device).unwrap();
+        assert!(state.use_alternate && !state.fired);
+        assert!(!level.variable("PULLED"));
+        // The retry runs the alternate, which commits.
+        assert_eq!(
+            level.run("LEVER"),
+            (true, vec![TriggerEffect::Message { source: None, id: 2 }])
+        );
+        assert!(level.variable("PULLED"));
+        assert!(level.world.get::<TriggerState>(device).unwrap().fired);
+    }
+
+    #[test]
+    fn a_door_waits_for_the_doors_it_runs_before_its_key_is_tried() {
+        let key = ItemId(7);
+        let mut door = trigger("DOOR", TriggerAction::OpenDoor);
+        door.door = Some(DoorLock { locked: true, key: Some(key) });
+        door.fire_linked = true;
+        let gate = trigger("GATE", TriggerAction::OpenDoor);
+        let mut triggers = vec![door, gate];
+        link(&mut triggers, &[("DOOR", &["GATE"])]);
+        let mut level = Scenario::new(
+            triggers,
+            &[PropSpec("DOOR", 15.0, false, &[]), PropSpec("GATE", 10.0, false, &[])],
+            LevelScript::None,
+        );
+        let definition = ItemDefinition { id: key, ..default() };
+        let item =
+            make_item(&definition, &mut ItemIds::default(), &mut GameRng::seeded(5), false, true);
+        level.inventory().hand.held = Some(item);
+        assert!(level.run("GATE").0);
+        // The gate is still opening: the door does not take the key.
+        assert!(!level.run("DOOR").0);
+        assert!(level.world.get::<DoorState>(level.device("DOOR")).unwrap().locked);
+        assert_eq!(level.motion("DOOR").target, 0.0);
+        level.settle();
+        // Once it has settled, the key opens the door, which runs the gate.
+        assert!(level.run("DOOR").0);
+        assert!(!level.world.get::<DoorState>(level.device("DOOR")).unwrap().locked);
+        assert_eq!(level.motion("DOOR").target, 15.0);
     }
 
     #[test]
