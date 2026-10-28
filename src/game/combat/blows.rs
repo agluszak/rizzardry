@@ -61,7 +61,7 @@ struct Tally {
 
 impl Tally {
     fn struck(&mut self, struck: Option<Effect>, by_party: bool) -> u32 {
-        let Some(Effect::Damaged { victim, amount, outcome }) = struck else { return 0 };
+        let Some(Effect::Damaged { victim, outcome }) = struck else { return 0 };
         if outcome.died {
             match victim {
                 Victim::Monster(monster) if by_party => {
@@ -70,7 +70,7 @@ impl Tally {
                 Victim::Monster(e) | Victim::Member(e) => self.deaths.push(e),
             }
         }
-        amount
+        outcome.damage
     }
 
     fn report(

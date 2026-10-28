@@ -23,35 +23,29 @@ const SEARCH_RADIUS: f32 = 20.0;
 const RANGE_PER_POINT: f32 = 0.2;
 const PULSE_SECONDS: f32 = 0.5;
 
-/// The party's search mode (retail `search_mode`).
+/// The party's search mode (retail `search_mode`): whether the player asked
+/// to search. A fight holds it in abeyance without forgetting it.
 #[derive(Resource, Debug)]
 pub struct Search {
-    mode: SearchMode,
+    requested: bool,
     /// The sweeps, every half second.
     pulse: Timer,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SearchMode {
-    Off,
-    On,
-    /// Resume after the fight; cannot also be on.
-    Suspended,
-}
-
 impl Search {
-    fn new(mode: SearchMode) -> Self {
-        Search { mode, pulse: Timer::from_seconds(PULSE_SECONDS, TimerMode::Repeating) }
+    /// Searching is in effect: asked for, and no fight going on.
+    pub fn on(&self, fighting: bool) -> bool {
+        self.requested && !fighting
     }
 
-    pub fn on(&self) -> bool {
-        self.mode == SearchMode::On
+    fn restart_pulse(&mut self) {
+        self.pulse.reset();
     }
 }
 
 impl Default for Search {
     fn default() -> Self {
-        Search::new(SearchMode::Off)
+        Search { requested: false, pulse: Timer::from_seconds(PULSE_SECONDS, TimerMode::Repeating) }
     }
 }
 
@@ -72,26 +66,26 @@ pub enum SearchNews {
     },
 }
 
-/// A fight switches search mode off (retail `InitializeCombat`)...
+/// A fight switches searching off (retail `InitializeCombat`)...
 pub fn suspend_search(
     _: On<Add<Battle>>,
     mut search: ResMut<Search>,
     mut news: MessageWriter<SearchNews>,
 ) {
-    if search.mode == SearchMode::On {
-        *search = Search::new(SearchMode::Suspended);
+    if search.requested {
+        search.restart_pulse();
         news.write(SearchNews::Off);
     }
 }
 
-/// ...and its end back on (retail `EndCombat`).
+/// ...and its end back on, if it was asked for (retail `EndCombat`).
 pub fn resume_search(
     _: On<Remove<Battle>>,
     mut search: ResMut<Search>,
     mut news: MessageWriter<SearchNews>,
 ) {
-    if search.mode == SearchMode::Suspended {
-        *search = Search::new(SearchMode::On);
+    if search.requested {
+        search.restart_pulse();
         news.write(SearchNews::On);
     }
 }
@@ -107,13 +101,14 @@ pub fn toggle_search(
         if !freedom.free() {
             continue;
         }
-        if search.on() {
-            search.mode = SearchMode::Off;
-            news.write(SearchNews::Off);
-        } else if battle.is_some() {
+        if battle.is_some() {
             news.write(SearchNews::NotInCombat);
+        } else if search.requested {
+            search.requested = false;
+            news.write(SearchNews::Off);
         } else {
-            *search = Search::new(SearchMode::On);
+            search.requested = true;
+            search.restart_pulse();
             news.write(SearchNews::On);
         }
     }
@@ -173,7 +168,7 @@ pub fn search_pulse(
     let running = movement.running;
     let mut best: Option<(u32, &Character)> = None;
     for (member, _) in members.iter_many(roster.iter()).matched().filter(|(_, v)| v.can_act()) {
-        let score = search_score(member, search.on(), running);
+        let score = search_score(member, search.on(battle.is_some()), running);
         if score > best.map_or(0, |b| b.0) {
             best = Some((score, member));
         }
@@ -216,7 +211,7 @@ mod tests {
     use crate::game::characters::{Gender, Race};
 
     #[test]
-    fn search_requests_work_without_input_and_resume_after_combat() {
+    fn search_intent_survives_a_fight_which_holds_it_off() {
         use crate::game::screen::Screen;
         use crate::game::world::level::Level;
         let mut app = App::new();
@@ -229,26 +224,42 @@ mod tests {
             .add_observer(resume_search)
             .add_systems(Update, toggle_search);
         app.world_mut().spawn(Level::test(default()));
+        let news = |app: &mut App| {
+            app.world_mut().resource_mut::<Messages<SearchNews>>().drain().collect::<Vec<_>>()
+        };
+        let on = |app: &App, fighting| app.world().resource::<Search>().on(fighting);
         app.world_mut().write_message(ToggleSearch);
         app.update();
-        assert!(app.world().resource::<Search>().on());
+        assert!(on(&app, false));
+        assert_eq!(news(&mut app), [SearchNews::On]);
+        // A fight holds searching off, and remembers it was asked for.
         let battle = app.world_mut().spawn(Battle::default()).id();
         app.update();
-        assert!(!app.world().resource::<Search>().on());
+        assert!(!on(&app, true));
+        assert_eq!(news(&mut app), [SearchNews::Off]);
         app.world_mut().write_message(ToggleSearch);
         app.update();
-        assert!(!app.world().resource::<Search>().on());
+        assert_eq!(news(&mut app), [SearchNews::NotInCombat], "no toggling in a fight");
         app.world_mut().despawn(battle);
         app.update();
-        assert!(app.world().resource::<Search>().on());
+        assert!(on(&app, false));
+        assert_eq!(news(&mut app), [SearchNews::On]);
         app.world_mut().resource_mut::<NextState<Screen>>().set(Screen::Inventory);
         app.world_mut().write_message(ToggleSearch);
         app.update();
-        assert!(app.world().resource::<Search>().on(), "a held party cannot toggle search");
+        assert!(on(&app, false), "a held party cannot toggle search");
         *app.world_mut().resource_mut::<NextState<Screen>>() = NextState::Unchanged;
         app.world_mut().write_message(ToggleSearch);
         app.update();
-        assert!(!app.world().resource::<Search>().on());
+        assert!(!on(&app, false));
+        assert_eq!(news(&mut app), [SearchNews::Off]);
+        // Off, a fight neither announces nor resumes anything.
+        let battle = app.world_mut().spawn(Battle::default()).id();
+        app.update();
+        app.world_mut().despawn(battle);
+        app.update();
+        assert!(!on(&app, false));
+        assert!(news(&mut app).is_empty());
     }
 
     #[test]

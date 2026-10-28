@@ -10,7 +10,7 @@ use crate::content::characters::{Attribute, Realm, Skill};
 use crate::content::items::{Dice, EquipClass, ItemCatalog};
 use crate::content::species::{MonsterCatalog, MonsterKind};
 use crate::content::spells::{SpellDefinition, SpellId};
-use crate::game::characters::{Condition, Lasting, inflict, resistance::Resistances, wake_on_hit};
+use crate::game::characters::{Condition, Lasting, inflict, wake_on_hit};
 use crate::game::difficulty::{Difficulty, Side};
 use crate::game::party::DamageApplied;
 use crate::game::party::formation::Formation;
@@ -215,7 +215,6 @@ pub enum Effect {
     },
     Damaged {
         victim: Victim,
-        amount: u32,
         outcome: DamageOutcome,
     },
     Inflicted {
@@ -291,7 +290,6 @@ pub struct Field<'a, 'm, 'ms, 'd, 'ds, 'f, 'p> {
     pub items: &'a ItemCatalog,
     pub species: Option<&'a MonsterCatalog>,
     pub spells: Option<&'a crate::content::spells::SpellCatalog>,
-    pub resistances: &'a Query<'a, 'a, &'static Resistances>,
     /// What monster loot tables scale by.
     pub party_level: u32,
     pub difficulty: Difficulty,
@@ -403,10 +401,16 @@ fn target(
             })
         }
         Victim::Member(member) => {
-            let (character, vitals, ..) = world.members.get(member).ok()?;
+            let (character, vitals, carried, _) = world.members.get(member).ok()?;
+            let resistances = crate::game::characters::resistance::member_resistances(
+                &character.stats(&vitals.enchantments),
+                carried,
+                world.items,
+                world.enchantments,
+            );
             Some(Target {
                 level: u32::from(character.level),
-                resistance: world.resistances.get(member).ok()?.0[realm].total,
+                resistance: resistances[realm].total,
                 side: None,
                 turncoat: vitals.has(Condition::Turncoat),
                 immune: false,
@@ -508,7 +512,7 @@ pub fn hurt(rng: &mut GameRng, world: &mut Field, victim: Victim, amount: u32) -
                 .monsters
                 .apply(monster, amount, world.party_level, world.inventory, rng)
                 .ok()?;
-            Some(Effect::Damaged { victim, amount: outcome.damage, outcome })
+            Some(Effect::Damaged { victim, outcome })
         }
         Victim::Member(member) => {
             let (character, mut vitals, ..) = world.members.get_mut(member).ok()?;
@@ -523,7 +527,7 @@ pub fn hurt(rng: &mut GameRng, world: &mut Field, victim: Victim, amount: u32) -
                 wake_on_hit(&mut vitals.conditions, character.attribute(Attribute::Senses), rng);
             }
             let outcome = DamageOutcome { damage: lost, died: vitals.is_dead(), experience: 0 };
-            Some(Effect::Damaged { victim, amount: lost, outcome })
+            Some(Effect::Damaged { victim, outcome })
         }
     }
 }
@@ -1376,8 +1380,8 @@ pub fn resolve(
                 }
                 let rolled = magnitude(rng, spell.dice, strength);
                 let effect = damage(rng, world, v, realm, rolled, strength.against)?;
-                if let Effect::Damaged { amount, .. } = effect {
-                    drained += amount;
+                if let Effect::Damaged { outcome, .. } = effect {
+                    drained += outcome.damage;
                 }
                 Some(effect)
             });

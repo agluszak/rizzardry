@@ -480,7 +480,6 @@ pub struct MagicContext<'w, 's> {
     visibility: Option<crate::game::world::obstacles::WorldObstacles<'w, 's>>,
     /// Missiles leave in launch order, so equal arrivals land in it too.
     pub flight_order: ResMut<'w, casting::FlightOrder>,
-    resistances: Query<'w, 's, &'static crate::game::characters::resistance::Resistances>,
 }
 
 impl MagicContext<'_, '_> {
@@ -540,7 +539,6 @@ impl MagicContext<'_, '_> {
             items,
             species: self.content.species(),
             spells: self.content.spells(),
-            resistances: &self.resistances,
             party_level,
             difficulty: *self.difficulty,
             party: &party,

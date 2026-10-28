@@ -7,7 +7,7 @@
 //! whatever else it meets on the way.
 
 use bevy::math::Vec3Swizzles;
-use bevy::prelude::{Component, Vec3};
+use bevy::prelude::Vec3;
 use enum_map::EnumMap;
 use enumset::EnumSet;
 
@@ -201,9 +201,8 @@ const NO_STRENGTH: [ItemKind; 5] = [
 ];
 
 /// One hand's attack, as the character sheet works it out (retail
-/// `W8HandAttack`). Members carry their main hand's, kept current by
-/// `sync_stats`.
-#[derive(Component, Clone, Debug, PartialEq)]
+/// `W8HandAttack`).
+#[derive(Clone, Debug, PartialEq)]
 pub struct Hand {
     pub holds: Holds,
     /// The hand can attack.
@@ -237,33 +236,6 @@ pub struct Hand {
     pub weight: Option<u16>,
     /// The weapon's retail kind.
     pub kind: Option<ItemKind>,
-}
-
-impl Default for Hand {
-    /// An empty hand that cannot attack.
-    fn default() -> Self {
-        Hand {
-            holds: Holds::Nothing,
-            in_play: false,
-            weapon_skill: Skill::MartialArts,
-            ranged: false,
-            reach: Reach::Touch,
-            dice: Dice::default(),
-            modes: EnumSet::empty(),
-            attacks: 0,
-            swings: 0,
-            attack_rating: 0,
-            to_hit: 0,
-            damage_percent: 0,
-            initiative: 0,
-            effects: AttackEffects::default(),
-            slays: [None; 2],
-            extra_swings: 0,
-            paired: false,
-            weight: None,
-            kind: None,
-        }
-    }
 }
 
 /// A member's two hands (retail `CalcAttacks`).

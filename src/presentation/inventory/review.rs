@@ -513,7 +513,8 @@ pub(super) fn refresh(
     let Some(screen) = screen else { return };
     let Ok(view) = characters.get(screen.member) else { return };
     let load = view.load();
-    let CharacterViewItem { profile, vitals, carried, hand, .. } = view;
+    let hand = view.hand(content.items());
+    let CharacterViewItem { profile, vitals, carried, .. } = view;
     let armour_view = info.as_ref().is_some_and(|info| info.armour);
     let effect_filter = info.as_ref().map_or(EffectFilter::All, |info| info.filter);
     let show_items = info.as_ref().is_some_and(|info| info.items);
@@ -705,7 +706,7 @@ pub(super) fn refresh(
             }
             Field::CombatValue(_) if armour_view => String::new(),
             Field::CombatValue(index) => {
-                if let Some(hand) = hand {
+                if let Some(hand) = &hand {
                     if unidentified && index != 8 {
                         "?".to_owned()
                     } else {

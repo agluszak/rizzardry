@@ -18,34 +18,17 @@ pub struct NewGameDestination {
     pub start: super::party::body::PartyStart,
 }
 
-/// Whether a campaign has begun or is entering its first level; a new one
-/// may not start alongside it.
-#[derive(bevy::ecs::system::SystemParam)]
-pub struct Campaign<'w, 's> {
-    begun: Query<'w, 's, (), Or<(With<Party>, With<Destination>)>>,
-}
-
-impl Campaign<'_, '_> {
-    pub fn begun(&self) -> bool {
-        !self.begun.is_empty()
-    }
-}
-
-/// Validate the whole proposed party and request its first level. Nothing
-/// joins until that level commits ([`Entry::NewGame`]), so a failed load
-/// leaves the drafts to retry and no half-started campaign.
-pub fn begin_adventure(
-    drafts: &[CharacterDraft],
-    session: &State<Session>,
-    campaign: &Campaign,
-    commands: &mut Commands,
-    assets: &AssetServer,
-    destination: &NewGameDestination,
-) -> Result<(), &'static str> {
-    if *session.get() != Session::Creation {
+/// Validate the whole proposed party and, unless a campaign has begun or is
+/// already entering its first level, request that level. The check and the
+/// request are one step, so of two starts only the first is accepted.
+/// Nothing joins until the level commits ([`Entry::NewGame`]), so a failed
+/// load leaves the drafts to retry and no half-started campaign.
+pub fn begin_adventure(world: &mut World, drafts: &[CharacterDraft]) -> Result<(), &'static str> {
+    if *world.resource::<State<Session>>().get() != Session::Creation {
         return Err("Start a new party from the main menu.");
     }
-    if campaign.begun() {
+    let mut begun = world.query_filtered::<(), Or<(With<Party>, With<Destination>)>>();
+    if begun.iter(world).next().is_some() {
         return Err("A campaign has already begun.");
     }
     if !(1..=6).contains(&drafts.len()) {
@@ -59,14 +42,10 @@ pub fn begin_adventure(
                 .map(|character| (character, crate::game::magic::LearnedSpells(draft.spells())))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    commands.spawn((
-        Name::new(destination.path.clone()),
-        Destination::new(
-            Level::load(&destination.path, assets),
-            destination.start.clone(),
-            Entry::NewGame(characters),
-        ),
-    ));
+    let destination = world.resource::<NewGameDestination>();
+    let (path, start) = (destination.path.clone(), destination.start.clone());
+    let level = Level::load(&path, world.resource::<AssetServer>());
+    world.spawn((Name::new(path), Destination::new(level, start, Entry::NewGame(characters))));
     Ok(())
 }
 
@@ -78,7 +57,6 @@ mod tests {
         level::LevelDefinition,
         ui::TextTable,
     };
-    use bevy::ecs::system::SystemState;
     use bevy_landmass::NavMesh3d;
 
     #[test]
@@ -104,24 +82,17 @@ mod tests {
                 ..default()
             },
         };
-        let mut operation =
-            SystemState::<(Commands, Campaign, Res<AssetServer>, Res<State<Session>>)>::new(
-                app.world_mut(),
-            );
-        let mut begin = |app: &mut App, drafts: &[CharacterDraft]| {
-            let (mut commands, campaign, assets, state) =
-                operation.get_mut(app.world_mut()).unwrap();
-            let result =
-                begin_adventure(drafts, &state, &campaign, &mut commands, &assets, &target);
-            operation.apply(app.world_mut());
-            result
-        };
+        app.insert_resource(target);
+        let begin =
+            |app: &mut App, drafts: &[CharacterDraft]| begin_adventure(app.world_mut(), drafts);
         // The second draft has no name.
         assert!(begin(&mut app, &drafts).is_err());
         assert_eq!(app.world_mut().query::<&Destination>().iter(app.world()).count(), 0);
         drafts[1].name = "Second".into();
-        begin(&mut app, &drafts).unwrap();
-        assert!(begin(&mut app, &drafts).is_err(), "one campaign at a time");
+        // Two starts in one go, as from a double click: only the first is
+        // taken.
+        let (first, second) = (begin(&mut app, &drafts), begin(&mut app, &drafts));
+        assert!(first.is_ok() && second.is_err(), "one campaign at a time");
         let arrival = app.world_mut().query::<&Destination>().single(app.world()).unwrap();
         assert_eq!(
             arrival.start.entrance.as_deref(),

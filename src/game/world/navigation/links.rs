@@ -152,6 +152,7 @@ pub fn use_reached_links(
             Entity,
             &ReachedAnimationLink3d,
             &super::Walker,
+            &bevy_landmass::prelude::AgentTarget3d,
             Option<&crate::game::world::population::Monster>,
         ),
         (Without<UsingAnimationLink>, Without<Crossing>),
@@ -159,8 +160,8 @@ pub fn use_reached_links(
     links: Query<&AnimationLink3d>,
     mut bodies: Query<(&mut Position, &mut Transform)>,
 ) {
-    for (entity, reached, walker, monster) in &walkers {
-        if monster.is_some_and(|m| m.is_dead()) {
+    for (entity, reached, walker, target, monster) in &walkers {
+        if !super::walking(target, monster) {
             continue;
         }
         let Some(kind) =
@@ -211,6 +212,84 @@ mod tests {
 
     /// A door closing on a walker mid-crossing despawns the link, and the
     /// walker goes back to finding its way instead of walking into the door.
+    /// A monster put to sleep mid-doorway stops moving at once; waking does
+    /// not resume the move its sleep ended, while a new move resumes the
+    /// crossing where it was. Asleep, it starts no new traversal.
+    #[test]
+    fn a_crossing_moves_its_walker_only_while_it_may_walk() {
+        use crate::game::characters::{Condition, Lasting};
+        use crate::game::world::population::{Monster, ScaledBody};
+        use bevy::ecs::system::RunSystemOnce;
+        let mut world = World::new();
+        world.add_observer(end_crossing);
+        let link = world.spawn_empty().id();
+        let party = world.spawn_empty().id();
+        let monster = Monster {
+            enchantments: default(),
+            location: 0,
+            species: 0,
+            hp: 10,
+            max_hp: 10,
+            stamina: 10,
+            max_stamina: 10,
+            conditions: Vec::new(),
+            body: ScaledBody { scale: 1.0, radius: 0.5, eye_height: 1.0, speed: 1.0 },
+        };
+        let walker = world
+            .spawn((
+                super::super::Walker { speed: 2.0, float_height: 1.0 },
+                AgentTarget3d::Entity(party),
+                monster,
+                Transform::default(),
+                bevy_tnua::prelude::TnuaController::<super::super::WalkerMotion>::default(),
+                Crossing { link, to: Vec3::X * 4.0 },
+            ))
+            .id();
+        let motion = |world: &mut World| {
+            world.run_system_once(super::super::steer_walkers).unwrap();
+            let controller =
+                world.get::<bevy_tnua::prelude::TnuaController<super::super::WalkerMotion>>(walker);
+            controller.unwrap().basis.desired_motion
+        };
+        assert!(motion(&mut world).x > 0.0, "crossing toward the far side");
+        world
+            .get_mut::<Monster>(walker)
+            .unwrap()
+            .conditions
+            .push((Condition::Asleep, Lasting::Rounds(2)));
+        assert_eq!(motion(&mut world), Vec3::ZERO, "asleep, it stops in the doorway");
+        // Its combat move ends with its sleep (`close_in`), clearing the target.
+        *world.get_mut::<AgentTarget3d>(walker).unwrap() = AgentTarget3d::None;
+        world.get_mut::<Monster>(walker).unwrap().conditions.clear();
+        assert_eq!(motion(&mut world), Vec3::ZERO, "waking does not resume the ended move");
+        assert!(world.get::<Crossing>(walker).is_some(), "its progress is kept");
+        *world.get_mut::<AgentTarget3d>(walker).unwrap() = AgentTarget3d::Entity(party);
+        assert!(motion(&mut world).x > 0.0, "a new move finishes the crossing");
+        // Asleep at another link's start, it does not take it.
+        world.entity_mut(walker).remove::<Crossing>();
+        world.flush();
+        world
+            .get_mut::<Monster>(walker)
+            .unwrap()
+            .conditions
+            .push((Condition::Asleep, Lasting::Rounds(2)));
+        world.entity_mut(walker).insert(ReachedAnimationLink3d {
+            link_entity: link,
+            start_point: Vec3::ZERO,
+            end_point: Vec3::X * 4.0,
+        });
+        let door = LevelLink { kind: LinkKind::Door, from: Vec3::ZERO, to: Vec3::X * 4.0 };
+        world.entity_mut(link).insert(link_bundle(&door, Entity::PLACEHOLDER, 0.5).link);
+        world.run_system_once(use_reached_links).unwrap();
+        world.flush();
+        assert!(world.get::<Crossing>(walker).is_none());
+        // Awake and moving, it does.
+        world.get_mut::<Monster>(walker).unwrap().conditions.clear();
+        world.run_system_once(use_reached_links).unwrap();
+        world.flush();
+        assert!(world.get::<Crossing>(walker).is_some());
+    }
+
     #[test]
     fn a_crossing_ends_with_its_link() {
         let mut world = World::new();
