@@ -247,11 +247,8 @@ pub(crate) fn ask_about(
     if state.ready() {
         info!("asking NPC about {}", question.0);
         for mut input in &mut inputs {
-            *input = bevy::text::EditableText {
-                max_characters: Some(128),
-                allow_newlines: false,
-                ..bevy::text::EditableText::new(&question.0)
-            };
+            input.clear();
+            input.queue_edit(bevy::text::TextEdit::Insert(question.0.clone().into()));
         }
         requests.write(crate::game::npcs::conversation::ConversationRequest::Topic {
             conversation,

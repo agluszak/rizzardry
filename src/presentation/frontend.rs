@@ -814,11 +814,10 @@ fn activate(
         && let Some(draft) = session.mode.draft()
     {
         for (_, mut name, nickname) in &mut names {
-            *name = EditableText {
-                max_characters: Some(if nickname { 9 } else { 39 }),
-                allow_newlines: false,
-                ..EditableText::new(if nickname { &draft.nickname } else { &draft.name })
-            };
+            name.clear();
+            name.queue_edit(bevy::text::TextEdit::Insert(
+                (if nickname { &draft.nickname } else { &draft.name }).as_str().into(),
+            ));
         }
     }
 }

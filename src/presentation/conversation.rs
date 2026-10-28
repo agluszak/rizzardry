@@ -1353,11 +1353,8 @@ fn activate_topic(
     let Some((root, _)) = views.owner(event.entity) else { return };
     for (entity, mut input) in &mut inputs {
         if views.owner(entity).is_some_and(|(owner, _)| owner == root) {
-            *input = EditableText {
-                max_characters: Some(128),
-                allow_newlines: false,
-                ..EditableText::new(&row.0)
-            };
+            input.clear();
+            input.queue_edit(bevy::text::TextEdit::Insert(row.0.clone().into()));
         }
     }
 }

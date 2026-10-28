@@ -591,9 +591,9 @@ fn topic(world: &mut World, c: &mut Conversation, text: &str) {
         .or_else(|| words.windows(2).find_map(|pair| script.topic(&pair.join(" "))))
         .or_else(|| words.iter().find_map(|word| script.topic(word)));
     if let Some(quote) = matched {
-        if validate_line(world, &script.quotes[quote as usize]).is_ok() {
-            world.resource_mut::<StoryFacts>().remember_topic(TopicCategory::Misc, &cleaned);
-        }
+        // The accepted question belongs in the notebook even when its
+        // answer first requires payment or another continuation.
+        world.resource_mut::<StoryFacts>().remember_topic(TopicCategory::Misc, &cleaned);
         c.transcript.push(TranscriptLine::Question(text.to_owned()));
         c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false });
         c.revision += 1;
