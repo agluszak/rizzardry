@@ -76,13 +76,8 @@ pub(super) fn open(world: &mut World, view: Entity, canvas: Entity) {
     if maximum < 2 || item.class == EquipClass::Ammunition {
         return;
     }
-    let (name, image, unit_weight, class, generic) = (
-        item.name.clone(),
-        item.image.clone(),
-        item.weight,
-        item.class,
-        item.unidentified_name.clone(),
-    );
+    let (name, image, unit_weight, class, generic) =
+        (item.name.clone(), item.image.clone(), item.weight, item.class, item.kind_name.clone());
     let remaining_price = if maximum == q.quantity {
         0
     } else {

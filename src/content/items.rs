@@ -105,6 +105,8 @@ pub struct ItemDefinition {
     pub name: String,
     /// What it is called before it is identified ("Dagger (Unidentified)").
     pub unidentified_name: String,
+    /// Generic kind without the unidentified annotation (for assay/type labels).
+    pub kind_name: String,
     /// The item's picture, a retail path such as `data/items/dagger.sti`.
     pub image: String,
     /// Its model lying in the world, such as `data/items3d/dagger.itm`.
