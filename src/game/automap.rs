@@ -95,6 +95,19 @@ impl MapNotes {
         Ok(())
     }
 
+    /// Whether another note fits.
+    pub fn has_room(&self) -> bool {
+        self.notes.len() < MAX_NOTES
+    }
+
+    pub fn erase(&mut self, index: usize) -> Result<MapNote, NoteRefusal> {
+        if index < self.notes.len() {
+            Ok(self.notes.remove(index))
+        } else {
+            Err(NoteRefusal::MissingNote)
+        }
+    }
+
     /// The note nearest a point, within `reach` metres.
     pub fn nearest(&self, point: Vec2, reach: f32, layer: usize) -> Option<usize> {
         self.notes

@@ -339,7 +339,7 @@ mod tests {
         let mut app = input_app();
         app.add_plugins(InputDispatchPlugin)
             .init_state::<Screen>()
-            .init_asset::<LevelDefinition>()
+            .init_asset::<crate::content::level::LevelDefinition>()
             .add_input_context::<AutomapScreen>()
             .add_systems(OnEnter(Screen::Automap), enter_automap)
             .add_systems(

@@ -414,6 +414,11 @@ impl PlayedLevel<'_, '_> {
         self.definitions.get(&self.levels.single().ok()?.1.definition)
     }
 
+    /// A level's definition, by the level.
+    pub fn of(&self, level: Entity) -> Option<&LevelDefinition> {
+        self.definitions.get(&self.levels.get(level).ok()?.1.definition)
+    }
+
     pub fn view_distance(&self) -> Option<f32> {
         self.definition().map(LevelDefinition::view_distance)
     }
