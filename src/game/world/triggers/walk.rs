@@ -74,7 +74,7 @@ pub(crate) fn walk(In(sample): In<Option<(Entity, Vec3, Duration)>>, world: &mut
                 && world.get::<PendingPartyMove>(level).is_none()
                 && usable(world, entity, definition)
             {
-                execute(world, geometry, entity, 0);
+                execute(world, geometry, entity, 0, -1);
             }
         }
     });

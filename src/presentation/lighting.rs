@@ -62,7 +62,7 @@ fn update_lights(
         for light in &level.lighting.lights {
             let active = state
                 .map_or(light.enabled, |state| state.light_enabled(&light.name, light.enabled));
-            let props = i32::from(active) - i32::from(light.enabled);
+            let props = i32::from(active);
             let compiled = i32::from(active) - i32::from(light.enabled && !light.runtime);
             if props == 0 && compiled == 0 {
                 continue;
@@ -108,6 +108,81 @@ mod tests {
         game::{magic::enchantments::Enchantment, world::triggers::LevelState},
         presentation::{environment::apply_environment, party_view::PartyCamera},
     };
+
+    #[test]
+    fn moving_a_prop_then_disabling_its_original_lamp_leaves_no_negative_rest_pose_correction() {
+        use crate::{
+            content::level::{PointLightSource, StateChange, TriggerAction},
+            game::world::{
+                scripts::LevelScript,
+                triggers::tests::{Scenario, trigger},
+            },
+        };
+        let off = trigger(
+            "OFF",
+            TriggerAction::Lights {
+                sources: vec![("LAMP".into(), true)],
+                change: StateChange::Clear,
+            },
+        );
+        let mut scene = Scenario::new(vec![off], &[], LevelScript::None);
+        scene.world.init_resource::<Assets<LevelGeometry>>();
+        scene.world.init_resource::<Assets<ShaderBuffer>>();
+        let geometry = scene.world.resource_mut::<Assets<LevelGeometry>>().add(LevelGeometry {
+            lighting: crate::content::level::LevelLighting {
+                lights: vec![PointLightSource {
+                    name: "LAMP".into(),
+                    runtime: false,
+                    enabled: true,
+                    position: Vec3::Y,
+                    colour: Vec3::ONE,
+                    range: 3.0,
+                }],
+                ..default()
+            },
+            ..default()
+        });
+        scene.world.entity_mut(scene.root).insert(LevelAppearance(geometry));
+        let buffer = scene
+            .world
+            .resource_mut::<Assets<ShaderBuffer>>()
+            .add(ShaderBuffer::from(vec![[[0.0f32; 4]; 3]]));
+        scene.world.insert_resource(SceneLights(buffer.clone()));
+        let prop = scene.world.spawn(Transform::default()).id();
+        scene.world.run_system_cached(update_lights).unwrap();
+        let data = |world: &World| match &world
+            .resource::<Assets<ShaderBuffer>>()
+            .get(&buffer)
+            .unwrap()
+            .data
+        {
+            ShaderBufferData::Initialized { data, .. } => data.as_slice().to_vec(),
+            _ => unreachable!(),
+        };
+        let active = data(&scene.world);
+        assert_eq!(
+            f32::from_le_bytes(active[32..36].try_into().unwrap()),
+            1.0,
+            "props receive the complete live light"
+        );
+        *scene.world.get_mut::<Transform>(prop).unwrap() =
+            Transform::from_xyz(20.0, 0.0, 0.0).with_rotation(Quat::from_rotation_z(1.0));
+        scene.world.run_system_cached(update_lights).unwrap();
+        assert_eq!(data(&scene.world), active, "world transforms are sampled by the shader");
+        assert!(scene.run("OFF").0);
+        scene.world.run_system_cached(update_lights).unwrap();
+        let disabled = data(&scene.world);
+        assert_eq!(
+            f32::from_le_bytes(disabled[32..36].try_into().unwrap()),
+            0.0,
+            "props need neither a light nor a rest-pose subtraction"
+        );
+        assert_eq!(
+            f32::from_le_bytes(disabled[36..40].try_into().unwrap()),
+            -1.0,
+            "immobile compiled geometry still cancels its original bake"
+        );
+    }
 
     #[test]
     fn movement_updates_only_the_light_buffer_and_stationary_light_does_not_rewrite_assets() {

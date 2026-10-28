@@ -120,6 +120,8 @@ impl LevelLighting {
 /// Immutable gameplay content. Loading it never constructs rendering assets.
 #[derive(Asset, TypePath, Clone, Debug, Default)]
 pub struct LevelDefinition {
+    /// Authored underwater camera distortion, changed by trigger calls.
+    pub camera_sway: bool,
     pub collision: CollisionMesh,
     pub map_layers: Vec<f32>,
     /// The authored sight limit, independent of any rendering camera.
@@ -365,7 +367,9 @@ pub enum TriggerAction {
     /// Fly the party along the named camera path (9).
     CameraPath(usize),
     /// Run the recipients (0xf).
-    Relay,
+    Relay(i32),
+    /// Distort or restore the camera according to the signed call argument (0x10).
+    CameraSway,
     /// Enable, disable or toggle the linked devices (0x2d..0x2f).
     SetDevices(StateChange),
     Lights {

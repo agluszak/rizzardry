@@ -194,7 +194,7 @@ pub fn update_radar(
         }
     }
     let (far, eye) = match camera.single() {
-        Ok((Projection::Perspective(p), eye)) => (p.far, eye.translation()),
+        Ok((p, eye)) => (bevy::camera::CameraProjection::far(&**p), eye.translation()),
         _ => (0.0, position.0),
     };
     let catalog = content.species();

@@ -37,8 +37,7 @@ impl AssetLoader for LvlLoader {
         let directory = "bitmaps";
         let mut textures = LoadedTextures::default();
         // The sky is drawn as authored, unlit by the level.
-        let unlit = default();
-        let lighting = PropLighting { ambient: Vec3::ONE, level: &unlit };
+        let lighting = PropLighting { ambient: Vec3::ONE, offset: Vec3::ZERO };
 
         let mut materials = Vec::with_capacity(record.materials.len());
         for (index, material) in record.materials.iter().enumerate() {
@@ -54,10 +53,9 @@ impl AssetLoader for LvlLoader {
         // The dome's vertices are already in sky space around the origin,
         // where the sky camera sits; its record placement is the dome's
         // pivot vertex, not a transform to apply.
-        let transform = Transform::default();
         let mut parts = Vec::new();
         for (material, mesh, vertex_lighting) in
-            record_meshes(&record, &transform, &lighting, |m| materials[m].emission)
+            record_meshes(&record, &lighting, |m| materials[m].emission)
         {
             let mesh = context.add_labeled_asset(format!("mesh/{material}"), mesh);
             parts.push(LevelPart {

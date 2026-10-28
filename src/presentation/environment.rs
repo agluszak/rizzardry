@@ -30,24 +30,22 @@ pub(super) fn spell_light(
     })
 }
 
-/// Change from the immutable rest lighting; activation belongs to the level.
-pub(super) fn light_delta(
+/// Current fixed lighting sampled for actor materials. Meshes own no
+/// rest-pose point-light term; this calculation also needs no signed inverse.
+pub(super) fn actor_light(
     lighting: &crate::content::level::LevelLighting,
     state: Option<&crate::game::world::triggers::LightActivation>,
     at: Vec3,
-    normal: Option<Vec3>,
-    compiled: bool,
 ) -> Vec3 {
-    lighting
-        .lights
-        .iter()
-        .map(|light| {
-            let enabled = state
-                .map_or(light.enabled, |state| state.light_enabled(&light.name, light.enabled));
-            let baked = light.enabled && !(compiled && light.runtime);
-            (i32::from(enabled) - i32::from(baked)) as f32 * light.at(at, normal)
-        })
-        .sum()
+    lighting.offset
+        + lighting
+            .lights
+            .iter()
+            .filter(|light| {
+                state.map_or(light.enabled, |state| state.light_enabled(&light.name, light.enabled))
+            })
+            .map(|light| light.at(at, None))
+            .sum::<Vec3>()
 }
 
 /// Presentation owns the optional render payload for an active level.
@@ -152,7 +150,7 @@ pub fn apply_environment(
     let fog = environment.fog_colours[phase as usize];
     clear.0 = Color::srgb(fog.x, fog.y, fog.z);
     let far = environment.view_distance;
-    if let Projection::Perspective(perspective) = projection.as_mut() {
+    if let Some(perspective) = super::water_view::perspective_mut(&mut projection) {
         perspective.far = far;
     }
     commands.entity(camera).insert((
@@ -263,30 +261,6 @@ mod tests {
     use super::*;
     use crate::content::level::{PropVisual, PropVisualPart};
     use crate::game::world::props::PropMotion;
-
-    #[test]
-    fn runtime_light_is_added_to_compiled_geometry_without_doubling_prop_bakes() {
-        use crate::content::level::{LevelLighting, PointLightSource};
-        let lighting = LevelLighting {
-            lights: vec![PointLightSource {
-                name: "LAMP".into(),
-                runtime: true,
-                enabled: true,
-                position: Vec3::Y,
-                colour: Vec3::ONE,
-                range: 2.0,
-            }],
-            ..default()
-        };
-        assert_eq!(light_delta(&lighting, None, Vec3::ZERO, Some(Vec3::Y), true), Vec3::splat(0.5));
-        assert_eq!(light_delta(&lighting, None, Vec3::ZERO, Some(Vec3::Y), false), Vec3::ZERO);
-        let disabled = LevelLighting {
-            lights: vec![PointLightSource { enabled: false, ..lighting.lights[0].clone() }],
-            ..default()
-        };
-        assert_eq!(light_delta(&disabled, None, Vec3::ZERO, None, true), Vec3::ZERO);
-        assert_eq!(disabled.at(Vec3::ZERO, None), Vec3::ZERO);
-    }
 
     #[test]
     fn replacing_a_camera_and_reloading_environment_reapply_fog_at_the_same_phase() {

@@ -35,17 +35,18 @@ pub fn follow_with_sky_camera(
             if transform.rotation != rotation {
                 transform.rotation = rotation;
             }
-            if let (Projection::Perspective(sky), Projection::Perspective(level)) =
-                (projection.as_ref(), party_projection)
-                && sky.fov != level.fov
-                && let Projection::Perspective(sky) = projection.as_mut()
-            {
-                sky.fov = level.fov;
+            let mut next = party_projection.clone();
+            if let Some(perspective) = super::water_view::perspective_mut(&mut next) {
+                perspective.near = 0.1;
+                perspective.far = 10_000.0;
+            }
+            if projection.get_clip_from_view() != next.get_clip_from_view() {
+                *projection = next;
             }
         }
         Err(_) => {
             let mut projection = party_projection.clone();
-            if let Projection::Perspective(perspective) = &mut projection {
+            if let Some(perspective) = super::water_view::perspective_mut(&mut projection) {
                 perspective.near = 0.1;
                 perspective.far = 10_000.0;
             }

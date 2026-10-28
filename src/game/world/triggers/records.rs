@@ -20,6 +20,7 @@ use crate::game::world::scripts::LevelScript;
 /// Dormant records use authored indices, never runtime entity references.
 #[derive(Debug, Default)]
 pub struct TriggerMemory {
+    camera_sway: bool,
     devices: HashMap<usize, KeptDevice>,
     variables: HashMap<VariableName, bool>,
     ambient_sounds: HashMap<String, bool>,
@@ -81,6 +82,7 @@ impl DeviceRecords<'_, '_> {
             })
             .collect();
         TriggerMemory {
+            camera_sway: state.camera_sway,
             devices,
             variables: state.variables.clone(),
             ambient_sounds: state.ambient_sounds.clone(),
@@ -112,7 +114,10 @@ pub fn spawn_devices(
         .into_iter()
         .map(|prop| prop.unwrap_or_else(|| commands.spawn(LevelOwned(level)).id()))
         .collect();
-    let mut state = LevelState::default();
+    let mut state = LevelState {
+        camera_sway: memory.as_ref().map_or(geometry.camera_sway, |memory| memory.camera_sway),
+        ..default()
+    };
     let lights = memory
         .as_mut()
         .map_or_else(LightActivation::default, |memory| std::mem::take(&mut memory.lights));

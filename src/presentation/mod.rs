@@ -35,6 +35,7 @@ mod surfaces;
 mod test_input;
 pub mod textures;
 pub mod voice;
+mod water_view;
 pub mod world_items;
 
 use bevy::prelude::*;
@@ -179,6 +180,7 @@ impl Plugin for PresentationPlugin {
             (
                 screen_art::scale_ui,
                 party_view::aim_camera.after(crate::game::GameplaySet::Combat),
+                water_view::sway,
                 camp::show_camp,
                 (
                     automap::request_automap,

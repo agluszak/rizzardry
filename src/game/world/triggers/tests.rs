@@ -519,7 +519,7 @@ fn bells() -> Scenario {
     windows.fire_linked = true;
     windows.required_states = vec!["RING2".into()];
     let relay = |name: &str, ring: &str| {
-        let mut relay = trigger(name, TriggerAction::Relay);
+        let mut relay = trigger(name, TriggerAction::Relay(-1));
         relay.fire_linked = true;
         relay.required_states = vec![ring.into()];
         relay
@@ -690,7 +690,7 @@ fn damage_zones_hurt_each_member_while_stood_in() {
 
 #[test]
 fn linked_hazards_tick_and_reset_in_authored_order() {
-    let mut relay = trigger("RELAY", TriggerAction::Relay);
+    let mut relay = trigger("RELAY", TriggerAction::Relay(-1));
     relay.usable = true;
     relay.place = Some(Vec3::ZERO);
     relay.range = (0.0, 2.0);
@@ -784,7 +784,7 @@ fn relay_recipients_complete_in_order_before_the_senders_commit() {
     let mut second = trigger("SECOND", TriggerAction::Nothing);
     second.required_states.push("READY".into());
     second.initial.message = Some(2);
-    let mut relay = trigger("RELAY", TriggerAction::Relay);
+    let mut relay = trigger("RELAY", TriggerAction::Relay(-1));
     relay.recipients = vec![0, 1];
     relay.initial.message = Some(3);
     let mut level = Scenario::new(vec![first, second, relay], &[], LevelScript::None);
@@ -1376,4 +1376,35 @@ fn light_switches_use_authored_initial_state_and_survive_revisit() {
     assert!(scene.world.get::<LightActivation>(scene.root).unwrap().light_enabled("laser", false));
     assert!(scene.run("TOGGLE").0);
     assert!(!scene.world.get::<LightActivation>(scene.root).unwrap().light_enabled("laser", false));
+}
+
+#[test]
+fn camera_sway_obeys_signed_relay_calls_without_committing_and_survives_revisit() {
+    let mut on = trigger("ON", TriggerAction::Relay(1));
+    on.recipients = vec![2];
+    let mut off = trigger("OFF", TriggerAction::Relay(-1));
+    off.recipients = vec![2];
+    let mut sway = trigger("SWAY", TriggerAction::CameraSway);
+    sway.fire_linked = true;
+    sway.recipients = vec![3];
+    sway.state_change = Some(("UNCOMMITTED".into(), StateChange::Set));
+    let linked = trigger("LINKED", TriggerAction::Nothing);
+    let mut level = Scenario::new(vec![on, off, sway, linked], &[], LevelScript::None);
+    assert!(!level.world.get::<LevelState>(level.root).unwrap().camera_sway);
+    assert!(level.run("ON").0);
+    assert!(level.world.get::<LevelState>(level.root).unwrap().camera_sway);
+    assert!(!level.variable("UNCOMMITTED"));
+    assert!(!level.world.get::<TriggerState>(level.device("SWAY")).unwrap().fired);
+    assert!(!level.world.get::<TriggerState>(level.device("LINKED")).unwrap().fired);
+    let memory = level.remember();
+    level.visit(Some(memory));
+    assert!(level.world.get::<LevelState>(level.root).unwrap().camera_sway);
+    assert!(level.run("OFF").0);
+    assert!(!level.world.get::<LevelState>(level.root).unwrap().camera_sway);
+    level.geometry.camera_sway = true;
+    level.visit(None);
+    assert!(level.world.get::<LevelState>(level.root).unwrap().camera_sway);
+    // A direct player/walk call uses -1, independently of the definition's data.
+    assert!(!level.run("SWAY").0);
+    assert!(!level.world.get::<LevelState>(level.root).unwrap().camera_sway);
 }

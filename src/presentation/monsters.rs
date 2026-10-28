@@ -284,14 +284,8 @@ pub fn light_monsters(
             _ => {
                 let target =
                     if sunlit(&spatial, level_entity, level, centre) { SUNLIT } else { 0.0 };
-                let fixed = level.lighting.at(centre, None)
-                    + super::environment::light_delta(
-                        &level.lighting,
-                        state.as_deref(),
-                        centre,
-                        None,
-                        false,
-                    );
+                let fixed =
+                    super::environment::actor_light(&level.lighting, state.as_deref(), centre);
                 sampled.lit_at = Some((centre, target, fixed));
                 (target, fixed)
             }

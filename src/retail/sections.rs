@@ -55,6 +55,7 @@ pub struct ClipPlane {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct LevelSections {
+    pub camera_sway: bool,
     pub positions: Vec<(String, super::trigger::TriggerPlacement)>,
     pub lights: Vec<Light>,
     pub props: Vec<Prop>,
@@ -224,7 +225,7 @@ fn read_sections_of(bytes: &mut Bytes, compiled: bool) -> Result<LevelSections, 
     sentinel(bytes, compiled)?;
     let triggers = (0..count(bytes)?).map(|_| read_trigger(bytes)).collect::<Result<_, _>>()?;
     sentinel(bytes, compiled)?;
-    bytes.i32()?; // camera sway
+    let camera_sway = bytes.i32()? != 0;
     let clip_count = count(bytes)?;
     let mut clip_planes = Vec::with_capacity(clip_count);
     if clip_count > 0 {
@@ -264,6 +265,7 @@ fn read_sections_of(bytes: &mut Bytes, compiled: bool) -> Result<LevelSections, 
     bytes.records(cells, 4, |b| b.u32())?;
     sentinel(bytes, compiled)?;
     Ok(LevelSections {
+        camera_sway,
         positions,
         lights,
         props,

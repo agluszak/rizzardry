@@ -12,12 +12,11 @@ use super::space::{retail_position, retail_rotation};
 use crate::content::UNITS_PER_METRE;
 use crate::content::level::{CollisionMesh, LevelLighting, PointLightSource, VertexLighting};
 
-/// Retail lights props at runtime from the level's lights. This bakes that
-/// lighting at load for the rest pose (`LevelLighting::at`), with the sky
-/// light (`ambient` at load) added per time of day.
-pub struct PropLighting<'a> {
+/// Only pose-independent colour belongs in prop meshes. Point lights are
+/// sampled at the live world pose by presentation, including after switches.
+pub struct PropLighting {
     pub ambient: Vec3,
-    pub level: &'a LevelLighting,
+    pub offset: Vec3,
 }
 
 /// The level lights that reach props and actors. `Sun` lights are
@@ -29,7 +28,7 @@ pub fn level_lighting(lights: &[Light], offset: [f32; 3]) -> LevelLighting {
         offset: Vec3::from(offset),
         lights: lights
             .iter()
-            .filter(|light| !is_sun(light) && (light.runtime || light.enabled))
+            .filter(|light| !is_sun(light))
             .map(|light| PointLightSource {
                 name: light.name.to_uppercase(),
                 runtime: light.runtime,
@@ -69,11 +68,9 @@ pub fn part_transforms(prop: &Prop) -> Vec<(Transform, Vec<Transform>)> {
         .collect()
 }
 
-/// One mesh per material of a record, in part-local Bevy space, lit for the
-/// part's rest `transform`. Returns (material index, mesh).
+/// One mesh per material, in part-local space. Dynamic lights are never baked.
 pub fn record_meshes(
     record: &MeshRecord,
-    transform: &Transform,
     lighting: &PropLighting,
     emission: impl Fn(usize) -> f32,
 ) -> Vec<(usize, Mesh, VertexLighting)> {
@@ -89,17 +86,6 @@ pub fn record_meshes(
         }
     }
     let normals: Vec<Vec3> = normals.into_iter().map(|n| n.normalize_or(Vec3::Y)).collect();
-    let world = transform.compute_affine();
-    let lit: Vec<Vec3> = positions
-        .iter()
-        .zip(&normals)
-        .map(|(&p, &n)| {
-            lighting
-                .level
-                .at(world.transform_point3(p), Some(world.transform_vector3(n).normalize_or(n)))
-        })
-        .collect();
-
     let mut materials: Vec<usize> = record.faces.iter().map(|f| f.material as usize).collect();
     materials.sort_unstable();
     materials.dedup();
@@ -115,7 +101,7 @@ pub fn record_meshes(
                 p.push(positions[v].to_array());
                 n.push(normals[v].to_array());
                 uv.push(face_uvs[corner]);
-                vertex_lighting.fixed.push(lit[v] + glow);
+                vertex_lighting.fixed.push(lighting.offset + glow);
                 vertex_lighting.sun.push(1.0);
             }
         };
@@ -149,5 +135,31 @@ pub fn record_collision(record: &MeshRecord) -> CollisionMesh {
             .map(|f| [f.vertices[0], f.vertices[2], f.vertices[1]])
             .collect(),
         walkable: vec![false; record.faces.len()],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn prop_vertices_keep_only_pose_independent_light() {
+        use crate::retail::mesh_record::{MeshFace, MeshVertices};
+        let record = MeshRecord {
+            placement: None,
+            vertices: MeshVertices::Static(vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
+            faces: vec![MeshFace {
+                vertices: [0, 1, 2],
+                uvs: [[0.0; 2]; 3],
+                material: 0,
+                flags: 0,
+            }],
+            materials: vec![],
+        };
+        let lighting = PropLighting { ambient: Vec3::splat(0.1), offset: Vec3::splat(0.2) };
+        let meshes = record_meshes(&record, &lighting, |_| 0.3);
+        assert_eq!(meshes[0].2.fixed, vec![Vec3::splat(0.5); 3]);
+        // There is no rest-pose point-light term to survive translation,
+        // rotation, a billboard update or switching the original lamp off.
+        assert_eq!(meshes[0].2.colours(Vec3::ZERO), vec![[0.5, 0.5, 0.5, 1.0]; 3]);
     }
 }

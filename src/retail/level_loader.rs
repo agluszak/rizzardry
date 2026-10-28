@@ -438,7 +438,8 @@ fn decode_action(
                 },
             }
         }
-        action::RELAY => TriggerAction::Relay,
+        action::RELAY => TriggerAction::Relay(first),
+        action::CAMERA_SWAY => TriggerAction::CameraSway,
         action::ENABLE_DEVICES => TriggerAction::SetDevices(StateChange::Set),
         action::DISABLE_DEVICES => TriggerAction::SetDevices(StateChange::Clear),
         action::TOGGLE_DEVICES => TriggerAction::SetDevices(StateChange::Toggle),
@@ -540,7 +541,7 @@ pub(super) async fn build_props(
     source: impl Iterator<Item = &Prop>,
     directory: &str,
     textures: &mut LoadedTextures,
-    lighting: &PropLighting<'_>,
+    lighting: &PropLighting,
 ) -> Vec<PropVisual> {
     let mut props = Vec::new();
     for (prop_index, prop) in source.enumerate() {
@@ -558,7 +559,7 @@ pub(super) async fn build_props(
             }
             let mut meshes = Vec::new();
             for (material, mesh, lighting) in
-                record_meshes(record, &transform, lighting, |m| part_materials[m].emission)
+                record_meshes(record, lighting, |m| part_materials[m].emission)
             {
                 let label = format!("prop/{prop_index}/{part_index}/mesh/{material}");
                 let mesh = context.add_labeled_asset(label, mesh);
@@ -620,7 +621,7 @@ impl AssetLoader for PvlLoader {
             }
         }
         let level_lighting = level_lighting(&sections.lights, sections.environment_offset);
-        let lighting = PropLighting { ambient, level: &level_lighting };
+        let lighting = PropLighting { ambient, offset: level_lighting.offset };
         let props = sections.props.iter().chain(&sections.bitmaps);
         let props = build_props(context, props, directory, &mut textures, &lighting).await;
         Ok(LevelGeometry {
@@ -730,6 +731,7 @@ impl AssetLoader for PvlDefinitionLoader {
             })
             .collect();
         Ok(LevelDefinition {
+            camera_sway: sections.camera_sway,
             collision,
             map_layers,
             sight_distance: sections
@@ -802,6 +804,7 @@ mod tests {
             trigger: Some(trigger.clone()),
         };
         let mut sections = LevelSections {
+            camera_sway: false,
             positions: vec![],
             lights: vec![],
             props: vec![prop.clone(), prop.clone()],

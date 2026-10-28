@@ -25,6 +25,7 @@ pub mod action {
     pub const CAMERA_PATH: u32 = 0x09;
     /// Fire the recipients.
     pub const RELAY: u32 = 0x0f;
+    pub const CAMERA_SWAY: u32 = 0x10;
     /// Hurt whoever stands in it, every few seconds.
     pub const DAMAGE_ZONE: u32 = 0x23;
     /// Hurt the party once by dice in the trigger's data words.

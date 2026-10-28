@@ -53,6 +53,7 @@ pub struct PositionedDevices(Vec<Entity>);
 /// Only level-wide variables and visit state live on the level.
 #[derive(Component, Debug, Default)]
 pub struct LevelState {
+    pub camera_sway: bool,
     variables: HashMap<VariableName, bool>,
     ambient_sounds: HashMap<String, bool>,
     previous_eye: Option<Vec3>,
@@ -347,7 +348,7 @@ pub fn activate(world: &mut World, entity: Entity, player: bool) -> bool {
         {
             return false;
         }
-        let ran = execute(world, geometry, entity, 0);
+        let ran = execute(world, geometry, entity, 0, -1);
         if player && ran == Ran::Declined {
             world.write_message(TriggerEffect::NothingHappened);
         }
@@ -539,11 +540,17 @@ fn play_authored_sound(world: &mut World, entity: Entity, definition: &TriggerDe
     }
 }
 
-fn execute_links(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth: usize) {
+fn execute_links(
+    world: &mut World,
+    geometry: &LevelDefinition,
+    entity: Entity,
+    depth: usize,
+    source: i32,
+) {
     let count = world.get::<Device>(entity).unwrap().recipients.len();
     for index in 0..count {
         let recipient = world.get::<Device>(entity).unwrap().recipients[index];
-        execute(world, geometry, recipient, depth + 1);
+        execute(world, geometry, recipient, depth + 1, source);
     }
 }
 
@@ -558,7 +565,13 @@ fn links_moving(world: &World, entity: Entity, depth: usize) -> bool {
         })
 }
 
-fn execute(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth: usize) -> Ran {
+fn execute(
+    world: &mut World,
+    geometry: &LevelDefinition,
+    entity: Entity,
+    depth: usize,
+    source: i32,
+) -> Ran {
     if !ready(world, entity) {
         return Ran::Declined;
     }
@@ -663,11 +676,16 @@ fn execute(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth:
             play_authored_sound(world, entity, definition);
             return Ran::Declined;
         }
-        TriggerAction::Relay => {
+        TriggerAction::CameraSway => {
+            let mut state = world.get_mut::<LevelState>(level).unwrap();
+            state.camera_sway = source > 0;
+            return Ran::Answered;
+        }
+        TriggerAction::Relay(source) => {
             if world.get::<Device>(entity).unwrap().recipients.is_empty() {
                 return Ran::Declined;
             }
-            execute_links(world, geometry, entity, depth);
+            execute_links(world, geometry, entity, depth, *source);
         }
         TriggerAction::Lights { sources, change } => {
             if sources.is_empty() {
@@ -776,7 +794,7 @@ fn execute(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth:
         play_authored_sound(world, entity, definition);
     }
     if definition.fire_linked {
-        execute_links(world, geometry, entity, depth);
+        execute_links(world, geometry, entity, depth, -1);
     }
     if changes_state && let Some((name, change)) = &definition.state_change {
         let mut state = world.get_mut::<LevelState>(level).unwrap();

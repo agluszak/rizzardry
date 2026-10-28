@@ -145,14 +145,7 @@ pub fn light_world_items(
             }
             _ => {
                 let sky_scale = if sunlit(&spatial, level_entity, level, at) { 1.0 } else { 0.0 };
-                let fixed = level.lighting.at(at, None)
-                    + super::environment::light_delta(
-                        &level.lighting,
-                        state.as_deref(),
-                        at,
-                        None,
-                        false,
-                    );
+                let fixed = super::environment::actor_light(&level.lighting, state.as_deref(), at);
                 shown.lit_at = Some((at, sky_scale, fixed));
                 (sky_scale, fixed)
             }
