@@ -68,7 +68,6 @@ impl Plugin for CombatPlugin {
                     // Defeat is settled before a fight starts or a round runs,
                     settle_defeat,
                     start_battle,
-                    track_party_move,
                     begin_round,
                     sync_armour,
                     run_battle,
@@ -78,6 +77,16 @@ impl Plugin for CombatPlugin {
                 )
                     .chain()
                     .in_set(crate::game::GameplaySet::Combat)
+                    .run_if(crate::game::world::level::level_active),
+            )
+            // The party walks on the fixed step; its move is measured on
+            // every step, once physics has moved it, so how frames batch
+            // those steps changes neither the ground counted nor where the
+            // budget runs out.
+            .add_systems(
+                FixedPostUpdate,
+                track_party_move
+                    .after(avian3d::prelude::PhysicsSystems::Writeback)
                     .run_if(crate::game::world::level::level_active),
             );
     }
@@ -296,14 +305,20 @@ impl Battle {
         news.write(CombatNews::Killed { actor: monster });
     }
 
-    /// Credit and announce the monsters a spell's effects killed, whether it
+    /// Credit and announce the kills a spell's effects made, whether it
     /// landed at once or as a missile: the one place spell kills are counted.
+    /// A member it killed is announced as one a monster's blow kills is.
     pub fn credit_kills(&mut self, effects: &[Effect], news: &mut MessageWriter<CombatNews>) {
         for effect in effects {
-            if let Effect::Damaged { victim: Victim::Monster(target), outcome, .. } = *effect
-                && outcome.died
-            {
-                self.credit_kill(target, outcome.experience, news);
+            let Effect::Damaged { victim, outcome, .. } = *effect else { continue };
+            if !outcome.died {
+                continue;
+            }
+            match victim {
+                Victim::Monster(target) => self.credit_kill(target, outcome.experience, news),
+                Victim::Member(member) => {
+                    news.write(CombatNews::Killed { actor: member });
+                }
             }
         }
     }
@@ -792,8 +807,13 @@ pub fn run_battle(
         if let PartyMove::Pending { pace, phase } = battle.party_move
             && phase <= step
         {
-            battle.party_move =
-                PartyMove::Moving { pace, budget: pace.combat_budget(), moved: 0.0, last: None };
+            // Counted from where the party stands as its move begins.
+            battle.party_move = PartyMove::Moving {
+                pace,
+                budget: pace.combat_budget(),
+                moved: 0.0,
+                last: Some(position.0),
+            };
             news.write(CombatNews::PartyMoves);
             return;
         }
@@ -1840,6 +1860,32 @@ mod tests {
         assert_eq!(killed, [CombatNews::Killed { actor: monster }]);
     }
 
+    /// A member killed by magic is announced as one killed in melee is.
+    #[test]
+    fn a_member_killed_by_magic_is_announced() {
+        let (mut app, [caster, member]) = round_app(true);
+        order_spell(
+            &mut app,
+            caster,
+            crate::content::spells::SpellDefinition {
+                dice: Some(Dice { base: 1000, count: 0, sides: 0 }),
+                ..energy_blast()
+            },
+        );
+        app.world_mut().resource_mut::<Messages<CombatNews>>().clear();
+        let id = crate::content::spells::SpellId::ENERGY_BLAST;
+        land(&mut app, vec![missile(caster, id, Victim::Member(member))]);
+        assert!(app.world().get::<Vitals>(member).unwrap().is_dead());
+        let killed: Vec<_> = app
+            .world_mut()
+            .resource_mut::<Messages<CombatNews>>()
+            .drain()
+            .filter(|n| matches!(n, CombatNews::Killed { .. }))
+            .collect();
+        assert_eq!(killed, [CombatNews::Killed { actor: member }]);
+        assert_eq!(fight(app.world()).unwrap().kills, 0, "a member is no kill");
+    }
+
     /// Skills an impact improves (a member resisting, practising Iron Will)
     /// are reported with the landing, exactly when they improved.
     #[test]
@@ -1969,7 +2015,8 @@ mod tests {
             .query_filtered::<Entity, With<PartyBody>>()
             .single(app.world())
             .unwrap();
-        app.update();
+        // Ground covered from the moment the move begins counts, however
+        // the frames fall.
         app.world_mut().get_mut::<Position>(body).unwrap().0 += Vec3::X * 21.0;
         app.update();
         news.extend(app.world_mut().resource_mut::<Messages<CombatNews>>().drain());
