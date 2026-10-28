@@ -17,7 +17,7 @@ use bevy_enhanced_input::prelude::*;
 use enumset::EnumSet;
 
 pub(super) fn plugin(app: &mut App) {
-    app.add_input_context::<Editor>().add_systems(Update, (offer, refresh));
+    app.add_input_context::<Editor>().add_systems(Update, (offer, refresh, scroll_to_focus));
 }
 #[derive(Component)]
 struct Open;
@@ -331,20 +331,47 @@ fn press(
         }
     }
 }
+/// Keep the focused control in view.
+fn scroll_to_focus(
+    mut commands: Commands,
+    focus: Res<InputFocus>,
+    actions: Query<(), With<Action>>,
+) {
+    if focus.is_changed()
+        && let Some(entity) = focus.get()
+        && actions.contains(entity)
+    {
+        commands.trigger(bevy::ui_widgets::ScrollIntoView { entity });
+    }
+}
+
+/// Show the draft. It is redrawn only when the editor, the content or the
+/// strings change or its controls are new, and the draft is worked out once
+/// for all of its rows.
 fn refresh(
     mut commands: Commands,
-    editors: Query<&Editor>,
+    editors: Query<Ref<Editor>>,
     content: Content,
     strings: crate::presentation::screen_art::GameStrings,
     mut captions: Query<(&Caption, &mut BitmapText)>,
     mut pages: Query<(&PagePanel, &mut Node, &mut Visibility)>,
     mut actions: Query<(Entity, &Action, Has<InteractionDisabled>, &mut BackgroundColor)>,
-    focus: Res<InputFocus>,
+    added: Query<(), Or<(Added<Caption>, Added<Action>, Added<PagePanel>)>>,
+    spell_catalogs: Res<Assets<crate::content::spells::SpellCatalog>>,
 ) {
     let Ok(editor) = editors.single() else { return };
+    let changed = editor.is_changed()
+        || spell_catalogs.is_changed()
+        || strings.is_changed()
+        || !added.is_empty();
+    if !changed {
+        return;
+    }
     let Some(spells) = content.spells() else { return };
     let draft = &editor.draft;
-    let c = draft.preview();
+    let evaluated = draft.evaluate();
+    let c = &evaluated.preview;
+    let spell_picks = draft.spell_remaining(spells);
     let name = |index, fallback: String| {
         strings.table().and_then(|t| t.get(index)).map_or(fallback, str::to_owned)
     };
@@ -364,7 +391,7 @@ fn refresh(
                 "Remaining: {} attributes, {} skills, {} spell picks",
                 draft.attribute_remaining(),
                 draft.skill_remaining(),
-                draft.spell_remaining(spells)
+                spell_picks
             ),
             Caption::Message => editor.message.clone(),
             Caption::Attribute(a) => {
@@ -392,22 +419,19 @@ fn refresh(
     }
     for (page, mut node, mut visibility) in &mut pages {
         let shown = page.0 == editor.page;
-        node.display = if shown { Display::Flex } else { Display::None };
+        let display = if shown { Display::Flex } else { Display::None };
+        if node.display != display {
+            node.display = display;
+        }
         visibility.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
-    }
-    if focus.is_changed()
-        && let Some(entity) = focus.get()
-        && actions.contains(entity)
-    {
-        commands.trigger(bevy::ui_widgets::ScrollIntoView { entity });
     }
     for (id, action, disabled, mut color) in &mut actions {
         let enabled = match *action {
-            Action::Attribute(a, up) => draft.can_adjust_attribute(a, up),
-            Action::Skill(s, up) => draft.can_adjust_skill(s, up, spells),
+            Action::Attribute(a, up) => draft.attribute_adjustable(&evaluated, a, up),
+            Action::Skill(s, up) => draft.skill_adjustable(&evaluated, s, up, spells),
             Action::Spell(s) => {
                 draft.selected_spell(s)
-                    || (draft.can_learn(s, spells) && draft.spell_remaining(spells) > 0)
+                    || (spell_picks > 0 && draft.learnable(&evaluated, s, spells))
             }
             _ => true,
         };

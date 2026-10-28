@@ -81,6 +81,15 @@ pub struct Advancement {
     skills: EnumMap<Skill, u8>,
     spells: BTreeSet<SpellId>,
 }
+/// An [`Advancement`] worked out once ([`Advancement::evaluate`]): a
+/// temporary view for one pass over many rows, never kept.
+pub struct Evaluation {
+    baseline: Character,
+    pub preview: Character,
+    learned: LearnedSpells,
+    attributes_left: u8,
+}
+
 impl Advancement {
     fn new(member: Entity, original: &Character, known: &LearnedSpells) -> Self {
         Self {
@@ -144,7 +153,9 @@ impl Advancement {
         c
     }
     pub fn preview(&self) -> Character {
-        let mut c = self.baseline();
+        self.allocate(self.baseline())
+    }
+    fn allocate(&self, mut c: Character) -> Character {
         for (a, &n) in &self.attributes {
             c.attributes[a] += n;
         }
@@ -153,9 +164,24 @@ impl Advancement {
         }
         c
     }
+    /// The draft worked out once (its baseline, its preview, what it would
+    /// know and the attribute points left), for checking many adjustments
+    /// against without rebuilding them for each.
+    pub fn evaluate(&self) -> Evaluation {
+        let baseline = self.baseline();
+        let preview = self.allocate(baseline.clone());
+        Evaluation {
+            attributes_left: self.attributes_left(&preview),
+            learned: self.learned(),
+            baseline,
+            preview,
+        }
+    }
+    fn attributes_left(&self, preview: &Character) -> u8 {
+        6 - preview.attributes.iter().map(|(a, &n)| n - self.original.attributes[a]).sum::<u8>()
+    }
     pub fn attribute_remaining(&self) -> u8 {
-        let c = self.preview();
-        6 - c.attributes.iter().map(|(a, &n)| n - self.original.attributes[a]).sum::<u8>()
+        self.attributes_left(&self.preview())
     }
     pub fn skill_remaining(&self) -> u8 {
         9 - self.skills.values().sum::<u8>()
@@ -167,11 +193,14 @@ impl Advancement {
         self.skills[s]
     }
     pub fn can_adjust_attribute(&self, a: Attribute, up: bool) -> bool {
+        self.attribute_adjustable(&self.evaluate(), a, up)
+    }
+    pub fn attribute_adjustable(&self, draft: &Evaluation, a: Attribute, up: bool) -> bool {
         if !up {
             return self.attributes[a] > 0;
         }
-        let c = self.preview();
-        self.attribute_remaining() > 0
+        let c = &draft.preview;
+        draft.attributes_left > 0
             && c.attributes[a] < 100
             && c.attributes[a] - self.original.attributes[a] < 3
     }
@@ -183,6 +212,15 @@ impl Advancement {
             self.attributes[a] += 1;
         } else {
             self.attributes[a] -= 1;
+        }
+        // An attribute lowered below 100 closes its expert skill, and what
+        // was put into it comes back (retail `AdjustAllocatedAttribute`,
+        // `RecomputeSkillLimits`, `ClampSkillsToBudget`).
+        let c = self.preview();
+        for s in EnumSet::<Skill>::all() {
+            if s as usize >= Skill::PowerStrike as usize && !c.skill_available(s) {
+                self.skills[s] = 0;
+            }
         }
         true
     }
@@ -197,14 +235,23 @@ impl Advancement {
         known
     }
     pub fn can_adjust_skill(&self, s: Skill, up: bool, catalog: &SpellCatalog) -> bool {
+        self.skill_adjustable(&self.evaluate(), s, up, catalog)
+    }
+    pub fn skill_adjustable(
+        &self,
+        draft: &Evaluation,
+        s: Skill,
+        up: bool,
+        catalog: &SpellCatalog,
+    ) -> bool {
         if !up {
             return self.skills[s] > 0;
         }
-        let c = self.preview();
+        let c = &draft.preview;
         self.skill_remaining() > 0
             && self.skills[s] < 3
             && c.skill_points[s] < 75
-            && magic::skill_available(&c, Some(&self.learned()), Some(catalog), s)
+            && magic::skill_available(c, Some(&draft.learned), Some(catalog), s)
     }
     pub fn adjust_skill(&mut self, s: Skill, up: bool, catalog: &SpellCatalog) -> bool {
         if !self.can_adjust_skill(s, up, catalog) {
@@ -232,9 +279,12 @@ impl Advancement {
             }))
     }
     pub fn can_learn(&self, id: SpellId, catalog: &SpellCatalog) -> bool {
+        self.learnable(&self.evaluate(), id, catalog)
+    }
+    pub fn learnable(&self, draft: &Evaluation, id: SpellId, catalog: &SpellCatalog) -> bool {
         // Retail excludes this draft's magic-skill allocations from spell eligibility.
         !self.known.0.contains(&id)
-            && catalog.get(id).is_some_and(|s| magic::can_learn(&self.baseline(), s))
+            && catalog.get(id).is_some_and(|s| magic::can_learn(&draft.baseline, s))
     }
     fn remaining_picks(&self, catalog: &SpellCatalog) -> Option<SpellPicks> {
         let c = self.baseline();
@@ -452,6 +502,25 @@ mod tests {
         c.experience = c.experience_goal();
         c
     }
+    /// Lowering an attribute below 100 refunds its expert skill, so the
+    /// draft never holds training it cannot accept.
+    #[test]
+    fn lowering_an_attribute_refunds_the_expert_skill_it_opened() {
+        let mut original = character(Profession::Fighter);
+        original.attributes[Attribute::Strength] = 97;
+        let mut draft = Advancement::new(Entity::PLACEHOLDER, &original, &default());
+        for _ in 0..3 {
+            assert!(draft.adjust_attribute(Attribute::Strength, true));
+        }
+        assert!(draft.adjust_skill(Skill::PowerStrike, true, &default()));
+        let left = draft.skill_remaining();
+        assert!(draft.adjust_attribute(Attribute::Strength, false));
+        assert_eq!(draft.skills[Skill::PowerStrike], 0);
+        assert_eq!(draft.skill_remaining(), left + 1);
+        complete(&mut draft, &default());
+        assert!(draft.finish(&default()).is_ok(), "nothing unavailable is left to refund");
+    }
+
     #[test]
     fn a_profession_change_spends_only_the_new_level_and_keeps_past_xp_prices() {
         let mut original = character(Profession::Fighter);
@@ -679,14 +748,19 @@ mod tests {
         assert_eq!(v.stamina, c.max_stamina() - 5);
         assert_eq!(v.conditions, [(Condition::Poisoned, Lasting::Rounds(10))]);
         assert_eq!(c.experience, original.experience);
-        assert!(accept(&mut w, &draft).is_err(), "duplicate acceptance cannot gain another level");
+        // Ready to advance again, a draft opened before the last acceptance
+        // is refused only because it is stale.
         w.get_mut::<Character>(member).unwrap().experience = 10000;
+        assert!(accept(&mut w, &draft).is_err(), "duplicate acceptance cannot gain another level");
         let mut stale = begin(&mut w, member);
         complete(&mut stale, &default());
         w.get_mut::<Character>(member).unwrap().skill_points[Skill::Sword] += 1;
         assert!(accept(&mut w, &stale).is_err());
+        // A fresh, valid draft is still refused once its actor leaves the party.
+        let mut fresh = begin(&mut w, member);
+        complete(&mut fresh, &default());
         w.entity_mut(member).remove::<PartyMember>();
-        assert!(accept(&mut w, &stale).is_err(), "a retained profile is not a party member");
+        assert!(accept(&mut w, &fresh).is_err(), "a retained profile is not a party member");
     }
     #[test]
     fn profession_change_moves_unusable_equipment_or_refuses_without_partial_changes() {
@@ -709,11 +783,15 @@ mod tests {
         w.get_mut::<Carried>(member).unwrap().backpack = backpack;
         w.get_mut::<PartyInventory>(party).unwrap().pool.stacks = full_pool;
         let before = w.get::<Carried>(member).unwrap().clone();
+        let pool = w.get::<PartyInventory>(party).unwrap().pool.clone();
+        let vitals = w.get::<Vitals>(member).unwrap().clone();
         let mut draft = begin(&mut w, member);
         assert!(draft.choose_profession(Profession::Mage));
         complete(&mut draft, &default());
         assert!(accept(&mut w, &draft).is_err());
         assert_eq!(*w.get::<Carried>(member).unwrap(), before);
+        assert_eq!(w.get::<PartyInventory>(party).unwrap().pool, pool);
+        assert_eq!(*w.get::<Vitals>(member).unwrap(), vitals);
         assert_eq!(w.get::<Character>(member).unwrap().level, 1);
         w.get_mut::<Carried>(member).unwrap().backpack[0] = None;
         accept(&mut w, &draft).unwrap();
