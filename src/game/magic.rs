@@ -649,20 +649,15 @@ pub fn deliver_spells(
             &mut field,
             (spells, &mut points),
         );
+        let improved = std::mem::take(&mut field.improved);
         if let Some(battle) = battle.as_mut() {
-            for effect in &effects {
-                if let Effect::Damaged { victim: Victim::Monster(target), outcome, .. } = *effect
-                    && outcome.died
-                {
-                    battle.credit_kill(target, outcome.experience);
-                    combat_news.write(crate::game::combat::CombatNews::Killed { actor: target });
-                }
-            }
+            battle.credit_magic_kills(&effects, &mut combat_news);
         }
         news.write(casting::MagicNews::Landed {
             caster: flight.caster,
             spell: flight.spell,
             effects,
+            improved,
         });
     }
 }

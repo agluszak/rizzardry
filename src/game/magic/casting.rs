@@ -94,11 +94,12 @@ pub enum MagicNews {
         effects: Vec<Effect>,
         improved: Vec<(Entity, Skill)>,
     },
-    /// A missile reached its victims.
+    /// A missile reached its victims, with the skills its impact improved.
     Landed {
         caster: Entity,
         spell: SpellId,
         effects: Vec<Effect>,
+        improved: Vec<(Entity, Skill)>,
     },
     Refused {
         caster: Entity,

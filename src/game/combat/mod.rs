@@ -244,6 +244,19 @@ impl Battle {
         }
     }
 
+    /// Credit and announce the kills magic made, whether it landed at once
+    /// or as a missile: the one place spell kills are counted.
+    pub fn credit_magic_kills(&mut self, effects: &[Effect], news: &mut MessageWriter<CombatNews>) {
+        for effect in effects {
+            if let Effect::Damaged { victim: Victim::Monster(target), outcome, .. } = *effect
+                && outcome.died
+            {
+                self.credit_kill(target, outcome.experience);
+                news.write(CombatNews::Killed { actor: target });
+            }
+        }
+    }
+
     /// How far through the round its play is, 0 to 1, while a round is
     /// being played.
     pub fn progress(&self) -> Option<f32> {
@@ -776,16 +789,7 @@ pub fn run_battle(
                 match report {
                     Ok((report, flights)) => {
                         battle.attacked_this_round = true;
-                        for effect in &report.effects {
-                            if let Effect::Damaged {
-                                victim: Victim::Monster(target), outcome, ..
-                            } = *effect
-                                && outcome.died
-                            {
-                                battle.credit_kill(target, outcome.experience);
-                                news.write(CombatNews::Killed { actor: target });
-                            }
-                        }
+                        battle.credit_magic_kills(&report.effects, &mut news);
                         magic.flight_order.launch(&mut commands, flights, level.0);
                         magic_news.write(MagicNews::Done(report));
                     }
@@ -1659,6 +1663,114 @@ mod tests {
         assert_eq!(once.iter().map(|(m, _)| *m).collect::<Vec<_>>(), [1, 3, 2, 0]);
         assert_eq!(once, stepped);
         assert_eq!(rng_once, rng_stepped);
+    }
+
+    /// Launch `flights` in a fight's world and let them all land.
+    fn land(
+        app: &mut App,
+        flights: Vec<crate::game::magic::casting::SpellInFlight>,
+    ) -> Vec<MagicNews> {
+        let level = app.world_mut().query::<&LevelOwned>().iter(app.world()).next().unwrap().0;
+        let world = app.world_mut();
+        let mut commands = world.commands();
+        casting::FlightOrder::default().launch(&mut commands, flights, level);
+        world.flush();
+        world.resource_mut::<Messages<MagicNews>>().clear();
+        world.resource_mut::<Time<Virtual>>().advance_by(std::time::Duration::from_secs(5));
+        world.run_system_cached(crate::game::magic::deliver_spells).unwrap();
+        world.flush();
+        world.resource_mut::<Messages<MagicNews>>().drain().collect()
+    }
+
+    fn missile(
+        caster: Entity,
+        spell: crate::content::spells::SpellId,
+        victim: Victim,
+    ) -> crate::game::magic::casting::SpellInFlight {
+        crate::game::magic::casting::SpellInFlight {
+            caster,
+            spell,
+            strength: crate::game::magic::Strength { power: 1, against: 1, boost: 0 },
+            victims: vec![victim],
+            arrives: Timer::from_seconds(0.1, TimerMode::Once),
+            launched: 0,
+        }
+    }
+
+    /// A missile that kills is credited and announced once, as an immediate
+    /// kill is; one landing on the dead afterwards adds nothing.
+    #[test]
+    fn a_lethal_missile_counts_its_kill_once() {
+        let (mut app, [caster, _]) = round_app(true);
+        let monster = order_spell(
+            &mut app,
+            caster,
+            crate::content::spells::SpellDefinition {
+                dice: Some(Dice { base: 50, count: 0, sides: 0 }),
+                ..energy_blast()
+            },
+        );
+        app.world_mut().get_mut::<Monster>(monster).unwrap().hp = 1;
+        app.world_mut().resource_mut::<Messages<CombatNews>>().clear();
+        let id = crate::content::spells::SpellId::ENERGY_BLAST;
+        let landed = land(
+            &mut app,
+            vec![
+                missile(caster, id, Victim::Monster(monster)),
+                missile(caster, id, Victim::Monster(monster)),
+            ],
+        );
+        assert_eq!(landed.iter().filter(|n| matches!(n, MagicNews::Landed { .. })).count(), 2);
+        assert_eq!(fight(app.world()).unwrap().kills, 1);
+        let killed: Vec<_> = app
+            .world_mut()
+            .resource_mut::<Messages<CombatNews>>()
+            .drain()
+            .filter(|n| matches!(n, CombatNews::Killed { .. }))
+            .collect();
+        assert_eq!(killed, [CombatNews::Killed { actor: monster }]);
+    }
+
+    /// Skills an impact improves (a member resisting, practising Iron Will)
+    /// are reported with the landing, exactly when they improved.
+    #[test]
+    fn a_landed_spell_reports_the_skills_its_impact_improved() {
+        use crate::content::characters::{Attribute, Skill};
+        let mut reported = 0;
+        for seed in 0..40 {
+            let (mut app, [caster, member]) = round_app(true);
+            order_spell(
+                &mut app,
+                caster,
+                crate::content::spells::SpellDefinition {
+                    id: crate::content::spells::SpellId(12),
+                    realm: Some(crate::content::characters::Realm::Mental),
+                    ..energy_blast()
+                },
+            );
+            {
+                let mut character = app.world_mut().get_mut::<Character>(member).unwrap();
+                character.attributes[Attribute::Piety] = 100;
+                character.level = 30;
+                character.skill_practice[Skill::IronWill] = 7;
+            }
+            app.insert_resource(GameRng::seeded(seed));
+            let landed = land(
+                &mut app,
+                vec![missile(caster, crate::content::spells::SpellId(12), Victim::Member(member))],
+            );
+            let improved =
+                app.world().get::<Character>(member).unwrap().skill_points[Skill::IronWill] > 0;
+            let [MagicNews::Landed { improved: report, .. }] = landed.as_slice() else {
+                panic!("{landed:?}")
+            };
+            assert_eq!(!report.is_empty(), improved, "seed {seed}");
+            if improved {
+                assert_eq!(report, &[(member, Skill::IronWill)]);
+                reported += 1;
+            }
+        }
+        assert!(reported > 0, "no impact improved a skill");
     }
 
     /// A monster with nothing in reach spends its phase advancing, by its
