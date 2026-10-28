@@ -139,7 +139,7 @@ pub(crate) fn discharge(
                             &victims,
                             &mut rng,
                             field,
-                            (spells, &mut points),
+                            &mut points,
                         );
                         Some((spell.id, effects, std::mem::take(&mut field.improved), destroyed))
                     })

@@ -302,6 +302,8 @@ pub fn draw_party(
     assets: Res<AssetServer>,
     slots: PortraitSlots,
     members: Query<CharacterView>,
+    battle: Option<Single<&crate::game::combat::Battle>>,
+    party_effects: Option<Single<&crate::game::magic::enchantments::PartyEffects>>,
     content: crate::game::data::Content,
     mut parts: Query<(
         &PartyPart,
@@ -325,7 +327,13 @@ pub fn draw_party(
         let mut hand_x = None;
         let image = |path: &str, frame| (crate::content::paths::retail(path), frame);
         if let Some(view) = actor {
-            let CharacterViewItem { profile, vitals, carried, armour, .. } = view;
+            let armour = view.armour(
+                part.member,
+                catalog,
+                battle.as_deref().copied(),
+                party_effects.as_deref().copied(),
+            );
+            let CharacterViewItem { profile, vitals, carried, .. } = view;
             let dead = vitals.is_dead();
             let worn = |slot| {
                 carried.as_ref().and_then(|c| c.worn(slot)).and_then(|i| catalog?.get(i.item))
@@ -407,7 +415,10 @@ pub fn draw_party(
                 Part::Armour => {
                     shown = !dead;
                     value = Some(
-                        armour.map_or(0, crate::game::combat::attack::Armour::average).to_string(),
+                        armour
+                            .as_ref()
+                            .map_or(0, crate::game::combat::attack::Armour::average)
+                            .to_string(),
                     );
                 }
                 Part::Name => value = Some(profile.name.clone()),

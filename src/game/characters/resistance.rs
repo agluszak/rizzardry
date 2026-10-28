@@ -7,14 +7,20 @@ use crate::game::characters::{Profession, Race};
 use crate::game::inventory::Carried;
 #[cfg(test)]
 use crate::game::inventory::EquipSlot;
+use bevy::prelude::Component;
 use enum_map::{EnumMap, enum_map};
 
 /// Base resistance and its current value, before unmodelled spell effects.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Resistance {
     pub base: i32,
     pub total: i32,
 }
+
+/// A member's resistance in each realm. Members carry theirs, kept current
+/// by `sync_stats`.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Resistances(pub EnumMap<Realm, Resistance>);
 
 /// Retail `RecalculateCharacterResistances` and equipment modifier accumulation.
 /// Other temporary effects are not represented yet.

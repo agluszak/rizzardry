@@ -136,12 +136,8 @@ pub(crate) fn pass_time(
     mut enchantments: Single<&mut crate::game::magic::enchantments::PartyEffects>,
     mut clock: ResMut<GameClock>,
     mut rng: ResMut<GameRng>,
-    (content, mut points): (
-        crate::game::data::Content,
-        Query<(&crate::game::magic::LearnedSpells, &mut crate::game::magic::SpellPoints)>,
-    ),
+    mut points: Query<&mut crate::game::magic::SpellPoints>,
 ) {
-    let spells = content.spells();
     if battle.is_some() {
         return;
     }
@@ -178,20 +174,10 @@ pub(crate) fn pass_time(
                 enchantments.0.age(1);
             }
             // Spell points come back at least at half rate (retail `spellScale`).
-            if let Some(spells) = spells {
-                let scale = crate::game::magic::recovery_scale(pace.health_scale());
-                let members = affected.p0();
-                for member in roster.iter() {
-                    let Ok((profile, vitals)) = members.get(member) else { continue };
-                    let Ok((learned, mut pool)) = points.get_mut(member) else { continue };
-                    let maximum = crate::game::magic::max_points(
-                        &profile.stats(&vitals.enchantments),
-                        learned,
-                        spells,
-                    );
-                    if maximum.iter().any(|(realm, &max)| pool.current[realm] < max) {
-                        pool.recover(&maximum, 1, scale);
-                    }
+            let scale = crate::game::magic::recovery_scale(pace.health_scale());
+            for mut pool in points.iter_many_unique_mut(roster.iter()).matched() {
+                if pool.short() {
+                    pool.recover(1, scale);
                 }
             }
             // Monsters' conditions run out in the world too.

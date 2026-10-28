@@ -3,7 +3,6 @@
 //! effects are not modelled yet; missiles hit by the same roll as melee
 //! (a deliberate approximation of retail's scattered aim point).
 
-use bevy::prelude::Component;
 use enum_map::EnumMap;
 use enumset::EnumSet;
 
@@ -137,8 +136,9 @@ fn fatigue_penalty(c: &crate::game::characters::CharacterStats<'_>, vitals: &Vit
     }
 }
 
-/// A member's main hand, as the character sheet works it out.
-#[derive(Clone, Debug, PartialEq)]
+/// A member's main hand, as the character sheet works it out. Members carry
+/// theirs, kept current by `sync_stats`.
+#[derive(bevy::prelude::Component, Clone, Debug, Default, PartialEq)]
 pub struct Hand {
     pub reach: Reach,
     pub dice: Dice,
@@ -239,9 +239,9 @@ pub fn primary_hand(
     }
 }
 
-/// A member's total and per-location armour, without skills, spells or
-/// conditions. Members carry theirs, kept current by `sync_armour`.
-#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// A member's total and per-location armour, without skills or conditions.
+/// Calculated from current inputs, never stored on the member.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Armour {
     pub total: i32,
     pub by_location: EnumMap<BodyPart, i32>,
@@ -260,6 +260,28 @@ impl Armour {
         let total: i32 = self.by_location.iter().map(|(part, value)| value * weight(part)).sum();
         (total as f32 / 100.0).round() as i32
     }
+}
+
+/// A member's armour with the spells on them and, for a party member, the
+/// party's protections.
+pub fn enchanted_armour(
+    c: &crate::game::characters::CharacterStats<'_>,
+    carried: &Carried,
+    catalog: &ItemCatalog,
+    load: Load,
+    defending: bool,
+    (personal, party): (
+        &crate::game::magic::enchantments::Enchantments,
+        Option<&crate::game::magic::enchantments::Enchantments>,
+    ),
+) -> Armour {
+    let mut armour = armour(c, carried, catalog, load, defending);
+    let bonus = personal.armour() + party.map_or(0, |party| party.armour());
+    armour.total += bonus;
+    for (_, value) in armour.by_location.iter_mut() {
+        *value += bonus;
+    }
+    armour
 }
 
 /// A character's armour (retail `CalcArmorClasses`). Defending adds 2
