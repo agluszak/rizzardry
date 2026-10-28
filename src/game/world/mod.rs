@@ -82,7 +82,7 @@ impl Plugin for WorldPlugin {
                 (
                     level::activate_level.in_set(crate::game::GameplaySet::LevelActivation),
                     (handle_world_requests, crate::game::automap::commit_notes)
-                        .after(crate::game::GameplaySet::LevelActivation)
+                        .after(crate::game::GameplaySet::Stats)
                         .before(crate::game::GameplaySet::Combat),
                     (search::toggle_search, search::search_pulse)
                         .chain()

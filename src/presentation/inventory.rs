@@ -1229,6 +1229,7 @@ impl Plugin for InventoryPlugin {
                         draw_cells,
                     )
                         .after(spawn_inventory_screen)
+                        .after(crate::game::GameplaySet::Stats)
                         .run_if(any_with_component::<InventoryScreen>),
                     follow_held,
                 ),
@@ -1247,7 +1248,8 @@ impl Plugin for InventoryPlugin {
                     spells::refresh,
                     pool_scroll::sync.before(draw_cells),
                 )
-                    .after(spawn_inventory_screen),
+                    .after(spawn_inventory_screen)
+                    .after(crate::game::GameplaySet::Stats),
             );
     }
 }

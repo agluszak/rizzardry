@@ -124,8 +124,9 @@ fn fatigue_penalty(c: &Character, vitals: &Vitals) -> i32 {
     }
 }
 
-/// A member's main hand, as the character sheet works it out.
-#[derive(Clone, Debug, PartialEq)]
+/// A member's main hand, as the character sheet works it out. Members carry
+/// theirs, kept current by `sync_stats`.
+#[derive(bevy::prelude::Component, Clone, Debug, Default, PartialEq)]
 pub struct Hand {
     pub reach: Reach,
     pub dice: Dice,

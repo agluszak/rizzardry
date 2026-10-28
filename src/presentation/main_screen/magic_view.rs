@@ -30,7 +30,7 @@ use crate::game::inventory::{Carried, PartyInventory};
 use crate::game::magic::casting::{
     AUTO_POWER, Aim, MagicChoice, Source, UseContext, can_activate, usable_items, usable_now,
 };
-use crate::game::magic::{LearnedSpells, MagicRequest, SpellPoints, max_points, resolvable};
+use crate::game::magic::{LearnedSpells, MagicRequest, SpellPoints, resolvable};
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::population::Monster;
 use crate::presentation::retail_controls::{
@@ -712,7 +712,7 @@ pub(super) fn refresh_magic_view(
     };
     let Ok((character, _, carried)) = members.get(view.caster) else { return };
     let (learned, points) = casters.get(view.caster).map_or((None, None), |(l, p)| (Some(l), p));
-    let maximum = learned.map(|l| max_points(character, l, spells)).unwrap_or_default();
+    let maximum = points.map(|p| p.maximum).unwrap_or_default();
     // Realms: their points, the chosen one latched; the first with points
     // chosen when none is.
     if !view.items {
