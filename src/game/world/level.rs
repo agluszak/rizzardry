@@ -444,6 +444,7 @@ fn build_world(
     commands.entity(root).insert((
         RigidBody::Static,
         collider,
+        super::obstacles::scenery(),
         remembered.as_deref_mut().map_or_else(MapNotes::default, |r| std::mem::take(&mut r.notes)),
     ));
     for (index, prop) in geometry.props.iter().enumerate() {
@@ -504,8 +505,11 @@ fn build_world(
                                 RigidBody::Kinematic
                             };
                             part_entity.insert((body, collider));
-                            // Props the party walks through can still be used.
-                            if !prop.collidable {
+                            // Props the party walks through can still be used;
+                            // they are not scenery that blocks sight or items.
+                            if prop.collidable {
+                                part_entity.insert(super::obstacles::scenery());
+                            } else {
                                 part_entity.insert(Sensor);
                             }
                         }
