@@ -885,14 +885,12 @@ fn sale_item(
     .ok_or(TradeError::StaleSelection)
 }
 fn execute_trade(world: &mut World, quote: TradeQuote) -> Result<(), TradeError> {
+    let in_battle = crate::game::combat::in_battle(world);
     let c = world.get::<Conversation>(quote.conversation).ok_or(TradeError::StaleSelection)?;
     if !c.ready() || c.revision != quote.revision {
         return Err(TradeError::StaleSelection);
     }
-    if !available(world, c.actor)
-        || !trade_allowed(world, c.actor)
-        || crate::game::combat::in_battle(world)
-    {
+    if !available(world, c.actor) || !trade_allowed(world, c.actor) || in_battle {
         return Err(TradeError::Unavailable);
     }
     let actor = c.actor;
@@ -989,9 +987,10 @@ pub fn update_conversation(world: &mut World) {
             close_one(world, entity);
             continue;
         }
+        let in_battle = crate::game::combat::in_battle(world);
         let Some(c) = world.get::<Conversation>(entity) else { continue };
         if !available(world, c.actor)
-            || crate::game::combat::in_battle(world)
+            || in_battle
             || world.contains_resource::<crate::game::camp::Camp>()
         {
             close_one(world, entity);
@@ -1038,26 +1037,27 @@ pub fn update_conversation(world: &mut World) {
     let sessions: Vec<_> =
         world.query_filtered::<Entity, With<Conversation>>().iter(world).collect();
     for entity in sessions {
+        let in_battle = crate::game::combat::in_battle(world);
         let Some(c) = world.get::<Conversation>(entity) else { continue };
-        if !available(world, c.actor) || crate::game::combat::in_battle(world) {
+        if !available(world, c.actor) || in_battle {
             close_one(world, entity);
             continue;
         }
-        if let ConversationWait::Line { speech, phase } = &c.wait {
-            // No mutable access for an audio wait without a playback event.
-            if !matches!(phase, LinePhase::Audio) || playback.iter().any(|e| e.speech == *speech) {
-                let fallback = world
-                    .get::<ConversationSpeech>(*speech)
-                    .map_or(2.0, |line| line.text.encode_utf16().count() as f32 * 0.06 + 2.0);
-                let finished = advance_playback(
-                    &mut world.get_mut::<Conversation>(entity).unwrap(),
-                    &playback,
-                    delta,
-                    fallback,
-                );
-                if let Some(speech) = finished {
-                    world.despawn(speech);
-                }
+        // No mutable access for an audio wait without a playback event.
+        if let ConversationWait::Line { speech, phase } = &c.wait
+            && (!matches!(phase, LinePhase::Audio) || playback.iter().any(|e| e.speech == *speech))
+        {
+            let fallback = world
+                .get::<ConversationSpeech>(*speech)
+                .map_or(2.0, |line| line.text.encode_utf16().count() as f32 * 0.06 + 2.0);
+            let finished = advance_playback(
+                &mut world.get_mut::<Conversation>(entity).unwrap(),
+                &playback,
+                delta,
+                fallback,
+            );
+            if let Some(speech) = finished {
+                world.despawn(speech);
             }
         }
         run(world, entity);
