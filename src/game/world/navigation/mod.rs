@@ -31,6 +31,7 @@ pub struct NavigationPlugin;
 impl Plugin for NavigationPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(Landmass3dPlugin::default())
+            .add_observer(links::end_crossing)
             .add_plugins(TnuaControllerPlugin::<WalkerMotion>::new(FixedUpdate))
             .add_systems(
                 FixedPreUpdate,

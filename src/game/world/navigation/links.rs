@@ -112,10 +112,28 @@ pub fn sync_door_links(
     }
 }
 
-/// A walker crossing a link.
+/// A walker crossing a door's link, toward its far side. It ends when the
+/// walker gets there, and with the link: a door that closes despawns its
+/// links, and the walker then finds its way again.
 #[derive(Component, Debug)]
+#[relationship(relationship_target = Crossers)]
 pub struct Crossing {
+    #[relationship]
+    pub link: Entity,
     pub to: Vec3,
+}
+
+/// The walkers crossing a link.
+#[derive(Component, Debug)]
+#[relationship_target(relationship = Crossing)]
+pub struct Crossers(Vec<Entity>);
+
+/// A crossing that ends, however it ends, hands the walker back to its
+/// navigation.
+pub fn end_crossing(remove: On<Remove<Crossing>>, mut commands: Commands) {
+    if let Ok(mut walker) = commands.get_entity(remove.entity) {
+        walker.try_remove::<UsingAnimationLink>();
+    }
 }
 
 /// Start crossing a link the walker has reached: teleports and climbs
@@ -153,9 +171,10 @@ pub fn use_reached_links(
                 }
             }
             LinkKind::Door => {
-                commands
-                    .entity(entity)
-                    .insert((UsingAnimationLink, Crossing { to: reached.end_point }));
+                commands.entity(entity).insert((
+                    UsingAnimationLink,
+                    Crossing { link: reached.link_entity, to: reached.end_point },
+                ));
             }
         }
     }
@@ -185,6 +204,21 @@ pub fn finish_crossings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A door closing on a walker mid-crossing despawns the link, and the
+    /// walker goes back to finding its way instead of walking into the door.
+    #[test]
+    fn a_crossing_ends_with_its_link() {
+        let mut world = World::new();
+        world.add_observer(end_crossing);
+        let link = world.spawn_empty().id();
+        let walker = world.spawn((UsingAnimationLink, Crossing { link, to: Vec3::X })).id();
+        world.flush();
+        world.despawn(link);
+        world.flush();
+        assert!(world.get::<Crossing>(walker).is_none());
+        assert!(world.get::<UsingAnimationLink>(walker).is_none());
+    }
 
     #[test]
     fn physical_door_pose_and_navigation_agree_before_each_planning_step() {
