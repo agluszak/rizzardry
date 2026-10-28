@@ -38,9 +38,11 @@ fn species(record: &[u8]) -> Result<Species, DecodeError> {
             Ok(MonsterAttack {
                 weapon: crate::content::species::MonsterWeapon::try_from(attack[1])
                     .map_err(|_| DecodeError::Invalid("unknown monster weapon", 1))?,
-                word: match attack[2] {
-                    1 => AttackWord::Verb,
-                    word => AttackWord::Word(word),
+                word: if attack[2] == 13 {
+                    AttackWord::Silent
+                } else {
+                    AttackWord::try_from(attack[2])
+                        .map_err(|_| DecodeError::Invalid("unknown monster attack word", 2))?
                 },
                 reach: reach(attack[3]),
                 score: attack[4],

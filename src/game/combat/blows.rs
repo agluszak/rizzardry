@@ -739,7 +739,8 @@ pub(super) fn monster_attacks(
     for _ in 0..swings {
         let Ok((monster, ..)) = field.monsters.monsters().get(entity) else { break };
         let monster = monster.clone();
-        if monster.is_dead() {
+        // A fumble may incapacitate the attacker between its swings.
+        if !monster.can_fight() {
             break;
         }
         let Some((_, aimed_at)) = member_defence(battle, field, fight, member)
