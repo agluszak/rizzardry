@@ -574,8 +574,8 @@ fn plan_quote(
             }
             DialogueOp::TakeItem(item) => {
                 let party = party
-                    .filter(|&p| world.get::<PartyRoster>(p).is_some())
-                    .ok_or_else(|| (i, "party roster unavailable".into()))?;
+                    .filter(|&p| world.get::<PartyInventory>(p).is_some())
+                    .ok_or_else(|| (i, "party items unavailable".into()))?;
                 plan.effects.push(QuoteEffect::TakeItem { party, item: *item });
             }
             DialogueOp::Conditional { facts, response } => {
@@ -636,7 +636,7 @@ fn executable(world: &World, plan: &QuotePlan, offered: Option<(Entity, ItemRef)
             world.get::<PartyInventory>(*party).is_some()
                 && GameData::items(world).is_some_and(|catalog| catalog.get(*item).is_some())
         }
-        QuoteEffect::TakeItem { party, .. } => world.get::<PartyRoster>(*party).is_some(),
+        QuoteEffect::TakeItem { party, .. } => world.get::<PartyInventory>(*party).is_some(),
     });
     present && exchange_fits(world, plan, offered)
 }
@@ -686,9 +686,11 @@ struct PartyItems {
 }
 impl PartyItems {
     fn of(world: &World, party: Entity) -> Option<Self> {
+        // A party without members has no roster, only its own items.
         let packs = world
-            .get::<PartyRoster>(party)?
-            .iter()
+            .get::<PartyRoster>(party)
+            .into_iter()
+            .flat_map(|roster| roster.iter())
             .filter_map(|member| Some((member, world.get::<Carried>(member)?.clone())))
             .collect();
         Some(Self { packs, pool: world.get::<PartyInventory>(party)?.pool.clone() })
