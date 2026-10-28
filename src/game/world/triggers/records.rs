@@ -176,7 +176,7 @@ pub fn spawn_devices(
                 if table.is_none() {
                     warn!("trigger {}: no loot table {name}; it holds nothing", definition.name);
                 }
-                entity.insert(Container { table, generated: false, contents: Contents::default() });
+                entity.insert(Container { table, contents: Contents::default() });
             }
             if let Some(guarded) = definition.lock.map(Guarded::new) {
                 entity.insert(guarded);

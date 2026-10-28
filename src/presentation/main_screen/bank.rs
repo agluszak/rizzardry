@@ -141,7 +141,7 @@ pub fn draw_bank(
         });
         set_enabled(&mut commands, entity, enabled, disabled);
         let selected_state = match face.kind {
-            Some(Bank::Search) => search.on(),
+            Some(Bank::Search) => search.on(fighting),
             Some(Bank::Formation) => layout.shows(Panel::Formation),
             Some(Bank::Order(wanted)) => wanted == order,
             Some(Bank::PartyMove) => battle.as_ref().is_some_and(|b| b.party_pace.is_some()),

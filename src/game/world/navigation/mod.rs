@@ -260,11 +260,24 @@ fn sync_walker_velocity(mut walkers: Query<(&LinearVelocity, &mut Velocity3d), W
     }
 }
 
+/// Whether a walker is to move now, the one rule for all its locomotion: it
+/// has somewhere to go, and a monster can still act. Ending a move clears
+/// the target, so a crossing it began keeps its progress but no longer moves
+/// the walker, and recovering from a condition does not resume it; only a
+/// new move does.
+pub(crate) fn walking(
+    target: &AgentTarget3d,
+    monster: Option<&super::population::Monster>,
+) -> bool {
+    !matches!(target, AgentTarget3d::None) && monster.is_none_or(|m| m.can_fight())
+}
+
 /// Feed Landmass's desired velocity to Tnua; while crossing a doorway link,
 /// head straight for its far side instead.
 fn steer_walkers(
     mut walkers: Query<(
         &Walker,
+        &AgentTarget3d,
         Option<&super::population::Monster>,
         Option<&AgentDesiredVelocity3d>,
         Option<&links::Crossing>,
@@ -272,8 +285,8 @@ fn steer_walkers(
         &mut TnuaController<WalkerMotion>,
     )>,
 ) {
-    for (walker, monster, desired, crossing, transform, mut controller) in &mut walkers {
-        let velocity = if monster.is_some_and(|m| m.is_dead()) {
+    for (walker, target, monster, desired, crossing, transform, mut controller) in &mut walkers {
+        let velocity = if !walking(target, monster) {
             Vec3::ZERO
         } else {
             match crossing {
