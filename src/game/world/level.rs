@@ -407,15 +407,57 @@ pub struct LevelReady {
 }
 
 /// The level's collider, or why it has none.
-fn level_collider(geometry: &LevelDefinition) -> Result<Collider, String> {
-    Collider::try_trimesh_with_config(
+/// A level's collision, built and checked before its entry commits: the
+/// level's own, and each prop part's by prop and part. Sprites have none.
+struct Collision {
+    level: Collider,
+    parts: Vec<Vec<Option<Collider>>>,
+}
+
+/// Build all of a level's collision once its entry is otherwise ready. The
+/// level's and every solid prop part's are mandatory: one that cannot be
+/// built fails the entry before anything changes. A part the party walks
+/// through (a sensor) only shows the way and may be left without.
+fn prepare_collision(geometry: &LevelDefinition) -> Result<Collision, String> {
+    let level = Collider::try_trimesh_with_config(
         geometry.collision.vertices.clone(),
         geometry.collision.triangles.clone(),
         TrimeshFlags::MERGE_DUPLICATE_VERTICES
             | TrimeshFlags::DELETE_DEGENERATE_TRIANGLES
             | TrimeshFlags::FIX_INTERNAL_EDGES,
     )
-    .map_err(|error| format!("level collider: {error:?}"))
+    .map_err(|error| format!("level collider: {error:?}"))?;
+    let parts = geometry
+        .props
+        .iter()
+        .map(|prop| {
+            prop.parts
+                .iter()
+                .map(|part| {
+                    // Sprites turn with the view and do not collide.
+                    if prop.face_camera {
+                        return Ok(None);
+                    }
+                    match Collider::try_trimesh_with_config(
+                        part.collision.vertices.clone(),
+                        part.collision.triangles.clone(),
+                        TrimeshFlags::MERGE_DUPLICATE_VERTICES
+                            | TrimeshFlags::DELETE_DEGENERATE_TRIANGLES,
+                    ) {
+                        Ok(collider) => Ok(Some(collider)),
+                        Err(error) if prop.collidable => {
+                            Err(format!("prop {} collider: {error:?}", prop.name))
+                        }
+                        Err(error) => {
+                            warn!("walk-through prop {} has no collider: {error:?}", prop.name);
+                            Ok(None)
+                        }
+                    }
+                })
+                .collect()
+        })
+        .collect::<Result<_, String>>()?;
+    Ok(Collision { level, parts })
 }
 
 /// Build the level's playable world under its root: its collider, its props
@@ -425,7 +467,7 @@ fn build_world(
     commands: &mut Commands,
     root: Entity,
     geometry: &LevelDefinition,
-    collider: Collider,
+    collision: Collision,
     script: super::scripts::LevelScript,
     tables: &LootTables,
     mut remembered: Option<&mut LevelRecord>,
@@ -443,11 +485,11 @@ fn build_world(
     );
     commands.entity(root).insert((
         RigidBody::Static,
-        collider,
+        collision.level,
         super::obstacles::scenery(),
         remembered.as_deref_mut().map_or_else(MapNotes::default, |r| std::mem::take(&mut r.notes)),
     ));
-    for (index, prop) in geometry.props.iter().enumerate() {
+    for ((index, prop), colliders) in geometry.props.iter().enumerate().zip(collision.parts) {
         let frame =
             remembered.as_ref().and_then(|r| r.prop_frames.get(&index)).copied().unwrap_or(0.0);
         let last_frame =
@@ -484,36 +526,22 @@ fn build_world(
             prop_entity.insert(doorway);
         }
         prop_entity.with_children(|prop_entity| {
-            for (part_index, part) in prop.parts.iter().enumerate() {
+            for ((part_index, part), collider) in prop.parts.iter().enumerate().zip(colliders) {
                 let at =
                     if part.keys.is_empty() { part.transform } else { pose(&part.keys, frame) };
                 let mut part_entity =
                     prop_entity.spawn((PropPart { part: part_index, keys: part.keys.clone() }, at));
-                // Sprites turn with the view and do not collide.
-                if !prop.face_camera {
-                    match Collider::try_trimesh_with_config(
-                        part.collision.vertices.clone(),
-                        part.collision.triangles.clone(),
-                        TrimeshFlags::MERGE_DUPLICATE_VERTICES
-                            | TrimeshFlags::DELETE_DEGENERATE_TRIANGLES,
-                    ) {
-                        Ok(collider) => {
-                            // Parts with a path can move (doors, lifts).
-                            let body = if part.keys.is_empty() {
-                                RigidBody::Static
-                            } else {
-                                RigidBody::Kinematic
-                            };
-                            part_entity.insert((body, collider));
-                            // Props the party walks through can still be used;
-                            // they are not scenery that blocks sight or items.
-                            if prop.collidable {
-                                part_entity.insert(super::obstacles::scenery());
-                            } else {
-                                part_entity.insert(Sensor);
-                            }
-                        }
-                        Err(error) => warn!("prop {} collider: {error:?}", prop.name),
+                if let Some(collider) = collider {
+                    // Parts with a path can move (doors, lifts).
+                    let body =
+                        if part.keys.is_empty() { RigidBody::Static } else { RigidBody::Kinematic };
+                    part_entity.insert((body, collider));
+                    // Props the party walks through can still be used;
+                    // they are not scenery that blocks sight or items.
+                    if prop.collidable {
+                        part_entity.insert(super::obstacles::scenery());
+                    } else {
+                        part_entity.insert(Sensor);
                     }
                 }
             }
@@ -617,13 +645,6 @@ pub fn activate_level(
         {
             continue;
         }
-        let collider = match level_collider(geometry) {
-            Ok(collider) => collider,
-            Err(error) => {
-                fail(&error);
-                continue;
-            }
-        };
         match presentation {
             Some(PresentationReadiness::Waiting) => continue,
             Some(PresentationReadiness::Failed(why)) => {
@@ -637,6 +658,15 @@ pub fn activate_level(
             fail("there is no party to travel");
             continue;
         }
+        // Built once, now that nothing else is awaited, and before the
+        // source is touched.
+        let collision = match prepare_collision(geometry) {
+            Ok(collision) => collision,
+            Err(error) => {
+                fail(&error);
+                continue;
+            }
+        };
         if let Entry::NewGame(characters) = &destination.entry
             && let Err(missing) = crate::game::party::roster::check_starting_items(
                 characters.iter().map(|(character, _)| character),
@@ -660,7 +690,7 @@ pub fn activate_level(
             &mut commands,
             root,
             geometry,
-            collider,
+            collision,
             level.script,
             loot,
             remembered.as_mut(),

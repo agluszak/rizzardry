@@ -289,6 +289,50 @@ fn a_level_without_collision_fails_and_places_no_party() {
     assert!(party_entities(&mut app).is_empty());
 }
 
+/// A solid prop whose collision cannot be built fails the destination
+/// before the level being left or the party changes; one the party walks
+/// through is built without it.
+#[test]
+fn a_solid_prop_without_collision_fails_entry_and_keeps_the_source() {
+    use rizzardry::content::level::{PropModel, PropModelPart};
+    let (mut app, first_level) = playing();
+    let party = party_entities(&mut app);
+    let prop = |collidable| PropModel {
+        name: "broken".into(),
+        collidable,
+        face_camera: false,
+        frames_per_second: 10.0,
+        parts: vec![PropModelPart {
+            transform: Transform::IDENTITY,
+            keys: vec![],
+            collision: CollisionMesh::default(),
+        }],
+        wraps: false,
+        slots: vec![],
+        trigger: None,
+    };
+    let enter = |app: &mut App, collidable: bool| {
+        let level = test_level(app, floor());
+        let mut definition =
+            app.world().resource::<Assets<LevelDefinition>>().get(&level.geometry).unwrap().clone();
+        definition.props = vec![prop(collidable)];
+        app.world_mut()
+            .resource_mut::<Assets<LevelDefinition>>()
+            .insert(&level.geometry, definition)
+            .unwrap();
+        app.world_mut().spawn(Destination::new(level, default(), Entry::Travel)).id()
+    };
+    let destination = enter(&mut app, true);
+    app.update();
+    assert!(failed(&app, destination));
+    assert!(is_played(&app, first_level));
+    assert_eq!(party_entities(&mut app), party);
+    let destination = enter(&mut app, false);
+    app.update();
+    assert!(is_played(&app, destination));
+    assert_eq!(party_entities(&mut app), party);
+}
+
 #[test]
 fn a_level_waits_for_the_shared_databases() {
     let mut app = app();
