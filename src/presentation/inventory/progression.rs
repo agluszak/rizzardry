@@ -4,8 +4,8 @@ use crate::content::characters::{Attribute, Profession, Skill};
 use crate::content::spells::SpellId;
 use crate::game::characters::progression::{Advancement, Progression};
 use crate::game::data::Content;
-use crate::presentation::retail_controls::{FocusRing, set_enabled};
-use crate::presentation::screen_art::{BitmapText, absolute};
+use crate::presentation::retail_controls::{ControlSkin, FocusRing, set_enabled};
+use crate::presentation::screen_art::{BitmapText, Picture, absolute};
 use bevy::input_focus::{
     InputFocus,
     tab_navigation::{TabGroup, TabIndex},
@@ -104,31 +104,49 @@ fn button(
 /// Put the offer in the review header, with live eligibility rather than a
 /// latched readiness flag. The button survives member/stat changes.
 pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) {
-    let id = commands
+    commands
         .spawn((
             Open,
             Button,
+            // Picture defaults to non-interactive; this image is the control.
+            Pickable::default(),
             TabIndex(0),
             FocusRing,
-            absolute(Vec2::new(204., 137.), Vec2::new(100., 24.)),
-            BackgroundColor(Color::srgb(0.22, 0.17, 0.11)),
+            // Retail CreateRcsLevelUpPanel: an 18x18 icon at (233, 63),
+            // beside the portrait, never over the character's level text.
+            Picture {
+                sheet: art.level_up.clone(),
+                frame: 0,
+                at: Vec2::new(233., 63.),
+                bounds: Some(0),
+            },
+            ControlSkin::new(0, 1, 2, 4, 3),
+            Node { display: Display::None, ..absolute(Vec2::new(233., 63.), Vec2::splat(18.)) },
+            InteractionDisabled,
             ChildOf(root),
         ))
-        .observe(open)
-        .id();
-    label(commands, id, &art.font, "Level up");
+        .observe(open);
 }
 fn offer(
     mut commands: Commands,
     screens: Query<&InventoryScreen>,
-    buttons: Query<(Entity, Has<InteractionDisabled>), With<Open>>,
+    mut buttons: Query<(Entity, Has<InteractionDisabled>, &mut Node), With<Open>>,
     progression: Progression,
     editors: Query<(), With<Editor>>,
+    mut focus: ResMut<InputFocus>,
 ) {
     let enabled = editors.is_empty()
         && screens.single().is_ok_and(|s| progression.eligibility(s.member).is_ok());
-    for (id, disabled) in &buttons {
+    for (id, disabled, mut node) in &mut buttons {
         set_enabled(&mut commands, id, enabled, disabled);
+        // Retail hides the offer altogether when advancement is unavailable.
+        let display = if enabled { Display::Flex } else { Display::None };
+        if node.display != display {
+            node.display = display;
+        }
+        if !enabled && focus.get() == Some(id) {
+            focus.clear();
+        }
     }
 }
 fn open(
@@ -467,6 +485,7 @@ mod tests {
         magic::{LearnedSpells, SpellPoints},
         party::roster,
     };
+    use bevy::ecs::system::RunSystemOnce;
 
     /// An inventory review of the first of `party`, with its level-up button.
     fn review(party: &[Character]) -> (App, Vec<Entity>, Entity, Entity) {
@@ -518,8 +537,40 @@ mod tests {
             .query_filtered::<Entity, With<InventoryScreen>>()
             .single(app.world())
             .unwrap();
-        let open = app.world_mut().spawn((Open, ChildOf(root))).observe(super::open).id();
+        app.world_mut()
+            .run_system_once(move |mut commands: Commands, art: Res<InventoryArt>| {
+                super::build(&mut commands, root, &art);
+            })
+            .unwrap();
+        app.update();
+        let open =
+            app.world_mut().query_filtered::<Entity, With<Open>>().single(app.world()).unwrap();
         (app, members, root, open)
+    }
+
+    #[test]
+    fn advancement_offer_tracks_eligibility_and_releases_focus_when_hidden() {
+        let c = Character::new("A", Race::Human, Gender::Female, Profession::Fighter);
+        let (mut app, members, _, open) = review(&[c]);
+        assert_eq!(app.world().get::<Node>(open).unwrap().display, Display::None);
+        assert!(app.world().get::<InteractionDisabled>(open).is_some());
+        {
+            let mut c = app.world_mut().get_mut::<Character>(members[0]).unwrap();
+            c.experience = c.experience_goal();
+        }
+        app.update();
+        assert_eq!(app.world().get::<Node>(open).unwrap().display, Display::Flex);
+        assert!(app.world().get::<InteractionDisabled>(open).is_none());
+        let pickable = app.world().get::<Pickable>(open).unwrap();
+        assert!(pickable.is_hoverable && pickable.should_block_lower);
+        app.world_mut()
+            .resource_mut::<InputFocus>()
+            .set(open, bevy::input_focus::FocusCause::Navigated);
+        app.world_mut().get_mut::<Character>(members[0]).unwrap().experience = 0;
+        app.update();
+        assert_eq!(app.world().get::<Node>(open).unwrap().display, Display::None);
+        assert!(app.world().get::<InteractionDisabled>(open).is_some());
+        assert_ne!(app.world().resource::<InputFocus>().get(), Some(open));
     }
 
     #[test]
