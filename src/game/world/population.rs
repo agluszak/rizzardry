@@ -562,4 +562,32 @@ mod tests {
         readied.sort();
         assert_eq!(readied, [1, 3, 12]);
     }
+
+    /// A summoned elemental's body is ready before the first cast, in
+    /// every level whatever it places.
+    #[test]
+    fn every_level_readies_the_elementals() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default())).init_asset::<MonsterBody>();
+        let mut bodies = MonsterBodies::default();
+        let assets = app.world().resource::<AssetServer>().clone();
+        let catalog = MonsterCatalog(vec![Species::default(); 49]);
+        bodies.for_level(&LevelDefinition::default(), &catalog, &assets);
+        let mut elementals = crate::game::magic::pointcasts::ELEMENTALS;
+        assert!(elementals.all(|id| bodies.0.contains_key(&id)));
+    }
+
+    /// Ids for a group called up in play pass the unborn's too.
+    #[test]
+    fn new_ids_pass_the_unborn() {
+        let mut rng = GameRng::seeded(1);
+        let unborn = Unborn(roll_group(
+            (9, 4),
+            (0, 2),
+            (&Species::default(), &MonsterBody::default()),
+            &mut rng,
+        ));
+        assert_eq!(next_ids([1, 3], [1], &unborn), (11, 5));
+        assert_eq!(next_ids([], [], &Unborn::default()), (1, 1));
+    }
 }
