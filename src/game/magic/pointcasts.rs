@@ -156,11 +156,13 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
             }
         }
         let bodies = bodies(world, root)?;
-        if bodies.iter().any(|(_, body)| body.movement_rate > 0.0)
-            && (world
-                .get::<LevelNavigation>(root)
-                .is_none_or(|nav| nav.archipelagos.len() < navigation::bake::SIZE_CLASSES.len())
-                || !world.contains_resource::<Assets<WalkerMotionConfig>>())
+        // Spawning needs walker configs; a walking elemental needs every
+        // size class's navigation too.
+        if !world.contains_resource::<Assets<WalkerMotionConfig>>()
+            || bodies.iter().any(|(_, body)| body.movement_rate > 0.0)
+                && world
+                    .get::<LevelNavigation>(root)
+                    .is_none_or(|nav| nav.archipelagos.len() < navigation::bake::SIZE_CLASSES.len())
         {
             return Err(Refusal::MissingContent);
         }
@@ -464,6 +466,7 @@ mod tests {
         world.init_resource::<Assets<MonsterCatalog>>();
         world.init_resource::<Assets<SpellCatalog>>();
         world.init_resource::<Assets<MonsterBody>>();
+        world.init_resource::<Assets<WalkerMotionConfig>>();
         world.init_resource::<Messages<MagicNews>>();
         world.init_resource::<Messages<crate::game::factions::FactionNews>>();
         let mut species = vec![Species::default(); 49];
