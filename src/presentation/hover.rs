@@ -72,7 +72,7 @@ pub fn show_tooltip(
         Query<&MonsterGroup>,
         Query<&GroupMember>,
         Single<&PartyRoster>,
-        Query<(&Character, &Vitals)>,
+        Query<(&Character, &Vitals, Has<crate::game::npcs::Npc>)>,
     ),
     pointers: Query<(&PointerId, &PointerLocation)>,
     scale: Res<UiScale>,
@@ -113,7 +113,7 @@ pub fn show_tooltip(
                 .ok()
                 .and_then(|m| groups.get(m.0).ok())
                 .is_some_and(|g| g.identified);
-            let party: Vec<(&Character, &Vitals)> =
+            let party: Vec<(&Character, &Vitals, bool)> =
                 members.iter_many(roster.iter()).matched().collect();
             let health = health_known(&party, monster.hp, monster.max_hp, kind.display_level);
             format!("{} ({health})", kind.shown_name(identified, 1))

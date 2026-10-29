@@ -71,19 +71,24 @@ pub fn recognition(
 /// What the party can tell of a monster's health (retail
 /// `FormatMonsterHealth`): its best Mythology, less three for each level the
 /// monster shows above the party's average, tells the current health from
-/// 10 and the most from 5; otherwise "?" ("12/20", "?/20", "?/?").
+/// 10 and the most from 5; otherwise "?" ("12/20", "?/20", "?/?"). The
+/// party is in roster order, each member with whether it is a recruited NPC.
 pub fn health_known(
-    party: &[(&Character, &Vitals)],
+    party: &[(&Character, &Vitals, bool)],
     hp: u32,
     max_hp: u32,
     display_level: u8,
 ) -> String {
     let mythology = crate::game::party::best_skill(
-        party.iter().map(|&(character, vitals)| ((), character, vitals)),
+        party.iter().map(|&(character, vitals, _)| ((), character, vitals)),
         Skill::Mythology,
     )
     .map_or(0, |(_, level)| level);
-    let average = crate::game::party::mean_level(party.iter().map(|(m, _)| m.level()));
+    let average = crate::game::party::mean_level(
+        crate::game::party::averaged_places(party.iter().map(|&(m, _, npc)| (m, npc)))
+            .into_iter()
+            .map(Character::level),
+    );
     let level = i32::from(display_level);
     let knowledge = if (average as i32) < level {
         (mythology as f32 - (level as f32 - average) * 3.0 + 0.5).max(0.0) as u32
@@ -235,13 +240,13 @@ mod tests {
         let mut sage = Character::new("Sage", Race::Human, Gender::Male, Profession::Bishop);
         let vitals = Vitals::new(&sage);
         sage.skill_points[Skill::Mythology] = 0;
-        assert_eq!(health_known(&[(&sage, &vitals)], 7, 20, 1), "?/?");
+        assert_eq!(health_known(&[(&sage, &vitals, false)], 7, 20, 1), "?/?");
         sage.skill_points[Skill::Mythology] = 6;
         let known = sage.skill(Skill::Mythology);
         assert!(known > 4 && known < 10, "{known}");
-        assert_eq!(health_known(&[(&sage, &vitals)], 7, 20, 1), "?/20");
+        assert_eq!(health_known(&[(&sage, &vitals, false)], 7, 20, 1), "?/20");
         sage.skill_points[Skill::Mythology] = 12;
-        assert_eq!(health_known(&[(&sage, &vitals)], 7, 20, 1), "7/20");
+        assert_eq!(health_known(&[(&sage, &vitals, false)], 7, 20, 1), "7/20");
         // Three levels above the party's average cost nine points.
         let left = sage.skill(Skill::Mythology) - 9;
         let expected = if left >= 10 {
@@ -251,7 +256,7 @@ mod tests {
         } else {
             "?/?"
         };
-        assert_eq!(health_known(&[(&sage, &vitals)], 7, 20, 4), expected);
+        assert_eq!(health_known(&[(&sage, &vitals, false)], 7, 20, 4), expected);
     }
 
     #[test]

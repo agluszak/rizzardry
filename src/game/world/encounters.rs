@@ -490,7 +490,7 @@ pub fn run_encounters(
     mut groups: Query<(Entity, &mut MonsterGroup, Option<&GroupMembers>)>,
     monsters: Query<(&Monster, ActorPose, Option<&Walker>, Option<&super::identify::GroupMember>)>,
     party: Query<(&Position, Option<&crate::game::party::roster::PartyRoster>), With<PartyBody>>,
-    characters: Query<&crate::game::characters::Character>,
+    characters: Query<(&crate::game::characters::Character, Has<crate::game::npcs::Npc>)>,
     blocked: (
         Option<Single<(), With<crate::game::combat::Battle>>>,
         Query<(), With<crate::game::npcs::conversation::Conversation>>,
@@ -517,11 +517,10 @@ pub fn run_encounters(
     let blocked = in_battle || !talking.is_empty();
     let difficulty = difficulty.map_or_else(Difficulty::default, |d| *d);
     let now_s = clock.ms / 1000;
+    let members = roster.into_iter().flat_map(|roster| roster.iter());
     let level = crate::game::party::mean_level(
-        roster
+        crate::game::party::averaged_places(members.filter_map(|m| characters.get(m).ok()))
             .into_iter()
-            .flat_map(|roster| roster.iter())
-            .filter_map(|m| characters.get(m).ok())
             .map(|c| c.level()),
     );
     let onlooker =
