@@ -266,18 +266,8 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
             if underwater {
                 weights[0] = 0;
             }
-            let mut roll = world.resource_mut::<GameRng>().below(weights.iter().sum());
-            let realm = weights
-                .iter()
-                .position(|weight| {
-                    if roll < *weight {
-                        true
-                    } else {
-                        roll -= *weight;
-                        false
-                    }
-                })
-                .unwrap_or(3);
+            let roll = world.resource_mut::<GameRng>().below(weights.iter().sum());
+            let realm = crate::game::rng::weighted(roll, weights).unwrap_or(3);
             let species_id = tier(strength.power, realm);
             let kind = GameData::species(world).unwrap().kind(species_id).unwrap().clone();
             let body = &definitions.iter().find(|(id, _)| *id == species_id).unwrap().1;

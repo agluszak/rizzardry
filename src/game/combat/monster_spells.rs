@@ -244,15 +244,9 @@ pub(super) fn choose(
         return None;
     }
     let total: u32 = usable.iter().map(|&(w, ..)| w).sum();
-    let mut roll = rng.below(total);
-    let (_, spell, aims) = usable
-        .iter()
-        .find(|&&(weight, ..)| {
-            let here = roll < weight;
-            roll = roll.saturating_sub(weight);
-            here
-        })
-        .unwrap_or(&usable[usable.len() - 1]);
+    let weights = usable.iter().map(|&(w, ..)| w);
+    let index = crate::game::rng::weighted(rng.below(total), weights).unwrap_or(usable.len() - 1);
+    let (_, spell, aims) = &usable[index];
     let aim = aims[rng.below(aims.len() as u32) as usize];
     Some((spell.id, aim))
 }

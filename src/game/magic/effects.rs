@@ -1646,18 +1646,8 @@ pub fn resolve(
                 let rolled = magnitude(rng, spell.dice, strength);
                 return damage(rng, world, v, realm, rolled, strength.against);
             }
-            let mut left = roll;
-            let pick = AFFLICTIONS
-                .iter()
-                .find(|&&(_, weight)| {
-                    if left < weight {
-                        true
-                    } else {
-                        left -= weight;
-                        false
-                    }
-                })
-                .and_then(|&(c, _)| c);
+            let pick = crate::game::rng::weighted(roll, AFFLICTIONS.iter().map(|&(_, w)| w))
+                .and_then(|index| AFFLICTIONS[index].0);
             match pick {
                 Some(condition) => attack(rng, world, spell, v, realm, condition, 100, strength),
                 None => slay(rng, world, spell, v, realm, strength),
