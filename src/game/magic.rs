@@ -492,6 +492,7 @@ pub struct MagicContext<'w, 's> {
     /// Missiles leave in launch order, so equal arrivals land in it too.
     pub flight_order: ResMut<'w, casting::FlightOrder>,
     provocations: MessageWriter<'w, crate::game::world::hostility::Provocation>,
+    fight: Query<'w, 's, Entity, With<crate::game::combat::Battle>>,
 }
 
 impl MagicContext<'_, '_> {
@@ -562,6 +563,7 @@ impl MagicContext<'_, '_> {
             party: &party,
             improved: Vec::new(),
             provocations: &mut self.provocations,
+            fight: self.fight.single().ok(),
         };
         Ok(act(&mut field, self.content.spells()))
     }
@@ -997,6 +999,7 @@ mod tests {
             SpellId::RESTORE_HEALTH,
             SpellId::RESTORE_MAGIC,
             SpellId::SMELLING_SALTS,
+            SpellId::CURE_POISON,
         ] {
             let mut app = App::new();
             app.add_plugins((MinimalPlugins, AssetPlugin::default()))
@@ -1063,6 +1066,7 @@ mod tests {
             vitals.stamina = 1;
             vitals.inflict(Condition::Asleep, Lasting::Rounds(8));
             vitals.inflict(Condition::Unconscious, Lasting::Rounds(8));
+            vitals.poison(Lasting::Rounds(20), 10);
             let ally = world
                 .spawn((
                     ally,
@@ -1112,11 +1116,14 @@ mod tests {
                             .absorption,
                         4
                     );
+                    let profile = world.get::<Character>(ally).unwrap().clone();
                     let mut vitals = world.get_mut::<Vitals>(ally).unwrap();
                     let stamina = vitals.stamina;
-                    assert_eq!(vitals.damage(4), 0);
+                    let mut rng = GameRng::default();
+                    let mut fate = crate::game::characters::Fate { fight: None, rng: &mut rng };
+                    assert_eq!(vitals.damage(&profile, 4, &mut fate), 0);
                     assert_eq!(vitals.stamina, stamina, "absorbed damage does not fatigue");
-                    assert_eq!(vitals.damage(2), 1);
+                    assert_eq!(vitals.damage(&profile, 2, &mut fate), 1);
                     assert!(vitals.is_dead());
                     assert!(vitals.enchantments.0.is_empty());
                 }
@@ -1131,7 +1138,7 @@ mod tests {
                 SpellId::HASTE | SpellId::SUPERMAN | SpellId::BODY_OF_STONE => {
                     let turns = vitals.enchantments.get(id).unwrap().turns;
                     let mut vitals = world.get_mut::<Vitals>(ally).unwrap();
-                    vitals.age_conditions(turns);
+                    vitals.age_conditions(turns, &mut GameRng::default());
                     assert!(vitals.enchantments.get(id).is_none());
                 }
                 SpellId::RESTORE_HEALTH => {
@@ -1144,6 +1151,13 @@ mod tests {
                 }
                 SpellId::SMELLING_SALTS => {
                     assert!(!vitals.has(Condition::Asleep) && !vitals.has(Condition::Unconscious))
+                }
+                // Power four takes sixteen rounds off, and the poison weakens
+                // by the same share, as aging would (retail
+                // `TickCharacterCondition`).
+                SpellId::CURE_POISON => {
+                    assert!(vitals.conditions.contains(&(Condition::Poisoned, Lasting::Rounds(4))));
+                    assert_eq!(vitals.poison, 2);
                 }
                 _ => unreachable!(),
             }

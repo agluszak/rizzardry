@@ -130,7 +130,7 @@ pub(crate) fn pass_time(
     party: Query<(&Position, &PartyBody, &LinearVelocity)>,
     roster: Single<&PartyRoster>,
     mut affected: ParamSet<(
-        Query<(&Character, &mut Vitals)>,
+        Query<(&mut Character, &mut Vitals)>,
         GroupRecognition,
         Query<&mut crate::game::world::population::Monster>,
     )>,

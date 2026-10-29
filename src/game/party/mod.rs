@@ -111,12 +111,55 @@ pub struct DamageApplied {
 /// actually changes a seat.
 pub fn damage_member(
     member: Entity,
-    vitals: &mut crate::game::characters::Vitals,
+    (profile, vitals): (&crate::game::characters::Character, &mut crate::game::characters::Vitals),
     formation: &mut Mut<formation::Formation>,
-    amount: u32,
+    (amount, fate): (u32, &mut crate::game::characters::Fate),
     damage: &mut MessageWriter<DamageApplied>,
 ) -> u32 {
-    let lost = vitals.damage(amount);
+    let lost = vitals.damage(profile, amount, fate);
+    if vitals.is_dead() && formation.row_of(member).is_some() {
+        formation.update_seat(member, true);
+    }
+    if lost > 0 {
+        damage.write(DamageApplied { member, amount: lost, died: vitals.is_dead() });
+    }
+    lost
+}
+
+/// [`damage_member`] for death inflicted outright
+/// ([`crate::game::characters::Vitals::perish`]). Returns the health lost.
+pub fn kill_member(
+    member: Entity,
+    (profile, vitals): (&crate::game::characters::Character, &mut crate::game::characters::Vitals),
+    formation: &mut Mut<formation::Formation>,
+    fate: &mut crate::game::characters::Fate,
+    damage: &mut MessageWriter<DamageApplied>,
+) -> u32 {
+    let hp = vitals.hp;
+    vitals.perish(profile, fate);
+    if vitals.is_dead() && formation.row_of(member).is_some() {
+        formation.update_seat(member, true);
+    }
+    let lost = hp.saturating_sub(vitals.hp);
+    if lost > 0 {
+        damage.write(DamageApplied { member, amount: lost, died: vitals.is_dead() });
+    }
+    lost
+}
+
+/// [`damage_member`] for draining, which lowers the maximum for good
+/// ([`crate::game::characters::Vitals::drain_health`]).
+pub fn drain_member(
+    member: Entity,
+    (profile, vitals): (
+        &mut crate::game::characters::Character,
+        &mut crate::game::characters::Vitals,
+    ),
+    formation: &mut Mut<formation::Formation>,
+    (amount, fate): (u32, &mut crate::game::characters::Fate),
+    damage: &mut MessageWriter<DamageApplied>,
+) -> u32 {
+    let lost = vitals.drain_health(profile, amount, fate);
     if vitals.is_dead() && formation.row_of(member).is_some() {
         formation.update_seat(member, true);
     }
@@ -143,6 +186,14 @@ mod tests {
             Single<&mut formation::Formation>,
             MessageWriter<DamageApplied>,
         )>::new(&mut world);
+        let profile = crate::game::characters::Character::new(
+            "Ragnar",
+            crate::game::characters::Race::Human,
+            crate::game::characters::Gender::Male,
+            crate::game::characters::Profession::Fighter,
+        );
+        let mut rng = crate::game::rng::GameRng::default();
+        let mut fate = crate::game::characters::Fate { fight: None, rng: &mut rng };
         {
             let (mut members, mut formation, mut damage) = operation.get_mut(&mut world).unwrap();
             let mut vitals = members.get_mut(first).unwrap();
@@ -153,10 +204,28 @@ mod tests {
                 turns: 4,
                 absorption: 6,
             });
-            assert_eq!(damage_member(first, &mut vitals, &mut formation, 6, &mut damage), 0);
+            assert_eq!(
+                damage_member(
+                    first,
+                    (&profile, &mut vitals),
+                    &mut formation,
+                    (6, &mut fate),
+                    &mut damage
+                ),
+                0
+            );
             assert_eq!(vitals.stamina, 20, "Guardian Angel absorbs before fatigue");
             assert!(formation.row_of(first).is_some());
-            assert_eq!(damage_member(first, &mut vitals, &mut formation, 3, &mut damage), 3);
+            assert_eq!(
+                damage_member(
+                    first,
+                    (&profile, &mut vitals),
+                    &mut formation,
+                    (3, &mut fate),
+                    &mut damage
+                ),
+                3
+            );
             vitals.heal(3, 10);
         }
         let reported: Vec<_> = world.resource_mut::<Messages<DamageApplied>>().drain().collect();
@@ -164,9 +233,27 @@ mod tests {
         {
             let (mut members, mut formation, mut damage) = operation.get_mut(&mut world).unwrap();
             let mut vitals = members.get_mut(first).unwrap();
-            assert_eq!(damage_member(first, &mut vitals, &mut formation, 100, &mut damage), 10);
+            assert_eq!(
+                damage_member(
+                    first,
+                    (&profile, &mut vitals),
+                    &mut formation,
+                    (100, &mut fate),
+                    &mut damage
+                ),
+                10
+            );
             assert!(formation.row_of(first).is_none(), "death settles before another action");
-            assert_eq!(damage_member(first, &mut vitals, &mut formation, 1, &mut damage), 0);
+            assert_eq!(
+                damage_member(
+                    first,
+                    (&profile, &mut vitals),
+                    &mut formation,
+                    (1, &mut fate),
+                    &mut damage
+                ),
+                0
+            );
         }
         let reported: Vec<_> = world.resource_mut::<Messages<DamageApplied>>().drain().collect();
         assert_eq!(reported, [DamageApplied { member: first, amount: 10, died: true }]);

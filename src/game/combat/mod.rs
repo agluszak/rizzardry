@@ -1560,7 +1560,7 @@ pub fn run_battle(
                 species,
             );
             let over = end_round(
-                &mut battle,
+                (entity, &mut battle),
                 combatants,
                 &mut clock,
                 &mut rng,
@@ -1573,6 +1573,9 @@ pub fn run_battle(
                 &mut magic,
                 &staying,
             );
+            if party_fallen(roster, &members) {
+                return;
+            }
             if over {
                 for &actor in combatants {
                     if let Some(mut e) = damage.enchantments_mut(actor) {
@@ -2625,8 +2628,13 @@ fn spell_scene<'a>(
 
 /// The round is over: a round's game time passes. Returns whether the fight
 /// is over: no hostile is left or nobody could attack for two rounds.
+/// Whether nobody in the party is left alive.
+fn party_fallen(roster: &PartyRoster, members: &Members) -> bool {
+    !members.iter_many(roster.iter()).matched().any(|(_, vitals, ..)| !vitals.is_dead())
+}
+
 fn end_round(
-    battle: &mut Battle,
+    (fight, battle): (Entity, &mut Battle),
     combatants: &[Entity],
     clock: &mut GameClock,
     rng: &mut GameRng,
@@ -2717,6 +2725,11 @@ fn end_round(
         }
     }
     battle.phase = RoundPhase::Waiting;
+    // Poison may have killed the last of the party as the time passed: that
+    // is their defeat, which `settle_defeat` reports, not a victory.
+    if party_fallen(roster, members) {
+        return false;
+    }
     // Recover after aging conditions, in accepted actor order.
     for work in &battle.this_round.party {
         let member = work.actor;
@@ -5624,6 +5637,46 @@ mod tests {
         }
         assert_eq!(fight(app.world()).unwrap().round, 1);
         assert_eq!(announced, ["A"]);
+    }
+
+    /// Poison that kills the last member as the round's time passes is the
+    /// party's defeat, though no hostile is left standing: no victory or
+    /// experience is settled for the dead.
+    #[test]
+    fn a_party_poisoned_to_death_at_the_round_end_loses() {
+        let (mut app, [last, fallen]) = round_app(false);
+        app.world_mut().get_mut::<Vitals>(fallen).unwrap().hp = 0;
+        {
+            let mut vitals = app.world_mut().get_mut::<Vitals>(last).unwrap();
+            vitals.hp = 3;
+            vitals.poison(crate::game::characters::Lasting::Rounds(50), 100);
+        }
+        // The survivor has already finished the last monster, its kill and
+        // experience credited to the fight.
+        let monster = app.world_mut().query::<(Entity, &Monster)>().single(app.world()).unwrap().0;
+        app.world_mut().get_mut::<Monster>(monster).unwrap().hp = 0;
+        {
+            let mut fight = fight_mut(app.world_mut());
+            fight.kills = 1;
+            fight.experience = 500;
+        }
+        let experience = app.world().get::<Character>(last).unwrap().experience;
+        let mut news = Vec::new();
+        for _ in 0..12 {
+            app.update();
+            news.extend(app.world_mut().resource_mut::<Messages<CombatNews>>().drain());
+            if fight(app.world()).is_none() {
+                break;
+            }
+        }
+        assert!(fight(app.world()).is_none());
+        assert!(app.world().get::<Vitals>(last).unwrap().is_dead());
+        assert!(news.contains(&CombatNews::Lost), "{news:?}");
+        assert!(
+            !news.iter().any(|n| matches!(n, CombatNews::Won { .. } | CombatNews::Over)),
+            "{news:?}"
+        );
+        assert_eq!(app.world().get::<Character>(last).unwrap().experience, experience);
     }
 
     #[test]

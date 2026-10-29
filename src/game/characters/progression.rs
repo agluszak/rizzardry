@@ -473,9 +473,6 @@ impl Progression<'_, '_> {
         Ok(())
     }
 }
-fn resized(current: u32, old: u32, new: u32) -> u32 {
-    current.saturating_add(new.saturating_sub(old)).saturating_sub(old.saturating_sub(new)).min(new)
-}
 
 #[cfg(test)]
 mod tests {
