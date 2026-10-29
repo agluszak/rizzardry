@@ -68,7 +68,9 @@ pub(super) fn experience_increment(profession: Profession, level: u8) -> u32 {
     value
 }
 pub fn ready(c: &Character, v: &Vitals) -> bool {
-    !v.is_dead() && c.level() < u8::MAX && c.experience >= c.experience_goal()
+    // Retail offers a level past 50 and then clamps it away; it is not
+    // offered here.
+    !v.is_dead() && c.level() < super::MAX_LEVEL && c.experience >= c.experience_goal()
 }
 
 #[derive(Clone, Debug)]
@@ -504,6 +506,24 @@ mod tests {
             draft.adjust_skill(s, true, spells);
         }
     }
+    /// Advancement stops at level 50, however the levels are split, so no
+    /// profession can pass it.
+    #[test]
+    fn advancement_stops_at_the_highest_level() {
+        let mut c = character(Profession::Fighter);
+        c.profession_levels[Profession::Fighter] = 48;
+        c.profession_levels[Profession::Mage] = 1;
+        c.experience = c.experience_goal();
+        let v = Vitals::new(&c);
+        assert!(ready(&c, &v));
+        let draft = Advancement::new(Entity::PLACEHOLDER, &c, &default());
+        let next = draft.baseline();
+        assert_eq!(next.level(), super::super::MAX_LEVEL);
+        let mut next = next;
+        next.experience = u32::MAX;
+        assert!(!ready(&next, &v), "no level past 50");
+    }
+
     fn character(profession: Profession) -> Character {
         let mut c = Character::new("Tester", Race::Human, Gender::Female, profession);
         c.experience = c.experience_goal();

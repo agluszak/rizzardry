@@ -380,6 +380,10 @@ fn load_band(weight: u32, capacity: u32) -> Load {
     }
 }
 
+/// The highest total level (retail `RecalculateCharacterDerivedStats`
+/// clamps the total and each profession's level to it).
+pub const MAX_LEVEL: u8 = 50;
+
 /// An adventurer's identity, training and progression.
 #[derive(Component, Clone, Debug, PartialEq)]
 #[require(MonsterKnowledge)]
@@ -417,11 +421,11 @@ pub struct MonsterKnowledge {
 }
 
 impl Character {
-    /// The total level: every level gained in any profession, at most 50
-    /// (retail `uiExpLevel`, which every advancement raises with the
-    /// profession's own level, and `RecalculateCharacterDerivedStats` caps).
+    /// The total level: every level gained in any profession (retail
+    /// `uiExpLevel`, which every advancement raises with the profession's
+    /// own level). Advancement stops at [`MAX_LEVEL`].
     pub fn level(&self) -> u8 {
-        self.profession_levels.values().map(|&l| u32::from(l)).sum::<u32>().min(50) as u8
+        self.profession_levels.values().sum()
     }
 
     /// A minimal valid level 1 character (retail's NPC recipe): each
