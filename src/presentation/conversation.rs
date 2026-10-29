@@ -198,6 +198,7 @@ impl Plugin for ConversationViewPlugin {
             .add_systems(
                 Update,
                 (
+                    close_views,
                     create_views,
                     (
                         project_text,
@@ -1065,14 +1066,29 @@ fn scope(
         parents.iter_ancestors(entity).find_map(|root| roots.get(root).ok().map(|v| (root, v.0)))
     })
 }
+/// A dialogue the party has left plays out without its view.
+fn close_views(
+    mut commands: Commands,
+    left: Query<&ConversationViews, Added<crate::game::npcs::conversation::Closing>>,
+) {
+    for views in &left {
+        for &view in &views.0 {
+            commands.entity(view).despawn();
+        }
+    }
+}
 fn create_views(
     mut commands: Commands,
-    sessions: Query<(Entity, Option<&ConversationViews>), With<Conversation>>,
+    sessions: Query<
+        (Entity, Option<&ConversationViews>),
+        (With<Conversation>, Without<crate::game::npcs::conversation::Closing>),
+    >,
 ) {
     for (session, views) in &sessions {
         if views.is_none_or(|v| v.0.is_empty()) {
             commands.queue(move |world: &mut World| {
                 if world.get::<Conversation>(session).is_some()
+                    && world.get::<crate::game::npcs::conversation::Closing>(session).is_none()
                     && world.get::<ConversationViews>(session).is_none_or(|v| v.0.is_empty())
                 {
                     build(world, session);

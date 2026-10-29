@@ -36,7 +36,10 @@ pub fn attach_camera(add: On<Add<PartyBody>>, mut commands: Commands) {
 /// Point the camera along the party's facing.
 pub fn aim_camera(
     party: Query<(&PartyBody, crate::game::world::ActorPose), Without<PartyCamera>>,
-    conversations: Query<&crate::game::npcs::conversation::Conversation>,
+    conversations: Query<
+        &crate::game::npcs::conversation::Conversation,
+        Without<crate::game::npcs::conversation::Closing>,
+    >,
     npc_bodies: Query<&crate::game::npcs::NpcBodies>,
     actors: Query<
         (

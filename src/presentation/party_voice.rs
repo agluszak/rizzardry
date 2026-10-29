@@ -142,7 +142,13 @@ pub(super) fn play_device_remarks(
     roster: Option<Single<&PartyRoster>>,
     members: Query<&Vitals>,
     speaking: Query<(), Or<(With<Speech>, With<PlayingRemark>)>>,
-    conversations: Query<(), With<crate::game::npcs::conversation::Conversation>>,
+    conversations: Query<
+        (),
+        (
+            With<crate::game::npcs::conversation::Conversation>,
+            Without<crate::game::npcs::conversation::Closing>,
+        ),
+    >,
     entering: Query<(), With<Destination>>,
     mut text: MessageWriter<SpokenRemark>,
 ) {

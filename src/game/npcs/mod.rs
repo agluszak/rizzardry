@@ -260,6 +260,7 @@ impl Plugin for NpcPlugin {
             .add_message::<conversation::ConversationRequest>()
             .add_message::<conversation::LinePlayback>()
             .add_message::<conversation::PartyRemark>()
+            .add_message::<conversation::NpcSpeech>()
             .add_observer(conversation::end_conversations)
             .add_systems(Startup, load_npcs)
             .add_systems(
