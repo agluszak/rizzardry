@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use super::{LearnedSpells, SpellPoints, Strength};
 use crate::content::characters::{Attribute, Realm, Skill};
 use crate::content::items::{Dice, EquipClass, ItemCatalog};
-use crate::content::species::{MonsterCatalog, MonsterKind};
+use crate::content::species::{MonsterCatalog, MonsterKind, SpecialAttackKind};
 use crate::content::spells::{SpellDefinition, SpellId};
 use crate::game::characters::{Condition, Lasting, inflict, wake_on_hit};
 use crate::game::difficulty::Difficulty;
@@ -201,6 +201,240 @@ pub fn worthwhile(spell: SpellId, standing: &Standing) -> bool {
         Some(Kind::Cure(conditions)) => conditions.iter().any(|&c| has(c)),
         _ => true,
     }
+}
+
+/// What one of a special attack's two effects does to a victim (retail
+/// `g_special_attack_table`'s entries).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpecialEffect {
+    /// A condition, for rounds rolled by its strength (entry 1).
+    Inflict(Condition),
+    /// Health taken straight off (entry 2, `DamageCharacter`).
+    Harm,
+    /// Magic drained (entry 3).
+    Drain,
+    /// Stamina spent (entry 4).
+    Tire,
+    /// A wound dealt as a blow's is (entry 5, `ApplyDamageToCharacter`).
+    Wound,
+}
+
+/// What a special attack is (retail `g_special_attack_table`,
+/// `g_special_attack_condition_table`, `g_special_attack_realm_table`,
+/// `MonsterSpecialAttackHonorsCastingBlock`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpecialDefinition {
+    /// Its two effects; a summoning has none and calls a group instead.
+    pub effects: [Option<SpecialEffect>; 2],
+    pub summons: bool,
+    /// The realm victims resist it by.
+    pub realm: Realm,
+    /// Whether resistance cuts it at all; one kind's wound is not resisted.
+    pub resisted: bool,
+    /// Whether a silence stops it.
+    pub silenced: bool,
+}
+
+/// A special attack's definition (retail `g_special_attack_table`,
+/// `g_special_attack_condition_table`, `g_special_attack_realm_table`,
+/// `MonsterSpecialAttackHonorsCastingBlock`).
+pub fn special(kind: SpecialAttackKind) -> SpecialDefinition {
+    use Condition::*;
+    use Realm::*;
+    use SpecialAttackKind as K;
+    use SpecialEffect::*;
+    let strike = |realm, first, second: Option<SpecialEffect>| SpecialDefinition {
+        effects: [Some(first), second],
+        summons: false,
+        realm,
+        resisted: true,
+        silenced: false,
+    };
+    let summon = |silenced| SpecialDefinition {
+        effects: [None, None],
+        summons: true,
+        realm: Fire,
+        resisted: true,
+        silenced,
+    };
+    let silenced = |definition| SpecialDefinition { silenced: true, ..definition };
+    match kind {
+        K::BlindingWater | K::BlindingWaterSecond => strike(Water, Inflict(Blind), None),
+        K::HarmAndDrainDivine => strike(Divine, Harm, Some(Drain)),
+        K::TiringWater => strike(Water, Tire, None),
+        K::FearAndInsanityMental => {
+            silenced(strike(Mental, Inflict(Afraid), Some(Inflict(Insane))))
+        }
+        K::FearAndTurncoatDivine => {
+            silenced(strike(Divine, Inflict(Afraid), Some(Inflict(Turncoat))))
+        }
+        K::FearMental => silenced(strike(Mental, Inflict(Afraid), None)),
+        K::WoundAndTireFire => strike(Fire, Wound, Some(Tire)),
+        K::WoundFire => strike(Fire, Wound, None),
+        K::InsanityAndWoundMental => {
+            SpecialDefinition { resisted: false, ..strike(Mental, Inflict(Insane), Some(Wound)) }
+        }
+        K::InsanityAndTurncoatDivine => strike(Divine, Inflict(Insane), Some(Inflict(Turncoat))),
+        K::InsanityMental => strike(Mental, Inflict(Insane), None),
+        K::IrritationEarth => strike(Earth, Inflict(Irritated), None),
+        K::IrritationAir => strike(Air, Inflict(Irritated), None),
+        K::NauseaEarth => strike(Earth, Inflict(Nauseated), None),
+        K::NauseaAir => strike(Air, Inflict(Nauseated), None),
+        K::ParalysisMental => strike(Mental, Inflict(Paralyzed), None),
+        K::ParalysisEarth => strike(Earth, Inflict(Paralyzed), None),
+        K::PoisonAndIrritationWater => strike(Water, Inflict(Poisoned), Some(Inflict(Irritated))),
+        K::PoisonAndWoundWater => strike(Water, Inflict(Poisoned), Some(Wound)),
+        K::SleepAir => strike(Air, Inflict(Asleep), None),
+        K::SlowAndParalysisWater => strike(Water, Inflict(Slowed), Some(Inflict(Paralyzed))),
+        K::SlowEarth => strike(Earth, Inflict(Slowed), None),
+        K::WoundWater => strike(Water, Wound, None),
+        K::SummonsSpecies153 | K::SummonsSpecies151 | K::SummonsSpecies12 => summon(false),
+        K::SummonsSpecies149
+        | K::SummonsSpecies150
+        | K::SummonsSpecies152
+        | K::SummonsSpecies148 => summon(true),
+    }
+}
+
+/// A monster making its special attack: how strong it is now.
+#[derive(Clone, Copy, Debug)]
+pub struct Breather {
+    pub level: u8,
+    pub stamina: u32,
+    pub max_stamina: u32,
+}
+
+/// Three rolls under `bound`, summed (retail `RollSpecialAttackSum`).
+fn three(rng: &mut GameRng, bound: u32) -> u32 {
+    rng.below(bound) + rng.below(bound) + rng.below(bound)
+}
+
+/// What resistance leaves of `amount` on a victim, or nothing for one dead
+/// or gone (retail `ApplyEffectAndAnnounce`).
+fn resisted(
+    rng: &mut GameRng,
+    world: &Field,
+    victim: Victim,
+    realm: Realm,
+    amount: u32,
+    against: u32,
+) -> Option<u32> {
+    let target = target(world, victim, realm, None)?;
+    (!target.dead).then(|| resist(rng, amount, target.resistance, target.level, against))
+}
+
+/// A monster's special attack (a breath, a gaze) landing on its victims
+/// (retail `ResolveMonsterGroupAttack`). Its strength follows its level and
+/// how fresh it is; each victim may escape each of its two effects (the
+/// first one time in ten, the second one in two), and resists each by its
+/// realm. Party members are taken first, then monsters, as retail does. A
+/// summoning does nothing here.
+pub fn special_attack(
+    kind: SpecialAttackKind,
+    breather: Breather,
+    victims: &[Victim],
+    rng: &mut GameRng,
+    world: &mut Field,
+    points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
+) -> Vec<Effect> {
+    let definition = special(kind);
+    if definition.summons {
+        return Vec::new();
+    }
+    let realm = definition.realm;
+    let level = u32::from(breather.level);
+    let fresh = |extra: u32| {
+        (breather.stamina * (level + level.min(15) + extra) / breather.max_stamina.max(1)).max(1)
+    };
+    // Retail's doubling of a fifth-entry effect reads the table's first
+    // rows, which never hold one.
+    let (against, bound) = (fresh(0), fresh(5));
+    let ordered = victims
+        .iter()
+        .filter(|v| matches!(v, Victim::Member(_)))
+        .chain(victims.iter().filter(|v| matches!(v, Victim::Monster(_))));
+    let mut effects = Vec::new();
+    for &victim in ordered {
+        let monster = matches!(victim, Victim::Monster(_));
+        for (slot, effect) in definition.effects.iter().enumerate() {
+            let escapes = if slot == 0 { rng.below(100) <= 9 } else { rng.below(100) <= 49 };
+            let Some(effect) = effect.filter(|_| !escapes) else { continue };
+            let landed = match effect {
+                SpecialEffect::Inflict(condition) => {
+                    let rounds = if monster { (bound / 3).max(1) } else { rng.below(bound) };
+                    // Retail rolls a poison's strength, which is not kept.
+                    if condition == Condition::Poisoned {
+                        rng.below(if monster { 2 } else { bound });
+                    }
+                    afflict(rng, world, victim, Some(condition), realm, against, Some(rounds))
+                }
+                SpecialEffect::Harm => {
+                    let rolled = three(rng, bound) / 3 + 1;
+                    damage(rng, world, victim, realm, rolled, against)
+                }
+                SpecialEffect::Drain => {
+                    let rolled = three(rng, bound) / if monster { 6 } else { 3 } + 1;
+                    match resisted(rng, world, victim, realm, rolled, against) {
+                        None => None,
+                        Some(0) => Some(Effect::Resisted { victim }),
+                        Some(amount) => match victim {
+                            // Retail drains the realm six times over.
+                            Victim::Member(member) => {
+                                let alive = world
+                                    .members
+                                    .get(member)
+                                    .is_ok_and(|(_, vitals, ..)| !vitals.is_dead());
+                                let drained = match points.get_mut(member) {
+                                    Ok((_, mut pool)) if alive => {
+                                        pool.drain_realm(realm, amount * 6)
+                                    }
+                                    _ => 0,
+                                };
+                                Some(Effect::Drained { victim, amount: drained })
+                            }
+                            Victim::Monster(entity) => {
+                                world.monsters.drain_magic(entity, amount / 2);
+                                Some(Effect::Drained { victim, amount })
+                            }
+                        },
+                    }
+                }
+                SpecialEffect::Tire => {
+                    let rolled = three(rng, bound) + u32::from(!monster);
+                    match resisted(rng, world, victim, realm, rolled, against) {
+                        None => None,
+                        Some(0) => Some(Effect::Resisted { victim }),
+                        Some(amount) => {
+                            let amount = match victim {
+                                Victim::Member(member) => world.members.get_mut(member).map_or(
+                                    0,
+                                    |(_, mut vitals, ..)| {
+                                        let before = vitals.stamina;
+                                        vitals.spend_stamina(amount);
+                                        before - vitals.stamina
+                                    },
+                                ),
+                                Victim::Monster(entity) => world.monsters.fatigue(entity, amount),
+                            };
+                            Some(Effect::Tired { victim, amount })
+                        }
+                    }
+                }
+                SpecialEffect::Wound => {
+                    let rolled = three(rng, bound) / 3 + 1;
+                    if definition.resisted {
+                        damage(rng, world, victim, realm, rolled, against)
+                    } else {
+                        target(world, victim, realm, None)
+                            .filter(|t| !t.dead)
+                            .and_then(|_| hurt(rng, world, victim, rolled))
+                    }
+                }
+            };
+            effects.extend(landed);
+        }
+    }
+    effects
 }
 
 /// Whether a spell restores what is missing, so that "auto" power and

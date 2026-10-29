@@ -134,6 +134,90 @@ pub struct LevelDefinition {
     pub items: Vec<ItemPlacement>,
     pub props: Vec<PropModel>,
     pub links: Vec<LevelLink>,
+    pub encounters: Encounters,
+}
+
+/// A level's random encounters as authored (retail `MonGen.cpp`: the
+/// `.sts` `MONG` chunk, its row of `LEVELS.DBS` and the encounter tables
+/// its generators draw from).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Encounters {
+    pub limits: EncounterLimits,
+    /// The running budget the level starts with.
+    pub budget: i32,
+    /// Generation is held off altogether (retail `g_generator_save_flag`).
+    pub held: bool,
+    /// The chance (%) and interval (seconds) of generators using the
+    /// defaults (retail `g_generator_interval_min`,
+    /// `g_generator_default_interval`).
+    pub default_chance: i16,
+    pub default_interval: i16,
+    pub generators: Vec<Generator>,
+}
+
+/// A level's bounds on random encounters (retail `LEVELS.DBS`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EncounterLimits {
+    /// How many may be about at once, at most and at least, whatever the
+    /// budget.
+    pub most: i32,
+    pub fewest: i32,
+    /// The budget's bounds.
+    pub largest_budget: i32,
+    pub smallest_budget: i32,
+    /// Game seconds that earn the budget one more.
+    pub period: i32,
+    /// How long an encounter lingers before it may be retired, in units of
+    /// twelve game seconds (retail scales it by `g_sight_default`).
+    pub lingers: i32,
+}
+
+/// A monster generator (retail `MonGen`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Generator {
+    pub name: String,
+    pub enabled: bool,
+    /// Turned off (retail flag bit 0).
+    pub disabled: bool,
+    /// Uses the level's default chance and interval (bit 3).
+    pub uses_defaults: bool,
+    /// Generates only for a hostile faction while one of the possessed
+    /// story facts holds (bit 5; harassment tables).
+    pub harasses: bool,
+    /// Its own chance (%) and interval (seconds).
+    pub chance: u8,
+    pub interval: u16,
+    /// Where its encounters come, at the feet.
+    pub position: Vec3,
+    /// How far its timer had run, as a share of its interval.
+    pub progress: f32,
+    pub table: Option<EncounterTable>,
+}
+
+/// What a generator may call up (retail `EncounterTables.dbs`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct EncounterTable {
+    pub name: String,
+    pub entries: Vec<EncounterEntry>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EncounterEntry {
+    pub species: u32,
+    /// How common: retail's classes 3, 7, 20 and 70.
+    pub rarity: u8,
+    pub time: EncounterTime,
+    /// The party level it suits.
+    pub challenge: u8,
+}
+
+/// When an entry may come.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EncounterTime {
+    Day,
+    Night,
+    #[default]
+    Always,
 }
 
 impl LevelDefinition {
@@ -201,6 +285,8 @@ pub struct MonsterPlacement {
     /// Feet.
     pub position: Vec3,
     pub yaw: f32,
+    /// Waits unborn until something births its group.
+    pub unborn: bool,
 }
 
 /// An item lying in the level as authored (retail `.sts` `ITEM`).

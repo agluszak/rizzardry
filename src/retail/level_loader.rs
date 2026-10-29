@@ -242,18 +242,18 @@ fn ambient_sound(name: &str, sound: &AmbientSound) -> AmbientSoundModel {
     }
 }
 
-/// Placed monsters with their models, in Bevy space. Unborn ones wait for a
-/// script that is not implemented yet, so they are left out.
+/// Placed monsters with their models, in Bevy space, the unborn among
+/// them.
 fn monster_placements(placements: &[Placement]) -> Vec<MonsterPlacement> {
     placements
         .iter()
-        .filter(|placement| !placement.unborn)
         .map(|placement| MonsterPlacement {
             location: placement.location,
             group: placement.group,
             species: placement.species,
             position: retail_position(placement.position),
             yaw: retail_yaw(placement.yaw, [0.0, 1.0, 0.0]),
+            unborn: placement.unborn,
         })
         .collect()
 }
@@ -674,6 +674,37 @@ impl AssetLoader for PvlLoader {
     }
 }
 
+/// A level's random encounters: its generators, with the tables they draw
+/// from and its row of `LEVELS.DBS`. A level with generators needs both
+/// databases.
+async fn level_encounters(
+    context: &mut LoadContext<'_>,
+    state: &[u8],
+    level: usize,
+) -> Result<crate::content::level::Encounters, LoadError> {
+    let tables = context
+        .read_asset_bytes(AssetPath::from(crate::content::paths::ENCOUNTER_TABLES))
+        .await
+        .map_err(LoadError::from)
+        .and_then(|bytes| Ok(super::encounters::read_tables(&bytes)?));
+    let generators = match &tables {
+        Ok(tables) => super::encounters::read_generators(state, tables)?,
+        // Without the tables, a level whose state has no generators needs
+        // none.
+        Err(_) => super::encounters::read_generators(state, &[])?,
+    };
+    let Some(mut encounters) = generators else { return Ok(default()) };
+    if encounters.generators.is_empty() {
+        return Ok(encounters);
+    }
+    tables?;
+    let levels =
+        context.read_asset_bytes(AssetPath::from(crate::content::paths::LEVEL_RECORDS)).await?;
+    encounters.limits = super::encounters::read_limits(&levels, level)?
+        .ok_or_else(|| LoadError::Invalid(format!("LEVELS.DBS has no row for level {level}")))?;
+    Ok(encounters)
+}
+
 /// Gameplay loading is independent of textures, meshes, materials and skies.
 #[derive(Default, TypePath)]
 pub struct PvlDefinitionLoader;
@@ -719,18 +750,26 @@ impl AssetLoader for PvlDefinitionLoader {
 
         // Who stands where and what lies about; levels without a state file
         // are empty, but one that cannot be read fails the level.
-        let (monsters, items, locks) = match sibling(context, ".", &format!("{stem}.sts")) {
+        let state = match sibling(context, ".", &format!("{stem}.sts")) {
             Some(path) => match context.read_asset_bytes(path).await {
-                Ok(state) => {
-                    let items = read_world_items(&state)?.iter().map(item_placement).collect();
-                    (monster_placements(&read_placements(&state)?), items, read_locks(&state)?)
-                }
+                Ok(state) => Some(state),
                 Err(bevy::asset::ReadAssetBytesError::AssetReaderError(
                     bevy::asset::io::AssetReaderError::NotFound(_),
-                )) => (vec![], vec![], vec![]),
+                )) => None,
                 Err(error) => return Err(error.into()),
             },
+            None => None,
+        };
+        let (monsters, items, locks) = match &state {
+            Some(state) => {
+                let items = read_world_items(state)?.iter().map(item_placement).collect();
+                (monster_placements(&read_placements(state)?), items, read_locks(state)?)
+            }
             None => (vec![], vec![], vec![]),
+        };
+        let encounters = match (&state, level_index) {
+            (Some(state), Some(index)) => level_encounters(context, state, index).await?,
+            _ => default(),
         };
 
         let (mut triggers, prop_triggers) = level_triggers(&sections);
@@ -818,6 +857,7 @@ impl AssetLoader for PvlDefinitionLoader {
                 .collect(),
             props,
             links: level_links(&sections),
+            encounters,
         })
     }
 

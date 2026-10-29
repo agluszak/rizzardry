@@ -11,7 +11,8 @@ use bevy::prelude::*;
 
 use super::identify::{GroupMember, MonsterGroup};
 use super::population::Monster;
-use crate::content::species::{Disposition, Species};
+use crate::content::species::{Disposition, MonsterCatalog, Species};
+use crate::game::characters::Condition;
 use crate::game::factions::{Band, Factions, PARTY, UNALIGNED};
 use crate::game::time::GameClock;
 
@@ -137,6 +138,92 @@ pub fn monster_stance(world: &World, monster: Entity) -> Stance {
         .controlled(world.get::<Monster>(monster).unwrap())
 }
 
+/// Monsters' stances now, through their groups, for systems that only
+/// read them (the fight's snapshot, the radar). Time is the caller's: the
+/// fight holds the clock itself.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct Stances<'w, 's> {
+    monsters: Query<
+        'w,
+        's,
+        (&'static Monster, Option<&'static GroupMember>, Has<crate::game::combat::Combatant>),
+    >,
+    groups: Query<'w, 's, &'static MonsterGroup>,
+    factions: Res<'w, Factions>,
+}
+
+impl Stances<'_, '_> {
+    /// A monster's group's stance now; one outside any group by its
+    /// species' default.
+    pub fn group(&self, monster: Entity, species: &MonsterCatalog, now: u64) -> Option<Stance> {
+        let (body, member, fighting) = self.monsters.get(monster).ok()?;
+        let kind = species.kind(body.species)?;
+        let set = member.and_then(|m| self.groups.get(m.0).ok()).and_then(|g| g.set);
+        Some(stance(set, kind, &self.factions, now, fighting))
+    }
+
+    /// A monster's own stance now: its group's, swapped by its own Turncoat
+    /// (retail's per-monster `ubDisposition`).
+    pub fn own(&self, monster: Entity, species: &MonsterCatalog, now: u64) -> Option<Stance> {
+        let group = self.group(monster, species, now)?;
+        let (body, ..) = self.monsters.get(monster).ok()?;
+        let turncoat = body.conditions.iter().any(|&(c, _)| c == Condition::Turncoat);
+        Some(own_stance(group, turncoat))
+    }
+}
+
+/// The species retail keeps out of every quarrel (record 0x224): neutral to
+/// everyone, and only ever waiting in a fight.
+pub const BYSTANDER_SPECIES: u32 = 0x224;
+
+/// A monster's own stance: its group's, swapped by Turncoat, which turns a
+/// hostile monster friendly and a friendly one hostile (retail
+/// `InflictConditionOnMonster`); a neutral one shrugs it off.
+pub fn own_stance(group: Stance, turncoat: bool) -> Stance {
+    match (group, turncoat) {
+        (Stance::Hostile, true) => Stance::Friendly,
+        (Stance::Friendly, true) => Stance::Hostile,
+        (stance, _) => stance,
+    }
+}
+
+/// How a monster stands toward a member: as it stands toward the party,
+/// hostile and friendly swapped for a member under Turncoat (retail
+/// `MonsterVsCharDisposition`).
+pub fn toward_member(monster: Stance, member_turncoat: bool) -> Stance {
+    own_stance(monster, member_turncoat)
+}
+
+/// A monster as another sees it: its species, own stance, faction and
+/// whether it is under Turncoat.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Allegiance {
+    pub species: u32,
+    pub stance: Stance,
+    pub faction: i32,
+    pub turncoat: bool,
+}
+
+/// How two monsters stand toward each other (retail `MonsterHostility`):
+/// alike, friends; either neutral, neutral; otherwise foes, but for two of
+/// one faction, who quarrel only when Turncoat holds one and not the other.
+pub fn between(first: Allegiance, second: Allegiance) -> Stance {
+    if first.species == BYSTANDER_SPECIES || second.species == BYSTANDER_SPECIES {
+        return Stance::Neutral;
+    }
+    if first.stance == second.stance {
+        return Stance::Friendly;
+    }
+    if first.stance == Stance::Neutral || second.stance == Stance::Neutral {
+        return Stance::Neutral;
+    }
+    if first.faction == UNALIGNED || second.faction == UNALIGNED || first.faction != second.faction
+    {
+        return Stance::Hostile;
+    }
+    if first.turncoat == second.turncoat { Stance::Neutral } else { Stance::Hostile }
+}
+
 /// The party acted against this monster: a blow aimed at it, a hostile
 /// spell aimed at it or catching it, whatever came of them (retail
 /// `MakeTargetGroupHostile`, `ProvokeListedMonsterGroups`).
@@ -170,6 +257,33 @@ mod tests {
         assert_eq!(default_stance(&umpani, &factions), Stance::Friendly);
         let allies = species(Disposition::Hostile, PARTY, 10);
         assert_eq!(default_stance(&allies, &factions), Stance::Friendly);
+    }
+
+    /// Turncoat swaps a monster's side, not a neutral's; monsters alike
+    /// are friends, a neutral stays out, and two of one faction quarrel
+    /// only when Turncoat holds one of them (retail `MonsterHostility`).
+    #[test]
+    fn monsters_stand_by_their_sides_and_turncoat_swaps_them() {
+        assert_eq!(own_stance(Stance::Hostile, true), Stance::Friendly);
+        assert_eq!(own_stance(Stance::Neutral, true), Stance::Neutral);
+        assert_eq!(toward_member(Stance::Hostile, true), Stance::Friendly);
+        let side = |stance, faction, turncoat| Allegiance { species: 1, stance, faction, turncoat };
+        let foe = side(Stance::Hostile, UNALIGNED, false);
+        let turned = side(own_stance(Stance::Hostile, true), UNALIGNED, true);
+        assert_eq!(between(foe, foe), Stance::Friendly);
+        assert_eq!(between(foe, turned), Stance::Hostile);
+        assert_eq!(between(foe, side(Stance::Neutral, UNALIGNED, false)), Stance::Neutral);
+        let mook = |stance, turncoat| side(stance, crate::game::factions::MOOK, turncoat);
+        assert_eq!(
+            between(mook(Stance::Hostile, false), mook(Stance::Friendly, false)),
+            Stance::Neutral
+        );
+        assert_eq!(
+            between(mook(Stance::Hostile, false), mook(Stance::Friendly, true)),
+            Stance::Hostile
+        );
+        let bystander = Allegiance { species: BYSTANDER_SPECIES, ..foe };
+        assert_eq!(between(foe, bystander), Stance::Neutral);
     }
 
     /// A provocation holds for Intelligence² game minutes outside a fight,

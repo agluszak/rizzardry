@@ -215,14 +215,17 @@ impl LevelMemory {
 
 /// A level the party has left (retail keeps it in the level's state image):
 /// what its triggers keep, its props’ motion, its monsters (the
-/// dead too, so they stay dead), the items lying about, what the party
-/// knows of its groups, and its map notes. Activation consumes it.
+/// dead too, so they stay dead) and those still unborn, the items lying
+/// about, what the party knows of its groups, and its map notes.
+/// Activation consumes it.
 #[derive(Debug)]
 pub struct LevelRecord {
     triggers: TriggerMemory,
     /// By prop definition index.
     prop_motion: HashMap<usize, PropMotion>,
     pub(super) monsters: Vec<KeptMonster>,
+    pub(super) unborn: Vec<KeptMonster>,
+    pub(super) encounters: super::encounters::EncounterState,
     pub(super) items: Vec<(WorldItem, Vec3)>,
     pub(super) groups: Vec<MonsterGroup>,
     notes: MapNotes,
@@ -239,14 +242,29 @@ pub struct KeptMonster {
 }
 
 impl KeptMonster {
-    /// A placed monster met for the first time: health and stamina rolled
-    /// from its species, then its size. Retail draws Random(1000) for the
-    /// size; its left-handed mirror draw, presentation only, is not taken
-    /// from gameplay's stream.
-    pub fn rolled(
+    /// A placed monster met for the first time (retail `LoadMonsterInfo`).
+    pub fn placed(
         placed: &crate::content::level::MonsterPlacement,
         kind: &crate::content::species::Species,
         body: &crate::content::monster::MonsterBody,
+        rng: &mut crate::game::rng::GameRng,
+    ) -> Self {
+        Self::rolled(
+            (placed.location, placed.species, Some(placed.group)),
+            (placed.position, placed.yaw),
+            (kind, body),
+            rng,
+        )
+    }
+
+    /// A monster come into being (retail `CreateMonsterInfo`): health and
+    /// stamina rolled from its species, then its size. Retail draws
+    /// Random(1000) for the size; its left-handed mirror draw, presentation
+    /// only, is not taken from gameplay's stream.
+    pub fn rolled(
+        (location, species, group): (i32, u32, Option<i32>),
+        (feet, yaw): (Vec3, f32),
+        (kind, body): (&crate::content::species::Species, &crate::content::monster::MonsterBody),
         rng: &mut crate::game::rng::GameRng,
     ) -> Self {
         let max_hp = rng.roll(kind.hit_points).max(1);
@@ -255,8 +273,8 @@ impl KeptMonster {
         KeptMonster {
             monster: Monster {
                 enchantments: default(),
-                location: placed.location,
-                species: placed.species,
+                location,
+                species,
                 hp: max_hp,
                 max_hp,
                 stamina: max_stamina,
@@ -266,9 +284,9 @@ impl KeptMonster {
                 spell_points: 0,
                 body,
             },
-            group: Some(placed.group),
-            feet: placed.position,
-            yaw: placed.yaw,
+            group,
+            feet,
+            yaw,
         }
     }
 
@@ -303,6 +321,9 @@ pub struct LevelContents<'w, 's> {
     items: Query<'w, 's, (&'static WorldItem, &'static Transform)>,
     groups: Query<'w, 's, &'static MonsterGroup>,
     notes: Query<'w, 's, &'static MapNotes>,
+    unborn: Query<'w, 's, &'static super::population::Unborn>,
+    encounters: Query<'w, 's, &'static super::encounters::EncounterState>,
+    clock: Res<'w, crate::game::time::GameClock>,
 }
 
 impl LevelContents<'_, '_> {
@@ -329,6 +350,11 @@ impl LevelContents<'_, '_> {
                     KeptMonster::capture(monster, &at, walker, group)
                 })
                 .collect(),
+            unborn: self.unborn.get(root).map_or_else(|_| Vec::new(), |unborn| unborn.0.clone()),
+            encounters: super::encounters::EncounterState {
+                arrival: Some(super::encounters::Arrival::Returned { left: self.clock.ms / 1000 }),
+                ..self.encounters.get(root).cloned().unwrap_or_default()
+            },
             items: self
                 .items
                 .iter_many(children)

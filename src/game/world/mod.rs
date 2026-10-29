@@ -2,6 +2,7 @@
 
 pub mod containers;
 pub mod damage;
+pub mod encounters;
 pub mod hostility;
 pub mod identify;
 pub mod interaction;
@@ -71,6 +72,7 @@ impl Plugin for WorldPlugin {
             .add_message::<triggers::TriggerEffect>()
             .add_message::<interaction::LockNews>()
             .add_message::<WorldRequest>()
+            .add_message::<population::Birth>()
             .add_message::<crate::game::automap::CommitNote>()
             .add_plugins(interaction::plugin)
             .add_observer(interaction::end_attempts)
@@ -87,11 +89,21 @@ impl Plugin for WorldPlugin {
                     (handle_world_requests, crate::game::automap::commit_notes)
                         .after(crate::game::GameplaySet::Stats)
                         .before(crate::game::GameplaySet::Combat),
+                    population::give_birth
+                        .run_if(level::level_active)
+                        .before(crate::game::GameplaySet::Combat),
                     (search::toggle_search, search::search_pulse)
                         .chain()
                         .run_if(level::level_active)
                         .after(level::activate_level),
                 ),
+            )
+            // Encounters come over ground physics has placed.
+            .add_systems(
+                FixedPostUpdate,
+                encounters::run_encounters
+                    .after(avian3d::prelude::PhysicsSystems::Writeback)
+                    .run_if(level::level_active),
             )
             .add_systems(
                 FixedPreUpdate,

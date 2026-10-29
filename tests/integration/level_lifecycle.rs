@@ -88,8 +88,14 @@ fn starting_catalog() -> ItemCatalog {
 }
 
 fn test_level(app: &mut App, collision: CollisionMesh) -> Level {
-    let crab =
-        MonsterPlacement { location: 7, group: 1, species: 0, position: Vec3::ZERO, yaw: 0.0 };
+    let crab = MonsterPlacement {
+        location: 7,
+        group: 1,
+        species: 0,
+        position: Vec3::ZERO,
+        yaw: 0.0,
+        unborn: false,
+    };
     let geometry = app.world_mut().resource_mut::<Assets<LevelDefinition>>().add(LevelDefinition {
         collision,
         monsters: vec![crab],
@@ -1058,4 +1064,57 @@ fn prop_motion_resumes_from_its_actual_frame_after_a_revisit() {
     app.update();
     let motion = app.world_mut().query::<&PropMotion>().single(app.world()).unwrap();
     assert_eq!((motion.frame, motion.target), (0.25, 1.));
+}
+
+/// An unborn group waits outside the world, rolled with the rest, through
+/// a revisit; its birth brings it in once, and it stays born on the next
+/// revisit (retail `GiveBirthToMonster`).
+#[test]
+fn an_unborn_group_waits_until_born_and_is_born_once() {
+    use rizzardry::game::world::identify::{GroupMember, MonsterGroup};
+    use rizzardry::game::world::population::{Birth, Unborn, give_birth};
+    let mut app = app();
+    app.add_message::<Birth>().add_systems(Update, give_birth.after(activate_level));
+    with_data(&mut app);
+    let level = test_level(&mut app, floor());
+    {
+        let mut definitions = app.world_mut().resource_mut::<Assets<LevelDefinition>>();
+        let mut definition = definitions.get_mut(&level.definition).unwrap();
+        definition.monsters.push(MonsterPlacement {
+            location: 8,
+            group: 2,
+            species: 0,
+            position: Vec3::X,
+            yaw: 0.0,
+            unborn: true,
+        });
+    }
+    let new_game = Entry::NewGame(vec![(
+        Character::new("A", Race::Human, Gender::Male, Profession::Fighter),
+        default(),
+    )]);
+    let root = app.world_mut().spawn(Destination::new(level, default(), new_game)).id();
+    app.update();
+    assert!(is_played(&app, root));
+    assert_eq!(monsters(&mut app).len(), 1, "the unborn one is not in the world");
+    assert_eq!(app.world().get::<Unborn>(root).unwrap().0.len(), 1);
+    let root = revisit(&mut app);
+    assert_eq!(monsters(&mut app).len(), 1);
+    assert_eq!(app.world().get::<Unborn>(root).unwrap().0.len(), 1, "it waits across a revisit");
+    for _ in 0..2 {
+        app.world_mut().write_message(Birth(2));
+        app.update();
+        let born: Vec<_> = monsters(&mut app).into_iter().filter(|m| m.location == 8).collect();
+        assert_eq!(born.len(), 1, "born once");
+    }
+    let world = app.world_mut();
+    let (_, membership) = world
+        .query::<(&Monster, &GroupMember)>()
+        .iter(world)
+        .find(|(m, _)| m.location == 8)
+        .unwrap();
+    assert_eq!(world.get::<MonsterGroup>(membership.0).unwrap().authored, 2);
+    let root = revisit(&mut app);
+    assert_eq!(monsters(&mut app).len(), 2, "born for good");
+    assert!(app.world().get::<Unborn>(root).unwrap().0.is_empty());
 }

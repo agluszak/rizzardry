@@ -881,6 +881,36 @@ pub fn monster_aim(
     difficulty.for_monster(score, stance)
 }
 
+/// How well a member presses a blow past a guard (retail
+/// `GetCharacterProtectionScore`): Speed, less fatigue (halved with a
+/// modern weapon), with the first hand's to-hit and rating when it is in
+/// play, and the member's own to-hit bonus.
+pub fn member_protection(c: &CharacterStats<'_>, vitals: &Vitals, hand: &Hand) -> i32 {
+    let mut fatigue = character_fatigue(c, vitals);
+    if hand.weapon_skill == Skill::ModernWeapon {
+        fatigue >>= 1;
+    }
+    let armed = if hand.in_play { hand.to_hit * 5 + hand.attack_rating } else { 0 };
+    c.attribute(crate::content::characters::Attribute::Speed) as i32 - fatigue
+        + armed
+        + vitals.enchantments.hit_bonus() * 5
+}
+
+/// How well a monster guards, or presses past a guard (retail
+/// `GetMonsterProtectionScore`): Speed, less fatigue (halved for the
+/// weapons that tire little), with its first attack's score and its to-hit
+/// bonus.
+pub fn monster_protection(species: &Species, monster: &Monster) -> i32 {
+    let first = species.attacks.first();
+    let mut fatigue = monster_fatigue(monster);
+    if first.is_some_and(MonsterAttack::tires_little) {
+        fatigue >>= 1;
+    }
+    i32::from(species.attributes.speed) - fatigue
+        + first.map_or(0, |a| i32::from(a.score))
+        + monster.enchantments.hit_bonus() * 5
+}
+
 /// A monster's chance to get through armour (retail `ContinueMonsterAttack`).
 /// Retail takes fatigue off only the attacks that tire little, in full.
 pub fn monster_penetration(

@@ -615,10 +615,38 @@ pub fn queue_notices(
                     vec![string(0x23b).replacen("%s", &name, 1).replacen("%s", &possessive, 1)]
                 })
                 .unwrap_or_default(),
+            // Retail `MonsterFleeAction`: the name and the attack's own
+            // (`g_monster_special_attack_name_ids`, known for kinds 1 to 11).
+            CombatNews::Special { monster, kind } => names
+                .name(*monster)
+                .map(|name| match kind.row() {
+                    row @ 1..=11 => vec![format!("{name} {}", string(1597 + usize::from(row)))],
+                    _ => vec![],
+                })
+                .unwrap_or_default(),
+            // Retail `g_condition_interrupt_notices` (0x3a0 on, twelve of
+            // them); fear's flight has none.
+            CombatNews::Interrupted { monster, interrupt } => names
+                .name(*monster)
+                .filter(|_| interrupt.number() < 12)
+                .map(|name| {
+                    vec![format!("{name} {}", string(0x3a0 + usize::from(interrupt.number())))]
+                })
+                .unwrap_or_default(),
+            // Retail string 0x21a after the guard's name, naming its ward.
+            CombatNews::Intercepts { guard, ward } => {
+                match (names.name(*guard), names.name(*ward)) {
+                    (Some(guard), Some(ward)) => {
+                        vec![format!("{guard} {}", string(0x21a).replacen("%s", &ward, 1))]
+                    }
+                    _ => vec![],
+                }
+            }
             CombatNews::Withdraws { monster } => names
                 .name(*monster)
                 .map(|name| vec![string(0x23a).replacen("%s", &name, 1)])
                 .unwrap_or_default(),
+            CombatNews::SummonFails => vec![string(0x26a)],
             CombatNews::Attack { attacker, target, how, swings, surprise } => {
                 match (names.name(*attacker), names.name(*target)) {
                     (Some(attacker), Some(target)) => {

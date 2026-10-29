@@ -4,10 +4,7 @@ use super::{
     casting::{Aim, MagicChoice, MagicNews, Refusal, UseContext},
 };
 use crate::{
-    content::{
-        characters::Skill, level::MonsterPlacement, monster::MonsterBody, species::MonsterKind,
-        spells::SpellId,
-    },
+    content::{characters::Skill, monster::MonsterBody, species::MonsterKind, spells::SpellId},
     game::{
         characters::{Character, Condition},
         combat::{Battle, Combatant},
@@ -353,15 +350,12 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
                     ChildOf(battle),
                 ))
                 .id();
-            let placement = MonsterPlacement {
-                location,
-                group: group_id,
-                species: species_id,
-                position: at,
-                yaw: 0.0,
-            };
-            let kept =
-                KeptMonster::rolled(&placement, &kind, body, &mut world.resource_mut::<GameRng>());
+            let kept = KeptMonster::rolled(
+                (location, species_id, Some(group_id)),
+                (at, 0.0),
+                (&kind, body),
+                &mut world.resource_mut::<GameRng>(),
+            );
             let shape = kept.monster.body;
             let elemental = world
                 .spawn((
