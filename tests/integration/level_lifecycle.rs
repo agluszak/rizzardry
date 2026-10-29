@@ -1021,14 +1021,7 @@ fn prop_motion_resumes_from_its_actual_frame_after_a_revisit() {
         });
     // This is the live motion at departure, independent of the authored starting pose.
     app.world_mut().spawn((
-        Prop {
-            definition: 0,
-            centre: Vec3::ZERO,
-            frames_per_second: 1.,
-            last_frame: 1,
-            wraps: false,
-            slots: vec![],
-        },
+        Prop { definition: 0 },
         PropMotion { frame: 0.25, target: 1. },
         LevelOwned(source),
     ));

@@ -267,23 +267,13 @@ mod tests {
         let prop = app
             .world_mut()
             .spawn((
-                Prop {
-                    definition: 0,
-                    centre: authored.translation,
-                    frames_per_second: 1.0,
-                    last_frame: 0,
-                    wraps: false,
-                    slots: vec![],
-                },
+                Prop { definition: 0 },
                 PropMotion::default(),
                 Transform::default(),
                 crate::game::world::level::LevelOwned(root),
             ))
             .id();
-        let part = app
-            .world_mut()
-            .spawn((PropPart { part: 0, keys: vec![] }, authored, ChildOf(prop)))
-            .id();
+        let part = app.world_mut().spawn((PropPart { part: 0 }, authored, ChildOf(prop))).id();
         let camera_rotation = Quat::from_euler(EulerRot::YXZ, -0.4, 0.2, 0.0);
         app.world_mut().spawn((PartyCamera, Transform::from_rotation(camera_rotation)));
         // Attachment and presentation can run independently on the first frame.
