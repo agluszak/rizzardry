@@ -40,7 +40,7 @@ pub const GRAVITY: f32 = 18750.0 / UNITS_PER_METRE;
 /// Retail caps a tick's motion at 3000 units (Whizzardry `collision.cpp`);
 /// walking never comes near it, so in practice it limits falls.
 const MAX_SPEED: f32 = 30000.0 / UNITS_PER_METRE;
-const MAX_PITCH: f32 = std::f32::consts::FRAC_PI_4;
+pub const MAX_PITCH: f32 = std::f32::consts::FRAC_PI_4;
 
 /// Movement the party can perform: walking only. Wizardry has no jumping.
 #[derive(TnuaScheme)]
@@ -69,12 +69,6 @@ impl PartyBody {
     /// The party's eye, over the centre of its body at `position`.
     pub fn eye(position: &Position) -> Vec3 {
         position.0 + Vec3::Y * EYE_ABOVE_CENTRE
-    }
-
-    /// Turn to face along `direction`, level.
-    pub fn face(&mut self, direction: Vec3) {
-        let facing = Transform::default().looking_to(direction.with_y(0.0), Vec3::Y);
-        (self.yaw, _, _) = facing.rotation.to_euler(EulerRot::YXZ);
     }
 }
 

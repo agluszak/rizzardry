@@ -423,7 +423,10 @@ pub enum Announcement {
 /// What the fight tells the player.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum CombatNews {
-    Began,
+    /// A fight begins; `nearest` is the engaged monster nearest the party.
+    Began {
+        nearest: Option<Entity>,
+    },
     /// An attack begins (retail `StartCharacterAttack`,
     /// `AnnounceMonsterAttack`).
     Attack {
@@ -724,7 +727,7 @@ pub fn start_battle(
     mut commands: Commands,
     battles: Query<Entity, With<Battle>>,
     camp: Option<Res<crate::game::camp::Camp>>,
-    mut party: Query<(&Position, &mut PartyBody)>,
+    party: Query<(&Position, &PartyBody)>,
     level: PlayedLevel,
     members: Query<(&Character, &Vitals)>,
     monsters: Query<(
@@ -762,7 +765,7 @@ pub fn start_battle(
         return;
     }
     let Some(catalog) = content.species() else { return };
-    let Ok((party_at, mut body)) = party.single_mut() else { return };
+    let Ok((party_at, body)) = party.single() else { return };
     let (Some(far), Some(root)) = (level.view_distance(), level.entity()) else { return };
     let sight = Sight {
         eye: PartyBody::eye(party_at),
@@ -1022,21 +1025,20 @@ pub fn start_battle(
         return;
     }
     info!("combat: {} monsters", joined.len());
-    // The view turns to the nearest of them (retail `beginCombat`).
-    let nearest = monsters
-        .iter_many(&joined)
-        .matched()
-        .map(|(_, _, at, ..)| at.translation())
-        .min_by(|a, b| a.distance(sight.eye).total_cmp(&b.distance(sight.eye)));
-    if let Some(nearest) = nearest {
-        body.face(nearest - sight.eye);
-    }
+    // The nearest of them, which the view may turn to (retail `StartCombat`
+    // hands it to `PointCameraAtMonster`); the party's facing is the
+    // player's.
+    let nearest = joined
+        .iter()
+        .filter_map(|&m| Some((m, monsters.get(m).ok()?.2.translation())))
+        .min_by(|a, b| a.1.distance(sight.eye).total_cmp(&b.1.distance(sight.eye)))
+        .map(|(m, _)| m);
     let battle = commands.spawn((Name::new("Battle"), Battle::default(), LevelOwned(root))).id();
     for &monster in &joined {
         commands.entity(monster).insert(Combatant(battle));
     }
     stage.p1().detect(sight.eye, body.forward(), Some(&joined), &mut rng);
-    news.write(CombatNews::Began);
+    news.write(CombatNews::Began { nearest });
 }
 
 /// Whether the party is fighting, for operations that hold the whole world.
@@ -3080,9 +3082,21 @@ mod tests {
             species.0[0].magic.chance = 50;
             species.0[0].magic.spells[0] = Some(id);
         }
+        // The party looks away; starting the fight leaves its facing alone
+        // and names the monster the view may turn to.
+        let party = app
+            .world_mut()
+            .query_filtered::<Entity, With<PartyBody>>()
+            .single(app.world())
+            .unwrap();
+        app.world_mut().get_mut::<PartyBody>(party).unwrap().yaw = 1.0;
+        app.world_mut().resource_mut::<Messages<CombatNews>>().clear();
         app.update();
         assert!(fight(app.world()).is_some(), "the caster starts the fight");
         assert!(app.world().get::<Combatant>(monster).is_some());
+        assert_eq!(app.world().get::<PartyBody>(party).unwrap().yaw, 1.0);
+        let news: Vec<_> = app.world_mut().resource_mut::<Messages<CombatNews>>().drain().collect();
+        assert!(news.contains(&CombatNews::Began { nearest: Some(monster) }), "{news:?}");
     }
 
     /// A cast waits for its caster's initiative, is revalidated then, spends

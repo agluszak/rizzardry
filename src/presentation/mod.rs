@@ -103,6 +103,7 @@ impl Plugin for PresentationPlugin {
         .add_message::<party_voice::SpokenRemark>()
         .add_message::<automap::OpenAutomap>()
         .init_resource::<effects::CameraShake>()
+        .init_resource::<party_view::ViewTurn>()
         .init_resource::<notices::TextLog>()
         .init_resource::<hover::Hover>()
         .init_resource::<selection::WorldSelection>()
@@ -177,6 +178,9 @@ impl Plugin for PresentationPlugin {
             (
                 screen_art::scale_ui,
                 party_view::aim_camera.after(crate::game::GameplaySet::Combat),
+                (party_view::track_fights, party_view::turn_view)
+                    .chain()
+                    .after(crate::game::GameplaySet::Combat),
                 camp::show_camp,
                 (
                     automap::request_automap,
