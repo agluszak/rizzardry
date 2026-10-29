@@ -4202,3 +4202,25 @@ mod tests {
         assert!(matches!(sale_item(world, source, party), Err(TradeError::StaleSelection)));
     }
 }
+
+#[cfg(test)]
+mod view_lifecycle_test {
+    use super::*;
+
+    #[test]
+    fn added_sessions_build_once_and_idle_transcripts_keep_their_labels() {
+        crate::presentation::conversation::tests::check_session_views(|actor, script| {
+            Conversation {
+                actor,
+                script,
+                revision: 0,
+                current: None,
+                wait: ConversationWait::Ready,
+                transcript: vec![],
+                learned_topics: default(),
+                result: None,
+                queue: default(),
+            }
+        });
+    }
+}

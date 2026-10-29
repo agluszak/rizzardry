@@ -200,11 +200,11 @@ impl Plugin for ConversationViewPlugin {
         app.add_observer(activate_choice)
             .add_observer(activate_trade)
             .add_observer(activate_topic)
+            .add_observer(create_view)
             .add_systems(
                 Update,
                 (
                     close_views,
-                    create_views,
                     (
                         project_text,
                         project_modes,
@@ -1182,25 +1182,13 @@ fn close_views(
         }
     }
 }
-fn create_views(
-    mut commands: Commands,
-    sessions: Query<
-        (Entity, Option<&ConversationViews>),
-        (With<Conversation>, Without<crate::game::npcs::conversation::Closing>),
-    >,
-) {
-    for (session, views) in &sessions {
-        if views.is_none_or(|v| v.0.is_empty()) {
-            commands.queue(move |world: &mut World| {
-                if world.get::<Conversation>(session).is_some()
-                    && world.get::<crate::game::npcs::conversation::Closing>(session).is_none()
-                    && world.get::<ConversationViews>(session).is_none_or(|v| v.0.is_empty())
-                {
-                    build(world, session);
-                }
-            });
+fn create_view(event: On<Add<Conversation>>, mut commands: Commands) {
+    let session = event.entity;
+    commands.queue(move |world: &mut World| {
+        if world.get::<Conversation>(session).is_some() && world.get::<crate::game::npcs::conversation::Closing>(session).is_none() {
+            build(world, session);
         }
-    }
+    });
 }
 fn project_text(
     views: ViewScope,
@@ -1276,45 +1264,46 @@ fn sync_transcript(
             .transcript
             .len()
             .saturating_sub(usize::from(matches!(c.wait, ConversationWait::Line { .. })));
-        let mut lines: Vec<_> = c.transcript[..count]
+        let lines: Vec<_> = c.transcript[..count]
             .iter()
             .map(|line| match line {
-                TranscriptLine::Npc(text) => (text.clone(), None),
+                TranscriptLine::Npc(text) => (std::borrow::Cow::Borrowed(text.as_str()), None),
                 // Retail alternates its two answers for having nothing to say.
                 TranscriptLine::NoAnswer { npc, second } => {
-                    (strings.get(NO_ANSWER[usize::from(*second)]).replacen("%s", npc, 1), None)
+                    (std::borrow::Cow::Owned(strings.get(NO_ANSWER[usize::from(*second)]).replacen("%s", npc, 1)), None)
                 }
-                TranscriptLine::Question(text) => (text.clone(), Some("palettebronze")),
-                TranscriptLine::Reply(text) => (text.clone(), Some("palettegreen")),
+                TranscriptLine::Question(text) => (std::borrow::Cow::Borrowed(text.as_str()), Some("retail://data/fonts/palettebronze.sti")),
+                TranscriptLine::Reply(text) => (std::borrow::Cow::Borrowed(text.as_str()), Some("retail://data/fonts/palettegreen.sti")),
                 // Retail shows gifts and removals in the NPC's own quote.
                 TranscriptLine::Reward(QuestReward::Gold { giver, amount }) => (
-                    strings
+                    std::borrow::Cow::Owned(strings
                         .get(QUEST_GOLD)
                         .replacen("%s", giver, 1)
-                        .replace("%d", &amount.to_string()),
+                        .replace("%d", &amount.to_string())),
                     None,
                 ),
                 TranscriptLine::Reward(QuestReward::Item { name }) => {
-                    (strings.get(QUEST_ITEM).replacen("%s", name, 1), None)
+                    (std::borrow::Cow::Owned(strings.get(QUEST_ITEM).replacen("%s", name, 1)), None)
                 }
                 TranscriptLine::Reward(QuestReward::Taken { member: Some(member) }) => {
-                    (strings.get(ITEM_TAKEN_FROM).replacen("%s", member, 1), None)
+                    (std::borrow::Cow::Owned(strings.get(ITEM_TAKEN_FROM).replacen("%s", member, 1)), None)
                 }
                 TranscriptLine::Reward(QuestReward::Taken { member: None }) => {
-                    (strings.get(ITEM_TAKEN).to_owned(), None)
+                    (std::borrow::Cow::Owned(strings.get(ITEM_TAKEN).to_owned()), None)
                 }
                 TranscriptLine::Reward(QuestReward::Experience { amount_each }) => (
-                    strings.get(QUEST_EXPERIENCE).replace("%d", &amount_each.to_string()),
-                    Some("palettegreen"),
+                    std::borrow::Cow::Owned(strings.get(QUEST_EXPERIENCE).replace("%d", &amount_each.to_string())),
+                    Some("retail://data/fonts/palettegreen.sti"),
                 ),
             })
             // A recording without a line ("SOUND") shows nothing.
             .filter(|(text, _)| !text.is_empty())
             .collect();
+        let mut trailing = Vec::new();
         if let ConversationWait::Blocked { quote, entry, reason } = &c.wait {
-            lines.push((
+            trailing.push((
                 format!("Content gap at quote {quote}, entry {entry:?}: {reason}"),
-                Some("palettered"),
+                Some("retail://data/fonts/palettered.sti"),
             ));
         }
         if let Some(outcome) = c.outcome() {
@@ -1324,36 +1313,51 @@ fn sync_transcript(
                 Outcome::TradeRefused(error) => format!("Trade refused: {error:?}"),
                 Outcome::GiftRefused(error) => format!("Gift refused: {error:?}"),
             };
-            lines.push((text, Some("palettebronze")));
+            trailing.push((text, Some("retail://data/fonts/palettebronze.sti")));
         }
         let old: Vec<_> = children
             .into_iter()
             .flatten()
             .filter_map(|e| rows.get(*e).ok().map(|(row, _)| (*e, row.0)))
             .collect();
-        let mut changed = old.len() != lines.len();
+        let length = lines.len() + trailing.len();
+        let mut changed = old.len() != length;
         for (entity, index) in &old {
-            if *index >= lines.len() {
+            if *index >= length {
                 commands.entity(*entity).despawn();
             }
         }
-        for (index, (value, palette)) in lines.into_iter().enumerate() {
-            let text = BitmapText {
-                font: assets.load("retail://data/fonts/wiz_text_font.sti"),
-                palette: palette.map(|name| assets.load(format!("retail://data/fonts/{name}.sti"))),
-                value,
-                width: 284.,
-                ..default()
-            };
+        for (index, (value, palette)) in lines.iter().map(|(text, palette)| (text.as_ref(), *palette))
+            .chain(trailing.iter().map(|(text, palette)| (text.as_str(), *palette)))
+            .enumerate()
+        {
             if let Some((entity, _)) = old.iter().find(|(_, i)| *i == index) {
                 if let Ok((_, mut current)) = rows.get_mut(*entity) {
-                    changed |= *current != text;
-                    current.set_if_neq(text);
+                    let palette_changed = current
+                        .palette
+                        .as_ref()
+                        .and_then(|h| h.path())
+                        .and_then(|p| p.path().to_str())
+                        != palette.map(|path| path.strip_prefix("retail://").unwrap());
+                    if current.value != value {
+                        current.value = value.to_owned();
+                        changed = true;
+                    }
+                    if palette_changed {
+                        current.palette = palette.map(|path| assets.load(path));
+                        changed = true;
+                    }
                 }
             } else {
                 commands.spawn((
                     TranscriptRow(index),
-                    text,
+                    BitmapText {
+                        font: assets.load("retail://data/fonts/wiz_text_font.sti"),
+                        palette: palette.map(|path| assets.load(path)),
+                        value: value.to_owned(),
+                        width: 284.,
+                        ..default()
+                    },
                     BitmapWrap { width: 284, line_spacing: 0 },
                     Node { position_type: PositionType::Relative, flex_shrink: 0., ..default() },
                     ChildOf(list),
@@ -2296,9 +2300,69 @@ fn watch_playback(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::content::{items::ItemCatalog, ui::TextTable};
+
+    pub(crate) fn check_session_views(
+        make: impl Fn(Entity, Handle<crate::content::npcs::DialogueScript>) -> Conversation,
+    ) {
+        let mut app = crate::presentation::test_input::input_app();
+        app.init_asset::<SpriteSheet>()
+            .init_asset::<Image>()
+            .init_asset::<Font>()
+            .init_resource::<super::super::main_screen::ScreenLayout>()
+            .add_observer(create_view)
+            .add_systems(Update, sync_transcript);
+        app.init_asset::<crate::content::npcs::DialogueScript>();
+        let actor = app.world_mut().spawn_empty().id();
+        let script = app
+            .world_mut()
+            .resource_mut::<Assets<crate::content::npcs::DialogueScript>>()
+            .add(crate::content::npcs::DialogueScript::default());
+        let mut conversation = make(actor, script.clone());
+        conversation.transcript =
+            vec![TranscriptLine::Question("Arnika".into()), TranscriptLine::Npc("A town.".into())];
+        let session = app.world_mut().spawn(conversation).id();
+        app.update();
+        let view = app.world().get::<ConversationViews>(session).unwrap().0[0];
+        let rows: Vec<_> = app
+            .world_mut()
+            .query::<(Entity, &TranscriptRow)>()
+            .iter(app.world())
+            .map(|(e, _)| e)
+            .collect();
+        assert_eq!(rows.len(), 2);
+        let ticks: Vec<_> = rows
+            .iter()
+            .map(|row| app.world().entity(*row).get_ref::<BitmapText>().unwrap().last_changed())
+            .collect();
+        app.world_mut().clear_trackers();
+        for _ in 0..3 {
+            app.update();
+        }
+        for (row, tick) in rows.iter().zip(ticks) {
+            assert_eq!(
+                app.world().entity(*row).get_ref::<BitmapText>().unwrap().last_changed(),
+                tick
+            );
+        }
+        assert_eq!(app.world().get::<ConversationViews>(session).unwrap().0.as_slice(), &[view]);
+        app.world_mut().get_mut::<Conversation>(session).unwrap().wait =
+            ConversationWait::Blocked { quote: 3, entry: None, reason: "Missing".into() };
+        app.update();
+        assert_eq!(app.world_mut().query::<&TranscriptRow>().iter(app.world()).count(), 3);
+        app.world_mut().get_mut::<Conversation>(session).unwrap().wait = ConversationWait::Ready;
+        app.update();
+        assert_eq!(app.world_mut().query::<&TranscriptRow>().iter(app.world()).count(), 2);
+        app.world_mut().despawn(session);
+        assert!(app.world().get_entity(view).is_err());
+        assert!(rows.into_iter().all(|e| app.world().get_entity(e).is_err()));
+        // Both operations precede the queued view build.
+        app.world_mut().commands().spawn(make(actor, script)).despawn();
+        app.update();
+        assert_eq!(app.world_mut().query::<&ConversationView>().iter(app.world()).count(), 0);
+    }
 
     #[test]
     fn session_ownership_rejects_stale_choices_and_cleans_only_its_views() {
