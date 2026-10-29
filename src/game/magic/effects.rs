@@ -843,22 +843,6 @@ pub fn hurt(rng: &mut GameRng, world: &mut Field, victim: Victim, amount: u32) -
     }
 }
 
-/// Haste and Slow cancel durations before either may remain.
-fn counter_haste(conditions: &mut Conditions, turns: u32) -> u32 {
-    match conditions.lasting_mut(Condition::Slowed) {
-        None => turns,
-        Some(Lasting::Indefinite) => 0,
-        Some(Lasting::Rounds(left)) => {
-            let remaining = turns.saturating_sub(u32::from(*left));
-            *left = u32::from(*left).saturating_sub(turns) as u16;
-            if *left == 0 {
-                conditions.lift(Condition::Slowed);
-            }
-            remaining
-        }
-    }
-}
-
 /// Give a victim a condition for `lasting`; a poison bites a member at
 /// `poison` (retail's condition argument).
 fn inflict_on(
@@ -876,31 +860,16 @@ fn inflict_on(
     }
     match victim {
         Victim::Monster(monster) => {
-            let lasting = if condition == Condition::Slowed {
-                match lasting {
-                    Lasting::Rounds(turns) => {
-                        let remaining = world
-                            .monsters
-                            .enchantments_mut(monster)?
-                            .counter_slow(u32::from(turns));
-                        if remaining == 0 {
-                            return Some(());
-                        }
-                        Lasting::Rounds(remaining as u16)
-                    }
-                    Lasting::Indefinite => {
-                        world
-                            .monsters
-                            .enchantments_mut(monster)?
-                            .0
-                            .retain(|e| e.spell != crate::content::spells::SpellId::HASTE);
-                        lasting
-                    }
-                }
+            let monster = &mut *world.monsters.monster_mut(monster)?;
+            if condition == Condition::Slowed {
+                super::enchantments::slow(
+                    &mut monster.conditions,
+                    &mut monster.enchantments,
+                    lasting,
+                );
             } else {
-                lasting
-            };
-            world.monsters.conditions_mut(monster)?.inflict(condition, lasting)
+                monster.conditions.inflict(condition, lasting);
+            }
         }
         Victim::Member(member) => {
             let mut vitals = world.members.get_mut(member).ok()?.1;
@@ -1351,14 +1320,13 @@ pub fn resolve(
                                 return false;
                             }
                             if spell.id == SpellId::HASTE {
-                                let remaining = counter_haste(&mut v.conditions, turns);
-                                if remaining == 0 {
-                                    return true;
-                                }
-                                return v.enchantments.apply(super::enchantments::Enchantment {
-                                    turns: remaining,
-                                    ..effect
-                                });
+                                let v = &mut *v;
+                                return super::enchantments::haste(
+                                    &mut v.conditions,
+                                    &mut v.enchantments,
+                                    effect,
+                                    false,
+                                );
                             }
                             apply(&mut v.enchantments, false)
                         })
@@ -1372,20 +1340,14 @@ pub fn resolve(
                     }
                     Victim::Monster(entity) => {
                         if spell.id == SpellId::HASTE {
-                            let remaining = world
-                                .monsters
-                                .conditions_mut(entity)
-                                .map(|mut c| counter_haste(&mut c, turns));
-                            remaining.is_some_and(|turns| {
-                                turns == 0
-                                    || world.monsters.enchantments_mut(entity).is_some_and(
-                                        |mut e| {
-                                            e.apply_to_monster(super::enchantments::Enchantment {
-                                                turns,
-                                                ..effect
-                                            })
-                                        },
-                                    )
+                            world.monsters.monster_mut(entity).is_some_and(|mut monster| {
+                                let monster = &mut *monster;
+                                super::enchantments::haste(
+                                    &mut monster.conditions,
+                                    &mut monster.enchantments,
+                                    effect,
+                                    true,
+                                )
                             })
                         } else {
                             world

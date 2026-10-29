@@ -192,8 +192,13 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         &mut self,
         monster: Entity,
     ) -> Option<Mut<'_, crate::game::characters::Conditions>> {
-        let (monster, ..) = self.monsters.get_mut(monster).ok()?;
-        Some(monster.map_unchanged(|monster| &mut monster.conditions))
+        Some(self.monster_mut(monster)?.map_unchanged(|monster| &mut monster.conditions))
+    }
+
+    /// A monster's body, for what changes its conditions and enchantments
+    /// together.
+    pub fn monster_mut(&mut self, monster: Entity) -> Option<Mut<'_, Monster>> {
+        Some(self.monsters.get_mut(monster).ok()?.0)
     }
 
     /// Tire a monster (retail `FatigueMonster`); spent, it drops
@@ -228,8 +233,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         &mut self,
         entity: Entity,
     ) -> Option<Mut<'_, crate::game::magic::enchantments::Enchantments>> {
-        let (monster, ..) = self.monsters.get_mut(entity).ok()?;
-        Some(monster.map_unchanged(|m| &mut m.enchantments))
+        Some(self.monster_mut(entity)?.map_unchanged(|m| &mut m.enchantments))
     }
 
     pub fn active(&self, target: Entity) -> bool {

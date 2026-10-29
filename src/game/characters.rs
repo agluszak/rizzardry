@@ -962,21 +962,15 @@ impl Vitals {
 
     /// Inflict a condition, keeping the longer duration if already afflicted.
     pub fn inflict(&mut self, condition: Condition, lasting: Lasting) {
-        let lasting = if condition == Condition::Slowed {
-            if let Lasting::Rounds(turns) = lasting {
-                let remaining = self.enchantments.counter_slow(u32::from(turns));
-                if remaining == 0 {
-                    return;
-                }
-                Lasting::Rounds(remaining as u16)
-            } else {
-                self.enchantments.0.retain(|e| e.spell != crate::content::spells::SpellId::HASTE);
-                lasting
-            }
+        if condition == Condition::Slowed {
+            crate::game::magic::enchantments::slow(
+                &mut self.conditions,
+                &mut self.enchantments,
+                lasting,
+            );
         } else {
-            lasting
-        };
-        self.conditions.inflict(condition, lasting);
+            self.conditions.inflict(condition, lasting);
+        }
     }
 
     /// Poison the member for `lasting` at `strength` (retail

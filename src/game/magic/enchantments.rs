@@ -2,6 +2,7 @@
 //! replacement rules in `ConditionsAndEnchantments.cpp` and `W8EffectSlot::Activate`.
 use crate::content::characters::Realm;
 use crate::content::spells::SpellId;
+use crate::game::characters::{Condition, Conditions, Lasting};
 use bevy::prelude::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -224,10 +225,9 @@ impl Enchantments {
             && rng.below(100) < chance
     }
 
-    pub fn counter_slow(&mut self, turns: u32) -> u32 {
-        let Some(haste) =
-            self.0.iter_mut().find(|e| e.spell == crate::content::spells::SpellId::HASTE)
-        else {
+    /// Slow's turns left once they have cancelled Haste's.
+    fn counter_slow(&mut self, turns: u32) -> u32 {
+        let Some(haste) = self.0.iter_mut().find(|e| e.spell == SpellId::HASTE) else {
             return turns;
         };
         let remaining = turns.saturating_sub(haste.turns);
@@ -252,6 +252,48 @@ impl Enchantments {
             .map_or(0, |e| e.scaled(u32::from(e.power) * 8))
             .min(100)
     }
+}
+
+/// Slow a party member or a monster: its turns first cancel Haste's, and only
+/// what is left of them slows; an indefinite slowing ends Haste outright
+/// (retail `InflictCharacterCondition`, `InflictMonsterCondition`).
+pub fn slow(conditions: &mut Conditions, enchantments: &mut Enchantments, lasting: Lasting) {
+    let lasting = match lasting {
+        Lasting::Rounds(turns) => match enchantments.counter_slow(u32::from(turns)) {
+            0 => return,
+            left => Lasting::Rounds(left as u16),
+        },
+        Lasting::Indefinite => {
+            enchantments.0.retain(|e| e.spell != SpellId::HASTE);
+            lasting
+        }
+    };
+    conditions.inflict(Condition::Slowed, lasting);
+}
+
+/// Haste a party member or a monster: its turns first cancel Slow's, and only
+/// what is left of them hastes. Whether it changed anything.
+pub fn haste(
+    conditions: &mut Conditions,
+    enchantments: &mut Enchantments,
+    effect: Enchantment,
+    monster: bool,
+) -> bool {
+    let turns = match conditions.lasting_mut(Condition::Slowed) {
+        None => effect.turns,
+        Some(Lasting::Indefinite) => 0,
+        Some(Lasting::Rounds(left)) => {
+            let remaining = effect.turns.saturating_sub(u32::from(*left));
+            *left = u32::from(*left).saturating_sub(effect.turns) as u16;
+            if *left == 0 {
+                conditions.lift(Condition::Slowed);
+            }
+            remaining
+        }
+    };
+    let effect = Enchantment { turns, ..effect };
+    turns == 0
+        || if monster { enchantments.apply_to_monster(effect) } else { enchantments.apply(effect) }
 }
 
 #[cfg(test)]
