@@ -1,14 +1,12 @@
-//! One mesh-selection policy shared by hover and activation. Physics is used
-//! only to find a dropped item's landing point, never to replace mesh picking.
+//! One mesh-selection policy shared by hover and activation.
 
 use super::controls::Interact;
 use super::morph_picking::MorphRayCast;
 use super::party_view::PartyCamera;
 use crate::game::inventory::PartyInventory;
 use crate::game::world::WorldRequest;
-use crate::game::world::items::{CLEARANCE, THROW, WorldItem};
+use crate::game::world::items::WorldItem;
 use crate::game::world::level::Level;
-use crate::game::world::obstacles::WorldObstacles;
 use crate::game::world::population::Monster;
 use crate::game::world::props::Prop;
 use crate::game::world::triggers::Device;
@@ -82,7 +80,6 @@ pub fn activate_selection(
     held: Single<&PartyInventory>,
     npcs: Query<&crate::game::npcs::NpcBody>,
     mut conversations: MessageWriter<crate::game::npcs::conversation::ConversationRequest>,
-    obstacles: WorldObstacles,
     mut requests: MessageWriter<WorldRequest>,
 ) {
     if !interact.contains(ActionEvents::START) {
@@ -105,22 +102,13 @@ pub fn activate_selection(
         return;
     }
     if held.hand.held.is_some() {
+        // Only where the pointer aims matters; gameplay throws from the
+        // party's eye, not the drawn (perhaps shaking) camera.
         let (Some(level), Some(ray)) = (selection.level, selection.ray) else { return };
-        if let Some(at) = drop_point(&obstacles, ray) {
-            requests.write(WorldRequest::DropHeld { level, at });
-        }
+        requests.write(WorldRequest::DropHeld { level, aim: ray.direction });
     } else if let Some(hit) = selection.hit {
         requests.write(WorldRequest::TakeItem { item: hit.entity });
     }
-}
-
-/// Retail stops the throw short of a collision and probes the ground below it.
-fn drop_point(obstacles: &WorldObstacles, ray: Ray3d) -> Option<Vec3> {
-    let reach =
-        obstacles.first_hit(ray.origin, ray.direction, THROW).map_or(THROW, |hit| hit.distance);
-    let above = ray.get_point((reach - CLEARANCE).max(0.0));
-    let ground = obstacles.first_hit(above, Dir3::NEG_Y, 100.0)?;
-    Some(above - Vec3::Y * (ground.distance - CLEARANCE))
 }
 
 /// What an entity belongs to: itself or the nearest ancestor that

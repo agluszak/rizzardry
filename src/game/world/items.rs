@@ -159,19 +159,21 @@ pub fn take_item(world: &mut World, target: Entity) -> Result<(), Refusal> {
     Ok(())
 }
 
-/// Drop the held owned value at a landing point resolved by an adapter. The
-/// operation validates the current level, party activity and throw reach.
-pub fn drop_held(world: &mut World, level: Entity, at: Vec3) -> Result<Entity, Refusal> {
+/// Throw the held item from the party's eye along `aim`, validating the
+/// current level and party activity: it stops short of what it hits and
+/// rests above the ground below, or stays in hand if there is no ground.
+pub fn drop_held(world: &mut World, level: Entity, aim: Dir3) -> Result<Entity, Refusal> {
     if !crate::game::freedom::free_in(world)
         || world.get::<super::level::Level>(level).is_none()
-        || !at.is_finite()
     {
         return Err(Refusal::DoesNotFit);
     }
     let eye = crate::game::party::body::PartyBody::eye_in(world).ok_or(Refusal::Nothing)?;
-    if eye.xz().distance(at.xz()) > THROW + CLEARANCE {
-        return Err(Refusal::DoesNotFit);
-    }
+    let at = world
+        .run_system_cached_with(landing, (eye, aim))
+        .ok()
+        .flatten()
+        .ok_or(Refusal::DoesNotFit)?;
     let party = the_party(world).ok_or(Refusal::Nothing)?;
     let held =
         world.get::<PartyInventory>(party).unwrap().hand.held.as_ref().ok_or(Refusal::Nothing)?;
@@ -192,10 +194,21 @@ pub fn drop_held(world: &mut World, level: Entity, at: Vec3) -> Result<Entity, R
         .id())
 }
 
+/// Where a throw from `eye` along `aim` comes to rest, if anywhere.
+fn landing(
+    In((eye, aim)): In<(Vec3, Dir3)>,
+    obstacles: super::obstacles::WorldObstacles,
+) -> Option<Vec3> {
+    let reach = obstacles.first_hit(eye, aim, THROW).map_or(THROW, |hit| hit.distance);
+    let above = eye + aim * (reach - CLEARANCE).max(0.0);
+    let ground = obstacles.first_hit(above, Dir3::NEG_Y, 100.0)?;
+    Some(above - Vec3::Y * (ground.distance - CLEARANCE))
+}
+
 /// Retail throws a dropped item at most 2500 units, stops it 125 short of
 /// what it hits, and rests it 125 above the ground below (`DropHeldItem`).
-pub(crate) const THROW: f32 = 5.0;
-pub(crate) const CLEARANCE: f32 = 0.25;
+const THROW: f32 = 5.0;
+const CLEARANCE: f32 = 0.25;
 
 #[cfg(test)]
 mod tests {
@@ -214,6 +227,83 @@ mod tests {
     fn item(ids: &mut ItemIds, id: u16) -> ItemStack {
         let definition = ItemDefinition { id: ItemId(id), ..default() };
         make_item(&definition, ids, &mut GameRng::seeded(1), false, true)
+    }
+
+    #[test]
+    fn a_throw_lands_short_of_walls_and_needs_ground() {
+        use super::super::WorldRequest;
+        use super::super::obstacles::scenery;
+        use crate::game::party::body::PartyBody;
+        use avian3d::prelude::*;
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin::default(),
+            bevy::mesh::MeshPlugin,
+            TransformPlugin,
+            PhysicsPlugins::default(),
+            bevy::state::app::StatesPlugin,
+        ))
+        .init_resource::<Assets<ItemCatalog>>()
+        .add_message::<ItemNews>()
+        .add_message::<WorldRequest>()
+        .add_systems(Update, super::super::handle_world_requests);
+        app.finish();
+        app.cleanup();
+        let catalog = app.world_mut().resource_mut::<Assets<ItemCatalog>>().add(catalog());
+        app.insert_resource(GameData {
+            items: catalog,
+            loot: default(),
+            species: default(),
+            spells: default(),
+        });
+        let party = crate::game::party::roster::test_party(app.world_mut(), &[]);
+        app.world_mut().entity_mut(party).insert((PartyBody::default(), Position::default()));
+        let eye = PartyBody::eye(&Position::default());
+        let level = app.world_mut().spawn(super::super::level::Level::test(default())).id();
+        let mut ids = ItemIds::default();
+        let mut throw = |app: &mut App| {
+            let stack = item(&mut ids, 1);
+            app.world_mut().get_mut::<PartyInventory>(party).unwrap().hand.held = Some(stack);
+            app.update();
+            app.update();
+            app.world_mut().write_message(WorldRequest::DropHeld { level, aim: Dir3::NEG_Z });
+            app.update();
+            let world = app.world_mut();
+            world.query::<(&WorldItem, &Transform)>().iter(world).last().map(|(_, at)| {
+                assert!(world.get::<PartyInventory>(party).unwrap().hand.held.is_none());
+                at.translation
+            })
+        };
+        assert_eq!(throw(&mut app), None, "with no ground it stays in hand");
+        assert!(app.world().get::<PartyInventory>(party).unwrap().hand.held.is_some());
+        let floor = eye.y - 2.0;
+        app.world_mut().spawn((
+            RigidBody::Static,
+            Collider::cuboid(40.0, 1.0, 40.0),
+            scenery(),
+            Transform::from_xyz(0.0, floor - 0.5, 0.0),
+        ));
+        let wall = app
+            .world_mut()
+            .spawn((
+                RigidBody::Static,
+                Collider::cuboid(4.0, 4.0, 0.2),
+                scenery(),
+                Transform::from_xyz(0.0, eye.y, -3.1),
+            ))
+            .id();
+        let short = throw(&mut app).unwrap();
+        let expected = Vec3::new(eye.x, floor + CLEARANCE, -3.0 + CLEARANCE);
+        assert!(short.abs_diff_eq(expected, 1e-3), "{short} short of the wall");
+        app.world_mut().despawn(wall);
+        let world = app.world_mut();
+        let dropped: Vec<_> =
+            world.query_filtered::<Entity, With<WorldItem>>().iter(world).collect();
+        dropped.into_iter().for_each(|item| _ = world.despawn(item));
+        let far = throw(&mut app).unwrap();
+        let expected = Vec3::new(eye.x, floor + CLEARANCE, -(THROW - CLEARANCE));
+        assert!(far.abs_diff_eq(expected, 1e-3), "{far} at full reach");
     }
 
     #[test]
