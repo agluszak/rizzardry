@@ -648,7 +648,23 @@ pub(crate) fn end_conversations(
 /// a paid answer or an accepted hand-in among them, so their effects commit
 /// as it ends; only their lines are lost.
 fn close_one(world: &mut World, entity: Entity) {
-    let Some(mut c) = world.get_mut::<Conversation>(entity) else { return };
+    let Some(c) = world.get::<Conversation>(entity) else { return };
+    // Closing removes the view, not ownership of an exchange already paid for.
+    // Retain every accepted plan until the whole settlement can run. The
+    // unavailable-speaker/battle path retries this operation on later updates.
+    let accepted = c.queue.iter().any(|step| matches!(step, Step::Quote { plan: Some(_), .. }));
+    if accepted && definition(world, c.actor).is_err()
+        || c.queue.iter().any(|step| match step {
+            Step::Quote { plan: Some(plan), .. } => !executable(world, plan),
+            _ => false,
+        })
+    {
+        if world.get::<Closing>(entity).is_none() {
+            world.entity_mut(entity).insert(Closing);
+        }
+        return;
+    }
+    let mut c = world.get_mut::<Conversation>(entity).unwrap();
     let plans: Vec<_> = c
         .queue
         .drain(..)
@@ -658,9 +674,7 @@ fn close_one(world: &mut World, entity: Entity) {
         })
         .collect();
     for plan in plans {
-        if executable(world, &plan) {
-            commit_effects(world, entity, plan.effects);
-        }
+        commit_effects(world, entity, plan.effects);
     }
     world.despawn(entity);
 }
@@ -3013,6 +3027,62 @@ mod tests {
             assert!(app.world().get::<Conversation>(session).is_none());
             assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, 50);
         }
+    }
+
+    #[test]
+    fn interrupted_exchange_waits_for_missing_reward_content_without_losing_or_repeating_it() {
+        let (mut app, session, actor) = app(DialogueScript {
+            quotes: vec![
+                Quote { text: vec!["Hello".into()], ..default() },
+                Quote {
+                    text: vec!["Thanks".into(), "Here".into()],
+                    operations: vec![
+                        DialogueOp::ItemQuote { item: ItemId(2), keeps: true },
+                        DialogueOp::GiveGold(50),
+                        DialogueOp::GiveItem(ItemId(1)),
+                    ],
+                    ..default()
+                },
+            ],
+            ..default()
+        });
+        with_items(&mut app);
+        let member = carrier(&mut app, "Ragnar", 2, 1);
+        let party = the_party(app.world_mut()).unwrap();
+        app.update();
+        finish_line(&mut app, session);
+        let id = app.world().get::<Carried>(member).unwrap().backpack[0].as_ref().unwrap().id;
+        let revision = app.world().get::<Conversation>(session).unwrap().revision;
+        app.world_mut().write_message(ConversationRequest::Give {
+            conversation: session,
+            revision,
+            item: ItemRef { owner: ItemOwner::Member(member), id },
+        });
+        app.update();
+        assert!(app.world().get::<Carried>(member).unwrap().backpack[0].is_none());
+        let handle = app.world().resource::<GameData>().items.clone();
+        let catalog =
+            app.world_mut().resource_mut::<Assets<ItemCatalog>>().remove(&handle).unwrap();
+        let body = app.world().get::<super::super::NpcBodies>(actor).unwrap()[0];
+        app.world_mut().entity_mut(body).insert(crate::game::world::population::Provoked);
+        for _ in 0..3 {
+            app.update();
+            assert!(app.world().get::<Conversation>(session).is_some());
+            assert!(app.world().get::<Closing>(session).is_some());
+            assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, 0);
+        }
+        app.world_mut().resource_mut::<Assets<ItemCatalog>>().insert(&handle, catalog).unwrap();
+        app.update();
+        assert!(app.world().get::<Conversation>(session).is_none());
+        let inventory = app.world().get::<PartyInventory>(party).unwrap().clone();
+        assert_eq!(inventory.gold, 50);
+        assert_eq!(inventory.pool.stacks.iter().filter(|stack| stack.item == ItemId(1)).count(), 1);
+        app.update();
+        assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, inventory.gold);
+        assert_eq!(
+            app.world().get::<PartyInventory>(party).unwrap().pool.stacks,
+            inventory.pool.stacks
+        );
     }
 
     /// Removals empty the members' packs before the party's items, and the
