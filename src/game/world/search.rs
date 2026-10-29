@@ -92,7 +92,7 @@ pub fn resume_search(
 
 pub fn toggle_search(
     mut requests: MessageReader<ToggleSearch>,
-    freedom: crate::game::screen::Freedom,
+    freedom: crate::game::freedom::Freedom,
     battle: Option<Single<&Battle>>,
     mut search: ResMut<Search>,
     mut news: MessageWriter<SearchNews>,
@@ -212,12 +212,9 @@ mod tests {
 
     #[test]
     fn search_intent_survives_a_fight_which_holds_it_off() {
-        use crate::game::screen::Screen;
-        use crate::game::world::level::Level;
+        use crate::game::world::level::{Destination, Level};
         let mut app = App::new();
-        app.insert_resource(State::new(Screen::World))
-            .init_resource::<NextState<Screen>>()
-            .init_resource::<Search>()
+        app.init_resource::<Search>()
             .add_message::<ToggleSearch>()
             .add_message::<SearchNews>()
             .add_observer(suspend_search)
@@ -244,11 +241,16 @@ mod tests {
         app.update();
         assert!(on(&app, false));
         assert_eq!(news(&mut app), [SearchNews::On]);
-        app.world_mut().resource_mut::<NextState<Screen>>().set(Screen::Inventory);
+        let level = app.world_mut().spawn(Destination::new(
+            Level::test(default()),
+            default(),
+            crate::game::world::level::Entry::Travel,
+        ));
+        let entering = level.id();
         app.world_mut().write_message(ToggleSearch);
         app.update();
         assert!(on(&app, false), "a held party cannot toggle search");
-        *app.world_mut().resource_mut::<NextState<Screen>>() = NextState::Unchanged;
+        app.world_mut().despawn(entering);
         app.world_mut().write_message(ToggleSearch);
         app.update();
         assert!(!on(&app, false));

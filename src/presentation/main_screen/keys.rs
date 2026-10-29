@@ -13,8 +13,8 @@ use super::{ScreenLayout, SelectedMember};
 use crate::game::combat::{Battle, StartRound};
 use crate::game::party::Order;
 use crate::game::party::roster::PartyRoster;
-use crate::game::screen::Screen;
 use crate::presentation::notices::{TextLog, VISIBLE_LINES};
+use crate::presentation::screen::Screen;
 
 #[derive(Component, Clone, Default)]
 pub struct MainScreenKeys;

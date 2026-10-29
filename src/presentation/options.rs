@@ -1,7 +1,8 @@
 //! A settings draft; Apply persists before changing the live owners.
 use super::screen_art::{BitmapText, absolute};
 use super::settings::{Preferences, SavedSettings, SettingsFile};
-use crate::game::{combat::CombatSettings, difficulty::Difficulty, screen::Screen};
+use crate::game::{combat::CombatSettings, difficulty::Difficulty};
+use crate::presentation::screen::Screen;
 use bevy::input_focus::{
     FocusCause, InputFocus,
     tab_navigation::{TabGroup, TabIndex},
@@ -51,7 +52,7 @@ pub fn plugin(app: &mut App) {
 }
 fn request(
     mut requests: MessageReader<OpenOptions>,
-    mut state: ParamSet<(crate::game::screen::Freedom, ResMut<NextState<Screen>>)>,
+    mut state: ParamSet<(super::screen::WorldInput, ResMut<NextState<Screen>>)>,
 ) {
     if requests.read().count() > 0 && state.p0().free() {
         state.p1().set(Screen::Options);

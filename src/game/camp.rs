@@ -164,7 +164,7 @@ pub struct CampRequest;
 
 pub fn request_camp(
     mut commands: Commands,
-    freedom: crate::game::screen::Freedom,
+    freedom: crate::game::freedom::Freedom,
     mut button: MessageReader<CampRequest>,
     battle: Option<Single<&crate::game::combat::Battle>>,
     party: Query<&LinearVelocity, With<PartyBody>>,

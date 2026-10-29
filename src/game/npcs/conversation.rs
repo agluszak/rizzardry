@@ -289,7 +289,7 @@ fn entry_quote(def: &NpcDefinition, npc: &Npc) -> u16 {
 }
 pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
     let party = the_party(world).ok_or(TradeError::Unavailable)?;
-    if !world.run_system_once(crate::game::screen::party_free).map_err(|_| TradeError::Busy)?
+    if !world.run_system_once(crate::game::freedom::party_free).map_err(|_| TradeError::Busy)?
         || crate::game::combat::in_battle(world)
     {
         return Err(TradeError::Busy);

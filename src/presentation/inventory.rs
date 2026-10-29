@@ -34,7 +34,7 @@ use crate::game::inventory::{
     BACKPACK_SLOTS, Carried, EquipSlot, ItemAt, ItemStack, MemberSlot, PartyInventory, Slot,
 };
 use crate::game::party::roster::PartyRoster;
-use crate::game::screen::Screen;
+use crate::presentation::screen::Screen;
 use crate::presentation::screen_art::{show_sheet, visible_if};
 
 const CELL: Vec2 = Vec2::new(46.0, 54.0);

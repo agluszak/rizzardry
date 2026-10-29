@@ -211,14 +211,14 @@ fn leave_hud_focus(
 /// Other screens own keyboard navigation while covering the HUD. A modal tab
 /// group is excluded from global navigation, without hiding the visible HUD.
 fn route_hud_focus(
-    screen: Res<State<crate::game::screen::Screen>>,
-    next: Res<NextState<crate::game::screen::Screen>>,
+    screen: Res<State<crate::presentation::screen::Screen>>,
+    next: Res<NextState<crate::presentation::screen::Screen>>,
     questions: Query<(), With<crate::game::world::level::TravelQuestion>>,
     roots: Query<Entity, With<MainScreen>>,
     parents: Query<&ChildOf>,
     mut focus: ResMut<InputFocus>,
 ) {
-    use crate::game::screen::Screen;
+    use crate::presentation::screen::Screen;
     let active = *screen.get() == Screen::World
         && matches!(*next, NextState::Unchanged | NextState::Pending(Screen::World))
         && questions.is_empty();
@@ -447,7 +447,7 @@ mod keyboard_tests {
         };
         let mut app = crate::presentation::test_input::input_app();
         app.add_plugins((InputDispatchPlugin, TabNavigationPlugin, ButtonPlugin))
-            .init_state::<crate::game::screen::Screen>()
+            .init_state::<crate::presentation::screen::Screen>()
             .init_resource::<ScreenLayout>()
             .init_resource::<SelectedMember>()
             .init_resource::<crate::game::combat::CombatSettings>()

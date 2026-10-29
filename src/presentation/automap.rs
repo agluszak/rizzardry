@@ -19,8 +19,8 @@ use bevy::prelude::*;
 use bevy::ui::InteractionDisabled;
 use bevy::ui_widgets::Activate;
 
-use crate::game::screen::Screen;
 use crate::presentation::retail_controls::{ControlSkin, set_enabled};
+use crate::presentation::screen::Screen;
 use crate::presentation::screen_art::BitmapText;
 use bevy::ui::Selected;
 use bevy_enhanced_input::prelude::*;
@@ -275,7 +275,7 @@ pub fn close_ended_map(
 
 pub fn request_automap(
     mut open: MessageReader<OpenAutomap>,
-    mut screen: ParamSet<(crate::game::screen::Freedom, ResMut<NextState<Screen>>)>,
+    mut screen: ParamSet<(super::screen::WorldInput, ResMut<NextState<Screen>>)>,
 ) {
     if open.read().count() > 0 && screen.p0().free() {
         screen.p1().set(Screen::Automap);

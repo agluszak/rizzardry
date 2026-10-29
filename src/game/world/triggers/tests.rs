@@ -94,8 +94,6 @@ impl Scenario {
         world.init_resource::<Messages<TriggerEffect>>();
         world.init_resource::<Messages<DamageApplied>>();
         world.init_resource::<Messages<crate::game::combat::CombatNews>>();
-        world.init_resource::<State<crate::game::screen::Screen>>();
-        world.init_resource::<NextState<crate::game::screen::Screen>>();
         world.init_resource::<Messages<crate::game::inventory::ItemNews>>();
         world.init_resource::<Messages<super::super::interaction::LockNews>>();
         world.init_resource::<crate::game::difficulty::Difficulty>();

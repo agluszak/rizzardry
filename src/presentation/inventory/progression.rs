@@ -480,11 +480,11 @@ mod tests {
             .init_resource::<crate::game::rng::GameRng>()
             .add_message::<crate::game::inventory::ItemNews>()
             .add_plugins(plugin)
-            .init_state::<crate::game::screen::Screen>()
+            .init_state::<crate::presentation::screen::Screen>()
             .init_resource::<crate::presentation::main_screen::SelectedMember>()
             .add_input_context::<super::super::InventoryRoot>()
             .add_systems(
-                OnEnter(crate::game::screen::Screen::Inventory),
+                OnEnter(crate::presentation::screen::Screen::Inventory),
                 super::super::enter_inventory,
             );
         let spells =
@@ -508,8 +508,8 @@ mod tests {
             .collect::<Vec<_>>();
         roster::test_party(app.world_mut(), &members);
         app.world_mut()
-            .resource_mut::<NextState<crate::game::screen::Screen>>()
-            .set(crate::game::screen::Screen::Inventory);
+            .resource_mut::<NextState<crate::presentation::screen::Screen>>()
+            .set(crate::presentation::screen::Screen::Inventory);
         app.finish();
         app.cleanup();
         app.update();
@@ -564,8 +564,8 @@ mod tests {
         assert_eq!(*app.world().get::<Character>(a).unwrap(), c);
         assert_eq!(*app.world().get::<Character>(b).unwrap(), second);
         assert_eq!(
-            *app.world().resource::<State<crate::game::screen::Screen>>().get(),
-            crate::game::screen::Screen::Inventory
+            *app.world().resource::<State<crate::presentation::screen::Screen>>().get(),
+            crate::presentation::screen::Screen::Inventory
         );
         app.world_mut().trigger(Activate { entity: open });
         app.update();

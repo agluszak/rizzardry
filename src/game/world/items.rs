@@ -110,7 +110,7 @@ pub fn placed_item(
 /// Take a resolved world item. Validation and the owned-value move complete
 /// synchronously, without a pointer, camera, rendering or a battle session.
 pub fn take_item(world: &mut World, target: Entity) -> Result<(), Refusal> {
-    if !world.run_system_cached(crate::game::screen::party_free).unwrap_or(false) {
+    if !world.run_system_cached(crate::game::freedom::party_free).unwrap_or(false) {
         return Err(Refusal::DoesNotFit);
     }
     let eye = world
@@ -166,7 +166,7 @@ pub fn take_item(world: &mut World, target: Entity) -> Result<(), Refusal> {
 /// Drop the held owned value at a landing point resolved by an adapter. The
 /// operation validates the current level, party activity and throw reach.
 pub fn drop_held(world: &mut World, level: Entity, at: Vec3) -> Result<Entity, Refusal> {
-    if !world.run_system_cached(crate::game::screen::party_free).unwrap_or(false)
+    if !world.run_system_cached(crate::game::freedom::party_free).unwrap_or(false)
         || world.get::<super::level::Level>(level).is_none()
         || !at.is_finite()
     {
@@ -229,8 +229,7 @@ mod tests {
         use crate::game::party::body::PartyBody;
         use avian3d::prelude::Position;
         let mut app = App::new();
-        app.add_plugins((MinimalPlugins, bevy::state::app::StatesPlugin))
-            .init_state::<crate::game::screen::Screen>()
+        app.add_plugins(MinimalPlugins)
             .init_resource::<Assets<ItemCatalog>>()
             .add_message::<ItemNews>()
             .add_message::<super::super::WorldRequest>()
