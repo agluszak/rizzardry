@@ -656,10 +656,8 @@ fn afflict(
         rounds => Lasting::Rounds(rounds.min(u32::from(u16::MAX)) as u16),
     };
     let Some(condition) = condition else {
-        let hp = match victim {
-            Victim::Monster(monster) => world.monsters.monsters().get(monster).ok()?.0.hp,
-            Victim::Member(member) => world.members.get(member).ok()?.1.hp,
-        };
+        let Victim::Monster(monster) = victim else { return perish(rng, world, victim) };
+        let hp = world.monsters.monsters().get(monster).ok()?.0.hp;
         return hurt(rng, world, victim, hp);
     };
     inflict_on(world, victim, (condition, argument), lasting)?;
@@ -818,27 +816,32 @@ fn slay(
     {
         return Some(Effect::Resisted { victim });
     }
-    let hp = match victim {
-        Victim::Monster(monster) => world.monsters.monsters().get(monster).ok()?.0.hp,
-        Victim::Member(member) => world.members.get(member).ok()?.1.hp,
-    };
     // A failed death save inflicts Dead; it is not absorbable damage.
-    match victim {
-        Victim::Member(member) => world
-            .members
-            .get_mut(member)
-            .ok()?
-            .1
-            .enchantments
-            .0
-            .retain(|e| e.spell != crate::content::spells::SpellId::GUARDIAN_ANGEL),
-        Victim::Monster(monster) => world
-            .monsters
-            .enchantments_mut(monster)?
-            .0
-            .retain(|e| e.spell != crate::content::spells::SpellId::GUARDIAN_ANGEL),
-    }
+    let Victim::Monster(monster) = victim else { return perish(rng, world, victim) };
+    let hp = world.monsters.monsters().get(monster).ok()?.0.hp;
+    world
+        .monsters
+        .enchantments_mut(monster)?
+        .0
+        .retain(|e| e.spell != crate::content::spells::SpellId::GUARDIAN_ANGEL);
     hurt(rng, world, victim, hp)
+}
+
+/// Death inflicted on a member outright ([`crate::game::party::kill_member`]):
+/// no damage first, so nothing absorbs or tires, but death may be cheated.
+fn perish(rng: &mut GameRng, world: &mut Field, victim: Victim) -> Option<Effect> {
+    let Victim::Member(member) = victim else { return None };
+    let (character, mut vitals, ..) = world.members.get_mut(member).ok()?;
+    let mut fate = Fate { fight: world.fight, rng };
+    let lost = crate::game::party::kill_member(
+        member,
+        (&character, &mut vitals),
+        world.formation,
+        &mut fate,
+        world.party_damage,
+    );
+    let outcome = DamageOutcome { damage: lost, died: vitals.is_dead(), experience: 0 };
+    Some(Effect::Damaged { victim, outcome })
 }
 
 /// The rounds a cure takes off a timed condition: `power²`, boosted.

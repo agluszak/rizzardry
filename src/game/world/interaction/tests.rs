@@ -186,6 +186,62 @@ fn a_sprung_trap_pays_its_effect_before_opening_and_retains_the_selected_victim(
     }
 }
 
+/// Instant Death inflicts death outright, without the fatigue of a blow, so
+/// a tired Valkyrie who fails her save still cheats it (retail
+/// `SetCharacterCondition` with Dead).
+#[test]
+fn a_tired_valkyrie_cheats_an_instant_death_trap() {
+    use super::super::interaction::spring_trap;
+    use crate::content::{
+        characters::Realm,
+        spells::{SpellDefinition, SpellId},
+    };
+    use crate::game::characters::{Condition, Lasting};
+    let mut cheated = 0;
+    for seed in 0..60 {
+        let mut level = chest_level(
+            Some(crate::content::level::Lock::Trap { difficulty: 7, kind: Some(8) }),
+            0,
+        );
+        with_trap_spell(
+            &mut level,
+            SpellDefinition {
+                id: SpellId::INSTANT_DEATH,
+                realm: Some(Realm::Divine),
+                duration_base: 20,
+                ..default()
+            },
+        );
+        for &member in &level.members.clone() {
+            level.world.entity_mut(member).insert(crate::game::inventory::Carried::default());
+        }
+        let profile = Character::new("Brunhild", Race::Human, Gender::Female, Profession::Valkyrie);
+        let valkyrie = level.add_member("Brunhild");
+        let mut vitals = Vitals::new(&profile);
+        vitals.stamina = 6;
+        level.world.entity_mut(valkyrie).insert((
+            profile,
+            vitals,
+            crate::game::inventory::Carried::default(),
+        ));
+        level.run("CHEST");
+        level.world.insert_resource(GameRng::seeded(seed));
+        let on = attempt(&level);
+        spring_trap(&mut level.world, on, Some(valkyrie)).unwrap();
+        let vitals = level.world.get::<Vitals>(valkyrie).unwrap();
+        if vitals.has(Condition::Unconscious) {
+            // Her save failed: she lives, out cold a few rounds, not for good.
+            assert!(!vitals.is_dead());
+            assert!(!vitals.conditions.contains(&(Condition::Unconscious, Lasting::Indefinite)));
+            assert_eq!(vitals.stamina, 6, "death outright tires no one");
+            cheated += 1;
+        } else {
+            assert!(!vitals.is_dead(), "she saved or cheated; she never dies here");
+        }
+    }
+    assert!(cheated > 0, "some seed fails her save");
+}
+
 #[test]
 fn trap_losses_use_existing_purse_items_and_all_party_spell_points() {
     use super::super::interaction::spring_trap;

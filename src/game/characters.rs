@@ -963,6 +963,18 @@ impl Vitals {
         hp - self.hp
     }
 
+    /// Die outright, as death effects inflict it (retail
+    /// `SetCharacterCondition` with Dead): no damage, absorption or fatigue
+    /// comes first, but death may still be cheated. Whether death took.
+    pub fn perish(&mut self, profile: &Character, fate: &mut Fate) -> bool {
+        if self.is_dead() || self.cheats_death(profile, fate) {
+            return false;
+        }
+        self.hp = 0;
+        self.die();
+        true
+    }
+
     /// The Valkyrie's trait (retail `CheatDeathRevive`) keeps her from death
     /// unless she is already seven rounds or more out cold: a stint
     /// unconscious, shorter the higher her level, and health back. The first

@@ -118,6 +118,27 @@ pub fn damage_member(
     lost
 }
 
+/// [`damage_member`] for death inflicted outright
+/// ([`crate::game::characters::Vitals::perish`]). Returns the health lost.
+pub fn kill_member(
+    member: Entity,
+    (profile, vitals): (&crate::game::characters::Character, &mut crate::game::characters::Vitals),
+    formation: &mut Mut<formation::Formation>,
+    fate: &mut crate::game::characters::Fate,
+    damage: &mut MessageWriter<DamageApplied>,
+) -> u32 {
+    let hp = vitals.hp;
+    vitals.perish(profile, fate);
+    if vitals.is_dead() && formation.row_of(member).is_some() {
+        formation.update_seat(member, true);
+    }
+    let lost = hp.saturating_sub(vitals.hp);
+    if lost > 0 {
+        damage.write(DamageApplied { member, amount: lost, died: vitals.is_dead() });
+    }
+    lost
+}
+
 /// [`damage_member`] for draining, which lowers the maximum for good
 /// ([`crate::game::characters::Vitals::drain_health`]).
 pub fn drain_member(
