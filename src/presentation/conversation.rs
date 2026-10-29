@@ -181,7 +181,10 @@ struct Choice {
 #[derive(Component)]
 pub(crate) struct TopicInput;
 #[derive(Component)]
-struct SubmitTopic;
+enum SubmitTopic {
+    Ask,
+    Edit(NotebookEdit),
+}
 #[derive(Component)]
 struct TradeList;
 #[derive(Component, Clone, Copy, PartialEq)]
@@ -987,7 +990,7 @@ fn build(world: &mut World, session: Entity) -> Entity {
                 |mut e: On<FocusedInput<KeyboardInput>>, mut commands: Commands| {
                     if e.input.state.is_pressed() && e.input.logical_key == Key::Enter {
                         e.propagate(false);
-                        commands.entity(e.original_event_target()).insert(SubmitTopic);
+                        commands.entity(e.original_event_target()).insert(SubmitTopic::Ask);
                     }
                 },
             );
@@ -1025,28 +1028,19 @@ fn build(world: &mut World, session: Entity) -> Entity {
                     2 => {
                         world.entity_mut(e).observe(
                             move |_: On<Activate>, mut commands: Commands| {
-                                commands.entity(input).insert(SubmitTopic);
+                                commands.entity(input).insert(SubmitTopic::Ask);
                             },
                         );
                     }
                     0 | 1 => {
                         world.entity_mut(e).observe(
-                            move |_: On<Activate>,
-                                  inputs: Query<&EditableText>,
-                                  mut facts: ResMut<StoryFacts>| {
-                                let Ok(editor) = inputs.get(input) else { return };
-                                if editor.is_composing() {
-                                    return;
-                                }
-                                let text = editor.value().to_string().trim().to_owned();
-                                if text.is_empty() {
-                                    return;
-                                }
-                                if i == 1 {
-                                    facts.topics.retain(|(_, t)| !t.eq_ignore_ascii_case(&text));
+                            move |_: On<Activate>, mut commands: Commands| {
+                                let edit = if i == 1 {
+                                    NotebookEdit::Forget
                                 } else {
-                                    facts.remember_topic(TopicCategory::Misc, &text);
-                                }
+                                    NotebookEdit::Remember
+                                };
+                                commands.entity(input).insert(SubmitTopic::Edit(edit));
                             },
                         );
                     }
@@ -2225,27 +2219,50 @@ fn sync_topic_geometry(
     }
 }
 
+impl SubmitTopic {
+    /// Only committed editor text becomes a gameplay request. Normalization
+    /// and notebook matching belong to the game.
+    fn request(
+        &self,
+        text: &EditableText,
+        conversation: Entity,
+        revision: u64,
+    ) -> Option<ConversationRequest> {
+        if text.is_composing() {
+            return None;
+        }
+        let text = text.value().to_string();
+        Some(match *self {
+            Self::Ask => ConversationRequest::Topic { conversation, revision, text },
+            Self::Edit(edit) => {
+                ConversationRequest::EditNotebook { conversation, revision, edit, text }
+            }
+        })
+    }
+}
+
 fn submit_topic(
     views: ViewScope,
     mut commands: Commands,
-    inputs: Query<(Entity, &EditableText), With<SubmitTopic>>,
+    inputs: Query<(Entity, &EditableText, &SubmitTopic)>,
     sessions: Query<&Conversation>,
     mut requests: MessageWriter<ConversationRequest>,
 ) {
-    for (entity, text) in &inputs {
+    for (entity, text, submit) in &inputs {
         if !text.pending_edits.is_empty() || text.pending_paste.is_some() {
             continue;
         }
         if let Some((_, session)) = views.owner(entity)
             && let Ok(c) = sessions.get(session)
+            && let Some(request) = submit.request(text, session, c.revision)
         {
-            let text = text.value().to_string();
-            // Retail's keyword dialog: a question the party answers by typing.
-            requests.write(if matches!(c.wait, ConversationWait::Options { typed: true, .. }) {
-                ConversationRequest::Reply { conversation: session, revision: c.revision, text }
-            } else {
-                ConversationRequest::Topic { conversation: session, revision: c.revision, text }
-            });
+            let request = match request {
+                ConversationRequest::Topic { conversation, revision, text }
+                    if matches!(c.wait, ConversationWait::Options { typed: true, .. }) =>
+                    ConversationRequest::Reply { conversation, revision, text },
+                request => request,
+            };
+            requests.write(request);
         }
         commands.entity(entity).remove::<SubmitTopic>();
     }
@@ -2354,6 +2371,27 @@ pub(crate) mod tests {
         app.world_mut().commands().spawn(make(actor, script)).despawn();
         app.update();
         assert_eq!(app.world_mut().query::<&ConversationView>().iter(app.world()).count(), 0);
+    }
+
+    #[test]
+    fn notebook_input_submits_committed_text_not_ime_composition() {
+        let session = Entity::from_raw_u32(42).unwrap();
+        let mut text = EditableText::default();
+        text.editor.set_text(" Ship ");
+        for edit in [NotebookEdit::Remember, NotebookEdit::Forget] {
+            let request = SubmitTopic::Edit(edit).request(&text, session, 7).unwrap();
+            assert!(matches!(request,
+                ConversationRequest::EditNotebook { conversation, revision: 7, edit: action, text }
+                if conversation == session && action == edit && text == " Ship "
+            ));
+        }
+        let mut fonts = bevy::text::FontCx::default();
+        let mut layout = bevy::text::LayoutCx::default();
+        text.editor.driver(&mut fonts, &mut layout).set_compose("new", None);
+        assert!(text.is_composing());
+        for edit in [NotebookEdit::Remember, NotebookEdit::Forget] {
+            assert!(SubmitTopic::Edit(edit).request(&text, session, 7).is_none());
+        }
     }
 
     #[test]

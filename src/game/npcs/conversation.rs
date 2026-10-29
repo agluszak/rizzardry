@@ -58,6 +58,14 @@ impl StoryFacts {
         true
     }
 
+    /// Forget a notebook entry without changing discovered facts or journal history.
+    pub fn forget_topic(&mut self, text: &str) -> bool {
+        let text = text.trim();
+        let before = self.topics.len();
+        self.topics.retain(|(_, known)| !known.eq_ignore_ascii_case(text));
+        self.topics.len() != before
+    }
+
     pub fn initialize(&mut self, catalog: &FactCatalog) {
         if self.initialized {
             return;
@@ -310,6 +318,13 @@ pub enum PlaybackEvent {
     Finished,
     Unavailable,
 }
+/// An explicit edit of the persistent keyword notebook, not a spoken question.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotebookEdit {
+    Remember,
+    Forget,
+}
+
 #[derive(Message, Clone, Copy, Debug)]
 pub struct LinePlayback {
     pub speech: Entity,
@@ -346,6 +361,7 @@ pub enum ConversationRequest {
         conversation: Entity,
         revision: u64,
     },
+    EditNotebook { conversation: Entity, revision: u64, edit: NotebookEdit, text: String },
     Trade(TradeQuote),
     /// Hand the NPC an item from a member's pack or the party's items.
     Give {
@@ -2007,6 +2023,7 @@ pub fn update_conversation(world: &mut World) {
         }
         let entity = match &request {
             ConversationRequest::Topic { conversation, .. }
+            | ConversationRequest::EditNotebook { conversation, .. }
             | ConversationRequest::Reply { conversation, .. }
             | ConversationRequest::PriceAnswer { conversation, .. }
             | ConversationRequest::Recruit { conversation, .. }
@@ -2039,6 +2056,19 @@ pub fn update_conversation(world: &mut World) {
         }
         let revision = c.revision;
         match request {
+            ConversationRequest::EditNotebook { revision: requested, edit, text, .. }
+                if requested == revision =>
+            {
+                let mut facts = world.resource_mut::<StoryFacts>();
+                match edit {
+                    NotebookEdit::Remember => {
+                        facts.remember_topic(TopicCategory::Misc, &text);
+                    }
+                    NotebookEdit::Forget => {
+                        facts.forget_topic(&text);
+                    }
+                }
+            }
             ConversationRequest::Topic { revision: requested, text, .. }
                 if requested == revision =>
             {
@@ -3547,6 +3577,67 @@ mod tests {
         app.update();
         assert_eq!(app.world().get::<Character>(member).unwrap().experience, 100);
         assert_eq!(app.world().get::<Character>(replacement).unwrap().experience, 0);
+    }
+
+    #[test]
+    fn notebook_edits_are_persistent_idempotent_and_session_bound() {
+        let (mut app, session, _) = app(DialogueScript::default());
+        app.world_mut().get_mut::<Conversation>(session).unwrap().queue.clear();
+        app.world_mut()
+            .get_mut::<Conversation>(session)
+            .unwrap()
+            .learned_topics
+            .insert("arnika".into());
+        {
+            let mut facts = app.world_mut().resource_mut::<StoryFacts>();
+            facts.remember_topic(TopicCategory::Place, "Arnika");
+            facts.values.insert(FactId(91), 1);
+            facts.journal.push(JournalEntry {
+                fact: FactId(91),
+                was_true: true,
+                level: "home".into(),
+            });
+        }
+        let edit = |world: &mut World, conversation, revision, edit, text: &str| {
+            world.write_message(ConversationRequest::EditNotebook {
+                conversation,
+                revision,
+                edit,
+                text: text.into(),
+            });
+        };
+        for text in [" Ship ", "ship", "   "] {
+            edit(app.world_mut(), session, 0, NotebookEdit::Remember, text);
+        }
+        edit(app.world_mut(), session, 99, NotebookEdit::Forget, "Arnika");
+        app.update();
+        assert_eq!(
+            app.world().resource::<StoryFacts>().topics,
+            [(TopicCategory::Place, "Arnika".into()), (TopicCategory::Misc, "Ship".into()),]
+        );
+        for _ in 0..2 {
+            edit(app.world_mut(), session, 0, NotebookEdit::Forget, " ARNIKA ");
+        }
+        app.update();
+        let facts = app.world().resource::<StoryFacts>();
+        assert_eq!(facts.topics, [(TopicCategory::Misc, "Ship".into())]);
+        assert_eq!(facts.values.get(&FactId(91)), Some(&1));
+        assert_eq!(facts.journal.len(), 1);
+        assert!(
+            app.world().get::<Conversation>(session).unwrap().learned_topics.contains("arnika")
+        );
+        // A new session sees the same notebook. Delayed edits from the old
+        // session cannot change it, even with the same revision number.
+        let mut reopened = app.world_mut().entity_mut(session).take::<Conversation>().unwrap();
+        app.world_mut().despawn(session);
+        reopened.learned_topics.clear();
+        let next = app.world_mut().spawn(reopened).id();
+        edit(app.world_mut(), session, 0, NotebookEdit::Forget, "ship");
+        app.update();
+        assert_eq!(app.world().resource::<StoryFacts>().topics.len(), 1);
+        edit(app.world_mut(), next, 0, NotebookEdit::Forget, "SHIP");
+        app.update();
+        assert!(app.world().resource::<StoryFacts>().topics.is_empty());
     }
 
     #[test]
