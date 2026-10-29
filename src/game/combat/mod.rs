@@ -1199,6 +1199,7 @@ fn member_casts(
         context: casting::UseContext::Combat,
         party: &party_members,
         party_at: party.eye,
+        party_forward: Quat::from_rotation_y(party.yaw) * Vec3::NEG_Z,
         monsters: &candidates,
         group_of: &group_of,
     };

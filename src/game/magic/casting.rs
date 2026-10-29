@@ -52,6 +52,9 @@ pub enum Source {
 pub enum Aim {
     Member(Entity),
     Monster(Entity),
+    /// Retail's auto-targeting: the monster nearest the party's heading,
+    /// chosen when the action is carried out.
+    Ahead,
     /// The device attempt under way (its lock or trap), by the attempt.
     Device(Entity),
 }
@@ -200,6 +203,8 @@ pub struct Situation<'a> {
     /// The party, in roster order, the dead included.
     pub party: &'a [Entity],
     pub party_at: Vec3,
+    /// Where the party faces.
+    pub party_forward: Vec3,
     pub monsters: &'a [Candidate],
     pub group_of: &'a dyn Fn(Entity) -> Vec<Entity>,
 }
@@ -210,6 +215,18 @@ impl Situation<'_> {
     }
     fn candidate(&self, monster: Entity, spell: &SpellDefinition) -> Option<&Candidate> {
         self.monsters.iter().find(|c| c.entity == monster && c.distance <= spell.reach.metres())
+    }
+
+    /// Of the monsters within the spell's reach, the one nearest the party's
+    /// heading, the nearer of equals.
+    fn ahead(&self, spell: &SpellDefinition) -> Option<&Candidate> {
+        let ahead = self.party_forward.with_y(0.0);
+        self.monsters
+            .iter()
+            .filter(|c| c.distance <= spell.reach.metres())
+            .map(|c| (c, (c.at - self.party_at).with_y(0.0).angle_between(ahead)))
+            .min_by(|a, b| a.1.total_cmp(&b.1).then(a.0.distance.total_cmp(&b.0.distance)))
+            .map(|(c, _)| c)
     }
 
     fn party_victims(&self) -> Vec<Victim> {
@@ -233,6 +250,7 @@ fn capture(
     }
     let aimed = || match aim {
         Aim::Monster(m) => situation.candidate(m, spell).copied().ok_or(Refusal::NoTarget),
+        Aim::Ahead => situation.ahead(spell).copied().ok_or(Refusal::NoTarget),
         Aim::Member(_) | Aim::Device(_) => Err(Refusal::NoTarget),
     };
     let reach = spell.reach.metres();
@@ -617,7 +635,7 @@ pub fn perform(
                 if auto {
                     let victim = match choice.aim {
                         Aim::Member(m) => world.members.get(m).ok(),
-                        Aim::Monster(_) | Aim::Device(_) => None,
+                        Aim::Monster(_) | Aim::Ahead | Aim::Device(_) => None,
                     };
                     auto_power(&character, spell, victim.map(|(c, v, ..)| (c, v)), affordable)
                 } else {
@@ -952,4 +970,59 @@ pub fn usable_items(
             (usable && charged && resolvable(cast.spell)).then_some((stack.id, cast.spell))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::content::species::Reach;
+
+    /// The monster ahead follows where the party faces when the action is
+    /// carried out; with none in reach the aim finds no target.
+    #[test]
+    fn the_monster_ahead_follows_the_party_facing() {
+        let entities: Vec<Entity> = (1..=3).map(Entity::from_raw_u32).map(Option::unwrap).collect();
+        let at = |entity, x: f32, z: f32| Candidate {
+            entity,
+            at: Vec3::new(x, 0.0, z),
+            distance: Vec2::new(x, z).length(),
+        };
+        // One ahead (-Z), one to the right (+X), one far behind.
+        let monsters =
+            [at(entities[0], 0.0, -10.0), at(entities[1], 10.0, 0.0), at(entities[2], 0.0, 40.0)];
+        let spell =
+            SpellDefinition { reach: Reach::Long, targeting: Targeting::Enemy, ..default() };
+        let situation = |forward: Vec3| Situation {
+            context: UseContext::Combat,
+            party: &[],
+            party_at: Vec3::ZERO,
+            party_forward: forward,
+            monsters: &monsters,
+            group_of: &|m| vec![m],
+        };
+        let facing = |yaw: f32| Quat::from_rotation_y(yaw) * Vec3::NEG_Z;
+        let target_enemy = |forward| {
+            capture(Entity::PLACEHOLDER, &spell, 1, Aim::Ahead, &situation(forward), false)
+                .map(|(victims, _)| victims)
+        };
+        assert_eq!(target_enemy(facing(0.0)), Ok(vec![Victim::Monster(entities[0])]));
+        // Turned right a quarter, the monster to the right is ahead.
+        assert_eq!(
+            target_enemy(facing(-std::f32::consts::FRAC_PI_2)),
+            Ok(vec![Victim::Monster(entities[1])])
+        );
+        // Turned about, the one behind is out of reach: of those in reach,
+        // the one to the side is nearest the heading.
+        assert_eq!(
+            target_enemy(facing(std::f32::consts::PI)),
+            Ok(vec![Victim::Monster(entities[1])])
+        );
+        // Nobody in reach at all: no target.
+        let short = SpellDefinition { reach: Reach::Touch, ..spell.clone() };
+        assert_eq!(
+            capture(Entity::PLACEHOLDER, &short, 1, Aim::Ahead, &situation(facing(0.0)), false)
+                .map(|(victims, _)| victims),
+            Err(Refusal::NoTarget)
+        );
+    }
 }
