@@ -170,11 +170,13 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         if body.is_dead() {
             return 0;
         }
-        let before = body.stamina;
-        body.stamina = body.stamina.saturating_add(amount).min(body.max_stamina);
-        let stamina = body.stamina;
-        body.conditions.come_round(stamina);
-        body.stamina.saturating_sub(before)
+        let body = &mut *body;
+        crate::game::characters::rest(
+            &mut body.stamina,
+            &mut body.conditions,
+            amount,
+            body.max_stamina,
+        )
     }
     pub fn restore_magic(&mut self, entity: Entity, amount: u32) {
         if let Ok((mut body, ..)) = self.monsters.get_mut(entity) {
@@ -205,15 +207,11 @@ impl<'w, 's> MonsterDamage<'w, 's> {
     /// unconscious. Returns the stamina taken.
     pub fn fatigue(&mut self, monster: Entity, amount: u32) -> u32 {
         let Ok((mut monster, ..)) = self.monsters.get_mut(monster) else { return 0 };
-        if monster.is_dead() || monster.stamina == 0 {
+        if monster.is_dead() {
             return 0;
         }
-        let taken = amount.min(monster.stamina);
-        monster.stamina -= taken;
-        if monster.stamina == 0 {
-            monster.conditions.exhaust();
-        }
-        taken
+        let monster = &mut *monster;
+        crate::game::characters::tire(&mut monster.stamina, &mut monster.conditions, amount)
     }
 
     /// Drain the current effective spell budget; only the change belongs to

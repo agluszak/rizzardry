@@ -181,6 +181,26 @@ impl FromIterator<(Condition, Lasting)> for Conditions {
     }
 }
 
+/// Spend stamina, a party member's or a monster's; spent, it is exhausted
+/// (retail `FatigueCharacter`, `FatigueMonster`). What it took.
+pub fn tire(stamina: &mut u32, conditions: &mut Conditions, amount: u32) -> u32 {
+    let taken = amount.min(*stamina);
+    *stamina -= taken;
+    if taken > 0 && *stamina == 0 {
+        conditions.exhaust();
+    }
+    taken
+}
+
+/// Give stamina back up to `maximum`; the exhausted come round once it is
+/// above 9. What it gave.
+pub fn rest(stamina: &mut u32, conditions: &mut Conditions, amount: u32, maximum: u32) -> u32 {
+    let before = *stamina;
+    *stamina = stamina.saturating_add(amount).min(maximum);
+    conditions.come_round(*stamina);
+    stamina.saturating_sub(before)
+}
+
 /// How long a condition lasts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lasting {
@@ -1230,23 +1250,17 @@ impl Vitals {
     /// Spend stamina; running out knocks the member unconscious until it
     /// comes back.
     pub fn spend_stamina(&mut self, amount: u32) {
-        if self.stamina == 0 || self.is_dead() || amount == 0 {
-            return;
-        }
-        self.stamina -= amount.min(self.stamina);
-        if self.stamina == 0 {
-            self.conditions.exhaust();
+        if !self.is_dead() {
+            tire(&mut self.stamina, &mut self.conditions, amount);
         }
     }
 
     /// Restore stamina up to its maximum; an exhausted member comes round
     /// once it is above 9.
     pub fn restore_stamina(&mut self, amount: u32, maximum: u32) {
-        if self.is_dead() {
-            return;
+        if !self.is_dead() {
+            rest(&mut self.stamina, &mut self.conditions, amount, maximum);
         }
-        self.stamina = (self.stamina + amount).min(maximum);
-        self.conditions.come_round(self.stamina);
     }
 
     /// Heal up to the maximum. Healing does not raise the dead.
