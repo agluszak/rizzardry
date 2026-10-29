@@ -1098,11 +1098,12 @@ pub fn start_battle(
     let shadow_hound = effects
         .single()
         .is_ok_and(|e| e.0.get(crate::content::spells::SpellId::SHADOW_HOUND).is_some());
+    let searching = search.as_ref().is_some_and(|s| s.on(false));
     let view = crate::game::world::perception::View {
         eye: sight.eye,
         forward: body.forward(),
         far,
-        searching: search.as_ref().is_some_and(|s| s.on(false)),
+        searching,
     };
     let seen = joined.iter().any(|&entity| {
         let Ok((_, monster, at, ..)) = monsters.get(entity) else { return false };
@@ -1122,7 +1123,7 @@ pub fn start_battle(
         shadow_hound,
         camp.is_some(),
         movement.single().is_ok_and(|m| m.running),
-        search.as_ref().is_some_and(|s| s.on(false)),
+        searching,
         members.iter_many(roster.iter()).matched(),
         &mut rng,
     );
@@ -1144,16 +1145,7 @@ pub fn start_battle(
     for &monster in &joined {
         commands.entity(monster).insert(Combatant(battle));
     }
-    stage.p1().detect(
-        sight.eye,
-        body.forward(),
-        Some(&joined),
-        effects
-            .single()
-            .is_ok_and(|e| e.0.get(crate::content::spells::SpellId::SHADOW_HOUND).is_some()),
-        search.as_ref().is_some_and(|s| s.on(false)),
-        &mut rng,
-    );
+    stage.p1().detect(sight.eye, body.forward(), Some(&joined), shadow_hound, searching, &mut rng);
     news.write(CombatNews::Began { nearest });
     if let Some(cause) = opening {
         news.write(CombatNews::Surprised(cause));
@@ -1169,18 +1161,23 @@ pub fn in_battle(world: &mut World) -> bool {
 /// Used before/after combat execution and at the end of environmental damage.
 pub fn settle_defeat(
     mut commands: Commands,
-    battle: Option<Single<Entity, With<Battle>>>,
+    battle: Option<Single<(Entity, Option<&Combatants>), With<Battle>>>,
     roster: Single<&PartyRoster>,
     members: Query<&Vitals>,
     mut news: MessageWriter<CombatNews>,
     mut effects: Single<&mut crate::game::magic::enchantments::PartyEffects>,
     mut monsters: Query<&mut Monster>,
 ) {
-    let Some(battle) = battle.map(Single::into_inner) else { return };
+    let Some((battle, combatants)) = battle.map(Single::into_inner) else { return };
     if !members.iter_many(roster.iter()).matched().any(|v| !v.is_dead()) {
+        // What lasts a fight ends on the party and on those in it, as when
+        // the party wins.
         effects.0.end_combat();
-        for mut monster in &mut monsters {
-            monster.enchantments.end_combat();
+        let combatants = combatants.map_or(&[][..], Combatants::entities);
+        for &monster in combatants {
+            if let Ok(mut monster) = monsters.get_mut(monster) {
+                monster.enchantments.end_combat();
+            }
         }
         news.write(CombatNews::Lost);
         // Its combatants leave the fight and stop closing in; they remain.
@@ -2635,13 +2632,13 @@ fn spell_scene<'a>(
     }
 }
 
-/// The round is over: a round's game time passes. Returns whether the fight
-/// is over: no hostile is left or nobody could attack for two rounds.
 /// Whether nobody in the party is left alive.
 fn party_fallen(roster: &PartyRoster, members: &Members) -> bool {
     !members.iter_many(roster.iter()).matched().any(|(_, vitals, ..)| !vitals.is_dead())
 }
 
+/// The round is over: a round's game time passes. Returns whether the fight
+/// is over: no hostile is left or nobody could attack for two rounds.
 fn end_round(
     (fight, battle): (Entity, &mut Battle),
     combatants: &[Entity],
