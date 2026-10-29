@@ -395,10 +395,14 @@ pub fn approach_ready(at: Option<u64>, now: u64) -> bool {
 /// no spell charms an NPC and none joins the party here yet.
 pub fn disposition(world: &World, actor: Entity) -> i32 {
     let Some(npc) = world.get::<Npc>(actor) else { return 0 };
+    standing(world, actor, npc.disposition)
+}
+/// [`disposition`] were the NPC's own `disposition` this.
+fn standing(world: &World, actor: Entity, disposition: u8) -> i32 {
     let turned = active_body(world, actor)
         .and_then(|body| world.get::<Monster>(body))
         .is_some_and(|m| m.conditions.iter().any(|(c, _)| *c == Condition::Turncoat));
-    let own = if turned { 100 } else { i32::from(npc.disposition) };
+    let own = if turned { 100 } else { i32::from(disposition) };
     let (Ok(def), Some(factions)) = (definition(world, actor), world.get_resource::<Factions>())
     else {
         return own;
@@ -411,7 +415,10 @@ pub fn disposition(world: &World, actor: Entity) -> i32 {
 }
 /// Retail `GetNpcDispositionBand`: hostile under 0x21, friendly from 0x42.
 pub fn band(world: &World, actor: Entity) -> Band {
-    match disposition(world, actor) {
+    band_of(disposition(world, actor))
+}
+fn band_of(disposition: i32) -> Band {
+    match disposition {
         d if d < 0x21 => Band::Hostile,
         d if d < 0x42 => Band::Neutral,
         _ => Band::Friendly,
@@ -1459,17 +1466,22 @@ const LEAST_BRIBE: u32 = 300;
 /// what the NPC will take. Once that runs out an NPC not yet friendly warms
 /// to the party, and the pool fills again.
 fn debit_trade_pool(world: &mut World, actor: Entity, price: u32) {
+    let (pool, disposition) = debited(world, actor, price);
+    let mut npc = world.get_mut::<Npc>(actor).unwrap();
+    (npc.trade_pool, npc.disposition) = (pool, disposition);
+}
+/// The NPC's trade pool and own disposition once a bribe of `price` is
+/// debited, without debiting it.
+fn debited(world: &mut World, actor: Entity, price: u32) -> (u16, u8) {
     let level = party_communication(world);
     let adjusted = price.wrapping_add(level * ((price & 0xffff) / 5) / 100);
     let refill = definition(world, actor).map_or(0, |d| d.trade_pool);
     let cold = band(world, actor) != Band::Friendly;
-    let mut npc = world.get_mut::<Npc>(actor).unwrap();
-    npc.trade_pool = npc.trade_pool.saturating_sub(adjusted as u16);
-    if npc.trade_pool == 0 {
-        if cold {
-            npc.disposition = 0x4b;
-        }
-        npc.trade_pool = refill;
+    let npc = world.get::<Npc>(actor).unwrap();
+    match npc.trade_pool.saturating_sub(adjusted as u16) {
+        0 if cold => (refill, 0x4b),
+        0 => (refill, npc.disposition),
+        pool => (pool, npc.disposition),
     }
 }
 /// A bribe that wins the NPC over from the topic menu turns it to its
@@ -1518,6 +1530,8 @@ fn give(world: &mut World, entity: Entity, item: ItemRef) -> Result<(), TradeErr
     // as a bribe, valued by the whole stack offered, and keeps it whatever
     // it says.
     let bribe = !voiced && band(world, actor) != Band::Friendly;
+    // A bribe is debited only with the item it buys.
+    let mut debit = None;
     let (quote, keeps) = match answer {
         _ if bribe && crucial => (REFUSED_GIFT_QUOTE, false),
         _ if bribe
@@ -1527,8 +1541,9 @@ fn give(world: &mut World, entity: Entity, item: ItemRef) -> Result<(), TradeErr
         }
         Some((quote, _)) if bribe => (quote, true),
         None if bribe => {
-            debit_trade_pool(world, actor, value);
-            let warmed = band(world, actor) == Band::Friendly;
+            let after = debited(world, actor, value);
+            debit = Some(after);
+            let warmed = band_of(standing(world, actor, after.1)) == Band::Friendly;
             (if warmed { ACCEPTED_GIFT_QUOTE } else { UNBRIBED_QUOTE }, true)
         }
         Some(answer) => answer,
@@ -1551,6 +1566,10 @@ fn give(world: &mut World, entity: Entity, item: ItemRef) -> Result<(), TradeErr
             return Err(TradeError::StaleSelection);
         }
         items.store(world, party);
+        if let Some((pool, disposition)) = debit {
+            let mut npc = world.get_mut::<Npc>(actor).unwrap();
+            (npc.trade_pool, npc.disposition) = (pool, disposition);
+        }
     }
     let mut c = world.get_mut::<Conversation>(entity).unwrap();
     c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false, plan });
@@ -2624,6 +2643,47 @@ mod tests {
             app.world().get::<Conversation>(session).unwrap().current,
             Some((UNBRIBED_QUOTE, 0))
         );
+    }
+
+    /// Retail `HandleNpcDialogueItem` pairs a bribe's debit with taking the
+    /// item: an answer that cannot run keeps the item and leaves the NPC's
+    /// trade pool and disposition as they were.
+    #[test]
+    fn an_item_bribe_is_debited_only_with_the_item() {
+        for runs in [false, true] {
+            let (mut app, session, actor) = wary((0, 0), 100);
+            with_items(&mut app);
+            let items = app.world().resource::<GameData>().items.clone();
+            app.world_mut().resource_mut::<Assets<ItemCatalog>>().get_mut(&items).unwrap().0[1]
+                .value = 400;
+            if !runs {
+                let script = app.world().get::<Conversation>(session).unwrap().script.clone();
+                let mut scripts = app.world_mut().resource_mut::<Assets<DialogueScript>>();
+                scripts.get_mut(&script).unwrap().quotes[usize::from(ACCEPTED_GIFT_QUOTE)] =
+                    lines(&["Thanks"], vec![DialogueOp::GiveItem(ItemId(9))]);
+            }
+            let member = carrier(&mut app, "Ragnar", 1, 1);
+            let id = app.world().get::<Carried>(member).unwrap().backpack[0].as_ref().unwrap().id;
+            let revision = app.world().get::<Conversation>(session).unwrap().revision;
+            app.world_mut().write_message(ConversationRequest::Give {
+                conversation: session,
+                revision,
+                item: ItemRef { owner: ItemOwner::Member(member), id },
+            });
+            app.update();
+            let npc = app.world().get::<Npc>(actor).unwrap();
+            let kept = app.world().get::<Carried>(member).unwrap().backpack[0].is_some();
+            let c = app.world().get::<Conversation>(session).unwrap();
+            if runs {
+                assert!(!kept);
+                assert_eq!((npc.trade_pool, npc.disposition), (100, 0x4b));
+                assert!(!c.menu);
+            } else {
+                assert!(kept);
+                assert_eq!((npc.trade_pool, npc.disposition), (100, 50));
+                assert!(c.menu);
+            }
+        }
     }
 
     /// Retail `GetNpcDisposition`: a factioned NPC answers with its faction's
