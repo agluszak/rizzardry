@@ -25,6 +25,9 @@ pub struct MainScreenPlugin;
 
 impl Plugin for MainScreenPlugin {
     fn build(&self, app: &mut App) {
+        use crate::game::world::items::WorldItem;
+        // Presentation history is attached immediately, even before the HUD exists.
+        app.register_required_components::<WorldItem, radar::RadarItem>();
         app.init_resource::<ScreenLayout>()
             .init_resource::<SelectedMember>()
             .add_plugins(keys::plugin)
