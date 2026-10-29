@@ -76,8 +76,11 @@ fn read_spell(index: usize, record: &[u8]) -> Result<SpellDefinition, DecodeErro
         duration_base: i32_at(r, 0x4d)?,
         radius: f32_at(r, 0x121)? / UNITS_PER_METRE,
         radius_per_power: f32_at(r, 0x127)? / UNITS_PER_METRE,
+        // 0x13f fires the spell's missiles (`CastSpellFromSource`). 0x144
+        // only keeps retail's queued effect, and its report, alive until its
+        // missiles and visuals finish; the impacts themselves land with the
+        // missiles either way.
         missile: (r[0x13f] != 0).then(|| u32::try_from(missile).ok()).flatten(),
-        after_visuals: r[0x144] != 0,
         monsters_cast: r[0x126] != 0,
         sound: c_string(&r[0x14b..0x14b + 0x74]).unwrap_or_default(),
     })

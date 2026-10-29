@@ -456,11 +456,16 @@ impl Plugin for MagicPlugin {
             .init_resource::<casting::FlightOrder>()
             .add_systems(
                 Update,
-                (accept_magic, deliver_spells)
-                    .chain()
+                accept_magic
                     .after(crate::game::GameplaySet::Stats)
                     .before(crate::game::GameplaySet::Combat)
                     .run_if(crate::game::world::level::level_active),
+            )
+            // Impacts land on gameplay time, before the step's physics and
+            // ahead of the frame's combat, however many steps a frame runs.
+            .add_systems(
+                FixedUpdate,
+                deliver_spells.run_if(crate::game::world::level::level_active),
             );
     }
 }
@@ -632,11 +637,12 @@ pub fn accept_magic(
 }
 
 /// Fly spell missiles and resolve them on arrival (retail
-/// `ResolveSpellMissileHit`): on the victims captured at the cast; one that
-/// died meanwhile is missed. Kills in a fight count for it.
+/// `ResolveSpellMissileHit`), on the fixed gameplay step: on the victims
+/// captured at the cast; one that died meanwhile is missed. Kills in a fight
+/// count for it.
 pub fn deliver_spells(
     mut points: Query<(&LearnedSpells, &mut SpellPoints)>,
-    time: Res<Time<Virtual>>,
+    time: Res<Time>,
     mut flights: Query<(Entity, &mut casting::SpellInFlight)>,
     (mut members, mut monsters): (Members, MonsterDamage),
     mut context: MagicContext,

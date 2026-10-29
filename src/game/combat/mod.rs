@@ -1770,9 +1770,7 @@ mod tests {
             world.flush();
             world.resource_mut::<Messages<MagicNews>>().clear();
             for _ in 0..steps {
-                world
-                    .resource_mut::<Time<Virtual>>()
-                    .advance_by(Duration::from_secs_f32(0.4) / steps);
+                world.resource_mut::<Time>().advance_by(Duration::from_secs_f32(0.4) / steps);
                 world.run_system_cached(crate::game::magic::deliver_spells).unwrap();
                 world.flush();
             }
@@ -1806,7 +1804,7 @@ mod tests {
         casting::FlightOrder::default().launch(&mut commands, flights, level);
         world.flush();
         world.resource_mut::<Messages<MagicNews>>().clear();
-        world.resource_mut::<Time<Virtual>>().advance_by(std::time::Duration::from_secs(5));
+        world.resource_mut::<Time>().advance_by(std::time::Duration::from_secs(5));
         world.run_system_cached(crate::game::magic::deliver_spells).unwrap();
         world.flush();
         world.resource_mut::<Messages<MagicNews>>().drain().collect()
