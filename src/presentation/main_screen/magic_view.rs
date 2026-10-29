@@ -244,7 +244,7 @@ pub fn open(
 ) {
     let art = art.clone();
     commands.queue(move |world: &mut World| {
-        use crate::game::world::interaction::{DeviceInteraction, DeviceRequest, Work, current};
+        use crate::game::world::interaction::{DeviceRequest, current, magic_attempt};
         let target = match requested_target {
             Some(ViewTarget::Conversation(entity)) => {
                 if current(world).is_some()
@@ -261,20 +261,7 @@ pub fn open(
                     ViewTarget::Device(entity) => entity,
                     ViewTarget::Conversation(_) => unreachable!(),
                 });
-                let attempt = match current(world) {
-                    Some((attempt, _)) => {
-                        if matches!(
-                            world.get::<DeviceInteraction>(attempt).map(|i| &i.work),
-                            Some(Work::Looting)
-                        ) || requested_attempt.is_some_and(|requested| requested != attempt)
-                        {
-                            return;
-                        }
-                        Some(attempt)
-                    }
-                    None if requested_attempt.is_some() => return,
-                    None => None,
-                };
+                let Ok(attempt) = magic_attempt(world, requested_attempt) else { return };
                 attempt.map(ViewTarget::Device)
             }
         };

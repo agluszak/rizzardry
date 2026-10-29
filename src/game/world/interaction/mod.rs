@@ -597,8 +597,29 @@ pub fn spring_trap(world: &mut World, on: Entity, selected: Option<Entity>) -> R
 
 /// Opening either selector releases this actor's spell-held pins even if
 /// the uncommitted selector is cancelled, as retail ReleaseOwnedTumblers does.
+/// The device attempt magic may be aimed at now: the one under way, unless
+/// the party is looting what it opened. `requested` is the attempt the
+/// caller means; it is refused when another, or none, is under way.
+pub fn magic_attempt(world: &World, requested: Option<Entity>) -> Result<Option<Entity>, Unable> {
+    match current(world) {
+        Some((attempt, _)) => {
+            let looting = matches!(
+                world.get::<DeviceInteraction>(attempt).map(|i| &i.work),
+                Some(Work::Looting)
+            );
+            if looting || requested.is_some_and(|requested| requested != attempt) {
+                return Err(Unable::NotNow);
+            }
+            Ok(Some(attempt))
+        }
+        None if requested.is_some() => Err(Unable::NotNow),
+        None => Ok(None),
+    }
+}
+
 pub fn prepare_device_magic(world: &mut World, actor: Entity, on: Entity) -> Result<(), Unable> {
     member(world, actor)?;
+    magic_attempt(world, Some(on))?;
     attempt(world, on)?;
     if let Work::Picking(picking) = &mut *work_mut(world, on) {
         for pin in &mut picking.tumblers {
