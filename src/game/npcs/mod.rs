@@ -1,5 +1,6 @@
 //! Campaign-lived NPCs retain their world-role state while their level is dormant.
 pub mod conversation;
+pub mod recruit;
 pub mod trade;
 use crate::content::{npcs::*, species::MonsterCatalog};
 use crate::game::{
@@ -139,6 +140,8 @@ pub struct NpcPopulation<'w, 's> {
     pub clock: Res<'w, crate::game::time::GameClock>,
     roster: Query<'w, 's, &'static PartyRoster>,
     profiles: Query<'w, 's, &'static Character>,
+    /// NPCs travelling with the party, whose world roles wait.
+    members: Query<'w, 's, (), With<crate::game::party::roster::PartyMember>>,
 }
 /// An NPC's placement as a level's population meets it.
 pub struct Placing<'a> {
@@ -172,7 +175,12 @@ impl NpcPopulation<'_, '_> {
         if !placed_actors.insert(key.clone()) {
             return None;
         }
-        if let Some((_, _, bodies)) = self.npcs.iter().find(|(_, identity, _)| **identity == key) {
+        if let Some((actor, _, bodies)) =
+            self.npcs.iter().find(|(_, identity, _)| **identity == key)
+        {
+            if self.members.contains(actor) {
+                return None;
+            }
             let entity = *bodies.first()?;
             let (_, role, monster, pose, walker, ..) = self.roles.get(entity).ok()?;
             if role.map != map || monster.is_dead() {
@@ -273,8 +281,37 @@ impl NpcPopulation<'_, '_> {
         }
         Ok(ready)
     }
+    /// NPCs whose world roles stand on `map` without being placed there,
+    /// such as one that left the party on it, as the level meets them again.
+    pub fn visitors(
+        &mut self,
+        commands: &mut Commands,
+        map: &str,
+        placed_actors: &mut std::collections::HashSet<ActorId>,
+    ) -> Vec<(Entity, Vec3, f32, crate::game::world::population::ScaledBody, Option<i32>)> {
+        let mut visitors = Vec::new();
+        for (actor, key, bodies) in &self.npcs {
+            if self.members.contains(actor) || placed_actors.contains(key) {
+                continue;
+            }
+            let Some(&entity) = bodies.first() else { continue };
+            let Ok((_, role, monster, pose, walker, ..)) = self.roles.get(entity) else { continue };
+            if role.map != map || monster.is_dead() {
+                continue;
+            }
+            placed_actors.insert(key.clone());
+            commands.entity(entity).remove::<Disabled>();
+            visitors.push((
+                entity,
+                crate::game::world::navigation::feet(pose.translation(), walker),
+                pose.rotation().to_euler(EulerRot::YXZ).0,
+                monster.body,
+                role.group,
+            ));
+        }
+        visitors
+    }
     pub fn depart(&mut self, commands: &mut Commands, root: Entity) {
-        use avian3d::prelude::{Collider, RigidBody};
         for (entity, mut role, _, pose, walker, parent, group) in &mut self.roles {
             if !parent.is_some_and(|parent| parent.0 == root) {
                 continue;
@@ -285,18 +322,25 @@ impl NpcPopulation<'_, '_> {
                 walker,
             ))
             .with_rotation(pose.rotation());
-            commands
-                .entity(entity)
-                .remove::<crate::game::world::level::LevelOwned>()
-                .remove::<crate::game::world::identify::GroupMember>()
-                .remove_with_requires::<(Collider, RigidBody)>()
-                .remove_with_requires::<bevy_landmass::prelude::Agent3dBundle>()
-                .remove_with_requires::<crate::game::world::navigation::links::Crossing>()
-                .remove::<(Walker, bevy_landmass::prelude::ReachedAnimationLink3d)>()
-                .despawn_related::<Children>()
-                .insert((at, Disabled));
+            retire(commands, entity, at);
         }
     }
+}
+/// End an NPC body's embodiment, leaving it standing dormant at `at`: it
+/// keeps its monster state but leaves its level, its group, physics and
+/// navigation.
+fn retire(commands: &mut Commands, entity: Entity, at: Transform) {
+    use avian3d::prelude::{Collider, RigidBody};
+    commands
+        .entity(entity)
+        .remove::<crate::game::world::level::LevelOwned>()
+        .remove::<crate::game::world::identify::GroupMember>()
+        .remove_with_requires::<(Collider, RigidBody)>()
+        .remove_with_requires::<bevy_landmass::prelude::Agent3dBundle>()
+        .remove_with_requires::<crate::game::world::navigation::links::Crossing>()
+        .remove::<(Walker, bevy_landmass::prelude::ReachedAnimationLink3d)>()
+        .despawn_related::<Children>()
+        .insert((at, Disabled));
 }
 pub struct NpcPlugin;
 impl Plugin for NpcPlugin {
@@ -318,7 +362,11 @@ impl Plugin for NpcPlugin {
             )
             .add_systems(
                 Update,
-                conversation::update_conversation.after(crate::game::GameplaySet::Combat),
+                (
+                    conversation::update_conversation,
+                    recruit::settle_npc_members.run_if(crate::game::world::level::level_active),
+                )
+                    .after(crate::game::GameplaySet::Combat),
             );
     }
 }

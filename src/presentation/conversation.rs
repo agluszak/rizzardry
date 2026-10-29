@@ -482,6 +482,21 @@ fn build(world: &mut World, session: Entity) -> Entity {
                         },
                     );
                 }
+                (false, 3) => {
+                    world.entity_mut(e).observe(
+                        move |_: On<Activate>,
+                              roots: Query<&ConversationView>,
+                              conversations: Query<&Conversation>,
+                              mut requests: MessageWriter<ConversationRequest>| {
+                            let Ok(view) = roots.get(root) else { return };
+                            let Ok(conversation) = conversations.get(view.0) else { return };
+                            requests.write(ConversationRequest::Recruit {
+                                conversation: view.0,
+                                revision: conversation.revision,
+                            });
+                        },
+                    );
+                }
                 (false, 5) => {
                     world.entity_mut(e).observe(
                         move |_: On<Activate>, roots: Query<&ConversationView>, mut requests: MessageWriter<ConversationRequest>| {

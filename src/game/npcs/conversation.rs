@@ -73,9 +73,15 @@ impl StoryFacts {
     pub fn get(&self, id: FactId, catalog: &FactCatalog) -> Result<u8, String> {
         let fact = catalog.get(id).ok_or_else(|| format!("missing fact definition {id:?}"))?;
         match fact.symbol.as_str() {
-            "FACT_VIRGIN" | "FACT_IMPORT" | "FACT_BURZ_SAID130" | "FACT_TEMPLAR" => {
-                Ok(*self.values.get(&id).unwrap_or(&0))
-            }
+            // Plain stored facts (retail `EvaluateFact` reads them unchanged).
+            "FACT_VIRGIN"
+            | "FACT_IMPORT"
+            | "FACT_BURZ_SAID130"
+            | "FACT_TEMPLAR"
+            | "FACT_UMISSION_SCUBA_DONE"
+            | "FACT_SEXUS_PAID"
+            | "FACT_TRYNNIE_MADRAS_WILL_JOIN"
+            | "FACT_PEACE_ACHIEVED" => Ok(*self.values.get(&id).unwrap_or(&0)),
             name => Err(format!("unported fact predicate {name}")),
         }
     }
@@ -114,6 +120,17 @@ fn fact_catalog(world: &World) -> Option<&FactCatalog> {
     let assets = world.resource::<NpcAssets>();
     world.resource::<Assets<FactCatalog>>().get(&assets.facts)
 }
+/// A fact by its symbol, for rules that name one.
+pub fn fact_named(world: &World, symbol: &str) -> Result<u8, String> {
+    let id = fact_catalog(world)
+        .ok_or_else(|| "fact database unavailable".to_string())?
+        .0
+        .iter()
+        .find(|fact| fact.symbol == symbol)
+        .ok_or_else(|| format!("missing fact {symbol}"))?
+        .id;
+    fact(world, id)
+}
 fn fact(world: &World, id: FactId) -> Result<u8, String> {
     world
         .resource::<StoryFacts>()
@@ -124,6 +141,7 @@ enum Step {
     Quote { quote: u16, subquote: usize, paid: bool, plan: Option<QuotePlan> },
     Options { quote: u16, words: Vec<String> },
     Price { quote: u16, gold: u32, always: bool },
+    Join,
     End,
 }
 #[derive(Clone, Debug, PartialEq)]
@@ -208,6 +226,7 @@ pub enum ConversationRequest {
     Topic { conversation: Entity, revision: u64, text: String },
     Reply { conversation: Entity, revision: u64, text: String },
     PriceAnswer { conversation: Entity, revision: u64, accept: bool },
+    Recruit { conversation: Entity, revision: u64 },
     Advance { conversation: Entity, speech: Entity },
     Close { conversation: Entity },
     Trade(TradeQuote),
@@ -576,6 +595,12 @@ fn run_script(world: &mut World, entity: Entity, script: &DialogueScript) {
                 world.get_mut::<Conversation>(entity).unwrap().queue.push_front(Step::End);
                 return;
             }
+            // The NPC joins the party once its acceptance is said.
+            Step::Join => {
+                if let Err(refusal) = super::recruit::join(world, actor) {
+                    warn!("NPC did not join after all: {refusal:?}");
+                }
+            }
             Step::Options { quote, words } => {
                 let mut c = world.get_mut::<Conversation>(entity).unwrap();
                 c.wait = ConversationWait::Options { quote, words };
@@ -701,6 +726,32 @@ fn learn_topic(world: &mut World, entity: Entity, category: TopicCategory, text:
             .learned_topics
             .insert(text.trim().to_ascii_lowercase());
     }
+}
+/// The script's quotes answering a request to join (retail
+/// `RequestNpcJoinParty`): it will not, the party has no room, it will.
+const DECLINES_TO_JOIN: u16 = 0xb;
+const NO_ROOM_TO_JOIN: u16 = 0xc;
+const JOINS: u16 = 0xd;
+/// The party asks the NPC to join. It answers from its script, and joining,
+/// leaves the conversation.
+fn ask_to_join(world: &mut World, entity: Entity) {
+    let c = world.get::<Conversation>(entity).unwrap();
+    if !c.ready() {
+        return;
+    }
+    let actor = c.actor;
+    let answer = super::recruit::joinable(world, actor);
+    let quote = match answer {
+        Ok(()) => JOINS,
+        Err(super::recruit::JoinRefusal::NoRoom) => NO_ROOM_TO_JOIN,
+        Err(super::recruit::JoinRefusal::Declines) => DECLINES_TO_JOIN,
+    };
+    let mut c = world.get_mut::<Conversation>(entity).unwrap();
+    c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false, plan: None });
+    if answer.is_ok() {
+        c.queue.extend([Step::Join, Step::End]);
+    }
+    c.revision += 1;
 }
 fn topic(world: &mut World, entity: Entity, text: &str) {
     let c = world.get::<Conversation>(entity).unwrap();
@@ -978,6 +1029,7 @@ pub fn update_conversation(world: &mut World) {
             ConversationRequest::Topic { conversation, .. }
             | ConversationRequest::Reply { conversation, .. }
             | ConversationRequest::PriceAnswer { conversation, .. }
+            | ConversationRequest::Recruit { conversation, .. }
             | ConversationRequest::Advance { conversation, .. }
             | ConversationRequest::Close { conversation } => *conversation,
             ConversationRequest::Trade(q) => q.conversation,
@@ -1012,6 +1064,9 @@ pub fn update_conversation(world: &mut World) {
                 if requested == revision =>
             {
                 answer_price(world, entity, accept)
+            }
+            ConversationRequest::Recruit { revision: requested, .. } if requested == revision => {
+                ask_to_join(world, entity)
             }
             ConversationRequest::Advance { speech, .. } => {
                 if matches!(world.get::<Conversation>(entity).unwrap().wait,ConversationWait::Line{speech:s,..} if s==speech)
@@ -1187,6 +1242,51 @@ mod tests {
             .id();
         (app, entity, actor)
     }
+    /// Asked to join, an NPC answers from its script: one with no character
+    /// to bring declines, a party whose NPC places are taken has no room, and
+    /// a willing one accepts and then joins.
+    #[test]
+    fn a_request_to_join_is_answered_from_the_script() {
+        let answer = |character: bool, companions: usize| {
+            let quotes =
+                (0..16).map(|i| Quote { text: vec![format!("quote {i}")], ..default() }).collect();
+            let (mut app, session, _) = app(DialogueScript { quotes, ..default() });
+            let w = app.world_mut();
+            if character {
+                let handle = w.resource::<NpcAssets>().catalog.clone();
+                w.resource_mut::<Assets<NpcCatalog>>().get_mut(&handle).unwrap().0[0].character =
+                    Some(crate::content::npcs::NpcCharacter {
+                        name: "Speaker".into(),
+                        profession: crate::game::characters::Profession::Fighter,
+                        race: crate::game::characters::Race::Human,
+                        gender: crate::game::characters::Gender::Male,
+                        portrait: 0,
+                        level: 1,
+                        attributes: default(),
+                        skills: default(),
+                        spells: vec![],
+                        equipment: [None; 12],
+                        backpack: [None; 8],
+                        wanted: vec![],
+                    });
+            }
+            for _ in 0..companions {
+                let companion = w.spawn(Npc::default()).id();
+                crate::game::party::roster::test_join(w, companion);
+            }
+            let mut c = w.get_mut::<Conversation>(session).unwrap();
+            c.queue.clear();
+            let revision = c.revision;
+            w.write_message(ConversationRequest::Recruit { conversation: session, revision });
+            app.update();
+            let c = app.world().get::<Conversation>(session).unwrap();
+            (c.current, c.queue.iter().any(|step| matches!(step, Step::Join)))
+        };
+        assert_eq!(answer(false, 0), (Some((DECLINES_TO_JOIN, 0)), false));
+        assert_eq!(answer(true, 2), (Some((NO_ROOM_TO_JOIN, 0)), false));
+        assert_eq!(answer(true, 1), (Some((JOINS, 0)), true));
+    }
+
     #[test]
     fn fact_writes_select_the_validated_branch_before_payment_or_effects() {
         for (initial, assigned) in [(0, 1), (1, 0)] {

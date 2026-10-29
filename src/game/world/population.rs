@@ -191,6 +191,7 @@ pub fn populate(
         commands.entity(actor.0).insert(Name::new(format!("{} #{}", kind.name, placed.location)));
         actors.push(actor);
     }
+    actors.extend(npcs.visitors(commands, map, &mut placed_actors));
     let monster_count = actors.len();
     for (actor, feet, yaw, body, group) in actors {
         let group = group.map(|authored| {
