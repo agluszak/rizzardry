@@ -1,16 +1,8 @@
-//! The frontend and the one-time boundary that starts a campaign.
+//! The one-time boundary that starts a campaign.
 use super::characters::creation::CharacterDraft;
 use super::party::roster::Party;
 use super::world::level::{Destination, Entry, Level};
 use bevy::prelude::*;
-
-#[derive(States, Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Session {
-    #[default]
-    MainMenu,
-    Creation,
-    Playing,
-}
 
 #[derive(Resource)]
 pub struct NewGameDestination {
@@ -24,9 +16,6 @@ pub struct NewGameDestination {
 /// Nothing joins until the level commits ([`Entry::NewGame`]), so a failed
 /// load leaves the drafts to retry and no half-started campaign.
 pub fn begin_adventure(world: &mut World, drafts: &[CharacterDraft]) -> Result<(), &'static str> {
-    if *world.resource::<State<Session>>().get() != Session::Creation {
-        return Err("Start a new party from the main menu.");
-    }
     let mut begun = world.query_filtered::<(), Or<(With<Party>, With<Destination>)>>();
     if begun.iter(world).next().is_some() {
         return Err("A campaign has already begun.");
@@ -62,11 +51,11 @@ mod tests {
     #[test]
     fn new_adventure_validates_all_members_and_requests_its_level_only_once() {
         let mut app = App::new();
-        app.add_plugins((MinimalPlugins, AssetPlugin::default(), bevy::state::app::StatesPlugin))
+        // No frontend: starting a campaign needs no menu or creation screen.
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
             .init_asset::<LevelDefinition>()
             .init_asset::<NavMesh3d>()
-            .init_asset::<TextTable>()
-            .insert_state(Session::Creation);
+            .init_asset::<TextTable>();
         let mut drafts = vec![CharacterDraft::default(), CharacterDraft::default()];
         drafts[0].name = "First".into();
         drafts[0].adjust_attribute(Attribute::Vitality, true);

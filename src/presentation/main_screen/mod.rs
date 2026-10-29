@@ -42,7 +42,7 @@ impl Plugin for MainScreenPlugin {
                 Update,
                 (
                     layout::fit_viewport,
-                    build_frame.run_if(in_state(crate::game::session::Session::Playing)),
+                    build_frame.run_if(in_state(crate::presentation::frontend::Session::Playing)),
                     update_frame,
                     layout::draw_buttons,
                     (

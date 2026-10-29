@@ -577,7 +577,6 @@ pub fn activate_level(
     mut memory: ResMut<LevelMemory>,
     (mut ids, mut rng): (ResMut<ItemIds>, ResMut<GameRng>),
     mut transition: ParamSet<(LevelContents, PartyPlacement)>,
-    mut session: Option<ResMut<NextState<crate::game::session::Session>>>,
     (mut ready, mut failures): (MessageWriter<LevelReady>, MessageWriter<LevelEntryFailed>),
 ) {
     for (root, mut destination, presentation) in &mut destinations {
@@ -661,9 +660,6 @@ pub fn activate_level(
         let party = match std::mem::replace(&mut destination.entry, Entry::Travel) {
             Entry::Travel => traveller.unwrap(),
             Entry::NewGame(characters) => {
-                if let Some(session) = session.as_mut() {
-                    session.set(crate::game::session::Session::Playing);
-                }
                 found_party(&mut commands, characters, (items, spells), (&mut ids, &mut rng))
             }
         };
