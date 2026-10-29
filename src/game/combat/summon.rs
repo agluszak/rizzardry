@@ -84,6 +84,9 @@ pub fn summon(
         .max()
         .unwrap_or(0)
         + 1;
+    // Where this run's earlier groups landed, and their radii: they too are
+    // not in the queries, yet the next group must stand clear of them.
+    let mut landed: Vec<(Vec3, f32)> = vec![];
     for &Summon { summoner, species: id } in summons.read() {
         let Ok((caller, caller_at, caller_walker)) = monsters.get(summoner) else { continue };
         let Some(kind) = species.kind(id) else { continue };
@@ -124,6 +127,7 @@ pub fn summon(
                 at.with_y(0.0).distance(spot.with_y(0.0)) >= radius + spacing / 2.0
             };
             apart(party_at.0, body::RADIUS)
+                && landed.iter().all(|&(at, radius)| apart(at, radius))
                 && monsters.iter().all(|(other, at, walker)| {
                     other.is_dead() || apart(feet(at.translation(), walker), other.body.radius)
                 })
@@ -175,6 +179,7 @@ pub fn summon(
             continue;
         }
         members.truncate(spots.len());
+        landed.extend(spots.iter().map(|&spot| (spot, radius)));
         next_location += members.len() as i32;
         next_group += 1;
         for (member, &spot) in members.iter_mut().zip(&spots) {
@@ -373,6 +378,27 @@ mod tests {
         authored.sort();
         authored.dedup();
         assert_eq!(authored.len(), 2, "two groups under two ids: {authored:?}");
+    }
+
+    /// Two summonings by one unseen summoner in one run scatter from the
+    /// same spot, yet the second group stands clear of the first.
+    #[test]
+    fn summonings_in_one_run_stand_clear_of_each_other() {
+        let (mut app, summoner, _) = scene(true);
+        app.world_mut().write_message(Summon { summoner, species: 12 });
+        app.world_mut().write_message(Summon { summoner, species: 12 });
+        app.world_mut().run_system_once(summon).unwrap();
+        let called = called(&mut app);
+        assert_eq!(called.len(), 6);
+        // The first group holds locations 5–7, the second 8–10; each of the
+        // second stands a radius plus half a step from each of the first.
+        let (first, second): (Vec<_>, Vec<_>) = called.iter().partition(|(m, ..)| m.location < 8);
+        assert_eq!((first.len(), second.len()), (3, 3));
+        for (_, a, _) in &first {
+            for (_, b, _) in &second {
+                assert!(a.with_y(0.0).distance(b.with_y(0.0)) >= 1.0, "apart: {a} {b}");
+            }
+        }
     }
 
     /// Unseen, the group comes where the summoner stands.
