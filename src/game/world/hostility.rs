@@ -26,22 +26,6 @@ pub enum Stance {
 }
 
 impl Stance {
-    /// Control reads the actual condition; expiry/cure restores the group's
-    /// current stance without a second writable allegiance field.
-    pub fn controlled(self, monster: &Monster) -> Self {
-        if !monster
-            .conditions
-            .iter()
-            .any(|(c, _)| *c == crate::game::characters::Condition::Turncoat)
-        {
-            return self;
-        }
-        match self {
-            Self::Hostile => Self::Friendly,
-            Self::Friendly => Self::Hostile,
-            Self::Neutral => Self::Neutral,
-        }
-    }
     pub fn opposes(self, other: Self) -> bool {
         matches!((self, other), (Self::Hostile, Self::Friendly) | (Self::Friendly, Self::Hostile))
     }
@@ -119,6 +103,20 @@ pub fn within_radius(species: &Species, nearest: f32) -> bool {
         && matches!(species.disposition, Disposition::HostileWithin(radius) if nearest <= radius)
 }
 
+/// A monster's own stance now: its group's set stance while it holds
+/// ([`stance`]), swapped by the monster's own Turncoat ([`own_stance`]).
+/// Every reader of a monster's side goes through this.
+pub fn monster_own(
+    monster: &Monster,
+    set: Option<SetStance>,
+    species: &Species,
+    factions: &Factions,
+    now: u64,
+    fighting: bool,
+) -> Stance {
+    own_stance(stance(set, species, factions, now, fighting), monster.has(Condition::Turncoat))
+}
+
 /// A monster's stance now, through its group, for operations that hold the
 /// whole world. A monster outside any group stands by its species' default.
 pub fn monster_stance(world: &World, monster: Entity) -> Stance {
@@ -134,8 +132,8 @@ pub fn monster_stance(world: &World, monster: Entity) -> Stance {
         .and_then(|group| group.set);
     let fighting = world.get::<crate::game::combat::Combatant>(monster).is_some();
     let now = world.resource::<GameClock>().ms;
-    stance(set, species, world.resource::<Factions>(), now, fighting)
-        .controlled(world.get::<Monster>(monster).unwrap())
+    let body = world.get::<Monster>(monster).unwrap();
+    monster_own(body, set, species, world.resource::<Factions>(), now, fighting)
 }
 
 /// Monsters' stances now, through their groups, for systems that only

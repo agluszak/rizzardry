@@ -43,13 +43,10 @@ pub(crate) fn radius(
                 .filter(|&member| {
                     world.members.get(member).is_ok_and(|(_, v, ..)| {
                         !v.is_dead()
-                            && recipients.admits(
-                                if v.has(crate::game::characters::Condition::Turncoat) {
-                                    crate::game::world::hostility::Stance::Hostile
-                                } else {
-                                    crate::game::world::hostility::Stance::Friendly
-                                },
-                            )
+                            && recipients.admits(crate::game::world::hostility::own_stance(
+                                crate::game::world::hostility::Stance::Friendly,
+                                v.has(crate::game::characters::Condition::Turncoat),
+                            ))
                     })
                 })
                 .map(Victim::Member),

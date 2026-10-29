@@ -119,7 +119,8 @@ impl<'w, 's> MonsterDamage<'w, 's> {
             .ok()
             .and_then(|member| self.groups.get(member.0).ok())
             .and_then(|group| group.set);
-        hostility::stance(set, kind, factions, now, true).controlled(monster)
+        let fighting = self.combatants.contains(entity);
+        hostility::monster_own(monster, set, kind, factions, now, fighting)
     }
 
     /// Commit hostility before damage/conditions inspect the target's side.

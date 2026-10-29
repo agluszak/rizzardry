@@ -707,17 +707,13 @@ pub fn perform(
                 centre,
                 spell.radius + spell.radius_per_power * f32::from(cast_power),
                 Some(situation.party_at),
-                super::targeting::Recipients::Opponents(
-                    if world
+                super::targeting::Recipients::Opponents(crate::game::world::hostility::own_stance(
+                    crate::game::world::hostility::Stance::Friendly,
+                    world
                         .members
                         .get(caster)
-                        .is_ok_and(|(_, vitals, ..)| vitals.has(Condition::Turncoat))
-                    {
-                        crate::game::world::hostility::Stance::Hostile
-                    } else {
-                        crate::game::world::hostility::Stance::Friendly
-                    },
-                ),
+                        .is_ok_and(|(_, vitals, ..)| vitals.has(Condition::Turncoat)),
+                )),
             );
         }
         // A spell aimed at enemies provokes those it is cast at, whatever
