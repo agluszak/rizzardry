@@ -1744,22 +1744,15 @@ fn party_turn(
     }
     if let RoundAction::Breathe(target) = work.action {
         battle.this_round.party[index].end();
-        let candidates = visible_monsters(combatants, damage, &magic.obstacles, party.eye);
-        let party_members: Vec<_> = magic.context.roster.iter().collect();
-        let situation = casting::Situation {
-            context: casting::UseContext::Combat,
-            party: &party_members,
-            party_at: party.eye,
-            facing: crate::game::party::body::heading(party.yaw),
-            monsters: &candidates,
-            group_of: &|m| vec![m],
-        };
-        let BattleMagic { context, points, .. } = magic;
-        let result = context
-            .resolve(party.now, members, damage, |field, spells| {
-                breath::execute(member, target, &situation, spells, rng, field, points)
-            })
-            .and_then(|result| result);
+        let result = member_acts(
+            combatants,
+            (members, damage),
+            party,
+            magic,
+            |situation, spells, field, points| {
+                breath::execute(member, target, situation, spells, rng, field, points)
+            },
+        );
         match result {
             Ok(effects) => {
                 battle.this_round.attacked = true;
@@ -1974,9 +1967,7 @@ fn visible_monsters(
         .collect()
 }
 
-/// A member casts or uses an item at their initiative. The monsters it may
-/// aim at are decided now: in the fight, alive, within the spell's reach of
-/// the party and in its sight (retail `CharacterActionReachesTarget`).
+/// A member casts or uses an item at their initiative.
 fn member_casts(
     combatants: &[Entity],
     member: Entity,
@@ -1987,6 +1978,27 @@ fn member_casts(
     party: &PartyView,
     magic: &mut BattleMagic,
 ) -> Result<(casting::Report, Vec<casting::SpellInFlight>), casting::Refusal> {
+    member_acts(combatants, (members, damage), party, magic, |situation, spells, field, points| {
+        casting::perform(member, choice, situation, spells, points, rng, field)
+    })
+}
+
+/// A member's magic or breath at their initiative, in the fight as it
+/// stands now: the monsters it may aim at are in the fight, targetable,
+/// and in the party's sight, with their groups (retail
+/// `CharacterActionReachesTarget`).
+fn member_acts<R>(
+    combatants: &[Entity],
+    (members, damage): (&mut Members, &mut MonsterDamage),
+    party: &PartyView,
+    magic: &mut BattleMagic,
+    act: impl FnOnce(
+        &casting::Situation,
+        &crate::content::spells::SpellCatalog,
+        &mut crate::game::magic::effects::Field,
+        &mut Query<(&LearnedSpells, &mut SpellPoints)>,
+    ) -> Result<R, casting::Refusal>,
+) -> Result<R, casting::Refusal> {
     let BattleMagic { context, points, obstacles, groups, group_members, .. } = magic;
     let party_members: Vec<Entity> = context.roster.iter().collect();
     let in_sight: Vec<_> = visible_monsters(combatants, damage, obstacles, party.eye)
@@ -2010,10 +2022,8 @@ fn member_casts(
         group_of: &group_of,
     };
     context
-        .resolve(party.now, members, damage, |field, spells| {
-            casting::perform(member, choice, &situation, spells, points, rng, field)
-        })
-        .and_then(|performed| performed)
+        .resolve(party.now, members, damage, |field, spells| act(&situation, spells, field, points))
+        .and_then(|acted| acted)
 }
 
 /// What a monster settled on doing with its action besides striking.
