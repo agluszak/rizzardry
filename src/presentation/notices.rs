@@ -187,6 +187,8 @@ pub(super) fn wrap(text: &str, width: u32, measure: impl Fn(&str) -> u32) -> Vec
 const PARTY_TAKES: usize = 0x1e9;
 const TAKES: usize = 0x1e8;
 const NO_ROOM: usize = 0x90c;
+/// What retail says when an item that may not be discarded stays in hand.
+const CANNOT_DROP: usize = 0x4ef;
 /// Merging: nothing is made from these, "%s lacks the skill", and both must
 /// be identified first (retail `MergeItems`).
 const CANNOT_MERGE: usize = 0x161;
@@ -394,6 +396,28 @@ fn magic_lines(
 }
 
 /// Turn trigger effects, camping and combat news into notice texts.
+/// Retail `AdjustFactionDisposition`'s notice: "%s standing %s." with the
+/// faction's name (`g_faction_name_ids`, whose two spare factions reuse the
+/// first name) and whether it worsened or improved.
+fn faction_line(
+    news: &crate::game::factions::FactionNews,
+    string: &impl Fn(usize) -> String,
+) -> String {
+    const NAMES: usize = 0x5a1;
+    const WORSENED: usize = 0x245;
+    const IMPROVED: usize = 0x246;
+    const CHANGED: usize = 0x247;
+    let name = match usize::try_from(news.faction) {
+        Ok(faction @ 0..=18) => NAMES + faction,
+        _ => NAMES,
+    };
+    string(CHANGED).replacen("%s", &string(name), 1).replacen(
+        "%s",
+        &string(if news.improved { IMPROVED } else { WORSENED }),
+        1,
+    )
+}
+
 pub fn queue_notices(
     mut effects: MessageReader<TriggerEffect>,
     mut camp: MessageReader<CampNews>,
@@ -410,9 +434,11 @@ pub fn queue_notices(
     battle: Option<Single<&crate::game::combat::Battle>>,
     sheets: Res<Assets<SpriteSheet>>,
     mut log: ResMut<TextLog>,
-    (mut magic, content): (
+    (mut magic, content, mut factions, mut speech): (
         MessageReader<crate::game::magic::casting::MagicNews>,
         crate::game::data::Content,
+        MessageReader<crate::game::factions::FactionNews>,
+        MessageReader<crate::game::npcs::conversation::NpcSpeech>,
     ),
 ) {
     let font = sheets.get(&art.font);
@@ -428,6 +454,13 @@ pub fn queue_notices(
         for line in magic_lines(news, &names, spells, &string) {
             log.push(channel, &line, font);
         }
+    }
+    // Retail `SpeakNpcSubquote` outside dialogue mode.
+    for line in speech.read() {
+        log.push(channel, &format!("{}: \"{}\"", line.speaker, line.text), font);
+    }
+    for news in factions.read() {
+        log.push(channel, &faction_line(news, &string), font);
     }
     for effect in effects.read() {
         let text = match effect {
@@ -487,6 +520,7 @@ pub fn queue_notices(
             }
             ItemNews::Takes { member: None, item } => string(PARTY_TAKES).replace("%s", item),
             ItemNews::NoRoom => string(NO_ROOM),
+            ItemNews::CannotDrop => string(CANNOT_DROP),
             ItemNews::CannotMerge => string(CANNOT_MERGE),
             ItemNews::Unskilled { member } => string(UNSKILLED_MERGE).replace("%s", member),
             ItemNews::Unidentified => string(MERGE_UNIDENTIFIED),
@@ -651,6 +685,23 @@ pub fn queue_notices(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A faction's notice names it and says which way its standing went;
+    /// retail's spare factions borrow the first name.
+    #[test]
+    fn faction_notices_name_the_faction_and_the_direction() {
+        let string = |index: usize| match index {
+            0x245 => "worsened".to_owned(),
+            0x246 => "improved".to_owned(),
+            0x247 => "%s standing %s.".to_owned(),
+            0x5a1 => "Unaligned".to_owned(),
+            0x5a5 => "Umpani".to_owned(),
+            _ => String::new(),
+        };
+        let news = |faction, improved| crate::game::factions::FactionNews { faction, improved };
+        assert_eq!(faction_line(&news(4, false), &string), "Umpani standing worsened.");
+        assert_eq!(faction_line(&news(20, true), &string), "Unaligned standing improved.");
+    }
 
     #[test]
     fn the_box_follows_new_lines_and_scrolls_to_its_last() {

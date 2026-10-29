@@ -45,7 +45,7 @@ pub struct NpcWorldRole {
     pub map: String,
     pub group: Option<i32>,
 }
-#[derive(Component, Debug)]
+#[derive(Component, Debug, Default)]
 pub struct Npc {
     pub definition: NpcId,
     pub disposition: u8,
@@ -54,6 +54,12 @@ pub struct Npc {
     /// Successful Mindread attempts advance through the NPC's three responses.
     pub mindread_refusals: u8,
     pub stock: trade::MerchantStock,
+    /// What it still takes in bribes before it warms to the party.
+    pub trade_pool: u16,
+    /// When the party last charmed it and made small talk with it; each
+    /// waits half a day before the party may try again.
+    pub charmed_at: Option<u64>,
+    pub small_talk_at: Option<u64>,
 }
 #[derive(Resource, Default)]
 pub struct NpcAssets {
@@ -158,6 +164,9 @@ impl NpcPopulation<'_, '_> {
                     mindread_refusals: 0,
                     paid_topics: vec![],
                     stock,
+                    trade_pool: definition.trade_pool,
+                    charmed_at: None,
+                    small_talk_at: None,
                 },
             ))
             .id();
@@ -260,8 +269,11 @@ impl Plugin for NpcPlugin {
             .init_asset::<FactCatalog>()
             .init_resource::<NpcAssets>()
             .init_resource::<conversation::StoryFacts>()
+            .init_resource::<conversation::NoAnswerTurn>()
             .add_message::<conversation::ConversationRequest>()
             .add_message::<conversation::LinePlayback>()
+            .add_message::<conversation::PartyRemark>()
+            .add_message::<conversation::NpcSpeech>()
             .add_observer(conversation::end_conversations)
             .add_systems(Startup, load_npcs)
             .add_systems(

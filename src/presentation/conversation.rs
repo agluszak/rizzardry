@@ -49,6 +49,8 @@ enum Mode {
     Talk,
     Buy,
     Sell,
+    /// Hand the NPC an item from a member's pack or the party's items.
+    Give,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ItemGroup {
@@ -89,6 +91,11 @@ enum ItemFilter {
 }
 #[derive(Component)]
 struct ModePanel(bool);
+/// The topic menu of an NPC not yet friendly, shown instead of the talk panel.
+#[derive(Component)]
+struct MenuPanel;
+#[derive(Component)]
+struct ApproachButton(Approach);
 #[derive(Component)]
 struct ModeFocus(bool);
 #[derive(Component)]
@@ -196,6 +203,7 @@ impl Plugin for ConversationViewPlugin {
             .add_systems(
                 Update,
                 (
+                    close_views,
                     create_views,
                     (
                         project_text,
@@ -380,6 +388,109 @@ fn paint_wells(
         }
     }
 }
+/// Every NPC takes items; only merchants buy and sell.
+fn open_trade(world: &mut World, button: Entity, root: Entity) {
+    world.entity_mut(button).observe(
+        move |_: On<Activate>,
+              mut states: Query<&mut DialogueState>,
+              roots: Query<&ConversationView>,
+              sessions: Query<&Conversation>,
+              npcs: Query<&Npc>,
+              definitions: Res<Assets<NpcCatalog>>,
+              assets: Res<NpcAssets>| {
+            let merchant = roots
+                .get(root)
+                .ok()
+                .and_then(|view| sessions.get(view.0).ok())
+                .and_then(|c| npcs.get(c.actor).ok())
+                .and_then(|n| definitions.get(&assets.catalog)?.get(n.definition))
+                .is_some_and(|d| d.owns_stock);
+            if let Ok(mut state) = states.get_mut(root) {
+                set_mode(&mut state, if merchant { Mode::Buy } else { Mode::Give });
+            }
+        },
+    );
+}
+fn leave_on(world: &mut World, button: Entity, root: Entity) {
+    world.entity_mut(button).observe(
+        move |_: On<Activate>,
+              roots: Query<&ConversationView>,
+              mut requests: MessageWriter<ConversationRequest>| {
+            if let Ok(view) = roots.get(root) {
+                requests.write(ConversationRequest::Close { conversation: view.0 });
+            }
+        },
+    );
+}
+/// Retail `ShowNpcDialogueTopicMenu`: an NPC not yet friendly may be
+/// charmed, talked to or bribed before it talks of anything else.
+fn build_menu(world: &mut World, canvas: Entity, root: Entity) {
+    let group = world.spawn((Node::default(), MenuPanel, Pickable::IGNORE, ChildOf(canvas))).id();
+    let left = panel(world, group, Vec2::new(23., 358.), Vec2::new(141., 92.), 0);
+    let name = label(world, left, "", Vec2::new(5., 2.), 132.);
+    let bold = world.resource::<AssetServer>().load("retail://data/fonts/wiz_text_font_bold.sti");
+    let mut text = world.get_mut::<BitmapText>(name).unwrap();
+    text.justify = bevy::text::Justify::Center;
+    text.font = bold;
+    world.entity_mut(name).insert(Caption::Name);
+    let strings = world
+        .get_resource::<super::screen_art::StringTable>()
+        .and_then(|t| world.resource::<Assets<crate::content::ui::TextTable>>().get(&t.0));
+    let labels = [
+        (0x727, "Charm"),
+        (0x728, "Small Talk"),
+        (0x729, "Bribe"),
+        (0x723, "Attack"),
+        (0x724, "Trade"),
+        (0x725, "Leave"),
+    ]
+    .map(|(id, fallback)| strings.and_then(|s| s.get(id)).unwrap_or(fallback).to_owned());
+    for (i, text) in labels.into_iter().enumerate() {
+        let e = action(
+            world,
+            left,
+            &text,
+            Vec2::new(2. + 66. * (i % 2) as f32, 17. + 16. * (i / 2) as f32),
+            Vec2::new(67., 16.),
+        );
+        match i {
+            0 | 1 => {
+                let approach = if i == 0 { Approach::Charm } else { Approach::SmallTalk };
+                world.entity_mut(e).insert(ApproachButton(approach)).observe(
+                    move |_: On<Activate>,
+                          roots: Query<&ConversationView>,
+                          sessions: Query<&Conversation>,
+                          mut requests: MessageWriter<ConversationRequest>| {
+                        if let Ok(view) = roots.get(root)
+                            && let Ok(c) = sessions.get(view.0)
+                        {
+                            requests.write(ConversationRequest::Approach {
+                                conversation: view.0,
+                                revision: c.revision,
+                                approach,
+                            });
+                        }
+                    },
+                );
+            }
+            // Retail's bribe opens the give layout.
+            2 => {
+                world.entity_mut(e).observe(
+                    move |_: On<Activate>, mut states: Query<&mut DialogueState>| {
+                        if let Ok(mut state) = states.get_mut(root) {
+                            set_mode(&mut state, Mode::Give);
+                        }
+                    },
+                );
+            }
+            4 => open_trade(world, e, root),
+            5 => leave_on(world, e, root),
+            _ => {
+                world.entity_mut(e).insert(InteractionDisabled);
+            }
+        }
+    }
+}
 fn set_mode(state: &mut DialogueState, mode: Mode) {
     if state.mode != mode {
         state.mode = mode;
@@ -471,9 +582,13 @@ fn build(world: &mut World, session: Entity) -> Entity {
                 Vec2::new(67., 16.),
             );
             match (trade, i) {
-                (false, 0) | (true, 0) | (true, 1) => {
-                    let mode = if i == 1 { Mode::Sell } else { Mode::Buy };
-                    world.entity_mut(e).insert((ModeButton(mode), TradeAvailable));
+                (false, 0) => open_trade(world, e, root),
+                (true, 0..=2) => {
+                    let mode = [Mode::Buy, Mode::Sell, Mode::Give][i];
+                    world.entity_mut(e).insert(ModeButton(mode));
+                    if mode != Mode::Give {
+                        world.entity_mut(e).insert(TradeAvailable);
+                    }
                     world.entity_mut(e).observe(
                         move |_: On<Activate>, mut states: Query<&mut DialogueState>| {
                             if let Ok(mut state) = states.get_mut(root) {
@@ -491,13 +606,7 @@ fn build(world: &mut World, session: Entity) -> Entity {
                         }
                     });
                 }
-                (false, 5) => {
-                    world.entity_mut(e).observe(
-                        move |_: On<Activate>, roots: Query<&ConversationView>, mut requests: MessageWriter<ConversationRequest>| {
-                            if let Ok(view)=roots.get(root){requests.write(ConversationRequest::Close { conversation:view.0 });}
-                        },
-                    );
-                }
+                (false, 5) => leave_on(world, e, root),
                 (true, 4..=5) => {
                     let pool = i == 4;
                     world.entity_mut(e).insert(PoolButton(pool));
@@ -688,19 +797,74 @@ fn build(world: &mut World, session: Entity) -> Entity {
                 .observe(move |_: On<Activate>, mut commands: Commands| {
                     commands.queue(move |world: &mut World| quantity::open(world, root, canvas));
                 });
+            // Retail's Give mode also gives gold: the amount typed here when
+            // no item is chosen.
+            let gift_gold = world
+                .spawn((
+                    GiftGold,
+                    TextInput,
+                    EditableText {
+                        max_characters: Some(9),
+                        allow_newlines: false,
+                        ..EditableText::new("")
+                    },
+                    bevy::text::EditableTextFilter::new(|c| c.is_ascii_digit()),
+                    TextFont {
+                        font: world
+                            .resource::<AssetServer>()
+                            .load("retail://data/fonts/wiz_text_font.sti#font")
+                            .into(),
+                        font_size: 11.0.into(),
+                        ..default()
+                    },
+                    TextColor(Color::WHITE),
+                    TabIndex(0),
+                    Node {
+                        display: Display::None,
+                        ..absolute(Vec2::new(83., 58.), Vec2::new(51., 12.))
+                    },
+                    ChildOf(right),
+                ))
+                .id();
             let confirm = action(world, right, "", Vec2::new(56., 34.), Vec2::new(80., 18.));
             world.entity_mut(confirm).insert(Confirm);
             let caption = world.get::<Children>(confirm).unwrap()[0];
             world.entity_mut(caption).insert(Caption::TradeAction);
             world.entity_mut(confirm).observe(
                 move |_: On<Activate>,
-                      states: Query<&DialogueState>,
+                      mut states: Query<&mut DialogueState>,
                       roots: Query<&ConversationView>,
+                      sessions: Query<&Conversation>,
+                      gold: Query<&EditableText, With<GiftGold>>,
                       mut requests: MessageWriter<ConversationRequest>| {
-                    if let Some(q) = states.get(root).ok().and_then(|s| s.selected)
+                    let Ok(mut state) = states.get_mut(root) else { return };
+                    let amount = gold.get(gift_gold).map_or(0, gift_amount);
+                    if state.mode == Mode::Give
+                        && state.selected.is_none()
+                        && amount > 0
+                        && let Ok(view) = roots.get(root)
+                        && let Ok(c) = sessions.get(view.0)
+                    {
+                        requests.write(ConversationRequest::GiveGold {
+                            conversation: view.0,
+                            revision: c.revision,
+                            amount,
+                        });
+                        set_mode(&mut state, Mode::Talk);
+                    } else if let Some(q) = state.selected
                         && roots.get(root).is_ok_and(|v| v.0 == q.conversation)
                     {
-                        requests.write(ConversationRequest::Trade(q));
+                        if state.mode != Mode::Give {
+                            requests.write(ConversationRequest::Trade(q));
+                        } else if let TradeSource::Party(item) = q.source {
+                            requests.write(ConversationRequest::Give {
+                                conversation: q.conversation,
+                                revision: q.revision,
+                                item,
+                            });
+                            // Retail returns to the transcript for the answer.
+                            set_mode(&mut state, Mode::Talk);
+                        }
                     }
                 },
             );
@@ -881,6 +1045,7 @@ fn build(world: &mut World, session: Entity) -> Entity {
             world.resource_mut::<InputFocus>().set(input, FocusCause::Navigated);
         }
     }
+    build_menu(world, canvas, root);
     let bubble = world
         .spawn((
             QuoteBubble { line: None },
@@ -939,7 +1104,22 @@ fn select(world: &mut World, view: Entity, session: Entity, source: TradeSource,
     if world.get::<ConversationView>(view).is_none_or(|v| v.0 != session) {
         return;
     }
-    let result = quote_trade(world, session, source, quantity);
+    // A gift has no price: one of the item is chosen as it is.
+    let giving = world.get::<DialogueState>(view).is_some_and(|s| s.mode == Mode::Give);
+    let result = if giving {
+        world
+            .get::<Conversation>(session)
+            .map(|c| TradeQuote {
+                conversation: session,
+                revision: c.revision,
+                source,
+                quantity: 1,
+                gold: 0,
+            })
+            .ok_or(trade::TradeError::StaleSelection)
+    } else {
+        quote_trade(world, session, source, quantity)
+    };
     let Some(mut v) = world.get_mut::<DialogueState>(view) else { return };
     match result {
         Ok(q) => {
@@ -976,14 +1156,29 @@ fn scope(
         parents.iter_ancestors(entity).find_map(|root| roots.get(root).ok().map(|v| (root, v.0)))
     })
 }
+/// A dialogue the party has left plays out without its view.
+fn close_views(
+    mut commands: Commands,
+    left: Query<&ConversationViews, Added<crate::game::npcs::conversation::Closing>>,
+) {
+    for views in &left {
+        for &view in &views.0 {
+            commands.entity(view).despawn();
+        }
+    }
+}
 fn create_views(
     mut commands: Commands,
-    sessions: Query<(Entity, Option<&ConversationViews>), With<Conversation>>,
+    sessions: Query<
+        (Entity, Option<&ConversationViews>),
+        (With<Conversation>, Without<crate::game::npcs::conversation::Closing>),
+    >,
 ) {
     for (session, views) in &sessions {
         if views.is_none_or(|v| v.0.is_empty()) {
             commands.queue(move |world: &mut World| {
                 if world.get::<Conversation>(session).is_some()
+                    && world.get::<crate::game::npcs::conversation::Closing>(session).is_none()
                     && world.get::<ConversationViews>(session).is_none_or(|v| v.0.is_empty())
                 {
                     build(world, session);
@@ -1015,9 +1210,15 @@ fn project_text(
                     .to_owned(),
                 Mode::Buy => "Buy".into(),
                 Mode::Sell => "Sell".into(),
+                Mode::Give => "Give".into(),
             },
             Caption::Gold => parties.single().map(|p| format!("{}g", p.gold)).unwrap_or_default(),
-            Caption::TradeAction => if state.mode == Mode::Buy { "Buy" } else { "Sell" }.into(),
+            Caption::TradeAction => match state.mode {
+                Mode::Buy => "Buy",
+                Mode::Give => "Give",
+                _ => "Sell",
+            }
+            .into(),
             Caption::Quote => {
                 if let ConversationWait::Line { speech: entity, .. } = c.wait {
                     speech.get(entity).map(|s| s.text.clone()).unwrap_or_default()
@@ -1031,10 +1232,22 @@ fn project_text(
         }
     }
 }
+/// What the NPC says as it hands over gold or an item, and as an item leaves
+/// a member's pack or the party's items (retail `ProcessNpcQuoteEntry`,
+/// `RemoveNpcScriptItem`), and the experience notice (`AwardPartyExperience`).
+const QUEST_GOLD: usize = 0x7e9;
+const QUEST_ITEM: usize = 0x7ea;
+const ITEM_TAKEN_FROM: usize = 0x7ec;
+const ITEM_TAKEN: usize = 0x7ed;
+const QUEST_EXPERIENCE: usize = 0x232;
+/// What an NPC says, in turn, to a question it has nothing to say to.
+const NO_ANSWER: [usize; 2] = [1867, 1868];
+
 fn sync_transcript(
     views: ViewScope,
     mut commands: Commands,
     assets: Res<AssetServer>,
+    strings: super::screen_art::GameStrings,
     sessions: Query<&Conversation>,
     lists: Query<(Entity, Option<&Children>), With<Summary>>,
     mut rows: Query<(&TranscriptRow, &mut BitmapText)>,
@@ -1052,9 +1265,36 @@ fn sync_transcript(
             .iter()
             .map(|line| match line {
                 TranscriptLine::Npc(text) => (text.clone(), None),
+                // Retail alternates its two answers for having nothing to say.
+                TranscriptLine::NoAnswer { npc, second } => {
+                    (strings.get(NO_ANSWER[usize::from(*second)]).replacen("%s", npc, 1), None)
+                }
                 TranscriptLine::Question(text) => (text.clone(), Some("palettebronze")),
                 TranscriptLine::Reply(text) => (text.clone(), Some("palettegreen")),
+                // Retail shows gifts and removals in the NPC's own quote.
+                TranscriptLine::Reward(QuestReward::Gold { giver, amount }) => (
+                    strings
+                        .get(QUEST_GOLD)
+                        .replacen("%s", giver, 1)
+                        .replace("%d", &amount.to_string()),
+                    None,
+                ),
+                TranscriptLine::Reward(QuestReward::Item { name }) => {
+                    (strings.get(QUEST_ITEM).replacen("%s", name, 1), None)
+                }
+                TranscriptLine::Reward(QuestReward::Taken { member: Some(member) }) => {
+                    (strings.get(ITEM_TAKEN_FROM).replacen("%s", member, 1), None)
+                }
+                TranscriptLine::Reward(QuestReward::Taken { member: None }) => {
+                    (strings.get(ITEM_TAKEN).to_owned(), None)
+                }
+                TranscriptLine::Reward(QuestReward::Experience { amount_each }) => (
+                    strings.get(QUEST_EXPERIENCE).replace("%d", &amount_each.to_string()),
+                    Some("palettegreen"),
+                ),
             })
+            // A recording without a line ("SOUND") shows nothing.
+            .filter(|(text, _)| !text.is_empty())
             .collect();
         if let ConversationWait::Blocked { quote, entry, reason } = &c.wait {
             lines.push((
@@ -1067,6 +1307,7 @@ fn sync_transcript(
                 Outcome::NoTopic => "No supported topic matches that input.".into(),
                 Outcome::Traded => "Trade complete.".into(),
                 Outcome::TradeRefused(error) => format!("Trade refused: {error:?}"),
+                Outcome::GiftRefused(error) => format!("Gift refused: {error:?}"),
             };
             lines.push((text, Some("palettebronze")));
         }
@@ -1134,10 +1375,12 @@ fn project_modes(
     npcs: Query<&Npc>,
     definitions: Res<Assets<NpcCatalog>>,
     assets: Res<NpcAssets>,
+    clock: Res<crate::game::time::GameClock>,
     mut panels: Query<
-        (Entity, &mut Node, Option<&ModePanel>, Option<&mut QuoteBubble>),
-        Or<(With<ModePanel>, With<QuoteBubble>)>,
+        (Entity, &mut Node, Option<&ModePanel>, Option<&mut QuoteBubble>, Has<MenuPanel>),
+        Or<(With<ModePanel>, With<QuoteBubble>, With<MenuPanel>)>,
     >,
+    approaches: Query<(Entity, &ApproachButton, Has<InteractionDisabled>)>,
     controls: Query<
         (
             Entity,
@@ -1160,7 +1403,7 @@ fn project_modes(
         )>,
     >,
 ) {
-    for (entity, mut node, panel, bubble) in &mut panels {
+    for (entity, mut node, panel, bubble, menu) in &mut panels {
         let Some((root, session)) = views.owner(entity) else { continue };
         let (Ok(state), Ok(c)) = (views.states.get(root), sessions.get(session)) else { continue };
         let visible = if let Some(mut bubble) = bubble {
@@ -1173,13 +1416,28 @@ fn project_modes(
                 bubble.line = line;
             }
             state.mode == Mode::Talk && line.is_some()
+        } else if menu {
+            state.mode == Mode::Talk && c.menu
         } else {
             panel.is_some_and(|p| p.0 == (state.mode != Mode::Talk))
+                && !(c.menu && state.mode == Mode::Talk)
         };
         let display = if visible { Display::Flex } else { Display::None };
         if node.display != display {
             node.display = display;
         }
+    }
+    // Each approach waits half a day once tried.
+    for (entity, button, disabled) in &approaches {
+        let Some((_, session)) = views.owner(entity) else { continue };
+        let Some(npc) = sessions.get(session).ok().and_then(|c| npcs.get(c.actor).ok()) else {
+            continue;
+        };
+        let at = match button.0 {
+            Approach::Charm => npc.charmed_at,
+            Approach::SmallTalk => npc.small_talk_at,
+        };
+        set_enabled(&mut commands, entity, approach_ready(at, clock.ms), disabled);
     }
     for (entity, disabled, was_selected, mode, pool, category, filter, trade, sort) in &controls {
         let Some((root, session)) = views.owner(entity) else { continue };
@@ -1192,7 +1450,12 @@ fn project_modes(
                 .is_some_and(|d| d.owns_stock);
             set_enabled(&mut commands, entity, can_trade, disabled);
         } else if pool.is_some() {
-            set_enabled(&mut commands, entity, state.mode == Mode::Sell, disabled);
+            set_enabled(
+                &mut commands,
+                entity,
+                matches!(state.mode, Mode::Sell | Mode::Give),
+                disabled,
+            );
         }
         let selected = (sort && state.alphabetical)
             || mode.is_some_and(|m| state.mode == m.0)
@@ -1400,13 +1663,18 @@ fn sync_choices(
         let Some((_, session)) = views.owner(list) else { continue };
         let Ok(c) = sessions.get(session) else { continue };
         let answers: Vec<(String, Answer)> = match &c.wait {
-            ConversationWait::Options { words, .. } => {
+            // A typed answer goes through the topic input instead.
+            ConversationWait::Options { words, typed: false, .. } => {
                 words.iter().map(|w| (w.clone(), Answer::Reply(w.clone()))).collect()
             }
             ConversationWait::Price { .. } => vec![
                 (string(0x7df, "Pay"), Answer::Price(true)),
                 (string(0x7e0, "Decline"), Answer::Price(false)),
             ],
+            // Retail's confirmation dialog for giving all the party's gold.
+            ConversationWait::GiveAll { .. } => {
+                vec![("OK".into(), Answer::Price(true)), ("Cancel".into(), Answer::Price(false))]
+            }
             _ => vec![],
         };
         let Ok((overlay, mut overlay_node, mut state)) = overlays.get_mut(parent.parent()) else {
@@ -1456,6 +1724,8 @@ fn sync_choices(
                         }
                     } else if let ConversationWait::Price { gold, .. } = c.wait {
                         string(0x7e5, "Price: %d gold").replace("%d", &gold.to_string())
+                    } else if matches!(c.wait, ConversationWait::GiveAll { .. }) {
+                        string(0x7d6, "Give all your gold?")
                     } else {
                         string(0x7e4, "Choose a response")
                     };
@@ -1569,6 +1839,12 @@ fn sync_topic_rows(
         }
     }
 }
+/// The gold amount typed to give the NPC.
+#[derive(Component)]
+struct GiftGold;
+fn gift_amount(text: &EditableText) -> u32 {
+    text.value().to_string().parse().unwrap_or(0)
+}
 #[derive(bevy::ecs::system::SystemParam)]
 struct TradeWidgets<'w, 's> {
     lists: Query<'w, 's, (Entity, Option<&'static Children>), With<TradeList>>,
@@ -1580,6 +1856,7 @@ struct TradeWidgets<'w, 's> {
     controls: Query<'w, 's, (Entity, Has<InteractionDisabled>), With<Confirm>>,
     previews:
         Query<'w, 's, (Entity, &'static mut Picture, &'static mut Visibility), With<ItemPreview>>,
+    gifts: Query<'w, 's, (Entity, &'static EditableText, &'static mut Node), With<GiftGold>>,
 }
 fn sync_trade_rows(
     views: ViewScope,
@@ -1602,6 +1879,7 @@ fn sync_trade_rows(
         mut texts,
         controls,
         mut previews,
+        mut gifts,
     } = widgets;
     let Some(items) = content.items() else { return };
     let Ok((roster, party)) = parties.single() else { return };
@@ -1719,6 +1997,8 @@ fn sync_trade_rows(
                 let value = quote.map_or_else(String::new, |q| {
                     if count {
                         if units > 1 { q.quantity.to_string() } else { String::new() }
+                    } else if state.mode == Mode::Give {
+                        String::new()
                     } else {
                         format!("{}g", q.gold)
                     }
@@ -1733,14 +2013,27 @@ fn sync_trade_rows(
                 set_enabled(
                     &mut commands,
                     entity,
-                    units > 1 && item.is_some_and(|d| d.class != EquipClass::Ammunition),
+                    state.mode != Mode::Give
+                        && units > 1
+                        && item.is_some_and(|d| d.class != EquipClass::Ammunition),
                     disabled,
                 );
             }
         }
+        let mut gold_typed = false;
+        for (entity, text, mut node) in &mut gifts {
+            if views.owner(entity).is_some_and(|(owner, _)| owner == root) {
+                let shown = state.mode == Mode::Give && quote.is_none();
+                let display = if shown { Display::Flex } else { Display::None };
+                if node.display != display {
+                    node.display = display;
+                }
+                gold_typed = shown && gift_amount(text) > 0;
+            }
+        }
         for (entity, disabled) in &controls {
             if views.owner(entity).is_some_and(|(owner, _)| owner == root) {
-                set_enabled(&mut commands, entity, quote.is_some(), disabled);
+                set_enabled(&mut commands, entity, quote.is_some() || gold_typed, disabled);
             }
         }
         for (entity, mut picture, mut visibility) in &mut previews {
@@ -1935,10 +2228,12 @@ fn submit_topic(
         if let Some((_, session)) = views.owner(entity)
             && let Ok(c) = sessions.get(session)
         {
-            requests.write(ConversationRequest::Topic {
-                conversation: session,
-                revision: c.revision,
-                text: text.value().to_string(),
+            let text = text.value().to_string();
+            // Retail's keyword dialog: a question the party answers by typing.
+            requests.write(if matches!(c.wait, ConversationWait::Options { typed: true, .. }) {
+                ConversationRequest::Reply { conversation: session, revision: c.revision, text }
+            } else {
+                ConversationRequest::Topic { conversation: session, revision: c.revision, text }
             });
         }
         commands.entity(entity).remove::<SubmitTopic>();
@@ -1946,14 +2241,26 @@ fn submit_topic(
 }
 fn play_lines(
     mut commands: Commands,
-    lines: Query<(Entity, &ConversationSpeech), Without<bevy::audio::AudioPlayer>>,
+    lines: Query<(Entity, &ConversationSpeech), Added<ConversationSpeech>>,
     assets: Res<AssetServer>,
 ) {
     for (e, line) in &lines {
-        commands.entity(e).insert((
-            bevy::audio::AudioPlayer::new(assets.load(super::voice::voice_path(&line.voice))),
-            bevy::audio::PlaybackSettings::ONCE,
-        ));
+        if let Some(voice) = &line.voice {
+            commands.entity(e).insert((
+                bevy::audio::AudioPlayer::new(assets.load(super::voice::voice_path(voice))),
+                bevy::audio::PlaybackSettings::ONCE,
+            ));
+        }
+        // Retail `SpeakNpcSubquote`: the alert chime, while the line waits
+        // out its text, not the sound.
+        if line.alert {
+            commands.spawn((
+                bevy::audio::AudioPlayer::new(
+                    assets.load("retail://data/sound/npcs/dialogue alert.wav"),
+                ),
+                bevy::audio::PlaybackSettings::DESPAWN,
+            ));
+        }
     }
 }
 fn watch_playback(
@@ -2028,6 +2335,7 @@ mod tests {
             .init_asset::<SpriteSheet>()
             .init_resource::<Assets<Image>>()
             .init_resource::<StoryFacts>()
+            .init_resource::<crate::game::time::GameClock>()
             .init_resource::<Assets<NpcCatalog>>()
             .init_resource::<Assets<TextTable>>()
             .init_resource::<Assets<ItemCatalog>>()

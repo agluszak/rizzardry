@@ -105,6 +105,7 @@ fn with_trap_spell(level: &mut Scenario, spell: crate::content::spells::SpellDef
     level.world.init_resource::<Assets<MonsterCatalog>>();
     level.world.init_resource::<Assets<SpellCatalog>>();
     level.world.init_resource::<crate::game::factions::Factions>();
+    level.world.init_resource::<Messages<crate::game::factions::FactionNews>>();
     level.world.init_resource::<Messages<crate::game::magic::casting::MagicNews>>();
     let species =
         level.world.resource_mut::<Assets<MonsterCatalog>>().add(MonsterCatalog::default());

@@ -225,6 +225,7 @@ mod pass_time_tests {
             .insert_resource(GameClock::at(0))
             .init_resource::<GameRng>()
             .init_resource::<crate::game::factions::Factions>()
+            .add_message::<crate::game::factions::FactionNews>()
             .init_resource::<Assets<crate::content::species::MonsterCatalog>>()
             .init_resource::<Assets<crate::content::spells::SpellCatalog>>()
             .init_resource::<Assets<crate::content::level::LevelDefinition>>()

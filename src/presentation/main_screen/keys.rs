@@ -194,7 +194,15 @@ pub(crate) struct WorldKeys<'w, 's> {
     focus: Res<'w, bevy::input_focus::InputFocus>,
     controls: Query<'w, 's, (), With<bevy::input_focus::tab_navigation::TabIndex>>,
     questions: Query<'w, 's, (), With<crate::game::world::level::TravelQuestion>>,
-    conversations: Query<'w, 's, (), With<crate::game::npcs::conversation::Conversation>>,
+    conversations: Query<
+        'w,
+        's,
+        (),
+        (
+            With<crate::game::npcs::conversation::Conversation>,
+            Without<crate::game::npcs::conversation::Closing>,
+        ),
+    >,
 }
 
 impl WorldKeys<'_, '_> {

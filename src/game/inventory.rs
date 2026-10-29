@@ -602,6 +602,9 @@ pub enum ItemNews {
         item: String,
     },
     NoRoom,
+    /// An item the party may not part with stays in hand instead of being
+    /// dropped (retail string 0x4ef).
+    CannotDrop,
     /// Merging needs both items identified.
     Unidentified,
     /// Nothing is made from the two.

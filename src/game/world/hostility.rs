@@ -187,7 +187,7 @@ mod tests {
         let mook = species(Disposition::Neutral, crate::game::factions::MOOK, 10);
         let calm = Some(SetStance { stance: Stance::Neutral, at: 1_000 });
         assert_eq!(stance(calm, &mook, &factions, 2_000, false), Stance::Neutral);
-        assert!(factions.record_offence(crate::game::factions::MOOK, false, 1_500));
+        assert!(factions.record_offence(crate::game::factions::MOOK, false, 1_500).is_some());
         assert_eq!(
             stance(calm, &mook, &factions, 2_000, false),
             Stance::Hostile,

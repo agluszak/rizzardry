@@ -40,6 +40,7 @@ fn app() -> App {
         .init_resource::<LevelMemory>()
         .init_resource::<MonsterBodies>()
         .init_resource::<rizzardry::game::factions::Factions>()
+        .add_message::<rizzardry::game::factions::FactionNews>()
         .init_resource::<ItemIds>()
         .init_resource::<GameRng>()
         .add_message::<LevelReady>()
@@ -894,6 +895,14 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
         let session = conversation::begin(app.world_mut(), actor).unwrap();
         app.update();
         assert_eq!(app.world().get::<Conversation>(session).unwrap().current, Some((0, 0)));
+        // Retail lets a queued line play out after the party leaves.
+        if let conversation::ConversationWait::Line { speech, .. } =
+            app.world().get::<Conversation>(session).unwrap().wait
+        {
+            app.world_mut()
+                .write_message(ConversationRequest::Advance { conversation: session, speech });
+            app.update();
+        }
         app.world_mut().write_message(ConversationRequest::Close { conversation: session });
         app.update();
         assert!(app.world().get_entity(session).is_err());

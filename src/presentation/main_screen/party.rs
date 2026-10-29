@@ -575,7 +575,13 @@ fn press(
     mut inventory: crate::game::inventory::operations::InventoryOperations,
     mut review: crate::presentation::inventory::OpenReview,
     mut views: Query<(&mut super::magic_view::MagicView, Has<super::magic_view::CastsAt>)>,
-    conversations: Query<(), With<crate::game::npcs::conversation::Conversation>>,
+    conversations: Query<
+        (),
+        (
+            With<crate::game::npcs::conversation::Conversation>,
+            Without<crate::game::npcs::conversation::Closing>,
+        ),
+    >,
 ) {
     if click.button != PointerButton::Primary {
         return;
@@ -651,7 +657,13 @@ fn release_right(
     mut review: crate::presentation::inventory::OpenReview,
     mut selected: ResMut<SelectedMember>,
     mut commands: Commands,
-    conversations: Query<(), With<crate::game::npcs::conversation::Conversation>>,
+    conversations: Query<
+        (),
+        (
+            With<crate::game::npcs::conversation::Conversation>,
+            Without<crate::game::npcs::conversation::Closing>,
+        ),
+    >,
 ) {
     if release.button != PointerButton::Secondary || !conversations.is_empty() {
         return;
@@ -846,7 +858,7 @@ mod tests {
                 greeting_pending: false,
                 mindread_refusals: 0,
                 paid_topics: vec![],
-                stock: default(),
+                ..default()
             })
             .id();
         crate::game::party::roster::test_join(&mut world, rpc);

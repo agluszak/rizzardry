@@ -1,4 +1,5 @@
 //! NPC definitions and authored dialogue. Numbers are content keys, never runtime slots.
+use super::factions::Faction;
 use super::items::ItemId;
 use bevy::prelude::*;
 
@@ -16,7 +17,14 @@ pub struct NpcDefinition {
     pub merchant: bool,
     pub recruitable: bool,
     pub disposition: u8,
+    /// How much charming it and making small talk move its disposition.
+    pub charm_scale: i8,
+    pub talk_scale: i8,
     pub faction: u8,
+    /// How much it takes in bribes before it warms to the party.
+    pub trade_pool: u16,
+    /// Retail's NPC kind; one kind takes no bribes in kind.
+    pub kind: i32,
     pub buy_factor: f32,
     pub sell_factor: f32,
     pub accepted_classes: enumset::EnumSet<super::items::EquipClass>,
@@ -63,7 +71,16 @@ pub enum TopicCategory {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Response {
     Fixed(u16),
-    Random { first: u16, last: u16 },
+    Random {
+        first: u16,
+        last: u16,
+    },
+    /// The NPC with this display name takes over the conversation and says
+    /// this quote of its own script.
+    Speaker {
+        npc: String,
+        quote: u16,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DialogueOp {
@@ -82,6 +99,42 @@ pub enum DialogueOp {
         words: Vec<String>,
     },
     SetFact(FactId, u8),
+    /// The NPC hands the party an item, identified and at full quantity.
+    GiveItem(ItemId),
+    /// One of the item leaves the party.
+    TakeItem(ItemId),
+    /// This quote answers the party offering the item. The NPC keeps what it
+    /// asked for and hands back what it only remarks on.
+    ItemQuote {
+        item: ItemId,
+        keeps: bool,
+    },
+    GiveGold(u32),
+    GiveExperience(u32),
+    /// The party answers by typing one of these words, not by choosing.
+    KeywordInput(Vec<String>),
+    /// The dialogue closes and the NPC goes back to what it was doing.
+    CloseAndResume,
+    /// The named NPC, or this one, leaves the party if it is in it.
+    LeaveParty {
+        npc: Option<String>,
+    },
+    /// The NPC's monster script carries on from this label; retail ignores
+    /// the entry (`None`) when its bound is 4.
+    MonsterScriptLabel(Option<String>),
+    /// The named NPC's disposition toward the party changes.
+    AdjustDisposition {
+        npc: String,
+        delta: i8,
+    },
+    /// A party member remarks on the moment with this character event.
+    PartyRemark(u16),
+    /// A change to a faction's standing. Retail ignores a name it does not
+    /// know, such as the shipped `FACTION_HIGARDI`, so none is changed.
+    AdjustFaction {
+        faction: Option<Faction>,
+        delta: i8,
+    },
     Close,
     Price {
         gold: u32,
@@ -111,6 +164,18 @@ pub struct DialogueScript {
     pub quotes: Vec<Quote>,
 }
 impl DialogueScript {
+    /// The first quote that answers the offered item, and whether the NPC
+    /// keeps it (retail `FindNpcScriptItemQuote`).
+    pub fn item_quote(&self, offered: ItemId) -> Option<(u16, bool)> {
+        self.quotes.iter().enumerate().find_map(|(index, quote)| {
+            quote.operations.iter().find_map(|op| match *op {
+                DialogueOp::ItemQuote { item, keeps } if item == offered => {
+                    Some((index as u16, keeps))
+                }
+                _ => None,
+            })
+        })
+    }
     pub fn topic(&self, text: &str) -> Option<u16> {
         self.quotes.iter().position(|q| q.operations.iter().any(|op| matches!(op,
             DialogueOp::Keywords(words) if words.iter().any(|w| w.eq_ignore_ascii_case(text.trim())))))

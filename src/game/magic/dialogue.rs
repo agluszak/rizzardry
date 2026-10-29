@@ -92,13 +92,17 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
                     level,
                     strength.against,
                 ) as u8 as i8;
-                if amount > world.get::<Conversation>(entity).unwrap().charm {
+                if amount > world.get::<Conversation>(entity).unwrap().charm() {
                     reply = MagicalReply::Charmed(amount);
                 }
             }
         }
     }
+    let charmed = matches!(reply, MagicalReply::Charmed(_));
     world.get_mut::<Conversation>(entity).unwrap().magical_reply(reply);
+    if charmed {
+        crate::game::npcs::conversation::won_over(world, entity, true);
+    }
     world.write_message(MagicNews::Done(report));
     Ok(())
 }

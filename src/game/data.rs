@@ -59,6 +59,7 @@ impl GameData {
         world.get_resource::<Assets<ItemCatalog>>()?.get(&world.get_resource::<GameData>()?.items)
     }
 
+    /// The species catalog, for operations that hold the whole world.
     pub fn species(world: &World) -> Option<&MonsterCatalog> {
         world
             .get_resource::<Assets<MonsterCatalog>>()?

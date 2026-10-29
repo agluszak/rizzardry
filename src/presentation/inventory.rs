@@ -298,7 +298,15 @@ pub(crate) struct OpenReview<'w, 's> {
     screen: Res<'w, State<Screen>>,
     next: ResMut<'w, NextState<Screen>>,
     questions: Query<'w, 's, (), With<crate::game::world::level::TravelQuestion>>,
-    conversations: Query<'w, 's, (), With<crate::game::npcs::conversation::Conversation>>,
+    conversations: Query<
+        'w,
+        's,
+        (),
+        (
+            With<crate::game::npcs::conversation::Conversation>,
+            Without<crate::game::npcs::conversation::Closing>,
+        ),
+    >,
     roster: Single<'w, 's, &'static PartyRoster>,
 }
 
@@ -1180,7 +1188,13 @@ fn click_cell(
     selected: Option<Single<&bevy::ui_widgets::SelectedTab, With<review::PageTabs>>>,
     tabs: Query<&review::PageButton>,
     pool_scroll: Option<Single<&bevy::ui_widgets::SliderValue, With<pool_scroll::PoolScroll>>>,
-    conversations: Query<(), With<crate::game::npcs::conversation::Conversation>>,
+    conversations: Query<
+        (),
+        (
+            With<crate::game::npcs::conversation::Conversation>,
+            Without<crate::game::npcs::conversation::Closing>,
+        ),
+    >,
     (mut ids, mut rng): (
         ResMut<crate::game::inventory::ItemIds>,
         ResMut<crate::game::rng::GameRng>,

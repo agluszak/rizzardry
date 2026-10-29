@@ -72,12 +72,14 @@ pub struct MonsterDamage<'w, 's> {
     content: crate::game::data::Content<'w>,
     ids: Option<ResMut<'w, ItemIds>>,
     factions: Option<ResMut<'w, crate::game::factions::Factions>>,
+    faction_news: Option<MessageWriter<'w, crate::game::factions::FactionNews>>,
 }
 
 impl<'w, 's> MonsterDamage<'w, 's> {
     pub fn ready(&self) -> bool {
         self.ids.is_some()
             && self.factions.is_some()
+            && self.faction_news.is_some()
             && self.content.items().is_some()
             && self.content.species().is_some()
             && self.content.loot().is_some()
@@ -235,7 +237,8 @@ impl<'w, 's> MonsterDamage<'w, 's> {
             return Err(DamageRefusal::MissingContent);
         };
         let kind = species.kind(monster.species).ok_or(DamageRefusal::MissingContent)?;
-        let (Some(ids), Some(factions)) = (self.ids.as_deref_mut(), self.factions.as_deref_mut())
+        let (Some(ids), Some(factions), Some(faction_news)) =
+            (self.ids.as_deref_mut(), self.factions.as_deref_mut(), self.faction_news.as_mut())
         else {
             return Err(DamageRefusal::MissingContent);
         };
@@ -304,7 +307,9 @@ impl<'w, 's> MonsterDamage<'w, 's> {
             return Ok(DamageOutcome { damage: lost, died: true, experience: 0 });
         }
         // The kill counts against its faction (retail `RecordFactionOffense`).
-        factions.record_offence(kind.faction, kind.npc.is_some(), now);
+        if let Some(news) = factions.record_offence(kind.faction, kind.npc.is_some(), now) {
+            faction_news.write(news);
+        }
         let (found, gold) =
             crate::game::loot::monster_loot(kind, tables, catalog, party_level, rng);
         if gold > 0 {

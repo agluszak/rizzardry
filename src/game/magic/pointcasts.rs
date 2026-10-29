@@ -516,6 +516,7 @@ mod tests {
         world.init_resource::<Assets<MonsterBody>>();
         world.init_resource::<MonsterBodies>();
         world.init_resource::<Messages<MagicNews>>();
+        world.init_resource::<Messages<crate::game::factions::FactionNews>>();
         let mut species = vec![Species::default(); 49];
         for kind in &mut species {
             kind.experience = 9000;

@@ -670,6 +670,11 @@ impl Character {
         self.base_stats().initiative(load)
     }
 
+    /// AwardPartyExperience saturates instead of wrapping at the XP limit.
+    pub fn award_experience(&mut self, amount: u32) {
+        self.experience = self.experience.saturating_add(amount);
+    }
+
     /// The passed threshold plus this profession's next increment: doubling
     /// to level 10, then 20% growth. Prior professions keep their actual cost.
     pub fn experience_goal(&self) -> u32 {

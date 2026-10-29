@@ -32,7 +32,15 @@ pub struct Freedom<'w, 's> {
     screen: Res<'w, State<Screen>>,
     next: Res<'w, NextState<Screen>>,
     camp: Option<Res<'w, Camp>>,
-    conversations: Query<'w, 's, (), With<crate::game::npcs::conversation::Conversation>>,
+    conversations: Query<
+        'w,
+        's,
+        (),
+        (
+            With<crate::game::npcs::conversation::Conversation>,
+            Without<crate::game::npcs::conversation::Closing>,
+        ),
+    >,
     questions: Query<'w, 's, (), With<TravelQuestion>>,
     flights: Query<'w, 's, (), With<crate::game::party::walk_in::PathFlight>>,
     interaction: Query<'w, 's, (), With<crate::game::world::interaction::DeviceInteraction>>,
