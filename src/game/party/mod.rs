@@ -88,6 +88,17 @@ pub type Members<'w, 's> = Query<
     ),
 >;
 
+/// The members' mean level, fractions kept, one when there are none
+/// (retail `GetAveragePartyMemberLevel`, which encounters use); retail
+/// reads only the six regular party slots.
+pub fn mean_level(levels: impl IntoIterator<Item = u8>) -> f32 {
+    let (sum, count) = levels
+        .into_iter()
+        .take(6)
+        .fold((0.0, 0.0), |(sum, count), level| (sum + f32::from(level), count + 1.0));
+    if count == 0.0 { 1.0 } else { sum / count }
+}
+
 /// The party's average level (retail `GetAveragePartyLevel`), over every
 /// member, dead or alive: what loot and stock scale by. 1 for an empty
 /// party, where retail divides by zero.

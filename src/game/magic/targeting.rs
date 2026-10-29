@@ -32,7 +32,7 @@ pub(crate) fn radius(
     let clear = |to: Vec3| obstacles.clear(origin, to);
     let mut victims = Vec::new();
     if party_at.is_some_and(|eye| {
-        let centre_of_party = eye - Vec3::Y * crate::game::party::body::EYE_ABOVE_CENTRE;
+        let centre_of_party = crate::game::party::body::PartyBody::centre(eye);
         centre_of_party.distance(centre) <= radius && clear(eye)
     }) {
         victims.extend(

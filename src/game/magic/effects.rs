@@ -2053,7 +2053,7 @@ pub(crate) fn pulse_clouds(
             )
             && let Some(realm) = spell.realm
         {
-            let centre = party_eye - Vec3::Y * crate::game::party::body::EYE_ABOVE_CENTRE;
+            let centre = crate::game::party::body::PartyBody::centre(party_eye);
             let reach =
                 crate::game::party::body::RADIUS + crate::content::species::Reach::Short.metres();
             let victims = super::targeting::radius(

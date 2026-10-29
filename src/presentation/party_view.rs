@@ -59,8 +59,8 @@ pub fn aim_camera(
             .and_then(|c| npc_bodies.get(c.actor).ok())
             .and_then(|bodies| bodies.iter().find_map(|body| actors.get(body).ok()))
             .map_or(ordinary, |(target, monster, walker)| {
-                let direction = crate::game::world::navigation::feet(target.translation(), walker)
-                    + Vec3::Y * monster.body.eye_height
+                let direction = monster
+                    .eye(crate::game::world::navigation::feet(target.translation(), walker))
                     - (pose.translation() + camera.translation);
                 if direction.length_squared() < 0.0001 {
                     ordinary
@@ -121,8 +121,7 @@ pub fn track_fights(
         let (Ok(at), Ok((pose, monster, walker))) = (party.single(), monsters.get(nearest)) else {
             continue;
         };
-        let aim = crate::game::world::navigation::feet(pose.translation(), walker)
-            + Vec3::Y * monster.body.eye_height;
+        let aim = monster.eye(crate::game::world::navigation::feet(pose.translation(), walker));
         let toward = aim - PartyBody::eye(at);
         turns.write(TurnParty {
             to: Vec2::new(

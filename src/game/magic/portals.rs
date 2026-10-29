@@ -4,7 +4,7 @@ use super::{
     casting::{MagicNews, Refusal, Source, UseContext},
 };
 use crate::content::spells::SpellId;
-use crate::game::party::body::{EYE_ABOVE_CENTRE, PartyBody, PartyMovement, PartyStart};
+use crate::game::party::body::{PartyBody, PartyMovement, PartyStart};
 use crate::game::world::level::{Destination, Entry, Level};
 use avian3d::prelude::{LinearVelocity, Position};
 use bevy::prelude::*;
@@ -78,10 +78,9 @@ pub(crate) fn cast(world: &mut World, caster: Entity, source: Source) -> Result<
                     world.spawn(destination);
                 } else {
                     let mut actor = world.entity_mut(party);
-                    actor.get_mut::<Position>().unwrap().0 =
-                        portal.eye - Vec3::Y * EYE_ABOVE_CENTRE;
+                    actor.get_mut::<Position>().unwrap().0 = PartyBody::centre(portal.eye);
                     if let Some(mut transform) = actor.get_mut::<Transform>() {
-                        transform.translation = portal.eye - Vec3::Y * EYE_ABOVE_CENTRE;
+                        transform.translation = PartyBody::centre(portal.eye);
                     }
                     let mut body = actor.get_mut::<PartyBody>().unwrap();
                     body.yaw = portal.yaw;

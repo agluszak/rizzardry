@@ -232,7 +232,7 @@ fn victim_body(field: &Field, fight: &Fight, victim: Victim) -> Option<(Vec3, f3
             if !field.members.get(entity).is_ok_and(|(_, vitals, ..)| !vitals.is_dead()) {
                 return None;
             }
-            Some((fight.party.eye - Vec3::Y * body::EYE_ABOVE_CENTRE, body::RADIUS, body::RADIUS))
+            Some((body::PartyBody::centre(fight.party.eye), body::RADIUS, body::RADIUS))
         }
         Victim::Monster(entity) => {
             let (monster, at, walker, ..) = field.monsters.monsters().get(entity).ok()?;

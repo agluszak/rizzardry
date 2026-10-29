@@ -517,21 +517,17 @@ pub fn run_encounters(
     let blocked = in_battle || !talking.is_empty();
     let difficulty = difficulty.map_or_else(Difficulty::default, |d| *d);
     let now_s = clock.ms / 1000;
-    let levels: Vec<f32> = roster
-        .into_iter()
-        .flat_map(|roster| roster.iter())
-        .filter_map(|m| characters.get(m).ok())
-        .map(|c| f32::from(c.level()))
-        .take(6)
-        .collect();
+    let level = crate::game::party::mean_level(
+        roster
+            .into_iter()
+            .flat_map(|roster| roster.iter())
+            .filter_map(|m| characters.get(m).ok())
+            .map(|c| c.level()),
+    );
     let onlooker = Onlooker {
         eye: PartyBody::eye(party_at),
         feet: party_at.0 - Vec3::Y * crate::game::party::body::FLOAT_HEIGHT,
-        level: if levels.is_empty() {
-            1.0
-        } else {
-            levels.iter().sum::<f32>() / levels.len() as f32
-        },
+        level,
     };
     let night = night(&clock);
     let (next_location, next_group) = population::next_ids(

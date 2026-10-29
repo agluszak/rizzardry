@@ -75,6 +75,12 @@ impl PartyBody {
     pub fn eye(position: &Position) -> Vec3 {
         position.0 + Vec3::Y * EYE_ABOVE_CENTRE
     }
+
+    /// The centre of the party's body under an eye at `eye`: [`Self::eye`]'s
+    /// inverse.
+    pub fn centre(eye: Vec3) -> Vec3 {
+        eye - Vec3::Y * EYE_ABOVE_CENTRE
+    }
 }
 
 /// On the party: continuous movement intent, supplied by input or a
@@ -134,7 +140,7 @@ impl PartyPlacement<'_, '_> {
             0.0,
         ));
         let yaw = start.yaw.or(entrance.map(|e| e.yaw)).unwrap_or_default();
-        let position = eye - Vec3::Y * EYE_ABOVE_CENTRE;
+        let position = PartyBody::centre(eye);
         if let Ok((mut body, mut at, mut transform, mut velocity)) = self.party.get_mut(party) {
             body.yaw = yaw;
             body.pitch = start.pitch.clamp(-MAX_PITCH, MAX_PITCH);
