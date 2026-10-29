@@ -1006,6 +1006,9 @@ fn camera_paths_without_keys_refuse_the_level() {
     }
     assert!(check(&level(trigger("EMPTY", TriggerAction::CameraPath(0)))).is_err());
     assert!(check(&level(trigger("MISSING", TriggerAction::CameraPath(3)))).is_err());
+    let unnamed = TriggerAction::MissingCameraPath("NOWHERE".into());
+    let why = check(&level(trigger("UNNAMED", unnamed))).unwrap_err();
+    assert!(why.contains("UNNAMED") && why.contains("NOWHERE"), "{why}");
     // An empty path behind the first use is refused too.
     let mut alternate = trigger("LATER", TriggerAction::CameraPath(1));
     alternate.alternate = Some(act(TriggerAction::CameraPath(0)));

@@ -311,13 +311,22 @@ pub fn check(geometry: &LevelDefinition) -> Result<(), String> {
         let uses =
             std::iter::once(&trigger.initial).chain(&trigger.alternate).chain(&trigger.fallback);
         for chosen in uses {
-            if let TriggerAction::CameraPath(path) = chosen.action
-                && geometry.camera_paths.get(path).is_none_or(|camera| camera.keys.is_empty())
-            {
-                return Err(format!(
-                    "trigger {} flies camera path {path}, which has no keys",
-                    trigger.name
-                ));
+            match &chosen.action {
+                TriggerAction::CameraPath(path)
+                    if geometry.camera_paths.get(*path).is_none_or(|c| c.keys.is_empty()) =>
+                {
+                    return Err(format!(
+                        "trigger {} flies camera path {path}, which has no keys",
+                        trigger.name
+                    ));
+                }
+                TriggerAction::MissingCameraPath(name) => {
+                    return Err(format!(
+                        "trigger {} flies camera path \"{name}\", which the level does not have",
+                        trigger.name
+                    ));
+                }
+                _ => {}
             }
         }
     }
@@ -599,6 +608,8 @@ fn execute(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth:
         TriggerAction::CameraPath(path) => {
             world.entity_mut(level).insert(PendingPartyMove(PartyMove::Fly(*path)));
         }
+        // Refused with its level at preparation.
+        TriggerAction::MissingCameraPath(_) => return Ran::Declined,
         TriggerAction::HurtParty(dice) => {
             if world.run_system_cached_with(damage_party, *dice).is_err() {
                 return Ran::Declined;

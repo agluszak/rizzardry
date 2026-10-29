@@ -399,11 +399,17 @@ fn decode_action(
         action::TOGGLE => TriggerAction::Animate(Animation::Toggle),
         action::START_ANIMATION => TriggerAction::Animate(Animation::Start),
         action::STOP_ANIMATION => TriggerAction::Animate(Animation::Stop),
-        action::CAMERA_PATH => first_recipient
-            .and_then(|name| {
-                sections.cameras.iter().position(|camera| camera.name.eq_ignore_ascii_case(name))
-            })
-            .map_or(TriggerAction::Unsupported(code), TriggerAction::CameraPath),
+        action::CAMERA_PATH => {
+            let name = first_recipient.unwrap_or_default();
+            sections
+                .cameras
+                .iter()
+                .position(|camera| camera.name.eq_ignore_ascii_case(name))
+                .map_or_else(
+                    || TriggerAction::MissingCameraPath(name.into()),
+                    TriggerAction::CameraPath,
+                )
+        }
         action::RELAY => TriggerAction::Relay,
         action::TELEPORT | action::RANDOM_TELEPORT => teleport_arrival(sections, item)
             .map_or(TriggerAction::Unsupported(code), TriggerAction::Teleport),
@@ -776,6 +782,13 @@ mod tests {
         assert!(
             matches!(&sections.trigger("same").unwrap().kind, TriggerKind::Item(item) if item.initial_action == 2)
         );
+        // A flight naming no camera the level has is kept as such, for
+        // preparation to refuse, not taken for an unported action.
+        if let TriggerKind::Item(item) = &mut sections.triggers[0].kind {
+            item.initial_action = action::CAMERA_PATH;
+        }
+        let (definitions, _) = level_triggers(&sections);
+        assert_eq!(definitions[3].initial.action, TriggerAction::MissingCameraPath("SAME".into()));
     }
 
     #[test]
