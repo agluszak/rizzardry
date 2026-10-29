@@ -127,18 +127,27 @@ enum Step {
     End,
 }
 #[derive(Clone, Debug, PartialEq)]
-pub enum LinePhase {
-    Text { remaining: f32 },
-    Audio,
-    Hold { remaining: f32 },
-}
-#[derive(Clone, Debug, PartialEq)]
 pub enum ConversationWait {
     Ready,
-    Line { speech: Entity, phase: LinePhase },
-    Options { quote: u16, words: Vec<String> },
-    Price { quote: u16, gold: u32, always: bool },
-    Blocked { quote: u16, entry: Option<usize>, reason: String },
+    /// A line is said; the script goes on when it is advanced past
+    /// ([`ConversationRequest::Advance`]), however long it takes to show.
+    Line {
+        speech: Entity,
+    },
+    Options {
+        quote: u16,
+        words: Vec<String>,
+    },
+    Price {
+        quote: u16,
+        gold: u32,
+        always: bool,
+    },
+    Blocked {
+        quote: u16,
+        entry: Option<usize>,
+        reason: String,
+    },
 }
 /// Accepted dialogue history, including the party's input. Presentation chooses
 /// the retail palette without guessing speakers from the text.
@@ -184,23 +193,12 @@ impl Conversation {
         self.result = Some((self.revision, outcome));
     }
 }
-/// Presentation may attach audio to this identity. No artwork/audio is required
-/// to progress: the default wait is the original text-duration fallback.
+/// A line said: the words and the voice stem presentation may play. How
+/// long it shows is presentation's to decide.
 #[derive(Component, Debug)]
 pub struct ConversationSpeech {
     pub voice: String,
     pub text: String,
-}
-#[derive(Clone, Copy, Debug)]
-pub enum PlaybackEvent {
-    Started,
-    Finished,
-    Unavailable,
-}
-#[derive(Message, Clone, Copy, Debug)]
-pub struct LinePlayback {
-    pub speech: Entity,
-    pub event: PlaybackEvent,
 }
 #[derive(Message, Clone, Debug)]
 pub enum ConversationRequest {
@@ -674,16 +672,12 @@ fn run_script(world: &mut World, entity: Entity, script: &DialogueScript) {
                     char::from(b'a' + (subquote - 1) as u8).to_string()
                 };
                 let voice = format!("{}_{quote:03}{suffix}", def.voice_stem());
-                let seconds = text.encode_utf16().count() as f32 * 0.06 + 2.0;
                 let line = TranscriptLine::Npc(text.clone());
                 let speech =
                     world.spawn((ConversationSpeech { voice, text }, ChildOf(entity))).id();
                 let mut c = world.get_mut::<Conversation>(entity).unwrap();
                 c.transcript.push(line);
-                c.wait = ConversationWait::Line {
-                    speech,
-                    phase: LinePhase::Text { remaining: seconds },
-                };
+                c.wait = ConversationWait::Line { speech };
                 c.revision += 1;
                 return;
             }
@@ -963,7 +957,6 @@ pub fn update_conversation(world: &mut World) {
         // no queued payment, trade or authored effect may alter the
         // departing campaign.
         world.resource_mut::<Messages<ConversationRequest>>().clear();
-        world.resource_mut::<Messages<LinePlayback>>().clear();
         return;
     }
     let requests: Vec<_> = world.resource_mut::<Messages<ConversationRequest>>().drain().collect();
@@ -1032,8 +1025,6 @@ pub fn update_conversation(world: &mut World) {
             _ => {}
         }
     }
-    let playback: Vec<_> = world.resource_mut::<Messages<LinePlayback>>().drain().collect();
-    let delta = world.resource::<Time<Real>>().delta_secs();
     let sessions: Vec<_> =
         world.query_filtered::<Entity, With<Conversation>>().iter(world).collect();
     for entity in sessions {
@@ -1043,23 +1034,6 @@ pub fn update_conversation(world: &mut World) {
             close_one(world, entity);
             continue;
         }
-        // No mutable access for an audio wait without a playback event.
-        if let ConversationWait::Line { speech, phase } = &c.wait
-            && (!matches!(phase, LinePhase::Audio) || playback.iter().any(|e| e.speech == *speech))
-        {
-            let fallback = world
-                .get::<ConversationSpeech>(*speech)
-                .map_or(2.0, |line| line.text.encode_utf16().count() as f32 * 0.06 + 2.0);
-            let finished = advance_playback(
-                &mut world.get_mut::<Conversation>(entity).unwrap(),
-                &playback,
-                delta,
-                fallback,
-            );
-            if let Some(speech) = finished {
-                world.despawn(speech);
-            }
-        }
         run(world, entity);
         let c = world.get::<Conversation>(entity).unwrap();
         if matches!(c.queue.front(), Some(Step::End)) && c.wait == ConversationWait::Ready {
@@ -1067,44 +1041,6 @@ pub fn update_conversation(world: &mut World) {
         }
     }
 }
-fn advance_playback(
-    c: &mut Conversation,
-    playback: &[LinePlayback],
-    delta: f32,
-    fallback: f32,
-) -> Option<Entity> {
-    let ConversationWait::Line { speech, phase } = &mut c.wait else { return None };
-    for event in playback.iter().filter(|e| e.speech == *speech) {
-        match event.event {
-            PlaybackEvent::Started if matches!(phase, LinePhase::Text { .. }) => {
-                *phase = LinePhase::Audio
-            }
-            PlaybackEvent::Finished if matches!(phase, LinePhase::Audio) => {
-                *phase = LinePhase::Hold { remaining: 0.7 }
-            }
-            PlaybackEvent::Unavailable if !matches!(phase, LinePhase::Hold { .. }) => {
-                *phase = LinePhase::Text { remaining: fallback }
-            }
-            _ => {}
-        }
-    }
-    let done = match phase {
-        LinePhase::Text { remaining } | LinePhase::Hold { remaining } => {
-            *remaining -= delta;
-            *remaining <= 0.0
-        }
-        LinePhase::Audio => false,
-    };
-    if done {
-        let speech = *speech;
-        c.wait = ConversationWait::Ready;
-        c.revision += 1;
-        Some(speech)
-    } else {
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1117,7 +1053,6 @@ mod tests {
                 std::time::Duration::from_millis(16),
             ))
             .add_message::<ConversationRequest>()
-            .add_message::<LinePlayback>()
             .init_resource::<StoryFacts>()
             .init_resource::<GameRng>()
             .init_resource::<Assets<NpcCatalog>>()
@@ -1517,7 +1452,7 @@ mod tests {
         assert!(app.world().resource::<StoryFacts>().values.is_empty());
     }
     #[test]
-    fn playback_waits_for_its_own_identity_and_real_hold_and_closure_keeps_npc() {
+    fn only_its_own_advance_moves_a_line_on_and_closure_keeps_npc() {
         let (mut app, session, actor) = app(DialogueScript {
             quotes: vec![
                 Quote {
@@ -1534,25 +1469,31 @@ mod tests {
             ConversationWait::Line { speech, .. } => speech,
             _ => panic!("line expected"),
         };
+        // Time alone never moves the script on, nor another line's advance.
         let unrelated = app.world_mut().spawn_empty().id();
-        app.world_mut()
-            .write_message(LinePlayback { speech: unrelated, event: PlaybackEvent::Finished });
-        app.update();
-        assert_eq!(app.world().get::<Conversation>(session).unwrap().current, Some((0, 0)));
-        app.world_mut().write_message(LinePlayback { speech, event: PlaybackEvent::Started });
-        app.world_mut().write_message(LinePlayback { speech, event: PlaybackEvent::Finished });
-        app.update();
-        assert!(matches!(
-            app.world().get::<Conversation>(session).unwrap().wait,
-            ConversationWait::Line { phase: LinePhase::Hold { .. }, .. }
-        ));
+        app.world_mut().write_message(ConversationRequest::Advance {
+            conversation: session,
+            speech: unrelated,
+        });
+        for _ in 0..600 {
+            app.update();
+        }
+        let c = app.world().get::<Conversation>(session).unwrap();
+        assert_eq!(c.current, Some((0, 0)));
+        assert_eq!(c.wait, ConversationWait::Line { speech });
         app.world_mut()
             .write_message(ConversationRequest::Advance { conversation: session, speech });
         app.update();
         assert_eq!(app.world().get::<Conversation>(session).unwrap().current, Some((1, 0)));
-        app.world_mut().write_message(LinePlayback { speech, event: PlaybackEvent::Finished });
+        // A repeated advance of the line already passed is stale.
+        app.world_mut()
+            .write_message(ConversationRequest::Advance { conversation: session, speech });
         app.update();
         assert_eq!(app.world().get::<Conversation>(session).unwrap().current, Some((1, 0)));
+        assert!(matches!(
+            app.world().get::<Conversation>(session).unwrap().wait,
+            ConversationWait::Line { speech: next } if next != speech
+        ));
         use crate::game::world::level::{Destination, Entry};
         let entering = app
             .world_mut()

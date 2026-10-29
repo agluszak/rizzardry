@@ -258,7 +258,6 @@ impl Plugin for NpcPlugin {
             .init_resource::<NpcAssets>()
             .init_resource::<conversation::StoryFacts>()
             .add_message::<conversation::ConversationRequest>()
-            .add_message::<conversation::LinePlayback>()
             .add_observer(conversation::end_conversations)
             .add_systems(Startup, load_npcs)
             .add_systems(
