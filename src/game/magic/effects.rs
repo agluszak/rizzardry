@@ -10,7 +10,7 @@ use crate::content::characters::{Attribute, Realm, Skill};
 use crate::content::items::{Dice, EquipClass, ItemCatalog};
 use crate::content::species::{MonsterCatalog, MonsterKind};
 use crate::content::spells::{SpellDefinition, SpellId};
-use crate::game::characters::{Condition, Lasting, inflict, wake_on_hit};
+use crate::game::characters::{Condition, Fate, Lasting, inflict, wake_on_hit};
 use crate::game::difficulty::{Difficulty, Side};
 use crate::game::party::DamageApplied;
 use crate::game::party::formation::Formation;
@@ -280,6 +280,8 @@ pub struct Field<'a, 'm, 'ms, 'd, 'ds, 'f, 'p> {
     pub party: &'a [Entity],
     /// Skills that improved while resolving, for the notices.
     pub improved: Vec<(Entity, Skill)>,
+    /// The fight under way, which cheating death counts by.
+    pub fight: Option<Entity>,
 }
 
 /// The magnitude a spell rolls at `power` (retail `RollEffectMagnitude`): its
@@ -453,14 +455,15 @@ fn damage(
 /// Drain a member's health for good ([`Vitals::drain_health`]): nothing wakes
 /// them. A monster has no lasting maximum to lose and is hurt as by any
 /// damage.
-fn sap(world: &mut Field, victim: Victim, amount: u32) -> Option<Effect> {
+fn sap(rng: &mut GameRng, world: &mut Field, victim: Victim, amount: u32) -> Option<Effect> {
     let Victim::Member(member) = victim else { return None };
     let (mut character, mut vitals, ..) = world.members.get_mut(member).ok()?;
+    let mut fate = Fate { fight: world.fight, rng };
     let lost = crate::game::party::drain_member(
         member,
         (&mut character, &mut vitals),
         world.formation,
-        amount,
+        (amount, &mut fate),
         world.party_damage,
     );
     let outcome = DamageOutcome { damage: lost, died: vitals.is_dead(), experience: 0 };
@@ -479,11 +482,12 @@ pub fn hurt(rng: &mut GameRng, world: &mut Field, victim: Victim, amount: u32) -
         }
         Victim::Member(member) => {
             let (character, mut vitals, ..) = world.members.get_mut(member).ok()?;
+            let mut fate = Fate { fight: world.fight, rng: &mut *rng };
             let lost = crate::game::party::damage_member(
                 member,
-                &mut vitals,
+                (&character, &mut vitals),
                 world.formation,
-                amount,
+                (amount, &mut fate),
                 world.party_damage,
             );
             if lost > 0 && !vitals.is_dead() {
@@ -736,7 +740,7 @@ pub fn blow(
             E::Possess => None,
             E::DrainHealth if member => {
                 drain(rng, world, victim, Realm::Earth, power, (count, 2, 0))
-                    .and_then(|amount| sap(world, victim, amount))
+                    .and_then(|amount| sap(rng, world, victim, amount))
             }
             E::DrainHealth => None,
             E::DrainStamina => {
@@ -1258,7 +1262,7 @@ pub fn resolve(
                     let target = target(world, v, realm, None).filter(|t| !t.dead)?;
                     match resist(rng, rolled, target.resistance, target.level, strength.against) {
                         0 => Some(Effect::Resisted { victim: v }),
-                        amount => sap(world, v, amount),
+                        amount => sap(rng, world, v, amount),
                     }
                 }
             }

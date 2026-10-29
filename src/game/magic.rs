@@ -487,6 +487,7 @@ pub struct MagicContext<'w, 's> {
     level: Single<'w, 's, Entity, With<crate::game::world::level::Level>>,
     /// Missiles leave in launch order, so equal arrivals land in it too.
     pub flight_order: ResMut<'w, casting::FlightOrder>,
+    fight: Query<'w, 's, Entity, With<crate::game::combat::Battle>>,
 }
 
 impl MagicContext<'_, '_> {
@@ -544,6 +545,7 @@ impl MagicContext<'_, '_> {
             difficulty: *self.difficulty,
             party: &party,
             improved: Vec::new(),
+            fight: self.fight.single().ok(),
         };
         Ok(act(&mut field, self.content.spells()))
     }
@@ -1026,11 +1028,14 @@ mod tests {
                             .absorption,
                         4
                     );
+                    let profile = world.get::<Character>(ally).unwrap().clone();
                     let mut vitals = world.get_mut::<Vitals>(ally).unwrap();
                     let stamina = vitals.stamina;
-                    assert_eq!(vitals.damage(4), 0);
+                    let mut rng = GameRng::default();
+                    let mut fate = crate::game::characters::Fate { fight: None, rng: &mut rng };
+                    assert_eq!(vitals.damage(&profile, 4, &mut fate), 0);
                     assert_eq!(vitals.stamina, stamina, "absorbed damage does not fatigue");
-                    assert_eq!(vitals.damage(2), 1);
+                    assert_eq!(vitals.damage(&profile, 2, &mut fate), 1);
                     assert!(vitals.is_dead());
                     assert!(vitals.enchantments.0.is_empty());
                 }

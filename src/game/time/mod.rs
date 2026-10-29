@@ -167,7 +167,8 @@ pub(crate) fn pass_time(
         };
         let mut members = affected.p0();
         for (mut profile, mut vitals) in members.iter_many_unique_mut(roster.iter()).matched() {
-            recovery::pass(&mut profile, &mut vitals, ticks, pace, &mut rng);
+            let mut fate = crate::game::characters::Fate { fight: None, rng: &mut rng };
+            recovery::pass(&mut profile, &mut vitals, ticks, pace, &mut fate);
         }
         if pass > 0 {
             if !enchantments.0.0.is_empty() {

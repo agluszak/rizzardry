@@ -871,7 +871,7 @@ pub fn run_battle(
         }
         if step > 100 {
             let over = end_round(
-                &mut battle,
+                (entity, &mut battle),
                 combatants,
                 &mut clock,
                 &mut rng,
@@ -1271,7 +1271,7 @@ fn party_fallen(roster: &PartyRoster, members: &Members) -> bool {
 }
 
 fn end_round(
-    battle: &mut Battle,
+    (fight, battle): (Entity, &mut Battle),
     combatants: &[Entity],
     clock: &mut GameClock,
     rng: &mut GameRng,
@@ -1305,7 +1305,8 @@ fn end_round(
         }
     }
     for (mut profile, mut vitals, ..) in members.iter_many_unique_mut(roster.iter()).matched() {
-        recovery::pass(&mut profile, &mut vitals, ticks, recovery::Pace::Fighting, rng);
+        let mut fate = crate::game::characters::Fate { fight: Some(fight), rng: &mut *rng };
+        recovery::pass(&mut profile, &mut vitals, ticks, recovery::Pace::Fighting, &mut fate);
     }
     battle.phase = RoundPhase::Waiting;
     // Poison may have killed the last of the party as the time passed: that
