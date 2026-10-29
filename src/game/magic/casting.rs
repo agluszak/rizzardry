@@ -384,7 +384,7 @@ fn item_strength(
     let figure = match definition.use_type {
         UseType::Instrument => u32::from(character.profession_levels[Profession::Bard]),
         UseType::Gadget => u32::from(character.profession_levels[Profession::Gadgeteer]),
-        _ => u32::from(character.level),
+        _ => u32::from(character.level()),
     };
     Strength::at(figure, spell, power, 0)
 }

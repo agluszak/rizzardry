@@ -380,6 +380,10 @@ fn load_band(weight: u32, capacity: u32) -> Load {
     }
 }
 
+/// The highest total level (retail `RecalculateCharacterDerivedStats`
+/// clamps the total and each profession's level to it).
+pub const MAX_LEVEL: u8 = 50;
+
 /// An adventurer's identity, training and progression.
 #[derive(Component, Clone, Debug, PartialEq)]
 #[require(MonsterKnowledge)]
@@ -392,7 +396,7 @@ pub struct Character {
     pub gender: Gender,
     pub profession: Profession,
     pub original_profession: Profession,
-    pub level: u8,
+    /// Levels gained in each profession; the total level is their sum.
     pub profession_levels: EnumMap<Profession, u8>,
     pub experience: u32,
     /// The threshold actually passed, retaining the prices of earlier professions.
@@ -417,6 +421,13 @@ pub struct MonsterKnowledge {
 }
 
 impl Character {
+    /// The total level: every level gained in any profession (retail
+    /// `uiExpLevel`, which every advancement raises with the profession's
+    /// own level). Advancement stops at [`MAX_LEVEL`].
+    pub fn level(&self) -> u8 {
+        self.profession_levels.values().sum()
+    }
+
     /// A minimal valid level 1 character (retail's NPC recipe): each
     /// attribute at the race's base or the profession's minimum, whichever
     /// is higher; the profession's skills seeded from their base levels;
@@ -436,7 +447,6 @@ impl Character {
             gender,
             profession,
             original_profession: profession,
-            level: 1,
             profession_levels,
             experience: 0,
             experience_previous_goal: 0,
@@ -674,7 +684,7 @@ impl Character {
     /// to level 10, then 20% growth. Prior professions keep their actual cost.
     pub fn experience_goal(&self) -> u32 {
         self.experience_previous_goal
-            .saturating_add(progression::experience_increment(self.profession, self.level))
+            .saturating_add(progression::experience_increment(self.profession, self.level()))
     }
 
     /// Whether the character may use an item (retail `CanCharacterUseItem`):
@@ -756,7 +766,7 @@ impl CharacterStats<'_> {
             .map(|a| self.attribute(a))
             .iter()
             .sum::<u32>() as f32;
-        (sum / 3.0 * (0.1 * f32::from(self.level) + 2.0)).round() as u32
+        (sum / 3.0 * (0.1 * f32::from(self.level()) + 2.0)).round() as u32
     }
     pub fn capacity(&self) -> u32 {
         let factor = if self.race == Race::Faerie { 8 } else { 12 };
@@ -766,7 +776,7 @@ impl CharacterStats<'_> {
         load_band(weight, self.capacity())
     }
     pub fn initiative(&self, load: Load) -> i32 {
-        let mut initiative = (i32::from(self.level) + 1) / 2
+        let mut initiative = (i32::from(self.level()) + 1) / 2
             + self.attribute(Attribute::Senses) as i32 / 5
             + self.attribute(Attribute::Speed) as i32 / 5
             - 10;
@@ -1027,10 +1037,10 @@ mod tests {
     #[test]
     fn experience_goals_double_then_grow_by_a_fifth() {
         let mut mage = Character::new("Mira", Race::Elf, Gender::Female, Profession::Mage);
-        mage.level = 3;
+        mage.profession_levels[Profession::Mage] = 3;
         mage.experience_previous_goal = 2400;
         assert_eq!(mage.experience_goal(), 1200 + 1200 + 2400);
-        mage.level = 11;
+        mage.profession_levels[Profession::Mage] = 11;
         mage.experience_previous_goal = 1200 * (1 + 511);
         // Level 1 is one weight; levels 2 to 10 add 1, 2, ..., 256 weights.
         let at_ten = 1200 * (1 + 511);

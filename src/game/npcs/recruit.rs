@@ -122,7 +122,7 @@ fn willing(world: &mut World, id: NpcId, definition: &NpcDefinition) -> bool {
                     .iter()
                     .filter(|&member| world.get::<Vitals>(member).is_some_and(Vitals::can_fight))
                     .filter_map(|member| world.get::<Character>(member))
-                    .map(|character| u32::from(character.level))
+                    .map(|character| u32::from(character.level()))
                     .collect()
             })
             .unwrap_or_default();
@@ -188,13 +188,12 @@ fn first_character(
     character.attributes = template.attributes;
     character.skill_points = template.skills;
     character.profession_levels = default();
-    character.profession_levels[template.profession] = template.level;
+    character.profession_levels[template.profession] = 1;
     // Walked up from level 1, as retail `AdvanceCharacterToLevel` does.
-    character.level = 1;
     character.experience_previous_goal = 0;
-    while character.level < template.level {
+    while character.level() < template.level {
         character.experience_previous_goal = character.experience_goal();
-        character.level += 1;
+        character.profession_levels[template.profession] += 1;
     }
     character.experience = character.experience_previous_goal;
     character.portrait = crate::game::characters::creation::identity::PORTRAITS

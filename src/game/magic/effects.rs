@@ -386,7 +386,7 @@ fn target(
                 world.enchantments,
             );
             Some(Target {
-                level: u32::from(character.level),
+                level: u32::from(character.level()),
                 resistance: resistances[realm].total,
                 side: None,
                 turncoat: vitals.has(Condition::Turncoat),

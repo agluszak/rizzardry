@@ -1122,9 +1122,9 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
     assert_eq!(members(&app), 2);
     assert_eq!(app.world().get::<PartyMember>(actor).unwrap().0, party);
     let character = app.world().get::<Character>(actor).unwrap();
-    assert_eq!((character.level, character.profession_levels[Profession::Fighter]), (3, 3));
+    assert_eq!((character.level(), character.profession_levels[Profession::Fighter]), (3, 3));
     assert_eq!(character.experience, character.experience_previous_goal);
-    assert!(character.experience > 0, "it has the experience its level took");
+    assert_eq!(character.experience, 2000, "level three has passed both Fighter thresholds");
     let experience = character.experience;
     let carried = app.world().get::<Carried>(actor).unwrap();
     assert_eq!(carried.equipment[EquipSlot::Primary].as_ref().unwrap().stack.item, ItemId(5));

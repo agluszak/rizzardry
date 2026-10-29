@@ -542,7 +542,7 @@ pub fn start_battle(
         .iter_many(roster.iter())
         .matched()
         .filter(|(_, v)| v.can_fight())
-        .map(|(c, _)| i32::from(c.level))
+        .map(|(c, _)| i32::from(c.level()))
         .min()
         .unwrap_or(0);
     // Only the level's static geometry blocks sight.
@@ -1907,7 +1907,8 @@ mod tests {
             {
                 let mut character = app.world_mut().get_mut::<Character>(member).unwrap();
                 character.attributes[Attribute::Piety] = 100;
-                character.level = 30;
+                let profession = character.profession;
+                character.profession_levels[profession] = 30;
                 character.skill_practice[Skill::IronWill] = 7;
             }
             app.insert_resource(GameRng::seeded(seed));
