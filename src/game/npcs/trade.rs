@@ -486,7 +486,7 @@ mod tests {
         stock.lots.push(StockLot { item: ItemId(999), ..stock.lots[0].clone() });
         let (before, mut rng) = (stock.clone(), GameRng::seeded(3));
         assert_eq!(
-            stock.maintain(&def, &catalog, 1, 3 * 86_400_000, false, &mut rng),
+            stock.maintain(&def, &catalog, 1, 3 * crate::game::time::DAY_MS, false, &mut rng),
             Err(TradeError::MissingContent)
         );
         assert_eq!(stock, before);

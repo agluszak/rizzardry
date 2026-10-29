@@ -16,8 +16,10 @@ use bevy::prelude::*;
 const RESTING_BELOW: f32 = 0.05;
 const RUNNING_ABOVE: f32 = WALK_SPEED * 1.1;
 
-/// One game day in milliseconds.
-pub const DAY_MS: u64 = 86_400_000;
+/// Game minutes, hours and days in milliseconds.
+pub const MINUTE_MS: u64 = 60_000;
+pub const HOUR_MS: u64 = 60 * MINUTE_MS;
+pub const DAY_MS: u64 = 24 * HOUR_MS;
 
 /// The game clock. Retail starts a new game at noon and runs the clock at 12
 /// times real time while exploring (`g_view_distance`, despite its name), so

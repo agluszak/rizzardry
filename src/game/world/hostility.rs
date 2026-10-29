@@ -67,7 +67,7 @@ pub fn default_stance(species: &Species, factions: &Factions) -> Stance {
 /// squared, in game minutes (retail `RefreshMonsterGroupHostility`).
 fn holds_for(species: &Species) -> u64 {
     let intelligence = u64::from(species.attributes.intelligence);
-    intelligence * intelligence * 60_000
+    intelligence * intelligence * crate::game::time::MINUTE_MS
 }
 
 /// A group's stance now (retail `RefreshMonsterGroupHostility`, which runs
@@ -294,7 +294,7 @@ mod tests {
         let mut factions = Factions::default();
         let crab = species(Disposition::HostileWithin(15.0), UNALIGNED, 10);
         let set = Some(SetStance { stance: Stance::Hostile, at: 1_000 });
-        let hold = 10 * 10 * 60_000;
+        let hold = 10 * 10 * crate::game::time::MINUTE_MS;
         assert_eq!(stance(set, &crab, &factions, 1_000 + hold, false), Stance::Hostile);
         assert_eq!(stance(set, &crab, &factions, 1_001 + hold, false), Stance::Neutral);
         assert_eq!(stance(set, &crab, &factions, 1_001 + hold, true), Stance::Hostile);

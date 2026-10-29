@@ -125,8 +125,6 @@ const ACTION_SECONDS: f32 = 1.0;
 /// Seconds of simulation between rounds, so that a round in which nobody
 /// can strike still lets monsters close in.
 const ROUND_SECONDS: f32 = 1.0;
-/// Game time one round takes.
-const ROUND_MS: u64 = 120_000;
 /// Rounds in which nobody could attack before the fight peters out.
 const PASSIVE_ROUNDS: u32 = 2;
 
@@ -2630,7 +2628,8 @@ fn end_round(
     // The round's time passes now, with its meaning: conditions age, spell
     // points come back at half rate and nothing else recovers (retail
     // `AdvanceCombatRound`, `AdvanceTimedEffects`).
-    let ticks = clock.advance(ROUND_MS);
+    // A round takes one aging tick.
+    let ticks = clock.advance(crate::game::time::AGING_TICK_MS);
     // A monster that waited, or lies asleep or knocked out, gets its
     // breath back (retail `AdvanceCombatRound`).
     for &entity in combatants {

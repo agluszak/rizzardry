@@ -65,7 +65,7 @@ const GRADE_SKILL: [i32; 11] = [10, 25, 35, 40, 50, 60, 70, 80, 90, 100, 110];
 
 /// The party remarks on a trap again once this much game time has passed
 /// since it last faced it (retail: 0x3840 seconds).
-const REMARK_AGAIN_MS: u64 = 4 * 3_600_000;
+const REMARK_AGAIN_MS: u64 = 4 * crate::game::time::HOUR_MS;
 
 /// Forcing a lock costs this much stamina and needs at least as much
 /// (retail `FatigueCharacter(slot, 0x50)`).

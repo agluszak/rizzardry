@@ -15,7 +15,7 @@ use crate::game::time::GameClock;
 use crate::game::world::level::level_active;
 
 /// How long a requested rest lasts, in game milliseconds.
-const REST_MS: u64 = 8 * 3_600_000;
+const REST_MS: u64 = 8 * crate::game::time::HOUR_MS;
 /// Faster than this, in metres a second, the party may not camp.
 const STILL_BELOW: f32 = 0.05;
 
