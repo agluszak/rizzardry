@@ -200,9 +200,9 @@ pub fn check(
 }
 
 /// The name an actor goes by in the world's inspector.
-fn actor_name(species: &MonsterCatalog, monster: &Monster) -> String {
-    let kind = species.kind(monster.species).map_or("", |kind| kind.name.as_str());
-    format!("{kind} #{}", monster.location)
+fn actor_name(species: &MonsterCatalog, (id, location): (u32, i32)) -> String {
+    let kind = species.kind(id).map_or("", |kind| kind.name.as_str());
+    format!("{kind} #{location}")
 }
 
 /// Make a monster an actor of its level: standing at its feet and facing
@@ -291,7 +291,7 @@ pub fn spawn_group(
     let members = members
         .into_iter()
         .map(|kept| {
-            let name = actor_name(species, &kept.monster);
+            let name = actor_name(species, (kept.monster.species, kept.monster.location));
             let body = kept.monster.body;
             let mut entity = commands.spawn((Name::new(name), kept.monster));
             embody(
@@ -384,7 +384,7 @@ pub fn give_birth(
                 commands.spawn((MonsterGroup { authored, ..default() }, LevelOwned(root))).id()
             });
         for kept in born {
-            let name = actor_name(species, &kept.monster);
+            let name = actor_name(species, (kept.monster.species, kept.monster.location));
             let body = kept.monster.body;
             let mut entity = commands.spawn((Name::new(name), kept.monster));
             embody(
@@ -435,7 +435,7 @@ pub fn populate(
                 .filter(|placed| species.0[placed.species as usize].npc.is_none())
                 .map(|placed| {
                     let kind = &species.0[placed.species as usize];
-                    let body = bodies.get(&handles.0[&placed.species]).unwrap();
+                    let body = handles.get(placed.species, bodies).unwrap();
                     (placed.unborn, KeptMonster::placed(placed, kind, body, rng))
                 })
                 .partition(|&(unborn, _)| unborn);
@@ -460,7 +460,7 @@ pub fn populate(
             continue;
         }
         let body = kept.monster.body;
-        let name = actor_name(species, &kept.monster);
+        let name = actor_name(species, (kept.monster.species, kept.monster.location));
         let entity = commands.spawn((Name::new(name), kept.monster)).id();
         actors.push((entity, kept.feet, kept.yaw, body, kept.group));
     }
@@ -470,14 +470,15 @@ pub fn populate(
     for placed in geometry.monsters.iter().filter(|placed| !placed.unborn) {
         let Some(kind) = species.kind(placed.species) else { continue };
         let Some(id) = kind.npc else { continue };
-        let body = bodies.get(&handles.0[&placed.species]).unwrap();
+        let body = handles.get(placed.species, bodies).unwrap();
         let place = crate::game::npcs::Placing { placed, tables, id, map, average };
         let Some(actor) = npcs.place(commands, place, items, &mut placed_actors, rng, |rng| {
             KeptMonster::placed(placed, kind, body, rng)
         }) else {
             continue;
         };
-        commands.entity(actor.0).insert(Name::new(format!("{} #{}", kind.name, placed.location)));
+        let name = actor_name(species, (placed.species, placed.location));
+        commands.entity(actor.0).insert(Name::new(name));
         actors.push(actor);
     }
     actors.extend(npcs.visitors(commands, map, &mut placed_actors));
