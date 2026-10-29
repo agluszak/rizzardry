@@ -173,7 +173,7 @@ impl NpcPopulation<'_, '_> {
     pub fn average_level(&self) -> u32 {
         self.roster.single().map_or(1, |roster| {
             crate::game::party::average_level(
-                self.profiles.iter_many(roster.iter()).matched().map(|c| c.level),
+                self.profiles.iter_many(roster.iter()).matched().map(|c| c.level()),
             )
         })
     }

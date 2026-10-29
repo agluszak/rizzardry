@@ -307,7 +307,7 @@ pub fn max_points(
             return 0;
         }
         let skill = character.skill(realm.skill()) as f32;
-        let levels = (known.len() + usize::from(character.level) + 1) as f32;
+        let levels = (known.len() + usize::from(character.level()) + 1) as f32;
         let points = ((weight + 3.0 * skill + piety) * 0.02 * levels + 0.5) as u32;
         points.max(known.iter().map(|s| s.cost).max().unwrap_or(0))
     })
@@ -526,7 +526,7 @@ impl MagicContext<'_, '_> {
     ) -> Result<R, casting::Refusal> {
         let party: Vec<Entity> = self.roster.iter().collect();
         let party_level = crate::game::party::average_level(
-            members.iter_many(self.roster.iter()).matched().map(|(c, ..)| c.level),
+            members.iter_many(self.roster.iter()).matched().map(|(c, ..)| c.level()),
         );
         let (Some(items), Some(species)) = (self.content.items(), self.content.species()) else {
             return Err(casting::Refusal::MissingContent);

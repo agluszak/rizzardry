@@ -554,7 +554,7 @@ fn member_blow(
                 *knockout = knockout.wrapping_add(character.scale_by_profession(5.0) as u8);
             }
         }
-        let power = attack::effect_power(u32::from(character.level));
+        let power = attack::effect_power(u32::from(character.level()));
         let landed = effects::blow(rng, field, fight.points, landing.victim, &blow, power, false);
         for effect in &landed {
             tally.struck(Some(*effect), true);

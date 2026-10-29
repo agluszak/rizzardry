@@ -1049,7 +1049,7 @@ fn draw_header(
             HeaderPart::Level => {
                 let title = strings.get(profession_title(profile));
                 let level = strings.get(0x91a);
-                value = Some(format!("{level} {} ({title})", profile.level));
+                value = Some(format!("{level} {} ({title})", profile.level()));
             }
         }
         if let Some(mut picture) = picture

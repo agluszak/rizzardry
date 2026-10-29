@@ -88,7 +88,7 @@ pub fn health_known(
         .max()
         .unwrap_or(0);
     let average =
-        party.iter().map(|(m, _)| f32::from(m.level)).sum::<f32>() / party.len().max(1) as f32;
+        party.iter().map(|(m, _)| f32::from(m.level())).sum::<f32>() / party.len().max(1) as f32;
     let level = i32::from(display_level);
     let knowledge = if (average as i32) < level {
         (mythology as f32 - (level as f32 - average) * 3.0 + 0.5).max(0.0) as u32
