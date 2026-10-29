@@ -69,7 +69,6 @@ impl Plugin for CombatPlugin {
                     settle_defeat,
                     start_battle,
                     control_combat,
-                    approach::close_in,
                 )
                     .chain()
                     .in_set(crate::game::GameplaySet::Combat)
@@ -103,8 +102,16 @@ impl Plugin for CombatPlugin {
             // budget runs out.
             .add_systems(
                 FixedPostUpdate,
-                track_party_move
+                (track_party_move, approach::spend_moves)
                     .after(avian3d::prelude::PhysicsSystems::Writeback)
+                    .run_if(crate::game::world::level::level_active),
+            )
+            // Monsters' moves likewise: headed before navigation plans the
+            // step, charged once physics has walked it.
+            .add_systems(
+                FixedPreUpdate,
+                approach::steer_moves
+                    .before(bevy_landmass::LandmassSystems::SyncExistence)
                     .run_if(crate::game::world::level::level_active),
             );
     }
