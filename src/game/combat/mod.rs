@@ -828,6 +828,9 @@ pub fn run_battle(
 ) {
     let Some((entity, mut battle, combatants)) = battle.map(Single::into_inner) else { return };
     let combatants = combatants.map_or(&[][..], Combatants::entities);
+    if content.spells().is_none() && roster.iter().any(|actor| magic.points.contains(actor)) {
+        return;
+    }
     let (mut members, mut damage) = actors.p0();
     // Content and the party's body exist whenever a level is played.
     let Some(species) = content.species() else { return };

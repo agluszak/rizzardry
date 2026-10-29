@@ -146,6 +146,18 @@ pub(crate) fn pass_time(
     if battle.is_some() {
         return;
     }
+    // Keep the entire aging operation pending while a caster's recovery rate
+    // cannot be derived. Expiry must not consume a tick without its recovery.
+    if content.spells().is_none() && {
+        let members = affected.p0();
+        roster.iter().any(|actor| {
+            members
+                .get(actor)
+                .is_ok_and(|(_, _, known, points)| known.is_some() && points.is_some())
+        })
+    } {
+        return;
+    }
     let racing = camp.as_ref().is_some_and(|c| c.racing());
     let ticks =
         clock.advance_real(time.delta(), if racing { CAMPING_RATE } else { EXPLORATION_RATE });
@@ -295,6 +307,20 @@ mod pass_time_tests {
             });
             let member = app.world_mut().spawn((profile, vitals, learned, points)).id();
             crate::game::party::roster::test_party(app.world_mut(), &[member]);
+            let data = app.world_mut().remove_resource::<GameData>().unwrap();
+            let before = app.world().get::<SpellPoints>(member).unwrap().clone();
+            app.update();
+            assert_eq!(app.world().get::<SpellPoints>(member).unwrap(), &before);
+            assert_eq!(app.world().resource::<GameClock>().ms, 0);
+            assert!(
+                app.world()
+                    .get::<Vitals>(member)
+                    .unwrap()
+                    .enchantments
+                    .get(SpellId::SUPERMAN)
+                    .is_some()
+            );
+            app.insert_resource(data);
             for _ in 0..3 / steps_per_update {
                 app.update();
             }
