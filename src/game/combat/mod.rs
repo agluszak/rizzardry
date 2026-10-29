@@ -73,7 +73,9 @@ impl Plugin for CombatPlugin {
             )
             // Rounds run on the fixed step: when each actor acts, and so
             // every roll, follows simulation time, not how often frames
-            // come. Requests made in Update wait for the next step.
+            // come. Requests made in Update wait for the next step, and a
+            // move the round starts or ends governs the party's input on
+            // that same step.
             .add_systems(
                 FixedUpdate,
                 (
@@ -83,6 +85,7 @@ impl Plugin for CombatPlugin {
                     settle_defeat,
                 )
                     .chain()
+                    .before(bevy_tnua::TnuaUserControlsSystems)
                     .run_if(crate::game::world::level::level_active),
             )
             // The party walks on the fixed step; its move is measured on
@@ -3519,6 +3522,47 @@ mod tests {
         let pending =
             fight(app.world()).unwrap().this_round.party.iter().filter(|p| p.phase > 0).count();
         assert_eq!(pending, 0, "a move spent in full keeps nobody's action");
+    }
+
+    /// Ending the party's move stops its walking on that very step, though
+    /// the walking input is still held.
+    #[test]
+    fn an_ended_move_takes_no_further_step() {
+        use crate::game::party::body::{PartyMotion, PartyMovement, drive_party};
+        use bevy_tnua::prelude::TnuaController;
+        let (mut app, _) = round_app(false);
+        app.insert_resource(State::new(crate::game::screen::Screen::World))
+            .init_resource::<NextState<crate::game::screen::Screen>>()
+            .add_systems(FixedUpdate, drive_party.in_set(bevy_tnua::TnuaUserControlsSystems));
+        let body = app
+            .world_mut()
+            .query_filtered::<Entity, With<PartyBody>>()
+            .single(app.world())
+            .unwrap();
+        app.world_mut().entity_mut(body).insert((
+            TnuaController::<PartyMotion>::default(),
+            PartyMovement { walk: Vec2::Y, ..default() },
+        ));
+        app.world_mut().write_message(CyclePartyMove);
+        for _ in 0..12 {
+            app.update();
+            if fight(app.world()).unwrap().party_may_move() {
+                break;
+            }
+        }
+        assert!(fight(app.world()).unwrap().party_may_move());
+        // One fixed step per frame from here.
+        let step = app.world().resource::<Time<Fixed>>().timestep();
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(step));
+        let motion = |app: &App| {
+            app.world().get::<TnuaController<PartyMotion>>(body).unwrap().basis.desired_motion
+        };
+        app.update();
+        assert_ne!(motion(&app), Vec3::ZERO, "the party walks during its move");
+        app.world_mut().write_message(StartRound);
+        app.update();
+        assert!(!fight(app.world()).unwrap().party_may_move());
+        assert_eq!(motion(&app), Vec3::ZERO, "no step after the move ends");
     }
 
     /// A monster put to sleep loses its actions until the condition runs out
