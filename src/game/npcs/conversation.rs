@@ -329,7 +329,7 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
     let greeting = entry_quote(def, world.get::<Npc>(actor).unwrap());
     if def.owns_stock {
         let stock = &world.get::<Npc>(actor).unwrap().stock;
-        let gated = stock.initialized
+        let gated = stock.restock_at.is_some()
             && now.saturating_sub(stock.maintenance_at) >= crate::game::time::DAY_MS
             && def.stock.iter().any(|r| !r.persistent && r.item == super::trade::TEMPLAR_GATED);
         let templar = if gated {

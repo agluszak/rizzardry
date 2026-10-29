@@ -44,7 +44,6 @@ pub struct ItemStack {
     pub identified: bool,
     pub spell_known: bool,
     pub curse_known: bool,
-    pub remarked: bool,
 }
 impl ItemStack {
     /// Import an authored/generated quantity. Legacy zero physical counts mean
@@ -71,7 +70,6 @@ impl ItemStack {
             identified: identify || definition.auto_identify,
             spell_known: false,
             curse_known: false,
-            remarked: false,
         }
     }
     pub fn count(&self) -> u16 {
@@ -1282,24 +1280,13 @@ mod tests {
         party.pool.stacks = (0..POOL_LIMIT).map(|_| stack(&c, &mut ids, 0, 20)).collect();
         party.pool.stacks[17] = stack(&c, &mut ids, 0, 19);
         let target_id = party.pool.stacks[17].id;
-        let mut source = stack(&c, &mut ids, 0, 7);
-        source.remarked = true;
+        let source = stack(&c, &mut ids, 0, 7);
         let source_id = source.id;
         let mut contents = vec![source];
         let taken = party.pool.collect(&mut contents, &c);
         assert_eq!(taken, vec![("item 0".to_owned(), 1)]);
-        assert_eq!(
-            (contents[0].id, contents[0].count(), contents[0].remarked),
-            (source_id, 6, true)
-        );
-        assert_eq!(
-            (
-                party.pool.stacks[17].id,
-                party.pool.stacks[17].count(),
-                party.pool.stacks[17].remarked
-            ),
-            (target_id, 20, false)
-        );
+        assert_eq!((contents[0].id, contents[0].count()), (source_id, 6));
+        assert_eq!((party.pool.stacks[17].id, party.pool.stacks[17].count()), (target_id, 20));
         let before = (party.clone(), contents.clone());
         assert!(party.pool.collect(&mut contents, &c).is_empty());
         assert_eq!((party, contents), before);

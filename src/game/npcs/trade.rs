@@ -21,14 +21,12 @@ pub struct StockLot {
     pub id: StockLotId,
     pub item: ItemId,
     pub units: u32,
-    pub charges: u8,
     pub available_at: u64,
 }
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MerchantStock {
     pub lots: Vec<StockLot>,
-    pub initialized: bool,
-    pub restock_at: u64,
+    pub restock_at: Option<u64>,
     pub maintenance_at: u64,
     next: u64,
 }
@@ -105,13 +103,7 @@ impl MerchantStock {
     }
     fn new_lot(&mut self, d: &ItemDefinition, units: u32) {
         self.next += 1;
-        self.lots.push(StockLot {
-            id: StockLotId(self.next),
-            item: d.id,
-            units,
-            charges: d.initial_quantity.maximum().min(255) as u8,
-            available_at: 0,
-        });
+        self.lots.push(StockLot { id: StockLotId(self.next), item: d.id, units, available_at: 0 });
     }
     pub fn maintain(
         &mut self,
@@ -129,22 +121,21 @@ impl MerchantStock {
         {
             return Err(TradeError::MissingContent);
         }
-        if !self.initialized {
+        let Some(restock_at) = self.restock_at else {
             for r in &def.stock {
                 let chance =
                     if r.persistent { 100 } else { tier(catalog.get(r.item).unwrap(), level) * 25 };
                 let n = (0..r.quantity).filter(|_| rng.below(100) < chance).count() as u32;
                 self.add(r.item, n, catalog, true)?;
             }
-            self.initialized = true;
-            self.restock_at = now;
+            self.restock_at = Some(now);
             self.maintenance_at = now;
             return Ok(());
-        }
+        };
         let daily = now.saturating_sub(self.maintenance_at) >= DAY_MS;
-        if now.saturating_sub(self.restock_at) > DAY_MS / 2 {
+        if now.saturating_sub(restock_at) > DAY_MS / 2 {
             self.replenish(def, catalog, level, true, templar, rng)?;
-            self.restock_at = now;
+            self.restock_at = Some(now);
         }
         if daily {
             for lot in &mut self.lots {
@@ -167,7 +158,7 @@ impl MerchantStock {
             self.replenish(def, catalog, level, false, templar, rng)?;
             self.lots.retain(|l| l.units > 0);
             self.maintenance_at = now;
-            self.restock_at = now;
+            self.restock_at = Some(now);
         }
         for lot in &mut self.lots {
             if lot.available_at != 0 && lot.available_at < now {
@@ -314,7 +305,7 @@ pub fn buy(
         } else if item.quantity == QuantityKind::None {
             1
         } else {
-            u16::from(source.charges)
+            item.initial_quantity.maximum().min(255) as u16
         };
         let delivered = ItemStack::new(item, &mut next_ids, amount, true);
         if draft.pool.receive(delivered, catalog).is_some() {
@@ -391,6 +382,71 @@ mod tests {
             ..default()
         }
     }
+    #[test]
+    fn zero_clock_initialization_half_day_and_delayed_stock_keep_their_clocks() {
+        use crate::content::npcs::StockRule;
+        let catalog = catalog();
+        let def = NpcDefinition {
+            stock: vec![StockRule { item: ItemId(0), quantity: 2, persistent: true }],
+            ..merchant()
+        };
+        let mut stock = MerchantStock::default();
+        let mut rng = GameRng::seeded(7);
+        let mut expected = rng.clone();
+        expected.below(100);
+        expected.below(100);
+        stock.maintain(&def, &catalog, 1, 0, false, &mut rng).unwrap();
+        assert_eq!(rng, expected);
+        assert_eq!(stock.restock_at, Some(0));
+        assert_eq!(stock.lots[0].units, 2);
+        let lot = stock.lots[0].id;
+        let initial = stock.clone();
+        stock.maintain(&def, &catalog, 1, 0, false, &mut rng).unwrap();
+        assert_eq!(stock, initial);
+        assert_eq!(rng, expected);
+        stock.lots[0].units = 0;
+        stock.maintain(&def, &catalog, 1, DAY_MS / 2, false, &mut rng).unwrap();
+        assert_eq!(stock.lots[0].units, 0);
+        assert_eq!(rng, expected);
+        let units = jitter(2, &mut expected);
+        stock.maintain(&def, &catalog, 1, DAY_MS / 2 + 1, false, &mut rng).unwrap();
+        assert_eq!(stock.lots[0].units, units);
+        assert_eq!(rng, expected);
+        assert_eq!(stock.lots[0].id, lot);
+        assert_eq!(stock.maintenance_at, 0);
+        stock.lots[0].units = 10;
+        stock.lots[0].available_at = DAY_MS + 10;
+        stock.maintain(&def, &catalog, 1, DAY_MS, false, &mut rng).unwrap();
+        assert_eq!(stock.restock_at, Some(DAY_MS));
+        assert_eq!(stock.maintenance_at, DAY_MS);
+        assert_eq!(stock.lots[0].units, 10);
+        assert_eq!(rng, expected);
+        stock.maintain(&def, &catalog, 1, DAY_MS + 10, false, &mut rng).unwrap();
+        assert!(!on_sale(&stock.lots[0], &catalog.0[0]));
+        stock.maintain(&def, &catalog, 1, DAY_MS + 11, false, &mut rng).unwrap();
+        assert!(on_sale(&stock.lots[0], &catalog.0[0]));
+        assert_eq!(stock.lots[0].id, lot);
+        assert_eq!(rng, expected);
+    }
+
+    #[test]
+    fn purchased_charges_come_from_the_definition_maximum() {
+        for (maximum, expected) in [(0, 0), (20, 20), (300, 255)] {
+            let mut catalog = catalog();
+            catalog.0[0].quantity = QuantityKind::Charges;
+            catalog.0[0].initial_quantity = Dice { base: maximum, ..default() };
+            let def = merchant();
+            let mut stock = MerchantStock::default();
+            stock.add(ItemId(0), 1, &catalog, false).unwrap();
+            let lot = stock.lots[0].id;
+            let cost = price(&def, &catalog.0[0], 1, true, true, 0).unwrap();
+            let mut party = PartyInventory { gold: 1000, ..default() };
+            buy(&mut stock, &mut party, &mut ItemIds::default(), &def, &catalog, lot, 1, cost, 0)
+                .unwrap();
+            assert_eq!(party.pool.stacks[0].remaining_uses(), Some(expected));
+        }
+    }
+
     #[test]
     fn purchase_revalidates_and_settles_complete_delivery() {
         let catalog = catalog();
@@ -470,7 +526,6 @@ mod tests {
         let mut stock = MerchantStock::default();
         stock.add(item.item, 3, &catalog, false).unwrap();
         assert_eq!(stock.lots[0].units, 3);
-        assert_eq!(stock.lots[0].charges, 20);
         // Communication is applied per unit, then truncated before multiplication.
         assert_eq!(price(&def, &catalog.0[0], 3, true, true, 20), Ok(33));
     }
@@ -480,7 +535,7 @@ mod tests {
     fn maintenance_checks_every_lot_before_changing_stock() {
         let catalog = catalog();
         let def = merchant();
-        let mut stock = MerchantStock { initialized: true, ..default() };
+        let mut stock = MerchantStock { restock_at: Some(0), ..default() };
         stock.add(ItemId(0), 3, &catalog, false).unwrap();
         stock.lots.push(StockLot { item: ItemId(999), ..stock.lots[0].clone() });
         let (before, mut rng) = (stock.clone(), GameRng::seeded(3));
@@ -505,7 +560,7 @@ mod tests {
             ],
             ..merchant()
         };
-        let mut stock = MerchantStock { initialized: true, ..default() };
+        let mut stock = MerchantStock { restock_at: Some(0), ..default() };
         let mut rng = GameRng::seeded(8);
         stock.maintain(&def, &catalog, 1, DAY_MS, false, &mut rng).unwrap();
         assert!(stock.lots.iter().all(|lot| lot.item != TEMPLAR_GATED));
