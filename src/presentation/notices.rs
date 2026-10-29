@@ -751,6 +751,8 @@ mod tests {
             .add_message::<LockNews>()
             .add_message::<super::super::party_voice::SpokenRemark>()
             .add_message::<crate::game::magic::casting::MagicNews>()
+            .add_message::<crate::game::factions::FactionNews>()
+            .add_message::<crate::game::npcs::conversation::NpcSpeech>()
             .add_systems(Update, queue_notices);
         let mut strings = vec![None; SURVIVORS_EARNED + 1];
         for (id, text) in [
