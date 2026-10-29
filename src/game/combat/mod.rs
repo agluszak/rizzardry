@@ -4890,9 +4890,7 @@ mod tests {
         use crate::game::party::body::{PartyMotion, PartyMovement, drive_party};
         use bevy_tnua::prelude::TnuaController;
         let (mut app, _) = round_app(false);
-        app.insert_resource(State::new(crate::game::screen::Screen::World))
-            .init_resource::<NextState<crate::game::screen::Screen>>()
-            .add_systems(FixedUpdate, drive_party.in_set(bevy_tnua::TnuaUserControlsSystems));
+        app.add_systems(FixedUpdate, drive_party.in_set(bevy_tnua::TnuaUserControlsSystems));
         let body = app
             .world_mut()
             .query_filtered::<Entity, With<PartyBody>>()

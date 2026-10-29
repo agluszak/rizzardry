@@ -104,7 +104,7 @@ fn bodies(world: &mut World, root: Entity) -> Result<Vec<(u32, MonsterBody)>, Re
 }
 
 pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Result<(), Refusal> {
-    if !world.run_system_cached(crate::game::screen::utility_magic).unwrap_or(false)
+    if !world.run_system_cached(crate::game::freedom::utility_magic).unwrap_or(false)
         || world.contains_resource::<crate::game::camp::Camp>()
     {
         return Err(Refusal::WrongTime);

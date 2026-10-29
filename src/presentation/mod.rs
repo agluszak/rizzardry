@@ -27,6 +27,7 @@ mod particles;
 pub mod party_view;
 mod party_voice;
 pub mod retail_controls;
+pub mod screen;
 pub mod screen_art;
 pub mod selection;
 pub mod settings;
@@ -58,17 +59,16 @@ impl Default for PresentationRng {
     }
 }
 
-/// Exploring takes input only while gameplay says the party is free
-/// (`game::screen`); presentation routes input by that rule, it does not
-/// make it.
+/// Exploring takes input only while the world screen is up and gameplay
+/// says the party is free ([`screen::WorldInput`]).
 fn hold_exploration(
     mut commands: Commands,
-    freedom: crate::game::screen::Freedom,
+    input: screen::WorldInput,
     focus: Res<bevy::input_focus::InputFocus>,
     widgets: Query<(), With<bevy::input_focus::tab_navigation::TabIndex>>,
     controls: Query<(Entity, Option<&ContextActivity<Exploration>>), With<Exploration>>,
 ) {
-    let active = freedom.free() && !focus.get().is_some_and(|entity| widgets.contains(entity));
+    let active = input.free() && !focus.get().is_some_and(|entity| widgets.contains(entity));
     for (entity, activity) in &controls {
         if activity.is_none_or(|a| **a != active) {
             commands.entity(entity).insert(ContextActivity::<Exploration>::new(active));
@@ -94,6 +94,7 @@ impl Plugin for PresentationPlugin {
             multi_click_interval: std::time::Duration::from_millis(400),
             ..default()
         })
+        .init_state::<screen::Screen>()
         .add_input_context::<Exploration>()
         .add_observer(retail_controls::primary_buttons_only)
         .add_observer(party_view::attach_camera)
@@ -115,7 +116,7 @@ impl Plugin for PresentationPlugin {
         .init_resource::<PresentationRng>()
         .add_input_context::<automap::MapKey>()
         .add_input_context::<automap::AutomapScreen>()
-        .add_systems(OnEnter(crate::game::screen::Screen::Automap), automap::enter_automap)
+        .add_systems(OnEnter(crate::presentation::screen::Screen::Automap), automap::enter_automap)
         .add_systems(
             PreUpdate,
             (hold_exploration, automap::route_map_keys)
@@ -260,7 +261,8 @@ impl Plugin for PresentationPlugin {
 #[cfg(test)]
 mod focus_tests {
     use super::*;
-    use crate::game::{screen::Screen, world::level::Level};
+    use crate::game::world::level::Level;
+    use crate::presentation::screen::Screen;
     use bevy::input_focus::{InputFocus, tab_navigation::TabIndex};
 
     #[test]

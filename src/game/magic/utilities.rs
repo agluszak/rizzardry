@@ -55,7 +55,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
     if id != SpellId::IDENTIFY_ITEM {
         return Err(Refusal::Unsupported);
     }
-    if !world.run_system_cached(crate::game::screen::utility_magic).unwrap_or(false)
+    if !world.run_system_cached(crate::game::freedom::utility_magic).unwrap_or(false)
         || world.query::<&crate::game::combat::Battle>().iter(world).next().is_some()
     {
         return Err(Refusal::WrongTime);
@@ -212,15 +212,13 @@ mod tests {
     fn utility_casting_while_camped_keeps_the_world_input_gate_closed() {
         let mut scene = scenario();
         let caster = scene.members[0];
-        scene.world.insert_resource(crate::game::camp::Camp::Resting(
-            crate::game::camp::RestGoal::UntilAble,
-        ));
-        assert!(!scene.world.run_system_cached(crate::game::screen::party_free).unwrap());
+        scene.world.insert_resource(crate::game::camp::Camp::UntilAble);
+        assert!(!scene.world.run_system_cached(crate::game::freedom::party_free).unwrap());
         assert!(
             matches!(request(&mut scene, SpellId::SET_PORTAL, Aim::Member(caster)), MagicNews::Done(report) if report.outcome == super::super::Outcome::Cast)
         );
         assert!(scene.world.get::<Portal>(caster).is_some());
-        assert!(!scene.world.run_system_cached(crate::game::screen::party_free).unwrap());
+        assert!(!scene.world.run_system_cached(crate::game::freedom::party_free).unwrap());
     }
 
     #[test]

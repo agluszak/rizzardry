@@ -120,15 +120,13 @@ mod tests {
     use crate::content::level::CameraPathModel;
     use crate::game::camp::{Camp, CampNews, CampRequest};
     use crate::game::party::body::{PartyLook, look_around};
-    use crate::game::screen::Screen;
 
     #[test]
     fn path_flight_blocks_manual_actions_and_landing_releases_the_party() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
-            .insert_resource(State::new(Screen::World))
-            .init_resource::<NextState<Screen>>()
             .init_resource::<Assets<LevelDefinition>>()
+            .init_resource::<crate::game::time::GameClock>()
             .add_message::<PartyLook>()
             .add_message::<CampRequest>()
             .add_message::<CampNews>()

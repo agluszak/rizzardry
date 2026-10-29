@@ -136,9 +136,9 @@ mod tests {
     use super::*;
     use crate::game::combat::CombatNews;
     use crate::game::party::body::{PartyTurning, turn_party};
-    use crate::game::screen::Screen;
     use crate::game::world::population::{Monster, ScaledBody};
     use crate::presentation::monsters::MonsterVisual;
+    use crate::presentation::screen::Screen;
     use crate::presentation::settings::Preferences;
     use avian3d::prelude::Position;
     use std::time::Duration;

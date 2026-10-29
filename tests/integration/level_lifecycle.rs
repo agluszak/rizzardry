@@ -912,8 +912,6 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     }
     // A merchant re-enters at authored quote zero even after its greeting was remembered.
     use rizzardry::game::npcs::conversation::{self, Conversation, ConversationRequest};
-    use rizzardry::game::screen::Screen;
-    app.insert_resource(State::new(Screen::World)).init_resource::<NextState<Screen>>();
     let at = app.world().get::<Transform>(body).unwrap().translation;
     let party = party_entities(&mut app)[0];
     app.world_mut().get_mut::<avian3d::prelude::Position>(party).unwrap().0 = at + Vec3::X;

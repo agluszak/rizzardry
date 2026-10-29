@@ -27,7 +27,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, source: Source) -> Result<
     if world.query::<&crate::game::combat::Battle>().iter(world).next().is_some() {
         return Err(Refusal::WrongTime);
     }
-    if !world.run_system_cached(crate::game::screen::utility_magic).unwrap_or(false) {
+    if !world.run_system_cached(crate::game::freedom::utility_magic).unwrap_or(false) {
         return Err(Refusal::WrongTime);
     }
     let (level, path) = world

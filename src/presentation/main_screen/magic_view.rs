@@ -344,7 +344,7 @@ fn spawn_view(
             absolute(Vec2::ZERO, crate::presentation::screen_art::SCREEN),
             GlobalZIndex(25),
             Pickable::IGNORE,
-            DespawnOnExit(crate::game::screen::Screen::World),
+            DespawnOnExit(crate::presentation::screen::Screen::World),
         ))
         .id();
     match target {

@@ -1,8 +1,9 @@
 //! Camping: the party rests eight game hours with time racing, or is forced
 //! to rest while nobody can act until someone can. Retail's sequence
-//! (`BeginPartyCamping`, `UpdateSurpriseMode`, `EndSurprise`): a second's
-//! fade into the camping screen, the rest itself, a second's fade back.
-//! Ambushes and the waking Senses roll wait for combat.
+//! (`BeginPartyCamping`, `UpdateSurpriseMode`, `EndSurprise`) fades into the
+//! camping screen and back; the fades are the presentation's, and the rest
+//! runs from when it is accepted until it ends. Ambushes and the waking
+//! Senses roll wait for combat.
 
 use avian3d::prelude::LinearVelocity;
 use bevy::prelude::*;
@@ -12,91 +13,29 @@ use crate::game::party::body::PartyBody;
 use crate::game::party::roster::PartyRoster;
 use crate::game::time::GameClock;
 use crate::game::world::level::level_active;
-use std::time::Duration;
 
 /// How long a requested rest lasts, in game milliseconds.
 const REST_MS: u64 = 8 * 3_600_000;
-/// Each fade: half a second to black, half a second from it.
-pub const FADE_SECONDS: f32 = 1.0;
 /// Faster than this, in metres a second, the party may not camp.
 const STILL_BELOW: f32 = 0.05;
 
-/// The party is camping. Exists only while it does.
-#[derive(Resource, Clone, Debug)]
+/// The party is camping, with game time racing. Exists only while it does.
+#[derive(Resource, Clone, Copy, Debug)]
 pub enum Camp {
-    FadingIn { fade: Timer, forced: bool },
-    Resting(RestGoal),
-    FadingOut { fade: Timer, outcome: CampNews },
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum RestGoal {
+    /// A requested rest, until this game time.
     Until(u64),
+    /// A forced rest, until someone can act.
     UntilAble,
 }
 
-fn fade() -> Timer {
-    Timer::from_seconds(FADE_SECONDS, TimerMode::Once)
-}
-
 impl Camp {
-    fn new(forced: bool) -> Self {
-        Self::FadingIn { fade: fade(), forced }
-    }
-
-    /// Whether game time races (retail's accelerated calendar).
-    pub fn racing(&self) -> bool {
-        matches!(self, Self::Resting(_))
-    }
-
-    fn leave(&mut self) -> Option<CampNews> {
+    /// How the rest ends, once this step's time and recovery have passed.
+    pub(crate) fn outcome(self, now: u64, anyone_able: bool) -> Option<CampNews> {
         match self {
-            Self::FadingIn { forced: true, .. } | Self::Resting(RestGoal::UntilAble) => {
-                Some(CampNews::Started { forced: true })
-            }
-            Self::Resting(RestGoal::Until(_)) => {
-                *self = Self::FadingOut { fade: fade(), outcome: CampNews::Interrupted };
-                None
-            }
+            Self::Until(until) if now >= until => Some(CampNews::Done),
+            Self::UntilAble if anyone_able => Some(CampNews::Recovered),
             _ => None,
         }
-    }
-
-    /// Called after this interval's clock and recovery have been settled under
-    /// the phase that began it. Rendering only observes these simulation phases.
-    pub(crate) fn advance(
-        &mut self,
-        elapsed: Duration,
-        now: u64,
-        anyone_able: bool,
-    ) -> Option<CampNews> {
-        match self {
-            Self::FadingIn { fade, forced } => {
-                if fade.tick(elapsed).is_finished() {
-                    *self = Self::Resting(if *forced {
-                        RestGoal::UntilAble
-                    } else {
-                        RestGoal::Until(now + REST_MS)
-                    });
-                }
-            }
-            Self::Resting(goal) => {
-                let outcome = match goal {
-                    RestGoal::Until(until) if now >= *until => Some(CampNews::Done),
-                    RestGoal::UntilAble if anyone_able => Some(CampNews::Recovered),
-                    _ => None,
-                };
-                if let Some(outcome) = outcome {
-                    *self = Self::FadingOut { fade: fade(), outcome };
-                }
-            }
-            Self::FadingOut { fade, outcome } => {
-                if fade.tick(elapsed).is_finished() {
-                    return Some(*outcome);
-                }
-            }
-        }
-        None
     }
 }
 
@@ -136,23 +75,22 @@ impl Plugin for CampPlugin {
     }
 }
 
-/// Move the camp on once this step's time and recovery have passed.
+/// End the rest once this step's time and recovery have passed.
 pub(crate) fn advance_camp(
     mut commands: Commands,
-    time: Res<Time>,
     clock: Res<GameClock>,
-    camp: Option<ResMut<Camp>>,
+    camp: Option<Res<Camp>>,
     battle: Option<Single<&crate::game::combat::Battle>>,
     roster: Single<&PartyRoster>,
     members: Query<&Vitals>,
     mut news: MessageWriter<CampNews>,
 ) {
-    let Some(mut camp) = camp else { return };
+    let Some(camp) = camp else { return };
     if battle.is_some() {
         return;
     }
     let anyone_able = members.iter_many(roster.iter()).matched().any(Vitals::can_act);
-    if let Some(outcome) = camp.advance(time.delta(), clock.ms, anyone_able) {
+    if let Some(outcome) = camp.outcome(clock.ms, anyone_able) {
         news.write(outcome);
         commands.remove_resource::<Camp>();
     }
@@ -164,7 +102,8 @@ pub struct CampRequest;
 
 pub fn request_camp(
     mut commands: Commands,
-    freedom: crate::game::screen::Freedom,
+    clock: Res<GameClock>,
+    freedom: crate::game::freedom::Freedom,
     mut button: MessageReader<CampRequest>,
     battle: Option<Single<&crate::game::combat::Battle>>,
     party: Query<&LinearVelocity, With<PartyBody>>,
@@ -182,7 +121,7 @@ pub fn request_camp(
         news.write(CampNews::Moving);
         return;
     }
-    commands.insert_resource(Camp::new(false));
+    commands.insert_resource(Camp::Until(clock.ms + REST_MS));
     news.write(CampNews::Started { forced: false });
 }
 
@@ -200,7 +139,7 @@ pub fn force_camp(
     if camp.is_some() || battle.is_some() || !anyone_alive || anyone_able {
         return;
     }
-    commands.insert_resource(Camp::new(true));
+    commands.insert_resource(Camp::UntilAble);
     news.write(CampNews::Started { forced: true });
 }
 
@@ -210,13 +149,20 @@ pub struct LeaveCamp;
 
 /// A forced camp cannot be left; a rest is cut short.
 pub fn leave_camp(
+    mut commands: Commands,
     mut requests: MessageReader<LeaveCamp>,
-    camp: Option<ResMut<Camp>>,
+    camp: Option<Res<Camp>>,
     mut news: MessageWriter<CampNews>,
 ) {
-    let (Some(mut camp), Some(LeaveCamp)) = (camp, requests.read().last()) else { return };
-    if let Some(outcome) = camp.leave() {
-        news.write(outcome);
+    let (Some(camp), Some(LeaveCamp)) = (camp, requests.read().last()) else { return };
+    match *camp {
+        Camp::UntilAble => {
+            news.write(CampNews::Started { forced: true });
+        }
+        Camp::Until(_) => {
+            news.write(CampNews::Interrupted);
+            commands.remove_resource::<Camp>();
+        }
     }
 }
 
@@ -225,21 +171,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn interrupting_before_the_deadline_stays_interrupted_after_fading() {
-        let mut camp = Camp::Resting(RestGoal::Until(1000));
-        assert_eq!(camp.leave(), None);
-        assert!(!camp.racing());
-        assert_eq!(camp.advance(Duration::from_secs(1), 2000, true), Some(CampNews::Interrupted));
+    fn a_rest_ends_at_its_deadline_and_a_forced_one_on_recovery() {
+        assert_eq!(Camp::Until(1000).outcome(999, true), None);
+        assert_eq!(Camp::Until(1000).outcome(1000, false), Some(CampNews::Done));
+        assert_eq!(Camp::UntilAble.outcome(u64::MAX, false), None);
+        assert_eq!(Camp::UntilAble.outcome(0, true), Some(CampNews::Recovered));
     }
 
     #[test]
-    fn forced_rest_cannot_be_cancelled_and_records_recovery_before_fading() {
-        let mut camp = Camp::Resting(RestGoal::UntilAble);
-        assert_eq!(camp.leave(), Some(CampNews::Started { forced: true }));
-        camp.advance(Duration::from_millis(16), 0, false);
-        assert!(camp.racing());
-        camp.advance(Duration::from_millis(16), 0, true);
-        assert!(!camp.racing());
-        assert_eq!(camp.advance(Duration::from_secs(1), 0, false), Some(CampNews::Recovered));
+    fn leaving_cuts_a_rest_short_at_once_but_not_a_forced_one() {
+        let mut app = App::new();
+        app.add_message::<LeaveCamp>()
+            .add_message::<CampNews>()
+            .add_systems(Update, leave_camp)
+            .insert_resource(Camp::UntilAble);
+        app.world_mut().write_message(LeaveCamp);
+        app.update();
+        assert!(app.world().contains_resource::<Camp>());
+        app.insert_resource(Camp::Until(1000));
+        app.world_mut().write_message(LeaveCamp);
+        app.update();
+        assert!(!app.world().contains_resource::<Camp>(), "no fade holds the rest");
+        let news: Vec<_> = app.world_mut().resource_mut::<Messages<CampNews>>().drain().collect();
+        assert_eq!(news, [CampNews::Started { forced: true }, CampNews::Interrupted]);
     }
 }

@@ -832,11 +832,9 @@ pub fn play_splats(
 mod tests {
     use super::*;
     use crate::content::items::ItemCatalog;
+    use crate::game::characters::{Gender, Profession};
     use crate::game::data::GameData;
-    use crate::game::{
-        characters::{Gender, Profession},
-        screen::Screen,
-    };
+    use crate::presentation::screen::Screen;
     use bevy::picking::backend::HitData;
 
     /// Retail's right-button portrait gestures: a quick release gives the

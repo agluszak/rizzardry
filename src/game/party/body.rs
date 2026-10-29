@@ -176,7 +176,7 @@ pub struct PartyStart {
 /// Apply requested view changes only while the party can act.
 pub fn look_around(
     mut requests: MessageReader<PartyLook>,
-    freedom: crate::game::screen::Freedom,
+    freedom: crate::game::freedom::Freedom,
     mut party: Query<&mut PartyBody>,
 ) {
     let delta: Vec2 = requests.read().map(|request| request.0).sum();
@@ -230,7 +230,7 @@ pub fn turn_party(
     time: Res<Time>,
     mut requests: MessageReader<TurnParty>,
     mut turning: ResMut<PartyTurning>,
-    freedom: crate::game::screen::Freedom,
+    freedom: crate::game::freedom::Freedom,
     mut party: Query<&mut PartyBody>,
 ) {
     let Ok(mut body) = party.single_mut() else {
@@ -271,11 +271,12 @@ pub fn turn_party(
 pub fn drive_party(
     time: Res<Time>,
     mut party: Query<(&mut PartyBody, &mut TnuaController<PartyMotion>, &PartyMovement)>,
-    freedom: crate::game::screen::Freedom,
+    freedom: crate::game::freedom::Freedom,
     battle: Option<Single<&crate::game::combat::Battle>>,
 ) {
     let Ok((mut body, mut controller, movement)) = party.single_mut() else { return };
-    // A party held by a screen, a camp or a question stands still.
+    // A party held by a camp or a question stands still; a screen over the
+    // world stops its walking input instead.
     let free = freedom.free();
     let turn = movement.turn.clamp(-1.0, 1.0) * TURN_SPEED * time.delta_secs();
     if free && turn != 0.0 {
