@@ -43,16 +43,6 @@ pub enum NoteRefusal {
     InvalidText,
 }
 
-impl MapNote {
-    pub fn type_char(&mut self, c: char) {
-        if self.text.encode_utf16().count() + c.len_utf16() <= MAX_NOTE_LENGTH
-            && crate::content::ui::glyph_index(c).is_some()
-        {
-            self.text.push(c);
-        }
-    }
-}
-
 /// The player accepts a note draft.
 #[derive(Message, Debug)]
 pub struct CommitNote(pub NoteDraft);
@@ -86,8 +76,11 @@ pub fn commit_note(world: &mut World, draft: NoteDraft) -> Result<(), NoteRefusa
 
 impl MapNotes {
     pub fn commit(&mut self, original: Option<usize>, note: MapNote) -> Result<(), NoteRefusal> {
+        // Retail stores a note as a terminated wide string: at most 39 UTF-16
+        // units, none of them the terminator. Which of them the HUD font can
+        // draw is the editor's concern.
         if note.text.encode_utf16().count() > MAX_NOTE_LENGTH
-            || note.text.chars().any(|c| crate::content::ui::glyph_index(c).is_none())
+            || note.text.contains('\0')
             || !note.position.is_finite()
         {
             return Err(NoteRefusal::InvalidText);
@@ -144,14 +137,13 @@ mod tests {
     #[test]
     fn notes_keep_retail_limits() {
         let mut notes = MapNotes::default();
-        let mut draft = MapNote { position: Vec2::ZERO, layer: 0, text: String::new() };
-        for _ in 0..50 {
-            draft.type_char('a');
-        }
-        draft.type_char('\u{1f600}');
-        assert_eq!(draft.text.len(), MAX_NOTE_LENGTH);
-        assert!(notes.notes.is_empty(), "editing is not a committed note");
-        notes.commit(None, draft).unwrap();
+        let note = |text: String| MapNote { position: Vec2::ZERO, layer: 0, text };
+        let too_long = format!("{}\u{1f600}", "a".repeat(MAX_NOTE_LENGTH - 1));
+        assert_eq!(notes.commit(None, note(too_long)), Err(NoteRefusal::InvalidText));
+        assert_eq!(notes.commit(None, note("a\0b".into())), Err(NoteRefusal::InvalidText));
+        assert!(notes.notes.is_empty());
+        // Storage takes text the HUD font cannot draw.
+        notes.commit(None, note(format!("{}\u{1f600}", "a".repeat(MAX_NOTE_LENGTH - 2)))).unwrap();
         for i in 1..MAX_NOTES {
             notes
                 .commit(
