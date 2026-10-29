@@ -27,10 +27,11 @@ pub(crate) fn definition(world: &World, actor: Entity) -> Option<&NpcDefinition>
     catalog(world)?.get(world.get::<ActorId>(actor)?.npc())
 }
 
-/// The levels of the party's members able to fight, in roster order: the
-/// population retail's NPC rules average over (`hp_current > 0 &&
-/// highest_condition < ASLEEP`, as in `CanNpcJoinParty` and the charm).
-pub(crate) fn able_levels(world: &mut World) -> Vec<u8> {
+/// The party's members awake and well enough to fight, in roster order: the
+/// population retail's NPC rules work with (`hp_current != 0 &&
+/// highest_condition < ASLEEP`, as in `CanNpcJoinParty`, the charm and
+/// dialogue practice).
+pub(crate) fn able_members(world: &mut World) -> Vec<Entity> {
     let Some(party) = crate::game::party::roster::the_party(world) else { return Vec::new() };
     let Some(roster) = world.get::<crate::game::party::roster::PartyRoster>(party) else {
         return Vec::new();
@@ -38,6 +39,13 @@ pub(crate) fn able_levels(world: &mut World) -> Vec<u8> {
     roster
         .iter()
         .filter(|&m| world.get::<crate::game::characters::Vitals>(m).is_some_and(|v| v.can_fight()))
+        .collect()
+}
+
+/// The levels of [`able_members`], which retail's NPC rules average.
+pub(crate) fn able_levels(world: &mut World) -> Vec<u8> {
+    able_members(world)
+        .into_iter()
         .filter_map(|m| world.get::<crate::game::characters::Character>(m))
         .map(|character| character.level())
         .collect()

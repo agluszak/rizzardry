@@ -513,13 +513,6 @@ fn practise_communication(world: &mut World, members: &[Entity], usage: u32) {
         }
     });
 }
-/// The members awake and well enough to fight (retail `hp_current != 0 &&
-/// highest_condition < ASLEEP`).
-fn able_members(world: &mut World) -> Vec<Entity> {
-    let Some(party) = the_party(world) else { return vec![] };
-    let Some(roster) = world.get::<PartyRoster>(party) else { return vec![] };
-    roster.iter().filter(|&m| world.get::<Vitals>(m).is_some_and(|v| v.can_fight())).collect()
-}
 /// The script's quote asking the price of a paid topic.
 const PRICE_QUOTE: u16 = 0x12;
 /// Which of retail's two answers for having nothing to say comes next; retail
@@ -554,7 +547,7 @@ fn greet(world: &mut World, actor: Entity) -> Result<u16, TradeError> {
     let def = definition(world, actor)?;
     let greeting = entry_quote(def, world.get::<Npc>(actor).unwrap());
     if greeting == 0 && !def.monster_bound && !def.voice_script && !def.merchant {
-        let members = able_members(world);
+        let members = super::able_members(world);
         practise_communication(world, &members, 0xf);
     }
     Ok(greeting)
