@@ -28,9 +28,10 @@ use crate::game::characters::{Character, Vitals};
 use crate::game::combat::Battle;
 use crate::game::inventory::{Carried, PartyInventory};
 use crate::game::magic::casting::{
-    AUTO_POWER, Aim, MagicChoice, Source, UseContext, can_activate, usable_items, usable_now,
+    AUTO_POWER, Aim, MagicChoice, Source, UseContext, castable, usable_items, usable_now,
+    usable_stack,
 };
-use crate::game::magic::{LearnedSpells, MagicRequest, SpellPoints, resolvable};
+use crate::game::magic::{LearnedSpells, MagicRequest, SpellPoints};
 use crate::game::party::roster::PartyRoster;
 use crate::presentation::retail_controls::{
     ControlSkin, FocusRing, ScrollWheel, scroll_wheel, set_scroll_maximum, step_scrollbar,
@@ -589,12 +590,8 @@ fn offers<'a>(
                 .stacks
                 .iter()
                 .filter_map(|stack| {
-                    let definition = items.get(stack.item)?;
-                    let spell = definition.spell?.spell;
-                    (can_activate(character, definition, false)
-                        && stack.remaining_uses() != Some(0)
-                        && resolvable(spell))
-                    .then_some((Source::PoolItem(stack.id), stack, spell))
+                    let spell = usable_stack(character, stack, items, false)?;
+                    Some((Source::PoolItem(stack.id), stack, spell))
                 })
                 .collect()
         } else {
@@ -640,13 +637,13 @@ fn offers<'a>(
         .filter_map(|&id| spells.get(id))
         .filter(|s| s.realm == Some(realm))
         .map(|s| {
-            let affordable = points.is_some_and(|p| p.affordable_power(s, maximum) > 0);
+            let affordable = points.map_or(0, |p| p.affordable_power(s, maximum));
             Offer {
                 source: Source::Spell { spell: s.id, power: 1 },
                 spell: s,
                 label: format!("{} {}", glyph(s.targeting), s.name),
                 cost: s.cost.to_string(),
-                available: affordable && resolvable(s.id) && usable_now(s, context) && !silenced,
+                available: castable(s, affordable, context, silenced),
                 silenced,
             }
         })

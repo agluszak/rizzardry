@@ -1108,13 +1108,38 @@ pub fn usable_items(
     carried
         .stacks()
         .filter_map(|stack| {
-            let definition = items.get(stack.item)?;
-            let cast = definition.spell?;
             let worn =
                 carried.active_equipment().any(|(_, equipped)| equipped.stack.id == stack.id);
-            let usable = can_activate(character, definition, worn);
-            let charged = stack.remaining_uses() != Some(0);
-            (usable && charged && resolvable(cast.spell)).then_some((stack.id, cast.spell))
+            Some((stack.id, usable_stack(character, stack, items, worn)?))
         })
         .collect()
+}
+
+/// The spell a stack casts for `character`, if they can use it now: one
+/// they may activate (worn, if it must be), with a charge left, whose
+/// effect the game resolves.
+pub fn usable_stack(
+    character: &Character,
+    stack: &crate::game::inventory::ItemStack,
+    items: &crate::content::items::ItemCatalog,
+    worn: bool,
+) -> Option<SpellId> {
+    let definition = items.get(stack.item)?;
+    let cast = definition.spell?;
+    (can_activate(character, definition, worn)
+        && stack.remaining_uses() != Some(0)
+        && resolvable(cast.spell))
+    .then_some(cast.spell)
+}
+
+/// Whether a learned spell can be cast in `context` with `affordable`
+/// power within reach: as the cast itself checks, points for it, an effect
+/// the game resolves, the moment for it and no silence.
+pub fn castable(
+    spell: &SpellDefinition,
+    affordable: u8,
+    context: UseContext,
+    silenced: bool,
+) -> bool {
+    affordable > 0 && resolvable(spell.id) && usable_now(spell, context) && !silenced
 }
