@@ -1289,14 +1289,8 @@ pub fn resolve(
             for &victim in victims {
                 let purify = |slots: &mut super::enchantments::Enchantments| {
                     slots.0.retain_mut(|slot| {
-                        if matches!(
-                            slot.spell,
-                            SpellId::ACID_BOMB
-                                | SpellId::TOXIC_CLOUD
-                                | SpellId::DRAINING_CLOUD
-                                | SpellId::FIRESTORM
-                                | SpellId::DEATH_CLOUD
-                        ) && let Some(cloud) = catalog.get(slot.spell)
+                        if super::enchantments::OFFENSIVE.contains(&slot.spell)
+                            && let Some(cloud) = catalog.get(slot.spell)
                         {
                             let removed = (amount + u32::from(spell.level))
                                 .saturating_sub(u32::from(cloud.level));
@@ -1907,13 +1901,7 @@ pub(crate) fn pulse_clouds(
     let party: Vec<_> = world.party.iter().copied().map(Victim::Member).collect();
     let targets = std::iter::once(None).chain(combatants.iter().copied().map(Some));
     for actor in targets {
-        for id in [
-            SpellId::ACID_BOMB,
-            SpellId::TOXIC_CLOUD,
-            SpellId::DRAINING_CLOUD,
-            SpellId::FIRESTORM,
-            SpellId::DEATH_CLOUD,
-        ] {
+        for id in super::enchantments::OFFENSIVE {
             let effect = match actor {
                 None => world.enchantments.get(id).copied(),
                 Some(actor) => world

@@ -46,6 +46,16 @@ pub fn personal(spell: SpellId) -> bool {
     )
 }
 
+/// The offensive slots: clouds and burning that pulse on whoever they hang
+/// over each round (retail `AdvanceTimedEffects`), in pulse order.
+pub const OFFENSIVE: [SpellId; 5] = [
+    SpellId::ACID_BOMB,
+    SpellId::TOXIC_CLOUD,
+    SpellId::DRAINING_CLOUD,
+    SpellId::FIRESTORM,
+    SpellId::DEATH_CLOUD,
+];
+
 pub fn combat_only(spell: SpellId) -> bool {
     matches!(
         spell,
