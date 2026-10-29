@@ -146,8 +146,7 @@ impl CharacterDraft {
     }
 
     pub fn spell_points_total(&self) -> usize {
-        let character = Character::new("", self.race, self.gender, self.profession);
-        crate::game::magic::starting_picks(&character)
+        crate::game::magic::starting_picks(self.profession)
     }
 
     pub fn spell_remaining(&self) -> usize {
@@ -368,6 +367,29 @@ pub(crate) fn complete_allocations(draft: &mut CharacterDraft) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn starting_spells_follow_the_professions_first_caster_level() {
+        use crate::game::magic;
+        for profession in EnumSet::<Profession>::all() {
+            let draft = CharacterDraft { profession, ..default() };
+            let character = Character::new("", draft.race, draft.gender, profession);
+            let picks = if magic::caster_level(&character, profession) > 0 { 2 } else { 0 };
+            assert_eq!(draft.spell_points_total(), picks, "{profession:?}");
+            assert_eq!(draft.spell_remaining(), picks);
+            assert_eq!(
+                draft.spell_books(),
+                if picks == 0 { EnumSet::empty() } else { magic::profession_books(profession) }
+            );
+            for skill in [Skill::Wizardry, Skill::Divinity, Skill::Alchemy, Skill::Psionics] {
+                assert_eq!(
+                    draft.skill_available(skill),
+                    picks > 0
+                        && SKILL_AVAILABILITY[skill as usize] & (1 << profession as usize) != 0
+                );
+            }
+        }
+    }
 
     #[test]
     fn learned_spells_survive_creation_and_make_their_realm_available() {
