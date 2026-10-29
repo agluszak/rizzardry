@@ -100,6 +100,7 @@ impl Plugin for WorldPlugin {
             .add_message::<interaction::LockNews>()
             .add_message::<WorldRequest>()
             .add_message::<population::Birth>()
+            .add_message::<particles::EmissionSpent>()
             .add_message::<crate::game::automap::CommitNote>()
             .add_plugins(interaction::plugin)
             .add_observer(interaction::end_attempts)
@@ -116,6 +117,7 @@ impl Plugin for WorldPlugin {
                     (handle_world_requests, crate::game::automap::commit_notes)
                         .after(crate::game::GameplaySet::Stats)
                         .before(crate::game::GameplaySet::Combat),
+                    particles::switch_off_spent,
                     population::give_birth
                         .run_if(level::level_active)
                         .before(crate::game::GameplaySet::Combat),

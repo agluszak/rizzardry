@@ -2,8 +2,9 @@
 //! emitters' schedules, each particle's motion and expiry, and its sprite.
 //! The game keeps only whether each emitter emits ([`Emitter`]); retail
 //! likewise counts births and moves particles in its renderer
-//! (`stParticle::Update`), and a spent emission limit only stops births
-//! (`ActivateParticle`), it does not switch the emitter off.
+//! (`stParticle::Update`). A spent emission limit stops births
+//! (`ActivateParticle`), and the view reports it to the game, which switches
+//! the emitter off (`SubmitToRenderer`).
 use super::{PresentationRng, billboards::FaceCamera, environment::LevelAppearance};
 use crate::{
     content::{
@@ -15,7 +16,7 @@ use crate::{
         world::{
             level::{Level, LevelOwned},
             obstacles::WorldObstacles,
-            particles::Emitter,
+            particles::{EmissionSpent, Emitter},
         },
     },
 };
@@ -137,6 +138,7 @@ fn emit_particles(
     particles: Query<&Particle>,
     party: Query<&avian3d::prelude::Position, With<PartyBody>>,
     mut rng: ResMut<PresentationRng>,
+    mut spent_emitters: MessageWriter<EmissionSpent>,
     mut commands: Commands,
 ) {
     let eye = party.single().ok().map(PartyBody::eye);
@@ -145,6 +147,14 @@ fn emit_particles(
         let Some(config) = config(&levels, &geometry, owner, emitter) else { continue };
         if !emitter.emitting() || matches!(config.emission, ParticleEmission::None) {
             emission.last = None;
+            continue;
+        }
+        let spent = |emission: &Emission| {
+            config.emission_limit != 0 && emission.emitted >= config.emission_limit
+        };
+        // Its births spent, it is switched off (retail `SubmitToRenderer`).
+        if spent(&emission) {
+            spent_emitters.write(EmissionSpent(entity));
             continue;
         }
         // Turned on: its schedule starts now (retail `SetActive`).
@@ -168,11 +178,8 @@ fn emit_particles(
             .flat_map(|p| p.iter())
             .filter_map(|e| particles.get(e).ok().map(|p| (p.born, e)))
             .collect();
-        let spent = |emission: &Emission| {
-            config.emission_limit != 0 && emission.emitted >= config.emission_limit
-        };
         for _ in 0..due {
-            // A spent limit stops births, and the emitter stays on.
+            // A spent limit stops births (retail `ActivateParticle`).
             if spent(&emission) {
                 emission.last = Some(now);
                 break;
@@ -383,6 +390,7 @@ mod tests {
         scene.world.init_resource::<avian3d::collider_tree::ColliderTrees>();
         scene.world.insert_resource(PresentationRng(rand::SeedableRng::seed_from_u64(3)));
         scene.world.add_observer(track_emission);
+        scene.world.init_resource::<Messages<EmissionSpent>>();
         scene.visit(None);
         scene
     }
@@ -393,6 +401,7 @@ mod tests {
         scene.world.flush();
         scene.world.run_system_cached(emit_particles).unwrap();
         scene.world.flush();
+        scene.world.run_system_cached(crate::game::world::particles::switch_off_spent).unwrap();
     }
 
     fn count(scene: &mut Scenario) -> usize {
@@ -438,11 +447,12 @@ mod tests {
         assert!(positions.iter().any(|&y| (y - 0.1).abs() < 0.0001));
     }
 
-    /// Retail's limit stops births without switching the emitter off, and a
-    /// new visit starts a new count (`ActivateParticle`); the game's RNG is
-    /// untouched.
+    /// Retail's limit stops births and then switches the emitter off
+    /// (`ActivateParticle`, `SubmitToRenderer`); one a trigger set is saved
+    /// off, and switched on again on a later visit it counts afresh. The
+    /// game's RNG is untouched.
     #[test]
-    fn a_spent_limit_stops_births_and_a_new_visit_counts_afresh() {
+    fn a_spent_limit_switches_a_triggered_emitter_off_across_visits() {
         let mut scene = scene();
         let rng = scene.world.resource::<crate::game::rng::GameRng>().clone();
         assert!(scene.run("ON").0);
@@ -451,16 +461,16 @@ mod tests {
         step(&mut scene, 100);
         step(&mut scene, 100);
         assert_eq!(count(&mut scene), 2);
+        assert!(active(&mut scene));
         step(&mut scene, 100);
         assert_eq!(count(&mut scene), 2, "no third birth");
-        assert!(active(&mut scene), "the emitter stays on");
+        assert!(!active(&mut scene), "the spent emitter is switched off");
         step(&mut scene, 500);
         assert_eq!(count(&mut scene), 0);
         let memory = scene.remember();
-        let member = scene.members[0];
         scene.visit(Some(memory));
-        assert!(scene.world.get_entity(member).is_ok());
-        assert!(active(&mut scene));
+        assert!(!active(&mut scene), "remembered off");
+        assert!(scene.run("ON").0);
         step(&mut scene, 0);
         step(&mut scene, 100);
         assert_eq!(count(&mut scene), 1, "a new visit's births");
