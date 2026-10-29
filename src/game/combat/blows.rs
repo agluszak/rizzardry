@@ -49,6 +49,60 @@ impl Fight<'_, '_, '_> {
     }
 }
 
+/// How an attack goes at its target: a shot from `from` (blinded, perhaps,
+/// and sure to get through armour for some), or a swing among the
+/// `bystanders` it may fumble onto at the `odds` it has.
+enum Delivery {
+    Shot { from: Vec3, blind: bool, through: bool },
+    Swing { bystanders: Vec<Victim>, odds: i32 },
+}
+
+/// Where an attack aimed at `target` lands, if anywhere: a shot scatters
+/// by its aim and lands where it strikes the target's body; a swing
+/// reaches, misses, or fumbles onto a bystander, which spends its surprise.
+/// An error when the target has no body to aim at.
+fn land(
+    rng: &mut GameRng,
+    field: &Field,
+    fight: &Fight,
+    (target, aim): (Victim, i32),
+    delivery: Delivery,
+    surprise: &mut Surprise,
+) -> Result<Option<Landing>, ()> {
+    match delivery {
+        Delivery::Shot { from, blind, through } => {
+            let (centre, radius, half) = victim_body(field, fight, target).ok_or(())?;
+            let shot = attack::scatter(rng, from, centre, aim, blind);
+            Ok(attack::strikes(centre, shot, radius, half).then(|| Landing {
+                victim: target,
+                roll: rng.below(100) + 1,
+                sure: true,
+                through,
+                fumbled: false,
+            }))
+        }
+        Delivery::Swing { bystanders, odds } => {
+            let fumble = attack::fumble_chance(bystanders.len(), odds);
+            Ok(match attack::swing(rng, bystanders.len(), fumble) {
+                Aim::Missed => None,
+                Aim::Reaches { roll, sure } => {
+                    Some(Landing { victim: target, roll, sure, through: sure, fumbled: false })
+                }
+                Aim::Fumbled { bystander, roll } => {
+                    *surprise = Surprise::default();
+                    Some(Landing {
+                        victim: bystanders[bystander],
+                        roll,
+                        sure: true,
+                        through: false,
+                        fumbled: true,
+                    })
+                }
+            })
+        }
+    }
+}
+
 /// Whoever a swing landed on, and how.
 #[derive(Clone, Copy)]
 struct Landing {
@@ -573,37 +627,20 @@ pub(super) fn member_attacks(
         let Some((aimed_at, _)) = victim_defence(battle, field, fight, target) else { break };
         let aim =
             attack::member_aim(&stats, &vitals, &hand, mode, surprise, Some(&aimed_at), difficulty);
-        let landing = if hand.reach >= Reach::Long {
-            let Some((centre, radius, half)) = victim_body(field, fight, target) else { break };
-            let shot =
-                attack::scatter(rng, fight.party.eye, centre, aim, vitals.has(Condition::Blind));
-            attack::strikes(centre, shot, radius, half).then(|| Landing {
-                victim: target,
-                roll: rng.below(100) + 1,
-                sure: true,
+        let delivery = if hand.reach >= Reach::Long {
+            Delivery::Shot {
+                from: fight.party.eye,
+                blind: vitals.has(Condition::Blind),
                 through: attack::sure_penetration(&stats, &hand),
-                fumbled: false,
-            })
-        } else {
-            let bystanders = member_bystanders(field, fight, member, &hand, target.entity());
-            let odds = attack::member_aim(&stats, &vitals, &hand, mode, surprise, None, difficulty);
-            let fumble = attack::fumble_chance(bystanders.len(), odds);
-            match attack::swing(rng, bystanders.len(), fumble) {
-                Aim::Missed => None,
-                Aim::Reaches { roll, sure } => {
-                    Some(Landing { victim: target, roll, sure, through: sure, fumbled: false })
-                }
-                Aim::Fumbled { bystander, roll } => {
-                    surprise = Surprise::default();
-                    Some(Landing {
-                        victim: bystanders[bystander],
-                        roll,
-                        sure: true,
-                        through: false,
-                        fumbled: true,
-                    })
-                }
             }
+        } else {
+            Delivery::Swing {
+                bystanders: member_bystanders(field, fight, member, &hand, target.entity()),
+                odds: attack::member_aim(&stats, &vitals, &hand, mode, surprise, None, difficulty),
+            }
+        };
+        let Ok(landing) = land(rng, field, fight, (target, aim), delivery, &mut surprise) else {
+            break;
         };
         if let Some(mut landing) = landing {
             if landing.fumbled {
@@ -1032,45 +1069,23 @@ pub(super) fn monster_attacks(
             Some(&aimed_at),
             difficulty,
         );
-        let landing = if attack.reach >= Reach::Long {
-            let blind = monster.has(Condition::Blind);
-            let Some((centre, radius, half)) = victim_body(field, fight, target) else { break };
-            let shot = attack::scatter(rng, eye, centre, aim, blind);
-            attack::strikes(centre, shot, radius, half).then(|| Landing {
-                victim: target,
-                roll: rng.below(100) + 1,
-                sure: true,
-                through: false,
-                fumbled: false,
-            })
+        let delivery = if attack.reach >= Reach::Long {
+            Delivery::Shot { from: eye, blind: monster.has(Condition::Blind), through: false }
         } else {
-            let bystanders =
-                monster_bystanders(field, fight, entity, attack.reach, target.entity());
-            let odds = attack::monster_aim(
-                (kind, &monster, stance),
-                attack,
-                mode,
-                surprise,
-                None,
-                difficulty,
-            );
-            let fumble = attack::fumble_chance(bystanders.len(), odds);
-            match attack::swing(rng, bystanders.len(), fumble) {
-                Aim::Missed => None,
-                Aim::Reaches { roll, sure } => {
-                    Some(Landing { victim: target, roll, sure, through: sure, fumbled: false })
-                }
-                Aim::Fumbled { bystander, roll } => {
-                    surprise = Surprise::default();
-                    Some(Landing {
-                        victim: bystanders[bystander],
-                        roll,
-                        sure: true,
-                        through: false,
-                        fumbled: true,
-                    })
-                }
+            Delivery::Swing {
+                bystanders: monster_bystanders(field, fight, entity, attack.reach, target.entity()),
+                odds: attack::monster_aim(
+                    (kind, &monster, stance),
+                    attack,
+                    mode,
+                    surprise,
+                    None,
+                    difficulty,
+                ),
             }
+        };
+        let Ok(landing) = land(rng, field, fight, (target, aim), delivery, &mut surprise) else {
+            break;
         };
         let Some(mut landing) = landing else { continue };
         if landing.fumbled {
