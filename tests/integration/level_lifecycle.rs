@@ -1197,7 +1197,7 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
     assert!(is_played(&app, home));
     assert!(app.world().get::<Disabled>(body).is_some());
     let mut again = test_level(&mut app, floor());
-    again.path = away_path;
+    again.path = away_path.clone();
     app.world_mut()
         .resource_mut::<Assets<LevelDefinition>>()
         .get_mut(&again.definition)
@@ -1226,6 +1226,24 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
     assert!(pool.iter().any(|stack| stack.item == ItemId(5)));
     assert!(!recruit::dismiss(app.world_mut(), actor));
     assert!(app.world().get::<Disabled>(body).is_some());
+    assert_eq!(app.world_mut().query::<&Npc>().iter(app.world()).count(), 1);
+    // Neither its authored map nor the map its body last stood on raises it.
+    let home = spawn_level(&mut app, floor());
+    app.update();
+    assert!(is_played(&app, home));
+    assert!(app.world().get::<Disabled>(body).is_some());
+    let mut last = test_level(&mut app, floor());
+    last.path = away_path;
+    app.world_mut()
+        .resource_mut::<Assets<LevelDefinition>>()
+        .get_mut(&last.definition)
+        .unwrap()
+        .monsters
+        .clear();
+    let last = app.world_mut().spawn(Destination::new(last, default(), Entry::Travel)).id();
+    app.update();
+    assert!(is_played(&app, last));
+    assert!(app.world().get::<Disabled>(body).is_some(), "the dead stay out of the world");
     assert_eq!(app.world_mut().query::<&Npc>().iter(app.world()).count(), 1);
 }
 

@@ -142,6 +142,9 @@ pub struct NpcPopulation<'w, 's> {
     profiles: Query<'w, 's, &'static Character>,
     /// NPCs travelling with the party, whose world roles wait.
     members: Query<'w, 's, (), With<crate::game::party::roster::PartyMember>>,
+    /// Whether each NPC has died, which outranks whatever its dormant body
+    /// last recorded.
+    states: Query<'w, 's, &'static Npc>,
 }
 /// An NPC's placement as a level's population meets it.
 pub struct Placing<'a> {
@@ -178,7 +181,7 @@ impl NpcPopulation<'_, '_> {
         if let Some((actor, _, bodies)) =
             self.npcs.iter().find(|(_, identity, _)| **identity == key)
         {
-            if self.members.contains(actor) {
+            if !self.may_stand(actor) {
                 return None;
             }
             let entity = *bodies.first()?;
@@ -281,6 +284,11 @@ impl NpcPopulation<'_, '_> {
         }
         Ok(ready)
     }
+    /// Whether the NPC's world role may stand in a level: not while it
+    /// travels with the party, and never once it has died, wherever.
+    fn may_stand(&self, actor: Entity) -> bool {
+        !self.members.contains(actor) && self.states.get(actor).is_ok_and(|npc| !npc.dead)
+    }
     /// NPCs whose world roles stand on `map` without being placed there,
     /// such as one that left the party on it, as the level meets them again.
     pub fn visitors(
@@ -291,7 +299,7 @@ impl NpcPopulation<'_, '_> {
     ) -> Vec<(Entity, Vec3, f32, crate::game::world::population::ScaledBody, Option<i32>)> {
         let mut visitors = Vec::new();
         for (actor, key, bodies) in &self.npcs {
-            if self.members.contains(actor) || placed_actors.contains(key) {
+            if !self.may_stand(actor) || placed_actors.contains(key) {
                 continue;
             }
             let Some(&entity) = bodies.first() else { continue };
