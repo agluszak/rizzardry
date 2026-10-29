@@ -4,7 +4,7 @@ use bevy::prelude::*;
 
 use crate::content::UNITS_PER_METRE;
 use crate::content::level::DEFAULT_VIEW_DISTANCE;
-use crate::game::party::body::{EYE_ABOVE_CENTRE, MAX_PITCH, PartyBody, PartyLook};
+use crate::game::party::body::{EYE_ABOVE_CENTRE, PartyBody, TurnParty};
 
 /// The first-person camera on the party's body.
 #[derive(Component, Debug)]
@@ -90,40 +90,14 @@ pub enum ViewTurning {
     Snap,
 }
 
-/// A view turn under way (retail `GDCamera`'s orientation transition): from
-/// where the party looked to where it is turning, as yaw and pitch, eased
-/// over the time retail gives the larger of the two angles. Turning the
-/// view by hand ends it.
-#[derive(Resource, Debug, Default)]
-pub struct ViewTurn(Option<Turning>);
-
-#[derive(Debug)]
-struct Turning {
-    from: Vec2,
-    to: Vec2,
-    duration: f32,
-    elapsed: f32,
-    /// Where this turn last left the view.
-    last: Vec2,
-}
-
-/// Retail's turn takes ten seconds per half turn of the larger angle.
-const SECONDS_PER_RADIAN: f32 = 10.0 / std::f32::consts::PI;
-
-/// An angle brought within half a turn either way.
-fn wrapped(angle: f32) -> f32 {
-    (angle + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
-}
-
-/// When a fight begins, turn the view to the nearest monster in it, as the
+/// When a fight begins, turn the party to the nearest monster in it, as the
 /// player's settings say (retail `StartCombat`'s `PointCameraAtMonster`):
 /// not with tracking off, nor in selected-member mode (no monster goes for
-/// anyone yet), nor at one not drawn. The turn is the player's look, given
-/// as any other look is ([`PartyLook`]).
+/// anyone yet), nor at one not drawn. The game carries the turn out.
 pub fn track_fights(
     mut news: MessageReader<crate::game::combat::CombatNews>,
     preferences: Res<crate::presentation::settings::Preferences>,
-    party: Query<(&PartyBody, &avian3d::prelude::Position)>,
+    party: Query<&avian3d::prelude::Position, With<PartyBody>>,
     monsters: Query<
         (
             crate::game::world::ActorPose,
@@ -132,8 +106,7 @@ pub fn track_fights(
         ),
         With<crate::presentation::monsters::MonsterVisual>,
     >,
-    mut turn: ResMut<ViewTurn>,
-    mut looks: MessageWriter<PartyLook>,
+    mut turns: MessageWriter<TurnParty>,
 ) {
     for notice in news.read() {
         let crate::game::combat::CombatNews::Began { nearest: Some(nearest) } = *notice else {
@@ -142,57 +115,16 @@ pub fn track_fights(
         if preferences.view_tracking != ViewTracking::AllTargets {
             continue;
         }
-        let (Ok((body, at)), Ok((pose, monster, walker))) = (party.single(), monsters.get(nearest))
-        else {
+        let (Ok(at), Ok((pose, monster, walker))) = (party.single(), monsters.get(nearest)) else {
             continue;
         };
         let aim = crate::game::world::navigation::feet(pose.translation(), walker)
             + Vec3::Y * monster.body.eye_height;
         let toward = aim - PartyBody::eye(at);
-        let yaw = (-toward.x).atan2(-toward.z);
-        let pitch = toward.y.atan2(toward.xz().length()).clamp(-MAX_PITCH, MAX_PITCH);
-        let from = Vec2::new(body.yaw, body.pitch);
-        let to = Vec2::new(body.yaw + wrapped(yaw - body.yaw), pitch);
-        match preferences.view_turning {
-            ViewTurning::Snap => {
-                looks.write(PartyLook(to - from));
-            }
-            ViewTurning::Smooth => {
-                let duration = (to - from).abs().max_element() * SECONDS_PER_RADIAN;
-                turn.0 = Some(Turning { from, to, duration, elapsed: 0.0, last: from });
-            }
-        }
-    }
-}
-
-/// Carry a smooth view turn on, easing in and out, until it is done or the
-/// player turns the view another way.
-pub fn turn_view(
-    time: Res<Time>,
-    party: Query<&PartyBody>,
-    mut turn: ResMut<ViewTurn>,
-    mut looks: MessageWriter<PartyLook>,
-) {
-    let Some(turning) = turn.0.as_mut() else { return };
-    let Ok(body) = party.single() else {
-        turn.0 = None;
-        return;
-    };
-    let now = Vec2::new(body.yaw, body.pitch);
-    if (now - turning.last).abs().max_element() > 1e-4 {
-        turn.0 = None;
-        return;
-    }
-    turning.elapsed += time.delta_secs();
-    let share = (turning.elapsed / turning.duration.max(f32::EPSILON)).min(1.0);
-    let eased = (1.0 - (share * std::f32::consts::PI).cos()) / 2.0;
-    let wanted = turning.from + (turning.to - turning.from) * eased;
-    if wanted != now {
-        looks.write(PartyLook(wanted - now));
-    }
-    turning.last = wanted;
-    if share >= 1.0 {
-        turn.0 = None;
+        turns.write(TurnParty {
+            to: Vec2::new((-toward.x).atan2(-toward.z), toward.y.atan2(toward.xz().length())),
+            smooth: preferences.view_turning == ViewTurning::Smooth,
+        });
     }
 }
 
@@ -200,34 +132,41 @@ pub fn turn_view(
 mod tests {
     use super::*;
     use crate::game::combat::CombatNews;
-    use crate::game::party::body::look_around;
+    use crate::game::party::body::{PartyTurning, turn_party};
     use crate::game::screen::Screen;
     use crate::game::world::population::{Monster, ScaledBody};
     use crate::presentation::monsters::MonsterVisual;
     use crate::presentation::settings::Preferences;
     use avian3d::prelude::Position;
+    use std::time::Duration;
 
     /// A party facing -Z and a drawn monster off to its right (+X); a fight
-    /// begins with it nearest, under the given settings. Returns the party's
-    /// yaw after each of `frames` quarter-second frames.
-    fn turned(tracking: ViewTracking, turning: ViewTurning, frames: usize) -> Vec<f32> {
+    /// begins with it nearest, under the given settings, and the game runs
+    /// for `seconds` in frames of `frame`, scheduled as in the game: the
+    /// request after the fight's update, the turn on the fixed step. Returns
+    /// the party's yaw every quarter second.
+    fn turned(
+        tracking: ViewTracking,
+        turning: ViewTurning,
+        frame: Duration,
+        seconds: u32,
+    ) -> Vec<f32> {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .init_resource::<Assets<crate::content::level::LevelDefinition>>()
-            .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
-                std::time::Duration::from_millis(250),
-            ))
+            .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(frame))
             .insert_resource(State::new(Screen::World))
             .init_resource::<NextState<Screen>>()
-            .init_resource::<ViewTurn>()
+            .init_resource::<PartyTurning>()
             .insert_resource(Preferences {
                 view_tracking: tracking,
                 view_turning: turning,
                 ..default()
             })
-            .add_message::<PartyLook>()
+            .add_message::<TurnParty>()
             .add_message::<CombatNews>()
-            .add_systems(Update, (track_fights, turn_view, look_around).chain());
+            .add_systems(Update, track_fights)
+            .add_systems(FixedUpdate, turn_party);
         let geometry = app
             .world_mut()
             .resource_mut::<Assets<crate::content::level::LevelDefinition>>()
@@ -259,9 +198,14 @@ mod tests {
             ))
             .id();
         app.world_mut().write_message(CombatNews::Began { nearest: Some(monster) });
-        (0..frames)
+        // The first frame has no time in it.
+        app.update();
+        let per_sample = (Duration::from_millis(250).as_nanos() / frame.as_nanos()) as u32;
+        (0..seconds * 4)
             .map(|_| {
-                app.update();
+                for _ in 0..per_sample {
+                    app.update();
+                }
                 app.world().get::<PartyBody>(party).unwrap().yaw
             })
             .collect()
@@ -269,21 +213,29 @@ mod tests {
 
     /// Off, the party keeps facing ahead; snapping turns it to the monster
     /// at once; smoothly, it gets there over the time retail gives a
-    /// quarter turn (five seconds), passing through the angles between.
+    /// quarter turn (five seconds), passing through the angles between, and
+    /// at every moment faces the same way however the frames fall.
     #[test]
-    fn a_fight_turns_the_view_as_the_settings_say() {
+    fn a_fight_turns_the_party_as_the_settings_say() {
+        let quarter = Duration::from_millis(250);
         let right = -std::f32::consts::FRAC_PI_2;
-        let off = turned(ViewTracking::Off, ViewTurning::Snap, 3);
+        let off = turned(ViewTracking::Off, ViewTurning::Snap, quarter, 1);
         assert!(off.iter().all(|&yaw| yaw == 0.0));
-        let mine = turned(ViewTracking::SelectedMember, ViewTurning::Snap, 3);
+        let mine = turned(ViewTracking::SelectedMember, ViewTurning::Snap, quarter, 1);
         assert!(mine.iter().all(|&yaw| yaw == 0.0), "nobody goes for the selected member yet");
-        let snap = turned(ViewTracking::AllTargets, ViewTurning::Snap, 2);
+        let snap = turned(ViewTracking::AllTargets, ViewTurning::Snap, quarter, 1);
         assert!((snap[0] - right).abs() < 1e-4, "{snap:?}");
-        let smooth = turned(ViewTracking::AllTargets, ViewTurning::Smooth, 24);
+        let smooth = turned(ViewTracking::AllTargets, ViewTurning::Smooth, quarter, 6);
         assert!(smooth[3] < 0.0 && smooth[3] > right, "partway: {smooth:?}");
-        // The first frame has no time in it.
-        assert!((smooth[20] - right).abs() < 1e-4, "there after five seconds: {smooth:?}");
-        assert!(smooth[19] > right, "not before: {smooth:?}");
-        assert_eq!(smooth[20], smooth[23]);
+        assert!((smooth[19] - right).abs() < 1e-4, "there after five seconds: {smooth:?}");
+        assert!(smooth[18] > right + 1e-3, "not before: {smooth:?}");
+        assert_eq!(smooth[19], smooth[23]);
+        let fine = turned(
+            ViewTracking::AllTargets,
+            ViewTurning::Smooth,
+            Duration::from_nanos(15_625_000),
+            6,
+        );
+        assert_eq!(fine, smooth, "frames change nothing");
     }
 }

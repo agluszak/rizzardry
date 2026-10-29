@@ -40,7 +40,7 @@ pub const GRAVITY: f32 = 18750.0 / UNITS_PER_METRE;
 /// Retail caps a tick's motion at 3000 units (Whizzardry `collision.cpp`);
 /// walking never comes near it, so in practice it limits falls.
 const MAX_SPEED: f32 = 30000.0 / UNITS_PER_METRE;
-pub const MAX_PITCH: f32 = std::f32::consts::FRAC_PI_4;
+const MAX_PITCH: f32 = std::f32::consts::FRAC_PI_4;
 
 /// Movement the party can perform: walking only. Wizardry has no jumping.
 #[derive(TnuaScheme)]
@@ -188,6 +188,82 @@ pub fn look_around(
     let pitch = (body.pitch + delta.y).clamp(-MAX_PITCH, MAX_PITCH);
     if (body.yaw, body.pitch) != (yaw, pitch) {
         (body.yaw, body.pitch) = (yaw, pitch);
+    }
+}
+
+/// Turn the party to look along `to` (yaw, pitch), at once or eased over
+/// the time retail's camera gives the turn (`GDCamera`'s orientation
+/// transition). The facing it gives is the party's, which moves it and aims
+/// its automatic casts, so the turn runs on the simulation step.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct TurnParty {
+    pub to: Vec2,
+    pub smooth: bool,
+}
+
+/// A turn under way, as yaw and pitch. Turning the view by hand ends it.
+#[derive(Resource, Debug, Default)]
+pub struct PartyTurning(Option<Turning>);
+
+#[derive(Debug)]
+struct Turning {
+    from: Vec2,
+    to: Vec2,
+    duration: f32,
+    elapsed: f32,
+    /// Where this turn last left the party.
+    last: Vec2,
+}
+
+/// Retail's turn takes ten seconds per half turn of the larger angle.
+const SECONDS_PER_RADIAN: f32 = 10.0 / std::f32::consts::PI;
+
+/// An angle brought within half a turn either way.
+fn wrapped(angle: f32) -> f32 {
+    (angle + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
+}
+
+/// Accept a requested turn and carry it on, easing in and out, until it is
+/// done or the view was turned another way. It waits while the party is
+/// held.
+pub fn turn_party(
+    time: Res<Time>,
+    mut requests: MessageReader<TurnParty>,
+    mut turning: ResMut<PartyTurning>,
+    freedom: crate::game::screen::Freedom,
+    mut party: Query<&mut PartyBody>,
+) {
+    let Ok(mut body) = party.single_mut() else {
+        requests.clear();
+        turning.0 = None;
+        return;
+    };
+    let now = Vec2::new(body.yaw, body.pitch);
+    for request in requests.read() {
+        let to = Vec2::new(
+            body.yaw + wrapped(request.to.x - body.yaw),
+            request.to.y.clamp(-MAX_PITCH, MAX_PITCH),
+        );
+        let duration =
+            if request.smooth { (to - now).abs().max_element() * SECONDS_PER_RADIAN } else { 0.0 };
+        turning.0 = Some(Turning { from: now, to, duration, elapsed: 0.0, last: now });
+    }
+    let Some(turn) = turning.0.as_mut() else { return };
+    if (now - turn.last).abs().max_element() > 1e-4 {
+        turning.0 = None;
+        return;
+    }
+    if !freedom.free() {
+        return;
+    }
+    turn.elapsed += time.delta_secs();
+    let share = (turn.elapsed / turn.duration.max(f32::EPSILON)).min(1.0);
+    let eased = (1.0 - (share * std::f32::consts::PI).cos()) / 2.0;
+    let wanted = turn.from + (turn.to - turn.from) * eased;
+    (body.yaw, body.pitch) = (wanted.x, wanted.y);
+    turn.last = wanted;
+    if share >= 1.0 {
+        turning.0 = None;
     }
 }
 
