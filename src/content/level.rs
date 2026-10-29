@@ -50,6 +50,8 @@ pub const DEFAULT_VIEW_DISTANCE: f32 = 150.0;
 /// A level's fog and sky light (retail "fog options").
 #[derive(Clone, Debug)]
 pub struct LevelEnvironment {
+    /// Whether the authored level enables distance fog.
+    pub fog_enabled: bool,
     /// Fog start and end as fractions of the view distance.
     pub fog_range: (f32, f32),
     /// The far clip, in metres.

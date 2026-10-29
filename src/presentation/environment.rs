@@ -172,7 +172,11 @@ pub fn apply_environment(
     {
         return;
     }
-    let Some(environment) = &level_geometry.environment else { return };
+    commands.entity(camera).insert(AppliedEnvironment(level.0.id(), phase));
+    let Some(environment) = &level_geometry.environment else {
+        commands.entity(camera).remove::<DistanceFog>();
+        return;
+    };
 
     let fog = environment.fog_colours[phase as usize];
     clear.0 = Color::srgb(fog.x, fog.y, fog.z);
@@ -180,17 +184,18 @@ pub fn apply_environment(
     if let Some(perspective) = super::water_view::perspective_mut(&mut projection) {
         perspective.far = far;
     }
-    commands.entity(camera).insert((
-        AppliedEnvironment(level.0.id(), phase),
-        DistanceFog {
+    if environment.fog_enabled {
+        commands.entity(camera).insert(DistanceFog {
             color: Color::srgb(fog.x, fog.y, fog.z),
             falloff: FogFalloff::Linear {
                 start: far * environment.fog_range.0,
                 end: far * environment.fog_range.1,
             },
             ..default()
-        },
-    ));
+        });
+    } else {
+        commands.entity(camera).remove::<DistanceFog>();
+    }
 
     let sky = environment.sky_light(phase);
     for part in level_geometry.parts.iter().chain(
@@ -300,6 +305,7 @@ mod tests {
             .add_systems(Update, apply_environment);
         let geometry = app.world_mut().resource_mut::<Assets<LevelGeometry>>().add(LevelGeometry {
             environment: Some(LevelEnvironment {
+                fog_enabled: true,
                 fog_range: (0.2, 1.0),
                 view_distance: 80.0,
                 intensity: 1.0,
@@ -331,6 +337,45 @@ mod tests {
             .view_distance = 120.0;
         app.update();
         assert_eq!(far(&app), 120.0);
+
+        // Changing levels must remove fog even while daylight stays unchanged.
+        let mut disabled = app
+            .world()
+            .resource::<Assets<LevelGeometry>>()
+            .get(&geometry)
+            .unwrap()
+            .environment
+            .clone()
+            .unwrap();
+        disabled.fog_enabled = false;
+        let off = app
+            .world_mut()
+            .resource_mut::<Assets<LevelGeometry>>()
+            .add(LevelGeometry { environment: Some(disabled), ..default() });
+        let level = app
+            .world_mut()
+            .query_filtered::<Entity, With<LevelAppearance>>()
+            .single(app.world())
+            .unwrap();
+        for (handle, enabled) in [(&off, false), (&geometry, true), (&off, false)] {
+            app.world_mut().entity_mut(level).insert(LevelAppearance(handle.clone()));
+            app.update();
+            assert_eq!(app.world().get::<DistanceFog>(camera).is_some(), enabled);
+            assert_eq!(far(&app), 120.0);
+        }
+        app.world_mut().despawn(camera);
+        let camera = app.world_mut().spawn((PartyCamera, Projection::default())).id();
+        app.update();
+        assert!(app.world().get::<DistanceFog>(camera).is_none());
+
+        app.world_mut().entity_mut(level).insert(LevelAppearance(geometry));
+        app.update();
+        assert!(app.world().get::<DistanceFog>(camera).is_some());
+        let absent =
+            app.world_mut().resource_mut::<Assets<LevelGeometry>>().add(LevelGeometry::default());
+        app.world_mut().entity_mut(level).insert(LevelAppearance(absent));
+        app.update();
+        assert!(app.world().get::<DistanceFog>(camera).is_none());
     }
 
     #[test]

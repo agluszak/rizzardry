@@ -49,6 +49,7 @@ fn level_environment(environment: &Environment) -> LevelEnvironment {
             .collect(),
     };
     LevelEnvironment {
+        fog_enabled: environment.fog_enabled,
         fog_range: (environment.fog_range[0], environment.fog_range[1]),
         view_distance: environment.view_distance / UNITS_PER_METRE,
         intensity: environment.intensity,
@@ -869,6 +870,26 @@ impl AssetLoader for PvlDefinitionLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn environment_preserves_authored_fog_switch_and_ranges() {
+        for fog_enabled in [false, true] {
+            let source = Environment {
+                fog_enabled,
+                fog_range: [0.2, 0.9],
+                intensity: 0.5,
+                view_distance: 80.0 * UNITS_PER_METRE,
+                fog_colours: Some(Box::new([[255, 128, 0]; 256])),
+                ambient_colours: None,
+            };
+            let loaded = level_environment(&source);
+            assert_eq!(loaded.fog_enabled, fog_enabled);
+            assert_eq!(loaded.fog_range, (0.2, 0.9));
+            assert_eq!(loaded.view_distance, 80.0);
+            assert_eq!(loaded.fog_colours[128], Vec3::new(1.0, 128.0 / 255.0, 0.0));
+            assert_eq!(loaded.sky_light(127), Vec3::splat(0.5));
+        }
+    }
 
     #[test]
     fn prop_bindings_use_records_while_named_links_use_registration_order() {
