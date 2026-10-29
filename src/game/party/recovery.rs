@@ -245,6 +245,44 @@ mod tests {
         assert_eq!(well.sicken(&mut profile, 0, &mut rng), None);
     }
 
+    /// A Vitality point lost to disease lowers the health maximum, and a
+    /// wounded member's health falls with it; one with too little left dies
+    /// of it (retail `ApplyAttributeChange`). Recovery plays no part.
+    #[test]
+    fn a_vitality_lost_to_disease_takes_health_with_it() {
+        use crate::content::characters::Attribute;
+        use crate::game::characters::Sickness;
+        let mut veteran = Character::new("Old", Race::Human, Gender::Male, Profession::Fighter);
+        veteran.level = 40;
+        veteran.profession_levels[Profession::Fighter] = 40;
+        let mut wounded_seen = false;
+        let mut dying_seen = false;
+        for seed in 0..2000 {
+            for dying in [false, true] {
+                let mut profile = veteran.clone();
+                let mut member = Vitals::new(&profile);
+                member.inflict(Condition::Diseased, Lasting::Indefinite);
+                let max_hp = profile.max_hp();
+                member.hp = if dying { 1 } else { max_hp - 20 };
+                let hp = member.hp;
+                let struck = member.sicken(&mut profile, 10_000, &mut GameRng::seeded(seed));
+                if struck != Some(Sickness::Weakened(Attribute::Vitality)) {
+                    continue;
+                }
+                let lowered = max_hp - profile.max_hp();
+                assert!(lowered > 0, "a veteran's health follows Vitality");
+                if dying {
+                    assert!(member.is_dead(), "too little health left to lose");
+                    dying_seen = true;
+                } else {
+                    assert_eq!(member.hp, hp - lowered);
+                    wounded_seen = true;
+                }
+            }
+        }
+        assert!(wounded_seen && dying_seen);
+    }
+
     /// Draining takes health from the maximum until Drained is lifted, which
     /// gives back what draining and disease took (retail `DamageCharacter`,
     /// `RemoveCharacterCondition`).

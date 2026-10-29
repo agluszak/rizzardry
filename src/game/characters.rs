@@ -380,6 +380,12 @@ fn load_band(weight: u32, capacity: u32) -> Load {
     }
 }
 
+/// A pool's value once its maximum moves from `old` to `new`: it moves by
+/// as much, within 0 and the new maximum.
+pub fn resized(current: u32, old: u32, new: u32) -> u32 {
+    current.saturating_add(new.saturating_sub(old)).saturating_sub(old.saturating_sub(new)).min(new)
+}
+
 /// What disease did to a member ([`Vitals::sicken`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sickness {
@@ -960,14 +966,10 @@ impl Vitals {
             return 0;
         }
         self.spend_stamina(amount * 2 / 3);
-        let before = profile.stats(&self.enchantments).max_hp();
+        let (hp, before) = (self.hp, self.maxima(profile));
         profile.hp_drained = profile.hp_drained.saturating_add(amount);
-        let after = profile.stats(&self.enchantments).max_hp();
-        let lost = (before - after).min(self.hp);
-        self.hp -= lost;
-        if self.is_dead() {
-            self.die();
-        }
+        self.resize(before, self.maxima(profile));
+        let lost = hp - self.hp;
         if !self.has(Condition::Drained) {
             self.inflict(Condition::Drained, Lasting::Indefinite);
         }
@@ -982,16 +984,31 @@ impl Vitals {
             return false;
         };
         self.conditions.remove(index);
-        let before = profile.stats(&self.enchantments);
-        let (hp, stamina) = (before.max_hp(), before.max_stamina());
+        let before = self.maxima(profile);
         profile.hp_drained = 0;
         profile.stamina_drained = 0;
-        let after = profile.stats(&self.enchantments);
-        if !self.is_dead() {
-            self.hp += after.max_hp() - hp;
-            self.stamina += after.max_stamina() - stamina;
-        }
+        self.resize(before, self.maxima(profile));
         true
+    }
+
+    /// The member's health and stamina maxima, their spells counted.
+    pub fn maxima(&self, profile: &Character) -> (u32, u32) {
+        let stats = profile.stats(&self.enchantments);
+        (stats.max_hp(), stats.max_stamina())
+    }
+
+    /// Carry the maxima's move from `before` to `after` into health and
+    /// stamina (retail `RecalculateCharacterHitPoints`,
+    /// `RecalculateCharacterStamina`); health run out is death.
+    pub fn resize(&mut self, before: (u32, u32), after: (u32, u32)) {
+        if self.is_dead() {
+            return;
+        }
+        self.hp = resized(self.hp, before.0, after.0);
+        self.stamina = resized(self.stamina, before.1, after.1);
+        if self.is_dead() {
+            self.die();
+        }
     }
 
     /// What disease does as `minutes` pass (retail `GameTurnsPassedChar`):
@@ -1026,10 +1043,15 @@ impl Vitals {
             1 => {
                 use enum_map::Enum;
                 let attribute = Attribute::from_usize(rng.below(7) as usize);
-                (profile.attributes[attribute] > 1).then(|| {
-                    profile.attributes[attribute] -= 1;
-                    Sickness::Weakened(attribute)
-                })
+                if profile.attributes[attribute] <= 1 {
+                    return None;
+                }
+                // The maxima follow the attribute, and the pools with them
+                // (retail `ApplyAttributeChange`).
+                let before = self.maxima(profile);
+                profile.attributes[attribute] -= 1;
+                self.resize(before, self.maxima(profile));
+                Some(Sickness::Weakened(attribute))
             }
             2 => {
                 if profile.stats(&self.enchantments).max_hp() < 5 {
