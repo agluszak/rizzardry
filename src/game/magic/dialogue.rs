@@ -51,9 +51,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
         .ok_or(Refusal::MissingContent)?;
     let (level, resistance, notice_chance) = (
         u32::from(kind.level),
-        (i32::from(kind.resistances[Realm::Mental])
-            + monster.enchantments.resistance(Realm::Mental))
-        .min(100),
+        monster.resistance(kind, Realm::Mental),
         (u32::from(kind.attributes.senses) + u32::from(kind.attributes.intelligence)) / 2,
     );
     let (mut report, strength) =
@@ -68,7 +66,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
         }
         Outcome::Cast => {
             let chance = super::effects::condition_chance(level, resistance, strength.against, 0);
-            let saved = (world.resource_mut::<GameRng>().below(100) as i32) < chance.clamp(5, 95);
+            let saved = super::effects::save_roll(&mut world.resource_mut::<GameRng>(), chance);
             if id == SpellId::MINDREAD {
                 reply = MagicalReply::Quote(if saved {
                     0x69

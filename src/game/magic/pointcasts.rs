@@ -222,27 +222,24 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
                 if kind.kind == MonsterKind::Undead {
                     continue;
                 }
-                let resistance =
-                    (i32::from(kind.resistances[crate::content::characters::Realm::Mental])
-                        + body.enchantments.resistance(crate::content::characters::Realm::Mental))
-                    .min(100);
+                let resistance = body.resistance(kind, crate::content::characters::Realm::Mental);
                 let chance = super::effects::condition_chance(
                     u32::from(kind.level),
                     resistance,
                     strength.against,
                     0,
-                )
-                .clamp(5, 95);
+                );
                 let eye = body.eye(here);
                 let clear = sight.get(world).is_ok_and(|obstacles| obstacles.clear(eye, at));
                 if !clear {
                     continue;
                 }
-                let response = if (world.resource_mut::<GameRng>().below(100) as i32) < chance {
-                    LureResponse::Resisted
-                } else {
-                    LureResponse::Controlled
-                };
+                let response =
+                    if super::effects::save_roll(&mut world.resource_mut::<GameRng>(), chance) {
+                        LureResponse::Resisted
+                    } else {
+                        LureResponse::Controlled
+                    };
                 let group = world
                     .get::<GroupMember>(entity)
                     .and_then(|group| world.get::<GroupMembers>(group.0));

@@ -44,6 +44,16 @@ impl Monster {
         self.spell_points.saturating_add(kind.magic.budget).max(0) as u32
     }
 
+    /// Its resistance to a realm: its species' and its enchantments', at most
+    /// 100.
+    pub fn resistance(
+        &self,
+        kind: &crate::content::species::Species,
+        realm: crate::content::characters::Realm,
+    ) -> i32 {
+        (i32::from(kind.resistances[realm]) + self.enchantments.resistance(realm)).min(100)
+    }
+
     pub fn is_dead(&self) -> bool {
         self.hp == 0
     }

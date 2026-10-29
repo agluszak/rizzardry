@@ -693,9 +693,7 @@ fn target(
             let kind = world.species?.kind(body.species)?;
             Some(Target {
                 level: u32::from(kind.level),
-                resistance: (i32::from(kind.resistances[realm])
-                    + body.enchantments.resistance(realm))
-                .min(100),
+                resistance: body.resistance(kind, realm),
                 side: Some(world.monsters.stance(monster, world.now)),
                 turncoat: false,
                 immune: condition.is_some_and(|c| immune(kind.kind, c)),
@@ -726,6 +724,12 @@ pub(super) fn condition_chance(level: u32, resistance: i32, against: u32, base: 
     (level as i32 - against as i32) * 3 + base + resistance
 }
 
+/// A saving throw at `chance` percent, held within 5..95 (retail
+/// `TargetResistsCondition`).
+pub(super) fn save_roll(rng: &mut GameRng, chance: i32) -> bool {
+    (rng.below(100) as i32) < chance.clamp(5, 95)
+}
+
 /// Whether a victim saves (retail `TargetResistsCondition`): `(level −
 /// strength)·3 + base + resistance`, scaled by difficulty, within 5..95. A
 /// party member who saves practises Iron Will.
@@ -742,7 +746,7 @@ fn saves(
         Some(side) => world.difficulty.for_monster(chance, side),
         None => world.difficulty.for_character(chance, target.turncoat),
     };
-    let saved = (rng.below(100) as i32) < chance.clamp(5, 95);
+    let saved = save_roll(rng, chance);
     if saved
         && let Victim::Member(member) = victim
         && let Ok((mut character, ..)) = world.members.get_mut(member)
