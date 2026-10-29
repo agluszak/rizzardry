@@ -341,20 +341,73 @@ pub struct SpecialAttack {
     pub cooldown: u8,
 }
 
-/// One of retail's special attacks, by its row in retail's tables (1 to
-/// 31); what it does is the game's definition of that row.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct SpecialAttackKind(u8);
+/// One of retail's special attacks (record 0xe3), named by what retail's
+/// tables define it to do: its effects and the realm they are resisted by,
+/// or the species it summons. Retail's own names for them are strings in
+/// its data (`g_monster_special_attack_name_ids`, for rows 1 to 11 only)
+/// and are not recovered here; two rows with the same definition keep
+/// their order. The discriminant is the record's byte.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, num_enum::TryFromPrimitive)]
+#[repr(u8)]
+pub enum SpecialAttackKind {
+    BlindingWater = 1,
+    BlindingWaterSecond = 2,
+    HarmAndDrainDivine = 3,
+    TiringWater = 4,
+    FearAndInsanityMental = 5,
+    FearAndTurncoatDivine = 6,
+    FearMental = 7,
+    WoundAndTireFire = 8,
+    WoundFire = 9,
+    /// Its wound is not resisted.
+    InsanityAndWoundMental = 10,
+    InsanityAndTurncoatDivine = 11,
+    InsanityMental = 12,
+    IrritationEarth = 13,
+    IrritationAir = 14,
+    NauseaEarth = 15,
+    NauseaAir = 16,
+    ParalysisMental = 17,
+    ParalysisEarth = 18,
+    PoisonAndIrritationWater = 19,
+    PoisonAndWoundWater = 20,
+    SleepAir = 21,
+    SlowAndParalysisWater = 22,
+    SlowEarth = 23,
+    SummonsSpecies153 = 24,
+    SummonsSpecies149 = 25,
+    SummonsSpecies150 = 26,
+    SummonsSpecies151 = 27,
+    SummonsSpecies152 = 28,
+    SummonsSpecies148 = 29,
+    WoundWater = 30,
+    SummonsSpecies12 = 31,
+}
 
 impl SpecialAttackKind {
-    /// The kind a record names; none for 0 or a row past retail's tables.
-    pub fn from_record(row: u8) -> Option<Self> {
-        (1..32).contains(&row).then_some(Self(row))
+    /// The kind a record names; none for 0 or a byte past retail's tables.
+    pub fn from_record(byte: u8) -> Option<Self> {
+        Self::try_from(byte).ok()
     }
 
     /// Its row in retail's tables, which also numbers its name.
     pub fn row(self) -> u8 {
-        self.0
+        self as u8
+    }
+
+    /// The species a summoning calls (retail `SpawnSummonedMonsterGroup`).
+    pub fn summons(self) -> Option<u32> {
+        use SpecialAttackKind::*;
+        Some(match self {
+            SummonsSpecies153 => 153,
+            SummonsSpecies149 => 149,
+            SummonsSpecies150 => 150,
+            SummonsSpecies151 => 151,
+            SummonsSpecies152 => 152,
+            SummonsSpecies148 => 148,
+            SummonsSpecies12 => 12,
+            _ => return None,
+        })
     }
 }
 

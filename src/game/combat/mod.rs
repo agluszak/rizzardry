@@ -2796,10 +2796,14 @@ mod tests {
     #[test]
     fn a_monster_breathes_on_the_party() {
         use crate::content::species::{SpecialAttack, SpecialAttackKind};
-        let burn = SpecialAttackKind::from_record(9).unwrap();
+        let burn = SpecialAttackKind::WoundFire;
         use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId, Targeting};
         use crate::game::magic::effects::{Effect, Victim};
         let (mut app, members) = round_app(true);
+        // The party holds back, so no blow knocks the monster out first.
+        for member in members {
+            app.world_mut().entity_mut(member).insert(Order::Defend);
+        }
         let monster =
             app.world().try_query::<&Combatants>().unwrap().single(app.world()).unwrap().entities()
                 [0];
@@ -2818,9 +2822,7 @@ mod tests {
         {
             let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
             let mut species = catalogs.get_mut(&data).unwrap();
-            // Kind 9 burns: one wound, resisted by fire.
-            species.0[0].special =
-                SpecialAttack { kind: SpecialAttackKind::from_record(9), chance: 100, cooldown: 3 };
+            species.0[0].special = SpecialAttack { kind: Some(burn), chance: 100, cooldown: 3 };
             species.0[0].level = 5;
         }
         {
@@ -2921,7 +2923,11 @@ mod tests {
     #[test]
     fn a_bodyguard_takes_blows_meant_for_its_ward() {
         use crate::content::species::{MonsterAttack, MonsterWeapon, Species};
-        let (mut app, _) = round_app(true);
+        let (mut app, [a, b]) = round_app(true);
+        // Only the member with the slow sword strikes, after the guard has
+        // chosen to guard.
+        app.world_mut().entity_mut(a).insert(Order::Defend);
+        app.world_mut().entity_mut(b).insert(Order::Attack);
         let ward =
             app.world().try_query::<&Combatants>().unwrap().single(app.world()).unwrap().entities()
                 [0];
@@ -2971,12 +2977,20 @@ mod tests {
             .spawn((guard, Transform::from_translation(Vec3::NEG_Z * 1.5), LevelOwned(level)))
             .id();
         app.world_mut().entity_mut(guard).insert(Combatant(battle));
+        // The guard may not reach the ward's trouble at once, so the fight
+        // runs on for a few rounds.
         let mut intercepted = false;
         for _ in 0..80 {
+            app.world_mut().write_message(StartRound);
             app.update();
             let news: Vec<_> =
                 app.world_mut().resource_mut::<Messages<CombatNews>>().drain().collect();
-            if news.contains(&CombatNews::Intercepts { guard, ward }) {
+            if news.contains(&CombatNews::Intercepts { guard, ward })
+                && news.iter().any(|n| {
+                    matches!(n, CombatNews::Attack { attacker, target, .. }
+                        if *attacker == b && *target == ward)
+                })
+            {
                 intercepted = true;
                 break;
             }

@@ -215,75 +215,65 @@ pub struct SpecialDefinition {
     pub silenced: bool,
 }
 
-/// Each special attack's definition, by its retail row.
-const SPECIALS: [SpecialDefinition; 32] = {
+/// A special attack's definition (retail `g_special_attack_table`,
+/// `g_special_attack_condition_table`, `g_special_attack_realm_table`,
+/// `MonsterSpecialAttackHonorsCastingBlock`).
+pub fn special(kind: SpecialAttackKind) -> SpecialDefinition {
     use Condition::*;
     use Realm::*;
+    use SpecialAttackKind as K;
     use SpecialEffect::*;
-    const fn strike(
-        realm: Realm,
-        first: Option<SpecialEffect>,
-        second: Option<SpecialEffect>,
-    ) -> SpecialDefinition {
-        SpecialDefinition {
-            effects: [first, second],
-            summons: false,
-            realm,
-            resisted: true,
-            silenced: false,
+    let strike = |realm, first, second: Option<SpecialEffect>| SpecialDefinition {
+        effects: [Some(first), second],
+        summons: false,
+        realm,
+        resisted: true,
+        silenced: false,
+    };
+    let summon = |silenced| SpecialDefinition {
+        effects: [None, None],
+        summons: true,
+        realm: Fire,
+        resisted: true,
+        silenced,
+    };
+    let silenced = |definition| SpecialDefinition { silenced: true, ..definition };
+    match kind {
+        K::BlindingWater | K::BlindingWaterSecond => strike(Water, Inflict(Blind), None),
+        K::HarmAndDrainDivine => strike(Divine, Harm, Some(Drain)),
+        K::TiringWater => strike(Water, Tire, None),
+        K::FearAndInsanityMental => {
+            silenced(strike(Mental, Inflict(Afraid), Some(Inflict(Insane))))
         }
-    }
-    const fn silenced(definition: SpecialDefinition) -> SpecialDefinition {
-        SpecialDefinition { silenced: true, ..definition }
-    }
-    const fn summon(realm: Realm) -> SpecialDefinition {
-        SpecialDefinition {
-            effects: [None, None],
-            summons: true,
-            realm,
-            resisted: true,
-            silenced: false,
+        K::FearAndTurncoatDivine => {
+            silenced(strike(Divine, Inflict(Afraid), Some(Inflict(Turncoat))))
         }
+        K::FearMental => silenced(strike(Mental, Inflict(Afraid), None)),
+        K::WoundAndTireFire => strike(Fire, Wound, Some(Tire)),
+        K::WoundFire => strike(Fire, Wound, None),
+        K::InsanityAndWoundMental => {
+            SpecialDefinition { resisted: false, ..strike(Mental, Inflict(Insane), Some(Wound)) }
+        }
+        K::InsanityAndTurncoatDivine => strike(Divine, Inflict(Insane), Some(Inflict(Turncoat))),
+        K::InsanityMental => strike(Mental, Inflict(Insane), None),
+        K::IrritationEarth => strike(Earth, Inflict(Irritated), None),
+        K::IrritationAir => strike(Air, Inflict(Irritated), None),
+        K::NauseaEarth => strike(Earth, Inflict(Nauseated), None),
+        K::NauseaAir => strike(Air, Inflict(Nauseated), None),
+        K::ParalysisMental => strike(Mental, Inflict(Paralyzed), None),
+        K::ParalysisEarth => strike(Earth, Inflict(Paralyzed), None),
+        K::PoisonAndIrritationWater => strike(Water, Inflict(Poisoned), Some(Inflict(Irritated))),
+        K::PoisonAndWoundWater => strike(Water, Inflict(Poisoned), Some(Wound)),
+        K::SleepAir => strike(Air, Inflict(Asleep), None),
+        K::SlowAndParalysisWater => strike(Water, Inflict(Slowed), Some(Inflict(Paralyzed))),
+        K::SlowEarth => strike(Earth, Inflict(Slowed), None),
+        K::WoundWater => strike(Water, Wound, None),
+        K::SummonsSpecies153 | K::SummonsSpecies151 | K::SummonsSpecies12 => summon(false),
+        K::SummonsSpecies149
+        | K::SummonsSpecies150
+        | K::SummonsSpecies152
+        | K::SummonsSpecies148 => summon(true),
     }
-    [
-        strike(Fire, None, None),
-        strike(Water, Some(Inflict(Blind)), None),
-        strike(Water, Some(Inflict(Blind)), None),
-        strike(Divine, Some(Harm), Some(Drain)),
-        strike(Water, Some(Tire), None),
-        silenced(strike(Mental, Some(Inflict(Afraid)), Some(Inflict(Insane)))),
-        silenced(strike(Divine, Some(Inflict(Afraid)), Some(Inflict(Turncoat)))),
-        silenced(strike(Mental, Some(Inflict(Afraid)), None)),
-        strike(Fire, Some(Wound), Some(Tire)),
-        strike(Fire, Some(Wound), None),
-        SpecialDefinition { resisted: false, ..strike(Mental, Some(Inflict(Insane)), Some(Wound)) },
-        strike(Divine, Some(Inflict(Insane)), Some(Inflict(Turncoat))),
-        strike(Mental, Some(Inflict(Insane)), None),
-        strike(Earth, Some(Inflict(Irritated)), None),
-        strike(Air, Some(Inflict(Irritated)), None),
-        strike(Earth, Some(Inflict(Nauseated)), None),
-        strike(Air, Some(Inflict(Nauseated)), None),
-        strike(Mental, Some(Inflict(Paralyzed)), None),
-        strike(Earth, Some(Inflict(Paralyzed)), None),
-        strike(Water, Some(Inflict(Poisoned)), Some(Inflict(Irritated))),
-        strike(Water, Some(Inflict(Poisoned)), Some(Wound)),
-        strike(Air, Some(Inflict(Asleep)), None),
-        strike(Water, Some(Inflict(Slowed)), Some(Inflict(Paralyzed))),
-        strike(Earth, Some(Inflict(Slowed)), None),
-        summon(Fire),
-        silenced(summon(Fire)),
-        silenced(summon(Fire)),
-        summon(Fire),
-        silenced(summon(Fire)),
-        silenced(summon(Fire)),
-        strike(Water, Some(Wound), None),
-        summon(Fire),
-    ]
-};
-
-/// A special attack's definition.
-pub fn special(kind: SpecialAttackKind) -> &'static SpecialDefinition {
-    &SPECIALS[usize::from(kind.row())]
 }
 
 /// A monster making its special attack: how strong it is now.
