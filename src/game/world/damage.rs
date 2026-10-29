@@ -104,7 +104,16 @@ impl<'w, 's> MonsterDamage<'w, 's> {
             })
             .unwrap_or(entity)
     }
+    /// A monster's own stance now ([`super::hostility::monster_own`]): its
+    /// group's, swapped by its own Turncoat.
     pub fn stance(&self, entity: Entity, now: u64) -> super::hostility::Stance {
+        let turncoat = self.monsters.get(entity).is_ok_and(|(m, ..)| m.has(Condition::Turncoat));
+        super::hostility::own_stance(self.group_stance(entity, now), turncoat)
+    }
+
+    /// How a monster's group stands now ([`super::hostility::stance`]); one
+    /// outside any group by its species' default.
+    pub fn group_stance(&self, entity: Entity, now: u64) -> super::hostility::Stance {
         use super::hostility::{self, Stance};
         let Ok((monster, ..)) = self.monsters.get(entity) else { return Stance::Neutral };
         let (Some(kind), Some(factions)) = (
@@ -119,8 +128,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
             .ok()
             .and_then(|member| self.groups.get(member.0).ok())
             .and_then(|group| group.set);
-        let fighting = self.combatants.contains(entity);
-        hostility::monster_own(monster, set, kind, factions, now, fighting)
+        hostility::stance(set, kind, factions, now, self.combatants.contains(entity))
     }
 
     /// Commit hostility before damage/conditions inspect the target's side.

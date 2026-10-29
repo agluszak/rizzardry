@@ -1170,36 +1170,20 @@ pub fn settle_defeat(
     }
 }
 
-/// How each monster in the fight stands, through its group (one outside
-/// any group by its species), as this update of the fight begins.
-fn fighting_stances(
-    combatants: &[Entity],
-    stances: &hostility::Stances,
-    now: u64,
-    species: &MonsterCatalog,
-) -> Vec<(Entity, hostility::Stance)> {
-    combatants
-        .iter()
-        .filter_map(|&monster| Some((monster, stances.group(monster, species, now)?)))
-        .collect()
-}
-
 /// A combatant's current allegiance, shared by target choice and engagement.
 fn allegiance(
     entity: Entity,
-    monsters: &MonsterQuery,
-    stances: &[(Entity, hostility::Stance)],
+    damage: &MonsterDamage,
+    now: u64,
     species: &MonsterCatalog,
 ) -> Option<hostility::Allegiance> {
-    let (body, ..) = monsters.get(entity).ok()?;
+    let (body, ..) = damage.monsters().get(entity).ok()?;
     let kind = species.kind(body.species)?;
-    let group = stances.iter().find(|&&(e, _)| e == entity)?.1;
-    let turncoat = body.has(Condition::Turncoat);
     Some(hostility::Allegiance {
         species: body.species,
-        stance: hostility::own_stance(group, turncoat),
+        stance: damage.stance(entity, now),
         faction: kind.faction,
-        turncoat,
+        turncoat: body.has(Condition::Turncoat),
     })
 }
 
@@ -1213,15 +1197,15 @@ fn allegiance(
 fn leave_fight(
     commands: &mut Commands,
     combatants: &[Entity],
-    monsters: &MonsterQuery,
-    (membership, stances): (&Query<&GroupMember>, &[(Entity, hostility::Stance)]),
+    (damage, now): (&MonsterDamage, u64),
+    membership: &Query<&GroupMember>,
     sight: &Sight,
     species: &MonsterCatalog,
 ) -> Vec<Entity> {
     use hostility::Stance;
+    let monsters = damage.monsters();
     let group_of = |monster: Entity| membership.get(monster).ok().map(|m| m.0);
-    let stance_of =
-        |monster: Entity| stances.iter().find(|&&(m, _)| m == monster).map(|&(_, stance)| stance);
+    let stance_of = |monster: Entity| Some(damage.group_stance(monster, now));
     let seen = |monster: Entity| -> Option<(Seen, bool)> {
         let (body, at, walker, ..) = monsters.get(monster).ok()?;
         let kind = species.kind(body.species)?;
@@ -1267,13 +1251,13 @@ fn leave_fight(
                 sees
             }
             Some(Stance::Friendly) => fellows.iter().any(|(fellow, _)| {
-                let Some(mine) = allegiance(fellow.entity, monsters, stances, species) else {
+                let Some(mine) = allegiance(fellow.entity, damage, now, species) else {
                     return false;
                 };
                 let Ok((body, at, walker, ..)) = monsters.get(fellow.entity) else { return false };
                 let Some(kind) = species.kind(body.species) else { return false };
                 combatants.iter().any(|&enemy| {
-                    let Some(theirs) = allegiance(enemy, monsters, stances, species) else {
+                    let Some(theirs) = allegiance(enemy, damage, now, species) else {
                         return false;
                     };
                     let Ok((target, target_at, target_walker, ..)) = monsters.get(enemy) else {
@@ -1501,7 +1485,7 @@ pub fn run_battle(
     battle: Option<Single<(Entity, &mut Battle, Option<&Combatants>)>>,
     mut rng: ResMut<GameRng>,
     mut clock: ResMut<GameClock>,
-    mut actors: ParamSet<((Members, MonsterDamage), GroupRecognition, hostility::Stances)>,
+    mut actors: ParamSet<((Members, MonsterDamage), GroupRecognition)>,
     party_body: Query<(&Position, &PartyBody)>,
     (roster, content, level): (Single<&PartyRoster>, crate::game::data::Content, PlayedLevel),
     mut magic: BattleMagic,
@@ -1514,7 +1498,6 @@ pub fn run_battle(
     }
     // Content and the party's body exist whenever a level is played.
     let Some(species) = content.species() else { return };
-    let stances = { fighting_stances(combatants, &actors.p2(), clock.ms, species) };
     let (mut members, mut damage) = actors.p0();
     let Ok((position, body)) = party_body.single() else { return };
     if !damage.ready() || !battle.executing() || !battle.wait.is_finished() {
@@ -1569,8 +1552,8 @@ pub fn run_battle(
             let staying = leave_fight(
                 &mut commands,
                 combatants,
-                damage.monsters(),
-                (&magic.groups, &stances),
+                (&damage, party.now),
+                &magic.groups,
                 &sight,
                 species,
             );
@@ -1646,7 +1629,7 @@ pub fn run_battle(
                 &mut commands,
                 &mut battle,
                 (index, step),
-                (combatants, &stances),
+                combatants,
                 &mut rng,
                 (&mut members, &mut damage),
                 &party,
@@ -2087,7 +2070,7 @@ fn monster_turn(
     commands: &mut Commands,
     battle: &mut Battle,
     (index, step): (usize, u8),
-    (combatants, stances): (&[Entity], &[(Entity, hostility::Stance)]),
+    combatants: &[Entity],
     rng: &mut GameRng,
     (members, damage): (&mut Members, &mut MonsterDamage),
     party: &PartyView,
@@ -2108,9 +2091,7 @@ fn monster_turn(
     // How everyone in the fight stands, each monster by its own stance.
     let allegiances: Vec<(Entity, hostility::Allegiance)> = combatants
         .iter()
-        .filter_map(|&entity| {
-            Some((entity, allegiance(entity, damage.monsters(), stances, species)?))
-        })
+        .filter_map(|&entity| Some((entity, allegiance(entity, damage, party.now, species)?)))
         .collect();
     let allegiance_of =
         |entity: Entity| allegiances.iter().find(|&&(e, _)| e == entity).map(|&(_, a)| a);
@@ -3125,7 +3106,9 @@ mod tests {
                 .unwrap();
             let battle = app.world().get::<Combatant>(hostile).unwrap().0;
             let owner = *app.world().get::<LevelOwned>(hostile).unwrap();
-            let group = app.world_mut().spawn(MonsterGroup::default()).id();
+            let set = |stance| Some(hostility::SetStance { stance, at: 0 });
+            let group =
+                app.world_mut().spawn(MonsterGroup { set: set(Stance::Hostile), ..default() }).id();
             app.world_mut()
                 .entity_mut(hostile)
                 .insert((GroupMember(group), Transform::from_xyz(0.0, 0.0, 4.0)));
@@ -3133,7 +3116,10 @@ mod tests {
             if blind {
                 body.conditions.push((Condition::Blind, Lasting::Rounds(2)));
             }
-            let friendly_group = app.world_mut().spawn(MonsterGroup::default()).id();
+            let friendly_group = app
+                .world_mut()
+                .spawn(MonsterGroup { set: set(Stance::Friendly), ..default() })
+                .id();
             let friendly = app
                 .world_mut()
                 .spawn((
@@ -3153,7 +3139,7 @@ mod tests {
                 .world_mut()
                 .run_system_once(
                     move |mut commands: Commands,
-                          monsters: MonsterQuery,
+                          damage: MonsterDamage,
                           membership: Query<&GroupMember>,
                           obstacles: WorldObstacles,
                           content: crate::game::data::Content| {
@@ -3165,7 +3151,7 @@ mod tests {
                             obstacles: &obstacles,
                         };
                         let species = content.species().unwrap();
-                        let (body, at, walker, ..) = monsters.get(hostile).unwrap();
+                        let (body, at, walker, ..) = damage.monsters().get(hostile).unwrap();
                         assert!(
                             sight.sees(body, &at, walker, &species.0[0]),
                             "the hostile remains engaged behind the party"
@@ -3177,11 +3163,8 @@ mod tests {
                         leave_fight(
                             &mut commands,
                             &[hostile, friendly],
-                            &monsters,
-                            (
-                                &membership,
-                                &[(hostile, Stance::Hostile), (friendly, Stance::Friendly)],
-                            ),
+                            (&damage, 0),
+                            &membership,
                             &sight,
                             species,
                         )
