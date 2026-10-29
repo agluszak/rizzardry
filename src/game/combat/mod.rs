@@ -1749,6 +1749,7 @@ fn member_casts(
         context: casting::UseContext::Combat,
         party: &party_members,
         party_at: party.eye,
+        facing: crate::game::party::body::heading(party.yaw),
         monsters: &candidates,
         group_of: &group_of,
     };
@@ -2711,6 +2712,74 @@ mod tests {
             dice: Some(Dice { base: 0, count: 1, sides: 7 }),
             ..default()
         }
+    }
+
+    /// An automatic aim takes the monster nearest the party's heading when
+    /// the spell is cast, from the party's own facing: ahead before a turn,
+    /// the one behind after half a turn, and nobody when none is in reach.
+    #[test]
+    fn an_automatic_aim_follows_the_partys_facing_at_the_cast() {
+        use crate::game::magic::casting::{Aim, MagicChoice, MagicNews, Refusal, Source};
+        use crate::game::magic::effects::{Effect, Victim};
+        let cast = |yaw: f32, far: bool| {
+            let (mut app, [caster, _]) = round_app(true);
+            let ahead = order_spell(&mut app, caster, energy_blast());
+            let battle = app
+                .world_mut()
+                .query_filtered::<Entity, With<Battle>>()
+                .single(app.world())
+                .unwrap();
+            let body = app.world().get::<Monster>(ahead).unwrap().clone();
+            let level = app.world().get::<LevelOwned>(ahead).unwrap().0;
+            let behind = app
+                .world_mut()
+                .spawn((body, Transform::from_translation(Vec3::Z * 3.0), LevelOwned(level)))
+                .id();
+            app.world_mut().entity_mut(behind).insert(Combatant(battle));
+            if far {
+                for (monster, z) in [(ahead, -40.0), (behind, 40.0)] {
+                    app.world_mut().get_mut::<Transform>(monster).unwrap().translation =
+                        Vec3::Z * z;
+                }
+            }
+            let choice = MagicChoice {
+                source: Source::Spell {
+                    spell: crate::content::spells::SpellId::ENERGY_BLAST,
+                    power: 1,
+                },
+                aim: Aim::Ahead,
+            };
+            app.world_mut().entity_mut(caster).insert(Order::Magic(choice));
+            let party = app
+                .world_mut()
+                .query_filtered::<Entity, With<PartyBody>>()
+                .single(app.world())
+                .unwrap();
+            app.world_mut().get_mut::<PartyBody>(party).unwrap().yaw = yaw;
+            let mut news = Vec::new();
+            for _ in 0..6 {
+                app.update();
+                news.extend(app.world_mut().resource_mut::<Messages<MagicNews>>().drain());
+            }
+            let hit = news.iter().find_map(|n| match n {
+                MagicNews::Done(report) => report.effects.iter().find_map(|e| match e {
+                    Effect::Damaged { victim: Victim::Monster(m), .. } => Some(*m),
+                    _ => None,
+                }),
+                _ => None,
+            });
+            let refused = news.iter().any(|n| {
+                matches!(n, MagicNews::Refused { caster: c, refusal: Refusal::NoTarget } if *c == caster)
+            });
+            (hit, refused, ahead, behind)
+        };
+        let (hit, _, ahead, _) = cast(0.0, false);
+        assert_eq!(hit, Some(ahead), "facing -Z, the one ahead");
+        let (hit, _, _, behind) = cast(std::f32::consts::PI, false);
+        assert_eq!(hit, Some(behind), "turned about, the one that was behind");
+        let (hit, refused, ..) = cast(0.0, true);
+        assert_eq!(hit, None);
+        assert!(refused, "nobody within reach");
     }
 
     /// A monster with a spell it can aim at the party casts it at its turn:

@@ -55,10 +55,15 @@ pub struct PartyBody {
     pub pitch: f32,
 }
 
+/// The way a party turned by `yaw` faces, level.
+pub fn heading(yaw: f32) -> Vec3 {
+    Quat::from_rotation_y(yaw) * Vec3::NEG_Z
+}
+
 impl PartyBody {
     /// The way the party faces, level.
     pub fn forward(&self) -> Vec3 {
-        Quat::from_rotation_y(self.yaw) * Vec3::NEG_Z
+        heading(self.yaw)
     }
 
     /// The party's eye, over the centre of its body at `position`.
