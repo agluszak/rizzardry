@@ -711,6 +711,7 @@ fn prepare(
         return Ok(false);
     };
     population::check(geometry, species, items)?;
+    super::triggers::check(geometry)?;
     if !npcs.prepare(species, &geometry.monsters, items, assets)? {
         return Ok(false);
     }

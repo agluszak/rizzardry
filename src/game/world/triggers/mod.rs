@@ -304,6 +304,26 @@ fn player_distance(world: &mut World, entity: Entity) -> Option<f32> {
     Some(distance.unwrap_or_else(|| eye.distance(prop.centre)))
 }
 
+/// Check a level's triggers before it is entered: each camera path a
+/// trigger can fly has keys, so a flight always has somewhere to go.
+pub fn check(geometry: &LevelDefinition) -> Result<(), String> {
+    for trigger in &geometry.triggers {
+        let uses =
+            std::iter::once(&trigger.initial).chain(&trigger.alternate).chain(&trigger.fallback);
+        for chosen in uses {
+            if let TriggerAction::CameraPath(path) = chosen.action
+                && geometry.camera_paths.get(path).is_none_or(|camera| camera.keys.is_empty())
+            {
+                return Err(format!(
+                    "trigger {} flies camera path {path}, which has no keys",
+                    trigger.name
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// How running a device went.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Ran {
@@ -577,11 +597,6 @@ fn execute(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth:
             world.entity_mut(level).insert(PendingPartyMove(PartyMove::Teleport(arrival.clone())));
         }
         TriggerAction::CameraPath(path) => {
-            // A path without keys has nowhere to carry the party.
-            if geometry.camera_paths.get(*path).is_none_or(|camera| camera.keys.is_empty()) {
-                warn!("trigger {}: camera path {path} has no keys", definition.name);
-                return Ran::Declined;
-            }
             world.entity_mut(level).insert(PendingPartyMove(PartyMove::Fly(*path)));
         }
         TriggerAction::HurtParty(dice) => {
