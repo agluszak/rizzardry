@@ -2264,7 +2264,7 @@ fn monster_turn(
         if matches!(decision, Decision::Fight { .. }) && reaches {
             let intelligence = u32::from(kind.attributes.intelligence);
             let able = kind.temper.bodyguard
-                && body.conditions.iter().all(|&(c, _)| c < Condition::Blind)
+                && body.worst_condition().is_none_or(|c| c < Condition::Blind)
                 && !kind.attacks.is_empty();
             let wards: Vec<Entity> = if able && rng.below(100) < intelligence {
                 let reach = kind.attacks[0].reach.metres();

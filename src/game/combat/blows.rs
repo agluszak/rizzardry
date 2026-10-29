@@ -427,7 +427,7 @@ pub(super) fn melee_target<'a>(
             {
                 return None;
             }
-            let worst = monster.conditions.iter().map(|&(c, _)| c).max();
+            let worst = monster.worst_condition();
             let side = formation::quadrant(fight.party.eye, fight.party.yaw, at.translation());
             let in_reach = !kind.attacks.is_empty()
                 && (side == Row::Rear
