@@ -86,20 +86,16 @@ impl ScaledBody {
 pub struct MonsterBodies(pub HashMap<u32, Handle<MonsterBody>>);
 
 impl MonsterBodies {
-    /// The bodies of the monsters a level places, of those they can summon
-    /// and of its random encounters and their companions, loading any not
-    /// yet requested: a group called up in play must have its body ready.
+    /// The bodies of every species a level may bring into play, loading any
+    /// not yet requested, since a group called up in play must have its
+    /// body ready: those it places, its random encounters and their
+    /// companions, and whatever any of these can summon, in turn.
     pub fn for_level(
         &mut self,
         geometry: &LevelDefinition,
         species: &MonsterCatalog,
         assets: &AssetServer,
     ) -> Vec<Handle<MonsterBody>> {
-        let placed = geometry.monsters.iter().map(|placed| placed.species);
-        let summoned = geometry
-            .monsters
-            .iter()
-            .filter_map(|placed| species.kind(placed.species)?.special.kind?.summons());
         let encountered: Vec<u32> = geometry
             .encounters
             .generators
@@ -112,10 +108,21 @@ impl MonsterBodies {
             .filter_map(|&id| species.kind(id))
             .flat_map(|kind| kind.companions.iter().flatten().map(|&(id, _)| id))
             .collect();
-        placed
-            .chain(summoned)
-            .chain(encountered)
-            .chain(companions)
+        let mut spawnable: Vec<u32> =
+            geometry.monsters.iter().map(|placed| placed.species).collect();
+        spawnable.extend(encountered);
+        spawnable.extend(companions);
+        let mut next = 0;
+        while let Some(&id) = spawnable.get(next) {
+            if let Some(called) = species.kind(id).and_then(|kind| kind.special.kind?.summons())
+                && !spawnable.contains(&called)
+            {
+                spawnable.push(called);
+            }
+            next += 1;
+        }
+        spawnable
+            .into_iter()
             .filter_map(|id| {
                 let kind = species.kind(id)?;
                 let body = self
@@ -427,5 +434,53 @@ pub fn populate(
     for (item, at) in lying {
         let name = items.get(item.appearance()).map_or_else(String::new, |d| d.name.clone());
         commands.spawn((Name::new(name), item, Transform::from_translation(at), LevelOwned(root)));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::content::level::{EncounterEntry, EncounterTable, Generator, MonsterPlacement};
+    use crate::content::species::{SpecialAttack, SpecialAttackKind, Species};
+
+    /// A species only a generator brings, which summons a species nothing
+    /// places, has that species' body readied too.
+    #[test]
+    fn an_encounters_summoning_has_its_body_ready() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<MonsterBody>();
+        let mut catalog = vec![Species::default(); 13];
+        catalog[3] = Species {
+            special: SpecialAttack { kind: Some(SpecialAttackKind::SummonsSpecies12), ..default() },
+            ..default()
+        };
+        let geometry = LevelDefinition {
+            monsters: vec![MonsterPlacement {
+                location: 1,
+                group: 1,
+                species: 1,
+                position: Vec3::ZERO,
+                yaw: 0.0,
+                unborn: false,
+            }],
+            encounters: crate::content::level::Encounters {
+                generators: vec![Generator {
+                    table: Some(EncounterTable {
+                        entries: vec![EncounterEntry { species: 3, ..default() }],
+                        ..default()
+                    }),
+                    ..default()
+                }],
+                ..default()
+            },
+            ..default()
+        };
+        let mut bodies = MonsterBodies::default();
+        let assets = app.world().resource::<AssetServer>().clone();
+        bodies.for_level(&geometry, &MonsterCatalog(catalog), &assets);
+        let mut readied: Vec<_> = bodies.0.keys().copied().collect();
+        readied.sort();
+        assert_eq!(readied, [1, 3, 12]);
     }
 }
