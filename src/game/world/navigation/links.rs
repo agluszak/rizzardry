@@ -310,7 +310,8 @@ mod tests {
         use crate::game::world::{WorldPlugin, level::Level};
         assert!(DoorLink::around([]).is_none(), "no corners, no doorway");
         let mut app = App::new();
-        app.add_plugins((MinimalPlugins, AssetPlugin::default(), WorldPlugin));
+        app.add_plugins((MinimalPlugins, AssetPlugin::default(), WorldPlugin))
+            .init_asset::<LevelDefinition>();
         app.finish();
         app.cleanup();
         let archipelago = app
