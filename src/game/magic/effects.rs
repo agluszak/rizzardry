@@ -1920,15 +1920,12 @@ pub(crate) fn pulse_clouds(
                                         mana.drain_realm(realm, amount, &maximum);
                                     }
                                 }
-                                if let Ok((_, mut vitals, ..)) = world.members.get_mut(member) {
-                                    vitals.spend_stamina(amount);
-                                }
                             }
                             Victim::Monster(monster) => {
                                 world.monsters.drain_magic(monster, amount / 2);
-                                world.monsters.fatigue(monster, amount);
                             }
                         }
+                        tire(world, victim, amount);
                     }
                     landed.extend(hit);
                     if id == SpellId::TOXIC_CLOUD {
