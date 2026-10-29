@@ -375,7 +375,8 @@ fn stand_beside_party(world: &mut World, actor: Entity, body: Entity, party: Ent
         let vitals = world.get::<Vitals>(actor).unwrap();
         (vitals.conditions.clone(), vitals.stamina)
     };
-    let stamina_max = world.get::<Character>(actor).map_or(stamina, Character::max_stamina);
+    let stamina_max =
+        world.get::<Character>(actor).map_or(stamina, |c| c.base_stats().max_stamina());
     let Some(species) = world.get::<Monster>(body).map(|m| m.species) else { return };
     let rolled = world.resource_scope(|world, mut rng: Mut<GameRng>| {
         let kind = GameData::species(world)?.kind(species)?;

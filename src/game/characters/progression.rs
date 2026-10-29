@@ -760,8 +760,8 @@ mod tests {
         accept(&mut w, &draft).unwrap();
         let c = w.get::<Character>(member).unwrap();
         let v = w.get::<Vitals>(member).unwrap();
-        assert_eq!(v.hp, c.max_hp() - 2);
-        assert_eq!(v.stamina, c.max_stamina() - 5);
+        assert_eq!(v.hp, c.base_stats().max_hp() - 2);
+        assert_eq!(v.stamina, c.base_stats().max_stamina() - 5);
         assert_eq!(
             v.conditions,
             crate::game::characters::Conditions::from([(Condition::Poisoned, Lasting::Rounds(10))])

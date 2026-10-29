@@ -429,10 +429,10 @@ pub(super) fn refresh(
                     7 => format!("Dex: {}", profile.attribute(Dexterity)),
                     8 => format!("Spd: {}", profile.attribute(Speed)),
                     9 => format!("Sen: {}", profile.attribute(Senses)),
-                    10 => format!("HP: {}", profile.max_hp()),
+                    10 => format!("HP: {}", profile.base_stats().max_hp()),
                     11 => String::new(),
-                    12 => format!("Stam: {}", profile.max_stamina()),
-                    13 => format!("Carry: {}", profile.capacity() / 10),
+                    12 => format!("Stam: {}", profile.base_stats().max_stamina()),
+                    13 => format!("Carry: {}", profile.base_stats().capacity() / 10),
                     _ => String::new(),
                 }
             }),

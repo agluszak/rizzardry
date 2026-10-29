@@ -756,11 +756,6 @@ impl Character {
         scale_by_level(self.profession_levels[self.profession], value)
     }
 
-    /// Percent taken off every blow that lands on them, without spells.
-    pub fn damage_reduction(&self) -> i32 {
-        self.base_stats().damage_reduction()
-    }
-
     /// The average of a skill's governing attributes' bases.
     fn skill_base(&self, skill: Skill) -> u32 {
         let (a, b) = governing(skill);
@@ -779,39 +774,12 @@ impl Character {
         (points + bonus).min(125)
     }
 
-    /// `round(Σ (0.6 + 0.008·VIT) × factor × levels)`, counting one extra
-    /// level for the original profession.
-    pub fn max_hp(&self) -> u32 {
-        self.base_stats().max_hp()
-    }
-
-    /// `round((STR + PIE + VIT) / 3 × (0.1·level + 2))`.
-    pub fn max_stamina(&self) -> u32 {
-        self.base_stats().max_stamina()
-    }
-
     /// Levels weighted by how physical each profession is.
     pub fn physical_levels(&self) -> i32 {
         self.profession_levels
             .iter()
             .map(|(profession, &levels)| i32::from(levels) * profession_row(profession).physical)
             .sum()
-    }
-
-    /// Tenths of a pound: `(VIT + 2·STR) × 12`, × 8 for a Faerie.
-    pub fn capacity(&self) -> u32 {
-        self.base_stats().capacity()
-    }
-
-    /// The load band of carrying `weight` (own plus pool share).
-    pub fn load(&self, weight: u32) -> Load {
-        self.base_stats().load(weight)
-    }
-
-    /// `(level + 1)/2 + SEN/5 + SPD/5 − 10`, plus Snake Speed, less 1, 2, 4
-    /// or 8 by load.
-    pub fn initiative(&self, load: Load) -> i32 {
-        self.base_stats().initiative(load)
     }
 
     /// AwardPartyExperience saturates instead of wrapping at the XP limit.
@@ -885,6 +853,8 @@ impl CharacterStats<'_> {
         let bonus = self.enchantments.map_or(0, |e| e.attribute_bonus(attribute));
         (self.profile.attribute(attribute) + bonus).min(125)
     }
+    /// `round(Σ (0.6 + 0.008·VIT) × factor × levels)`, counting one extra
+    /// level for the original profession.
     pub fn max_hp(&self) -> u32 {
         let vitality = 0.6 + 0.008 * self.attribute(Attribute::Vitality) as f32;
         let total: f32 = self
@@ -900,6 +870,7 @@ impl CharacterStats<'_> {
             .sum();
         (total.round() as u32).saturating_sub(self.hp_drained).max(1)
     }
+    /// `round((STR + PIE + VIT) / 3 × (0.1·level + 2))`.
     pub fn max_stamina(&self) -> u32 {
         let sum = [Attribute::Strength, Attribute::Piety, Attribute::Vitality]
             .map(|a| self.attribute(a))
@@ -908,13 +879,17 @@ impl CharacterStats<'_> {
         ((sum / 3.0 * (0.1 * f32::from(self.level()) + 2.0)).round() as u32)
             .saturating_sub(self.stamina_drained)
     }
+    /// Tenths of a pound: `(VIT + 2·STR) × 12`, × 8 for a Faerie.
     pub fn capacity(&self) -> u32 {
         let factor = if self.race == Race::Faerie { 8 } else { 12 };
         (self.attribute(Attribute::Vitality) + 2 * self.attribute(Attribute::Strength)) * factor
     }
+    /// The load band of carrying `weight` (own plus pool share).
     pub fn load(&self, weight: u32) -> Load {
         load_band(weight, self.capacity())
     }
+    /// `(level + 1)/2 + SEN/5 + SPD/5 − 10`, plus Snake Speed, less 1, 2, 4
+    /// or 8 by load.
     pub fn initiative(&self, load: Load) -> i32 {
         let mut initiative = (i32::from(self.level()) + 1) / 2
             + self.attribute(Attribute::Senses) as i32 / 5
@@ -949,7 +924,11 @@ pub struct Vitals {
 
 impl Vitals {
     pub fn new(profile: &Character) -> Self {
-        Self { hp: profile.max_hp(), stamina: profile.max_stamina(), ..default() }
+        Self {
+            hp: profile.base_stats().max_hp(),
+            stamina: profile.base_stats().max_stamina(),
+            ..default()
+        }
     }
 
     /// The share of stamina spent, in percent.
@@ -1350,15 +1329,15 @@ mod tests {
     fn a_human_fighter_has_the_worked_example_numbers() {
         let fighter = Character::new("Ragnar", Race::Human, Gender::Male, Profession::Fighter);
         assert_eq!(fighter.attributes, EnumMap::from_array([55, 45, 45, 50, 50, 45, 45]));
-        assert_eq!(fighter.max_hp(), 18);
-        assert_eq!(fighter.max_stamina(), 105);
-        assert_eq!(fighter.capacity(), 1920);
-        assert_eq!(fighter.initiative(Load::None), 9);
-        assert_eq!(fighter.initiative(Load::Heavy), 5);
-        assert_eq!(fighter.load(959), Load::None);
-        assert_eq!(fighter.load(960), Load::Light);
-        assert_eq!(fighter.load(1939), Load::Heavy, "integer percent: still 100");
-        assert_eq!(fighter.load(1940), Load::Extreme);
+        assert_eq!(fighter.base_stats().max_hp(), 18);
+        assert_eq!(fighter.base_stats().max_stamina(), 105);
+        assert_eq!(fighter.base_stats().capacity(), 1920);
+        assert_eq!(fighter.base_stats().initiative(Load::None), 9);
+        assert_eq!(fighter.base_stats().initiative(Load::Heavy), 5);
+        assert_eq!(fighter.base_stats().load(959), Load::None);
+        assert_eq!(fighter.base_stats().load(960), Load::Light);
+        assert_eq!(fighter.base_stats().load(1939), Load::Heavy, "integer percent: still 100");
+        assert_eq!(fighter.base_stats().load(1940), Load::Extreme);
         assert_eq!(fighter.experience_goal(), 1000);
         // Profession and bonus skills are seeded; others are not.
         let close_combat = fighter.skill_points[Skill::CloseCombat];
@@ -1429,7 +1408,7 @@ mod tests {
     fn a_valkyrie_cheats_death_unless_long_out_cold() {
         let valkyrie =
             Character::new("Brunhild", Race::Human, Gender::Female, Profession::Valkyrie);
-        let maximum = valkyrie.max_hp();
+        let maximum = valkyrie.base_stats().max_hp();
         let mut rng = crate::game::rng::GameRng::seeded(9);
         let fight = Entity::from_bits(77);
         let other = Entity::from_bits(78);
@@ -1487,15 +1466,15 @@ mod tests {
         assert_eq!((fighter.hp, fighter.stamina), (12, 101));
         fighter.spend_stamina(200);
         assert!(fighter.conditions.has(Condition::Unconscious));
-        fighter.restore_stamina(9, profile.max_stamina());
+        fighter.restore_stamina(9, profile.base_stats().max_stamina());
         assert!(fighter.conditions.has(Condition::Unconscious), "not above 9 yet");
-        fighter.restore_stamina(1, profile.max_stamina());
+        fighter.restore_stamina(1, profile.base_stats().max_stamina());
         assert!(!fighter.conditions.has(Condition::Unconscious));
         assert_eq!(fighter.damage(&profile, 100, &mut fate), 12);
         assert!(fighter.is_dead());
         assert!(fighter.conditions.is_empty() && fighter.stamina == 0);
         assert_eq!(fighter.damage(&profile, 5, &mut fate), 0);
-        fighter.heal(10, profile.max_hp());
+        fighter.heal(10, profile.base_stats().max_hp());
         assert!(fighter.is_dead(), "healing does not raise the dead");
     }
 
@@ -1507,17 +1486,17 @@ mod tests {
         fighter.stamina = 0;
         fighter.inflict(Condition::Unconscious, Lasting::Indefinite);
         // (0.9 × 105 + 20) / 240 × 0.5 ≈ 0.24 a tick: 10 above 9 after 42.
-        fighter.recover_stamina(41, 0.5, profile.max_stamina());
+        fighter.recover_stamina(41, 0.5, profile.base_stats().max_stamina());
         assert!(fighter.conditions.has(Condition::Unconscious));
-        fighter.recover_stamina(1, 0.5, profile.max_stamina());
+        fighter.recover_stamina(1, 0.5, profile.base_stats().max_stamina());
         assert_eq!(fighter.stamina, 10);
         assert!(!fighter.conditions.has(Condition::Unconscious));
         // (0.4 × 18 + 20) / 240 × 0.5 ≈ 0.057 a tick.
-        fighter.recover_health(17, 0.5, profile.max_hp());
+        fighter.recover_health(17, 0.5, profile.base_stats().max_hp());
         assert_eq!(fighter.hp, 1);
-        fighter.recover_health(1, 0.5, profile.max_hp());
+        fighter.recover_health(1, 0.5, profile.base_stats().max_hp());
         assert_eq!(fighter.hp, 2);
-        fighter.recover_health(1, 0.0, profile.max_hp());
+        fighter.recover_health(1, 0.0, profile.base_stats().max_hp());
         assert_eq!(fighter.hp_fraction, 0.0, "no recovery clears the fraction");
     }
 

@@ -606,7 +606,7 @@ pub(super) fn refresh(
             },
             Value::Health => {
                 if session.choices.race && session.choices.profession {
-                    profile.max_hp().to_string()
+                    profile.base_stats().max_hp().to_string()
                 } else if session.choices.race {
                     "0".into()
                 } else {
@@ -615,14 +615,14 @@ pub(super) fn refresh(
             }
             Value::Stamina => {
                 if session.choices.race {
-                    profile.max_stamina().to_string()
+                    profile.base_stats().max_stamina().to_string()
                 } else {
                     String::new()
                 }
             }
             Value::Capacity => {
                 if session.choices.race {
-                    (profile.capacity() / 10).to_string()
+                    (profile.base_stats().capacity() / 10).to_string()
                 } else {
                     String::new()
                 }

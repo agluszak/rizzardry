@@ -1357,7 +1357,8 @@ fn accept_round(
                     turns.current = hand;
                     turns.left =
                         hands.hands.each_ref().map(|h| if h.in_play { h.attacks } else { 0 });
-                    let initiative = stats.initiative(burden.load) + hands.hands[hand].initiative;
+                    let initiative =
+                        attack::character_initiative(&stats, &hands.hands[hand], burden.load);
                     phase(rng, initiative)
                 }
                 None => 0,
@@ -1382,15 +1383,18 @@ fn accept_round(
         };
         round.monsters.push((entity, turn));
     }
-    // The party's own move takes the phase its slowest member allows,
-    // on a step of ten (retail `InitializePartyMovementPhase`).
+    // The party's own move takes the phase its slowest living member
+    // allows, by the initiative its actions use, on a step of ten (retail
+    // `InitializePartyMovementPhase`).
     battle.party_move = match pace {
         Some(pace) => {
             let latest = roster
                 .iter()
                 .filter_map(|m| members.get(m).ok())
-                .filter(|(_, vitals, ..)| vitals.can_fight())
-                .map(|(c, _, _, burden)| phase(rng, c.initiative(burden.load)))
+                .filter(|(_, vitals, ..)| !vitals.is_dead())
+                .map(|(c, vitals, _, burden)| {
+                    phase(rng, c.stats(&vitals.enchantments).initiative(burden.load))
+                })
                 .max()
                 .unwrap_or(90);
             let phase = (latest + 5) - (latest + 5) % 10;
