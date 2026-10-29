@@ -823,7 +823,7 @@ pub fn start_battle(
         let casts = spells
             .is_some_and(|spells| monster_spells::casts_at_foes(monster, kind, spells, &scene));
         let breathes = kind.special.chance != 0
-            && special_ready(monster, kind, false)
+            && special_ready(monster, kind, false, None)
             && spells
                 .and_then(|spells| spells.get(crate::content::spells::SpellId::SPECIAL_ATTACK_CONE))
                 .is_some_and(|cone| !monster_spells::aims(cone, &scene).is_empty());
@@ -1783,14 +1783,27 @@ enum Plan<'a> {
 
 /// Whether a monster can make its special attack now (retail
 /// `CanMonsterFlee`): it has one, it is not cooling down, it has a tenth of
-/// its stamina, and a silence does not stop it.
-fn special_ready(monster: &Monster, kind: &Species, cooling: bool) -> bool {
+/// its stamina, and a silence does not stop it. A summoning is never what
+/// starts a fight (`fighting` is `None` then, retail's `exclude_special`);
+/// in one it needs the party within long reach and the summoner not on its
+/// side. Any other kind also needs an aim, which its caller finds.
+fn special_ready(
+    monster: &Monster,
+    kind: &Species,
+    cooling: bool,
+    fighting: Option<(f32, hostility::Stance)>,
+) -> bool {
     let silenced = monster.conditions.iter().any(|&(c, _)| c == Condition::Silenced);
     kind.special.kind.is_some_and(|special| {
         let definition = crate::game::magic::effects::special(special);
+        let summons = special.summons().is_none()
+            || fighting.is_some_and(|(nearest, stance)| {
+                nearest <= Reach::Long.metres() && stance != hostility::Stance::Friendly
+            });
         !cooling
             && monster.stamina >= monster.max_stamina / 10
             && !(silenced && definition.silenced)
+            && summons
     })
 }
 
@@ -1910,37 +1923,56 @@ fn monster_turn(
             decision = Decision::Move { conduct, quiet: false };
         } else if special.chance != 0
             && !closes_in
-            && let Some(cone) =
-                magic.context.content.spells().and_then(|spells| {
-                    spells.get(crate::content::spells::SpellId::SPECIAL_ATTACK_CONE)
-                })
-            && special_ready(body, kind, cooling)
-            && let scene = spell_scene(
-                (monster, kind),
-                (combatants, party_of(members, &magic.context.roster)),
-                damage.monsters(),
-                &party.sight(members, &magic.context.roster, &magic.obstacles),
-                &toward,
-            )
-            && let aims = monster_spells::aims(cone, &scene)
-            && !aims.is_empty()
+            && let Some(special_kind) = special.kind
+            && special_ready(body, kind, cooling, Some((nearest, mine.stance)))
+            && let Some(aim) = if special_kind.summons().is_some() {
+                // A summoning aims at the summoner's own spot (retail
+                // `AimFleeingMonster`); it needs no one in sight.
+                Some(None)
+            } else {
+                magic
+                    .context
+                    .content
+                    .spells()
+                    .and_then(|spells| {
+                        spells.get(crate::content::spells::SpellId::SPECIAL_ATTACK_CONE)
+                    })
+                    .map(|cone| {
+                        let scene = spell_scene(
+                            (monster, kind),
+                            (combatants, party_of(members, &magic.context.roster)),
+                            damage.monsters(),
+                            &party.sight(members, &magic.context.roster, &magic.obstacles),
+                            &toward,
+                        );
+                        let aims = monster_spells::aims(cone, &scene);
+                        (cone, scene, aims)
+                    })
+                    .filter(|(_, _, aims)| !aims.is_empty())
+                    .map(Some)
+            }
             && rng.below(100) < if reaches { u32::from(special.chance) } else { 100 }
         {
-            // At one of its aims at random (retail `AimMonsterAtSpellTarget`),
-            // catching whoever stands in the cone.
-            let aim = aims[rng.below(aims.len() as u32) as usize];
-            let victims = monster_spells::cone_victims(
-                &scene,
-                monster_spells::aimed_at(&scene, aim),
-                cone.reach.metres(),
-            );
+            // A breath at one of its aims at random (retail
+            // `AimMonsterAtSpellTarget`), catching whoever stands in the cone.
+            let victims = match aim {
+                Some((cone, scene, aims)) => {
+                    let aim = aims[rng.below(aims.len() as u32) as usize];
+                    monster_spells::cone_victims(
+                        &scene,
+                        monster_spells::aimed_at(&scene, aim),
+                        cone.reach.metres(),
+                    )
+                }
+                None => Vec::new(),
+            };
             let breather = crate::game::magic::effects::Breather {
                 level: kind.level,
                 stamina: body.stamina,
                 max_stamina: body.max_stamina,
             };
             decision = Decision::Plan(Box::new(Plan::Special {
-                kind: special.kind.expect("a ready monster has a special attack"),
+                kind: special_kind,
                 cooldown: special.cooldown,
                 breather,
                 victims,
@@ -2777,6 +2809,57 @@ mod tests {
             "{:?}",
             report.effects
         );
+    }
+
+    /// A summoner in a fight calls its group up with no one to aim a cone
+    /// at, as long as the party is within long reach and it is not on the
+    /// party's side; a summoning never starts a fight (retail
+    /// `CanMonsterFlee`, `AimFleeingMonster`).
+    #[test]
+    fn a_summoner_summons_without_an_aim_unless_on_the_partys_side() {
+        use crate::content::species::{SpecialAttack, SpecialAttackKind};
+        let call = SpecialAttackKind::SummonsSpecies12;
+        for turned in [false, true] {
+            let (mut app, members) = round_app(true);
+            for member in members {
+                app.world_mut().entity_mut(member).insert(Order::Defend);
+            }
+            let monster = app
+                .world()
+                .try_query::<&Combatants>()
+                .unwrap()
+                .single(app.world())
+                .unwrap()
+                .entities()[0];
+            let data = app.world().resource::<GameData>().species.clone();
+            {
+                let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
+                let species = &mut catalogs.get_mut(&data).unwrap().0;
+                species[0].special = SpecialAttack { kind: Some(call), chance: 100, cooldown: 3 };
+                let kind = species[0].clone();
+                assert!(
+                    !special_ready(&conduct::tests::monster(10), &kind, false, None),
+                    "never what starts a fight"
+                );
+                species.resize(13, default());
+            }
+            {
+                let mut body = app.world_mut().get_mut::<Monster>(monster).unwrap();
+                body.stamina = 100;
+                body.max_stamina = 100;
+                if turned {
+                    body.conditions
+                        .push((Condition::Turncoat, crate::game::characters::Lasting::Rounds(20)));
+                }
+            }
+            let mut news = Vec::new();
+            for _ in 0..12 {
+                app.update();
+                news.extend(app.world_mut().resource_mut::<Messages<CombatNews>>().drain());
+            }
+            let summoned = news.contains(&CombatNews::Special { monster, kind: call });
+            assert_eq!(summoned, !turned, "turned {turned}");
+        }
     }
 
     /// A monster with a breath and nothing to strike with breathes on the
