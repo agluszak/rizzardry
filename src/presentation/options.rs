@@ -1,7 +1,7 @@
 //! A settings draft; Apply persists before changing the live owners.
 use super::screen_art::{BitmapText, absolute};
-use super::settings::{Preferences, SavedSettings, SettingsFile};
 use crate::game::{combat::CombatSettings, difficulty::Difficulty, screen::Screen};
+use crate::settings::{Preferences, SavedSettings, SettingsFile};
 use bevy::input_focus::{
     FocusCause, InputFocus,
     tab_navigation::{TabGroup, TabIndex},
@@ -38,7 +38,6 @@ pub fn plugin(app: &mut App) {
         .init_resource::<SettingsFile>()
         .add_input_context::<OptionsView>()
         .add_message::<OpenOptions>()
-        .add_systems(Startup, super::settings::load)
         .add_systems(Update, (request, refresh, style_buttons))
         .add_systems(
             Update,

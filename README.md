@@ -30,7 +30,9 @@ Options:
 - `--hour <0-24>`: start at this time of day instead of noon.
 - `--party <file.ron>`: skip the main menu and start with this party. Headless
   runs use `assets/party.ron` unless overridden.
-- `--continuous`: fight continuously, as retail's setting does.
+- `--continuous`: fight continuously, as retail's setting does. Overrides the saved
+  combat mode in both windowed and headless runs. Saved gameplay settings load
+  before startup in either mode; a new-game difficulty choice applies afterward.
 
 Developer options:
 
