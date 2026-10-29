@@ -646,8 +646,7 @@ impl Sight<'_, '_, '_> {
         let (from, ..) = observer;
         let target_feet = feet(at.translation(), walker);
         let observer_feet = feet(observer.1.translation(), observer.2);
-        let distance =
-            (observer_feet.distance(target_feet) - from.body.radius - body.body.radius).max(0.0);
+        let distance = from.gap(observer_feet, body, target_feet);
         let eye = body.eye(target_feet);
         self.sees_point(observer, eye, distance, i32::from(kind.level), 0)
     }
@@ -2285,13 +2284,10 @@ fn monster_turn(
                         other != monster
                             && toward(Victim::Monster(other)) == Stance::Friendly
                             && damage.monsters().get(other).is_ok_and(|(o, o_at, o_walker, ..)| {
-                                let gap = feet.distance(crate::game::world::navigation::feet(
-                                    o_at.translation(),
-                                    o_walker,
-                                )) - body.body.radius
-                                    - o.body.radius;
+                                let gap =
+                                    body.gap(feet, o, self::feet(o_at.translation(), o_walker));
                                 !o.is_dead()
-                                    && gap.max(0.0) <= reach
+                                    && gap <= reach
                                     && species.kind(o.species).is_some_and(|k| k.level > kind.level)
                                     && o.hp * 100 / o.max_hp.max(1) < 40
                             })
@@ -2328,12 +2324,7 @@ fn monster_turn(
                     other != monster
                         && toward(Victim::Monster(other)) == Stance::Friendly
                         && damage.monsters().get(other).is_ok_and(|(o, o_at, o_walker, ..)| {
-                            let gap = feet.distance(crate::game::world::navigation::feet(
-                                o_at.translation(),
-                                o_walker,
-                            )) - body.body.radius
-                                - o.body.radius;
-                            gap.max(0.0) <= reach
+                            body.gap(feet, o, self::feet(o_at.translation(), o_walker)) <= reach
                         })
                 })
         });
@@ -2502,7 +2493,7 @@ fn monster_turn(
             if let Some(target) = destination {
                 let kind = species.kind(body.species)?;
                 walker.filter(|walker| walker.speed > 0.0)?;
-                let charge = body.hp * 100 <= body.max_hp * 95;
+                let charge = body.charges();
                 Some((
                     approach::MoveBudget {
                         metres: approach::move_metres(body, kind, charge),
@@ -2626,8 +2617,7 @@ fn spell_scene<'a>(
                 Some(monster_spells::Someone {
                     entity,
                     at,
-                    from_caster: (at.distance(feet_at) - body.body.radius - other.body.radius)
-                        .max(0.0),
+                    from_caster: body.gap(feet_at, other, at),
                     standing: monster_spells::monster_standing(other),
                     stance: if entity == caster {
                         hostility::Stance::Friendly

@@ -81,7 +81,7 @@ pub(super) fn move_budget(
         return None;
     }
     let kind = species.kind(monster.species)?;
-    let charge = monster.hp * 100 <= monster.max_hp * 95;
+    let charge = monster.charges();
     Some(MoveBudget { metres: move_metres(monster, kind, charge), charge })
 }
 
@@ -145,9 +145,7 @@ pub fn steer_moves(
                         .and_then(|kind| kind.attacks.iter().map(|a| a.reach).max())
                         .unwrap_or(Reach::Touch)
                         .metres();
-                    !target.is_dead()
-                        && here.distance(there) - monster.body.radius - target.body.radius
-                            > reach - REACH_MARGIN
+                    !target.is_dead() && monster.gap(here, target, there) > reach - REACH_MARGIN
                 });
                 (needed, AgentTarget3d::Entity(entity))
             }
