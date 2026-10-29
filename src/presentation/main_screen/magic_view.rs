@@ -589,6 +589,7 @@ fn offers<'a>(
     carried: Option<&Carried>,
     learned: Option<&LearnedSpells>,
     points: Option<&SpellPoints>,
+    maximum: &enum_map::EnumMap<Realm, u32>,
     spells: &'a SpellCatalog,
     items: &ItemCatalog,
     context: UseContext,
@@ -652,7 +653,7 @@ fn offers<'a>(
         .filter_map(|&id| spells.get(id))
         .filter(|s| s.realm == Some(realm))
         .map(|s| {
-            let affordable = points.is_some_and(|p| p.affordable_power(s) > 0);
+            let affordable = points.is_some_and(|p| p.affordable_power(s, maximum) > 0);
             Offer {
                 source: Source::Spell { spell: s.id, power: 1 },
                 spell: s,
@@ -781,16 +782,14 @@ pub(super) fn refresh_magic_view(
     };
     let Ok((character, vitals, carried)) = members.get(view.caster) else { return };
     let (learned, points) = casters.get(view.caster).map_or((None, None), |(l, p)| (Some(l), p));
-    let maximum = learned
-        .map(|learned| {
-            crate::game::magic::max_points(&character.stats(&vitals.enchantments), learned, spells)
-        })
+    let mana_maximum = learned
+        .map(|l| crate::game::magic::max_points(&character.stats(&vitals.enchantments), l, spells))
         .unwrap_or_default();
     // Realms: their points, the chosen one latched; the first with points
     // chosen when none is.
     if !view.items {
         if view.realm.is_none() {
-            view.realm = EnumSet::<Realm>::all().iter().find(|&r| maximum[r] > 0);
+            view.realm = EnumSet::<Realm>::all().iter().find(|&r| mana_maximum[r] > 0);
         }
         for (button, selected, entity) in &parts.p0() {
             let wanted = view.realm == Some(button.0);
@@ -804,7 +803,7 @@ pub(super) fn refresh_magic_view(
             crate::presentation::retail_controls::set_enabled(
                 &mut commands,
                 entity,
-                maximum[button.0] > 0,
+                mana_maximum[button.0] > 0,
                 false,
             );
         }
@@ -821,16 +820,27 @@ pub(super) fn refresh_magic_view(
             }
         }
         for (realm, mut label) in &mut parts.p1() {
-            let current = points.map_or(0, |p| p.current[realm.0]);
-            let value = format!("{current}/{}", maximum[realm.0]);
+            let current = points.map_or(0, |p| p.current(realm.0, &mana_maximum));
+            let value = format!("{current}/{}", mana_maximum[realm.0]);
             if label.value != value {
                 label.value = value;
             }
         }
     }
     let silenced = vitals.has(crate::game::characters::Condition::Silenced);
-    let offers =
-        offers(&view, character, carried, learned, points, spells, items, context, &pool, silenced);
+    let offers = offers(
+        &view,
+        character,
+        carried,
+        learned,
+        points,
+        &mana_maximum,
+        spells,
+        items,
+        context,
+        &pool,
+        silenced,
+    );
     let Ok((scroll_value, scroll_range)) = sliders.get(scroll.0) else { return };
     let maximum = offers.len().saturating_sub(ROWS);
     set_scroll_maximum(&mut commands, scroll.0, scroll_value, scroll_range, maximum as f32);
@@ -884,7 +894,7 @@ pub(super) fn refresh_magic_view(
     // Pips: as many lit as the chosen power, rated by failure chance;
     // auto pips only where retail offers them.
     if !view.items {
-        let affordable = spell.zip(points).map_or(0, |(s, p)| p.affordable_power(s));
+        let affordable = spell.zip(points).map_or(0, |(s, p)| p.affordable_power(s, &mana_maximum));
         for (pip, hovered, mut picture, mut visibility) in &mut parts.p5() {
             let index = usize::from(pip.0);
             let shown = match (pip.0, spell.map(|s| s.power)) {
@@ -1058,12 +1068,16 @@ fn choose_row(
     let Ok((character, vitals, carried)) = members.get(view.caster) else { return };
     let (learned, points) = casters.get(view.caster).map_or((None, None), |(l, p)| (Some(l), p));
     let silenced = vitals.has(crate::game::characters::Condition::Silenced);
+    let mana_maximum = learned
+        .map(|l| crate::game::magic::max_points(&character.stats(&vitals.enchantments), l, spells))
+        .unwrap_or_default();
     let offers = offers(
         &view,
         character,
         carried,
         learned,
         points,
+        &mana_maximum,
         spells,
         items,
         match context(

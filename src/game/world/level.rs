@@ -624,7 +624,7 @@ pub fn activate_level(
         }
         let geometry = geometry.get(&level.definition).expect("prepared");
         let content = &shared.content;
-        let (Some(items), Some(loot), Some(species), Some(spells)) =
+        let (Some(items), Some(loot), Some(species), Some(_spells)) =
             (content.items(), content.loot(), content.species(), content.spells())
         else {
             continue;
@@ -689,7 +689,7 @@ pub fn activate_level(
                 if let Some(session) = session.as_mut() {
                     session.set(crate::game::session::Session::Playing);
                 }
-                found_party(&mut commands, characters, (items, spells), (&mut ids, &mut rng))
+                found_party(&mut commands, characters, items, (&mut ids, &mut rng))
             }
         };
         transition.p1().place(&mut commands, party, geometry, &destination.start);
@@ -761,7 +761,7 @@ fn prepare(
 fn found_party(
     commands: &mut Commands,
     characters: Vec<(crate::game::characters::Character, crate::game::magic::LearnedSpells)>,
-    catalogs: (&crate::content::items::ItemCatalog, &crate::content::spells::SpellCatalog),
+    items: &crate::content::items::ItemCatalog,
     (ids, rng): (&mut ItemIds, &mut GameRng),
 ) -> Entity {
     let party = commands.spawn((Name::new("Party"), Party)).id();
@@ -772,7 +772,7 @@ fn found_party(
             party,
             &mut formation,
             member,
-            catalogs,
+            items,
             (&mut *ids, &mut *rng),
         );
     }

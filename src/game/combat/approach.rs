@@ -167,7 +167,10 @@ pub fn steer_moves(
 
 /// Charge each monster on its move the fixed step it has walked, at its
 /// walking speed whether or not it got anywhere.
-pub fn spend_moves(time: Res<Time<Fixed>>, mut walkers: Query<(&Walker, &AgentTarget3d, &mut CombatMove)>) {
+pub fn spend_moves(
+    time: Res<Time<Fixed>>,
+    mut walkers: Query<(&Walker, &AgentTarget3d, &mut CombatMove)>,
+) {
     for (walker, target, mut movement) in &mut walkers {
         if !matches!(target, AgentTarget3d::None) {
             movement.moved += walker.speed * time.delta_secs();

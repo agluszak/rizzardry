@@ -9,9 +9,9 @@ use super::{LearnedSpells, SpellPoints, Strength};
 use crate::content::characters::{Attribute, Realm, Skill};
 use crate::content::items::{Dice, EquipClass, ItemCatalog};
 use crate::content::species::{MonsterCatalog, MonsterKind, SpecialAttackKind};
-use crate::content::spells::{SpellDefinition, SpellId};
+use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId};
 use crate::game::characters::{Condition, Fate, Lasting, inflict, wake_on_hit};
-use crate::game::difficulty::{Difficulty};
+use crate::game::difficulty::Difficulty;
 use crate::game::party::DamageApplied;
 use crate::game::party::formation::Formation;
 use crate::game::rng::GameRng;
@@ -594,6 +594,17 @@ impl Field<'_, '_, '_, '_, '_, '_, '_> {
     }
 }
 
+impl Field<'_, '_, '_, '_, '_, '_, '_> {
+    pub fn mana_maximum(
+        &self,
+        member: Entity,
+        learned: &LearnedSpells,
+    ) -> Option<enum_map::EnumMap<Realm, u32>> {
+        let (profile, vitals, ..) = self.members.get(member).ok()?;
+        Some(super::max_points(&profile.stats(&vitals.enchantments), learned, self.spells?))
+    }
+}
+
 /// The magnitude a spell rolls at `power` (retail `RollEffectMagnitude`): its
 /// dice count times power, then raised by the boost percent.
 pub(crate) fn magnitude(rng: &mut GameRng, dice: Option<Dice>, strength: Strength) -> u32 {
@@ -1121,8 +1132,9 @@ pub fn blow(
                 Victim::Member(member) => {
                     drain(rng, world, victim, Realm::Divine, power, (count, 6, count)).and_then(
                         |amount| {
-                            let (_, mut pool) = points.get_mut(member).ok()?;
-                            let amount = pool.drain(amount, rng);
+                            let (learned, mut pool) = points.get_mut(member).ok()?;
+                            let maximum = world.mana_maximum(member, learned)?;
+                            let amount = pool.drain(amount, &maximum, rng);
                             Some(Effect::Drained { victim, amount })
                         },
                     )
@@ -1515,9 +1527,10 @@ pub fn resolve(
                 // Anti-Magic drains the whole living party, not only captured victims.
                 for &member in world.party {
                     if world.members.get(member).is_ok_and(|(_, v, ..)| !v.is_dead())
-                        && let Ok((_, mut pool)) = points.get_mut(member)
+                        && let Ok((learned, mut pool)) = points.get_mut(member)
+                        && let Some(maximum) = world.mana_maximum(member, learned)
                     {
-                        let amount = pool.drain(amount, rng);
+                        let amount = pool.drain(amount, &maximum, rng);
                         effects.push(Effect::Drained { victim: Victim::Member(member), amount });
                     }
                 }
@@ -1814,18 +1827,20 @@ pub fn resolve(
                         return None;
                     }
                     let percent = if kind == Kind::Lifesteal {
-                        v.hp * 100 / c.stats(&v.enchantments).max_hp().max(1)
+                        i64::from(v.hp * 100 / c.stats(&v.enchantments).max_hp().max(1))
                     } else {
                         let (learned, pool) = points.get(m).ok()?;
-                        let maximum: u32 =
-                            super::max_points(&c.stats(&v.enchantments), learned, world.spells?)
-                                .values()
-                                .sum();
+                        let maxima = world.mana_maximum(m, learned)?;
+                        let maximum: u32 = maxima.values().sum();
                         if maximum == 0 {
                             return None;
                         }
-                        pool.current.values().map(|&value| value.max(0) as u32).sum::<u32>() * 100
-                            / maximum
+                        maxima
+                            .iter()
+                            .map(|(realm, _)| i64::from(pool.available(realm, &maxima)))
+                            .sum::<i64>()
+                            * 100
+                            / i64::from(maximum)
                     };
                     (percent < 100).then_some((m, percent))
                 })

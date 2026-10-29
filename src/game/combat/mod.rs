@@ -498,7 +498,9 @@ fn opening_surprise<'a>(
 /// What the fight tells the player.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum CombatNews {
-    Began { nearest: Option<Entity> },
+    Began {
+        nearest: Option<Entity>,
+    },
     Surprised(SurpriseCause),
     Breathed {
         actor: Entity,
@@ -3383,10 +3385,7 @@ mod tests {
                 character.skill_points[skill] = 100;
             }
         }
-        let mut points = SpellPoints::default();
-        for realm in [Realm::Fire, Realm::Air] {
-            points.current[realm] = 20;
-        }
+        let points = SpellPoints::default();
         let monster =
             app.world().try_query::<&Combatants>().unwrap().single(app.world()).unwrap().entities()
                 [0];
@@ -3399,6 +3398,9 @@ mod tests {
             points,
             Order::Magic(choice),
         ));
+        for realm in [Realm::Fire, Realm::Air] {
+            crate::game::magic::test_set_points(app.world_mut(), member, realm, 20);
+        }
         monster
     }
 
@@ -3878,7 +3880,7 @@ mod tests {
         ));
         let monster = app.world().get::<Monster>(monster).unwrap();
         assert!(monster.hp < monster.max_hp);
-        assert_eq!(app.world().get::<SpellPoints>(caster).unwrap().current[Realm::Fire], 18);
+        assert_eq!(crate::game::magic::test_points(app.world(), caster, Realm::Fire), 18);
         assert!(!attackers.contains(&"A".to_owned()), "casting replaces the attack");
     }
 
@@ -3898,7 +3900,7 @@ mod tests {
             RoundAction::Magic(_)
         ));
         assert!(!fight(app.world()).unwrap().defends(caster));
-        app.world_mut().get_mut::<SpellPoints>(caster).unwrap().current[Realm::Fire] = 0;
+        crate::game::magic::test_set_points(app.world_mut(), caster, Realm::Fire, 0);
         let mut refused = false;
         for _ in 0..12 {
             app.update();
