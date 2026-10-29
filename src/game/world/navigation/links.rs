@@ -8,7 +8,7 @@ use bevy_landmass::prelude::*;
 
 use super::LevelNavigation;
 use super::bake::SIZE_CLASSES;
-use crate::content::level::{LevelDefinition, LevelLink, LinkKind};
+use crate::content::level::{LevelDefinition, LevelLink, LinkKind, PropModel};
 
 use crate::game::world::props::{Prop, PropMotion};
 
@@ -87,15 +87,17 @@ impl DoorLink {
 pub fn sync_door_links(
     mut commands: Commands,
     doors: Query<
-        (Entity, &Prop, &PropMotion, &DoorLink, Option<&Children>),
+        (Entity, &Prop, &LevelOwned, &PropMotion, &DoorLink, Option<&Children>),
         Or<(Changed<PropMotion>, Added<DoorLink>)>,
     >,
+    models: crate::game::world::props::PropModels,
     links: Query<(), With<AnimationLink3d>>,
     navigation: Query<&LevelNavigation>,
 ) {
     let Ok(navigation) = navigation.single() else { return };
-    for (entity, prop, motion, door, children) in &doors {
-        let open = prop.last_frame > 0 && motion.frame >= prop.last_frame as f32 * 0.5;
+    for (entity, prop, owner, motion, door, children) in &doors {
+        let last = models.get(owner, prop).map_or(0, PropModel::last_frame);
+        let open = last > 0 && motion.frame >= last as f32 * 0.5;
         let existing =
             children.into_iter().flatten().copied().filter(|&child| links.contains(child));
         if open && existing.clone().next().is_none() {
@@ -310,28 +312,41 @@ mod tests {
         use crate::game::world::{WorldPlugin, level::Level};
         assert!(DoorLink::around([]).is_none(), "no corners, no doorway");
         let mut app = App::new();
-        app.add_plugins((MinimalPlugins, AssetPlugin::default(), WorldPlugin));
+        app.add_plugins((MinimalPlugins, AssetPlugin::default(), WorldPlugin))
+            .init_asset::<LevelDefinition>();
         app.finish();
         app.cleanup();
         let archipelago = app
             .world_mut()
             .spawn(Archipelago3d::new(ArchipelagoOptions::from_agent_radius(SIZE_CLASSES[0])))
             .id();
+        // A door whose one part runs ten frames.
+        let definition =
+            app.world_mut().resource_mut::<Assets<LevelDefinition>>().add(LevelDefinition {
+                props: vec![crate::content::level::PropModel {
+                    name: "DOOR".into(),
+                    collidable: true,
+                    face_camera: false,
+                    frames_per_second: 10.0,
+                    parts: vec![crate::content::level::PropModelPart {
+                        transform: Transform::IDENTITY,
+                        keys: vec![Transform::IDENTITY; 11],
+                        collision: default(),
+                    }],
+                    wraps: false,
+                    slots: vec![],
+                    trigger: None,
+                }],
+                ..default()
+            });
         let level = app
             .world_mut()
-            .spawn((Level::test(default()), LevelNavigation { archipelagos: vec![archipelago] }))
+            .spawn((Level::test(definition), LevelNavigation { archipelagos: vec![archipelago] }))
             .id();
         let door = app
             .world_mut()
             .spawn((
-                Prop {
-                    definition: 0,
-                    centre: Vec3::ZERO,
-                    frames_per_second: 10.0,
-                    last_frame: 10,
-                    wraps: false,
-                    slots: vec![],
-                },
+                Prop { definition: 0 },
                 PropMotion { frame: 0.0, target: 10.0 },
                 DoorLink::around([Vec3::new(-1.0, 0.0, -0.1), Vec3::new(1.0, 2.0, 0.1)]).unwrap(),
                 LevelOwned(level),

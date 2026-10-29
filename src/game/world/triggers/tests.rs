@@ -61,7 +61,6 @@ pub(crate) struct Scenario {
     pub(crate) world: World,
     pub(crate) geometry: LevelDefinition,
     pub(crate) script: LevelScript,
-    pub(crate) last_frames: Vec<f32>,
     pub(crate) root: Entity,
     pub(crate) devices: Vec<Entity>,
     pub(crate) members: Vec<Entity>,
@@ -75,12 +74,17 @@ impl Scenario {
     ) -> Self {
         let models = props
             .iter()
-            .map(|&PropSpec(name, _, wraps, slots)| PropModel {
+            .map(|&PropSpec(name, last, wraps, slots)| PropModel {
                 name: name.into(),
                 collidable: false,
                 face_camera: false,
                 frames_per_second: 10.0,
-                parts: vec![],
+                // One part, its path keys running to the last frame.
+                parts: vec![crate::content::level::PropModelPart {
+                    transform: Transform::IDENTITY,
+                    keys: vec![Transform::IDENTITY; last as usize + 1],
+                    collision: default(),
+                }],
                 wraps,
                 slots: slots.to_vec(),
                 trigger: triggers.iter().position(|t| t.name == name),
@@ -113,15 +117,7 @@ impl Scenario {
         let loot = world.resource_mut::<Assets<LootTables>>().add(LootTables::default());
         world.insert_resource(GameData { items, loot, species: default(), spells: default() });
         let root = world.spawn_empty().id();
-        let mut scenario = Self {
-            world,
-            geometry,
-            script,
-            last_frames: props.iter().map(|p| p.1).collect(),
-            root,
-            devices: vec![],
-            members: vec![],
-        };
+        let mut scenario = Self { world, geometry, script, root, devices: vec![], members: vec![] };
         scenario.visit(None);
         scenario.add_member("A");
         scenario
@@ -157,18 +153,8 @@ impl Scenario {
             &tables,
             memory,
         );
-        for (index, model) in self.geometry.props.iter().enumerate() {
-            commands.entity(props[index]).insert((
-                Prop {
-                    definition: index,
-                    centre: Vec3::ZERO,
-                    frames_per_second: 10.0,
-                    last_frame: self.last_frames[index] as usize,
-                    wraps: model.wraps,
-                    slots: model.slots.clone(),
-                },
-                PropMotion::default(),
-            ));
+        for (index, &prop) in props.iter().enumerate() {
+            commands.entity(prop).insert((Prop { definition: index }, PropMotion::default()));
         }
         state.apply(&mut self.world);
     }
@@ -959,10 +945,10 @@ fn same_named_props_keep_their_own_device_state_and_animation() {
         definition.sound_on_commit = true;
         definition.name = "SAME".into();
     }
+    level.geometry.props[1].parts[0].transform.translation = Vec3::X;
     level.visit(None);
     let [first, second] = level.devices[..] else { panic!("two devices") };
     assert!(level.world.get::<Prop>(first).is_some());
-    level.world.get_mut::<Prop>(second).unwrap().centre = Vec3::X;
     assert!(activate(&mut level.world, first, false));
     assert_eq!(
         level.effects(),
@@ -1188,34 +1174,38 @@ fn player_reach_uses_only_prop_colliders_then_one_centre_fallback() {
     let position = Position::default();
     let eye = PartyBody::eye(&position);
     world.spawn((PartyBody::default(), position));
-    let prop = world
-        .spawn(Prop {
-            definition: 0,
-            centre: eye + Vec3::X * 20.0,
+    let geometry = LevelDefinition {
+        props: vec![PropModel {
+            name: "PROP".into(),
+            collidable: true,
+            face_camera: false,
             frames_per_second: 0.0,
-            last_frame: 0,
+            parts: vec![crate::content::level::PropModelPart {
+                transform: Transform::from_translation(eye + Vec3::X * 20.0),
+                keys: vec![],
+                collision: default(),
+            }],
             wraps: false,
             slots: vec![],
-        })
-        .id();
+            trigger: None,
+        }],
+        ..default()
+    };
+    let prop = world.spawn(Prop { definition: 0 }).id();
     let surface = world
         .spawn((
-            PropPart { part: 0, keys: vec![] },
+            PropPart { part: 0 },
             Transform::from_translation(eye + Vec3::X * 10.0),
             Collider::sphere(1.0),
             ChildOf(prop),
         ))
         .id();
     // Neither a colliderless part nor a helper collider is gameplay reach geometry.
-    world.spawn((
-        PropPart { part: 1, keys: vec![] },
-        Transform::from_translation(eye),
-        ChildOf(prop),
-    ));
+    world.spawn((PropPart { part: 1 }, Transform::from_translation(eye), ChildOf(prop)));
     world.spawn((Collider::sphere(1.0), Transform::from_translation(eye), ChildOf(prop)));
-    assert!((player_distance(&mut world, prop).unwrap() - 9.0).abs() < 0.001);
+    assert!((player_distance(&mut world, &geometry, prop).unwrap() - 9.0).abs() < 0.001);
     world.entity_mut(surface).remove::<Collider>();
-    assert!((player_distance(&mut world, prop).unwrap() - 20.0).abs() < 0.001);
+    assert!((player_distance(&mut world, &geometry, prop).unwrap() - 20.0).abs() < 0.001);
 }
 
 #[test]

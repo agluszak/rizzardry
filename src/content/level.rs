@@ -374,6 +374,19 @@ pub struct PropModel {
     pub trigger: Option<usize>,
 }
 
+impl PropModel {
+    /// The highest path key of any part.
+    pub fn last_frame(&self) -> usize {
+        self.parts.iter().map(|p| p.keys.len().saturating_sub(1)).max().unwrap_or(0)
+    }
+
+    /// The middle of its parts at rest, where its sounds play.
+    pub fn centre(&self) -> Vec3 {
+        self.parts.iter().map(|part| part.transform.translation).sum::<Vec3>()
+            / self.parts.len().max(1) as f32
+    }
+}
+
 /// A case-insensitive location-variable name, canonicalized at the content boundary.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct VariableName(String);

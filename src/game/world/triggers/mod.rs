@@ -25,7 +25,8 @@ use super::props::{Prop, PropMotion};
 use super::scripts::BellButton;
 use crate::content::items::Dice;
 use crate::content::level::{
-    Fountain, LevelDefinition, Restores, TriggerAction, TriggerDefinition, TriggerUse, VariableName,
+    Fountain, LevelDefinition, PropModel, Restores, TriggerAction, TriggerDefinition, TriggerUse,
+    VariableName,
 };
 use crate::game::characters::{Character, Vitals};
 use crate::game::data::GameData;
@@ -323,7 +324,7 @@ pub fn activate(world: &mut World, entity: Entity, player: bool) -> bool {
         let definition = &geometry.triggers[world.get::<Device>(entity).unwrap().definition];
         if (player
             && (!usable(world, entity, definition)
-                || player_distance(world, entity).is_none_or(|distance| {
+                || player_distance(world, geometry, entity).is_none_or(|distance| {
                     !distance.is_finite()
                         || !(definition.range.0..=definition.range.1).contains(&distance)
                 })))
@@ -341,10 +342,10 @@ pub fn activate(world: &mut World, entity: Entity, player: bool) -> bool {
 
 /// Reach uses the current gameplay geometry, independent of the last pointer hit.
 /// Colliderless props fall back to their authored centre.
-fn player_distance(world: &mut World, entity: Entity) -> Option<f32> {
+fn player_distance(world: &mut World, geometry: &LevelDefinition, entity: Entity) -> Option<f32> {
     use avian3d::prelude::Collider;
     let eye = crate::game::party::body::PartyBody::eye_in(world)?;
-    let prop = world.get::<Prop>(entity)?;
+    let centre = geometry.props.get(world.get::<Prop>(entity)?.definition)?.centre();
     let distance = world
         .get::<Children>(entity)
         .into_iter()
@@ -356,7 +357,7 @@ fn player_distance(world: &mut World, entity: Entity) -> Option<f32> {
             Some(collider.distance_to_point(at.translation, at.rotation, eye, true))
         })
         .min_by(f32::total_cmp);
-    Some(distance.unwrap_or_else(|| eye.distance(prop.centre)))
+    Some(distance.unwrap_or_else(|| eye.distance(centre)))
 }
 
 /// Check a level's triggers before it is entered: each camera path a
@@ -476,12 +477,16 @@ fn select_use<'a>(
     Some(Selected::Use { chosen, keyed, next: Some(next) })
 }
 
-fn operate_door(mut device: EntityMut, open_only: bool) -> Result<bool, TriggerEffect> {
+fn operate_door(
+    mut device: EntityMut,
+    model: &PropModel,
+    open_only: bool,
+) -> Result<bool, TriggerEffect> {
     if device.get::<DoorState>().is_some_and(|door| door.locked) {
         return Err(TriggerEffect::Locked);
     }
-    let Ok((mut door, prop, mut motion, mut trigger)) =
-        device.get_components_mut::<(&mut DoorState, &Prop, &mut PropMotion, &mut TriggerState)>()
+    let Ok((mut door, mut motion, mut trigger)) =
+        device.get_components_mut::<(&mut DoorState, &mut PropMotion, &mut TriggerState)>()
     else {
         return Ok(false);
     };
@@ -490,14 +495,17 @@ fn operate_door(mut device: EntityMut, open_only: bool) -> Result<bool, TriggerE
         return Ok(false);
     }
     door.open = open;
-    motion.target = if open { prop.last_frame as f32 } else { 0.0 };
+    motion.target = if open { model.last_frame() as f32 } else { 0.0 };
     trigger.awaits_animation = true;
     Ok(true)
 }
 
-fn animate_device(mut device: EntityMut, animation: crate::content::level::Animation) {
-    let (prop, motion) = device.get_components_mut::<(&Prop, &mut PropMotion)>().unwrap();
-    PropMotion::activate(motion, prop, animation);
+fn animate_device(
+    mut device: EntityMut,
+    model: &PropModel,
+    animation: crate::content::level::Animation,
+) {
+    PropMotion::activate(device.get_mut::<PropMotion>().unwrap(), model, animation);
     if let Some(mut door) = device.get_mut::<DoorState>() {
         door.open = !door.open;
     }
@@ -506,21 +514,23 @@ fn animate_device(mut device: EntityMut, animation: crate::content::level::Anima
 
 fn turn_dial(
     mut actor: EntityMut,
+    model: &PropModel,
     mut level: Mut<LevelState>,
     variable: Option<&VariableName>,
 ) -> bool {
-    let Ok((mut dial, prop, mut motion)) =
-        actor.get_components_mut::<(&mut DialState, &Prop, &mut PropMotion)>()
+    let Ok((mut dial, mut motion)) =
+        actor.get_components_mut::<(&mut DialState, &mut PropMotion)>()
     else {
         return false;
     };
     let old = dial.position;
-    let next = if prop.slots.len() < 3 {
+    let slots = &model.slots;
+    let next = if slots.len() < 3 {
         0
     } else {
-        let next = (old + 1) % (prop.slots.len() - 1);
-        motion.frame = f32::from(prop.slots[next]);
-        motion.target = f32::from(prop.slots[next + 1]);
+        let next = (old + 1) % (slots.len() - 1);
+        motion.frame = f32::from(slots[next]);
+        motion.target = f32::from(slots[next + 1]);
         next
     };
     if old != next {
@@ -533,16 +543,29 @@ fn turn_dial(
     true
 }
 
-fn sound_position(world: &World, entity: Entity, definition: &TriggerDefinition) -> Option<Vec3> {
-    definition.place.or_else(|| world.get::<Prop>(entity).map(|prop| prop.centre))
+fn sound_position(
+    world: &World,
+    geometry: &LevelDefinition,
+    entity: Entity,
+    definition: &TriggerDefinition,
+) -> Option<Vec3> {
+    definition.place.or_else(|| {
+        let prop = world.get::<Prop>(entity)?;
+        geometry.props.get(prop.definition).map(PropModel::centre)
+    })
 }
 
-fn play_authored_sound(world: &mut World, entity: Entity, definition: &TriggerDefinition) {
+fn play_authored_sound(
+    world: &mut World,
+    geometry: &LevelDefinition,
+    entity: Entity,
+    definition: &TriggerDefinition,
+) {
     if let Some(sound) = &definition.sound {
         world.write_message(TriggerEffect::Sound {
             path: sound.path.clone(),
             volume: sound.volume,
-            at: sound_position(world, entity, definition),
+            at: sound_position(world, geometry, entity, definition),
         });
     }
 }
@@ -644,12 +667,16 @@ fn execute(
         world.write_message(outcome);
     }
     let changes_state = !matches!(chosen.action, TriggerAction::Dial);
+    // The prop the device moves, as its level authored it.
+    let model = world.get::<Prop>(entity).and_then(|prop| geometry.props.get(prop.definition));
     match &chosen.action {
         TriggerAction::Nothing => {}
         TriggerAction::NoRuntimeAction => return Ran::Declined,
         action @ (TriggerAction::OpenDoor | TriggerAction::ToggleDoor) => {
+            let Some(model) = model else { return Ran::Declined };
             match operate_door(
                 world.entity_mut(entity).into_mutable(),
+                model,
                 *action == TriggerAction::OpenDoor,
             ) {
                 Ok(true) => {}
@@ -661,9 +688,9 @@ fn execute(
             }
         }
         TriggerAction::Animate(animation) => {
-            if world.get::<Prop>(entity).is_none() || world.get::<PropMotion>(entity).is_none() {
+            let Some(model) = model.filter(|_| world.get::<PropMotion>(entity).is_some()) else {
                 return Ran::Declined;
-            }
+            };
             if world.get::<Container>(entity).is_some() {
                 // Without a party there is nobody to use it.
                 match world.run_system_cached_with(use_container, entity) {
@@ -678,10 +705,10 @@ fn execute(
                     }
                 }
             }
-            animate_device(world.entity_mut(entity).into_mutable(), *animation);
+            animate_device(world.entity_mut(entity).into_mutable(), model, *animation);
         }
         TriggerAction::Sound => {
-            play_authored_sound(world, entity, definition);
+            play_authored_sound(world, geometry, entity, definition);
             return Ran::Declined;
         }
         TriggerAction::CameraSway => {
@@ -775,7 +802,7 @@ fn execute(
             }
         }
         TriggerAction::Fountain(fountain) => {
-            let at = sound_position(world, entity, definition);
+            let at = sound_position(world, geometry, entity, definition);
             if !world
                 .run_system_cached_with(drink_fountain, (entity, *fountain, at))
                 .unwrap_or(false)
@@ -796,9 +823,11 @@ fn execute(
             });
         }
         TriggerAction::Dial => {
+            let Some(model) = model else { return Ran::Declined };
             let [actor, mut owner] = world.get_entity_mut([entity, level]).unwrap();
             if !turn_dial(
                 actor,
+                model,
                 owner.get_mut::<LevelState>().unwrap(),
                 definition.state_change.as_ref().map(|(name, _)| name),
             ) {
@@ -808,7 +837,7 @@ fn execute(
         TriggerAction::Unsupported(_) => unreachable!("checked before selection commits"),
     }
     if definition.sound_on_commit {
-        play_authored_sound(world, entity, definition);
+        play_authored_sound(world, geometry, entity, definition);
     }
     if definition.fire_linked {
         execute_links(world, geometry, entity, depth, -1);

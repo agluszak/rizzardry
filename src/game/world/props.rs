@@ -5,34 +5,38 @@ use bevy::prelude::*;
 
 use avian3d::prelude::*;
 
+use super::level::{Level, LevelOwned};
 use super::navigation::links::DoorLink;
-use crate::content::level::{Animation, CollisionMesh, PropModel};
+use crate::content::level::{Animation, CollisionMesh, LevelDefinition, PropModel};
 
-/// A placed prop. Its parts are children carrying [`PropPart`].
+/// A placed prop. Its parts are children carrying [`PropPart`]; what it is
+/// stays in its level's definition, and only its [`PropMotion`] changes.
 #[derive(Component, Debug)]
 pub struct Prop {
     /// Its place among the level's props (`LevelDefinition::props`), which
     /// identifies it within the level.
     pub definition: usize,
-    /// The middle of its parts at rest, where its sounds play.
-    pub centre: Vec3,
-    pub frames_per_second: f32,
-    /// The highest path key of any part.
-    pub last_frame: usize,
-    /// Each play starts from the first frame instead of reversing the last.
-    pub wraps: bool,
-    /// Path keys splitting the animation into segments (a dial).
-    pub slots: Vec<u16>,
 }
 
-/// One rigid part of a placed prop, with its animation poses.
+/// One rigid part of a placed prop.
 #[derive(Component, Debug)]
 pub struct PropPart {
     /// Its place among its prop's parts (`PropModel::parts`).
     pub part: usize,
-    /// Poses along the part's path, starting with the rest pose; empty if
-    /// the part does not move.
-    pub keys: Vec<Transform>,
+}
+
+/// Placed props' authored models, from their levels' definitions.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct PropModels<'w, 's> {
+    levels: Query<'w, 's, &'static Level>,
+    definitions: Res<'w, Assets<LevelDefinition>>,
+}
+
+impl PropModels<'_, '_> {
+    pub fn get(&self, owner: &LevelOwned, prop: &Prop) -> Option<&PropModel> {
+        let level = self.levels.get(owner.0).ok()?;
+        self.definitions.get(&level.definition)?.props.get(prop.definition)
+    }
 }
 
 /// A solid collider of a collision mesh, cleaned up with `extra` flags.
@@ -60,9 +64,6 @@ pub fn build_prop(
     colliders: Vec<Option<Collider>>,
 ) {
     let frame = motion.frame;
-    let last_frame = prop.parts.iter().map(|p| p.keys.len().saturating_sub(1)).max().unwrap_or(0);
-    let centre = prop.parts.iter().map(|part| part.transform.translation).sum::<Vec3>()
-        / prop.parts.len().max(1) as f32;
     let doorway = door
         .then(|| {
             DoorLink::around(prop.parts.iter().flat_map(|part| {
@@ -73,14 +74,7 @@ pub fn build_prop(
         .flatten();
     entity.insert((
         Name::new(prop.name.clone()),
-        Prop {
-            definition: index,
-            centre,
-            frames_per_second: prop.frames_per_second,
-            last_frame,
-            wraps: prop.wraps,
-            slots: prop.slots.clone(),
-        },
+        Prop { definition: index },
         motion,
         Transform::default(),
     ));
@@ -90,8 +84,7 @@ pub fn build_prop(
     entity.with_children(|parts| {
         for ((part_index, part), collider) in prop.parts.iter().enumerate().zip(colliders) {
             let at = if part.keys.is_empty() { part.transform } else { pose(&part.keys, frame) };
-            let mut part_entity =
-                parts.spawn((PropPart { part: part_index, keys: part.keys.clone() }, at));
+            let mut part_entity = parts.spawn((PropPart { part: part_index }, at));
             let Some(collider) = collider else { continue };
             // Parts with a path can move (doors, lifts).
             let body = if part.keys.is_empty() { RigidBody::Static } else { RigidBody::Kinematic };
@@ -115,20 +108,17 @@ pub struct PropMotion {
 }
 
 impl PropMotion {
-    pub fn activate(mut motion: Mut<Self>, prop: &Prop, animation: Animation) {
+    pub fn activate(mut motion: Mut<Self>, prop: &PropModel, animation: Animation) {
         let playing = motion.frame != motion.target;
+        let last = prop.last_frame() as f32;
         match animation {
             Animation::Toggle if playing => motion.target = motion.frame,
             Animation::Toggle | Animation::Start if !playing => {
                 if prop.wraps {
                     motion.frame = 0.0;
-                    motion.target = prop.last_frame as f32;
+                    motion.target = last;
                 } else {
-                    motion.target = if motion.frame >= prop.last_frame as f32 {
-                        0.0
-                    } else {
-                        prop.last_frame as f32
-                    };
+                    motion.target = if motion.frame >= last { 0.0 } else { last };
                 }
             }
             Animation::Stop if playing => motion.target = motion.frame,
@@ -157,14 +147,16 @@ pub fn pose(keys: &[Transform], frame: f32) -> Transform {
 /// their parts (and the parts' colliders) along the authored paths.
 pub fn animate_props(
     time: Res<Time>,
-    mut props: Query<(&Prop, &mut PropMotion, &Children)>,
+    models: PropModels,
+    mut props: Query<(&Prop, &LevelOwned, &mut PropMotion, &Children)>,
     mut parts: Query<(&PropPart, &mut Transform)>,
 ) {
-    for (prop, mut motion, children) in &mut props {
+    for (prop, owner, mut motion, children) in &mut props {
         if motion.frame == motion.target {
             continue;
         }
-        let step = prop.frames_per_second * time.delta_secs();
+        let Some(model) = models.get(owner, prop) else { continue };
+        let step = model.frames_per_second * time.delta_secs();
         motion.frame = if motion.target > motion.frame {
             (motion.frame + step).min(motion.target)
         } else {
@@ -172,9 +164,10 @@ pub fn animate_props(
         };
         for child in children {
             if let Ok((part, mut transform)) = parts.get_mut(*child)
-                && !part.keys.is_empty()
+                && let Some(keys) = model.parts.get(part.part).map(|p| &p.keys)
+                && !keys.is_empty()
             {
-                *transform = pose(&part.keys, motion.frame);
+                *transform = pose(keys, motion.frame);
             }
         }
     }
