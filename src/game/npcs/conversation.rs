@@ -1838,7 +1838,7 @@ pub fn quote_trade(
     source: TradeSource,
     quantity: u32,
 ) -> Result<TradeQuote, TradeError> {
-    if crate::game::world::level::entering(world) {
+    if crate::game::world::party_occupied(world) {
         return Err(TradeError::Busy);
     }
     let c = world.get::<Conversation>(conversation).ok_or(TradeError::StaleSelection)?;
@@ -1890,12 +1890,12 @@ fn sale_item(
     .ok_or(TradeError::StaleSelection)
 }
 fn execute_trade(world: &mut World, quote: TradeQuote) -> Result<(), TradeError> {
-    let in_battle = crate::game::combat::in_battle(world);
+    let occupied = crate::game::world::party_occupied(world);
     let c = world.get::<Conversation>(quote.conversation).ok_or(TradeError::StaleSelection)?;
     if !c.ready() || c.revision != quote.revision {
         return Err(TradeError::StaleSelection);
     }
-    if !available(world, c.actor) || !trade_allowed(world, c.actor) || in_battle {
+    if !available(world, c.actor) || !trade_allowed(world, c.actor) || occupied {
         return Err(TradeError::Unavailable);
     }
     let actor = c.actor;
