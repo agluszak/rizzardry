@@ -1968,6 +1968,16 @@ fn monster_turn(
                 decision = Decision::Plan(plan);
             }
         }
+        // One that can strike nobody, having no attack or, blind, nobody
+        // in reach, withdraws (retail `UpdateMonsterAI`'s
+        // `RETURN_TO_START`); a Monk fights blind.
+        let blind = body.conditions.iter().any(|&(c, _)| c == Condition::Blind)
+            && kind.kind != crate::content::species::MonsterKind::Monk;
+        if matches!(decision, Decision::Fight { .. })
+            && (kind.attacks.is_empty() || (blind && !reaches))
+        {
+            decision = Decision::Move { conduct: conduct::Conduct::Withdraw, quiet: false };
+        }
         // One with someone in reach builds its choices (retail
         // `BuildMonsterActionQueue`): a bodyguard, as clever as it is, may
         // guard a stronger fellow in trouble; a wary one may hold back.
@@ -2076,12 +2086,14 @@ fn monster_turn(
             battle.this_round.monsters[index].1 = Turn::default();
             let Ok((body, at, walker, _)) = damage.monsters().get(monster) else { return false };
             let Some(kind) = species.kind(body.species) else { return false };
-            // A monster that cannot walk, or has moved this round, stays.
-            let moves = conduct != conduct::Conduct::Hold
-                && walker.is_some_and(|w| w.speed > 0.0)
-                && !battle.this_round.moved.contains(&monster);
-            if !moves {
+            if conduct == conduct::Conduct::Hold {
                 return false;
+            }
+            // A monster that cannot walk, or has moved this round, waits
+            // instead (retail falls back on `WAIT` when the move fails).
+            if !walker.is_some_and(|w| w.speed > 0.0) || battle.this_round.moved.contains(&monster)
+            {
+                return true;
             }
             battle.this_round.moved.push(monster);
             let metres = approach::move_metres(body, kind, false);
