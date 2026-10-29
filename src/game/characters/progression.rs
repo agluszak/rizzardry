@@ -68,7 +68,9 @@ pub(super) fn experience_increment(profession: Profession, level: u8) -> u32 {
     value
 }
 pub fn ready(c: &Character, v: &Vitals) -> bool {
-    !v.is_dead() && c.level < u8::MAX && c.experience >= c.experience_goal()
+    // Retail offers a level past 50 and then clamps it away; it is not
+    // offered here.
+    !v.is_dead() && c.level() < super::MAX_LEVEL && c.experience >= c.experience_goal()
 }
 
 #[derive(Clone, Debug)]
@@ -130,7 +132,6 @@ impl Advancement {
     fn baseline(&self) -> Character {
         let mut c = self.original.clone();
         c.experience_previous_goal = c.experience_goal();
-        c.level += 1;
         c.profession = self.profession;
         c.profession_levels[self.profession] += 1;
         for (a, &minimum) in &profession_row(self.profession).minimums {
@@ -496,6 +497,24 @@ mod tests {
             draft.adjust_skill(s, true, spells);
         }
     }
+    /// Advancement stops at level 50, however the levels are split, so no
+    /// profession can pass it.
+    #[test]
+    fn advancement_stops_at_the_highest_level() {
+        let mut c = character(Profession::Fighter);
+        c.profession_levels[Profession::Fighter] = 48;
+        c.profession_levels[Profession::Mage] = 1;
+        c.experience = c.experience_goal();
+        let v = Vitals::new(&c);
+        assert!(ready(&c, &v));
+        let draft = Advancement::new(Entity::PLACEHOLDER, &c, &default());
+        let next = draft.baseline();
+        assert_eq!(next.level(), super::super::MAX_LEVEL);
+        let mut next = next;
+        next.experience = u32::MAX;
+        assert!(!ready(&next, &v), "no level past 50");
+    }
+
     fn character(profession: Profession) -> Character {
         let mut c = Character::new("Tester", Race::Human, Gender::Female, profession);
         c.experience = c.experience_goal();
@@ -537,7 +556,7 @@ mod tests {
         let (next, _) = draft.finish(&default()).unwrap();
         assert_eq!(
             (
-                next.level,
+                next.level(),
                 next.profession_levels[Profession::Fighter],
                 next.profession_levels[Profession::Mage]
             ),
@@ -549,7 +568,7 @@ mod tests {
         assert_eq!(next.experience_goal(), 2200);
         assert_eq!(next.skill_practice[Skill::Sword], 7);
         assert_eq!(next.spell_picks.total(), 1);
-        assert_eq!(original.level, 1, "editing/cancel never changes the source");
+        assert_eq!(original.level(), 1, "editing/cancel never changes the source");
     }
     #[test]
     fn profession_minimums_use_the_same_six_points_and_three_point_limit() {
@@ -570,7 +589,6 @@ mod tests {
     #[test]
     fn hybrid_unlock_and_saved_school_picks_follow_profession_history() {
         let mut c = character(Profession::Samurai);
-        c.level = 4;
         c.profession_levels[Profession::Samurai] = 4;
         let draft = Advancement::new(Entity::PLACEHOLDER, &c, &default());
         assert_eq!(draft.preview().skill_points[Skill::Wizardry], 5);
@@ -592,7 +610,6 @@ mod tests {
     #[test]
     fn portal_pair_costs_one_pick_and_draft_skill_points_cannot_unlock_spells() {
         let mut c = character(Profession::Mage);
-        c.level = 10;
         c.attributes = EnumMap::from_fn(|_| 80);
         c.profession_levels[Profession::Mage] = 10;
         c.skill_points[Skill::Wizardry] = 60;
@@ -738,7 +755,7 @@ mod tests {
             ))
             .id();
         assert!(accept(&mut w, &draft).is_err());
-        assert_eq!(w.get::<Character>(member).unwrap().level, 1);
+        assert_eq!(w.get::<Character>(member).unwrap().level(), 1);
         w.despawn(entering);
         accept(&mut w, &draft).unwrap();
         let c = w.get::<Character>(member).unwrap();
@@ -791,7 +808,7 @@ mod tests {
         assert_eq!(*w.get::<Carried>(member).unwrap(), before);
         assert_eq!(w.get::<PartyInventory>(party).unwrap().pool, pool);
         assert_eq!(*w.get::<Vitals>(member).unwrap(), vitals);
-        assert_eq!(w.get::<Character>(member).unwrap().level, 1);
+        assert_eq!(w.get::<Character>(member).unwrap().level(), 1);
         w.get_mut::<Carried>(member).unwrap().backpack[0] = None;
         accept(&mut w, &draft).unwrap();
         let carried = w.get::<Carried>(member).unwrap();

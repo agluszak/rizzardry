@@ -87,7 +87,7 @@ pub(crate) fn use_container(
         // gameplay generator, so contents depend on when the chest is first
         // opened.
         let party_level = crate::game::party::average_level(
-            profiles.iter_many(roster.iter()).matched().map(|c| c.level),
+            profiles.iter_many(roster.iter()).matched().map(|c| c.level()),
         );
         let (found, gold) = roll_loot(&loot.0[table], catalog, party_level, &mut rng);
         let contents = &mut container.contents;

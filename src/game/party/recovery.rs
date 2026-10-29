@@ -137,7 +137,7 @@ mod tests {
     #[test]
     fn fighter_rest_uses_current_profession_level_and_stops_scaling_at_twenty() {
         let mut profile = Character::new("Fighter", Race::Human, Gender::Male, Profession::Fighter);
-        profile.level = 40;
+        profile.profession_levels[Profession::Mage] = 39;
         assert_eq!(
             combat_rest_amount(&profile, 10),
             20,

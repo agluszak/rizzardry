@@ -332,7 +332,7 @@ pub fn populate(
     root: Entity,
     geometry: &LevelDefinition,
     remembered: Option<LevelRecord>,
-    (species, items): (&MonsterCatalog, &ItemCatalog),
+    (species, items, tables): (&MonsterCatalog, &ItemCatalog, &crate::content::items::LootTables),
     (map, npcs): (&str, &mut crate::game::npcs::NpcPopulation),
     (handles, bodies): (&MonsterBodies, &Assets<MonsterBody>),
     (navigation, configs): (&LevelNavigation, &mut Assets<WalkerMotionConfig>),
@@ -394,7 +394,7 @@ pub fn populate(
         let Some(kind) = species.kind(placed.species) else { continue };
         let Some(id) = kind.npc else { continue };
         let body = bodies.get(&handles.0[&placed.species]).unwrap();
-        let place = crate::game::npcs::Placing { placed, id, map, average };
+        let place = crate::game::npcs::Placing { placed, tables, id, map, average };
         let Some(actor) = npcs.place(commands, place, items, &mut placed_actors, rng, |rng| {
             KeptMonster::placed(placed, kind, body, rng)
         }) else {
@@ -403,6 +403,7 @@ pub fn populate(
         commands.entity(actor.0).insert(Name::new(format!("{} #{}", kind.name, placed.location)));
         actors.push(actor);
     }
+    actors.extend(npcs.visitors(commands, map, &mut placed_actors));
     let monster_count = actors.len();
     for (actor, feet, yaw, body, group) in actors {
         let group = group.map(|authored| {

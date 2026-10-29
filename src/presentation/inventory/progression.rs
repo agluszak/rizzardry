@@ -388,7 +388,7 @@ fn refresh(
             Caption::Header => format!(
                 "{} - level {} {} (profession level {})",
                 c.name,
-                c.level,
+                c.level(),
                 name(
                     crate::content::ui::PROFESSION_NAMES + c.profession as usize,
                     format!("{:?}", c.profession)
@@ -580,7 +580,7 @@ mod tests {
         let mut c = Character::new("A", Race::Human, Gender::Female, Profession::Fighter);
         let mut next = c.clone();
         next.experience_previous_goal = c.experience_goal();
-        next.level += 1;
+        next.profession_levels[next.profession] += 1;
         c.experience = next.experience_goal();
         let (mut app, members, _, open) = review(&[c.clone()]);
         let a = members[0];
@@ -611,13 +611,13 @@ mod tests {
             app.update();
         };
         level_up(&mut app);
-        assert_eq!(app.world().get::<Character>(a).unwrap().level, c.level + 1);
+        assert_eq!(app.world().get::<Character>(a).unwrap().level(), c.level() + 1);
         let editor =
             app.world_mut().query::<&Editor>().single(app.world()).expect("a second level waits");
-        assert_eq!(editor.draft.preview().level, c.level + 2);
+        assert_eq!(editor.draft.preview().level(), c.level() + 2);
         assert!(editor.message.is_empty());
         level_up(&mut app);
-        assert_eq!(app.world().get::<Character>(a).unwrap().level, c.level + 2);
+        assert_eq!(app.world().get::<Character>(a).unwrap().level(), c.level() + 2);
         assert!(app.world_mut().query::<&Editor>().iter(app.world()).next().is_none());
     }
 }

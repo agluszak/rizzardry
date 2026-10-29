@@ -195,7 +195,7 @@ pub struct TalkTo(pub String);
 
 pub fn talk_to_npc(world: &mut World) {
     use crate::content::npcs::NpcCatalog;
-    use crate::game::npcs::{Npc, NpcAssets, NpcBodies, conversation};
+    use crate::game::npcs::{NpcAssets, NpcBodies, conversation};
     let Some(request) = world.get_resource::<TalkTo>() else { return };
     let name = request.0.clone();
     if world.query::<&Level>().iter(world).next().is_none() {
@@ -211,10 +211,10 @@ pub fn talk_to_npc(world: &mut World) {
         return;
     };
     let actor = world
-        .query::<(Entity, &Npc, &NpcBodies)>()
+        .query::<(Entity, &crate::game::npcs::ActorId, &NpcBodies)>()
         .iter(world)
-        .find(|(_, npc, bodies)| {
-            npc.definition.0 as usize == definition
+        .find(|(_, identity, bodies)| {
+            usize::from(identity.npc().0) == definition
                 && bodies
                     .iter()
                     .any(|body| world.get::<crate::game::world::level::LevelOwned>(body).is_some())

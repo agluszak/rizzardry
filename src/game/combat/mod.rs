@@ -4718,7 +4718,8 @@ mod tests {
             {
                 let mut character = app.world_mut().get_mut::<Character>(member).unwrap();
                 character.attributes[Attribute::Piety] = 100;
-                character.level = 30;
+                let profession = character.profession;
+                character.profession_levels[profession] = 30;
                 character.skill_practice[Skill::IronWill] = 7;
             }
             app.insert_resource(GameRng::seeded(seed));

@@ -55,7 +55,9 @@ pub fn read_npcs(data: &[u8]) -> Result<NpcCatalog, LoadError> {
             monster_bound: r[0x54] != 0,
             owns_stock: r[0x55] != 0,
             merchant: r[0x56] != 0,
-            recruitable: r[0x57] != 0,
+            character: if r[0x57] != 0 { Some(npc_character(r)?) } else { None },
+            services: u32_at(r, 0x68)?,
+            min_party_level: r[0x6f],
             disposition: r[0x5c],
             charm_scale: r[0x5d] as i8,
             talk_scale: r[0x5e] as i8,
@@ -67,12 +69,68 @@ pub fn read_npcs(data: &[u8]) -> Result<NpcCatalog, LoadError> {
             accepted_classes: enumset::EnumSet::from_repr_truncated(u32_at(r, 0x2d6)?),
             voice_script: r[0x2ea] != 0,
             stock,
+            // One-based; zero carries nothing.
+            item_table: u16::try_from(i32_at(r, 0x64)?).ok().and_then(|id| id.checked_sub(1)),
+            gold: u32::try_from(i32_at(r, 0x2eb)?).unwrap_or(0),
         });
     }
     if b.remaining() != 0 {
         return Err(invalid("trailing NPC bytes"));
     }
     Ok(NpcCatalog(out))
+}
+/// The record's character block (retail `W8NpcCharacterTemplate`, at
+/// 0xc4), which `InitializeNpcCharacter` expands when the NPC joins.
+fn npc_character(r: &[u8]) -> Result<NpcCharacter, LoadError> {
+    use crate::content::characters::{Attribute, Gender, Profession, Race, Skill};
+    use enum_map::Enum;
+    fn index<T: Enum>(value: i32, count: usize, what: &str) -> Result<T, LoadError> {
+        usize::try_from(value)
+            .ok()
+            .filter(|&i| i < count)
+            .map(T::from_usize)
+            .ok_or_else(|| invalid(what))
+    }
+    let byte = |value: i32| u8::try_from(value.clamp(0, 255)).unwrap_or(0);
+    let item = |present: u16, id: u16| (present != 0 && id != 0xffff).then_some(ItemId(id));
+    let mut equipment = [None; 12];
+    for (slot, worn) in equipment.iter_mut().enumerate() {
+        *worn = item(u16_at(r, 0x26a + 2 * slot)?, u16_at(r, 0x282 + 2 * slot)?);
+    }
+    let mut backpack = [None; 8];
+    for (slot, carried) in backpack.iter_mut().enumerate() {
+        *carried = item(u16_at(r, 0x29a + 2 * slot)?, u16_at(r, 0x2aa + 2 * slot)?);
+    }
+    let mut wanted = Vec::new();
+    for slot in 0..3 {
+        // One-based; zero wants nothing.
+        let id = u16_at(r, 0x2bb + 2 * slot)?;
+        if let Some(id) = id.checked_sub(1).filter(|&id| id < 0x7fff) {
+            wanted.push(ItemId(id));
+        }
+    }
+    Ok(NpcCharacter {
+        name: wide(&r[0xc4..0xd8])?,
+        profession: index::<Profession>(i32_at(r, 0x128)?, 15, "NPC profession")?,
+        race: index::<Race>(i32_at(r, 0x12c)?, 16, "NPC race")?,
+        gender: index::<Gender>(i32::from(r[0x2ba] as i8), 2, "NPC gender")?,
+        portrait: usize::try_from(i32_at(r, 0x130)?).map_err(|_| invalid("NPC portrait"))?,
+        level: byte(i32_at(r, 0x134)?).max(1),
+        attributes: enum_map::EnumMap::from_fn(|a: Attribute| {
+            byte(i32_at(r, 0x138 + 4 * a.into_usize()).unwrap_or(0))
+        }),
+        skills: enum_map::EnumMap::from_fn(|s: Skill| {
+            byte(i32_at(r, 0x154 + 4 * s.into_usize()).unwrap_or(0))
+        }),
+        // One flag per spell, the first for spell 1.
+        spells: (0..0x72u8)
+            .filter(|&i| r[0x1f8 + usize::from(i)] != 0)
+            .map(|i| crate::content::spells::SpellId(i + 1))
+            .collect(),
+        equipment,
+        backpack,
+        wanted,
+    })
 }
 fn narrow(b: &mut Bytes) -> Result<String, LoadError> {
     let n = b.u16()? as usize;

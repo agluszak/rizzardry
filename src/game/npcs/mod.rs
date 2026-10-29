@@ -1,5 +1,6 @@
 //! Campaign-lived NPCs retain their world-role state while their level is dormant.
 pub mod conversation;
+pub mod recruit;
 pub mod trade;
 use crate::content::{npcs::*, species::MonsterCatalog};
 use crate::game::{
@@ -21,6 +22,12 @@ pub enum ActorId {
     Placed { npc: NpcId, map: String, location: i32 },
 }
 impl ActorId {
+    /// The NPC this is.
+    pub fn npc(&self) -> NpcId {
+        match *self {
+            Self::Named(npc) | Self::Placed { npc, .. } => npc,
+        }
+    }
     pub fn for_placement(id: NpcId, def: &NpcDefinition, map: &str, location: i32) -> Self {
         if def.monster_bound {
             Self::Placed { npc: id, map: map.into(), location }
@@ -47,7 +54,6 @@ pub struct NpcWorldRole {
 }
 #[derive(Component, Debug, Default)]
 pub struct Npc {
-    pub definition: NpcId,
     pub disposition: u8,
     pub greeting_pending: bool,
     pub paid_topics: Vec<u16>,
@@ -60,6 +66,51 @@ pub struct Npc {
     /// waits half a day before the party may try again.
     pub charmed_at: Option<u64>,
     pub small_talk_at: Option<u64>,
+    pub possessions: Possessions,
+    /// Killed (retail `W8NpcState::spawned`): the NPC never comes back to
+    /// the world, and story facts read its death from here.
+    pub dead: bool,
+}
+
+/// What an NPC carries on its person, apart from any stock it trades
+/// (retail `InitializeNpcItemTable`): its item table's entries with their
+/// weights, how many of the weighted ones it gives up, and its purse.
+#[derive(Clone, Debug, Default)]
+pub struct Possessions {
+    pub items: Vec<(crate::content::items::ItemId, u8)>,
+    pub count: crate::content::items::Dice,
+    pub gold: u32,
+}
+
+impl Possessions {
+    pub fn of(definition: &NpcDefinition, tables: &crate::content::items::LootTables) -> Self {
+        let table = definition.item_table.and_then(|id| tables.0.get(usize::from(id)));
+        Self {
+            items: table.map_or_else(Vec::new, |table| table.entries.clone()),
+            count: table.map_or_else(default, |table| table.item_count),
+            gold: definition.gold,
+        }
+    }
+
+    /// Everything the NPC leaves when it dies (retail `DropMonsterLoot`'s
+    /// NPC branch): every item of weight 0, then as many weighted draws as
+    /// its count rolls, and its purse. It keeps nothing.
+    pub fn give_up(
+        &mut self,
+        catalog: &crate::content::items::ItemCatalog,
+        rng: &mut crate::game::rng::GameRng,
+    ) -> (Vec<crate::content::items::ItemId>, u32) {
+        let table = crate::content::items::LootTable {
+            name: String::new(),
+            entries: std::mem::take(&mut self.items),
+            level_scaled: false,
+            item_count: self.count,
+            gold: default(),
+        };
+        let wanted = rng.roll(self.count);
+        let items = crate::game::loot::table_items(&table, catalog, 0, wanted, rng);
+        (items, std::mem::take(&mut self.gold))
+    }
 }
 #[derive(Resource, Default)]
 pub struct NpcAssets {
@@ -102,10 +153,17 @@ pub struct NpcPopulation<'w, 's> {
     pub clock: Res<'w, crate::game::time::GameClock>,
     roster: Query<'w, 's, &'static PartyRoster>,
     profiles: Query<'w, 's, &'static Character>,
+    /// NPCs travelling with the party, whose world roles wait.
+    members: Query<'w, 's, (), With<crate::game::party::roster::PartyMember>>,
+    /// Whether each NPC has died, which outranks whatever its dormant body
+    /// last recorded.
+    states: Query<'w, 's, &'static Npc>,
 }
 /// An NPC's placement as a level's population meets it.
 pub struct Placing<'a> {
     pub placed: &'a crate::content::level::MonsterPlacement,
+    /// The item tables an NPC's possessions come from.
+    pub tables: &'a crate::content::items::LootTables,
     pub id: NpcId,
     /// The level's map, which identifies the placement.
     pub map: &'a str,
@@ -118,7 +176,7 @@ impl NpcPopulation<'_, '_> {
     pub fn place(
         &mut self,
         commands: &mut Commands,
-        Placing { placed, id, map, average }: Placing,
+        Placing { placed, tables, id, map, average }: Placing,
         items: &crate::content::items::ItemCatalog,
         placed_actors: &mut std::collections::HashSet<ActorId>,
         rng: &mut crate::game::rng::GameRng,
@@ -133,7 +191,12 @@ impl NpcPopulation<'_, '_> {
         if !placed_actors.insert(key.clone()) {
             return None;
         }
-        if let Some((_, _, bodies)) = self.npcs.iter().find(|(_, identity, _)| **identity == key) {
+        if let Some((actor, _, bodies)) =
+            self.npcs.iter().find(|(_, identity, _)| **identity == key)
+        {
+            if !self.may_stand(actor) {
+                return None;
+            }
             let entity = *bodies.first()?;
             let (_, role, monster, pose, walker, ..) = self.roles.get(entity).ok()?;
             if role.map != map || monster.is_dead() {
@@ -158,7 +221,6 @@ impl NpcPopulation<'_, '_> {
             .spawn((
                 key,
                 Npc {
-                    definition: id,
                     disposition: definition.disposition,
                     greeting_pending: true,
                     mindread_refusals: 0,
@@ -167,6 +229,8 @@ impl NpcPopulation<'_, '_> {
                     trade_pool: definition.trade_pool,
                     charmed_at: None,
                     small_talk_at: None,
+                    possessions: Possessions::of(definition, tables),
+                    dead: false,
                 },
             ))
             .id();
@@ -185,7 +249,7 @@ impl NpcPopulation<'_, '_> {
     pub fn average_level(&self) -> u32 {
         self.roster.single().map_or(1, |roster| {
             crate::game::party::average_level(
-                self.profiles.iter_many(roster.iter()).matched().map(|c| c.level),
+                self.profiles.iter_many(roster.iter()).matched().map(|c| c.level()),
             )
         })
     }
@@ -236,8 +300,42 @@ impl NpcPopulation<'_, '_> {
         }
         Ok(ready)
     }
+    /// Whether the NPC's world role may stand in a level: not while it
+    /// travels with the party, and never once it has died, wherever.
+    fn may_stand(&self, actor: Entity) -> bool {
+        !self.members.contains(actor) && self.states.get(actor).is_ok_and(|npc| !npc.dead)
+    }
+    /// NPCs whose world roles stand on `map` without being placed there,
+    /// such as one that left the party on it, as the level meets them again.
+    pub fn visitors(
+        &mut self,
+        commands: &mut Commands,
+        map: &str,
+        placed_actors: &mut std::collections::HashSet<ActorId>,
+    ) -> Vec<(Entity, Vec3, f32, crate::game::world::population::ScaledBody, Option<i32>)> {
+        let mut visitors = Vec::new();
+        for (actor, key, bodies) in &self.npcs {
+            if !self.may_stand(actor) || placed_actors.contains(key) {
+                continue;
+            }
+            let Some(&entity) = bodies.first() else { continue };
+            let Ok((_, role, monster, pose, walker, ..)) = self.roles.get(entity) else { continue };
+            if role.map != map || monster.is_dead() {
+                continue;
+            }
+            placed_actors.insert(key.clone());
+            commands.entity(entity).remove::<Disabled>();
+            visitors.push((
+                entity,
+                crate::game::world::navigation::feet(pose.translation(), walker),
+                pose.rotation().to_euler(EulerRot::YXZ).0,
+                monster.body,
+                role.group,
+            ));
+        }
+        visitors
+    }
     pub fn depart(&mut self, commands: &mut Commands, root: Entity) {
-        use avian3d::prelude::{Collider, RigidBody};
         for (entity, mut role, _, pose, walker, parent, group) in &mut self.roles {
             if !parent.is_some_and(|parent| parent.0 == root) {
                 continue;
@@ -248,18 +346,25 @@ impl NpcPopulation<'_, '_> {
                 walker,
             ))
             .with_rotation(pose.rotation());
-            commands
-                .entity(entity)
-                .remove::<crate::game::world::level::LevelOwned>()
-                .remove::<crate::game::world::identify::GroupMember>()
-                .remove_with_requires::<(Collider, RigidBody)>()
-                .remove_with_requires::<bevy_landmass::prelude::Agent3dBundle>()
-                .remove_with_requires::<crate::game::world::navigation::links::Crossing>()
-                .remove::<(Walker, bevy_landmass::prelude::ReachedAnimationLink3d)>()
-                .despawn_related::<Children>()
-                .insert((at, Disabled));
+            retire(commands, entity, at);
         }
     }
+}
+/// End an NPC body's embodiment, leaving it standing dormant at `at`: it
+/// keeps its monster state but leaves its level, its group, physics and
+/// navigation.
+fn retire(commands: &mut Commands, entity: Entity, at: Transform) {
+    use avian3d::prelude::{Collider, RigidBody};
+    commands
+        .entity(entity)
+        .remove::<crate::game::world::level::LevelOwned>()
+        .remove::<crate::game::world::identify::GroupMember>()
+        .remove_with_requires::<(Collider, RigidBody)>()
+        .remove_with_requires::<bevy_landmass::prelude::Agent3dBundle>()
+        .remove_with_requires::<crate::game::world::navigation::links::Crossing>()
+        .remove::<(Walker, bevy_landmass::prelude::ReachedAnimationLink3d)>()
+        .despawn_related::<Children>()
+        .insert((at, Disabled));
 }
 pub struct NpcPlugin;
 impl Plugin for NpcPlugin {
@@ -284,7 +389,11 @@ impl Plugin for NpcPlugin {
             )
             .add_systems(
                 Update,
-                conversation::update_conversation.after(crate::game::GameplaySet::Combat),
+                (
+                    conversation::update_conversation,
+                    recruit::settle_npc_members.run_if(crate::game::world::level::level_active),
+                )
+                    .after(crate::game::GameplaySet::Combat),
             );
     }
 }

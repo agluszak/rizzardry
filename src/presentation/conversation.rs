@@ -606,6 +606,21 @@ fn build(world: &mut World, session: Entity) -> Entity {
                         }
                     });
                 }
+                (false, 3) => {
+                    world.entity_mut(e).observe(
+                        move |_: On<Activate>,
+                              roots: Query<&ConversationView>,
+                              conversations: Query<&Conversation>,
+                              mut requests: MessageWriter<ConversationRequest>| {
+                            let Ok(view) = roots.get(root) else { return };
+                            let Ok(conversation) = conversations.get(view.0) else { return };
+                            requests.write(ConversationRequest::Recruit {
+                                conversation: view.0,
+                                revision: conversation.revision,
+                            });
+                        },
+                    );
+                }
                 (false, 5) => leave_on(world, e, root),
                 (true, 4..=5) => {
                     let pool = i == 4;
@@ -1191,7 +1206,7 @@ fn project_text(
     views: ViewScope,
     sessions: Query<&Conversation>,
     speech: Query<&ConversationSpeech>,
-    npcs: Query<&Npc>,
+    npcs: Query<&crate::game::npcs::ActorId>,
     definitions: Res<Assets<NpcCatalog>>,
     assets: Res<NpcAssets>,
     parties: Query<&PartyInventory, With<crate::game::party::roster::Party>>,
@@ -1205,7 +1220,7 @@ fn project_text(
                 Mode::Talk => npcs
                     .get(c.actor)
                     .ok()
-                    .and_then(|n| definitions.get(&assets.catalog)?.get(n.definition))
+                    .and_then(|n| definitions.get(&assets.catalog)?.get(n.npc()))
                     .map_or("NPC", |d| d.source_name.as_str())
                     .to_owned(),
                 Mode::Buy => "Buy".into(),
@@ -1372,7 +1387,7 @@ fn project_modes(
     views: ViewScope,
     mut commands: Commands,
     sessions: Query<&Conversation>,
-    npcs: Query<&Npc>,
+    npcs: Query<&crate::game::npcs::ActorId>,
     definitions: Res<Assets<NpcCatalog>>,
     assets: Res<NpcAssets>,
     clock: Res<crate::game::time::GameClock>,
@@ -1446,7 +1461,7 @@ fn project_modes(
             let can_trade = npcs
                 .get(c.actor)
                 .ok()
-                .and_then(|n| definitions.get(&assets.catalog)?.get(n.definition))
+                .and_then(|n| definitions.get(&assets.catalog)?.get(n.npc()))
                 .is_some_and(|d| d.owns_stock);
             set_enabled(&mut commands, entity, can_trade, disabled);
         } else if pool.is_some() {

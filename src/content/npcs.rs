@@ -15,7 +15,9 @@ pub struct NpcDefinition {
     pub monster_bound: bool,
     pub owns_stock: bool,
     pub merchant: bool,
-    pub recruitable: bool,
+    /// The character the NPC brings when it joins the party; only NPCs
+    /// with one can join (retail `has_group`).
+    pub character: Option<NpcCharacter>,
     pub disposition: u8,
     /// How much charming it and making small talk move its disposition.
     pub charm_scale: i8,
@@ -25,12 +27,42 @@ pub struct NpcDefinition {
     pub trade_pool: u16,
     /// Retail's NPC kind; one kind takes no bribes in kind.
     pub kind: i32,
+    /// One bit per region whose service the NPC offers; it will not leave
+    /// that region's post to join.
+    pub services: u32,
+    /// The average party level before the NPC will join; 0 for any.
+    pub min_party_level: u8,
     pub buy_factor: f32,
     pub sell_factor: f32,
     pub accepted_classes: enumset::EnumSet<super::items::EquipClass>,
     pub voice_script: bool,
     pub stock: Vec<StockRule>,
+    /// The loot table whose entries the NPC carries, if any.
+    pub item_table: Option<u16>,
+    /// The purse the party gets when the NPC dies.
+    pub gold: u32,
 }
+/// The character a recruitable NPC brings to the party (retail
+/// `W8NpcCharacterTemplate`).
+#[derive(Clone, Debug)]
+pub struct NpcCharacter {
+    pub name: String,
+    pub profession: super::characters::Profession,
+    pub race: super::characters::Race,
+    pub gender: super::characters::Gender,
+    /// Index into the portrait table.
+    pub portrait: usize,
+    pub level: u8,
+    pub attributes: enum_map::EnumMap<super::characters::Attribute, u8>,
+    pub skills: enum_map::EnumMap<super::characters::Skill, u8>,
+    pub spells: Vec<super::spells::SpellId>,
+    /// What it wears, in retail's slot order.
+    pub equipment: [Option<ItemId>; 12],
+    pub backpack: [Option<ItemId>; 8],
+    /// Items it keeps when it leaves the party.
+    pub wanted: Vec<ItemId>,
+}
+
 impl NpcDefinition {
     pub fn script_path(&self) -> String {
         format!(

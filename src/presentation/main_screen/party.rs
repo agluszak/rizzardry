@@ -851,16 +851,7 @@ mod tests {
         let project = |slots: PortraitSlots| (0..8).map(|i| slots.member(i)).collect::<Vec<_>>();
         let expected = [vec![None, None], pcs.iter().copied().map(Some).collect()].concat();
         assert_eq!(world.run_system_once(project).unwrap(), expected);
-        let rpc = world
-            .spawn(crate::game::npcs::Npc {
-                definition: crate::content::npcs::NpcId(0),
-                disposition: 80,
-                greeting_pending: false,
-                mindread_refusals: 0,
-                paid_topics: vec![],
-                ..default()
-            })
-            .id();
+        let rpc = world.spawn(crate::game::npcs::Npc::default()).id();
         crate::game::party::roster::test_join(&mut world, rpc);
         let projected = world.run_system_once(project).unwrap();
         assert_eq!(projected[0], Some(rpc));
