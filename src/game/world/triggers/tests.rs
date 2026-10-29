@@ -986,6 +986,35 @@ fn same_named_props_keep_their_own_device_state_and_animation() {
         assert!(level.world.get::<DoorState>(device).unwrap().open);
     }
 }
+/// A level whose trigger, by any of its uses, would fly a camera path
+/// without keys is refused before it is entered; paths with keys pass.
+#[test]
+fn camera_paths_without_keys_refuse_the_level() {
+    use crate::content::level::CameraPathModel;
+    let paths = [0, 1, 3].map(|keys| CameraPathModel {
+        name: format!("PATH{keys}"),
+        keys: (0..keys).map(|x| Transform::from_xyz(x as f32, 0.0, 0.0)).collect(),
+        keys_per_second: 1.0,
+    });
+    let level = |trigger: TriggerDefinition| LevelDefinition {
+        triggers: vec![trigger],
+        camera_paths: paths.clone().into(),
+        ..default()
+    };
+    for path in [1, 2] {
+        assert!(check(&level(trigger("FLY", TriggerAction::CameraPath(path)))).is_ok());
+    }
+    assert!(check(&level(trigger("EMPTY", TriggerAction::CameraPath(0)))).is_err());
+    assert!(check(&level(trigger("MISSING", TriggerAction::CameraPath(3)))).is_err());
+    let unnamed = TriggerAction::MissingCameraPath("NOWHERE".into());
+    let why = check(&level(trigger("UNNAMED", unnamed))).unwrap_err();
+    assert!(why.contains("UNNAMED") && why.contains("NOWHERE"), "{why}");
+    // An empty path behind the first use is refused too.
+    let mut alternate = trigger("LATER", TriggerAction::CameraPath(1));
+    alternate.alternate = Some(act(TriggerAction::CameraPath(0)));
+    assert!(check(&level(alternate)).is_err());
+}
+
 #[test]
 fn a_pending_move_cannot_be_applied_to_a_later_visit() {
     let arrival = Arrival::Here { eye: Vec3::X, yaw: 0.0 };

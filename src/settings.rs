@@ -146,7 +146,12 @@ mod tests {
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("settings.ron");
         let saved = SavedSettings {
-            preferences: Preferences { volume: 30, invert_mouse_y: true, fullscreen: false, ..default() },
+            preferences: Preferences {
+                volume: 30,
+                invert_mouse_y: true,
+                fullscreen: false,
+                ..default()
+            },
             difficulty: Difficulty::Expert,
             continuous: true,
         };
