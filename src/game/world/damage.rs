@@ -64,7 +64,6 @@ pub struct MonsterDamage<'w, 's> {
     ids: ResMut<'w, ItemIds>,
     factions: ResMut<'w, crate::game::factions::Factions>,
     faction_news: MessageWriter<'w, crate::game::factions::FactionNews>,
-    clock: Res<'w, crate::game::time::GameClock>,
 }
 
 impl<'w, 's> MonsterDamage<'w, 's> {
@@ -190,9 +189,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         }
         self.commands.entity(target).remove_with_requires::<Crossing>();
         // The kill counts against its faction (retail `RecordFactionOffense`).
-        if let Some(news) =
-            self.factions.record_offence(kind.faction, kind.npc.is_some(), self.clock.ms)
-        {
+        if let Some(news) = self.factions.record_offence(kind.faction, kind.npc.is_some()) {
             self.faction_news.write(news);
         }
         let (found, gold) =

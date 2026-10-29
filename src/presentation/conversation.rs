@@ -2326,6 +2326,7 @@ mod tests {
             .init_asset::<SpriteSheet>()
             .init_resource::<Assets<Image>>()
             .init_resource::<StoryFacts>()
+            .init_resource::<crate::game::time::GameClock>()
             .init_resource::<Assets<NpcCatalog>>()
             .init_resource::<Assets<TextTable>>()
             .init_resource::<Assets<ItemCatalog>>()
