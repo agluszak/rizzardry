@@ -171,9 +171,9 @@ pub(super) fn play_device_remarks(
             continue;
         }
         let vitals = vitals.unwrap();
-        let event = if vitals.has(Condition::Silenced) {
+        let event = if vitals.conditions.has(Condition::Silenced) {
             510
-        } else if vitals.has(Condition::Insane) {
+        } else if vitals.conditions.has(Condition::Insane) {
             500
         } else {
             remark.requested

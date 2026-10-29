@@ -11,7 +11,7 @@ use super::{Npc, NpcBodies, NpcWorldRole};
 use crate::content::items::ItemCatalog;
 use crate::content::npcs::{NpcCharacter, NpcDefinition, NpcId};
 use crate::content::spells::SpellCatalog;
-use crate::game::characters::{Character, Condition, Lasting, Vitals};
+use crate::game::characters::{Character, Vitals};
 use crate::game::data::GameData;
 use crate::game::inventory::{Carried, EquipSlot, Equipped, ItemIds, ItemStack, PartyInventory};
 use crate::game::magic::{LearnedSpells, SpellPoints};
@@ -389,7 +389,7 @@ fn stand_beside_party(world: &mut World, actor: Entity, body: Entity, party: Ent
         monster.max_stamina = max_stamina;
         monster.stamina = max_stamina;
         // An NPC out cold stays as spent as it was.
-        if conditions.contains(&(Condition::Unconscious, Lasting::Indefinite)) {
+        if conditions.exhausted() {
             monster.stamina = stamina.min(stamina_max);
         }
         monster.conditions = conditions;

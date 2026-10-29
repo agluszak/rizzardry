@@ -762,7 +762,10 @@ mod tests {
         let v = w.get::<Vitals>(member).unwrap();
         assert_eq!(v.hp, c.max_hp() - 2);
         assert_eq!(v.stamina, c.max_stamina() - 5);
-        assert_eq!(v.conditions, [(Condition::Poisoned, Lasting::Rounds(10))]);
+        assert_eq!(
+            v.conditions,
+            crate::game::characters::Conditions::from([(Condition::Poisoned, Lasting::Rounds(10))])
+        );
         assert_eq!(c.experience, original.experience);
         // Ready to advance again, a draft opened before the last acceptance
         // is refused only because it is stale.

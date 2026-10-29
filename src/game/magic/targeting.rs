@@ -45,7 +45,7 @@ pub(crate) fn radius(
                         !v.is_dead()
                             && recipients.admits(crate::game::world::hostility::own_stance(
                                 crate::game::world::hostility::Stance::Friendly,
-                                v.has(crate::game::characters::Condition::Turncoat),
+                                v.conditions.has(crate::game::characters::Condition::Turncoat),
                             ))
                     })
                 })

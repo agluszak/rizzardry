@@ -189,7 +189,7 @@ mod tests {
                     max_hp: 10,
                     stamina: 0,
                     max_stamina: 0,
-                    conditions: vec![],
+                    conditions: Default::default(),
                     spell_points: 0,
                     body: ScaledBody {
                         scale: 1.0,

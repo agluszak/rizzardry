@@ -384,7 +384,7 @@ mod tests {
                     max_hp: 10,
                     stamina: 10,
                     max_stamina: 10,
-                    conditions: vec![],
+                    conditions: Default::default(),
                     spell_points: 0,
                     body: ScaledBody { scale: 1.0, radius: 1.0, eye_height: 1.0, speed: 0.0 },
                 },
@@ -522,7 +522,7 @@ mod tests {
             max_hp: 10,
             stamina: 0,
             max_stamina: 0,
-            conditions: vec![],
+            conditions: Default::default(),
             spell_points: 0,
             body: ScaledBody { scale: 1.0, radius: 1.0, eye_height: 1.0, speed: 0.0 },
         };

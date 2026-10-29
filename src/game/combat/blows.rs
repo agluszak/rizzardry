@@ -467,7 +467,7 @@ pub(super) fn melee_target<'a>(
             let turned = field
                 .members
                 .get(member)
-                .is_ok_and(|(_, vitals, ..)| vitals.has(Condition::Turncoat));
+                .is_ok_and(|(_, vitals, ..)| vitals.conditions.has(Condition::Turncoat));
             let side = field.monsters.stance(entity, field.now);
             let wanted = if turned {
                 crate::game::world::hostility::Stance::Friendly
@@ -482,7 +482,7 @@ pub(super) fn melee_target<'a>(
             {
                 return None;
             }
-            let worst = monster.worst_condition();
+            let worst = monster.conditions.worst();
             let side = formation::quadrant(fight.party.eye, fight.party.yaw, at.translation());
             let in_reach = !kind.attacks.is_empty()
                 && (side == Row::Rear
@@ -500,7 +500,11 @@ fn member_target(
     fight: &Fight,
     rng: &mut GameRng,
 ) -> Option<Victim> {
-    if field.members.get(member).is_ok_and(|(_, vitals, ..)| vitals.has(Condition::Turncoat)) {
+    if field
+        .members
+        .get(member)
+        .is_ok_and(|(_, vitals, ..)| vitals.conditions.has(Condition::Turncoat))
+    {
         let mut targets: Vec<_> = field
             .party
             .iter()
@@ -508,7 +512,7 @@ fn member_target(
             .filter(|&target| {
                 target != member
                     && field.members.get(target).is_ok_and(|(_, vitals, ..)| {
-                        !vitals.is_dead() && !vitals.has(Condition::Turncoat)
+                        !vitals.is_dead() && !vitals.conditions.has(Condition::Turncoat)
                     })
             })
             .map(Victim::Member)
@@ -543,8 +547,8 @@ pub(super) fn member_attacks(
     let (items, difficulty) = (field.items, field.difficulty);
     let Ok((character, vitals, carried, burden)) = field.members.get(member) else { return };
     let (character, load) = (character.clone(), burden.load);
-    let controlled = vitals.has(Condition::Turncoat);
-    let slowed = vitals.has(Condition::Slowed);
+    let controlled = vitals.conditions.has(Condition::Turncoat);
+    let slowed = vitals.conditions.has(Condition::Slowed);
     let mut hands = attack::hands(&character.stats(&vitals.enchantments), carried, items, load);
     // The party's blessings guide every hand.
     for hand in &mut hands.hands {
@@ -629,7 +633,7 @@ pub(super) fn member_attacks(
         let delivery = if hand.reach >= Reach::Long {
             Delivery::Shot {
                 from: fight.party.eye,
-                blind: vitals.has(Condition::Blind),
+                blind: vitals.conditions.has(Condition::Blind),
                 through: attack::sure_penetration(&stats, &hand),
             }
         } else {
@@ -684,8 +688,13 @@ pub(super) fn member_attacks(
         // Every swing tires, twice as much in a berserk fury.
         let Ok((_, mut vitals, mut carried, _)) = field.members.get_mut(member) else { break };
         let weight = hand.weight;
-        let cost =
-            attack::swing_stamina(rng, mode, weight, berserk, vitals.has(Condition::Diseased));
+        let cost = attack::swing_stamina(
+            rng,
+            mode,
+            weight,
+            berserk,
+            vitals.conditions.has(Condition::Diseased),
+        );
         let hasted = vitals.enchantments.has(crate::content::spells::SpellId::HASTE);
         vitals.spend_stamina(load.scale_fatigue(cost, slowed, hasted));
         // Arrows, bolts and stones are shot away, thrown weapons thrown,
@@ -894,8 +903,8 @@ fn notices(
 ) -> bool {
     let alert = !vitals.is_dead()
         && vitals.stamina > 0
-        && vitals.worst_condition().is_none_or(|c| c < Condition::Webbed)
-        && !vitals.has(Condition::Blind);
+        && vitals.conditions.worst().is_none_or(|c| c < Condition::Webbed)
+        && !vitals.conditions.has(Condition::Blind);
     let defending = battle
         .this_round
         .party
@@ -1069,7 +1078,11 @@ pub(super) fn monster_attacks(
             difficulty,
         );
         let delivery = if attack.reach >= Reach::Long {
-            Delivery::Shot { from: eye, blind: monster.has(Condition::Blind), through: false }
+            Delivery::Shot {
+                from: eye,
+                blind: monster.conditions.has(Condition::Blind),
+                through: false,
+            }
         } else {
             Delivery::Swing {
                 bystanders: monster_bystanders(field, fight, entity, attack.reach, target.entity()),

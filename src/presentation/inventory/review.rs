@@ -906,7 +906,7 @@ mod tests {
         app.world_mut().trigger(Activate { entity: beneficial });
         app.update();
         assert!(!text(app.world_mut(), "Blind"));
-        assert!(app.world().get::<Vitals>(actor).unwrap().has(Condition::Blind));
+        assert!(app.world().get::<Vitals>(actor).unwrap().conditions.has(Condition::Blind));
         app.world_mut().trigger(Activate { entity: beneficial });
         app.update();
         assert!(text(app.world_mut(), "Blind"));

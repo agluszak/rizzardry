@@ -446,7 +446,7 @@ pub fn disposition(world: &World, actor: Entity) -> i32 {
 fn standing(world: &World, actor: Entity, disposition: u8) -> i32 {
     let turned = active_body(world, actor)
         .and_then(|body| world.get::<Monster>(body))
-        .is_some_and(|m| m.has(Condition::Turncoat));
+        .is_some_and(|m| m.conditions.has(Condition::Turncoat));
     let charm = world
         .try_query::<&Conversation>()
         .and_then(|mut q| q.iter(world).find_map(|c| c.charms.get(&actor).copied()))
@@ -2140,7 +2140,7 @@ mod tests {
                 stamina: 5,
                 max_stamina: 5,
 
-                conditions: vec![],
+                conditions: Default::default(),
                 spell_points: 0,
                 body: ScaledBody { scale: 1., radius: 0.5, eye_height: 1., speed: 0. },
             },
@@ -2359,7 +2359,7 @@ mod tests {
 
     #[test]
     fn quest_rewards_commit_once_to_living_roster_members_and_the_faction_owner() {
-        use crate::game::characters::{Condition, Gender, Lasting, Profession, Race};
+        use crate::game::characters::{Gender, Profession, Race};
         let operations = vec![
             DialogueOp::GiveGold(500),
             DialogueOp::GiveExperience(100),
@@ -2394,7 +2394,7 @@ mod tests {
                     }
                     let mut vitals = Vitals::new(&character);
                     if index == 1 {
-                        vitals.conditions.push((Condition::Unconscious, Lasting::Indefinite));
+                        vitals.conditions.exhaust();
                     }
                     if index == 2 {
                         vitals.hp = 0;
@@ -2658,7 +2658,7 @@ mod tests {
                 max_hp: 5,
                 stamina: 5,
                 max_stamina: 5,
-                conditions: vec![],
+                conditions: Default::default(),
                 spell_points: 0,
                 body: ScaledBody { scale: 1., radius: 0.5, eye_height: 1., speed: 0. },
             },

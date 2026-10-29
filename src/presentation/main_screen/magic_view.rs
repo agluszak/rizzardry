@@ -813,7 +813,7 @@ pub(super) fn refresh_magic_view(
             }
         }
     }
-    let silenced = vitals.has(crate::game::characters::Condition::Silenced);
+    let silenced = vitals.conditions.has(crate::game::characters::Condition::Silenced);
     let offers = offers(
         &view,
         character,
@@ -1054,7 +1054,7 @@ fn choose_row(
     };
     let Ok((character, vitals, carried)) = members.get(view.caster) else { return };
     let (learned, points) = casters.get(view.caster).map_or((None, None), |(l, p)| (Some(l), p));
-    let silenced = vitals.has(crate::game::characters::Condition::Silenced);
+    let silenced = vitals.conditions.has(crate::game::characters::Condition::Silenced);
     let mana_maximum = learned
         .map(|l| crate::game::magic::max_points(&character.stats(&vitals.enchantments), l, spells))
         .unwrap_or_default();

@@ -51,60 +51,134 @@ pub fn anyone_alive<'a>(vitals: impl IntoIterator<Item = &'a Vitals>) -> bool {
     vitals.into_iter().any(|vitals| !vitals.is_dead())
 }
 
-/// Whether a party member or monster can fight: alive and nothing worse than
-/// webbed (retail `highest_condition < ASLEEP`).
-pub fn can_fight(hp: u32, conditions: &[(Condition, Lasting)]) -> bool {
-    hp != 0 && conditions.iter().all(|&(c, _)| c < Condition::Asleep)
-}
+/// What ails a party member or a monster: each condition at most once, with
+/// how long it lasts.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Conditions(Vec<(Condition, Lasting)>);
 
-/// Inflict a condition on a party member or a monster (retail
-/// `InflictCharacterCondition`, `InflictMonsterCondition`): a longer
-/// duration replaces a shorter one, never the reverse.
-pub fn inflict(conditions: &mut Vec<(Condition, Lasting)>, condition: Condition, lasting: Lasting) {
-    match conditions.iter_mut().find(|(c, _)| *c == condition) {
-        Some((_, existing)) => {
-            *existing = match (*existing, lasting) {
-                (Lasting::Rounds(a), Lasting::Rounds(b)) => Lasting::Rounds(a.max(b)),
-                _ => Lasting::Indefinite,
+impl Conditions {
+    pub fn has(&self, condition: Condition) -> bool {
+        self.0.iter().any(|&(c, _)| c == condition)
+    }
+
+    /// How long `condition` lasts, if it is there.
+    pub fn lasting(&self, condition: Condition) -> Option<Lasting> {
+        self.0.iter().find_map(|&(c, lasting)| (c == condition).then_some(lasting))
+    }
+
+    /// How long `condition` lasts, to shorten it in place.
+    pub fn lasting_mut(&mut self, condition: Condition) -> Option<&mut Lasting> {
+        self.0.iter_mut().find_map(|(c, lasting)| (*c == condition).then_some(lasting))
+    }
+
+    /// Out cold until stamina returns: spent stamina's unconsciousness,
+    /// which lasts indefinitely.
+    pub fn exhausted(&self) -> bool {
+        self.lasting(Condition::Unconscious) == Some(Lasting::Indefinite)
+    }
+
+    /// Spent stamina leaves one exhausted (retail `FatigueCharacter`,
+    /// `FatigueMonster`).
+    pub fn exhaust(&mut self) {
+        self.inflict(Condition::Unconscious, Lasting::Indefinite);
+    }
+
+    /// The exhausted come round once stamina is above 9.
+    pub fn come_round(&mut self, stamina: u32) {
+        if self.exhausted() && stamina > COMES_ROUND_ABOVE {
+            self.lift(Condition::Unconscious);
+        }
+    }
+
+    /// The worst condition, which retail shows and whose rank its rules
+    /// compare (`highest_condition`).
+    pub fn worst(&self) -> Option<Condition> {
+        self.0.iter().map(|&(c, _)| c).max()
+    }
+
+    /// Whether nothing is as bad as `condition` (retail
+    /// `highest_condition < condition`).
+    pub fn below(&self, condition: Condition) -> bool {
+        self.worst().is_none_or(|worst| worst < condition)
+    }
+
+    /// Inflict a condition (retail `InflictCharacterCondition`,
+    /// `InflictMonsterCondition`): a longer duration replaces a shorter one,
+    /// never the reverse.
+    pub fn inflict(&mut self, condition: Condition, lasting: Lasting) {
+        match self.0.iter_mut().find(|(c, _)| *c == condition) {
+            Some((_, existing)) => {
+                *existing = match (*existing, lasting) {
+                    (Lasting::Rounds(a), Lasting::Rounds(b)) => Lasting::Rounds(a.max(b)),
+                    _ => Lasting::Indefinite,
+                }
             }
+            None => self.0.push((condition, lasting)),
         }
-        None => conditions.push((condition, lasting)),
     }
-}
 
-/// Count timed conditions down by aging ticks, lifting those that run out
-/// (retail `TickCharacterCondition`, `TickMonsterCondition`).
-pub fn age(conditions: &mut Vec<(Condition, Lasting)>, ticks: u32) {
-    conditions.retain_mut(|(_, lasting)| match lasting {
-        Lasting::Rounds(left) if u32::from(*left) <= ticks => false,
-        Lasting::Rounds(left) => {
-            *left -= ticks as u16;
-            true
+    pub fn lift(&mut self, condition: Condition) {
+        self.0.retain(|&(c, _)| c != condition);
+    }
+
+    /// Lift every condition but infatuation, which only its own cure ends
+    /// (retail `Die`, `RemoveAllConditionsFromParty`).
+    pub fn lift_all(&mut self) {
+        self.0.retain(|&(c, _)| c == Condition::Infatuated);
+    }
+
+    /// Count timed conditions down by aging ticks, lifting those that run
+    /// out (retail `TickCharacterCondition`, `TickMonsterCondition`).
+    pub fn age(&mut self, ticks: u32) {
+        self.0.retain_mut(|(_, lasting)| match lasting {
+            Lasting::Rounds(left) if u32::from(*left) <= ticks => false,
+            Lasting::Rounds(left) => {
+                *left -= ticks as u16;
+                true
+            }
+            Lasting::Indefinite => true,
+        });
+    }
+
+    /// Whether any condition is timed, so that aging has work to do.
+    pub fn any_timed(&self) -> bool {
+        self.0.iter().any(|(_, lasting)| matches!(lasting, Lasting::Rounds(_)))
+    }
+
+    /// A hit that is not quiet may wake a sleeper: `SEN/2 + 50` percent
+    /// (retail `damageCharacter`, `MonsterReactsToBeingStruck`). Whether it
+    /// woke.
+    pub fn wake_on_hit(&mut self, senses: u32, rng: &mut crate::game::rng::GameRng) -> bool {
+        if self.has(Condition::Asleep) && rng.below(100) < senses / 2 + 50 {
+            self.lift(Condition::Asleep);
+            return true;
         }
-        Lasting::Indefinite => true,
-    });
+        false
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &(Condition, Lasting)> {
+        self.0.iter()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
 }
 
-/// Whether any condition is timed, so that aging has work to do.
-pub fn any_timed(conditions: &[(Condition, Lasting)]) -> bool {
-    conditions.iter().any(|(_, lasting)| matches!(lasting, Lasting::Rounds(_)))
+impl<const N: usize> From<[(Condition, Lasting); N]> for Conditions {
+    fn from(conditions: [(Condition, Lasting); N]) -> Self {
+        conditions.into_iter().collect()
+    }
 }
 
-/// A hit that is not quiet may wake a sleeper: `SEN/2 + 50` percent (retail
-/// `damageCharacter`, `MonsterReactsToBeingStruck`). Returns whether it woke.
-pub fn wake_on_hit(
-    conditions: &mut Vec<(Condition, Lasting)>,
-    senses: u32,
-    rng: &mut crate::game::rng::GameRng,
-) -> bool {
-    if !conditions.iter().any(|&(c, _)| c == Condition::Asleep) {
-        return false;
+impl FromIterator<(Condition, Lasting)> for Conditions {
+    fn from_iter<I: IntoIterator<Item = (Condition, Lasting)>>(conditions: I) -> Self {
+        let mut all = Self::default();
+        for (condition, lasting) in conditions {
+            all.inflict(condition, lasting);
+        }
+        all
     }
-    if rng.below(100) < senses / 2 + 50 {
-        conditions.retain(|&(c, _)| c != Condition::Asleep);
-        return true;
-    }
-    false
 }
 
 /// How long a condition lasts.
@@ -840,7 +914,7 @@ pub struct Vitals {
     pub enchantments: crate::game::magic::enchantments::Enchantments,
     pub hp: u32,
     pub stamina: u32,
-    pub conditions: Vec<(Condition, Lasting)>,
+    pub conditions: Conditions,
     /// Recovery not yet whole points; retail keeps these between ticks.
     pub hp_fraction: f32,
     pub stamina_fraction: f32,
@@ -867,33 +941,23 @@ impl Vitals {
         self.hp == 0
     }
 
-    pub fn has(&self, condition: Condition) -> bool {
-        self.conditions.iter().any(|&(c, _)| c == condition)
-    }
-
-    /// The worst condition, which retail shows and which decides whether
-    /// the member can act.
-    pub fn worst_condition(&self) -> Option<Condition> {
-        self.conditions.iter().map(|&(c, _)| c).max()
-    }
-
     /// Alive and nothing worse than blind: able to act outside a combat
     /// round, such as to search, trade or rest (retail
     /// `highest_condition < TURNCOAT`).
     pub fn can_act(&self) -> bool {
-        !self.is_dead() && self.worst_condition().is_none_or(|c| c < Condition::Turncoat)
+        !self.is_dead() && self.conditions.below(Condition::Turncoat)
     }
 
     /// Alive and nothing worse than infatuated: in its right mind, able to
     /// look, keep watch or identify (retail `highest_condition < INSANE`).
     pub fn lucid(&self) -> bool {
-        !self.is_dead() && self.worst_condition().is_none_or(|c| c < Condition::Insane)
+        !self.is_dead() && self.conditions.below(Condition::Insane)
     }
 
     /// Alive and nothing worse than webbed: able to take or be the target of
     /// a combat action (retail `highest_condition < ASLEEP`).
     pub fn can_fight(&self) -> bool {
-        can_fight(self.hp, &self.conditions)
+        !self.is_dead() && self.conditions.below(Condition::Asleep)
     }
 
     /// Inflict a condition, keeping the longer duration if already afflicted.
@@ -912,7 +976,7 @@ impl Vitals {
         } else {
             lasting
         };
-        inflict(&mut self.conditions, condition, lasting);
+        self.conditions.inflict(condition, lasting);
     }
 
     /// Poison the member for `lasting` at `strength` (retail
@@ -923,7 +987,7 @@ impl Vitals {
         if strength == 0 {
             return false;
         }
-        if !self.has(Condition::Poisoned) {
+        if !self.conditions.has(Condition::Poisoned) {
             self.poison = 0;
         }
         self.inflict(Condition::Poisoned, lasting);
@@ -931,15 +995,11 @@ impl Vitals {
         true
     }
 
-    pub fn lift(&mut self, condition: Condition) {
-        self.conditions.retain(|&(c, _)| c != condition);
-    }
-
     /// Count timed conditions down, lifting those that run out (retail
     /// `TickCharacterCondition`), the poison weakening as it goes.
     pub fn age_conditions(&mut self, ticks: u32, rng: &mut crate::game::rng::GameRng) {
         self.weaken_poison(ticks, rng);
-        age(&mut self.conditions, ticks);
+        self.conditions.age(ticks);
         self.enchantments.age(ticks);
     }
 
@@ -948,10 +1008,10 @@ impl Vitals {
     /// (retail `TickCharacterCondition`, for aging and partial cures alike).
     /// The caller counts the poison's duration down.
     pub fn weaken_poison(&mut self, ticks: u32, rng: &mut crate::game::rng::GameRng) {
-        let left = self.conditions.iter().find_map(|&(c, lasting)| match lasting {
-            Lasting::Rounds(left) if c == Condition::Poisoned => Some(u32::from(left)),
+        let left = match self.conditions.lasting(Condition::Poisoned) {
+            Some(Lasting::Rounds(left)) => Some(u32::from(left)),
             _ => None,
-        });
+        };
         if let Some(left) = left.filter(|&left| left > ticks) {
             let mut lost = self.poison * ticks / left;
             if lost == 0 && rng.below(100) < self.poison * ticks * 100 / left {
@@ -966,7 +1026,7 @@ impl Vitals {
     /// half again unless the party stands still (retail `wait_state` 3,
     /// outside a fight).
     pub fn poison_damage(&self, ticks: u32, still: bool) -> u32 {
-        if !self.has(Condition::Poisoned) {
+        if !self.conditions.has(Condition::Poisoned) {
             return 0;
         }
         let damage = self.poison * ticks;
@@ -1017,11 +1077,7 @@ impl Vitals {
         if !profile.has_trait(Trait::CheatDeath) {
             return false;
         }
-        let out_cold = self
-            .conditions
-            .iter()
-            .find_map(|&(c, lasting)| (c == Condition::Unconscious).then_some(lasting));
-        let rounds = match out_cold {
+        let rounds = match self.conditions.lasting(Condition::Unconscious) {
             None => 0,
             Some(Lasting::Rounds(rounds)) => u32::from(rounds),
             Some(Lasting::Indefinite) => return false,
@@ -1048,8 +1104,7 @@ impl Vitals {
 
     fn die(&mut self) {
         self.enchantments.0.clear();
-        // Death clears every condition but infatuation (retail `Die`).
-        self.conditions.retain(|&(c, _)| c == Condition::Infatuated);
+        self.conditions.lift_all();
         self.stamina = 0;
     }
 
@@ -1067,7 +1122,7 @@ impl Vitals {
         profile.hp_drained = profile.hp_drained.saturating_add(amount);
         self.resize(profile, before, Some(fate));
         let lost = hp.saturating_sub(self.hp);
-        if !self.has(Condition::Drained) {
+        if !self.conditions.has(Condition::Drained) {
             self.inflict(Condition::Drained, Lasting::Indefinite);
         }
         lost
@@ -1077,10 +1132,10 @@ impl Vitals {
     /// what draining and disease took, and the pools rise with them. Whether
     /// it was there to lift.
     pub fn lift_drain(&mut self, profile: &mut Character) -> bool {
-        let Some(index) = self.conditions.iter().position(|&(c, _)| c == Condition::Drained) else {
+        if !self.conditions.has(Condition::Drained) {
             return false;
-        };
-        self.conditions.remove(index);
+        }
+        self.conditions.lift(Condition::Drained);
         let before = self.maxima(profile);
         profile.hp_drained = 0;
         profile.stamina_drained = 0;
@@ -1120,7 +1175,7 @@ impl Vitals {
         minutes: u32,
         fate: &mut Fate,
     ) -> Option<Sickness> {
-        if !self.has(Condition::Diseased) {
+        if !self.conditions.has(Condition::Diseased) {
             return None;
         }
         let rng = &mut *fate.rng;
@@ -1186,7 +1241,7 @@ impl Vitals {
         }
         self.stamina -= amount.min(self.stamina);
         if self.stamina == 0 {
-            self.inflict(Condition::Unconscious, Lasting::Indefinite);
+            self.conditions.exhaust();
         }
     }
 
@@ -1197,10 +1252,7 @@ impl Vitals {
             return;
         }
         self.stamina = (self.stamina + amount).min(maximum);
-        let exhausted = self.conditions.contains(&(Condition::Unconscious, Lasting::Indefinite));
-        if exhausted && self.stamina > COMES_ROUND_ABOVE {
-            self.lift(Condition::Unconscious);
-        }
+        self.conditions.come_round(self.stamina);
     }
 
     /// Heal up to the maximum. Healing does not raise the dead.
@@ -1385,17 +1437,17 @@ mod tests {
         let mut member = Vitals { hp: 4, ..Vitals::new(&valkyrie) };
         struck(&mut member, None);
         assert!((1..=4).contains(&member.hp), "{}", member.hp);
-        assert!(member.conditions.contains(&(Condition::Unconscious, Lasting::Rounds(4))));
+        assert_eq!(member.conditions.lasting(Condition::Unconscious), Some(Lasting::Rounds(4)));
         // The first time in a fight, half her maximum or more; the second
         // time in the same fight only the small roll; a new fight, half again.
         let mut member = Vitals::new(&valkyrie);
         struck(&mut member, Some(fight));
         assert!(member.hp >= maximum / 2 && member.hp <= maximum, "{}", member.hp);
-        member.lift(Condition::Unconscious);
+        member.conditions.lift(Condition::Unconscious);
         let hp = member.hp;
         struck(&mut member, Some(fight));
         assert!(member.hp <= hp, "only a roll of what she had: {} of {hp}", member.hp);
-        member.lift(Condition::Unconscious);
+        member.conditions.lift(Condition::Unconscious);
         struck(&mut member, Some(other));
         assert!(member.hp >= maximum / 2, "{}", member.hp);
         // Long out cold, she dies; so does anyone without the trait.
@@ -1414,7 +1466,7 @@ mod tests {
         let mut drained = valkyrie.clone();
         let mut member = Vitals { hp: 2, ..Vitals::new(&drained) };
         member.drain_health(&mut drained, 5, &mut Fate { fight: None, rng: &mut rng });
-        assert!(!member.is_dead() && member.has(Condition::Drained));
+        assert!(!member.is_dead() && member.conditions.has(Condition::Drained));
     }
 
     #[test]
@@ -1426,11 +1478,11 @@ mod tests {
         assert_eq!(fighter.damage(&profile, 6, &mut fate), 6);
         assert_eq!((fighter.hp, fighter.stamina), (12, 101));
         fighter.spend_stamina(200);
-        assert!(fighter.has(Condition::Unconscious));
+        assert!(fighter.conditions.has(Condition::Unconscious));
         fighter.restore_stamina(9, profile.max_stamina());
-        assert!(fighter.has(Condition::Unconscious), "not above 9 yet");
+        assert!(fighter.conditions.has(Condition::Unconscious), "not above 9 yet");
         fighter.restore_stamina(1, profile.max_stamina());
-        assert!(!fighter.has(Condition::Unconscious));
+        assert!(!fighter.conditions.has(Condition::Unconscious));
         assert_eq!(fighter.damage(&profile, 100, &mut fate), 12);
         assert!(fighter.is_dead());
         assert!(fighter.conditions.is_empty() && fighter.stamina == 0);
@@ -1448,10 +1500,10 @@ mod tests {
         fighter.inflict(Condition::Unconscious, Lasting::Indefinite);
         // (0.9 × 105 + 20) / 240 × 0.5 ≈ 0.24 a tick: 10 above 9 after 42.
         fighter.recover_stamina(41, 0.5, profile.max_stamina());
-        assert!(fighter.has(Condition::Unconscious));
+        assert!(fighter.conditions.has(Condition::Unconscious));
         fighter.recover_stamina(1, 0.5, profile.max_stamina());
         assert_eq!(fighter.stamina, 10);
-        assert!(!fighter.has(Condition::Unconscious));
+        assert!(!fighter.conditions.has(Condition::Unconscious));
         // (0.4 × 18 + 20) / 240 × 0.5 ≈ 0.057 a tick.
         fighter.recover_health(17, 0.5, profile.max_hp());
         assert_eq!(fighter.hp, 1);
@@ -1470,12 +1522,15 @@ mod tests {
         mage.age_conditions(2, &mut crate::game::rng::GameRng::default());
         assert_eq!(
             mage.conditions,
-            vec![
+            Conditions::from([
                 (Condition::Asleep, Lasting::Rounds(1)),
                 (Condition::Unconscious, Lasting::Indefinite)
-            ]
+            ])
         );
         mage.age_conditions(1, &mut crate::game::rng::GameRng::default());
-        assert_eq!(mage.conditions, vec![(Condition::Unconscious, Lasting::Indefinite)]);
+        assert_eq!(
+            mage.conditions,
+            Conditions::from([(Condition::Unconscious, Lasting::Indefinite)])
+        );
     }
 }

@@ -10,7 +10,7 @@ use crate::content::characters::{Attribute, Realm, Skill};
 use crate::content::items::{Dice, EquipClass, ItemCatalog};
 use crate::content::species::{MonsterCatalog, MonsterKind, SpecialAttackKind};
 use crate::content::spells::{SpellDefinition, SpellId};
-use crate::game::characters::{Condition, Fate, Lasting, inflict, wake_on_hit};
+use crate::game::characters::{Condition, Conditions, Fate, Lasting};
 use crate::game::difficulty::Difficulty;
 use crate::game::party::DamageApplied;
 use crate::game::party::formation::Formation;
@@ -185,9 +185,8 @@ pub fn modelled(spell: SpellId) -> bool {
 pub struct Standing {
     pub hurt: bool,
     pub tired: bool,
-    pub conditions: Vec<Condition>,
-    /// The spells already enchanting it.
-    pub enchanted: Vec<SpellId>,
+    pub conditions: Conditions,
+    pub enchantments: super::enchantments::Enchantments,
 }
 
 /// Whether a spell would do anything to a victim (retail
@@ -196,14 +195,14 @@ pub struct Standing {
 /// has. Pandemonium still works on the frightened while they are sane.
 pub fn worthwhile(spell: SpellId, standing: &Standing) -> bool {
     use Condition::*;
-    let has = |condition| standing.conditions.contains(&condition);
+    let has = |condition| standing.conditions.has(condition);
     match kind(spell) {
         Some(Kind::Heal) => standing.hurt,
         Some(Kind::Stamina) => standing.tired,
         Some(Kind::Inflict(condition, _)) => !has(condition),
         Some(Kind::Fear { .. }) => !has(Afraid),
         Some(Kind::Pandemonium) => !has(Afraid) || !has(Insane),
-        Some(Kind::Enchant) => !standing.enchanted.contains(&spell),
+        Some(Kind::Enchant) => !standing.enchantments.has(spell),
         Some(Kind::Cure(conditions)) => conditions.iter().any(|&c| has(c)),
         _ => true,
     }
@@ -715,7 +714,7 @@ fn target(
                 level: u32::from(character.level()),
                 resistance: resistances[realm].total,
                 side: None,
-                turncoat: vitals.has(Condition::Turncoat),
+                turncoat: vitals.conditions.has(Condition::Turncoat),
                 immune: false,
                 dead: vitals.is_dead(),
             })
@@ -836,7 +835,7 @@ pub fn hurt(rng: &mut GameRng, world: &mut Field, victim: Victim, amount: u32) -
                 world.party_damage,
             );
             if lost > 0 && !vitals.is_dead() {
-                wake_on_hit(&mut vitals.conditions, character.attribute(Attribute::Senses), rng);
+                vitals.conditions.wake_on_hit(character.attribute(Attribute::Senses), rng);
             }
             let outcome = DamageOutcome { damage: lost, died: vitals.is_dead(), experience: 0 };
             Some(Effect::Damaged { victim, outcome })
@@ -845,25 +844,19 @@ pub fn hurt(rng: &mut GameRng, world: &mut Field, victim: Victim, amount: u32) -
 }
 
 /// Haste and Slow cancel durations before either may remain.
-fn counter_haste(conditions: &mut Vec<(Condition, Lasting)>, turns: u32) -> u32 {
-    let mut remaining = turns;
-    conditions.retain_mut(|(condition, lasting)| {
-        if *condition != Condition::Slowed {
-            return true;
-        }
-        match lasting {
-            Lasting::Indefinite => {
-                remaining = 0;
-                true
+fn counter_haste(conditions: &mut Conditions, turns: u32) -> u32 {
+    match conditions.lasting_mut(Condition::Slowed) {
+        None => turns,
+        Some(Lasting::Indefinite) => 0,
+        Some(Lasting::Rounds(left)) => {
+            let remaining = turns.saturating_sub(u32::from(*left));
+            *left = u32::from(*left).saturating_sub(turns) as u16;
+            if *left == 0 {
+                conditions.lift(Condition::Slowed);
             }
-            Lasting::Rounds(left) => {
-                remaining = turns.saturating_sub(u32::from(*left));
-                *left = u32::from(*left).saturating_sub(turns) as u16;
-                *left > 0
-            }
+            remaining
         }
-    });
-    remaining
+    }
 }
 
 /// Give a victim a condition for `lasting`; a poison bites a member at
@@ -907,7 +900,7 @@ fn inflict_on(
             } else {
                 lasting
             };
-            inflict(&mut *world.monsters.conditions_mut(monster)?, condition, lasting)
+            world.monsters.conditions_mut(monster)?.inflict(condition, lasting)
         }
         Victim::Member(member) => {
             let mut vitals = world.members.get_mut(member).ok()?.1;
@@ -1197,7 +1190,7 @@ fn cure_rounds(strength: Strength) -> u32 {
 /// `power·15`%.
 fn cure(
     rng: &mut GameRng,
-    conditions: &mut Vec<(Condition, Lasting)>,
+    conditions: &mut Conditions,
     cured: &[Condition],
     strength: Strength,
     forced: bool,
@@ -1205,8 +1198,8 @@ fn cure(
     let per = cure_rounds(strength);
     let mut lifted = Vec::new();
     for &condition in cured {
-        let Some(index) = conditions.iter().position(|&(c, _)| c == condition) else { continue };
-        let gone = match &mut conditions[index].1 {
+        let Some(lasting) = conditions.lasting_mut(condition) else { continue };
+        let gone = match lasting {
             _ if forced => true,
             Lasting::Rounds(left) if u32::from(*left) <= per => true,
             Lasting::Rounds(left) => {
@@ -1216,7 +1209,7 @@ fn cure(
             Lasting::Indefinite => rng.below(100) < u32::from(strength.power) * 15,
         };
         if gone {
-            conditions.remove(index);
+            conditions.lift(condition);
             lifted.push(condition);
         }
     }

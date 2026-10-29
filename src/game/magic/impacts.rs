@@ -57,11 +57,9 @@ impl Origin {
     pub(crate) fn recipients(self, world: &Field, reversed: bool) -> Recipients {
         let side = match self.owner() {
             Some(Victim::Member(entity)) => {
-                if world
-                    .members
-                    .get(entity)
-                    .is_ok_and(|(_, v, ..)| v.has(crate::game::characters::Condition::Turncoat))
-                {
+                if world.members.get(entity).is_ok_and(|(_, v, ..)| {
+                    v.conditions.has(crate::game::characters::Condition::Turncoat)
+                }) {
                     Stance::Hostile
                 } else {
                     Stance::Friendly

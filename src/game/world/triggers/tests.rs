@@ -1332,7 +1332,10 @@ fn restorative_fountains_require_spell_content_before_consuming_a_use() {
     assert!(scene.run("TEMPLE").0);
     let vitals = scene.world.get::<Vitals>(member).unwrap();
     assert_eq!(vitals.hp, 2, "out-of-range authored power becomes one, not seven");
-    assert_eq!(vitals.conditions, vec![(Condition::Infatuated, Lasting::Indefinite)]);
+    assert_eq!(
+        vitals.conditions,
+        crate::game::characters::Conditions::from([(Condition::Infatuated, Lasting::Indefinite)])
+    );
     assert!(!scene.run("TEMPLE").0);
 }
 

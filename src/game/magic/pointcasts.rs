@@ -209,7 +209,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
                     continue;
                 }
                 let body = world.get::<Monster>(entity).unwrap();
-                if !body.can_fight() || body.has(Condition::Blind) {
+                if !body.can_fight() || body.conditions.has(Condition::Blind) {
                     continue;
                 }
                 let Some(here) = crate::game::world::actor_position(world, entity) else {
@@ -394,7 +394,7 @@ pub(crate) fn update_lure(world: &mut World) {
         let target = crate::game::world::actor_position(world, influence.lure);
         let follows = world
             .get::<Monster>(entity)
-            .is_some_and(|body| body.can_fight() && !body.has(Condition::Blind))
+            .is_some_and(|body| body.can_fight() && !body.conditions.has(Condition::Blind))
             && influence.response == LureResponse::Controlled;
         let here = crate::game::world::actor_position(world, entity);
         let goal = match (follows, here, target) {
@@ -558,7 +558,7 @@ mod tests {
                     max_hp: 10,
                     stamina: 10,
                     max_stamina: 10,
-                    conditions: vec![],
+                    conditions: Default::default(),
                     spell_points: 0,
                     body: ScaledBody { scale: 1.0, radius: 1.0, eye_height: 1.0, speed: 1.0 },
                 },

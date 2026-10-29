@@ -71,7 +71,7 @@ impl View {
         let concealment = if in_combat { 0 } else { u32::from(species.camouflage) };
         members.any(|(profile, vitals)| {
             if !vitals.can_fight()
-                || vitals.has(Condition::Blind) && profile.profession != Profession::Monk
+                || vitals.conditions.has(Condition::Blind) && profile.profession != Profession::Monk
             {
                 return false;
             }
@@ -147,7 +147,7 @@ mod tests {
 
             max_stamina: 1,
             spell_points: 0,
-            conditions: vec![],
+            conditions: Default::default(),
             body: ScaledBody { scale: 1.0, radius: 0.5, eye_height: 1.0, speed: 0.0 },
         };
         let mut species = Species { level: 30, ..default() };

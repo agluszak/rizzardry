@@ -1209,13 +1209,19 @@ mod tests {
                     assert_eq!((vitals.hp, vitals.stamina), (1, 1));
                 }
                 SpellId::SMELLING_SALTS => {
-                    assert!(!vitals.has(Condition::Asleep) && !vitals.has(Condition::Unconscious))
+                    assert!(
+                        !vitals.conditions.has(Condition::Asleep)
+                            && !vitals.conditions.has(Condition::Unconscious)
+                    )
                 }
                 // Power four takes sixteen rounds off, and the poison weakens
                 // by the same share, as aging would (retail
                 // `TickCharacterCondition`).
                 SpellId::CURE_POISON => {
-                    assert!(vitals.conditions.contains(&(Condition::Poisoned, Lasting::Rounds(4))));
+                    assert_eq!(
+                        vitals.conditions.lasting(Condition::Poisoned),
+                        Some(Lasting::Rounds(4))
+                    );
                     assert_eq!(vitals.poison, 2);
                 }
                 _ => unreachable!(),

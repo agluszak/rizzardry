@@ -858,8 +858,9 @@ pub fn start_battle(
         let close = kind.attacks.iter().map(|a| a.reach).max().is_some_and(|r| r <= Reach::Short);
         let party_at = PartyBody::feet_below(sight.eye);
         let toward = |victim: crate::game::magic::effects::Victim| {
-            let turncoat =
-                members.get(victim.entity()).is_ok_and(|(_, v)| v.has(Condition::Turncoat));
+            let turncoat = members
+                .get(victim.entity())
+                .is_ok_and(|(_, v)| v.conditions.has(Condition::Turncoat));
             hostility::toward_member(hostility::Stance::Hostile, turncoat)
         };
         let scene = monster_spells::Scene {
@@ -1185,7 +1186,7 @@ fn allegiance(
         species: body.species,
         stance: damage.stance(entity, now),
         faction: kind.faction,
-        turncoat: body.has(Condition::Turncoat),
+        turncoat: body.conditions.has(Condition::Turncoat),
     })
 }
 
@@ -1334,7 +1335,7 @@ fn accept_round(
         let hands = attack::hands(&stats, carried, items, burden.load);
         let weapons =
             [EquipSlot::Primary, EquipSlot::Secondary].map(|slot| carried.worn(slot).map(|i| i.id));
-        let order = if vitals.has(Condition::Turncoat) {
+        let order = if vitals.conditions.has(Condition::Turncoat) {
             Order::Attack
         } else {
             orders.get(member).copied().unwrap_or_default()
@@ -1879,7 +1880,7 @@ fn finish_party_move(battle: &mut Battle, rng: &mut GameRng, members: &mut Membe
         if vitals.is_dead() {
             continue;
         }
-        let disease = if vitals.has(Condition::Diseased) { 1.5 } else { 1.0 };
+        let disease = if vitals.conditions.has(Condition::Diseased) { 1.5 } else { 1.0 };
         let cost = moved * pace.stamina_per_metre() * burden.load.movement_factor() * disease;
         vitals.spend_stamina(cost.round() as u32);
     }
@@ -2023,7 +2024,7 @@ fn special_ready(
     cooling: bool,
     fighting: Option<(f32, hostility::Stance)>,
 ) -> bool {
-    let silenced = monster.has(Condition::Silenced);
+    let silenced = monster.conditions.has(Condition::Silenced);
     kind.special.kind.is_some_and(|special| {
         let definition = crate::game::magic::effects::special(special);
         let summons = special.summons().is_none()
@@ -2102,7 +2103,9 @@ fn monster_turn(
         .context
         .roster
         .iter()
-        .filter(|&m| members.get(m).is_ok_and(|(_, vitals, ..)| vitals.has(Condition::Turncoat)))
+        .filter(|&m| {
+            members.get(m).is_ok_and(|(_, vitals, ..)| vitals.conditions.has(Condition::Turncoat))
+        })
         .collect();
     let toward = |victim: Victim| match victim {
         Victim::Member(member) => {
@@ -2325,7 +2328,7 @@ fn monster_turn(
             if interrupt == Interrupt::Freed
                 && let Some(mut conditions) = damage.conditions_mut(monster)
             {
-                conditions.retain(|&(c, _)| c != Condition::Webbed);
+                conditions.lift(Condition::Webbed);
             }
             news.write(CombatNews::Interrupted { monster, interrupt });
             battle.this_round.monsters[index].1 = Turn::default();
@@ -2512,8 +2515,8 @@ fn member_in_scene(
         standing: crate::game::magic::effects::Standing {
             hurt: vitals.hp < stats.max_hp(),
             tired: vitals.stamina < stats.max_stamina(),
-            conditions: vitals.conditions.iter().map(|&(c, _)| c).collect(),
-            enchanted: vitals.enchantments.0.iter().map(|e| e.spell).collect(),
+            conditions: vitals.conditions.clone(),
+            enchantments: vitals.enchantments.clone(),
         },
         stance: toward(crate::game::magic::effects::Victim::Member(member)),
     }
@@ -2653,9 +2656,9 @@ fn end_round(
     }
     for &entity in combatants {
         if let Some(mut conditions) = damage.conditions_mut(entity)
-            && crate::game::characters::any_timed(&conditions)
+            && conditions.any_timed()
         {
-            crate::game::characters::age(&mut conditions, ticks.aging);
+            conditions.age(ticks.aging);
         }
     }
     for actor in roster.iter() {
@@ -2714,16 +2717,17 @@ fn end_round(
         }
         let Ok((character, mut vitals, ..)) = members.get_mut(member) else { continue };
         let resting = battle.defends(member)
-            || matches!(vitals.worst_condition(), Some(Condition::Asleep | Condition::Unconscious));
+            || matches!(
+                vitals.conditions.worst(),
+                Some(Condition::Asleep | Condition::Unconscious)
+            );
         if vitals.is_dead() || !resting {
             continue;
         }
         let rolled = recovery::rest_roll(character.stats(&vitals.enchantments).max_stamina(), rng);
         let gained = recovery::combat_rest_amount(&character, rolled);
         if vitals.stamina < character.stats(&vitals.enchantments).max_stamina()
-            || vitals
-                .conditions
-                .contains(&(Condition::Unconscious, crate::game::characters::Lasting::Indefinite))
+            || vitals.conditions.exhausted()
         {
             let maximum = character.stats(&vitals.enchantments).max_stamina();
             vitals.restore_stamina(gained, maximum);
@@ -3035,11 +3039,11 @@ mod tests {
             .world_mut()
             .spawn((copy, Transform::from_xyz(0.5, 0.0, -1.0), owner, Combatant(battle)))
             .id();
-        crate::game::characters::inflict(
-            &mut app.world_mut().get_mut::<Monster>(first).unwrap().conditions,
-            Condition::Turncoat,
-            Lasting::Rounds(2),
-        );
+        app.world_mut()
+            .get_mut::<Monster>(first)
+            .unwrap()
+            .conditions
+            .inflict(Condition::Turncoat, Lasting::Rounds(2));
         let handle = app.world().resource::<GameData>().species.clone();
         {
             let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
@@ -3110,7 +3114,7 @@ mod tests {
                 .insert((GroupMember(group), Transform::from_xyz(0.0, 0.0, 4.0)));
             let mut body = app.world().get::<Monster>(hostile).unwrap().clone();
             if blind {
-                body.conditions.push((Condition::Blind, Lasting::Rounds(2)));
+                body.conditions.inflict(Condition::Blind, Lasting::Rounds(2));
             }
             let friendly_group = app
                 .world_mut()
@@ -3382,7 +3386,7 @@ mod tests {
                     stamina: 0,
                     max_stamina: 0,
 
-                    conditions: vec![],
+                    conditions: Default::default(),
                     spell_points: 0,
                     body: ScaledBody { scale: 1.0, radius: 1.0, eye_height: 1.0, speed: 0.0 },
                 },
@@ -3647,7 +3651,7 @@ mod tests {
                 body.max_stamina = 100;
                 if turned {
                     body.conditions
-                        .push((Condition::Turncoat, crate::game::characters::Lasting::Rounds(20)));
+                        .inflict(Condition::Turncoat, crate::game::characters::Lasting::Rounds(20));
                 }
             }
             let mut news = Vec::new();
@@ -3769,7 +3773,7 @@ mod tests {
             .get_mut::<Monster>(turned)
             .unwrap()
             .conditions
-            .push((Condition::Turncoat, Lasting::Rounds(20)));
+            .inflict(Condition::Turncoat, Lasting::Rounds(20));
         let mut struck = None;
         for _ in 0..16 {
             app.update();
@@ -4232,7 +4236,7 @@ mod tests {
             body.hp = body.max_hp - 5;
             body.stamina = 0;
             body.max_stamina = 100;
-            body.conditions = vec![(Condition::Unconscious, Lasting::Indefinite)];
+            body.conditions = [(Condition::Unconscious, Lasting::Indefinite)].into();
         }
         cast(&mut app, SpellId::HEAL_WOUNDS);
         let body = app.world().get::<Monster>(target).unwrap();
@@ -4245,14 +4249,15 @@ mod tests {
         {
             let mut body = app.world_mut().get_mut::<Monster>(target).unwrap();
             body.stamina = 0;
-            body.conditions = vec![
+            body.conditions = [
                 (Condition::Unconscious, Lasting::Rounds(5)),
                 (Condition::Poisoned, Lasting::Indefinite),
-            ];
+            ]
+            .into();
         }
         cast(&mut app, SpellId::STAMINA);
         assert_eq!(
-            app.world().get::<Monster>(target).unwrap().conditions.len(),
+            app.world().get::<Monster>(target).unwrap().conditions.iter().count(),
             2,
             "stamina alone does not cure a knockout or poison"
         );
@@ -4306,7 +4311,7 @@ mod tests {
         }
         let owner = *app.world().get::<LevelOwned>(caster).unwrap();
         let mut target = app.world().get::<Monster>(caster).unwrap().clone();
-        target.conditions.push((Condition::Turncoat, Lasting::Rounds(10)));
+        target.conditions.inflict(Condition::Turncoat, Lasting::Rounds(10));
         target.location = 1;
         let exposed = app
             .world_mut()
@@ -5322,7 +5327,7 @@ mod tests {
                     max_hp: 10,
                     stamina: 10,
                     max_stamina: 10,
-                    conditions: vec![],
+                    conditions: Default::default(),
                     spell_points: 0,
                     body: ScaledBody { scale: 1.0, radius: 0.5, eye_height: 1.5, speed: 0.0 },
                 },
@@ -5652,7 +5657,7 @@ mod tests {
         assert_eq!(rested.stamina, 100 - 2 * swings);
         let (_, exhausted, hp) = run(1);
         assert_eq!(exhausted.stamina, 0);
-        assert!(exhausted.has(Condition::Unconscious));
+        assert!(exhausted.conditions.has(Condition::Unconscious));
         assert!(hp >= 9999, "exhaustion allows at most one one-damage swing");
     }
 

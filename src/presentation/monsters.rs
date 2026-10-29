@@ -397,7 +397,7 @@ mod tests {
                             stamina: 1,
                             max_stamina: 1,
 
-                            conditions: vec![],
+                            conditions: Default::default(),
                             spell_points: 0,
                             body: ScaledBody::new(&MonsterBody::default(), 0),
                         },

@@ -545,7 +545,7 @@ fn prepare_source<'a>(
             if power == 0 {
                 return Err(Refusal::CannotUse);
             }
-            if vitals.has(Condition::Silenced) {
+            if vitals.conditions.has(Condition::Silenced) {
                 return Err(Refusal::Silenced);
             }
             let (learned, pool) = points.get(caster).map_err(|_| Refusal::NotLearned)?;
@@ -585,7 +585,9 @@ fn prepare_source<'a>(
             if stack.remaining_uses() == Some(0) {
                 return Err(Refusal::NoCharges);
             }
-            if definition.use_type == UseType::Instrument && vitals.has(Condition::Silenced) {
+            if definition.use_type == UseType::Instrument
+                && vitals.conditions.has(Condition::Silenced)
+            {
                 return Err(Refusal::Silenced);
             }
             let spell = spells.get(cast.spell).ok_or(Refusal::MissingContent)?;
@@ -714,7 +716,7 @@ pub fn perform(
                     world
                         .members
                         .get(caster)
-                        .is_ok_and(|(_, vitals, ..)| vitals.has(Condition::Turncoat)),
+                        .is_ok_and(|(_, vitals, ..)| vitals.conditions.has(Condition::Turncoat)),
                 )),
             );
         }
@@ -1043,14 +1045,14 @@ fn pay(
                 UseType::Instrument | UseType::Gadget => 0,
                 _ => {
                     let base = rng.below(2) + 1;
-                    if vitals.has(Condition::Diseased) { base * 2 } else { base }
+                    if vitals.conditions.has(Condition::Diseased) { base * 2 } else { base }
                 }
             }
         }
     };
     // Action fatigue weighs more under load (retail `FatigueCharacter`).
     let (_, mut vitals, _, burden) = members.get_mut(caster).map_err(|_| Refusal::CannotAct)?;
-    let slowed = vitals.has(Condition::Slowed);
+    let slowed = vitals.conditions.has(Condition::Slowed);
     let hasted = vitals.enchantments.has(crate::content::spells::SpellId::HASTE);
     vitals.spend_stamina(burden.load.scale_fatigue(fatigue, slowed, hasted));
     Ok(())

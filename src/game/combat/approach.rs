@@ -96,7 +96,7 @@ pub(super) fn move_metres(monster: &Monster, kind: &Species, charge: bool) -> f3
     }
     if let Some(haste) = monster.enchantments.get(crate::content::spells::SpellId::HASTE) {
         budget += kind.combat_move_range * METRES_PER_MOVE_RANGE * f32::from(haste.power) * 0.1;
-    } else if monster.has(Condition::Slowed) {
+    } else if monster.conditions.has(Condition::Slowed) {
         budget *= 0.5;
     }
     budget
@@ -247,7 +247,7 @@ mod tests {
                     max_hp: 10,
                     stamina: 0,
                     max_stamina: 0,
-                    conditions: vec![],
+                    conditions: Default::default(),
                     spell_points: 0,
                     body: ScaledBody { scale: 1.0, radius: 1.0, eye_height: 1.0, speed: 2.0 },
                 },

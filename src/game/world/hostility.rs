@@ -114,7 +114,10 @@ pub fn monster_own(
     now: u64,
     fighting: bool,
 ) -> Stance {
-    own_stance(stance(set, species, factions, now, fighting), monster.has(Condition::Turncoat))
+    own_stance(
+        stance(set, species, factions, now, fighting),
+        monster.conditions.has(Condition::Turncoat),
+    )
 }
 
 /// A monster's stance now, through its group, for operations that hold the
@@ -165,7 +168,7 @@ impl Stances<'_, '_> {
     pub fn own(&self, monster: Entity, species: &MonsterCatalog, now: u64) -> Option<Stance> {
         let group = self.group(monster, species, now)?;
         let (body, ..) = self.monsters.get(monster).ok()?;
-        let turncoat = body.has(Condition::Turncoat);
+        let turncoat = body.conditions.has(Condition::Turncoat);
         Some(own_stance(group, turncoat))
     }
 }

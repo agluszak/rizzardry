@@ -13,7 +13,7 @@ use super::items::drop_loot;
 use super::level::Level;
 use super::navigation::{Walker, feet};
 use super::population::Monster;
-use crate::game::characters::{Condition, Lasting};
+use crate::game::characters::Condition;
 use crate::game::inventory::{ItemIds, PartyInventory, make_item};
 use crate::game::rng::GameRng;
 
@@ -107,7 +107,8 @@ impl<'w, 's> MonsterDamage<'w, 's> {
     /// A monster's own stance now ([`super::hostility::monster_own`]): its
     /// group's, swapped by its own Turncoat.
     pub fn stance(&self, entity: Entity, now: u64) -> super::hostility::Stance {
-        let turncoat = self.monsters.get(entity).is_ok_and(|(m, ..)| m.has(Condition::Turncoat));
+        let turncoat =
+            self.monsters.get(entity).is_ok_and(|(m, ..)| m.conditions.has(Condition::Turncoat));
         super::hostility::own_stance(self.group_stance(entity, now), turncoat)
     }
 
@@ -136,7 +137,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
     pub fn provoke(&mut self, entity: Entity, now: u64) -> bool {
         use super::hostility::{self, SetStance, Stance};
         let Ok((body, ..)) = self.monsters.get(entity) else { return false };
-        if body.is_dead() || body.has(Condition::Turncoat) {
+        if body.is_dead() || body.conditions.has(Condition::Turncoat) {
             return false;
         }
         let (Some(kind), Some(factions)) = (
@@ -171,15 +172,8 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         }
         let before = body.stamina;
         body.stamina = body.stamina.saturating_add(amount).min(body.max_stamina);
-        if body.stamina > crate::game::characters::COMES_ROUND_ABOVE {
-            body.conditions.retain(|&(condition, lasting)| {
-                (condition, lasting)
-                    != (
-                        crate::game::characters::Condition::Unconscious,
-                        crate::game::characters::Lasting::Indefinite,
-                    )
-            });
-        }
+        let stamina = body.stamina;
+        body.conditions.come_round(stamina);
         body.stamina.saturating_sub(before)
     }
     pub fn restore_magic(&mut self, entity: Entity, amount: u32) {
@@ -197,7 +191,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
     pub fn conditions_mut(
         &mut self,
         monster: Entity,
-    ) -> Option<Mut<'_, Vec<(Condition, Lasting)>>> {
+    ) -> Option<Mut<'_, crate::game::characters::Conditions>> {
         let (monster, ..) = self.monsters.get_mut(monster).ok()?;
         Some(monster.map_unchanged(|monster| &mut monster.conditions))
     }
@@ -212,11 +206,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         let taken = amount.min(monster.stamina);
         monster.stamina -= taken;
         if monster.stamina == 0 {
-            crate::game::characters::inflict(
-                &mut monster.conditions,
-                Condition::Unconscious,
-                Lasting::Indefinite,
-            );
+            monster.conditions.exhaust();
         }
         taken
     }
@@ -314,11 +304,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
             }
         }
         if !monster.is_dead() {
-            crate::game::characters::wake_on_hit(
-                &mut monster.conditions,
-                u32::from(kind.attributes.senses),
-                rng,
-            );
+            monster.conditions.wake_on_hit(u32::from(kind.attributes.senses), rng);
             return Ok(DamageOutcome { damage: lost, ..default() });
         }
         monster.enchantments.0.clear();

@@ -233,7 +233,7 @@ mod tests {
             stamina: 10,
             max_stamina: 10,
 
-            conditions: Vec::new(),
+            conditions: Default::default(),
             spell_points: 0,
             body: ScaledBody { scale: 1.0, radius: 0.5, eye_height: 1.0, speed: 1.0 },
         };
@@ -258,11 +258,11 @@ mod tests {
             .get_mut::<Monster>(walker)
             .unwrap()
             .conditions
-            .push((Condition::Asleep, Lasting::Rounds(2)));
+            .inflict(Condition::Asleep, Lasting::Rounds(2));
         assert_eq!(motion(&mut world), Vec3::ZERO, "asleep, it stops in the doorway");
         // Its combat move ends with its sleep (`close_in`), clearing the target.
         *world.get_mut::<AgentTarget3d>(walker).unwrap() = AgentTarget3d::None;
-        world.get_mut::<Monster>(walker).unwrap().conditions.clear();
+        world.get_mut::<Monster>(walker).unwrap().conditions = Default::default();
         assert_eq!(motion(&mut world), Vec3::ZERO, "waking does not resume the ended move");
         assert!(world.get::<Crossing>(walker).is_some(), "its progress is kept");
         *world.get_mut::<AgentTarget3d>(walker).unwrap() = AgentTarget3d::Entity(party);
@@ -274,7 +274,7 @@ mod tests {
             .get_mut::<Monster>(walker)
             .unwrap()
             .conditions
-            .push((Condition::Asleep, Lasting::Rounds(2)));
+            .inflict(Condition::Asleep, Lasting::Rounds(2));
         world.entity_mut(walker).insert(ReachedAnimationLink3d {
             link_entity: link,
             start_point: Vec3::ZERO,
@@ -286,7 +286,7 @@ mod tests {
         world.flush();
         assert!(world.get::<Crossing>(walker).is_none());
         // Awake and moving, it does.
-        world.get_mut::<Monster>(walker).unwrap().conditions.clear();
+        world.get_mut::<Monster>(walker).unwrap().conditions = Default::default();
         world.run_system_once(use_reached_links).unwrap();
         world.flush();
         assert!(world.get::<Crossing>(walker).is_some());

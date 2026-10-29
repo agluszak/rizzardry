@@ -822,14 +822,14 @@ pub fn member_aim(
         score -= target.armour_class(mode, surprise) * 5;
         score += (character_ssdi(c) - target.ssdi) / 10;
     }
-    if vitals.has(Condition::Blind) && score > 10 {
+    if vitals.conditions.has(Condition::Blind) && score > 10 {
         score = if c.has_trait(Trait::EffectiveWhileBlind) {
             c.scale_by_profession((score - 10) as f32) as i32 + 10
         } else {
             10
         };
     }
-    difficulty.for_character(score, vitals.has(Condition::Turncoat))
+    difficulty.for_character(score, vitals.conditions.has(Condition::Turncoat))
 }
 
 /// A member's chance to get through armour where the blow landed (retail
@@ -849,7 +849,7 @@ pub fn member_penetration(
     }
     score -= target.armour_at(mode, surprise, at) * 5;
     score += (character_ssdi(c) - target.ssdi) / 10;
-    difficulty.for_character(score, vitals.has(Condition::Turncoat))
+    difficulty.for_character(score, vitals.conditions.has(Condition::Turncoat))
 }
 
 /// A monster's aim with one attack (retail `GetMonsterAttackScore`).
@@ -875,7 +875,7 @@ pub fn monster_aim(
         score -= target.armour_class(mode, surprise) * 5;
         score += (species_ssdi(species, &monster.enchantments) - target.ssdi) / 10;
     }
-    if monster.has(Condition::Blind) && score > 10 {
+    if monster.conditions.has(Condition::Blind) && score > 10 {
         score = 10;
     }
     difficulty.for_monster(score, stance)

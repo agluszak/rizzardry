@@ -217,10 +217,7 @@ fn drink_fountain(
                 Restores::Health => member.hp >= profile.stats(&member.enchantments).max_hp(),
                 Restores::Stamina => {
                     member.stamina >= profile.stats(&member.enchantments).max_stamina()
-                        && !member.conditions.contains(&(
-                            crate::game::characters::Condition::Unconscious,
-                            crate::game::characters::Lasting::Indefinite,
-                        ))
+                        && !member.conditions.exhausted()
                 }
             }
         {
@@ -240,9 +237,7 @@ fn drink_fountain(
                     let maximum = profile.stats(&member.enchantments).max_hp();
                     member.heal(amount, maximum);
                 }
-                member.conditions.retain(|(condition, _)| {
-                    *condition == crate::game::characters::Condition::Infatuated
-                });
+                member.conditions.lift_all();
             }
             Restores::Magic => {
                 let (_, mut points) = points.unwrap();

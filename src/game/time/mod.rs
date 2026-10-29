@@ -196,8 +196,8 @@ pub(crate) fn pass_time(
                 if !monster.enchantments.0.is_empty() {
                     monster.enchantments.age(1);
                 }
-                if crate::game::characters::any_timed(&monster.conditions) {
-                    crate::game::characters::age(&mut monster.conditions, 1);
+                if monster.conditions.any_timed() {
+                    monster.conditions.age(1);
                 }
             }
         }
@@ -384,7 +384,7 @@ mod pass_time_tests {
         // The third accelerated step crosses the aging tick and clears sleep;
         // the other thirteen steps already use the ordinary rate.
         assert_eq!(app.world().resource::<GameClock>().ms, 135_000 + 2437);
-        assert!(!app.world().get::<Vitals>(member).unwrap().has(Condition::Asleep));
+        assert!(!app.world().get::<Vitals>(member).unwrap().conditions.has(Condition::Asleep));
         assert!(!app.world().contains_resource::<Camp>());
     }
 }

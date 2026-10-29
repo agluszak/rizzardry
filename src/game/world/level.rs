@@ -280,7 +280,7 @@ impl KeptMonster {
                 stamina: max_stamina,
 
                 max_stamina,
-                conditions: Vec::new(),
+                conditions: Default::default(),
                 spell_points: 0,
                 body,
             },

@@ -120,8 +120,8 @@ pub(super) fn monster_standing(monster: &Monster) -> Standing {
     Standing {
         hurt: monster.hp < monster.max_hp,
         tired: monster.stamina < monster.max_stamina,
-        conditions: monster.conditions.iter().map(|&(c, _)| c).collect(),
-        enchanted: monster.enchantments.0.iter().map(|e| e.spell).collect(),
+        conditions: monster.conditions.clone(),
+        enchantments: monster.enchantments.clone(),
     }
 }
 
@@ -129,7 +129,7 @@ pub(super) fn monster_standing(monster: &Monster) -> Standing {
 /// `IsSpellUsableByMonster`): monsters may cast it, its effect is modelled
 /// here, its aim is one a monster takes, and a silence does not stop it.
 fn castable(spell: &SpellDefinition, caster: &Monster, kind: &Species) -> bool {
-    let silenced = caster.has(Condition::Silenced);
+    let silenced = caster.conditions.has(Condition::Silenced);
     spell.monsters_cast
         && effects::modelled(spell.id)
         && !matches!(

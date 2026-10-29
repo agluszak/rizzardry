@@ -175,7 +175,7 @@ mod tests {
             None,
         );
         assert_eq!((fighter.hp, fighter.stamina), (hp, stamina));
-        assert!(!fighter.has(Condition::Afraid));
+        assert!(!fighter.conditions.has(Condition::Afraid));
         // Standing still for two hours heals.
         elapse(
             &mut profile,
@@ -221,7 +221,10 @@ mod tests {
         // A tenth of the course gone takes a tenth of the strength, which
         // rounds to nothing here but a roll's chance of one.
         assert!(still.poison == 4 || still.poison == 3);
-        assert_eq!(still.conditions, [(Condition::Poisoned, Lasting::Rounds(9))]);
+        assert_eq!(
+            still.conditions,
+            crate::game::characters::Conditions::from([(Condition::Poisoned, Lasting::Rounds(9))])
+        );
         // Half of what is left: half the strength.
         let mut halved = Vitals::new(&profile);
         halved.poison(Lasting::Rounds(10), 8);
@@ -234,7 +237,7 @@ mod tests {
         halved.poison(Lasting::Rounds(2), 1);
         assert_eq!(halved.poison, 6);
         halved.age_conditions(20, &mut rng);
-        assert!(!halved.has(Condition::Poisoned));
+        assert!(!halved.conditions.has(Condition::Poisoned));
         assert_eq!(halved.poison_damage(5, false), 0);
         halved.poison(Lasting::Rounds(3), 2);
         assert_eq!(halved.poison, 2);
@@ -260,7 +263,7 @@ mod tests {
             let struck = member.sicken(&mut sick, 10_000, &mut calm(&mut rng));
             match struck {
                 Some(Sickness::Condition(condition)) => {
-                    assert!(member.conditions.contains(&(condition, Lasting::Indefinite)));
+                    assert!(member.conditions.lasting(condition) == Some(Lasting::Indefinite));
                     seen.insert(0);
                 }
                 Some(Sickness::Weakened(attribute)) => {
@@ -279,7 +282,7 @@ mod tests {
                 }
                 None => {}
             }
-            assert!(!member.has(Condition::Drained), "disease does not drain");
+            assert!(!member.conditions.has(Condition::Drained), "disease does not drain");
         }
         assert_eq!(seen.len(), 4, "every blow comes up");
         // Without disease, or with no time, nothing happens.
@@ -338,7 +341,7 @@ mod tests {
         assert_eq!(member.drain_health(&mut profile, 3, &mut calm(&mut GameRng::default())), 3);
         assert_eq!((profile.max_hp(), member.hp), (max_hp - 3, max_hp - 3));
         assert_eq!(member.stamina, max_stamina - 2, "two thirds of it tires");
-        assert!(member.has(Condition::Drained));
+        assert!(member.conditions.has(Condition::Drained));
         profile.stamina_drained = 4;
         member.stamina = member.stamina.min(profile.max_stamina());
         // Recovery heals only up to the lowered maximum.
@@ -359,6 +362,6 @@ mod tests {
         // Draining the last of it kills, and the dead stay Drained.
         let mut doomed = Vitals { hp: 2, ..Vitals::new(&profile) };
         assert_eq!(doomed.drain_health(&mut profile, 5, &mut calm(&mut GameRng::default())), 2);
-        assert!(doomed.is_dead() && doomed.has(Condition::Drained));
+        assert!(doomed.is_dead() && doomed.conditions.has(Condition::Drained));
     }
 }

@@ -12,7 +12,7 @@ use crate::content::items::ItemCatalog;
 use crate::content::level::LevelDefinition;
 use crate::content::monster::MonsterBody;
 use crate::content::species::MonsterCatalog;
-use crate::game::characters::{Condition, Lasting};
+use crate::game::characters::Condition;
 use crate::game::inventory::ItemIds;
 use crate::game::rng::GameRng;
 use crate::game::world::items::{WorldItem, placed_item};
@@ -28,7 +28,7 @@ pub struct Monster {
     pub max_hp: u32,
     pub stamina: u32,
     pub max_stamina: u32,
-    pub conditions: Vec<(Condition, Lasting)>,
+    pub conditions: crate::game::characters::Conditions,
     pub body: ScaledBody,
     /// What has been done to its spell budget since it was met: drained
     /// away, or raised by Might to Magic (retail `spell_points`, zero at
@@ -49,26 +49,19 @@ impl Monster {
     }
 
     pub fn can_fight(&self) -> bool {
-        crate::game::characters::can_fight(self.hp, &self.conditions)
+        !self.is_dead() && self.conditions.below(Condition::Asleep)
     }
 
     /// Alive and nothing worse than insane: able to guard a fellow
     /// (retail bodyguards, `highest_condition < BLIND`).
     pub fn can_guard(&self) -> bool {
-        !self.is_dead() && self.worst_condition().is_none_or(|c| c < Condition::Blind)
-    }
-
-    pub fn worst_condition(&self) -> Option<Condition> {
-        self.conditions.iter().map(|&(c, _)| c).max()
-    }
-
-    pub fn has(&self, condition: Condition) -> bool {
-        self.conditions.iter().any(|&(c, _)| c == condition)
+        !self.is_dead() && self.conditions.below(Condition::Blind)
     }
 
     /// Blindness takes its sight; a Monk fights on without it.
     pub fn blinded(&self, kind: &crate::content::species::Species) -> bool {
-        self.has(Condition::Blind) && kind.kind != crate::content::species::MonsterKind::Monk
+        self.conditions.has(Condition::Blind)
+            && kind.kind != crate::content::species::MonsterKind::Monk
     }
 
     /// Its eyes, over its feet at `feet`.

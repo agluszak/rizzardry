@@ -1153,7 +1153,7 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
     let party =
         app.world_mut().query_filtered::<Entity, With<Party>>().single(app.world()).unwrap();
     let afraid = (Condition::Afraid, Lasting::Rounds(3));
-    app.world_mut().get_mut::<Monster>(body).unwrap().conditions.push(afraid);
+    app.world_mut().get_mut::<Monster>(body).unwrap().conditions.inflict(afraid.0, afraid.1);
     let members = |app: &App| app.world().get::<PartyRoster>(party).unwrap().len();
 
     // Joining.
@@ -1168,7 +1168,7 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
     let carried = app.world().get::<Carried>(actor).unwrap();
     assert_eq!(carried.equipment[EquipSlot::Primary].as_ref().unwrap().stack.item, ItemId(5));
     assert_eq!(carried.backpack[0].as_ref().unwrap().item, ItemId(6));
-    assert_eq!(app.world().get::<Vitals>(actor).unwrap().conditions, [afraid]);
+    assert_eq!(app.world().get::<Vitals>(actor).unwrap().conditions, [afraid].into());
     assert!(app.world().get::<Disabled>(body).is_some());
     assert!(app.world().get::<LevelOwned>(body).is_none());
     assert_eq!(recruit::joinable(app.world_mut(), actor), Err(JoinRefusal::Declines));
@@ -1224,7 +1224,7 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
     assert_eq!(app.world().get::<NpcWorldRole>(body).unwrap().map, away_path);
     let monster = app.world().get::<Monster>(body).unwrap();
     assert!(monster.hp > 0);
-    assert_eq!(monster.conditions, [afraid]);
+    assert_eq!(monster.conditions, [afraid].into());
     let pool: Vec<_> = app
         .world()
         .get::<PartyInventory>(party)

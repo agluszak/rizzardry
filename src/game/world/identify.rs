@@ -336,7 +336,7 @@ mod tests {
                 stamina: 0,
                 max_stamina: 0,
 
-                conditions: vec![],
+                conditions: Default::default(),
                 spell_points: 0,
                 body: ScaledBody { scale: 1.0, radius: 1.0, eye_height: 1.0, speed: 0.0 },
             },
@@ -400,6 +400,7 @@ mod tests {
             !app.world()
                 .get::<Vitals>(member)
                 .unwrap()
+                .conditions
                 .has(crate::game::characters::Condition::Blind)
         );
         assert!(app.world().get::<MonsterGroup>(group).unwrap().identified);

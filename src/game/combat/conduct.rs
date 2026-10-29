@@ -128,7 +128,7 @@ pub(super) fn interrupt(
     (fleeing, strikes_friend, berserk, against_foes): (bool, bool, bool, bool),
 ) -> Option<Interrupt> {
     use crate::game::characters::Condition;
-    let has = |condition| monster.has(condition);
+    let has = |condition| monster.conditions.has(condition);
     if has(Condition::Nauseated) && rng.below(100) < 25 {
         return Some(Interrupt::Nauseated);
     }
@@ -171,7 +171,7 @@ pub(super) mod tests {
             max_hp: 100,
             stamina: 0,
             max_stamina: 0,
-            conditions: vec![],
+            conditions: Default::default(),
             spell_points: 0,
             body: crate::game::world::population::ScaledBody {
                 scale: 1.0,
@@ -192,14 +192,14 @@ pub(super) mod tests {
         let mut rng = GameRng::seeded(4);
         let kind = Species::default();
         let mut webbed = monster(100);
-        webbed.conditions.push((Condition::Webbed, Lasting::Rounds(3)));
+        webbed.conditions.inflict(Condition::Webbed, Lasting::Rounds(3));
         assert_eq!(
             interrupt(&mut rng, &webbed, &kind, (false, false, false, true)),
             Some(Interrupt::Webbed)
         );
         assert_eq!(interrupt(&mut rng, &monster(100), &kind, (false, false, false, true)), None);
         let mut turned = monster(100);
-        turned.conditions.push((Condition::Turncoat, Lasting::Rounds(3)));
+        turned.conditions.inflict(Condition::Turncoat, Lasting::Rounds(3));
         assert_eq!(
             interrupt(&mut rng, &turned, &kind, (false, false, false, true)),
             Some(Interrupt::Turncoat)

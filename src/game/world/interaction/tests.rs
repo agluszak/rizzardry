@@ -171,7 +171,7 @@ fn a_sprung_trap_pays_its_effect_before_opening_and_retains_the_selected_victim(
         // Vampiric Vortex drains: what it took stays off the maximum.
         let lost = selected_hp - level.world.get::<Vitals>(selected).unwrap().hp;
         assert_eq!(level.world.get::<Character>(selected).unwrap().hp_drained, lost);
-        assert!(level.world.get::<Vitals>(selected).unwrap().has(Condition::Drained));
+        assert!(level.world.get::<Vitals>(selected).unwrap().conditions.has(Condition::Drained));
         assert_eq!(level.world.get::<Guarded>(chest).is_none(), destroyed);
         assert_eq!(level.motion("CHEST").target > 0.0, destroyed);
         assert!(work(&level).is_none(), "a surviving trap ends the interaction, not a free retry");
@@ -230,10 +230,10 @@ fn a_tired_valkyrie_cheats_an_instant_death_trap() {
         let on = attempt(&level);
         spring_trap(&mut level.world, on, Some(valkyrie)).unwrap();
         let vitals = level.world.get::<Vitals>(valkyrie).unwrap();
-        if vitals.has(Condition::Unconscious) {
+        if vitals.conditions.has(Condition::Unconscious) {
             // Her save failed: she lives, out cold a few rounds, not for good.
             assert!(!vitals.is_dead());
-            assert!(!vitals.conditions.contains(&(Condition::Unconscious, Lasting::Indefinite)));
+            assert!(vitals.conditions.lasting(Condition::Unconscious) != Some(Lasting::Indefinite));
             assert_eq!(vitals.stamina, 6, "death outright tires no one");
             cheated += 1;
         } else {
@@ -445,7 +445,12 @@ fn device_casts_revalidate_targets_and_pay_from_the_selected_item_owner() {
     );
     assert_eq!(*level.world.resource::<GameRng>(), rng);
     assert_eq!(crate::game::magic::test_points(&level.world, actor, Realm::Earth), 20);
-    level.world.get_mut::<Vitals>(actor).unwrap().lift(crate::game::characters::Condition::Webbed);
+    level
+        .world
+        .get_mut::<Vitals>(actor)
+        .unwrap()
+        .conditions
+        .lift(crate::game::characters::Condition::Webbed);
     let on = attempt(&level);
     assert_eq!(
         cast_device(&mut level.world, actor, on, Source::Item(worn_id)),
