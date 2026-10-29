@@ -25,7 +25,7 @@ pub(crate) fn radius(
     party_at: Option<Vec3>,
     recipients: Recipients,
 ) -> Vec<Victim> {
-    let (Some(obstacles), Some(species)) = (world.visibility, world.species) else { return vec![] };
+    let Some(obstacles) = world.visibility else { return vec![] };
     if radius <= 0.0 {
         return vec![];
     }
@@ -57,10 +57,7 @@ pub(crate) fn radius(
         .monsters()
         .iter()
         .filter_map(|(body, at, _, _, entity)| {
-            let definition = species.kind(body.species)?;
-            (world.monsters.active(entity)
-                && !body.is_dead()
-                && !definition.untargetable
+            (world.monsters.targetable(entity)
                 && recipients.admits(world.monsters.stance(entity, world.now))
                 && at.translation().distance(centre) - body.body.radius <= radius
                 && clear(at.translation()))

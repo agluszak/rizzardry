@@ -238,6 +238,22 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         self.monsters.get(target).is_ok_and(|(_, _, _, owner, _)| self.levels.contains(owner.0))
     }
 
+    /// Whether magic may take a monster as a target or victim: in play,
+    /// alive, and of a species not kept out of targeting (retail's live
+    /// targetable monsters, `CollectConeMonsterTargets`,
+    /// `CollectMonstersWithinRadius`).
+    pub fn targetable(&self, target: Entity) -> bool {
+        self.active(target)
+            && self.monsters.get(target).is_ok_and(|(body, ..)| {
+                !body.is_dead()
+                    && self
+                        .content
+                        .species()
+                        .and_then(|catalog| catalog.kind(body.species))
+                        .is_some_and(|kind| !kind.untargetable)
+            })
+    }
+
     /// Hurt a monster at game time `now`; a kill drops its loot, pays its
     /// gold into the party's purse and counts against its faction then.
     pub fn apply(

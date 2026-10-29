@@ -38,13 +38,8 @@ pub(super) fn execute(
     }
     let cone = spells.get(SpellId::SPECIAL_ATTACK_CONE).ok_or(Refusal::MissingContent)?;
     let (mut victims, _) = casting::capture(actor, cone, Aim::Monster(target), situation, false)?;
-    let species = world.species.ok_or(Refusal::MissingContent)?;
     victims.retain(|victim| match *victim {
-        effects::Victim::Monster(entity) => {
-            world.monsters.monsters().get(entity).is_ok_and(|(body, ..)| {
-                species.kind(body.species).is_some_and(|kind| !kind.untargetable)
-            })
-        }
+        effects::Victim::Monster(entity) => world.monsters.targetable(entity),
         _ => false,
     });
     if victims.is_empty() {

@@ -1960,7 +1960,7 @@ fn visible_monsters(
         .iter()
         .filter_map(|&entity| {
             let (monster, at, walker, ..) = damage.monsters().get(entity).ok()?;
-            if monster.is_dead() || !damage.active(entity) {
+            if !damage.targetable(entity) {
                 return None;
             }
             let feet = feet(at.translation(), walker);
