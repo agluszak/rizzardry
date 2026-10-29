@@ -100,7 +100,7 @@ pub(super) fn away_from(feet: Vec3, party_eye: Vec3, metres: f32) -> Vec3 {
 }
 
 /// Metres per unit of a species' `combat_move_range`.
-const METRES_PER_MOVE_RANGE: f32 = 20.0;
+pub(super) const METRES_PER_MOVE_RANGE: f32 = 20.0;
 
 /// Walk monsters on their move toward the party; the move ends when they
 /// arrive, spend it or fall.
