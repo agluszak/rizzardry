@@ -31,7 +31,10 @@ fn chunk<'a>(bytes: &mut Bytes<'a>) -> Result<([u8; 4], &'a [u8]), DecodeError> 
 }
 
 /// A level state chunk's payload, if the file has it.
-fn level_chunk<'a>(data: &'a [u8], wanted: &[u8; 4]) -> Result<Option<&'a [u8]>, DecodeError> {
+pub(super) fn level_chunk<'a>(
+    data: &'a [u8],
+    wanted: &[u8; 4],
+) -> Result<Option<&'a [u8]>, DecodeError> {
     let mut bytes = Bytes::new(data);
     let (id, root) = chunk(&mut bytes)?;
     if &id != b"RIFF" {

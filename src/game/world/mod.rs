@@ -2,6 +2,7 @@
 
 pub mod containers;
 pub mod damage;
+pub mod encounters;
 pub mod hostility;
 pub mod identify;
 pub mod interaction;
@@ -94,6 +95,13 @@ impl Plugin for WorldPlugin {
                         .run_if(level::level_active)
                         .after(level::activate_level),
                 ),
+            )
+            // Encounters come over ground physics has placed.
+            .add_systems(
+                FixedPostUpdate,
+                encounters::run_encounters
+                    .after(avian3d::prelude::PhysicsSystems::Writeback)
+                    .run_if(level::level_active),
             )
             .add_systems(
                 FixedPreUpdate,

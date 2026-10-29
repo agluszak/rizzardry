@@ -125,6 +125,11 @@ fn species(record: &[u8]) -> Result<Species, DecodeError> {
         pronouns: record[0xcc].min(3),
         group_size: dice_at(record, 0xc1)?,
         unborn: record[0x26a] != 0,
+        companions: std::array::from_fn(|i| {
+            let at = 0xc5 + 3 * i;
+            let species = i16::from_le_bytes([record[at], record[at + 1]]);
+            (species > 0).then(|| (species as u32, record[at + 2]))
+        }),
         temper: Temper {
             flee_chance: record[0xe2],
             craven: record[0x1c0] == 0,

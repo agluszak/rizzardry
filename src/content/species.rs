@@ -333,6 +333,9 @@ pub struct Species {
     /// A group of it starts unborn, until something births it (retail
     /// record `unborn`).
     pub unborn: bool,
+    /// Groups that may come along when it comes as a random encounter, each
+    /// at its chance (%) (retail `companions`).
+    pub companions: [Option<(u32, u8)>; 2],
 }
 
 /// A species' special attack: a breath, a gaze or a summoning (retail

@@ -86,9 +86,9 @@ impl ScaledBody {
 pub struct MonsterBodies(pub HashMap<u32, Handle<MonsterBody>>);
 
 impl MonsterBodies {
-    /// The bodies of the monsters a level places and of those they can
-    /// summon, loading any not yet requested: a group called up mid-fight
-    /// must have its body ready.
+    /// The bodies of the monsters a level places, of those they can summon
+    /// and of its random encounters and their companions, loading any not
+    /// yet requested: a group called up in play must have its body ready.
     pub fn for_level(
         &mut self,
         geometry: &LevelDefinition,
@@ -100,8 +100,22 @@ impl MonsterBodies {
             .monsters
             .iter()
             .filter_map(|placed| species.kind(placed.species)?.special.kind?.summons());
+        let encountered: Vec<u32> = geometry
+            .encounters
+            .generators
+            .iter()
+            .flat_map(|generator| generator.table.iter().flat_map(|table| &table.entries))
+            .map(|entry| entry.species)
+            .collect();
+        let companions: Vec<u32> = encountered
+            .iter()
+            .filter_map(|&id| species.kind(id))
+            .flat_map(|kind| kind.companions.iter().flatten().map(|&(id, _)| id))
+            .collect();
         placed
             .chain(summoned)
+            .chain(encountered)
+            .chain(companions)
             .filter_map(|id| {
                 let kind = species.kind(id)?;
                 let body = self
@@ -316,9 +330,14 @@ pub fn populate(
     ids: &mut ItemIds,
     rng: &mut GameRng,
 ) {
-    let (remembered_monsters, remembered_items, groups) = match remembered {
-        Some(record) => (Some((record.monsters, record.unborn)), Some(record.items), record.groups),
-        None => (None, None, default()),
+    let (remembered_monsters, remembered_items, groups, encounters) = match remembered {
+        Some(record) => (
+            Some((record.monsters, record.unborn)),
+            Some(record.items),
+            record.groups,
+            Some(record.encounters),
+        ),
+        None => (None, None, default(), None),
     };
     // Every placed monster is rolled in placement order, the unborn too.
     let (monsters, unborn): (Vec<KeptMonster>, Vec<KeptMonster>) = match remembered_monsters {
@@ -341,6 +360,10 @@ pub fn populate(
         }
     };
     commands.entity(root).insert(Unborn(unborn));
+    // The encounters' timers jitter after the placed monsters' rolls.
+    let encounters = encounters
+        .unwrap_or_else(|| super::encounters::EncounterState::authored(&geometry.encounters, rng));
+    commands.entity(root).insert(encounters);
     let mut groups: HashMap<i32, Entity> = groups
         .into_iter()
         .map(|group| (group.authored, commands.spawn((group, LevelOwned(root))).id()))

@@ -35,6 +35,8 @@ pub const SPELL_EFFECTS: &str = "retail://data/databases/spelleffect.dbs";
 pub const SPELL_DESCRIPTIONS: &str = "retail://data/databases/spelldesc.dbs";
 pub const NPCS: &str = "retail://data/databases/npc.dbs";
 pub const FACTS: &str = "retail://data/databases/fact.dbs";
+pub const ENCOUNTER_TABLES: &str = "retail://data/databases/encountertables.dbs";
+pub const LEVEL_RECORDS: &str = "retail://data/databases/levels.dbs";
 /// The game's string table.
 pub const STRINGS: &str = "retail://data/strings/stringdata.dat";
 

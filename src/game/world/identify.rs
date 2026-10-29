@@ -25,6 +25,12 @@ pub struct MonsterGroup {
     pub counted: bool,
     /// The stance last set on the group and when, if anything has set one.
     pub set: Option<super::hostility::SetStance>,
+    /// A random encounter about the level, and the game second it came
+    /// (retail `encounter_registered`, `spawn_time`).
+    pub encounter: Option<u64>,
+    /// A companion group come along with the random encounter of this
+    /// group id, which it goes with (retail `leader_group_id`).
+    pub escort_of: Option<i32>,
 }
 
 /// Membership is independent of level lifetime ownership. Replacing this

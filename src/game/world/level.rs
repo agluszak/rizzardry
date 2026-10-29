@@ -225,6 +225,7 @@ pub struct LevelRecord {
     prop_motion: HashMap<usize, PropMotion>,
     pub(super) monsters: Vec<KeptMonster>,
     pub(super) unborn: Vec<KeptMonster>,
+    pub(super) encounters: super::encounters::EncounterState,
     pub(super) items: Vec<(WorldItem, Vec3)>,
     pub(super) groups: Vec<MonsterGroup>,
     notes: MapNotes,
@@ -319,6 +320,8 @@ pub struct LevelContents<'w, 's> {
     groups: Query<'w, 's, &'static MonsterGroup>,
     notes: Query<'w, 's, &'static MapNotes>,
     unborn: Query<'w, 's, &'static super::population::Unborn>,
+    encounters: Query<'w, 's, &'static super::encounters::EncounterState>,
+    clock: Res<'w, crate::game::time::GameClock>,
 }
 
 impl LevelContents<'_, '_> {
@@ -342,6 +345,10 @@ impl LevelContents<'_, '_> {
                 })
                 .collect(),
             unborn: self.unborn.get(root).map_or_else(|_| Vec::new(), |unborn| unborn.0.clone()),
+            encounters: super::encounters::EncounterState {
+                arrival: Some(super::encounters::Arrival::Returned { left: self.clock.ms / 1000 }),
+                ..self.encounters.get(root).cloned().unwrap_or_default()
+            },
             items: self
                 .items
                 .iter_many(children)
