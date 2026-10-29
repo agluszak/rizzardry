@@ -13,7 +13,7 @@ pub use crate::content::characters::{Gender, Profession, Race};
 use crate::content::items::ItemDefinition;
 
 /// Stamina above which an exhausted member comes round.
-const COMES_ROUND_ABOVE: u32 = 9;
+pub(crate) const COMES_ROUND_ABOVE: u32 = 9;
 
 /// Retail's conditions, mildest first. Death is not one of them here: a
 /// member is dead exactly when their health is 0.

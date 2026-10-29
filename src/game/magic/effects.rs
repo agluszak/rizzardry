@@ -1286,8 +1286,11 @@ pub fn resolve(
             damage(rng, world, v, realm, rolled, strength.against)
         }),
         Kind::Heal | Kind::Stamina | Kind::Restoration => each(&mut |v, rng, world| {
-            let Victim::Member(member) = v else { return None };
-            if world.members.get(member).ok()?.1.is_dead() {
+            let dead = match v {
+                Victim::Member(member) => world.members.get(member).ok()?.1.is_dead(),
+                Victim::Monster(entity) => world.monsters.monsters().get(entity).ok()?.0.is_dead(),
+            };
+            if dead {
                 return None;
             }
             let dice = if kind == Kind::Restoration { Some(RESTORATION_DICE) } else { spell.dice };
@@ -1303,7 +1306,6 @@ pub fn resolve(
             {
                 effect = Effect::Refreshed { victim: v, amount };
             }
-            let (_, mut vitals, ..) = world.members.get_mut(member).ok()?;
             if kind == Kind::Restoration {
                 use Condition::*;
                 let all = [
@@ -1323,7 +1325,21 @@ pub fn resolve(
                     Paralyzed,
                     Unconscious,
                 ];
-                cure(rng, &mut vitals.conditions, &all, strength, true);
+                let lifted = match v {
+                    Victim::Member(member) => {
+                        let (_, mut vitals, ..) = world.members.get_mut(member).ok()?;
+                        cure(rng, &mut vitals.conditions, &all, strength, true)
+                    }
+                    Victim::Monster(entity) => {
+                        let mut conditions = world.monsters.conditions_mut(entity)?;
+                        cure(rng, &mut conditions, &all, strength, true)
+                    }
+                };
+                if matches!(effect, Effect::Nothing { .. })
+                    && let Some(&condition) = lifted.first()
+                {
+                    effect = Effect::Cured { victim: v, condition };
+                }
             }
             Some(effect)
         }),
@@ -1526,8 +1542,8 @@ enum Pool {
     Stamina,
 }
 
-/// Restore a living member's health or stamina by rolled `dice`, up to the
-/// maximum: the amount, or `None` (nothing rolled) when the member lacks
+/// Restore a living actor's health or stamina by rolled `dice`, up to the
+/// maximum: the amount, or `None` (nothing rolled) when the actor lacks
 /// none or cannot be restored.
 fn restore(
     rng: &mut GameRng,
@@ -1537,23 +1553,48 @@ fn restore(
     dice: Option<Dice>,
     strength: Strength,
 ) -> Option<u32> {
-    let Victim::Member(member) = victim else { return None };
-    let (character, mut vitals, ..) = world.members.get_mut(member).ok()?;
-    if vitals.is_dead() {
-        return None;
-    }
-    let (current, maximum) = match pool {
-        Pool::Health => (vitals.hp, character.stats(&vitals.enchantments).max_hp()),
-        Pool::Stamina => (vitals.stamina, character.stats(&vitals.enchantments).max_stamina()),
+    let (current, maximum) = match victim {
+        Victim::Member(member) => {
+            let (character, vitals, ..) = world.members.get(member).ok()?;
+            if vitals.is_dead() {
+                return None;
+            }
+            let stats = character.stats(&vitals.enchantments);
+            match pool {
+                Pool::Health => (vitals.hp, stats.max_hp()),
+                Pool::Stamina => (vitals.stamina, stats.max_stamina()),
+            }
+        }
+        Victim::Monster(entity) => {
+            let (body, ..) = world.monsters.monsters().get(entity).ok()?;
+            if body.is_dead() {
+                return None;
+            }
+            match pool {
+                Pool::Health => (body.hp, body.max_hp),
+                Pool::Stamina => (body.stamina, body.max_stamina),
+            }
+        }
     };
     let missing = maximum.saturating_sub(current);
     if missing == 0 {
         return None;
     }
     let amount = magnitude(rng, dice, strength).min(missing);
-    match pool {
-        Pool::Health => vitals.heal(amount, maximum),
-        Pool::Stamina => vitals.restore_stamina(amount, maximum),
+    match victim {
+        Victim::Member(member) => {
+            let (_, mut vitals, ..) = world.members.get_mut(member).ok()?;
+            match pool {
+                Pool::Health => vitals.heal(amount, maximum),
+                Pool::Stamina => vitals.restore_stamina(amount, maximum),
+            }
+        }
+        Victim::Monster(entity) => {
+            match pool {
+                Pool::Health => world.monsters.restore_health(entity, amount),
+                Pool::Stamina => world.monsters.restore_stamina(entity, amount),
+            };
+        }
     }
     Some(amount)
 }

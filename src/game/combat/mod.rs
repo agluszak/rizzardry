@@ -2952,6 +2952,89 @@ mod tests {
     }
 
     #[test]
+    fn restorative_spells_heal_monsters_wake_only_exhaustion_and_skip_full_or_dead_targets() {
+        use crate::content::spells::{SpellDefinition, SpellId};
+        use crate::game::{
+            characters::Lasting,
+            magic::{Strength, effects},
+        };
+        use bevy::ecs::system::RunSystemOnce;
+        let (mut app, _) = round_app(true);
+        app.world_mut().resource_mut::<Messages<StartRound>>().clear();
+        let target =
+            app.world().try_query::<&Combatants>().unwrap().single(app.world()).unwrap().entities()
+                [0];
+        let cast = |app: &mut App, id| {
+            app.world_mut().run_system_once(
+                move |mut context: MagicContext, mut members: Members,
+                      mut damage: MonsterDamage, mut rng: ResMut<GameRng>,
+                      mut points: Query<(&LearnedSpells, &mut SpellPoints)>| {
+                    context.with_field(0, &mut members, &mut damage, |field| {
+                        effects::resolve(Some(effects::Victim::Monster(target)), false,
+                            &SpellDefinition { id, realm: Some(crate::content::characters::Realm::Divine), dice: Some(Dice { count: 1, sides: 1, base: 50 }), ..default() },
+                            Strength { power: 1, boost: 0, against: 1 },
+                            &[effects::Victim::Monster(target)], &mut rng, field, &mut points)
+                    }).unwrap()
+                }).unwrap()
+        };
+        {
+            let mut body = app.world_mut().get_mut::<Monster>(target).unwrap();
+            body.hp = body.max_hp - 5;
+            body.stamina = 0;
+            body.max_stamina = 100;
+            body.conditions = vec![(Condition::Unconscious, Lasting::Indefinite)];
+        }
+        cast(&mut app, SpellId::HEAL_WOUNDS);
+        let body = app.world().get::<Monster>(target).unwrap();
+        assert_eq!(body.hp, body.max_hp);
+        assert_eq!(body.stamina, 0);
+        cast(&mut app, SpellId::STAMINA);
+        let body = app.world().get::<Monster>(target).unwrap();
+        assert!(body.stamina > 9);
+        assert!(body.conditions.is_empty(), "stamina restores consciousness after exhaustion");
+        {
+            let mut body = app.world_mut().get_mut::<Monster>(target).unwrap();
+            body.stamina = 0;
+            body.conditions = vec![
+                (Condition::Unconscious, Lasting::Rounds(5)),
+                (Condition::Poisoned, Lasting::Indefinite),
+            ];
+        }
+        cast(&mut app, SpellId::STAMINA);
+        assert_eq!(
+            app.world().get::<Monster>(target).unwrap().conditions.len(),
+            2,
+            "stamina alone does not cure a knockout or poison"
+        );
+        app.world_mut().get_mut::<Monster>(target).unwrap().stamina = 100;
+        assert!(
+            effects::affected(&cast(&mut app, SpellId::RESTORATION)),
+            "curing conditions alone is an effective restoration"
+        );
+        assert!(app.world().get::<Monster>(target).unwrap().conditions.is_empty());
+        {
+            let mut body = app.world_mut().get_mut::<Monster>(target).unwrap();
+            body.stamina = body.max_stamina;
+        }
+        let before = app.world().resource::<GameRng>().clone();
+        cast(&mut app, SpellId::HEAL_WOUNDS);
+        cast(&mut app, SpellId::STAMINA);
+        assert_eq!(
+            app.world().resource::<GameRng>(),
+            &before,
+            "full actors consume no magnitude rolls"
+        );
+        app.world_mut().get_mut::<Monster>(target).unwrap().hp = 0;
+        cast(&mut app, SpellId::RESTORATION);
+        assert_eq!(
+            app.world().get::<Monster>(target).unwrap().hp,
+            0,
+            "restoration cannot resurrect"
+        );
+        assert_eq!(app.world().resource::<GameRng>(), &before);
+    }
+
+    #[test]
     fn monster_blasts_use_the_explosion_origin_instead_of_caster_aim_visibility() {
         use crate::game::{
             characters::Lasting, magic::effects::Standing, world::obstacles::scenery,

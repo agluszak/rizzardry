@@ -151,6 +151,25 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         body.hp = body.hp.saturating_add(amount).min(body.max_hp);
         body.hp.saturating_sub(before)
     }
+    /// Restoring stamina wakes exhaustion, but leaves a timed knockout alone.
+    pub fn restore_stamina(&mut self, entity: Entity, amount: u32) -> u32 {
+        let Ok((mut body, ..)) = self.monsters.get_mut(entity) else { return 0 };
+        if body.is_dead() {
+            return 0;
+        }
+        let before = body.stamina;
+        body.stamina = body.stamina.saturating_add(amount).min(body.max_stamina);
+        if body.stamina > crate::game::characters::COMES_ROUND_ABOVE {
+            body.conditions.retain(|&(condition, lasting)| {
+                (condition, lasting)
+                    != (
+                        crate::game::characters::Condition::Unconscious,
+                        crate::game::characters::Lasting::Indefinite,
+                    )
+            });
+        }
+        body.stamina.saturating_sub(before)
+    }
     pub fn restore_magic(&mut self, entity: Entity, amount: u32) {
         if let Ok((mut body, ..)) = self.monsters.get_mut(entity) {
             body.spell_points =
