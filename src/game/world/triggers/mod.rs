@@ -700,13 +700,10 @@ fn execute(
             if recipients.is_empty() {
                 return Ran::Declined;
             }
-            let now = world
-                .get_resource::<Time<Virtual>>()
-                .map_or(std::time::Duration::ZERO, Time::elapsed);
             for recipient in recipients {
                 let mut emitter = world.get_mut::<Emitter>(recipient).unwrap();
                 let enabled = change.apply(emitter.emitting());
-                emitter.set_active(enabled, now);
+                emitter.set_active(enabled);
             }
         }
         TriggerAction::AmbientSounds { names, change } => {

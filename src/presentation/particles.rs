@@ -1,24 +1,257 @@
-//! Particle billboards observe game-owned scene simulation and birth history.
-use super::{billboards::FaceCamera, environment::LevelAppearance};
+//! A level's particle systems as the player sees them: births on their
+//! emitters' schedules, each particle's motion and expiry, and its sprite.
+//! The game keeps only whether each emitter emits ([`Emitter`]); retail
+//! likewise counts births and moves particles in its renderer
+//! (`stParticle::Update`), and a spent emission limit only stops births
+//! (`ActivateParticle`), it does not switch the emitter off.
+use super::{PresentationRng, billboards::FaceCamera, environment::LevelAppearance};
 use crate::{
     content::{
         level::{LevelDefinition, LevelGeometry},
         particles::*,
     },
-    game::world::{
-        level::{Level, LevelOwned},
-        particles::{Emitter, Particle},
+    game::{
+        party::body::PartyBody,
+        world::{
+            level::{Level, LevelOwned},
+            obstacles::WorldObstacles,
+            particles::Emitter,
+        },
     },
 };
 use bevy::prelude::*;
+use rand::Rng;
+use std::time::Duration;
+
+/// An emitter's births so far this visit (retail `emission_count`,
+/// `last_emission_tick`).
+#[derive(Component, Debug, Default)]
+pub struct Emission {
+    last: Option<Duration>,
+    emitted: u32,
+}
+
+/// One particle of an emitter, its child.
+#[derive(Component, Debug)]
+pub struct Particle {
+    pub born: Duration,
+    integrated: Duration,
+    pub velocity: Vec3,
+    pub flutter_angle: f32,
+}
+
 #[derive(Component)]
 struct ParticleSprite;
 #[derive(Resource)]
 struct ParticleMesh(Handle<Mesh>);
 pub(super) fn plugin(app: &mut App) {
     let mesh = app.world_mut().resource_mut::<Assets<Mesh>>().add(Rectangle::new(1.0, 1.0));
-    app.insert_resource(ParticleMesh(mesh))
-        .add_systems(Update, (attach_sprites, animate_particles).chain());
+    app.insert_resource(ParticleMesh(mesh)).add_observer(track_emission).add_systems(
+        Update,
+        (move_particles, emit_particles, attach_sprites, animate_particles).chain(),
+    );
+}
+
+/// An emitter's births are counted from its arrival.
+fn track_emission(add: On<Add<Emitter>>, mut commands: Commands) {
+    commands.entity(add.entity).insert(Emission::default());
+}
+
+fn expired(lifetime: &ParticleLifetime, age: Duration) -> bool {
+    match lifetime {
+        ParticleLifetime::Timed(limit) => age > *limit,
+        ParticleLifetime::TextureOnce(limit) => age >= *limit,
+        ParticleLifetime::TextureLoop => false,
+    }
+}
+
+fn emitter_pose(config: &ParticleConfig, eye: Option<Vec3>) -> Transform {
+    let mut transform = config.transform;
+    if config.follows_eye {
+        transform.translation += eye.unwrap_or_default();
+    }
+    transform
+}
+
+fn inside(bounds: &ParticleBounds, point: Vec3, transform: Transform) -> bool {
+    let local = transform.rotation.inverse() * (point - transform.translation);
+    match bounds {
+        ParticleBounds::None => true,
+        ParticleBounds::Box { minimum, maximum } => {
+            local.cmpge(*minimum).all() && local.cmple(*maximum).all()
+        }
+        ParticleBounds::Sphere { centre, radius } => local.distance(*centre) <= *radius,
+    }
+}
+
+/// An emitter's authored definition, through its level.
+fn config<'a>(
+    levels: &Query<&Level>,
+    geometry: &'a Assets<LevelDefinition>,
+    owner: &LevelOwned,
+    emitter: &Emitter,
+) -> Option<&'a ParticleConfig> {
+    geometry.get(&levels.get(owner.0).ok()?.definition)?.particles.get(emitter.definition())
+}
+
+fn move_particles(
+    time: Res<Time<Virtual>>,
+    geometry: Res<Assets<LevelDefinition>>,
+    levels: Query<&Level>,
+    emitters: Query<(&LevelOwned, &Emitter)>,
+    party: Query<&avian3d::prelude::Position, With<PartyBody>>,
+    mut particles: Query<(Entity, &ChildOf, &mut Particle, &mut Transform)>,
+    obstacles: WorldObstacles,
+    mut commands: Commands,
+) {
+    let eye = party.single().ok().map(PartyBody::eye);
+    for (entity, emitter, mut particle, mut transform) in &mut particles {
+        let Ok((owner, emitter)) = emitters.get(emitter.parent()) else { continue };
+        let Some(config) = config(&levels, &geometry, owner, emitter) else {
+            commands.entity(entity).despawn();
+            continue;
+        };
+        let age = time.elapsed().saturating_sub(particle.born);
+        if expired(&config.lifetime, age) {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        let elapsed = time.elapsed().saturating_sub(particle.integrated).as_secs_f32();
+        particle.integrated = time.elapsed();
+        particle.velocity += config.acceleration * elapsed;
+        let next = transform.translation + particle.velocity * elapsed;
+        let blocked = config.stops_at_scenery && !obstacles.clear(transform.translation, next);
+        if blocked || !inside(&config.bounds, next, emitter_pose(config, eye)) {
+            commands.entity(entity).despawn();
+        } else if transform.translation != next {
+            transform.translation = next;
+        }
+    }
+}
+
+fn emit_particles(
+    time: Res<Time<Virtual>>,
+    geometry: Res<Assets<LevelDefinition>>,
+    levels: Query<&Level>,
+    mut emitters: Query<(Entity, &LevelOwned, &Emitter, &mut Emission, Option<&Children>)>,
+    particles: Query<&Particle>,
+    party: Query<&avian3d::prelude::Position, With<PartyBody>>,
+    mut rng: ResMut<PresentationRng>,
+    mut commands: Commands,
+) {
+    let eye = party.single().ok().map(PartyBody::eye);
+    let now = time.elapsed();
+    for (entity, owner, emitter, mut emission, produced) in &mut emitters {
+        let Some(config) = config(&levels, &geometry, owner, emitter) else { continue };
+        if !emitter.emitting() || matches!(config.emission, ParticleEmission::None) {
+            emission.last = None;
+            continue;
+        }
+        // Turned on: its schedule starts now (retail `SetActive`).
+        let Some(last) = emission.last else {
+            emission.last = Some(now);
+            continue;
+        };
+        let elapsed = now.saturating_sub(last);
+        if elapsed < config.interval {
+            continue;
+        }
+        let transform = emitter_pose(config, eye);
+        let due = match config.emission {
+            ParticleEmission::Single => 1,
+            _ => {
+                ((elapsed.as_nanos().saturating_sub(1)) / config.interval.as_nanos().max(1)) as u64
+            }
+        };
+        let mut existing: Vec<_> = produced
+            .into_iter()
+            .flat_map(|p| p.iter())
+            .filter_map(|e| particles.get(e).ok().map(|p| (p.born, e)))
+            .collect();
+        let spent = |emission: &Emission| {
+            config.emission_limit != 0 && emission.emitted >= config.emission_limit
+        };
+        for _ in 0..due {
+            // A spent limit stops births, and the emitter stays on.
+            if spent(&emission) {
+                emission.last = Some(now);
+                break;
+            }
+            let born = match config.emission {
+                ParticleEmission::CatchUp { .. } => emission.last.unwrap() + config.interval,
+                ParticleEmission::Single | ParticleEmission::None => now,
+            };
+            if expired(&config.lifetime, now.saturating_sub(born)) {
+                emission.last = Some(born);
+                emission.emitted = emission.emitted.saturating_add(1);
+                continue;
+            }
+            if existing.len() >= config.capacity as usize {
+                if !config.replace_when_full || existing.is_empty() {
+                    emission.last = Some(now);
+                    break;
+                }
+                let (index, _) = existing
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, (born, entity))| (*born, *entity))
+                    .unwrap();
+                commands.entity(existing.swap_remove(index).1).despawn();
+            }
+            let rng = &mut rng.0;
+            let mut velocity = match config.direction {
+                ParticleDirection::Stationary => Vec3::ZERO,
+                ParticleDirection::Fixed(direction) => direction,
+                ParticleDirection::Forward => transform.rotation * Vec3::NEG_Z,
+                ParticleDirection::Cone { yaw, pitch } => {
+                    transform.rotation
+                        * Quat::from_rotation_y((rng.random::<f32>() - 0.5) * yaw)
+                        * Quat::from_rotation_x((rng.random::<f32>() - 0.5) * pitch)
+                        * Vec3::NEG_Z
+                }
+                ParticleDirection::Random => Vec3::new(
+                    rng.random::<f32>() - 0.5,
+                    rng.random::<f32>() - 0.5,
+                    rng.random::<f32>() - 0.5,
+                )
+                .normalize_or(Vec3::Y),
+            } * match config.speed {
+                ParticleSpeed::Zero => 0.0,
+                ParticleSpeed::Fixed(speed) => speed,
+                ParticleSpeed::Random { minimum, maximum } => {
+                    minimum + (maximum - minimum) * rng.random::<f32>()
+                }
+            };
+            let mut position = transform.translation;
+            let lag = if let ParticleEmission::CatchUp { minimum, maximum } = config.emission {
+                position += transform.rotation
+                    * (minimum
+                        + (maximum - minimum)
+                            * Vec3::new(rng.random(), rng.random(), rng.random()));
+                emission.last = Some(born);
+                now.saturating_sub(born).as_secs_f32()
+            } else {
+                emission.last = Some(now);
+                0.0
+            };
+            velocity += config.acceleration * lag;
+            position += velocity * lag;
+            let particle = commands
+                .spawn((
+                    Particle {
+                        born,
+                        integrated: now,
+                        velocity,
+                        flutter_angle: rng.random::<f32>() * std::f32::consts::TAU,
+                    },
+                    Transform::from_translation(position),
+                    ChildOf(entity),
+                ))
+                .id();
+            emission.emitted = emission.emitted.saturating_add(1);
+            existing.push((born, particle));
+        }
+    }
 }
 fn attach_sprites(
     levels: Query<&LevelAppearance>,
@@ -140,8 +373,123 @@ mod tests {
     use super::*;
     use crate::{
         content::surface::{Surface, TextureFrames},
-        game::world::particles::tests::{scene, step},
+        game::world::triggers::tests::Scenario,
     };
+
+    /// The game's emitter scene, seen: its emitters count their births.
+    fn scene() -> Scenario {
+        let mut scene = crate::game::world::particles::tests::scene();
+        scene.world.init_resource::<Time<Virtual>>();
+        scene.world.init_resource::<avian3d::collider_tree::ColliderTrees>();
+        scene.world.insert_resource(PresentationRng(rand::SeedableRng::seed_from_u64(3)));
+        scene.world.add_observer(track_emission);
+        scene.visit(None);
+        scene
+    }
+
+    fn step(scene: &mut Scenario, ms: u64) {
+        scene.world.resource_mut::<Time<Virtual>>().advance_by(Duration::from_millis(ms));
+        scene.world.run_system_cached(move_particles).unwrap();
+        scene.world.flush();
+        scene.world.run_system_cached(emit_particles).unwrap();
+        scene.world.flush();
+    }
+
+    fn count(scene: &mut Scenario) -> usize {
+        scene.world.query::<&Particle>().iter(&scene.world).count()
+    }
+
+    fn active(scene: &mut Scenario) -> bool {
+        scene.world.query::<&Emitter>().single(&scene.world).unwrap().emitting()
+    }
+
+    #[test]
+    fn catch_up_keeps_scheduled_births_and_retires_old_texture_lifetimes() {
+        let mut scene = scene();
+        {
+            let handle = scene.world.get::<Level>(scene.root).unwrap().definition.clone();
+            let mut definitions = scene.world.resource_mut::<Assets<LevelDefinition>>();
+            let config = &mut definitions.get_mut(&handle).unwrap().particles[0];
+            config.emission =
+                ParticleEmission::CatchUp { minimum: Vec3::ZERO, maximum: Vec3::ZERO };
+            config.capacity = 20;
+            config.emission_limit = 0;
+            config.lifetime = ParticleLifetime::TextureOnce(Duration::from_millis(250));
+        }
+        assert!(scene.run("ON").0);
+        // The view sees it switched on, as on its next frame.
+        step(&mut scene, 0);
+        step(&mut scene, 1000);
+        let born: Vec<_> = scene
+            .world
+            .query::<&Particle>()
+            .iter(&scene.world)
+            .map(|particle| particle.born)
+            .collect();
+        assert_eq!(born, [Duration::from_millis(800), Duration::from_millis(900)]);
+        let positions: Vec<_> = scene
+            .world
+            .query::<&Transform>()
+            .iter(&scene.world)
+            .map(|t| t.translation.y)
+            .filter(|y| *y > 0.0)
+            .collect();
+        assert!(positions.iter().any(|&y| (y - 0.2).abs() < 0.0001));
+        assert!(positions.iter().any(|&y| (y - 0.1).abs() < 0.0001));
+    }
+
+    /// Retail's limit stops births without switching the emitter off, and a
+    /// new visit starts a new count (`ActivateParticle`); the game's RNG is
+    /// untouched.
+    #[test]
+    fn a_spent_limit_stops_births_and_a_new_visit_counts_afresh() {
+        let mut scene = scene();
+        let rng = scene.world.resource::<crate::game::rng::GameRng>().clone();
+        assert!(scene.run("ON").0);
+        // The view sees it switched on, as on its next frame.
+        step(&mut scene, 0);
+        step(&mut scene, 100);
+        step(&mut scene, 100);
+        assert_eq!(count(&mut scene), 2);
+        step(&mut scene, 100);
+        assert_eq!(count(&mut scene), 2, "no third birth");
+        assert!(active(&mut scene), "the emitter stays on");
+        step(&mut scene, 500);
+        assert_eq!(count(&mut scene), 0);
+        let memory = scene.remember();
+        let member = scene.members[0];
+        scene.visit(Some(memory));
+        assert!(scene.world.get_entity(member).is_ok());
+        assert!(active(&mut scene));
+        step(&mut scene, 0);
+        step(&mut scene, 100);
+        assert_eq!(count(&mut scene), 1, "a new visit's births");
+        assert_eq!(scene.world.resource::<crate::game::rng::GameRng>(), &rng);
+    }
+
+    #[test]
+    fn stopping_leaves_existing_particles_to_move_and_expire_and_restart_has_no_backlog() {
+        let mut scene = scene();
+        assert!(scene.run("ON").0);
+        // The view sees it switched on, as on its next frame.
+        step(&mut scene, 0);
+        step(&mut scene, 100);
+        let entity =
+            scene.world.query_filtered::<Entity, With<Particle>>().single(&scene.world).unwrap();
+        assert!(scene.run("OFF").0);
+        step(&mut scene, 100);
+        assert_eq!(count(&mut scene), 1);
+        assert!((scene.world.get::<Transform>(entity).unwrap().translation.y - 0.1).abs() < 1e-6);
+        step(&mut scene, 201);
+        assert_eq!(count(&mut scene), 0);
+        assert!(scene.run("ON").0);
+        // The view sees it switched on, as on its next frame.
+        step(&mut scene, 0);
+        step(&mut scene, 50);
+        assert_eq!(count(&mut scene), 0);
+        step(&mut scene, 50);
+        assert_eq!(count(&mut scene), 1, "no backlog from the time it was off");
+    }
 
     #[test]
     fn rebuilding_particle_views_preserves_birth_motion_and_independent_texture_phase() {
@@ -173,6 +521,8 @@ mod tests {
         });
         scene.world.entity_mut(scene.root).insert(LevelAppearance(appearance));
         assert!(scene.run("ON").0);
+        // The view sees it switched on, as on its next frame.
+        step(&mut scene, 0);
         step(&mut scene, 100);
         scene.world.run_system_cached(attach_sprites).unwrap();
         scene.world.flush();

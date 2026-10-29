@@ -54,7 +54,6 @@ impl Plugin for GamePlugin {
             .add_plugins((
                 avian3d::prelude::PhysicsPlugins::default(),
                 world::WorldPlugin,
-                world::particles::plugin,
                 npcs::NpcPlugin,
                 party::PartyPlugin,
                 time::TimePlugin,
