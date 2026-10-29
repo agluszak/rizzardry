@@ -16,6 +16,22 @@ use std::collections::HashMap;
 
 /// Named NPCs use their definition identity; repeatable monster-bound NPCs also
 /// need the authored placement. Neither key uses a transient retail runtime slot.
+/// The levels of the party's members able to fight, in roster order: the
+/// population retail's NPC rules average over (`hp_current > 0 &&
+/// highest_condition < ASLEEP`, as in `CanNpcJoinParty` and the charm).
+pub(crate) fn able_levels(world: &mut World) -> Vec<u8> {
+    let Some(party) = crate::game::party::roster::the_party(world) else { return Vec::new() };
+    let Some(roster) = world.get::<crate::game::party::roster::PartyRoster>(party) else {
+        return Vec::new();
+    };
+    roster
+        .iter()
+        .filter(|&m| world.get::<crate::game::characters::Vitals>(m).is_some_and(|v| v.can_fight()))
+        .filter_map(|m| world.get::<crate::game::characters::Character>(m))
+        .map(|character| character.level())
+        .collect()
+}
+
 #[derive(Component, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ActorId {
     Named(NpcId),

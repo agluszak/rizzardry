@@ -1490,13 +1490,7 @@ fn approach_npc(world: &mut World, entity: Entity, approach: Approach) {
     let Some((speaker, level)) = best_communicator(world) else { return };
     let mut delta = scale + level as i32 * (scale.abs() / 5) / 100;
     if approach == Approach::Charm && delta > 0 {
-        let members = able_members(world);
-        let total: u32 = members
-            .iter()
-            .filter_map(|&m| world.get::<Character>(m))
-            .map(|c| u32::from(c.level()))
-            .sum();
-        let average = if members.is_empty() { 1 } else { total / members.len() as u32 };
+        let average = crate::game::party::average_level(super::able_levels(world));
         let own = active_body(world, actor)
             .and_then(|body| world.get::<Monster>(body))
             .and_then(|m| GameData::species(world)?.kind(m.species))

@@ -114,19 +114,12 @@ fn willing(world: &mut World, id: NpcId, definition: &NpcDefinition) -> bool {
         }
     }
     if definition.min_party_level > 0 {
-        let Some(party) = the_party(world) else { return false };
-        let levels: Vec<u32> = world
-            .get::<PartyRoster>(party)
-            .map(|roster| {
-                roster
-                    .iter()
-                    .filter(|&member| world.get::<Vitals>(member).is_some_and(Vitals::can_fight))
-                    .filter_map(|member| world.get::<Character>(member))
-                    .map(|character| u32::from(character.level()))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let average = levels.iter().sum::<u32>().checked_div(levels.len() as u32).unwrap_or(0);
+        if the_party(world).is_none() {
+            return false;
+        }
+        // Retail counts no able member as an average of nothing.
+        let levels = super::able_levels(world);
+        let average = if levels.is_empty() { 0 } else { crate::game::party::average_level(levels) };
         if average < u32::from(definition.min_party_level) {
             return false;
         }
