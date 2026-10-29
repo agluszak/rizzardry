@@ -186,7 +186,8 @@ fn spawn_main_screen_keys(mut commands: Commands) {
 }
 
 /// Whether the world's shortcut keys may act: the party is in the world,
-/// under no question, and no focused control owns the keyboard. Every world
+/// entering no level, under no question, and no focused control owns the
+/// keyboard. Every world
 /// shortcut context is held by this one rule.
 #[derive(bevy::ecs::system::SystemParam)]
 pub(crate) struct WorldKeys<'w, 's> {
@@ -203,11 +204,13 @@ pub(crate) struct WorldKeys<'w, 's> {
             Without<crate::game::npcs::conversation::Closing>,
         ),
     >,
+    entering: Query<'w, 's, (), With<crate::game::world::level::Destination>>,
 }
 
 impl WorldKeys<'_, '_> {
     pub(crate) fn active(&self) -> bool {
         *self.screen.get() == Screen::World
+            && self.entering.is_empty()
             && self.questions.is_empty()
             && self.conversations.is_empty()
             && !self.focus.get().is_some_and(|entity| self.controls.contains(entity))
