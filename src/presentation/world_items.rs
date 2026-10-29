@@ -104,10 +104,7 @@ pub fn turn_world_items(time: Res<Time>, mut items: Query<&mut Transform, With<I
 /// nearby lights, and the material's own glow.
 pub fn light_world_items(
     time: Res<Time>,
-    party: Query<
-        (&avian3d::prelude::Position, &crate::game::magic::enchantments::PartyEffects),
-        With<crate::game::party::body::PartyBody>,
-    >,
+    torch: super::environment::PartyTorch,
     hovered: Res<super::hover::Hover>,
     clock: Res<GameClock>,
     levels: Query<(
@@ -124,10 +121,8 @@ pub fn light_world_items(
     else {
         return;
     };
-    let sky = level.environment.as_ref().map_or(Vec3::ZERO, |e| e.sky_light(clock.phase()));
-    let torch = party.single().ok().and_then(|(at, effects)| {
-        super::environment::spell_light(crate::game::party::body::PartyBody::eye(at), effects)
-    });
+    let sky = super::environment::sky_now(level, &clock);
+    let torch = torch.light();
     // The hovered item pulses green: retail raises and lowers its level by
     // 0.05 every 50 ms between 0.25 and 1. How retail's renderer mixes the
     // highlight in is not recovered; here it adds green light.

@@ -13,8 +13,35 @@ use crate::game::world::props::PropPart;
 use crate::presentation::billboards::FaceCamera;
 use crate::presentation::party_view::PartyCamera;
 
+/// The party's torch, as every lit view reads it: the Light spell's
+/// [`spell_light`] at the party's eye.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct PartyTorch<'w, 's> {
+    party: Query<
+        'w,
+        's,
+        (
+            &'static avian3d::prelude::Position,
+            &'static crate::game::magic::enchantments::PartyEffects,
+        ),
+        With<crate::game::party::body::PartyBody>,
+    >,
+}
+
+impl PartyTorch<'_, '_> {
+    pub fn light(&self) -> Option<crate::content::level::PointLightSource> {
+        let (at, effects) = self.party.single().ok()?;
+        spell_light(crate::game::party::body::PartyBody::eye(at), effects)
+    }
+}
+
+/// The sky's light on a level now, by the time of day's phase.
+pub(super) fn sky_now(level: &LevelGeometry, clock: &GameClock) -> Vec3 {
+    level.environment.as_ref().map_or(Vec3::ZERO, |e| e.sky_light(clock.phase()))
+}
+
 /// Retail camera light: warm, 4000 retail units, twice adjusted power plus two.
-pub(super) fn spell_light(
+fn spell_light(
     eye: Vec3,
     effects: &crate::game::magic::enchantments::PartyEffects,
 ) -> Option<crate::content::level::PointLightSource> {

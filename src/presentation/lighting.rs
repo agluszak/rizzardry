@@ -1,11 +1,6 @@
 //! Dynamic contributions use live fragment positions; baked mesh colours stay immutable.
-use super::environment::{LevelAppearance, spell_light};
-use crate::{
-    content::level::LevelGeometry,
-    game::{
-        magic::enchantments::PartyEffects, party::body::PartyBody, world::triggers::LightActivation,
-    },
-};
+use super::environment::LevelAppearance;
+use crate::{content::level::LevelGeometry, game::world::triggers::LightActivation};
 use bevy::{
     asset::embedded_asset,
     pbr::{ExtendedMaterial, MaterialExtension},
@@ -50,7 +45,7 @@ pub fn plugin(app: &mut App) {
 fn update_lights(
     levels: Query<(&LevelAppearance, Option<&LightActivation>)>,
     geometry: Res<Assets<LevelGeometry>>,
-    party: Query<(&avian3d::prelude::Position, &PartyEffects), With<PartyBody>>,
+    torch: super::environment::PartyTorch,
     scene: Res<SceneLights>,
     mut buffers: ResMut<Assets<ShaderBuffer>>,
 ) {
@@ -73,9 +68,7 @@ fn update_lights(
                 [props as f32, compiled as f32, 0.0, 0.0],
             ]);
         }
-        if let Ok((position, effects)) = party.single()
-            && let Some(light) = spell_light(PartyBody::eye(position), effects)
-        {
+        if let Some(light) = torch.light() {
             data.push([
                 light.position.extend(light.range).to_array(),
                 light.colour.extend(0.0).to_array(),
@@ -103,6 +96,7 @@ fn update_lights(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::{magic::enchantments::PartyEffects, party::body::PartyBody};
     use crate::{
         content::spells::SpellId,
         game::{magic::enchantments::Enchantment, world::triggers::LevelState},

@@ -248,10 +248,7 @@ const SKY_SCALE_PER_SECOND: f32 = 2.0;
 /// their falloff at its centre.
 pub fn light_monsters(
     time: Res<Time>,
-    party: Query<
-        (&avian3d::prelude::Position, &crate::game::magic::enchantments::PartyEffects),
-        With<crate::game::party::body::PartyBody>,
-    >,
+    torch: super::environment::PartyTorch,
     clock: Res<GameClock>,
     levels: Query<(
         Entity,
@@ -267,10 +264,8 @@ pub fn light_monsters(
     else {
         return;
     };
-    let sky = level.environment.as_ref().map_or(Vec3::ZERO, |e| e.sky_light(clock.phase()));
-    let torch = party.single().ok().and_then(|(at, effects)| {
-        super::environment::spell_light(crate::game::party::body::PartyBody::eye(at), effects)
-    });
+    let sky = super::environment::sky_now(level, &clock);
+    let torch = torch.light();
     for (transform, mut sampled, mut light) in &mut actors {
         let centre = transform.translation();
         let (target, fixed) = match sampled.lit_at {
