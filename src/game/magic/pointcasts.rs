@@ -14,10 +14,10 @@ use crate::{
         world::{
             hostility::{self, SetStance, Stance},
             identify::{GroupMember, GroupMembers, MonsterGroup},
-            level::{KeptMonster, Level, LevelOwned},
+            level::{Level, LevelOwned},
             navigation::{self, LevelNavigation, WalkerMotionConfig},
             obstacles::WorldObstacles,
-            population::{Monster, MonsterBodies},
+            population::{self, Monster, MonsterBodies, Unborn},
         },
     },
 };
@@ -68,39 +68,19 @@ fn tier(power: u8, realm: usize) -> u32 {
     // Retail g_elemental_summon_group_ids: air, earth, water, fire per tier.
     21 + u32::from(power.saturating_sub(1).min(6)) * 4 + [3, 2, 0, 1][realm]
 }
-fn bodies(world: &mut World, root: Entity) -> Result<Vec<(u32, MonsterBody)>, Refusal> {
-    let mut result = Vec::new();
-    for id in 21..=48 {
-        let model = GameData::species(world)
-            .and_then(|catalog| catalog.kind(id))
-            .ok_or(Refusal::MissingContent)?
-            .model
-            .clone();
-        let handle = match world.get::<MonsterBodies>(root).and_then(|b| b.0.get(&id)).cloned() {
-            Some(handle) => handle,
-            None => {
-                let assets = world.get_resource::<AssetServer>().ok_or(Refusal::MissingContent)?;
-                let handle = assets.load(crate::content::paths::monster(&model));
-                world
-                    .get_mut::<MonsterBodies>(root)
-                    .ok_or(Refusal::MissingContent)?
-                    .0
-                    .insert(id, handle.clone());
-                handle
-            }
-        };
-        if let Some(body) = world
-            .get_resource::<Assets<MonsterBody>>()
-            .and_then(|assets| assets.get(&handle))
-            .cloned()
-        {
-            result.push((id, body));
-        }
-    }
-    if result.len() != 28 {
-        return Err(Refusal::MissingContent);
-    }
-    Ok(result)
+/// The elementals Summon Elemental may call, four elements to a tier
+/// (retail `g_elemental_summon_group_ids`). Their bodies load with every
+/// level ([`MonsterBodies::for_level`]).
+pub const ELEMENTALS: std::ops::RangeInclusive<u32> = 21..=48;
+
+/// Every elemental's body definition, which a summoning needs before it
+/// is paid for.
+fn bodies(world: &World, root: Entity) -> Result<Vec<(u32, MonsterBody)>, Refusal> {
+    let handles = world.get::<MonsterBodies>(root).ok_or(Refusal::MissingContent)?;
+    let assets = world.get_resource::<Assets<MonsterBody>>().ok_or(Refusal::MissingContent)?;
+    ELEMENTALS
+        .map(|id| Ok((id, *handles.get(id, assets).ok_or(Refusal::MissingContent)?)))
+        .collect()
 }
 
 pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Result<(), Refusal> {
@@ -313,73 +293,62 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
             let species_id = tier(strength.power, realm);
             let kind = GameData::species(world).unwrap().kind(species_id).unwrap().clone();
             let body = &definitions.iter().find(|(id, _)| *id == species_id).unwrap().1;
-            let location = world
+            let locations: Vec<i32> = world
                 .query::<(&Monster, &LevelOwned)>()
                 .iter(world)
                 .filter(|(_, owner)| owner.0 == root)
                 .map(|(body, _)| body.location)
-                .max()
-                .unwrap_or(0)
-                + 1;
-            let group_id = world
+                .collect();
+            let groups: Vec<i32> = world
                 .query::<(&MonsterGroup, &LevelOwned)>()
                 .iter(world)
                 .filter(|(_, owner)| owner.0 == root)
                 .map(|(group, _)| group.authored)
-                .max()
-                .unwrap_or(0)
-                + 1;
+                .collect();
+            let ids = population::next_ids(
+                locations,
+                groups,
+                world.get::<Unborn>(root).unwrap_or(&Unborn::default()),
+            );
+            let mut members = population::roll_group(
+                ids,
+                (species_id, 1),
+                (&kind, body),
+                &mut world.resource_mut::<GameRng>(),
+            );
+            members[0].feet = at;
             let stance = if report.outcome == Outcome::Backfired {
                 Stance::Hostile
             } else {
                 Stance::Friendly
             };
-            let group = world
-                .spawn((
-                    MonsterGroup {
-                        authored: group_id,
-                        set: Some(SetStance { stance, at: now }),
-                        ..default()
-                    },
-                    LevelOwned(root),
-                    ChildOf(battle),
-                ))
-                .id();
-            let kept = KeptMonster::rolled(
-                (location, species_id, Some(group_id)),
-                (at, 0.0),
-                (&kind, body),
-                &mut world.resource_mut::<GameRng>(),
+            let navigation = LevelNavigation {
+                archipelagos: world.get::<LevelNavigation>(root).unwrap().archipelagos.clone(),
+            };
+            let catalog = world.resource::<GameData>().species.clone();
+            let (group, spawned) = world.resource_scope(
+                |world, catalogs: Mut<Assets<crate::content::species::MonsterCatalog>>| {
+                    world.resource_scope(|world, mut configs: Mut<Assets<WalkerMotionConfig>>| {
+                        population::spawn_group(
+                            &mut world.commands(),
+                            root,
+                            members,
+                            (ids.1, Some(SetStance { stance, at: now })),
+                            catalogs.get(&catalog).unwrap(),
+                            (&navigation, &mut configs),
+                        )
+                    })
+                },
             );
-            let shape = kept.monster.body;
-            let elemental = world
-                .spawn((
-                    kept.monster,
-                    Transform::from_translation(
-                        at + Vec3::Y * navigation::float_height(shape.speed),
-                    ),
-                    LevelOwned(root),
-                    GroupMember(group),
-                    Combatant(battle),
-                    SummonedBy(caster),
-                    ChildOf(battle),
-                ))
-                .id();
-            if shape.speed > 0.0 {
-                let nav = LevelNavigation {
-                    archipelagos: world.get::<LevelNavigation>(root).unwrap().archipelagos.clone(),
-                };
-                world.resource_scope(|world, mut configs: Mut<Assets<WalkerMotionConfig>>| {
-                    navigation::insert_walker(
-                        &mut world.commands().entity(elemental),
-                        (at, 0.0),
-                        (shape.radius, shape.speed),
-                        &nav,
-                        &mut configs,
-                    );
-                });
-                world.flush();
-            }
+            world.flush();
+            // The summoning lasts no longer than the fight.
+            world.entity_mut(group).insert(ChildOf(battle));
+            let elemental = spawned[0];
+            world.entity_mut(elemental).insert((
+                Combatant(battle),
+                SummonedBy(caster),
+                ChildOf(battle),
+            ));
             // Power Cast may add the element's associated buff; use the same slot and duration rules.
             if strength.boost != 0 && world.resource_mut::<GameRng>().below(100) < strength.boost {
                 let buff = [

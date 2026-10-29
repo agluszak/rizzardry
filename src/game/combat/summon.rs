@@ -12,7 +12,7 @@ use crate::game::rng::GameRng;
 use crate::game::time::GameClock;
 use crate::game::world::hostility::{self, SetStance, Stance};
 use crate::game::world::identify::MonsterGroup;
-use crate::game::world::level::{KeptMonster, Level, PlayedLevel};
+use crate::game::world::level::{Level, PlayedLevel};
 use crate::game::world::navigation::{LevelNavigation, Walker, WalkerMotionConfig, feet};
 use crate::game::world::obstacles::WorldObstacles;
 use crate::game::world::population::{self, Monster, MonsterBodies, Unborn};
@@ -66,41 +66,33 @@ pub fn summon(
     // The next free ids, the unborn's counted too. Groups spawned here are
     // not in the queries until this run ends, so each takes its ids from
     // these and moves them on.
-    let mut next_location = monsters
-        .iter()
-        .map(|(m, ..)| m.location)
-        .chain(unborn.0.iter().map(|k| k.monster.location))
-        .max()
-        .unwrap_or(0)
-        + 1;
-    let mut next_group = groups
-        .iter()
-        .map(|g| g.authored)
-        .chain(unborn.0.iter().filter_map(|k| k.group))
-        .max()
-        .unwrap_or(0)
-        + 1;
+    let (mut next_location, mut next_group) = population::next_ids(
+        monsters.iter().map(|(m, ..)| m.location),
+        groups.iter().map(|g| g.authored),
+        &unborn,
+    );
     // Where this run's earlier groups landed, and their radii: they too are
     // not in the queries, yet the next group must stand clear of them.
     let mut landed: Vec<(Vec3, f32)> = vec![];
     for &Summon { summoner, species: id } in summons.read() {
         let Ok((caller, caller_at, caller_walker)) = monsters.get(summoner) else { continue };
         let Some(kind) = species.kind(id) else { continue };
-        let Some(definition) = bodies.0.get(&id).and_then(|body| definitions.get(body)) else {
+        let Some(definition) = bodies.get(id, &definitions) else {
             warn!("summoned species {id} has no body ready");
             continue;
         };
-        let count = rng.roll(kind.group_size).min(9) as usize;
+        let authored = next_group;
+        let count = rng.roll(kind.group_size);
+        let mut members = population::roll_group(
+            (next_location, authored),
+            (id, count),
+            (kind, definition),
+            &mut rng,
+        );
+        let count = members.len();
         if count == 0 {
             continue;
         }
-        let (location, authored) = (next_location, next_group);
-        let mut members: Vec<KeptMonster> = (0..count)
-            .map(|i| {
-                let identity = (location + i as i32, id, Some(authored));
-                KeptMonster::rolled(identity, (Vec3::ZERO, 0.0), (kind, definition), &mut rng)
-            })
-            .collect();
         let stance = match stances.own(summoner, species, clock.ms) {
             Some(Stance::Friendly) => Stance::Friendly,
             _ => Stance::Hostile,

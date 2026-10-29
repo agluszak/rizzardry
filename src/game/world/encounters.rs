@@ -7,7 +7,7 @@ use avian3d::prelude::Position;
 use bevy::prelude::*;
 
 use super::identify::{GroupMembers, MonsterGroup};
-use super::level::{KeptMonster, Level, PlayedLevel};
+use super::level::{Level, PlayedLevel};
 use super::navigation::{LevelNavigation, Walker, WalkerMotionConfig, feet};
 use super::obstacles::WorldObstacles;
 use super::population::{self, Monster, MonsterBodies, Unborn};
@@ -265,29 +265,22 @@ impl Spawning<'_, '_, '_> {
         unborn: &mut Unborn,
     ) -> Option<Vec<Vec3>> {
         let kind = self.species.kind(id)?;
-        let Some(definition) = self.bodies.0.0.get(&id).and_then(|body| self.bodies.1.get(body))
-        else {
+        let Some(definition) = self.bodies.0.get(id, self.bodies.1) else {
             warn!("encounter species {id} has no body ready");
             return None;
         };
-        let count = count.min(9) as usize;
-        if count == 0 {
+        let (location, authored) = self.next;
+        let mut members = population::roll_group(self.next, (id, count), (kind, definition), rng);
+        if members.is_empty() {
             return None;
         }
-        let (location, authored) = self.next;
-        self.next = (location + count as i32, authored + 1);
-        let mut members: Vec<KeptMonster> = (0..count)
-            .map(|i| {
-                let identity = (location + i as i32, id, Some(authored));
-                KeptMonster::rolled(identity, (at, 0.0), (kind, definition), rng)
-            })
-            .collect();
+        self.next = (location + members.len() as i32, authored + 1);
         let toward = toward - at;
         let yaw = (-toward.x).atan2(-toward.z);
         let obstacles = self.obstacles;
         let spots = population::scatter(
             (at, yaw, 2.0 * members[0].monster.body.radius),
-            count,
+            members.len(),
             rng,
             |spot| obstacles.ground_below(spot, GROUND_BELOW),
             |_| true,
@@ -541,21 +534,11 @@ pub fn run_encounters(
         },
     };
     let night = night(&clock);
-    // The next free ids, the unborn's counted too.
-    let next_location = monsters
-        .iter()
-        .map(|(m, ..)| m.location)
-        .chain(unborn.0.iter().map(|k| k.monster.location))
-        .max()
-        .unwrap_or(0)
-        + 1;
-    let next_group = groups
-        .iter()
-        .map(|(_, g, _)| g.authored)
-        .chain(unborn.0.iter().filter_map(|k| k.group))
-        .max()
-        .unwrap_or(0)
-        + 1;
+    let (next_location, next_group) = population::next_ids(
+        monsters.iter().map(|(m, ..)| m.location),
+        groups.iter().map(|(_, g, _)| g.authored),
+        &unborn,
+    );
     let mut spawning = Spawning {
         root,
         species,

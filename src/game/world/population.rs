@@ -119,10 +119,20 @@ impl ScaledBody {
 pub struct MonsterBodies(pub HashMap<u32, Handle<MonsterBody>>);
 
 impl MonsterBodies {
+    /// A species' body definition, once loaded.
+    pub fn get<'a>(
+        &self,
+        species: u32,
+        assets: &'a Assets<MonsterBody>,
+    ) -> Option<&'a MonsterBody> {
+        assets.get(self.0.get(&species)?)
+    }
+
     /// The bodies of every species a level may bring into play, loading any
     /// not yet requested, since a group called up in play must have its
     /// body ready: those it places, its random encounters and their
-    /// companions, and whatever any of these can summon, in turn.
+    /// companions, the elementals the party may summon, and whatever any of
+    /// these can summon, in turn.
     pub fn for_level(
         &mut self,
         geometry: &LevelDefinition,
@@ -145,6 +155,7 @@ impl MonsterBodies {
             geometry.monsters.iter().map(|placed| placed.species).collect();
         spawnable.extend(encountered);
         spawnable.extend(companions);
+        spawnable.extend(crate::game::magic::pointcasts::ELEMENTALS);
         let mut next = 0;
         while let Some(&id) = spawnable.get(next) {
             if let Some(called) = species.kind(id).and_then(|kind| kind.special.kind?.summons())
@@ -301,6 +312,41 @@ pub fn spawn_group(
 /// their group is born.
 #[derive(Component, Clone, Debug, Default)]
 pub struct Unborn(pub Vec<KeptMonster>);
+
+/// The next free monster location and group ids of a level: past every
+/// one its monsters and groups hold, the unborn's included.
+pub fn next_ids(
+    locations: impl IntoIterator<Item = i32>,
+    groups: impl IntoIterator<Item = i32>,
+    unborn: &Unborn,
+) -> (i32, i32) {
+    let next = |ids: &mut dyn Iterator<Item = i32>| ids.max().unwrap_or(0) + 1;
+    (
+        next(&mut locations.into_iter().chain(unborn.0.iter().map(|k| k.monster.location))),
+        next(&mut groups.into_iter().chain(unborn.0.iter().filter_map(|k| k.group))),
+    )
+}
+
+/// A group of `count` of a species called up in play, nine at most, rolled
+/// in order under the ids `(location, authored)`: the first takes
+/// `location`, the next the one after, and so on.
+pub fn roll_group(
+    (location, authored): (i32, i32),
+    (id, count): (u32, u32),
+    (kind, body): (&crate::content::species::Species, &MonsterBody),
+    rng: &mut GameRng,
+) -> Vec<KeptMonster> {
+    (0..count.min(9) as i32)
+        .map(|i| {
+            KeptMonster::rolled(
+                (location + i, id, Some(authored)),
+                (Vec3::ZERO, 0.0),
+                (kind, body),
+                rng,
+            )
+        })
+        .collect()
+}
 
 /// Birth an unborn group of the played level, by the level's id for it
 /// (retail `GiveBirthToMonster`): its members come into the world where
