@@ -577,6 +577,13 @@ pub fn queue_notices(
                     _ => vec![],
                 })
                 .unwrap_or_default(),
+            // Retail `g_condition_interrupt_notices` (0x3a0 on, twelve of
+            // them); fear's flight has none.
+            CombatNews::Interrupted { monster, interrupt } => names
+                .name(*monster)
+                .filter(|_| *interrupt < 12)
+                .map(|name| vec![format!("{name} {}", string(0x3a0 + usize::from(*interrupt)))])
+                .unwrap_or_default(),
             CombatNews::Withdraws { monster } => names
                 .name(*monster)
                 .map(|name| vec![string(0x23a).replacen("%s", &name, 1)])

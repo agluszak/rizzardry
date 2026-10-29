@@ -60,6 +60,9 @@ pub(super) fn decide(
     fleeing: &mut bool,
     nearest: f32,
 ) -> Conduct {
+    if monster.species == crate::game::world::hostility::BYSTANDER_SPECIES {
+        return Conduct::Hold;
+    }
     let (chance, still) = flee_chance(monster, kind, stance, *fleeing, nearest);
     *fleeing = still;
     if rng.below(100) < chance {
@@ -70,6 +73,47 @@ pub(super) fn decide(
         return if kind.temper.camouflaged { Conduct::Hold } else { Conduct::Withdraw };
     }
     Conduct::Fight
+}
+
+/// What a monster's conditions do to its action as it begins (retail
+/// `GetConditionInterrupt` for a monster), by retail's interrupt number,
+/// which also names its notice: nausea (3), a web held (0) or broken (7),
+/// blindness (2), insanity (4 to 6, or 8 turning it on its friends), fear
+/// (1, or 12 sending it running) and Turncoat (9, its action stands).
+pub(super) fn interrupt(
+    rng: &mut GameRng,
+    monster: &Monster,
+    kind: &Species,
+    (fleeing, strikes_friend, berserk, against_foes): (bool, bool, bool, bool),
+) -> Option<u8> {
+    use crate::game::characters::Condition;
+    let has = |condition| monster.conditions.iter().any(|&(c, _)| c == condition);
+    if has(Condition::Nauseated) && rng.below(100) < 25 {
+        return Some(3);
+    }
+    if has(Condition::Webbed) {
+        let freed = rng.below(100) < u32::from(kind.attributes.strength) / 3;
+        return Some(if freed { 7 } else { 0 });
+    }
+    if has(Condition::Blind)
+        && rng.below(100) < 20
+        && kind.kind != crate::content::species::MonsterKind::Monk
+    {
+        return Some(2);
+    }
+    if has(Condition::Insane) && rng.below(100) < 80 {
+        if strikes_friend && !berserk && rng.below(100) < 40 {
+            return Some(8);
+        }
+        return Some(rng.below(3) as u8 + 4);
+    }
+    if has(Condition::Afraid) && rng.below(100) < 25 && !fleeing {
+        return Some(1);
+    }
+    if has(Condition::Afraid) && rng.below(100) < 40 {
+        return Some(12);
+    }
+    (has(Condition::Turncoat) && against_foes).then_some(9)
 }
 
 #[cfg(test)]
@@ -98,6 +142,23 @@ pub(super) mod tests {
     }
 
     use bevy::prelude::default;
+
+    /// A web holds a weak monster; nothing interrupts a clear-headed one,
+    /// and Turncoat lets an action against its new foes stand.
+    #[test]
+    fn conditions_interrupt_a_monsters_action() {
+        use crate::game::characters::{Condition, Lasting};
+        let mut rng = GameRng::seeded(4);
+        let kind = Species::default();
+        let mut webbed = monster(100);
+        webbed.conditions.push((Condition::Webbed, Lasting::Rounds(3)));
+        assert_eq!(interrupt(&mut rng, &webbed, &kind, (false, false, false, true)), Some(0));
+        assert_eq!(interrupt(&mut rng, &monster(100), &kind, (false, false, false, true)), None);
+        let mut turned = monster(100);
+        turned.conditions.push((Condition::Turncoat, Lasting::Rounds(3)));
+        assert_eq!(interrupt(&mut rng, &turned, &kind, (false, false, false, true)), Some(9));
+        assert_eq!(interrupt(&mut rng, &turned, &kind, (false, false, false, false)), None);
+    }
 
     /// A craven species without its own chance always runs, and keeps
     /// running until the party closes to short reach; a steady one fights;

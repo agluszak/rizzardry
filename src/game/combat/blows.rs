@@ -32,6 +32,10 @@ pub(super) struct Fight<'a, 'w, 's> {
     /// Monsters advancing this round, which drop their guard.
     pub advancing: &'a dyn Fn(Entity) -> bool,
     pub points: &'a mut Query<'w, 's, (&'static LearnedSpells, &'static mut SpellPoints)>,
+    /// Whom the acting monster may attack (retail `BuildMonsterActionQueue`'s
+    /// `MonsterVsCharDisposition` and `MonsterHostility` tests); members
+    /// act on their own orders.
+    pub attacks: &'a dyn Fn(Victim) -> bool,
 }
 
 /// Whoever a swing landed on, and how.
@@ -215,7 +219,7 @@ fn monster_bystanders(
         let gap = here.distance(feet(other_at.translation(), other_walker))
             - monster.body.radius
             - other.body.radius;
-        if entity == attacker || gap.max(0.0) <= reach.metres() {
+        if entity != target && (entity == attacker || gap.max(0.0) <= reach.metres()) {
             bystanders.push(Victim::Monster(entity));
         }
     }
@@ -673,9 +677,9 @@ fn notices(
 }
 
 /// A monster's attack (retail `StartMonsterAttack` and its swings): one of
-/// its attacks and modes at a member it reaches, all equally likely, its
-/// swings each rolled to hit, to penetrate and for damage and effects.
-/// Returns whether it had nobody to attack.
+/// its attacks and modes at a member or a fellow monster it may attack and
+/// reaches, all equally likely, its swings each rolled to hit, to penetrate
+/// and for damage and effects. Returns whether it had nobody to attack.
 pub(super) fn monster_attacks(
     battle: &mut Battle,
     index: usize,
@@ -693,16 +697,37 @@ pub(super) fn monster_attacks(
     let position = at.translation();
     let eye = feet(position, walker) + Vec3::Y * monster.body.eye_height;
     let formation = &**field.formation;
-    // Every (attack, mode, member) that reaches is equally likely.
+    let here = feet(position, walker);
+    // Every (attack, mode, target) that reaches is equally likely: members,
+    // then the other monsters in the fight.
     let mut candidates = vec![];
     for (a, attack) in kind.attacks.iter().enumerate() {
         for &member in field.party {
             let Ok((_, vitals, ..)) = field.members.get(member) else { continue };
             if vitals.can_fight()
+                && (fight.attacks)(Victim::Member(member))
                 && fight.party.reaches(formation, member, position, attack.reach, distance)
             {
                 for mode in attack.modes {
-                    candidates.push((a, mode, member));
+                    candidates.push((a, mode, Victim::Member(member)));
+                }
+            }
+        }
+        for &other in fight.combatants {
+            let Ok((body, other_at, other_walker, _)) = field.monsters.monsters().get(other) else {
+                continue;
+            };
+            let gap = here.distance(feet(other_at.translation(), other_walker))
+                - monster.body.radius
+                - body.body.radius;
+            if other != entity
+                && !body.is_dead()
+                && field.monsters.active(other)
+                && (fight.attacks)(Victim::Monster(other))
+                && gap.max(0.0) <= attack.reach.metres()
+            {
+                for mode in attack.modes {
+                    candidates.push((a, mode, Victim::Monster(other)));
                 }
             }
         }
@@ -713,7 +738,7 @@ pub(super) fn monster_attacks(
         return true;
     }
     battle.this_round.attacked = true;
-    let (a, mode, member) = candidates[rng.below(candidates.len() as u32) as usize];
+    let (a, mode, target) = candidates[rng.below(candidates.len() as u32) as usize];
     let attack = &kind.attacks[a];
     // Retail draws for the mode again, from just the one chosen.
     let mode = attack::choose_mode(rng, enumset::EnumSet::only(mode));
@@ -726,6 +751,7 @@ pub(super) fn monster_attacks(
     };
     // A member not facing it may turn in time, or be struck from behind.
     if attack.reach <= Reach::Short
+        && let Victim::Member(member) = target
         && let Ok((character, vitals, ..)) = field.members.get(member)
     {
         let side = formation::quadrant(fight.party.eye, fight.party.yaw, position);
@@ -741,7 +767,7 @@ pub(super) fn monster_attacks(
     }
     news.write(CombatNews::Attack {
         attacker: entity,
-        target: member,
+        target: target.entity(),
         how: Announcement::Monster { word: attack.word, mode, named: attack.named() },
         swings,
         surprise,
@@ -755,11 +781,13 @@ pub(super) fn monster_attacks(
         if !monster.can_fight() {
             break;
         }
-        let Some((_, aimed_at)) = member_defence(battle, field, fight, member)
-            .filter(|_| field.members.get(member).is_ok_and(|(_, v, ..)| !v.is_dead()))
-        else {
-            break;
+        let aimed_at = match target {
+            Victim::Member(member) => member_defence(battle, field, fight, member)
+                .filter(|_| field.members.get(member).is_ok_and(|(_, v, ..)| !v.is_dead()))
+                .map(|(_, defence)| defence),
+            Victim::Monster(other) => monster_defence(field, fight, other),
         };
+        let Some(aimed_at) = aimed_at else { break };
         let aim = attack::monster_aim(
             (kind, &monster),
             attack,
@@ -770,28 +798,36 @@ pub(super) fn monster_attacks(
         );
         let landing = if attack.reach >= Reach::Long {
             let blind = monster.conditions.iter().any(|&(c, _)| c == Condition::Blind);
-            let shot = attack::scatter(rng, eye, fight.party.eye, aim, blind);
-            attack::strikes(fight.party.eye, shot, body::RADIUS, body::RADIUS).then(|| Landing {
-                victim: Victim::Member(member),
+            // At the party's eye, or a monster's middle.
+            let (aimed, radius, half_height) = match target {
+                Victim::Member(_) => (fight.party.eye, body::RADIUS, body::RADIUS),
+                Victim::Monster(other) => {
+                    let Ok((body, at, walker, _)) = field.monsters.monsters().get(other) else {
+                        break;
+                    };
+                    let centre = body_centre(feet(at.translation(), walker), body);
+                    (centre, body.body.radius, body.body.eye_height * 0.5)
+                }
+            };
+            let shot = attack::scatter(rng, eye, aimed, aim, blind);
+            attack::strikes(aimed, shot, radius, half_height).then(|| Landing {
+                victim: target,
                 roll: rng.below(100) + 1,
                 sure: true,
                 through: false,
                 fumbled: false,
             })
         } else {
-            let bystanders = monster_bystanders(field, fight, entity, attack.reach, member);
+            let bystanders =
+                monster_bystanders(field, fight, entity, attack.reach, target.entity());
             let odds =
                 attack::monster_aim((kind, &monster), attack, mode, surprise, None, difficulty);
             let fumble = attack::fumble_chance(bystanders.len(), odds);
             match attack::swing(rng, bystanders.len(), fumble) {
                 Aim::Missed => None,
-                Aim::Reaches { roll, sure } => Some(Landing {
-                    victim: Victim::Member(member),
-                    roll,
-                    sure,
-                    through: sure,
-                    fumbled: false,
-                }),
+                Aim::Reaches { roll, sure } => {
+                    Some(Landing { victim: target, roll, sure, through: sure, fumbled: false })
+                }
                 Aim::Fumbled { bystander, roll } => {
                     surprise = Surprise::default();
                     Some(Landing {
@@ -883,7 +919,7 @@ pub(super) fn monster_attacks(
             tally.damage += dealt;
         }
     }
-    tally.report(battle, (entity, member), news);
+    tally.report(battle, (entity, target.entity()), news);
     battle.this_round.monsters[index].1 =
         Turn { phase: super::next_phase(turn.phase, turn_left), attacks_left: turn_left };
     false

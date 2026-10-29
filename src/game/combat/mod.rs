@@ -284,6 +284,8 @@ struct Round {
     moved: Vec<Entity>,
     /// Monsters that made their special attack.
     specials: Vec<Entity>,
+    /// Monsters insanity turned on their friends this round.
+    berserk: Vec<Entity>,
     /// How the party moves this round.
     pace: Option<PartyPace>,
     /// How often each member has tried to spot an attacker this round.
@@ -457,6 +459,12 @@ pub enum CombatNews {
     Special {
         monster: Entity,
         kind: u8,
+    },
+    /// A monster's condition took its action (retail
+    /// `GetConditionInterrupt`, by its interrupt number).
+    Interrupted {
+        monster: Entity,
+        interrupt: u8,
     },
     /// A monster runs for its life.
     Flees {
@@ -1406,16 +1414,11 @@ pub fn run_battle(
             continue;
         }
         if let Some(index) = battle.this_round.monsters.iter().position(|(_, t)| t.phase == step) {
-            let monster = battle.this_round.monsters[index].0;
-            let stance = stances
-                .iter()
-                .find(|&&(m, _)| m == monster)
-                .map_or(hostility::Stance::Hostile, |&(_, stance)| stance);
             let acted = monster_turn(
                 &mut commands,
                 &mut battle,
                 (index, step),
-                (combatants, stance),
+                (combatants, &stances),
                 &mut rng,
                 (&mut members, &mut damage),
                 &party,
@@ -1520,8 +1523,14 @@ fn party_turn(
     let advancing = |monster| moving.contains(monster);
     let armours = party_armours(battle, members, context);
     let armour = |member| armours.iter().find(|&&(m, _)| m == member).map(|&(_, a)| a);
-    let mut fight =
-        blows::Fight { combatants, party, armour: &armour, advancing: &advancing, points };
+    let mut fight = blows::Fight {
+        combatants,
+        party,
+        armour: &armour,
+        advancing: &advancing,
+        points,
+        attacks: &|_| false,
+    };
     let attacked = context.with_field(party.now, members, damage, |field| {
         blows::member_attacks(battle, index, rng, field, &mut fight, news);
     });
@@ -1766,16 +1775,32 @@ fn breath_victims(
     victims
 }
 
+/// What a monster settled on as its round's action began.
+enum Decision<'a> {
+    /// Run, withdraw or hold back; `quiet` for a flight fear forced, which
+    /// retail does not announce.
+    Move {
+        conduct: conduct::Conduct,
+        quiet: bool,
+    },
+    Plan(Plan<'a>),
+    /// Strike someone it may attack, or close in to.
+    Fight,
+}
+
 /// A monster's accepted turn comes (retail `UpdateMonsterAI`,
-/// `StepMonsterCombatAction`): it may run for its life, withdraw or hold
-/// back ([`conduct::decide`]); otherwise it attacks someone it reaches, or
-/// with nobody in reach advances (or charges when hurt) and acts again
-/// later in the round. Returns whether it acted.
+/// `StartMonsterCombatAction`, `StepMonsterCombatAction`). As its round's
+/// action begins it decides: to run, withdraw or hold back
+/// ([`conduct::decide`]), to breathe or cast, or to fight; then its
+/// conditions may interrupt that ([`conduct::interrupt`]). Fighting, it
+/// strikes someone it may attack and reaches, or with nobody in reach
+/// advances (or charges when hurt) and acts again later in the round.
+/// Returns whether it acted.
 fn monster_turn(
     commands: &mut Commands,
     battle: &mut Battle,
     (index, step): (usize, u8),
-    (combatants, stance): (&[Entity], hostility::Stance),
+    (combatants, stances): (&[Entity], &[(Entity, hostility::Stance)]),
     rng: &mut GameRng,
     (members, damage): (&mut Members, &mut MonsterDamage),
     party: &PartyView,
@@ -1783,6 +1808,8 @@ fn monster_turn(
     species: &MonsterCatalog,
     news: &mut MessageWriter<CombatNews>,
 ) -> bool {
+    use crate::game::magic::effects::Victim;
+    use hostility::Stance;
     let monster = battle.this_round.monsters[index].0;
     if !combatants.contains(&monster)
         || !damage.monsters().get(monster).is_ok_and(|(m, ..)| m.can_fight())
@@ -1791,9 +1818,48 @@ fn monster_turn(
         return false;
     }
     let turn = battle.this_round.monsters[index].1;
-    let mut plan = None;
+    // How everyone in the fight stands, each monster by its own stance.
+    let allegiances: Vec<(Entity, hostility::Allegiance)> = combatants
+        .iter()
+        .filter_map(|&entity| {
+            let (body, ..) = damage.monsters().get(entity).ok()?;
+            let kind = species.kind(body.species)?;
+            let group =
+                stances.iter().find(|&&(e, _)| e == entity).map_or(Stance::Hostile, |&(_, s)| s);
+            let turncoat = body.conditions.iter().any(|&(c, _)| c == Condition::Turncoat);
+            let allegiance = hostility::Allegiance {
+                species: body.species,
+                stance: hostility::own_stance(group, turncoat),
+                faction: kind.faction,
+                turncoat,
+            };
+            Some((entity, allegiance))
+        })
+        .collect();
+    let allegiance_of =
+        |entity: Entity| allegiances.iter().find(|&&(e, _)| e == entity).map(|&(_, a)| a);
+    let Some(mine) = allegiance_of(monster) else {
+        battle.this_round.monsters[index].1 = Turn::default();
+        return false;
+    };
+    let turncoats: Vec<Entity> = magic
+        .context
+        .roster
+        .iter()
+        .filter(|&m| members.get(m).is_ok_and(|(_, vitals, ..)| vitals.has(Condition::Turncoat)))
+        .collect();
+    let toward = |victim: Victim| match victim {
+        Victim::Member(member) => {
+            hostility::toward_member(mine.stance, turncoats.contains(&member))
+        }
+        Victim::Monster(other) => {
+            allegiance_of(other).map_or(Stance::Neutral, |theirs| hostility::between(mine, theirs))
+        }
+    };
     // A monster decides as its round's action begins, not again between
     // its attacks.
+    let mut decision = Decision::Fight;
+    let mut interrupted = None;
     if let Ok((body, at, walker, _)) = damage.monsters().get(monster)
         && let Some(kind) = species.kind(body.species)
         && turn.attacks_left == u32::from(kind.attacks_per_round)
@@ -1802,33 +1868,10 @@ fn monster_turn(
         let feet = feet(at.translation(), walker);
         let nearest = distance_to_party(party.eye, body, feet);
         let mut fleeing = battle.fleeing.contains(&monster);
-        let conduct = conduct::decide(rng, body, kind, stance, &mut fleeing, nearest);
+        let conduct = conduct::decide(rng, body, kind, mine.stance, &mut fleeing, nearest);
         battle.fleeing.retain(|&m| m != monster);
         if fleeing {
             battle.fleeing.push(monster);
-        }
-        if conduct != conduct::Conduct::Fight {
-            battle.this_round.monsters[index].1 = Turn::default();
-            // A monster that cannot walk, or has moved this round, stays.
-            let moves = conduct != conduct::Conduct::Hold
-                && walker.is_some_and(|w| w.speed > 0.0)
-                && !battle.this_round.moved.contains(&monster);
-            if !moves {
-                return false;
-            }
-            battle.this_round.moved.push(monster);
-            let metres = approach::move_metres(body, kind, false);
-            let away = approach::away_from(feet, party.eye, metres);
-            commands.entity(monster).insert(approach::CombatMove {
-                budget: metres,
-                moved: 0.0,
-                away: Some(away),
-            });
-            news.write(match conduct {
-                conduct::Conduct::Flee => CombatNews::Flees { monster },
-                _ => CombatNews::Withdraws { monster },
-            });
-            return true;
         }
         // One that would close in on the party to strike does so rather
         // than breathe or cast; one that can strike does either at its
@@ -1837,7 +1880,9 @@ fn monster_turn(
         let closes_in = !kind.temper.prefers_range && !kind.attacks.is_empty() && !reaches;
         let special = kind.special;
         let cooling = battle.cooldowns.iter().any(|&(m, left)| m == monster && left > 0);
-        if special.chance != 0
+        if conduct != conduct::Conduct::Fight {
+            decision = Decision::Move { conduct, quiet: false };
+        } else if special.chance != 0
             && !closes_in
             && let Some(cone) =
                 magic.context.content.spells().and_then(|spells| {
@@ -1864,7 +1909,7 @@ fn monster_turn(
                 stamina: body.stamina,
                 max_stamina: body.max_stamina,
             };
-            plan = Some(Plan::Special {
+            decision = Decision::Plan(Plan::Special {
                 kind: special.kind,
                 cooldown: special.cooldown,
                 breather,
@@ -1877,23 +1922,121 @@ fn monster_turn(
             let chance = if reaches { u32::from(kind.magic.chance) } else { 100 };
             let roster = &magic.context.roster;
             let sight = party.sight(members, roster, &magic.obstacles);
-            let scene = spell_scene(
+            let mut scene = spell_scene(
                 (monster, kind),
                 (combatants, roster),
                 members,
                 damage.monsters(),
                 &sight,
             );
-            plan = monster_spells::choose(rng, body, kind, chance, spells, &scene).and_then(
-                |(id, aim)| {
+            // Its fellows are those it stands with.
+            scene.monsters.retain(|&(other, ..)| {
+                other == monster || toward(Victim::Monster(other)) == Stance::Friendly
+            });
+            if let Some(plan) = monster_spells::choose(rng, body, kind, chance, spells, &scene)
+                .and_then(|(id, aim)| {
                     let spell = spells.get(id)?.clone();
                     let budget = body.spell_budget(kind);
                     let power = monster_spells::power(rng, budget, &spell);
                     Some(Plan::Spell { spell, power, aim, scene, caster: (kind, budget) })
-                },
-            );
+                })
+            {
+                decision = Decision::Plan(plan);
+            }
+        }
+        // Its conditions, then, as the action begins.
+        let against_foes = match &decision {
+            Decision::Move { .. } => false,
+            Decision::Plan(Plan::Spell { spell, .. }) => spell.aimed_at_enemies(),
+            Decision::Plan(Plan::Special { .. }) | Decision::Fight => true,
+        };
+        let strikes_friend = kind.attacks.iter().any(|attack| {
+            let reach = attack.reach.metres();
+            (nearest <= reach
+                && magic
+                    .context
+                    .roster
+                    .iter()
+                    .any(|m| toward(Victim::Member(m)) == Stance::Friendly))
+                || combatants.iter().any(|&other| {
+                    other != monster
+                        && toward(Victim::Monster(other)) == Stance::Friendly
+                        && damage.monsters().get(other).is_ok_and(|(o, o_at, o_walker, _)| {
+                            let gap = feet.distance(crate::game::world::navigation::feet(
+                                o_at.translation(),
+                                o_walker,
+                            )) - body.body.radius
+                                - o.body.radius;
+                            gap.max(0.0) <= reach
+                        })
+                })
+        });
+        let berserk = battle.this_round.berserk.contains(&monster);
+        let fleeing_now =
+            matches!(decision, Decision::Move { conduct: conduct::Conduct::Flee, .. });
+        interrupted = conduct::interrupt(
+            rng,
+            body,
+            kind,
+            (fleeing_now, strikes_friend, berserk, against_foes),
+        );
+    }
+    match interrupted {
+        None | Some(9) => {}
+        // Insanity turns it on its friends this round.
+        Some(8) => {
+            battle.this_round.berserk.push(monster);
+            decision = Decision::Fight;
+        }
+        // Fear sends it running, without its flight's notice.
+        Some(12) => {
+            if !battle.fleeing.contains(&monster) {
+                battle.fleeing.push(monster);
+            }
+            decision = Decision::Move { conduct: conduct::Conduct::Flee, quiet: true };
+        }
+        Some(interrupt) => {
+            if interrupt == 7
+                && let Some(mut conditions) = damage.conditions_mut(monster)
+            {
+                conditions.retain(|&(c, _)| c != Condition::Webbed);
+            }
+            news.write(CombatNews::Interrupted { monster, interrupt });
+            battle.this_round.monsters[index].1 = Turn::default();
+            return true;
         }
     }
+    let plan = match decision {
+        Decision::Move { conduct, quiet } => {
+            battle.this_round.monsters[index].1 = Turn::default();
+            let Ok((body, at, walker, _)) = damage.monsters().get(monster) else { return false };
+            let Some(kind) = species.kind(body.species) else { return false };
+            // A monster that cannot walk, or has moved this round, stays.
+            let moves = conduct != conduct::Conduct::Hold
+                && walker.is_some_and(|w| w.speed > 0.0)
+                && !battle.this_round.moved.contains(&monster);
+            if !moves {
+                return false;
+            }
+            battle.this_round.moved.push(monster);
+            let metres = approach::move_metres(body, kind, false);
+            let away = approach::away_from(feet(at.translation(), walker), party.eye, metres);
+            commands.entity(monster).insert(approach::CombatMove {
+                budget: metres,
+                moved: 0.0,
+                away: Some(away),
+            });
+            if !quiet {
+                news.write(match conduct {
+                    conduct::Conduct::Flee => CombatNews::Flees { monster },
+                    _ => CombatNews::Withdraws { monster },
+                });
+            }
+            return true;
+        }
+        Decision::Plan(plan) => Some(plan),
+        Decision::Fight => None,
+    };
     let BattleMagic { context, points, moving, .. } = magic;
     match plan {
         Some(Plan::Spell { spell, power, aim, scene, caster }) => {
@@ -1931,11 +2074,24 @@ fn monster_turn(
         }
         None => {}
     }
+    // A berserk monster strikes its friends; any other its foes.
+    let wanted = if battle.this_round.berserk.contains(&monster) {
+        Stance::Friendly
+    } else {
+        Stance::Hostile
+    };
+    let may_attack = |victim: Victim| toward(victim) == wanted;
     let advancing = |monster| moving.contains(monster);
     let armours = party_armours(battle, members, context);
     let armour = |member| armours.iter().find(|&&(m, _)| m == member).map(|&(_, a)| a);
-    let mut fight =
-        blows::Fight { combatants, party, armour: &armour, advancing: &advancing, points };
+    let mut fight = blows::Fight {
+        combatants,
+        party,
+        armour: &armour,
+        advancing: &advancing,
+        points,
+        attacks: &may_attack,
+    };
     let idle = context
         .with_field(party.now, members, damage, |field| {
             blows::monster_attacks(battle, index, rng, field, &mut fight, news)
@@ -2552,6 +2708,64 @@ mod tests {
         );
         assert_eq!(app.world().get::<Monster>(monster).unwrap().stamina, 90);
         assert!(fight(app.world()).unwrap().cooldowns.contains(&(monster, 3)));
+    }
+
+    /// A monster under Turncoat strikes its fellow, not the party it now
+    /// stands with (retail `MonsterHostility`, `MonsterVsCharDisposition`).
+    #[test]
+    fn a_turncoat_monster_strikes_its_fellow() {
+        use crate::game::characters::Lasting;
+        let (mut app, members) = round_app(true);
+        let turned =
+            app.world().try_query::<&Combatants>().unwrap().single(app.world()).unwrap().entities()
+                [0];
+        let data = app.world().resource::<GameData>().species.clone();
+        {
+            let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
+            let mut species = catalogs.get_mut(&data).unwrap();
+            species.0[0].attacks_per_round = 1;
+            species.0[0].swings_per_round = 1;
+            species.0[0].attacks = vec![crate::content::species::MonsterAttack {
+                word: AttackWord::Verb,
+                weapon: crate::content::species::MonsterWeapon::Unarmed,
+                effects: default(),
+                reach: Reach::Touch,
+                score: 50,
+                modes: EnumSet::only(AttackMode::Bash),
+                damage: Dice { base: 1, count: 1, sides: 2 },
+            }];
+        }
+        let battle =
+            app.world_mut().query_filtered::<Entity, With<Battle>>().single(app.world()).unwrap();
+        let mut fellow = app.world().get::<Monster>(turned).unwrap().clone();
+        fellow.location = 1;
+        let level = app.world().get::<LevelOwned>(turned).unwrap().0;
+        let fellow = app
+            .world_mut()
+            .spawn((fellow, Transform::from_translation(Vec3::NEG_Z * 2.5), LevelOwned(level)))
+            .id();
+        app.world_mut().entity_mut(fellow).insert(Combatant(battle));
+        app.world_mut()
+            .get_mut::<Monster>(turned)
+            .unwrap()
+            .conditions
+            .push((Condition::Turncoat, Lasting::Rounds(20)));
+        let mut struck = None;
+        for _ in 0..16 {
+            app.update();
+            let news: Vec<_> =
+                app.world_mut().resource_mut::<Messages<CombatNews>>().drain().collect();
+            struck = news.into_iter().find_map(|n| match n {
+                CombatNews::Attack { attacker, target, .. } if attacker == turned => Some(target),
+                _ => None,
+            });
+            if struck.is_some() {
+                break;
+            }
+        }
+        let struck = struck.expect("the turncoat attacks");
+        assert_eq!(struck, fellow, "its fellow, not a member");
+        assert!(!members.contains(&struck));
     }
 
     /// A cast waits for its caster's initiative, is revalidated then, spends
