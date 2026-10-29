@@ -74,10 +74,11 @@ impl ScaledBody {
     }
 }
 
-/// The body definitions an entry's monsters need, by species, held while
-/// the entry loads and dropped with it. Visual model construction is not a
-/// gameplay prerequisite and is requested separately by presentation.
-#[derive(Debug, Default)]
+/// The body definitions a level's monsters need, by species: held by its
+/// entry while it loads, then by the played level (for monsters spawned
+/// later) until it is left. Visual model construction is not a gameplay
+/// prerequisite and is requested separately by presentation.
+#[derive(Component, Debug, Default)]
 pub struct MonsterBodies(pub HashMap<u32, Handle<MonsterBody>>);
 
 impl MonsterBodies {

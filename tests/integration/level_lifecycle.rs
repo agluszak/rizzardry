@@ -19,7 +19,7 @@ use rizzardry::game::world::level::{
     Destination, Entry, Level, LevelEntryFailed, LevelMemory, LevelOwned, LevelReady, Travel,
     activate_level, travel,
 };
-use rizzardry::game::world::population::Monster;
+use rizzardry::game::world::population::{Monster, MonsterBodies};
 use rizzardry::game::world::triggers::PendingPartyMove;
 
 fn app() -> App {
@@ -533,6 +533,8 @@ fn a_level_waits_for_body_metadata_and_sizes_monsters_without_render_assets() {
     let world = app.world_mut();
     let crab = world.query::<&Monster>().single(world).unwrap();
     assert_eq!((crab.body.scale, crab.body.radius), (2.0, 1.0), "its body at its size");
+    let held = world.get::<MonsterBodies>(root).expect("the played level holds its bodies");
+    assert_eq!(held.0[&0], loading, "for monsters spawned while it is played");
     use bevy_tnua::TnuaController;
     use rizzardry::game::world::navigation::{Walker, WalkerMotion, feet};
     let (at, walker, _) = world

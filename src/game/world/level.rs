@@ -672,7 +672,8 @@ pub fn activate_level(
         transition.p1().place(&mut commands, party, geometry, &destination.start);
         navigation::add_party_characters(&mut commands, root, party, &navigation);
         info!("{} is active", level.path);
-        commands.entity(root).remove::<Destination>().insert((level.clone(), navigation));
+        let bodies = std::mem::take(&mut destination.bodies);
+        commands.entity(root).remove::<Destination>().insert((level.clone(), navigation, bodies));
         ready.write(LevelReady { level: root });
         break;
     }
