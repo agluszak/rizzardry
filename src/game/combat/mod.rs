@@ -2373,8 +2373,15 @@ mod tests {
             vitals.hp = 3;
             vitals.poison(crate::game::characters::Lasting::Rounds(50), 100);
         }
+        // The survivor has already finished the last monster, its kill and
+        // experience credited to the fight.
         let monster = app.world_mut().query::<(Entity, &Monster)>().single(app.world()).unwrap().0;
         app.world_mut().get_mut::<Monster>(monster).unwrap().hp = 0;
+        {
+            let mut fight = fight_mut(app.world_mut());
+            fight.kills = 1;
+            fight.experience = 500;
+        }
         let experience = app.world().get::<Character>(last).unwrap().experience;
         let mut news = Vec::new();
         for _ in 0..12 {
