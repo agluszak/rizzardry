@@ -210,10 +210,9 @@ pub fn scatter(
     spots
 }
 
-/// A group come into the level (retail `CreateGroup`): up to nine of a
-/// species, at the spots given (the first its leader's), facing `yaw`,
-/// with the stance something set on it. The members take the next free
-/// location ids, the group the next free group id. Returns the group.
+/// A group come into the level (retail `CreateGroup`): its members as
+/// rolled and placed, under the group id given, with the stance something
+/// set on it. Returns the group and its members.
 pub fn spawn_group(
     commands: &mut Commands,
     root: Entity,
