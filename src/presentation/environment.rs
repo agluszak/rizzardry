@@ -5,9 +5,9 @@ use bevy::prelude::*;
 
 use crate::content::level::LevelGeometry;
 use crate::game::time::GameClock;
-use bevy::asset::{LoadState, RecursiveDependencyLoadState};
+use bevy::asset::LoadState;
 
-use crate::game::world::level::{Destination, Level, LevelEntities, PresentationReadiness};
+use crate::game::world::level::{Destination, Level, LevelEntities};
 use crate::game::world::props::Prop;
 use crate::game::world::props::PropPart;
 use crate::presentation::billboards::FaceCamera;
@@ -79,47 +79,22 @@ pub(super) fn actor_light(
 #[derive(Component, Debug)]
 pub struct LevelAppearance(pub Handle<LevelGeometry>);
 
-/// On an entry being prepared: its appearance, loading before it commits.
+/// On an entry being prepared: its appearance, loading alongside it.
 #[derive(Component, Debug)]
 pub struct PreparedAppearance(Handle<LevelGeometry>);
 
-/// Load an entry's appearance as part of its preparation, holding its
-/// commit until the appearance and what it uses have loaded. If the level
-/// itself cannot be shown the entry fails; a missing texture or model only
-/// shows as missing, as before.
+/// Start loading an entry's appearance while gameplay prepares it, so it
+/// is likely ready when the level commits. It never holds or fails the
+/// entry: a level whose looks are late shows them when they arrive, and
+/// one whose looks fail plays on unseen ([`attach_level_visuals`]).
 pub fn prepare_appearance(
     mut commands: Commands,
-    entries: Query<(Entity, &Destination, Option<&PreparedAppearance>)>,
+    entries: Query<(Entity, &Destination), Without<PreparedAppearance>>,
     assets: Res<AssetServer>,
 ) {
-    for (entity, destination, prepared) in &entries {
-        let Some(PreparedAppearance(handle)) = prepared else {
-            let handle = assets.load(crate::content::paths::retail(&destination.level.path));
-            commands
-                .entity(entity)
-                .insert((PreparedAppearance(handle), PresentationReadiness::Waiting));
-            continue;
-        };
-        let readiness = match assets.get_load_states(handle) {
-            Some((LoadState::Failed(error), ..)) => {
-                Some(PresentationReadiness::Failed(format!("its appearance failed: {error}")))
-            }
-            Some((
-                LoadState::Loaded,
-                _,
-                RecursiveDependencyLoadState::Loaded | RecursiveDependencyLoadState::Failed(_),
-            )) => None,
-            _ => Some(PresentationReadiness::Waiting),
-        };
-        match readiness {
-            Some(PresentationReadiness::Waiting) => {}
-            Some(failed) => {
-                commands.entity(entity).insert(failed);
-            }
-            None => {
-                commands.entity(entity).remove::<PresentationReadiness>();
-            }
-        }
+    for (entity, destination) in &entries {
+        let handle = assets.load(crate::content::paths::retail(&destination.level.path));
+        commands.entity(entity).insert(PreparedAppearance(handle));
     }
 }
 
@@ -207,7 +182,8 @@ pub fn apply_environment(
     }
 }
 
-/// The level's meshes have been attached.
+/// The level's meshes have been attached, or its appearance failed and
+/// none will be.
 #[derive(Component, Debug)]
 pub struct LevelVisuals;
 
@@ -220,11 +196,18 @@ pub fn attach_level_visuals(
     source_materials: Res<Assets<StandardMaterial>>,
     mut materials: ResMut<Assets<super::lighting::SceneMaterial>>,
     lights: Res<super::lighting::SceneLights>,
+    assets: Res<AssetServer>,
     props: Query<(&Prop, &Children)>,
     parts: Query<&PropPart>,
 ) {
     for (root, level, children) in &levels {
-        let Some(geometry) = geometry.get(&level.0) else { continue };
+        let Some(geometry) = geometry.get(&level.0) else {
+            if let Some(LoadState::Failed(error)) = assets.get_load_state(&level.0) {
+                error!("the level's appearance failed to load; it plays unseen: {error}");
+                commands.entity(root).insert(LevelVisuals);
+            }
+            continue;
+        };
         // Do not mark a partially attached scene complete while material
         // definitions are still arriving; retry attachment as one operation.
         if geometry
@@ -378,11 +361,35 @@ mod tests {
         assert!(app.world().get::<DistanceFog>(camera).is_none());
     }
 
+    /// A level whose looks cannot load plays on unseen; presentation gives
+    /// up on them without touching the level.
+    #[test]
+    fn a_level_whose_appearance_fails_plays_on_unseen() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<LevelGeometry>()
+            .init_resource::<Assets<StandardMaterial>>()
+            .init_resource::<Assets<super::super::lighting::SceneMaterial>>()
+            .insert_resource(super::super::lighting::SceneLights(default()))
+            .add_systems(Update, attach_level_visuals);
+        // No loader takes this file, so its load fails.
+        let handle = app.world().resource::<AssetServer>().load("missing.appearance");
+        let root = app.world_mut().spawn(LevelAppearance(handle)).id();
+        for _ in 0..100 {
+            app.update();
+            if app.world().get::<LevelVisuals>(root).is_some() {
+                break;
+            }
+        }
+        assert!(app.world().get::<LevelVisuals>(root).is_some());
+        assert!(app.world().get::<LevelAppearance>(root).is_some());
+    }
+
     #[test]
     fn billboards_follow_the_camera_without_changing_gameplay_poses() {
         let mut app = App::new();
-        app.add_plugins((MinimalPlugins, TransformPlugin))
-            .init_resource::<Assets<LevelGeometry>>()
+        app.add_plugins((MinimalPlugins, TransformPlugin, AssetPlugin::default()))
+            .init_asset::<LevelGeometry>()
             .init_resource::<Assets<StandardMaterial>>()
             .init_resource::<Assets<super::super::lighting::SceneMaterial>>()
             .insert_resource(super::super::lighting::SceneLights(default()))

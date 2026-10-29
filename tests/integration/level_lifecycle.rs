@@ -1298,36 +1298,6 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
 }
 
 #[test]
-fn a_rendered_entry_waits_for_its_looks_and_fails_without_them() {
-    use rizzardry::game::world::level::PresentationReadiness;
-    let (mut app, source) = playing();
-    let mut next = test_level(&mut app, floor());
-    next.path = "shown".into();
-    let shown = app
-        .world_mut()
-        .spawn((Destination::new(next, default(), Entry::Travel), PresentationReadiness::Waiting))
-        .id();
-    app.update();
-    assert!(is_played(&app, source), "the commit waits for the appearance");
-    app.world_mut().entity_mut(shown).remove::<PresentationReadiness>();
-    app.update();
-    assert!(is_played(&app, shown));
-
-    let mut next = test_level(&mut app, floor());
-    next.path = "unshowable".into();
-    let unshowable = app
-        .world_mut()
-        .spawn((
-            Destination::new(next, default(), Entry::Travel),
-            PresentationReadiness::Failed("no appearance".into()),
-        ))
-        .id();
-    app.update();
-    assert!(failed(&app, unshowable));
-    assert!(is_played(&app, shown), "a failed appearance leaves the level being played");
-}
-
-#[test]
 fn prop_motion_resumes_from_its_actual_frame_after_a_revisit() {
     use rizzardry::content::level::{PropModel, PropModelPart};
     use rizzardry::game::world::props::{Prop, PropMotion};

@@ -402,18 +402,6 @@ pub enum Entry {
     Travel,
 }
 
-/// On an entry: the rendered app is still preparing to show it (its
-/// appearance), or found it cannot. Activation waits while it is
-/// `Waiting` and discards the entry on `Failed`, before the source is
-/// retired. Headless play never adds it, so gameplay readiness does not
-/// depend on artwork; with a renderer, the loading phase also covers the
-/// destination's looks.
-#[derive(Component, Debug)]
-pub enum PresentationReadiness {
-    Waiting,
-    Failed(String),
-}
-
 /// An entry could not be prepared and was discarded.
 #[derive(Message, Debug, Clone)]
 pub struct LevelEntryFailed {
@@ -594,7 +582,7 @@ pub struct SharedData<'w> {
 /// collision fail is discarded and the party plays on where it was.
 pub fn activate_level(
     mut commands: Commands,
-    mut destinations: Query<(Entity, &mut Destination, Option<&PresentationReadiness>)>,
+    mut destinations: Query<(Entity, &mut Destination)>,
     current: Query<(Entity, &Level, &LevelState, Option<&LevelEntities>)>,
     parties: Query<Entity, With<Party>>,
     geometry: Res<Assets<LevelDefinition>>,
@@ -606,7 +594,7 @@ pub fn activate_level(
     mut transition: ParamSet<(LevelContents, PartyPlacement)>,
     (mut ready, mut failures): (MessageWriter<LevelReady>, MessageWriter<LevelEntryFailed>),
 ) {
-    for (root, mut destination, presentation) in &mut destinations {
+    for (root, mut destination) in &mut destinations {
         // Polling reads the destination; the commit consumes it.
         let destination = destination.bypass_change_detection();
         let level = &destination.level;
@@ -616,7 +604,7 @@ pub fn activate_level(
             commands.entity(root).despawn();
         };
         let bodies = &mut destination.bodies;
-        match prepare(level, bodies, presentation, &geometry, &shared, &mut npcs, &assets) {
+        match prepare(level, bodies, &geometry, &shared, &mut npcs, &assets) {
             Ok(true) => {}
             Ok(false) => continue,
             Err(why) => {
@@ -707,7 +695,6 @@ pub fn activate_level(
 fn prepare(
     level: &Level,
     bodies: &mut MonsterBodies,
-    presentation: Option<&PresentationReadiness>,
     geometry: &Assets<LevelDefinition>,
     shared: &SharedData,
     npcs: &mut crate::game::npcs::NpcPopulation,
@@ -745,16 +732,8 @@ fn prepare(
     if bodies.iter().any(|body| failed(body.id().untyped())) {
         return Err("a monster's body definition failed to load".into());
     }
-    if !bodies.iter().all(|body| shared.bodies.contains(body))
-        || !navigation::navmeshes_ready(level, assets)
-    {
-        return Ok(false);
-    }
-    match presentation {
-        Some(PresentationReadiness::Waiting) => Ok(false),
-        Some(PresentationReadiness::Failed(why)) => Err(why.clone()),
-        None => Ok(true),
-    }
+    Ok(bodies.iter().all(|body| shared.bodies.contains(body))
+        && navigation::navmeshes_ready(level, assets))
 }
 
 /// A new campaign's party, its members joining complete and in order.
