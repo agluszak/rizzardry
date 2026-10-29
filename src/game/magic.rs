@@ -461,16 +461,9 @@ impl Plugin for MagicPlugin {
                     .after(crate::game::GameplaySet::Stats)
                     .before(crate::game::GameplaySet::Combat)
                     .run_if(crate::game::world::level::level_active),
-            )
-            // Missiles fly on the fixed step, like the fight's pauses: an
-            // impact lands at the step its travel ends, and before the
-            // fight picks its next actor in that step.
-            .add_systems(
-                FixedUpdate,
-                deliver_spells
-                    .before(crate::game::combat::begin_round)
-                    .run_if(crate::game::world::level::level_active),
             );
+        // Missiles fly on the fixed step, ahead of the fight's step there
+        // (see `CombatPlugin`).
     }
 }
 

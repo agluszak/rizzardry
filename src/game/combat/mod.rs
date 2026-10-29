@@ -75,10 +75,14 @@ impl Plugin for CombatPlugin {
             // every roll, follows simulation time, not how often frames
             // come. Requests made in Update wait for the next step, and a
             // move the round starts or ends governs the party's input on
-            // that same step.
+            // that same step. Spell missiles fly on it too: an impact lands
+            // at the step its travel ends, and a defeat it causes is settled
+            // before anyone else acts.
             .add_systems(
                 FixedUpdate,
                 (
+                    crate::game::magic::deliver_spells,
+                    settle_defeat,
                     begin_round,
                     run_battle,
                     // and again after the round's damage.
@@ -3124,7 +3128,6 @@ mod tests {
     #[test]
     fn a_spell_missile_lands_after_its_flight() {
         let (mut app, [caster, _]) = round_app(true);
-        app.add_systems(FixedUpdate, crate::game::magic::deliver_spells.before(begin_round));
         let monster = order_spell(
             &mut app,
             caster,
@@ -3155,7 +3158,6 @@ mod tests {
     fn missiles_land_the_same_whatever_the_frame_rate() {
         let fight_for = |frame: std::time::Duration| {
             let (mut app, [caster, _]) = round_app(true);
-            app.add_systems(FixedUpdate, crate::game::magic::deliver_spells.before(begin_round));
             app.world_mut().resource_mut::<CombatSettings>().continuous = true;
             let monster = order_spell(
                 &mut app,
@@ -3312,6 +3314,53 @@ mod tests {
             .filter(|n| matches!(n, CombatNews::Killed { .. }))
             .collect();
         assert_eq!(killed, [CombatNews::Killed { actor: monster }]);
+    }
+
+    /// A missile that kills the last member standing ends the fight on the
+    /// step it lands: nobody acts after it and no round passes.
+    #[test]
+    fn a_missile_killing_the_last_member_ends_the_fight_at_once() {
+        let (mut app, [fallen, last]) = round_app(true);
+        let monster = order_spell(
+            &mut app,
+            fallen,
+            crate::content::spells::SpellDefinition {
+                dice: Some(Dice { base: 1000, count: 0, sides: 0 }),
+                ..energy_blast()
+            },
+        );
+        app.world_mut().entity_mut(fallen).insert(Order::Defend);
+        for _ in 0..4 {
+            app.update();
+            if fight(app.world()).unwrap().executing() {
+                break;
+            }
+        }
+        assert!(fight(app.world()).unwrap().executing());
+        // Mid-round, the next actor's delay over, a monster's missile flies
+        // at the one member still standing.
+        app.world_mut().get_mut::<Vitals>(fallen).unwrap().hp = 0;
+        fight_mut(app.world_mut()).wait = Timer::from_seconds(0.0, TimerMode::Once);
+        let level = app.world_mut().query::<&LevelOwned>().iter(app.world()).next().unwrap().0;
+        let mut flight =
+            missile(monster, crate::content::spells::SpellId::ENERGY_BLAST, Victim::Member(last));
+        flight.arrives = Timer::from_seconds(0.5, TimerMode::Once);
+        let world = app.world_mut();
+        let mut commands = world.commands();
+        casting::FlightOrder::default().launch(&mut commands, vec![flight], level);
+        world.flush();
+        world.resource_mut::<Messages<CombatNews>>().clear();
+        let before = world.resource::<GameClock>().ms;
+        let mut news = Vec::new();
+        for _ in 0..4 {
+            app.update();
+            news.extend(app.world_mut().resource_mut::<Messages<CombatNews>>().drain());
+        }
+        assert!(app.world().get::<Vitals>(last).unwrap().is_dead());
+        assert!(fight(app.world()).is_none());
+        assert_eq!(news.iter().filter(|n| **n == CombatNews::Lost).count(), 1, "{news:?}");
+        assert!(!news.iter().any(|n| matches!(n, CombatNews::Attack { .. })), "{news:?}");
+        assert_eq!(app.world().resource::<GameClock>().ms, before, "no round passed");
     }
 
     /// A member killed by magic is announced as one killed in melee is.
