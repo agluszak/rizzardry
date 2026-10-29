@@ -126,6 +126,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .init_resource::<Assets<LevelDefinition>>()
+            .init_resource::<crate::game::time::GameClock>()
             .add_message::<PartyLook>()
             .add_message::<CampRequest>()
             .add_message::<CampNews>()
