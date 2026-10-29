@@ -8,6 +8,20 @@ use crate::game::data::Content;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 
+/// Explicitly finish handling the held stack, preferring this member and then
+/// the pool. A view disappearing is not this request. Missing content and full
+/// containers leave the unplaced stack in the hand, as `put_away` specifies.
+#[derive(Event, Clone, Copy, Debug)]
+pub struct PutAwayHeld {
+    pub member: Entity,
+}
+
+pub(crate) fn put_away_held(request: On<PutAwayHeld>, mut inventory: InventoryOperations) {
+    if let Err(reason) = inventory.put_away(request.member) {
+        warn!("held item could not be put away: {reason:?}");
+    }
+}
+
 #[derive(SystemParam)]
 pub struct InventoryOperations<'w, 's> {
     party: Single<'w, 's, &'static mut PartyInventory>,
@@ -253,4 +267,83 @@ fn member<'a>(
         return Err(Refusal::NotMember);
     }
     members.get_mut(member).map_err(|_| Refusal::NotMember)
+}
+
+#[cfg(test)]
+mod settlement_tests {
+    use super::*;
+    use crate::game::characters::{Gender, Profession, Race};
+    use crate::game::data::GameData;
+
+    #[test]
+    fn put_away_needs_no_view_and_preserves_fallbacks_and_refusals() {
+        for (departed, full, loaded) in
+            [(false, false, true), (true, false, true), (false, true, true), (false, false, false)]
+        {
+            let mut app = App::new();
+            app.init_resource::<Assets<ItemCatalog>>()
+                .add_message::<ItemNews>()
+                .add_observer(put_away_held);
+            let definition =
+                ItemDefinition { quantity: QuantityKind::Stack, stack_limit: 20, ..default() };
+            let mut ids = ItemIds::default();
+            let held = ItemStack::new(&definition, &mut ids, 7, true);
+            let items = app
+                .world_mut()
+                .resource_mut::<Assets<ItemCatalog>>()
+                .add(ItemCatalog(vec![definition.clone()]));
+            if loaded {
+                app.insert_resource(GameData {
+                    items,
+                    loot: default(),
+                    species: default(),
+                    spells: default(),
+                });
+            }
+            let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
+            let mut carried = Carried::default();
+            if full {
+                for slot in &mut carried.backpack {
+                    *slot = Some(ItemStack::new(&definition, &mut ids, 20, true));
+                }
+            }
+            let member = app.world_mut().spawn((Vitals::new(&profile), profile, carried)).id();
+            let other = Character::new("B", Race::Human, Gender::Male, Profession::Fighter);
+            let other =
+                app.world_mut().spawn((Vitals::new(&other), other, Carried::default())).id();
+            let party = crate::game::party::roster::test_party(app.world_mut(), &[member, other]);
+            {
+                let mut inventory = app.world_mut().get_mut::<PartyInventory>(party).unwrap();
+                if full {
+                    inventory.pool.stacks = (0..POOL_LIMIT)
+                        .map(|_| ItemStack::new(&definition, &mut ids, 20, true))
+                        .collect();
+                }
+                inventory.hand.held = Some(held.clone());
+            }
+            if departed {
+                app.world_mut()
+                    .entity_mut(member)
+                    .remove::<crate::game::party::roster::PartyMember>();
+            }
+            // The request retains the member identity without any screen or
+            // selection resource. Duplicate closes never duplicate the stack.
+            app.world_mut().trigger(PutAwayHeld { member });
+            app.world_mut().trigger(PutAwayHeld { member });
+            let inventory = app.world().get::<PartyInventory>(party).unwrap();
+            let carried = app.world().get::<Carried>(member).unwrap();
+            if full || !loaded {
+                assert_eq!(inventory.hand.held, Some(held));
+            } else {
+                assert!(inventory.hand.held.is_none());
+                if departed {
+                    assert_eq!(inventory.pool.stacks, vec![held]);
+                    assert!(carried.backpack.iter().all(Option::is_none));
+                } else {
+                    assert_eq!(carried.backpack[0], Some(held));
+                    assert!(inventory.pool.stacks.is_empty());
+                }
+            }
+        }
+    }
 }
