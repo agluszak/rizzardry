@@ -1758,10 +1758,10 @@ fn party_turn(
             monsters: &candidates,
             group_of: &|m| vec![m],
         };
-        let result = magic
-            .context
+        let BattleMagic { context, points, .. } = magic;
+        let result = context
             .resolve(party.now, members, damage, |field, spells| {
-                breath::execute(member, target, &situation, spells, rng, field)
+                breath::execute(member, target, &situation, spells, rng, field, points)
             })
             .and_then(|result| result);
         match result {
@@ -2432,7 +2432,12 @@ fn monster_turn(
             }
             let effects = context.with_field(party.now, members, damage, |field| {
                 crate::game::magic::effects::special_attack(
-                    kind, breather, &victims, rng, field, points,
+                    crate::game::magic::effects::special(kind),
+                    breather,
+                    &victims,
+                    rng,
+                    field,
+                    points,
                 )
             });
             if let Ok(effects) = effects

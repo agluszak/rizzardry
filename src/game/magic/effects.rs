@@ -302,7 +302,16 @@ pub fn special(kind: SpecialAttackKind) -> SpecialDefinition {
     }
 }
 
-/// A monster making its special attack: how strong it is now.
+/// A character's breath (retail special-attack entry 30): a Water blast.
+pub const CHARACTER_BREATH: SpecialDefinition = SpecialDefinition {
+    effects: [Some(SpecialEffect::Harm), None],
+    summons: false,
+    realm: Realm::Water,
+    resisted: true,
+    silenced: false,
+};
+
+/// Whoever makes a special attack: how strong they are now.
 #[derive(Clone, Copy, Debug)]
 pub struct Breather {
     pub level: u8,
@@ -336,14 +345,13 @@ fn resisted(
 /// realm. Party members are taken first, then monsters, as retail does. A
 /// summoning does nothing here.
 pub fn special_attack(
-    kind: SpecialAttackKind,
+    definition: SpecialDefinition,
     breather: Breather,
     victims: &[Victim],
     rng: &mut GameRng,
     world: &mut Field,
     points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
 ) -> Vec<Effect> {
-    let definition = special(kind);
     if definition.summons {
         return Vec::new();
     }
@@ -412,20 +420,7 @@ pub fn special_attack(
                     match resisted(rng, world, victim, realm, rolled, against) {
                         None => None,
                         Some(0) => Some(Effect::Resisted { victim }),
-                        Some(amount) => {
-                            let amount = match victim {
-                                Victim::Member(member) => world.members.get_mut(member).map_or(
-                                    0,
-                                    |(_, mut vitals, ..)| {
-                                        let before = vitals.stamina;
-                                        vitals.spend_stamina(amount);
-                                        before - vitals.stamina
-                                    },
-                                ),
-                                Victim::Monster(entity) => world.monsters.fatigue(entity, amount),
-                            };
-                            Some(Effect::Tired { victim, amount })
-                        }
+                        Some(amount) => Some(tire(world, victim, amount)),
                     }
                 }
                 SpecialEffect::Wound => {
@@ -789,33 +784,6 @@ fn resisted_magnitude(
     Some(resist(rng, rolled, target.resistance, target.level, against))
 }
 
-/// Character breath, retail special-attack entry 30: stamina scales its
-/// saving strength and three uniform rolls; the Water realm supplies its save.
-pub(crate) fn breath(
-    level: u32,
-    stamina: u32,
-    maximum: u32,
-    victims: &[Victim],
-    rng: &mut GameRng,
-    world: &mut Field,
-) -> Vec<Effect> {
-    let scale = level + level.min(15);
-    let against = (stamina * scale / maximum.max(1)).max(1);
-    let bound = (stamina * (scale + 5) / maximum.max(1)).max(1);
-    let mut effects = Vec::new();
-    for &victim in victims {
-        if rng.below(100) > 9 {
-            let amount = (rng.below(bound) + rng.below(bound) + rng.below(bound)) / 3 + 1;
-            if let Some(effect) = damage(rng, world, victim, Realm::Water, amount, against) {
-                effects.push(effect);
-            }
-        }
-        // The second special-attack slot is empty, but its gate still rolls.
-        rng.below(100);
-    }
-    effects
-}
-
 /// Drain a member's health for good ([`Vitals::drain_health`]): nothing wakes
 /// them. A monster has no lasting maximum to lose and is hurt as by any
 /// damage.
@@ -832,6 +800,19 @@ fn sap(rng: &mut GameRng, world: &mut Field, victim: Victim, amount: u32) -> Opt
     );
     let outcome = DamageOutcome { damage: lost, died: vitals.is_dead(), experience: 0 };
     Some(Effect::Damaged { victim, outcome })
+}
+
+/// Take up to `amount` stamina from a victim.
+fn tire(world: &mut Field, victim: Victim, amount: u32) -> Effect {
+    let amount = match victim {
+        Victim::Member(member) => world.members.get_mut(member).map_or(0, |(_, mut vitals, ..)| {
+            let before = vitals.stamina;
+            vitals.spend_stamina(amount);
+            before - vitals.stamina
+        }),
+        Victim::Monster(monster) => world.monsters.fatigue(monster, amount),
+    };
+    Effect::Tired { victim, amount }
 }
 
 /// Take `amount` health from a victim; a member who survives may wake.
@@ -1006,11 +987,7 @@ fn afflict(
         1 => Lasting::Rounds(2),
         rounds => Lasting::Rounds(rounds.min(u32::from(u16::MAX)) as u16),
     };
-    let Some(condition) = condition else {
-        let Victim::Monster(monster) = victim else { return perish(rng, world, victim) };
-        let hp = world.monsters.monsters().get(monster).ok()?.0.hp;
-        return hurt(rng, world, victim, hp);
-    };
+    let Some(condition) = condition else { return kill(rng, world, victim) };
     inflict_on(world, victim, (condition, argument), lasting)?;
     Some(Effect::Inflicted { victim, condition })
 }
@@ -1114,21 +1091,8 @@ pub fn blow(
             }
             E::DrainHealth => None,
             E::DrainStamina => {
-                drain(rng, world, victim, Realm::Water, power, (count * 2, 5, count * 3)).map(
-                    |amount| {
-                        let amount = match victim {
-                            Victim::Member(member) => {
-                                world.members.get_mut(member).map_or(0, |(_, mut vitals, ..)| {
-                                    let before = vitals.stamina;
-                                    vitals.spend_stamina(amount);
-                                    before - vitals.stamina
-                                })
-                            }
-                            Victim::Monster(monster) => world.monsters.fatigue(monster, amount),
-                        };
-                        Effect::Tired { victim, amount }
-                    },
-                )
+                drain(rng, world, victim, Realm::Water, power, (count * 2, 5, count * 3))
+                    .map(|amount| tire(world, victim, amount))
             }
             E::DrainSpellPoints => match victim {
                 Victim::Member(member) => {

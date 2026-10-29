@@ -8,6 +8,7 @@ use crate::{
     game::{
         characters::{Character, Vitals},
         magic::{
+            LearnedSpells, SpellPoints,
             casting::{self, Aim, Refusal, Situation},
             effects::{self, Effect, Field},
         },
@@ -30,6 +31,7 @@ pub(super) fn execute(
     spells: &SpellCatalog,
     rng: &mut GameRng,
     world: &mut Field,
+    points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
 ) -> Result<Vec<Effect>, Refusal> {
     let (profile, vitals, ..) = world.members.get(actor).map_err(|_| Refusal::CannotAct)?;
     if !available(profile, vitals) {
@@ -49,12 +51,11 @@ pub(super) fn execute(
     if victims.is_empty() {
         return Err(Refusal::NoTarget);
     }
-    let (level, stamina, maximum) = (
-        u32::from(profile.level()),
-        vitals.stamina,
-        profile.stats(&vitals.enchantments).max_stamina(),
-    );
-    let effects = effects::breath(level, stamina, maximum, &victims, rng, world);
+    let maximum = profile.stats(&vitals.enchantments).max_stamina();
+    let breather =
+        effects::Breather { level: profile.level(), stamina: vitals.stamina, max_stamina: maximum };
+    let effects =
+        effects::special_attack(effects::CHARACTER_BREATH, breather, &victims, rng, world, points);
     world.members.get_mut(actor).unwrap().1.spend_stamina(maximum / 5);
     Ok(effects)
 }
