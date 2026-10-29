@@ -504,18 +504,12 @@ fn resume(world: &mut World, actor: Entity) {
 fn best_communicator(world: &mut World) -> Option<(Entity, u32)> {
     let party = the_party(world)?;
     let roster = world.get::<PartyRoster>(party)?;
-    let mut best: Option<(Entity, u32)> = None;
-    for member in roster.iter() {
-        let (Some(c), Some(v)) = (world.get::<Character>(member), world.get::<Vitals>(member))
-        else {
-            continue;
-        };
-        let level = c.skill(crate::content::characters::Skill::Communication);
-        if v.can_act() && best.is_none_or(|(_, best)| level > best) {
-            best = Some((member, level));
-        }
-    }
-    best
+    crate::game::party::best_skill(
+        roster.iter().filter_map(|member| {
+            Some((member, world.get::<Character>(member)?, world.get::<Vitals>(member)?))
+        }),
+        crate::content::characters::Skill::Communication,
+    )
 }
 /// Practise `members`' Communication `usage` times.
 fn practise_communication(world: &mut World, members: &[Entity], usage: u32) {

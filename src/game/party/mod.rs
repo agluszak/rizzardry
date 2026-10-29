@@ -88,6 +88,25 @@ pub type Members<'w, 's> = Query<
     ),
 >;
 
+/// The best level of a skill among the members who can act, the first on a
+/// tie, with whose it is (retail `GetBestPartySkillLevel`: `hp_current !=
+/// 0 && highest_condition < TURNCOAT`).
+pub fn best_skill<'a, T>(
+    members: impl IntoIterator<
+        Item = (T, &'a crate::game::characters::Character, &'a crate::game::characters::Vitals),
+    >,
+    skill: crate::content::characters::Skill,
+) -> Option<(T, u32)> {
+    let mut best: Option<(T, u32)> = None;
+    for (member, character, vitals) in members {
+        let level = character.skill(skill);
+        if vitals.can_act() && best.as_ref().is_none_or(|&(_, best)| level > best) {
+            best = Some((member, level));
+        }
+    }
+    best
+}
+
 /// The members' mean level, fractions kept, one when there are none
 /// (retail `GetAveragePartyMemberLevel`, which encounters use); retail
 /// reads only the six regular party slots.

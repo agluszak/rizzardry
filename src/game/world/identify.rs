@@ -86,14 +86,12 @@ pub fn health_known(
     max_hp: u32,
     display_level: u8,
 ) -> String {
-    let mythology = party
-        .iter()
-        .filter(|(_, v)| v.can_act())
-        .map(|(m, _)| m.skill(Skill::Mythology))
-        .max()
-        .unwrap_or(0);
-    let average =
-        party.iter().map(|(m, _)| f32::from(m.level())).sum::<f32>() / party.len().max(1) as f32;
+    let mythology = crate::game::party::best_skill(
+        party.iter().map(|&(character, vitals)| ((), character, vitals)),
+        Skill::Mythology,
+    )
+    .map_or(0, |(_, level)| level);
+    let average = crate::game::party::mean_level(party.iter().map(|(m, _)| m.level()));
     let level = i32::from(display_level);
     let knowledge = if (average as i32) < level {
         (mythology as f32 - (level as f32 - average) * 3.0 + 0.5).max(0.0) as u32
