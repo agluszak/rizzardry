@@ -1543,7 +1543,7 @@ fn approach_npc(world: &mut World, entity: Entity, approach: Approach) {
 fn stack_value(item: &crate::content::items::ItemDefinition, count: u16) -> u32 {
     let count = u32::from(count);
     if item.class == crate::content::items::EquipClass::Ammunition {
-        (item.value * count).div_ceil(25)
+        (item.value * count).div_ceil(crate::content::items::AMMUNITION_BUNDLE)
     } else if item.quantity == crate::content::items::QuantityKind::Stack && count > 1 {
         item.value * count
     } else {

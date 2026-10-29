@@ -29,6 +29,10 @@ pub struct Dice {
     pub base: i16,
 }
 
+/// Ammunition is valued by the bundle of this many (retail
+/// `GetItemStackValue`, `CalculateItemTradeValue`).
+pub const AMMUNITION_BUNDLE: u32 = 25;
+
 /// Where an item can be worn or wielded, and what it is (retail equipment
 /// class; labels 1087..1119 in the string table).
 /// Declared in retail's order, so its retail number converts both ways.

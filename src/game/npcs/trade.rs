@@ -236,7 +236,8 @@ pub fn price(
         factor = 0.1;
     }
     let value = if item.class == EquipClass::Ammunition {
-        let bundled = (u64::from(item.value) * u64::from(quantity)).div_ceil(25);
+        let bundled = (u64::from(item.value) * u64::from(quantity))
+            .div_ceil(u64::from(crate::content::items::AMMUNITION_BUNDLE));
         (factor * bundled as f32) as u64
     } else {
         // Ordinary stacks and separate items are priced per unit. Charges do
