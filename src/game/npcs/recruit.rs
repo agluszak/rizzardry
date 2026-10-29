@@ -310,9 +310,8 @@ pub fn join(world: &mut World, actor: Entity) -> Result<(), JoinRefusal> {
 /// for dropped at its feet. `keep` says which the member keeps.
 fn hand_over(world: &mut World, actor: Entity, level: Entity, keep: impl Fn(&ItemStack) -> bool) {
     let Some(party) = the_party(world) else { return };
-    let feet = world.get::<avian3d::prelude::Position>(party).map_or(Vec3::ZERO, |at| {
-        PartyBody::eye(at) - Vec3::Y * crate::game::party::body::EYE_HEIGHT
-    });
+    let feet =
+        world.get::<avian3d::prelude::Position>(party).map_or(Vec3::ZERO, PartyBody::feet);
     // Nothing leaves the member unless the catalog to place it with is there.
     with_catalogs(world, |world, items, _, _| {
         let given: Vec<ItemStack> = {
@@ -414,7 +413,7 @@ fn stand_beside_party(world: &mut World, actor: Entity, body: Entity, party: Ent
     // Retail asks the navigator for a place out from the party along its
     // heading turned by an eighth of a turn; this stands it two metres out
     // that way, without the navigator's search.
-    let feet = PartyBody::eye(&at) - Vec3::Y * crate::game::party::body::EYE_HEIGHT
+    let feet = PartyBody::feet(&at)
         + Quat::from_rotation_y(yaw + std::f32::consts::FRAC_PI_4) * Vec3::NEG_Z * 2.0;
     let (conditions, stamina) = {
         let vitals = world.get::<Vitals>(actor).unwrap();

@@ -19,18 +19,14 @@ pub struct View {
     pub far: f32,
     pub searching: bool,
 }
-/// The party's point, 1000 world units (2 m) under its eye: what reach and
-/// sight measure from (retail `GetPointDistanceToPlayer`).
-pub fn party_point(eye: Vec3) -> Vec3 {
-    eye - Vec3::Y * crate::content::EYE_HEIGHT
-}
-
 /// How far a monster standing at `feet` is from the party (retail
 /// `GetPointDistanceToPlayer`): from its feet to the party's point, less
 /// both bodies' radii (its fight radius, the party's 1 m), never below 0.
 /// Reach and sight compare against this.
 pub fn party_distance(eye: Vec3, monster: &Monster, feet: Vec3) -> f32 {
-    (feet.distance(party_point(eye)) - monster.body.radius - crate::game::party::body::RADIUS)
+    (feet.distance(crate::game::party::body::PartyBody::feet_below(eye))
+        - monster.body.radius
+        - crate::game::party::body::RADIUS)
         .max(0.0)
 }
 

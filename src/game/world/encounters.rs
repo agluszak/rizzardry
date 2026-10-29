@@ -524,11 +524,8 @@ pub fn run_encounters(
             .filter_map(|m| characters.get(m).ok())
             .map(|c| c.level()),
     );
-    let onlooker = Onlooker {
-        eye: PartyBody::eye(party_at),
-        feet: party_at.0 - Vec3::Y * crate::game::party::body::FLOAT_HEIGHT,
-        level,
-    };
+    let onlooker =
+        Onlooker { eye: PartyBody::eye(party_at), feet: PartyBody::feet(party_at), level };
     let night = night(&clock);
     let (next_location, next_group) = population::next_ids(
         monsters.iter().map(|(m, ..)| m.location),

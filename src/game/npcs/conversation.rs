@@ -1009,7 +1009,7 @@ fn drop_gift(
     let feet = world
         .query_filtered::<&avian3d::prelude::Position, With<PartyBody>>()
         .single(world)
-        .map(|at| at.0 - Vec3::Y * crate::game::party::body::FLOAT_HEIGHT)
+        .map(crate::game::party::body::PartyBody::feet)
         .unwrap_or_default();
     match level {
         Some(level) if !crucial => {

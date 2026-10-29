@@ -16,7 +16,7 @@ use crate::game::world::level::LevelOwned;
 use crate::game::world::level::PlayedLevel;
 use crate::game::world::navigation::{Walker, feet};
 use crate::game::world::obstacles::WorldObstacles;
-use crate::game::world::perception::{party_distance, party_point, sight_threshold};
+use crate::game::world::perception::{party_distance, sight_threshold};
 use crate::game::world::{ActorPose, ActorPoseItem};
 use avian3d::prelude::Position;
 use bevy::prelude::*;
@@ -854,7 +854,7 @@ pub fn start_battle(
         let sees = sight.sees(monster, &at, walker, kind);
         let reaches = kind.attacks.iter().any(|a| distance <= a.reach.metres());
         let close = kind.attacks.iter().map(|a| a.reach).max().is_some_and(|r| r <= Reach::Short);
-        let party_at = party_point(sight.eye);
+        let party_at = PartyBody::feet_below(sight.eye);
         let toward = |victim: crate::game::magic::effects::Victim| {
             let turncoat =
                 members.get(victim.entity()).is_ok_and(|(_, v)| v.has(Condition::Turncoat));
@@ -2569,7 +2569,7 @@ fn spell_scene<'a>(
 ) -> monster_spells::Scene {
     use crate::game::magic::effects::Victim;
     let party_eye = sight.eye;
-    let party_at = party_point(party_eye);
+    let party_at = PartyBody::feet_below(party_eye);
     let Ok((body, at, walker, ..)) = monsters.get(caster) else {
         return monster_spells::Scene {
             caster,

@@ -693,7 +693,7 @@ pub(super) fn refresh_magic_view(
         Query<&crate::game::npcs::conversation::Conversation>,
         Query<&crate::game::npcs::NpcBody>,
         Query<(Entity, &crate::game::world::population::Monster, crate::game::world::ActorPose)>,
-        Query<&GlobalTransform, With<crate::game::party::body::PartyBody>>,
+        Query<(&avian3d::prelude::Position, &crate::game::party::body::PartyBody)>,
     ),
     (art, assets, strings): (
         Res<MagicViewArt>,
@@ -977,10 +977,11 @@ pub(super) fn refresh_magic_view(
     } else {
         match spell.targeting {
             Targeting::Point => {
-                let Ok(eye) = party.single() else { return };
-                let at =
-                    eye.translation() + eye.forward().as_vec3() * spell.reach.metres().min(10.0);
-                Aim::Point(at.with_y(eye.translation().y - crate::content::EYE_HEIGHT))
+                // On the ground ahead of the party, as far as the spell
+                // reaches (ten metres at most).
+                let Ok((position, body)) = party.single() else { return };
+                let feet = crate::game::party::body::PartyBody::feet(position);
+                Aim::Point(feet + body.forward() * spell.reach.metres().min(10.0))
             }
             Targeting::Item => match pool.hand.held.as_ref() {
                 Some(stack) => Aim::Item(stack.id),

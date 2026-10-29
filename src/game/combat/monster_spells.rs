@@ -303,7 +303,7 @@ fn victims(
                 _ => None,
             }
         };
-        let party_eye = scene.party_at + Vec3::Y * crate::content::EYE_HEIGHT;
+        let party_eye = crate::game::party::body::PartyBody::eye_above(scene.party_at);
         let (centre, origin) = if let Some(target) = target {
             let Ok((body, at, walker, ..)) = field.monsters.monsters().get(target) else {
                 return vec![];
@@ -419,7 +419,7 @@ pub(super) fn cast(
                     strength,
                     &victims,
                     Some(&finish),
-                    scene.party_at + Vec3::Y * crate::content::EYE_HEIGHT,
+                    crate::game::party::body::PartyBody::eye_above(scene.party_at),
                     spells,
                     rng,
                     field,

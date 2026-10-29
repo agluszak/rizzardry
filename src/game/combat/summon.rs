@@ -129,7 +129,7 @@ pub fn summon(
                     let distance =
                         if distance > 0.0 { distance } else { body::RADIUS + radius + 0.002 };
                     // At the party's feet's height, behind it.
-                    let at = party_at.0 - Vec3::Y * body::FLOAT_HEIGHT
+                    let at = PartyBody::feet(party_at)
                         + Quat::from_rotation_y(heading) * Vec3::Z * distance;
                     population::scatter(
                         (at, facing(at), spacing),

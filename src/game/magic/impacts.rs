@@ -44,7 +44,9 @@ impl Origin {
     fn ground(self, world: &Field, party: Vec3) -> Vec3 {
         match self {
             Self::Point { at, .. } => at,
-            Self::Actor(Victim::Member(_)) => party - Vec3::Y * crate::content::EYE_HEIGHT,
+            Self::Actor(Victim::Member(_)) => {
+                crate::game::party::body::PartyBody::feet_below(party)
+            }
             Self::Actor(Victim::Monster(entity)) => {
                 world.monsters.monsters().get(entity).map_or(party, |(_, at, walker, ..)| {
                     crate::game::world::navigation::feet(at.translation(), walker)

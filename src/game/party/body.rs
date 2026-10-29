@@ -81,6 +81,22 @@ impl PartyBody {
     pub fn centre(eye: Vec3) -> Vec3 {
         eye - Vec3::Y * EYE_ABOVE_CENTRE
     }
+
+    /// The party's feet, under its body at `position`.
+    pub fn feet(position: &Position) -> Vec3 {
+        position.0 - Vec3::Y * FLOAT_HEIGHT
+    }
+
+    /// The party's feet under an eye at `eye` (retail's party point, 1000
+    /// world units under the eye, which reach and sight measure from).
+    pub fn feet_below(eye: Vec3) -> Vec3 {
+        eye - Vec3::Y * EYE_HEIGHT
+    }
+
+    /// The party's eye over feet at `feet`: [`Self::feet_below`]'s inverse.
+    pub fn eye_above(feet: Vec3) -> Vec3 {
+        feet + Vec3::Y * EYE_HEIGHT
+    }
 }
 
 /// On the party: continuous movement intent, supplied by input or a
