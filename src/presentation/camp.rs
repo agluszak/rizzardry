@@ -45,6 +45,14 @@ fn fade() -> Timer {
     Timer::from_seconds(FADE_SECONDS, TimerMode::Once)
 }
 
+/// A fade turned back midway: the other fade from the mirrored point, so
+/// the darkness and the picture behind it carry on unchanged.
+fn reversed(fade: &Timer) -> Timer {
+    let mut back = self::fade();
+    back.set_elapsed(back.duration().saturating_sub(fade.elapsed()));
+    back
+}
+
 #[derive(InputAction)]
 #[action_output(bool)]
 struct Leave;
@@ -96,14 +104,15 @@ pub fn show_camp(
             }
         }
         (CampFade::Shown, true) => {}
-        (CampFade::In(_) | CampFade::Shown, false) => *phase = CampFade::Out(fade()),
+        (CampFade::In(fade), false) => *phase = CampFade::Out(reversed(fade)),
+        (CampFade::Shown, false) => *phase = CampFade::Out(fade()),
         (CampFade::Out(fade), false) => {
             if fade.tick(delta).is_finished() {
                 commands.entity(screen).despawn();
                 return;
             }
         }
-        (CampFade::Out(_), true) => *phase = CampFade::In(fade()),
+        (CampFade::Out(fade), true) => *phase = CampFade::In(reversed(fade)),
     }
     let (darkness, picture_shown) = look(&phase);
     for mut veil in &mut veils {
@@ -148,6 +157,39 @@ fn spawn_camp_screen(commands: &mut Commands) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fade turned back midway carries on from the same darkness and
+    /// picture; only a shown camp fades out from the start.
+    #[test]
+    fn a_reversed_fade_keeps_the_look_it_had() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<SpriteSheet>()
+            .insert_resource(CampArt(Handle::default()))
+            .add_systems(Update, show_camp);
+        let quarter = {
+            let mut fade = fade();
+            fade.set_elapsed(std::time::Duration::from_secs_f32(0.25));
+            fade
+        };
+        let screen = app.world_mut().spawn((CampScreen, CampFade::In(quarter.clone()))).id();
+        let look_now = |app: &App| look(app.world().get::<CampFade>(screen).unwrap());
+        let before = look(&CampFade::In(quarter));
+        // Left before the screen went black: it fades back from where it was.
+        app.update();
+        assert!(matches!(app.world().get::<CampFade>(screen), Some(CampFade::Out(_))));
+        assert_eq!(look_now(&app), before);
+        // Camping again while it fades out turns it back the same way.
+        app.insert_resource(Camp::UntilAble);
+        app.update();
+        assert!(matches!(app.world().get::<CampFade>(screen), Some(CampFade::In(_))));
+        assert_eq!(look_now(&app), before);
+        // Only a camp that was shown fades out from the start.
+        *app.world_mut().get_mut::<CampFade>(screen).unwrap() = CampFade::Shown;
+        app.world_mut().remove_resource::<Camp>();
+        app.update();
+        assert_eq!(look_now(&app), (0.0, true));
+    }
 
     #[test]
     fn fades_swap_the_world_and_camping_screen_while_black() {

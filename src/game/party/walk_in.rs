@@ -129,6 +129,7 @@ mod tests {
             .insert_resource(State::new(Screen::World))
             .init_resource::<NextState<Screen>>()
             .init_resource::<Assets<LevelDefinition>>()
+            .init_resource::<crate::game::time::GameClock>()
             .add_message::<PartyLook>()
             .add_message::<CampRequest>()
             .add_message::<CampNews>()
