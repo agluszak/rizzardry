@@ -388,11 +388,17 @@ impl Plugin for NpcPlugin {
             )
             .add_systems(
                 Update,
-                (
-                    conversation::update_conversation,
-                    recruit::settle_npc_members.run_if(crate::game::world::level::level_active),
-                )
-                    .after(crate::game::GameplaySet::Combat),
+                conversation::update_conversation.after(crate::game::GameplaySet::Combat),
+            )
+            .add_systems(
+                Update,
+                recruit::settle_npc_members.before(crate::game::GameplaySet::LevelActivation),
+            )
+            .add_systems(
+                FixedUpdate,
+                recruit::settle_npc_members
+                    .after(crate::game::GameplaySet::Combat)
+                    .run_if(crate::game::world::level::level_active),
             );
     }
 }

@@ -705,9 +705,11 @@ pub(super) fn refresh_magic_view(
         Single<&PartyInventory>,
     ),
     content: crate::game::data::Content,
-    (conversations, speakers): (
+    (conversations, speakers, monsters, party): (
         Query<&crate::game::npcs::conversation::Conversation>,
         Query<&crate::game::npcs::NpcBody>,
+        Query<(Entity, &crate::game::world::population::Monster, crate::game::world::ActorPose)>,
+        Query<&GlobalTransform, With<crate::game::party::body::PartyBody>>,
     ),
     (art, assets, strings): (
         Res<MagicViewArt>,

@@ -288,7 +288,14 @@ fn breathe(
         monsters
             .iter_many(combatants.entities().iter().copied())
             .matched()
-            .map(|(entity, monster, at)| (entity, monster, at.translation())),
+            .filter(|(_, monster, _)| !monster.is_dead())
+            .map(|(entity, monster, at)| {
+                (
+                    entity,
+                    at.translation(),
+                    (at.translation() - eye).with_y(0.0).length() - monster.body.radius,
+                )
+            }),
     ) {
         orders.write(crate::game::combat::GiveOrder { member, order: Order::Breathe(target) });
     }

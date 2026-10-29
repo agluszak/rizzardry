@@ -9,7 +9,7 @@ use super::{LearnedSpells, SpellPoints, Strength};
 use crate::content::characters::{Attribute, Realm, Skill};
 use crate::content::items::{Dice, EquipClass, ItemCatalog};
 use crate::content::species::{MonsterCatalog, MonsterKind, SpecialAttackKind};
-use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId};
+use crate::content::spells::{SpellDefinition, SpellId};
 use crate::game::characters::{Condition, Fate, Lasting, inflict, wake_on_hit};
 use crate::game::difficulty::Difficulty;
 use crate::game::party::DamageApplied;
@@ -372,7 +372,7 @@ pub fn special_attack(
                     if condition == Condition::Poisoned {
                         rng.below(if monster { 2 } else { bound });
                     }
-                    afflict(rng, world, victim, Some(condition), realm, against, Some(rounds))
+                    afflict(rng, world, victim, (Some(condition), 0), realm, against, Some(rounds))
                 }
                 SpecialEffect::Harm => {
                     let rolled = three(rng, bound) / 3 + 1;
@@ -391,8 +391,10 @@ pub fn special_attack(
                                     .get(member)
                                     .is_ok_and(|(_, vitals, ..)| !vitals.is_dead());
                                 let drained = match points.get_mut(member) {
-                                    Ok((_, mut pool)) if alive => {
-                                        pool.drain_realm(realm, amount * 6)
+                                    Ok((known, mut pool)) if alive => {
+                                        world.mana_maximum(member, known).map_or(0, |maximum| {
+                                            pool.drain_realm(realm, amount * 6, &maximum)
+                                        })
                                     }
                                     _ => 0,
                                 };
@@ -1393,7 +1395,7 @@ pub fn resolve(
                 };
                 let changed = match victim {
                     Victim::Member(member) if personal => {
-                        world.members.get_mut(member).is_ok_and(|(profile, mut v, ..)| {
+                        world.members.get_mut(member).is_ok_and(|(_, mut v, ..)| {
                             if v.is_dead() {
                                 return false;
                             }
@@ -1407,28 +1409,7 @@ pub fn resolve(
                                     ..effect
                                 });
                             }
-                            let maximum = world.spells.and_then(|spells| {
-                                points.get(member).ok().map(|(known, _)| {
-                                    super::max_points(
-                                        &profile.stats(&v.enchantments),
-                                        known,
-                                        spells,
-                                    )
-                                })
-                            });
-                            let changed = apply(&mut v.enchantments, false);
-                            if changed
-                                && let (Some(before), Some(spells), Ok((known, mut pool))) =
-                                    (maximum, world.spells, points.get_mut(member))
-                            {
-                                let after = super::max_points(
-                                    &profile.stats(&v.enchantments),
-                                    known,
-                                    spells,
-                                );
-                                pool.adjust_limits(&before, &after);
-                            }
-                            changed
+                            apply(&mut v.enchantments, false)
                         })
                     }
                     Victim::Member(_) => {
@@ -1540,18 +1521,16 @@ pub fn resolve(
         }
         Kind::RestoreMagic => each(&mut |v, rng, world| {
             let Victim::Member(member) = v else { return None };
-            let (profile, vitals, ..) = world.members.get(member).ok()?;
+            let (_, vitals, ..) = world.members.get(member).ok()?;
             if vitals.is_dead() {
                 return None;
             }
             // Retail rolls even when every realm is already full.
             let amount = magnitude(rng, spell.dice, strength);
-            let Ok((learned, mut pool)) = points.get_mut(member) else {
+            let Ok((_, mut pool)) = points.get_mut(member) else {
                 return Some(Effect::Nothing { victim: v });
             };
-            let maximum =
-                super::max_points(&profile.stats(&vitals.enchantments), learned, world.spells?);
-            let amount = pool.restore_evenly(amount, &maximum);
+            let amount = pool.restore_evenly(amount);
             Some(if amount == 0 {
                 Effect::Nothing { victim: v }
             } else {
@@ -1856,11 +1835,8 @@ pub fn resolve(
                         victim: Victim::Member(member),
                         amount: v.hp - before,
                     });
-                } else if let (Ok((learned, mut pool)), Some(spells)) =
-                    (points.get_mut(member), world.spells)
-                {
-                    let maximum = super::max_points(&c.stats(&v.enchantments), learned, spells);
-                    let amount = pool.restore_evenly(drained, &maximum);
+                } else if let Ok((_, mut pool)) = points.get_mut(member) {
+                    let amount = pool.restore_evenly(drained);
                     effects.push(Effect::Replenished { victim: Victim::Member(member), amount });
                 }
             }
@@ -2040,9 +2016,11 @@ pub(crate) fn pulse_clouds(
                     if id == SpellId::DRAINING_CLOUD && amount > 0 {
                         match victim {
                             Victim::Member(member) => {
-                                if let Ok((_, mut mana)) = points.get_mut(member) {
+                                if let Ok((known, mut mana)) = points.get_mut(member)
+                                    && let Some(maximum) = world.mana_maximum(member, known)
+                                {
                                     for realm in enumset::EnumSet::<Realm>::all() {
-                                        mana.drain_realm(realm, amount);
+                                        mana.drain_realm(realm, amount, &maximum);
                                     }
                                 }
                                 if let Ok((_, mut vitals, ..)) = world.members.get_mut(member) {
@@ -2093,7 +2071,7 @@ pub(crate) fn pulse_clouds(
                                 || shrugs(world, victim, condition, false)
                             {
                                 landed.push(Effect::Resisted { victim });
-                            } else if inflict_on(world, victim, condition, lasting).is_some() {
+                            } else if inflict_on(world, victim, (condition, 0), lasting).is_some() {
                                 landed.push(Effect::Inflicted { victim, condition });
                             }
                         }

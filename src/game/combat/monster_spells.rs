@@ -303,7 +303,7 @@ fn victims(
                 _ => None,
             }
         };
-        let party_eye = scene.party_at + Vec3::Y * super::CAMERA_ABOVE_PARTY_POINT;
+        let party_eye = scene.party_at + Vec3::Y * crate::content::EYE_HEIGHT;
         let (centre, origin) = if let Some(target) = target {
             let Ok((body, at, walker, ..)) = field.monsters.monsters().get(target) else {
                 return vec![];
@@ -395,9 +395,15 @@ pub(super) fn cast(
             let original_aim = match aim {
                 SpellAim::Monster(entity) => crate::game::magic::casting::Aim::Monster(entity),
                 SpellAim::Member(entity) => crate::game::magic::casting::Aim::Member(entity),
-                SpellAim::Party | SpellAim::Foes => crate::game::magic::casting::Aim::Member(
-                    scene.members.first().map_or(scene.caster, |member| member.entity),
-                ),
+                SpellAim::Party | SpellAim::Foes => match victims.first() {
+                    Some(Victim::Member(entity)) => {
+                        crate::game::magic::casting::Aim::Member(*entity)
+                    }
+                    Some(Victim::Monster(entity)) => {
+                        crate::game::magic::casting::Aim::Monster(*entity)
+                    }
+                    None => crate::game::magic::casting::Aim::Monster(scene.caster),
+                },
             };
             let finish = crate::game::magic::casting::Finalization {
                 aim: original_aim,
@@ -413,7 +419,7 @@ pub(super) fn cast(
                     strength,
                     &victims,
                     Some(&finish),
-                    scene.party_at,
+                    scene.party_at + Vec3::Y * crate::content::EYE_HEIGHT,
                     spells,
                     rng,
                     field,

@@ -223,11 +223,7 @@ fn first_character(
     for (slot, id) in template.backpack.iter().enumerate() {
         carried.backpack[slot] = id.and_then(&mut make);
     }
-    let points = SpellPoints::full(crate::game::magic::max_points(
-        &character.base_stats(),
-        &learned,
-        spells,
-    ));
+    let points = SpellPoints::default();
     let vitals = Vitals::new(&character);
     (character, vitals, learned, points, carried)
 }

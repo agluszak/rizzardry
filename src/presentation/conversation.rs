@@ -410,7 +410,7 @@ fn open_trade(world: &mut World, button: Entity, root: Entity) {
               mut states: Query<&mut DialogueState>,
               roots: Query<&ConversationView>,
               sessions: Query<&Conversation>,
-              npcs: Query<&Npc>,
+              npcs: Query<&crate::game::npcs::ActorId>,
               definitions: Res<Assets<NpcCatalog>>,
               assets: Res<NpcAssets>| {
             let merchant = roots
@@ -418,7 +418,7 @@ fn open_trade(world: &mut World, button: Entity, root: Entity) {
                 .ok()
                 .and_then(|view| sessions.get(view.0).ok())
                 .and_then(|c| npcs.get(c.actor).ok())
-                .and_then(|n| definitions.get(&assets.catalog)?.get(n.definition))
+                .and_then(|n| definitions.get(&assets.catalog)?.get(n.npc()))
                 .is_some_and(|d| d.owns_stock);
             if let Ok(mut state) = states.get_mut(root) {
                 set_mode(&mut state, if merchant { Mode::Buy } else { Mode::Give });
@@ -1415,7 +1415,7 @@ fn project_modes(
     views: ViewScope,
     mut commands: Commands,
     sessions: Query<&Conversation>,
-    npcs: Query<&crate::game::npcs::ActorId>,
+    npcs: Query<(&crate::game::npcs::ActorId, &Npc)>,
     definitions: Res<Assets<NpcCatalog>>,
     assets: Res<NpcAssets>,
     clock: Res<crate::game::time::GameClock>,
@@ -1473,7 +1473,7 @@ fn project_modes(
     // Each approach waits half a day once tried.
     for (entity, button, disabled) in &approaches {
         let Some((_, session)) = views.owner(entity) else { continue };
-        let Some(npc) = sessions.get(session).ok().and_then(|c| npcs.get(c.actor).ok()) else {
+        let Some((_, npc)) = sessions.get(session).ok().and_then(|c| npcs.get(c.actor).ok()) else {
             continue;
         };
         let at = match button.0 {
@@ -1489,7 +1489,7 @@ fn project_modes(
             let can_trade = npcs
                 .get(c.actor)
                 .ok()
-                .and_then(|n| definitions.get(&assets.catalog)?.get(n.npc()))
+                .and_then(|(id, _)| definitions.get(&assets.catalog)?.get(id.npc()))
                 .is_some_and(|d| d.owns_stock);
             set_enabled(&mut commands, entity, can_trade, disabled);
         } else if pool.is_some() {

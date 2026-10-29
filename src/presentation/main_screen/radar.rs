@@ -361,6 +361,8 @@ mod tests {
         let watcher = app.world_mut().spawn((Vitals::new(&profile), profile)).id();
         let party = crate::game::party::roster::test_party(app.world_mut(), &[watcher]);
         app.world_mut().entity_mut(party).insert((PartyBody::default(), Position::default()));
+        app.init_resource::<crate::game::factions::Factions>()
+            .init_resource::<crate::game::time::GameClock>();
         app.world_mut().init_resource::<Assets<crate::content::species::MonsterCatalog>>();
         let species = app
             .world_mut()
@@ -498,7 +500,11 @@ mod tests {
             species,
             spells: default(),
         });
-        app.world_mut().spawn((
+        use crate::game::characters::{Character, Gender, Profession, Race, Vitals};
+        let profile = Character::new("Watcher", Race::Human, Gender::Male, Profession::Fighter);
+        let watcher = app.world_mut().spawn((Vitals::new(&profile), profile)).id();
+        let party = crate::game::party::roster::test_party(app.world_mut(), &[watcher]);
+        app.world_mut().entity_mut(party).insert((
             avian3d::prelude::Position::default(),
             crate::game::party::body::PartyBody::default(),
         ));
@@ -508,6 +514,7 @@ mod tests {
             GlobalTransform::default(),
         ));
         app.world_mut().spawn((RadarBlips, Node::default()));
+        let root = app.world_mut().spawn(crate::game::world::level::Level::test(default())).id();
         let group = app.world_mut().spawn(MonsterGroup::default()).id();
         let monster = Monster {
             enchantments: default(),
@@ -523,7 +530,12 @@ mod tests {
         };
         let monster = app
             .world_mut()
-            .spawn((monster, GroupMember(group), GlobalTransform::from_xyz(0.0, 0.0, -10.0)))
+            .spawn((
+                monster,
+                GroupMember(group),
+                Transform::from_xyz(0.0, 0.0, -10.0),
+                crate::game::world::level::LevelOwned(root),
+            ))
             .id();
         let shown = |app: &mut App| {
             app.update();

@@ -93,6 +93,8 @@ impl Plugin for CombatPlugin {
                     settle_defeat,
                 )
                     .chain()
+                    .in_set(crate::game::GameplaySet::Combat)
+                    .after(crate::game::party::body::turn_party)
                     .before(bevy_tnua::TnuaUserControlsSystems)
                     .run_if(crate::game::world::level::level_active),
             )
@@ -729,7 +731,7 @@ fn reinforces(members: &[(Seen, bool)], hostiles: &[Seen]) -> bool {
 
 /// The party's lowest level among those who can act.
 fn lowest_level<'a>(party: impl Iterator<Item = (&'a Character, &'a Vitals)>) -> i32 {
-    party.filter(|(_, v)| v.can_fight()).map(|(c, _)| i32::from(c.level)).min().unwrap_or(0)
+    party.filter(|(_, v)| v.can_fight()).map(|(c, _)| i32::from(c.level())).min().unwrap_or(0)
 }
 
 /// Where the party stands and faces, and its formation, as reach needs them.
@@ -837,10 +839,7 @@ pub fn start_battle(
         .filter_map(|&hostility::Provocation(m)| Some(monsters.get(m).ok()?.4?.0))
         .collect();
     let running = battles.single().ok();
-    if running.is_none()
-        && (camp.as_ref().is_some_and(|c| !c.racing())
-            || !members.iter_many(roster.iter()).matched().any(|(_, v)| !v.is_dead()))
-    {
+    if running.is_none() && !members.iter_many(roster.iter()).matched().any(|(_, v)| !v.is_dead()) {
         return;
     }
     let Some(catalog) = content.species() else { return };
@@ -1723,6 +1722,7 @@ fn party_turn(
             context: casting::UseContext::Combat,
             party: &party_members,
             party_at: party.eye,
+            facing: Vec3::new(party.yaw.sin(), 0.0, -party.yaw.cos()),
             monsters: &candidates,
             group_of: &|m| vec![m],
         };
@@ -2686,16 +2686,17 @@ fn end_round(
         }
     }
     for actor in roster.iter() {
-        let Ok((profile, mut vitals, ..)) = members.get_mut(actor) else { continue };
+        let Ok((mut profile, mut vitals, ..)) = members.get_mut(actor) else { continue };
         let mut pool = magic.points.get_mut(actor).ok();
-        let mana = pool.as_mut().map(|(known, pool)| (*known, &mut **pool));
+        let mana = pool.as_mut().map(|(known, pool)| (*known, pool));
         recovery::pass(
-            &profile,
+            &mut profile,
             &mut vitals,
             ticks,
             recovery::Pace::Fighting,
             mana,
             magic.context.content.spells(),
+            &mut crate::game::characters::Fate { fight: Some(fight), rng },
         );
     }
     // AdvanceTimedEffects applies offensive slots after personal aging and
@@ -2868,7 +2869,7 @@ mod tests {
             spells::SpellId,
         };
         use crate::game::{
-            camp::{Camp, CampNews, RestGoal},
+            camp::{Camp, CampNews},
             magic::enchantments::{Enchantment, PartyEffects},
         };
         for hound in [false, true] {
@@ -2929,12 +2930,13 @@ mod tests {
                     absorption: 0,
                 });
             }
-            app.insert_resource(Camp::Resting(RestGoal::Until(u64::MAX)));
+            app.insert_resource(Camp::Until(u64::MAX));
             app.update();
             assert!(!app.world().contains_resource::<Camp>());
             let news: Vec<_> =
                 app.world_mut().resource_mut::<Messages<CampNews>>().drain().collect();
             assert_eq!(news, [CampNews::Interrupted]);
+            app.world_mut().run_schedule(FixedUpdate);
             assert_eq!(fight(app.world()).unwrap().round, if hound { 0 } else { 1 });
             let news: Vec<_> =
                 app.world_mut().resource_mut::<Messages<CombatNews>>().drain().collect();
@@ -2987,7 +2989,8 @@ mod tests {
             absorption: 0,
         });
         app.world_mut().entity_mut(actor).insert(Order::Breathe(monster));
-        app.world_mut().get_mut::<Character>(actor).unwrap().level = 20;
+        app.world_mut().get_mut::<Character>(actor).unwrap().profession_levels
+            [crate::game::characters::Profession::Fighter] = 20;
         let battle = app.world().get::<Combatant>(monster).unwrap().0;
         let root = app.world().get::<LevelOwned>(monster).unwrap().0;
         let body = app.world().get::<Monster>(monster).unwrap().clone();
@@ -4370,7 +4373,7 @@ mod tests {
             world.resource_mut::<Messages<MagicNews>>().clear();
             for _ in 0..steps {
                 world
-                    .resource_mut::<Time<Virtual>>()
+                    .resource_mut::<Time<Fixed>>()
                     .advance_by(std::time::Duration::from_secs_f32(0.5 / steps as f32));
                 world.run_system_cached(crate::game::magic::deliver_spells).unwrap();
                 world.flush();
@@ -5860,7 +5863,7 @@ mod tests {
         let (mut app, members) = round_app(false);
         for member in members {
             let mut profile = app.world_mut().get_mut::<Character>(member).unwrap();
-            profile.level = 30;
+
             profile.skill_points[crate::content::characters::Skill::Sword] = 100;
             for attribute in [
                 crate::content::characters::Attribute::Dexterity,

@@ -95,6 +95,12 @@ impl SpellPoints {
         self.current(realm, maximum).clamp(0, i64::from(u32::MAX)) as u32
     }
 
+    pub fn drain_realm(&mut self, realm: Realm, amount: u32, maximum: &EnumMap<Realm, u32>) -> u32 {
+        let taken = amount.min(self.available(realm, maximum));
+        self.spend(realm, taken);
+        taken
+    }
+
     /// Record spending after the caller has checked what is available.
     pub fn spend(&mut self, realm: Realm, amount: u32) {
         self.spent[realm] += i64::from(amount);
@@ -109,8 +115,7 @@ impl SpellPoints {
                 break;
             }
             let realm = Realm::try_from(rng.below(6) as u8).unwrap();
-            let taken = remaining.min(self.available(realm, maximum));
-            self.spend(realm, taken);
+            let taken = self.drain_realm(realm, remaining, maximum);
             remaining -= taken;
         }
         amount - remaining
@@ -175,6 +180,23 @@ impl SpellPoints {
             }
         }
     }
+}
+
+/// Select an available target by angle to the heading, then distance.
+pub fn target_ahead(
+    eye: Vec3,
+    forward: Vec3,
+    reach: f32,
+    candidates: impl IntoIterator<Item = (Entity, Vec3, f32)>,
+) -> Option<Entity> {
+    candidates
+        .into_iter()
+        .filter(|(_, _, distance)| *distance <= reach)
+        .map(|(entity, at, distance)| {
+            (entity, (at - eye).with_y(0.0).angle_between(forward.with_y(0.0)), distance)
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1).then(a.2.total_cmp(&b.2)))
+        .map(|(entity, ..)| entity)
 }
 
 /// The share of spell points recovered while health recovers at
@@ -995,7 +1017,7 @@ mod tests {
         maximum[Realm::Air] = 3;
         let mut points = SpellPoints { spent: maximum.map(|_, max| i64::from(max)), ..default() };
         points.fraction[Realm::Fire] = 0.75;
-        assert_eq!(points.restore_evenly(8, &maximum), 8);
+        assert_eq!(points.restore_evenly(8), 8);
         // Five go to Fire; then the equal deficits share, in realm order.
         assert_eq!(
             (points.current(Realm::Fire, &maximum), points.current(Realm::Water, &maximum)),
@@ -1005,7 +1027,7 @@ mod tests {
         assert_eq!(points.restore_evenly(100), 10);
         assert!(!points.short());
         assert_eq!(points.fraction[Realm::Fire], 0.75);
-        assert_eq!(points.restore_evenly(5, &maximum), 0);
+        assert_eq!(points.restore_evenly(5), 0);
     }
 
     #[test]
@@ -1199,17 +1221,15 @@ mod tests {
         high[Realm::Divine] = 20;
         let mut low = high;
         low[Realm::Divine] = 10;
-        let mut points = SpellPoints::full(high);
-        points.current[Realm::Divine] = 1;
+        let mut points = SpellPoints::default();
+        points.spend(Realm::Divine, 19);
         points.fraction[Realm::Divine] = 0.5;
-        points.adjust_limits(&high, &low);
-        assert_eq!(points.current[Realm::Divine], -9);
-        assert_eq!(points.available(Realm::Divine), 0);
-        assert_eq!(points.drain_realm(Realm::Divine, 5), 0);
+        assert_eq!(points.current(Realm::Divine, &low), -9);
+        assert_eq!(points.available(Realm::Divine, &low), 0);
+        assert_eq!(points.drain_realm(Realm::Divine, 5, &low), 0);
         let spell = SpellDefinition { realm: Some(Realm::Divine), cost: 1, ..default() };
-        assert_eq!(points.affordable_power(&spell), 0);
-        points.adjust_limits(&low, &high);
-        assert_eq!(points.current[Realm::Divine], 1);
+        assert_eq!(points.affordable_power(&spell, &low), 0);
+        assert_eq!(points.current(Realm::Divine, &high), 1);
         assert_eq!(points.fraction[Realm::Divine], 0.5);
     }
 
@@ -1224,10 +1244,10 @@ mod tests {
         points.recover(10_000, 1.0, &maximum);
         assert_eq!(points.current(Realm::Divine, &maximum), 20);
         assert_eq!(points.fraction[Realm::Divine], 0.0);
-        points.current[Realm::Divine] = 25;
+        points.spent[Realm::Divine] = -5;
         points.fraction[Realm::Divine] = 0.5;
         points.recover(1, 1.0, &maximum);
-        assert_eq!(points.current[Realm::Divine], 25, "retail skips full realms");
+        assert_eq!(points.current(Realm::Divine, &maximum), 25, "retail skips full realms");
         assert_eq!(points.fraction[Realm::Divine], 0.0);
     }
 

@@ -174,10 +174,18 @@ pub(crate) fn pass_time(
         };
         let mut members = affected.p0();
         for actor in roster.iter() {
-            let Ok((profile, mut vitals)) = members.get_mut(actor) else { continue };
+            let Ok((mut profile, mut vitals)) = members.get_mut(actor) else { continue };
             let mut pool = points.get_mut(actor).ok().filter(|_| ticks.aging > 0);
-            let magic = pool.as_mut().map(|(known, pool)| (*known, &mut **pool));
-            recovery::pass(profile, &mut vitals, ticks, pace, magic, content.spells());
+            let magic = pool.as_mut().map(|(known, pool)| (*known, pool));
+            recovery::pass(
+                &mut profile,
+                &mut vitals,
+                ticks,
+                pace,
+                magic,
+                content.spells(),
+                &mut crate::game::characters::Fate { fight: None, rng: &mut rng },
+            );
         }
         if pass > 0 {
             if !enchantments.0.0.is_empty() {
@@ -260,7 +268,7 @@ mod pass_time_tests {
             let learned = LearnedSpells([SpellId(1)].into());
             let mut profile =
                 Character::new("Priest", Race::Human, Gender::Female, Profession::Priest);
-            profile.level = 10;
+            profile.profession_levels[Profession::Priest] = 10;
             let mut vitals = Vitals::new(&profile);
             let base = max_points(&profile.base_stats(), &learned, &catalog);
             vitals.enchantments.apply(Enchantment {

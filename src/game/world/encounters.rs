@@ -535,7 +535,7 @@ pub fn run_encounters(
         .into_iter()
         .flat_map(|roster| roster.iter())
         .filter_map(|m| characters.get(m).ok())
-        .map(|c| f32::from(c.level))
+        .map(|c| f32::from(c.level()))
         .take(6)
         .collect();
     let onlooker = Onlooker {

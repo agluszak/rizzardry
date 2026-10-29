@@ -205,7 +205,7 @@ mod tests {
 
     /// A 1 m move at 2 m/s, begun after some frames of `frame` each: the
     /// fixed time from its start to its end, and the walking it counted.
-    fn run_move(frame: Duration) -> (Duration, f32) {
+    fn run_move(frame: Duration, during_step: bool) -> (Duration, f32) {
         use crate::content::species::Species;
         use crate::game::data::GameData;
         use crate::game::world::population::ScaledBody;
@@ -263,16 +263,48 @@ mod tests {
             app.update();
         }
         let start = app.world().resource::<Time<Fixed>>().elapsed();
-        app.world_mut().entity_mut(monster).insert(CombatMove {
+        let movement = CombatMove {
             budget: 1.0,
             moved: 0.0,
-            away: Some(Vec3::new(0.0, 0.0, -20.0)),
-        });
+            goal: MoveGoal::Retreat(Vec3::new(0.0, 0.0, -20.0)),
+        };
+        if during_step {
+            app.add_systems(
+                FixedUpdate,
+                move |mut commands: Commands, mut accepted: Local<bool>| {
+                    if !*accepted {
+                        commands.entity(monster).insert(movement.clone());
+                        *accepted = true;
+                    }
+                },
+            );
+            app.add_systems(
+                FixedPostUpdate,
+                (move |moves: Query<&CombatMove>,
+                       targets: Query<&AgentTarget3d>,
+                       mut checked: Local<bool>| {
+                    if !*checked {
+                        assert_eq!(moves.get(monster).unwrap().moved, 0.0);
+                        assert_eq!(*targets.get(monster).unwrap(), AgentTarget3d::None);
+                        *checked = true;
+                    }
+                })
+                .after(spend_moves),
+            );
+        } else {
+            app.world_mut().entity_mut(monster).insert(movement);
+        }
         while app.world().resource::<Ended>().0.is_none() {
             app.update();
             // Headed off from the first step it walks.
             if app.world().get::<CombatMove>(monster).is_some()
-                && app.world().resource::<Time<Fixed>>().elapsed() > start
+                && app.world().resource::<Time<Fixed>>().elapsed()
+                    > start
+                        + if during_step {
+                            Time::<Fixed>::default().timestep()
+                        } else {
+                            Duration::ZERO
+                        }
             {
                 assert_eq!(
                     *app.world().get::<AgentTarget3d>(monster).unwrap(),
@@ -291,11 +323,18 @@ mod tests {
     /// move began.
     #[test]
     fn a_move_ends_at_the_same_fixed_step_whatever_the_frame_rate() {
-        let fast = run_move(Duration::from_micros(4_167));
-        let slow = run_move(Duration::from_millis(143));
+        let fast = run_move(Duration::from_micros(4_167), false);
+        let slow = run_move(Duration::from_millis(143), false);
         assert_eq!(fast, slow);
         // 2 m/s over 1/64 s steps spends 1 m in 32 steps; the 33rd ends it.
         let step = Time::<Fixed>::default().timestep();
         assert_eq!(fast, (step * 33, 1.0));
+    }
+    #[test]
+    fn a_move_accepted_during_the_step_waits_for_navigation_before_spending() {
+        let fast = run_move(Duration::from_micros(4_167), true);
+        let slow = run_move(Duration::from_millis(143), true);
+        assert_eq!(fast, slow);
+        assert_eq!(fast, (Time::<Fixed>::default().timestep() * 34, 1.0));
     }
 }

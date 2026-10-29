@@ -1055,7 +1055,7 @@ fn a_slain_npc_gives_up_what_it_carries_and_never_returns() {
                        mut purses: Query<&mut PartyInventory>,
                        mut rng: ResMut<GameRng>| {
         let mut damage = damage;
-        damage.apply(body, 1000, 1, &mut purses.get_mut(party).unwrap(), &mut rng).unwrap()
+        damage.apply(body, 1000, (1, 0), &mut purses.get_mut(party).unwrap(), &mut rng).unwrap()
     };
     let killed = app.world_mut().run_system_once(strike).unwrap();
     assert!(killed.died);
@@ -1265,9 +1265,11 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
     assert_eq!(app.world().get::<Character>(actor).unwrap().experience, experience);
     assert!(app.world().get::<Carried>(actor).unwrap().backpack[0].is_none());
 
-    // Dying in the party: it leaves for good, its items to the party.
+    // Death and accepted travel share a frame: settle before retiring the source level.
     app.world_mut().get_mut::<Vitals>(actor).unwrap().hp = 0;
+    let destination = spawn_level(&mut app, floor());
     app.update();
+    assert!(is_played(&app, destination));
     assert_eq!(members(&app), 1);
     assert!(app.world().get::<Npc>(actor).unwrap().dead);
     let pool = &app.world().get::<PartyInventory>(party).unwrap().pool.stacks;

@@ -548,19 +548,18 @@ mod tests {
             world.get_mut::<MonsterBodies>(scene.root).unwrap().0.insert(id, body.clone());
         }
         let mut profile = Character::new("Caller", Race::Human, Gender::Male, Profession::Mage);
-        profile.level = 30;
+
         profile.profession_levels[Profession::Mage] = 30;
         profile.skill_points[Skill::Wizardry] = 100;
         profile.skill_points[Skill::FireMagic] = 100;
-        let mut maximum = enum_map::EnumMap::default();
-        maximum[Realm::Fire] = 100;
         world.entity_mut(scene.members[0]).insert((
             Vitals::new(&profile),
             profile,
             Carried::default(),
             LearnedSpells([SpellId::HYPNOTIC_LURE, SpellId::SUMMON_ELEMENTAL].into()),
-            SpellPoints::full(maximum),
+            SpellPoints::default(),
         ));
+        crate::game::magic::test_set_points(world, scene.members[0], Realm::Fire, 100);
         scene
     }
     fn choice(spell: SpellId) -> MagicChoice {
@@ -583,12 +582,12 @@ mod tests {
             Err(Refusal::MissingContent)
         );
         assert_eq!(&rng, world.resource::<GameRng>());
-        assert_eq!(world.get::<SpellPoints>(caster).unwrap().current[Realm::Fire], 100);
+        assert_eq!(crate::game::magic::test_points(world, caster, Realm::Fire), 100);
         world.entity_mut(root).insert(definitions);
         cast(world, caster, choice(SpellId::SUMMON_ELEMENTAL)).unwrap();
         let summon = world.get::<Elementals>(caster).unwrap().iter().next().unwrap();
         assert!((21..=24).contains(&world.get::<Monster>(summon).unwrap().species));
-        assert_eq!(world.get::<SpellPoints>(caster).unwrap().current[Realm::Fire], 99);
+        assert_eq!(crate::game::magic::test_points(world, caster, Realm::Fire), 99);
         assert_eq!(cast(world, caster, choice(SpellId::SUMMON_ELEMENTAL)), Err(Refusal::NoTarget));
         let party = crate::game::party::roster::the_party(world).unwrap();
         let before = world.get::<PartyInventory>(party).unwrap().gold;

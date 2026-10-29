@@ -256,13 +256,13 @@ impl Situation<'_> {
     /// The monster an automatic aim takes: of those within reach, the one
     /// nearest the party's heading, the nearer of equals.
     fn ahead(&self, spell: &SpellDefinition) -> Option<&Candidate> {
-        let facing = self.facing.with_y(0.0);
-        self.monsters
-            .iter()
-            .filter(|c| c.distance <= spell.reach.metres())
-            .map(|c| (c, (c.at - self.party_at).with_y(0.0).angle_between(facing)))
-            .min_by(|a, b| a.1.total_cmp(&b.1).then(a.0.distance.total_cmp(&b.0.distance)))
-            .map(|(c, _)| c)
+        let entity = super::target_ahead(
+            self.party_at,
+            self.facing,
+            spell.reach.metres(),
+            self.monsters.iter().map(|c| (c.entity, c.at, c.distance)),
+        )?;
+        self.monsters.iter().find(|c| c.entity == entity)
     }
 
     fn party_victims(&self) -> Vec<Victim> {
@@ -929,7 +929,12 @@ pub(crate) fn perform_utility(
         Some(_) => power,
         None => {
             let (learned, pool) = points.get(caster).map_err(|_| Refusal::NotLearned)?;
-            let maximum = world.mana_maximum(caster, learned).ok_or(Refusal::MissingContent)?;
+            let maximum = super::max_points(
+                &character
+                    .stats(&members.get(caster).map_err(|_| Refusal::CannotAct)?.1.enchantments),
+                learned,
+                spells,
+            );
             power.min(MAX_POWER).min(pool.affordable_power(spell, &maximum))
         }
     };

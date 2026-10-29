@@ -1267,16 +1267,31 @@ fn mana_fountains_share_use_and_refill_history_and_restore_deficits() {
     scene.world.entity_mut(member).insert(LearnedSpells([SpellId(1), SpellId(2)].into()));
     points.fraction[Realm::Fire] = 0.25;
     scene.world.entity_mut(member).insert(points);
+    for realm in enumset::EnumSet::<Realm>::all() {
+        crate::game::magic::test_set_points(&mut scene.world, member, realm, 0);
+    }
     assert!(scene.run("MANA").0);
     let points = scene.world.get::<SpellPoints>(member).unwrap();
-    assert_eq!(points.current.values().sum::<i64>(), 3);
+    assert_eq!(
+        enumset::EnumSet::<Realm>::all()
+            .iter()
+            .map(|r| crate::game::magic::test_points(&scene.world, member, r))
+            .sum::<i64>(),
+        3
+    );
     assert_eq!(points.fraction[Realm::Fire], 0.25);
     let memory = scene.remember();
     scene.visit(Some(memory));
     assert!(!scene.run("MANA").0);
     scene.world.resource_mut::<GameClock>().ms = 1000;
     assert!(scene.run("MANA").0);
-    assert_eq!(scene.world.get::<SpellPoints>(member).unwrap().current.values().sum::<i64>(), 6);
+    assert_eq!(
+        enumset::EnumSet::<Realm>::all()
+            .iter()
+            .map(|r| crate::game::magic::test_points(&scene.world, member, r))
+            .sum::<i64>(),
+        6
+    );
 }
 
 #[test]

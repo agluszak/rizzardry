@@ -789,11 +789,11 @@ fn npc_named(world: &World, name: &str) -> Option<Entity> {
         .and_then(|facts| facts.0.iter().find(|f| f.symbol == "FACT_RFS81_HAS_BEEN_FIXED"))
         .is_some_and(|f| fact(world, f.id).is_ok_and(|value| value != 0));
     world.iter_entities().find_map(|e| {
-        let npc = e.get::<Npc>()?;
-        let shown = if npc.definition == RFS81 && fixed {
+        let id = e.get::<super::ActorId>()?.npc();
+        let shown = if id == RFS81 && fixed {
             RFS81_FIXED_NAME
         } else {
-            catalog.get(npc.definition)?.display_name.as_str()
+            catalog.get(id)?.display_name.as_str()
         };
         shown.eq_ignore_ascii_case(name).then(|| e.id())
     })
@@ -804,7 +804,7 @@ fn npc_named(world: &World, name: &str) -> Option<Entity> {
 /// answers to it, the conversation simply waits for the party.
 fn hand_over(world: &mut World, entity: Entity, name: &str, quote: u16) {
     let Some(speaker) = npc_named(world, name) else { return };
-    let id = world.get::<Npc>(speaker).unwrap().definition;
+    let id = world.get::<super::ActorId>(speaker).unwrap().npc();
     let Some(script) = world.resource::<NpcAssets>().scripts.get(&id).cloned() else {
         let mut c = world.get_mut::<Conversation>(entity).unwrap();
         block(&mut c, quote, None, format!("{name}'s script unavailable"));
@@ -1507,7 +1507,7 @@ fn approach_npc(world: &mut World, entity: Entity, approach: Approach) {
         let total: u32 = members
             .iter()
             .filter_map(|&m| world.get::<Character>(m))
-            .map(|c| u32::from(c.level))
+            .map(|c| u32::from(c.level()))
             .sum();
         let average = if members.is_empty() { 1 } else { total / members.len() as u32 };
         let own = active_body(world, actor)
@@ -2335,12 +2335,10 @@ mod tests {
         let spells = world.resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(spells));
         world.insert_resource(GameData { items, species, spells, loot: default() });
         let mut profile = Character::new("Reader", Race::Human, Gender::Male, Profession::Mage);
-        profile.level = 30;
+
         profile.profession_levels[Profession::Mage] = 30;
         profile.skill_points[Skill::Wizardry] = 100;
         profile.skill_points[Skill::MentalMagic] = 100;
-        let mut maximum = enum_map::EnumMap::default();
-        maximum[Realm::Mental] = 100;
         let caster = world
             .spawn((
                 Vitals::new(&profile),
@@ -2348,9 +2346,10 @@ mod tests {
                 Carried::default(),
                 Burden::default(),
                 LearnedSpells([SpellId::CHARM, SpellId::MINDREAD].into()),
-                SpellPoints::full(maximum),
+                SpellPoints::default(),
             ))
             .id();
+        crate::game::magic::test_set_points(world, caster, Realm::Mental, 100);
         crate::game::party::roster::test_join(world, caster);
         let body = active_body(world, actor).unwrap();
         let choice = |spell| MagicChoice {
@@ -2363,7 +2362,7 @@ mod tests {
             Err(Refusal::WrongTime)
         );
         assert_eq!(world.resource::<GameRng>(), &rng);
-        assert_eq!(world.get::<SpellPoints>(caster).unwrap().current[Realm::Mental], 100);
+        assert_eq!(crate::game::magic::test_points(world, caster, Realm::Mental), 100);
         world.get_mut::<Conversation>(session).unwrap().queue.clear();
         // Select a successful save roll without assuming retail's RNG sequence.
         for seed in 0..30 {
@@ -2697,13 +2696,10 @@ mod tests {
         world.resource_mut::<NpcAssets>().scripts.insert(id, script);
         let level = world.query_filtered::<Entity, With<Level>>().single(world).unwrap();
         let actor = world
-            .spawn(Npc {
-                definition: id,
-                disposition: 80,
-                greeting_pending: true,
-                paid_topics: vec![],
-                ..default()
-            })
+            .spawn((
+                super::super::ActorId::Named(id),
+                Npc { disposition: 80, greeting_pending: true, paid_topics: vec![], ..default() },
+            ))
             .id();
         world.spawn((
             super::super::NpcBody(actor),
@@ -4239,6 +4235,8 @@ mod view_lifecycle_test {
                 wait: ConversationWait::Ready,
                 transcript: vec![],
                 learned_topics: default(),
+                menu: false,
+                charms: default(),
                 result: None,
                 queue: default(),
             }

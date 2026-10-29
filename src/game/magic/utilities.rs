@@ -181,20 +181,19 @@ mod tests {
         data.spells = spells;
         data.species = species;
         let mut profile = Character::new("Caster", Race::Human, Gender::Male, Profession::Mage);
-        profile.level = 30;
+
         profile.profession_levels[Profession::Mage] = 30;
         profile.skill_points[Skill::Wizardry] = 100;
         profile.skill_points[Skill::FireMagic] = 100;
         let vitals = Vitals::new(&profile);
-        let mut maximum = enum_map::EnumMap::default();
-        maximum[Realm::Fire] = 100;
         world.entity_mut(scene.members[0]).insert((
             profile,
             vitals,
             Carried::default(),
             LearnedSpells(ids.into_iter().collect()),
-            SpellPoints::full(maximum),
+            SpellPoints::default(),
         ));
+        crate::game::magic::test_set_points(world, scene.members[0], Realm::Fire, 100);
         scene
     }
 
@@ -289,7 +288,7 @@ mod tests {
             matches!(request(&mut scene, SpellId::HEAL_WOUNDS, Aim::Member(caster)), MagicNews::Done(report) if report.outcome == super::super::Outcome::Cast)
         );
         assert_eq!(scene.world.get::<Vitals>(caster).unwrap().hp, 6);
-        let mana = scene.world.get::<SpellPoints>(caster).unwrap().current[Realm::Fire];
+        let mana = crate::game::magic::test_points(&scene.world, caster, Realm::Fire);
         let stamina = scene.world.get::<Vitals>(caster).unwrap().stamina;
         scene
             .world
@@ -300,13 +299,13 @@ mod tests {
             matches!(request(&mut scene, SpellId::HEAL_WOUNDS, Aim::Member(caster)), MagicNews::Done(report) if report.outcome == super::super::Outcome::Fizzled)
         );
         assert_eq!(scene.world.get::<Vitals>(caster).unwrap().hp, 6);
-        assert_eq!(scene.world.get::<SpellPoints>(caster).unwrap().current[Realm::Fire], mana - 1);
+        assert_eq!(crate::game::magic::test_points(&scene.world, caster, Realm::Fire), mana - 1);
         assert_eq!(scene.world.get::<Vitals>(caster).unwrap().stamina, stamina - 2);
         assert!(
             matches!(request(&mut scene, SpellId::SET_PORTAL, Aim::Member(caster)), MagicNews::Done(report) if report.outcome == super::super::Outcome::Fizzled)
         );
         assert!(scene.world.get::<Portal>(caster).is_none());
-        assert_eq!(scene.world.get::<SpellPoints>(caster).unwrap().current[Realm::Fire], mana - 2);
+        assert_eq!(crate::game::magic::test_points(&scene.world, caster, Realm::Fire), mana - 2);
     }
 
     #[test]
@@ -353,7 +352,7 @@ mod tests {
             .unwrap();
             assert_eq!(report.outcome, if fizzles { Outcome::Fizzled } else { Outcome::Cast });
             assert_eq!(scene.inventory().pool.stacks[0].count(), 1);
-            assert_eq!(scene.world.get::<SpellPoints>(caster).unwrap().current[Realm::Fire], 100);
+            assert_eq!(crate::game::magic::test_points(&scene.world, caster, Realm::Fire), 100);
         }
     }
 
@@ -375,7 +374,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(report.outcome, super::super::Outcome::Cast);
-        assert_eq!(scene.world.get::<SpellPoints>(caster).unwrap().current[Realm::Fire], 99);
+        assert_eq!(crate::game::magic::test_points(&scene.world, caster, Realm::Fire), 99);
     }
 
     #[test]
@@ -403,7 +402,7 @@ mod tests {
             MagicNews::Done(report) if report.outcome == super::super::Outcome::Cast));
         assert_eq!(PartyBody::eye(scene.world.get::<Position>(party).unwrap()), saved.eye);
         assert_eq!(scene.world.get::<PartyBody>(party).unwrap().pitch, 0.25);
-        assert_eq!(scene.world.get::<SpellPoints>(caster).unwrap().current[Realm::Fire], 98);
+        assert_eq!(crate::game::magic::test_points(&scene.world, caster, Realm::Fire), 98);
         let memory = scene.remember();
         scene.visit(Some(memory));
         assert_eq!(scene.world.get::<Portal>(caster).unwrap().eye, saved.eye);

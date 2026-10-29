@@ -50,7 +50,7 @@ pub(super) fn execute(
         return Err(Refusal::NoTarget);
     }
     let (level, stamina, maximum) = (
-        u32::from(profile.level),
+        u32::from(profile.level()),
         vitals.stamina,
         profile.stats(&vitals.enchantments).max_stamina(),
     );

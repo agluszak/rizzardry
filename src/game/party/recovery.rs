@@ -54,33 +54,23 @@ impl Pace {
 /// [`elapse`] on a tracked member, which counts as changed only when
 /// something did change.
 pub fn pass(
-    profile: &Character,
+    profile: &mut Mut<Character>,
     member: &mut Mut<Vitals>,
     ticks: Ticks,
     pace: Pace,
-    mut magic: Option<(&LearnedSpells, &mut SpellPoints)>,
+    magic: Option<(&LearnedSpells, &mut Mut<SpellPoints>)>,
     spells: Option<&SpellCatalog>,
+    fate: &mut crate::game::characters::Fate,
 ) {
     if ticks.aging > 0 && magic.is_some() && spells.is_none() {
         return;
     }
-    // GameTurnsPassedChar regenerates before aging personal enchantments.
-    // Their expiry then recalculates ceilings and adjusts current points by
-    // the difference. No render-frame refresh participates in either step.
-    let maximum = magic.as_ref().zip(spells).map(|((known, _), spells)| {
-        max_points(&profile.stats(&member.enchantments), known, spells)
-    });
-    if ticks.aging > 0
-        && let (Some((_, pool)), Some(maximum)) = (&mut magic, &maximum)
-    {
-        pool.recover(ticks.aging, recovery_scale(pace.health_scale()), maximum);
-    }
+    let magic = magic.filter(|(_, pool)| ticks.aging > 0 && pool.needs_recovery());
+    let magic = magic.zip(spells).map(|((known, pool), spells)| (known, &mut **pool, spells));
     let vitals = member.bypass_change_detection();
     let before = vitals.clone();
-    elapse(profile, vitals, ticks, pace);
-    if let (Some((known, pool)), Some(maximum), Some(spells)) = (magic, maximum, spells) {
-        let after = max_points(&profile.stats(&vitals.enchantments), known, spells);
-        pool.adjust_limits(&maximum, &after);
+    if elapse(profile.bypass_change_detection(), vitals, ticks, pace, fate, magic).is_some() {
+        profile.set_changed();
     }
     if *vitals != before {
         member.set_changed();
@@ -96,6 +86,7 @@ pub fn elapse(
     ticks: Ticks,
     pace: Pace,
     fate: &mut crate::game::characters::Fate,
+    magic: Option<(&LearnedSpells, &mut SpellPoints, &SpellCatalog)>,
 ) -> Option<crate::game::characters::Sickness> {
     let mut sickness = None;
     let (stamina, health) = pace.scales();
@@ -113,6 +104,10 @@ pub fn elapse(
             member.damage(profile, poisoned, fate);
         }
         sickness = member.sicken(profile, ticks.aging, fate);
+        if let Some((known, pool, spells)) = magic {
+            let maximum = max_points(&profile.stats(&member.enchantments), known, spells);
+            pool.recover(ticks.aging, recovery_scale(pace.health_scale()), &maximum);
+        }
         member.recover_health(ticks.aging, health, profile.stats(&member.enchantments).max_hp());
         member.age_conditions(ticks.aging, fate.rng);
         let stats = profile.stats(&member.enchantments);
@@ -169,6 +164,7 @@ mod tests {
             Ticks { stamina: 85, aging: 1 },
             Pace::Fighting,
             &mut calm(&mut GameRng::default()),
+            None,
         );
         assert_eq!((fighter.hp, fighter.stamina), (hp, stamina));
         assert!(!fighter.has(Condition::Afraid));
@@ -179,6 +175,7 @@ mod tests {
             Ticks { stamina: 85, aging: 60 },
             Pace::Still,
             &mut calm(&mut GameRng::default()),
+            None,
         );
         assert!(fighter.hp > hp && fighter.stamina > stamina);
     }
@@ -201,6 +198,7 @@ mod tests {
             Ticks { stamina: 0, aging: 1 },
             Pace::Walking,
             &mut calm(&mut rng),
+            None,
         );
         elapse(
             &mut profile,
@@ -208,6 +206,7 @@ mod tests {
             Ticks { stamina: 0, aging: 1 },
             Pace::Still,
             &mut calm(&mut rng),
+            None,
         );
         assert_eq!(walking.hp, hp - 6, "four, half again on the move");
         assert_eq!(still.hp, hp - 4);
@@ -290,7 +289,6 @@ mod tests {
         use crate::content::characters::Attribute;
         use crate::game::characters::Sickness;
         let mut veteran = Character::new("Old", Race::Human, Gender::Male, Profession::Fighter);
-        veteran.level = 40;
         veteran.profession_levels[Profession::Fighter] = 40;
         let mut wounded_seen = false;
         let mut dying_seen = false;
@@ -342,6 +340,7 @@ mod tests {
             Ticks { stamina: 0, aging: 60 },
             Pace::Camping,
             &mut calm(&mut GameRng::default()),
+            None,
         );
         assert_eq!(member.hp, max_hp - 3);
         let stamina = member.stamina;

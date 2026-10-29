@@ -245,13 +245,8 @@ fn drink_fountain(
                 });
             }
             Restores::Magic => {
-                let (learned, mut points) = points.unwrap();
-                let maximum = crate::game::magic::max_points(
-                    &profile.stats(&member.enchantments),
-                    learned,
-                    content.spells().unwrap(),
-                );
-                points.restore_evenly(fountain.amount, &maximum);
+                let (_, mut points) = points.unwrap();
+                points.restore_evenly(fountain.amount);
             }
             Restores::Health => {
                 let maximum = profile.stats(&member.enchantments).max_hp();
