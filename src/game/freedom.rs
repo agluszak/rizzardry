@@ -34,9 +34,12 @@ pub struct Freedom<'w, 's> {
 
 impl Freedom<'_, '_> {
     pub fn free(&self) -> bool {
-        self.utility_magic() && self.camp.is_none()
+        self.unoccupied() && self.camp.is_none()
     }
-    pub fn utility_magic(&self) -> bool {
+
+    /// Free but perhaps camping: what utility magic needs (a camp does not
+    /// stop a portal).
+    pub fn unoccupied(&self) -> bool {
         !self.levels.is_empty()
             && self.entering.is_empty()
             && self.conversations.is_empty()
@@ -51,6 +54,7 @@ pub fn party_free(freedom: Freedom) -> bool {
     freedom.free()
 }
 
-pub fn utility_magic(freedom: Freedom) -> bool {
-    freedom.utility_magic()
+/// Run condition: free but perhaps camping ([`Freedom::unoccupied`]).
+pub fn unoccupied(freedom: Freedom) -> bool {
+    freedom.unoccupied()
 }

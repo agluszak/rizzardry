@@ -66,6 +66,11 @@ impl GameData {
             .get(&world.get_resource::<GameData>()?.species)
     }
 
+    /// The spell catalog, for operations that hold the whole world.
+    pub fn spells(world: &World) -> Option<&SpellCatalog> {
+        world.get_resource::<Assets<SpellCatalog>>()?.get(&world.get_resource::<GameData>()?.spells)
+    }
+
     /// The loot tables, for operations that hold the whole world.
     pub fn loot(world: &World) -> Option<&LootTables> {
         world.get_resource::<Assets<LootTables>>()?.get(&world.get_resource::<GameData>()?.loot)

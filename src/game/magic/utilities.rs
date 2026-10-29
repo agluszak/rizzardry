@@ -26,19 +26,19 @@ pub(crate) fn source_spell(
 /// Search only the current roster and party inventory. Stable stack IDs allow
 /// a target to move between those owners without retargeting a different item.
 fn target(world: &World, party: Entity, id: StackId) -> Option<&ItemStack> {
-    let inventory = world.get::<PartyInventory>(party)?;
-    inventory
-        .hand
-        .held
-        .as_ref()
-        .filter(|s| s.id == id)
-        .or_else(|| inventory.pool.stacks.iter().find(|s| s.id == id))
-        .or_else(|| {
-            world
-                .get::<PartyRoster>(party)?
-                .iter()
-                .find_map(|member| world.get::<Carried>(member)?.find_stack(id))
-        })
+    world.get::<PartyInventory>(party)?.find_stack(id).or_else(|| {
+        world
+            .get::<PartyRoster>(party)?
+            .iter()
+            .find_map(|member| world.get::<Carried>(member)?.find_stack(id))
+    })
+}
+
+/// Whether an identify at `strength` reveals an item this hard (retail
+/// `ApplyIdentifyAttempt`: power × 3, raised by Power Cast).
+fn identifies(strength: super::Strength, difficulty: u8) -> bool {
+    let score = u32::from(strength.power) * 3;
+    score + score * strength.boost / 100 >= u32::from(difficulty)
 }
 
 pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Result<(), Refusal> {
@@ -55,7 +55,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
     if id != SpellId::IDENTIFY_ITEM {
         return Err(Refusal::Unsupported);
     }
-    if !world.run_system_cached(crate::game::freedom::utility_magic).unwrap_or(false)
+    if !world.run_system_cached(crate::game::freedom::unoccupied).unwrap_or(false)
         || world.query::<&crate::game::combat::Battle>().iter(world).next().is_some()
     {
         return Err(Refusal::WrongTime);
@@ -75,42 +75,28 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
         return Err(Refusal::NoTarget);
     }
     let source = if let Source::Spell { spell, power: super::casting::AUTO_POWER } = choice.source {
-        let data =
-            world.get_resource::<crate::game::data::GameData>().ok_or(Refusal::MissingContent)?;
-        let spells = world
-            .get_resource::<Assets<crate::content::spells::SpellCatalog>>()
-            .and_then(|s| s.get(&data.spells))
-            .ok_or(Refusal::MissingContent)?;
+        let spells = crate::game::data::GameData::spells(world).ok_or(Refusal::MissingContent)?;
         let definition = spells.get(spell).ok_or(Refusal::MissingContent)?;
         let profile =
             world.get::<crate::game::characters::Character>(caster).ok_or(Refusal::CannotAct)?;
         let power = (1..=crate::content::spells::MAX_POWER)
-            .find(|&power| {
-                let strength = super::Strength::of(profile, definition, power);
-                let score = u32::from(power) * 3;
-                score + score * strength.boost / 100 >= u32::from(difficulty)
-            })
+            .find(|&power| identifies(super::Strength::of(profile, definition, power), difficulty))
             .unwrap_or(crate::content::spells::MAX_POWER);
         Source::Spell { spell, power }
     } else {
         choice.source
     };
     let (report, strength) = super::sources::cast_source(world, caster, source, UseContext::World)?;
-    // Retail ApplyIdentifyAttempt: power*3, adjusted by Power Cast. No item
-    // roll or extra RNG draw; success reveals identity, spell and binding.
-    let score = u32::from(strength.power) * 3;
-    if report.outcome == super::Outcome::Cast
-        && score + score * strength.boost / 100 >= u32::from(difficulty)
-    {
+    // No item roll or extra RNG draw; success reveals identity, spell and
+    // binding.
+    if report.outcome == super::Outcome::Cast && identifies(strength, difficulty) {
         let reveal = |stack: &mut ItemStack| {
             stack.identified = true;
             stack.spell_known = true;
             stack.curse_known = true;
         };
         let mut inventory = world.get_mut::<PartyInventory>(party).unwrap();
-        if let Some(stack) = inventory.hand.held.as_mut().filter(|s| s.id == target_id) {
-            reveal(stack);
-        } else if let Some(stack) = inventory.pool.stacks.iter_mut().find(|s| s.id == target_id) {
+        if let Some(stack) = inventory.find_stack_mut(target_id) {
             reveal(stack);
         } else {
             let owner = world

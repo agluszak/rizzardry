@@ -807,8 +807,7 @@ fn test_maximum(world: &World, member: Entity) -> EnumMap<Realm, u32> {
     let profile = world.get::<Character>(member).unwrap();
     let vitals = world.get::<crate::game::characters::Vitals>(member).unwrap();
     let learned = world.get::<LearnedSpells>(member).unwrap();
-    let data = world.resource::<crate::game::data::GameData>();
-    let spells = world.resource::<Assets<SpellCatalog>>().get(&data.spells).unwrap();
+    let spells = crate::game::data::GameData::spells(world).unwrap();
     max_points(&profile.stats(&vitals.enchantments), learned, spells)
 }
 

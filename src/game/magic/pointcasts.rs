@@ -84,9 +84,7 @@ fn bodies(world: &World, root: Entity) -> Result<Vec<(u32, MonsterBody)>, Refusa
 }
 
 pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Result<(), Refusal> {
-    if !world.run_system_cached(crate::game::freedom::utility_magic).unwrap_or(false)
-        || world.contains_resource::<crate::game::camp::Camp>()
-    {
+    if !world.run_system_cached(crate::game::freedom::party_free).unwrap_or(false) {
         return Err(Refusal::WrongTime);
     }
     let id = super::utilities::source_spell(world, caster, choice.source)?;
@@ -103,10 +101,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
         .map_err(|_| Refusal::WrongTime)?;
     let battle = world.query_filtered::<Entity, With<Battle>>().single(world).ok();
     let (spell, far) = {
-        let data = world.get_resource::<GameData>().ok_or(Refusal::MissingContent)?;
-        let spell = world
-            .get_resource::<Assets<crate::content::spells::SpellCatalog>>()
-            .and_then(|assets| assets.get(&data.spells))
+        let spell = GameData::spells(world)
             .and_then(|catalog| catalog.get(id))
             .cloned()
             .ok_or(Refusal::MissingContent)?;
@@ -147,11 +142,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
             .get::<Character>(caster)
             .is_some_and(|profile| super::Strength::of(profile, &spell, 1).boost != 0)
         {
-            let data = world.get_resource::<GameData>().ok_or(Refusal::MissingContent)?;
-            let spells = world
-                .get_resource::<Assets<crate::content::spells::SpellCatalog>>()
-                .and_then(|assets| assets.get(&data.spells))
-                .ok_or(Refusal::MissingContent)?;
+            let spells = GameData::spells(world).ok_or(Refusal::MissingContent)?;
             if [
                 SpellId::HASTE,
                 SpellId::BODY_OF_STONE,
@@ -357,11 +348,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
                     SpellId::MISSILE_SHIELD,
                     SpellId::ARMORPLATE,
                 ][realm];
-                let definition = world
-                    .get_resource::<Assets<crate::content::spells::SpellCatalog>>()
-                    .and_then(|assets| assets.get(&world.resource::<GameData>().spells))
-                    .and_then(|catalog| catalog.get(buff))
-                    .cloned();
+                let definition = GameData::spells(world).and_then(|c| c.get(buff)).cloned();
                 if let Some(definition) = definition {
                     let turns = super::effects::duration(
                         &mut world.resource_mut::<GameRng>(),

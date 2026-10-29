@@ -981,6 +981,16 @@ pub fn pool_shares(pool_weight: u32, members: &[Option<(u32, u32)>]) -> Vec<u32>
 }
 
 impl PartyInventory {
+    /// A stack the party holds by identity: in hand or in the pool.
+    pub fn find_stack(&self, id: StackId) -> Option<&ItemStack> {
+        self.hand.held.iter().chain(&self.pool.stacks).find(|s| s.id == id)
+    }
+
+    /// Edit metadata of a stack the party holds without moving it.
+    pub(crate) fn find_stack_mut(&mut self, id: StackId) -> Option<&mut ItemStack> {
+        self.hand.held.iter_mut().chain(&mut self.pool.stacks).find(|s| s.id == id)
+    }
+
     pub fn give_held(
         &mut self,
         member: Option<&mut Carried>,
