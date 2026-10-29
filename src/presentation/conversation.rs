@@ -2085,7 +2085,8 @@ fn sync_trade_rows(
             if let Some(item) = item {
                 picture.set_if_neq(Picture {
                     sheet: assets.load(format!("retail://{}", item.image)),
-                    frame: 1,
+                    // Retail ShowSelectedNpcTradeItem uses SetImage's default frame 0.
+                    frame: 0,
                     at: Vec2::new(5., 20.),
                     bounds: None,
                 });
