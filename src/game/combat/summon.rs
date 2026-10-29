@@ -67,6 +67,23 @@ pub fn summon(
     let Ok((party_at, party_body)) = party.single() else { return };
     let Ok((root, navigation, mut unborn)) = levels.single_mut() else { return };
     let eye = PartyBody::eye(party_at);
+    // The next free ids, the unborn's counted too. Groups spawned here are
+    // not in the queries until this run ends, so each takes its ids from
+    // these and moves them on.
+    let mut next_location = monsters
+        .iter()
+        .map(|(m, ..)| m.location)
+        .chain(unborn.0.iter().map(|k| k.monster.location))
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let mut next_group = groups
+        .iter()
+        .map(|g| g.authored)
+        .chain(unborn.0.iter().filter_map(|k| k.group))
+        .max()
+        .unwrap_or(0)
+        + 1;
     for &Summon { summoner, species: id } in summons.read() {
         let Ok((caller, caller_at, caller_walker)) = monsters.get(summoner) else { continue };
         let Some(kind) = species.kind(id) else { continue };
@@ -78,21 +95,7 @@ pub fn summon(
         if count == 0 {
             continue;
         }
-        // The next free ids, the unborn's counted too.
-        let location = monsters
-            .iter()
-            .map(|(m, ..)| m.location)
-            .chain(unborn.0.iter().map(|k| k.monster.location))
-            .max()
-            .unwrap_or(0)
-            + 1;
-        let authored = groups
-            .iter()
-            .map(|g| g.authored)
-            .chain(unborn.0.iter().filter_map(|k| k.group))
-            .max()
-            .unwrap_or(0)
-            + 1;
+        let (location, authored) = (next_location, next_group);
         let mut members: Vec<KeptMonster> = (0..count)
             .map(|i| {
                 let identity = (location + i as i32, id, Some(authored));
@@ -172,6 +175,8 @@ pub fn summon(
             continue;
         }
         members.truncate(spots.len());
+        next_location += members.len() as i32;
+        next_group += 1;
         for (member, &spot) in members.iter_mut().zip(&spots) {
             member.feet = spot;
             member.yaw = facing(spots[0]);
@@ -340,6 +345,34 @@ mod tests {
             .unwrap();
         let group = world.get::<MonsterGroup>(membership.0).unwrap();
         assert_eq!(group.set.map(|set| set.stance), Some(Stance::Hostile));
+    }
+
+    /// Two summonings landing in one run each get their own group and their
+    /// own monsters' ids, though neither group is in the queries until the
+    /// run ends.
+    #[test]
+    fn summonings_in_one_run_take_distinct_ids() {
+        let (mut app, summoner, _) = scene(false);
+        app.world_mut().write_message(Summon { summoner, species: 12 });
+        app.world_mut().write_message(Summon { summoner, species: 12 });
+        app.world_mut().run_system_once(summon).unwrap();
+        let mut locations: Vec<_> = called(&mut app).iter().map(|(m, ..)| m.location).collect();
+        locations.sort();
+        assert_eq!(locations, [5, 6, 7, 8, 9, 10]);
+        let world = app.world_mut();
+        let mut groups: Vec<_> = world
+            .query::<(&Monster, &GroupMember)>()
+            .iter(world)
+            .filter(|(m, _)| m.species == 12)
+            .map(|(_, membership)| membership.0)
+            .collect();
+        groups.sort();
+        groups.dedup();
+        let mut authored: Vec<_> =
+            groups.iter().map(|&g| world.get::<MonsterGroup>(g).unwrap().authored).collect();
+        authored.sort();
+        authored.dedup();
+        assert_eq!(authored.len(), 2, "two groups under two ids: {authored:?}");
     }
 
     /// Unseen, the group comes where the summoner stands.
