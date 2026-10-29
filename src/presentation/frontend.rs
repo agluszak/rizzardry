@@ -5,7 +5,7 @@ use crate::content::ui::SpriteSheet;
 use crate::game::characters::creation::{
     CharacterDraft, PARTY_LIMIT, PLAYABLE_RACES, admit, default_gender, identity,
 };
-use crate::game::session::{Session, begin_adventure};
+use crate::game::session::begin_adventure;
 use crate::presentation::screen_art::visible_if;
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::input_focus::{
@@ -30,11 +30,24 @@ mod credits;
 mod party;
 mod spell_info;
 
+/// Which frontend screen shows: the main menu, party creation, or the world
+/// once a party plays in it.
+#[derive(States, Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Session {
+    #[default]
+    MainMenu,
+    Creation,
+    Playing,
+}
+
 pub struct FrontendPlugin;
 impl Plugin for FrontendPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(TabNavigationPlugin)
+            .init_state::<Session>()
             .add_sub_state::<MenuPage>()
+            .add_observer(show_the_world)
+            .add_systems(PostStartup, skip_the_menu)
             .add_input_context::<MenuInput>()
             .add_input_context::<credits::CreditsInput>()
             .add_input_context::<confirmation::ConfirmDialog>()
@@ -74,8 +87,28 @@ impl Plugin for FrontendPlugin {
                     credits::scroll,
                 )
                     .chain()
-                    .run_if(not(in_state(crate::game::session::Session::Playing))),
+                    .run_if(not(in_state(Session::Playing))),
             );
+    }
+}
+
+/// The world shows once a party plays in it: a new party's first level has
+/// committed. A failed entry leaves creation, and its drafts, to retry.
+fn show_the_world(
+    _: On<Add<crate::game::party::roster::Party>>,
+    mut next: ResMut<NextState<Session>>,
+) {
+    next.set(Session::Playing);
+}
+
+/// A campaign already entering its level at startup (a quick start) skips
+/// the menu.
+fn skip_the_menu(
+    entering: Query<(), With<crate::game::world::level::Destination>>,
+    mut next: ResMut<NextState<Session>>,
+) {
+    if !entering.is_empty() {
+        next.set(Session::Playing);
     }
 }
 
@@ -928,6 +961,42 @@ fn refresh(
     }
 }
 // Retail portrait catalog; any portrait may be selected for any character.
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+
+    /// Creation gives way to the world only when a party plays in it; a
+    /// quick start entering its level at startup skips the menu.
+    #[test]
+    fn the_world_shows_once_a_party_plays_in_it() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::state::app::StatesPlugin))
+            .insert_state(Session::Creation)
+            .add_observer(show_the_world)
+            .add_systems(PostStartup, skip_the_menu);
+        app.update();
+        assert_eq!(*app.world().resource::<State<Session>>().get(), Session::Creation);
+        app.world_mut().spawn(crate::game::party::roster::Party);
+        app.update();
+        assert_eq!(*app.world().resource::<State<Session>>().get(), Session::Playing);
+
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::state::app::StatesPlugin))
+            .init_state::<Session>()
+            .add_systems(Startup, |mut commands: Commands| {
+                commands.spawn(crate::game::world::level::Destination::new(
+                    crate::game::world::level::Level::test(default()),
+                    default(),
+                    crate::game::world::level::Entry::Travel,
+                ));
+            })
+            .add_systems(PostStartup, skip_the_menu);
+        app.update();
+        app.update();
+        assert_eq!(*app.world().resource::<State<Session>>().get(), Session::Playing);
+    }
+}
 
 #[cfg(test)]
 mod keyboard_tests {
