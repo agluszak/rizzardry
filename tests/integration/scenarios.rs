@@ -15,8 +15,8 @@ use rizzardry::game::world::items::WorldItem;
 use rizzardry::game::world::level::{Level, Travel};
 use rizzardry::game::world::population::Monster;
 
-/// Plenty of fixed steps (each 1/64 s of game time) for anything here.
-const STEPS: usize = 64 * 120;
+/// Ten simulated minutes includes full movement budgets in multi-round fights.
+const STEPS: usize = 64 * 600;
 
 /// The game with these command-line options, headless, ready to step.
 fn game(args: &[&str]) -> App {
@@ -84,13 +84,13 @@ fn crab_fight(app: &mut App) {
 #[test]
 #[ignore = "requires a retail installation"]
 fn a_green_slime_leaves_treasure() {
-    // With this seed one of the three Green Slimes drops from its table.
-    let mut app = game(&["--continuous", "--seed", "5", "--start=69.5,10,-24", "--yaw", "0"]);
+    // With this seed the three Green Slimes leave two item stacks.
+    let mut app = game(&["--continuous", "--seed", "9", "--start=69.5,10,-24", "--yaw", "0"]);
     step_until(&mut app, "the Monastery becoming active", |w| playing(w).is_some());
     let before = lying_items(app.world_mut());
     step_until(&mut app, "a fight with the slimes", |w| fighting(w));
     step_until(&mut app, "the fight's end", |w| !fighting(w));
-    assert_eq!(lying_items(app.world_mut()), before + 1);
+    assert_eq!(lying_items(app.world_mut()), before + 2);
 
     // Taking the resolved treasure, within reach, uses the same gameplay
     // operation as the rendered input adapter.
@@ -107,7 +107,7 @@ fn a_green_slime_leaves_treasure() {
     step_until(&mut app, "taking the treasure", |w| {
         w.try_query::<&PartyInventory>().unwrap().single(w).is_ok_and(|p| p.hand.held.is_some())
     });
-    assert_eq!(lying_items(app.world_mut()), before);
+    assert_eq!(lying_items(app.world_mut()), before + 1);
 }
 
 #[test]
@@ -170,9 +170,9 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     );
     let actor = app
         .world_mut()
-        .query::<(Entity, &Npc)>()
+        .query::<(Entity, &rizzardry::game::npcs::ActorId)>()
         .iter(app.world())
-        .find(|(_, n)| n.definition == burz_id)
+        .find(|(_, identity)| identity.npc() == burz_id)
         .unwrap()
         .0;
     assert!(
@@ -329,9 +329,9 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     assert_eq!(app.world().resource::<conversation::StoryFacts>().get(fact, facts), Ok(1));
     assert_eq!(
         app.world_mut()
-            .query::<&Npc>()
+            .query::<(&rizzardry::game::npcs::ActorId, &Npc)>()
             .iter(app.world())
-            .filter(|n| n.definition == burz_id)
+            .filter(|(identity, _)| identity.npc() == burz_id)
             .count(),
         1
     );
@@ -341,7 +341,8 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     }
     let reopened = conversation::begin(app.world_mut(), actor).unwrap();
     app.update();
-    assert_eq!(app.world().get::<Conversation>(reopened).unwrap().current, Some((121, 0)));
     finish(&mut app, reopened);
+    // The retained NPC uses its repeat greeting, not the first meeting branch.
+    assert_eq!(app.world().get::<Conversation>(reopened).unwrap().current, Some((1, 0)));
     assert!(app.world().get::<Conversation>(reopened).unwrap().ready());
 }

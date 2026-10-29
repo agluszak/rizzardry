@@ -6,20 +6,26 @@
 pub mod approach;
 pub mod attack;
 mod blows;
+pub mod breath;
+mod conduct;
+pub use conduct::Interrupt;
+mod monster_spells;
+pub mod summon;
 
-use crate::game::world::ActorPose;
 use crate::game::world::level::LevelOwned;
 use crate::game::world::level::PlayedLevel;
 use crate::game::world::navigation::{Walker, feet};
 use crate::game::world::obstacles::WorldObstacles;
+use crate::game::world::perception::{party_distance, sight_threshold};
+use crate::game::world::{ActorPose, ActorPoseItem};
 use avian3d::prelude::Position;
 use bevy::prelude::*;
 
 use crate::content::items::AttackMode;
 use crate::content::species::AttackWord;
 
-use crate::content::items::{Dice, ItemCatalog};
-use crate::content::species::{MonsterCatalog, Reach};
+use crate::content::items::ItemCatalog;
+use crate::content::species::{MonsterCatalog, Reach, Species};
 use crate::game::characters::{Character, Condition, Vitals};
 use crate::game::inventory::{EquipSlot, StackId};
 use crate::game::magic::casting::{self, MagicChoice, MagicNews};
@@ -33,7 +39,8 @@ use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::time::GameClock;
 use crate::game::world::damage::{MonsterDamage, MonsterQuery};
-use crate::game::world::identify::{GroupMember, GroupMembers, GroupRecognition};
+use crate::game::world::hostility;
+use crate::game::world::identify::{GroupMember, GroupMembers, GroupRecognition, MonsterGroup};
 use crate::game::world::population::Monster;
 use attack::{Armour, phase};
 use bevy::ecs::relationship::RelationshipTarget;
@@ -43,9 +50,12 @@ pub struct CombatPlugin;
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<CombatNews>()
+            .add_message::<hostility::Provocation>()
             .add_message::<CyclePartyMove>()
             .add_message::<StartRound>()
+            .add_message::<summon::Summon>()
             .add_message::<CombatControl>()
+            .add_message::<crate::game::camp::CampNews>()
             .add_message::<GiveOrder>()
             .init_resource::<CombatSettings>()
             .init_resource::<casting::FlightOrder>()
@@ -55,18 +65,37 @@ impl Plugin for CombatPlugin {
                 Update,
                 (
                     give_orders,
-                    // Defeat is settled before a fight starts or a round runs,
+                    // Defeat is settled before a fight starts,
                     settle_defeat,
                     start_battle,
                     control_combat,
-                    begin_round,
-                    run_battle,
-                    // and again after the round's damage.
-                    settle_defeat,
-                    approach::close_in,
                 )
                     .chain()
                     .in_set(crate::game::GameplaySet::Combat)
+                    .run_if(crate::game::world::level::level_active),
+            )
+            // Rounds run on the fixed step: when each actor acts, and so
+            // every roll, follows simulation time, not how often frames
+            // come. Requests made in Update wait for the next step, and a
+            // move the round starts or ends governs the party's input on
+            // that same step. Spell missiles fly on it too: an impact lands
+            // at the step its travel ends, and a defeat it causes is settled
+            // before anyone else acts.
+            .add_systems(
+                FixedUpdate,
+                (
+                    crate::game::magic::deliver_spells,
+                    settle_defeat,
+                    begin_round,
+                    run_battle,
+                    summon::summon,
+                    // and again after the round's damage.
+                    settle_defeat,
+                )
+                    .chain()
+                    .in_set(crate::game::GameplaySet::Combat)
+                    .after(crate::game::party::body::turn_party)
+                    .before(bevy_tnua::TnuaUserControlsSystems)
                     .run_if(crate::game::world::level::level_active),
             )
             // The party walks on the fixed step; its move is measured on
@@ -75,29 +104,27 @@ impl Plugin for CombatPlugin {
             // budget runs out.
             .add_systems(
                 FixedPostUpdate,
-                track_party_move
+                (track_party_move, approach::spend_moves)
                     .after(avian3d::prelude::PhysicsSystems::Writeback)
+                    .run_if(crate::game::world::level::level_active),
+            )
+            // Monsters' moves likewise: headed before navigation plans the
+            // step, charged once physics has walked it.
+            .add_systems(
+                FixedPreUpdate,
+                approach::steer_moves
+                    .before(bevy_landmass::LandmassSystems::SyncExistence)
                     .run_if(crate::game::world::level::level_active),
             );
     }
 }
 
-/// The party's reach point is this far under its eye (retail
-/// `g_default_world_height`, 1000 world units).
-const CAMERA_ABOVE_PARTY_POINT: f32 = 2.0;
-/// The party navigator's alternate radius (retail's default, 500 units).
-const PARTY_ALTERNATE_RADIUS: f32 = 1.0;
-/// A monster facing within this of the party sees it as far as anyone can
-/// (retail `g_monster_facing_tolerance`, 45 degrees).
-const FACING_TOLERANCE: f32 = std::f32::consts::FRAC_PI_4;
-
-/// Seconds between actors (retail `combat_delay_ms`, 1000 by default).
+/// Seconds of simulation between actors (retail `combat_delay_ms`, 1000 by
+/// default).
 const ACTION_SECONDS: f32 = 1.0;
-/// Real seconds between rounds, so that a round in which nobody can strike
-/// still lets monsters close in.
+/// Seconds of simulation between rounds, so that a round in which nobody
+/// can strike still lets monsters close in.
 const ROUND_SECONDS: f32 = 1.0;
-/// Game time one round takes.
-const ROUND_MS: u64 = 120_000;
 /// Rounds in which nobody could attack before the fight peters out.
 const PASSIVE_ROUNDS: u32 = 2;
 
@@ -127,15 +154,16 @@ fn give_orders(
     mut requests: MessageReader<GiveOrder>,
     battle: Option<Single<&Battle>>,
     roster: Single<&crate::game::party::roster::PartyRoster>,
-    mut orders: Query<(&mut crate::game::party::Order, &Character)>,
+    mut orders: Query<(&mut crate::game::party::Order, &Character, &Vitals)>,
 ) {
     use crate::content::characters::Trait;
     for &GiveOrder { member, order } in requests.read() {
         if battle.is_some()
             && roster.contains(&member)
-            && let Ok((mut current, character)) = orders.get_mut(member)
+            && let Ok((mut current, character, vitals)) = orders.get_mut(member)
             // Only those with the trait go berserk.
             && (order != Order::Berserk || character.has_trait(Trait::Berserk))
+            && (!matches!(order, Order::Breathe(_)) || breath::available(character, vitals))
         {
             current.set_if_neq(order);
         }
@@ -214,6 +242,7 @@ enum RoundAction {
     Defend,
     /// A spell or item use, revalidated and paid when its initiative comes.
     Magic(MagicChoice),
+    Breathe(Entity),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -277,17 +306,37 @@ struct Round {
     attacked: bool,
     /// Monsters that have moved: one move each.
     moved: Vec<Entity>,
+    /// Monsters that made their special attack.
+    specials: Vec<Entity>,
+    /// Monsters insanity turned on their friends this round.
+    berserk: Vec<Entity>,
+    /// Monsters guarding a fellow this round.
+    guards: Vec<Guard>,
+    /// Monsters that waited this round, which rests them.
+    waited: Vec<Entity>,
     /// How the party moves this round.
     pace: Option<PartyPace>,
     /// How often each member has tried to spot an attacker this round.
     spotted: bevy::ecs::entity::EntityHashMap<u32>,
 }
 
+/// A monster guarding a fellow this round, and how many blows it has
+/// taken in its place (retail `ACTION_PROTECT`, `interception_count`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Guard {
+    guard: Entity,
+    ward: Entity,
+    interceptions: u32,
+}
+
 /// The party's fight, on an entity owned by its level. Exists only while
 /// there is one.
 #[derive(Component, Debug, Default)]
+#[require(Transform)]
 pub struct Battle {
     pub round: u32,
+    /// Accepted encounter history, consumed when the opening round is initialized.
+    opening: Option<SurpriseCause>,
     phase: RoundPhase,
     this_round: Round,
     /// Experience from kills, shared at the end.
@@ -297,6 +346,11 @@ pub struct Battle {
     /// The party's standing choice to walk or run in the next rounds.
     pub party_pace: Option<PartyPace>,
     party_move: PartyMove,
+    /// Monsters running for their lives (retail `pCombat->advancing`).
+    fleeing: Vec<Entity>,
+    /// Rounds each monster still waits before its next special attack
+    /// (retail `pCombat->special_cooldown`).
+    cooldowns: Vec<(Entity, u8)>,
     /// Until the next action.
     wait: Timer,
 }
@@ -392,10 +446,57 @@ pub enum Announcement {
     Monster { word: AttackWord, mode: AttackMode, named: bool },
 }
 
+/// Why the party loses its opening turn (retail `RollCombatSurprise`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SurpriseCause {
+    Ambush,
+    Running,
+    Searching,
+}
+
+/// Automatic encounters already require a hostile that sees the party.
+/// Test party awareness before combat turns the camera toward that attacker.
+fn opening_surprise<'a>(
+    seen: bool,
+    shadow_hound: bool,
+    camping: bool,
+    running: bool,
+    searching: bool,
+    mut members: impl Iterator<Item = (&'a Character, &'a Vitals)>,
+    rng: &mut GameRng,
+) -> Option<SurpriseCause> {
+    if !shadow_hound {
+        if !seen {
+            return Some(SurpriseCause::Ambush);
+        }
+        if camping {
+            let guard = members.find(|(_, v)| v.lucid());
+            let Some((profile, vitals)) = guard else { return Some(SurpriseCause::Ambush) };
+            let senses = profile
+                .stats(&vitals.enchantments)
+                .attribute(crate::content::characters::Attribute::Senses);
+            rng.below(1);
+            if senses / 2 <= rng.below(100) {
+                return Some(SurpriseCause::Ambush);
+            }
+        }
+    }
+    if (running || searching) && rng.below(100) < 20 {
+        return Some(if running { SurpriseCause::Running } else { SurpriseCause::Searching });
+    }
+    None
+}
+
 /// What the fight tells the player.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum CombatNews {
-    Began,
+    Began {
+        nearest: Option<Entity>,
+    },
+    Surprised(SurpriseCause),
+    Breathed {
+        actor: Entity,
+    },
     /// An attack begins (retail `StartCharacterAttack`,
     /// `AnnounceMonsterAttack`).
     Attack {
@@ -440,47 +541,201 @@ pub enum CombatNews {
         monster: Entity,
         charge: bool,
     },
+    /// A monster makes its special attack (retail `MonsterFleeAction`'s
+    /// notice); what it did follows as [`CombatNews::Effects`].
+    Special {
+        monster: Entity,
+        kind: crate::content::species::SpecialAttackKind,
+    },
+    /// A guard takes a blow meant for its ward (retail string 0x21a).
+    Intercepts {
+        guard: Entity,
+        ward: Entity,
+    },
+    /// A monster's condition took its action (retail
+    /// `GetConditionInterrupt`, by its interrupt number).
+    Interrupted {
+        monster: Entity,
+        interrupt: Interrupt,
+    },
+    /// A monster runs for its life.
+    Flees {
+        monster: Entity,
+    },
+    /// A monster moves off from the party.
+    Withdraws {
+        monster: Entity,
+    },
+    /// A summoning found nowhere for its group to stand.
+    SummonFails,
     /// The party's move begins; it ends when spent or stopped.
     PartyMoves,
     PartyStops,
 }
 
-/// How far a monster is from the party (retail `GetPointDistanceToPlayer`):
-/// from its feet to the point 1000 world units (2 m) under the party's eye,
-/// less both bodies' alternate radii (its fight radius, the party's 1 m),
-/// never below 0. Reach and sight compare against this.
-fn distance_to_party(party_eye: Vec3, monster: &Monster, feet: Vec3) -> f32 {
-    let party_point = party_eye - Vec3::Y * CAMERA_ABOVE_PARTY_POINT;
-    ((feet - party_point).length() - monster.body.radius - PARTY_ALTERNATE_RADIUS).max(0.0)
+/// What monsters see of the party (after retail `UpdateMonsterSight`).
+struct Sight<'a, 'w, 's> {
+    eye: Vec3,
+    far: f32,
+    /// The party's lowest level among those who can act, which weakens
+    /// sight from behind.
+    lowest_level: i32,
+    concealment: u32,
+    obstacles: &'a WorldObstacles<'w, 's>,
 }
 
-/// Retail `ComputeSightThreshold`: how far an observer facing away by
-/// `angle` (radians) sees, given its senses, a ranged bonus percent and the
-/// penalty source (the party's lowest level, doubled); within 45 degrees, or
-/// at no distance, the whole `far` clip.
-fn sight_threshold(
-    angle: f32,
-    senses: i32,
-    bonus: u32,
-    penalty: i32,
-    far: f32,
-    distance: f32,
-) -> f32 {
-    let mut percent = if angle < FACING_TOLERANCE || distance == 0.0 {
-        100
-    } else {
-        ((senses - penalty * 2) as f32 * ((far - distance) / distance)) as i32
-    };
-    if bonus != 0 {
-        percent = (bonus as i32 + 100) * percent / 100;
+impl Sight<'_, '_, '_> {
+    /// Whether a monster that can still fight sees the party: within the
+    /// far clip, a clear line from its eyes past the level's static
+    /// geometry, and its sight threshold covering the distance.
+    fn sees(
+        &self,
+        monster: &Monster,
+        at: &ActorPoseItem,
+        walker: Option<&Walker>,
+        kind: &Species,
+    ) -> bool {
+        let distance = party_distance(self.eye, monster, feet(at.translation(), walker));
+        self.sees_point(
+            (monster, at, walker, kind),
+            self.eye,
+            distance,
+            self.lowest_level,
+            self.concealment,
+        )
     }
-    percent.clamp(2, 100) as f32 * far * 0.01
+
+    /// Whether the party has a clear line to a monster
+    /// ([`crate::game::world::perception::in_view`]), whichever way the
+    /// monster faces and however keen it is.
+    fn in_view(&self, monster: &Monster, at: &ActorPoseItem, walker: Option<&Walker>) -> bool {
+        crate::game::world::perception::in_view(
+            (self.eye, self.far),
+            monster,
+            feet(at.translation(), walker),
+            self.obstacles,
+        )
+    }
+
+    /// Whether a monster sees another (retail `CanMonsterSeeMonster`):
+    /// the same rule, weakened from behind by the other's level.
+    fn sees_monster(
+        &self,
+        observer: (&Monster, &ActorPoseItem, Option<&Walker>, &Species),
+        target: (&Monster, &ActorPoseItem, Option<&Walker>, &Species),
+    ) -> bool {
+        let (body, at, walker, kind) = target;
+        let (from, ..) = observer;
+        let target_feet = feet(at.translation(), walker);
+        let observer_feet = feet(observer.1.translation(), observer.2);
+        let distance = from.gap(observer_feet, body, target_feet);
+        let eye = body.eye(target_feet);
+        self.sees_point(observer, eye, distance, i32::from(kind.level), 0)
+    }
+
+    fn sees_point(
+        &self,
+        (monster, at, walker, kind): (&Monster, &ActorPoseItem, Option<&Walker>, &Species),
+        target: Vec3,
+        distance: f32,
+        penalty: i32,
+        concealment: u32,
+    ) -> bool {
+        let eye = monster.eye(feet(at.translation(), walker));
+        if !monster.can_fight() || distance > self.far || monster.blinded(kind) {
+            return false;
+        }
+        let clear = self.obstacles.clear(eye, target);
+        let forward = at.forward().with_y(0.0);
+        let angle = forward.angle_between((target - eye).with_y(0.0));
+        let senses = i32::from(kind.attributes.senses);
+        let bonus = if kind.level_sight { (u32::from(kind.level) * 5).min(125) } else { 0 };
+        clear
+            && sight_threshold(angle, senses, bonus, penalty, concealment, self.far, distance)
+                >= distance
+    }
+}
+
+/// How far from the party a neutral member may stand and still reinforce a
+/// fight (retail `GetMonsterEngagementRange`, 25000 world units).
+const ENGAGEMENT_RANGE: f32 = 50.0;
+/// What a group's leader reaches at least, beyond the engagement range, to
+/// join a running fight (retail `g_monster_engagement_range_floor`).
+const ENGAGEMENT_FLOOR: f32 = 15.0;
+/// How far out of its way a neutral member may stand from a hostile's line
+/// to the party and still be between them (retail
+/// `g_reinforcement_distance_slack`).
+const REINFORCEMENT_SLACK: f32 = 1.15;
+
+/// A monster as the reinforcement and leaving rules read it: where its
+/// feet are, how far it is from the party, whether it sees the party
+/// ([`Sight::sees`]) and whether the party has a line to it
+/// ([`Sight::in_view`]).
+#[derive(Clone, Copy, Debug)]
+struct Seen {
+    entity: Entity,
+    at: Vec3,
+    from_party: f32,
+    sees: bool,
+    in_view: bool,
+}
+
+/// Whether a neutral group stands with a fight (retail
+/// `MonsterGroupHasReinforcement`): one of its members in the party's view,
+/// within the engagement range, stands roughly between the party and a
+/// hostile fighter also in the party's view ([`Seen::in_view`], retail
+/// `party_threat.los_flags[1]`). A camouflaged member does not count.
+fn reinforces(members: &[(Seen, bool)], hostiles: &[Seen]) -> bool {
+    members
+        .iter()
+        .filter(|(member, camouflaged)| {
+            !camouflaged && member.in_view && member.from_party <= ENGAGEMENT_RANGE
+        })
+        .any(|(member, _)| {
+            hostiles.iter().filter(|other| other.entity != member.entity && other.in_view).any(
+                |other| {
+                    let between = member.at.distance(other.at);
+                    between + member.from_party < other.from_party * REINFORCEMENT_SLACK
+                        && (member.from_party < other.from_party || between < other.from_party)
+                },
+            )
+        })
+}
+
+/// The party's lowest level among those who can act.
+fn lowest_level<'a>(party: impl Iterator<Item = (&'a Character, &'a Vitals)>) -> i32 {
+    party.filter(|(_, v)| v.can_fight()).map(|(c, _)| i32::from(c.level())).min().unwrap_or(0)
 }
 
 /// Where the party stands and faces, and its formation, as reach needs them.
 struct PartyView {
     eye: Vec3,
     yaw: f32,
+    /// The level's far clip, which bounds monsters' sight.
+    far: f32,
+    /// The game time the round's actions happen at.
+    now: u64,
+}
+
+impl PartyView {
+    /// How monsters see the party now.
+    fn sight<'a, 'w, 's>(
+        &self,
+        members: &Members,
+        roster: &PartyRoster,
+        obstacles: &'a WorldObstacles<'w, 's>,
+        concealment: u32,
+    ) -> Sight<'a, 'w, 's> {
+        Sight {
+            eye: self.eye,
+            concealment,
+            far: self.far,
+            lowest_level: lowest_level(
+                members.iter_many(roster.iter()).matched().map(|(c, v, ..)| (c, v)),
+            ),
+            obstacles,
+        }
+    }
 }
 
 impl PartyView {
@@ -497,18 +752,36 @@ impl PartyView {
     }
 }
 
-/// Start a fight when hostile monsters that see the party can act on it
-/// (after retail `UpdateMonsterSight` and `MonsterGroupCanEngage`): the
-/// monster is within the far clip, has a line of sight from its eyes to the
-/// party's, and its sight threshold covers the distance; and one of its
-/// attacks reaches, or its best attack is close (touch or short) and it can
-/// walk up. Retail's combat move range and path checks, groups, factions and
-/// the party's own surprise rolls are not modelled yet.
+/// Start a fight when a hostile group can act on the party, and bring
+/// groups into one already running (after retail `UpdateMonsterGroups`,
+/// `MonsterGroupCanEngage`, `CheckMonsterGroupsEnterCombat`,
+/// `ShouldMonsterGroupEnterCombat`, `AlertSameFactionGroups`,
+/// `MakeTargetGroupHostile`).
+///
+/// Each group outside the fight, in authored order, takes its stance
+/// ([`hostility::stance`]), turning hostile when the party comes within its
+/// hostility radius in its sight. A hostile group enters with all its
+/// living members when the party has just acted against it. Otherwise a
+/// fight starts when a member sees the party ([`Sight`]) and a member can
+/// act on it: one of its attacks reaches, or its best attack is close
+/// (touch or short) and it can walk up. A fight under way takes in a
+/// hostile group that sees the party with its leader in reach, and a
+/// neutral group standing with it ([`reinforces`]); and while it runs, a
+/// hostile group fighting turns hostile the other groups of its faction
+/// whose leader sees its leader. NPC groups keep to their roles. Retail's
+/// path-length check is taken as the straight distance; its rendered-member
+/// clause and the party's own surprise rolls are not modelled yet.
 pub fn start_battle(
     mut commands: Commands,
-    battles: Query<(), With<Battle>>,
-    camp: Option<Res<crate::game::camp::Camp>>,
-    mut party: Query<(&Position, &mut PartyBody)>,
+    battles: Query<Entity, With<Battle>>,
+    (camp, search, movement, effects): (
+        Option<Res<crate::game::camp::Camp>>,
+        Option<Res<crate::game::world::search::Search>>,
+        Query<&crate::game::party::body::PartyMovement>,
+        Query<&crate::game::magic::enchantments::PartyEffects>,
+    ),
+    mut camp_news: MessageWriter<crate::game::camp::CampNews>,
+    party: Query<(&Position, &PartyBody)>,
     level: PlayedLevel,
     members: Query<(&Character, &Vitals)>,
     monsters: Query<(
@@ -516,95 +789,353 @@ pub fn start_battle(
         &Monster,
         ActorPose,
         Option<&Walker>,
-        Has<crate::game::world::population::Provoked>,
+        Option<&GroupMember>,
+        Has<Combatant>,
     )>,
+    mut provocations: MessageReader<hostility::Provocation>,
+    mut stage: ParamSet<(
+        (
+            Query<(Entity, &mut MonsterGroup, &GroupMembers, &LevelOwned)>,
+            Res<crate::game::factions::Factions>,
+        ),
+        GroupRecognition,
+    )>,
+    clock: Res<GameClock>,
     obstacles: WorldObstacles,
     content: crate::game::data::Content,
     roster: Single<&PartyRoster>,
     mut news: MessageWriter<CombatNews>,
-    mut recognition: GroupRecognition,
     mut rng: ResMut<GameRng>,
 ) {
-    if !battles.is_empty()
-        || camp.is_some()
-        || !members.iter_many(roster.iter()).matched().any(|(_, v)| !v.is_dead())
+    let provoked: Vec<Entity> = provocations
+        .read()
+        .filter_map(|&hostility::Provocation(m)| Some(monsters.get(m).ok()?.4?.0))
+        .collect();
+    let running = battles.single().ok();
+    if running.is_none()
+        && !crate::game::characters::anyone_alive(
+            members.iter_many(roster.iter()).matched().map(|(_, v)| v),
+        )
     {
         return;
     }
-    let (Ok((party_at, mut body)), Some(catalog)) = (party.single_mut(), content.species()) else {
-        return;
-    };
+    let Some(catalog) = content.species() else { return };
+    let Ok((party_at, body)) = party.single() else { return };
     let (Some(far), Some(root)) = (level.view_distance(), level.entity()) else { return };
-    let party_eye = PartyBody::eye(party_at);
-    // The party's lowest level among those who can act weakens sight
-    // from behind.
-    let lowest_level = members
-        .iter_many(roster.iter())
-        .matched()
-        .filter(|(_, v)| v.can_fight())
-        .map(|(c, _)| i32::from(c.level))
-        .min()
-        .unwrap_or(0);
-    // Only the level's static geometry blocks sight.
-    let clear = |from: Vec3, to: Vec3| {
-        let Ok(direction) = Dir3::new(to - from) else { return true };
-        obstacles.first_hit(from, direction, from.distance(to)).is_none()
+    let sight = Sight {
+        eye: PartyBody::eye(party_at),
+        concealment: effects.single().map_or(0, |e| e.0.concealment()),
+        far,
+        lowest_level: lowest_level(members.iter_many(roster.iter()).matched()),
+        obstacles: &obstacles,
     };
-    let mut joined: Vec<(i32, Entity)> = monsters
-        .iter()
-        .filter(|(_, monster, at, walker, provoked)| {
-            let Some(kind) = catalog.kind(monster.species) else { return false };
-            if kind.npc.is_some() || !monster.can_fight() {
-                return false;
-            }
-            let feet = feet(at.translation(), *walker);
-            let distance = distance_to_party(party_eye, monster, feet);
-            // Authored disposition: some keep to themselves until the party
-            // comes close or hurts them.
-            if !provoked && !recognition.factions.hostile_on_sight(kind, distance) {
-                return false;
-            }
-            let eye = feet + Vec3::Y * monster.body.eye_height;
-            if distance > far || !clear(eye, party_eye) {
-                return false;
-            }
-            let forward = at.forward().with_y(0.0);
-            let to_party = (party_eye - eye).with_y(0.0);
-            let angle = forward.angle_between(to_party);
-            let senses = i32::from(kind.attributes.senses);
-            let bonus = if kind.level_sight { (u32::from(kind.level) * 5).min(125) } else { 0 };
-            if sight_threshold(angle, senses, bonus, lowest_level, far, distance) < distance {
-                return false;
-            }
-            let reaches = kind.attacks.iter().any(|a| distance <= a.reach.metres());
-            let close =
-                kind.attacks.iter().map(|a| a.reach).max().is_some_and(|r| r <= Reach::Short);
-            let walks = monster.body.speed > 0.0;
-            reaches || (close && walks)
+    // Those of a group that fight: alive, and not an NPC.
+    let fighters = |group: &GroupMembers| -> Vec<Entity> {
+        group
+            .iter()
+            .filter(|&member| {
+                monsters.get(member).is_ok_and(|(_, monster, ..)| {
+                    !monster.is_dead()
+                        && catalog.kind(monster.species).is_some_and(|k| k.npc.is_none())
+                })
+            })
+            .collect()
+    };
+    let spells = content.spells();
+    // How far a fighter is, whether it sees the party, and whether it can
+    // act on it (retail `MonsterGroupCanEngage`): one of its attacks
+    // reaches, or its best attack is close and it can walk up, or it can
+    // cast or breathe at the party.
+    let look = |fighter: Entity| -> Option<(f32, bool, bool)> {
+        let (_, monster, at, walker, ..) = monsters.get(fighter).ok()?;
+        let kind = catalog.kind(monster.species)?;
+        let at_feet = feet(at.translation(), walker);
+        let distance = party_distance(sight.eye, monster, at_feet);
+        let sees = sight.sees(monster, &at, walker, kind);
+        let reaches = kind.attacks.iter().any(|a| distance <= a.reach.metres());
+        let close = kind.attacks.iter().map(|a| a.reach).max().is_some_and(|r| r <= Reach::Short);
+        let party_at = PartyBody::feet_below(sight.eye);
+        let toward = |victim: crate::game::magic::effects::Victim| {
+            let turncoat = members
+                .get(victim.entity())
+                .is_ok_and(|(_, v)| v.conditions.has(Condition::Turncoat));
+            hostility::toward_member(hostility::Stance::Hostile, turncoat)
+        };
+        let scene = monster_spells::Scene {
+            caster: fighter,
+            from: at_feet,
+            party_at,
+            members: roster
+                .iter()
+                .filter_map(|m| members.get(m).ok().map(|(c, v)| (m, c, v)))
+                .filter(|(_, _, v)| !v.is_dead())
+                .map(|(m, c, v)| member_in_scene((m, c, v), (party_at, distance), &toward))
+                .collect(),
+            monsters: Vec::new(),
+            party: distance,
+            sees_party: sees,
+        };
+        let casts = spells
+            .is_some_and(|spells| monster_spells::casts_at_foes(monster, kind, spells, &scene));
+        let breathes = kind.special.chance != 0
+            && special_ready(monster, kind, false, None)
+            && spells
+                .and_then(|spells| spells.get(crate::content::spells::SpellId::SPECIAL_ATTACK_CONE))
+                .is_some_and(|cone| !monster_spells::aims(cone, &scene).is_empty());
+        let acts = monster.can_fight()
+            && (reaches || (close && monster.body.speed > 0.0) || casts || breathes);
+        Some((distance, sees, acts))
+    };
+    let seen = |member: Entity| -> Option<Seen> {
+        let (_, monster, at, walker, ..) = monsters.get(member).ok()?;
+        let kind = catalog.kind(monster.species)?;
+        let at_feet = feet(at.translation(), walker);
+        Some(Seen {
+            entity: member,
+            at: at_feet,
+            from_party: party_distance(sight.eye, monster, at_feet),
+            sees: sight.sees(monster, &at, walker, kind),
+            in_view: sight.in_view(monster, &at, walker),
         })
-        .map(|(entity, m, ..)| (m.location, entity))
-        .collect();
+    };
+    let now = clock.ms;
+    // How far a monster is from the party.
+    let nearest_of = |member: Entity| {
+        monsters.get(member).map_or(f32::INFINITY, |(_, monster, at, walker, ..)| {
+            party_distance(sight.eye, monster, feet(at.translation(), walker))
+        })
+    };
+    // Whether a group's leader (its first fighter) is in reach of the
+    // party: its best attack's
+    // reach and one combat move, never under the engagement range and its
+    // floor (retail `ShouldMonsterGroupEnterCombat`; retail's path length
+    // check is taken as the straight distance).
+    let leader_reaches = |kind: &Species, distance: f32| {
+        let best = kind.attacks.iter().map(|a| a.reach.metres()).fold(0.0, f32::max);
+        let reach = (best + kind.combat_move_range * approach::METRES_PER_MOVE_RANGE)
+            .max(ENGAGEMENT_RANGE + ENGAGEMENT_FLOOR);
+        distance <= reach
+    };
+    // The fight's hostile fighters in the party's sight, as reinforcement
+    // reads them, and its same-faction groups alerted (retail
+    // `CheckMonsterGroupsEnterCombat`, `AlertSameFactionGroups`).
+    let mut hostiles = Vec::new();
+    if running.is_some() {
+        let (mut groups, factions) = stage.p0();
+        let stands = |monster: Entity, group: Option<&MonsterGroup>| -> Option<hostility::Stance> {
+            let (_, body, ..) = monsters.get(monster).ok()?;
+            let kind = catalog.kind(body.species)?;
+            Some(hostility::stance(group.and_then(|g| g.set), kind, &factions, now, true))
+        };
+        let living = |membership: &GroupMembers| -> Option<Entity> {
+            membership
+                .iter()
+                .find(|&m| monsters.get(m).is_ok_and(|(_, monster, ..)| !monster.is_dead()))
+        };
+        for (entity, monster, .., group, fighting) in &monsters {
+            let membership = group.and_then(|g| groups.get(g.0).ok());
+            if fighting
+                && !monster.is_dead()
+                && stands(entity, membership.map(|(_, g, ..)| g))
+                    == Some(hostility::Stance::Hostile)
+                && let Some(seen) = seen(entity).filter(|s| s.in_view)
+            {
+                hostiles.push(seen);
+            }
+        }
+        // Fighting hostile groups by their leaders, and their factions.
+        let alerting: Vec<(Entity, i32, Entity)> = groups
+            .iter()
+            .filter_map(|(entity, group, membership, owner)| {
+                let leader = living(membership).filter(|_| owner.0 == root)?;
+                let (_, body, .., fighting) = monsters.get(leader).ok()?;
+                let kind = catalog.kind(body.species)?;
+                (fighting
+                    && kind.faction != crate::game::factions::UNALIGNED
+                    && stands(leader, Some(group)) == Some(hostility::Stance::Hostile))
+                .then_some((entity, kind.faction, leader))
+            })
+            .collect();
+        let view = |monster: Entity| {
+            monsters.get(monster).ok().and_then(|(_, body, at, walker, ..)| {
+                Some((body, at, walker, catalog.kind(body.species)?))
+            })
+        };
+        for (entity, mut group, membership, owner) in &mut groups {
+            let Some(leader) = living(membership).filter(|_| owner.0 == root) else { continue };
+            let Some(observer) = view(leader) else { continue };
+            // NPCs keep to their own roles here.
+            if observer.3.npc.is_some() {
+                continue;
+            }
+            let alerted = alerting.iter().any(|&(source, faction, target)| {
+                source != entity
+                    && faction == observer.3.faction
+                    && view(target).is_some_and(|target| {
+                        sight.sees_monster(
+                            (observer.0, &observer.1, observer.2, observer.3),
+                            (target.0, &target.1, target.2, target.3),
+                        )
+                    })
+            });
+            let fighting = monsters.get(leader).is_ok_and(|m| m.5);
+            if alerted
+                && hostility::stance(group.set, observer.3, &factions, now, fighting)
+                    != hostility::Stance::Hostile
+            {
+                group.set =
+                    Some(hostility::SetStance { stance: hostility::Stance::Hostile, at: now });
+            }
+        }
+    }
+    // Each group outside the fight in authored order, then any monster
+    // without one.
+    let mut units: Vec<(i32, Option<Entity>, Vec<Entity>)> = {
+        let (groups, _) = stage.p0();
+        groups
+            .iter()
+            .filter(|(.., owner)| owner.0 == root)
+            .map(|(entity, group, membership, ..)| {
+                (group.authored, Some(entity), fighters(membership))
+            })
+            .collect()
+    };
+    units.sort_unstable_by_key(|&(authored, ..)| authored);
+    units.extend(
+        monsters
+            .iter()
+            .filter(|(_, monster, .., group, _)| {
+                group.is_none()
+                    && !monster.is_dead()
+                    && catalog.kind(monster.species).is_some_and(|k| k.npc.is_none())
+            })
+            .map(|(entity, ..)| (i32::MAX, None, vec![entity])),
+    );
+    let mut joined: Vec<(i32, Entity)> = Vec::new();
+    for (_, group, fighters) in units {
+        // Those already fighting stay; the rest of their group may join them.
+        let fighters: Vec<Entity> =
+            fighters.into_iter().filter(|&m| monsters.get(m).is_ok_and(|m| !m.5)).collect();
+        let Some(&first) = fighters.first() else { continue };
+        let kind = catalog.kind(monsters.get(first).unwrap().1.species).unwrap();
+        let looks: Vec<_> = fighters.iter().filter_map(|&m| look(m)).collect();
+        let nearest = looks.iter().map(|l| l.0).fold(f32::INFINITY, f32::min);
+        let sees = looks.iter().any(|l| l.1);
+        let acts = looks.iter().any(|l| l.2);
+        let (mut groups, factions) = stage.p0();
+        let mut stance = match group.and_then(|g| groups.get(g).ok()) {
+            Some((_, group, ..)) => hostility::stance(group.set, kind, &factions, now, false),
+            None => hostility::default_stance(kind, &factions),
+        };
+        // Coming within a hostility radius in the group's sight turns it.
+        if stance != hostility::Stance::Hostile && sees && hostility::within_radius(kind, nearest) {
+            stance = hostility::Stance::Hostile;
+            if let Some(Ok((_, mut group, ..))) = group.map(|g| groups.get_mut(g)) {
+                group.set = Some(hostility::SetStance { stance, at: now });
+            }
+        }
+        let provoked = group.is_some_and(|g| provoked.contains(&g));
+        let enters = match stance {
+            // A fight starts when a hostile group can act on the party
+            // (retail `MonsterGroupCanEngage`); one under way takes in a
+            // hostile group that sees the party with its leader in reach
+            // (`ShouldMonsterGroupEnterCombat`).
+            hostility::Stance::Hostile if running.is_some() => {
+                provoked || (sees && leader_reaches(kind, nearest_of(first)))
+            }
+            hostility::Stance::Hostile => provoked || (sees && acts),
+            // A neutral group joins a running fight it stands with.
+            hostility::Stance::Neutral if running.is_some() => {
+                let members: Vec<(Seen, bool)> = fighters
+                    .iter()
+                    .filter_map(|&m| seen(m))
+                    .map(|s| (s, kind.temper.camouflaged))
+                    .collect();
+                reinforces(&members, &hostiles)
+            }
+            _ => false,
+        };
+        if !enters {
+            continue;
+        }
+        // An unaligned species with a hostility radius turns hostile as it
+        // enters.
+        if stance == hostility::Stance::Neutral
+            && kind.npc.is_none()
+            && kind.faction == crate::game::factions::UNALIGNED
+            && matches!(kind.disposition, crate::content::species::Disposition::HostileWithin(_))
+            && let Some(Ok((_, mut group, ..))) = group.map(|g| groups.get_mut(g))
+        {
+            group.set = Some(hostility::SetStance { stance: hostility::Stance::Hostile, at: now });
+        }
+        joined.extend(fighters.iter().map(|&m| (monsters.get(m).unwrap().1.location, m)));
+    }
     if joined.is_empty() {
         return;
     }
     joined.sort();
-    info!("combat: {} monsters", joined.len());
-    // The view turns to the nearest of them (retail `beginCombat`).
-    let nearest = monsters
-        .iter_many(joined.iter().map(|&(_, e)| e))
-        .matched()
-        .map(|(_, _, at, ..)| at.translation())
-        .min_by(|a, b| a.distance(party_eye).total_cmp(&b.distance(party_eye)));
-    if let Some(nearest) = nearest {
-        body.face(nearest - party_eye);
-    }
     let joined: Vec<Entity> = joined.into_iter().map(|(_, e)| e).collect();
-    let battle = commands.spawn((Name::new("Battle"), Battle::default(), LevelOwned(root))).id();
+    if let Some(battle) = running {
+        for &monster in &joined {
+            commands.entity(monster).insert(Combatant(battle));
+        }
+        return;
+    }
+    info!("combat: {} monsters", joined.len());
+    let shadow_hound =
+        effects.single().is_ok_and(|e| e.0.has(crate::content::spells::SpellId::SHADOW_HOUND));
+    let searching = search.as_ref().is_some_and(|s| s.on(false));
+    let view = crate::game::world::perception::View {
+        eye: sight.eye,
+        forward: body.forward(),
+        far,
+        searching,
+    };
+    let seen = joined.iter().any(|&entity| {
+        let Ok((_, monster, at, walker, ..)) = monsters.get(entity) else { return false };
+        let Some(kind) = catalog.kind(monster.species) else { return false };
+        view.sees(
+            members.iter_many(roster.iter()).matched(),
+            shadow_hound,
+            monster,
+            kind,
+            feet(at.translation(), walker),
+            false,
+            &obstacles,
+        )
+    });
+    let opening = opening_surprise(
+        seen,
+        shadow_hound,
+        camp.is_some(),
+        movement.single().is_ok_and(|m| m.running),
+        searching,
+        members.iter_many(roster.iter()).matched(),
+        &mut rng,
+    );
+    if camp.is_some() {
+        commands.remove_resource::<crate::game::camp::Camp>();
+        camp_news.write(crate::game::camp::CampNews::Interrupted);
+    }
+    // The nearest of them, which the view may turn to (retail `StartCombat`
+    // hands it to `PointCameraAtMonster`); the party's facing is the
+    // player's.
+    let nearest = joined
+        .iter()
+        .filter_map(|&m| Some((m, monsters.get(m).ok()?.2.translation())))
+        .min_by(|a, b| a.1.distance(sight.eye).total_cmp(&b.1.distance(sight.eye)))
+        .map(|(m, _)| m);
+    let battle = commands
+        .spawn((Name::new("Battle"), Battle { opening, ..default() }, LevelOwned(root)))
+        .id();
     for &monster in &joined {
         commands.entity(monster).insert(Combatant(battle));
     }
-    recognition.detect(party_eye, body.forward(), Some(&joined), &mut rng);
-    news.write(CombatNews::Began);
+    stage.p1().detect(sight.eye, body.forward(), Some(&joined), shadow_hound, searching, &mut rng);
+    news.write(CombatNews::Began { nearest });
+    if let Some(cause) = opening {
+        news.write(CombatNews::Surprised(cause));
+    }
 }
 
 /// Whether the party is fighting, for operations that hold the whole world.
@@ -616,23 +1147,149 @@ pub fn in_battle(world: &mut World) -> bool {
 /// Used before/after combat execution and at the end of environmental damage.
 pub fn settle_defeat(
     mut commands: Commands,
-    battle: Option<Single<Entity, With<Battle>>>,
+    battle: Option<Single<(Entity, Option<&Combatants>), With<Battle>>>,
     roster: Single<&PartyRoster>,
     members: Query<&Vitals>,
     mut news: MessageWriter<CombatNews>,
     mut effects: Single<&mut crate::game::magic::enchantments::PartyEffects>,
     mut monsters: Query<&mut Monster>,
 ) {
-    let Some(battle) = battle.map(Single::into_inner) else { return };
-    if !members.iter_many(roster.iter()).matched().any(|v| !v.is_dead()) {
+    let Some((battle, combatants)) = battle.map(Single::into_inner) else { return };
+    if !crate::game::characters::anyone_alive(members.iter_many(roster.iter()).matched()) {
+        // What lasts a fight ends on the party and on those in it, as when
+        // the party wins.
         effects.0.end_combat();
-        for mut monster in &mut monsters {
-            monster.enchantments.end_combat();
+        let combatants = combatants.map_or(&[][..], Combatants::entities);
+        for &monster in combatants {
+            if let Ok(mut monster) = monsters.get_mut(monster) {
+                monster.enchantments.end_combat();
+            }
         }
         news.write(CombatNews::Lost);
         // Its combatants leave the fight and stop closing in; they remain.
         commands.entity(battle).despawn();
     }
+}
+
+/// A combatant's current allegiance, shared by target choice and engagement.
+fn allegiance(
+    entity: Entity,
+    damage: &MonsterDamage,
+    now: u64,
+    species: &MonsterCatalog,
+) -> Option<hostility::Allegiance> {
+    let (body, ..) = damage.monsters().get(entity).ok()?;
+    let kind = species.kind(body.species)?;
+    Some(hostility::Allegiance {
+        species: body.species,
+        stance: damage.stance(entity, now),
+        faction: kind.faction,
+        turncoat: body.conditions.has(Condition::Turncoat),
+    })
+}
+
+/// Groups with nothing left to fight leave it as the round ends (retail
+/// `CheckMonsterGroupsLeaveCombat`): a neutral group once it no longer
+/// stands with the fight ([`reinforces`]); a friendly group while one of
+/// its members sees an enemy; a hostile group while a living member sees
+/// the party. When no hostile
+/// group is left engaged, everyone leaves. Returns the combatants that
+/// stay; one outside any group stays while hostile groups fight on.
+fn leave_fight(
+    commands: &mut Commands,
+    combatants: &[Entity],
+    (damage, now): (&MonsterDamage, u64),
+    membership: &Query<&GroupMember>,
+    sight: &Sight,
+    species: &MonsterCatalog,
+) -> Vec<Entity> {
+    use hostility::Stance;
+    let monsters = damage.monsters();
+    let group_of = |monster: Entity| membership.get(monster).ok().map(|m| m.0);
+    let stance_of = |monster: Entity| Some(damage.group_stance(monster, now));
+    let seen = |monster: Entity| -> Option<(Seen, bool)> {
+        let (body, at, walker, ..) = monsters.get(monster).ok()?;
+        let kind = species.kind(body.species)?;
+        if body.is_dead() {
+            return None;
+        }
+        let at_feet = feet(at.translation(), walker);
+        let seen = Seen {
+            entity: monster,
+            at: at_feet,
+            from_party: party_distance(sight.eye, body, at_feet),
+            sees: sight.sees(body, &at, walker, kind),
+            in_view: sight.in_view(body, &at, walker),
+        };
+        Some((seen, kind.temper.camouflaged))
+    };
+    let hostiles: Vec<Seen> = combatants
+        .iter()
+        .filter(|&&c| stance_of(c) == Some(Stance::Hostile))
+        .filter_map(|&c| seen(c).map(|(s, _)| s))
+        .filter(|s| s.in_view)
+        .collect();
+    let (mut checked, mut leaving, mut engaged) = (Vec::new(), Vec::new(), false);
+    for &combatant in combatants {
+        let Some(group) = group_of(combatant) else {
+            engaged |= stance_of(combatant) == Some(Stance::Hostile);
+            continue;
+        };
+        if checked.contains(&group) {
+            continue;
+        }
+        checked.push(group);
+        let fellows: Vec<(Seen, bool)> = combatants
+            .iter()
+            .filter(|&&c| group_of(c) == Some(group))
+            .filter_map(|&c| seen(c))
+            .collect();
+        let stays = match stance_of(combatant) {
+            Some(Stance::Neutral) => reinforces(&fellows, &hostiles),
+            Some(Stance::Hostile) => {
+                let sees = fellows.iter().any(|(s, _)| s.sees);
+                engaged |= sees;
+                sees
+            }
+            Some(Stance::Friendly) => fellows.iter().any(|(fellow, _)| {
+                let Some(mine) = allegiance(fellow.entity, damage, now, species) else {
+                    return false;
+                };
+                let Ok((body, at, walker, ..)) = monsters.get(fellow.entity) else { return false };
+                let Some(kind) = species.kind(body.species) else { return false };
+                combatants.iter().any(|&enemy| {
+                    let Some(theirs) = allegiance(enemy, damage, now, species) else {
+                        return false;
+                    };
+                    let Ok((target, target_at, target_walker, ..)) = monsters.get(enemy) else {
+                        return false;
+                    };
+                    let Some(target_kind) = species.kind(target.species) else { return false };
+                    !target.is_dead()
+                        && hostility::between(mine, theirs) == Stance::Hostile
+                        && sight.sees_monster(
+                            (body, &at, walker, kind),
+                            (target, &target_at, target_walker, target_kind),
+                        )
+                })
+            }),
+            _ => false,
+        };
+        if !stays {
+            leaving.push(group);
+        }
+    }
+    combatants
+        .iter()
+        .copied()
+        .filter(|&combatant| {
+            let leaves = !engaged || group_of(combatant).is_some_and(|g| leaving.contains(&g));
+            if leaves {
+                commands.entity(combatant).remove::<Combatant>();
+            }
+            !leaves
+        })
+        .collect()
 }
 
 /// Accept a round (retail `BeginCombatExecution`): lock each member's order
@@ -650,7 +1307,9 @@ fn accept_round(
 ) {
     use crate::content::characters::{Skill, Trait};
     battle.round += 1;
-    let mut round = Round { pace: battle.party_pace, ..default() };
+    let surprised = battle.opening.take().is_some();
+    let pace = if surprised { None } else { battle.party_pace };
+    let mut round = Round { pace, ..default() };
     // Samurai ready their Lightning Strike with a sword before anyone's
     // initiative is rolled (retail `BeginCombatExecution`).
     let lightning: Vec<bool> = roster
@@ -660,20 +1319,26 @@ fn accept_round(
                 return false;
             };
             let stats = character.stats(&vitals.enchantments);
-            orders.get(member).copied().unwrap_or_default() == Order::Attack
+            !surprised
+                && orders.get(member).copied().unwrap_or_default() == Order::Attack
                 && character.has_trait(Trait::LightningStrike)
                 && attack::hands(&stats, carried, items, burden.load).hands[0].weapon_skill
                     == Skill::Sword
                 && rng.below(100) < u32::from(character.scale_by_profession(12.0) as u8)
         })
         .collect();
-    for (member, lightning) in roster.iter().zip(lightning) {
+    for (member, lightning) in roster.iter().zip(lightning).filter(|_| !surprised) {
         let Ok((character, vitals, carried, burden)) = members.get(member) else { continue };
         let stats = character.stats(&vitals.enchantments);
         let hands = attack::hands(&stats, carried, items, burden.load);
         let weapons =
             [EquipSlot::Primary, EquipSlot::Secondary].map(|slot| carried.worn(slot).map(|i| i.id));
-        let action = match orders.get(member).copied().unwrap_or_default() {
+        let order = if vitals.conditions.has(Condition::Turncoat) {
+            Order::Attack
+        } else {
+            orders.get(member).copied().unwrap_or_default()
+        };
+        let action = match order {
             Order::Attack => RoundAction::Attack { weapons, berserk: false },
             // One who can no longer berserk attacks as usual.
             Order::Berserk => {
@@ -681,6 +1346,7 @@ fn accept_round(
             }
             Order::Defend => RoundAction::Defend,
             Order::Magic(choice) => RoundAction::Magic(choice),
+            Order::Breathe(target) => RoundAction::Breathe(target),
         };
         let mut turns = HandTurns { lightning, ..default() };
         let phase = match action {
@@ -691,12 +1357,13 @@ fn accept_round(
                     turns.current = hand;
                     turns.left =
                         hands.hands.each_ref().map(|h| if h.in_play { h.attacks } else { 0 });
-                    let initiative = stats.initiative(burden.load) + hands.hands[hand].initiative;
+                    let initiative =
+                        attack::character_initiative(&stats, &hands.hands[hand], burden.load);
                     phase(rng, initiative)
                 }
                 None => 0,
             },
-            RoundAction::Magic(_) if vitals.can_fight() => {
+            RoundAction::Magic(_) | RoundAction::Breathe(_) if vitals.can_fight() => {
                 phase(rng, stats.initiative(burden.load))
             }
             _ => 0,
@@ -716,15 +1383,18 @@ fn accept_round(
         };
         round.monsters.push((entity, turn));
     }
-    // The party's own move takes the phase its slowest member allows,
-    // on a step of ten (retail `InitializePartyMovementPhase`).
-    battle.party_move = match battle.party_pace {
+    // The party's own move takes the phase its slowest living member
+    // allows, by the initiative its actions use, on a step of ten (retail
+    // `InitializePartyMovementPhase`).
+    battle.party_move = match pace {
         Some(pace) => {
             let latest = roster
                 .iter()
                 .filter_map(|m| members.get(m).ok())
-                .filter(|(_, vitals, ..)| vitals.can_fight())
-                .map(|(c, _, _, burden)| phase(rng, c.initiative(burden.load)))
+                .filter(|(_, vitals, ..)| !vitals.is_dead())
+                .map(|(c, vitals, _, burden)| {
+                    phase(rng, c.stats(&vitals.enchantments).initiative(burden.load))
+                })
                 .max()
                 .unwrap_or(90);
             let phase = (latest + 5) - (latest + 5) % 10;
@@ -796,7 +1466,7 @@ pub fn begin_round(
     };
     // Between rounds a phased fight waits for the player; a continuous one
     // goes on.
-    if start && !battle.executing() {
+    if (start || battle.opening.is_some()) && !battle.executing() {
         accept(&mut battle, &mut rng);
     }
     // A finished pause is not ticked again: a fight waiting for the player
@@ -822,15 +1492,18 @@ pub fn run_battle(
     mut clock: ResMut<GameClock>,
     mut actors: ParamSet<((Members, MonsterDamage), GroupRecognition)>,
     party_body: Query<(&Position, &PartyBody)>,
-    (roster, content): (Single<&PartyRoster>, crate::game::data::Content),
+    (roster, content, level): (Single<&PartyRoster>, crate::game::data::Content, PlayedLevel),
     mut magic: BattleMagic,
-    mut news: MessageWriter<CombatNews>,
+    (mut news, mut summons): (MessageWriter<CombatNews>, MessageWriter<summon::Summon>),
 ) {
     let Some((entity, mut battle, combatants)) = battle.map(Single::into_inner) else { return };
     let combatants = combatants.map_or(&[][..], Combatants::entities);
-    let (mut members, mut damage) = actors.p0();
+    if content.spells().is_none() && roster.iter().any(|actor| magic.points.contains(actor)) {
+        return;
+    }
     // Content and the party's body exist whenever a level is played.
     let Some(species) = content.species() else { return };
+    let (mut members, mut damage) = actors.p0();
     let Ok((position, body)) = party_body.single() else { return };
     if !damage.ready() || !battle.executing() || !battle.wait.is_finished() {
         return;
@@ -839,7 +1512,12 @@ pub fn run_battle(
         return;
     }
     let roster = &**roster;
-    let party = PartyView { eye: PartyBody::eye(position), yaw: body.yaw };
+    let party = PartyView {
+        eye: PartyBody::eye(position),
+        yaw: body.yaw,
+        far: level.view_distance().unwrap_or(0.0),
+        now: clock.ms,
+    };
     if battle.phase == RoundPhase::Accepted {
         battle.phase = RoundPhase::Executing(1);
     }
@@ -870,8 +1548,22 @@ pub fn run_battle(
             return;
         }
         if step > 100 {
+            let sight = party.sight(
+                &members,
+                roster,
+                &magic.obstacles,
+                magic.context.enchantments.0.concealment(),
+            );
+            let staying = leave_fight(
+                &mut commands,
+                combatants,
+                (&damage, party.now),
+                &magic.groups,
+                &sight,
+                species,
+            );
             let over = end_round(
-                &mut battle,
+                (entity, &mut battle),
                 combatants,
                 &mut clock,
                 &mut rng,
@@ -881,9 +1573,12 @@ pub fn run_battle(
                 party.eye,
                 species,
                 &mut news,
-                &mut magic.points,
-                &mut magic.context.enchantments.0,
+                &mut magic,
+                &staying,
             );
+            if party_fallen(roster, &members) {
+                return;
+            }
             if over {
                 for &actor in combatants {
                     if let Some(mut e) = damage.enchantments_mut(actor) {
@@ -893,7 +1588,19 @@ pub fn run_battle(
             }
             // Recognition is a required part of this round, before the next
             // accepted action or the battle's end can change its meaning.
-            actors.p1().detect(party.eye, body.forward(), Some(combatants), &mut rng);
+            actors.p1().detect(
+                party.eye,
+                body.forward(),
+                Some(combatants),
+                magic
+                    .context
+                    .enchantments
+                    .0
+                    .get(crate::content::spells::SpellId::SHADOW_HOUND)
+                    .is_some(),
+                false,
+                &mut rng,
+            );
             if over {
                 magic.context.enchantments.0.end_combat();
                 commands.entity(entity).despawn();
@@ -933,7 +1640,7 @@ pub fn run_battle(
                 &party,
                 &mut magic,
                 species,
-                &mut news,
+                (&mut news, &mut summons),
             );
             if acted {
                 battle.wait = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
@@ -988,7 +1695,7 @@ fn party_turn(
     let work = battle.this_round.party[index];
     let member = work.actor;
     let able_now = magic.context.roster.contains(&member)
-        && members.get(member).is_ok_and(|(_, vitals, carried, _)| {
+        && members.get(member).is_ok_and(|(_, vitals, carried, ..)| {
             vitals.can_fight()
                 && match work.action {
                     // The weapons accepted, or nothing where one was used up.
@@ -1001,6 +1708,7 @@ fn party_turn(
                         )
                     }
                     RoundAction::Magic(_) => true,
+                    RoundAction::Breathe(_) => true,
                     RoundAction::Defend => false,
                 }
         });
@@ -1008,8 +1716,56 @@ fn party_turn(
         battle.this_round.party[index].end();
         return false;
     }
+    if let RoundAction::Breathe(target) = work.action {
+        battle.this_round.party[index].end();
+        let result = member_acts(
+            combatants,
+            (members, damage),
+            party,
+            magic,
+            |situation, spells, field, points| {
+                breath::execute(member, target, situation, spells, rng, field, points)
+            },
+        );
+        match result {
+            Ok(effects) => {
+                battle.this_round.attacked = true;
+                news.write(CombatNews::Breathed { actor: member });
+                battle.credit_kills(&effects, news);
+                news.write(CombatNews::Effects(effects));
+            }
+            Err(_) => battle.this_round.party[index].action = RoundAction::Defend,
+        }
+        return true;
+    }
     if let RoundAction::Magic(choice) = work.action {
         battle.this_round.party[index].end();
+        let point_cast = magic
+            .context
+            .content
+            .items()
+            .and_then(|items| {
+                choice.source.spell_id(
+                    members.get(member).ok().map(|(_, _, carried, ..)| carried),
+                    &magic.context.inventory,
+                    items,
+                )
+            })
+            .is_some_and(crate::game::magic::pointcasts::spell);
+        if point_cast {
+            // A refusal falls back to defending, as below.
+            commands.queue(move |world: &mut World| {
+                if crate::game::magic::execute_in_world(world, member, choice).is_err()
+                    && let Ok(mut query) = world.try_query::<&mut Battle>().ok_or(())
+                    && let Ok(mut battle) = query.single_mut(world)
+                    && let Some(work) =
+                        battle.this_round.party.iter_mut().find(|work| work.actor == member)
+                {
+                    work.action = RoundAction::Defend;
+                }
+            });
+            return true;
+        }
         match member_casts(combatants, member, choice, rng, members, damage, party, magic) {
             Ok((report, flights)) => {
                 battle.this_round.attacked = true;
@@ -1029,12 +1785,16 @@ fn party_turn(
         return true;
     }
     let BattleMagic { context, points, moving, .. } = magic;
-    let advancing = |monster| moving.contains(monster);
-    let armours = party_armours(battle, members, context);
-    let armour = |member| armours.iter().find(|&&(m, _)| m == member).map(|&(_, a)| a);
-    let mut fight =
-        blows::Fight { combatants, party, armour: &armour, advancing: &advancing, points };
-    let attacked = context.with_field(members, damage, |field| {
+    let mut fight = blows::Fight {
+        combatants,
+        party,
+        armours: party_armours(battle, members, context),
+        moving,
+        points,
+        attacks: &|_| false,
+        waits: false,
+    };
+    let attacked = context.with_field(party.now, members, damage, |field| {
         blows::member_attacks(battle, index, rng, field, &mut fight, news);
     });
     if attacked.is_err() {
@@ -1122,7 +1882,7 @@ fn finish_party_move(battle: &mut Battle, rng: &mut GameRng, members: &mut Membe
         if vitals.is_dead() {
             continue;
         }
-        let disease = if vitals.has(Condition::Diseased) { 1.5 } else { 1.0 };
+        let disease = if vitals.conditions.has(Condition::Diseased) { 1.5 } else { 1.0 };
         let cost = moved * pace.stamina_per_metre() * burden.load.movement_factor() * disease;
         vitals.spend_stamina(cost.round() as u32);
     }
@@ -1152,9 +1912,33 @@ pub struct BattleMagic<'w, 's> {
     moving: Query<'w, 's, (), With<approach::CombatMove>>,
 }
 
-/// A member casts or uses an item at their initiative. The monsters it may
-/// aim at are decided now: in the fight, alive, within the spell's reach of
-/// the party and in its sight (retail `CharacterActionReachesTarget`).
+/// Live, active combatants with unobstructed scenery sight, shared by casts
+/// and breath. Accepted aim never redirects to a replacement actor.
+fn visible_monsters(
+    combatants: &[Entity],
+    damage: &MonsterDamage,
+    obstacles: &WorldObstacles,
+    party_eye: Vec3,
+) -> Vec<casting::Candidate> {
+    combatants
+        .iter()
+        .filter_map(|&entity| {
+            let (monster, at, walker, ..) = damage.monsters().get(entity).ok()?;
+            if !damage.targetable(entity) {
+                return None;
+            }
+            let feet = feet(at.translation(), walker);
+            let eye = monster.eye(feet);
+            obstacles.clear(party_eye, eye).then(|| casting::Candidate {
+                entity,
+                at: feet,
+                distance: party_distance(party_eye, monster, feet),
+            })
+        })
+        .collect()
+}
+
+/// A member casts or uses an item at their initiative.
 fn member_casts(
     combatants: &[Entity],
     member: Entity,
@@ -1165,27 +1949,32 @@ fn member_casts(
     party: &PartyView,
     magic: &mut BattleMagic,
 ) -> Result<(casting::Report, Vec<casting::SpellInFlight>), casting::Refusal> {
+    member_acts(combatants, (members, damage), party, magic, |situation, spells, field, points| {
+        casting::perform(member, choice, situation, spells, points, rng, field)
+    })
+}
+
+/// A member's magic or breath at their initiative, in the fight as it
+/// stands now: the monsters it may aim at are in the fight, targetable,
+/// and in the party's sight, with their groups (retail
+/// `CharacterActionReachesTarget`).
+fn member_acts<R>(
+    combatants: &[Entity],
+    (members, damage): (&mut Members, &mut MonsterDamage),
+    party: &PartyView,
+    magic: &mut BattleMagic,
+    act: impl FnOnce(
+        &casting::Situation,
+        &crate::content::spells::SpellCatalog,
+        &mut crate::game::magic::effects::Field,
+        &mut Query<(&LearnedSpells, &mut SpellPoints)>,
+    ) -> Result<R, casting::Refusal>,
+) -> Result<R, casting::Refusal> {
     let BattleMagic { context, points, obstacles, groups, group_members, .. } = magic;
     let party_members: Vec<Entity> = context.roster.iter().collect();
-    // Where each fighting monster in the party's sight stands, and how far.
-    let in_sight: Vec<(casting::Candidate, Option<Entity>)> = combatants
-        .iter()
-        .filter_map(|&entity| {
-            let (monster, at, walker, _) = damage.monsters().get(entity).ok()?;
-            if monster.is_dead() || !damage.active(entity) {
-                return None;
-            }
-            let feet = feet(at.translation(), walker);
-            let eye = feet + Vec3::Y * monster.body.eye_height;
-            let clear = Dir3::new(eye - party.eye).map_or(true, |direction| {
-                obstacles.first_hit(party.eye, direction, party.eye.distance(eye)).is_none()
-            });
-            clear.then(|| {
-                let distance = distance_to_party(party.eye, monster, feet);
-                let candidate = casting::Candidate { entity, at: feet, distance };
-                (candidate, groups.get(entity).ok().map(|g| g.0))
-            })
-        })
+    let in_sight: Vec<_> = visible_monsters(combatants, damage, obstacles, party.eye)
+        .into_iter()
+        .map(|candidate| (candidate, groups.get(candidate.entity).ok().map(|g| g.0)))
         .collect();
     let candidates: Vec<_> = in_sight.iter().map(|&(c, _)| c).collect();
     let group_of = |monster: Entity| -> Vec<Entity> {
@@ -1199,20 +1988,86 @@ fn member_casts(
         context: casting::UseContext::Combat,
         party: &party_members,
         party_at: party.eye,
+        facing: crate::game::party::body::heading(party.yaw),
         monsters: &candidates,
         group_of: &group_of,
     };
     context
-        .resolve(members, damage, |field, spells| {
-            casting::perform(member, choice, &situation, spells, points, rng, field)
-        })
-        .and_then(|performed| performed)
+        .resolve(party.now, members, damage, |field, spells| act(&situation, spells, field, points))
+        .and_then(|acted| acted)
 }
 
-/// A monster's accepted turn comes: it attacks someone it reaches, or with
-/// nobody in reach advances (or charges when hurt) and acts again later in
-/// the round (retail `UpdateMonsterAI`, `StepMonsterCombatAction`). Returns
-/// whether it acted.
+/// What a monster settled on doing with its action besides striking.
+enum Plan<'a> {
+    Spell {
+        spell: crate::content::spells::SpellDefinition,
+        power: u8,
+        aim: monster_spells::SpellAim,
+        scene: monster_spells::Scene,
+        caster: (&'a Species, u32),
+    },
+    Special {
+        kind: crate::content::species::SpecialAttackKind,
+        cooldown: u8,
+        breather: crate::game::magic::effects::Breather,
+        victims: Vec<crate::game::magic::effects::Victim>,
+    },
+}
+
+/// Whether a monster can make its special attack now (retail
+/// `CanMonsterFlee`): it has one, it is not cooling down, it has a tenth of
+/// its stamina, and a silence does not stop it. A summoning is never what
+/// starts a fight (`fighting` is `None` then, retail's `exclude_special`);
+/// in one it needs the party within long reach and the summoner not on its
+/// side. Any other kind also needs an aim, which its caller finds.
+fn special_ready(
+    monster: &Monster,
+    kind: &Species,
+    cooling: bool,
+    fighting: Option<(f32, hostility::Stance)>,
+) -> bool {
+    let silenced = monster.conditions.has(Condition::Silenced);
+    kind.special.kind.is_some_and(|special| {
+        let definition = crate::game::magic::effects::special(special);
+        let summons = special.summons().is_none()
+            || fighting.is_some_and(|(nearest, stance)| {
+                nearest <= Reach::Long.metres() && stance != hostility::Stance::Friendly
+            });
+        !cooling
+            && monster.stamina >= monster.max_stamina / 10
+            && !(silenced && definition.silenced)
+            && summons
+    })
+}
+
+/// What a monster settled on as its round's action began.
+enum Decision<'a> {
+    /// Run, withdraw or hold back; `quiet` for a flight fear forced, which
+    /// retail does not announce.
+    Move {
+        conduct: conduct::Conduct,
+        quiet: bool,
+    },
+    Plan(Box<Plan<'a>>),
+    /// Guard a fellow this round.
+    Protect {
+        ward: Entity,
+    },
+    /// Strike someone it may attack, or close in to; `waits` when it may
+    /// hold back instead.
+    Fight {
+        waits: bool,
+    },
+}
+
+/// A monster's accepted turn comes (retail `UpdateMonsterAI`,
+/// `StartMonsterCombatAction`, `StepMonsterCombatAction`). As its round's
+/// action begins it decides: to run, withdraw or hold back
+/// ([`conduct::decide`]), to breathe or cast, or to fight; then its
+/// conditions may interrupt that ([`conduct::interrupt`]). Fighting, it
+/// strikes someone it may attack and reaches, or with nobody in reach
+/// advances (or charges when hurt) and acts again later in the round.
+/// Returns whether it acted.
 fn monster_turn(
     commands: &mut Commands,
     battle: &mut Battle,
@@ -1223,8 +2078,10 @@ fn monster_turn(
     party: &PartyView,
     magic: &mut BattleMagic,
     species: &MonsterCatalog,
-    news: &mut MessageWriter<CombatNews>,
+    (news, summons): (&mut MessageWriter<CombatNews>, &mut MessageWriter<summon::Summon>),
 ) -> bool {
+    use crate::game::magic::effects::Victim;
+    use hostility::Stance;
     let monster = battle.this_round.monsters[index].0;
     if !combatants.contains(&monster)
         || !damage.monsters().get(monster).is_ok_and(|(m, ..)| m.can_fight())
@@ -1233,37 +2090,533 @@ fn monster_turn(
         return false;
     }
     let turn = battle.this_round.monsters[index].1;
+    // How everyone in the fight stands, each monster by its own stance.
+    let allegiances: Vec<(Entity, hostility::Allegiance)> = combatants
+        .iter()
+        .filter_map(|&entity| Some((entity, allegiance(entity, damage, party.now, species)?)))
+        .collect();
+    let allegiance_of =
+        |entity: Entity| allegiances.iter().find(|&&(e, _)| e == entity).map(|&(_, a)| a);
+    let Some(mine) = allegiance_of(monster) else {
+        battle.this_round.monsters[index].1 = Turn::default();
+        return false;
+    };
+    let turncoats: Vec<Entity> = magic
+        .context
+        .roster
+        .iter()
+        .filter(|&m| {
+            members.get(m).is_ok_and(|(_, vitals, ..)| vitals.conditions.has(Condition::Turncoat))
+        })
+        .collect();
+    let toward = |victim: Victim| match victim {
+        Victim::Member(member) => {
+            hostility::toward_member(mine.stance, turncoats.contains(&member))
+        }
+        Victim::Monster(other) => {
+            allegiance_of(other).map_or(Stance::Neutral, |theirs| hostility::between(mine, theirs))
+        }
+    };
+    // A monster decides as its round's action begins, not again between
+    // its attacks.
+    let mut decision = Decision::Fight { waits: false };
+    let mut interrupted = None;
+    if let Ok((body, at, walker, ..)) = damage.monsters().get(monster)
+        && let Some(kind) = species.kind(body.species)
+        && turn.attacks_left == u32::from(kind.attacks_per_round)
+        && !battle.this_round.moved.contains(&monster)
+    {
+        let feet = feet(at.translation(), walker);
+        let nearest = party_distance(party.eye, body, feet);
+        let mut fleeing = battle.fleeing.contains(&monster);
+        let conduct = conduct::decide(rng, body, kind, mine.stance, &mut fleeing, nearest);
+        battle.fleeing.retain(|&m| m != monster);
+        if fleeing {
+            battle.fleeing.push(monster);
+        }
+        // One that would close in on the party to strike does so rather
+        // than breathe or cast; one that can strike does either at its
+        // chance, and one that cannot always tries.
+        let reaches = kind.attacks.iter().any(|a| nearest <= a.reach.metres());
+        let closes_in = !kind.temper.prefers_range && !kind.attacks.is_empty() && !reaches;
+        let special = kind.special;
+        let cooling = battle.cooldowns.iter().any(|&(m, left)| m == monster && left > 0);
+        if conduct != conduct::Conduct::Fight {
+            decision = Decision::Move { conduct, quiet: false };
+        } else if special.chance != 0
+            && !closes_in
+            && let Some(special_kind) = special.kind
+            && special_ready(body, kind, cooling, Some((nearest, mine.stance)))
+            && let Some(aim) = if special_kind.summons().is_some() {
+                // A summoning aims at the summoner's own spot (retail
+                // `AimFleeingMonster`); it needs no one in sight.
+                Some(None)
+            } else {
+                magic
+                    .context
+                    .content
+                    .spells()
+                    .and_then(|spells| {
+                        spells.get(crate::content::spells::SpellId::SPECIAL_ATTACK_CONE)
+                    })
+                    .map(|cone| {
+                        let scene = spell_scene(
+                            (monster, kind),
+                            (combatants, party_of(members, &magic.context.roster)),
+                            damage.monsters(),
+                            &party.sight(
+                                members,
+                                &magic.context.roster,
+                                &magic.obstacles,
+                                magic.context.enchantments.0.concealment(),
+                            ),
+                            &toward,
+                        );
+                        let aims = monster_spells::aims(cone, &scene);
+                        (cone, scene, aims)
+                    })
+                    .filter(|(_, _, aims)| !aims.is_empty())
+                    .map(Some)
+            }
+            && rng.below(100) < if reaches { u32::from(special.chance) } else { 100 }
+        {
+            // A breath at one of its aims at random (retail
+            // `AimMonsterAtSpellTarget`), catching whoever stands in the cone.
+            let victims = match aim {
+                Some((cone, scene, aims)) => {
+                    let aim = aims[rng.below(aims.len() as u32) as usize];
+                    monster_spells::cone_victims(
+                        &scene,
+                        monster_spells::aimed_at(&scene, aim),
+                        cone.reach.metres(),
+                    )
+                }
+                None => Vec::new(),
+            };
+            let breather = crate::game::magic::effects::Breather {
+                level: kind.level,
+                stamina: body.stamina,
+                max_stamina: body.max_stamina,
+            };
+            decision = Decision::Plan(Box::new(Plan::Special {
+                kind: special_kind,
+                cooldown: special.cooldown,
+                breather,
+                victims,
+            }));
+        } else if kind.magic.chance != 0
+            && !closes_in
+            && let Some(spells) = magic.context.content.spells()
+        {
+            let chance = if reaches { u32::from(kind.magic.chance) } else { 100 };
+            let roster = &magic.context.roster;
+            let sight = party.sight(
+                members,
+                roster,
+                &magic.obstacles,
+                magic.context.enchantments.0.concealment(),
+            );
+            let scene = spell_scene(
+                (monster, kind),
+                (combatants, party_of(members, roster)),
+                damage.monsters(),
+                &sight,
+                &toward,
+            );
+            if let Some(plan) = monster_spells::choose(rng, body, kind, chance, spells, &scene)
+                .and_then(|(id, aim)| {
+                    let spell = spells.get(id)?.clone();
+                    let budget = body.spell_budget(kind);
+                    let power = monster_spells::power(rng, budget, &spell);
+                    Some(Plan::Spell { spell, power, aim, scene, caster: (kind, budget) })
+                })
+            {
+                decision = Decision::Plan(Box::new(plan));
+            }
+        }
+        // One that can strike nobody, having no attack or, blind, nobody
+        // in reach, withdraws (retail `UpdateMonsterAI`'s
+        // `RETURN_TO_START`); a Monk fights blind.
+        let blind = body.blinded(kind);
+        if matches!(decision, Decision::Fight { .. })
+            && (kind.attacks.is_empty() || (blind && !reaches))
+        {
+            decision = Decision::Move { conduct: conduct::Conduct::Withdraw, quiet: false };
+        }
+        // One with someone in reach builds its choices (retail
+        // `BuildMonsterActionQueue`): a bodyguard, as clever as it is, may
+        // guard a stronger fellow in trouble; a wary one may hold back.
+        if matches!(decision, Decision::Fight { .. }) && reaches {
+            let intelligence = u32::from(kind.attributes.intelligence);
+            let able = kind.temper.bodyguard && body.can_guard() && !kind.attacks.is_empty();
+            let wards: Vec<Entity> = if able && rng.below(100) < intelligence {
+                let reach = kind.attacks[0].reach.metres();
+                combatants
+                    .iter()
+                    .copied()
+                    .filter(|&other| {
+                        other != monster
+                            && toward(Victim::Monster(other)) == Stance::Friendly
+                            && damage.monsters().get(other).is_ok_and(|(o, o_at, o_walker, ..)| {
+                                let gap =
+                                    body.gap(feet, o, self::feet(o_at.translation(), o_walker));
+                                !o.is_dead()
+                                    && gap <= reach
+                                    && species.kind(o.species).is_some_and(|k| k.level > kind.level)
+                                    && o.hp * 100 / o.max_hp.max(1) < 40
+                            })
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            if !wards.is_empty() {
+                let ward = wards[rng.below(wards.len() as u32) as usize];
+                decision = Decision::Protect { ward };
+            } else if kind.temper.wary && rng.below(100) < intelligence {
+                decision = Decision::Fight { waits: true };
+            }
+        }
+        // Its conditions, then, as the action begins.
+        let against_foes = match &decision {
+            Decision::Move { .. } | Decision::Protect { .. } => false,
+            Decision::Plan(plan) => match &**plan {
+                Plan::Spell { spell, .. } => spell.aimed_at_enemies(),
+                Plan::Special { .. } => true,
+            },
+            Decision::Fight { .. } => true,
+        };
+        let strikes_friend = kind.attacks.iter().any(|attack| {
+            let reach = attack.reach.metres();
+            (nearest <= reach
+                && magic
+                    .context
+                    .roster
+                    .iter()
+                    .any(|m| toward(Victim::Member(m)) == Stance::Friendly))
+                || combatants.iter().any(|&other| {
+                    other != monster
+                        && toward(Victim::Monster(other)) == Stance::Friendly
+                        && damage.monsters().get(other).is_ok_and(|(o, o_at, o_walker, ..)| {
+                            body.gap(feet, o, self::feet(o_at.translation(), o_walker)) <= reach
+                        })
+                })
+        });
+        let berserk = battle.this_round.berserk.contains(&monster);
+        let fleeing_now =
+            matches!(decision, Decision::Move { conduct: conduct::Conduct::Flee, .. });
+        interrupted = conduct::interrupt(
+            rng,
+            body,
+            kind,
+            (fleeing_now, strikes_friend, berserk, against_foes),
+        );
+    }
+    match interrupted {
+        None | Some(Interrupt::Turncoat) => {}
+        // Insanity turns it on its friends this round.
+        Some(Interrupt::Berserk) => {
+            battle.this_round.berserk.push(monster);
+            decision = Decision::Fight { waits: false };
+        }
+        // Fear sends it running, without its flight's notice.
+        Some(Interrupt::Panics) => {
+            if !battle.fleeing.contains(&monster) {
+                battle.fleeing.push(monster);
+            }
+            decision = Decision::Move { conduct: conduct::Conduct::Flee, quiet: true };
+        }
+        Some(interrupt) => {
+            if interrupt == Interrupt::Freed
+                && let Some(mut conditions) = damage.conditions_mut(monster)
+            {
+                conditions.lift(Condition::Webbed);
+            }
+            news.write(CombatNews::Interrupted { monster, interrupt });
+            battle.this_round.monsters[index].1 = Turn::default();
+            return true;
+        }
+    }
+    let waits = matches!(decision, Decision::Fight { waits: true });
+    let plan = match decision {
+        Decision::Move { conduct, quiet } => {
+            battle.this_round.monsters[index].1 = Turn::default();
+            let Ok((body, at, walker, ..)) = damage.monsters().get(monster) else { return false };
+            let Some(kind) = species.kind(body.species) else { return false };
+            if conduct == conduct::Conduct::Hold {
+                return false;
+            }
+            // A monster that cannot walk, or has moved this round, waits
+            // instead (retail falls back on `WAIT` when the move fails).
+            if !walker.is_some_and(|w| w.speed > 0.0) || battle.this_round.moved.contains(&monster)
+            {
+                battle.this_round.waited.push(monster);
+                return true;
+            }
+            battle.this_round.moved.push(monster);
+            let metres = approach::move_metres(body, kind, false);
+            let away = approach::away_from(feet(at.translation(), walker), party.eye, metres);
+            commands.entity(monster).insert(approach::CombatMove {
+                budget: metres,
+                moved: 0.0,
+                goal: approach::MoveGoal::Retreat(away),
+            });
+            if !quiet {
+                news.write(match conduct {
+                    conduct::Conduct::Flee => CombatNews::Flees { monster },
+                    _ => CombatNews::Withdraws { monster },
+                });
+            }
+            return true;
+        }
+        Decision::Protect { ward } => {
+            battle.this_round.monsters[index].1 = Turn::default();
+            battle.this_round.guards.push(Guard { guard: monster, ward, interceptions: 0 });
+            return true;
+        }
+        Decision::Plan(plan) => Some(*plan),
+        Decision::Fight { .. } => None,
+    };
     let BattleMagic { context, points, moving, .. } = magic;
-    let advancing = |monster| moving.contains(monster);
-    let armours = party_armours(battle, members, context);
-    let armour = |member| armours.iter().find(|&&(m, _)| m == member).map(|&(_, a)| a);
-    let mut fight =
-        blows::Fight { combatants, party, armour: &armour, advancing: &advancing, points };
+    match plan {
+        Some(Plan::Spell { spell, power, aim, scene, caster }) => {
+            battle.this_round.monsters[index].1 = Turn::default();
+            battle.this_round.attacked = true;
+            let report = context.with_field(party.now, members, damage, |field| {
+                monster_spells::cast((&spell, power, aim), caster, &scene, rng, field, points)
+            });
+            if let Ok((report, flights)) = report {
+                battle.credit_kills(&report.effects, news);
+                let level = context.level();
+                context.flight_order.launch(commands, flights, level);
+                context.news.write(crate::game::magic::casting::MagicNews::Done(report));
+            }
+            return true;
+        }
+        // Retail `ExecuteMonsterSpecialAttack`: the attack lands, the
+        // cooldown starts and it costs a tenth of the monster's stamina.
+        Some(Plan::Special { kind, cooldown, breather, victims }) => {
+            battle.this_round.monsters[index].1 = Turn::default();
+            battle.this_round.attacked = true;
+            battle.this_round.specials.push(monster);
+            news.write(CombatNews::Special { monster, kind });
+            // A summoning calls its group up rather than landing on anyone.
+            if let Some(species) = kind.summons() {
+                summons.write(summon::Summon { summoner: monster, species });
+            }
+            let effects = context.with_field(party.now, members, damage, |field| {
+                crate::game::magic::effects::special_attack(
+                    crate::game::magic::effects::special(kind),
+                    breather,
+                    &victims,
+                    rng,
+                    field,
+                    points,
+                )
+            });
+            if let Ok(effects) = effects
+                && !effects.is_empty()
+            {
+                news.write(CombatNews::Effects(effects));
+            }
+            battle.cooldowns.retain(|&(m, _)| m != monster);
+            battle.cooldowns.push((monster, cooldown));
+            damage.fatigue(monster, breather.max_stamina / 10);
+            return true;
+        }
+        None => {}
+    }
+    // A berserk monster strikes its friends; any other its foes.
+    let wanted = if battle.this_round.berserk.contains(&monster) {
+        Stance::Friendly
+    } else {
+        Stance::Hostile
+    };
+    let may_attack = |victim: Victim| toward(victim) == wanted;
+    let mut fight = blows::Fight {
+        combatants,
+        party,
+        armours: party_armours(battle, members, context),
+        moving,
+        points,
+        attacks: &may_attack,
+        waits,
+    };
     let idle = context
-        .with_field(members, damage, |field| {
+        .with_field(party.now, members, damage, |field| {
             blows::monster_attacks(battle, index, rng, field, &mut fight, news)
         })
         .unwrap_or(false);
-    if idle
-        && !battle.this_round.moved.contains(&monster)
-        && let Ok((walker_monster, at, walker, _)) = damage.monsters().get(monster)
-        && let Some(budget) =
-            approach::move_budget(walker_monster, at.translation(), walker, party.eye, species)
-    {
-        battle.this_round.moved.push(monster);
-        battle.this_round.monsters[index].1 =
-            Turn { phase: (u32::from(step) * 2).min(100) as u8, attacks_left: turn.attacks_left };
-        let charge = budget.charge;
-        commands.entity(monster).insert(approach::CombatMove { budget: budget.metres, moved: 0.0 });
-        news.write(CombatNews::Moves { monster, charge });
+    if idle && !battle.this_round.moved.contains(&monster) {
+        let destination = if mine.stance == Stance::Friendly {
+            damage.monsters().get(monster).ok().and_then(|(_, here, ..)| {
+                combatants
+                    .iter()
+                    .filter_map(|&entity| {
+                        let (body, at, ..) = damage.monsters().get(entity).ok()?;
+                        (entity != monster
+                            && !body.is_dead()
+                            && may_attack(Victim::Monster(entity)))
+                        .then_some((here.translation().distance_squared(at.translation()), entity))
+                    })
+                    .min_by(|a, b| a.0.total_cmp(&b.0))
+                    .map(|(_, entity)| entity)
+            })
+        } else {
+            None
+        };
+        let budget = damage.monsters().get(monster).ok().and_then(|(body, at, walker, ..)| {
+            if let Some(target) = destination {
+                let kind = species.kind(body.species)?;
+                walker.filter(|walker| walker.speed > 0.0)?;
+                let charge = body.charges();
+                Some((
+                    approach::MoveBudget {
+                        metres: approach::move_metres(body, kind, charge),
+                        charge,
+                    },
+                    approach::MoveGoal::Attack(target),
+                ))
+            } else if mine.stance == Stance::Hostile {
+                approach::move_budget(body, at.translation(), walker, party.eye, species)
+                    .map(|budget| (budget, approach::MoveGoal::Party))
+            } else {
+                None
+            }
+        });
+        if let Some((budget, goal)) = budget {
+            battle.this_round.moved.push(monster);
+            battle.this_round.monsters[index].1 = Turn {
+                phase: (u32::from(step) * 2).min(100) as u8,
+                attacks_left: turn.attacks_left,
+            };
+            commands.entity(monster).insert(approach::CombatMove {
+                budget: budget.metres,
+                moved: 0.0,
+                goal,
+            });
+            news.write(CombatNews::Moves { monster, charge: budget.charge });
+        }
     }
+
     true
+}
+
+/// A member as a casting monster sees them, at the party's point
+/// `party` away.
+fn member_in_scene(
+    (member, character, vitals): (Entity, &Character, &Vitals),
+    (party_at, party): (Vec3, f32),
+    toward: &dyn Fn(crate::game::magic::effects::Victim) -> hostility::Stance,
+) -> monster_spells::Someone {
+    let stats = character.stats(&vitals.enchantments);
+    monster_spells::Someone {
+        entity: member,
+        at: party_at,
+        from_caster: party,
+        standing: crate::game::magic::effects::Standing {
+            hurt: vitals.hp < stats.max_hp(),
+            tired: vitals.stamina < stats.max_stamina(),
+            conditions: vitals.conditions.clone(),
+            enchantments: vitals.enchantments.clone(),
+        },
+        stance: toward(crate::game::magic::effects::Victim::Member(member)),
+    }
+}
+
+/// The party's members in roster order, as a scene reads them.
+fn party_of<'a>(
+    members: &'a Members,
+    roster: &'a PartyRoster,
+) -> impl Iterator<Item = (Entity, &'a Character, &'a Vitals)> {
+    roster.iter().filter_map(|member| {
+        members.get(member).ok().map(|(character, vitals, ..)| (member, character, vitals))
+    })
+}
+
+/// The fight as a monster about to cast or breathe sees it: the living
+/// party and the living monsters in the fight it has a clear line to, where
+/// each stands, what each lacks, and how it stands toward each (`toward`).
+fn spell_scene<'a>(
+    (caster, kind): (Entity, &Species),
+    (combatants, party_members): (
+        &[Entity],
+        impl Iterator<Item = (Entity, &'a Character, &'a Vitals)>,
+    ),
+    monsters: &MonsterQuery,
+    sight: &Sight,
+    toward: &dyn Fn(crate::game::magic::effects::Victim) -> hostility::Stance,
+) -> monster_spells::Scene {
+    use crate::game::magic::effects::Victim;
+    let party_eye = sight.eye;
+    let party_at = PartyBody::feet_below(party_eye);
+    let Ok((body, at, walker, ..)) = monsters.get(caster) else {
+        return monster_spells::Scene {
+            caster,
+            from: party_at,
+            party_at,
+            members: vec![],
+            monsters: vec![],
+            party: f32::INFINITY,
+            sees_party: false,
+        };
+    };
+    let feet_at = feet(at.translation(), walker);
+    let eye = body.eye(feet_at);
+    let party = party_distance(party_eye, body, feet_at);
+    // A fellow is in reach of its spell only along a clear line, as the
+    // party is only where the caster sees it.
+    let clear = |to: Vec3| sight.obstacles.clear(eye, to);
+    monster_spells::Scene {
+        caster,
+        from: feet_at,
+        party_at,
+        party,
+        sees_party: sight.sees(body, &at, walker, kind),
+        members: party_members
+            .filter(|(_, _, vitals)| !vitals.is_dead())
+            .map(|(member, character, vitals)| {
+                member_in_scene((member, character, vitals), (party_at, party), toward)
+            })
+            .collect(),
+        monsters: combatants
+            .iter()
+            .filter_map(|&entity| {
+                let (other, at, walker, ..) = monsters.get(entity).ok()?;
+                if other.is_dead() {
+                    return None;
+                }
+                let at = feet(at.translation(), walker);
+                if entity != caster && !clear(other.eye(at)) {
+                    return None;
+                }
+                Some(monster_spells::Someone {
+                    entity,
+                    at,
+                    from_caster: body.gap(feet_at, other, at),
+                    standing: monster_spells::monster_standing(other),
+                    stance: if entity == caster {
+                        hostility::Stance::Friendly
+                    } else {
+                        toward(Victim::Monster(entity))
+                    },
+                })
+            })
+            .collect(),
+    }
+}
+
+/// Whether nobody in the party is left alive.
+fn party_fallen(roster: &PartyRoster, members: &Members) -> bool {
+    !crate::game::characters::anyone_alive(
+        members.iter_many(roster.iter()).matched().map(|(_, vitals, ..)| vitals),
+    )
 }
 
 /// The round is over: a round's game time passes. Returns whether the fight
 /// is over: no hostile is left or nobody could attack for two rounds.
 fn end_round(
-    battle: &mut Battle,
+    (fight, battle): (Entity, &mut Battle),
     combatants: &[Entity],
     clock: &mut GameClock,
     rng: &mut GameRng,
@@ -1273,33 +2626,92 @@ fn end_round(
     party_eye: Vec3,
     species: &MonsterCatalog,
     news: &mut MessageWriter<CombatNews>,
-    points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
-    enchantments: &mut crate::game::magic::enchantments::Enchantments,
+    magic: &mut BattleMagic,
+    staying: &[Entity],
 ) -> bool {
     // The round's time passes now, with its meaning: conditions age, spell
     // points come back at half rate and nothing else recovers (retail
     // `AdvanceCombatRound`, `AdvanceTimedEffects`).
-    let ticks = clock.advance(ROUND_MS);
-    enchantments.age(ticks.aging);
+    // A round takes one aging tick.
+    let ticks = clock.advance(crate::game::time::AGING_TICK_MS);
+    // A monster that waited, or lies asleep or knocked out, gets its
+    // breath back (retail `AdvanceCombatRound`).
     for &entity in combatants {
-        if let Some(mut e) = damage.enchantments_mut(entity) {
-            e.age(ticks.aging);
+        let waited = battle.this_round.waited.contains(&entity);
+        let resting = waited
+            || damage.monsters().get(entity).is_ok_and(|(monster, ..)| {
+                monster
+                    .conditions
+                    .iter()
+                    .any(|&(c, _)| matches!(c, Condition::Asleep | Condition::Unconscious))
+            });
+        if resting {
+            let maximum = damage.monsters().get(entity).map_or(0, |(m, ..)| m.max_stamina);
+            damage.restore_stamina(entity, recovery::rest_roll(maximum, rng));
         }
+    }
+    // A special attack cools down over the rounds the monster does not
+    // make one (retail `AdvanceCombatRound`).
+    for (monster, left) in &mut battle.cooldowns {
+        if *left > 0 && !battle.this_round.specials.contains(monster) {
+            *left -= 1;
+        }
+    }
+    for &entity in combatants {
         if let Some(mut conditions) = damage.conditions_mut(entity)
-            && crate::game::characters::any_timed(&conditions)
+            && conditions.any_timed()
         {
-            crate::game::characters::age(&mut conditions, ticks.aging);
+            conditions.age(ticks.aging);
         }
     }
-    for (_, mut pool) in points.iter_many_unique_mut(roster.iter()).matched() {
-        if pool.short() {
-            pool.recover(ticks.aging, crate::game::magic::recovery_scale(0.0));
+    for actor in roster.iter() {
+        let Ok((mut profile, mut vitals, ..)) = members.get_mut(actor) else { continue };
+        let mut pool = magic.points.get_mut(actor).ok();
+        let mana = pool.as_mut().map(|(known, pool)| (*known, pool));
+        recovery::pass(
+            &mut profile,
+            &mut vitals,
+            ticks,
+            recovery::Pace::Fighting,
+            mana,
+            magic.context.content.spells(),
+            &mut crate::game::characters::Fate { fight: Some(fight), rng },
+        );
+    }
+    // AdvanceTimedEffects applies offensive slots after personal aging and
+    // before expiring the slots. Their final remaining turn still pulses.
+    if let Ok(reports) = magic.context.resolve(clock.ms, members, damage, |field, spells| {
+        crate::game::magic::effects::pulse_clouds(
+            combatants,
+            party_eye,
+            spells,
+            rng,
+            field,
+            &mut magic.points,
+        )
+    }) {
+        for (spell, effects) in reports {
+            battle.credit_kills(&effects, news);
+            battle.this_round.attacked |= crate::game::magic::effects::affected(&effects);
+            magic.context.news.write(casting::MagicNews::Triggered {
+                spell,
+                effects,
+                improved: vec![],
+            });
         }
     }
-    for (profile, mut vitals, ..) in members.iter_many_unique_mut(roster.iter()).matched() {
-        recovery::pass(&profile, &mut vitals, ticks, recovery::Pace::Fighting);
+    magic.context.enchantments.0.age(ticks.aging);
+    for &entity in combatants {
+        if let Some(mut effects) = damage.enchantments_mut(entity) {
+            effects.age(ticks.aging);
+        }
     }
     battle.phase = RoundPhase::Waiting;
+    // Poison may have killed the last of the party as the time passed: that
+    // is their defeat, which `settle_defeat` reports, not a victory.
+    if party_fallen(roster, members) {
+        return false;
+    }
     // Recover after aging conditions, in accepted actor order.
     for work in &battle.this_round.party {
         let member = work.actor;
@@ -1308,18 +2720,17 @@ fn end_round(
         }
         let Ok((character, mut vitals, ..)) = members.get_mut(member) else { continue };
         let resting = battle.defends(member)
-            || matches!(vitals.worst_condition(), Some(Condition::Asleep | Condition::Unconscious));
+            || matches!(
+                vitals.conditions.worst(),
+                Some(Condition::Asleep | Condition::Unconscious)
+            );
         if vitals.is_dead() || !resting {
             continue;
         }
-        let sides =
-            (character.stats(&vitals.enchantments).max_stamina() / 20).saturating_sub(1).max(1);
-        let rolled = rng.roll(Dice { count: 2, sides: sides.min(255) as u8, base: 0 });
+        let rolled = recovery::rest_roll(character.stats(&vitals.enchantments).max_stamina(), rng);
         let gained = recovery::combat_rest_amount(&character, rolled);
         if vitals.stamina < character.stats(&vitals.enchantments).max_stamina()
-            || vitals
-                .conditions
-                .contains(&(Condition::Unconscious, crate::game::characters::Lasting::Indefinite))
+            || vitals.conditions.exhausted()
         {
             let maximum = character.stats(&vitals.enchantments).max_stamina();
             vitals.restore_stamina(gained, maximum);
@@ -1328,14 +2739,16 @@ fn end_round(
     battle.wait = Timer::from_seconds(ROUND_SECONDS, TimerMode::Once);
     let monsters = damage.monsters();
     let approaching = combatants.iter().any(|&entity| {
-        monsters.get(entity).is_ok_and(|(monster, at, walker, _)| {
+        monsters.get(entity).is_ok_and(|(monster, at, walker, ..)| {
             approach::needs_approach(monster, at.translation(), walker, party_eye, species)
         })
     });
     let active = battle.this_round.attacked || approaching;
     battle.passive_rounds = if active { 0 } else { battle.passive_rounds + 1 };
-    let hostiles_left =
-        combatants.iter().any(|&e| monsters.get(e).is_ok_and(|(m, ..)| !m.is_dead()));
+    let hostiles_left = staying.iter().any(|&e| {
+        damage.stance(e, clock.ms) == hostility::Stance::Hostile
+            && monsters.get(e).is_ok_and(|(m, ..)| !m.is_dead())
+    });
     if hostiles_left && battle.passive_rounds < PASSIVE_ROUNDS {
         return false;
     }
@@ -1346,7 +2759,7 @@ fn end_round(
     if each > 0 {
         for (mut character, vitals, ..) in members.iter_many_unique_mut(roster.iter()).matched() {
             if !vitals.is_dead() {
-                character.experience += each;
+                character.award_experience(each);
             }
         }
     }
@@ -1361,12 +2774,411 @@ fn end_round(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::content::items::Dice;
     use crate::content::items::{ItemId, LootTables};
     use crate::content::spells::SpellCatalog;
     use crate::game::data::GameData;
     use crate::game::inventory::{Carried, ItemIds, ItemStack, make_item};
     use crate::game::party::DamageApplied;
     use enumset::EnumSet;
+
+    #[test]
+    fn shadow_hound_prevents_camping_ambush_but_not_running_or_search_distraction() {
+        use crate::content::characters::Attribute;
+        use crate::game::characters::{Gender, Profession, Race};
+        let mut profile = Character::new("Guard", Race::Human, Gender::Male, Profession::Fighter);
+        profile.attributes[Attribute::Senses] = 0;
+        let vitals = Vitals::new(&profile);
+        let mut rng = GameRng::seeded(1);
+        let before = rng.clone();
+        assert_eq!(
+            opening_surprise(
+                false,
+                true,
+                true,
+                false,
+                false,
+                std::iter::once((&profile, &vitals)),
+                &mut rng
+            ),
+            None
+        );
+        assert_eq!(rng, before, "the hound bypasses the guard roll");
+        assert_eq!(
+            opening_surprise(
+                true,
+                false,
+                true,
+                false,
+                false,
+                std::iter::once((&profile, &vitals)),
+                &mut rng
+            ),
+            Some(SurpriseCause::Ambush)
+        );
+        assert_eq!(
+            opening_surprise(false, false, false, false, false, std::iter::empty(), &mut rng),
+            Some(SurpriseCause::Ambush)
+        );
+        assert!((0..100).any(|seed| opening_surprise(
+            true,
+            true,
+            false,
+            false,
+            true,
+            std::iter::once((&profile, &vitals)),
+            &mut GameRng::seeded(seed)
+        ) == Some(SurpriseCause::Searching)));
+        assert!((0..100).any(|seed| opening_surprise(
+            true,
+            true,
+            false,
+            true,
+            true,
+            std::iter::once((&profile, &vitals)),
+            &mut GameRng::seeded(seed)
+        ) == Some(SurpriseCause::Running)));
+    }
+
+    #[test]
+    fn a_camping_encounter_checks_awareness_before_turning_and_removes_camp() {
+        use crate::content::{
+            characters::Attribute,
+            species::{MonsterAttack, MonsterWeapon},
+            spells::SpellId,
+        };
+        use crate::game::{
+            camp::{Camp, CampNews},
+            magic::enchantments::{Enchantment, PartyEffects},
+        };
+        for hound in [false, true] {
+            let (mut app, members) = round_app(false);
+            app.world_mut().resource_mut::<Messages<StartRound>>().clear();
+            let battle = app
+                .world_mut()
+                .query_filtered::<Entity, With<Battle>>()
+                .single(app.world())
+                .unwrap();
+            app.world_mut().despawn(battle);
+            let root = app
+                .world_mut()
+                .query_filtered::<Entity, With<crate::game::world::level::Level>>()
+                .single(app.world())
+                .unwrap();
+            let definition = app
+                .world_mut()
+                .resource_mut::<Assets<crate::content::level::LevelDefinition>>()
+                .add(crate::content::level::LevelDefinition {
+                    sight_distance: Some(60.0),
+                    ..default()
+                });
+            app.world_mut().get_mut::<crate::game::world::level::Level>(root).unwrap().definition =
+                definition;
+            for member in members {
+                app.world_mut().get_mut::<Character>(member).unwrap().attributes
+                    [Attribute::Senses] = 0;
+            }
+            let catalog = app.world().resource::<GameData>().species.clone();
+            app.world_mut().resource_mut::<Assets<MonsterCatalog>>().get_mut(&catalog).unwrap().0
+                [0]
+            .attacks = vec![MonsterAttack {
+                word: AttackWord::Verb,
+                weapon: MonsterWeapon::Unarmed,
+                reach: Reach::Extreme,
+                score: 0,
+                modes: EnumSet::only(AttackMode::Swing),
+                damage: default(),
+                effects: default(),
+            }];
+            let monster = app
+                .world_mut()
+                .query_filtered::<Entity, With<Monster>>()
+                .single(app.world())
+                .unwrap();
+            app.world_mut().entity_mut(monster).insert(Transform::from_translation(Vec3::Z * 30.0));
+            app.world_mut().resource_mut::<Assets<MonsterCatalog>>().get_mut(&catalog).unwrap().0
+                [0]
+            .disposition = crate::content::species::Disposition::Hostile;
+            if hound {
+                let party = crate::game::party::roster::the_party(app.world_mut()).unwrap();
+                app.world_mut().get_mut::<PartyEffects>(party).unwrap().0.apply(Enchantment {
+                    spell: SpellId::SHADOW_HOUND,
+                    power: 1,
+                    boost: 0,
+                    turns: 1,
+                    absorption: 0,
+                });
+            }
+            app.insert_resource(Camp::Until(u64::MAX));
+            app.update();
+            assert!(!app.world().contains_resource::<Camp>());
+            let news: Vec<_> =
+                app.world_mut().resource_mut::<Messages<CampNews>>().drain().collect();
+            assert_eq!(news, [CampNews::Interrupted]);
+            app.world_mut().run_schedule(FixedUpdate);
+            assert_eq!(fight(app.world()).unwrap().round, if hound { 0 } else { 1 });
+            let news: Vec<_> =
+                app.world_mut().resource_mut::<Messages<CombatNews>>().drain().collect();
+            assert_eq!(news.contains(&CombatNews::Surprised(SurpriseCause::Ambush)), !hound);
+        }
+    }
+
+    #[test]
+    fn surprise_automatically_spends_only_the_opening_party_turn() {
+        let (mut app, _) = round_app(false);
+        app.world_mut().resource_mut::<Messages<StartRound>>().clear();
+        fight_mut(app.world_mut()).opening = Some(SurpriseCause::Ambush);
+        app.update();
+        assert_eq!(fight(app.world()).unwrap().round, 1);
+        assert!(fight(app.world()).unwrap().this_round.party.is_empty());
+        assert!(fight(app.world()).unwrap().opening.is_none());
+        assert!(attacks(&mut app).is_empty());
+        fight_mut(app.world_mut()).phase = RoundPhase::Waiting;
+        fight_mut(app.world_mut()).wait = default();
+        app.world_mut().write_message(StartRound);
+        app.update();
+        assert_eq!(fight(app.world()).unwrap().this_round.party.len(), 2);
+        assert!(!attacks(&mut app).is_empty());
+    }
+
+    #[test]
+    fn spell_granted_breath_spends_stamina_and_expiry_prevents_reusing_the_order() {
+        use crate::{
+            content::spells::{SpellDefinition, SpellId, Targeting},
+            game::magic::enchantments::Enchantment,
+        };
+        let (mut app, [actor, _]) = round_app(true);
+        let monster =
+            app.world_mut().query_filtered::<Entity, With<Monster>>().single(app.world()).unwrap();
+        let mut spells = vec![SpellDefinition::default(); 120];
+        spells[119] = SpellDefinition {
+            id: SpellId::SPECIAL_ATTACK_CONE,
+            targeting: Targeting::Cone,
+            reach: Reach::Short,
+            ..default()
+        };
+        let spells =
+            app.world_mut().resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(spells));
+        app.world_mut().resource_mut::<GameData>().spells = spells;
+        app.world_mut().get_mut::<Vitals>(actor).unwrap().enchantments.apply(Enchantment {
+            spell: SpellId::DRACON_BREATH,
+            power: 1,
+            boost: 0,
+            turns: 1,
+            absorption: 0,
+        });
+        app.world_mut().entity_mut(actor).insert(Order::Breathe(monster));
+        app.world_mut().get_mut::<Character>(actor).unwrap().profession_levels
+            [crate::game::characters::Profession::Fighter] = 20;
+        let battle = app.world().get::<Combatant>(monster).unwrap().0;
+        let root = app.world().get::<LevelOwned>(monster).unwrap().0;
+        let body = app.world().get::<Monster>(monster).unwrap().clone();
+        let behind = app
+            .world_mut()
+            .spawn((
+                body.clone(),
+                Transform::from_translation(Vec3::Z),
+                LevelOwned(root),
+                Combatant(battle),
+            ))
+            .id();
+        let above = app
+            .world_mut()
+            .spawn((body, Transform::from_xyz(0.0, 4.0, -1.0), LevelOwned(root), Combatant(battle)))
+            .id();
+        let before = app.world().get::<Vitals>(actor).unwrap().stamina;
+        let cost = {
+            let profile = app.world().get::<Character>(actor).unwrap();
+            let vitals = app.world().get::<Vitals>(actor).unwrap();
+            profile.stats(&vitals.enchantments).max_stamina() / 5
+        };
+        app.update();
+        assert_eq!(app.world().get::<Vitals>(actor).unwrap().stamina, before - cost);
+        let news: Vec<_> = app.world_mut().resource_mut::<Messages<CombatNews>>().drain().collect();
+        assert!(news.contains(&CombatNews::Breathed { actor }));
+        assert!(
+            app.world().get::<Monster>(monster).unwrap().hp < 10000,
+            "breath applies Water damage to the aimed actor"
+        );
+        assert_eq!(app.world().get::<Monster>(behind).unwrap().hp, 10000);
+        assert_eq!(
+            app.world().get::<Monster>(above).unwrap().hp,
+            10000,
+            "elevation also limits the cone"
+        );
+        app.world_mut().get_mut::<Vitals>(actor).unwrap().enchantments.age(1);
+        assert!(!breath::available(
+            app.world().get::<Character>(actor).unwrap(),
+            app.world().get::<Vitals>(actor).unwrap()
+        ));
+        {
+            let mut fight = fight_mut(app.world_mut());
+            fight.phase = RoundPhase::Waiting;
+            fight.wait = default();
+        }
+        app.world_mut().write_message(StartRound);
+        app.update();
+        let news: Vec<_> = app.world_mut().resource_mut::<Messages<CombatNews>>().drain().collect();
+        assert!(!news.contains(&CombatNews::Breathed { actor }));
+        assert!(fight(app.world()).unwrap().defends(actor));
+    }
+
+    #[test]
+    fn turncoat_monsters_attack_their_former_allies_and_members_lose_order_control() {
+        use crate::content::species::{MonsterAttack, MonsterWeapon};
+        use crate::game::characters::Lasting;
+        let (mut app, [a, b]) = round_app(true);
+        for actor in [a, b] {
+            app.world_mut().get_mut::<Vitals>(actor).unwrap().hp = 10000;
+            app.world_mut().entity_mut(actor).insert(Order::Defend);
+        }
+        let first =
+            app.world_mut().query_filtered::<Entity, With<Monster>>().single(app.world()).unwrap();
+        let owner = *app.world().get::<LevelOwned>(first).unwrap();
+        let battle = app.world().get::<Combatant>(first).unwrap().0;
+        let mut copy = app.world().get::<Monster>(first).unwrap().clone();
+        copy.location = 1;
+        let second = app
+            .world_mut()
+            .spawn((copy, Transform::from_xyz(0.5, 0.0, -1.0), owner, Combatant(battle)))
+            .id();
+        app.world_mut()
+            .get_mut::<Monster>(first)
+            .unwrap()
+            .conditions
+            .inflict(Condition::Turncoat, Lasting::Rounds(2));
+        let handle = app.world().resource::<GameData>().species.clone();
+        {
+            let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
+            let kind = &mut catalogs.get_mut(&handle).unwrap().0[0];
+            kind.attacks_per_round = 1;
+            kind.swings_per_round = 3;
+            kind.attacks = vec![MonsterAttack {
+                word: AttackWord::Bite,
+                weapon: MonsterWeapon::Unarmed,
+                reach: Reach::Touch,
+                score: 255,
+                modes: EnumSet::only(AttackMode::Swing),
+                damage: Dice { count: 0, sides: 0, base: 3 },
+                effects: default(),
+            }];
+        }
+        let mut targets = vec![];
+        for _ in 0..5 {
+            app.update();
+            targets.extend(
+                app.world_mut().resource_mut::<Messages<CombatNews>>().drain().filter_map(|news| {
+                    match news {
+                        CombatNews::Attack { attacker, target, .. } if attacker == first => {
+                            Some(target)
+                        }
+                        _ => None,
+                    }
+                }),
+            );
+        }
+        assert_eq!(targets, [second]);
+        assert!(app.world().get::<Monster>(second).unwrap().hp < 10000);
+        app.world_mut()
+            .get_mut::<Vitals>(a)
+            .unwrap()
+            .inflict(Condition::Turncoat, Lasting::Rounds(2));
+        {
+            let mut battle = fight_mut(app.world_mut());
+            battle.phase = RoundPhase::Waiting;
+            battle.wait = default();
+        }
+        app.world_mut().write_message(StartRound);
+        app.update();
+        let news: Vec<_> = app.world_mut().resource_mut::<Messages<CombatNews>>().drain().collect();
+        assert!(news.iter().any(|news| matches!(news, CombatNews::Attack { attacker, target, .. } if *attacker == a && (*target == b || crate::game::world::hostility::monster_stance(app.world(), *target) == hostility::Stance::Friendly))), "a controlled member does not keep the player's defend order: {news:?}");
+    }
+
+    #[test]
+    fn a_friendly_group_stays_only_while_it_can_see_an_enemy() {
+        use crate::game::characters::Lasting;
+        use crate::game::world::identify::MonsterGroup;
+        use bevy::ecs::system::RunSystemOnce;
+        use hostility::Stance;
+        for blind in [false, true] {
+            let (mut app, _) = round_app(true);
+            let hostile = app
+                .world_mut()
+                .query_filtered::<Entity, With<Monster>>()
+                .single(app.world())
+                .unwrap();
+            let battle = app.world().get::<Combatant>(hostile).unwrap().0;
+            let owner = *app.world().get::<LevelOwned>(hostile).unwrap();
+            let set = |stance| Some(hostility::SetStance { stance, at: 0 });
+            let group =
+                app.world_mut().spawn(MonsterGroup { set: set(Stance::Hostile), ..default() }).id();
+            app.world_mut()
+                .entity_mut(hostile)
+                .insert((GroupMember(group), Transform::from_xyz(0.0, 0.0, 4.0)));
+            let mut body = app.world().get::<Monster>(hostile).unwrap().clone();
+            if blind {
+                body.conditions.inflict(Condition::Blind, Lasting::Rounds(2));
+            }
+            let friendly_group = app
+                .world_mut()
+                .spawn(MonsterGroup { set: set(Stance::Friendly), ..default() })
+                .id();
+            let friendly = app
+                .world_mut()
+                .spawn((
+                    body,
+                    GroupMember(friendly_group),
+                    Combatant(battle),
+                    owner,
+                    Transform::from_xyz(0.0, 0.0, 2.0)
+                        .with_rotation(Quat::from_rotation_y(std::f32::consts::PI)),
+                ))
+                .id();
+            let catalog = app.world().resource::<GameData>().species.clone();
+            app.world_mut().resource_mut::<Assets<MonsterCatalog>>().get_mut(&catalog).unwrap().0
+                [0]
+            .faction = crate::game::factions::UNALIGNED;
+            let staying = app
+                .world_mut()
+                .run_system_once(
+                    move |mut commands: Commands,
+                          damage: MonsterDamage,
+                          membership: Query<&GroupMember>,
+                          obstacles: WorldObstacles,
+                          content: crate::game::data::Content| {
+                        let sight = Sight {
+                            eye: Vec3::Y,
+                            far: 100.0,
+                            lowest_level: 1,
+                            concealment: 0,
+                            obstacles: &obstacles,
+                        };
+                        let species = content.species().unwrap();
+                        let (body, at, walker, ..) = damage.monsters().get(hostile).unwrap();
+                        assert!(
+                            sight.sees(body, &at, walker, &species.0[0]),
+                            "the hostile remains engaged behind the party"
+                        );
+                        assert!(
+                            sight.in_view(body, &at, walker),
+                            "party visibility does not substitute for the friendly monster's sight"
+                        );
+                        leave_fight(
+                            &mut commands,
+                            &[hostile, friendly],
+                            (&damage, 0),
+                            &membership,
+                            &sight,
+                            species,
+                        )
+                    },
+                )
+                .unwrap();
+            assert!(staying.contains(&hostile));
+            assert_eq!(staying.contains(&friendly), !blind);
+            assert_eq!(app.world().get::<Combatant>(friendly).is_some(), !blind);
+        }
+    }
 
     #[test]
     fn party_armour_follows_membership_and_expiry() {
@@ -1418,6 +3230,7 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<CombatSettings>()
             .add_message::<CombatControl>()
+            .add_message::<crate::game::camp::CampNews>()
             .add_message::<StartRound>()
             .add_systems(Update, control_combat);
         app.world_mut().write_message(CombatControl::RoundButton);
@@ -1438,13 +3251,34 @@ mod tests {
     #[test]
     fn sight_reaches_the_far_clip_ahead_and_less_from_behind() {
         // Facing the party: the whole far clip.
-        assert_eq!(sight_threshold(0.3, 40, 0, 1, 60.0, 30.0), 60.0);
+        assert_eq!(sight_threshold(0.3, 40, 0, 1, 0, 60.0, 30.0), 60.0);
         // Behind it: (senses - 2 × lowest level) × (far - d) / d percent.
-        let behind = sight_threshold(3.0, 40, 0, 1, 60.0, 30.0);
+        let behind = sight_threshold(3.0, 40, 0, 1, 0, 60.0, 30.0);
         assert!((behind - 0.38 * 60.0).abs() < 1e-3);
         // Never under 2%, and a ranged bonus scales the percent.
-        assert!((sight_threshold(3.0, 0, 0, 10, 60.0, 50.0) - 1.2).abs() < 1e-3);
-        assert!((sight_threshold(3.0, 40, 50, 1, 60.0, 30.0) - 0.57 * 60.0).abs() < 1e-3);
+        assert!((sight_threshold(3.0, 0, 0, 10, 0, 60.0, 50.0) - 1.2).abs() < 1e-3);
+        assert!((sight_threshold(3.0, 40, 50, 1, 0, 60.0, 30.0) - 0.57 * 60.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn chameleon_adjusted_power_reduces_sight_before_ranger_bonus_and_expires_with_its_slot() {
+        use crate::content::spells::SpellId;
+        use crate::game::magic::enchantments::{Enchantment, Enchantments};
+        let mut effects = Enchantments::default();
+        effects.apply(Enchantment {
+            spell: SpellId::CHAMELEON,
+            power: 3,
+            boost: 50,
+            turns: 1,
+            absorption: 0,
+        });
+        let reach = |effects: &Enchantments, bonus| {
+            sight_threshold(0.0, 40, bonus, 1, effects.concealment(), 60.0, 40.0)
+        };
+        assert_eq!(reach(&effects, 0), 30.0);
+        assert_eq!(reach(&effects, 50), 45.0);
+        effects.age(1);
+        assert_eq!(reach(&effects, 0), 60.0);
     }
 
     #[test]
@@ -1456,6 +3290,9 @@ mod tests {
     }
     /// Real battle acceptance and round execution without movement, rendering or UI.
     fn round_app(defending: bool) -> (App, [Entity; 2]) {
+        round_app_with_colliders(defending, false)
+    }
+    fn round_app_with_colliders(defending: bool, colliders: bool) -> (App, [Entity; 2]) {
         use crate::content::characters::Skill;
         use crate::content::items::{ItemDefinition, QuantityKind};
         use crate::content::species::Species;
@@ -1470,10 +3307,14 @@ mod tests {
             .init_resource::<Assets<MonsterCatalog>>()
             .init_resource::<Assets<crate::content::spells::SpellCatalog>>()
             .init_resource::<Assets<LootTables>>()
+            .init_resource::<Assets<crate::content::monster::MonsterBody>>()
+            .init_resource::<Assets<crate::game::world::navigation::WalkerMotionConfig>>()
             .init_resource::<avian3d::collider_tree::ColliderTrees>()
             .init_resource::<crate::game::factions::Factions>()
+            .add_message::<crate::game::factions::FactionNews>()
             .init_resource::<crate::game::difficulty::Difficulty>()
             .add_message::<MagicNews>()
+            .add_message::<crate::game::world::hostility::Provocation>()
             .init_resource::<ItemIds>()
             .init_resource::<GameClock>()
             .insert_resource(GameRng::seeded(5))
@@ -1488,6 +3329,14 @@ mod tests {
         app.world_mut()
             .resource_mut::<Time<Virtual>>()
             .set_max_delta(std::time::Duration::from_secs(2));
+        if colliders {
+            app.add_plugins((
+                AssetPlugin::default(),
+                bevy::mesh::MeshPlugin,
+                TransformPlugin,
+                avian3d::prelude::PhysicsPlugins::default(),
+            ));
+        }
         let weapons: Vec<_> = [100, 0]
             .into_iter()
             .enumerate()
@@ -1539,7 +3388,9 @@ mod tests {
                     max_hp: 10000,
                     stamina: 0,
                     max_stamina: 0,
-                    conditions: vec![],
+
+                    conditions: Default::default(),
+                    spell_points: 0,
                     body: ScaledBody { scale: 1.0, radius: 1.0, eye_height: 1.0, speed: 0.0 },
                 },
                 Transform::from_translation(Vec3::NEG_Z),
@@ -1550,6 +3401,8 @@ mod tests {
         app.world_mut().entity_mut(monster).insert(Combatant(battle));
         app.finish();
         app.cleanup();
+        // Time starts with the first update, so rounds run from the next.
+        app.update();
         app.world_mut().write_message(StartRound);
         (app, [members[0], members[1]])
     }
@@ -1560,6 +3413,20 @@ mod tests {
 
     fn fight_mut(world: &mut World) -> Mut<'_, Battle> {
         world.query::<&mut Battle>().single_mut(world).unwrap()
+    }
+
+    /// Give the played level its definition, which sets how far monsters
+    /// see and lets fights start.
+    fn define_level(app: &mut App) {
+        let world = app.world_mut();
+        let geometry = world
+            .resource_mut::<Assets<crate::content::level::LevelDefinition>>()
+            .add(crate::content::level::LevelDefinition::default());
+        world
+            .query::<&mut crate::game::world::level::Level>()
+            .single_mut(world)
+            .unwrap()
+            .definition = geometry;
     }
 
     /// Make `member` a trained Mage who knows `spell`, with points to cast it,
@@ -1586,10 +3453,7 @@ mod tests {
                 character.skill_points[skill] = 100;
             }
         }
-        let mut points = SpellPoints::default();
-        for realm in [Realm::Fire, Realm::Air] {
-            points.current[realm] = 20;
-        }
+        let points = SpellPoints::default();
         let monster =
             app.world().try_query::<&Combatants>().unwrap().single(app.world()).unwrap().entities()
                 [0];
@@ -1602,6 +3466,9 @@ mod tests {
             points,
             Order::Magic(choice),
         ));
+        for realm in [Realm::Fire, Realm::Air] {
+            crate::game::magic::test_set_points(app.world_mut(), member, realm, 20);
+        }
         monster
     }
 
@@ -1619,6 +3486,444 @@ mod tests {
             dice: Some(Dice { base: 0, count: 1, sides: 7 }),
             ..default()
         }
+    }
+
+    /// An automatic aim takes the monster nearest the party's heading when
+    /// the spell is cast, from the party's own facing: ahead before a turn,
+    /// the one behind after half a turn, and nobody when none is in reach.
+    #[test]
+    fn an_automatic_aim_follows_the_partys_facing_at_the_cast() {
+        use crate::game::magic::casting::{Aim, MagicChoice, MagicNews, Refusal, Source};
+        use crate::game::magic::effects::{Effect, Victim};
+        let cast = |yaw: f32, far: bool, axis: Vec3| {
+            let (mut app, [caster, _]) = round_app(true);
+            let ahead = order_spell(&mut app, caster, energy_blast());
+            let battle = app
+                .world_mut()
+                .query_filtered::<Entity, With<Battle>>()
+                .single(app.world())
+                .unwrap();
+            let body = app.world().get::<Monster>(ahead).unwrap().clone();
+            let level = app.world().get::<LevelOwned>(ahead).unwrap().0;
+            let behind = app
+                .world_mut()
+                .spawn((body, Transform::from_translation(axis * 3.0), LevelOwned(level)))
+                .id();
+            app.world_mut().entity_mut(behind).insert(Combatant(battle));
+            app.world_mut().get_mut::<Transform>(ahead).unwrap().translation = -axis;
+            if far {
+                for (monster, z) in [(ahead, -40.0), (behind, 40.0)] {
+                    app.world_mut().get_mut::<Transform>(monster).unwrap().translation = axis * z;
+                }
+            }
+            let choice = MagicChoice {
+                source: Source::Spell {
+                    spell: crate::content::spells::SpellId::ENERGY_BLAST,
+                    power: 1,
+                },
+                aim: Aim::Ahead,
+            };
+            app.world_mut().entity_mut(caster).insert(Order::Magic(choice));
+            let party = app
+                .world_mut()
+                .query_filtered::<Entity, With<PartyBody>>()
+                .single(app.world())
+                .unwrap();
+            app.world_mut().get_mut::<PartyBody>(party).unwrap().yaw = yaw;
+            let mut news = Vec::new();
+            for _ in 0..6 {
+                app.update();
+                news.extend(app.world_mut().resource_mut::<Messages<MagicNews>>().drain());
+            }
+            let hit = news.iter().find_map(|n| match n {
+                MagicNews::Done(report) => report.effects.iter().find_map(|e| match e {
+                    Effect::Damaged { victim: Victim::Monster(m), .. } => Some(*m),
+                    _ => None,
+                }),
+                _ => None,
+            });
+            let refused = news.iter().any(|n| {
+                matches!(n, MagicNews::Refused { caster: c, refusal: Refusal::NoTarget } if *c == caster)
+            });
+            (hit, refused, ahead, behind)
+        };
+        let (hit, _, ahead, _) = cast(0.0, false, Vec3::Z);
+        assert_eq!(hit, Some(ahead), "facing -Z, the one ahead");
+        let (hit, _, _, behind) = cast(std::f32::consts::PI, false, Vec3::Z);
+        assert_eq!(hit, Some(behind), "turned about, the one that was behind");
+        let (hit, _, ahead, _) = cast(std::f32::consts::FRAC_PI_2, false, Vec3::X);
+        assert_eq!(hit, Some(ahead), "positive quarter turn faces -X");
+        let (hit, _, _, behind) = cast(-std::f32::consts::FRAC_PI_2, false, Vec3::X);
+        assert_eq!(hit, Some(behind), "negative quarter turn faces +X");
+        let (hit, refused, ..) = cast(0.0, true, Vec3::Z);
+        assert_eq!(hit, None);
+        assert!(refused, "nobody within reach");
+    }
+
+    /// A monster with a spell it can aim at the party casts it at its turn:
+    /// it lands on a member at once and spends nothing (retail
+    /// `UpdateMonsterAI`, `MonsterCastsSpell`).
+    #[test]
+    fn a_monster_casts_its_spell_at_a_member() {
+        use crate::content::spells::SpellCatalog;
+        use crate::game::magic::casting::MagicNews;
+        use crate::game::magic::effects::{Effect, Victim};
+        let (mut app, members) = round_app(true);
+        let monster =
+            app.world().try_query::<&Combatants>().unwrap().single(app.world()).unwrap().entities()
+                [0];
+        let blast =
+            crate::content::spells::SpellDefinition { monsters_cast: true, ..energy_blast() };
+        let id = blast.id;
+        let mut catalog: Vec<_> = (0..=id.0).map(|_| default()).collect();
+        catalog[usize::from(id.0)] = blast;
+        let handle =
+            app.world_mut().resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(catalog));
+        app.world_mut().resource_mut::<GameData>().spells = handle;
+        let data = app.world().resource::<GameData>().species.clone();
+        {
+            let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
+            let mut species = catalogs.get_mut(&data).unwrap();
+            species.0[0].level = 5;
+            species.0[0].magic.chance = 100;
+            species.0[0].magic.budget = 200;
+            species.0[0].magic.spells[0] = Some(id);
+        }
+        let mut cast = None;
+        for _ in 0..12 {
+            app.update();
+            let news: Vec<_> =
+                app.world_mut().resource_mut::<Messages<MagicNews>>().drain().collect();
+            cast = news.into_iter().find_map(|n| match n {
+                MagicNews::Done(report) if report.caster == monster => Some(report),
+                _ => None,
+            });
+            if cast.is_some() {
+                break;
+            }
+        }
+        let report = cast.expect("the monster casts");
+        assert_eq!(report.spell, id);
+        assert!(report.power >= 6, "a large budget casts hard: {}", report.power);
+        assert!(
+            report.effects.iter().any(|e| matches!(
+                e,
+                Effect::Damaged { victim: Victim::Member(m), .. } | Effect::Resisted { victim: Victim::Member(m) }
+                    if members.contains(m)
+            )),
+            "{:?}",
+            report.effects
+        );
+    }
+
+    /// A summoner in a fight calls its group up with no one to aim a cone
+    /// at, as long as the party is within long reach and it is not on the
+    /// party's side; a summoning never starts a fight (retail
+    /// `CanMonsterFlee`, `AimFleeingMonster`).
+    #[test]
+    fn a_summoner_summons_without_an_aim_unless_on_the_partys_side() {
+        use crate::content::species::{SpecialAttack, SpecialAttackKind};
+        let call = SpecialAttackKind::SummonsSpecies12;
+        for turned in [false, true] {
+            let (mut app, members) = round_app(true);
+            for member in members {
+                app.world_mut().entity_mut(member).insert(Order::Defend);
+            }
+            let monster = app
+                .world()
+                .try_query::<&Combatants>()
+                .unwrap()
+                .single(app.world())
+                .unwrap()
+                .entities()[0];
+            let data = app.world().resource::<GameData>().species.clone();
+            {
+                let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
+                let species = &mut catalogs.get_mut(&data).unwrap().0;
+                species[0].special = SpecialAttack { kind: Some(call), chance: 100, cooldown: 3 };
+                let kind = species[0].clone();
+                assert!(
+                    !special_ready(&conduct::tests::monster(10), &kind, false, None),
+                    "never what starts a fight"
+                );
+                species.resize(13, default());
+            }
+            {
+                let mut body = app.world_mut().get_mut::<Monster>(monster).unwrap();
+                body.stamina = 100;
+                body.max_stamina = 100;
+                if turned {
+                    body.conditions
+                        .inflict(Condition::Turncoat, crate::game::characters::Lasting::Rounds(20));
+                }
+            }
+            let mut news = Vec::new();
+            for _ in 0..12 {
+                app.update();
+                news.extend(app.world_mut().resource_mut::<Messages<CombatNews>>().drain());
+            }
+            let summoned = news.contains(&CombatNews::Special { monster, kind: call });
+            assert_eq!(summoned, !turned, "turned {turned}");
+        }
+    }
+
+    /// A monster with a breath and nothing to strike with breathes on the
+    /// party at its turn: the notice, what it did to the members, its
+    /// cooldown and a tenth of its stamina (retail `UpdateMonsterAI`,
+    /// `ExecuteMonsterSpecialAttack`, `ResolveMonsterGroupAttack`).
+    #[test]
+    fn a_monster_breathes_on_the_party() {
+        use crate::content::species::{SpecialAttack, SpecialAttackKind};
+        let burn = SpecialAttackKind::WoundFire;
+        use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId, Targeting};
+        use crate::game::magic::effects::{Effect, Victim};
+        let (mut app, members) = round_app(true);
+        // The party holds back, so no blow knocks the monster out first.
+        for member in members {
+            app.world_mut().entity_mut(member).insert(Order::Defend);
+        }
+        let monster =
+            app.world().try_query::<&Combatants>().unwrap().single(app.world()).unwrap().entities()
+                [0];
+        let cone = SpellId::SPECIAL_ATTACK_CONE;
+        let mut catalog: Vec<SpellDefinition> = (0..=cone.0).map(|_| default()).collect();
+        catalog[usize::from(cone.0)] = SpellDefinition {
+            id: cone,
+            targeting: Targeting::Cone,
+            reach: Reach::Long,
+            ..default()
+        };
+        let handle =
+            app.world_mut().resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(catalog));
+        app.world_mut().resource_mut::<GameData>().spells = handle;
+        let data = app.world().resource::<GameData>().species.clone();
+        {
+            let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
+            let mut species = catalogs.get_mut(&data).unwrap();
+            species.0[0].special = SpecialAttack { kind: Some(burn), chance: 100, cooldown: 3 };
+            species.0[0].level = 5;
+        }
+        {
+            let mut body = app.world_mut().get_mut::<Monster>(monster).unwrap();
+            body.stamina = 100;
+            body.max_stamina = 100;
+        }
+        let mut news = Vec::new();
+        for _ in 0..12 {
+            app.update();
+            news.extend(app.world_mut().resource_mut::<Messages<CombatNews>>().drain());
+            if news.contains(&CombatNews::Special { monster, kind: burn }) {
+                break;
+            }
+        }
+        assert!(news.contains(&CombatNews::Special { monster, kind: burn }), "it breathes");
+        let effects: Vec<Effect> = news
+            .iter()
+            .filter_map(|n| match n {
+                CombatNews::Effects(effects) => Some(effects.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert!(
+            effects.iter().all(|e| matches!(
+                e,
+                Effect::Damaged { victim: Victim::Member(m), .. }
+                    | Effect::Resisted { victim: Victim::Member(m) } if members.contains(m)
+            )),
+            "only the party is caught: {effects:?}"
+        );
+        assert_eq!(app.world().get::<Monster>(monster).unwrap().stamina, 90);
+        assert!(fight(app.world()).unwrap().cooldowns.contains(&(monster, 3)));
+    }
+
+    /// A monster under Turncoat strikes its fellow, not the party it now
+    /// stands with (retail `MonsterHostility`, `MonsterVsCharDisposition`).
+    #[test]
+    fn a_turncoat_monster_strikes_its_fellow() {
+        use crate::game::characters::Lasting;
+        let (mut app, members) = round_app(true);
+        let turned =
+            app.world().try_query::<&Combatants>().unwrap().single(app.world()).unwrap().entities()
+                [0];
+        let data = app.world().resource::<GameData>().species.clone();
+        {
+            let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
+            let mut species = catalogs.get_mut(&data).unwrap();
+            species.0[0].attacks_per_round = 1;
+            species.0[0].swings_per_round = 1;
+            species.0[0].attacks = vec![crate::content::species::MonsterAttack {
+                word: AttackWord::Verb,
+                weapon: crate::content::species::MonsterWeapon::Unarmed,
+                effects: default(),
+                reach: Reach::Touch,
+                score: 50,
+                modes: EnumSet::only(AttackMode::Bash),
+                damage: Dice { base: 1, count: 1, sides: 2 },
+            }];
+        }
+        let battle =
+            app.world_mut().query_filtered::<Entity, With<Battle>>().single(app.world()).unwrap();
+        let mut fellow = app.world().get::<Monster>(turned).unwrap().clone();
+        fellow.location = 1;
+        let level = app.world().get::<LevelOwned>(turned).unwrap().0;
+        let fellow = app
+            .world_mut()
+            .spawn((fellow, Transform::from_translation(Vec3::NEG_Z * 2.5), LevelOwned(level)))
+            .id();
+        app.world_mut().entity_mut(fellow).insert(Combatant(battle));
+        app.world_mut()
+            .get_mut::<Monster>(turned)
+            .unwrap()
+            .conditions
+            .inflict(Condition::Turncoat, Lasting::Rounds(20));
+        let mut struck = None;
+        for _ in 0..16 {
+            app.update();
+            let news: Vec<_> =
+                app.world_mut().resource_mut::<Messages<CombatNews>>().drain().collect();
+            struck = news.into_iter().find_map(|n| match n {
+                CombatNews::Attack { attacker, target, .. } if attacker == turned => Some(target),
+                _ => None,
+            });
+            if struck.is_some() {
+                break;
+            }
+        }
+        let struck = struck.expect("the turncoat attacks");
+        assert_eq!(struck, fellow, "its fellow, not a member");
+        assert!(!members.contains(&struck));
+    }
+
+    /// A bodyguard guards a stronger fellow in trouble, and steps in front
+    /// of the blows meant for it (retail `BuildMonsterActionQueue`'s
+    /// protection, `ResolveGuardianInterception`).
+    #[test]
+    fn a_bodyguard_takes_blows_meant_for_its_ward() {
+        use crate::content::species::{MonsterAttack, MonsterWeapon, Species};
+        let (mut app, [a, b]) = round_app(true);
+        // Only the member with the slow sword strikes, after the guard has
+        // chosen to guard.
+        app.world_mut().entity_mut(a).insert(Order::Defend);
+        app.world_mut().entity_mut(b).insert(Order::Attack);
+        let ward =
+            app.world().try_query::<&Combatants>().unwrap().single(app.world()).unwrap().entities()
+                [0];
+        let claw = MonsterAttack {
+            word: AttackWord::Verb,
+            weapon: MonsterWeapon::Unarmed,
+            effects: default(),
+            reach: Reach::Short,
+            score: 1,
+            modes: EnumSet::only(AttackMode::Bash),
+            damage: Dice { base: 1, count: 1, sides: 1 },
+        };
+        let data = app.world().resource::<GameData>().species.clone();
+        {
+            let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
+            let catalog = &mut catalogs.get_mut(&data).unwrap().0;
+            catalog[0].level = 5;
+            catalog[0].attacks = vec![claw.clone()];
+            let mut guard = Species {
+                name: "Guard".into(),
+                attacks_per_round: 4,
+                attacks: vec![MonsterAttack { score: 250, ..claw }],
+                ..default()
+            };
+            guard.temper.bodyguard = true;
+            // It acts first in the round, so it guards before the blows.
+            guard.initiative = 89;
+            guard.attributes.intelligence = 100;
+            guard.attributes.speed = 200;
+            catalog.push(guard);
+        }
+        {
+            let mut body = app.world_mut().get_mut::<Monster>(ward).unwrap();
+            body.max_hp = 100;
+            body.hp = 30;
+        }
+        let battle =
+            app.world_mut().query_filtered::<Entity, With<Battle>>().single(app.world()).unwrap();
+        let mut guard = app.world().get::<Monster>(ward).unwrap().clone();
+        guard.species = 1;
+        guard.location = 1;
+        guard.hp = 10000;
+        guard.max_hp = 10000;
+        let level = app.world().get::<LevelOwned>(ward).unwrap().0;
+        let guard = app
+            .world_mut()
+            .spawn((guard, Transform::from_translation(Vec3::NEG_Z * 1.5), LevelOwned(level)))
+            .id();
+        app.world_mut().entity_mut(guard).insert(Combatant(battle));
+        // The guard may not reach the ward's trouble at once, so the fight
+        // runs on for a few rounds.
+        let mut intercepted = false;
+        for _ in 0..80 {
+            app.world_mut().write_message(StartRound);
+            app.update();
+            let news: Vec<_> =
+                app.world_mut().resource_mut::<Messages<CombatNews>>().drain().collect();
+            if news.contains(&CombatNews::Intercepts { guard, ward })
+                && news.iter().any(|n| {
+                    matches!(n, CombatNews::Attack { attacker, target, .. }
+                        if *attacker == b && *target == ward)
+                })
+            {
+                intercepted = true;
+                break;
+            }
+            if fight(app.world()).is_none() {
+                break;
+            }
+        }
+        assert!(intercepted, "the guard steps in");
+    }
+
+    /// A hostile monster that cannot strike or walk but has a spell to cast
+    /// at the party starts a fight on sight (retail `MonsterGroupCanEngage`'s
+    /// spell test).
+    #[test]
+    fn a_stationary_caster_starts_a_fight() {
+        use crate::content::spells::SpellCatalog;
+        let (mut app, _) = round_app(true);
+        define_level(&mut app);
+        let monster =
+            app.world().try_query::<&Combatants>().unwrap().single(app.world()).unwrap().entities()
+                [0];
+        let battle =
+            app.world_mut().query_filtered::<Entity, With<Battle>>().single(app.world()).unwrap();
+        app.world_mut().entity_mut(monster).remove::<Combatant>();
+        app.world_mut().despawn(battle);
+        let blast =
+            crate::content::spells::SpellDefinition { monsters_cast: true, ..energy_blast() };
+        let id = blast.id;
+        let mut catalog: Vec<_> = (0..=id.0).map(|_| default()).collect();
+        catalog[usize::from(id.0)] = blast;
+        let handle =
+            app.world_mut().resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(catalog));
+        app.world_mut().resource_mut::<GameData>().spells = handle;
+        let data = app.world().resource::<GameData>().species.clone();
+        {
+            let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
+            let mut species = catalogs.get_mut(&data).unwrap();
+            species.0[0].magic.chance = 50;
+            species.0[0].magic.spells[0] = Some(id);
+        }
+        // The party looks away; starting the fight leaves its facing alone
+        // and names the monster the view may turn to.
+        let party = app
+            .world_mut()
+            .query_filtered::<Entity, With<PartyBody>>()
+            .single(app.world())
+            .unwrap();
+        app.world_mut().get_mut::<PartyBody>(party).unwrap().yaw = 1.0;
+        app.world_mut().resource_mut::<Messages<CombatNews>>().clear();
+        app.update();
+        assert!(fight(app.world()).is_some(), "the caster starts the fight");
+        assert!(app.world().get::<Combatant>(monster).is_some());
+        assert_eq!(app.world().get::<PartyBody>(party).unwrap().yaw, 1.0);
+        let news: Vec<_> = app.world_mut().resource_mut::<Messages<CombatNews>>().drain().collect();
+        assert!(news.contains(&CombatNews::Began { nearest: Some(monster) }), "{news:?}");
     }
 
     /// A cast waits for its caster's initiative, is revalidated then, spends
@@ -1647,7 +3952,7 @@ mod tests {
         ));
         let monster = app.world().get::<Monster>(monster).unwrap();
         assert!(monster.hp < monster.max_hp);
-        assert_eq!(app.world().get::<SpellPoints>(caster).unwrap().current[Realm::Fire], 18);
+        assert_eq!(crate::game::magic::test_points(app.world(), caster, Realm::Fire), 18);
         assert!(!attackers.contains(&"A".to_owned()), "casting replaces the attack");
     }
 
@@ -1667,7 +3972,7 @@ mod tests {
             RoundAction::Magic(_)
         ));
         assert!(!fight(app.world()).unwrap().defends(caster));
-        app.world_mut().get_mut::<SpellPoints>(caster).unwrap().current[Realm::Fire] = 0;
+        crate::game::magic::test_set_points(app.world_mut(), caster, Realm::Fire, 0);
         let mut refused = false;
         for _ in 0..12 {
             app.update();
@@ -1713,10 +4018,6 @@ mod tests {
     #[test]
     fn a_spell_missile_lands_after_its_flight() {
         let (mut app, [caster, _]) = round_app(true);
-        app.add_systems(
-            Update,
-            crate::game::magic::deliver_spells.before(crate::game::GameplaySet::Combat),
-        );
         let monster = order_spell(
             &mut app,
             caster,
@@ -1739,9 +4040,53 @@ mod tests {
         assert!(cast.is_some() && landed.is_some() && cast < landed, "{news:?}");
     }
 
-    /// Impacts due in the same update land in the order they arrive, ties
-    /// in launch order, whatever the entity order: one long update and many
-    /// short ones give the same impacts and leave the RNG in the same state.
+    /// A fight with a missile in it runs the same at any frame rate: the
+    /// missile lands at the step its flight ends, before that step's next
+    /// actor, so frames of 1/32 s and of 3/4 s give the same impacts,
+    /// actions, wounds and generator state.
+    #[test]
+    fn missiles_land_the_same_whatever_the_frame_rate() {
+        let fight_for = |frame: std::time::Duration| {
+            let (mut app, [caster, _]) = round_app(true);
+            app.world_mut().resource_mut::<CombatSettings>().continuous = true;
+            let monster = order_spell(
+                &mut app,
+                caster,
+                crate::content::spells::SpellDefinition { missile: Some(2), ..energy_blast() },
+            );
+            // Far enough for a flight of several steps.
+            app.world_mut().get_mut::<Transform>(monster).unwrap().translation = Vec3::NEG_Z * 20.0;
+            app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(frame));
+            let frames = (6.0 / frame.as_secs_f64()).round() as u32;
+            let mut news = Vec::new();
+            for _ in 0..frames {
+                app.update();
+                news.extend(
+                    app.world_mut()
+                        .resource_mut::<Messages<MagicNews>>()
+                        .drain()
+                        .map(|n| format!("{n:?}")),
+                );
+                news.extend(
+                    app.world_mut()
+                        .resource_mut::<Messages<CombatNews>>()
+                        .drain()
+                        .map(|n| format!("{n:?}")),
+                );
+            }
+            let hp = app.world().get::<Monster>(monster).unwrap().hp;
+            let next = app.world_mut().resource_mut::<GameRng>().below(u32::MAX);
+            (news, hp, next)
+        };
+        let fast = fight_for(std::time::Duration::from_micros(31_250));
+        let slow = fight_for(std::time::Duration::from_millis(750));
+        assert!(fast.0.iter().any(|n| n.starts_with("Landed")), "{:?}", fast.0);
+        assert_eq!(fast, slow);
+    }
+
+    /// Impacts due in the same step land in the order they arrive, ties in
+    /// launch order, whatever the entity order: one long step and many short
+    /// ones give the same impacts and leave the RNG in the same state.
     #[test]
     fn due_spell_impacts_land_in_arrival_order_however_time_is_batched() {
         use crate::game::magic::Strength;
@@ -1755,6 +4100,8 @@ mod tests {
             let markers: Vec<Entity> = (0..4).map(|_| app.world_mut().spawn_empty().id()).collect();
             let flights = [(0.3, 0), (0.1, 1), (0.2, 2), (0.1, 3)]
                 .map(|(seconds, marker)| SpellInFlight {
+                    origin: casting::Origin::Actor(Victim::Member(caster)),
+                    finish: None,
                     caster: markers[marker],
                     spell: crate::content::spells::SpellId::ENERGY_BLAST,
                     strength: Strength { power: 1, against: 1, boost: 0 },
@@ -1771,7 +4118,7 @@ mod tests {
             world.resource_mut::<Messages<MagicNews>>().clear();
             for _ in 0..steps {
                 world
-                    .resource_mut::<Time<Virtual>>()
+                    .resource_mut::<Time<Fixed>>()
                     .advance_by(Duration::from_secs_f32(0.4) / steps);
                 world.run_system_cached(crate::game::magic::deliver_spells).unwrap();
                 world.flush();
@@ -1806,10 +4153,35 @@ mod tests {
         casting::FlightOrder::default().launch(&mut commands, flights, level);
         world.flush();
         world.resource_mut::<Messages<MagicNews>>().clear();
-        world.resource_mut::<Time<Virtual>>().advance_by(std::time::Duration::from_secs(5));
+        world.resource_mut::<Time<Fixed>>().advance_by(std::time::Duration::from_secs(5));
         world.run_system_cached(crate::game::magic::deliver_spells).unwrap();
         world.flush();
         world.resource_mut::<Messages<MagicNews>>().drain().collect()
+    }
+
+    #[test]
+    fn accepted_missiles_wait_for_monster_damage_services_without_spending_rng() {
+        let (mut app, [caster, _]) = round_app(true);
+        let monster = order_spell(&mut app, caster, energy_blast());
+        let loot = app.world_mut().remove_resource::<Assets<LootTables>>().unwrap();
+        let rng = app.world().resource::<GameRng>().clone();
+        let health = app.world().get::<Monster>(monster).unwrap().hp;
+        let news = land(
+            &mut app,
+            vec![missile(
+                caster,
+                crate::content::spells::SpellId::ENERGY_BLAST,
+                Victim::Monster(monster),
+            )],
+        );
+        assert!(news.is_empty());
+        assert_eq!(app.world().resource::<GameRng>(), &rng);
+        assert_eq!(app.world().get::<Monster>(monster).unwrap().hp, health);
+        assert_eq!(app.world_mut().query::<&casting::SpellInFlight>().iter(app.world()).count(), 1);
+        app.insert_resource(loot);
+        assert!(matches!(land(&mut app, vec![]).as_slice(), [MagicNews::Landed { .. }]));
+        assert!(app.world().get::<Monster>(monster).unwrap().hp < health);
+        assert_eq!(app.world_mut().query::<&casting::SpellInFlight>().iter(app.world()).count(), 0);
     }
 
     fn missile(
@@ -1818,12 +4190,477 @@ mod tests {
         victim: Victim,
     ) -> crate::game::magic::casting::SpellInFlight {
         crate::game::magic::casting::SpellInFlight {
+            origin: casting::Origin::Actor(Victim::Member(caster)),
+            finish: Some(casting::Finalization {
+                aim: match victim {
+                    Victim::Member(entity) => casting::Aim::Member(entity),
+                    Victim::Monster(entity) => casting::Aim::Monster(entity),
+                },
+                victims: vec![victim],
+                reflected: false,
+            }),
             caster,
             spell,
             strength: crate::game::magic::Strength { power: 1, against: 1, boost: 0 },
             victims: vec![victim],
             arrives: Timer::from_seconds(0.1, TimerMode::Once),
             launched: 0,
+        }
+    }
+
+    #[test]
+    fn restorative_spells_heal_monsters_wake_only_exhaustion_and_skip_full_or_dead_targets() {
+        use crate::content::spells::{SpellDefinition, SpellId};
+        use crate::game::{
+            characters::Lasting,
+            magic::{Strength, effects},
+        };
+        use bevy::ecs::system::RunSystemOnce;
+        let (mut app, _) = round_app(true);
+        app.world_mut().resource_mut::<Messages<StartRound>>().clear();
+        let target =
+            app.world().try_query::<&Combatants>().unwrap().single(app.world()).unwrap().entities()
+                [0];
+        let cast = |app: &mut App, id| {
+            app.world_mut().run_system_once(
+                move |mut context: MagicContext, mut members: Members,
+                      mut damage: MonsterDamage, mut rng: ResMut<GameRng>,
+                      mut points: Query<(&LearnedSpells, &mut SpellPoints)>| {
+                    context.with_field(0, &mut members, &mut damage, |field| {
+                        effects::resolve(Some(effects::Victim::Monster(target)), false,
+                            &SpellDefinition { id, realm: Some(crate::content::characters::Realm::Divine), dice: Some(Dice { count: 1, sides: 1, base: 50 }), ..default() },
+                            Strength { power: 1, boost: 0, against: 1 },
+                            &[effects::Victim::Monster(target)], &mut rng, field, &mut points)
+                    }).unwrap()
+                }).unwrap()
+        };
+        {
+            let mut body = app.world_mut().get_mut::<Monster>(target).unwrap();
+            body.hp = body.max_hp - 5;
+            body.stamina = 0;
+            body.max_stamina = 100;
+            body.conditions = [(Condition::Unconscious, Lasting::Indefinite)].into();
+        }
+        cast(&mut app, SpellId::HEAL_WOUNDS);
+        let body = app.world().get::<Monster>(target).unwrap();
+        assert_eq!(body.hp, body.max_hp);
+        assert_eq!(body.stamina, 0);
+        cast(&mut app, SpellId::STAMINA);
+        let body = app.world().get::<Monster>(target).unwrap();
+        assert!(body.stamina > 9);
+        assert!(body.conditions.is_empty(), "stamina restores consciousness after exhaustion");
+        {
+            let mut body = app.world_mut().get_mut::<Monster>(target).unwrap();
+            body.stamina = 0;
+            body.conditions = [
+                (Condition::Unconscious, Lasting::Rounds(5)),
+                (Condition::Poisoned, Lasting::Indefinite),
+            ]
+            .into();
+        }
+        cast(&mut app, SpellId::STAMINA);
+        assert_eq!(
+            app.world().get::<Monster>(target).unwrap().conditions.iter().count(),
+            2,
+            "stamina alone does not cure a knockout or poison"
+        );
+        app.world_mut().get_mut::<Monster>(target).unwrap().stamina = 100;
+        assert!(
+            effects::affected(&cast(&mut app, SpellId::RESTORATION)),
+            "curing conditions alone is an effective restoration"
+        );
+        assert!(app.world().get::<Monster>(target).unwrap().conditions.is_empty());
+        {
+            let mut body = app.world_mut().get_mut::<Monster>(target).unwrap();
+            body.stamina = body.max_stamina;
+        }
+        let before = app.world().resource::<GameRng>().clone();
+        cast(&mut app, SpellId::HEAL_WOUNDS);
+        cast(&mut app, SpellId::STAMINA);
+        assert_eq!(
+            app.world().resource::<GameRng>(),
+            &before,
+            "full actors consume no magnitude rolls"
+        );
+        app.world_mut().get_mut::<Monster>(target).unwrap().hp = 0;
+        cast(&mut app, SpellId::RESTORATION);
+        assert_eq!(
+            app.world().get::<Monster>(target).unwrap().hp,
+            0,
+            "restoration cannot resurrect"
+        );
+        assert_eq!(app.world().resource::<GameRng>(), &before);
+    }
+
+    #[test]
+    fn monster_blasts_use_the_explosion_origin_instead_of_caster_aim_visibility() {
+        use crate::game::{
+            characters::Lasting, magic::effects::Standing, world::obstacles::scenery,
+        };
+        use avian3d::prelude::{Collider, RigidBody};
+        use bevy::ecs::system::RunSystemOnce;
+        let (mut app, members) = round_app_with_colliders(true, true);
+        app.world_mut().resource_mut::<Messages<StartRound>>().clear();
+        let spell = crate::content::spells::SpellDefinition {
+            targeting: crate::content::spells::Targeting::Radius,
+            radius: 10.0,
+            dice: Some(Dice { count: 0, sides: 0, base: 3 }),
+            ..energy_blast()
+        };
+        let caster = order_spell(&mut app, members[0], spell.clone());
+        app.world_mut().entity_mut(caster).insert(Transform::from_xyz(-5.0, 0.0, -5.0));
+        for member in members {
+            app.world_mut().get_mut::<Vitals>(member).unwrap().hp = 10000;
+        }
+        let owner = *app.world().get::<LevelOwned>(caster).unwrap();
+        let mut target = app.world().get::<Monster>(caster).unwrap().clone();
+        target.conditions.inflict(Condition::Turncoat, Lasting::Rounds(10));
+        target.location = 1;
+        let exposed = app
+            .world_mut()
+            .spawn((target.clone(), Transform::from_xyz(0.0, 0.0, -5.0), owner))
+            .id();
+        target.location = 2;
+        let shielded =
+            app.world_mut().spawn((target, Transform::from_xyz(-5.0, 0.0, 0.0), owner)).id();
+        for z in [-5.0, 0.0] {
+            app.world_mut().spawn((
+                RigidBody::Static,
+                Collider::cuboid(0.2, 20.0, 2.0),
+                scenery(),
+                Transform::from_xyz(-2.5, 0.0, z),
+            ));
+        }
+        app.update();
+        app.update();
+        let scene = monster_spells::Scene {
+            caster,
+            from: Vec3::ZERO,
+            party_at: Vec3::Y,
+            party: 7.0,
+            sees_party: true,
+            members: vec![],
+            monsters: vec![monster_spells::Someone {
+                entity: shielded,
+                at: Vec3::Z * 5.0,
+                from_caster: 5.0,
+                standing: Standing::default(),
+                stance: hostility::Stance::Hostile,
+            }],
+        };
+        app.world_mut()
+            .run_system_once(
+                move |mut context: MagicContext,
+                      mut members: Members,
+                      mut damage: MonsterDamage,
+                      mut rng: ResMut<GameRng>,
+                      mut points: Query<(&LearnedSpells, &mut SpellPoints)>,
+                      content: crate::game::data::Content| {
+                    let kind = &content.species().unwrap().0[0];
+                    context
+                        .with_field(0, &mut members, &mut damage, |field| {
+                            monster_spells::cast(
+                                (&spell, 1, monster_spells::SpellAim::Party),
+                                (kind, 100),
+                                &scene,
+                                &mut rng,
+                                field,
+                                &mut points,
+                            )
+                        })
+                        .unwrap()
+                },
+            )
+            .unwrap();
+        assert!(
+            app.world().get::<Monster>(exposed).unwrap().hp < 10000,
+            "hidden from the caster, visible to the explosion"
+        );
+        assert_eq!(
+            app.world().get::<Monster>(shielded).unwrap().hp,
+            10000,
+            "visible to the caster, behind scenery from the explosion"
+        );
+    }
+
+    #[test]
+    fn eye_for_an_eye_finishes_after_all_hits_spends_the_strongest_charge_once_and_does_not_loop() {
+        use crate::content::spells::{SpellId, Targeting};
+        use crate::game::magic::{Strength, enchantments::Enchantment};
+        let run = |steps| {
+            let (mut app, [caster, other]) = round_app(true);
+            for actor in [caster, other] {
+                app.world_mut().get_mut::<Vitals>(actor).unwrap().hp = 10000;
+            }
+            let target = order_spell(
+                &mut app,
+                caster,
+                crate::content::spells::SpellDefinition {
+                    targeting: Targeting::EnemyGroup,
+                    dice: Some(Dice { count: 0, sides: 0, base: 3 }),
+                    ..energy_blast()
+                },
+            );
+            let owner = *app.world().get::<LevelOwned>(target).unwrap();
+            let battle = app.world().get::<Combatant>(target).unwrap().0;
+            let mut copy = app.world().get::<Monster>(target).unwrap().clone();
+            copy.location = 1;
+            let strongest = app
+                .world_mut()
+                .spawn((copy, Transform::from_translation(Vec3::NEG_Z), owner, Combatant(battle)))
+                .id();
+            let enchantment = |power| Enchantment {
+                spell: SpellId::EYE_FOR_AN_EYE,
+                power,
+                boost: 0,
+                turns: 10,
+                absorption: 0,
+            };
+            app.world_mut().get_mut::<Monster>(target).unwrap().enchantments.apply(enchantment(3));
+            app.world_mut()
+                .get_mut::<Monster>(strongest)
+                .unwrap()
+                .enchantments
+                .apply(enchantment(5));
+            app.world_mut().get_mut::<Vitals>(caster).unwrap().enchantments.apply(enchantment(7));
+            let mut first = missile(caster, SpellId::ENERGY_BLAST, Victim::Monster(target));
+            first.strength = Strength { power: 2, against: 20, boost: 0 };
+            first.finish = None;
+            let mut last = missile(caster, SpellId::ENERGY_BLAST, Victim::Monster(strongest));
+            last.strength = first.strength;
+            last.arrives = Timer::from_seconds(0.3, TimerMode::Once);
+            last.finish = Some(casting::Finalization {
+                aim: casting::Aim::Monster(target),
+                victims: vec![Victim::Monster(target), Victim::Monster(strongest)],
+                reflected: false,
+            });
+            app.world_mut().resource_mut::<Messages<StartRound>>().clear();
+            let world = app.world_mut();
+            let mut commands = world.commands();
+            let mut order = casting::FlightOrder::default();
+            order.launch(&mut commands, vec![first, last], owner.0);
+            world.flush();
+            world.resource_mut::<Messages<MagicNews>>().clear();
+            for _ in 0..steps {
+                world
+                    .resource_mut::<Time<Fixed>>()
+                    .advance_by(std::time::Duration::from_secs_f32(0.5 / steps as f32));
+                world.run_system_cached(crate::game::magic::deliver_spells).unwrap();
+                world.flush();
+            }
+            let reflections = world.resource_mut::<Messages<MagicNews>>().drain().flat_map(|event| match event { MagicNews::Landed { effects, .. } => effects, _ => vec![] }).filter(|effect| matches!(effect, Effect::Reflected { victim: Victim::Monster(entity) } if *entity == strongest)).count();
+            assert_eq!(reflections, 1);
+            assert_eq!(
+                world
+                    .get::<Monster>(target)
+                    .unwrap()
+                    .enchantments
+                    .get(SpellId::EYE_FOR_AN_EYE)
+                    .unwrap()
+                    .power,
+                3
+            );
+            assert_eq!(
+                world
+                    .get::<Monster>(strongest)
+                    .unwrap()
+                    .enchantments
+                    .get(SpellId::EYE_FOR_AN_EYE)
+                    .unwrap()
+                    .power,
+                4
+            );
+            assert_eq!(
+                world
+                    .get::<Vitals>(caster)
+                    .unwrap()
+                    .enchantments
+                    .get(SpellId::EYE_FOR_AN_EYE)
+                    .unwrap()
+                    .power,
+                7
+            );
+            assert_eq!(world.query::<&casting::SpellInFlight>().iter(world).count(), 0);
+            (world.get::<Vitals>(caster).unwrap().hp, world.resource::<GameRng>().clone())
+        };
+        assert_eq!(run(1), run(5));
+    }
+
+    #[test]
+    fn boiling_blood_explodes_at_a_dead_victim_and_credits_secondary_kills() {
+        use crate::content::spells::{SpellId, Targeting};
+        for (initial_hp, kills) in [(1000, 0), (1, 2), (0, 1)] {
+            let (mut app, [caster, _]) = round_app(true);
+            let monster = order_spell(
+                &mut app,
+                caster,
+                crate::content::spells::SpellDefinition {
+                    id: SpellId::BOILING_BLOOD,
+                    dice: Some(Dice { base: 50, count: 0, sides: 0 }),
+                    ..energy_blast()
+                },
+            );
+            let handle = app.world().resource::<GameData>().spells.clone();
+            {
+                let mut catalogs = app.world_mut().resource_mut::<Assets<SpellCatalog>>();
+                let mut catalog = catalogs.get_mut(&handle).unwrap();
+                catalog.0.resize_with(
+                    usize::from(SpellId::BOILING_BLOOD_EXPLOSION.0) + 1,
+                    Default::default,
+                );
+                catalog.0[usize::from(SpellId::BOILING_BLOOD_EXPLOSION.0)] =
+                    crate::content::spells::SpellDefinition {
+                        id: SpellId::BOILING_BLOOD_EXPLOSION,
+                        targeting: Targeting::Radius,
+                        radius: 2.0,
+                        dice: Some(Dice { base: 50, count: 0, sides: 0 }),
+                        ..energy_blast()
+                    };
+            }
+            let mut body = app.world().get::<Monster>(monster).unwrap().clone();
+            body.hp = 1;
+            body.location += 1;
+            let owner = *app.world().get::<LevelOwned>(monster).unwrap();
+            let nearby = app
+                .world_mut()
+                .spawn((body.clone(), Transform::from_translation(Vec3::NEG_Z * 2.0), owner))
+                .id();
+            body.location += 1;
+            let far = app
+                .world_mut()
+                .spawn((body, Transform::from_translation(Vec3::NEG_Z * 20.0), owner))
+                .id();
+            app.world_mut().get_mut::<Monster>(monster).unwrap().hp = initial_hp;
+            let landed = land(
+                &mut app,
+                vec![missile(caster, SpellId::BOILING_BLOOD, Victim::Monster(monster))],
+            );
+            assert_eq!(fight(app.world()).unwrap().kills, kills, "{initial_hp}: {landed:?}");
+            assert_eq!(app.world().get::<Monster>(nearby).unwrap().is_dead(), initial_hp <= 1);
+            assert_eq!(app.world().get::<Monster>(far).unwrap().hp, 1);
+        }
+    }
+
+    #[test]
+    fn explosions_and_ring_of_fire_respect_closed_scenery_and_targetability() {
+        use crate::{
+            content::spells::{SpellId, Targeting},
+            game::magic::enchantments::{Enchantment, PartyEffects},
+        };
+        use avian3d::prelude::{Collider, RigidBody};
+        use bevy::ecs::system::RunSystemOnce;
+        for ring in [false, true] {
+            let (mut app, [caster, _]) = round_app_with_colliders(true, true);
+            let primary = order_spell(
+                &mut app,
+                caster,
+                crate::content::spells::SpellDefinition {
+                    id: SpellId::BOILING_BLOOD,
+                    dice: Some(Dice { base: 50, count: 0, sides: 0 }),
+                    ..energy_blast()
+                },
+            );
+            let handle = app.world().resource::<GameData>().spells.clone();
+            {
+                let mut catalogs = app.world_mut().resource_mut::<Assets<SpellCatalog>>();
+                let mut catalog = catalogs.get_mut(&handle).unwrap();
+                catalog.0.resize_with(
+                    usize::from(SpellId::BOILING_BLOOD_EXPLOSION.0) + 1,
+                    Default::default,
+                );
+                catalog.0[usize::from(SpellId::BOILING_BLOOD_EXPLOSION.0)] =
+                    crate::content::spells::SpellDefinition {
+                        id: SpellId::BOILING_BLOOD_EXPLOSION,
+                        targeting: Targeting::Radius,
+                        radius: 5.0,
+                        dice: Some(Dice { base: 50, count: 0, sides: 0 }),
+                        ..energy_blast()
+                    };
+                catalog.0[usize::from(SpellId::RING_OF_FIRE.0)] =
+                    crate::content::spells::SpellDefinition {
+                        id: SpellId::RING_OF_FIRE,
+                        dice: Some(Dice { base: 5, count: 0, sides: 0 }),
+                        ..energy_blast()
+                    };
+            }
+            app.world_mut().resource_mut::<Messages<StartRound>>().clear();
+            let centre = if ring { Vec3::ZERO } else { Vec3::NEG_Z * 2.0 };
+            app.world_mut().get_mut::<Transform>(primary).unwrap().translation =
+                if ring { Vec3::X * 100.0 } else { centre };
+            app.world_mut().get_mut::<Monster>(primary).unwrap().hp = 1;
+            let mut body = app.world().get::<Monster>(primary).unwrap().clone();
+            body.hp = 100;
+            body.location += 1;
+            let owner = *app.world().get::<LevelOwned>(primary).unwrap();
+            let clear = app
+                .world_mut()
+                .spawn((body.clone(), Transform::from_translation(centre + Vec3::X * 2.0), owner))
+                .id();
+            body.location += 1;
+            let blocked = app
+                .world_mut()
+                .spawn((
+                    body.clone(),
+                    Transform::from_translation(if ring { Vec3::NEG_Z * 2.0 } else { Vec3::ZERO }),
+                    owner,
+                ))
+                .id();
+            let species = app.world().resource::<GameData>().species.clone();
+            app.world_mut()
+                .resource_mut::<Assets<MonsterCatalog>>()
+                .get_mut(&species)
+                .unwrap()
+                .0
+                .push(crate::content::species::Species { untargetable: true, ..default() });
+            body.location += 1;
+            body.species = 1;
+            let hidden = app
+                .world_mut()
+                .spawn((body, Transform::from_translation(centre + Vec3::NEG_X * 2.0), owner))
+                .id();
+            app.world_mut().spawn((
+                RigidBody::Kinematic,
+                Collider::cuboid(4.0, 4.0, 0.2),
+                crate::game::world::obstacles::scenery(),
+                Transform::from_xyz(0.0, 0.0, -1.0),
+            ));
+            app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::from_millis(100),
+            ));
+            app.update();
+            app.update();
+            let health: Vec<_> =
+                app.world_mut().query::<&Vitals>().iter(app.world()).map(|v| v.hp).collect();
+            if ring {
+                let party = crate::game::party::roster::the_party(app.world_mut()).unwrap();
+                app.world_mut().get_mut::<PartyEffects>(party).unwrap().0.apply(Enchantment {
+                    spell: SpellId::RING_OF_FIRE,
+                    power: 1,
+                    boost: 0,
+                    turns: 1,
+                    absorption: 0,
+                });
+                app.world_mut().run_system_once(|mut context: MagicContext, mut members: Members, mut damage: MonsterDamage, mut rng: ResMut<GameRng>, mut points: Query<(&LearnedSpells, &mut SpellPoints)>| {
+                    context.resolve(0, &mut members, &mut damage, |field, spells| crate::game::magic::effects::pulse_clouds(&[], Vec3::Y * crate::game::party::body::EYE_ABOVE_CENTRE, spells, &mut rng, field, &mut points)).unwrap()
+                }).unwrap();
+            } else {
+                land(
+                    &mut app,
+                    vec![missile(caster, SpellId::BOILING_BLOOD, Victim::Monster(primary))],
+                );
+            }
+            assert_eq!(app.world().get::<Monster>(clear).unwrap().hp, if ring { 95 } else { 50 });
+            assert_eq!(app.world().get::<Monster>(blocked).unwrap().hp, 100);
+            assert_eq!(app.world().get::<Monster>(hidden).unwrap().hp, 100);
+            assert_eq!(
+                app.world_mut()
+                    .query::<&Vitals>()
+                    .iter(app.world())
+                    .map(|v| v.hp)
+                    .collect::<Vec<_>>(),
+                health,
+                "the blast cannot reach the party through the wall"
+            );
         }
     }
 
@@ -1859,6 +4696,53 @@ mod tests {
             .filter(|n| matches!(n, CombatNews::Killed { .. }))
             .collect();
         assert_eq!(killed, [CombatNews::Killed { actor: monster }]);
+    }
+
+    /// A missile that kills the last member standing ends the fight on the
+    /// step it lands: nobody acts after it and no round passes.
+    #[test]
+    fn a_missile_killing_the_last_member_ends_the_fight_at_once() {
+        let (mut app, [fallen, last]) = round_app(true);
+        let monster = order_spell(
+            &mut app,
+            fallen,
+            crate::content::spells::SpellDefinition {
+                dice: Some(Dice { base: 1000, count: 0, sides: 0 }),
+                ..energy_blast()
+            },
+        );
+        app.world_mut().entity_mut(fallen).insert(Order::Defend);
+        for _ in 0..4 {
+            app.update();
+            if fight(app.world()).unwrap().executing() {
+                break;
+            }
+        }
+        assert!(fight(app.world()).unwrap().executing());
+        // Mid-round, the next actor's delay over, a monster's missile flies
+        // at the one member still standing.
+        app.world_mut().get_mut::<Vitals>(fallen).unwrap().hp = 0;
+        fight_mut(app.world_mut()).wait = Timer::from_seconds(0.0, TimerMode::Once);
+        let level = app.world_mut().query::<&LevelOwned>().iter(app.world()).next().unwrap().0;
+        let mut flight =
+            missile(monster, crate::content::spells::SpellId::ENERGY_BLAST, Victim::Member(last));
+        flight.arrives = Timer::from_seconds(0.5, TimerMode::Once);
+        let world = app.world_mut();
+        let mut commands = world.commands();
+        casting::FlightOrder::default().launch(&mut commands, vec![flight], level);
+        world.flush();
+        world.resource_mut::<Messages<CombatNews>>().clear();
+        let before = world.resource::<GameClock>().ms;
+        let mut news = Vec::new();
+        for _ in 0..4 {
+            app.update();
+            news.extend(app.world_mut().resource_mut::<Messages<CombatNews>>().drain());
+        }
+        assert!(app.world().get::<Vitals>(last).unwrap().is_dead());
+        assert!(fight(app.world()).is_none());
+        assert_eq!(news.iter().filter(|n| **n == CombatNews::Lost).count(), 1, "{news:?}");
+        assert!(!news.iter().any(|n| matches!(n, CombatNews::Attack { .. })), "{news:?}");
+        assert_eq!(app.world().resource::<GameClock>().ms, before, "no round passed");
     }
 
     /// A member killed by magic is announced as one killed in melee is.
@@ -1907,7 +4791,8 @@ mod tests {
             {
                 let mut character = app.world_mut().get_mut::<Character>(member).unwrap();
                 character.attributes[Attribute::Piety] = 100;
-                character.level = 30;
+                let profession = character.profession;
+                character.profession_levels[profession] = 30;
                 character.skill_practice[Skill::IronWill] = 7;
             }
             app.insert_resource(GameRng::seeded(seed));
@@ -1952,6 +4837,121 @@ mod tests {
         app.world_mut().entity_mut(battle).insert(state);
         app.update();
         assert_eq!(fight(app.world()).unwrap().party_pace, None);
+    }
+
+    #[test]
+    fn a_friendly_monster_approaches_an_enemy_not_an_opposing_same_faction_member() {
+        use crate::game::world::identify::MonsterGroup;
+        use hostility::{SetStance, Stance};
+        let (mut app, members) = round_app(true);
+        for member in members {
+            app.world_mut().entity_mut(member).insert(Order::Defend);
+        }
+        let friendly =
+            app.world_mut().query_filtered::<Entity, With<Monster>>().single(app.world()).unwrap();
+        let battle = app.world().get::<Combatant>(friendly).unwrap().0;
+        let owner = *app.world().get::<LevelOwned>(friendly).unwrap();
+        let catalog = app.world().resource::<GameData>().species.clone();
+        {
+            let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
+            let mut catalog = catalogs.get_mut(&catalog).unwrap();
+            catalog.0[0].faction = 7;
+            catalog.0[0].combat_move_range = 1.0;
+            catalog.0[0].attacks = vec![crate::content::species::MonsterAttack {
+                word: AttackWord::Bite,
+                weapon: crate::content::species::MonsterWeapon::Unarmed,
+                reach: Reach::Touch,
+                score: 50,
+                modes: EnumSet::only(AttackMode::Swing),
+                damage: Dice { count: 0, sides: 0, base: 1 },
+                effects: default(),
+            }];
+            let mut enemy = catalog.0[0].clone();
+            enemy.faction = 8;
+            catalog.0.push(enemy);
+        }
+        let group = app
+            .world_mut()
+            .spawn(MonsterGroup {
+                set: Some(SetStance { stance: Stance::Friendly, at: 0 }),
+                ..default()
+            })
+            .id();
+        app.world_mut().entity_mut(friendly).insert((
+            GroupMember(group),
+            Walker { speed: 2.0, float_height: 1.0 },
+            Transform::from_xyz(0.0, 0.0, -3.0),
+        ));
+        let body = app.world().get::<Monster>(friendly).unwrap().clone();
+        let mut enemies = Vec::new();
+        for (species, z) in [(0, -10.0), (1, -20.0)] {
+            let group = app
+                .world_mut()
+                .spawn(MonsterGroup {
+                    set: Some(SetStance { stance: Stance::Hostile, at: 0 }),
+                    ..default()
+                })
+                .id();
+            let mut body = body.clone();
+            body.species = species;
+            enemies.push(
+                app.world_mut()
+                    .spawn((
+                        body,
+                        GroupMember(group),
+                        Combatant(battle),
+                        owner,
+                        Transform::from_xyz(0.0, 0.0, z),
+                    ))
+                    .id(),
+            );
+        }
+        for _ in 0..8 {
+            app.update();
+            if let Some(movement) = app.world().get::<approach::CombatMove>(friendly) {
+                assert_eq!(movement.goal, approach::MoveGoal::Attack(enemies[1]));
+                return;
+            }
+        }
+        panic!("the friendly monster never approached its enemy");
+    }
+
+    /// A craven monster runs for its life at its turn, away from the party
+    /// by its whole move, and runs again next round while the party stays
+    /// off (retail `MonsterAdvanceChance`).
+    #[test]
+    fn a_craven_monster_runs_from_the_party() {
+        let (mut app, _) = round_app(true);
+        let monster =
+            app.world().try_query::<&Combatants>().unwrap().single(app.world()).unwrap().entities()
+                [0];
+        app.world_mut().entity_mut(monster).insert((
+            Walker { speed: 2.0, float_height: 1.0 },
+            Transform::from_translation(Vec3::NEG_Z * 20.0),
+        ));
+        let data = app.world().resource::<GameData>().species.clone();
+        {
+            let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
+            let mut species = catalogs.get_mut(&data).unwrap();
+            species.0[0].combat_move_range = 1.0;
+            species.0[0].temper.craven = true;
+        }
+        let mut ran = false;
+        for _ in 0..8 {
+            app.update();
+            let news: Vec<_> =
+                app.world_mut().resource_mut::<Messages<CombatNews>>().drain().collect();
+            if news.contains(&CombatNews::Flees { monster }) {
+                ran = true;
+                break;
+            }
+        }
+        assert!(ran, "it runs");
+        let order = app.world().get::<approach::CombatMove>(monster).unwrap();
+        assert_eq!(order.budget, 20.0);
+        let approach::MoveGoal::Retreat(away) = order.goal else { panic!("away from the party") };
+        assert!(away.z < -39.0, "a whole move further off: {away}");
+        assert!(fight(app.world()).unwrap().fleeing.contains(&monster));
     }
 
     /// A monster with nothing in reach spends its phase advancing, by its
@@ -2031,6 +5031,45 @@ mod tests {
         let pending =
             fight(app.world()).unwrap().this_round.party.iter().filter(|p| p.phase > 0).count();
         assert_eq!(pending, 0, "a move spent in full keeps nobody's action");
+    }
+
+    /// Ending the party's move stops its walking on that very step, though
+    /// the walking input is still held.
+    #[test]
+    fn an_ended_move_takes_no_further_step() {
+        use crate::game::party::body::{PartyMotion, PartyMovement, drive_party};
+        use bevy_tnua::prelude::TnuaController;
+        let (mut app, _) = round_app(false);
+        app.add_systems(FixedUpdate, drive_party.in_set(bevy_tnua::TnuaUserControlsSystems));
+        let body = app
+            .world_mut()
+            .query_filtered::<Entity, With<PartyBody>>()
+            .single(app.world())
+            .unwrap();
+        app.world_mut().entity_mut(body).insert((
+            TnuaController::<PartyMotion>::default(),
+            PartyMovement { walk: Vec2::Y, ..default() },
+        ));
+        app.world_mut().write_message(CyclePartyMove);
+        for _ in 0..12 {
+            app.update();
+            if fight(app.world()).unwrap().party_may_move() {
+                break;
+            }
+        }
+        assert!(fight(app.world()).unwrap().party_may_move());
+        // One fixed step per frame from here.
+        let step = app.world().resource::<Time<Fixed>>().timestep();
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(step));
+        let motion = |app: &App| {
+            app.world().get::<TnuaController<PartyMotion>>(body).unwrap().basis.desired_motion
+        };
+        app.update();
+        assert_ne!(motion(&app), Vec3::ZERO, "the party walks during its move");
+        app.world_mut().write_message(StartRound);
+        app.update();
+        assert!(!fight(app.world()).unwrap().party_may_move());
+        assert_eq!(motion(&app), Vec3::ZERO, "no step after the move ends");
     }
 
     /// A monster put to sleep loses its actions until the condition runs out
@@ -2165,9 +5204,10 @@ mod tests {
             .spawn((MonsterGroup { authored: 2, ..default() }, LevelOwned(level)))
             .id();
         let outsider = app.world().get::<Monster>(monster).unwrap().clone();
+        // Far out of sight, so it has no part in the fight.
         app.world_mut().spawn((
             outsider,
-            Transform::from_translation(Vec3::NEG_Z),
+            Transform::from_translation(Vec3::NEG_Z * 500.0),
             GroupMember(outsider_group),
             LevelOwned(level),
         ));
@@ -2190,6 +5230,408 @@ mod tests {
             !app.world().get::<MonsterGroup>(outsider_group).unwrap().counted,
             "ending the battle cannot broaden its pending recognition to outsiders"
         );
+    }
+
+    /// Attacking one member of a neutral group turns that group hostile,
+    /// whatever the blows did, and brings the rest of it into the fight; a
+    /// neutral group nobody acted against keeps out (retail
+    /// `MakeTargetGroupHostile`).
+    #[test]
+    fn acting_against_a_neutral_group_brings_it_alone_into_the_fight() {
+        use crate::content::species::{Disposition, Species};
+        use crate::game::world::hostility::{SetStance, Stance};
+        use crate::game::world::identify::{GroupMember, MonsterGroup};
+        use crate::game::world::level::Level;
+        let (mut app, _) = round_app(true);
+        define_level(&mut app);
+        let species = app.world().resource::<GameData>().species.clone();
+        app.world_mut().resource_mut::<Assets<MonsterCatalog>>().get_mut(&species).unwrap().0.push(
+            Species { name: "Bystander".into(), disposition: Disposition::Neutral, ..default() },
+        );
+        let level =
+            app.world_mut().query_filtered::<Entity, With<Level>>().single(app.world()).unwrap();
+        let target = app.world_mut().query::<(Entity, &Monster)>().single(app.world()).unwrap().0;
+        app.world_mut().get_mut::<Monster>(target).unwrap().species = 1;
+        let group = |app: &mut App, authored| {
+            app.world_mut().spawn((MonsterGroup { authored, ..default() }, LevelOwned(level))).id()
+        };
+        let (attacked, untouched) = (group(&mut app, 1), group(&mut app, 2));
+        app.world_mut().entity_mut(target).insert(GroupMember(attacked));
+        let bystander = |app: &mut App, group, location| {
+            let mut monster = app.world().get::<Monster>(target).unwrap().clone();
+            monster.location = location;
+            app.world_mut()
+                .spawn((
+                    monster,
+                    Transform::from_translation(Vec3::NEG_Z * 30.0),
+                    GroupMember(group),
+                    LevelOwned(level),
+                ))
+                .id()
+        };
+        let companion = bystander(&mut app, attacked, 1);
+        let stranger = bystander(&mut app, untouched, 2);
+        for _ in 0..12 {
+            app.update();
+            if app.world().get::<Combatant>(companion).is_some() {
+                break;
+            }
+        }
+        let set = app.world().get::<MonsterGroup>(attacked).unwrap().set;
+        assert!(matches!(set, Some(SetStance { stance: Stance::Hostile, .. })));
+        assert!(app.world().get::<Combatant>(companion).is_some(), "the group joins the fight");
+        assert_eq!(app.world().get::<MonsterGroup>(untouched).unwrap().set, None);
+        assert!(app.world().get::<Combatant>(stranger).is_none());
+    }
+
+    /// A caster in the fight with a wall between it and the party has no
+    /// aim at the party, however close; with the wall gone it has (retail
+    /// `CollectMonsterSpellTargets`' sight gate).
+    #[test]
+    fn cover_keeps_a_caster_from_aiming_at_the_party() {
+        use crate::content::species::{MonsterMagic, Species};
+        use crate::content::spells::{SpellCatalog, SpellId, Targeting};
+        use crate::game::characters::{Gender, Profession, Race};
+        use crate::game::world::obstacles::scenery;
+        use crate::game::world::population::ScaledBody;
+        use avian3d::prelude::{Collider, PhysicsPlugins, RigidBody};
+        use bevy::ecs::system::RunSystemOnce;
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin::default(),
+            bevy::mesh::MeshPlugin,
+            TransformPlugin,
+            PhysicsPlugins::default(),
+        ));
+        app.finish();
+        app.cleanup();
+        let character = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
+        let vitals = Vitals::new(&character);
+        let member = app
+            .world_mut()
+            .spawn((
+                character,
+                vitals,
+                Carried::default(),
+                crate::game::inventory::Burden::default(),
+            ))
+            .id();
+        crate::game::party::roster::test_party(app.world_mut(), &[member]);
+        let level = app.world_mut().spawn_empty().id();
+        let caster = app
+            .world_mut()
+            .spawn((
+                Monster {
+                    enchantments: default(),
+                    location: 0,
+                    species: 0,
+                    hp: 10,
+                    max_hp: 10,
+                    stamina: 10,
+                    max_stamina: 10,
+                    conditions: Default::default(),
+                    spell_points: 0,
+                    body: ScaledBody { scale: 1.0, radius: 0.5, eye_height: 1.5, speed: 0.0 },
+                },
+                Transform::from_xyz(0.0, 0.0, -10.0).looking_at(Vec3::new(0.0, 0.0, 0.0), Vec3::Y),
+                LevelOwned(level),
+            ))
+            .id();
+        let wall = app
+            .world_mut()
+            .spawn((
+                RigidBody::Static,
+                Collider::cuboid(8.0, 8.0, 0.2),
+                scenery(),
+                Transform::from_xyz(0.0, 0.0, -5.0),
+            ))
+            .id();
+        app.update();
+        app.update();
+        let mut spells = [None; 10];
+        spells[0] = Some(SpellId::ENERGY_BLAST);
+        let kind = Species { magic: MonsterMagic { chance: 100, spells, budget: 50 }, ..default() };
+        let blast = crate::content::spells::SpellDefinition {
+            monsters_cast: true,
+            targeting: Targeting::Enemy,
+            ..energy_blast()
+        };
+        let mut catalog: Vec<_> = (0..=blast.id.0).map(|_| default()).collect();
+        let slot = usize::from(blast.id.0);
+        catalog[slot] = blast;
+        let catalog = std::sync::Arc::new(SpellCatalog(catalog));
+        let aim = |app: &mut App| {
+            let kind = kind.clone();
+            let catalog = std::sync::Arc::clone(&catalog);
+            app.world_mut()
+                .run_system_once(
+                    move |members: Members,
+                          monsters: MonsterQuery,
+                          obstacles: WorldObstacles,
+                          roster: Single<&PartyRoster>| {
+                        let party = PartyView { eye: Vec3::Y * 1.5, yaw: 0.0, far: 50.0, now: 0 };
+                        let sight = party.sight(&members, &roster, &obstacles, 0);
+                        let scene = spell_scene(
+                            (caster, &kind),
+                            (&[caster], party_of(&members, &roster)),
+                            &monsters,
+                            &sight,
+                            &|_| hostility::Stance::Hostile,
+                        );
+                        let (body, ..) = monsters.get(caster).unwrap();
+                        let mut rng = GameRng::seeded(1);
+                        (
+                            scene.sees_party,
+                            monster_spells::choose(&mut rng, body, &kind, 100, &catalog, &scene),
+                        )
+                    },
+                )
+                .unwrap()
+        };
+        assert_eq!(aim(&mut app), (false, None), "the wall hides the party");
+        app.world_mut().despawn(wall);
+        app.update();
+        let (sees, chosen) = aim(&mut app);
+        assert!(sees);
+        assert_eq!(chosen, Some((SpellId::ENERGY_BLAST, monster_spells::SpellAim::Member(member))));
+    }
+
+    /// A neutral member counts only standing in the party's sight, within
+    /// the engagement range, roughly between the party and a hostile
+    /// fighter that sees it, and not camouflaged.
+    #[test]
+    fn a_neutral_group_reinforces_only_between_the_party_and_a_hostile() {
+        let at = |entity: u64, z: f32, in_view: bool| Seen {
+            entity: Entity::from_bits(entity),
+            at: Vec3::NEG_Z * z,
+            from_party: z,
+            sees: false,
+            in_view,
+        };
+        let hostile = [at(1, 10.0, true)];
+        assert!(reinforces(&[(at(2, 5.0, true), false)], &hostile));
+        assert!(!reinforces(&[(at(2, 5.0, true), true)], &hostile), "camouflaged");
+        assert!(!reinforces(&[(at(2, 5.0, false), false)], &hostile), "out of sight");
+        assert!(!reinforces(&[(at(2, 15.0, true), false)], &hostile), "behind the hostile");
+        assert!(!reinforces(&[(at(2, 5.0, true), false)], &[at(1, 10.0, false)]));
+        let far = [at(1, 70.0, true)];
+        assert!(!reinforces(&[(at(2, 60.0, true), false)], &far), "beyond the engagement range");
+        assert!(!reinforces(&[(at(2, 5.0, true), false)], &[]), "nobody hostile fights");
+    }
+
+    /// A fighting hostile group turns hostile the group of its faction
+    /// whose leader sees its leader, which then joins the fight; a group of
+    /// another faction is untouched (retail `AlertSameFactionGroups`).
+    #[test]
+    fn a_fighting_group_alerts_its_faction() {
+        use crate::content::species::Species;
+        use crate::game::factions::{RAPAX_TEMPLAR, RATTKIN_COMMON};
+        use crate::game::world::hostility::{SetStance, Stance};
+        use crate::game::world::identify::{GroupMember, MonsterGroup};
+        use crate::game::world::level::Level;
+        let (mut app, _) = round_app(true);
+        define_level(&mut app);
+        let species = app.world().resource::<GameData>().species.clone();
+        {
+            let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
+            let catalog = &mut catalogs.get_mut(&species).unwrap().0;
+            catalog.push(Species { name: "Rattkin".into(), faction: RATTKIN_COMMON, ..default() });
+            catalog.push(Species { name: "Templar".into(), faction: RAPAX_TEMPLAR, ..default() });
+        }
+        let level =
+            app.world_mut().query_filtered::<Entity, With<Level>>().single(app.world()).unwrap();
+        let target = app.world_mut().query::<(Entity, &Monster)>().single(app.world()).unwrap().0;
+        app.world_mut().get_mut::<Monster>(target).unwrap().species = 1;
+        let group = |app: &mut App, authored, set| {
+            app.world_mut()
+                .spawn((MonsterGroup { authored, set, ..default() }, LevelOwned(level)))
+                .id()
+        };
+        let fighting = group(&mut app, 1, Some(SetStance { stance: Stance::Hostile, at: 0 }));
+        let (kin, stranger_group) = (group(&mut app, 2, None), group(&mut app, 3, None));
+        app.world_mut().entity_mut(target).insert(GroupMember(fighting));
+        let watcher = |app: &mut App, group, species, location, at: Vec3| {
+            let mut monster = app.world().get::<Monster>(target).unwrap().clone();
+            monster.species = species;
+            monster.location = location;
+            app.world_mut()
+                .spawn((
+                    monster,
+                    // Facing the fighting leader.
+                    Transform::from_translation(at).looking_at(Vec3::NEG_Z, Vec3::Y),
+                    GroupMember(group),
+                    LevelOwned(level),
+                ))
+                .id()
+        };
+        let rattkin = watcher(&mut app, kin, 1, 1, Vec3::NEG_Z * 4.0);
+        // Off to the side, so it stands between the party and no hostile.
+        let templar = watcher(&mut app, stranger_group, 2, 2, Vec3::new(3.0, 0.0, -4.0));
+        for _ in 0..6 {
+            app.update();
+            if app.world().get::<Combatant>(rattkin).is_some() {
+                break;
+            }
+        }
+        let set = app.world().get::<MonsterGroup>(kin).unwrap().set;
+        assert!(matches!(set, Some(SetStance { stance: Stance::Hostile, .. })), "alerted");
+        assert!(app.world().get::<Combatant>(rattkin).is_some(), "and it joins the fight");
+        assert_eq!(app.world().get::<MonsterGroup>(stranger_group).unwrap().set, None);
+        assert!(app.world().get::<Combatant>(templar).is_none());
+    }
+
+    /// A neutral group standing in the party's view between it and a
+    /// hostile fighter joins the running fight, without turning hostile,
+    /// whether or not it sees the party itself (retail
+    /// `MonsterGroupHasReinforcement`'s party line of sight).
+    #[test]
+    fn a_neutral_group_between_the_party_and_a_foe_joins_the_fight() {
+        use crate::content::species::{Disposition, Species};
+        use crate::game::world::identify::{GroupMember, MonsterGroup};
+        use crate::game::world::level::Level;
+        let (mut app, _) = round_app(true);
+        define_level(&mut app);
+        let species = app.world().resource::<GameData>().species.clone();
+        app.world_mut().resource_mut::<Assets<MonsterCatalog>>().get_mut(&species).unwrap().0.push(
+            Species { name: "Bystander".into(), disposition: Disposition::Neutral, ..default() },
+        );
+        let level =
+            app.world_mut().query_filtered::<Entity, With<Level>>().single(app.world()).unwrap();
+        let foe = app.world_mut().query::<(Entity, &Monster)>().single(app.world()).unwrap().0;
+        let facing =
+            |z: f32| Transform::from_translation(Vec3::NEG_Z * z).looking_at(Vec3::ZERO, Vec3::Y);
+        app.world_mut().entity_mut(foe).insert(facing(10.0));
+        let group = app
+            .world_mut()
+            .spawn((MonsterGroup { authored: 1, ..default() }, LevelOwned(level)))
+            .id();
+        let mut bystander = app.world().get::<Monster>(foe).unwrap().clone();
+        bystander.species = 1;
+        bystander.location = 1;
+        let bystander = app
+            .world_mut()
+            // Facing away and without Senses, it does not see the party;
+            // the party's line to it is what counts.
+            .spawn((
+                bystander,
+                Transform::from_translation(Vec3::NEG_Z * 5.0),
+                GroupMember(group),
+                LevelOwned(level),
+            ))
+            .id();
+        for _ in 0..4 {
+            app.update();
+            if app.world().get::<Combatant>(bystander).is_some() {
+                break;
+            }
+        }
+        assert!(app.world().get::<Combatant>(bystander).is_some(), "it stands with the fight");
+        assert_eq!(app.world().get::<MonsterGroup>(group).unwrap().set, None, "still neutral");
+    }
+
+    /// A spell that kills its target outright still provokes the target's
+    /// group: whether it provokes is settled as the cast is accepted, and
+    /// the surviving member joins the fight.
+    #[test]
+    fn a_lethal_opening_spell_still_provokes_the_victims_group() {
+        use crate::content::species::{Disposition, Species};
+        use crate::game::world::hostility::{SetStance, Stance};
+        use crate::game::world::identify::{GroupMember, MonsterGroup};
+        use crate::game::world::level::Level;
+        let (mut app, [caster, _]) = round_app(true);
+        define_level(&mut app);
+        let species = app.world().resource::<GameData>().species.clone();
+        app.world_mut().resource_mut::<Assets<MonsterCatalog>>().get_mut(&species).unwrap().0.push(
+            Species { name: "Bystander".into(), disposition: Disposition::Neutral, ..default() },
+        );
+        let level =
+            app.world_mut().query_filtered::<Entity, With<Level>>().single(app.world()).unwrap();
+        let target = order_spell(&mut app, caster, energy_blast());
+        {
+            let mut monster = app.world_mut().get_mut::<Monster>(target).unwrap();
+            monster.species = 1;
+            monster.hp = 1;
+        }
+        let group = app
+            .world_mut()
+            .spawn((MonsterGroup { authored: 1, ..default() }, LevelOwned(level)))
+            .id();
+        app.world_mut().entity_mut(target).insert(GroupMember(group));
+        let mut survivor = app.world().get::<Monster>(target).unwrap().clone();
+        survivor.location = 1;
+        survivor.hp = 10;
+        let survivor = app
+            .world_mut()
+            .spawn((
+                survivor,
+                // Close and facing the party, so its group does not leave the
+                // fight as the round ends; it has no attack to join by sight.
+                Transform::from_translation(Vec3::NEG_Z * 3.0).looking_at(Vec3::ZERO, Vec3::Y),
+                GroupMember(group),
+                LevelOwned(level),
+            ))
+            .id();
+        for _ in 0..12 {
+            app.update();
+            if app.world().get::<Combatant>(survivor).is_some() {
+                break;
+            }
+        }
+        assert!(app.world().get::<Monster>(target).unwrap().is_dead(), "the spell kills");
+        let set = app.world().get::<MonsterGroup>(group).unwrap().set;
+        assert!(matches!(set, Some(SetStance { stance: Stance::Hostile, .. })));
+        assert!(app.world().get::<Combatant>(survivor).is_some(), "the survivor joins");
+    }
+
+    /// The same continuous fight, run for the same simulated time with
+    /// frames of 1/32 s and of 3/4 s, rolls the same dice in the
+    /// same order: the same news, round, wounds and generator state.
+    #[test]
+    fn a_fight_runs_the_same_whatever_the_frame_rate() {
+        use crate::content::species::{MonsterAttack, MonsterWeapon};
+        let fight_for = |frame: std::time::Duration| {
+            let (mut app, members) = round_app(false);
+            app.world_mut().resource_mut::<CombatSettings>().continuous = true;
+            let data = app.world().resource::<GameData>().species.clone();
+            {
+                let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
+                let kind = &mut catalogs.get_mut(&data).unwrap().0[0];
+                kind.attacks_per_round = 2;
+                kind.attacks = vec![MonsterAttack {
+                    word: AttackWord::Verb,
+                    weapon: MonsterWeapon::Unarmed,
+                    effects: default(),
+                    reach: Reach::Short,
+                    score: 60,
+                    modes: EnumSet::only(AttackMode::Bash),
+                    damage: Dice { base: 0, count: 1, sides: 3 },
+                }];
+            }
+            app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(frame));
+            let frames = (std::time::Duration::from_secs(12).as_secs_f64() / frame.as_secs_f64())
+                .round() as u32;
+            let mut news = Vec::new();
+            for _ in 0..frames {
+                app.update();
+                news.extend(
+                    app.world_mut()
+                        .resource_mut::<Messages<CombatNews>>()
+                        .drain()
+                        .map(|n| format!("{n:?}")),
+                );
+            }
+            let round = fight(app.world()).map(|b| b.round);
+            let mut wounds: Vec<u32> =
+                members.iter().map(|&m| app.world().get::<Vitals>(m).unwrap().hp).collect();
+            wounds.extend(app.world_mut().query::<&Monster>().iter(app.world()).map(|m| m.hp));
+            let next = app.world_mut().resource_mut::<GameRng>().below(u32::MAX);
+            (news, round, wounds, next)
+        };
+        let fast = fight_for(std::time::Duration::from_micros(31_250));
+        let slow = fight_for(std::time::Duration::from_millis(750));
+        assert!(fast.0.iter().filter(|n| n.starts_with("Attack")).count() > 4, "{:?}", fast.0);
+        assert_eq!(fast, slow);
     }
 
     #[test]
@@ -2218,7 +5660,7 @@ mod tests {
         assert_eq!(rested.stamina, 100 - 2 * swings);
         let (_, exhausted, hp) = run(1);
         assert_eq!(exhausted.stamina, 0);
-        assert!(exhausted.has(Condition::Unconscious));
+        assert!(exhausted.conditions.has(Condition::Unconscious));
         assert!(hp >= 9999, "exhaustion allows at most one one-damage swing");
     }
 
@@ -2348,6 +5790,46 @@ mod tests {
         assert_eq!(announced, ["A"]);
     }
 
+    /// Poison that kills the last member as the round's time passes is the
+    /// party's defeat, though no hostile is left standing: no victory or
+    /// experience is settled for the dead.
+    #[test]
+    fn a_party_poisoned_to_death_at_the_round_end_loses() {
+        let (mut app, [last, fallen]) = round_app(false);
+        app.world_mut().get_mut::<Vitals>(fallen).unwrap().hp = 0;
+        {
+            let mut vitals = app.world_mut().get_mut::<Vitals>(last).unwrap();
+            vitals.hp = 3;
+            vitals.poison(crate::game::characters::Lasting::Rounds(50), 100);
+        }
+        // The survivor has already finished the last monster, its kill and
+        // experience credited to the fight.
+        let monster = app.world_mut().query::<(Entity, &Monster)>().single(app.world()).unwrap().0;
+        app.world_mut().get_mut::<Monster>(monster).unwrap().hp = 0;
+        {
+            let mut fight = fight_mut(app.world_mut());
+            fight.kills = 1;
+            fight.experience = 500;
+        }
+        let experience = app.world().get::<Character>(last).unwrap().experience;
+        let mut news = Vec::new();
+        for _ in 0..12 {
+            app.update();
+            news.extend(app.world_mut().resource_mut::<Messages<CombatNews>>().drain());
+            if fight(app.world()).is_none() {
+                break;
+            }
+        }
+        assert!(fight(app.world()).is_none());
+        assert!(app.world().get::<Vitals>(last).unwrap().is_dead());
+        assert!(news.contains(&CombatNews::Lost), "{news:?}");
+        assert!(
+            !news.iter().any(|n| matches!(n, CombatNews::Won { .. } | CombatNews::Over)),
+            "{news:?}"
+        );
+        assert_eq!(app.world().get::<Character>(last).unwrap().experience, experience);
+    }
+
     #[test]
     fn defeat_settles_without_round_input_content_or_an_expired_timer() {
         let (mut app, members) = round_app(false);
@@ -2465,6 +5947,295 @@ mod tests {
         }
         assert!(!fight(app.world()).unwrap().executing());
         news
+    }
+
+    #[test]
+    fn purify_air_reduces_the_party_slot_once_without_touching_monster_slots() {
+        use crate::content::{
+            characters::Realm,
+            spells::{SpellDefinition, SpellId, Spellbook, Targeting, Usable},
+        };
+        use crate::game::magic::enchantments::{Enchantment, PartyEffects};
+        let (mut app, [caster, _]) = round_app(false);
+        let monster = order_spell(
+            &mut app,
+            caster,
+            SpellDefinition {
+                id: SpellId::PURIFY_AIR,
+                realm: Some(Realm::Fire),
+                cost: 1,
+                books: Spellbook::Wizardry.into(),
+                targeting: Targeting::Party,
+                usable: Usable::InCombat,
+                ..default()
+            },
+        );
+        let handle = app.world().resource::<GameData>().spells.clone();
+        app.world_mut().resource_mut::<Assets<SpellCatalog>>().get_mut(&handle).unwrap().0[48] =
+            SpellDefinition { id: SpellId::ACID_BOMB, ..default() };
+        let effect =
+            Enchantment { spell: SpellId::ACID_BOMB, power: 1, boost: 0, turns: 10, absorption: 0 };
+        let party = crate::game::party::roster::the_party(app.world_mut()).unwrap();
+        app.world_mut().get_mut::<PartyEffects>(party).unwrap().0.apply(effect);
+        app.world_mut().get_mut::<Monster>(monster).unwrap().enchantments.apply(effect);
+        app.update();
+        let remaining = app
+            .world()
+            .get::<PartyEffects>(party)
+            .unwrap()
+            .0
+            .get(SpellId::ACID_BOMB)
+            .unwrap()
+            .turns;
+        assert!(
+            (7..=8).contains(&remaining),
+            "one 2..3 turn reduction for the party, not one per member"
+        );
+        assert_eq!(
+            app.world()
+                .get::<Monster>(monster)
+                .unwrap()
+                .enchantments
+                .get(SpellId::ACID_BOMB)
+                .unwrap()
+                .turns,
+            10
+        );
+    }
+
+    #[test]
+    fn razor_cloak_spends_its_last_charge_on_one_close_range_hit() {
+        use crate::content::spells::{SpellDefinition, SpellId};
+        use crate::game::magic::enchantments::Enchantment;
+        let (mut app, members) = round_app(false);
+        for member in members {
+            let mut profile = app.world_mut().get_mut::<Character>(member).unwrap();
+
+            profile.skill_points[crate::content::characters::Skill::Sword] = 100;
+            for attribute in [
+                crate::content::characters::Attribute::Dexterity,
+                crate::content::characters::Attribute::Senses,
+            ] {
+                profile.attributes[attribute] = 100;
+            }
+        }
+        let mut definitions = vec![SpellDefinition::default(); 28];
+        definitions[27] = SpellDefinition {
+            id: SpellId::RAZOR_CLOAK,
+            dice: Some(Dice { count: 0, sides: 0, base: 5 }),
+            ..default()
+        };
+        let catalog =
+            app.world_mut().resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(definitions));
+        app.world_mut().resource_mut::<GameData>().spells = catalog;
+        let monster =
+            app.world().try_query::<&Combatants>().unwrap().single(app.world()).unwrap().entities()
+                [0];
+        app.world_mut().get_mut::<Monster>(monster).unwrap().enchantments.apply(Enchantment {
+            spell: SpellId::RAZOR_CLOAK,
+            power: 1,
+            boost: 0,
+            turns: 5,
+            absorption: 0,
+        });
+        let health: u32 =
+            members.iter().map(|&member| app.world().get::<Vitals>(member).unwrap().hp).sum();
+        let news = finish_round(&mut app);
+        let responses: Vec<_> = news.iter().filter(|event| matches!(event, CombatNews::Result { attacker, damage: 5, .. } if *attacker == monster)).collect();
+        assert_eq!(responses.len(), 1, "{news:?}");
+        assert!(
+            app.world()
+                .get::<Monster>(monster)
+                .unwrap()
+                .enchantments
+                .get(SpellId::RAZOR_CLOAK)
+                .is_none()
+        );
+        assert_eq!(
+            members
+                .iter()
+                .map(|&member| app.world().get::<Vitals>(member).unwrap().hp)
+                .sum::<u32>(),
+            health - 5
+        );
+    }
+
+    #[test]
+    fn ring_of_fire_samples_the_partys_current_radius_each_pulse() {
+        use crate::content::{
+            characters::Realm,
+            spells::{SpellDefinition, SpellId},
+        };
+        use crate::game::magic::{
+            MagicContext,
+            enchantments::{Enchantment, PartyEffects},
+        };
+        use bevy::ecs::system::RunSystemOnce;
+        let (mut app, [caster, _]) = round_app(false);
+        let monster = order_spell(
+            &mut app,
+            caster,
+            SpellDefinition {
+                id: SpellId::RING_OF_FIRE,
+                realm: Some(Realm::Fire),
+                dice: Some(Dice { count: 0, sides: 0, base: 5 }),
+                ..default()
+            },
+        );
+        app.world_mut().get_mut::<Transform>(monster).unwrap().translation = Vec3::X * 100.0;
+        let party = crate::game::party::roster::the_party(app.world_mut()).unwrap();
+        app.world_mut().get_mut::<PartyEffects>(party).unwrap().0.apply(Enchantment {
+            spell: SpellId::RING_OF_FIRE,
+            power: 1,
+            boost: 0,
+            turns: 5,
+            absorption: 0,
+        });
+        for (centre, expected_hp) in [(Vec3::ZERO, 10000), (Vec3::X * 100.0, 9995)] {
+            app.world_mut().run_system_once(move |mut context: MagicContext, mut members: Members, mut damage: MonsterDamage, mut rng: ResMut<GameRng>, mut points: Query<(&LearnedSpells, &mut SpellPoints)>| {
+                context.resolve(0, &mut members, &mut damage, |field, spells| crate::game::magic::effects::pulse_clouds(&[monster], centre + Vec3::Y * crate::game::party::body::EYE_ABOVE_CENTRE, spells, &mut rng, field, &mut points)).unwrap()
+            }).unwrap();
+            assert_eq!(app.world().get::<Monster>(monster).unwrap().hp, expected_hp);
+        }
+    }
+
+    #[test]
+    fn death_cloud_respects_immunity_and_bypasses_guardian_angel() {
+        use crate::content::{
+            characters::Realm,
+            spells::{SpellDefinition, SpellId},
+        };
+        use crate::game::magic::{MagicContext, enchantments::Enchantment};
+        use bevy::ecs::system::RunSystemOnce;
+        for immune in [true, false] {
+            let (mut app, [caster, _]) = round_app(false);
+            let monster = order_spell(
+                &mut app,
+                caster,
+                SpellDefinition { id: SpellId::DEATH_CLOUD, realm: Some(Realm::Air), ..default() },
+            );
+            let species_handle = app.world().resource::<GameData>().species.clone();
+            let species_id = app.world().get::<Monster>(monster).unwrap().species;
+            app.world_mut()
+                .resource_mut::<Assets<MonsterCatalog>>()
+                .get_mut(&species_handle)
+                .unwrap()
+                .0[species_id as usize]
+                .death_immune = immune;
+            {
+                let mut target = app.world_mut().get_mut::<Monster>(monster).unwrap();
+                for (spell, absorption) in
+                    [(SpellId::DEATH_CLOUD, 0), (SpellId::GUARDIAN_ANGEL, u32::MAX)]
+                {
+                    target.enchantments.apply(Enchantment {
+                        spell,
+                        power: 7,
+                        boost: 0,
+                        turns: 2,
+                        absorption,
+                    });
+                }
+            }
+            // Force a failed save even at the maximum allowed save chance.
+            let seed = (0..1000).find(|&seed| GameRng::seeded(seed).below(100) >= 95).unwrap();
+            app.insert_resource(GameRng::seeded(seed));
+            let reports = app
+                .world_mut()
+                .run_system_once(
+                    move |mut context: MagicContext,
+                          mut members: Members,
+                          mut damage: MonsterDamage,
+                          mut rng: ResMut<GameRng>, mut points: Query<(&LearnedSpells, &mut SpellPoints)>| {
+                        context
+                            .resolve(0, &mut members, &mut damage, |field, spells| {
+                                crate::game::magic::effects::pulse_clouds(
+                                    &[monster],
+                                    Vec3::ZERO,
+                                    spells,
+                                    &mut rng,
+                                    field,
+                                    &mut points,
+                                )
+                            })
+                            .unwrap()
+                    },
+                )
+                .unwrap();
+            assert_eq!(app.world().get::<Monster>(monster).unwrap().is_dead(), !immune);
+            assert!(
+                matches!(reports.as_slice(), [(SpellId::DEATH_CLOUD, effects)] if effects.len() == 1)
+            );
+        }
+    }
+
+    #[test]
+    fn an_offensive_slot_pulses_on_its_last_round_then_expires() {
+        use crate::content::{
+            characters::Realm,
+            spells::{SpellDefinition, SpellId, Spellbook, Targeting, Usable},
+        };
+        for (cloud, shielded) in [
+            (SpellId::ACID_BOMB, false),
+            (SpellId::FIRESTORM, false),
+            (SpellId::TOXIC_CLOUD, false),
+            (SpellId::DRAINING_CLOUD, false),
+            (SpellId::DRAINING_CLOUD, true),
+        ] {
+            let (mut app, [caster, _]) = round_app(false);
+            let monster = order_spell(
+                &mut app,
+                caster,
+                SpellDefinition {
+                    id: cloud,
+                    realm: Some(Realm::Fire),
+                    cost: 1,
+                    books: Spellbook::Wizardry.into(),
+                    targeting: Targeting::Enemy,
+                    usable: Usable::InCombat,
+                    reach: Reach::Long,
+                    dice: Some(Dice { count: 0, sides: 0, base: 5 }),
+                    duration_base: 2,
+                    ..default()
+                },
+            );
+            app.world_mut().get_mut::<Monster>(monster).unwrap().spell_points = 20;
+            app.update();
+            {
+                let mut target = app.world_mut().get_mut::<Monster>(monster).unwrap();
+                let effect = target.enchantments.0.iter_mut().find(|e| e.spell == cloud).unwrap();
+                effect.turns = 1;
+                target.stamina = 100;
+                target.max_stamina = 100;
+                if shielded {
+                    target.enchantments.apply(crate::game::magic::enchantments::Enchantment {
+                        spell: SpellId::GUARDIAN_ANGEL,
+                        power: 7,
+                        boost: 0,
+                        turns: 9,
+                        absorption: u32::MAX,
+                    });
+                }
+            }
+            app.world_mut().resource_mut::<Messages<MagicNews>>().clear();
+            finish_round(&mut app);
+            let pulses: Vec<_> =
+                app.world_mut().resource_mut::<Messages<MagicNews>>().drain().collect();
+            assert!(matches!(pulses.as_slice(), [MagicNews::Triggered { spell, effects, .. }]
+            if *spell == cloud && !effects.is_empty()));
+            assert!(app.world().get::<Monster>(monster).unwrap().enchantments.get(cloud).is_none());
+            if cloud == SpellId::DRAINING_CLOUD {
+                assert_eq!(app.world().get::<Monster>(monster).unwrap().spell_points, 18);
+                assert_eq!(app.world().get::<Monster>(monster).unwrap().stamina, 95);
+                if shielded {
+                    assert_eq!(app.world().get::<Monster>(monster).unwrap().hp, 10000);
+                }
+            }
+            app.world_mut().entity_mut(caster).insert(Order::Defend);
+            app.world_mut().write_message(StartRound);
+            app.update();
+            finish_round(&mut app);
+            assert!(app.world_mut().resource_mut::<Messages<MagicNews>>().drain().next().is_none());
+        }
     }
 
     /// A second weapon in the off hand takes its own attacks in the round,

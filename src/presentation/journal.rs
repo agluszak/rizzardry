@@ -4,8 +4,8 @@ use crate::content::npcs::FactCatalog;
 use crate::game::{
     difficulty::Difficulty,
     npcs::{NpcAssets, conversation::StoryFacts},
-    screen::Screen,
 };
+use crate::presentation::screen::Screen;
 use bevy::input_focus::{FocusCause, InputFocus, tab_navigation::TabGroup};
 use bevy::prelude::*;
 use bevy::ui_widgets::Activate;
@@ -69,7 +69,7 @@ pub fn plugin(app: &mut App) {
 }
 fn request(
     mut requests: MessageReader<OpenJournal>,
-    mut state: ParamSet<(crate::game::screen::Freedom, ResMut<NextState<Screen>>)>,
+    mut state: ParamSet<(super::screen::WorldInput, ResMut<NextState<Screen>>)>,
 ) {
     if requests.read().count() > 0 && state.p0().free() {
         state.p1().set(Screen::Journal);

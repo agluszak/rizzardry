@@ -19,17 +19,31 @@ pub mod action {
     pub const TOGGLE: u32 = 0x03;
     /// Play the named camera path; the party ends at its last key (ladders,
     /// ropes).
+    pub const TOGGLE_LIGHTS: u32 = 0x04;
+    pub const ENABLE_LIGHTS: u32 = 0x30;
+    pub const DISABLE_LIGHTS: u32 = 0x31;
     pub const CAMERA_PATH: u32 = 0x09;
     /// Fire the recipients.
     pub const RELAY: u32 = 0x0f;
+    pub const CAMERA_SWAY: u32 = 0x10;
+    /// These editor placeholders reach the default return in Trigger::Run.
+    pub const NO_RUNTIME_ACTIONS: [u32; 3] = [0x1a, 0x1f, 0x21];
+    pub const START_PARTICLES: u32 = 0x44;
+    pub const STOP_PARTICLES: u32 = 0x45;
+    pub const TOGGLE_PARTICLES: u32 = 0x46;
     /// Hurt whoever stands in it, every few seconds.
     pub const DAMAGE_ZONE: u32 = 0x23;
     /// Hurt the party once by dice in the trigger's data words.
     pub const HURT_PARTY: u32 = 0x24;
     pub const STAMINA_FOUNTAIN: u32 = 0x25;
     pub const HEALTH_FOUNTAIN: u32 = 0x26;
+    pub const MAGIC_FOUNTAIN: u32 = 0x27;
+    pub const RESTORATIVE_FOUNTAIN: u32 = 0x2b;
     /// A second door toggle.
     pub const TOGGLE_DOOR_2: u32 = 0x2c;
+    pub const ENABLE_DEVICES: u32 = 0x2d;
+    pub const DISABLE_DEVICES: u32 = 0x2e;
+    pub const TOGGLE_DEVICES: u32 = 0x2f;
     pub const START_ANIMATION: u32 = 0x32;
     pub const STOP_ANIMATION: u32 = 0x33;
     /// Move the party to the recipients: a local trigger or named position,
@@ -38,6 +52,9 @@ pub mod action {
     pub const SOUND: u32 = 0x36;
     pub const SHAKE: u32 = 0x39;
     pub const DIAL: u32 = 0x40;
+    pub const START_AMBIENT_SOUND: u32 = 0x41;
+    pub const STOP_AMBIENT_SOUND: u32 = 0x42;
+    pub const TOGGLE_AMBIENT_SOUND: u32 = 0x43;
     /// Like [`TELEPORT`] to a randomly chosen recipient.
     pub const RANDOM_TELEPORT: u32 = 0x4b;
 }

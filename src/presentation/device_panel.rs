@@ -568,7 +568,7 @@ fn press(
                     art,
                     actor,
                     control == Control::UseItem,
-                    Some(on),
+                    Some(super::main_screen::magic_view::ViewTarget::Device(on)),
                 );
             }
         }

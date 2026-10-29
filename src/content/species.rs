@@ -282,6 +282,10 @@ pub struct Species {
     pub vulnerable_from_behind: bool,
     /// Nothing kills it outright.
     pub death_immune: bool,
+    /// Excluded from spell/attack target sweeps.
+    pub untargetable: bool,
+    /// Monster Editor concealment rating used outside combat.
+    pub camouflage: u8,
     pub attributes: MonsterAttributes,
     pub hit_points: Dice,
     pub stamina: Dice,
@@ -320,6 +324,142 @@ pub struct Species {
     /// How far it moves in one combat action: this many times 20 metres
     /// (retail `combat_move_range`, `MonsterManager.cpp:620-633`).
     pub combat_move_range: f32,
+    /// Which words name it (retail `name_group`): 0 he, 1 she, 2 it, 3
+    /// they.
+    pub pronouns: u8,
+    /// How it carries itself in a fight.
+    pub temper: Temper,
+    pub magic: MonsterMagic,
+    pub special: SpecialAttack,
+    /// How many come when a group of it is called up (retail
+    /// `group_size_dice`): a summoning, a random encounter.
+    pub group_size: Dice,
+    /// A group of it starts unborn, until something births it (retail
+    /// record `unborn`).
+    pub unborn: bool,
+    /// Groups that may come along when it comes as a random encounter, each
+    /// at its chance (%) (retail `companions`).
+    pub companions: [Option<(u32, u8)>; 2],
+}
+
+/// A species' special attack: a breath, a gaze or a summoning (retail
+/// record 0xe3, 0xe1 and 0x15c). Retail names its chance `flee_chance`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SpecialAttack {
+    /// Which one, if it has one.
+    pub kind: Option<SpecialAttackKind>,
+    /// The chance (%) it makes it at its turn while it can strike someone.
+    pub chance: u8,
+    /// The rounds it waits before the next.
+    pub cooldown: u8,
+}
+
+/// One of retail's special attacks (record 0xe3), named by what retail's
+/// tables define it to do: its effects and the realm they are resisted by,
+/// or the species it summons. Retail's own names for them are strings in
+/// its data (`g_monster_special_attack_name_ids`, for rows 1 to 11 only)
+/// and are not recovered here; two rows with the same definition keep
+/// their order. The discriminant is the record's byte.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, num_enum::TryFromPrimitive)]
+#[repr(u8)]
+pub enum SpecialAttackKind {
+    BlindingWater = 1,
+    BlindingWaterSecond = 2,
+    HarmAndDrainDivine = 3,
+    TiringWater = 4,
+    FearAndInsanityMental = 5,
+    FearAndTurncoatDivine = 6,
+    FearMental = 7,
+    WoundAndTireFire = 8,
+    WoundFire = 9,
+    /// Its wound is not resisted.
+    InsanityAndWoundMental = 10,
+    InsanityAndTurncoatDivine = 11,
+    InsanityMental = 12,
+    IrritationEarth = 13,
+    IrritationAir = 14,
+    NauseaEarth = 15,
+    NauseaAir = 16,
+    ParalysisMental = 17,
+    ParalysisEarth = 18,
+    PoisonAndIrritationWater = 19,
+    PoisonAndWoundWater = 20,
+    SleepAir = 21,
+    SlowAndParalysisWater = 22,
+    SlowEarth = 23,
+    SummonsSpecies153 = 24,
+    SummonsSpecies149 = 25,
+    SummonsSpecies150 = 26,
+    SummonsSpecies151 = 27,
+    SummonsSpecies152 = 28,
+    SummonsSpecies148 = 29,
+    WoundWater = 30,
+    SummonsSpecies12 = 31,
+}
+
+impl SpecialAttackKind {
+    /// The kind a record names; none for 0 or a byte past retail's tables.
+    pub fn from_record(byte: u8) -> Option<Self> {
+        Self::try_from(byte).ok()
+    }
+
+    /// Its row in retail's tables, which also numbers its name.
+    pub fn row(self) -> u8 {
+        self as u8
+    }
+
+    /// The species a summoning calls (retail `SpawnSummonedMonsterGroup`).
+    pub fn summons(self) -> Option<u32> {
+        use SpecialAttackKind::*;
+        Some(match self {
+            SummonsSpecies153 => 153,
+            SummonsSpecies149 => 149,
+            SummonsSpecies150 => 150,
+            SummonsSpecies151 => 151,
+            SummonsSpecies152 => 152,
+            SummonsSpecies148 => 148,
+            SummonsSpecies12 => 12,
+            _ => return None,
+        })
+    }
+}
+
+/// The spells a species casts in a fight (retail record 0xe0, 0x14d,
+/// 0x26f).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct MonsterMagic {
+    /// The chance (%) it casts at its turn while it can strike someone;
+    /// none never casts.
+    pub chance: u8,
+    /// Its ten spell slots; later slots weigh more.
+    pub spells: [Option<super::spells::SpellId>; 10],
+    /// What its casting stands on, in place of a caster's skill (retail
+    /// `sp_budget`).
+    pub budget: i32,
+}
+
+/// How a species carries itself in a fight (retail `UpdateMonsterAI`,
+/// `MonsterAdvanceChance`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Temper {
+    /// The chance (%) it runs for its life at its turn (retail record byte
+    /// 0xe2); without one, a craven species always runs.
+    pub flee_chance: u8,
+    /// Its Combat Morale is the Monster Editor's first (retail record byte
+    /// 0x1c0 is 0).
+    pub craven: bool,
+    /// It keeps its place hidden rather than withdraw while neutral
+    /// (retail record byte 0x249).
+    pub camouflaged: bool,
+    /// It stands off and casts rather than close in (retail record byte
+    /// 0x1b9).
+    pub prefers_range: bool,
+    /// Its Combat Morale is the editor's third (2) and its Combat
+    /// Behaviour not the fourth (3): a clever one may hold back from
+    /// attacking (retail `BuildMonsterActionQueue`).
+    pub wary: bool,
+    /// It may guard a stronger fellow in trouble (retail monster flag 0x04).
+    pub bodyguard: bool,
 }
 
 /// How a species meets the party before anything provokes it.

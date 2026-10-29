@@ -28,4 +28,10 @@ impl ActorNames<'_, '_> {
             membership.and_then(|m| self.groups.get(m.0).ok()).is_some_and(|g| g.identified);
         Some(kind.shown_name(known, 1).to_owned())
     }
+
+    /// The words a monster goes by (its species' `name_group`).
+    pub fn pronouns(&self, actor: Entity) -> Option<u8> {
+        let (monster, _) = self.monsters.get(actor).ok()?;
+        Some(self.content.species()?.kind(monster.species)?.pronouns)
+    }
 }

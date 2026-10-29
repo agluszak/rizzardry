@@ -34,7 +34,7 @@ use crate::game::inventory::{
     BACKPACK_SLOTS, Carried, EquipSlot, ItemAt, ItemStack, MemberSlot, PartyInventory, Slot,
 };
 use crate::game::party::roster::PartyRoster;
-use crate::game::screen::Screen;
+use crate::presentation::screen::Screen;
 use crate::presentation::screen_art::{show_sheet, visible_if};
 
 const CELL: Vec2 = Vec2::new(46.0, 54.0);
@@ -298,7 +298,15 @@ pub(crate) struct OpenReview<'w, 's> {
     screen: Res<'w, State<Screen>>,
     next: ResMut<'w, NextState<Screen>>,
     questions: Query<'w, 's, (), With<crate::game::world::level::TravelQuestion>>,
-    conversations: Query<'w, 's, (), With<crate::game::npcs::conversation::Conversation>>,
+    conversations: Query<
+        'w,
+        's,
+        (),
+        (
+            With<crate::game::npcs::conversation::Conversation>,
+            Without<crate::game::npcs::conversation::Closing>,
+        ),
+    >,
     roster: Single<'w, 's, &'static PartyRoster>,
 }
 
@@ -341,30 +349,37 @@ fn enter_inventory(
         next.set(Screen::World);
         return;
     };
-    commands.spawn_scene(bsn! {
-        @centred()
-        InventoryRoot
-        TabGroup::modal() bevy::ui_widgets::ModalDialog
-        BackgroundColor(Color::BLACK)
-        GlobalZIndex(10)
-        ContextPriority::<InventoryRoot>::new(1)
-        Actions<InventoryRoot> [
-            Action::<CloseInventory>::new()
-            ActionSettings { consume_input: true }
-            Bindings [ Binding(KeyCode::Escape) -- Binding(KeyCode::KeyI) ]
-        ]
-        on(|_: On<Start<CloseInventory>>, mut next: ResMut<NextState<Screen>>| { next.set(Screen::World); })
-    }).insert((InventoryScreen { member }, DespawnOnExit(Screen::Inventory)));
+    commands
+        .spawn_scene(bsn! {
+            @centred()
+            InventoryRoot
+            TabGroup::modal() bevy::ui_widgets::ModalDialog
+            BackgroundColor(Color::BLACK)
+            GlobalZIndex(10)
+            ContextPriority::<InventoryRoot>::new(1)
+            Actions<InventoryRoot> [
+                Action::<CloseInventory>::new()
+                ActionSettings { consume_input: true }
+                Bindings [ Binding(KeyCode::Escape) -- Binding(KeyCode::KeyI) ]
+            ]
+            on(|_: On<Start<CloseInventory>>, mut close: CloseReview| { close.finish(); })
+        })
+        .insert((InventoryScreen { member }, DespawnOnExit(Screen::Inventory)));
 }
 
-/// This explicit exit consequence uses the same inventory operation as any
-/// other caller, before Bevy removes the state-scoped root.
-fn put_away_held(
-    screen: Option<Single<&InventoryScreen>>,
-    mut inventory: crate::game::inventory::operations::InventoryOperations,
-) {
-    if let Some(screen) = screen {
-        let _ = inventory.put_away(screen.member);
+/// Capture the preferred member while accepting the user's close, before the
+/// view can disappear. Gameplay settles the request independently of the view.
+#[derive(bevy::ecs::system::SystemParam)]
+struct CloseReview<'w, 's> {
+    commands: Commands<'w, 's>,
+    view: Single<'w, 's, &'static InventoryScreen>,
+    next: ResMut<'w, NextState<Screen>>,
+}
+impl CloseReview<'_, '_> {
+    fn finish(&mut self) {
+        self.commands
+            .trigger(crate::game::inventory::operations::PutAwayHeld { member: self.view.member });
+        self.next.set(Screen::World);
     }
 }
 
@@ -671,6 +686,8 @@ pub fn spawn_inventory_screen(
         || strings.failed(&assets)
         || matches!(assets.get_load_state(&art.fill), Some(bevy::asset::LoadState::Failed(_)))
     {
+        // Presentation failure hides the view, but does not accept a put-away.
+        // The hand still owns its item and world controls can handle it.
         warn!("inventory artwork failed to load; returning to the world");
         next.set(Screen::World);
         return;
@@ -728,7 +745,7 @@ pub fn spawn_inventory_screen(
         @{exit} ChildOf(content)
             UiButton TabIndex(0) Pickable::default()
             crate::presentation::retail_controls::FocusRing
-            on(|_: On<Activate>, mut next: ResMut<NextState<Screen>>| { next.set(Screen::World); })
+            on(|_: On<Activate>, mut close: CloseReview| { close.finish(); })
     });
     let initial_tab = review::build(&mut commands, content, &art);
     if let Some(mut focus) = focus {
@@ -1049,7 +1066,7 @@ fn draw_header(
             HeaderPart::Level => {
                 let title = strings.get(profession_title(profile));
                 let level = strings.get(0x91a);
-                value = Some(format!("{level} {} ({title})", profile.level));
+                value = Some(format!("{level} {} ({title})", profile.level()));
             }
         }
         if let Some(mut picture) = picture
@@ -1180,7 +1197,13 @@ fn click_cell(
     selected: Option<Single<&bevy::ui_widgets::SelectedTab, With<review::PageTabs>>>,
     tabs: Query<&review::PageButton>,
     pool_scroll: Option<Single<&bevy::ui_widgets::SliderValue, With<pool_scroll::PoolScroll>>>,
-    conversations: Query<(), With<crate::game::npcs::conversation::Conversation>>,
+    conversations: Query<
+        (),
+        (
+            With<crate::game::npcs::conversation::Conversation>,
+            Without<crate::game::npcs::conversation::Closing>,
+        ),
+    >,
     (mut ids, mut rng): (
         ResMut<crate::game::inventory::ItemIds>,
         ResMut<crate::game::rng::GameRng>,
@@ -1315,12 +1338,6 @@ impl Plugin for InventoryPlugin {
                     .before(EnhancedInputSystems::Update),
             )
             .add_systems(OnEnter(Screen::Inventory), enter_inventory)
-            .add_systems(OnExit(Screen::Inventory), put_away_held)
-            .configure_sets(
-                StateTransition,
-                bevy::state::state::ExitSchedules::<Screen>::default()
-                    .before(bevy::state::state_scoped::despawn_entities_on_exit_state::<Screen>),
-            )
             .add_systems(
                 Update,
                 (
@@ -1393,6 +1410,7 @@ mod tests {
             .init_asset::<ItemCatalog>()
             .init_resource::<UiScale>()
             .add_message::<crate::game::inventory::ItemNews>()
+            .add_observer(crate::game::inventory::operations::put_away_held)
             .init_resource::<crate::game::inventory::ItemIds>()
             .init_resource::<crate::game::rng::GameRng>()
             .init_resource::<super::super::main_screen::SelectedMember>()
@@ -1510,8 +1528,17 @@ mod tests {
         use crate::game::characters::{Gender, Profession, Race};
         use crate::game::inventory::{ItemIds, make_item};
         use crate::game::rng::GameRng;
-        for still_a_member in [true, false] {
+        use crate::presentation::test_input::key;
+        for (still_a_member, explicit_close, full, loaded) in [
+            (true, true, false, true),
+            (false, true, false, true),
+            (true, true, true, true),
+            (true, true, false, false),
+            (true, false, false, true),
+        ] {
             let mut app = inventory_app();
+            let window =
+                app.world_mut().spawn((Window::default(), bevy::window::PrimaryWindow)).id();
             let definition = ItemDefinition { ..default() };
             let item = make_item(
                 &definition,
@@ -1524,9 +1551,9 @@ mod tests {
             let items = app
                 .world_mut()
                 .resource_mut::<Assets<ItemCatalog>>()
-                .add(ItemCatalog(vec![definition]));
+                .add(ItemCatalog(vec![definition.clone()]));
             app.insert_resource(GameData {
-                items,
+                items: if loaded { items } else { default() },
                 loot: default(),
                 species: default(),
                 spells: default(),
@@ -1546,6 +1573,19 @@ mod tests {
                 .spawn(Character::new("B", Race::Human, Gender::Male, Profession::Fighter))
                 .id();
             let party = crate::game::party::roster::test_party(app.world_mut(), &[member, other]);
+            if full {
+                let mut ids = ItemIds::default();
+                // Use distinct identities from the held item.
+                ids.allocate();
+                let mut carried = app.world_mut().get_mut::<Carried>(member).unwrap();
+                for slot in &mut carried.backpack {
+                    *slot = Some(ItemStack::new(&definition, &mut ids, 1, true));
+                }
+                app.world_mut().get_mut::<PartyInventory>(party).unwrap().pool.stacks = (0
+                    ..crate::game::inventory::POOL_LIMIT)
+                    .map(|_| ItemStack::new(&definition, &mut ids, 1, true))
+                    .collect();
+            }
             app.world_mut().get_mut::<PartyInventory>(party).unwrap().hand.held = Some(item);
             app.world_mut().resource_mut::<super::super::main_screen::SelectedMember>().0 =
                 Some(member);
@@ -1558,8 +1598,37 @@ mod tests {
                     .entity_mut(member)
                     .remove::<crate::game::party::roster::PartyMember>();
             }
-            app.world_mut().resource_mut::<NextState<Screen>>().set(Screen::World);
+            if explicit_close {
+                key(&mut app, window, KeyCode::Escape, true);
+            } else {
+                // The artwork-failure path only hides the screen. It must not
+                // implicitly accept an inventory operation through OnExit.
+                app.world_mut().resource_mut::<NextState<Screen>>().set(Screen::World);
+            }
             app.update();
+            assert_eq!(*app.world().resource::<State<Screen>>().get(), Screen::World);
+            if !explicit_close || full || !loaded {
+                assert_eq!(
+                    app.world()
+                        .get::<PartyInventory>(party)
+                        .unwrap()
+                        .hand
+                        .held
+                        .as_ref()
+                        .unwrap()
+                        .id,
+                    id
+                );
+                assert_eq!(
+                    app.world().get::<Carried>(member).unwrap().backpack.iter().flatten().count(),
+                    if full { BACKPACK_SLOTS } else { 0 }
+                );
+                assert_eq!(
+                    app.world().get::<PartyInventory>(party).unwrap().pool.stacks.len(),
+                    if full { crate::game::inventory::POOL_LIMIT } else { 0 }
+                );
+                continue;
+            }
             assert!(app.world().get::<PartyInventory>(party).unwrap().hand.held.is_none());
             assert_eq!(
                 app.world()

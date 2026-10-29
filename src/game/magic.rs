@@ -7,10 +7,16 @@
 //! item spends a use (see `game::magic::casting`).
 
 pub mod casting;
-pub(crate) mod devices;
+pub(crate) mod dialogue;
 pub mod effects;
 pub mod enchantments;
+pub(crate) mod impacts;
+pub(crate) mod pointcasts;
+pub mod portals;
+pub(crate) mod sources;
+pub(crate) mod targeting;
 pub(crate) mod traps;
+pub(crate) mod utilities;
 
 pub use casting::resolvable;
 pub use effects::{Effect, Field, Victim, modelled};
@@ -68,32 +74,48 @@ pub fn skill_available(
     character.skill_available(skill)
 }
 
-/// Spell points left per realm, recovery not yet whole points, and the
-/// maximum ([`max_points`]), a derived stat kept current by
-/// [`sync_spell_points`] (`crate::game::stats`).
+/// Mana already spent and fractional recovery are history. The current pool is
+/// the live maximum minus this deficit: retail's RebuildRealmSpellPointCeilings
+/// adds each maximum change to current mana, preserving precisely this value.
+/// A loss of capacity can leave signed current mana below zero; it is not a
+/// fresh empty pool that a later capacity increase should refill for free.
+/// Default means no spending: full mana at the actor's live capacity.
 #[derive(Component, Clone, Debug, Default, PartialEq)]
 pub struct SpellPoints {
-    pub current: EnumMap<Realm, u32>,
+    spent: EnumMap<Realm, i64>,
     pub fraction: EnumMap<Realm, f32>,
-    pub maximum: EnumMap<Realm, u32>,
 }
 
 impl SpellPoints {
-    pub fn full(maximum: EnumMap<Realm, u32>) -> Self {
-        SpellPoints { current: maximum, maximum, ..default() }
+    pub fn current(&self, realm: Realm, maximum: &EnumMap<Realm, u32>) -> i64 {
+        i64::from(maximum[realm]) - self.spent[realm]
+    }
+
+    pub fn available(&self, realm: Realm, maximum: &EnumMap<Realm, u32>) -> u32 {
+        self.current(realm, maximum).clamp(0, i64::from(u32::MAX)) as u32
+    }
+
+    pub fn drain_realm(&mut self, realm: Realm, amount: u32, maximum: &EnumMap<Realm, u32>) -> u32 {
+        let taken = amount.min(self.available(realm, maximum));
+        self.spend(realm, taken);
+        taken
+    }
+
+    /// Record spending after the caller has checked what is available.
+    pub fn spend(&mut self, realm: Realm, amount: u32) {
+        self.spent[realm] += i64::from(amount);
     }
 
     /// Drain randomly chosen realms, at most fifty draws (retail
     /// `DrainCharacterSpellPoints`). Fractional recovery is not spent.
-    pub fn drain(&mut self, amount: u32, rng: &mut GameRng) -> u32 {
+    pub fn drain(&mut self, amount: u32, maximum: &EnumMap<Realm, u32>, rng: &mut GameRng) -> u32 {
         let mut remaining = amount;
         for _ in 0..50 {
             if remaining == 0 {
                 break;
             }
             let realm = Realm::try_from(rng.below(6) as u8).unwrap();
-            let taken = remaining.min(self.current[realm]);
-            self.current[realm] -= taken;
+            let taken = self.drain_realm(realm, remaining, maximum);
             remaining -= taken;
         }
         amount - remaining
@@ -103,11 +125,8 @@ impl SpellPoints {
     /// `RestoreCharacterSpellPointsEvenly`). Ties keep the initial deficit order
     /// (initial ties use realm order). Excess is wasted; recovery fractions stay.
     pub fn restore_evenly(&mut self, amount: u32) -> u32 {
-        let mut deficits: Vec<_> = self
-            .maximum
-            .iter()
-            .map(|(realm, &max)| (realm, max.saturating_sub(self.current[realm])))
-            .collect();
+        let mut deficits: Vec<_> =
+            self.spent.iter().map(|(realm, &spent)| (realm, spent.max(0))).collect();
         deficits.sort_by_key(|&(_, missing)| std::cmp::Reverse(missing));
         let mut restored = 0;
         for _ in 0..amount {
@@ -117,7 +136,7 @@ impl SpellPoints {
             }
             let (realm, missing) =
                 deficits.iter_mut().find(|(_, missing)| *missing == largest).unwrap();
-            self.current[*realm] += 1;
+            self.spent[*realm] -= 1;
             *missing -= 1;
             restored += 1;
         }
@@ -125,37 +144,59 @@ impl SpellPoints {
     }
 
     /// The highest power the realm's points pay for, 0 if none.
-    pub fn affordable_power(&self, spell: &SpellDefinition) -> u8 {
+    pub fn affordable_power(&self, spell: &SpellDefinition, maximum: &EnumMap<Realm, u32>) -> u8 {
         let Some(realm) = spell.realm else { return 0 };
         if spell.cost == 0 {
             return MAX_POWER;
         }
-        (self.current[realm] / spell.cost).min(u32::from(MAX_POWER)) as u8
+        (self.available(realm, maximum) / spell.cost).min(u32::from(MAX_POWER)) as u8
     }
 
     /// Whether any realm is short of its maximum.
     pub fn short(&self) -> bool {
-        self.maximum.iter().any(|(realm, &max)| self.current[realm] < max)
+        self.spent.values().any(|&spent| spent > 0)
+    }
+
+    /// Full pools need no write unless a previous operation left a fraction
+    /// for the aging boundary to clear.
+    pub(crate) fn needs_recovery(&self) -> bool {
+        self.short() || self.fraction.values().any(|&fraction| fraction != 0.0)
     }
 
     /// Recover over `ticks` aging ticks at `(0.65·max + 20)/240` per tick
     /// times `scale` (retail aging, `GameplayTime.cpp`).
-    pub fn recover(&mut self, ticks: u32, scale: f32) {
-        for (realm, &max) in &self.maximum {
-            if max == 0 || self.current[realm] >= max {
+    pub fn recover(&mut self, ticks: u32, scale: f32, maximum: &EnumMap<Realm, u32>) {
+        for (realm, &max) in maximum {
+            if self.spent[realm] <= 0 {
                 self.fraction[realm] = 0.0;
-                self.current[realm] = self.current[realm].min(max);
                 continue;
             }
             self.fraction[realm] += ticks as f32 * (0.65 * max as f32 + 20.0) / 240.0 * scale;
             let whole = self.fraction[realm].trunc();
             self.fraction[realm] -= whole;
-            self.current[realm] = (self.current[realm] + whole as u32).min(max);
-            if self.current[realm] >= max {
+            self.spent[realm] = (self.spent[realm] - whole as i64).max(0);
+            if self.spent[realm] == 0 {
                 self.fraction[realm] = 0.0;
             }
         }
     }
+}
+
+/// Select an available target by angle to the heading, then distance.
+pub fn target_ahead(
+    eye: Vec3,
+    forward: Vec3,
+    reach: f32,
+    candidates: impl IntoIterator<Item = (Entity, Vec3, f32)>,
+) -> Option<Entity> {
+    candidates
+        .into_iter()
+        .filter(|(_, _, distance)| *distance <= reach)
+        .map(|(entity, at, distance)| {
+            (entity, (at - eye).with_y(0.0).angle_between(forward.with_y(0.0)), distance)
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1).then(a.2.total_cmp(&b.2)))
+        .map(|(entity, ..)| entity)
 }
 
 /// The share of spell points recovered while health recovers at
@@ -281,62 +322,42 @@ pub fn starting_picks(character: &Character) -> usize {
     if caster_level(character, character.profession) > 0 { 2 } else { 0 }
 }
 
-/// Spell points per realm (retail `RecalculateRealmSpellPoints`): none in a
-/// realm without a learned spell, and never under its dearest learned spell.
-pub fn max_points(
-    character: &crate::game::characters::CharacterStats<'_>,
-    learned: &LearnedSpells,
-    spells: &SpellCatalog,
-) -> EnumMap<Realm, u32> {
-    let mut books: Vec<u32> = [Skill::Wizardry, Skill::Divinity, Skill::Alchemy, Skill::Psionics]
-        .map(|s| character.skill(s))
-        .to_vec();
-    books.sort_unstable_by(|a, b| b.cmp(a));
-    let weight =
-        (books[0] as f32 + (books[1] / 2) as f32 + (books[2] / 4) as f32 + (books[3] / 8) as f32)
+impl crate::game::characters::CharacterStats<'_> {
+    /// Spell points per realm (retail `RecalculateRealmSpellPoints`): none in
+    /// a realm without a learned spell, and never under its dearest learned
+    /// spell.
+    pub fn max_points(
+        &self,
+        learned: &LearnedSpells,
+        spells: &SpellCatalog,
+    ) -> EnumMap<Realm, u32> {
+        let character = self;
+        let mut books: Vec<u32> =
+            [Skill::Wizardry, Skill::Divinity, Skill::Alchemy, Skill::Psionics]
+                .map(|s| character.skill(s))
+                .to_vec();
+        books.sort_unstable_by(|a, b| b.cmp(a));
+        let weight = (books[0] as f32
+            + (books[1] / 2) as f32
+            + (books[2] / 4) as f32
+            + (books[3] / 8) as f32)
             .min(125.0);
-    let piety = character.attribute(Attribute::Piety) as f32;
-    EnumMap::from_fn(|realm| {
-        let known: Vec<_> = learned
-            .0
-            .iter()
-            .filter_map(|&id| spells.get(id))
-            .filter(|s| s.realm == Some(realm))
-            .collect();
-        if known.is_empty() {
-            return 0;
-        }
-        let skill = character.skill(realm.skill()) as f32;
-        let levels = (known.len() + usize::from(character.level) + 1) as f32;
-        let points = ((weight + 3.0 * skill + piety) * 0.02 * levels + 0.5) as u32;
-        points.max(known.iter().map(|s| s.cost).max().unwrap_or(0))
-    })
-}
-
-/// Keep each caster's maximum spell points current, recomputing it only when
-/// the character, the spells on them or what they have learned changes (retail
-/// `RecalculateRealmSpellPoints`). Points above a lowered maximum stay until
-/// spent or the next recovery tick.
-pub fn sync_spell_points(
-    mut casters: Query<(
-        Ref<Character>,
-        Ref<crate::game::characters::Vitals>,
-        Ref<LearnedSpells>,
-        &mut SpellPoints,
-    )>,
-    content: crate::game::data::Content,
-    mut had_catalog: Local<bool>,
-) {
-    let Some(spells) = content.spells() else { return };
-    // Everyone's maximum is settled once the spell catalog has loaded.
-    let loaded = !std::mem::replace(&mut *had_catalog, true);
-    for (character, vitals, learned, mut points) in &mut casters {
-        if loaded || character.is_changed() || vitals.is_changed() || learned.is_changed() {
-            let maximum = max_points(&character.stats(&vitals.enchantments), &learned, spells);
-            if points.maximum != maximum {
-                points.maximum = maximum;
+        let piety = character.attribute(Attribute::Piety) as f32;
+        EnumMap::from_fn(|realm| {
+            let known: Vec<_> = learned
+                .0
+                .iter()
+                .filter_map(|&id| spells.get(id))
+                .filter(|s| s.realm == Some(realm))
+                .collect();
+            if known.is_empty() {
+                return 0;
             }
-        }
+            let skill = character.skill(realm.skill()) as f32;
+            let levels = (known.len() + usize::from(character.level()) + 1) as f32;
+            let points = ((weight + 3.0 * skill + piety) * 0.02 * levels + 0.5) as u32;
+            points.max(known.iter().map(|s| s.cost).max().unwrap_or(0))
+        })
     }
 }
 
@@ -424,7 +445,17 @@ pub enum Outcome {
 /// Roll a cast against its failure chance (retail `CastSpellFromSource`):
 /// the same roll decides failure and backfire. Ordinary failure chances below
 /// 6% cannot backfire; quiet (thrown) uses backfire whenever they fail and can.
-pub fn roll(rng: &mut GameRng, chance: u32, spell: &SpellDefinition, quiet: bool) -> Outcome {
+/// Underwater Fire first overrides failure to 100%, then quiet halves it;
+/// either case forbids backfire and keeps the ordinary payment transaction.
+pub fn roll(
+    rng: &mut GameRng,
+    chance: u32,
+    spell: &SpellDefinition,
+    quiet: bool,
+    underwater: bool,
+) -> Outcome {
+    let suppressed = underwater && spell.realm == Some(Realm::Fire);
+    let chance = if suppressed { if quiet { 50 } else { 100 } } else { chance };
     if chance == 0 {
         return Outcome::Cast;
     }
@@ -432,7 +463,7 @@ pub fn roll(rng: &mut GameRng, chance: u32, spell: &SpellDefinition, quiet: bool
     if rolled >= chance {
         return Outcome::Cast;
     }
-    let backfire = if !spell.can_backfire() || (!quiet && chance < 6) {
+    let backfire = if suppressed || !spell.can_backfire() || (!quiet && chance < 6) {
         0
     } else if quiet {
         chance
@@ -453,21 +484,24 @@ impl Plugin for MagicPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<MagicRequest>()
             .add_message::<casting::MagicNews>()
+            .add_message::<crate::game::world::hostility::Provocation>()
             .init_resource::<casting::FlightOrder>()
             .add_systems(
                 Update,
-                (accept_magic, deliver_spells)
+                (accept_magic, pointcasts::update_lure)
                     .chain()
                     .after(crate::game::GameplaySet::Stats)
                     .before(crate::game::GameplaySet::Combat)
                     .run_if(crate::game::world::level::level_active),
             );
+        // Missiles fly on the fixed step, ahead of the fight's step there
+        // (see `CombatPlugin`).
     }
 }
 
 /// A member asks to cast or use an item. In a fight it becomes their order
 /// for the next round; otherwise it happens at once.
-#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Message, Clone, Copy, Debug, PartialEq)]
 pub struct MagicRequest {
     pub caster: Entity,
     pub choice: casting::MagicChoice,
@@ -485,8 +519,12 @@ pub struct MagicContext<'w, 's> {
     pub inventory: Single<'w, 's, &'static mut PartyInventory>,
     pub news: MessageWriter<'w, casting::MagicNews>,
     level: Single<'w, 's, Entity, With<crate::game::world::level::Level>>,
+    level_rules: Query<'w, 's, &'static crate::game::world::triggers::LevelState>,
+    visibility: Option<crate::game::world::obstacles::WorldObstacles<'w, 's>>,
     /// Missiles leave in launch order, so equal arrivals land in it too.
     pub flight_order: ResMut<'w, casting::FlightOrder>,
+    provocations: MessageWriter<'w, crate::game::world::hostility::Provocation>,
+    fight: Query<'w, 's, Entity, With<crate::game::combat::Battle>>,
 }
 
 impl MagicContext<'_, '_> {
@@ -495,43 +533,53 @@ impl MagicContext<'_, '_> {
         *self.level
     }
 
-    /// Resolve magic: `cast` gets the field of members, monsters and party
-    /// belongings it changes, and the spells.
+    /// Resolve magic at game time `now`: `cast` gets the field of members,
+    /// monsters and party belongings it changes, and the spells.
     pub fn resolve<R>(
         &mut self,
+        now: u64,
         members: &mut Members,
         monsters: &mut MonsterDamage,
         cast: impl FnOnce(&mut Field, &SpellCatalog) -> R,
     ) -> Result<R, casting::Refusal> {
-        self.field(members, monsters, |field, spells| spells.map(|spells| cast(field, spells)))?
-            .ok_or(casting::Refusal::MissingContent)
+        self.field(now, members, monsters, |field, spells| {
+            spells.map(|spells| cast(field, spells))
+        })?
+        .ok_or(casting::Refusal::MissingContent)
     }
 
     /// The field of members, monsters and party belongings that blows
     /// change; refused until items and monsters have loaded.
     pub fn with_field<R>(
         &mut self,
+        now: u64,
         members: &mut Members,
         monsters: &mut MonsterDamage,
         act: impl FnOnce(&mut Field) -> R,
     ) -> Result<R, casting::Refusal> {
-        self.field(members, monsters, |field, _| act(field))
+        if self.content.species().is_none() || !monsters.ready() {
+            return Err(casting::Refusal::MissingContent);
+        }
+        self.field(now, members, monsters, |field, _| act(field))
     }
 
     fn field<R>(
         &mut self,
+        now: u64,
         members: &mut Members,
         monsters: &mut MonsterDamage,
         act: impl FnOnce(&mut Field, Option<&SpellCatalog>) -> R,
     ) -> Result<R, casting::Refusal> {
         let party: Vec<Entity> = self.roster.iter().collect();
         let party_level = crate::game::party::average_level(
-            members.iter_many(self.roster.iter()).matched().map(|(c, ..)| c.level),
+            members.iter_many(self.roster.iter()).matched().map(|(c, ..)| c.level()),
         );
-        let (Some(items), Some(species)) = (self.content.items(), self.content.species()) else {
+        let Some(items) = self.content.items() else {
             return Err(casting::Refusal::MissingContent);
         };
         let mut field = Field {
+            visibility: self.visibility.as_ref(),
+            underwater: self.level_rules.get(*self.level).is_ok_and(|state| state.camera_sway),
             members,
             monsters,
             enchantments: &mut self.enchantments.0,
@@ -539,14 +587,40 @@ impl MagicContext<'_, '_> {
             formation: &mut self.formation,
             party_damage: &mut self.party_damage,
             items,
-            species,
+            species: self.content.species(),
+            spells: self.content.spells(),
             party_level,
+            now,
             difficulty: *self.difficulty,
             party: &party,
             improved: Vec::new(),
+            provocations: &mut self.provocations,
+            fight: self.fight.single().ok(),
         };
         Ok(act(&mut field, self.content.spells()))
     }
+}
+
+/// Carry out magic that needs the whole world, announcing a refusal: a
+/// utility spell (portals, dialogue, point casts, Identify) or a cast at a
+/// device. The one way such magic executes, in or out of a fight.
+pub(crate) fn execute_in_world(
+    world: &mut World,
+    caster: Entity,
+    choice: casting::MagicChoice,
+) -> Result<(), casting::Refusal> {
+    let utility = utilities::source_spell(world, caster, choice.source).is_ok_and(utilities::spell);
+    let result = match choice.aim {
+        _ if utility => utilities::cast(world, caster, choice),
+        casting::Aim::Device(attempt) => {
+            crate::game::world::interaction::cast_device(world, caster, attempt, choice.source)
+        }
+        _ => Err(casting::Refusal::Unsupported),
+    };
+    if let Err(refusal) = result {
+        world.write_message(casting::MagicNews::Refused { caster, refusal });
+    }
+    result
 }
 
 /// Accept magic requests (retail `ChooseAction`): in combat only record the
@@ -561,23 +635,28 @@ pub fn accept_magic(
     mut points: Query<(&LearnedSpells, &mut SpellPoints)>,
     mut context: MagicContext,
     mut rng: ResMut<GameRng>,
-    party: Query<&avian3d::prelude::Position, With<crate::game::party::body::PartyBody>>,
+    party: Query<(&avian3d::prelude::Position, &crate::game::party::body::PartyBody)>,
     mut commands: Commands,
+    clock: Res<crate::game::time::GameClock>,
 ) {
     for &MagicRequest { caster, choice } in requests.read() {
         if !context.roster.contains(&caster) {
             continue;
         }
-        if let casting::Aim::Device(attempt) = choice.aim {
+        let spell = context.content.items().and_then(|items| {
+            choice.source.spell_id(
+                members.get(caster).ok().map(|(_, _, carried, ..)| carried),
+                &context.inventory,
+                items,
+            )
+        });
+        // A point cast in a fight waits for its turn, as any other order.
+        let in_world = (spell.is_some_and(utilities::spell)
+            && (battle.is_none() || !spell.is_some_and(pointcasts::spell)))
+            || matches!(choice.aim, casting::Aim::Device(_));
+        if in_world {
             commands.queue(move |world: &mut World| {
-                if let Err(refusal) = crate::game::world::interaction::cast_device(
-                    world,
-                    caster,
-                    attempt,
-                    choice.source,
-                ) {
-                    world.write_message(casting::MagicNews::Refused { caster, refusal });
-                }
+                let _ = execute_in_world(world, caster, choice);
             });
             continue;
         }
@@ -594,7 +673,10 @@ pub fn accept_magic(
             }
             continue;
         }
-        let Ok(party_at) = party.single().map(crate::game::party::body::PartyBody::eye) else {
+        let Ok((party_at, facing)) = party
+            .single()
+            .map(|(at, body)| (crate::game::party::body::PartyBody::eye(at), body.forward()))
+        else {
             context.news.write(casting::MagicNews::Refused {
                 caster,
                 refusal: casting::Refusal::WrongTime,
@@ -612,12 +694,13 @@ pub fn accept_magic(
             },
             party: &roster,
             party_at,
+            facing,
             monsters: &[],
             group_of: &|m| vec![m],
         };
         let level = context.level();
         let performed = context
-            .resolve(&mut members, &mut monsters, |field, spells| {
+            .resolve(clock.ms, &mut members, &mut monsters, |field, spells| {
                 casting::perform(caster, choice, &situation, spells, &mut points, &mut rng, field)
             })
             .and_then(|performed| performed);
@@ -636,7 +719,8 @@ pub fn accept_magic(
 /// died meanwhile is missed. Kills in a fight count for it.
 pub fn deliver_spells(
     mut points: Query<(&LearnedSpells, &mut SpellPoints)>,
-    time: Res<Time<Virtual>>,
+    party: Query<&avian3d::prelude::Position, With<crate::game::party::body::PartyBody>>,
+    time: Res<Time<Fixed>>,
     mut flights: Query<(Entity, &mut casting::SpellInFlight)>,
     (mut members, mut monsters): (Members, MonsterDamage),
     mut context: MagicContext,
@@ -644,8 +728,29 @@ pub fn deliver_spells(
     mut battle: Option<Single<&mut crate::game::combat::Battle>>,
     mut combat_news: MessageWriter<crate::game::combat::CombatNews>,
     mut commands: Commands,
+    clock: Res<crate::game::time::GameClock>,
 ) {
     if flights.is_empty() {
+        return;
+    }
+    // Keep accepted impacts pending while mandatory assets/services are absent.
+    if context.content.spells().is_none()
+        || context.content.items().is_none()
+        || (flights.iter().any(|(_, flight)| {
+            flight.spell == SpellId::BOILING_BLOOD
+                || flight.victims.iter().any(|victim| matches!(victim, Victim::Monster(_)))
+        }) && !monsters.ready())
+    {
+        return;
+    }
+    let party_at = party.single().ok().map(crate::game::party::body::PartyBody::eye);
+    let spells = context.content.spells().unwrap();
+    if flights.iter().any(|(_, flight)| {
+        spells.get(flight.spell).is_none()
+            || !impacts::ready(flight.spell, spells)
+            || flight.spell == SpellId::BOILING_BLOOD && context.visibility.is_none()
+            || flight.spell == SpellId::BOILING_BLOOD && party_at.is_none()
+    }) {
         return;
     }
     // Every impact due in this update, in the order they arrive.
@@ -656,21 +761,36 @@ pub fn deliver_spells(
             due.push((left, flight.launched, entity));
         }
     }
-    due.sort_unstable_by_key(|&(left, launched, _)| (left, launched));
-    for (_, _, entity) in due {
-        let flight = flights.get(entity).unwrap().1.clone();
-        commands.entity(entity).despawn();
-        let landed = context.resolve(&mut members, &mut monsters, |field, spells| {
+    let mut due: Vec<_> = due
+        .into_iter()
+        .map(|(left, launched, entity)| {
+            (left, launched, Some(entity), flights.get(entity).unwrap().1.clone())
+        })
+        .collect();
+    while let Some((index, _)) =
+        due.iter().enumerate().min_by_key(|(_, (left, launched, ..))| (*left, *launched))
+    {
+        let (at, _, entity, flight) = due.swap_remove(index);
+        if let Some(entity) = entity {
+            commands.entity(entity).despawn();
+        }
+        let mut secondary = Vec::new();
+        let landed = context.resolve(clock.ms, &mut members, &mut monsters, |field, spells| {
             let spell = spells.get(flight.spell)?;
-            let victims = &flight.victims;
-            let effects = effects::resolve(
+            let effects = impacts::resolve(
+                flight.caster,
+                flight.origin,
                 false,
                 spell,
                 flight.strength,
-                victims,
+                &flight.victims,
+                flight.finish.as_ref(),
+                party_at.unwrap_or_default(),
+                spells,
                 &mut rng,
                 field,
                 &mut points,
+                &mut secondary,
             );
             Some((effects, std::mem::take(&mut field.improved)))
         });
@@ -684,30 +804,39 @@ pub fn deliver_spells(
             effects,
             improved,
         });
+        for mut reflection in secondary {
+            context.flight_order.stamp(&mut reflection);
+            let arrival = at + reflection.arrives.remaining();
+            if arrival <= time.delta() {
+                due.push((arrival, reflection.launched, None, reflection));
+            } else {
+                reflection.arrives.tick(time.delta().saturating_sub(at));
+                let level = context.level();
+                context.flight_order.launch(&mut commands, vec![reflection], level);
+            }
+        }
     }
 }
 
-/// Retail's auto-targeting: of the living monsters within the spell's
-/// reach, the one nearest the party's heading, the nearer of equals.
-pub fn target_ahead<'a>(
-    eye: Vec3,
-    forward: Vec3,
-    reach: f32,
-    monsters: impl IntoIterator<Item = (Entity, &'a crate::game::world::population::Monster, Vec3)>,
-) -> Option<Entity> {
-    let ahead = forward.with_y(0.0);
-    monsters
-        .into_iter()
-        .filter_map(|(entity, monster, at)| {
-            let to = (at - eye).with_y(0.0);
-            (!monster.is_dead() && to.length() <= reach + monster.body.radius).then_some((
-                entity,
-                to.angle_between(ahead),
-                to.length(),
-            ))
-        })
-        .min_by(|a, b| a.1.total_cmp(&b.1).then(a.2.total_cmp(&b.2)))
-        .map(|(entity, ..)| entity)
+#[cfg(test)]
+fn test_maximum(world: &World, member: Entity) -> EnumMap<Realm, u32> {
+    let profile = world.get::<Character>(member).unwrap();
+    let vitals = world.get::<crate::game::characters::Vitals>(member).unwrap();
+    let learned = world.get::<LearnedSpells>(member).unwrap();
+    let spells = crate::game::data::GameData::spells(world).unwrap();
+    profile.stats(&vitals.enchantments).max_points(learned, spells)
+}
+
+#[cfg(test)]
+pub(crate) fn test_set_points(world: &mut World, member: Entity, realm: Realm, current: i64) {
+    let maximum = test_maximum(world, member);
+    world.get_mut::<SpellPoints>(member).unwrap().spent[realm] =
+        i64::from(maximum[realm]) - current;
+}
+
+#[cfg(test)]
+pub(crate) fn test_points(world: &World, member: Entity, realm: Realm) -> i64 {
+    world.get::<SpellPoints>(member).unwrap().current(realm, &test_maximum(world, member))
 }
 
 #[cfg(test)]
@@ -739,6 +868,22 @@ mod tests {
     /// The out-of-combat use path with real requests: a potion stack and a
     /// charged wand, each casting its own spell at its own power.
     #[test]
+    fn underwater_fire_cannot_backfire_even_for_a_quiet_hostile_spell() {
+        let spell = SpellDefinition {
+            id: SpellId::ENERGY_BLAST,
+            targeting: Targeting::Enemy,
+            realm: Some(Realm::Fire),
+            ..default()
+        };
+        assert!(spell.can_backfire());
+        let mut rng = GameRng::seeded(1);
+        for _ in 0..20 {
+            assert_eq!(roll(&mut rng, 0, &spell, false, true), Outcome::Fizzled);
+            assert_ne!(roll(&mut rng, 100, &spell, true, true), Outcome::Backfired);
+        }
+    }
+
+    #[test]
     fn using_items_spends_a_dose_or_a_charge_and_the_last_dose_still_heals() {
         use crate::content::items::{
             EquipClass, ItemDefinition, ItemId, LootTables, QuantityKind, UseType,
@@ -754,6 +899,8 @@ mod tests {
             .init_asset::<SpellCatalog>()
             .init_asset::<LootTables>()
             .init_resource::<crate::game::factions::Factions>()
+            .init_resource::<crate::game::time::GameClock>()
+            .add_message::<crate::game::factions::FactionNews>()
             .init_resource::<ItemIds>()
             .init_resource::<crate::game::difficulty::Difficulty>()
             .init_resource::<casting::FlightOrder>()
@@ -761,6 +908,7 @@ mod tests {
             .add_message::<DamageApplied>()
             .add_message::<MagicRequest>()
             .add_message::<casting::MagicNews>()
+            .add_message::<crate::game::world::hostility::Provocation>()
             .add_systems(Update, accept_magic);
         let potion = ItemDefinition {
             id: ItemId(0),
@@ -854,7 +1002,8 @@ mod tests {
         // An untrained priest at power 7: a high failure chance.
         let chance = fail_chance(&priest, &heal, 7);
         assert!(chance > 50, "{chance}");
-        let outcomes: Vec<_> = (0..50).map(|_| roll(&mut rng, chance, &heal, false)).collect();
+        let outcomes: Vec<_> =
+            (0..50).map(|_| roll(&mut rng, chance, &heal, false, false)).collect();
         assert!(outcomes.contains(&Outcome::Fizzled) && outcomes.contains(&Outcome::Cast));
     }
 
@@ -870,7 +1019,7 @@ mod tests {
         let catalog =
             SpellCatalog((0..=6).map(|i| if i == 6 { heal_wounds() } else { default() }).collect());
         let learned = LearnedSpells([SpellId::HEAL_WOUNDS].into());
-        let points = max_points(&priest.base_stats(), &learned, &catalog);
+        let points = priest.base_stats().max_points(&learned, &catalog);
         assert!(points[Realm::Divine] >= 3, "never under the dearest learned spell");
         assert_eq!(points[Realm::Fire], 0, "no spell, no points");
     }
@@ -881,14 +1030,17 @@ mod tests {
         maximum[Realm::Fire] = 10;
         maximum[Realm::Water] = 5;
         maximum[Realm::Air] = 3;
-        let mut points = SpellPoints { maximum, ..default() };
+        let mut points = SpellPoints { spent: maximum.map(|_, max| i64::from(max)), ..default() };
         points.fraction[Realm::Fire] = 0.75;
         assert_eq!(points.restore_evenly(8), 8);
         // Five go to Fire; then the equal deficits share, in realm order.
-        assert_eq!((points.current[Realm::Fire], points.current[Realm::Water]), (7, 1));
-        assert_eq!(points.current[Realm::Air], 0);
+        assert_eq!(
+            (points.current(Realm::Fire, &maximum), points.current(Realm::Water, &maximum)),
+            (7, 1)
+        );
+        assert_eq!(points.current(Realm::Air, &maximum), 0);
         assert_eq!(points.restore_evenly(100), 10);
-        assert_eq!(points.current, maximum);
+        assert!(!points.short());
         assert_eq!(points.fraction[Realm::Fire], 0.75);
         assert_eq!(points.restore_evenly(5), 0);
     }
@@ -912,6 +1064,7 @@ mod tests {
             SpellId::RESTORE_HEALTH,
             SpellId::RESTORE_MAGIC,
             SpellId::SMELLING_SALTS,
+            SpellId::CURE_POISON,
         ] {
             let mut app = App::new();
             app.add_plugins((MinimalPlugins, AssetPlugin::default()))
@@ -920,6 +1073,8 @@ mod tests {
                 .init_asset::<SpellCatalog>()
                 .init_asset::<LootTables>()
                 .init_resource::<crate::game::factions::Factions>()
+                .init_resource::<crate::game::time::GameClock>()
+                .add_message::<crate::game::factions::FactionNews>()
                 .init_resource::<ItemIds>()
                 .init_resource::<crate::game::difficulty::Difficulty>()
                 .init_resource::<casting::FlightOrder>()
@@ -927,7 +1082,8 @@ mod tests {
                 .add_message::<DamageApplied>()
                 .add_message::<MagicRequest>()
                 .add_message::<MagicNews>()
-                .add_systems(Update, (sync_spell_points, accept_magic).chain());
+                .add_message::<crate::game::world::hostility::Provocation>()
+                .add_systems(Update, accept_magic);
             let definition = ItemDefinition {
                 id: ItemId(0),
                 class: EquipClass::Potion,
@@ -975,6 +1131,7 @@ mod tests {
             vitals.stamina = 1;
             vitals.inflict(Condition::Asleep, Lasting::Rounds(8));
             vitals.inflict(Condition::Unconscious, Lasting::Rounds(8));
+            vitals.poison(Lasting::Rounds(20), 10);
             let ally = world
                 .spawn((
                     ally,
@@ -984,6 +1141,7 @@ mod tests {
                     SpellPoints::default(),
                 ))
                 .id();
+            test_set_points(world, ally, Realm::Divine, 0);
             crate::game::party::roster::test_party(world, &[user, ally]);
             world.spawn(crate::game::world::level::Level::test(default()));
             world.spawn((
@@ -1024,11 +1182,14 @@ mod tests {
                             .absorption,
                         4
                     );
+                    let profile = world.get::<Character>(ally).unwrap().clone();
                     let mut vitals = world.get_mut::<Vitals>(ally).unwrap();
                     let stamina = vitals.stamina;
-                    assert_eq!(vitals.damage(4), 0);
+                    let mut rng = GameRng::default();
+                    let mut fate = crate::game::characters::Fate { fight: None, rng: &mut rng };
+                    assert_eq!(vitals.damage(&profile, 4, &mut fate), 0);
                     assert_eq!(vitals.stamina, stamina, "absorbed damage does not fatigue");
-                    assert_eq!(vitals.damage(2), 1);
+                    assert_eq!(vitals.damage(&profile, 2, &mut fate), 1);
                     assert!(vitals.is_dead());
                     assert!(vitals.enchantments.0.is_empty());
                 }
@@ -1043,7 +1204,7 @@ mod tests {
                 SpellId::HASTE | SpellId::SUPERMAN | SpellId::BODY_OF_STONE => {
                     let turns = vitals.enchantments.get(id).unwrap().turns;
                     let mut vitals = world.get_mut::<Vitals>(ally).unwrap();
-                    vitals.age_conditions(turns);
+                    vitals.age_conditions(turns, &mut GameRng::default());
                     assert!(vitals.enchantments.get(id).is_none());
                 }
                 SpellId::RESTORE_HEALTH => {
@@ -1051,11 +1212,24 @@ mod tests {
                     assert_eq!(vitals.stamina, 9, "stamina rolls twice the dice, independently");
                 }
                 SpellId::RESTORE_MAGIC => {
-                    assert!(world.get::<SpellPoints>(ally).unwrap().current[Realm::Divine] > 0);
+                    assert!(test_points(world, ally, Realm::Divine) > 0);
                     assert_eq!((vitals.hp, vitals.stamina), (1, 1));
                 }
                 SpellId::SMELLING_SALTS => {
-                    assert!(!vitals.has(Condition::Asleep) && !vitals.has(Condition::Unconscious))
+                    assert!(
+                        !vitals.conditions.has(Condition::Asleep)
+                            && !vitals.conditions.has(Condition::Unconscious)
+                    )
+                }
+                // Power four takes sixteen rounds off, and the poison weakens
+                // by the same share, as aging would (retail
+                // `TickCharacterCondition`).
+                SpellId::CURE_POISON => {
+                    assert_eq!(
+                        vitals.conditions.lasting(Condition::Poisoned),
+                        Some(Lasting::Rounds(4))
+                    );
+                    assert_eq!(vitals.poison, 2);
                 }
                 _ => unreachable!(),
             }
@@ -1063,25 +1237,66 @@ mod tests {
     }
 
     #[test]
+    fn lowered_capacity_keeps_debt_until_the_capacity_returns() {
+        let mut high = EnumMap::default();
+        high[Realm::Divine] = 20;
+        let mut low = high;
+        low[Realm::Divine] = 10;
+        let mut points = SpellPoints::default();
+        points.spend(Realm::Divine, 19);
+        points.fraction[Realm::Divine] = 0.5;
+        assert_eq!(points.current(Realm::Divine, &low), -9);
+        assert_eq!(points.available(Realm::Divine, &low), 0);
+        assert_eq!(points.drain_realm(Realm::Divine, 5, &low), 0);
+        let spell = SpellDefinition { realm: Some(Realm::Divine), cost: 1, ..default() };
+        assert_eq!(points.affordable_power(&spell, &low), 0);
+        assert_eq!(points.current(Realm::Divine, &high), 1);
+        assert_eq!(points.fraction[Realm::Divine], 0.5);
+    }
+
+    #[test]
     fn points_recover_by_retail_rate_and_never_beyond_the_maximum() {
         let mut maximum = EnumMap::default();
         maximum[Realm::Divine] = 20;
-        let mut points = SpellPoints { maximum, ..default() };
+        let mut points = SpellPoints { spent: maximum.map(|_, max| i64::from(max)), ..default() };
         // (0.65·20 + 20)/240 = 0.1375 a tick at half rate: 0.06875.
-        points.recover(100, recovery_scale(0.0));
-        assert_eq!(points.current[Realm::Divine], 6);
-        points.recover(10_000, 1.0);
-        assert_eq!(points.current[Realm::Divine], 20);
+        points.recover(100, recovery_scale(0.0), &maximum);
+        assert_eq!(points.current(Realm::Divine, &maximum), 6);
+        points.recover(10_000, 1.0, &maximum);
+        assert_eq!(points.current(Realm::Divine, &maximum), 20);
         assert_eq!(points.fraction[Realm::Divine], 0.0);
+        points.spent[Realm::Divine] = -5;
+        points.fraction[Realm::Divine] = 0.5;
+        points.recover(1, 1.0, &maximum);
+        assert_eq!(points.current(Realm::Divine, &maximum), 25, "retail skips full realms");
+        assert_eq!(points.fraction[Realm::Divine], 0.0);
+    }
+
+    #[test]
+    fn idle_recovery_keeps_surplus_but_clears_its_fraction() {
+        let mut maximum = EnumMap::default();
+        maximum[Realm::Divine] = 10;
+        let mut points = SpellPoints::default();
+        points.spent[Realm::Divine] = -5;
+        points.fraction[Realm::Divine] = 0.5;
+        points.recover(1, 0.5, &maximum);
+        assert_eq!(points.current(Realm::Divine, &maximum), 15);
+        assert_eq!(points.fraction[Realm::Divine], 0.0);
+        assert!(!points.needs_recovery());
+        points.spend(Realm::Divine, 6);
+        points.recover(100, 0.5, &maximum);
+        assert_eq!(points.current(Realm::Divine, &maximum), 10);
     }
 
     #[test]
     fn affordable_power_is_points_over_cost_within_seven() {
         let mut points = SpellPoints::default();
-        points.current[Realm::Divine] = 10;
-        assert_eq!(points.affordable_power(&heal_wounds()), 3);
-        points.current[Realm::Divine] = 100;
-        assert_eq!(points.affordable_power(&heal_wounds()), 7);
+        let mut maximum = EnumMap::default();
+        maximum[Realm::Divine] = 100;
+        points.spent[Realm::Divine] = 90;
+        assert_eq!(points.affordable_power(&heal_wounds(), &maximum), 3);
+        points.spent[Realm::Divine] = 0;
+        assert_eq!(points.affordable_power(&heal_wounds(), &maximum), 7);
     }
 
     #[test]
@@ -1092,12 +1307,12 @@ mod tests {
         let mut expected = rng.clone();
         let rolled = expected.below(100);
         let outcome = if rolled < 33 { Outcome::Backfired } else { Outcome::Fizzled };
-        assert_eq!(roll(&mut rng, 100, &spell, false), outcome);
+        assert_eq!(roll(&mut rng, 100, &spell, false, false), outcome);
         assert_eq!(rng, expected, "backfire must not consume a second random draw");
-        assert_eq!(roll(&mut rng, 0, &spell, false), Outcome::Cast);
+        assert_eq!(roll(&mut rng, 0, &spell, false, false), Outcome::Cast);
         assert_eq!(rng, expected, "a guaranteed cast consumes no failure draw");
         expected.below(100);
-        assert_eq!(roll(&mut rng, 100, &spell, true), Outcome::Backfired);
+        assert_eq!(roll(&mut rng, 100, &spell, true, false), Outcome::Backfired);
         assert_eq!(rng, expected);
     }
 
@@ -1108,7 +1323,7 @@ mod tests {
         assert!(fail_chance(&priest, &heal, 7) > fail_chance(&priest, &heal, 1));
         let mut rng = GameRng::seeded(1);
         for _ in 0..200 {
-            assert_ne!(roll(&mut rng, 100, &heal, false), Outcome::Backfired);
+            assert_ne!(roll(&mut rng, 100, &heal, false, false), Outcome::Backfired);
         }
     }
 }

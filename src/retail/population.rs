@@ -31,7 +31,10 @@ fn chunk<'a>(bytes: &mut Bytes<'a>) -> Result<([u8; 4], &'a [u8]), DecodeError> 
 }
 
 /// A level state chunk's payload, if the file has it.
-fn level_chunk<'a>(data: &'a [u8], wanted: &[u8; 4]) -> Result<Option<&'a [u8]>, DecodeError> {
+pub(super) fn level_chunk<'a>(
+    data: &'a [u8],
+    wanted: &[u8; 4],
+) -> Result<Option<&'a [u8]>, DecodeError> {
     let mut bytes = Bytes::new(data);
     let (id, root) = chunk(&mut bytes)?;
     if &id != b"RIFF" {
@@ -225,7 +228,7 @@ fn read_monsters(data: &[u8]) -> Result<Vec<Placement>, DecodeError> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     fn chunk(id: &[u8; 4], payload: &[u8]) -> Vec<u8> {
@@ -237,7 +240,7 @@ mod tests {
     }
 
     /// A level state file holding one chunk.
-    fn level_state(id: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+    pub(in crate::retail) fn level_state(id: &[u8; 4], payload: &[u8]) -> Vec<u8> {
         let mut level = [1u32.to_le_bytes(), 7u32.to_le_bytes()].concat();
         level.extend(chunk(id, payload));
         let mut root = 1u32.to_le_bytes().to_vec();

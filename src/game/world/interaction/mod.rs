@@ -65,7 +65,7 @@ const GRADE_SKILL: [i32; 11] = [10, 25, 35, 40, 50, 60, 70, 80, 90, 100, 110];
 
 /// The party remarks on a trap again once this much game time has passed
 /// since it last faced it (retail: 0x3840 seconds).
-const REMARK_AGAIN_MS: u64 = 4 * 3_600_000;
+const REMARK_AGAIN_MS: u64 = 4 * crate::game::time::HOUR_MS;
 
 /// Forcing a lock costs this much stamina and needs at least as much
 /// (retail `FatigueCharacter(slot, 0x50)`).
@@ -308,7 +308,7 @@ pub fn force_chance(
     tumblers: usize,
     setting: Difficulty,
 ) -> Option<u32> {
-    let strength = character.attribute(Attribute::Strength);
+    let strength = character.stats(&vitals.enchantments).attribute(Attribute::Strength);
     if !vitals.can_act() || vitals.stamina < FORCE_STAMINA || strength <= FORCE_STRENGTH {
         return None;
     }
@@ -597,8 +597,29 @@ pub fn spring_trap(world: &mut World, on: Entity, selected: Option<Entity>) -> R
 
 /// Opening either selector releases this actor's spell-held pins even if
 /// the uncommitted selector is cancelled, as retail ReleaseOwnedTumblers does.
+/// The device attempt magic may be aimed at now: the one under way, unless
+/// the party is looting what it opened. `requested` is the attempt the
+/// caller means; it is refused when another, or none, is under way.
+pub fn magic_attempt(world: &World, requested: Option<Entity>) -> Result<Option<Entity>, Unable> {
+    match current(world) {
+        Some((attempt, _)) => {
+            let looting = matches!(
+                world.get::<DeviceInteraction>(attempt).map(|i| &i.work),
+                Some(Work::Looting)
+            );
+            if looting || requested.is_some_and(|requested| requested != attempt) {
+                return Err(Unable::NotNow);
+            }
+            Ok(Some(attempt))
+        }
+        None if requested.is_some() => Err(Unable::NotNow),
+        None => Ok(None),
+    }
+}
+
 pub fn prepare_device_magic(world: &mut World, actor: Entity, on: Entity) -> Result<(), Unable> {
     member(world, actor)?;
+    magic_attempt(world, Some(on))?;
     attempt(world, on)?;
     if let Work::Picking(picking) = &mut *work_mut(world, on) {
         for pin in &mut picking.tumblers {
@@ -674,7 +695,7 @@ pub fn cast_device(
         })?;
     }
     let (report, strength) =
-        crate::game::magic::devices::cast_source(world, actor, source, context)?;
+        crate::game::magic::sources::cast_source(world, actor, source, context)?;
     let outcome = report.outcome;
     let spell = report.spell;
     world.write_message(MagicNews::Done(report));

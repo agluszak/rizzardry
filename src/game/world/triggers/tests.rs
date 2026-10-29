@@ -6,7 +6,7 @@ use crate::game::data::GameData;
 use crate::game::inventory::{ItemIds, ItemStack, make_item};
 use crate::game::world::scripts::LevelScript;
 
-use crate::content::level::{Animation, Arrival, DoorLock, PropModel, TriggerSound};
+use crate::content::level::{Animation, Arrival, DoorLock, PropModel, StateChange, TriggerSound};
 use crate::game::characters::{Gender, Profession, Race};
 
 pub(crate) fn act(action: TriggerAction) -> TriggerUse {
@@ -93,9 +93,8 @@ impl Scenario {
         world.init_resource::<Assets<LootTables>>();
         world.init_resource::<Messages<TriggerEffect>>();
         world.init_resource::<Messages<DamageApplied>>();
+        world.init_resource::<Messages<crate::game::world::hostility::Provocation>>();
         world.init_resource::<Messages<crate::game::combat::CombatNews>>();
-        world.init_resource::<State<crate::game::screen::Screen>>();
-        world.init_resource::<NextState<crate::game::screen::Screen>>();
         world.init_resource::<Messages<crate::game::inventory::ItemNews>>();
         world.init_resource::<Messages<super::super::interaction::LockNews>>();
         world.init_resource::<crate::game::difficulty::Difficulty>();
@@ -232,10 +231,11 @@ impl Scenario {
     pub(crate) fn remember(&mut self) -> TriggerMemory {
         let mut records = SystemState::<DeviceRecords>::new(&mut self.world);
         let owned = self.world.get::<super::super::level::LevelEntities>(self.root).unwrap();
-        records
-            .get(&self.world)
-            .unwrap()
-            .remember(owned.entities(), self.world.get::<LevelState>(self.root).unwrap())
+        records.get(&self.world).unwrap().remember(
+            owned.entities(),
+            self.world.get::<LevelState>(self.root).unwrap(),
+            self.world.get::<LightActivation>(self.root).unwrap(),
+        )
     }
 }
 
@@ -531,7 +531,7 @@ fn bells() -> Scenario {
     windows.fire_linked = true;
     windows.required_states = vec!["RING2".into()];
     let relay = |name: &str, ring: &str| {
-        let mut relay = trigger(name, TriggerAction::Relay);
+        let mut relay = trigger(name, TriggerAction::Relay(-1));
         relay.fire_linked = true;
         relay.required_states = vec![ring.into()];
         relay
@@ -702,7 +702,7 @@ fn damage_zones_hurt_each_member_while_stood_in() {
 
 #[test]
 fn linked_hazards_tick_and_reset_in_authored_order() {
-    let mut relay = trigger("RELAY", TriggerAction::Relay);
+    let mut relay = trigger("RELAY", TriggerAction::Relay(-1));
     relay.usable = true;
     relay.place = Some(Vec3::ZERO);
     relay.range = (0.0, 2.0);
@@ -796,7 +796,7 @@ fn relay_recipients_complete_in_order_before_the_senders_commit() {
     let mut second = trigger("SECOND", TriggerAction::Nothing);
     second.required_states.push("READY".into());
     second.initial.message = Some(2);
-    let mut relay = trigger("RELAY", TriggerAction::Relay);
+    let mut relay = trigger("RELAY", TriggerAction::Relay(-1));
     relay.recipients = vec![0, 1];
     relay.initial.message = Some(3);
     let mut level = Scenario::new(vec![first, second, relay], &[], LevelScript::None);
@@ -1099,20 +1099,25 @@ fn a_refused_take_leaves_container_receiver_and_identities_untouched() {
 /// the commit fires, sets variables and shows messages.
 #[test]
 fn a_declined_action_advances_the_sequence_but_commits_nothing() {
-    let mut lever = trigger("LEVER", TriggerAction::Unsupported(0x7f));
-    lever.initial.message = Some(1);
-    lever.alternate = Some(TriggerUse { action: TriggerAction::Nothing, message: Some(2) });
-    lever.state_change = Some(("PULLED".into(), StateChange::Set));
-    let mut level = Scenario::new(vec![lever], &[], LevelScript::None);
-    assert_eq!(level.run("LEVER"), (false, vec![]));
-    let device = level.device("LEVER");
-    let state = level.world.get::<TriggerState>(device).unwrap();
-    assert!(state.use_alternate && !state.fired);
-    assert!(!level.variable("PULLED"));
-    // The retry runs the alternate, which commits.
-    assert_eq!(level.run("LEVER"), (true, vec![TriggerEffect::Message { source: None, id: 2 }]));
-    assert!(level.variable("PULLED"));
-    assert!(level.world.get::<TriggerState>(device).unwrap().fired);
+    for action in [TriggerAction::OpenDoor, TriggerAction::NoRuntimeAction] {
+        let mut lever = trigger("LEVER", action);
+        lever.initial.message = Some(1);
+        lever.alternate = Some(TriggerUse { action: TriggerAction::Nothing, message: Some(2) });
+        lever.state_change = Some(("PULLED".into(), StateChange::Set));
+        let mut level = Scenario::new(vec![lever], &[], LevelScript::None);
+        assert_eq!(level.run("LEVER"), (false, vec![]));
+        let device = level.device("LEVER");
+        let state = level.world.get::<TriggerState>(device).unwrap();
+        assert!(state.use_alternate && !state.fired);
+        assert!(!level.variable("PULLED"));
+        // The retry runs the alternate, which commits.
+        assert_eq!(
+            level.run("LEVER"),
+            (true, vec![TriggerEffect::Message { source: None, id: 2 }])
+        );
+        assert!(level.variable("PULLED"));
+        assert!(level.world.get::<TriggerState>(device).unwrap().fired);
+    }
 }
 
 #[test]
@@ -1182,4 +1187,259 @@ fn player_reach_uses_only_prop_colliders_then_one_centre_fallback() {
     assert!((player_distance(&mut world, prop).unwrap() - 9.0).abs() < 0.001);
     world.entity_mut(surface).remove::<Collider>();
     assert!((player_distance(&mut world, prop).unwrap() - 20.0).abs() < 0.001);
+}
+
+#[test]
+fn missing_actions_preserve_selection_and_keys_until_supported() {
+    let mut lever = trigger("MISSING", TriggerAction::Unsupported(0x7f));
+    lever.alternate = Some(act(TriggerAction::Nothing));
+    lever.door = Some(DoorLock { locked: true, key: Some(ItemId(7)) });
+    let mut level = Scenario::new(vec![lever], &[], LevelScript::None);
+    let item = make_item(
+        &ItemDefinition { id: ItemId(7), ..default() },
+        &mut ItemIds::default(),
+        &mut GameRng::seeded(5),
+        false,
+        true,
+    );
+    level.inventory().hand.held = Some(item);
+    for _ in 0..2 {
+        assert_eq!(
+            level.run("MISSING"),
+            (false, vec![TriggerEffect::Unsupported { device: "MISSING".into(), code: 0x7f }])
+        );
+        let entity = level.device("MISSING");
+        let state = level.world.get::<TriggerState>(entity).unwrap();
+        assert!(!state.fired && !state.use_alternate);
+        assert!(level.world.get::<DoorState>(entity).unwrap().locked);
+    }
+}
+
+#[test]
+fn linked_device_switches_use_the_persisted_device_state() {
+    let mut definitions = vec![
+        trigger("OFF", TriggerAction::SetDevices(StateChange::Clear)),
+        trigger("ON", TriggerAction::SetDevices(StateChange::Set)),
+        trigger("TOGGLE", TriggerAction::SetDevices(StateChange::Toggle)),
+        trigger("TARGET", TriggerAction::Nothing),
+    ];
+    link(&mut definitions, &[("OFF", &["TARGET"]), ("ON", &["TARGET"]), ("TOGGLE", &["TARGET"])]);
+    let mut level = Scenario::new(definitions, &[], LevelScript::None);
+    assert!(level.run("OFF").0);
+    assert!(!level.run("TARGET").0);
+    let memory = level.remember();
+    level.visit(Some(memory));
+    assert!(!level.run("TARGET").0);
+    assert!(level.run("ON").0);
+    assert!(level.run("TARGET").0);
+    assert!(level.run("TOGGLE").0);
+    assert!(!level.run("TARGET").0);
+}
+
+#[test]
+fn mana_fountains_share_use_and_refill_history_and_restore_deficits() {
+    use crate::content::characters::Realm;
+    use crate::game::magic::SpellPoints;
+    let mut scene = Scenario::new(
+        vec![trigger(
+            "MANA",
+            TriggerAction::Fountain(Fountain {
+                restores: Restores::Magic,
+                amount: 3,
+                uses: Some(1),
+                refills_after: Some(1000),
+            }),
+        )],
+        &[],
+        LevelScript::None,
+    );
+    let member = scene.members[0];
+    let mut points = SpellPoints::default();
+    use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId};
+    use crate::game::magic::LearnedSpells;
+    scene.world.init_resource::<Assets<SpellCatalog>>();
+    let spells = scene.world.resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(vec![
+        SpellDefinition::default(),
+        SpellDefinition { id: SpellId(1), realm: Some(Realm::Fire), cost: 8, ..default() },
+        SpellDefinition { id: SpellId(2), realm: Some(Realm::Water), cost: 6, ..default() },
+    ]));
+    scene.world.resource_mut::<GameData>().spells = spells;
+    scene.world.entity_mut(member).insert(LearnedSpells([SpellId(1), SpellId(2)].into()));
+    points.fraction[Realm::Fire] = 0.25;
+    scene.world.entity_mut(member).insert(points);
+    for realm in enumset::EnumSet::<Realm>::all() {
+        crate::game::magic::test_set_points(&mut scene.world, member, realm, 0);
+    }
+    assert!(scene.run("MANA").0);
+    let points = scene.world.get::<SpellPoints>(member).unwrap();
+    assert_eq!(
+        enumset::EnumSet::<Realm>::all()
+            .iter()
+            .map(|r| crate::game::magic::test_points(&scene.world, member, r))
+            .sum::<i64>(),
+        3
+    );
+    assert_eq!(points.fraction[Realm::Fire], 0.25);
+    let memory = scene.remember();
+    scene.visit(Some(memory));
+    assert!(!scene.run("MANA").0);
+    scene.world.resource_mut::<GameClock>().ms = 1000;
+    assert!(scene.run("MANA").0);
+    assert_eq!(
+        enumset::EnumSet::<Realm>::all()
+            .iter()
+            .map(|r| crate::game::magic::test_points(&scene.world, member, r))
+            .sum::<i64>(),
+        6
+    );
+}
+
+#[test]
+fn restorative_fountains_require_spell_content_before_consuming_a_use() {
+    use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId};
+    use crate::game::characters::{Condition, Lasting};
+    let mut scene = Scenario::new(
+        vec![trigger(
+            "TEMPLE",
+            TriggerAction::Fountain(Fountain {
+                restores: Restores::Restoration,
+                amount: 15,
+                uses: Some(1),
+                refills_after: None,
+            }),
+        )],
+        &[],
+        LevelScript::None,
+    );
+    let member = scene.members[0];
+    {
+        let mut vitals = scene.world.get_mut::<Vitals>(member).unwrap();
+        vitals.hp = 1;
+        vitals.inflict(Condition::Poisoned, Lasting::Rounds(10));
+        vitals.inflict(Condition::Infatuated, Lasting::Indefinite);
+    }
+    assert!(!scene.run("TEMPLE").0);
+    assert!(scene.world.get::<FountainState>(scene.device("TEMPLE")).unwrap().used.is_none());
+    scene.world.init_resource::<Assets<SpellCatalog>>();
+    let mut definitions = vec![SpellDefinition::default(); 69];
+    definitions[68] = SpellDefinition {
+        id: SpellId::HEAL_ALL,
+        dice: Some(Dice { count: 1, sides: 1, base: 0 }),
+        ..default()
+    };
+    let spells = scene.world.resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(definitions));
+    scene.world.resource_mut::<GameData>().spells = spells;
+    assert!(scene.run("TEMPLE").0);
+    let vitals = scene.world.get::<Vitals>(member).unwrap();
+    assert_eq!(vitals.hp, 2, "out-of-range authored power becomes one, not seven");
+    assert_eq!(
+        vitals.conditions,
+        crate::game::characters::Conditions::from([(Condition::Infatuated, Lasting::Indefinite)])
+    );
+    assert!(!scene.run("TEMPLE").0);
+}
+
+#[test]
+fn random_teleports_choose_at_execution_and_disabled_devices_do_not_draw() {
+    let destinations: Vec<_> = [10.0, 20.0, 30.0]
+        .into_iter()
+        .map(|x| Arrival::Here { eye: Vec3::X * x, yaw: 0.0 })
+        .collect();
+    let mut scene = Scenario::new(
+        vec![trigger("RANDOM", TriggerAction::RandomTeleport(destinations.clone()))],
+        &[],
+        LevelScript::None,
+    );
+    let mut expected = scene.world.resource::<GameRng>().clone();
+    let index = expected.below(3) as usize;
+    assert!(scene.run("RANDOM").0);
+    let pending = scene.world.entity_mut(scene.root).take::<PendingPartyMove>().unwrap();
+    assert!(matches!(pending.0, PartyMove::Teleport(ref actual) if actual == &destinations[index]));
+    let entity = scene.device("RANDOM");
+    scene.world.get_mut::<TriggerState>(entity).unwrap().on = false;
+    assert!(!scene.run("RANDOM").0);
+    assert_eq!(scene.world.resource::<GameRng>().clone().below(1000), expected.below(1000));
+}
+
+#[test]
+fn named_ambient_sound_switches_survive_revisit() {
+    let mut scene = Scenario::new(
+        vec![
+            trigger(
+                "STOP",
+                TriggerAction::AmbientSounds {
+                    names: vec!["SoundHum".into()],
+                    change: StateChange::Clear,
+                },
+            ),
+            trigger(
+                "TOGGLE",
+                TriggerAction::AmbientSounds {
+                    names: vec!["SOUNDHUM".into()],
+                    change: StateChange::Toggle,
+                },
+            ),
+        ],
+        &[],
+        LevelScript::None,
+    );
+    assert!(scene.run("STOP").0);
+    let memory = scene.remember();
+    scene.visit(Some(memory));
+    assert!(!scene.world.get::<LevelState>(scene.root).unwrap().ambient_sound_enabled("soundhum"));
+    assert!(scene.run("TOGGLE").0);
+    assert!(scene.world.get::<LevelState>(scene.root).unwrap().ambient_sound_enabled("SoundHum"));
+}
+
+#[test]
+fn light_switches_use_authored_initial_state_and_survive_revisit() {
+    let mut scene = Scenario::new(
+        vec![trigger(
+            "TOGGLE",
+            TriggerAction::Lights {
+                sources: vec![("LASER".into(), false)],
+                change: StateChange::Toggle,
+            },
+        )],
+        &[],
+        LevelScript::None,
+    );
+    assert!(!scene.world.get::<LightActivation>(scene.root).unwrap().light_enabled("laser", false));
+    assert!(scene.run("TOGGLE").0);
+    let memory = scene.remember();
+    scene.visit(Some(memory));
+    assert!(scene.world.get::<LightActivation>(scene.root).unwrap().light_enabled("laser", false));
+    assert!(scene.run("TOGGLE").0);
+    assert!(!scene.world.get::<LightActivation>(scene.root).unwrap().light_enabled("laser", false));
+}
+
+#[test]
+fn camera_sway_obeys_signed_relay_calls_without_committing_and_survives_revisit() {
+    let mut on = trigger("ON", TriggerAction::Relay(1));
+    on.recipients = vec![2];
+    let mut off = trigger("OFF", TriggerAction::Relay(-1));
+    off.recipients = vec![2];
+    let mut sway = trigger("SWAY", TriggerAction::CameraSway);
+    sway.fire_linked = true;
+    sway.recipients = vec![3];
+    sway.state_change = Some(("UNCOMMITTED".into(), StateChange::Set));
+    let linked = trigger("LINKED", TriggerAction::Nothing);
+    let mut level = Scenario::new(vec![on, off, sway, linked], &[], LevelScript::None);
+    assert!(!level.world.get::<LevelState>(level.root).unwrap().camera_sway);
+    assert!(level.run("ON").0);
+    assert!(level.world.get::<LevelState>(level.root).unwrap().camera_sway);
+    assert!(!level.variable("UNCOMMITTED"));
+    assert!(!level.world.get::<TriggerState>(level.device("SWAY")).unwrap().fired);
+    assert!(!level.world.get::<TriggerState>(level.device("LINKED")).unwrap().fired);
+    let memory = level.remember();
+    level.visit(Some(memory));
+    assert!(level.world.get::<LevelState>(level.root).unwrap().camera_sway);
+    assert!(level.run("OFF").0);
+    assert!(!level.world.get::<LevelState>(level.root).unwrap().camera_sway);
+    level.geometry.camera_sway = true;
+    level.visit(None);
+    assert!(level.world.get::<LevelState>(level.root).unwrap().camera_sway);
+    // A direct player/walk call uses -1, independently of the definition's data.
+    assert!(!level.run("SWAY").0);
+    assert!(!level.world.get::<LevelState>(level.root).unwrap().camera_sway);
 }

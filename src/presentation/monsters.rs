@@ -248,26 +248,39 @@ const SKY_SCALE_PER_SECOND: f32 = 2.0;
 /// their falloff at its centre.
 pub fn light_monsters(
     time: Res<Time>,
+    torch: super::environment::PartyTorch,
     clock: Res<GameClock>,
-    levels: Query<(Entity, &LevelAppearance)>,
+    levels: Query<(
+        Entity,
+        &LevelAppearance,
+        Option<Ref<crate::game::world::triggers::LightActivation>>,
+    )>,
     geometry: Res<Assets<LevelGeometry>>,
     spatial: SpatialQuery,
     mut actors: Query<(&GlobalTransform, &mut MonsterLight, &mut ActorLight)>,
 ) {
-    let Some((level_entity, level)) =
-        levels.iter().find_map(|(e, l)| geometry.get(&l.0).map(|g| (e, g)))
+    let Some((level_entity, level, state)) =
+        levels.iter().find_map(|(e, l, state)| geometry.get(&l.0).map(|g| (e, g, state)))
     else {
         return;
     };
-    let sky = level.environment.as_ref().map_or(Vec3::ZERO, |e| e.sky_light(clock.phase()));
+    let sky = super::environment::sky_now(level, &clock);
+    let torch = torch.light();
     for (transform, mut sampled, mut light) in &mut actors {
         let centre = transform.translation();
         let (target, fixed) = match sampled.lit_at {
-            Some((at, target, fixed)) if at == centre && !geometry.is_changed() => (target, fixed),
+            Some((at, target, fixed))
+                if at == centre
+                    && !geometry.is_changed()
+                    && !state.as_ref().is_some_and(|s| s.is_changed()) =>
+            {
+                (target, fixed)
+            }
             _ => {
                 let target =
                     if sunlit(&spatial, level_entity, level, centre) { SUNLIT } else { 0.0 };
-                let fixed = level.lighting.at(centre, None);
+                let fixed =
+                    super::environment::actor_light(&level.lighting, state.as_deref(), centre);
                 sampled.lit_at = Some((centre, target, fixed));
                 (target, fixed)
             }
@@ -276,7 +289,10 @@ pub fn light_monsters(
             let step = SKY_SCALE_PER_SECOND * time.delta_secs();
             sampled.sky_scale += (target - sampled.sky_scale).clamp(-step, step);
         }
-        light.set_if_neq(ActorLight { sky: sky * sampled.sky_scale, fixed });
+        light.set_if_neq(ActorLight {
+            sky: sky * sampled.sky_scale,
+            fixed: fixed + torch.as_ref().map_or(Vec3::ZERO, |light| light.at(centre, None)),
+        });
     }
 }
 
@@ -380,7 +396,9 @@ mod tests {
                             max_hp: 1,
                             stamina: 1,
                             max_stamina: 1,
-                            conditions: vec![],
+
+                            conditions: Default::default(),
+                            spell_points: 0,
                             body: ScaledBody::new(&MonsterBody::default(), 0),
                         },
                         MonsterVisual(model.clone()),

@@ -2,12 +2,16 @@
 
 pub mod containers;
 pub mod damage;
+pub mod encounters;
+pub mod hostility;
 pub mod identify;
 pub mod interaction;
 pub mod items;
 pub mod level;
 pub mod navigation;
 pub mod obstacles;
+pub mod particles;
+pub mod perception;
 pub mod population;
 pub mod props;
 pub mod scripts;
@@ -40,6 +44,34 @@ impl ActorPoseItem<'_, '_> {
     }
 }
 
+/// An actor's position, for operations that hold the whole world: as
+/// [`ActorPose`] reads it.
+pub fn actor_position(world: &World, actor: Entity) -> Option<Vec3> {
+    world
+        .get::<avian3d::prelude::Position>(actor)
+        .map(|position| position.0)
+        .or_else(|| world.get::<Transform>(actor).map(|transform| transform.translation))
+}
+
+/// Turn an actor, level, to face the point `toward`, for operations that
+/// hold the whole world. Its physics rotation and its transform turn
+/// together, so physics' transform synchronization cannot restore the old
+/// yaw.
+pub fn face(world: &mut World, actor: Entity, toward: Vec3) {
+    let Some(here) = actor_position(world, actor) else { return };
+    let delta = (toward - here).with_y(0.0);
+    if delta.length_squared() <= 0.0001 {
+        return;
+    }
+    let facing = Quat::from_rotation_y(crate::game::party::body::yaw_toward(delta));
+    if let Some(mut rotation) = world.get_mut::<avian3d::prelude::Rotation>(actor) {
+        rotation.0 = facing;
+    }
+    if let Some(mut transform) = world.get_mut::<Transform>(actor) {
+        transform.rotation = facing;
+    }
+}
+
 /// The highest step the party and walking monsters climb: 300 retail units
 /// (0.6 m).
 ///
@@ -64,10 +96,11 @@ impl Plugin for WorldPlugin {
             .add_message::<search::SearchNews>()
             .init_resource::<search::Search>()
             .init_resource::<level::LevelMemory>()
-            .init_resource::<population::MonsterBodies>()
             .add_message::<triggers::TriggerEffect>()
             .add_message::<interaction::LockNews>()
             .add_message::<WorldRequest>()
+            .add_message::<population::Birth>()
+            .add_message::<particles::EmissionSpent>()
             .add_message::<crate::game::automap::CommitNote>()
             .add_plugins(interaction::plugin)
             .add_observer(interaction::end_attempts)
@@ -84,11 +117,22 @@ impl Plugin for WorldPlugin {
                     (handle_world_requests, crate::game::automap::commit_notes)
                         .after(crate::game::GameplaySet::Stats)
                         .before(crate::game::GameplaySet::Combat),
+                    particles::switch_off_spent.before(crate::game::GameplaySet::LevelActivation),
+                    population::give_birth
+                        .run_if(level::level_active)
+                        .before(crate::game::GameplaySet::Combat),
                     (search::toggle_search, search::search_pulse)
                         .chain()
                         .run_if(level::level_active)
                         .after(level::activate_level),
                 ),
+            )
+            // Encounters come over ground physics has placed.
+            .add_systems(
+                FixedPostUpdate,
+                encounters::run_encounters
+                    .after(avian3d::prelude::PhysicsSystems::Writeback)
+                    .run_if(level::level_active),
             )
             .add_systems(
                 FixedPreUpdate,

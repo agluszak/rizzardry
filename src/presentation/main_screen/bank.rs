@@ -31,7 +31,7 @@ pub struct CaptionLine(usize);
 #[derive(Component, Clone, Default)]
 pub struct RoundProgress;
 
-#[derive(Component, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Component, Clone, Copy, Default, PartialEq)]
 enum Bank {
     #[default]
     Camp,
@@ -299,6 +299,7 @@ pub fn draw_caption(
                     .unwrap_or_default()
                 {
                     Order::Defend => "Defend".into(),
+                    Order::Breathe(_) => "Breathe".into(),
                     order @ (Order::Attack | Order::Berserk) => {
                         let weapon = carried
                             .and_then(|c| c.worn(EquipSlot::Primary))

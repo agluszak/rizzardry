@@ -3,7 +3,7 @@
 use super::LoadError;
 use crate::{
     bytes::{Bytes, i32_at, lenient_string, u16_at, u32_at, utf16_units},
-    content::{items::ItemId, npcs::*},
+    content::{factions::Faction, items::ItemId, npcs::*},
 };
 use bevy::{
     asset::{AssetLoader, LoadContext, io::Reader},
@@ -55,20 +55,82 @@ pub fn read_npcs(data: &[u8]) -> Result<NpcCatalog, LoadError> {
             monster_bound: r[0x54] != 0,
             owns_stock: r[0x55] != 0,
             merchant: r[0x56] != 0,
-            recruitable: r[0x57] != 0,
+            character: if r[0x57] != 0 { Some(npc_character(r)?) } else { None },
+            services: u32_at(r, 0x68)?,
+            min_party_level: r[0x6f],
             disposition: r[0x5c],
+            charm_scale: r[0x5d] as i8,
+            talk_scale: r[0x5e] as i8,
             faction: r[0x5f],
+            trade_pool: u16_at(r, 2)?,
+            kind: u32_at(r, 0x58)? as i32,
             buy_factor,
             sell_factor,
             accepted_classes: enumset::EnumSet::from_repr_truncated(u32_at(r, 0x2d6)?),
             voice_script: r[0x2ea] != 0,
             stock,
+            // One-based; zero carries nothing.
+            item_table: u16::try_from(i32_at(r, 0x64)?).ok().and_then(|id| id.checked_sub(1)),
+            gold: u32::try_from(i32_at(r, 0x2eb)?).unwrap_or(0),
         });
     }
     if b.remaining() != 0 {
         return Err(invalid("trailing NPC bytes"));
     }
     Ok(NpcCatalog(out))
+}
+/// The record's character block (retail `W8NpcCharacterTemplate`, at
+/// 0xc4), which `InitializeNpcCharacter` expands when the NPC joins.
+fn npc_character(r: &[u8]) -> Result<NpcCharacter, LoadError> {
+    use crate::content::characters::{Attribute, Gender, Profession, Race, Skill};
+    use enum_map::Enum;
+    fn index<T: Enum>(value: i32, count: usize, what: &str) -> Result<T, LoadError> {
+        usize::try_from(value)
+            .ok()
+            .filter(|&i| i < count)
+            .map(T::from_usize)
+            .ok_or_else(|| invalid(what))
+    }
+    let byte = |value: i32| u8::try_from(value.clamp(0, 255)).unwrap_or(0);
+    let item = |present: u16, id: u16| (present != 0 && id != 0xffff).then_some(ItemId(id));
+    let mut equipment = [None; 12];
+    for (slot, worn) in equipment.iter_mut().enumerate() {
+        *worn = item(u16_at(r, 0x26a + 2 * slot)?, u16_at(r, 0x282 + 2 * slot)?);
+    }
+    let mut backpack = [None; 8];
+    for (slot, carried) in backpack.iter_mut().enumerate() {
+        *carried = item(u16_at(r, 0x29a + 2 * slot)?, u16_at(r, 0x2aa + 2 * slot)?);
+    }
+    let mut wanted = Vec::new();
+    for slot in 0..3 {
+        // One-based; zero wants nothing.
+        let id = u16_at(r, 0x2bb + 2 * slot)?;
+        if let Some(id) = id.checked_sub(1).filter(|&id| id < 0x7fff) {
+            wanted.push(ItemId(id));
+        }
+    }
+    Ok(NpcCharacter {
+        name: wide(&r[0xc4..0xd8])?,
+        profession: index::<Profession>(i32_at(r, 0x128)?, 15, "NPC profession")?,
+        race: index::<Race>(i32_at(r, 0x12c)?, 16, "NPC race")?,
+        gender: index::<Gender>(i32::from(r[0x2ba] as i8), 2, "NPC gender")?,
+        portrait: usize::try_from(i32_at(r, 0x130)?).map_err(|_| invalid("NPC portrait"))?,
+        level: byte(i32_at(r, 0x134)?).max(1),
+        attributes: enum_map::EnumMap::from_fn(|a: Attribute| {
+            byte(i32_at(r, 0x138 + 4 * a.into_usize()).unwrap_or(0))
+        }),
+        skills: enum_map::EnumMap::from_fn(|s: Skill| {
+            byte(i32_at(r, 0x154 + 4 * s.into_usize()).unwrap_or(0))
+        }),
+        // One flag per spell, the first for spell 1.
+        spells: (0..0x72u8)
+            .filter(|&i| r[0x1f8 + usize::from(i)] != 0)
+            .map(|i| crate::content::spells::SpellId(i + 1))
+            .collect(),
+        equipment,
+        backpack,
+        wanted,
+    })
 }
 fn narrow(b: &mut Bytes) -> Result<String, LoadError> {
     let n = b.u16()? as usize;
@@ -87,13 +149,27 @@ fn operation(
             .map(|(_, s)| s.clone().ok_or_else(|| invalid("missing keyword")))
             .collect::<Result<Vec<_>, _>>()
     };
+    let named = || {
+        subs.first()
+            .and_then(|(_, text)| text.as_deref()?.get(4..))
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+    };
+    // Retail's response chooser (`RunNpcScriptLine`, `SelectNpcQuoteResponse`):
+    // mode 2 picks at random up to the bound; otherwise a bound of 4 hands
+    // the dialogue to the NPC the first sub-entry names (its text past a
+    // four-character prefix); anything else answers with the first operand.
     let response = || -> Result<Response, LoadError> {
         match (args[1], args[2]) {
             (2, last) if last >= args[0] => {
                 Ok(Response::Random { first: id(args[0])?, last: id(last)? })
             }
-            (1, 0) => Ok(Response::Fixed(id(args[0])?)),
-            _ => Err(invalid("unsupported response mode")),
+            (2, _) => Err(invalid("empty random response range")),
+            (_, 4) => {
+                let npc = named().ok_or_else(|| invalid("speaker change without a speaker"))?;
+                Ok(Response::Speaker { npc, quote: id(args[0])? })
+            }
+            _ => Ok(Response::Fixed(id(args[0])?)),
         }
     };
     let unsupported =
@@ -104,8 +180,13 @@ fn operation(
             Ok(r) => DialogueOp::Next(r),
             Err(_) => unsupported(),
         },
-        3 if subs.len().is_multiple_of(2) && args[2] != 4 => {
-            let facts = subs
+        3 => {
+            // A speaker change names its speaker before the fact pairs.
+            let pairs = &subs[usize::from(args[1] != 2 && args[2] == 4).min(subs.len())..];
+            if !pairs.len().is_multiple_of(2) {
+                return Ok(unsupported());
+            }
+            let facts = pairs
                 .as_chunks::<2>()
                 .0
                 .iter()
@@ -131,6 +212,43 @@ fn operation(
             u8::try_from(args[1]).map_err(|_| invalid("fact value"))?,
         ),
         8 => DialogueOp::Close,
+        9..=11 | 15 => match u16::try_from(args[0]).map(ItemId) {
+            Ok(item) if kind == 9 => DialogueOp::GiveItem(item),
+            Ok(item) if kind == 10 => DialogueOp::TakeItem(item),
+            Ok(item) => DialogueOp::ItemQuote { item, keeps: kind == 11 },
+            Err(_) => unsupported(),
+        },
+        // Retail names the other NPC by its sub-entry past a four-character
+        // prefix (`ProcessNpcQuoteEntry`, `RunNpcScriptLine`).
+        13 | 21 if named().is_some() => {
+            let npc = named().unwrap();
+            if kind == 13 {
+                DialogueOp::LeaveParty { npc: Some(npc) }
+            } else {
+                // `ApplyNpcInteraction` passes the operand as a signed char.
+                DialogueOp::AdjustDisposition { npc, delta: args[0] as i8 }
+            }
+        }
+        12 if args[2] == 4 => DialogueOp::MonsterScriptLabel(None),
+        12 => DialogueOp::MonsterScriptLabel(Some(
+            words()?
+                .into_iter()
+                .next()
+                .ok_or_else(|| invalid("monster script label without a label"))?,
+        )),
+        14 => DialogueOp::CloseAndResume,
+        19 => DialogueOp::KeywordInput(words()?),
+        20 => DialogueOp::LeaveParty { npc: None },
+        24 => match u16::try_from(args[0]) {
+            Ok(event) => DialogueOp::PartyRemark(event),
+            Err(_) => unsupported(),
+        },
+        16 if args[0] >= 0 => DialogueOp::GiveGold(args[0] as u32),
+        17 if args[0] >= 0 => DialogueOp::GiveExperience(args[0] as u32),
+        // `AdjustFactionDisposition` takes the operand as a char.
+        22 if subs.len() == 1 => {
+            DialogueOp::AdjustFaction { faction: faction(&words()?[0]), delta: args[0] as i8 }
+        }
         18 | 30 if args[0] >= 0 => DialogueOp::Price { gold: args[0] as u32, always: kind == 30 },
         23 => DialogueOp::Decline(id(args[0])?),
         25..=28 | 31..=34 if subs.len() == 1 => DialogueOp::Mention {
@@ -143,6 +261,31 @@ fn operation(
             text: words()?.remove(0),
         },
         _ => unsupported(),
+    })
+}
+/// A faction by its script name, any case (retail `FindFactionByName`).
+fn faction(name: &str) -> Option<Faction> {
+    Some(match name.to_ascii_uppercase().as_str() {
+        "UNALIGNED" => Faction::Unaligned,
+        "FACTION_PARTY" => Faction::Party,
+        "FACTION_DARK_SAVANT" => Faction::DarkSavant,
+        "FACTION_COSMIC_LORDS" => Faction::CosmicLords,
+        "FACTION_UMPANI" => Faction::Umpani,
+        "FACTION_TRANG" => Faction::Trang,
+        "FACTION_MOOK" => Faction::Mook,
+        "FACTION_RATTKIN_COMMON" => Faction::RattkinCommon,
+        "FACTION_RATTKIN_MAFIA" => Faction::RattkinMafia,
+        "FACTION_BROTHERHOOD" => Faction::Brotherhood,
+        "FACTION_HIGARDI_BANK" => Faction::HigardiBank,
+        "FACTION_HIGARDI_HLL" => Faction::HigardiLunarLegion,
+        "FACTION_HIGARDI_COMMON" => Faction::HigardiCommon,
+        "FACTION_TRYNNIE" => Faction::Trynnie,
+        "FACTION_MAD_MARTEN" => Faction::MadMarten,
+        "FACTION_RAPAX_COMMON" => Faction::RapaxCommon,
+        "FACTION_RAPAX_TEMPLAR" => Faction::RapaxTemplar,
+        "FACTION_RAPAX_ARMY" => Faction::RapaxArmy,
+        "FACTION_KINGS_ASSASINS" => Faction::KingsAssassins,
+        _ => return None,
     })
 }
 pub fn read_dialogue(data: &[u8]) -> Result<DialogueScript, LoadError> {
@@ -194,6 +337,8 @@ pub fn read_dialogue(data: &[u8]) -> Result<DialogueScript, LoadError> {
                 DialogueOp::Next(r) | DialogueOp::Conditional { response: r, .. } => match r {
                     Response::Fixed(q) => vec![*q],
                     Response::Random { first, last } => vec![*first, *last],
+                    // The quote belongs to the other speaker's script.
+                    Response::Speaker { .. } => vec![],
                 },
                 _ => vec![],
             };
@@ -311,6 +456,114 @@ mod tests {
         invalid[40..44].copy_from_slice(&2i32.to_le_bytes());
         assert!(read_dialogue(&invalid).is_err(), "out-of-range authored continuation is rejected");
     }
+    /// Retail's response chooser: a random range in mode 2, else a bound of
+    /// 4 names another speaker, else the first operand is the answer.
+    #[test]
+    fn decodes_every_response_mode_and_speaker_changes() {
+        let named = || vec![(0, Some("NPC_Gadrock".into()))];
+        assert_eq!(operation(2, [5, 0, 0], vec![]).unwrap(), DialogueOp::Next(Response::Fixed(5)));
+        assert_eq!(operation(2, [5, 3, 7], vec![]).unwrap(), DialogueOp::Next(Response::Fixed(5)));
+        assert_eq!(
+            operation(2, [5, 2, 7], vec![]).unwrap(),
+            DialogueOp::Next(Response::Random { first: 5, last: 7 })
+        );
+        assert_eq!(
+            operation(2, [5, 1, 4], named()).unwrap(),
+            DialogueOp::Next(Response::Speaker { npc: "Gadrock".into(), quote: 5 })
+        );
+        let mut subs = named();
+        subs.extend([(91, None), (1, None)]);
+        assert_eq!(
+            operation(3, [5, 1, 4], subs).unwrap(),
+            DialogueOp::Conditional {
+                facts: vec![(FactId(91), 1)],
+                response: Response::Speaker { npc: "Gadrock".into(), quote: 5 }
+            }
+        );
+        assert!(matches!(operation(2, [5, 1, 4], vec![]).unwrap(), DialogueOp::Unsupported { .. }));
+    }
+
+    #[test]
+    fn decodes_world_actions_dispositions_remarks_and_keyword_questions() {
+        let named = || vec![(0, Some("NPC_Gadrock".into()))];
+        assert_eq!(
+            operation(13, [0, 0, 0], named()).unwrap(),
+            DialogueOp::LeaveParty { npc: Some("Gadrock".into()) }
+        );
+        assert_eq!(operation(20, [0, 0, 0], vec![]).unwrap(), DialogueOp::LeaveParty { npc: None });
+        assert_eq!(
+            operation(21, [0xf6, 0, 0], named()).unwrap(),
+            DialogueOp::AdjustDisposition { npc: "Gadrock".into(), delta: -10 },
+            "the operand is a signed char"
+        );
+        assert_eq!(operation(14, [0, 0, 0], vec![]).unwrap(), DialogueOp::CloseAndResume);
+        assert_eq!(
+            operation(12, [0, 0, 0], vec![(0, Some("WalkHome".into()))]).unwrap(),
+            DialogueOp::MonsterScriptLabel(Some("WalkHome".into()))
+        );
+        assert_eq!(
+            operation(12, [0, 0, 4], vec![(0, Some("WalkHome".into()))]).unwrap(),
+            DialogueOp::MonsterScriptLabel(None)
+        );
+        assert_eq!(operation(24, [511, 0, 0], vec![]).unwrap(), DialogueOp::PartyRemark(511));
+        assert_eq!(
+            operation(19, [0, 0, 0], vec![(0, Some("YES".into()))]).unwrap(),
+            DialogueOp::KeywordInput(vec!["YES".into()])
+        );
+        assert!(matches!(
+            operation(21, [5, 0, 0], vec![]).unwrap(),
+            DialogueOp::Unsupported { .. }
+        ));
+    }
+
+    #[test]
+    fn decodes_item_gifts_removals_and_item_answers() {
+        assert_eq!(
+            operation(9, [0x1f0, 0, 0], vec![]).unwrap(),
+            DialogueOp::GiveItem(ItemId(0x1f0))
+        );
+        assert_eq!(operation(10, [7, 0, 0], vec![]).unwrap(), DialogueOp::TakeItem(ItemId(7)));
+        assert_eq!(
+            operation(11, [7, 0, 0], vec![]).unwrap(),
+            DialogueOp::ItemQuote { item: ItemId(7), keeps: true }
+        );
+        assert_eq!(
+            operation(15, [7, 0, 0], vec![]).unwrap(),
+            DialogueOp::ItemQuote { item: ItemId(7), keeps: false }
+        );
+        assert!(matches!(
+            operation(9, [-1, 0, 0], vec![]).unwrap(),
+            DialogueOp::Unsupported { .. }
+        ));
+    }
+
+    #[test]
+    fn decodes_rewards_and_signed_faction_changes_without_guessing_bad_operands() {
+        assert_eq!(operation(16, [6000, 0, 0], vec![]).unwrap(), DialogueOp::GiveGold(6000));
+        assert_eq!(
+            operation(17, [300000, 0, 0], vec![]).unwrap(),
+            DialogueOp::GiveExperience(300000)
+        );
+        assert_eq!(
+            operation(22, [-50, 0, 0], vec![(0, Some("faction_umpani".into()))]).unwrap(),
+            DialogueOp::AdjustFaction { faction: Some(Faction::Umpani), delta: -50 }
+        );
+        assert_eq!(
+            operation(22, [5, 0, 0], vec![(0, Some("FACTION_HIGARDI".into()))]).unwrap(),
+            DialogueOp::AdjustFaction { faction: None, delta: 5 },
+            "retail's misspelt name changes nothing"
+        );
+        assert!(matches!(
+            operation(16, [-1, 0, 0], vec![]).unwrap(),
+            DialogueOp::Unsupported { .. }
+        ));
+        assert_eq!(
+            operation(22, [0x1fb, 0, 0], vec![(0, Some("FACTION_UMPANI".into()))]).unwrap(),
+            DialogueOp::AdjustFaction { faction: Some(Faction::Umpani), delta: -5 },
+            "retail truncates the operand to a char"
+        );
+    }
+
     #[test]
     fn refuses_truncation() {
         assert!(read_npcs(&[1, 0, 0, 0]).is_err());

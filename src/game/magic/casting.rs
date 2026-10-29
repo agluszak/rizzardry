@@ -32,7 +32,7 @@ pub const AUTO_POWER: u8 = MAX_POWER + 1;
 
 /// How fast spell missiles fly: retail's `energy_blast.mls` velocity of 30,
 /// advanced per two-millisecond step (`Missile.cpp`), comes to 15 m/s.
-const MISSILE_SPEED: f32 = 15.0;
+pub(crate) const MISSILE_SPEED: f32 = 15.0;
 
 /// What pays for a cast.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,18 +46,44 @@ pub enum Source {
     PoolItem(StackId),
 }
 
+impl Source {
+    /// Resolve an item source by its stable stack identity. This is routing,
+    /// not acceptance: the cast revalidates eligibility and payment.
+    pub fn spell_id(
+        self,
+        carried: Option<&Carried>,
+        inventory: &PartyInventory,
+        items: &ItemCatalog,
+    ) -> Option<SpellId> {
+        match self {
+            Self::Spell { spell, .. } => Some(spell),
+            Self::Item(id) => items.get(carried?.find_stack(id)?.item)?.spell.map(|s| s.spell),
+            Self::PoolItem(id) => items
+                .get(inventory.pool.stacks.iter().find(|s| s.id == id)?.item)?
+                .spell
+                .map(|s| s.spell),
+        }
+    }
+}
+
 /// Whom the actor aimed at; group, area, party and self spells widen or
 /// replace it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Aim {
+    Point(Vec3),
     Member(Entity),
     Monster(Entity),
+    /// Whoever stands nearest the party's heading within the spell's reach
+    /// when it is cast (retail's automatic targeting), the nearer of equals.
+    Ahead,
     /// The device attempt under way (its lock or trap), by the attempt.
     Device(Entity),
+    /// The selected stack, retained across any delayed request.
+    Item(StackId),
 }
 
 /// An accepted magic action: the source and the aim, nothing resolved yet.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MagicChoice {
     pub source: Source,
     pub aim: Aim,
@@ -127,9 +153,13 @@ pub struct Report {
     pub repeats: u32,
 }
 
+pub use super::impacts::{Finalization, Origin};
+
 /// A missile on its way: its own copy of the spell's strength and victims.
 #[derive(Component, Debug, Clone)]
 pub struct SpellInFlight {
+    pub origin: Origin,
+    pub finish: Option<Finalization>,
     pub caster: Entity,
     pub spell: SpellId,
     pub strength: Strength,
@@ -146,10 +176,15 @@ pub struct SpellInFlight {
 pub struct FlightOrder(u64);
 
 impl FlightOrder {
-    pub fn launch(&mut self, commands: &mut Commands, flights: Vec<SpellInFlight>, level: Entity) {
-        for mut flight in flights {
+    pub(crate) fn stamp(&mut self, flight: &mut SpellInFlight) {
+        if flight.launched == 0 {
             self.0 += 1;
             flight.launched = self.0;
+        }
+    }
+    pub fn launch(&mut self, commands: &mut Commands, flights: Vec<SpellInFlight>, level: Entity) {
+        for mut flight in flights {
+            self.stamp(&mut flight);
             commands.spawn((flight, crate::game::world::level::LevelOwned(level)));
         }
     }
@@ -170,6 +205,7 @@ pub enum UseContext {
     World,
     Combat,
     Camp,
+    Conversation,
     Lock,
     Trap,
 }
@@ -177,11 +213,14 @@ pub enum UseContext {
 /// Whether the game can resolve a spell: its effect is modelled, or it is
 /// one of the device spells the device interaction resolves.
 pub fn resolvable(spell: SpellId) -> bool {
-    effects::modelled(spell) || matches!(spell, SpellId::DIVINE_TRAP | SpellId::KNOCK_KNOCK)
+    effects::modelled(spell)
+        || super::utilities::spell(spell)
+        || matches!(spell, SpellId::DIVINE_TRAP | SpellId::KNOCK_KNOCK)
 }
 
 pub fn usable_now(spell: &SpellDefinition, context: UseContext) -> bool {
     match context {
+        UseContext::Conversation => super::dialogue::spell(spell.id),
         UseContext::Lock => spell.id == SpellId::KNOCK_KNOCK,
         UseContext::Trap => matches!(spell.id, SpellId::DIVINE_TRAP | SpellId::KNOCK_KNOCK),
         _ => match spell.usable {
@@ -200,6 +239,8 @@ pub struct Situation<'a> {
     /// The party, in roster order, the dead included.
     pub party: &'a [Entity],
     pub party_at: Vec3,
+    /// The way the party faces, level ([`crate::game::party::body::PartyBody::forward`]).
+    pub facing: Vec3,
     pub monsters: &'a [Candidate],
     pub group_of: &'a dyn Fn(Entity) -> Vec<Entity>,
 }
@@ -212,18 +253,42 @@ impl Situation<'_> {
         self.monsters.iter().find(|c| c.entity == monster && c.distance <= spell.reach.metres())
     }
 
+    /// The monster an automatic aim takes: of those within reach, the one
+    /// nearest the party's heading, the nearer of equals.
+    fn ahead(&self, spell: &SpellDefinition) -> Option<&Candidate> {
+        let entity = super::target_ahead(
+            self.party_at,
+            self.facing,
+            spell.reach.metres(),
+            self.monsters.iter().map(|c| (c.entity, c.at, c.distance)),
+        )?;
+        self.monsters.iter().find(|c| c.entity == entity)
+    }
+
     fn party_victims(&self) -> Vec<Victim> {
         self.party.iter().map(|&m| Victim::Member(m)).collect()
     }
 }
 
+/// Whether `target` lies within a cone's arcs along `aim`, both directions
+/// from its apex (retail `TargetInRangeAndArcs`, which tests heading and
+/// elevation independently against a 45° half arc). Range is the caller's.
+pub(crate) fn in_cone(aim: Vec3, target: Vec3) -> bool {
+    let heading = |v: Vec3| v.x.atan2(v.z);
+    let elevation = |v: Vec3| v.y.atan2(v.x.hypot(v.z));
+    let within = |a: f32, b: f32| {
+        let difference = a - b;
+        difference.sin().atan2(difference.cos()).abs() < std::f32::consts::FRAC_PI_4
+    };
+    within(heading(aim), heading(target)) && within(elevation(aim), elevation(target))
+}
+
 /// The victims a spell takes when it is cast (retail
 /// `PopulateSpellTargetMarkers`), and where its missile flies. Later movement
 /// adds nobody.
-fn capture(
+pub(crate) fn capture(
     caster: Entity,
     spell: &SpellDefinition,
-    power: u8,
     aim: Aim,
     situation: &Situation,
     forced_self: bool,
@@ -233,7 +298,8 @@ fn capture(
     }
     let aimed = || match aim {
         Aim::Monster(m) => situation.candidate(m, spell).copied().ok_or(Refusal::NoTarget),
-        Aim::Member(_) | Aim::Device(_) => Err(Refusal::NoTarget),
+        Aim::Ahead => situation.ahead(spell).copied().ok_or(Refusal::NoTarget),
+        Aim::Point(_) | Aim::Member(_) | Aim::Device(_) | Aim::Item(_) => Err(Refusal::NoTarget),
     };
     let reach = spell.reach.metres();
     Ok(match spell.targeting {
@@ -274,15 +340,11 @@ fn capture(
         // A cone fans out from the party toward the aimed monster.
         Targeting::Cone => {
             let target = aimed()?;
-            let toward = (target.at - situation.party_at).with_y(0.0);
+            let toward = target.at - situation.party_at;
             let victims = situation
                 .monsters
                 .iter()
-                .filter(|c| {
-                    c.distance <= reach
-                        && (c.at - situation.party_at).with_y(0.0).angle_between(toward)
-                            < std::f32::consts::FRAC_PI_4
-                })
+                .filter(|c| c.distance <= reach && in_cone(toward, c.at - situation.party_at))
                 .map(|c| Victim::Monster(c.entity))
                 .collect();
             (victims, Some(target.at))
@@ -290,17 +352,7 @@ fn capture(
         // A blast centred where it lands, the party too if it is that close.
         Targeting::Radius => {
             let target = aimed()?;
-            let radius = spell.radius + spell.radius_per_power * f32::from(power);
-            let mut victims: Vec<_> = situation
-                .monsters
-                .iter()
-                .filter(|c| c.at.distance(target.at) <= radius)
-                .map(|c| Victim::Monster(c.entity))
-                .collect();
-            if situation.party_at.distance(target.at) <= radius {
-                victims.extend(situation.party_victims());
-            }
-            (victims, Some(target.at))
+            (Vec::new(), Some(target.at))
         }
         Targeting::Point | Targeting::Item | Targeting::LockOrTrap => {
             return Err(Refusal::Unsupported);
@@ -384,7 +436,7 @@ fn item_strength(
     let figure = match definition.use_type {
         UseType::Instrument => u32::from(character.profession_levels[Profession::Bard]),
         UseType::Gadget => u32::from(character.profession_levels[Profession::Gadgeteer]),
-        _ => u32::from(character.level),
+        _ => u32::from(character.level()),
     };
     Strength::at(figure, spell, power, 0)
 }
@@ -493,7 +545,7 @@ fn prepare_source<'a>(
             if power == 0 {
                 return Err(Refusal::CannotUse);
             }
-            if vitals.has(Condition::Silenced) {
+            if vitals.conditions.has(Condition::Silenced) {
                 return Err(Refusal::Silenced);
             }
             let (learned, pool) = points.get(caster).map_err(|_| Refusal::NotLearned)?;
@@ -501,7 +553,8 @@ fn prepare_source<'a>(
                 return Err(Refusal::NotLearned);
             }
             let definition = spells.get(spell).ok_or(Refusal::MissingContent)?;
-            if pool.affordable_power(definition) == 0 {
+            let maximum = profile.stats(&vitals.enchantments).max_points(learned, spells);
+            if pool.affordable_power(definition, &maximum) == 0 {
                 return Err(Refusal::NoSpellPoints);
             }
             (definition, power.min(AUTO_POWER), None, false)
@@ -532,7 +585,9 @@ fn prepare_source<'a>(
             if stack.remaining_uses() == Some(0) {
                 return Err(Refusal::NoCharges);
             }
-            if definition.use_type == UseType::Instrument && vitals.has(Condition::Silenced) {
+            if definition.use_type == UseType::Instrument
+                && vitals.conditions.has(Condition::Silenced)
+            {
                 return Err(Refusal::Silenced);
             }
             let spell = spells.get(cast.spell).ok_or(Refusal::MissingContent)?;
@@ -574,6 +629,9 @@ pub fn perform(
     if !effects::modelled(spell.id) {
         return Err(Refusal::Unsupported);
     }
+    if !super::impacts::ready(spell.id, spells) {
+        return Err(Refusal::MissingContent);
+    }
     if !usable_now(spell, situation.context) {
         return Err(Refusal::WrongTime);
     }
@@ -585,10 +643,24 @@ pub fn perform(
     }
     // Instruments can pay fatigue while finding power, so validate the target
     // first. Radius changes may widen victims but cannot rescue an invalid aim.
-    capture(caster, spell, power.min(MAX_POWER), choice.aim, situation, forced_self)?;
+    let (targets, _) = capture(caster, spell, choice.aim, situation, forced_self)?;
+    if (spell.targeting == Targeting::Radius
+        || spell.id == SpellId::BOILING_BLOOD
+        || targets.iter().any(|victim| matches!(victim, Victim::Monster(_))))
+        && (world.species.is_none() || !world.monsters.ready())
+    {
+        return Err(Refusal::MissingContent);
+    }
+    if (spell.targeting == Targeting::Radius
+        || spell.id == SpellId::BOILING_BLOOD
+        || spell.id == SpellId::RING_OF_FIRE)
+        && world.visibility.is_none()
+    {
+        return Err(Refusal::MissingContent);
+    }
     let power = match &item {
         Some(use_) if matches!(use_.definition.use_type, UseType::Instrument | UseType::Gadget) => {
-            play(caster, &character, use_, spell, rng, world)?
+            play(caster, &character, use_, spell, rng, world.members)?
         }
         _ => power,
     };
@@ -609,15 +681,20 @@ pub fn perform(
         let cast_power = match &item {
             Some(_) => power,
             None => {
-                let (_, pool) = points.get(caster).map_err(|_| Refusal::NotLearned)?;
-                let affordable = pool.affordable_power(spell);
+                let (learned, pool) = points.get(caster).map_err(|_| Refusal::NotLearned)?;
+                let maximum = world.mana_maximum(caster, learned).ok_or(Refusal::MissingContent)?;
+                let affordable = pool.affordable_power(spell, &maximum);
                 if affordable == 0 {
                     break;
                 }
                 if auto {
                     let victim = match choice.aim {
                         Aim::Member(m) => world.members.get(m).ok(),
-                        Aim::Monster(_) | Aim::Device(_) => None,
+                        Aim::Ahead
+                        | Aim::Point(_)
+                        | Aim::Monster(_)
+                        | Aim::Device(_)
+                        | Aim::Item(_) => None,
                     };
                     auto_power(&character, spell, victim.map(|(c, v, ..)| (c, v)), affordable)
                 } else {
@@ -625,13 +702,48 @@ pub fn perform(
                 }
             }
         };
-        let (victims, landing) =
-            capture(caster, spell, cast_power, choice.aim, situation, forced_self)?;
+        let (mut victims, landing) = capture(caster, spell, choice.aim, situation, forced_self)?;
+        if spell.targeting == Targeting::Radius && !forced_self {
+            let centre = landing.ok_or(Refusal::NoTarget)?;
+            victims = super::targeting::radius(
+                world,
+                centre,
+                centre,
+                spell.radius + spell.radius_per_power * f32::from(cast_power),
+                Some(situation.party_at),
+                super::targeting::Recipients::Opponents(crate::game::world::hostility::own_stance(
+                    crate::game::world::hostility::Stance::Friendly,
+                    world
+                        .members
+                        .get(caster)
+                        .is_ok_and(|(_, vitals, ..)| vitals.conditions.has(Condition::Turncoat)),
+                )),
+            );
+        }
+        // A spell aimed at enemies provokes those it is cast at, whatever
+        // the roll (retail `MakeTargetGroupHostile` as the action starts).
+        if first && spell.aimed_at_enemies() {
+            for victim in &victims {
+                if let Victim::Monster(monster) = *victim {
+                    world.provoke(monster);
+                }
+            }
+        }
         // Accepted: roll, then pay whatever the roll.
         let (chance, quiet, strength) =
             attempt(&character, item.as_ref(), spell, cast_power, world.difficulty);
-        let outcome = super::roll(rng, chance, spell, quiet);
-        pay(caster, spell, cast_power, item.as_ref(), points, rng, world, &mut report)?;
+        let outcome = super::roll(rng, chance, spell, quiet, world.underwater);
+        pay(
+            caster,
+            spell,
+            cast_power,
+            item.as_ref(),
+            points,
+            rng,
+            world.members,
+            world.inventory,
+            &mut report,
+        )?;
         let victims = match outcome {
             Outcome::Cast => victims,
             Outcome::Backfired => backfire_victims(caster, spell, situation),
@@ -640,21 +752,58 @@ pub fn perform(
         // Missiles fly to their victims, one each, or to where they burst; a
         // backfire turns on the party at once.
         let flies = spell.missile.is_some() && outcome == Outcome::Cast && !victims.is_empty();
+        let origin = if outcome == Outcome::Backfired {
+            match spell.targeting {
+                Targeting::Enemy | Targeting::Ally => match choice.aim {
+                    Aim::Monster(entity) => Origin::Actor(Victim::Monster(entity)),
+                    Aim::Member(entity) => Origin::Actor(Victim::Member(entity)),
+                    _ => Origin::Actor(Victim::Member(caster)),
+                },
+                Targeting::EnemyGroup => match choice.aim {
+                    Aim::Monster(entity) => {
+                        Origin::Actor(Victim::Monster(world.monsters.leader(entity)))
+                    }
+                    _ => Origin::Actor(Victim::Member(caster)),
+                },
+                Targeting::Radius | Targeting::Cone => Origin::Point {
+                    at: landing.unwrap_or(situation.party_at),
+                    owner: Some(Victim::Member(caster)),
+                },
+                _ => Origin::Actor(Victim::Member(caster)),
+            }
+        } else {
+            Origin::Actor(Victim::Member(caster))
+        };
+        let strength = if outcome == Outcome::Backfired {
+            Strength::at(origin.figure(world, spell), spell, strength.power, strength.boost)
+        } else {
+            strength
+        };
+        let finish = Finalization {
+            aim: landing
+                .filter(|_| matches!(spell.targeting, Targeting::Radius | Targeting::Cone))
+                .map_or(choice.aim, Aim::Point),
+            victims: victims.clone(),
+            reflected: false,
+        };
+        let first_flight = flights.len();
         let landed = if flies {
-            let arrives = |to: Vec3| {
-                let seconds = to.distance(situation.party_at) / MISSILE_SPEED;
-                Timer::from_seconds(seconds, TimerMode::Once)
+            // One missile to where a burst lands, else one to each victim.
+            let flight = |victims: Vec<Victim>, to: Vec3| SpellInFlight {
+                origin,
+                finish: None,
+                caster,
+                spell: spell.id,
+                strength,
+                victims,
+                arrives: Timer::from_seconds(
+                    to.distance(situation.party_at) / MISSILE_SPEED,
+                    TimerMode::Once,
+                ),
+                launched: 0,
             };
             if spell.targeting == Targeting::Radius {
-                let to = landing.unwrap_or(situation.party_at);
-                flights.push(SpellInFlight {
-                    caster,
-                    spell: spell.id,
-                    strength,
-                    victims: victims.clone(),
-                    arrives: arrives(to),
-                    launched: 0,
-                });
+                flights.push(flight(victims.clone(), landing.unwrap_or(situation.party_at)));
             } else {
                 for &victim in &victims {
                     let to = match victim {
@@ -665,32 +814,39 @@ pub fn perform(
                             .map_or(situation.party_at, |c| c.at),
                         Victim::Member(_) => situation.party_at,
                     };
-                    let victims = vec![victim];
-                    flights.push(SpellInFlight {
-                        caster,
-                        spell: spell.id,
-                        strength,
-                        victims,
-                        arrives: arrives(to),
-                        launched: 0,
-                    });
+                    flights.push(flight(vec![victim], to));
                 }
             }
+            super::impacts::attach(&mut flights[first_flight..], finish);
             Vec::new()
         } else {
-            effects::resolve(
+            super::impacts::resolve(
+                caster,
+                origin,
                 outcome == Outcome::Backfired,
                 spell,
                 strength,
                 &victims,
+                Some(&finish),
+                situation.party_at,
+                spells,
                 rng,
                 world,
                 &mut *points,
+                &mut flights,
             )
         };
         // Practice follows what the cast did; a missile on its way counts.
         if outcome != Outcome::Fizzled && (flies || effects::affected(&landed)) {
-            practise(caster, &character, spell, cast_power, item.as_ref(), rng, world);
+            world.improved.extend(practise(
+                caster,
+                &character,
+                spell,
+                cast_power,
+                item.as_ref(),
+                rng,
+                world.members,
+            ));
         }
         if first {
             report.power = cast_power;
@@ -705,7 +861,13 @@ pub fn perform(
         // An auto cast tries again while it fizzles, and auto recast goes on
         // until its victim is whole, while stamina and points last.
         let stamina = world.members.get(caster).map_or(0, |(_, v, ..)| v.stamina);
-        let left = points.get(caster).map_or(0, |(_, p)| spell.realm.map_or(0, |r| p.current[r]));
+        let left = points
+            .get(caster)
+            .ok()
+            .and_then(|(learned, pool)| {
+                Some(pool.available(spell.realm?, &world.mana_maximum(caster, learned)?))
+            })
+            .unwrap_or(0);
         let again = auto
             && stamina > u32::from(spell.level)
             && left >= spell.cost
@@ -724,27 +886,27 @@ pub fn perform(
     Ok((report, flights))
 }
 
-/// Execute the shared source side of a device operation while the exclusive
-/// caller owns target validation and applies the device consequence immediately.
-pub(crate) fn perform_device(
+/// Execute the source side of a utility or device cast. The exclusive caller
+/// validates its target first and applies the consequence immediately.
+pub(crate) fn perform_utility(
     caster: Entity,
     source: Source,
     context: UseContext,
     spells: &SpellCatalog,
     points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
     rng: &mut GameRng,
-    world: &mut Field,
+    members: &mut crate::game::party::Members,
+    inventory: &mut PartyInventory,
+    items: &ItemCatalog,
+    difficulty: Difficulty,
+    underwater: bool,
 ) -> Result<(Report, Strength), Refusal> {
-    let Prepared { character, spell, power, item, .. } = prepare_source(
-        caster,
-        source,
-        false,
-        (spells, world.items),
-        world.members,
-        points,
-        world.inventory,
-    )?;
-    if !matches!(context, UseContext::Lock | UseContext::Trap) || !usable_now(spell, context) {
+    let Prepared { character, spell, power, item, .. } =
+        prepare_source(caster, source, false, (spells, items), members, points, inventory)?;
+    if !(matches!(context, UseContext::Lock | UseContext::Trap)
+        || super::utilities::spell(spell.id))
+        || !usable_now(spell, context)
+    {
         return Err(Refusal::WrongTime);
     }
     if spell.realm.is_none() {
@@ -752,19 +914,21 @@ pub(crate) fn perform_device(
     }
     let power = match &item {
         Some(use_) if matches!(use_.definition.use_type, UseType::Instrument | UseType::Gadget) => {
-            play(caster, &character, use_, spell, rng, world)?
+            play(caster, &character, use_, spell, rng, members)?
         }
         Some(_) => power,
-        None => power
-            .min(MAX_POWER)
-            .min(points.get(caster).map_err(|_| Refusal::NotLearned)?.1.affordable_power(spell)),
+        None => {
+            let (learned, pool) = points.get(caster).map_err(|_| Refusal::NotLearned)?;
+            let vitals = members.get(caster).map_err(|_| Refusal::CannotAct)?.1;
+            let maximum = character.stats(&vitals.enchantments).max_points(learned, spells);
+            power.min(MAX_POWER).min(pool.affordable_power(spell, &maximum))
+        }
     };
     if power == 0 {
         return Err(Refusal::NoSpellPoints);
     }
-    let (chance, quiet, strength) =
-        attempt(&character, item.as_ref(), spell, power, world.difficulty);
-    let outcome = super::roll(rng, chance, spell, quiet);
+    let (chance, quiet, strength) = attempt(&character, item.as_ref(), spell, power, difficulty);
+    let outcome = super::roll(rng, chance, spell, quiet, underwater);
     let mut report = Report {
         caster,
         spell: spell.id,
@@ -775,10 +939,9 @@ pub(crate) fn perform_device(
         improved: Vec::new(),
         repeats: 0,
     };
-    pay(caster, spell, power, item.as_ref(), points, rng, world, &mut report)?;
+    pay(caster, spell, power, item.as_ref(), points, rng, members, inventory, &mut report)?;
     // Retail considers these utility spells affected even on a fizzle.
-    practise(caster, &character, spell, power, item.as_ref(), rng, world);
-    report.improved = std::mem::take(&mut world.improved);
+    report.improved.extend(practise(caster, &character, spell, power, item.as_ref(), rng, members));
     Ok((report, strength))
 }
 
@@ -814,7 +977,7 @@ fn play(
     use_: &ItemUse,
     spell: &SpellDefinition,
     rng: &mut GameRng,
-    world: &mut Field,
+    members: &mut crate::game::party::Members,
 ) -> Result<u8, Refusal> {
     let mut power = MAX_POWER;
     while power > 0
@@ -827,8 +990,7 @@ fn play(
         power -= 1;
         chance = chance.saturating_sub(7);
     }
-    let (mut profile, mut vitals, ..) =
-        world.members.get_mut(caster).map_err(|_| Refusal::CannotAct)?;
+    let (mut profile, mut vitals, ..) = members.get_mut(caster).map_err(|_| Refusal::CannotAct)?;
     vitals.spend_stamina(u32::from(spell.level) * 8 + 20);
     if power == 0 {
         // The refusal carries the practice, since no report follows it.
@@ -848,21 +1010,21 @@ fn pay(
     item: Option<&ItemUse>,
     points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
     rng: &mut GameRng,
-    world: &mut Field,
+    members: &mut crate::game::party::Members,
+    inventory: &mut PartyInventory,
     report: &mut Report,
 ) -> Result<(), Refusal> {
     let fatigue = match item {
         None => {
             let (_, mut pool) = points.get_mut(caster).map_err(|_| Refusal::NotLearned)?;
             let realm = spell.realm.ok_or(Refusal::MissingContent)?;
-            pool.current[realm] = pool.current[realm].saturating_sub(spell.cost_at(power));
+            pool.spend(realm, spell.cost_at(power));
             super::cast_fatigue(spell, power)
         }
         Some(use_) => {
             let consumed = match use_.owner {
-                ItemOwner::Pool => world.inventory.pool.consume_use(use_.id, use_.definition),
-                ItemOwner::Member(owner) => world
-                    .members
+                ItemOwner::Pool => inventory.pool.consume_use(use_.id, use_.definition),
+                ItemOwner::Member(owner) => members
                     .get_mut(owner)
                     .map_err(|_| Refusal::NoItem)?
                     .2
@@ -871,7 +1033,7 @@ fn pay(
             if !consumed {
                 return Err(Refusal::NoItem);
             }
-            let (_, vitals, ..) = world.members.get(caster).map_err(|_| Refusal::CannotAct)?;
+            let (_, vitals, ..) = members.get(caster).map_err(|_| Refusal::CannotAct)?;
             report.item = Some(use_.definition.name.clone());
             match use_.definition.use_type {
                 UseType::Thrown => 10,
@@ -879,16 +1041,15 @@ fn pay(
                 UseType::Instrument | UseType::Gadget => 0,
                 _ => {
                     let base = rng.below(2) + 1;
-                    if vitals.has(Condition::Diseased) { base * 2 } else { base }
+                    if vitals.conditions.has(Condition::Diseased) { base * 2 } else { base }
                 }
             }
         }
     };
     // Action fatigue weighs more under load (retail `FatigueCharacter`).
-    let (_, mut vitals, _, burden) =
-        world.members.get_mut(caster).map_err(|_| Refusal::CannotAct)?;
-    let slowed = vitals.has(Condition::Slowed);
-    let hasted = vitals.enchantments.get(crate::content::spells::SpellId::HASTE).is_some();
+    let (_, mut vitals, _, burden) = members.get_mut(caster).map_err(|_| Refusal::CannotAct)?;
+    let slowed = vitals.conditions.has(Condition::Slowed);
+    let hasted = vitals.enchantments.has(crate::content::spells::SpellId::HASTE);
     vitals.spend_stamina(burden.load.scale_fatigue(fatigue, slowed, hasted));
     Ok(())
 }
@@ -903,8 +1064,9 @@ fn practise(
     power: u8,
     item: Option<&ItemUse>,
     rng: &mut GameRng,
-    world: &mut Field,
-) {
+    members: &mut crate::game::party::Members,
+) -> Vec<(Entity, Skill)> {
+    let mut improved = Vec::new();
     let practice: Vec<(Skill, u32)> = match item {
         None => {
             let index = u32::from(spell.level) + u32::from(power);
@@ -924,13 +1086,14 @@ fn practise(
             .map(|skill| vec![(skill, u32::from(spell.level) + u32::from(power) / 2)])
             .unwrap_or_default(),
     };
-    if let Ok((mut profile, ..)) = world.members.get_mut(caster) {
+    if let Ok((mut profile, ..)) = members.get_mut(caster) {
         for (skill, usage) in practice {
             if profile.practise(skill, usage, rng) {
-                world.improved.push((caster, skill));
+                improved.push((caster, skill));
             }
         }
     }
+    improved
 }
 
 /// The spells and items an actor could use: what menus offer. Execution
@@ -943,13 +1106,38 @@ pub fn usable_items(
     carried
         .stacks()
         .filter_map(|stack| {
-            let definition = items.get(stack.item)?;
-            let cast = definition.spell?;
             let worn =
                 carried.active_equipment().any(|(_, equipped)| equipped.stack.id == stack.id);
-            let usable = can_activate(character, definition, worn);
-            let charged = stack.remaining_uses() != Some(0);
-            (usable && charged && resolvable(cast.spell)).then_some((stack.id, cast.spell))
+            Some((stack.id, usable_stack(character, stack, items, worn)?))
         })
         .collect()
+}
+
+/// The spell a stack casts for `character`, if they can use it now: one
+/// they may activate (worn, if it must be), with a charge left, whose
+/// effect the game resolves.
+pub fn usable_stack(
+    character: &Character,
+    stack: &crate::game::inventory::ItemStack,
+    items: &crate::content::items::ItemCatalog,
+    worn: bool,
+) -> Option<SpellId> {
+    let definition = items.get(stack.item)?;
+    let cast = definition.spell?;
+    (can_activate(character, definition, worn)
+        && stack.remaining_uses() != Some(0)
+        && resolvable(cast.spell))
+    .then_some(cast.spell)
+}
+
+/// Whether a learned spell can be cast in `context` with `affordable`
+/// power within reach: as the cast itself checks, points for it, an effect
+/// the game resolves, the moment for it and no silence.
+pub fn castable(
+    spell: &SpellDefinition,
+    affordable: u8,
+    context: UseContext,
+    silenced: bool,
+) -> bool {
+    affordable > 0 && resolvable(spell.id) && usable_now(spell, context) && !silenced
 }

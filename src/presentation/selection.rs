@@ -34,7 +34,7 @@ pub struct WorldSelection {
 }
 
 pub fn select_world_target(
-    freedom: crate::game::screen::Freedom,
+    input: super::screen::WorldInput,
     pointers: Query<(&PointerId, &PointerLocation)>,
     camera: Query<(&Camera, &GlobalTransform), With<PartyCamera>>,
     mut meshes: MeshRayCast,
@@ -47,7 +47,7 @@ pub fn select_world_target(
     mut selection: ResMut<WorldSelection>,
 ) {
     *selection = WorldSelection::default();
-    if !freedom.free() {
+    if !input.free() {
         return;
     }
     // A pointer over a control or panel drawn over the view (the spell

@@ -15,6 +15,7 @@ pub mod frontend;
 pub mod hover;
 pub mod inventory;
 pub mod journal;
+mod lighting;
 pub mod main_screen;
 pub mod monsters;
 mod morph_picking;
@@ -22,9 +23,11 @@ pub mod music;
 pub mod names;
 pub mod notices;
 pub mod options;
+mod particles;
 pub mod party_view;
 mod party_voice;
 pub mod retail_controls;
+pub mod screen;
 pub mod screen_art;
 pub mod selection;
 pub mod settings;
@@ -34,6 +37,7 @@ mod surfaces;
 mod test_input;
 pub mod textures;
 pub mod voice;
+mod water_view;
 pub mod world_items;
 
 use bevy::prelude::*;
@@ -55,17 +59,16 @@ impl Default for PresentationRng {
     }
 }
 
-/// Exploring takes input only while gameplay says the party is free
-/// (`game::screen`); presentation routes input by that rule, it does not
-/// make it.
+/// Exploring takes input only while the world screen is up and gameplay
+/// says the party is free ([`screen::WorldInput`]).
 fn hold_exploration(
     mut commands: Commands,
-    freedom: crate::game::screen::Freedom,
+    input: screen::WorldInput,
     focus: Res<bevy::input_focus::InputFocus>,
     widgets: Query<(), With<bevy::input_focus::tab_navigation::TabIndex>>,
     controls: Query<(Entity, Option<&ContextActivity<Exploration>>), With<Exploration>>,
 ) {
-    let active = freedom.free() && !focus.get().is_some_and(|entity| widgets.contains(entity));
+    let active = input.free() && !focus.get().is_some_and(|entity| widgets.contains(entity));
     for (entity, activity) in &controls {
         if activity.is_none_or(|a| **a != active) {
             commands.entity(entity).insert(ContextActivity::<Exploration>::new(active));
@@ -76,6 +79,8 @@ fn hold_exploration(
 impl Plugin for PresentationPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((
+            lighting::plugin,
+            particles::plugin,
             main_screen::MainScreenPlugin,
             conversation::ConversationViewPlugin,
             inventory::InventoryPlugin,
@@ -89,6 +94,7 @@ impl Plugin for PresentationPlugin {
             multi_click_interval: std::time::Duration::from_millis(400),
             ..default()
         })
+        .init_state::<screen::Screen>()
         .add_input_context::<Exploration>()
         .add_observer(retail_controls::primary_buttons_only)
         .add_observer(party_view::attach_camera)
@@ -110,7 +116,7 @@ impl Plugin for PresentationPlugin {
         .init_resource::<PresentationRng>()
         .add_input_context::<automap::MapKey>()
         .add_input_context::<automap::AutomapScreen>()
-        .add_systems(OnEnter(crate::game::screen::Screen::Automap), automap::enter_automap)
+        .add_systems(OnEnter(crate::presentation::screen::Screen::Automap), automap::enter_automap)
         .add_systems(
             PreUpdate,
             (hold_exploration, automap::route_map_keys)
@@ -155,6 +161,7 @@ impl Plugin for PresentationPlugin {
             PostUpdate,
             (
                 party_voice::queue_device_remarks.run_if(crate::game::world::level::level_active),
+                party_voice::queue_dialogue_remarks.run_if(crate::game::world::level::level_active),
                 party_voice::play_device_remarks,
             )
                 .chain()
@@ -177,6 +184,8 @@ impl Plugin for PresentationPlugin {
             (
                 screen_art::scale_ui,
                 party_view::aim_camera.after(crate::game::GameplaySet::Combat),
+                water_view::sway,
+                party_view::track_fights.after(crate::game::GameplaySet::Combat),
                 camp::show_camp,
                 (
                     automap::request_automap,
@@ -252,7 +261,8 @@ impl Plugin for PresentationPlugin {
 #[cfg(test)]
 mod focus_tests {
     use super::*;
-    use crate::game::{screen::Screen, world::level::Level};
+    use crate::game::world::level::Level;
+    use crate::presentation::screen::Screen;
     use bevy::input_focus::{InputFocus, tab_navigation::TabIndex};
 
     #[test]

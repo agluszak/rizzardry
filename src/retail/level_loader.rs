@@ -224,11 +224,12 @@ fn sound_path(name: &str) -> String {
 
 /// A level's ambient sound, with Whizzardry `AddAmbientSound`'s defaults:
 /// unset volumes are full (127 of 127), unset times 5 to 20 seconds.
-fn ambient_sound(sound: &AmbientSound) -> AmbientSoundModel {
+fn ambient_sound(name: &str, sound: &AmbientSound) -> AmbientSoundModel {
     let or = |value: i32, default: i32| if value == -1 { default } else { value };
     let volume = |v: i32| or(v, 127).clamp(0, 127) as f32 / 127.0;
     let seconds = |ms: i32| ms.max(0) as f32 / 1000.0;
     AmbientSoundModel {
+        name: name.into(),
         path: sound_path(&sound.wave),
         position: retail_position(sound.position),
         radius: sound.radius / UNITS_PER_METRE,
@@ -241,18 +242,18 @@ fn ambient_sound(sound: &AmbientSound) -> AmbientSoundModel {
     }
 }
 
-/// Placed monsters with their models, in Bevy space. Unborn ones wait for a
-/// script that is not implemented yet, so they are left out.
+/// Placed monsters with their models, in Bevy space, the unborn among
+/// them.
 fn monster_placements(placements: &[Placement]) -> Vec<MonsterPlacement> {
     placements
         .iter()
-        .filter(|placement| !placement.unborn)
         .map(|placement| MonsterPlacement {
             location: placement.location,
             group: placement.group,
             species: placement.species,
             position: retail_position(placement.position),
             yaw: retail_yaw(placement.yaw, [0.0, 1.0, 0.0]),
+            unborn: placement.unborn,
         })
         .collect()
 }
@@ -404,26 +405,93 @@ fn decode_action(
                 sections.cameras.iter().position(|camera| camera.name.eq_ignore_ascii_case(name))
             })
             .map_or(TriggerAction::Unsupported(code), TriggerAction::CameraPath),
-        action::RELAY => TriggerAction::Relay,
-        action::TELEPORT | action::RANDOM_TELEPORT => teleport_arrival(sections, item)
+        action::START_AMBIENT_SOUND | action::STOP_AMBIENT_SOUND | action::TOGGLE_AMBIENT_SOUND => {
+            TriggerAction::AmbientSounds {
+                names: item.recipients().map(str::to_uppercase).collect(),
+                change: match code {
+                    action::START_AMBIENT_SOUND => StateChange::Set,
+                    action::STOP_AMBIENT_SOUND => StateChange::Clear,
+                    _ => StateChange::Toggle,
+                },
+            }
+        }
+        action::TOGGLE_LIGHTS | action::ENABLE_LIGHTS | action::DISABLE_LIGHTS => {
+            TriggerAction::Lights {
+                sources: item
+                    .recipients()
+                    .filter_map(|name| {
+                        sections
+                            .lights
+                            .iter()
+                            .rev()
+                            .find(|light| light.name.eq_ignore_ascii_case(name))
+                            .map(|light| (light.name.to_uppercase(), light.enabled))
+                    })
+                    .collect(),
+                change: match code {
+                    action::ENABLE_LIGHTS => StateChange::Set,
+                    action::DISABLE_LIGHTS => StateChange::Clear,
+                    _ => StateChange::Toggle,
+                },
+            }
+        }
+        action::START_PARTICLES | action::STOP_PARTICLES | action::TOGGLE_PARTICLES => {
+            TriggerAction::Particles {
+                sources: item
+                    .recipients()
+                    .filter_map(|name| {
+                        sections
+                            .particles
+                            .iter()
+                            .position(|p| p.config.name.eq_ignore_ascii_case(name))
+                    })
+                    .collect(),
+                change: match code {
+                    action::START_PARTICLES => StateChange::Set,
+                    action::STOP_PARTICLES => StateChange::Clear,
+                    _ => StateChange::Toggle,
+                },
+            }
+        }
+        action::RELAY => TriggerAction::Relay(first),
+        action::CAMERA_SWAY => TriggerAction::CameraSway,
+        action::ENABLE_DEVICES => TriggerAction::SetDevices(StateChange::Set),
+        action::DISABLE_DEVICES => TriggerAction::SetDevices(StateChange::Clear),
+        action::TOGGLE_DEVICES => TriggerAction::SetDevices(StateChange::Toggle),
+        action::TELEPORT => teleport_arrival(sections, item)
             .map_or(TriggerAction::Unsupported(code), TriggerAction::Teleport),
+        action::RANDOM_TELEPORT => super::links::random_arrivals(sections, item)
+            .map_or(TriggerAction::Unsupported(code), TriggerAction::RandomTeleport),
         action::HURT_PARTY => TriggerAction::HurtParty(Dice {
             count: or(first, 1) as u8,
             sides: or(second, 6) as u8,
             base: or(third, 2) as i16,
         }),
         action::DAMAGE_ZONE => TriggerAction::DamageZone,
-        action::STAMINA_FOUNTAIN | action::HEALTH_FOUNTAIN => TriggerAction::Fountain(Fountain {
-            restores: if code == action::HEALTH_FOUNTAIN {
-                Restores::Health
-            } else {
-                Restores::Stamina
-            },
-            amount: third.max(0) as u32,
-            uses: (first != -1).then_some(first.max(0) as u32),
-            // Its second word counts retail's 720-second game hours.
-            refills_after: (second > 0).then(|| second as u64 * 720 * 1000),
-        }),
+        action::STAMINA_FOUNTAIN
+        | action::HEALTH_FOUNTAIN
+        | action::MAGIC_FOUNTAIN
+        | action::RESTORATIVE_FOUNTAIN => {
+            TriggerAction::Fountain(Fountain {
+                restores: match code {
+                    action::HEALTH_FOUNTAIN => Restores::Health,
+                    action::MAGIC_FOUNTAIN => Restores::Magic,
+                    action::RESTORATIVE_FOUNTAIN => Restores::Restoration,
+                    _ => Restores::Stamina,
+                },
+                // RestorePartySpellPoints treats a negative amount as full.
+                amount: if matches!(code, action::MAGIC_FOUNTAIN | action::RESTORATIVE_FOUNTAIN)
+                    && third < 0
+                {
+                    u32::MAX
+                } else {
+                    third.max(0) as u32
+                },
+                uses: (first != -1).then_some(first.max(0) as u32),
+                // Its second word counts retail's 720-second game hours.
+                refills_after: (second > 0).then(|| second as u64 * 720 * 1000),
+            })
+        }
         action::SHAKE => TriggerAction::Shake {
             seconds: if third == -1 { 1.0 } else { third.unsigned_abs() as f32 / 1000.0 },
             intensity: if first == -1 { 800.0 } else { first as f32 },
@@ -431,6 +499,7 @@ fn decode_action(
         },
         action::DIAL => TriggerAction::Dial,
         action::SOUND => TriggerAction::Sound,
+        other if action::NO_RUNTIME_ACTIONS.contains(&other) => TriggerAction::NoRuntimeAction,
         other => TriggerAction::Unsupported(other),
     }
 }
@@ -488,7 +557,7 @@ pub(super) async fn build_props(
     source: impl Iterator<Item = &Prop>,
     directory: &str,
     textures: &mut LoadedTextures,
-    lighting: &PropLighting<'_>,
+    lighting: &PropLighting,
 ) -> Vec<PropVisual> {
     let mut props = Vec::new();
     for (prop_index, prop) in source.enumerate() {
@@ -506,7 +575,7 @@ pub(super) async fn build_props(
             }
             let mut meshes = Vec::new();
             for (material, mesh, lighting) in
-                record_meshes(record, &transform, lighting, |m| part_materials[m].emission)
+                record_meshes(record, lighting, |m| part_materials[m].emission)
             {
                 let label = format!("prop/{prop_index}/{part_index}/mesh/{material}");
                 let mesh = context.add_labeled_asset(label, mesh);
@@ -568,17 +637,31 @@ impl AssetLoader for PvlLoader {
             }
         }
         let level_lighting = level_lighting(&sections.lights, sections.environment_offset);
-        let lighting = PropLighting { ambient, level: &level_lighting };
+        let lighting = PropLighting { ambient, offset: level_lighting.offset };
         let props = sections.props.iter().chain(&sections.bitmaps);
         let props = build_props(context, props, directory, &mut textures, &lighting).await;
+        let mut particles = Vec::with_capacity(sections.particles.len());
+        for (index, particle) in sections.particles.iter().enumerate() {
+            let surface = load_material(
+                context,
+                format!("particle/{index}/material"),
+                directory,
+                &mut textures,
+                1,
+                &particle.material,
+            )
+            .await;
+            particles.push(surface);
+        }
         Ok(LevelGeometry {
+            particles,
             parts,
             environment,
             lighting: level_lighting,
             ambient_sounds: sections
                 .all_triggers()
                 .filter_map(|trigger| match &trigger.kind {
-                    TriggerKind::AmbientSound(sound) => Some(ambient_sound(sound)),
+                    TriggerKind::AmbientSound(sound) => Some(ambient_sound(&trigger.name, sound)),
                     _ => None,
                 })
                 .collect(),
@@ -589,6 +672,37 @@ impl AssetLoader for PvlLoader {
     fn extensions(&self) -> &[&str] {
         &["pvl"]
     }
+}
+
+/// A level's random encounters: its generators, with the tables they draw
+/// from and its row of `LEVELS.DBS`. A level with generators needs both
+/// databases.
+async fn level_encounters(
+    context: &mut LoadContext<'_>,
+    state: &[u8],
+    level: usize,
+) -> Result<crate::content::level::Encounters, LoadError> {
+    let tables = context
+        .read_asset_bytes(AssetPath::from(crate::content::paths::ENCOUNTER_TABLES))
+        .await
+        .map_err(LoadError::from)
+        .and_then(|bytes| Ok(super::encounters::read_tables(&bytes)?));
+    let generators = match &tables {
+        Ok(tables) => super::encounters::read_generators(state, tables)?,
+        // Without the tables, a level whose state has no generators needs
+        // none.
+        Err(_) => super::encounters::read_generators(state, &[])?,
+    };
+    let Some(mut encounters) = generators else { return Ok(default()) };
+    if encounters.generators.is_empty() {
+        return Ok(encounters);
+    }
+    tables?;
+    let levels =
+        context.read_asset_bytes(AssetPath::from(crate::content::paths::LEVEL_RECORDS)).await?;
+    encounters.limits = super::encounters::read_limits(&levels, level)?
+        .ok_or_else(|| LoadError::Invalid(format!("LEVELS.DBS has no row for level {level}")))?;
+    Ok(encounters)
 }
 
 /// Gameplay loading is independent of textures, meshes, materials and skies.
@@ -636,18 +750,26 @@ impl AssetLoader for PvlDefinitionLoader {
 
         // Who stands where and what lies about; levels without a state file
         // are empty, but one that cannot be read fails the level.
-        let (monsters, items, locks) = match sibling(context, ".", &format!("{stem}.sts")) {
+        let state = match sibling(context, ".", &format!("{stem}.sts")) {
             Some(path) => match context.read_asset_bytes(path).await {
-                Ok(state) => {
-                    let items = read_world_items(&state)?.iter().map(item_placement).collect();
-                    (monster_placements(&read_placements(&state)?), items, read_locks(&state)?)
-                }
+                Ok(state) => Some(state),
                 Err(bevy::asset::ReadAssetBytesError::AssetReaderError(
                     bevy::asset::io::AssetReaderError::NotFound(_),
-                )) => (vec![], vec![], vec![]),
+                )) => None,
                 Err(error) => return Err(error.into()),
             },
+            None => None,
+        };
+        let (monsters, items, locks) = match &state {
+            Some(state) => {
+                let items = read_world_items(state)?.iter().map(item_placement).collect();
+                (monster_placements(&read_placements(state)?), items, read_locks(state)?)
+            }
             None => (vec![], vec![], vec![]),
+        };
+        let encounters = match (&state, level_index) {
+            (Some(state), Some(index)) => level_encounters(context, state, index).await?,
+            _ => default(),
         };
 
         let (mut triggers, prop_triggers) = level_triggers(&sections);
@@ -677,7 +799,43 @@ impl AssetLoader for PvlDefinitionLoader {
                 trigger,
             })
             .collect();
+        // Texture expiry follows frame-list metadata, never image readiness.
+        let mut particles = Vec::with_capacity(sections.particles.len());
+        for particle in &sections.particles {
+            let mut config = particle.config.clone();
+            if particle.texture_expiry {
+                use crate::content::particles::ParticleLifetime;
+                let ParticleLifetime::Timed(fallback) = config.lifetime else { unreachable!() };
+                let frames = if let Some((_, file)) = particle.material.texture()
+                    && file.to_lowercase().ends_with(".ifl")
+                    && let Some(path) = sibling(context, "bitmaps", file)
+                    && let Ok(bytes) = context.read_asset_bytes(path).await
+                {
+                    ifl_frames(&String::from_utf8_lossy(&bytes)).len()
+                } else {
+                    0
+                };
+                config.lifetime = if frames == 0 {
+                    ParticleLifetime::Timed(if fallback.is_zero() {
+                        std::time::Duration::from_secs(1)
+                    } else {
+                        fallback
+                    })
+                } else if particle.material.animation_mode == 2
+                    && particle.material.animation_rate > 0.0
+                {
+                    ParticleLifetime::TextureOnce(std::time::Duration::from_secs_f64(
+                        frames as f64 / f64::from(particle.material.animation_rate),
+                    ))
+                } else {
+                    ParticleLifetime::TextureLoop
+                };
+            }
+            particles.push(config);
+        }
         Ok(LevelDefinition {
+            particles,
+            camera_sway: sections.camera_sway,
             collision,
             map_layers,
             sight_distance: sections
@@ -699,6 +857,7 @@ impl AssetLoader for PvlDefinitionLoader {
                 .collect(),
             props,
             links: level_links(&sections),
+            encounters,
         })
     }
 
@@ -750,6 +909,9 @@ mod tests {
             trigger: Some(trigger.clone()),
         };
         let mut sections = LevelSections {
+            particles: vec![],
+            camera_sway: false,
+            positions: vec![],
             lights: vec![],
             props: vec![prop.clone(), prop.clone()],
             bitmaps: vec![prop],
@@ -773,6 +935,26 @@ mod tests {
         assert!(definitions.iter().all(|d| d.recipients == [3]));
         assert!(matches!(definitions[0].initial.action, TriggerAction::OpenDoor));
         assert!(matches!(definitions[3].initial.action, TriggerAction::ToggleDoor));
+        // A named pose can share a trigger's name. Named entities win, and
+        // case-insensitive normal/random lookup must agree without RNG.
+        sections.positions.push((
+            "SAME".into(),
+            super::super::trigger::TriggerPlacement {
+                position: [123.0, 456.0, 789.0],
+                angle: 0.0,
+                axis: [0.0, 1.0, 0.0],
+            },
+        ));
+        let TriggerKind::Item(mut item) = sections.trigger("same").unwrap().kind.clone() else {
+            unreachable!()
+        };
+        item.recipients = "same".into();
+        let ordinary = teleport_arrival(&sections, &item).unwrap();
+        assert!(matches!(ordinary, crate::content::level::Arrival::Here { eye, .. }
+            if eye == retail_position([123.0, 456.0, 789.0])));
+        assert_eq!(super::super::links::random_arrivals(&sections, &item), Some(vec![ordinary]));
+        item.recipients = "not-a-destination".into();
+        assert!(teleport_arrival(&sections, &item).is_none());
         assert!(
             matches!(&sections.trigger("same").unwrap().kind, TriggerKind::Item(item) if item.initial_action == 2)
         );

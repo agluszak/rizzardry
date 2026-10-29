@@ -293,28 +293,14 @@ impl CharacterDraft {
         true
     }
 
+    /// Whether the drafted character may train a skill: the character's own
+    /// rule ([`Character::skill_available`]), a realm skill by the spells
+    /// picked in its realm.
     pub fn skill_available(&self, skill: Skill) -> bool {
-        let index = skill as usize;
-        if index >= Skill::PowerStrike as usize {
-            return false;
+        match skill.realm() {
+            Some(realm) => !self.learned_spells[realm].is_empty(),
+            None => self.preview().skill_available(skill),
         }
-        if let Some(realm) = skill.realm() {
-            return !self.learned_spells[realm].is_empty();
-        }
-        if SKILL_AVAILABILITY[index] & (1 << self.profession as usize) == 0 {
-            return false;
-        }
-        if index >= Skill::Wizardry as usize {
-            return matches!(
-                self.profession,
-                Profession::Mage
-                    | Profession::Priest
-                    | Profession::Alchemist
-                    | Profession::Psionic
-                    | Profession::Bishop
-            );
-        }
-        true
     }
 
     pub fn preview(&self) -> Character {

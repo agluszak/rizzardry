@@ -15,7 +15,7 @@ use crate::game::world::level::level_active;
 
 /// A member's standing choice for the next round. Recruitment starts on
 /// Attack (retail `ResetPartySlotRow`).
-#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
 pub enum Order {
     #[default]
     Attack,
@@ -24,6 +24,8 @@ pub enum Order {
     Berserk,
     /// No attack; +2 armour, and stamina back at the round's end.
     Defend,
+    /// Breathe toward the chosen actor; identity survives order edits.
+    Breathe(Entity),
     /// Cast a learned spell or use an item's spell, at its initiative.
     Magic(crate::game::magic::casting::MagicChoice),
 }
@@ -38,6 +40,8 @@ impl Plugin for PartyPlugin {
         ))
         .insert_resource(Gravity(Vec3::NEG_Y * body::GRAVITY))
         .add_message::<body::PartyLook>()
+        .add_message::<body::TurnParty>()
+        .init_resource::<body::PartyTurning>()
         .add_message::<DamageApplied>()
         .add_systems(
             Update,
@@ -50,7 +54,11 @@ impl Plugin for PartyPlugin {
         // them on the same step.
         .add_systems(
             FixedUpdate,
-            (body::drive_party.in_set(TnuaUserControlsSystems), walk_in::fly_party)
+            (
+                body::turn_party,
+                body::drive_party.in_set(TnuaUserControlsSystems),
+                walk_in::fly_party,
+            )
                 .chain()
                 .run_if(level_active),
         )
@@ -80,6 +88,53 @@ pub type Members<'w, 's> = Query<
     ),
 >;
 
+/// The best level of a skill among the members who can act, the first on a
+/// tie, with whose it is (retail `GetBestPartySkillLevel`: `hp_current !=
+/// 0 && highest_condition < TURNCOAT`).
+pub fn best_skill<'a, T>(
+    members: impl IntoIterator<
+        Item = (T, &'a crate::game::characters::Character, &'a crate::game::characters::Vitals),
+    >,
+    skill: crate::content::characters::Skill,
+) -> Option<(T, u32)> {
+    let mut best: Option<(T, u32)> = None;
+    for (member, character, vitals) in members {
+        let level = character.skill(skill);
+        if vitals.can_act() && best.as_ref().is_none_or(|&(_, best)| level > best) {
+            best = Some((member, level));
+        }
+    }
+    best
+}
+
+/// The mean of these levels, fractions kept, one when there are none
+/// (retail `GetAveragePartyMemberLevel`'s arithmetic; [`averaged_places`]
+/// is its population).
+pub fn mean_level(levels: impl IntoIterator<Item = u8>) -> f32 {
+    let (sum, count) = levels
+        .into_iter()
+        .fold((0.0, 0.0), |(sum, count), level| (sum + f32::from(level), count + 1.0));
+    if count == 0.0 { 1.0 } else { sum / count }
+}
+
+/// The members, each with whether it is a recruited NPC, in roster order,
+/// that retail's `GetAveragePartyMemberLevel` reads: its party slots 0 to
+/// 5. `AddCharacterToParty` gives NPCs slots 0 and 1 and regular members
+/// the lowest free of 2 to 7, so those are every NPC and the first four
+/// regular members; the last two are left out, as in retail. Regular
+/// members join in slot order and do not leave, so roster order is theirs.
+pub fn averaged_places<T>(members: impl IntoIterator<Item = (T, bool)>) -> Vec<T> {
+    let mut regular = 0;
+    members
+        .into_iter()
+        .filter(|&(_, npc)| {
+            regular += usize::from(!npc);
+            npc || regular <= 4
+        })
+        .map(|(member, _)| member)
+        .collect()
+}
+
 /// The party's average level (retail `GetAveragePartyLevel`), over every
 /// member, dead or alive: what loot and stock scale by. 1 for an empty
 /// party, where retail divides by zero.
@@ -103,12 +158,55 @@ pub struct DamageApplied {
 /// actually changes a seat.
 pub fn damage_member(
     member: Entity,
-    vitals: &mut crate::game::characters::Vitals,
+    (profile, vitals): (&crate::game::characters::Character, &mut crate::game::characters::Vitals),
     formation: &mut Mut<formation::Formation>,
-    amount: u32,
+    (amount, fate): (u32, &mut crate::game::characters::Fate),
     damage: &mut MessageWriter<DamageApplied>,
 ) -> u32 {
-    let lost = vitals.damage(amount);
+    let lost = vitals.damage(profile, amount, fate);
+    if vitals.is_dead() && formation.row_of(member).is_some() {
+        formation.update_seat(member, true);
+    }
+    if lost > 0 {
+        damage.write(DamageApplied { member, amount: lost, died: vitals.is_dead() });
+    }
+    lost
+}
+
+/// [`damage_member`] for death inflicted outright
+/// ([`crate::game::characters::Vitals::perish`]). Returns the health lost.
+pub fn kill_member(
+    member: Entity,
+    (profile, vitals): (&crate::game::characters::Character, &mut crate::game::characters::Vitals),
+    formation: &mut Mut<formation::Formation>,
+    fate: &mut crate::game::characters::Fate,
+    damage: &mut MessageWriter<DamageApplied>,
+) -> u32 {
+    let hp = vitals.hp;
+    vitals.perish(profile, fate);
+    if vitals.is_dead() && formation.row_of(member).is_some() {
+        formation.update_seat(member, true);
+    }
+    let lost = hp.saturating_sub(vitals.hp);
+    if lost > 0 {
+        damage.write(DamageApplied { member, amount: lost, died: vitals.is_dead() });
+    }
+    lost
+}
+
+/// [`damage_member`] for draining, which lowers the maximum for good
+/// ([`crate::game::characters::Vitals::drain_health`]).
+pub fn drain_member(
+    member: Entity,
+    (profile, vitals): (
+        &mut crate::game::characters::Character,
+        &mut crate::game::characters::Vitals,
+    ),
+    formation: &mut Mut<formation::Formation>,
+    (amount, fate): (u32, &mut crate::game::characters::Fate),
+    damage: &mut MessageWriter<DamageApplied>,
+) -> u32 {
+    let lost = vitals.drain_health(profile, amount, fate);
     if vitals.is_dead() && formation.row_of(member).is_some() {
         formation.update_seat(member, true);
     }
@@ -124,6 +222,21 @@ mod tests {
     use crate::game::characters::Vitals;
     use bevy::ecs::system::SystemState;
 
+    /// Retail averages its slots 0 to 5: the NPC places and the first four
+    /// regular places, whatever order the NPCs joined in.
+    #[test]
+    fn the_averaged_places_are_every_npc_and_the_first_four_regular_members() {
+        let regulars = [1, 1, 1, 1, 50, 50].map(|level| (level, false));
+        assert_eq!(mean_level(averaged_places(regulars)), 1.0);
+        let mut party = regulars.to_vec();
+        party.push((10, true));
+        assert_eq!(averaged_places(party.clone()), [1, 1, 1, 1, 10]);
+        party.insert(2, (4, true));
+        assert_eq!(averaged_places(party), [1, 1, 4, 1, 1, 10]);
+        assert_eq!(mean_level(averaged_places([(7, true)])), 7.0);
+        assert_eq!(mean_level(averaged_places(Vec::<(u8, bool)>::new())), 1.0);
+    }
+
     #[test]
     fn damage_reports_actual_loss_and_death_even_when_healing_follows() {
         let mut world = World::new();
@@ -135,6 +248,14 @@ mod tests {
             Single<&mut formation::Formation>,
             MessageWriter<DamageApplied>,
         )>::new(&mut world);
+        let profile = crate::game::characters::Character::new(
+            "Ragnar",
+            crate::game::characters::Race::Human,
+            crate::game::characters::Gender::Male,
+            crate::game::characters::Profession::Fighter,
+        );
+        let mut rng = crate::game::rng::GameRng::default();
+        let mut fate = crate::game::characters::Fate { fight: None, rng: &mut rng };
         {
             let (mut members, mut formation, mut damage) = operation.get_mut(&mut world).unwrap();
             let mut vitals = members.get_mut(first).unwrap();
@@ -145,10 +266,28 @@ mod tests {
                 turns: 4,
                 absorption: 6,
             });
-            assert_eq!(damage_member(first, &mut vitals, &mut formation, 6, &mut damage), 0);
+            assert_eq!(
+                damage_member(
+                    first,
+                    (&profile, &mut vitals),
+                    &mut formation,
+                    (6, &mut fate),
+                    &mut damage
+                ),
+                0
+            );
             assert_eq!(vitals.stamina, 20, "Guardian Angel absorbs before fatigue");
             assert!(formation.row_of(first).is_some());
-            assert_eq!(damage_member(first, &mut vitals, &mut formation, 3, &mut damage), 3);
+            assert_eq!(
+                damage_member(
+                    first,
+                    (&profile, &mut vitals),
+                    &mut formation,
+                    (3, &mut fate),
+                    &mut damage
+                ),
+                3
+            );
             vitals.heal(3, 10);
         }
         let reported: Vec<_> = world.resource_mut::<Messages<DamageApplied>>().drain().collect();
@@ -156,9 +295,27 @@ mod tests {
         {
             let (mut members, mut formation, mut damage) = operation.get_mut(&mut world).unwrap();
             let mut vitals = members.get_mut(first).unwrap();
-            assert_eq!(damage_member(first, &mut vitals, &mut formation, 100, &mut damage), 10);
+            assert_eq!(
+                damage_member(
+                    first,
+                    (&profile, &mut vitals),
+                    &mut formation,
+                    (100, &mut fate),
+                    &mut damage
+                ),
+                10
+            );
             assert!(formation.row_of(first).is_none(), "death settles before another action");
-            assert_eq!(damage_member(first, &mut vitals, &mut formation, 1, &mut damage), 0);
+            assert_eq!(
+                damage_member(
+                    first,
+                    (&profile, &mut vitals),
+                    &mut formation,
+                    (1, &mut fate),
+                    &mut damage
+                ),
+                0
+            );
         }
         let reported: Vec<_> = world.resource_mut::<Messages<DamageApplied>>().drain().collect();
         assert_eq!(reported, [DamageApplied { member: first, amount: 10, died: true }]);

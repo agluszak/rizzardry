@@ -50,8 +50,9 @@ fn a_fighter_and_a_crab_trade_blows() {
         max_hp: 10,
         stamina: 10,
         max_stamina: 10,
-        conditions: Vec::new(),
+        conditions: Default::default(),
         enchantments: Default::default(),
+        spell_points: 0,
         body: ScaledBody { scale: 1.0, radius: 1.0, eye_height: 1.0, speed: 0.0 },
     };
     // Each side's aim lands somewhere a roll of 1-100 sometimes beats and
@@ -69,7 +70,7 @@ fn a_fighter_and_a_crab_trade_blows() {
     let attack = &crab.attacks[0];
     let mode = choose_mode(&mut rng, attack.modes);
     let theirs = monster_aim(
-        (crab, &body),
+        (crab, &body, rizzardry::game::world::hostility::Stance::Hostile),
         attack,
         mode,
         Surprise::default(),

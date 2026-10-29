@@ -35,6 +35,20 @@ impl GameRng {
     }
 }
 
+/// Which of `weights` a roll lands in: each takes as many rolls as its
+/// weight, in order; none for a roll past their sum. The roll is the
+/// caller's, so each rule keeps its own draw.
+pub fn weighted(mut roll: u32, weights: impl IntoIterator<Item = u32>) -> Option<usize> {
+    weights.into_iter().position(|weight| {
+        if roll < weight {
+            true
+        } else {
+            roll -= weight;
+            false
+        }
+    })
+}
+
 impl Default for GameRng {
     fn default() -> Self {
         GameRng::seeded(0x5743_5249_5a41_5244)

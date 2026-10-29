@@ -19,8 +19,8 @@ use bevy::prelude::*;
 use bevy::ui::InteractionDisabled;
 use bevy::ui_widgets::Activate;
 
-use crate::game::screen::Screen;
 use crate::presentation::retail_controls::{ControlSkin, set_enabled};
+use crate::presentation::screen::Screen;
 use crate::presentation::screen_art::BitmapText;
 use bevy::ui::Selected;
 use bevy_enhanced_input::prelude::*;
@@ -28,7 +28,7 @@ use bevy_enhanced_input::prelude::*;
 use crate::content::level::CollisionMesh;
 use crate::content::ui::{SpriteSheet, ui_image};
 use crate::game::automap::{CommitNote, MapNote, MapNotes, NoteDraft};
-use crate::game::party::body::{FLOAT_HEIGHT, PartyBody};
+use crate::game::party::body::PartyBody;
 use crate::game::world::level::{Level, PlayedLevel};
 use crate::presentation::screen_art::visible_if;
 use crate::presentation::screen_art::{SCREEN, absolute, centred, screen};
@@ -275,7 +275,7 @@ pub fn close_ended_map(
 
 pub fn request_automap(
     mut open: MessageReader<OpenAutomap>,
-    mut screen: ParamSet<(crate::game::screen::Freedom, ResMut<NextState<Screen>>)>,
+    mut screen: ParamSet<(super::screen::WorldInput, ResMut<NextState<Screen>>)>,
 ) {
     if open.read().count() > 0 && screen.p0().free() {
         screen.p1().set(Screen::Automap);
@@ -297,7 +297,7 @@ pub fn enter_automap(
     let mut map = Automap::new(
         collision.map(|g| &g.collision),
         layers,
-        party.translation - Vec3::Y * FLOAT_HEIGHT,
+        PartyBody::feet(&avian3d::prelude::Position(party.translation)),
     );
     map.level = level;
     commands.spawn_scene(bsn! {
@@ -375,7 +375,7 @@ pub fn build_automap(
         // The art is still loading; build once it has.
         return;
     };
-    let feet = party.translation - Vec3::Y * FLOAT_HEIGHT;
+    let feet = PartyBody::feet(&avian3d::prelude::Position(party.translation));
     let collision = levels.of(automap.level);
     let plan = collision
         .map(|level| images.add(floor_plan(&level.collision, &level.map_layers, automap)))

@@ -16,8 +16,10 @@ use bevy::prelude::*;
 const RESTING_BELOW: f32 = 0.05;
 const RUNNING_ABOVE: f32 = WALK_SPEED * 1.1;
 
-/// One game day in milliseconds.
-pub const DAY_MS: u64 = 86_400_000;
+/// Game minutes, hours and days in milliseconds.
+pub const MINUTE_MS: u64 = 60_000;
+pub const HOUR_MS: u64 = 60 * MINUTE_MS;
+pub const DAY_MS: u64 = 24 * HOUR_MS;
 
 /// The game clock. Retail starts a new game at noon and runs the clock at 12
 /// times real time while exploring (`g_view_distance`, despite its name), so
@@ -125,23 +127,30 @@ mod tests {
 pub(crate) fn pass_time(
     time: Res<Time>,
     camp: Option<Res<Camp>>,
+    search: Option<Res<crate::game::world::search::Search>>,
     battle: Option<Single<&crate::game::combat::Battle>>,
     party: Query<(&Position, &PartyBody, &LinearVelocity)>,
     roster: Single<&PartyRoster>,
     mut affected: ParamSet<(
-        Query<(&Character, &mut Vitals)>,
+        Query<(&mut Character, &mut Vitals)>,
         GroupRecognition,
         Query<&mut crate::game::world::population::Monster>,
     )>,
     mut enchantments: Single<&mut crate::game::magic::enchantments::PartyEffects>,
     mut clock: ResMut<GameClock>,
     mut rng: ResMut<GameRng>,
-    mut points: Query<&mut crate::game::magic::SpellPoints>,
+    mut points: Query<(&crate::game::magic::LearnedSpells, &mut crate::game::magic::SpellPoints)>,
+    content: crate::game::data::Content,
 ) {
     if battle.is_some() {
         return;
     }
-    let racing = camp.as_ref().is_some_and(|c| c.racing());
+    // No game-time transition commits until every caster's coupled mana and
+    // personal expiry operation has its mandatory spell definitions.
+    if content.spells().is_none() && roster.iter().any(|actor| points.contains(actor)) {
+        return;
+    }
+    let racing = camp.is_some();
     let ticks =
         clock.advance_real(time.delta(), if racing { CAMPING_RATE } else { EXPLORATION_RATE });
     // Retail tells running (fast movement) from walking; here the speed
@@ -166,34 +175,45 @@ pub(crate) fn pass_time(
             Ticks { stamina: 0, aging: 1 }
         };
         let mut members = affected.p0();
-        for (profile, mut vitals) in members.iter_many_unique_mut(roster.iter()).matched() {
-            recovery::pass(profile, &mut vitals, ticks, pace);
+        for actor in roster.iter() {
+            let Ok((mut profile, mut vitals)) = members.get_mut(actor) else { continue };
+            let mut pool = points.get_mut(actor).ok().filter(|_| ticks.aging > 0);
+            let magic = pool.as_mut().map(|(known, pool)| (*known, pool));
+            recovery::pass(
+                &mut profile,
+                &mut vitals,
+                ticks,
+                pace,
+                magic,
+                content.spells(),
+                &mut crate::game::characters::Fate { fight: None, rng: &mut rng },
+            );
         }
         if pass > 0 {
             if !enchantments.0.0.is_empty() {
                 enchantments.0.age(1);
-            }
-            // Spell points come back at least at half rate (retail `spellScale`).
-            let scale = crate::game::magic::recovery_scale(pace.health_scale());
-            for mut pool in points.iter_many_unique_mut(roster.iter()).matched() {
-                if pool.short() {
-                    pool.recover(1, scale);
-                }
             }
             // Monsters' conditions run out in the world too.
             for mut monster in &mut affected.p2() {
                 if !monster.enchantments.0.is_empty() {
                     monster.enchantments.age(1);
                 }
-                if crate::game::characters::any_timed(&monster.conditions) {
-                    crate::game::characters::age(&mut monster.conditions, 1);
+                if monster.conditions.any_timed() {
+                    monster.conditions.age(1);
                 }
             }
         }
         if pass > 0
             && let Ok((position, body, _)) = party.single()
         {
-            affected.p1().detect(PartyBody::eye(position), body.forward(), None, &mut rng);
+            affected.p1().detect(
+                PartyBody::eye(position),
+                body.forward(),
+                None,
+                enchantments.0.has(crate::content::spells::SpellId::SHADOW_HOUND),
+                search.as_ref().is_some_and(|s| s.on(false)),
+                &mut rng,
+            );
         }
     }
 }
@@ -201,7 +221,7 @@ pub(crate) fn pass_time(
 #[cfg(test)]
 mod pass_time_tests {
     use super::*;
-    use crate::game::camp::{CampNews, RestGoal, advance_camp};
+    use crate::game::camp::{CampNews, advance_camp};
     use crate::game::characters::{Condition, Gender, Lasting, Profession, Race};
     use bevy::time::TimeUpdateStrategy;
     use std::time::Duration;
@@ -215,6 +235,7 @@ mod pass_time_tests {
             .insert_resource(GameClock::at(0))
             .init_resource::<GameRng>()
             .init_resource::<crate::game::factions::Factions>()
+            .add_message::<crate::game::factions::FactionNews>()
             .init_resource::<Assets<crate::content::species::MonsterCatalog>>()
             .init_resource::<Assets<crate::content::spells::SpellCatalog>>()
             .init_resource::<Assets<crate::content::level::LevelDefinition>>()
@@ -224,6 +245,94 @@ mod pass_time_tests {
         app.world_mut().resource_mut::<Time<Virtual>>().set_max_delta(step);
         app.update();
         app
+    }
+
+    #[test]
+    fn mana_expiry_uses_the_same_history_across_fixed_step_batches() {
+        use crate::content::characters::Realm;
+        use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId};
+        use crate::game::data::GameData;
+        use crate::game::magic::enchantments::Enchantment;
+        use crate::game::magic::{LearnedSpells, SpellPoints};
+        let run = |steps_per_update: u32| {
+            let tick = Duration::from_millis(AGING_TICK_MS / EXPLORATION_RATE);
+            let mut app = fixed_app(tick * steps_per_update);
+            app.insert_resource(Time::<Fixed>::from_duration(tick));
+            let catalog = SpellCatalog(vec![
+                SpellDefinition::default(),
+                SpellDefinition {
+                    id: SpellId(1),
+                    realm: Some(Realm::Divine),
+                    cost: 1,
+                    ..default()
+                },
+            ]);
+            let learned = LearnedSpells([SpellId(1)].into());
+            let mut profile =
+                Character::new("Priest", Race::Human, Gender::Female, Profession::Priest);
+            profile.profession_levels[Profession::Priest] = 10;
+            let mut vitals = Vitals::new(&profile);
+            let base = profile.base_stats().max_points(&learned, &catalog);
+            vitals.enchantments.apply(Enchantment {
+                spell: SpellId::SUPERMAN,
+                power: 7,
+                boost: 0,
+                turns: 1,
+                absorption: 0,
+            });
+            let boosted = profile.stats(&vitals.enchantments).max_points(&learned, &catalog);
+            assert!(boosted[Realm::Divine] > base[Realm::Divine] + 4);
+            let mut points = SpellPoints::default();
+            points.spend(Realm::Divine, base[Realm::Divine] + 4);
+            points.fraction[Realm::Divine] = 0.3;
+            let mut expected = points.clone();
+            expected.recover(1, 0.5, &boosted);
+            expected.recover(1, 0.5, &base);
+            expected.recover(1, 0.5, &base);
+            let spells = app.world_mut().resource_mut::<Assets<SpellCatalog>>().add(catalog);
+            app.insert_resource(GameData {
+                spells,
+                items: default(),
+                loot: default(),
+                species: default(),
+            });
+            let member = app.world_mut().spawn((profile, vitals, learned, points)).id();
+            crate::game::party::roster::test_party(app.world_mut(), &[member]);
+            let data = app.world_mut().remove_resource::<GameData>().unwrap();
+            let before = app.world().get::<SpellPoints>(member).unwrap().clone();
+            app.update();
+            assert_eq!(app.world().get::<SpellPoints>(member).unwrap(), &before);
+            assert_eq!(app.world().resource::<GameClock>().ms, 0);
+            assert!(
+                app.world()
+                    .get::<Vitals>(member)
+                    .unwrap()
+                    .enchantments
+                    .get(SpellId::SUPERMAN)
+                    .is_some()
+            );
+            app.insert_resource(data);
+            for _ in 0..3 / steps_per_update {
+                app.update();
+            }
+            let points = app.world().get::<SpellPoints>(member).unwrap();
+            assert_eq!(points, &expected);
+            assert!(
+                points.current(Realm::Divine, &base) < 0,
+                "capacity loss keeps the unpaid deficit"
+            );
+            assert!(
+                app.world()
+                    .get::<Vitals>(member)
+                    .unwrap()
+                    .enchantments
+                    .get(SpellId::SUPERMAN)
+                    .is_none()
+            );
+            assert_eq!(app.world().resource::<GameClock>().ms, 3 * AGING_TICK_MS);
+            points.clone()
+        };
+        assert_eq!(run(1), run(3));
     }
 
     #[test]
@@ -256,14 +365,11 @@ mod pass_time_tests {
         let profile = Character::new("Rester", Race::Human, Gender::Male, Profession::Fighter);
         let member = app.world_mut().spawn((Vitals::new(&profile), profile)).id();
         crate::game::party::roster::test_party(app.world_mut(), &[member]);
-        app.insert_resource(Camp::Resting(RestGoal::Until(180_000)));
+        app.insert_resource(Camp::Until(180_000));
         app.update();
-        // Four accelerated steps, then twelve exploration-rate fade steps.
+        // Four accelerated steps end the rest; the other twelve run at the
+        // exploration rate, with no fade holding the camp.
         assert_eq!(app.world().resource::<GameClock>().ms, 180_000 + 2250);
-        assert!(!app.world().resource::<Camp>().racing());
-        for _ in 0..4 {
-            app.update();
-        }
         assert!(!app.world().contains_resource::<Camp>());
     }
 
@@ -275,15 +381,12 @@ mod pass_time_tests {
         vitals.inflict(Condition::Asleep, Lasting::Rounds(1));
         let member = app.world_mut().spawn((profile, vitals)).id();
         crate::game::party::roster::test_party(app.world_mut(), &[member]);
-        app.insert_resource(Camp::Resting(RestGoal::UntilAble));
+        app.insert_resource(Camp::UntilAble);
         app.update();
         // The third accelerated step crosses the aging tick and clears sleep;
         // the other thirteen steps already use the ordinary rate.
         assert_eq!(app.world().resource::<GameClock>().ms, 135_000 + 2437);
-        assert!(!app.world().get::<Vitals>(member).unwrap().has(Condition::Asleep));
-        assert!(matches!(
-            app.world().resource::<Camp>(),
-            Camp::FadingOut { outcome: CampNews::Recovered, .. }
-        ));
+        assert!(!app.world().get::<Vitals>(member).unwrap().conditions.has(Condition::Asleep));
+        assert!(!app.world().contains_resource::<Camp>());
     }
 }

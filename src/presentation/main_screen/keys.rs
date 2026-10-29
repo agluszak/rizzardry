@@ -13,8 +13,8 @@ use super::{ScreenLayout, SelectedMember};
 use crate::game::combat::{Battle, StartRound};
 use crate::game::party::Order;
 use crate::game::party::roster::PartyRoster;
-use crate::game::screen::Screen;
 use crate::presentation::notices::{TextLog, VISIBLE_LINES};
+use crate::presentation::screen::Screen;
 
 #[derive(Component, Clone, Default)]
 pub struct MainScreenKeys;
@@ -58,6 +58,10 @@ struct ToggleContinuous;
 #[derive(InputAction)]
 #[action_output(bool)]
 struct SetOrder;
+
+#[derive(InputAction)]
+#[action_output(bool)]
+struct Breathe;
 
 #[derive(Component, Clone, Default)]
 struct OrderKey(Order);
@@ -150,6 +154,7 @@ fn spawn_main_screen_keys(mut commands: Commands) {
             // Retail offers Berserk among a Fighter's actions; its own
             // control for it is not recovered, so it has a key here.
             Action::<SetOrder>::new() OrderKey({Order::Berserk}) Bindings [ Binding(KeyCode::KeyB) ]
+            -- Action::<Breathe>::new() Bindings [ Binding(KeyCode::KeyE) ]
             --
             {text_box}
         ]
@@ -175,6 +180,7 @@ fn spawn_main_screen_keys(mut commands: Commands) {
             controls.write(crate::game::combat::CombatControl::ToggleContinuous);
         })
         on(set_order)
+        on(breathe)
         on(text_box_key)
     });
 }
@@ -188,7 +194,15 @@ pub(crate) struct WorldKeys<'w, 's> {
     focus: Res<'w, bevy::input_focus::InputFocus>,
     controls: Query<'w, 's, (), With<bevy::input_focus::tab_navigation::TabIndex>>,
     questions: Query<'w, 's, (), With<crate::game::world::level::TravelQuestion>>,
-    conversations: Query<'w, 's, (), With<crate::game::npcs::conversation::Conversation>>,
+    conversations: Query<
+        'w,
+        's,
+        (),
+        (
+            With<crate::game::npcs::conversation::Conversation>,
+            Without<crate::game::npcs::conversation::Closing>,
+        ),
+    >,
 }
 
 impl WorldKeys<'_, '_> {
@@ -239,6 +253,51 @@ fn set_order(
         && let Some(member) = selected.member(&roster)
     {
         orders.write(crate::game::combat::GiveOrder { member, order });
+    }
+}
+
+fn breathe(
+    _: On<Start<Breathe>>,
+    selected: Res<SelectedMember>,
+    roster: Single<&PartyRoster>,
+    party: Query<(&avian3d::prelude::Position, &crate::game::party::body::PartyBody)>,
+    battle: Query<&crate::game::combat::Combatants>,
+    monsters: Query<(
+        Entity,
+        &crate::game::world::population::Monster,
+        crate::game::world::ActorPose,
+    )>,
+    content: crate::game::data::Content,
+    mut orders: MessageWriter<crate::game::combat::GiveOrder>,
+) {
+    let (Some(member), Ok((position, body)), Ok(combatants), Some(spell)) = (
+        selected.member(&roster),
+        party.single(),
+        battle.single(),
+        content
+            .spells()
+            .and_then(|spells| spells.get(crate::content::spells::SpellId::SPECIAL_ATTACK_CONE)),
+    ) else {
+        return;
+    };
+    let eye = crate::game::party::body::PartyBody::eye(position);
+    if let Some(target) = crate::game::magic::target_ahead(
+        eye,
+        body.forward(),
+        spell.reach.metres(),
+        monsters
+            .iter_many(combatants.entities().iter().copied())
+            .matched()
+            .filter(|(_, monster, _)| !monster.is_dead())
+            .map(|(entity, monster, at)| {
+                (
+                    entity,
+                    at.translation(),
+                    (at.translation() - eye).with_y(0.0).length() - monster.body.radius,
+                )
+            }),
+    ) {
+        orders.write(crate::game::combat::GiveOrder { member, order: Order::Breathe(target) });
     }
 }
 

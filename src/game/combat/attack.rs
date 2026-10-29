@@ -20,9 +20,10 @@ use crate::content::species::{MonsterAttack, Reach, Species};
 #[cfg(test)]
 use crate::game::characters::Character;
 use crate::game::characters::{CharacterStats, Condition, Load, Race, Vitals};
-use crate::game::difficulty::{Difficulty, Side};
+use crate::game::difficulty::Difficulty;
 use crate::game::inventory::{Carried, EquipSlot};
 use crate::game::rng::GameRng;
+use crate::game::world::hostility::Stance;
 use crate::game::world::population::Monster;
 
 /// The to-hit term of a mode (retail `AttackModeMod` for the aim).
@@ -766,7 +767,7 @@ impl<'a> Defence<'a> {
 
     /// Damage after the target's own reduction (retail
     /// `ApplyDamageReduction`, `ApplyCharacterDamageReduction`).
-    fn reduce(&self, damage: i32) -> u32 {
+    pub(super) fn reduce(&self, damage: i32) -> u32 {
         let reduction = match self.defender {
             Defender::Monster { species, reduction, .. } => {
                 (i32::from(species.damage_reduction) + reduction).min(100)
@@ -821,14 +822,14 @@ pub fn member_aim(
         score -= target.armour_class(mode, surprise) * 5;
         score += (character_ssdi(c) - target.ssdi) / 10;
     }
-    if vitals.has(Condition::Blind) && score > 10 {
+    if vitals.conditions.has(Condition::Blind) && score > 10 {
         score = if c.has_trait(Trait::EffectiveWhileBlind) {
             c.scale_by_profession((score - 10) as f32) as i32 + 10
         } else {
             10
         };
     }
-    difficulty.for_character(score, vitals.has(Condition::Turncoat))
+    difficulty.for_character(score, vitals.conditions.has(Condition::Turncoat))
 }
 
 /// A member's chance to get through armour where the blow landed (retail
@@ -848,12 +849,12 @@ pub fn member_penetration(
     }
     score -= target.armour_at(mode, surprise, at) * 5;
     score += (character_ssdi(c) - target.ssdi) / 10;
-    difficulty.for_character(score, vitals.has(Condition::Turncoat))
+    difficulty.for_character(score, vitals.conditions.has(Condition::Turncoat))
 }
 
 /// A monster's aim with one attack (retail `GetMonsterAttackScore`).
 pub fn monster_aim(
-    (species, monster): (&Species, &Monster),
+    (species, monster, stance): (&Species, &Monster, Stance),
     attack: &MonsterAttack,
     mode: AttackMode,
     surprise: Surprise,
@@ -874,16 +875,46 @@ pub fn monster_aim(
         score -= target.armour_class(mode, surprise) * 5;
         score += (species_ssdi(species, &monster.enchantments) - target.ssdi) / 10;
     }
-    if monster.conditions.iter().any(|&(c, _)| c == Condition::Blind) && score > 10 {
+    if monster.conditions.has(Condition::Blind) && score > 10 {
         score = 10;
     }
-    difficulty.for_monster(score, Side::Hostile)
+    difficulty.for_monster(score, stance)
+}
+
+/// How well a member presses a blow past a guard (retail
+/// `GetCharacterProtectionScore`): Speed, less fatigue (halved with a
+/// modern weapon), with the first hand's to-hit and rating when it is in
+/// play, and the member's own to-hit bonus.
+pub fn member_protection(c: &CharacterStats<'_>, vitals: &Vitals, hand: &Hand) -> i32 {
+    let mut fatigue = character_fatigue(c, vitals);
+    if hand.weapon_skill == Skill::ModernWeapon {
+        fatigue >>= 1;
+    }
+    let armed = if hand.in_play { hand.to_hit * 5 + hand.attack_rating } else { 0 };
+    c.attribute(crate::content::characters::Attribute::Speed) as i32 - fatigue
+        + armed
+        + vitals.enchantments.hit_bonus() * 5
+}
+
+/// How well a monster guards, or presses past a guard (retail
+/// `GetMonsterProtectionScore`): Speed, less fatigue (halved for the
+/// weapons that tire little), with its first attack's score and its to-hit
+/// bonus.
+pub fn monster_protection(species: &Species, monster: &Monster) -> i32 {
+    let first = species.attacks.first();
+    let mut fatigue = monster_fatigue(monster);
+    if first.is_some_and(MonsterAttack::tires_little) {
+        fatigue >>= 1;
+    }
+    i32::from(species.attributes.speed) - fatigue
+        + first.map_or(0, |a| i32::from(a.score))
+        + monster.enchantments.hit_bonus() * 5
 }
 
 /// A monster's chance to get through armour (retail `ContinueMonsterAttack`).
 /// Retail takes fatigue off only the attacks that tire little, in full.
 pub fn monster_penetration(
-    (species, monster): (&Species, &Monster),
+    (species, monster, stance): (&Species, &Monster, Stance),
     attack: &MonsterAttack,
     mode: AttackMode,
     surprise: Surprise,
@@ -897,7 +928,7 @@ pub fn monster_penetration(
     }
     score -= target.armour_at(mode, surprise, at) * 5;
     score += (species_ssdi(species, &monster.enchantments) - target.ssdi) / 10;
-    difficulty.for_monster(score, Side::Hostile)
+    difficulty.for_monster(score, stance)
 }
 
 /// The chance a swing goes astray onto someone else in reach (retail
@@ -1301,7 +1332,7 @@ mod tests {
         assert_eq!(bow_hand.dice, arrows.damage);
         assert_eq!(bow_hand.effects.chances[AttackEffect::Poison], 10);
         // The bow's own base is a damage bonus: +20%, with strength's.
-        let strength = ranger.attribute(Attribute::Strength) as i32;
+        let strength = ranger.base_stats().attribute(Attribute::Strength) as i32;
         let from_strength = match strength {
             ..50 => -(50 - strength),
             50 => 0,

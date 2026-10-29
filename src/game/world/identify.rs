@@ -11,17 +11,26 @@ use bevy::prelude::*;
 
 use super::population::Monster;
 use crate::content::characters::{Attribute, Skill};
-use crate::game::characters::{Character, Condition, MonsterKnowledge, Vitals};
+use crate::game::characters::{Character, MonsterKnowledge, Vitals};
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::world::level::PlayedLevel;
 
-/// Knowledge belongs to the identifiable group, not to parallel level tables.
+/// Knowledge belongs to the identifiable group, not to parallel level tables,
+/// and so does its stance toward the party ([`super::hostility`]).
 #[derive(Component, Clone, Copy, Debug, Default)]
 pub struct MonsterGroup {
     pub authored: i32,
     pub identified: bool,
     pub counted: bool,
+    /// The stance last set on the group and when, if anything has set one.
+    pub set: Option<super::hostility::SetStance>,
+    /// A random encounter about the level, and the game second it came
+    /// (retail `encounter_registered`, `spawn_time`).
+    pub encounter: Option<u64>,
+    /// A companion group come along with the random encounter of this
+    /// group id, which it goes with (retail `leader_group_id`).
+    pub escort_of: Option<i32>,
 }
 
 /// Membership is independent of level lifetime ownership. Replacing this
@@ -44,23 +53,11 @@ pub struct Identified {
     pub count: usize,
 }
 
-/// Retail's base horizontal field of view; a group is seen when a member
-/// is within it and the far clip (retail asks whether a member is drawn).
-const HALF_VIEW: f32 = 85.0 / 2.0;
-
-/// Whether a member can look (retail: alive, not insane or worse, not
-/// blind).
-fn can_look(member: &Vitals) -> bool {
-    !member.is_dead()
-        && member.worst_condition().is_none_or(|c| c < Condition::Insane)
-        && !member.has(Condition::Blind)
-}
-
 /// How likely, in percent, a member is to recognise a species of `level`:
 /// three for each of its kind they have seen beyond its level, a tenth of
 /// their Intelligence, and their Mythology.
 pub fn recognition(
-    member: &Character,
+    member: &crate::game::characters::CharacterStats<'_>,
     knowledge: &MonsterKnowledge,
     species: u32,
     level: u8,
@@ -74,21 +71,24 @@ pub fn recognition(
 /// What the party can tell of a monster's health (retail
 /// `FormatMonsterHealth`): its best Mythology, less three for each level the
 /// monster shows above the party's average, tells the current health from
-/// 10 and the most from 5; otherwise "?" ("12/20", "?/20", "?/?").
+/// 10 and the most from 5; otherwise "?" ("12/20", "?/20", "?/?"). The
+/// party is in roster order, each member with whether it is a recruited NPC.
 pub fn health_known(
-    party: &[(&Character, &Vitals)],
+    party: &[(&Character, &Vitals, bool)],
     hp: u32,
     max_hp: u32,
     display_level: u8,
 ) -> String {
-    let mythology = party
-        .iter()
-        .filter(|(_, v)| v.can_act())
-        .map(|(m, _)| m.skill(Skill::Mythology))
-        .max()
-        .unwrap_or(0);
-    let average =
-        party.iter().map(|(m, _)| f32::from(m.level)).sum::<f32>() / party.len().max(1) as f32;
+    let mythology = crate::game::party::best_skill(
+        party.iter().map(|&(character, vitals, _)| ((), character, vitals)),
+        Skill::Mythology,
+    )
+    .map_or(0, |(_, level)| level);
+    let average = crate::game::party::mean_level(
+        crate::game::party::averaged_places(party.iter().map(|&(m, _, npc)| (m, npc)))
+            .into_iter()
+            .map(Character::level),
+    );
     let level = i32::from(display_level);
     let knowledge = if (average as i32) < level {
         (mythology as f32 - (level as f32 - average) * 3.0 + 0.5).max(0.0) as u32
@@ -109,11 +109,13 @@ pub struct GroupRecognition<'w, 's> {
         's,
         (Entity, &'static mut MonsterGroup, Option<&'static GroupMembers>, &'static LevelOwned),
     >,
-    monsters: Query<'w, 's, (&'static Monster, ActorPose)>,
+    monsters:
+        Query<'w, 's, (&'static Monster, ActorPose, Option<&'static super::navigation::Walker>)>,
     level: PlayedLevel<'w, 's>,
     roster: Single<'w, 's, &'static PartyRoster>,
     members: Query<'w, 's, (&'static Character, &'static Vitals, &'static mut MonsterKnowledge)>,
     content: crate::game::data::Content<'w>,
+    obstacles: Option<super::obstacles::WorldObstacles<'w, 's>>,
     pub(crate) factions: ResMut<'w, crate::game::factions::Factions>,
     news: MessageWriter<'w, Identified>,
 }
@@ -124,6 +126,8 @@ impl GroupRecognition<'_, '_> {
         from: Vec3,
         forward: Vec3,
         combatants: Option<&[Entity]>,
+        shadow_hound: bool,
+        searching: bool,
         rng: &mut GameRng,
     ) {
         let (Some(level), Some(far)) = (self.level.entity(), self.level.view_distance()) else {
@@ -132,6 +136,8 @@ impl GroupRecognition<'_, '_> {
         let Some(catalog) = self.content.species() else {
             return;
         };
+        let Some(obstacles) = self.obstacles.as_ref() else { return };
+        let view = super::perception::View { eye: from, forward, far, searching };
         let (groups, monsters, roster, members, news) =
             (&mut self.groups, &self.monsters, &self.roster, &mut self.members, &mut self.news);
         // Authored group order determines gameplay RNG use. Membership itself is
@@ -152,31 +158,42 @@ impl GroupRecognition<'_, '_> {
             }
             let (mut species_id, mut count, mut in_view) = (None, 0usize, false);
             for member in membership.iter() {
-                let Ok((monster, at)) = monsters.get(member) else { continue };
+                let Ok((monster, at, walker)) = monsters.get(member) else { continue };
                 if monster.is_dead() || combatants.is_some_and(|c| !c.contains(&member)) {
                     continue;
                 }
                 species_id.get_or_insert(monster.species);
                 count += 1;
-                let to = at.translation() - from;
-                in_view |= to.length() < far
-                    && forward.angle_between(to.with_y(0.0)).to_degrees() < HALF_VIEW;
+                let Some(species) = catalog.kind(monster.species) else { continue };
+                in_view |= view.sees(
+                    members
+                        .iter_many(roster.iter())
+                        .matched()
+                        .map(|(profile, vitals, _)| (profile, vitals)),
+                    shadow_hound,
+                    monster,
+                    species,
+                    super::navigation::feet(at.translation(), walker),
+                    combatants.is_some(),
+                    obstacles,
+                );
             }
             if !in_view {
                 continue;
             }
             let Some(species_id) = species_id else { continue };
             let Some(species) = catalog.0.get(species_id as usize) else { continue };
-            if members.iter_many(roster.iter()).matched().any(|(_, vitals, _)| can_look(vitals)) {
+            if members.iter_many(roster.iter()).matched().any(|(_, vitals, _)| vitals.lucid()) {
                 self.factions.encounter(species.faction);
             }
             if !known {
                 let mut best: Option<(String, i32)> = None;
                 for (profile, vitals, knowledge) in members.iter_many(roster.iter()).matched() {
-                    if !can_look(vitals) {
+                    if !vitals.lucid() {
                         continue;
                     }
-                    let score = recognition(profile, knowledge, species_id, species.level);
+                    let stats = profile.stats(&vitals.enchantments);
+                    let score = recognition(&stats, knowledge, species_id, species.level);
                     let roll = rng.below(100) as i32;
                     if roll < score
                         && best.as_ref().is_none_or(|(_, margin)| score - roll > *margin)
@@ -199,7 +216,7 @@ impl GroupRecognition<'_, '_> {
                 for (_, vitals, mut knowledge) in
                     members.iter_many_unique_mut(roster.iter()).matched()
                 {
-                    if !can_look(vitals) {
+                    if !vitals.lucid() {
                         continue;
                     }
                     let seen = knowledge.seen.entry(species_id).or_default();
@@ -224,13 +241,13 @@ mod tests {
         let mut sage = Character::new("Sage", Race::Human, Gender::Male, Profession::Bishop);
         let vitals = Vitals::new(&sage);
         sage.skill_points[Skill::Mythology] = 0;
-        assert_eq!(health_known(&[(&sage, &vitals)], 7, 20, 1), "?/?");
+        assert_eq!(health_known(&[(&sage, &vitals, false)], 7, 20, 1), "?/?");
         sage.skill_points[Skill::Mythology] = 6;
         let known = sage.skill(Skill::Mythology);
         assert!(known > 4 && known < 10, "{known}");
-        assert_eq!(health_known(&[(&sage, &vitals)], 7, 20, 1), "?/20");
+        assert_eq!(health_known(&[(&sage, &vitals, false)], 7, 20, 1), "?/20");
         sage.skill_points[Skill::Mythology] = 12;
-        assert_eq!(health_known(&[(&sage, &vitals)], 7, 20, 1), "7/20");
+        assert_eq!(health_known(&[(&sage, &vitals, false)], 7, 20, 1), "7/20");
         // Three levels above the party's average cost nine points.
         let left = sage.skill(Skill::Mythology) - 9;
         let expected = if left >= 10 {
@@ -240,7 +257,7 @@ mod tests {
         } else {
             "?/?"
         };
-        assert_eq!(health_known(&[(&sage, &vitals)], 7, 20, 4), expected);
+        assert_eq!(health_known(&[(&sage, &vitals, false)], 7, 20, 4), expected);
     }
 
     #[test]
@@ -251,9 +268,9 @@ mod tests {
         bishop.skill_points[Skill::Mythology] = 10;
         let mythology = bishop.skill(Skill::Mythology) as i32;
         // A level 8 kind never seen: 24 below, and 6 from Intelligence.
-        assert_eq!(recognition(&bishop, &knowledge, 62, 8), mythology + 6 - 24);
+        assert_eq!(recognition(&bishop.base_stats(), &knowledge, 62, 8), mythology + 6 - 24);
         knowledge.seen.insert(62, 10);
-        assert_eq!(recognition(&bishop, &knowledge, 62, 8), mythology + 6 + 6);
+        assert_eq!(recognition(&bishop.base_stats(), &knowledge, 62, 8), mythology + 6 + 6);
     }
 
     #[test]
@@ -265,6 +282,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .init_resource::<crate::game::factions::Factions>()
+            .init_resource::<avian3d::collider_tree::ColliderTrees>()
             .init_resource::<Assets<LevelDefinition>>()
             .init_resource::<Assets<MonsterCatalog>>()
             .insert_resource(GameRng::seeded(4))
@@ -275,7 +293,14 @@ mod tests {
                  mut recognition: GroupRecognition,
                  mut rng: ResMut<GameRng>| {
                     let (at, body) = party.single().unwrap();
-                    recognition.detect(PartyBody::eye(at), body.forward(), None, &mut rng);
+                    recognition.detect(
+                        PartyBody::eye(at),
+                        body.forward(),
+                        None,
+                        false,
+                        false,
+                        &mut rng,
+                    );
                 },
             );
         let geometry = app
@@ -311,7 +336,9 @@ mod tests {
                 max_hp: 10,
                 stamina: 0,
                 max_stamina: 0,
-                conditions: vec![],
+
+                conditions: Default::default(),
+                spell_points: 0,
                 body: ScaledBody { scale: 1.0, radius: 1.0, eye_height: 1.0, speed: 0.0 },
             },
             Transform::from_translation(Vec3::splat(1000.0)),
@@ -354,10 +381,10 @@ mod tests {
         let catalog = app.world().resource::<GameData>().species.clone();
         app.world_mut().resource_mut::<Assets<MonsterCatalog>>().get_mut(&catalog).unwrap().0[0]
             .level = 1;
-        app.world_mut()
-            .get_mut::<Vitals>(member)
-            .unwrap()
-            .inflict(Condition::Blind, crate::game::characters::Lasting::Rounds(2));
+        app.world_mut().get_mut::<Vitals>(member).unwrap().inflict(
+            crate::game::characters::Condition::Blind,
+            crate::game::characters::Lasting::Rounds(2),
+        );
         let body = app
             .world_mut()
             .query_filtered::<Entity, With<PartyBody>>()
@@ -370,7 +397,13 @@ mod tests {
         app.world_mut().resource_mut::<Time>().advance_by(std::time::Duration::from_secs(30));
         use bevy::ecs::system::RunSystemOnce;
         app.world_mut().run_system_once(crate::game::time::pass_time).unwrap();
-        assert!(!app.world().get::<Vitals>(member).unwrap().has(Condition::Blind));
+        assert!(
+            !app.world()
+                .get::<Vitals>(member)
+                .unwrap()
+                .conditions
+                .has(crate::game::characters::Condition::Blind)
+        );
         assert!(app.world().get::<MonsterGroup>(group).unwrap().identified);
     }
 }

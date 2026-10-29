@@ -13,13 +13,16 @@ use super::items::drop_loot;
 use super::level::Level;
 use super::navigation::{Walker, feet};
 use super::population::Monster;
-use crate::game::characters::{Condition, Lasting};
+use crate::game::characters::Condition;
 use crate::game::inventory::{ItemIds, PartyInventory, make_item};
 use crate::game::rng::GameRng;
 
 /// What [`MonsterDamage`] lets others read of a monster.
-pub type MonsterQuery<'w, 's> =
-    Query<'w, 's, (&'static mut Monster, ActorPose, Option<&'static Walker>, &'static LevelOwned)>;
+pub type MonsterQuery<'w, 's> = Query<
+    'w,
+    's,
+    (&'static mut Monster, ActorPose, Option<&'static Walker>, &'static LevelOwned, Entity),
+>;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DamageOutcome {
@@ -34,8 +37,6 @@ pub enum DamageRefusal {
     MissingTarget,
     InactiveLevel,
     MissingContent,
-    /// NPC death uses its own retained-character and loot rules, not monster tables.
-    UnsupportedNpcDeath,
 }
 
 /// Monsters in play, changed only through its operations. [`apply`] is
@@ -47,6 +48,12 @@ pub enum DamageRefusal {
 #[derive(SystemParam)]
 pub struct MonsterDamage<'w, 's> {
     monsters: MonsterQuery<'w, 's>,
+    membership: Query<'w, 's, &'static super::identify::GroupMember>,
+    summoned: Query<'w, 's, (), With<crate::game::magic::pointcasts::SummonedBy>>,
+    lures: Query<'w, 's, &'static crate::game::magic::pointcasts::LureInfluence>,
+    combatants: Query<'w, 's, (), With<crate::game::combat::Combatant>>,
+    groups: Query<'w, 's, &'static mut super::identify::MonsterGroup>,
+    group_members: Query<'w, 's, &'static super::identify::GroupMembers>,
     motion: Query<
         'w,
         's,
@@ -59,19 +66,124 @@ pub struct MonsterDamage<'w, 's> {
         ),
     >,
     levels: Query<'w, 's, (), With<Level>>,
+    /// The NPCs whose world roles are among the monsters.
+    npcs: (
+        Query<'w, 's, &'static crate::game::npcs::NpcBody>,
+        Query<'w, 's, &'static mut crate::game::npcs::Npc>,
+    ),
     commands: Commands<'w, 's>,
     content: crate::game::data::Content<'w>,
-    ids: ResMut<'w, ItemIds>,
-    factions: ResMut<'w, crate::game::factions::Factions>,
+    ids: Option<ResMut<'w, ItemIds>>,
+    factions: Option<ResMut<'w, crate::game::factions::Factions>>,
+    faction_news: Option<MessageWriter<'w, crate::game::factions::FactionNews>>,
 }
 
 impl<'w, 's> MonsterDamage<'w, 's> {
     pub fn ready(&self) -> bool {
-        self.content.items().is_some()
+        self.ids.is_some()
+            && self.factions.is_some()
+            && self.faction_news.is_some()
+            && self.content.items().is_some()
             && self.content.species().is_some()
             && self.content.loot().is_some()
     }
 
+    pub fn group(&self, entity: Entity) -> Vec<Entity> {
+        use bevy::ecs::relationship::RelationshipTarget;
+        self.membership
+            .get(entity)
+            .ok()
+            .and_then(|member| self.group_members.get(member.0).ok())
+            .map_or_else(|| vec![entity], |members| members.iter().collect())
+    }
+    pub fn leader(&self, entity: Entity) -> Entity {
+        self.group(entity)
+            .into_iter()
+            .min_by_key(|&member| {
+                self.monsters.get(member).map_or(i32::MAX, |(body, ..)| body.location)
+            })
+            .unwrap_or(entity)
+    }
+    /// A monster's own stance now ([`super::hostility::monster_own`]): its
+    /// group's, swapped by its own Turncoat.
+    pub fn stance(&self, entity: Entity, now: u64) -> super::hostility::Stance {
+        let turncoat =
+            self.monsters.get(entity).is_ok_and(|(m, ..)| m.conditions.has(Condition::Turncoat));
+        super::hostility::own_stance(self.group_stance(entity, now), turncoat)
+    }
+
+    /// How a monster's group stands now ([`super::hostility::stance`]); one
+    /// outside any group by its species' default.
+    pub fn group_stance(&self, entity: Entity, now: u64) -> super::hostility::Stance {
+        use super::hostility::{self, Stance};
+        let Ok((monster, ..)) = self.monsters.get(entity) else { return Stance::Neutral };
+        let (Some(kind), Some(factions)) = (
+            self.content.species().and_then(|catalog| catalog.kind(monster.species)),
+            self.factions.as_deref(),
+        ) else {
+            return Stance::Neutral;
+        };
+        let set = self
+            .membership
+            .get(entity)
+            .ok()
+            .and_then(|member| self.groups.get(member.0).ok())
+            .and_then(|group| group.set);
+        hostility::stance(set, kind, factions, now, self.combatants.contains(entity))
+    }
+
+    /// Commit hostility before damage/conditions inspect the target's side.
+    /// The later notification can start a fight even when this hit kills it.
+    pub fn provoke(&mut self, entity: Entity, now: u64) -> bool {
+        use super::hostility::{self, SetStance, Stance};
+        let Ok((body, ..)) = self.monsters.get(entity) else { return false };
+        if body.is_dead() || body.conditions.has(Condition::Turncoat) {
+            return false;
+        }
+        let (Some(kind), Some(factions)) = (
+            self.content.species().and_then(|catalog| catalog.kind(body.species)),
+            self.factions.as_deref(),
+        ) else {
+            return false;
+        };
+        if let Ok(member) = self.membership.get(entity)
+            && let Ok(mut group) = self.groups.get_mut(member.0)
+            && hostility::stance(group.set, kind, factions, now, true) != Stance::Hostile
+        {
+            group.set = Some(SetStance { stance: Stance::Hostile, at: now });
+        }
+        true
+    }
+
+    pub fn restore_health(&mut self, entity: Entity, amount: u32) -> u32 {
+        let Ok((mut body, ..)) = self.monsters.get_mut(entity) else { return 0 };
+        if body.is_dead() {
+            return 0;
+        }
+        let before = body.hp;
+        body.hp = body.hp.saturating_add(amount).min(body.max_hp);
+        body.hp.saturating_sub(before)
+    }
+    /// Restoring stamina wakes exhaustion, but leaves a timed knockout alone.
+    pub fn restore_stamina(&mut self, entity: Entity, amount: u32) -> u32 {
+        let Ok((mut body, ..)) = self.monsters.get_mut(entity) else { return 0 };
+        if body.is_dead() {
+            return 0;
+        }
+        let body = &mut *body;
+        crate::game::characters::rest(
+            &mut body.stamina,
+            &mut body.conditions,
+            amount,
+            body.max_stamina,
+        )
+    }
+    pub fn restore_magic(&mut self, entity: Entity, amount: u32) {
+        if let Ok((mut body, ..)) = self.monsters.get_mut(entity) {
+            body.spell_points =
+                body.spell_points.saturating_add(amount.min(i32::MAX as u32) as i32);
+        }
+    }
     /// The monsters, to look at.
     pub fn monsters(&self) -> &MonsterQuery<'w, 's> {
         &self.monsters
@@ -81,53 +193,78 @@ impl<'w, 's> MonsterDamage<'w, 's> {
     pub fn conditions_mut(
         &mut self,
         monster: Entity,
-    ) -> Option<Mut<'_, Vec<(Condition, Lasting)>>> {
-        let (monster, ..) = self.monsters.get_mut(monster).ok()?;
-        Some(monster.map_unchanged(|monster| &mut monster.conditions))
+    ) -> Option<Mut<'_, crate::game::characters::Conditions>> {
+        Some(self.monster_mut(monster)?.map_unchanged(|monster| &mut monster.conditions))
+    }
+
+    /// A monster's body, for what changes its conditions and enchantments
+    /// together.
+    pub fn monster_mut(&mut self, monster: Entity) -> Option<Mut<'_, Monster>> {
+        Some(self.monsters.get_mut(monster).ok()?.0)
     }
 
     /// Tire a monster (retail `FatigueMonster`); spent, it drops
     /// unconscious. Returns the stamina taken.
     pub fn fatigue(&mut self, monster: Entity, amount: u32) -> u32 {
         let Ok((mut monster, ..)) = self.monsters.get_mut(monster) else { return 0 };
-        if monster.is_dead() || monster.stamina == 0 {
+        if monster.is_dead() {
             return 0;
         }
-        let taken = amount.min(monster.stamina);
-        monster.stamina -= taken;
-        if monster.stamina == 0 {
-            crate::game::characters::inflict(
-                &mut monster.conditions,
-                Condition::Unconscious,
-                Lasting::Indefinite,
-            );
-        }
-        taken
+        let monster = &mut *monster;
+        crate::game::characters::tire(&mut monster.stamina, &mut monster.conditions, amount)
+    }
+
+    /// Drain the current effective spell budget; only the change belongs to
+    /// the actor. Casting and draining read the same species-plus-history rule.
+    pub fn drain_magic(&mut self, entity: Entity, amount: u32) -> u32 {
+        let Ok((mut monster, ..)) = self.monsters.get_mut(entity) else { return 0 };
+        let Some(kind) = self.content.species().and_then(|catalog| catalog.kind(monster.species))
+        else {
+            return 0;
+        };
+        let lost = monster.spell_budget(kind).min(amount);
+        monster.spell_points = monster.spell_points.saturating_sub(lost as i32);
+        lost
     }
 
     pub fn enchantments_mut(
         &mut self,
         entity: Entity,
     ) -> Option<Mut<'_, crate::game::magic::enchantments::Enchantments>> {
-        let (monster, ..) = self.monsters.get_mut(entity).ok()?;
-        Some(monster.map_unchanged(|m| &mut m.enchantments))
+        Some(self.monster_mut(entity)?.map_unchanged(|m| &mut m.enchantments))
     }
 
     pub fn active(&self, target: Entity) -> bool {
-        self.monsters.get(target).is_ok_and(|(_, _, _, owner)| self.levels.contains(owner.0))
+        self.monsters.get(target).is_ok_and(|(_, _, _, owner, _)| self.levels.contains(owner.0))
     }
 
-    /// Hurt a monster; a kill drops its loot and pays its gold into the
-    /// party's purse.
+    /// Whether magic may take a monster as a target or victim: in play,
+    /// alive, and of a species not kept out of targeting (retail's live
+    /// targetable monsters, `CollectConeMonsterTargets`,
+    /// `CollectMonstersWithinRadius`).
+    pub fn targetable(&self, target: Entity) -> bool {
+        self.active(target)
+            && self.monsters.get(target).is_ok_and(|(body, ..)| {
+                !body.is_dead()
+                    && self
+                        .content
+                        .species()
+                        .and_then(|catalog| catalog.kind(body.species))
+                        .is_some_and(|kind| !kind.untargetable)
+            })
+    }
+
+    /// Hurt a monster at game time `now`; a kill drops its loot, pays its
+    /// gold into the party's purse and counts against its faction then.
     pub fn apply(
         &mut self,
         target: Entity,
         amount: u32,
-        party_level: u32,
+        (party_level, now): (u32, u64),
         purse: &mut PartyInventory,
         rng: &mut GameRng,
     ) -> Result<DamageOutcome, DamageRefusal> {
-        let (mut monster, at, walker, owner) =
+        let (mut monster, at, walker, owner, _) =
             self.monsters.get_mut(target).map_err(|_| DamageRefusal::MissingTarget)?;
         let level = owner.0;
         if !self.levels.contains(level) {
@@ -139,30 +276,37 @@ impl<'w, 's> MonsterDamage<'w, 's> {
             return Err(DamageRefusal::MissingContent);
         };
         let kind = species.kind(monster.species).ok_or(DamageRefusal::MissingContent)?;
+        let (Some(ids), Some(factions), Some(faction_news)) =
+            (self.ids.as_deref_mut(), self.factions.as_deref_mut(), self.faction_news.as_mut())
+        else {
+            return Err(DamageRefusal::MissingContent);
+        };
         if monster.is_dead() || amount == 0 {
             return Ok(DamageOutcome::default());
         }
-        // A Guardian Angel's absorption counts before the NPC-death refusal,
-        // and is spent only once the hit is allowed.
-        let mut enchantments = monster.enchantments.clone();
-        let amount = enchantments.absorb(amount);
-        if amount >= monster.hp && kind.npc.is_some() {
-            return Err(DamageRefusal::UnsupportedNpcDeath);
-        }
-        monster.enchantments = enchantments;
+        let amount = monster.enchantments.absorb(amount);
         if amount == 0 {
             return Ok(DamageOutcome::default());
         }
         let position = feet(at.translation(), walker);
         let lost = amount.min(monster.hp);
         monster.hp -= lost;
-        self.commands.entity(target).insert(super::population::Provoked);
+        if lost > 0
+            && let Ok(influence) = self.lures.get(target)
+        {
+            let influence = crate::game::magic::pointcasts::LureInfluence {
+                response: crate::game::magic::pointcasts::LureResponse::Resisted,
+                ..*influence
+            };
+            self.commands.entity(target).insert(influence);
+            if !self.combatants.contains(target)
+                && let Ok((Some(mut goal), ..)) = self.motion.get_mut(target)
+            {
+                *goal = AgentTarget3d::None;
+            }
+        }
         if !monster.is_dead() {
-            crate::game::characters::wake_on_hit(
-                &mut monster.conditions,
-                u32::from(kind.attributes.senses),
-                rng,
-            );
+            monster.conditions.wake_on_hit(u32::from(kind.attributes.senses), rng);
             return Ok(DamageOutcome { damage: lost, ..default() });
         }
         monster.enchantments.0.clear();
@@ -187,17 +331,28 @@ impl<'w, 's> MonsterDamage<'w, 's> {
             velocity.velocity = Vec3::ZERO;
         }
         self.commands.entity(target).remove_with_requires::<Crossing>();
+        if self.summoned.contains(target) {
+            return Ok(DamageOutcome { damage: lost, died: true, experience: 0 });
+        }
         // The kill counts against its faction (retail `RecordFactionOffense`).
-        self.factions.record_offence(kind.faction, kind.npc.is_some());
-        let (found, gold) =
-            crate::game::loot::monster_loot(kind, tables, catalog, party_level, rng);
+        if let Some(news) = factions.record_offence(kind.faction, kind.npc.is_some(), now) {
+            faction_news.write(news);
+        }
+        let npc = self.npcs.0.get(target).ok().and_then(|body| self.npcs.1.get_mut(body.0).ok());
+        let (found, gold) = match npc {
+            Some(mut npc) => {
+                npc.dead = true;
+                npc.possessions.give_up(catalog, rng)
+            }
+            None => crate::game::loot::monster_loot(kind, tables, catalog, party_level, rng),
+        };
         if gold > 0 {
             purse.gold += gold;
         }
         let items = found
             .into_iter()
             .filter_map(|id| catalog.get(id))
-            .map(|definition| make_item(definition, &mut self.ids, rng, false, false))
+            .map(|definition| make_item(definition, ids, rng, false, false))
             .collect();
         drop_loot(&mut self.commands, level, position, items, catalog);
         Ok(DamageOutcome { damage: lost, died: true, experience: kind.experience })

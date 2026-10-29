@@ -92,7 +92,7 @@ pub fn resume_search(
 
 pub fn toggle_search(
     mut requests: MessageReader<ToggleSearch>,
-    freedom: crate::game::screen::Freedom,
+    freedom: crate::game::freedom::Freedom,
     battle: Option<Single<&Battle>>,
     mut search: ResMut<Search>,
     mut news: MessageWriter<SearchNews>,
@@ -118,7 +118,11 @@ pub fn toggle_search(
 /// Scouting (a quarter while running) plus a bonus rising with Senses, at
 /// most 100. Without search mode only rangers search; while running, those
 /// without Scouting score nothing.
-pub fn search_score(member: &Character, search_mode: bool, running: bool) -> u32 {
+pub fn search_score(
+    member: &crate::game::characters::CharacterStats<'_>,
+    search_mode: bool,
+    running: bool,
+) -> u32 {
     if member.profession != Profession::Ranger && !search_mode {
         return 0;
     }
@@ -167,12 +171,14 @@ pub fn search_pulse(
     let (from, forward) = (PartyBody::eye(position), body.forward());
     let running = movement.running;
     let mut best: Option<(u32, &Character)> = None;
-    for (member, _) in members.iter_many(roster.iter()).matched().filter(|(_, v)| v.can_act()) {
-        let score = search_score(member, search.on(battle.is_some()), running);
+    for (member, vitals) in members.iter_many(roster.iter()).matched().filter(|(_, v)| v.can_act())
+    {
+        let stats = member.stats(&vitals.enchantments);
+        let score = search_score(&stats, search.on(battle.is_some()), running);
         if score > best.map_or(0, |b| b.0) {
             best = Some((score, member));
         }
-        if enchantments.0.get(crate::content::spells::SpellId::DETECT_SECRETS).is_some()
+        if enchantments.0.has(crate::content::spells::SpellId::DETECT_SECRETS)
             && !(best.is_some() && rng.below(2) == 0)
         {
             best = Some((100, member));
@@ -190,8 +196,7 @@ pub fn search_pulse(
         if distance >= SEARCH_RADIUS || distance >= score as f32 * RANGE_PER_POINT || !ahead {
             continue;
         }
-        let Ok(direction) = Dir3::new(to - from) else { continue };
-        if obstacles.first_hit(from, direction, distance).is_some() {
+        if !obstacles.clear(from, to) {
             continue;
         }
         item.hidden = false;
@@ -212,12 +217,9 @@ mod tests {
 
     #[test]
     fn search_intent_survives_a_fight_which_holds_it_off() {
-        use crate::game::screen::Screen;
-        use crate::game::world::level::Level;
+        use crate::game::world::level::{Destination, Level};
         let mut app = App::new();
-        app.insert_resource(State::new(Screen::World))
-            .init_resource::<NextState<Screen>>()
-            .init_resource::<Search>()
+        app.init_resource::<Search>()
             .add_message::<ToggleSearch>()
             .add_message::<SearchNews>()
             .add_observer(suspend_search)
@@ -244,11 +246,16 @@ mod tests {
         app.update();
         assert!(on(&app, false));
         assert_eq!(news(&mut app), [SearchNews::On]);
-        app.world_mut().resource_mut::<NextState<Screen>>().set(Screen::Inventory);
+        let level = app.world_mut().spawn(Destination::new(
+            Level::test(default()),
+            default(),
+            crate::game::world::level::Entry::Travel,
+        ));
+        let entering = level.id();
         app.world_mut().write_message(ToggleSearch);
         app.update();
         assert!(on(&app, false), "a held party cannot toggle search");
-        *app.world_mut().resource_mut::<NextState<Screen>>() = NextState::Unchanged;
+        app.world_mut().despawn(entering);
         app.world_mut().write_message(ToggleSearch);
         app.update();
         assert!(!on(&app, false));
@@ -271,10 +278,10 @@ mod tests {
         // Half of Scouting 20 (plus the ranger's bonus, if Scouting is it)
         // and Senses 60's bonus of 10 + 10 / 3.
         let base = ranger.skill(Skill::Scouting) / 2;
-        assert_eq!(search_score(&ranger, false, false), base + 13);
-        assert_eq!(search_score(&fighter, false, false), 0);
+        assert_eq!(search_score(&ranger.base_stats(), false, false), base + 13);
+        assert_eq!(search_score(&fighter.base_stats(), false, false), 0);
         // In search mode anyone searches by Senses alone, but not running.
-        assert!(search_score(&fighter, true, false) > 0);
-        assert_eq!(search_score(&fighter, true, true), 0);
+        assert!(search_score(&fighter.base_stats(), true, false) > 0);
+        assert_eq!(search_score(&fighter.base_stats(), true, true), 0);
     }
 }

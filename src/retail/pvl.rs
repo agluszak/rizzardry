@@ -85,7 +85,7 @@ pub(crate) fn text(bytes: &mut Bytes, len: usize) -> Result<String, DecodeError>
     c_string(bytes.take(len)?).ok_or(DecodeError::Invalid("unterminated texture name", offset))
 }
 
-fn material(bytes: &mut Bytes, with_modes: bool) -> Result<MaterialRecord, DecodeError> {
+pub(super) fn material(bytes: &mut Bytes, with_modes: bool) -> Result<MaterialRecord, DecodeError> {
     let version = bytes.u8()?;
     let _legacy_name = text(bytes, 0x28)?;
     let textures = [text(bytes, 0x28)?, text(bytes, 0x28)?, text(bytes, 0x28)?, text(bytes, 0x28)?];

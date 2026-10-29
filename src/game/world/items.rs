@@ -35,9 +35,7 @@ impl WorldItem {
     pub fn display_name(&self, definition: &ItemDefinition, count: bool) -> String {
         match &self.loot {
             GroundLoot::Loose(s) => s.display_name(definition, count),
-            GroundLoot::Pile { identified, .. } => {
-                if *identified { &definition.name } else { &definition.unidentified_name }.clone()
-            }
+            GroundLoot::Pile { identified, .. } => definition.known_name(*identified).to_owned(),
         }
     }
     pub fn stacks(&self) -> &[ItemStack] {
@@ -66,14 +64,7 @@ pub fn drop_loot(
     if !items.is_empty() {
         info!("loot: {} item(s) at {feet:.1}", items.len());
     }
-    let mut lay = |lying| {
-        commands.spawn((
-            Name::new("loot"),
-            lying,
-            Transform::from_translation(feet + Vec3::Y * CLEARANCE),
-            LevelOwned(level),
-        ));
-    };
+    let mut lay = |lying| lay(commands, level, feet, lying);
     match (items.len(), catalog.get(BAG_OF_ITEMS)) {
         (0, _) => {}
         (1, _) => lay(WorldItem::loose(items.remove(0), false)),
@@ -87,6 +78,16 @@ pub fn drop_loot(
         }),
         (_, None) => items.into_iter().for_each(|item| lay(WorldItem::loose(item, false))),
     }
+}
+
+/// Lay an item on the ground at `feet`, resting as dropped items do.
+pub fn lay(commands: &mut Commands, level: Entity, feet: Vec3, item: WorldItem) {
+    commands.spawn((
+        Name::new("dropped item"),
+        item,
+        Transform::from_translation(feet + Vec3::Y * CLEARANCE),
+        LevelOwned(level),
+    ));
 }
 
 /// Retail takes an item from at most this far from the eye
@@ -110,14 +111,10 @@ pub fn placed_item(
 /// Take a resolved world item. Validation and the owned-value move complete
 /// synchronously, without a pointer, camera, rendering or a battle session.
 pub fn take_item(world: &mut World, target: Entity) -> Result<(), Refusal> {
-    if !world.run_system_cached(crate::game::screen::party_free).unwrap_or(false) {
+    if !crate::game::freedom::free_in(world) {
         return Err(Refusal::DoesNotFit);
     }
-    let eye = world
-        .query_filtered::<&avian3d::prelude::Position, With<crate::game::party::body::PartyBody>>()
-        .single(world)
-        .map(crate::game::party::body::PartyBody::eye)
-        .map_err(|_| Refusal::Nothing)?;
+    let eye = crate::game::party::body::PartyBody::eye_in(world).ok_or(Refusal::Nothing)?;
     let at = world
         .query::<super::ActorPose>()
         .get(world, target)
@@ -142,11 +139,10 @@ pub fn take_item(world: &mut World, target: Entity) -> Result<(), Refusal> {
     }
     let mut item = world.entity_mut(target).take::<WorldItem>().unwrap();
     if let GroundLoot::Pile { contents, .. } = &mut item.loot {
-        let handle = world.resource::<GameData>().items.clone();
-        let taken = world.resource_scope(|world, catalogs: Mut<Assets<ItemCatalog>>| {
-            let catalog = catalogs.get(&handle).unwrap();
+        let taken = GameData::with_items(world, |world, catalog| {
             world.get_mut::<PartyInventory>(party).unwrap().pool.collect(contents, catalog)
-        });
+        })
+        .unwrap();
         let moved = !taken.is_empty();
         for (name, _) in taken {
             world.write_message(ItemNews::Takes { member: None, item: name });
@@ -166,17 +162,13 @@ pub fn take_item(world: &mut World, target: Entity) -> Result<(), Refusal> {
 /// Drop the held owned value at a landing point resolved by an adapter. The
 /// operation validates the current level, party activity and throw reach.
 pub fn drop_held(world: &mut World, level: Entity, at: Vec3) -> Result<Entity, Refusal> {
-    if !world.run_system_cached(crate::game::screen::party_free).unwrap_or(false)
+    if !crate::game::freedom::free_in(world)
         || world.get::<super::level::Level>(level).is_none()
         || !at.is_finite()
     {
         return Err(Refusal::DoesNotFit);
     }
-    let eye = world
-        .query_filtered::<&avian3d::prelude::Position, With<crate::game::party::body::PartyBody>>()
-        .single(world)
-        .map(crate::game::party::body::PartyBody::eye)
-        .map_err(|_| Refusal::Nothing)?;
+    let eye = crate::game::party::body::PartyBody::eye_in(world).ok_or(Refusal::Nothing)?;
     if eye.xz().distance(at.xz()) > THROW + CLEARANCE {
         return Err(Refusal::DoesNotFit);
     }
@@ -229,8 +221,7 @@ mod tests {
         use crate::game::party::body::PartyBody;
         use avian3d::prelude::Position;
         let mut app = App::new();
-        app.add_plugins((MinimalPlugins, bevy::state::app::StatesPlugin))
-            .init_state::<crate::game::screen::Screen>()
+        app.add_plugins(MinimalPlugins)
             .init_resource::<Assets<ItemCatalog>>()
             .add_message::<ItemNews>()
             .add_message::<super::super::WorldRequest>()

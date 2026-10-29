@@ -55,7 +55,7 @@ pub(super) struct RadarBlip(Entity);
 pub(super) struct RadarView(Entity);
 
 /// One class of radar blip's colours (retail `g_radar_blip_colors`); retail
-/// has three more classes (friendly, unseen, missile) not drawn yet.
+/// has two more classes (unseen, missile) not drawn yet.
 #[derive(Clone, Copy)]
 struct BlipColours {
     /// More than 3 m below the party.
@@ -87,11 +87,27 @@ const HOSTILE_BLIPS: BlipColours = BlipColours {
     level: Color::srgb(0.7, 0.0, 0.0),
     above: Color::srgb(1.0, 0.0, 0.0),
 };
+const FRIENDLY_BLIPS: BlipColours = BlipColours {
+    below: Color::srgb(0.0, 0.5, 0.0),
+    level: Color::srgb(0.0, 0.7, 0.0),
+    above: Color::srgb(0.0, 1.0, 0.0),
+};
 const ITEM_BLIPS: BlipColours = BlipColours {
     below: Color::srgb(0.5, 0.5, 0.5),
     level: Color::srgb(0.7, 0.7, 0.7),
     above: Color::srgb(1.0, 1.0, 1.0),
 };
+
+/// A monster's blip class by its own stance (retail
+/// `g_radar_disposition_class`).
+fn blip_class(stance: Option<crate::game::world::hostility::Stance>) -> BlipColours {
+    use crate::game::world::hostility::Stance;
+    match stance.unwrap_or_default() {
+        Stance::Neutral => NEUTRAL_BLIPS,
+        Stance::Hostile => HOSTILE_BLIPS,
+        Stance::Friendly => FRIENDLY_BLIPS,
+    }
+}
 
 /// Pixels from the radar's centre to the party's radius.
 const PARTY_EDGE: f32 = 2.0;
@@ -162,24 +178,50 @@ pub fn track_radar_items(
 }
 
 /// Turn the compass rim with the party, and mark the monsters within the
-/// far clip: hostile red, others yellow, brighter above and dimmer below;
+/// far clip by how each stands now: hostile red, friendly green, neutral
+/// yellow, brighter above and dimmer below;
 /// and the items once seen, grey to white.
 pub fn update_radar(
     mut commands: Commands,
-    party: Query<(&avian3d::prelude::Position, &crate::game::party::body::PartyBody)>,
+    party: Query<(
+        &avian3d::prelude::Position,
+        &crate::game::party::body::PartyBody,
+        Option<&crate::game::magic::enchantments::PartyEffects>,
+        Option<&crate::game::party::roster::PartyRoster>,
+    )>,
     camera: Query<(&Projection, &GlobalTransform), With<PartyCamera>>,
     mut rims: Query<&mut UiTransform, With<RadarRim>>,
     layers: Query<Entity, With<RadarBlips>>,
-    monsters: Query<(Entity, &crate::game::world::population::Monster, &GlobalTransform)>,
+    members: Query<(&crate::game::characters::Character, &crate::game::characters::Vitals)>,
+    monsters: Query<(
+        Entity,
+        &crate::game::world::population::Monster,
+        crate::game::world::ActorPose,
+        Option<&crate::game::world::navigation::Walker>,
+        Has<crate::game::combat::Combatant>,
+        &crate::game::world::level::LevelOwned,
+    )>,
     views: Query<&RadarView>,
     mut blips: Query<(Entity, &mut Node, &mut BackgroundColor, &mut Visibility), With<RadarBlip>>,
     (mut items, obstacles): (
         Query<(Entity, &crate::game::world::items::WorldItem, &GlobalTransform, &mut RadarItem)>,
         WorldObstacles,
     ),
-    content: crate::game::data::Content,
+    (content, stances, clock): (
+        crate::game::data::Content,
+        crate::game::world::hostility::Stances,
+        Res<crate::game::time::GameClock>,
+    ),
+    (search, battle, levels): (
+        Option<Res<crate::game::world::search::Search>>,
+        Query<(), With<crate::game::combat::Battle>>,
+        Query<(), With<crate::game::world::level::Level>>,
+    ),
 ) {
-    let (Ok((position, body)), Ok(layer)) = (party.single(), layers.single()) else { return };
+    let (Ok((position, body, effects, roster)), Ok(layer)) = (party.single(), layers.single())
+    else {
+        return;
+    };
     for mut rim in &mut rims {
         // North stays put while the view turns.
         let rotation = Rot2::radians(body.yaw);
@@ -188,10 +230,11 @@ pub fn update_radar(
         }
     }
     let (far, eye) = match camera.single() {
-        Ok((Projection::Perspective(p), eye)) => (p.far, eye.translation()),
+        Ok((p, eye)) => (bevy::camera::CameraProjection::far(&**p), eye.translation()),
         _ => (0.0, position.0),
     };
     let catalog = content.species();
+    let xray = effects.is_some_and(|effects| effects.0.has(crate::content::spells::SpellId::X_RAY));
     // Each blip's visibility is decided once, so one that stays in view
     // stays clean.
     let mut shown = bevy::ecs::entity::EntityHashSet::default();
@@ -215,14 +258,39 @@ pub fn update_radar(
             ));
         }
     };
-    for (entity, monster, at) in &monsters {
-        let delta = at.translation() - position.0;
-        if monster.is_dead() || delta.length() > far {
+    let view = crate::game::world::perception::View {
+        eye,
+        forward: body.forward(),
+        far,
+        searching: search.as_ref().is_some_and(|s| s.on(!battle.is_empty())),
+    };
+    let shadow_hound =
+        effects.is_some_and(|effects| effects.0.has(crate::content::spells::SpellId::SHADOW_HOUND));
+    for (entity, monster, at, walker, in_combat, owner) in &monsters {
+        let (Some(roster), Some(species)) =
+            (roster, catalog.and_then(|catalog| catalog.kind(monster.species)))
+        else {
+            continue;
+        };
+        let feet = crate::game::world::navigation::feet(at.translation(), walker);
+        if !levels.contains(owner.0) || !view.in_range(monster, feet) {
             continue;
         }
-        let hostile =
-            catalog.and_then(|c| c.kind(monster.species)).is_some_and(|s| s.npc.is_none());
-        let class = if hostile { HOSTILE_BLIPS } else { NEUTRAL_BLIPS };
+        if !xray
+            && !view.sees(
+                members.iter_many(roster.iter()).matched(),
+                shadow_hound,
+                monster,
+                species,
+                feet,
+                in_combat,
+                &obstacles,
+            )
+        {
+            continue;
+        }
+        let delta = at.translation() - position.0;
+        let class = blip_class(catalog.and_then(|c| stances.own(entity, c, clock.ms)));
         let at = blip_position(delta, body.yaw, false) - Vec2::ONE;
         show(entity, at, class.at(delta.y));
     }
@@ -237,10 +305,8 @@ pub fn update_radar(
         }
         if !known.seen {
             let to = at.translation();
-            let in_sight = Dir3::new(to - eye).is_ok_and(|direction| {
-                obstacles.first_hit(eye, direction, eye.distance(to)).is_none()
-            });
-            if !in_sight {
+            let in_sight = obstacles.clear(eye, to);
+            if !xray && !in_sight {
                 continue;
             }
             known.seen = true;
@@ -261,6 +327,115 @@ pub fn update_radar(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn xray_marks_an_occluded_item_seen_until_the_level_visit_ends() {
+        use crate::content::spells::SpellId;
+        use crate::game::{
+            inventory::{ItemIds, make_item},
+            magic::enchantments::{Enchantment, PartyEffects},
+            party::body::PartyBody,
+            rng::GameRng,
+            world::{items::WorldItem, obstacles::scenery},
+        };
+        use avian3d::prelude::*;
+        use bevy::ecs::system::RunSystemOnce;
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin::default(),
+            bevy::mesh::MeshPlugin,
+            TransformPlugin,
+            PhysicsPlugins::default(),
+        ));
+        app.finish();
+        app.cleanup();
+        use crate::game::characters::{Character, Gender, Profession, Race, Vitals};
+        use crate::game::world::{
+            level::{Level, LevelOwned},
+            population::{Monster, ScaledBody},
+        };
+        let profile = Character::new("Watcher", Race::Human, Gender::Male, Profession::Fighter);
+        let watcher = app.world_mut().spawn((Vitals::new(&profile), profile)).id();
+        let party = crate::game::party::roster::test_party(app.world_mut(), &[watcher]);
+        app.world_mut().entity_mut(party).insert((PartyBody::default(), Position::default()));
+        app.init_resource::<crate::game::factions::Factions>()
+            .init_resource::<crate::game::time::GameClock>();
+        app.world_mut().init_resource::<Assets<crate::content::species::MonsterCatalog>>();
+        let species = app
+            .world_mut()
+            .resource_mut::<Assets<crate::content::species::MonsterCatalog>>()
+            .add(crate::content::species::MonsterCatalog(vec![default()]));
+        app.insert_resource(crate::game::data::GameData {
+            species,
+            items: default(),
+            loot: default(),
+            spells: default(),
+        });
+        let root = app.world_mut().spawn(Level::test(default())).id();
+        let monster = app
+            .world_mut()
+            .spawn((
+                Monster {
+                    enchantments: default(),
+                    location: 1,
+                    species: 0,
+                    hp: 10,
+                    max_hp: 10,
+                    stamina: 10,
+                    max_stamina: 10,
+                    conditions: Default::default(),
+                    spell_points: 0,
+                    body: ScaledBody { scale: 1.0, radius: 1.0, eye_height: 1.0, speed: 0.0 },
+                },
+                Transform::from_xyz(0.0, 0.0, -10.0),
+                LevelOwned(root),
+            ))
+            .id();
+        app.world_mut().spawn((
+            PartyCamera,
+            Projection::Perspective(default()),
+            GlobalTransform::default(),
+        ));
+        app.world_mut().spawn(RadarBlips);
+        app.world_mut().spawn((
+            RigidBody::Static,
+            Collider::cuboid(20.0, 20.0, 1.0),
+            scenery(),
+            Transform::from_xyz(0.0, 0.0, -5.0),
+        ));
+        let stack =
+            make_item(&default(), &mut ItemIds::default(), &mut GameRng::default(), true, true);
+        let item = app
+            .world_mut()
+            .spawn((
+                WorldItem::loose(stack, false),
+                GlobalTransform::from_translation(Vec3::NEG_Z * 10.0),
+                RadarItem::default(),
+            ))
+            .id();
+        app.update();
+        app.update();
+        app.world_mut().run_system_once(update_radar).unwrap();
+        assert!(!app.world().get::<RadarItem>(item).unwrap().seen);
+        assert!(app.world().get::<RadarView>(monster).is_none());
+        app.world_mut().get_mut::<PartyEffects>(party).unwrap().0.apply(Enchantment {
+            spell: SpellId::X_RAY,
+            power: 1,
+            boost: 0,
+            turns: 1,
+            absorption: 0,
+        });
+        app.world_mut().run_system_once(update_radar).unwrap();
+        assert!(app.world().get::<RadarItem>(item).unwrap().seen);
+        assert!(app.world().get::<RadarView>(monster).is_some());
+        app.world_mut().get_mut::<PartyEffects>(party).unwrap().0.age(1);
+        app.world_mut().run_system_once(update_radar).unwrap();
+        assert!(app.world().get::<RadarItem>(item).unwrap().seen);
+        assert!(app.world().get::<RadarView>(item).is_some());
+        let blip = app.world().get::<RadarView>(monster).unwrap().0;
+        assert_eq!(app.world().get::<Visibility>(blip), Some(&Visibility::Hidden));
+    }
 
     #[test]
     fn discovery_glows_even_when_the_hud_has_not_been_built() {
@@ -289,6 +464,97 @@ mod tests {
             .set_max_delta(std::time::Duration::from_secs(11));
         app.update();
         assert!(app.world().get::<RadarItem>(target).unwrap().glow.is_none());
+    }
+
+    /// A monster's blip follows how its group stands now, by the same rule
+    /// the fight uses: the faction's band, a stance set on the group, and
+    /// that stance wearing off, all with the species unchanged (retail
+    /// `UpdateRadarBlips` by `ubDisposition`).
+    #[test]
+    fn a_blip_shows_how_the_group_stands_now() {
+        use crate::content::species::{MonsterCatalog, Species};
+        use crate::game::data::GameData;
+        use crate::game::factions::Factions;
+        use crate::game::time::GameClock;
+        use crate::game::world::hostility::{SetStance, Stance};
+        use crate::game::world::identify::{GroupMember, MonsterGroup};
+        use crate::game::world::population::{Monster, ScaledBody};
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<Assets<MonsterCatalog>>()
+            .init_resource::<avian3d::collider_tree::ColliderTrees>()
+            .init_resource::<Factions>()
+            .init_resource::<GameClock>()
+            .add_systems(Update, update_radar);
+        let mut species = Species { faction: 7, ..default() };
+        species.attributes.intelligence = 10;
+        let species = app
+            .world_mut()
+            .resource_mut::<Assets<MonsterCatalog>>()
+            .add(MonsterCatalog(vec![species]));
+        app.insert_resource(GameData {
+            items: default(),
+            loot: default(),
+            species,
+            spells: default(),
+        });
+        use crate::game::characters::{Character, Gender, Profession, Race, Vitals};
+        let profile = Character::new("Watcher", Race::Human, Gender::Male, Profession::Fighter);
+        let watcher = app.world_mut().spawn((Vitals::new(&profile), profile)).id();
+        let party = crate::game::party::roster::test_party(app.world_mut(), &[watcher]);
+        app.world_mut().entity_mut(party).insert((
+            avian3d::prelude::Position::default(),
+            crate::game::party::body::PartyBody::default(),
+        ));
+        app.world_mut().spawn((
+            PartyCamera,
+            Projection::Perspective(default()),
+            GlobalTransform::default(),
+        ));
+        app.world_mut().spawn((RadarBlips, Node::default()));
+        let root = app.world_mut().spawn(crate::game::world::level::Level::test(default())).id();
+        let group = app.world_mut().spawn(MonsterGroup::default()).id();
+        let monster = Monster {
+            enchantments: default(),
+            location: 0,
+            species: 0,
+            hp: 10,
+            max_hp: 10,
+            stamina: 0,
+            max_stamina: 0,
+            conditions: Default::default(),
+            spell_points: 0,
+            body: ScaledBody { scale: 1.0, radius: 1.0, eye_height: 1.0, speed: 0.0 },
+        };
+        let monster = app
+            .world_mut()
+            .spawn((
+                monster,
+                GroupMember(group),
+                Transform::from_xyz(0.0, 0.0, -10.0),
+                crate::game::world::level::LevelOwned(root),
+            ))
+            .id();
+        let shown = |app: &mut App| {
+            app.update();
+            let world = app.world_mut();
+            let blip = world.get::<RadarView>(monster).unwrap().0;
+            world.get::<BackgroundColor>(blip).unwrap().0
+        };
+        // Faction 7 starts neutral.
+        assert_eq!(shown(&mut app), NEUTRAL_BLIPS.level);
+        // The party offends it into the hostile band.
+        app.world_mut().resource_mut::<Factions>().record_offence(7, true, 0);
+        assert_eq!(shown(&mut app), HOSTILE_BLIPS.level);
+        // Something sets the group friendly after that.
+        app.world_mut().resource_mut::<GameClock>().ms = 1_000;
+        app.world_mut().get_mut::<MonsterGroup>(group).unwrap().set =
+            Some(SetStance { stance: Stance::Friendly, at: 1_000 });
+        assert_eq!(shown(&mut app), FRIENDLY_BLIPS.level);
+        // Its while outside a fight (Intelligence squared, in minutes)
+        // passes, and the faction's band stands again.
+        app.world_mut().resource_mut::<GameClock>().ms = 1_000 + 100 * 60_000 + 1;
+        assert_eq!(shown(&mut app), HOSTILE_BLIPS.level);
     }
 
     #[test]

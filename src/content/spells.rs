@@ -236,14 +236,27 @@ pub struct SpellDefinition {
     pub radius_per_power: f32,
     /// Flies to its target as a missile (`MissileTables.dbs` row).
     pub missile: Option<u32>,
-    /// Applies only when its visuals have played out.
-    pub after_visuals: bool,
     pub monsters_cast: bool,
     /// `data/spells/sounds/<sound>`.
     pub sound: String,
 }
 
 impl SpellDefinition {
+    /// Whether it is aimed at enemies, which provokes them (retail
+    /// `MonsterCanAimSpell`, `CharacterActionTargetsEnemies`): an enemy,
+    /// group, area or all-enemies spell other than Charm and Mindread.
+    pub fn aimed_at_enemies(&self) -> bool {
+        matches!(
+            self.targeting,
+            Targeting::Enemy
+                | Targeting::EnemyGroup
+                | Targeting::Cone
+                | Targeting::Radius
+                | Targeting::AllEnemies
+        ) && self.id != SpellId::CHARM
+            && self.id != SpellId::MINDREAD
+    }
+
     /// Spell points a cast at `power` costs.
     pub fn cost_at(&self, power: u8) -> u32 {
         self.cost * u32::from(power)

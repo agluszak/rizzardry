@@ -548,7 +548,7 @@ pub(super) fn refresh(
             .to_owned(),
             Value::Attribute(a) => {
                 if session.choices.race {
-                    profile.attribute(a).to_string()
+                    profile.base_stats().attribute(a).to_string()
                 } else {
                     String::new()
                 }
@@ -606,7 +606,7 @@ pub(super) fn refresh(
             },
             Value::Health => {
                 if session.choices.race && session.choices.profession {
-                    profile.max_hp().to_string()
+                    profile.base_stats().max_hp().to_string()
                 } else if session.choices.race {
                     "0".into()
                 } else {
@@ -615,14 +615,14 @@ pub(super) fn refresh(
             }
             Value::Stamina => {
                 if session.choices.race {
-                    profile.max_stamina().to_string()
+                    profile.base_stats().max_stamina().to_string()
                 } else {
                     String::new()
                 }
             }
             Value::Capacity => {
                 if session.choices.race {
-                    (profile.capacity() / 10).to_string()
+                    (profile.base_stats().capacity() / 10).to_string()
                 } else {
                     String::new()
                 }
@@ -647,16 +647,8 @@ pub(super) fn refresh(
                     content
                         .spells()
                         .map(|catalog| {
-                            EnumSet::<Realm>::all()
-                                .iter()
-                                .map(|realm| {
-                                    crate::game::magic::max_points(
-                                        &profile.base_stats(),
-                                        &crate::game::magic::LearnedSpells(draft.spells()),
-                                        catalog,
-                                    )[realm]
-                                })
-                                .sum::<u32>()
+                            let learned = crate::game::magic::LearnedSpells(draft.spells());
+                            profile.base_stats().max_points(&learned, catalog).values().sum::<u32>()
                         })
                         .unwrap_or(0)
                         .to_string()

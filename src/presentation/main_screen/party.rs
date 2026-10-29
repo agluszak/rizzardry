@@ -575,7 +575,13 @@ fn press(
     mut inventory: crate::game::inventory::operations::InventoryOperations,
     mut review: crate::presentation::inventory::OpenReview,
     mut views: Query<(&mut super::magic_view::MagicView, Has<super::magic_view::CastsAt>)>,
-    conversations: Query<(), With<crate::game::npcs::conversation::Conversation>>,
+    conversations: Query<
+        (),
+        (
+            With<crate::game::npcs::conversation::Conversation>,
+            Without<crate::game::npcs::conversation::Closing>,
+        ),
+    >,
 ) {
     if click.button != PointerButton::Primary {
         return;
@@ -651,7 +657,13 @@ fn release_right(
     mut review: crate::presentation::inventory::OpenReview,
     mut selected: ResMut<SelectedMember>,
     mut commands: Commands,
-    conversations: Query<(), With<crate::game::npcs::conversation::Conversation>>,
+    conversations: Query<
+        (),
+        (
+            With<crate::game::npcs::conversation::Conversation>,
+            Without<crate::game::npcs::conversation::Closing>,
+        ),
+    >,
 ) {
     if release.button != PointerButton::Secondary || !conversations.is_empty() {
         return;
@@ -820,11 +832,9 @@ pub fn play_splats(
 mod tests {
     use super::*;
     use crate::content::items::ItemCatalog;
+    use crate::game::characters::{Gender, Profession};
     use crate::game::data::GameData;
-    use crate::game::{
-        characters::{Gender, Profession},
-        screen::Screen,
-    };
+    use crate::presentation::screen::Screen;
     use bevy::picking::backend::HitData;
 
     /// Retail's right-button portrait gestures: a quick release gives the
@@ -839,15 +849,7 @@ mod tests {
         let project = |slots: PortraitSlots| (0..8).map(|i| slots.member(i)).collect::<Vec<_>>();
         let expected = [vec![None, None], pcs.iter().copied().map(Some).collect()].concat();
         assert_eq!(world.run_system_once(project).unwrap(), expected);
-        let rpc = world
-            .spawn(crate::game::npcs::Npc {
-                definition: crate::content::npcs::NpcId(0),
-                disposition: 80,
-                greeting_pending: false,
-                paid_topics: vec![],
-                stock: default(),
-            })
-            .id();
+        let rpc = world.spawn(crate::game::npcs::Npc::default()).id();
         crate::game::party::roster::test_join(&mut world, rpc);
         let projected = world.run_system_once(project).unwrap();
         assert_eq!(projected[0], Some(rpc));

@@ -13,6 +13,68 @@ use crate::game::world::props::PropPart;
 use crate::presentation::billboards::FaceCamera;
 use crate::presentation::party_view::PartyCamera;
 
+/// The party's torch, as every lit view reads it: the Light spell's
+/// [`spell_light`] at the party's eye.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct PartyTorch<'w, 's> {
+    party: Query<
+        'w,
+        's,
+        (
+            &'static avian3d::prelude::Position,
+            &'static crate::game::magic::enchantments::PartyEffects,
+        ),
+        With<crate::game::party::body::PartyBody>,
+    >,
+}
+
+impl PartyTorch<'_, '_> {
+    pub fn light(&self) -> Option<crate::content::level::PointLightSource> {
+        let (at, effects) = self.party.single().ok()?;
+        spell_light(crate::game::party::body::PartyBody::eye(at), effects)
+    }
+}
+
+/// The sky's light on a level now, by the time of day's phase.
+pub(super) fn sky_now(level: &LevelGeometry, clock: &GameClock) -> Vec3 {
+    level.environment.as_ref().map_or(Vec3::ZERO, |e| e.sky_light(clock.phase()))
+}
+
+/// Retail camera light: warm, 4000 retail units, twice adjusted power plus two.
+fn spell_light(
+    eye: Vec3,
+    effects: &crate::game::magic::enchantments::PartyEffects,
+) -> Option<crate::content::level::PointLightSource> {
+    let effect = effects.0.get(crate::content::spells::SpellId::LIGHT)?;
+    let amount = (effect.adjusted(u32::from(effect.power)) as u8).wrapping_mul(2);
+    Some(crate::content::level::PointLightSource {
+        name: String::new(),
+        runtime: true,
+        enabled: true,
+        position: eye,
+        colour: Vec3::new(1.0, 0.85, 0.39) * (f32::from(amount) + 2.0),
+        range: 4000.0 / crate::content::UNITS_PER_METRE,
+    })
+}
+
+/// Current fixed lighting sampled for actor materials. Meshes own no
+/// rest-pose point-light term; this calculation also needs no signed inverse.
+pub(super) fn actor_light(
+    lighting: &crate::content::level::LevelLighting,
+    state: Option<&crate::game::world::triggers::LightActivation>,
+    at: Vec3,
+) -> Vec3 {
+    lighting.offset
+        + lighting
+            .lights
+            .iter()
+            .filter(|light| {
+                state.map_or(light.enabled, |state| state.light_enabled(&light.name, light.enabled))
+            })
+            .map(|light| light.at(at, None))
+            .sum::<Vec3>()
+}
+
 /// Presentation owns the optional render payload for an active level.
 #[derive(Component, Debug)]
 pub struct LevelAppearance(pub Handle<LevelGeometry>);
@@ -115,7 +177,7 @@ pub fn apply_environment(
     let fog = environment.fog_colours[phase as usize];
     clear.0 = Color::srgb(fog.x, fog.y, fog.z);
     let far = environment.view_distance;
-    if let Projection::Perspective(perspective) = projection.as_mut() {
+    if let Some(perspective) = super::water_view::perspective_mut(&mut projection) {
         perspective.far = far;
     }
     commands.entity(camera).insert((
@@ -131,11 +193,9 @@ pub fn apply_environment(
     ));
 
     let sky = environment.sky_light(phase);
-    let parts = level_geometry
-        .parts
-        .iter()
-        .chain(level_geometry.props.iter().flat_map(|p| &p.parts).flat_map(|p| &p.meshes));
-    for part in parts {
+    for part in level_geometry.parts.iter().chain(
+        level_geometry.props.iter().flat_map(|prop| &prop.parts).flat_map(|part| &part.meshes),
+    ) {
         if let Some(mut mesh) = meshes.get_mut(&part.mesh) {
             mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, part.lighting.colours(sky));
         }
@@ -152,14 +212,36 @@ pub fn attach_level_visuals(
     mut commands: Commands,
     levels: Query<(Entity, &LevelAppearance, Option<&LevelEntities>), Without<LevelVisuals>>,
     geometry: Res<Assets<LevelGeometry>>,
+    source_materials: Res<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<super::lighting::SceneMaterial>>,
+    lights: Res<super::lighting::SceneLights>,
     props: Query<(&Prop, &Children)>,
     parts: Query<&PropPart>,
 ) {
     for (root, level, children) in &levels {
         let Some(geometry) = geometry.get(&level.0) else { continue };
+        // Do not mark a partially attached scene complete while material
+        // definitions are still arriving; retry attachment as one operation.
+        if geometry
+            .parts
+            .iter()
+            .chain(geometry.props.iter().flat_map(|prop| &prop.parts).flat_map(|part| &part.meshes))
+            .any(|part| source_materials.get(&part.surface.material).is_none())
+        {
+            continue;
+        }
         commands.entity(root).insert((LevelVisuals, Visibility::default()));
+        let mut instances = bevy::platform::collections::HashMap::new();
         for part in &geometry.parts {
-            commands.spawn((Mesh3d(part.mesh.clone()), part.surface.render(), ChildOf(root)));
+            if let Some(surface) = part.surface.dynamic_instance(
+                true,
+                &lights.0,
+                &mut instances,
+                &source_materials,
+                &mut materials,
+            ) {
+                commands.spawn((Mesh3d(part.mesh.clone()), surface, ChildOf(root)));
+            }
         }
         for &child in children.into_iter().flat_map(LevelEntities::entities) {
             let Ok((prop, prop_parts)) = props.get(child) else { continue };
@@ -186,11 +268,15 @@ pub fn attach_level_visuals(
                     entity
                 };
                 for mesh in &part.meshes {
-                    commands.spawn((
-                        Mesh3d(mesh.mesh.clone()),
-                        mesh.surface.render(),
-                        ChildOf(visual),
-                    ));
+                    if let Some(surface) = mesh.surface.dynamic_instance(
+                        false,
+                        &lights.0,
+                        &mut instances,
+                        &source_materials,
+                        &mut materials,
+                    ) {
+                        commands.spawn((Mesh3d(mesh.mesh.clone()), surface, ChildOf(visual)));
+                    }
                 }
             }
         }
@@ -252,6 +338,9 @@ mod tests {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, TransformPlugin))
             .init_resource::<Assets<LevelGeometry>>()
+            .init_resource::<Assets<StandardMaterial>>()
+            .init_resource::<Assets<super::super::lighting::SceneMaterial>>()
+            .insert_resource(super::super::lighting::SceneLights(default()))
             .add_systems(Update, attach_level_visuals)
             .add_systems(Update, crate::presentation::billboards::face_camera);
         let authored = Transform::from_xyz(3.0, 4.0, 5.0).with_rotation(Quat::from_rotation_y(0.7));

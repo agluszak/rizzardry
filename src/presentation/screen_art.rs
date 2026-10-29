@@ -24,7 +24,7 @@ pub fn condition_icon(character: &Vitals) -> Option<String> {
     if character.is_dead() {
         Some("dead".into())
     } else {
-        character.worst_condition().map(|c| format!("{c:?}").to_lowercase())
+        character.conditions.worst().map(|c| format!("{c:?}").to_lowercase())
     }
 }
 

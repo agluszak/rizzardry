@@ -1,6 +1,7 @@
 //! The campaign's difficulty and what it scales (retail `g_settings.difficulty`,
 //! `DifficultyScaling.cpp`, `Game Difficulty.cpp`, `ScaleByCombatPace`).
 
+use crate::game::world::hostility::Stance;
 use bevy::prelude::*;
 
 /// Retail's three settings; new games start on Normal (`Gameplay Init.cpp:494`).
@@ -12,14 +13,6 @@ pub enum Difficulty {
     #[default]
     Normal,
     Expert,
-}
-
-/// How a monster stands toward the party, for difficulty scaling.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Side {
-    Hostile,
-    Neutral,
-    Friendly,
 }
 
 impl Difficulty {
@@ -36,13 +29,13 @@ impl Difficulty {
     /// A monster's figure (retail `ScaleValueForMonsterDifficulty`): hostile
     /// ones are weaker on Novice and stronger on Expert, friendly ones the
     /// reverse, neutral ones unscaled.
-    pub fn for_monster(self, value: i32, side: Side) -> i32 {
+    pub fn for_monster(self, value: i32, side: Stance) -> i32 {
         match (self, side) {
-            (Difficulty::Normal, _) | (_, Side::Neutral) => value,
-            (Difficulty::Novice, Side::Hostile) | (Difficulty::Expert, Side::Friendly) => {
+            (Difficulty::Normal, _) | (_, Stance::Neutral) => value,
+            (Difficulty::Novice, Stance::Hostile) | (Difficulty::Expert, Stance::Friendly) => {
                 value * 3 * 20 / 100
             }
-            (Difficulty::Expert, Side::Hostile) | (Difficulty::Novice, Side::Friendly) => {
+            (Difficulty::Expert, Stance::Hostile) | (Difficulty::Novice, Stance::Friendly) => {
                 value * 7 * 20 / 100
             }
         }
@@ -69,9 +62,9 @@ mod tests {
         assert_eq!(Difficulty::Novice.for_character(50, false), 70);
         assert_eq!(Difficulty::Expert.for_character(50, false), 30);
         assert_eq!(Difficulty::Expert.for_character(50, true), 70);
-        assert_eq!(Difficulty::Novice.for_monster(50, Side::Hostile), 30);
-        assert_eq!(Difficulty::Expert.for_monster(50, Side::Hostile), 70);
-        assert_eq!(Difficulty::Expert.for_monster(50, Side::Neutral), 50);
+        assert_eq!(Difficulty::Novice.for_monster(50, Stance::Hostile), 30);
+        assert_eq!(Difficulty::Expert.for_monster(50, Stance::Hostile), 70);
+        assert_eq!(Difficulty::Expert.for_monster(50, Stance::Neutral), 50);
         assert_eq!(Difficulty::Normal.scale_by_pace(40, 0), 40);
         assert_eq!(Difficulty::Normal.scale_by_pace(40, 60), 40);
         assert_eq!(Difficulty::Normal.scale_by_pace(50, 100), 90);

@@ -187,6 +187,8 @@ pub(super) fn wrap(text: &str, width: u32, measure: impl Fn(&str) -> u32) -> Vec
 const PARTY_TAKES: usize = 0x1e9;
 const TAKES: usize = 0x1e8;
 const NO_ROOM: usize = 0x90c;
+/// What retail says when an item that may not be discarded stays in hand.
+const CANNOT_DROP: usize = 0x4ef;
 /// Merging: nothing is made from these, "%s lacks the skill", and both must
 /// be identified first (retail `MergeItems`).
 const CANNOT_MERGE: usize = 0x161;
@@ -299,6 +301,7 @@ fn effect_line(names: &super::names::ActorNames, effect: crate::game::magic::Eff
     use crate::game::magic::{Effect, Victim};
     let victim = |victim: Victim| names.name(victim.entity()).unwrap_or_default();
     match effect {
+        Effect::Purified { victim: v } => format!("The air around {} clears.", victim(v)),
         Effect::Enchanted { victim: v, .. } => format!("{} is enchanted.", victim(v)),
         Effect::Healed { victim: v, amount } => {
             format!("{} heals {amount}.", victim(v))
@@ -326,6 +329,7 @@ fn effect_line(names: &super::names::ActorNames, effect: crate::game::magic::Eff
         Effect::Tired { victim: v, amount } => format!("{} loses {amount} stamina.", victim(v)),
         Effect::Raised { victim: v } => format!("{} lives again!", victim(v)),
         Effect::Resisted { victim: v } => format!("{} resists.", victim(v)),
+        Effect::Reflected { victim: v } => format!("{} reflects the spell.", victim(v)),
         Effect::Nothing { victim: v } => format!("{} is unaffected.", victim(v)),
     }
 }
@@ -392,6 +396,28 @@ fn magic_lines(
 }
 
 /// Turn trigger effects, camping and combat news into notice texts.
+/// Retail `AdjustFactionDisposition`'s notice: "%s standing %s." with the
+/// faction's name (`g_faction_name_ids`, whose two spare factions reuse the
+/// first name) and whether it worsened or improved.
+fn faction_line(
+    news: &crate::game::factions::FactionNews,
+    string: &impl Fn(usize) -> String,
+) -> String {
+    const NAMES: usize = 0x5a1;
+    const WORSENED: usize = 0x245;
+    const IMPROVED: usize = 0x246;
+    const CHANGED: usize = 0x247;
+    let name = match usize::try_from(news.faction) {
+        Ok(faction @ 0..=18) => NAMES + faction,
+        _ => NAMES,
+    };
+    string(CHANGED).replacen("%s", &string(name), 1).replacen(
+        "%s",
+        &string(if news.improved { IMPROVED } else { WORSENED }),
+        1,
+    )
+}
+
 pub fn queue_notices(
     mut effects: MessageReader<TriggerEffect>,
     mut camp: MessageReader<CampNews>,
@@ -408,9 +434,11 @@ pub fn queue_notices(
     battle: Option<Single<&crate::game::combat::Battle>>,
     sheets: Res<Assets<SpriteSheet>>,
     mut log: ResMut<TextLog>,
-    (mut magic, content): (
+    (mut magic, content, mut factions, mut speech): (
         MessageReader<crate::game::magic::casting::MagicNews>,
         crate::game::data::Content,
+        MessageReader<crate::game::factions::FactionNews>,
+        MessageReader<crate::game::npcs::conversation::NpcSpeech>,
     ),
 ) {
     let font = sheets.get(&art.font);
@@ -427,6 +455,13 @@ pub fn queue_notices(
             log.push(channel, &line, font);
         }
     }
+    // Retail `SpeakNpcSubquote` outside dialogue mode.
+    for line in speech.read() {
+        log.push(channel, &format!("{}: \"{}\"", line.speaker, line.text), font);
+    }
+    for news in factions.read() {
+        log.push(channel, &faction_line(news, &string), font);
+    }
     for effect in effects.read() {
         let text = match effect {
             TriggerEffect::Message { source, id } => source
@@ -434,6 +469,9 @@ pub fn queue_notices(
                 .and_then(|source| tables.get(source))
                 .and_then(|messages| messages.get(usize::try_from(*id).ok()?))
                 .map(str::to_owned),
+            TriggerEffect::Unsupported { device, code } => {
+                Some(format!("{device}: action {code:#x} is not implemented."))
+            }
             TriggerEffect::NothingHappened => Some(string(NOTHING_HAPPENS)),
             // Whizzardry's notice for a locked door without its key.
             TriggerEffect::Locked => Some("Your party doesn't have required key.".to_owned()),
@@ -482,6 +520,7 @@ pub fn queue_notices(
             }
             ItemNews::Takes { member: None, item } => string(PARTY_TAKES).replace("%s", item),
             ItemNews::NoRoom => string(NO_ROOM),
+            ItemNews::CannotDrop => string(CANNOT_DROP),
             ItemNews::CannotMerge => string(CANNOT_MERGE),
             ItemNews::Unskilled { member } => string(UNSKILLED_MERGE).replace("%s", member),
             ItemNews::Unidentified => string(MERGE_UNIDENTIFIED),
@@ -545,10 +584,18 @@ pub fn queue_notices(
     // course (retail's own blow lines are not ported yet).
     for news in combat.read() {
         let texts = match news {
-            CombatNews::Began => {
+            CombatNews::Began { .. } => {
                 log.selected = 1;
                 vec![string(COMBAT)]
             }
+            CombatNews::Breathed { actor } => {
+                names.name(*actor).map(|name| vec![format!("{name} breathes!")]).unwrap_or_default()
+            }
+            CombatNews::Surprised(cause) => vec![string(match cause {
+                crate::game::combat::SurpriseCause::Ambush => 0x240,
+                crate::game::combat::SurpriseCause::Running => 0x23e,
+                crate::game::combat::SurpriseCause::Searching => 0x23f,
+            })],
             // Retail notices 0x21b and 0x21c: the party moves, and stops.
             CombatNews::PartyMoves => vec![string(0x21b)],
             CombatNews::PartyStops => vec![string(0x21c)],
@@ -557,6 +604,49 @@ pub fn queue_notices(
                 .name(*monster)
                 .map(|name| vec![format!("{name} {}", string(if *charge { 0x237 } else { 0x236 }))])
                 .unwrap_or_default(),
+            // Retail `StartMonsterCombatAction`'s notices: 0x23b takes the
+            // monster's name and possessive, 0x23a its name.
+            CombatNews::Flees { monster } => names
+                .name(*monster)
+                .map(|name| {
+                    let pronouns = usize::from(names.pronouns(*monster).unwrap_or(2));
+                    let possessive =
+                        string(if pronouns < 3 { POSSESSIVES + pronouns } else { 0x2df });
+                    vec![string(0x23b).replacen("%s", &name, 1).replacen("%s", &possessive, 1)]
+                })
+                .unwrap_or_default(),
+            // Retail `MonsterFleeAction`: the name and the attack's own
+            // (`g_monster_special_attack_name_ids`, known for kinds 1 to 11).
+            CombatNews::Special { monster, kind } => names
+                .name(*monster)
+                .map(|name| match kind.row() {
+                    row @ 1..=11 => vec![format!("{name} {}", string(1597 + usize::from(row)))],
+                    _ => vec![],
+                })
+                .unwrap_or_default(),
+            // Retail `g_condition_interrupt_notices` (0x3a0 on, twelve of
+            // them); fear's flight has none.
+            CombatNews::Interrupted { monster, interrupt } => names
+                .name(*monster)
+                .filter(|_| interrupt.number() < 12)
+                .map(|name| {
+                    vec![format!("{name} {}", string(0x3a0 + usize::from(interrupt.number())))]
+                })
+                .unwrap_or_default(),
+            // Retail string 0x21a after the guard's name, naming its ward.
+            CombatNews::Intercepts { guard, ward } => {
+                match (names.name(*guard), names.name(*ward)) {
+                    (Some(guard), Some(ward)) => {
+                        vec![format!("{guard} {}", string(0x21a).replacen("%s", &ward, 1))]
+                    }
+                    _ => vec![],
+                }
+            }
+            CombatNews::Withdraws { monster } => names
+                .name(*monster)
+                .map(|name| vec![string(0x23a).replacen("%s", &name, 1)])
+                .unwrap_or_default(),
+            CombatNews::SummonFails => vec![string(0x26a)],
             CombatNews::Attack { attacker, target, how, swings, surprise } => {
                 match (names.name(*attacker), names.name(*target)) {
                     (Some(attacker), Some(target)) => {
@@ -623,6 +713,23 @@ pub fn queue_notices(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A faction's notice names it and says which way its standing went;
+    /// retail's spare factions borrow the first name.
+    #[test]
+    fn faction_notices_name_the_faction_and_the_direction() {
+        let string = |index: usize| match index {
+            0x245 => "worsened".to_owned(),
+            0x246 => "improved".to_owned(),
+            0x247 => "%s standing %s.".to_owned(),
+            0x5a1 => "Unaligned".to_owned(),
+            0x5a5 => "Umpani".to_owned(),
+            _ => String::new(),
+        };
+        let news = |faction, improved| crate::game::factions::FactionNews { faction, improved };
+        assert_eq!(faction_line(&news(4, false), &string), "Umpani standing worsened.");
+        assert_eq!(faction_line(&news(20, true), &string), "Unaligned standing improved.");
+    }
 
     #[test]
     fn the_box_follows_new_lines_and_scrolls_to_its_last() {

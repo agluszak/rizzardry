@@ -4,7 +4,7 @@
 use avian3d::prelude::*;
 use bevy::prelude::*;
 
-use super::body::{EYE_ABOVE_CENTRE, PartyBody};
+use super::body::PartyBody;
 use crate::content::level::{Arrival, LevelDefinition};
 use crate::game::world::level::{Level, PlayedLevel, Travel, ask_travel};
 use crate::game::world::props::pose;
@@ -45,9 +45,7 @@ pub fn move_party(
     match party_move {
         PartyMove::Teleport(Arrival::Here { eye, yaw }) => {
             // Same-level destinations place the eye at the trigger, unprobed.
-            position.0 = eye - Vec3::Y * EYE_ABOVE_CENTRE;
-            transform.translation = position.0;
-            body.yaw = yaw;
+            body.stand(&mut position, &mut transform, eye, yaw);
             info!("teleport to {eye:.2}");
             state.arrive(eye);
         }
@@ -105,7 +103,7 @@ pub fn fly_party(
     flight.frame = (flight.frame + path.keys_per_second * time.delta_secs()).min(last);
     let key = pose(&path.keys, flight.frame);
     (body.yaw, body.pitch, _) = key.rotation.to_euler(EulerRot::YXZ);
-    position.0 = key.translation - Vec3::Y * EYE_ABOVE_CENTRE;
+    position.0 = PartyBody::centre(key.translation);
     transform.translation = position.0;
     velocity.0 = Vec3::ZERO;
     if flight.frame >= last {
@@ -120,15 +118,13 @@ mod tests {
     use crate::content::level::CameraPathModel;
     use crate::game::camp::{Camp, CampNews, CampRequest};
     use crate::game::party::body::{PartyLook, look_around};
-    use crate::game::screen::Screen;
 
     #[test]
     fn path_flight_blocks_manual_actions_and_landing_releases_the_party() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
-            .insert_resource(State::new(Screen::World))
-            .init_resource::<NextState<Screen>>()
             .init_resource::<Assets<LevelDefinition>>()
+            .init_resource::<crate::game::time::GameClock>()
             .add_message::<PartyLook>()
             .add_message::<CampRequest>()
             .add_message::<CampNews>()
@@ -166,7 +162,7 @@ mod tests {
         assert!(app.world().get::<RigidBodyDisabled>(body).is_none());
         assert_eq!(
             app.world().get::<Position>(body).unwrap().0,
-            Vec3::new(3.0, 4.0, 5.0) - Vec3::Y * EYE_ABOVE_CENTRE
+            PartyBody::centre(Vec3::new(3.0, 4.0, 5.0))
         );
         app.world_mut().write_message(CampRequest);
         app.update();

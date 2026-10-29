@@ -50,15 +50,26 @@ pub enum PartyMotion {}
 /// The party's spatial body. Exactly one exists while a level is active.
 /// Its own rotation is locked; facing lives here and on the camera.
 #[derive(Component, Debug, Default)]
+#[require(Transform)]
 pub struct PartyBody {
     pub yaw: f32,
     pub pitch: f32,
 }
 
+/// The way a party turned by `yaw` faces, level.
+pub fn heading(yaw: f32) -> Vec3 {
+    Quat::from_rotation_y(yaw) * Vec3::NEG_Z
+}
+
+/// The yaw that faces along `toward`, level: [`heading`]'s inverse.
+pub fn yaw_toward(toward: Vec3) -> f32 {
+    (-toward.x).atan2(-toward.z)
+}
+
 impl PartyBody {
     /// The way the party faces, level.
     pub fn forward(&self) -> Vec3 {
-        Quat::from_rotation_y(self.yaw) * Vec3::NEG_Z
+        heading(self.yaw)
     }
 
     /// The party's eye, over the centre of its body at `position`.
@@ -66,10 +77,51 @@ impl PartyBody {
         position.0 + Vec3::Y * EYE_ABOVE_CENTRE
     }
 
-    /// Turn to face along `direction`, level.
-    pub fn face(&mut self, direction: Vec3) {
-        let facing = Transform::default().looking_to(direction.with_y(0.0), Vec3::Y);
-        (self.yaw, _, _) = facing.rotation.to_euler(EulerRot::YXZ);
+    /// The party's eye now, for operations that hold the whole world.
+    pub fn eye_in(world: &mut World) -> Option<Vec3> {
+        world.query_filtered::<&Position, With<PartyBody>>().single(world).ok().map(Self::eye)
+    }
+
+    /// The party's feet, for operations that hold the whole world.
+    pub fn feet_in(world: &mut World) -> Option<Vec3> {
+        world.query_filtered::<&Position, With<PartyBody>>().single(world).ok().map(Self::feet)
+    }
+
+    /// The centre of the party's body under an eye at `eye`: [`Self::eye`]'s
+    /// inverse.
+    pub fn centre(eye: Vec3) -> Vec3 {
+        eye - Vec3::Y * EYE_ABOVE_CENTRE
+    }
+
+    /// The party's feet, under its body at `position`.
+    pub fn feet(position: &Position) -> Vec3 {
+        position.0 - Vec3::Y * FLOAT_HEIGHT
+    }
+
+    /// The party's feet under an eye at `eye` (retail's party point, 1000
+    /// world units under the eye, which reach and sight measure from).
+    pub fn feet_below(eye: Vec3) -> Vec3 {
+        eye - Vec3::Y * EYE_HEIGHT
+    }
+
+    /// The party's eye over feet at `feet`: [`Self::feet_below`]'s inverse.
+    pub fn eye_above(feet: Vec3) -> Vec3 {
+        feet + Vec3::Y * EYE_HEIGHT
+    }
+
+    /// Put the party's eye at `eye`, facing `yaw`: its physics position, its
+    /// transform and its heading together. Pitch, velocity, path flights and
+    /// what arriving means stay each caller's.
+    pub fn stand(
+        &mut self,
+        position: &mut Position,
+        transform: &mut Transform,
+        eye: Vec3,
+        yaw: f32,
+    ) {
+        position.0 = Self::centre(eye);
+        transform.translation = position.0;
+        self.yaw = yaw;
     }
 }
 
@@ -130,17 +182,15 @@ impl PartyPlacement<'_, '_> {
             0.0,
         ));
         let yaw = start.yaw.or(entrance.map(|e| e.yaw)).unwrap_or_default();
-        let position = eye - Vec3::Y * EYE_ABOVE_CENTRE;
         if let Ok((mut body, mut at, mut transform, mut velocity)) = self.party.get_mut(party) {
-            body.yaw = yaw;
+            body.stand(&mut at, &mut transform, eye, yaw);
             body.pitch = start.pitch.clamp(-MAX_PITCH, MAX_PITCH);
-            at.0 = position;
-            transform.translation = position;
             velocity.0 = Vec3::ZERO;
             commands.entity(party).remove_with_requires::<super::walk_in::PathFlight>();
             return;
         }
         // Entering its first level, the party gets its body.
+        let position = PartyBody::centre(eye);
         commands.entity(party).insert((
             PartyBody { yaw, pitch: start.pitch.clamp(-MAX_PITCH, MAX_PITCH) },
             Transform::from_translation(position),
@@ -177,7 +227,7 @@ pub struct PartyStart {
 /// Apply requested view changes only while the party can act.
 pub fn look_around(
     mut requests: MessageReader<PartyLook>,
-    freedom: crate::game::screen::Freedom,
+    freedom: crate::game::freedom::Freedom,
     mut party: Query<&mut PartyBody>,
 ) {
     let delta: Vec2 = requests.read().map(|request| request.0).sum();
@@ -192,15 +242,92 @@ pub fn look_around(
     }
 }
 
+/// Turn the party to look along `to` (yaw, pitch), at once or eased over
+/// the time retail's camera gives the turn (`GDCamera`'s orientation
+/// transition). The facing it gives is the party's, which moves it and aims
+/// its automatic casts, so the turn runs on the simulation step.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct TurnParty {
+    pub to: Vec2,
+    pub smooth: bool,
+}
+
+/// A turn under way, as yaw and pitch. Turning the view by hand ends it.
+#[derive(Resource, Debug, Default)]
+pub struct PartyTurning(Option<Turning>);
+
+#[derive(Debug)]
+struct Turning {
+    from: Vec2,
+    to: Vec2,
+    duration: f32,
+    elapsed: f32,
+    /// Where this turn last left the party.
+    last: Vec2,
+}
+
+/// Retail's turn takes ten seconds per half turn of the larger angle.
+const SECONDS_PER_RADIAN: f32 = 10.0 / std::f32::consts::PI;
+
+/// An angle brought within half a turn either way.
+fn wrapped(angle: f32) -> f32 {
+    (angle + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
+}
+
+/// Accept a requested turn and carry it on, easing in and out, until it is
+/// done or the view was turned another way. It waits while the party is
+/// held.
+pub fn turn_party(
+    time: Res<Time>,
+    mut requests: MessageReader<TurnParty>,
+    mut turning: ResMut<PartyTurning>,
+    freedom: crate::game::freedom::Freedom,
+    mut party: Query<&mut PartyBody>,
+) {
+    let Ok(mut body) = party.single_mut() else {
+        requests.clear();
+        turning.0 = None;
+        return;
+    };
+    let now = Vec2::new(body.yaw, body.pitch);
+    for request in requests.read() {
+        let to = Vec2::new(
+            body.yaw + wrapped(request.to.x - body.yaw),
+            request.to.y.clamp(-MAX_PITCH, MAX_PITCH),
+        );
+        let duration =
+            if request.smooth { (to - now).abs().max_element() * SECONDS_PER_RADIAN } else { 0.0 };
+        turning.0 = Some(Turning { from: now, to, duration, elapsed: 0.0, last: now });
+    }
+    let Some(turn) = turning.0.as_mut() else { return };
+    if (now - turn.last).abs().max_element() > 1e-4 {
+        turning.0 = None;
+        return;
+    }
+    if !freedom.free() {
+        return;
+    }
+    turn.elapsed += time.delta_secs();
+    let share = (turn.elapsed / turn.duration.max(f32::EPSILON)).min(1.0);
+    let eased = (1.0 - (share * std::f32::consts::PI).cos()) / 2.0;
+    let wanted = turn.from + (turn.to - turn.from) * eased;
+    (body.yaw, body.pitch) = (wanted.x, wanted.y);
+    turn.last = wanted;
+    if share >= 1.0 {
+        turning.0 = None;
+    }
+}
+
 /// Turn and walk on the fixed simulation step, feeding Tnua.
 pub fn drive_party(
     time: Res<Time>,
     mut party: Query<(&mut PartyBody, &mut TnuaController<PartyMotion>, &PartyMovement)>,
-    freedom: crate::game::screen::Freedom,
+    freedom: crate::game::freedom::Freedom,
     battle: Option<Single<&crate::game::combat::Battle>>,
 ) {
     let Ok((mut body, mut controller, movement)) = party.single_mut() else { return };
-    // A party held by a screen, a camp or a question stands still.
+    // A party held by a camp or a question stands still; a screen over the
+    // world stops its walking input instead.
     let free = freedom.free();
     let turn = movement.turn.clamp(-1.0, 1.0) * TURN_SPEED * time.delta_secs();
     if free && turn != 0.0 {

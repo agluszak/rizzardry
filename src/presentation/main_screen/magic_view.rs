@@ -28,11 +28,11 @@ use crate::game::characters::{Character, Vitals};
 use crate::game::combat::Battle;
 use crate::game::inventory::{Carried, PartyInventory};
 use crate::game::magic::casting::{
-    AUTO_POWER, Aim, MagicChoice, Source, UseContext, can_activate, usable_items, usable_now,
+    AUTO_POWER, Aim, MagicChoice, Source, UseContext, castable, usable_items, usable_now,
+    usable_stack,
 };
-use crate::game::magic::{LearnedSpells, MagicRequest, SpellPoints, resolvable};
+use crate::game::magic::{LearnedSpells, MagicRequest, SpellPoints};
 use crate::game::party::roster::PartyRoster;
-use crate::game::world::population::Monster;
 use crate::presentation::retail_controls::{
     ControlSkin, FocusRing, ScrollWheel, scroll_wheel, set_scroll_maximum, step_scrollbar,
 };
@@ -142,6 +142,19 @@ impl MagicView {
     }
 }
 
+/// The requested target is a draft; the view retains the actual relationship.
+#[derive(Clone, Copy)]
+pub enum ViewTarget {
+    Device(Entity),
+    Conversation(Entity),
+}
+#[derive(Component)]
+#[relationship(relationship_target = ConversationCasting)]
+pub(super) struct ConversationTarget(Entity);
+#[derive(Component)]
+#[relationship_target(relationship = ConversationTarget, linked_spawn)]
+pub(super) struct ConversationCasting(Vec<Entity>);
+
 /// The device attempt a view casts at; the view closes with it.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 #[relationship(relationship_target = AttemptCasting)]
@@ -228,24 +241,34 @@ pub fn open(
     art: &MagicViewArt,
     caster: Entity,
     items: bool,
-    requested_attempt: Option<Entity>,
+    requested_target: Option<ViewTarget>,
 ) {
     let art = art.clone();
     commands.queue(move |world: &mut World| {
-        use crate::game::world::interaction::{DeviceInteraction, DeviceRequest, Work, current};
-        let attempt = match current(world) {
-            Some((attempt, _)) => {
-                if matches!(
-                    world.get::<DeviceInteraction>(attempt).map(|i| &i.work),
-                    Some(Work::Looting)
-                ) || requested_attempt.is_some_and(|requested| requested != attempt)
+        use crate::game::world::interaction::{DeviceRequest, current, magic_attempt};
+        let target = match requested_target {
+            Some(ViewTarget::Conversation(entity)) => {
+                if current(world).is_some()
+                    || !world
+                        .get::<crate::game::npcs::conversation::Conversation>(entity)
+                        .is_some_and(|c| c.ready())
                 {
                     return;
                 }
-                Some(attempt)
+                Some(ViewTarget::Conversation(entity))
             }
-            None if requested_attempt.is_some() => return,
-            None => None,
+            request => {
+                let requested_attempt = request.map(|target| match target {
+                    ViewTarget::Device(entity) => entity,
+                    ViewTarget::Conversation(_) => unreachable!(),
+                });
+                let Ok(attempt) = magic_attempt(world, requested_attempt) else { return };
+                attempt.map(ViewTarget::Device)
+            }
+        };
+        let attempt = match target {
+            Some(ViewTarget::Device(entity)) => Some(entity),
+            _ => None,
         };
         if let Some(attempt) = attempt {
             world.write_message(DeviceRequest::PrepareMagic { on: attempt, actor: caster });
@@ -267,7 +290,7 @@ pub fn open(
         }
         let mut state = bevy::ecs::system::SystemState::<Commands>::new(world);
         let first =
-            spawn_view(&mut state.get_mut(world).unwrap(), &art, caster, items, attempt, restore);
+            spawn_view(&mut state.get_mut(world).unwrap(), &art, caster, items, target, restore);
         state.apply(world);
         if let Some(mut focus) = world.get_resource_mut::<InputFocus>() {
             focus.set(first, bevy::input_focus::FocusCause::Navigated);
@@ -280,7 +303,7 @@ fn spawn_view(
     art: &MagicViewArt,
     caster: Entity,
     items: bool,
-    attempt: Option<Entity>,
+    target: Option<ViewTarget>,
     restore: Option<Entity>,
 ) -> Entity {
     let root = commands
@@ -309,11 +332,17 @@ fn spawn_view(
             absolute(Vec2::ZERO, crate::presentation::screen_art::SCREEN),
             GlobalZIndex(25),
             Pickable::IGNORE,
-            DespawnOnExit(crate::game::screen::Screen::World),
+            DespawnOnExit(crate::presentation::screen::Screen::World),
         ))
         .id();
-    if let Some(attempt) = attempt {
-        commands.entity(root).insert(CastsAt(attempt));
+    match target {
+        Some(ViewTarget::Device(entity)) => {
+            commands.entity(root).insert(CastsAt(entity));
+        }
+        Some(ViewTarget::Conversation(entity)) => {
+            commands.entity(root).insert(ConversationTarget(entity));
+        }
+        None => {}
     }
     let picture = |commands: &mut Commands, sheet: &Handle<SpriteSheet>, frame, at| {
         commands
@@ -500,11 +529,20 @@ struct Offer<'a> {
 
 fn context(
     attempt: Option<Entity>,
+    dialogue: Option<Entity>,
+    conversations: &Query<&crate::game::npcs::conversation::Conversation>,
     fighting: bool,
     camped: bool,
     attempts: &Query<&crate::game::world::interaction::DeviceInteraction>,
 ) -> Option<UseContext> {
     use crate::game::world::interaction::Work;
+    if let Some(entity) = dialogue {
+        return conversations
+            .get(entity)
+            .ok()
+            .filter(|c| c.ready())
+            .map(|_| UseContext::Conversation);
+    }
     match attempt {
         Some(attempt) => {
             let interaction = attempts.get(attempt).ok()?;
@@ -539,6 +577,7 @@ fn offers<'a>(
     carried: Option<&Carried>,
     learned: Option<&LearnedSpells>,
     points: Option<&SpellPoints>,
+    maximum: &enum_map::EnumMap<Realm, u32>,
     spells: &'a SpellCatalog,
     items: &ItemCatalog,
     context: UseContext,
@@ -551,12 +590,8 @@ fn offers<'a>(
                 .stacks
                 .iter()
                 .filter_map(|stack| {
-                    let definition = items.get(stack.item)?;
-                    let spell = definition.spell?.spell;
-                    (can_activate(character, definition, false)
-                        && stack.remaining_uses() != Some(0)
-                        && resolvable(spell))
-                    .then_some((Source::PoolItem(stack.id), stack, spell))
+                    let spell = usable_stack(character, stack, items, false)?;
+                    Some((Source::PoolItem(stack.id), stack, spell))
                 })
                 .collect()
         } else {
@@ -574,8 +609,13 @@ fn offers<'a>(
                 let silenced =
                     silenced && definition.use_type == crate::content::items::UseType::Instrument;
                 let available = usable_now(spell, context) && !silenced;
-                if matches!(context, UseContext::Lock | UseContext::Trap | UseContext::Camp)
-                    && !available
+                if matches!(
+                    context,
+                    UseContext::Lock
+                        | UseContext::Trap
+                        | UseContext::Camp
+                        | UseContext::Conversation
+                ) && !available
                 {
                     return None;
                 }
@@ -597,18 +637,18 @@ fn offers<'a>(
         .filter_map(|&id| spells.get(id))
         .filter(|s| s.realm == Some(realm))
         .map(|s| {
-            let affordable = points.is_some_and(|p| p.affordable_power(s) > 0);
+            let affordable = points.map_or(0, |p| p.affordable_power(s, maximum));
             Offer {
                 source: Source::Spell { spell: s.id, power: 1 },
                 spell: s,
                 label: format!("{} {}", glyph(s.targeting), s.name),
                 cost: s.cost.to_string(),
-                available: affordable && resolvable(s.id) && usable_now(s, context) && !silenced,
+                available: castable(s, affordable, context, silenced),
                 silenced,
             }
         })
         .collect();
-    if matches!(context, UseContext::Lock | UseContext::Trap) {
+    if matches!(context, UseContext::Lock | UseContext::Trap | UseContext::Conversation) {
         offers.retain(|o| usable_now(o.spell, context));
     }
     // Castable first, then the rest (retail's two passes).
@@ -631,22 +671,30 @@ fn rating(chance: u32) -> usize {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn refresh_magic_view(
     mut commands: Commands,
-    mut views: Query<(Entity, &mut MagicView, &MagicScroll, Option<&CastsAt>)>,
+    mut views: Query<(
+        Entity,
+        &mut MagicView,
+        &MagicScroll,
+        Option<&CastsAt>,
+        Option<&ConversationTarget>,
+    )>,
     sliders: Query<(&SliderValue, &SliderRange)>,
     (selected, roster): (Res<super::SelectedMember>, Single<&PartyRoster>),
     members: Query<(&Character, &Vitals, Option<&Carried>)>,
     casters: Query<(&LearnedSpells, Option<&SpellPoints>)>,
-    (battle, monsters, party): (
-        Option<Single<(&Battle, Option<&crate::game::combat::Combatants>)>>,
-        Query<(Entity, &Monster, &GlobalTransform)>,
-        Query<&GlobalTransform, With<crate::game::party::body::PartyBody>>,
-    ),
-    (camp, interaction, pool): (
+    (battle, camp, interaction, pool): (
+        Option<Single<&Battle>>,
         Option<Res<crate::game::camp::Camp>>,
         Query<&crate::game::world::interaction::DeviceInteraction>,
         Single<&PartyInventory>,
     ),
     content: crate::game::data::Content,
+    (conversations, speakers, monsters, party): (
+        Query<&crate::game::npcs::conversation::Conversation>,
+        Query<&crate::game::npcs::NpcBody>,
+        Query<(Entity, &crate::game::world::population::Monster, crate::game::world::ActorPose)>,
+        Query<(&avian3d::prelude::Position, &crate::game::party::body::PartyBody)>,
+    ),
     (art, assets, strings): (
         Res<MagicViewArt>,
         Res<AssetServer>,
@@ -676,7 +724,9 @@ pub(super) fn refresh_magic_view(
         MessageWriter<crate::game::world::interaction::DeviceRequest>,
     ),
 ) {
-    let Ok((root, mut view, scroll, casts_at)) = views.single_mut() else { return };
+    let Ok((root, mut view, scroll, casts_at, conversation_target)) = views.single_mut() else {
+        return;
+    };
     let attempt = casts_at.map(|casts_at| casts_at.0);
     // The selected member casts; choosing another starts over for them.
     if let Some(member) = selected.member(&roster)
@@ -705,18 +755,27 @@ pub(super) fn refresh_magic_view(
     let (Some(spells), Some(items)) = (content.spells(), content.items()) else {
         return;
     };
-    let Some(context) = context(attempt, battle.is_some(), camp.is_some(), &interaction) else {
+    let Some(context) = context(
+        attempt,
+        conversation_target.map(|r| r.0),
+        &conversations,
+        battle.is_some(),
+        camp.is_some(),
+        &interaction,
+    ) else {
         commands.entity(root).despawn();
         return;
     };
-    let Ok((character, _, carried)) = members.get(view.caster) else { return };
+    let Ok((character, vitals, carried)) = members.get(view.caster) else { return };
     let (learned, points) = casters.get(view.caster).map_or((None, None), |(l, p)| (Some(l), p));
-    let maximum = points.map(|p| p.maximum).unwrap_or_default();
+    let mana_maximum = learned
+        .map(|l| character.stats(&vitals.enchantments).max_points(l, spells))
+        .unwrap_or_default();
     // Realms: their points, the chosen one latched; the first with points
     // chosen when none is.
     if !view.items {
         if view.realm.is_none() {
-            view.realm = EnumSet::<Realm>::all().iter().find(|&r| maximum[r] > 0);
+            view.realm = EnumSet::<Realm>::all().iter().find(|&r| mana_maximum[r] > 0);
         }
         for (button, selected, entity) in &parts.p0() {
             let wanted = view.realm == Some(button.0);
@@ -730,7 +789,7 @@ pub(super) fn refresh_magic_view(
             crate::presentation::retail_controls::set_enabled(
                 &mut commands,
                 entity,
-                maximum[button.0] > 0,
+                mana_maximum[button.0] > 0,
                 false,
             );
         }
@@ -747,18 +806,27 @@ pub(super) fn refresh_magic_view(
             }
         }
         for (realm, mut label) in &mut parts.p1() {
-            let current = points.map_or(0, |p| p.current[realm.0]);
-            let value = format!("{current}/{}", maximum[realm.0]);
+            let current = points.map_or(0, |p| p.current(realm.0, &mana_maximum));
+            let value = format!("{current}/{}", mana_maximum[realm.0]);
             if label.value != value {
                 label.value = value;
             }
         }
     }
-    let silenced = members
-        .get(view.caster)
-        .is_ok_and(|(_, v, _)| v.has(crate::game::characters::Condition::Silenced));
-    let offers =
-        offers(&view, character, carried, learned, points, spells, items, context, &pool, silenced);
+    let silenced = vitals.conditions.has(crate::game::characters::Condition::Silenced);
+    let offers = offers(
+        &view,
+        character,
+        carried,
+        learned,
+        points,
+        &mana_maximum,
+        spells,
+        items,
+        context,
+        &pool,
+        silenced,
+    );
     let Ok((scroll_value, scroll_range)) = sliders.get(scroll.0) else { return };
     let maximum = offers.len().saturating_sub(ROWS);
     set_scroll_maximum(&mut commands, scroll.0, scroll_value, scroll_range, maximum as f32);
@@ -812,7 +880,7 @@ pub(super) fn refresh_magic_view(
     // Pips: as many lit as the chosen power, rated by failure chance;
     // auto pips only where retail offers them.
     if !view.items {
-        let affordable = spell.zip(points).map_or(0, |(s, p)| p.affordable_power(s));
+        let affordable = spell.zip(points).map_or(0, |(s, p)| p.affordable_power(s, &mana_maximum));
         for (pip, hovered, mut picture, mut visibility) in &mut parts.p5() {
             let index = usize::from(pip.0);
             let shown = match (pip.0, spell.map(|s| s.power)) {
@@ -895,30 +963,37 @@ pub(super) fn refresh_magic_view(
     // An item casts at its own power.
     let power = if view.items { Some(1) } else { view.power };
     let Some(power) = power else { return };
-    let aim = if let Some(attempt) = attempt {
+    let aim = if let Some(relation) = conversation_target {
+        let Ok(conversation) = conversations.get(relation.0) else { return };
+        let Some((body, _, _)) = monsters.iter().find(|(entity, monster, _)| {
+            !monster.is_dead()
+                && speakers.get(*entity).is_ok_and(|binding| binding.0 == conversation.actor)
+        }) else {
+            return;
+        };
+        Aim::Monster(body)
+    } else if let Some(attempt) = attempt {
         Aim::Device(attempt)
     } else {
         match spell.targeting {
+            Targeting::Point => {
+                // On the ground ahead of the party, as far as the spell
+                // reaches (ten metres at most).
+                let Ok((position, body)) = party.single() else { return };
+                let feet = crate::game::party::body::PartyBody::feet(position);
+                Aim::Point(feet + body.forward() * spell.reach.metres().min(10.0))
+            }
+            Targeting::Item => match pool.hand.held.as_ref() {
+                Some(stack) => Aim::Item(stack.id),
+                None => return,
+            },
             Targeting::Ally => match view.member {
                 Some(member) => Aim::Member(member),
                 None => return,
             },
+            // The game picks the monster ahead when the spell is cast.
             Targeting::Enemy | Targeting::EnemyGroup | Targeting::Cone | Targeting::Radius => {
-                let Ok(eye) = party.single() else { return };
-                let fighting = battle
-                    .iter()
-                    .flat_map(|b| b.1.into_iter().flat_map(|c| c.entities().iter().copied()))
-                    .filter_map(|m| {
-                        let (_, monster, at) = monsters.get(m).ok()?;
-                        Some((m, monster, at.translation()))
-                    });
-                let ahead = crate::game::magic::target_ahead(
-                    eye.translation(),
-                    eye.forward().into(),
-                    spell.reach.metres(),
-                    fighting,
-                );
-                ahead.map_or(Aim::Member(view.caster), Aim::Monster)
+                Aim::Ahead
             }
             _ => Aim::Member(view.caster),
         }
@@ -957,7 +1032,7 @@ fn choose_realm(
 fn choose_row(
     click: On<Activate>,
     rows: Query<&Row>,
-    mut views: Query<(&mut MagicView, Option<&CastsAt>)>,
+    mut views: Query<(&mut MagicView, Option<&CastsAt>, Option<&ConversationTarget>)>,
     members: Query<(&Character, &Vitals, Option<&Carried>)>,
     casters: Query<(&LearnedSpells, Option<&SpellPoints>)>,
     battle: Option<Single<&Battle>>,
@@ -967,27 +1042,39 @@ fn choose_row(
         Single<&PartyInventory>,
     ),
     content: crate::game::data::Content,
+    conversations: Query<&crate::game::npcs::conversation::Conversation>,
 ) {
-    let (Ok(row), Ok((mut view, casts_at))) = (rows.get(click.entity), views.single_mut()) else {
+    let (Ok(row), Ok((mut view, casts_at, conversation_target))) =
+        (rows.get(click.entity), views.single_mut())
+    else {
         return;
     };
     let (Some(spells), Some(items)) = (content.spells(), content.items()) else {
         return;
     };
-    let Ok((character, _, carried)) = members.get(view.caster) else { return };
+    let Ok((character, vitals, carried)) = members.get(view.caster) else { return };
     let (learned, points) = casters.get(view.caster).map_or((None, None), |(l, p)| (Some(l), p));
-    let silenced = members
-        .get(view.caster)
-        .is_ok_and(|(_, v, _)| v.has(crate::game::characters::Condition::Silenced));
+    let silenced = vitals.conditions.has(crate::game::characters::Condition::Silenced);
+    let mana_maximum = learned
+        .map(|l| character.stats(&vitals.enchantments).max_points(l, spells))
+        .unwrap_or_default();
     let offers = offers(
         &view,
         character,
         carried,
         learned,
         points,
+        &mana_maximum,
         spells,
         items,
-        match context(casts_at.map(|c| c.0), battle.is_some(), camp.is_some(), &interaction) {
+        match context(
+            casts_at.map(|c| c.0),
+            conversation_target.map(|r| r.0),
+            &conversations,
+            battle.is_some(),
+            camp.is_some(),
+            &interaction,
+        ) {
             Some(c) => c,
             None => return,
         },

@@ -7,7 +7,8 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use super::{
-    Device, DialState, DoorState, FountainState, LevelState, PositionedDevices, TriggerState,
+    Device, DialState, DoorState, FountainState, LevelState, LightActivation, PositionedDevices,
+    TriggerState,
 };
 use crate::content::items::LootTables;
 use crate::content::level::{LevelDefinition, TriggerAction, VariableName};
@@ -19,8 +20,12 @@ use crate::game::world::scripts::LevelScript;
 /// Dormant records use authored indices, never runtime entity references.
 #[derive(Debug, Default)]
 pub struct TriggerMemory {
+    camera_sway: bool,
     devices: HashMap<usize, KeptDevice>,
     variables: HashMap<VariableName, bool>,
+    ambient_sounds: HashMap<String, bool>,
+    particles: super::super::particles::ParticleMemory,
+    lights: LightActivation,
 }
 
 #[derive(Debug)]
@@ -36,6 +41,7 @@ struct KeptDevice {
 /// Keep the same device values between visits; proximity and zones are transient.
 #[derive(SystemParam)]
 pub struct DeviceRecords<'w, 's> {
+    particles: Query<'w, 's, &'static super::super::particles::Emitter>,
     devices: Query<
         'w,
         's,
@@ -53,7 +59,12 @@ pub struct DeviceRecords<'w, 's> {
 
 impl DeviceRecords<'_, '_> {
     /// Remember the devices among what a level owns.
-    pub fn remember(&self, owned: &[Entity], state: &LevelState) -> TriggerMemory {
+    pub fn remember(
+        &self,
+        owned: &[Entity],
+        state: &LevelState,
+        lights: &LightActivation,
+    ) -> TriggerMemory {
         let devices = self
             .devices
             .iter_many(owned)
@@ -72,7 +83,14 @@ impl DeviceRecords<'_, '_> {
                 )
             })
             .collect();
-        TriggerMemory { devices, variables: state.variables.clone() }
+        TriggerMemory {
+            camera_sway: state.camera_sway,
+            devices,
+            variables: state.variables.clone(),
+            ambient_sounds: state.ambient_sounds.clone(),
+            particles: super::super::particles::remember(self.particles.iter_many(owned).matched()),
+            lights: lights.clone(),
+        }
     }
 }
 
@@ -86,6 +104,12 @@ pub fn spawn_devices(
     tables: &LootTables,
     mut memory: Option<TriggerMemory>,
 ) -> Vec<Entity> {
+    super::super::particles::spawn_emitters(
+        commands,
+        level,
+        geometry,
+        memory.as_mut().map(|memory| std::mem::take(&mut memory.particles)).unwrap_or_default(),
+    );
     let mut attached = vec![None; geometry.triggers.len()];
     for (index, prop) in geometry.props.iter().enumerate() {
         if let Some(trigger) = prop.trigger {
@@ -99,9 +123,16 @@ pub fn spawn_devices(
         .into_iter()
         .map(|prop| prop.unwrap_or_else(|| commands.spawn(LevelOwned(level)).id()))
         .collect();
-    let mut state = LevelState::default();
+    let mut state = LevelState {
+        camera_sway: memory.as_ref().map_or(geometry.camera_sway, |memory| memory.camera_sway),
+        ..default()
+    };
+    let lights = memory
+        .as_mut()
+        .map_or_else(LightActivation::default, |memory| std::mem::take(&mut memory.lights));
     if let Some(memory) = &mut memory {
         state.variables = std::mem::take(&mut memory.variables);
+        state.ambient_sounds = std::mem::take(&mut memory.ambient_sounds);
     } else {
         for definition in &geometry.triggers {
             if let (Some((name, _)), Some(value)) =
@@ -186,7 +217,7 @@ pub fn spawn_devices(
             positioned.0.push(devices[index]);
         }
     }
-    commands.entity(level).insert((state, positioned));
+    commands.entity(level).insert((state, lights, positioned));
     script.bind(commands, geometry, &devices);
     devices
 }

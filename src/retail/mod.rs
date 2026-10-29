@@ -6,6 +6,7 @@
 pub mod automap;
 mod bitmap_font;
 pub mod credits;
+pub mod encounters;
 pub mod files;
 pub mod item_model_loader;
 pub mod items;
@@ -141,3 +142,5 @@ impl Plugin for RetailPresentationPlugin {
             .init_asset_loader::<texture_loader::RetailTextureLoader>();
     }
 }
+
+mod particles;

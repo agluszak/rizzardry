@@ -43,11 +43,9 @@ impl AssetLoader for ItmLoader {
             );
         }
         // The vertex colours are the instance's to set; bake nothing.
-        let unlit = default();
-        let lighting = PropLighting { ambient: Vec3::ONE, level: &unlit };
+        let lighting = PropLighting { ambient: Vec3::ONE, offset: Vec3::ZERO };
         let mut parts = Vec::new();
-        for (material, mut mesh, _) in
-            record_meshes(&record, &Transform::default(), &lighting, |m| materials[m].emission)
+        for (material, mut mesh, _) in record_meshes(&record, &lighting, |m| materials[m].emission)
         {
             mesh.remove_attribute(Mesh::ATTRIBUTE_COLOR);
             parts.push(ItemModelPart {

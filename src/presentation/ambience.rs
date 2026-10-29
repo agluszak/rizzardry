@@ -60,7 +60,7 @@ pub fn play_ambient_sounds(
     time: Res<Time>,
     assets: Res<AssetServer>,
     listener: Query<&GlobalTransform, With<PartyCamera>>,
-    levels: Query<&LevelAppearance>,
+    levels: Query<(&LevelAppearance, Option<&crate::game::world::triggers::LevelState>)>,
     geometry: Res<Assets<LevelGeometry>>,
     mut emitters: Query<(
         Entity,
@@ -77,12 +77,12 @@ pub fn play_ambient_sounds(
     let Ok(listener) = listener.single() else { return };
     let ear = listener.translation();
     for (entity, mut emitter, at, owner, playing, sink, settings) in &mut emitters {
-        let Some(level) = levels.get(owner.parent()).ok().and_then(|l| geometry.get(&l.0)) else {
-            continue;
-        };
+        let Ok((appearance, state)) = levels.get(owner.parent()) else { continue };
+        let Some(level) = geometry.get(&appearance.0) else { continue };
         let Some(sound) = level.ambient_sounds.get(emitter.index) else { continue };
         let distance = ear.distance(at.translation);
-        let inside = distance < sound.radius;
+        let inside =
+            distance < sound.radius && state.is_none_or(|s| s.ambient_sound_enabled(&sound.name));
         let entering = inside && !emitter.inside;
         emitter.inside = inside;
         if !inside {
@@ -152,6 +152,7 @@ mod tests {
             .add_systems(Update, (place_ambient_sounds, play_ambient_sounds).chain());
         let geometry = app.world_mut().resource_mut::<Assets<LevelGeometry>>().add(LevelGeometry {
             ambient_sounds: vec![AmbientSoundModel {
+                name: "TEST".into(),
                 path: "test.wav".into(),
                 position: Vec3::ZERO,
                 radius: 10.0,
@@ -243,6 +244,7 @@ mod tests {
         let (mut app, _, _, _) = app(true);
         let geometry = app.world_mut().resource_mut::<Assets<LevelGeometry>>().add(LevelGeometry {
             ambient_sounds: vec![AmbientSoundModel {
+                name: "TEST".into(),
                 path: "distant.wav".into(),
                 position: Vec3::X * 5.0,
                 radius: 1.0,

@@ -105,6 +105,7 @@ fn with_trap_spell(level: &mut Scenario, spell: crate::content::spells::SpellDef
     level.world.init_resource::<Assets<MonsterCatalog>>();
     level.world.init_resource::<Assets<SpellCatalog>>();
     level.world.init_resource::<crate::game::factions::Factions>();
+    level.world.init_resource::<Messages<crate::game::factions::FactionNews>>();
     level.world.init_resource::<Messages<crate::game::magic::casting::MagicNews>>();
     let species =
         level.world.resource_mut::<Assets<MonsterCatalog>>().add(MonsterCatalog::default());
@@ -167,6 +168,10 @@ fn a_sprung_trap_pays_its_effect_before_opening_and_retains_the_selected_victim(
             level.world.get::<Vitals>(selected).unwrap().hp < selected_hp,
             "unconscious selected member still pays the spell"
         );
+        // Vampiric Vortex drains: what it took stays off the maximum.
+        let lost = selected_hp - level.world.get::<Vitals>(selected).unwrap().hp;
+        assert_eq!(level.world.get::<Character>(selected).unwrap().hp_drained, lost);
+        assert!(level.world.get::<Vitals>(selected).unwrap().conditions.has(Condition::Drained));
         assert_eq!(level.world.get::<Guarded>(chest).is_none(), destroyed);
         assert_eq!(level.motion("CHEST").target > 0.0, destroyed);
         assert!(work(&level).is_none(), "a surviving trap ends the interaction, not a free retry");
@@ -180,6 +185,62 @@ fn a_sprung_trap_pays_its_effect_before_opening_and_retains_the_selected_victim(
             [MagicNews::Triggered { .. }]
         ));
     }
+}
+
+/// Instant Death inflicts death outright, without the fatigue of a blow, so
+/// a tired Valkyrie who fails her save still cheats it (retail
+/// `SetCharacterCondition` with Dead).
+#[test]
+fn a_tired_valkyrie_cheats_an_instant_death_trap() {
+    use super::super::interaction::spring_trap;
+    use crate::content::{
+        characters::Realm,
+        spells::{SpellDefinition, SpellId},
+    };
+    use crate::game::characters::{Condition, Lasting};
+    let mut cheated = 0;
+    for seed in 0..60 {
+        let mut level = chest_level(
+            Some(crate::content::level::Lock::Trap { difficulty: 7, kind: Some(8) }),
+            0,
+        );
+        with_trap_spell(
+            &mut level,
+            SpellDefinition {
+                id: SpellId::INSTANT_DEATH,
+                realm: Some(Realm::Divine),
+                duration_base: 20,
+                ..default()
+            },
+        );
+        for &member in &level.members.clone() {
+            level.world.entity_mut(member).insert(crate::game::inventory::Carried::default());
+        }
+        let profile = Character::new("Brunhild", Race::Human, Gender::Female, Profession::Valkyrie);
+        let valkyrie = level.add_member("Brunhild");
+        let mut vitals = Vitals::new(&profile);
+        vitals.stamina = 6;
+        level.world.entity_mut(valkyrie).insert((
+            profile,
+            vitals,
+            crate::game::inventory::Carried::default(),
+        ));
+        level.run("CHEST");
+        level.world.insert_resource(GameRng::seeded(seed));
+        let on = attempt(&level);
+        spring_trap(&mut level.world, on, Some(valkyrie)).unwrap();
+        let vitals = level.world.get::<Vitals>(valkyrie).unwrap();
+        if vitals.conditions.has(Condition::Unconscious) {
+            // Her save failed: she lives, out cold a few rounds, not for good.
+            assert!(!vitals.is_dead());
+            assert!(vitals.conditions.lasting(Condition::Unconscious) != Some(Lasting::Indefinite));
+            assert_eq!(vitals.stamina, 6, "death outright tires no one");
+            cheated += 1;
+        } else {
+            assert!(!vitals.is_dead(), "she saved or cheated; she never dies here");
+        }
+    }
+    assert!(cheated > 0, "some seed fails her save");
 }
 
 #[test]
@@ -213,9 +274,9 @@ fn trap_losses_use_existing_purse_items_and_all_party_spell_points() {
         level.world.entity_mut(other).insert(Carried::default());
         for member in [selected, other] {
             let mut points = SpellPoints::default();
-            points.current[Realm::Divine] = 10;
             points.fraction[Realm::Divine] = 0.5;
             level.world.entity_mut(member).insert((LearnedSpells::default(), points));
+            crate::game::magic::test_set_points(&mut level.world, member, Realm::Divine, 10);
         }
         let potion = ItemDefinition {
             id: ItemId(0),
@@ -275,7 +336,7 @@ fn trap_losses_use_existing_purse_items_and_all_party_spell_points() {
                 for member in [selected, other] {
                     let points = level.world.get::<SpellPoints>(member).unwrap();
                     assert_eq!(
-                        points.current[Realm::Divine],
+                        points.current(Realm::Divine, &default()),
                         0,
                         "even the unselected living member loses mana"
                     );
@@ -318,14 +379,14 @@ fn device_casts_revalidate_targets_and_pay_from_the_selected_item_owner() {
     for skill in [Skill::Wizardry, Skill::EarthMagic, Skill::Artifacts] {
         profile.skill_points[skill] = 100;
     }
-    let mut points = SpellPoints::default();
-    points.current[Realm::Earth] = 20;
+    let points = SpellPoints::default();
     level.world.entity_mut(actor).insert((
         Vitals::new(&profile),
         profile,
         LearnedSpells([SpellId::KNOCK_KNOCK].into()),
         points,
     ));
+    crate::game::magic::test_set_points(&mut level.world, actor, Realm::Earth, 20);
     let pool_tool = ItemDefinition {
         id: ItemId(0),
         class: EquipClass::MiscMagic,
@@ -383,8 +444,13 @@ fn device_casts_revalidate_targets_and_pay_from_the_selected_item_owner() {
         Err(Refusal::CannotAct)
     );
     assert_eq!(*level.world.resource::<GameRng>(), rng);
-    assert_eq!(level.world.get::<SpellPoints>(actor).unwrap().current[Realm::Earth], 20);
-    level.world.get_mut::<Vitals>(actor).unwrap().lift(crate::game::characters::Condition::Webbed);
+    assert_eq!(crate::game::magic::test_points(&level.world, actor, Realm::Earth), 20);
+    level
+        .world
+        .get_mut::<Vitals>(actor)
+        .unwrap()
+        .conditions
+        .lift(crate::game::characters::Condition::Webbed);
     let on = attempt(&level);
     assert_eq!(
         cast_device(&mut level.world, actor, on, Source::Item(worn_id)),
@@ -399,7 +465,7 @@ fn device_casts_revalidate_targets_and_pay_from_the_selected_item_owner() {
         Source::Spell { spell: SpellId::KNOCK_KNOCK, power: 1 },
     )
     .unwrap();
-    assert_eq!(level.world.get::<SpellPoints>(actor).unwrap().current[Realm::Earth], 19);
+    assert_eq!(crate::game::magic::test_points(&level.world, actor, Realm::Earth), 19);
     let on = attempt(&level);
     cast_device(&mut level.world, actor, on, Source::PoolItem(pool_id)).unwrap();
     assert!(level.inventory().pool.stacks.is_empty(), "a plain exhausted charged tool is consumed");
@@ -468,14 +534,14 @@ fn divine_trap_replaces_its_session_bonus_and_uses_shared_spell_payment() {
     let mut profile = Character::new("Caster", Race::Human, Gender::Male, Profession::Mage);
     profile.skill_points[Skill::Wizardry] = 100;
     profile.skill_points[Skill::MentalMagic] = 100;
-    let mut points = SpellPoints::default();
-    points.current[Realm::Mental] = 10;
+    let points = SpellPoints::default();
     level.world.entity_mut(actor).insert((
         Vitals::new(&profile),
         profile,
         LearnedSpells([SpellId::DIVINE_TRAP].into()),
         points,
     ));
+    crate::game::magic::test_set_points(&mut level.world, actor, Realm::Mental, 10);
     level.run("CHEST");
     let device = level.device("CHEST");
     let on = attempt(&level);
@@ -502,7 +568,7 @@ fn divine_trap_replaces_its_session_bonus_and_uses_shared_spell_payment() {
     assert!(
         trap.inspection_chance(Some(25), crate::game::difficulty::Difficulty::Normal) < stronger
     );
-    assert_eq!(level.world.get::<SpellPoints>(actor).unwrap().current[Realm::Mental], 7);
+    assert_eq!(crate::game::magic::test_points(&level.world, actor, Realm::Mental), 7);
     let on = attempt(&level);
     leave(&mut level.world, on);
     level.run("CHEST");

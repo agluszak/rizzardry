@@ -34,8 +34,7 @@ pub struct WorldObstacles<'w, 's> {
 }
 
 impl WorldObstacles<'_, '_> {
-    /// The first solid scenery along the ray. Callers retain their own range,
-    /// clearance and degenerate-ray policy.
+    /// The first solid scenery along the ray.
     pub fn first_hit(&self, origin: Vec3, direction: Dir3, reach: f32) -> Option<RayHitData> {
         self.spatial.cast_ray(
             origin,
@@ -44,6 +43,21 @@ impl WorldObstacles<'_, '_> {
             true,
             &SpatialQueryFilter::from_mask(Layer::Scenery),
         )
+    }
+
+    /// Whether nothing solid stands between two points: a line of sight,
+    /// or a clear path for something flying. A point is clear of itself.
+    pub fn clear(&self, from: Vec3, to: Vec3) -> bool {
+        Dir3::new(to - from)
+            .map_or(true, |direction| self.first_hit(from, direction, from.distance(to)).is_none())
+    }
+
+    /// The ground a spot stands on: looking down from a step above it, at
+    /// most `depth` below it.
+    pub fn ground_below(&self, spot: Vec3, depth: f32) -> Option<Vec3> {
+        let start = spot + Vec3::Y * super::STEP_HEIGHT;
+        let hit = self.first_hit(start, Dir3::NEG_Y, super::STEP_HEIGHT + depth)?;
+        Some(start - Vec3::Y * hit.distance)
     }
 }
 

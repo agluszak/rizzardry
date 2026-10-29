@@ -84,8 +84,12 @@ impl ItemStack {
         self.remaining_uses
     }
     pub fn display_name(&self, definition: &ItemDefinition, count: bool) -> String {
-        let name = if self.identified { &definition.name } else { &definition.unidentified_name };
-        if count && self.count() > 1 { format!("{name} ({})", self.count()) } else { name.clone() }
+        let name = definition.known_name(self.identified);
+        if count && self.count() > 1 {
+            format!("{name} ({})", self.count())
+        } else {
+            name.to_owned()
+        }
     }
     /// Split a proper subset; only the additional surviving stack gets an ID.
     pub fn split_off(&mut self, amount: u16, ids: &mut ItemIds) -> Option<Self> {
@@ -388,6 +392,10 @@ impl Carried {
     pub fn find_stack(&self, id: StackId) -> Option<&ItemStack> {
         self.slot(self.find(id)?)
     }
+    /// Edit metadata of an existing stack without moving or rebinding it.
+    pub(crate) fn find_stack_mut(&mut self, id: StackId) -> Option<&mut ItemStack> {
+        self.stack_mut(self.find(id)?)
+    }
     /// Trade and other unworn-item operations cannot extract equipment.
     pub fn backpack_stack(&self, id: StackId) -> Option<&ItemStack> {
         self.backpack.iter().flatten().find(|stack| stack.id == id)
@@ -598,6 +606,9 @@ pub enum ItemNews {
         item: String,
     },
     NoRoom,
+    /// An item the party may not part with stays in hand instead of being
+    /// dropped (retail string 0x4ef).
+    CannotDrop,
     /// Merging needs both items identified.
     Unidentified,
     /// Nothing is made from the two.
@@ -735,8 +746,7 @@ pub(crate) fn identify_attempt(
     vitals: &Vitals,
     difficulty: u8,
 ) -> Option<Identified> {
-    use crate::game::characters::Condition;
-    if vitals.is_dead() || vitals.worst_condition().is_some_and(|c| c >= Condition::Insane) {
+    if !vitals.lucid() {
         return None;
     }
     let strength = (character.skill(Skill::Artifacts) / 6) as i8;
@@ -974,6 +984,16 @@ pub fn pool_shares(pool_weight: u32, members: &[Option<(u32, u32)>]) -> Vec<u32>
 }
 
 impl PartyInventory {
+    /// A stack the party holds by identity: in hand or in the pool.
+    pub fn find_stack(&self, id: StackId) -> Option<&ItemStack> {
+        self.hand.held.iter().chain(&self.pool.stacks).find(|s| s.id == id)
+    }
+
+    /// Edit metadata of a stack the party holds without moving it.
+    pub(crate) fn find_stack_mut(&mut self, id: StackId) -> Option<&mut ItemStack> {
+        self.hand.held.iter_mut().chain(&mut self.pool.stacks).find(|s| s.id == id)
+    }
+
     pub fn give_held(
         &mut self,
         member: Option<&mut Carried>,

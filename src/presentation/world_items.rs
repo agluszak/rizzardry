@@ -104,19 +104,25 @@ pub fn turn_world_items(time: Res<Time>, mut items: Query<&mut Transform, With<I
 /// nearby lights, and the material's own glow.
 pub fn light_world_items(
     time: Res<Time>,
+    torch: super::environment::PartyTorch,
     hovered: Res<super::hover::Hover>,
     clock: Res<GameClock>,
-    levels: Query<(Entity, &LevelAppearance)>,
+    levels: Query<(
+        Entity,
+        &LevelAppearance,
+        Option<Ref<crate::game::world::triggers::LightActivation>>,
+    )>,
     geometry: Res<Assets<LevelGeometry>>,
     spatial: SpatialQuery,
     mut items: Query<(Entity, &GlobalTransform, &mut ItemShown, &mut ActorLight)>,
 ) {
-    let Some((level_entity, level)) =
-        levels.iter().find_map(|(e, l)| geometry.get(&l.0).map(|g| (e, g)))
+    let Some((level_entity, level, state)) =
+        levels.iter().find_map(|(e, l, state)| geometry.get(&l.0).map(|g| (e, g, state)))
     else {
         return;
     };
-    let sky = level.environment.as_ref().map_or(Vec3::ZERO, |e| e.sky_light(clock.phase()));
+    let sky = super::environment::sky_now(level, &clock);
+    let torch = torch.light();
     // The hovered item pulses green: retail raises and lowers its level by
     // 0.05 every 50 ms between 0.25 and 1. How retail's renderer mixes the
     // highlight in is not recovered; here it adds green light.
@@ -125,18 +131,27 @@ pub fn light_world_items(
     for (entity, transform, mut shown, mut light) in &mut items {
         let at = transform.translation();
         let (sky_scale, fixed) = match shown.lit_at {
-            Some((lit, sky_scale, fixed)) if lit == at && !geometry.is_changed() => {
+            Some((lit, sky_scale, fixed))
+                if lit == at
+                    && !geometry.is_changed()
+                    && !state.as_ref().is_some_and(|s| s.is_changed()) =>
+            {
                 (sky_scale, fixed)
             }
             _ => {
                 let sky_scale = if sunlit(&spatial, level_entity, level, at) { 1.0 } else { 0.0 };
-                let fixed = level.lighting.at(at, None);
+                let fixed = super::environment::actor_light(&level.lighting, state.as_deref(), at);
                 shown.lit_at = Some((at, sky_scale, fixed));
                 (sky_scale, fixed)
             }
         };
         let highlight = if hovered.entity() == Some(entity) { Vec3::Y * pulse } else { Vec3::ZERO };
-        light.set_if_neq(ActorLight { sky: sky * sky_scale, fixed: fixed + highlight });
+        light.set_if_neq(ActorLight {
+            sky: sky * sky_scale,
+            fixed: fixed
+                + highlight
+                + torch.as_ref().map_or(Vec3::ZERO, |light| light.at(at, None)),
+        });
     }
 }
 

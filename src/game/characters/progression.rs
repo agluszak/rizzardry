@@ -3,7 +3,7 @@
 use super::*;
 use crate::content::spells::{SpellCatalog, SpellId, Spellbook};
 use crate::game::inventory::{Carried, PartyInventory};
-use crate::game::magic::{self, LearnedSpells, SpellPoints};
+use crate::game::magic::{self, LearnedSpells};
 use crate::game::party::roster::PartyRoster;
 use enumset::EnumSet;
 use std::collections::BTreeSet;
@@ -68,7 +68,9 @@ pub(super) fn experience_increment(profession: Profession, level: u8) -> u32 {
     value
 }
 pub fn ready(c: &Character, v: &Vitals) -> bool {
-    !v.is_dead() && c.level < u8::MAX && c.experience >= c.experience_goal()
+    // Retail offers a level past 50 and then clamps it away; it is not
+    // offered here.
+    !v.is_dead() && c.level() < super::MAX_LEVEL && c.experience >= c.experience_goal()
 }
 
 #[derive(Clone, Debug)]
@@ -130,7 +132,6 @@ impl Advancement {
     fn baseline(&self) -> Character {
         let mut c = self.original.clone();
         c.experience_previous_goal = c.experience_goal();
-        c.level += 1;
         c.profession = self.profession;
         c.profession_levels[self.profession] += 1;
         for (a, &minimum) in &profession_row(self.profession).minimums {
@@ -369,7 +370,6 @@ pub struct Progression<'w, 's> {
             &'static mut Character,
             &'static mut Vitals,
             &'static mut LearnedSpells,
-            &'static mut SpellPoints,
             &'static mut Carried,
         ),
     >,
@@ -413,8 +413,7 @@ impl Progression<'_, '_> {
         self.eligibility(draft.member)?;
         let spells = self.content.spells().ok_or("Spell definitions are not ready.")?;
         let items = self.content.items().ok_or("Item definitions are not ready.")?;
-        let (mut c, mut v, mut known, mut points, mut carried) =
-            self.members.get_mut(draft.member).unwrap();
+        let (mut c, mut v, mut known, mut carried) = self.members.get_mut(draft.member).unwrap();
         if *c != draft.original || *known != draft.known {
             return Err("This character's training changed. Reopen level-up.");
         }
@@ -448,12 +447,7 @@ impl Progression<'_, '_> {
             resized(v.hp, old.max_hp(), new.max_hp()),
             resized(v.stamina, old.max_stamina(), new.max_stamina()),
         );
-        let old_max = magic::max_points(&old, &known, spells);
-        let new_max = magic::max_points(&new, &learned, spells);
         (v.hp, v.stamina) = (hp, stamina);
-        for realm in EnumSet::<Realm>::all() {
-            points.current[realm] = resized(points.current[realm], old_max[realm], new_max[realm]);
-        }
         *c = next;
         *known = learned;
         *carried = equipment;
@@ -475,9 +469,6 @@ impl Progression<'_, '_> {
         Ok(())
     }
 }
-fn resized(current: u32, old: u32, new: u32) -> u32 {
-    current.saturating_add(new.saturating_sub(old)).saturating_sub(old.saturating_sub(new)).min(new)
-}
 
 #[cfg(test)]
 mod tests {
@@ -486,6 +477,7 @@ mod tests {
         items::{ItemCatalog, ItemDefinition, ItemId, ItemKind},
         spells::SpellDefinition,
     };
+    use crate::game::magic::SpellPoints;
     use crate::game::{
         data::GameData,
         inventory::{EquipSlot, Equipped, ItemIds, ItemStack, POOL_LIMIT},
@@ -505,6 +497,24 @@ mod tests {
             draft.adjust_skill(s, true, spells);
         }
     }
+    /// Advancement stops at level 50, however the levels are split, so no
+    /// profession can pass it.
+    #[test]
+    fn advancement_stops_at_the_highest_level() {
+        let mut c = character(Profession::Fighter);
+        c.profession_levels[Profession::Fighter] = 48;
+        c.profession_levels[Profession::Mage] = 1;
+        c.experience = c.experience_goal();
+        let v = Vitals::new(&c);
+        assert!(ready(&c, &v));
+        let draft = Advancement::new(Entity::PLACEHOLDER, &c, &default());
+        let next = draft.baseline();
+        assert_eq!(next.level(), super::super::MAX_LEVEL);
+        let mut next = next;
+        next.experience = u32::MAX;
+        assert!(!ready(&next, &v), "no level past 50");
+    }
+
     fn character(profession: Profession) -> Character {
         let mut c = Character::new("Tester", Race::Human, Gender::Female, profession);
         c.experience = c.experience_goal();
@@ -546,7 +556,7 @@ mod tests {
         let (next, _) = draft.finish(&default()).unwrap();
         assert_eq!(
             (
-                next.level,
+                next.level(),
                 next.profession_levels[Profession::Fighter],
                 next.profession_levels[Profession::Mage]
             ),
@@ -558,7 +568,7 @@ mod tests {
         assert_eq!(next.experience_goal(), 2200);
         assert_eq!(next.skill_practice[Skill::Sword], 7);
         assert_eq!(next.spell_picks.total(), 1);
-        assert_eq!(original.level, 1, "editing/cancel never changes the source");
+        assert_eq!(original.level(), 1, "editing/cancel never changes the source");
     }
     #[test]
     fn profession_minimums_use_the_same_six_points_and_three_point_limit() {
@@ -579,7 +589,6 @@ mod tests {
     #[test]
     fn hybrid_unlock_and_saved_school_picks_follow_profession_history() {
         let mut c = character(Profession::Samurai);
-        c.level = 4;
         c.profession_levels[Profession::Samurai] = 4;
         let draft = Advancement::new(Entity::PLACEHOLDER, &c, &default());
         assert_eq!(draft.preview().skill_points[Skill::Wizardry], 5);
@@ -601,7 +610,6 @@ mod tests {
     #[test]
     fn portal_pair_costs_one_pick_and_draft_skill_points_cannot_unlock_spells() {
         let mut c = character(Profession::Mage);
-        c.level = 10;
         c.attributes = EnumMap::from_fn(|_| 80);
         c.profession_levels[Profession::Mage] = 10;
         c.skill_points[Skill::Wizardry] = 60;
@@ -747,14 +755,17 @@ mod tests {
             ))
             .id();
         assert!(accept(&mut w, &draft).is_err());
-        assert_eq!(w.get::<Character>(member).unwrap().level, 1);
+        assert_eq!(w.get::<Character>(member).unwrap().level(), 1);
         w.despawn(entering);
         accept(&mut w, &draft).unwrap();
         let c = w.get::<Character>(member).unwrap();
         let v = w.get::<Vitals>(member).unwrap();
-        assert_eq!(v.hp, c.max_hp() - 2);
-        assert_eq!(v.stamina, c.max_stamina() - 5);
-        assert_eq!(v.conditions, [(Condition::Poisoned, Lasting::Rounds(10))]);
+        assert_eq!(v.hp, c.base_stats().max_hp() - 2);
+        assert_eq!(v.stamina, c.base_stats().max_stamina() - 5);
+        assert_eq!(
+            v.conditions,
+            crate::game::characters::Conditions::from([(Condition::Poisoned, Lasting::Rounds(10))])
+        );
         assert_eq!(c.experience, original.experience);
         // Ready to advance again, a draft opened before the last acceptance
         // is refused only because it is stale.
@@ -800,7 +811,7 @@ mod tests {
         assert_eq!(*w.get::<Carried>(member).unwrap(), before);
         assert_eq!(w.get::<PartyInventory>(party).unwrap().pool, pool);
         assert_eq!(*w.get::<Vitals>(member).unwrap(), vitals);
-        assert_eq!(w.get::<Character>(member).unwrap().level, 1);
+        assert_eq!(w.get::<Character>(member).unwrap().level(), 1);
         w.get_mut::<Carried>(member).unwrap().backpack[0] = None;
         accept(&mut w, &draft).unwrap();
         let carried = w.get::<Carried>(member).unwrap();
@@ -821,10 +832,8 @@ mod tests {
         };
         let catalog = SpellCatalog(vec![SpellDefinition::default(), spell(1), spell(2)]);
         let known = LearnedSpells([SpellId::ACID_SPLASH].into());
-        let old =
-            magic::max_points(&w.get::<Character>(member).unwrap().base_stats(), &known, &catalog);
-        let mut mana = SpellPoints::full(old);
-        mana.current[Realm::Divine] -= 2;
+        let mut mana = SpellPoints::default();
+        mana.spend(Realm::Divine, 2);
         mana.fraction[Realm::Divine] = 0.25;
         w.entity_mut(member).insert((known, mana));
         let handle = w.resource::<GameData>().spells.clone();
@@ -836,13 +845,11 @@ mod tests {
         accept(&mut w, &draft).unwrap();
         let c = w.get::<Character>(member).unwrap();
         let learned = w.get::<LearnedSpells>(member).unwrap();
-        let maximum = magic::max_points(
-            &c.base_stats(),
-            learned,
-            w.resource::<Assets<SpellCatalog>>().get(&handle).unwrap(),
-        );
+        let maximum = c
+            .base_stats()
+            .max_points(learned, w.resource::<Assets<SpellCatalog>>().get(&handle).unwrap());
         let mana = w.get::<SpellPoints>(member).unwrap();
-        assert_eq!(mana.current[Realm::Divine], maximum[Realm::Divine] - 2);
+        assert_eq!(mana.current(Realm::Divine, &maximum), i64::from(maximum[Realm::Divine]) - 2);
         assert_eq!(mana.fraction[Realm::Divine], 0.25);
         assert_eq!(learned.0, [SpellId::ACID_SPLASH, SpellId::BLESS].into());
         assert_eq!(c.spell_picks.total(), 0);

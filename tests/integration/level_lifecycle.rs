@@ -38,8 +38,9 @@ fn app() -> App {
         .init_resource::<Assets<PartyMotionConfig>>()
         .init_resource::<Assets<rizzardry::game::world::navigation::WalkerMotionConfig>>()
         .init_resource::<LevelMemory>()
-        .init_resource::<MonsterBodies>()
+        .add_observer(give_bodies)
         .init_resource::<rizzardry::game::factions::Factions>()
+        .add_message::<rizzardry::game::factions::FactionNews>()
         .init_resource::<ItemIds>()
         .init_resource::<GameRng>()
         .add_message::<LevelReady>()
@@ -66,7 +67,25 @@ fn with_data(app: &mut App) {
     world.insert_resource(GameData { items, loot, species, spells });
     // Required body metadata is available without a visual asset or renderer.
     let body = world.resource_mut::<Assets<MonsterBody>>().add(MonsterBody::default());
-    world.resource_mut::<MonsterBodies>().0.insert(0, body);
+    for mut destination in world.query::<&mut Destination>().iter_mut(world) {
+        destination.bodies.0.insert(0, body.clone());
+    }
+    world.insert_resource(CrabBody(body));
+}
+
+/// The crab's body, which a destination would otherwise load from retail.
+#[derive(Resource)]
+struct CrabBody(Handle<MonsterBody>);
+
+fn give_bodies(
+    add: On<Add<Destination>>,
+    body: Option<Res<CrabBody>>,
+    mut destinations: Query<&mut Destination>,
+) {
+    let (Some(body), Ok(mut destination)) = (body, destinations.get_mut(add.entity)) else {
+        return;
+    };
+    destination.bodies.0.insert(0, body.0.clone());
 }
 
 /// Plain items under every id a new character can start with.
@@ -87,8 +106,14 @@ fn starting_catalog() -> ItemCatalog {
 }
 
 fn test_level(app: &mut App, collision: CollisionMesh) -> Level {
-    let crab =
-        MonsterPlacement { location: 7, group: 1, species: 0, position: Vec3::ZERO, yaw: 0.0 };
+    let crab = MonsterPlacement {
+        location: 7,
+        group: 1,
+        species: 0,
+        position: Vec3::ZERO,
+        yaw: 0.0,
+        unborn: false,
+    };
     let geometry = app.world_mut().resource_mut::<Assets<LevelDefinition>>().add(LevelDefinition {
         collision,
         monsters: vec![crab],
@@ -502,7 +527,7 @@ fn a_level_waits_for_body_metadata_and_sizes_monsters_without_render_assets() {
     with_data(&mut app);
     // The crab's gameplay body metadata is still loading.
     let loading = app.world_mut().resource_mut::<Assets<MonsterBody>>().reserve_handle();
-    app.world_mut().resource_mut::<MonsterBodies>().0.insert(0, loading.clone());
+    app.world_mut().insert_resource(CrabBody(loading.clone()));
     let root = spawn_level(&mut app, floor());
 
     app.update();
@@ -515,6 +540,8 @@ fn a_level_waits_for_body_metadata_and_sizes_monsters_without_render_assets() {
     let world = app.world_mut();
     let crab = world.query::<&Monster>().single(world).unwrap();
     assert_eq!((crab.body.scale, crab.body.radius), (2.0, 1.0), "its body at its size");
+    let held = world.get::<MonsterBodies>(root).expect("the played level holds its bodies");
+    assert_eq!(held.0[&0], loading, "for monsters spawned while it is played");
     use bevy_tnua::TnuaController;
     use rizzardry::game::world::navigation::{Walker, WalkerMotion, feet};
     let (at, walker, _) = world
@@ -535,26 +562,22 @@ fn group_knowledge_survives_revisit() {
     let (mut app, _) = playing();
     let monster =
         app.world_mut().query_filtered::<Entity, With<Monster>>().single(app.world()).unwrap();
-    app.world_mut().entity_mut(monster).insert(rizzardry::game::world::population::Provoked);
-    let old =
-        app.world_mut().query_filtered::<Entity, With<MonsterGroup>>().single(app.world()).unwrap();
+    let provoked = rizzardry::game::world::hostility::SetStance {
+        stance: rizzardry::game::world::hostility::Stance::Hostile,
+        at: 7,
+    };
+    let old = app.world().get::<GroupMember>(monster).unwrap().0;
     let mut group = app.world_mut().get_mut::<MonsterGroup>(old).unwrap();
     group.identified = true;
     group.counted = true;
+    group.set = Some(provoked);
     let back = revisit(&mut app);
     assert!(is_played(&app, back));
-    assert_eq!(
-        app.world_mut()
-            .query_filtered::<Entity, With<rizzardry::game::world::population::Provoked>>()
-            .iter(app.world())
-            .count(),
-        1,
-        "revisiting does not forgive provoked aggression",
-    );
     let world = app.world_mut();
     let membership = world.query_filtered::<&GroupMember, With<Monster>>().single(world).unwrap();
     let group = world.get::<MonsterGroup>(membership.0).unwrap();
     assert!(group.identified && group.counted);
+    assert_eq!(group.set, Some(provoked), "revisiting does not forgive provoked aggression");
 }
 
 #[test]
@@ -599,7 +622,7 @@ fn direct_damage_settles_death_once_and_rejection_leaves_the_target_unchanged() 
                 move |mut damage: MonsterDamage,
                       mut purse: Single<&mut rizzardry::game::inventory::PartyInventory>,
                       mut rng: ResMut<GameRng>| {
-                    damage.apply(target, 10, 1, &mut purse, &mut rng)
+                    damage.apply(target, 10, (1, 0), &mut purse, &mut rng)
                 },
             )
             .unwrap()
@@ -889,8 +912,6 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     }
     // A merchant re-enters at authored quote zero even after its greeting was remembered.
     use rizzardry::game::npcs::conversation::{self, Conversation, ConversationRequest};
-    use rizzardry::game::screen::Screen;
-    app.insert_resource(State::new(Screen::World)).init_resource::<NextState<Screen>>();
     let at = app.world().get::<Transform>(body).unwrap().translation;
     let party = party_entities(&mut app)[0];
     app.world_mut().get_mut::<avian3d::prelude::Position>(party).unwrap().0 = at + Vec3::X;
@@ -898,11 +919,25 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
         let session = conversation::begin(app.world_mut(), actor).unwrap();
         app.update();
         assert_eq!(app.world().get::<Conversation>(session).unwrap().current, Some((0, 0)));
+        // Retail lets a queued line play out after the party leaves.
+        if let conversation::ConversationWait::Line { speech, .. } =
+            app.world().get::<Conversation>(session).unwrap().wait
+        {
+            app.world_mut()
+                .write_message(ConversationRequest::Advance { conversation: session, speech });
+            app.update();
+        }
         app.world_mut().write_message(ConversationRequest::Close { conversation: session });
         app.update();
         assert!(app.world().get_entity(session).is_err());
     }
-    app.world_mut().entity_mut(body).insert(rizzardry::game::world::population::Provoked);
+    let provoked = rizzardry::game::world::hostility::SetStance {
+        stance: rizzardry::game::world::hostility::Stance::Hostile,
+        at: 7,
+    };
+    let group = app.world().get::<rizzardry::game::world::identify::GroupMember>(body).unwrap().0;
+    app.world_mut().get_mut::<rizzardry::game::world::identify::MonsterGroup>(group).unwrap().set =
+        Some(provoked);
     let stock = app.world().get::<Npc>(actor).unwrap().stock.clone();
     // Replacing the current map departs and reuses this role in the same
     // activation, before its queued Disabled insertion is applied.
@@ -953,8 +988,12 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     assert!(app.world().get::<Collider>(returned_body).is_some());
     assert!(app.world().get::<bevy::ecs::entity_disabling::Disabled>(returned_body).is_none());
     assert_eq!(app.world().get::<Monster>(returned_body).unwrap().hp, 4);
-    assert!(
-        app.world().get::<rizzardry::game::world::population::Provoked>(returned_body).is_some()
+    let group =
+        app.world().get::<rizzardry::game::world::identify::GroupMember>(returned_body).unwrap().0;
+    assert_eq!(
+        app.world().get::<rizzardry::game::world::identify::MonsterGroup>(group).unwrap().set,
+        Some(provoked),
+        "the NPC's group keeps the provocation"
     );
     let npc = app.world().get::<Npc>(actor).unwrap();
     assert_eq!(npc.stock, stock);
@@ -962,6 +1001,300 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     assert!(!npc.greeting_pending);
     assert_eq!(app.world_mut().query::<&Npc>().iter(app.world()).count(), 1);
     assert_eq!(app.world().get::<ActorId>(actor), Some(&ActorId::Named(NpcId(0))));
+}
+
+/// A slain NPC gives up what it carries, not its species' treasure, pays
+/// its purse once, and its world role never comes back.
+#[test]
+fn a_slain_npc_gives_up_what_it_carries_and_never_returns() {
+    use bevy::ecs::system::RunSystemOnce;
+    use rizzardry::content::items::{Dice, ItemId, LootTable};
+    use rizzardry::content::npcs::{
+        DialogueScript, FactCatalog, NpcCatalog, NpcDefinition, NpcId, Quote,
+    };
+    use rizzardry::game::inventory::PartyInventory;
+    use rizzardry::game::npcs::{Npc, NpcAssets, NpcBodies};
+    use rizzardry::game::world::damage::MonsterDamage;
+    use rizzardry::game::world::items::{GroundLoot, WorldItem};
+    let mut app = app();
+    with_data(&mut app);
+    let data = app.world().resource::<GameData>();
+    let (species, loot) = (data.species.clone(), data.loot.clone());
+    app.world_mut().resource_mut::<Assets<MonsterCatalog>>().get_mut(&species).unwrap().0[0].npc =
+        Some(NpcId(0));
+    app.world_mut().resource_mut::<Assets<LootTables>>().get_mut(&loot).unwrap().0 =
+        vec![LootTable {
+            name: "Pockets".into(),
+            entries: vec![(ItemId(1), 0), (ItemId(2), 5), (ItemId(3), 5)],
+            level_scaled: false,
+            item_count: Dice { count: 0, sides: 0, base: 1 },
+            gold: default(),
+        }];
+    let catalog =
+        app.world_mut().resource_mut::<Assets<NpcCatalog>>().add(NpcCatalog(vec![NpcDefinition {
+            source_name: "Fixture".into(),
+            disposition: 80,
+            item_table: Some(0),
+            gold: 25,
+            ..default()
+        }]));
+    let facts = app.world_mut().resource_mut::<Assets<FactCatalog>>().add(FactCatalog::default());
+    let script = app.world_mut().resource_mut::<Assets<DialogueScript>>().add(DialogueScript {
+        quotes: vec![Quote { text: vec!["Greeting".into()], ..default() }],
+        ..default()
+    });
+    app.insert_resource(NpcAssets { catalog, facts, scripts: [(NpcId(0), script)].into() });
+    let source = spawn_level(&mut app, floor());
+    app.update();
+    assert!(is_played(&app, source));
+    let actor = app.world_mut().query::<(Entity, &Npc)>().single(app.world()).unwrap().0;
+    let body = app.world().get::<NpcBodies>(actor).unwrap()[0];
+    let party =
+        app.world_mut().query_filtered::<Entity, With<Party>>().single(app.world()).unwrap();
+    let strike = move |damage: MonsterDamage,
+                       mut purses: Query<&mut PartyInventory>,
+                       mut rng: ResMut<GameRng>| {
+        let mut damage = damage;
+        damage.apply(body, 1000, (1, 0), &mut purses.get_mut(party).unwrap(), &mut rng).unwrap()
+    };
+    let killed = app.world_mut().run_system_once(strike).unwrap();
+    assert!(killed.died);
+    let npc = app.world().get::<Npc>(actor).unwrap();
+    assert!(npc.dead);
+    assert!(npc.possessions.items.is_empty());
+    assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, 25);
+    let mut dropped: Vec<_> = app
+        .world_mut()
+        .query::<&WorldItem>()
+        .iter(app.world())
+        .flat_map(|lying| match &lying.loot {
+            GroundLoot::Loose(item) => vec![item.item],
+            GroundLoot::Pile { contents, .. } => contents.iter().map(|item| item.item).collect(),
+        })
+        .collect();
+    dropped.sort();
+    assert_eq!(dropped.len(), 2, "the sure item and one draw: {dropped:?}");
+    assert_eq!(dropped[0], ItemId(1));
+    // The corpse pays nothing more.
+    let again = app.world_mut().run_system_once(strike).unwrap();
+    assert!(!again.died);
+    assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, 25);
+    // Away and back: the NPC stays dead and out of the world.
+    let away = spawn_level(&mut app, floor());
+    app.update();
+    assert!(is_played(&app, away));
+    let back = spawn_level(&mut app, floor());
+    app.update();
+    assert!(is_played(&app, back));
+    assert_eq!(app.world().get::<NpcBodies>(actor).unwrap()[0], body);
+    assert!(app.world().get::<bevy::ecs::entity_disabling::Disabled>(body).is_some());
+    assert_eq!(app.world_mut().query::<&Npc>().iter(app.world()).count(), 1);
+}
+
+/// An NPC that joins brings its character and belongings and leaves its
+/// body dormant; dismissed, it stands where it left and keeps what it wants;
+/// it rejoins as itself; dying in the party, it leaves for good. Never a
+/// second NPC, and never a body in the world while it travels with the party.
+#[test]
+fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
+    use bevy::ecs::entity_disabling::Disabled;
+    use rizzardry::content::characters::{Attribute, Skill};
+    use rizzardry::content::items::ItemId;
+    use rizzardry::content::npcs::{
+        DialogueScript, FactCatalog, NpcCatalog, NpcCharacter, NpcDefinition, NpcId, Quote,
+    };
+    use rizzardry::game::characters::{Condition, Lasting, Vitals};
+    use rizzardry::game::inventory::{Carried, EquipSlot, PartyInventory};
+    use rizzardry::game::npcs::recruit::{self, JoinRefusal};
+    use rizzardry::game::npcs::{Npc, NpcAssets, NpcBodies, NpcWorldRole};
+    use rizzardry::game::party::roster::{PartyMember, PartyRoster};
+    use rizzardry::game::world::level::LevelOwned;
+    let mut app = app();
+    with_data(&mut app);
+    let species = app.world().resource::<GameData>().species.clone();
+    app.world_mut().resource_mut::<Assets<MonsterCatalog>>().get_mut(&species).unwrap().0[0].npc =
+        Some(NpcId(0));
+    let mut equipment = [None; 12];
+    equipment[6] = Some(ItemId(5));
+    let mut backpack = [None; 8];
+    backpack[0] = Some(ItemId(6));
+    let template = NpcCharacter {
+        name: "Fixture".into(),
+        profession: Profession::Fighter,
+        race: Race::Human,
+        gender: Gender::Male,
+        portrait: 0,
+        level: 3,
+        attributes: enum_map::EnumMap::from_fn(|_: Attribute| 60),
+        skills: enum_map::EnumMap::from_fn(|s| if s == Skill::Sword { 20 } else { 0 }),
+        spells: vec![],
+        equipment,
+        backpack,
+        wanted: vec![ItemId(5)],
+    };
+    let catalog =
+        app.world_mut().resource_mut::<Assets<NpcCatalog>>().add(NpcCatalog(vec![NpcDefinition {
+            source_name: "Fixture".into(),
+            disposition: 80,
+            character: Some(template),
+            ..default()
+        }]));
+    let facts = app.world_mut().resource_mut::<Assets<FactCatalog>>().add(FactCatalog::default());
+    let script = app.world_mut().resource_mut::<Assets<DialogueScript>>().add(DialogueScript {
+        quotes: vec![Quote { text: vec!["Greeting".into()], ..default() }],
+        ..default()
+    });
+    app.insert_resource(NpcAssets { catalog, facts, scripts: [(NpcId(0), script)].into() });
+    let source = spawn_level(&mut app, floor());
+    app.update();
+    assert!(is_played(&app, source));
+    let actor = app.world_mut().query::<(Entity, &Npc)>().single(app.world()).unwrap().0;
+    let body = app.world().get::<NpcBodies>(actor).unwrap()[0];
+    let party =
+        app.world_mut().query_filtered::<Entity, With<Party>>().single(app.world()).unwrap();
+    let afraid = (Condition::Afraid, Lasting::Rounds(3));
+    app.world_mut().get_mut::<Monster>(body).unwrap().conditions.inflict(afraid.0, afraid.1);
+    let members = |app: &App| app.world().get::<PartyRoster>(party).unwrap().len();
+
+    // Joining.
+    recruit::join(app.world_mut(), actor).unwrap();
+    assert_eq!(members(&app), 2);
+    assert_eq!(app.world().get::<PartyMember>(actor).unwrap().0, party);
+    let character = app.world().get::<Character>(actor).unwrap();
+    assert_eq!((character.level(), character.profession_levels[Profession::Fighter]), (3, 3));
+    assert_eq!(character.experience, character.experience_previous_goal);
+    assert_eq!(character.experience, 2000, "level three has passed both Fighter thresholds");
+    let experience = character.experience;
+    let carried = app.world().get::<Carried>(actor).unwrap();
+    assert_eq!(carried.equipment[EquipSlot::Primary].as_ref().unwrap().stack.item, ItemId(5));
+    assert_eq!(carried.backpack[0].as_ref().unwrap().item, ItemId(6));
+    assert_eq!(app.world().get::<Vitals>(actor).unwrap().conditions, [afraid].into());
+    assert!(app.world().get::<Disabled>(body).is_some());
+    assert!(app.world().get::<LevelOwned>(body).is_none());
+    assert_eq!(recruit::joinable(app.world_mut(), actor), Err(JoinRefusal::Declines));
+
+    // Revisiting its map while it travels with the party leaves its body dormant.
+    let mut away = test_level(&mut app, floor());
+    away.path = "levels/away/away.pvl".into();
+    app.world_mut()
+        .resource_mut::<Assets<LevelDefinition>>()
+        .get_mut(&away.definition)
+        .unwrap()
+        .monsters
+        .clear();
+    let away_path = away.path.clone();
+    let away = app.world_mut().spawn(Destination::new(away, default(), Entry::Travel)).id();
+    app.update();
+    assert!(is_played(&app, away));
+    let back = spawn_level(&mut app, floor());
+    app.update();
+    assert!(is_played(&app, back));
+    assert!(app.world().get::<Disabled>(body).is_some());
+    assert_eq!(app.world_mut().query::<&Npc>().iter(app.world()).count(), 1);
+    assert_eq!(members(&app), 2);
+
+    // Leaving, on another map: it stands there, keeps what it wants and
+    // gives the party the rest.
+    let mut elsewhere = test_level(&mut app, floor());
+    elsewhere.path = away_path.clone();
+    app.world_mut()
+        .resource_mut::<Assets<LevelDefinition>>()
+        .get_mut(&elsewhere.definition)
+        .unwrap()
+        .monsters
+        .clear();
+    let elsewhere =
+        app.world_mut().spawn(Destination::new(elsewhere, default(), Entry::Travel)).id();
+    app.update();
+    assert!(is_played(&app, elsewhere));
+    // Without the item catalog to place its items with, it does not leave:
+    // nothing moves, nothing is lost.
+    let items = app.world().resource::<GameData>().items.clone();
+    let catalog = app.world_mut().resource_mut::<Assets<ItemCatalog>>().remove(&items).unwrap();
+    assert!(!recruit::dismiss(app.world_mut(), actor));
+    assert_eq!(members(&app), 2);
+    assert!(app.world().get::<Carried>(actor).unwrap().backpack[0].is_some());
+    assert!(app.world().get::<Disabled>(body).is_some());
+    app.world_mut().resource_mut::<Assets<ItemCatalog>>().insert(&items, catalog).unwrap();
+    assert!(recruit::dismiss(app.world_mut(), actor));
+    assert_eq!(members(&app), 1);
+    assert!(app.world().get::<PartyMember>(actor).is_none());
+    assert!(app.world().get::<Disabled>(body).is_none());
+    assert_eq!(app.world().get::<LevelOwned>(body).unwrap().0, elsewhere);
+    assert_eq!(app.world().get::<NpcWorldRole>(body).unwrap().map, away_path);
+    let monster = app.world().get::<Monster>(body).unwrap();
+    assert!(monster.hp > 0);
+    assert_eq!(monster.conditions, [afraid].into());
+    let pool: Vec<_> = app
+        .world()
+        .get::<PartyInventory>(party)
+        .unwrap()
+        .pool
+        .stacks
+        .iter()
+        .map(|stack| stack.item)
+        .collect();
+    assert!(pool.contains(&ItemId(6)) && !pool.contains(&ItemId(5)), "{pool:?}");
+    let carried = app.world().get::<Carried>(actor).unwrap();
+    assert!(carried.equipment[EquipSlot::Primary].is_some());
+    assert!(carried.backpack[0].is_none());
+
+    // Its authored map no longer places it; the map it left on keeps it.
+    let home = spawn_level(&mut app, floor());
+    app.update();
+    assert!(is_played(&app, home));
+    assert!(app.world().get::<Disabled>(body).is_some());
+    let mut again = test_level(&mut app, floor());
+    again.path = away_path.clone();
+    app.world_mut()
+        .resource_mut::<Assets<LevelDefinition>>()
+        .get_mut(&again.definition)
+        .unwrap()
+        .monsters
+        .clear();
+    let again = app.world_mut().spawn(Destination::new(again, default(), Entry::Travel)).id();
+    app.update();
+    assert!(is_played(&app, again));
+    assert!(app.world().get::<Disabled>(body).is_none());
+    assert_eq!(app.world().get::<LevelOwned>(body).unwrap().0, again);
+    assert_eq!(app.world_mut().query::<&Npc>().iter(app.world()).count(), 1);
+
+    // Rejoining: the same character, not a fresh one.
+    recruit::join(app.world_mut(), actor).unwrap();
+    assert_eq!(members(&app), 2);
+    assert_eq!(app.world().get::<Character>(actor).unwrap().experience, experience);
+    assert!(app.world().get::<Carried>(actor).unwrap().backpack[0].is_none());
+
+    // Death and accepted travel share a frame: settle before retiring the source level.
+    app.world_mut().get_mut::<Vitals>(actor).unwrap().hp = 0;
+    let destination = spawn_level(&mut app, floor());
+    app.update();
+    assert!(is_played(&app, destination));
+    assert_eq!(members(&app), 1);
+    assert!(app.world().get::<Npc>(actor).unwrap().dead);
+    let pool = &app.world().get::<PartyInventory>(party).unwrap().pool.stacks;
+    assert!(pool.iter().any(|stack| stack.item == ItemId(5)));
+    assert!(!recruit::dismiss(app.world_mut(), actor));
+    assert!(app.world().get::<Disabled>(body).is_some());
+    assert_eq!(app.world_mut().query::<&Npc>().iter(app.world()).count(), 1);
+    // Neither its authored map nor the map its body last stood on raises it.
+    let home = spawn_level(&mut app, floor());
+    app.update();
+    assert!(is_played(&app, home));
+    assert!(app.world().get::<Disabled>(body).is_some());
+    let mut last = test_level(&mut app, floor());
+    last.path = away_path;
+    app.world_mut()
+        .resource_mut::<Assets<LevelDefinition>>()
+        .get_mut(&last.definition)
+        .unwrap()
+        .monsters
+        .clear();
+    let last = app.world_mut().spawn(Destination::new(last, default(), Entry::Travel)).id();
+    app.update();
+    assert!(is_played(&app, last));
+    assert!(app.world().get::<Disabled>(body).is_some(), "the dead stay out of the world");
+    assert_eq!(app.world_mut().query::<&Npc>().iter(app.world()).count(), 1);
 }
 
 #[test]
@@ -1043,4 +1376,57 @@ fn prop_motion_resumes_from_its_actual_frame_after_a_revisit() {
     app.update();
     let motion = app.world_mut().query::<&PropMotion>().single(app.world()).unwrap();
     assert_eq!((motion.frame, motion.target), (0.25, 1.));
+}
+
+/// An unborn group waits outside the world, rolled with the rest, through
+/// a revisit; its birth brings it in once, and it stays born on the next
+/// revisit (retail `GiveBirthToMonster`).
+#[test]
+fn an_unborn_group_waits_until_born_and_is_born_once() {
+    use rizzardry::game::world::identify::{GroupMember, MonsterGroup};
+    use rizzardry::game::world::population::{Birth, Unborn, give_birth};
+    let mut app = app();
+    app.add_message::<Birth>().add_systems(Update, give_birth.after(activate_level));
+    with_data(&mut app);
+    let level = test_level(&mut app, floor());
+    {
+        let mut definitions = app.world_mut().resource_mut::<Assets<LevelDefinition>>();
+        let mut definition = definitions.get_mut(&level.definition).unwrap();
+        definition.monsters.push(MonsterPlacement {
+            location: 8,
+            group: 2,
+            species: 0,
+            position: Vec3::X,
+            yaw: 0.0,
+            unborn: true,
+        });
+    }
+    let new_game = Entry::NewGame(vec![(
+        Character::new("A", Race::Human, Gender::Male, Profession::Fighter),
+        default(),
+    )]);
+    let root = app.world_mut().spawn(Destination::new(level, default(), new_game)).id();
+    app.update();
+    assert!(is_played(&app, root));
+    assert_eq!(monsters(&mut app).len(), 1, "the unborn one is not in the world");
+    assert_eq!(app.world().get::<Unborn>(root).unwrap().0.len(), 1);
+    let root = revisit(&mut app);
+    assert_eq!(monsters(&mut app).len(), 1);
+    assert_eq!(app.world().get::<Unborn>(root).unwrap().0.len(), 1, "it waits across a revisit");
+    for _ in 0..2 {
+        app.world_mut().write_message(Birth(2));
+        app.update();
+        let born: Vec<_> = monsters(&mut app).into_iter().filter(|m| m.location == 8).collect();
+        assert_eq!(born.len(), 1, "born once");
+    }
+    let world = app.world_mut();
+    let (_, membership) = world
+        .query::<(&Monster, &GroupMember)>()
+        .iter(world)
+        .find(|(m, _)| m.location == 8)
+        .unwrap();
+    assert_eq!(world.get::<MonsterGroup>(membership.0).unwrap().authored, 2);
+    let root = revisit(&mut app);
+    assert_eq!(monsters(&mut app).len(), 2, "born for good");
+    assert!(app.world().get::<Unborn>(root).unwrap().0.is_empty());
 }

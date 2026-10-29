@@ -388,7 +388,7 @@ fn refresh(
             Caption::Header => format!(
                 "{} - level {} {} (profession level {})",
                 c.name,
-                c.level,
+                c.level(),
                 name(
                     crate::content::ui::PROFESSION_NAMES + c.profession as usize,
                     format!("{:?}", c.profession)
@@ -480,11 +480,11 @@ mod tests {
             .init_resource::<crate::game::rng::GameRng>()
             .add_message::<crate::game::inventory::ItemNews>()
             .add_plugins(plugin)
-            .init_state::<crate::game::screen::Screen>()
+            .init_state::<crate::presentation::screen::Screen>()
             .init_resource::<crate::presentation::main_screen::SelectedMember>()
             .add_input_context::<super::super::InventoryRoot>()
             .add_systems(
-                OnEnter(crate::game::screen::Screen::Inventory),
+                OnEnter(crate::presentation::screen::Screen::Inventory),
                 super::super::enter_inventory,
             );
         let spells =
@@ -508,8 +508,8 @@ mod tests {
             .collect::<Vec<_>>();
         roster::test_party(app.world_mut(), &members);
         app.world_mut()
-            .resource_mut::<NextState<crate::game::screen::Screen>>()
-            .set(crate::game::screen::Screen::Inventory);
+            .resource_mut::<NextState<crate::presentation::screen::Screen>>()
+            .set(crate::presentation::screen::Screen::Inventory);
         app.finish();
         app.cleanup();
         app.update();
@@ -564,8 +564,8 @@ mod tests {
         assert_eq!(*app.world().get::<Character>(a).unwrap(), c);
         assert_eq!(*app.world().get::<Character>(b).unwrap(), second);
         assert_eq!(
-            *app.world().resource::<State<crate::game::screen::Screen>>().get(),
-            crate::game::screen::Screen::Inventory
+            *app.world().resource::<State<crate::presentation::screen::Screen>>().get(),
+            crate::presentation::screen::Screen::Inventory
         );
         app.world_mut().trigger(Activate { entity: open });
         app.update();
@@ -580,7 +580,7 @@ mod tests {
         let mut c = Character::new("A", Race::Human, Gender::Female, Profession::Fighter);
         let mut next = c.clone();
         next.experience_previous_goal = c.experience_goal();
-        next.level += 1;
+        next.profession_levels[next.profession] += 1;
         c.experience = next.experience_goal();
         let (mut app, members, _, open) = review(&[c.clone()]);
         let a = members[0];
@@ -611,13 +611,13 @@ mod tests {
             app.update();
         };
         level_up(&mut app);
-        assert_eq!(app.world().get::<Character>(a).unwrap().level, c.level + 1);
+        assert_eq!(app.world().get::<Character>(a).unwrap().level(), c.level() + 1);
         let editor =
             app.world_mut().query::<&Editor>().single(app.world()).expect("a second level waits");
-        assert_eq!(editor.draft.preview().level, c.level + 2);
+        assert_eq!(editor.draft.preview().level(), c.level() + 2);
         assert!(editor.message.is_empty());
         level_up(&mut app);
-        assert_eq!(app.world().get::<Character>(a).unwrap().level, c.level + 2);
+        assert_eq!(app.world().get::<Character>(a).unwrap().level(), c.level() + 2);
         assert!(app.world_mut().query::<&Editor>().iter(app.world()).next().is_none());
     }
 }

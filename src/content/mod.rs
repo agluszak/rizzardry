@@ -1,6 +1,7 @@
 //! Immutable content shared by every campaign session.
 
 pub mod characters;
+pub mod factions;
 pub mod items;
 pub mod level;
 pub mod levels;
@@ -22,3 +23,5 @@ pub const UNITS_PER_METRE: f32 = 500.0;
 
 /// The party's eye above its feet, in metres (retail 1000 units).
 pub const EYE_HEIGHT: f32 = 2.0;
+
+pub mod particles;

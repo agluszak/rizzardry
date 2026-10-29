@@ -113,7 +113,11 @@ pub struct Rest;
 #[action_output(bool)]
 pub struct SearchKey;
 
+/// Publish the exploration intents, rechecked after this frame's input has
+/// been handled: a key that opens a screen this frame leaves the context
+/// active until the next, but the party must not walk behind the screen.
 pub fn read_controls(
+    input: super::screen::WorldInput,
     walk: Single<&Action<Walk>>,
     turn: Single<&Action<Turn>>,
     run: Single<&Action<Run>>,
@@ -127,6 +131,10 @@ pub fn read_controls(
     mut camps: MessageWriter<CampRequest>,
     mut searches: MessageWriter<ToggleSearch>,
 ) {
+    if !input.free() {
+        movement.set_if_neq(PartyMovement::default());
+        return;
+    }
     movement.set_if_neq(PartyMovement { walk: ***walk, turn: ***turn, running: ***run });
     if ***free_look {
         let mut delta = -***look * 0.003;
@@ -149,14 +157,17 @@ mod tests {
 
     #[test]
     fn bindings_produce_gameplay_requests_and_clear_movement_when_disabled() {
+        use crate::presentation::screen::Screen;
         let mut app = crate::presentation::test_input::input_app();
-        app.add_input_context::<Exploration>()
+        app.init_state::<Screen>()
+            .add_input_context::<Exploration>()
             .add_message::<PartyLook>()
             .add_message::<CampRequest>()
             .add_message::<ToggleSearch>()
             .add_systems(Startup, spawn_exploration_controls)
             .add_systems(PreUpdate, read_controls.after(EnhancedInputSystems::Apply));
         let party = app.world_mut().spawn(crate::game::party::roster::Party).id();
+        app.world_mut().spawn(crate::game::world::level::Level::test(default()));
         app.finish();
         app.cleanup();
         app.update();
@@ -177,6 +188,17 @@ mod tests {
             .query_filtered::<Entity, With<Exploration>>()
             .single(app.world())
             .unwrap();
+        // A screen opened by this frame's input, with the walk key still
+        // held and the context not yet switched off, stops the walk at once.
+        app.world_mut().resource_mut::<NextState<Screen>>().set(Screen::Inventory);
+        app.update();
+        let movement = app.world().get::<PartyMovement>(party).unwrap();
+        assert_eq!((movement.walk, movement.running), (Vec2::ZERO, false));
+        assert_eq!(*app.world().resource::<State<Screen>>().get(), Screen::Inventory);
+        app.world_mut().resource_mut::<NextState<Screen>>().set(Screen::World);
+        app.update();
+        app.update();
+        assert_eq!(app.world().get::<PartyMovement>(party).unwrap().walk, Vec2::Y);
         app.world_mut().entity_mut(controls).insert(ContextActivity::<Exploration>::new(false));
         app.update();
         let movement = app.world().get::<PartyMovement>(party).unwrap();

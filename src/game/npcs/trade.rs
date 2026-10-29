@@ -236,7 +236,8 @@ pub fn price(
         factor = 0.1;
     }
     let value = if item.class == EquipClass::Ammunition {
-        let bundled = (u64::from(item.value) * u64::from(quantity)).div_ceil(25);
+        let bundled = (u64::from(item.value) * u64::from(quantity))
+            .div_ceil(u64::from(crate::content::items::AMMUNITION_BUNDLE));
         (factor * bundled as f32) as u64
     } else {
         // Ordinary stacks and separate items are priced per unit. Charges do
@@ -485,7 +486,7 @@ mod tests {
         stock.lots.push(StockLot { item: ItemId(999), ..stock.lots[0].clone() });
         let (before, mut rng) = (stock.clone(), GameRng::seeded(3));
         assert_eq!(
-            stock.maintain(&def, &catalog, 1, 3 * 86_400_000, false, &mut rng),
+            stock.maintain(&def, &catalog, 1, 3 * crate::game::time::DAY_MS, false, &mut rng),
             Err(TradeError::MissingContent)
         );
         assert_eq!(stock, before);

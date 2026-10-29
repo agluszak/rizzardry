@@ -12,9 +12,10 @@ use enumset::EnumSet;
 
 use crate::content::items::{AttackEffects, ItemId};
 use crate::content::species::{
-    AttackWord, Disposition, Drop, MonsterAttack, MonsterAttributes, MonsterCatalog, Species,
-    Treasure,
+    AttackWord, Disposition, Drop, MonsterAttack, MonsterAttributes, MonsterCatalog, MonsterMagic,
+    SpecialAttack, SpecialAttackKind, Species, Temper, Treasure,
 };
+use crate::content::spells::SpellId;
 
 const RECORD: usize = 0x297;
 const ATTACKS_AT: usize = 0xe7;
@@ -72,6 +73,8 @@ fn species(record: &[u8]) -> Result<Species, DecodeError> {
         damage_reduction: record[0xcf],
         vulnerable_from_behind: record[0xd0] & 0x02 != 0,
         death_immune: record[0x1be] != 0,
+        untargetable: record[0x24a] != 0,
+        camouflage: record[0x248],
         attributes: MonsterAttributes {
             strength: record[0xd1],
             intelligence: record[0xd2],
@@ -121,6 +124,34 @@ fn species(record: &[u8]) -> Result<Species, DecodeError> {
         },
         faction: i32_at(record, 0x25f)?,
         combat_move_range: f32_at(record, 0x1ba)?.max(0.0),
+        pronouns: record[0xcc].min(3),
+        group_size: dice_at(record, 0xc1)?,
+        unborn: record[0x26a] != 0,
+        companions: std::array::from_fn(|i| {
+            let at = 0xc5 + 3 * i;
+            let species = i16::from_le_bytes([record[at], record[at + 1]]);
+            (species > 0).then(|| (species as u32, record[at + 2]))
+        }),
+        temper: Temper {
+            flee_chance: record[0xe2],
+            craven: record[0x1c0] == 0,
+            camouflaged: record[0x249] != 0,
+            prefers_range: record[0x1b9] != 0,
+            wary: record[0x1c0] == 2 && record[0x1bf] != 3,
+            bodyguard: record[0xd0] & 0x04 != 0,
+        },
+        magic: MonsterMagic {
+            chance: record[0xe0],
+            spells: std::array::from_fn(|slot| {
+                Some(record[0x14d + slot]).filter(|&id| id != 0).map(SpellId)
+            }),
+            budget: i32_at(record, 0x26f)?,
+        },
+        special: SpecialAttack {
+            kind: SpecialAttackKind::from_record(record[0xe3]),
+            chance: record[0xe1],
+            cooldown: record[0x15c],
+        },
     })
 }
 

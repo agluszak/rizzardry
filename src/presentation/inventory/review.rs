@@ -809,7 +809,9 @@ pub(super) fn layout_skills(
     }
     for (bar, mut crop) in &mut bars {
         let (start, end) = match *bar {
-            Bar::Attribute(attribute) => (0.0, profile.attribute(attribute).min(125) as f32),
+            Bar::Attribute(attribute) => {
+                (0.0, profile.base_stats().attribute(attribute).min(125) as f32)
+            }
             Bar::SkillBase(skill) => (
                 0.0,
                 u32::from(profile.skill_points[skill]).min(profile.skill(skill)).min(125) as f32,
@@ -906,11 +908,14 @@ mod tests {
         app.world_mut().trigger(Activate { entity: beneficial });
         app.update();
         assert!(!text(app.world_mut(), "Blind"));
-        assert!(app.world().get::<Vitals>(actor).unwrap().has(Condition::Blind));
+        assert!(app.world().get::<Vitals>(actor).unwrap().conditions.has(Condition::Blind));
         app.world_mut().trigger(Activate { entity: beneficial });
         app.update();
         assert!(text(app.world_mut(), "Blind"));
-        app.world_mut().get_mut::<Vitals>(actor).unwrap().age_conditions(1);
+        app.world_mut()
+            .get_mut::<Vitals>(actor)
+            .unwrap()
+            .age_conditions(1, &mut crate::game::rng::GameRng::default());
         app.update();
         assert!(!text(app.world_mut(), "Blind"));
     }

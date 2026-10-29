@@ -20,7 +20,7 @@ pub enum Row {
 
 impl Row {
     /// The side across the party; the center has none.
-    fn opposite(self) -> Option<Row> {
+    pub fn opposite(self) -> Option<Row> {
         match self {
             Row::Front => Some(Row::Rear),
             Row::Rear => Some(Row::Front),

@@ -2,6 +2,7 @@
 //! replacement rules in `ConditionsAndEnchantments.cpp` and `W8EffectSlot::Activate`.
 use crate::content::characters::Realm;
 use crate::content::spells::SpellId;
+use crate::game::characters::{Condition, Conditions, Lasting};
 use bevy::prelude::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,6 +47,16 @@ pub fn personal(spell: SpellId) -> bool {
     )
 }
 
+/// The offensive slots: clouds and burning that pulse on whoever they hang
+/// over each round (retail `AdvanceTimedEffects`), in pulse order.
+pub const OFFENSIVE: [SpellId; 5] = [
+    SpellId::ACID_BOMB,
+    SpellId::TOXIC_CLOUD,
+    SpellId::DRAINING_CLOUD,
+    SpellId::FIRESTORM,
+    SpellId::DEATH_CLOUD,
+];
+
 pub fn combat_only(spell: SpellId) -> bool {
     matches!(
         spell,
@@ -65,6 +76,10 @@ pub fn combat_only(spell: SpellId) -> bool {
 impl Enchantments {
     pub fn get(&self, spell: SpellId) -> Option<&Enchantment> {
         self.0.iter().find(|e| e.spell == spell && e.turns > 0)
+    }
+
+    pub fn has(&self, spell: SpellId) -> bool {
+        self.get(spell).is_some()
     }
 
     /// A character's effect is replaced only by a stronger one.
@@ -100,6 +115,20 @@ impl Enchantments {
         true
     }
 
+    /// Spend one reactive use and return the strength before spending it.
+    pub fn spend_charge(&mut self, spell: SpellId) -> Option<Enchantment> {
+        let index = self
+            .0
+            .iter()
+            .position(|effect| effect.spell == spell && effect.turns > 0 && effect.power > 0)?;
+        let effect = self.0[index];
+        self.0[index].power -= 1;
+        if self.0[index].power == 0 {
+            self.0.remove(index);
+        }
+        Some(effect)
+    }
+
     pub fn age(&mut self, ticks: u32) {
         self.0.retain_mut(|e| {
             if e.turns < 9999 {
@@ -132,6 +161,9 @@ impl Enchantments {
     }
 
     pub fn armour(&self) -> i32 {
+        // RebuildPartyEffectBlock/RebuildMonsterDerivedStats subtract the
+        // offensive slot's raw amount; Power Cast affects its duration.
+        let melted = self.get(SpellId::ARMORMELT).map_or(0, |effect| i32::from(effect.power));
         self.get(crate::content::spells::SpellId::BLESS).map_or(0, |e| e.adjusted(2)) as i32
             + self
                 .get(crate::content::spells::SpellId::ARMORPLATE)
@@ -139,6 +171,13 @@ impl Enchantments {
             + self
                 .get(crate::content::spells::SpellId::BODY_OF_STONE)
                 .map_or(0, |e| e.scaled(u32::from(e.power))) as i32
+            - melted
+    }
+
+    /// Chameleon removes ten sight percentage points per adjusted power.
+    /// The byte is read by retail monster sight only outside a fight.
+    pub fn concealment(&self) -> u32 {
+        self.get(SpellId::CHAMELEON).map_or(0, |effect| effect.adjusted(u32::from(effect.power)))
     }
 
     pub fn hit_bonus(&self) -> i32 {
@@ -186,10 +225,9 @@ impl Enchantments {
             && rng.below(100) < chance
     }
 
-    pub fn counter_slow(&mut self, turns: u32) -> u32 {
-        let Some(haste) =
-            self.0.iter_mut().find(|e| e.spell == crate::content::spells::SpellId::HASTE)
-        else {
+    /// Slow's turns left once they have cancelled Haste's.
+    fn counter_slow(&mut self, turns: u32) -> u32 {
+        let Some(haste) = self.0.iter_mut().find(|e| e.spell == SpellId::HASTE) else {
             return turns;
         };
         let remaining = turns.saturating_sub(haste.turns);
@@ -216,12 +254,85 @@ impl Enchantments {
     }
 }
 
+/// Slow a party member or a monster: its turns first cancel Haste's, and only
+/// what is left of them slows; an indefinite slowing ends Haste outright
+/// (retail `InflictCharacterCondition`, `InflictMonsterCondition`).
+pub fn slow(conditions: &mut Conditions, enchantments: &mut Enchantments, lasting: Lasting) {
+    let lasting = match lasting {
+        Lasting::Rounds(turns) => match enchantments.counter_slow(u32::from(turns)) {
+            0 => return,
+            left => Lasting::Rounds(left as u16),
+        },
+        Lasting::Indefinite => {
+            enchantments.0.retain(|e| e.spell != SpellId::HASTE);
+            lasting
+        }
+    };
+    conditions.inflict(Condition::Slowed, lasting);
+}
+
+/// Haste a party member or a monster: its turns first cancel Slow's, and only
+/// what is left of them hastes. Whether it changed anything.
+pub fn haste(
+    conditions: &mut Conditions,
+    enchantments: &mut Enchantments,
+    effect: Enchantment,
+    monster: bool,
+) -> bool {
+    let turns = match conditions.lasting_mut(Condition::Slowed) {
+        None => effect.turns,
+        Some(Lasting::Indefinite) => 0,
+        Some(Lasting::Rounds(left)) => {
+            let remaining = effect.turns.saturating_sub(u32::from(*left));
+            *left = u32::from(*left).saturating_sub(effect.turns) as u16;
+            if *left == 0 {
+                conditions.lift(Condition::Slowed);
+            }
+            remaining
+        }
+    };
+    let effect = Enchantment { turns, ..effect };
+    turns == 0
+        || if monster { enchantments.apply_to_monster(effect) } else { enchantments.apply(effect) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     fn effect(spell: SpellId, power: u8, turns: u32) -> Enchantment {
         Enchantment { spell, power, turns, boost: 0, absorption: 12 }
     }
+    #[test]
+    fn armormelt_penalty_stacks_with_protection_and_expires() {
+        let mut effects = Enchantments::default();
+        effects.apply(Enchantment {
+            spell: SpellId::ARMORPLATE,
+            power: 4,
+            boost: 0,
+            turns: 4,
+            absorption: 0,
+        });
+        effects.apply(Enchantment {
+            spell: SpellId::ARMORMELT,
+            power: 3,
+            boost: 100,
+            turns: 1,
+            absorption: 0,
+        });
+        assert_eq!(effects.armour(), -1);
+        effects.age(1);
+        assert_eq!(effects.armour(), 2);
+        effects.apply(Enchantment {
+            spell: SpellId::ARMORMELT,
+            power: 7,
+            boost: 0,
+            turns: 9,
+            absorption: 0,
+        });
+        effects.end_combat();
+        assert_eq!(effects.armour(), 2);
+    }
+
     #[test]
     fn actors_require_stronger_power_but_party_slots_replace() {
         let mut effects = Enchantments::default();
@@ -274,12 +385,12 @@ mod tests {
         effects.apply(effect(crate::content::spells::SpellId::SUPERMAN, 2, 2));
         assert_eq!(
             profile.stats(&effects).attribute(Attribute::Speed),
-            profile.attribute(Attribute::Speed) + 40
+            profile.base_stats().attribute(Attribute::Speed) + 40
         );
         effects.age(2);
         assert_eq!(
             profile.stats(&effects).attribute(Attribute::Speed),
-            profile.attribute(Attribute::Speed) + 30
+            profile.base_stats().attribute(Attribute::Speed) + 30
         );
         assert_eq!(effects.counter_slow(8), 5);
         assert!(effects.0.is_empty());
@@ -291,6 +402,6 @@ mod tests {
         assert_eq!(effects.resistance(Realm::Mental), 23);
         effects.end_combat();
         assert_eq!(effects.resistance(Realm::Fire), 23);
-        assert!(effects.get(crate::content::spells::SpellId::BODY_OF_STONE).is_some());
+        assert!(effects.has(crate::content::spells::SpellId::BODY_OF_STONE));
     }
 }

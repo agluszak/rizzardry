@@ -45,7 +45,7 @@ pub fn entering(world: &mut World) -> bool {
 /// becomes one only by [`activate_level`]; until then its root is a
 /// [`Destination`].
 #[derive(Component, Debug, Clone)]
-#[require(Transform)]
+#[require(Transform, MonsterBodies)]
 pub struct Level {
     /// The retail path of its `.pvl`, which identifies it.
     pub path: String,
@@ -215,14 +215,17 @@ impl LevelMemory {
 
 /// A level the party has left (retail keeps it in the level's state image):
 /// what its triggers keep, its props’ motion, its monsters (the
-/// dead too, so they stay dead), the items lying about, what the party
-/// knows of its groups, and its map notes. Activation consumes it.
+/// dead too, so they stay dead) and those still unborn, the items lying
+/// about, what the party knows of its groups, and its map notes.
+/// Activation consumes it.
 #[derive(Debug)]
 pub struct LevelRecord {
     triggers: TriggerMemory,
     /// By prop definition index.
     prop_motion: HashMap<usize, PropMotion>,
     pub(super) monsters: Vec<KeptMonster>,
+    pub(super) unborn: Vec<KeptMonster>,
+    pub(super) encounters: super::encounters::EncounterState,
     pub(super) items: Vec<(WorldItem, Vec3)>,
     pub(super) groups: Vec<MonsterGroup>,
     notes: MapNotes,
@@ -233,42 +236,57 @@ pub struct LevelRecord {
 #[derive(Clone, Debug)]
 pub struct KeptMonster {
     pub group: Option<i32>,
-    pub provoked: bool,
     pub monster: Monster,
     pub feet: Vec3,
     pub yaw: f32,
 }
 
 impl KeptMonster {
-    /// A placed monster met for the first time: health and stamina rolled
-    /// from its species, then its size. Retail draws Random(1000) for the
-    /// size; its left-handed mirror draw, presentation only, is not taken
-    /// from gameplay's stream.
-    pub fn rolled(
+    /// A placed monster met for the first time (retail `LoadMonsterInfo`).
+    pub fn placed(
         placed: &crate::content::level::MonsterPlacement,
         kind: &crate::content::species::Species,
         body: &crate::content::monster::MonsterBody,
+        rng: &mut crate::game::rng::GameRng,
+    ) -> Self {
+        Self::rolled(
+            (placed.location, placed.species, Some(placed.group)),
+            (placed.position, placed.yaw),
+            (kind, body),
+            rng,
+        )
+    }
+
+    /// A monster come into being (retail `CreateMonsterInfo`): health and
+    /// stamina rolled from its species, then its size. Retail draws
+    /// Random(1000) for the size; its left-handed mirror draw, presentation
+    /// only, is not taken from gameplay's stream.
+    pub fn rolled(
+        (location, species, group): (i32, u32, Option<i32>),
+        (feet, yaw): (Vec3, f32),
+        (kind, body): (&crate::content::species::Species, &crate::content::monster::MonsterBody),
         rng: &mut crate::game::rng::GameRng,
     ) -> Self {
         let max_hp = rng.roll(kind.hit_points).max(1);
         let max_stamina = rng.roll(kind.stamina);
         let body = super::population::ScaledBody::new(body, rng.below(1000));
         KeptMonster {
-            provoked: false,
             monster: Monster {
                 enchantments: default(),
-                location: placed.location,
-                species: placed.species,
+                location,
+                species,
                 hp: max_hp,
                 max_hp,
                 stamina: max_stamina,
+
                 max_stamina,
-                conditions: Vec::new(),
+                conditions: Default::default(),
+                spell_points: 0,
                 body,
             },
-            group: Some(placed.group),
-            feet: placed.position,
-            yaw: placed.yaw,
+            group,
+            feet,
+            yaw,
         }
     }
 
@@ -278,10 +296,8 @@ impl KeptMonster {
         pose: &super::ActorPoseItem,
         walker: Option<&super::navigation::Walker>,
         group: Option<i32>,
-        provoked: bool,
     ) -> Self {
         KeptMonster {
-            provoked,
             group,
             monster: monster.clone(),
             feet: super::navigation::feet(pose.translation(), walker),
@@ -294,29 +310,31 @@ impl KeptMonster {
 #[derive(SystemParam)]
 pub struct LevelContents<'w, 's> {
     devices: DeviceRecords<'w, 's>,
+    lights: Query<'w, 's, &'static super::triggers::LightActivation>,
     props: Query<'w, 's, (&'static Prop, &'static PropMotion)>,
     monsters: Query<
         'w,
         's,
-        (
-            &'static Monster,
-            super::ActorPose,
-            Option<&'static Walker>,
-            Option<&'static GroupMember>,
-            Has<super::population::Provoked>,
-        ),
+        (&'static Monster, super::ActorPose, Option<&'static Walker>, Option<&'static GroupMember>),
         Without<crate::game::npcs::NpcBody>,
     >,
     items: Query<'w, 's, (&'static WorldItem, &'static Transform)>,
     groups: Query<'w, 's, &'static MonsterGroup>,
     notes: Query<'w, 's, &'static MapNotes>,
+    unborn: Query<'w, 's, &'static super::population::Unborn>,
+    encounters: Query<'w, 's, &'static super::encounters::EncounterState>,
+    clock: Res<'w, crate::game::time::GameClock>,
 }
 
 impl LevelContents<'_, '_> {
     fn remember(&self, root: Entity, state: &LevelState, children: &[Entity]) -> LevelRecord {
         let notes = self.notes.get(root).ok();
         LevelRecord {
-            triggers: self.devices.remember(children, state),
+            triggers: self.devices.remember(
+                children,
+                state,
+                self.lights.get(root).expect("active levels own light state"),
+            ),
             prop_motion: self
                 .props
                 .iter_many(children)
@@ -327,11 +345,16 @@ impl LevelContents<'_, '_> {
                 .monsters
                 .iter_many(children)
                 .matched()
-                .map(|(monster, at, walker, group, provoked)| {
+                .map(|(monster, at, walker, group)| {
                     let group = group.and_then(|m| self.groups.get(m.0).ok()).map(|g| g.authored);
-                    KeptMonster::capture(monster, &at, walker, group, provoked)
+                    KeptMonster::capture(monster, &at, walker, group)
                 })
                 .collect(),
+            unborn: self.unborn.get(root).map_or_else(|_| Vec::new(), |unborn| unborn.0.clone()),
+            encounters: super::encounters::EncounterState {
+                arrival: Some(super::encounters::Arrival::Returned { left: self.clock.ms / 1000 }),
+                ..self.encounters.get(root).cloned().unwrap_or_default()
+            },
             items: self
                 .items
                 .iter_many(children)
@@ -358,11 +381,13 @@ pub struct Destination {
     pub level: Level,
     pub start: PartyStart,
     pub entry: Entry,
+    /// Its monsters' bodies, held while it loads.
+    pub bodies: MonsterBodies,
 }
 
 impl Destination {
     pub fn new(level: Level, start: PartyStart, entry: Entry) -> Self {
-        Destination { level, start, entry }
+        Destination { level, start, entry, bodies: default() }
     }
 }
 
@@ -554,7 +579,6 @@ pub struct SharedData<'w> {
     data: Option<Res<'w, GameData>>,
     content: crate::game::data::Content<'w>,
     bodies: Res<'w, Assets<MonsterBody>>,
-    monster_bodies: ResMut<'w, MonsterBodies>,
     motion_configs: ResMut<'w, Assets<navigation::WalkerMotionConfig>>,
 }
 
@@ -589,7 +613,8 @@ pub fn activate_level(
             failures.write(LevelEntryFailed { path: level.path.clone() });
             commands.entity(root).despawn();
         };
-        match prepare(level, presentation, &geometry, &mut shared, &mut npcs, &assets) {
+        let bodies = &mut destination.bodies;
+        match prepare(level, bodies, presentation, &geometry, &shared, &mut npcs, &assets) {
             Ok(true) => {}
             Ok(false) => continue,
             Err(why) => {
@@ -599,7 +624,7 @@ pub fn activate_level(
         }
         let geometry = geometry.get(&level.definition).expect("prepared");
         let content = &shared.content;
-        let (Some(items), Some(loot), Some(species), Some(spells)) =
+        let (Some(items), Some(loot), Some(species), Some(_spells)) =
             (content.items(), content.loot(), content.species(), content.spells())
         else {
             continue;
@@ -651,9 +676,9 @@ pub fn activate_level(
             root,
             geometry,
             remembered,
-            (species, items),
+            (species, items, loot),
             (&level.path, &mut npcs),
-            (&shared.monster_bodies.0, &shared.bodies),
+            (&destination.bodies, &shared.bodies),
             (&navigation, &mut shared.motion_configs),
             &mut ids,
             &mut rng,
@@ -664,13 +689,14 @@ pub fn activate_level(
                 if let Some(session) = session.as_mut() {
                     session.set(crate::game::session::Session::Playing);
                 }
-                found_party(&mut commands, characters, (items, spells), (&mut ids, &mut rng))
+                found_party(&mut commands, characters, items, (&mut ids, &mut rng))
             }
         };
         transition.p1().place(&mut commands, party, geometry, &destination.start);
         navigation::add_party_characters(&mut commands, root, party, &navigation);
         info!("{} is active", level.path);
-        commands.entity(root).remove::<Destination>().insert((level.clone(), navigation));
+        let bodies = std::mem::take(&mut destination.bodies);
+        commands.entity(root).remove::<Destination>().insert((level.clone(), navigation, bodies));
         ready.write(LevelReady { level: root });
         break;
     }
@@ -681,9 +707,10 @@ pub fn activate_level(
 /// never will.
 fn prepare(
     level: &Level,
+    bodies: &mut MonsterBodies,
     presentation: Option<&PresentationReadiness>,
     geometry: &Assets<LevelDefinition>,
-    shared: &mut SharedData,
+    shared: &SharedData,
     npcs: &mut crate::game::npcs::NpcPopulation,
     assets: &AssetServer,
 ) -> Result<bool, String> {
@@ -714,7 +741,7 @@ fn prepare(
     if !npcs.prepare(species, &geometry.monsters, items, assets)? {
         return Ok(false);
     }
-    let bodies = shared.monster_bodies.for_level(geometry, species, assets);
+    let bodies = bodies.for_level(geometry, species, assets);
     if bodies.iter().any(|body| failed(body.id().untyped())) {
         return Err("a monster's body definition failed to load".into());
     }
@@ -734,7 +761,7 @@ fn prepare(
 fn found_party(
     commands: &mut Commands,
     characters: Vec<(crate::game::characters::Character, crate::game::magic::LearnedSpells)>,
-    catalogs: (&crate::content::items::ItemCatalog, &crate::content::spells::SpellCatalog),
+    items: &crate::content::items::ItemCatalog,
     (ids, rng): (&mut ItemIds, &mut GameRng),
 ) -> Entity {
     let party = commands.spawn((Name::new("Party"), Party)).id();
@@ -745,7 +772,7 @@ fn found_party(
             party,
             &mut formation,
             member,
-            catalogs,
+            items,
             (&mut *ids, &mut *rng),
         );
     }
