@@ -300,17 +300,7 @@ pub(crate) struct OpenReview<'w, 's> {
     pub(super) selected: ResMut<'w, super::main_screen::SelectedMember>,
     screen: Res<'w, State<Screen>>,
     next: ResMut<'w, NextState<Screen>>,
-    questions: Query<'w, 's, (), With<crate::game::world::level::TravelQuestion>>,
-    conversations: Query<
-        'w,
-        's,
-        (),
-        (
-            With<crate::game::npcs::conversation::Conversation>,
-            Without<crate::game::npcs::conversation::Closing>,
-        ),
-    >,
-    entering: Query<'w, 's, (), With<crate::game::world::level::Destination>>,
+    freedom: crate::game::freedom::Freedom<'w, 's>,
     roster: Single<'w, 's, &'static PartyRoster>,
 }
 
@@ -319,9 +309,7 @@ impl OpenReview<'_, '_> {
     pub(crate) fn open(&mut self, member: Entity) -> bool {
         if *self.screen.get() != Screen::World
             || !matches!(*self.next, NextState::Unchanged)
-            || !self.questions.is_empty()
-            || !self.conversations.is_empty()
-            || !self.entering.is_empty()
+            || !self.freedom.undisturbed()
             || !self.roster.contains(&member)
         {
             return false;

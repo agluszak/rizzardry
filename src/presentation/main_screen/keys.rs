@@ -194,25 +194,13 @@ pub(crate) struct WorldKeys<'w, 's> {
     screen: Res<'w, State<Screen>>,
     focus: Res<'w, bevy::input_focus::InputFocus>,
     controls: Query<'w, 's, (), With<bevy::input_focus::tab_navigation::TabIndex>>,
-    questions: Query<'w, 's, (), With<crate::game::world::level::TravelQuestion>>,
-    conversations: Query<
-        'w,
-        's,
-        (),
-        (
-            With<crate::game::npcs::conversation::Conversation>,
-            Without<crate::game::npcs::conversation::Closing>,
-        ),
-    >,
-    entering: Query<'w, 's, (), With<crate::game::world::level::Destination>>,
+    freedom: crate::game::freedom::Freedom<'w, 's>,
 }
 
 impl WorldKeys<'_, '_> {
     pub(crate) fn active(&self) -> bool {
         *self.screen.get() == Screen::World
-            && self.entering.is_empty()
-            && self.questions.is_empty()
-            && self.conversations.is_empty()
+            && self.freedom.undisturbed()
             && !self.focus.get().is_some_and(|entity| self.controls.contains(entity))
     }
 }

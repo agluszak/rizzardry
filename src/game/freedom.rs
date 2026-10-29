@@ -37,13 +37,17 @@ impl Freedom<'_, '_> {
         self.unoccupied() && self.camp.is_none()
     }
 
+    /// Entering no level and held by no travel question or conversation:
+    /// what views that open over the world wait for.
+    pub fn undisturbed(&self) -> bool {
+        self.entering.is_empty() && self.conversations.is_empty() && self.questions.is_empty()
+    }
+
     /// Free but perhaps camping: what utility magic needs (a camp does not
     /// stop a portal).
     pub fn unoccupied(&self) -> bool {
         !self.levels.is_empty()
-            && self.entering.is_empty()
-            && self.conversations.is_empty()
-            && self.questions.is_empty()
+            && self.undisturbed()
             && self.flights.is_empty()
             && self.interaction.is_empty()
     }
