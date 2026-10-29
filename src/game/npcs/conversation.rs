@@ -8,9 +8,9 @@ use crate::content::{
     items::{ItemCatalog, ItemId},
     npcs::*,
 };
-use crate::game::factions::Factions;
+use crate::game::factions::{Band, Factions};
 use crate::game::{
-    characters::{Character, Vitals},
+    characters::{Character, Condition, Vitals},
     data::GameData,
     inventory::{Carried, ItemIds, ItemOwner, ItemPool, ItemRef, PartyInventory, make_item},
     party::roster::{PartyMember, PartyRoster, the_party},
@@ -212,6 +212,9 @@ pub struct Conversation {
     /// Keywords discovered during this conversation are green. Reopening
     /// imports the persistent notebook without the transient discovery marks.
     pub learned_topics: BTreeSet<String>,
+    /// The NPC is not friendly yet: the party sees retail's topic menu
+    /// (charm, small talk, bribe) rather than the dialogue's topics.
+    pub menu: bool,
     /// Revision-scoped gameplay outcome; presentation owns its wording.
     result: Option<(u64, Outcome)>,
     queue: VecDeque<Step>,
@@ -306,6 +309,18 @@ pub enum ConversationRequest {
         revision: u64,
         amount: u32,
     },
+    /// Try to win over an NPC that is not yet friendly.
+    Approach {
+        conversation: Entity,
+        revision: u64,
+        approach: Approach,
+    },
+}
+/// How the party tries to win an NPC over from retail's topic menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Approach {
+    Charm,
+    SmallTalk,
 }
 fn definition(world: &World, actor: Entity) -> Result<&NpcDefinition, TradeError> {
     let npc = world.get::<Npc>(actor).ok_or(TradeError::Unavailable)?;
@@ -339,15 +354,7 @@ fn with_items<T>(
     })
 }
 pub fn party_communication(world: &mut World) -> u32 {
-    let Some(party) = the_party(world) else { return 0 };
-    let Some(roster) = world.get::<PartyRoster>(party) else { return 0 };
-    roster
-        .iter()
-        .filter_map(|e| Some((world.get::<Character>(e)?, world.get::<Vitals>(e)?)))
-        .filter(|(_, v)| v.can_act())
-        .map(|(c, _)| c.skill(crate::content::characters::Skill::Communication))
-        .max()
-        .unwrap_or(0)
+    best_communicator(world).map_or(0, |(_, level)| level)
 }
 fn average_level(world: &mut World) -> u32 {
     let Some(party) = the_party(world) else { return 1 };
@@ -364,8 +371,105 @@ fn active_body(world: &World, actor: Entity) -> Option<Entity> {
             && world.get::<Monster>(*body).is_some_and(|m| !m.is_dead())
     })
 }
-/// The lowest disposition at which an NPC will talk.
-const WILLING_DISPOSITION: u8 = 0x42;
+/// What a neutral NPC says first, and its answers to charm, small talk and
+/// bribes that leave it unmoved; what a hostile one says to turn the party
+/// away; and what one won over by charm says.
+const NEUTRAL_GREETING: u16 = 2;
+const SMALL_TALK_QUOTE: u16 = 3;
+const CHARMED_QUOTE: u16 = 4;
+const UNCHARMED_QUOTE: u16 = 6;
+const UNBRIBED_QUOTE: u16 = 7;
+const HOSTILE_QUOTE: u16 = 0x18;
+/// How long the party waits to charm or make small talk with an NPC again
+/// (retail `AdvanceNpcTimers`: 0xa8c0 seconds).
+const APPROACH_COOLDOWN_MS: u64 = 0xa8c0 * 1000;
+/// Whether an approach made at `at` may be tried again at `now`.
+pub fn approach_ready(at: Option<u64>, now: u64) -> bool {
+    at.is_none_or(|at| now.saturating_sub(at) > APPROACH_COOLDOWN_MS)
+}
+/// How the NPC stands toward the party now (retail `GetNpcDisposition`):
+/// its own disposition, fully friendly while its body is turned. A
+/// factioned NPC answers with its faction's score when bound to its monster
+/// or when the faction is hostile to the party. Retail also adds a charmed
+/// body's bonus, and pins NPCs allied to a party member's faction at fifty;
+/// no spell charms an NPC and none joins the party here yet.
+pub fn disposition(world: &World, actor: Entity) -> i32 {
+    let Some(npc) = world.get::<Npc>(actor) else { return 0 };
+    let turned = active_body(world, actor)
+        .and_then(|body| world.get::<Monster>(body))
+        .is_some_and(|m| m.conditions.iter().any(|(c, _)| *c == Condition::Turncoat));
+    let own = if turned { 100 } else { i32::from(npc.disposition) };
+    let (Ok(def), Some(factions)) = (definition(world, actor), world.get_resource::<Factions>())
+    else {
+        return own;
+    };
+    let faction = i32::from(def.faction);
+    if def.faction != 0 && (def.monster_bound || factions.band(faction) == Band::Hostile) {
+        return factions.score(faction).map_or(own, i32::from);
+    }
+    own
+}
+/// Retail `GetNpcDispositionBand`: hostile under 0x21, friendly from 0x42.
+pub fn band(world: &World, actor: Entity) -> Band {
+    match disposition(world, actor) {
+        d if d < 0x21 => Band::Hostile,
+        d if d < 0x42 => Band::Neutral,
+        _ => Band::Friendly,
+    }
+}
+/// Retail `AdjustNpcDisposition`, clamped to 0..99.
+fn shift_disposition(npc: &mut Npc, delta: i8) {
+    npc.disposition = (i16::from(npc.disposition) + i16::from(delta)).clamp(0, 99) as u8;
+}
+/// Retail `SetNpcDispositionBand` to hostile.
+fn turn_hostile(world: &mut World, actor: Entity) {
+    if band(world, actor) != Band::Hostile {
+        world.get_mut::<Npc>(actor).unwrap().disposition = 0x19;
+    }
+}
+/// Retail `ResumeNpc` as a dialogue closes on the party: an NPC that is not
+/// already hostile becomes so. Retail's NPC then fights with its group; NPCs
+/// do not fight here yet, so it only turns the party away from now on.
+fn resume(world: &mut World, actor: Entity) {
+    if disposition(world, actor) > 0x20 {
+        world.get_mut::<Npc>(actor).unwrap().disposition = 0x19;
+    }
+}
+/// The member with the best Communication, the first on a tie, and that
+/// level (retail `GetBestPartySkillLevel`).
+fn best_communicator(world: &mut World) -> Option<(Entity, u32)> {
+    let party = the_party(world)?;
+    let roster = world.get::<PartyRoster>(party)?;
+    let mut best: Option<(Entity, u32)> = None;
+    for member in roster.iter() {
+        let (Some(c), Some(v)) = (world.get::<Character>(member), world.get::<Vitals>(member))
+        else {
+            continue;
+        };
+        let level = c.skill(crate::content::characters::Skill::Communication);
+        if v.can_act() && best.is_none_or(|(_, best)| level > best) {
+            best = Some((member, level));
+        }
+    }
+    best
+}
+/// Practise `members`' Communication `usage` times.
+fn practise_communication(world: &mut World, members: &[Entity], usage: u32) {
+    world.resource_scope(|world, mut rng: Mut<GameRng>| {
+        for &member in members {
+            if let Some(mut c) = world.get_mut::<Character>(member) {
+                c.practise(crate::content::characters::Skill::Communication, usage, &mut rng);
+            }
+        }
+    });
+}
+/// The members awake and well enough to fight (retail `hp_current != 0 &&
+/// highest_condition < ASLEEP`).
+fn able_members(world: &mut World) -> Vec<Entity> {
+    let Some(party) = the_party(world) else { return vec![] };
+    let Some(roster) = world.get::<PartyRoster>(party) else { return vec![] };
+    roster.iter().filter(|&m| world.get::<Vitals>(m).is_some_and(|v| v.can_fight())).collect()
+}
 /// The script's quote asking the price of a paid topic.
 const PRICE_QUOTE: u16 = 0x12;
 /// Which of retail's two answers for having nothing to say comes next; retail
@@ -383,7 +487,7 @@ const TOO_POOR_QUOTE: u16 = 0x14;
 fn available(world: &World, actor: Entity) -> bool {
     active_body(world, actor)
         .is_some_and(|body| world.get::<crate::game::world::population::Provoked>(body).is_none())
-        && world.get::<Npc>(actor).is_some_and(|n| n.disposition >= WILLING_DISPOSITION)
+        && world.get::<Npc>(actor).is_some()
 }
 /// Shared gameplay permission, also used to derive the trade controls.
 pub fn trade_allowed(world: &World, actor: Entity) -> bool {
@@ -391,6 +495,18 @@ pub fn trade_allowed(world: &World, actor: Entity) -> bool {
 }
 fn entry_quote(def: &NpcDefinition, npc: &Npc) -> u16 {
     if def.merchant || npc.greeting_pending { 0 } else { 1 }
+}
+/// What the NPC says to open its dialogue; meeting it for the first time
+/// teaches the party's members Communication (retail
+/// `HandleNpcDialogueDeparture`).
+fn greet(world: &mut World, actor: Entity) -> Result<u16, TradeError> {
+    let def = definition(world, actor)?;
+    let greeting = entry_quote(def, world.get::<Npc>(actor).unwrap());
+    if greeting == 0 && !def.monster_bound && !def.voice_script && !def.merchant {
+        let members = able_members(world);
+        practise_communication(world, &members, 0xf);
+    }
+    Ok(greeting)
 }
 pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
     let party = the_party(world).ok_or(TradeError::Unavailable)?;
@@ -428,10 +544,35 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
     if !world.resource::<Assets<DialogueScript>>().contains(&script) {
         return Err(TradeError::MissingContent);
     }
+    let def = definition(world, actor)?;
+    // Retail `BeginNpcDialogueInternal` and `OpenNpcDialoguePanel`: an NPC
+    // that speaks through its own script greets as it is; otherwise one
+    // hostile to the party only turns it away, a neutral one offers the
+    // topic menu, and a merchant always does business.
+    let scripted = def.monster_bound || def.voice_script;
+    let band = band(world, actor);
+    let quote =
+        |quote| VecDeque::from([Step::Quote { quote, subquote: 0, paid: false, plan: None }]);
+    let conversation = |queue| Conversation {
+        actor,
+        script: script.clone(),
+        revision: 0,
+        current: None,
+        wait: ConversationWait::Ready,
+        transcript: vec![],
+        learned_topics: default(),
+        menu: false,
+        result: None,
+        queue,
+    };
+    if !scripted && !def.merchant && band == Band::Hostile {
+        return Ok(world.spawn((conversation(quote(HOSTILE_QUOTE)), Closing)).id());
+    }
+    let menu = !scripted && !def.merchant && band == Band::Neutral;
+    let greeting = if menu { NEUTRAL_GREETING } else { greet(world, actor)? };
     let now = world.resource::<crate::game::time::GameClock>().ms;
     let average = average_level(world);
     let def = definition(world, actor)?;
-    let greeting = entry_quote(def, world.get::<Npc>(actor).unwrap());
     if def.owns_stock {
         let stock = &world.get::<Npc>(actor).unwrap().stock;
         let gated = stock.initialized
@@ -483,24 +624,7 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
             }
         }
     }
-    Ok(world
-        .spawn(Conversation {
-            actor,
-            script,
-            revision: 0,
-            current: None,
-            wait: ConversationWait::Ready,
-            transcript: vec![],
-            learned_topics: default(),
-            result: None,
-            queue: VecDeque::from([Step::Quote {
-                quote: greeting,
-                subquote: 0,
-                paid: false,
-                plan: None,
-            }]),
-        })
-        .id())
+    Ok(world.spawn(Conversation { menu, ..conversation(quote(greeting)) }).id())
 }
 /// Travel ends the conversation; the speaker stays.
 pub(crate) fn end_conversations(
@@ -616,6 +740,8 @@ enum QuoteEffect {
     TakeItem { party: Entity, item: ItemId },
     Disposition { npc: Entity, delta: i8 },
     PartyRemark(u16),
+    // The speaker turns on the party as the dialogue closes.
+    Resume,
 }
 #[derive(Debug)]
 enum Continuation {
@@ -730,6 +856,7 @@ fn plan_quote(
             }
             // Retail closes without reading the quote's later entries.
             DialogueOp::CloseAndResume => {
+                plan.effects.push(QuoteEffect::Resume);
                 plan.following = Some(Continuation::End);
                 break;
             }
@@ -777,7 +904,7 @@ fn executable(world: &World, plan: &QuotePlan) -> bool {
         }
         QuoteEffect::TakeItem { party, .. } => world.get::<PartyInventory>(*party).is_some(),
         QuoteEffect::Disposition { npc, .. } => world.get::<Npc>(*npc).is_some(),
-        QuoteEffect::PartyRemark(_) => true,
+        QuoteEffect::PartyRemark(_) | QuoteEffect::Resume => true,
     })
 }
 /// Retail `AddItemToPartyOrDrop`: a gift the party's items have no room for
@@ -970,11 +1097,12 @@ fn commit_effects(world: &mut World, entity: Entity, effects: Vec<QuoteEffect>) 
                         .push(TranscriptLine::Reward(QuestReward::Taken { member }));
                 }
             }
-            // Retail `AdjustNpcDisposition`, clamped to 0..99.
             QuoteEffect::Disposition { npc, delta } => {
-                let mut npc = world.get_mut::<Npc>(npc).unwrap();
-                npc.disposition =
-                    (i16::from(npc.disposition) + i16::from(delta)).clamp(0, 99) as u8;
+                shift_disposition(&mut world.get_mut::<Npc>(npc).unwrap(), delta)
+            }
+            QuoteEffect::Resume => {
+                let actor = world.get::<Conversation>(entity).unwrap().actor;
+                resume(world, actor);
             }
             QuoteEffect::PartyRemark(event) => {
                 world.write_message(PartyRemark { event });
@@ -1193,7 +1321,7 @@ fn learn_topic(world: &mut World, entity: Entity, category: TopicCategory, text:
 }
 fn topic(world: &mut World, entity: Entity, text: &str) {
     let c = world.get::<Conversation>(entity).unwrap();
-    if !c.ready() {
+    if !c.ready() || c.menu {
         return;
     }
     let Some(script) = script(world, c) else { return };
@@ -1218,13 +1346,137 @@ fn topic(world: &mut World, entity: Entity, text: &str) {
         world.get_mut::<Conversation>(entity).unwrap().report(Outcome::NoTopic);
     }
 }
+/// The party charms the NPC or makes small talk with it from the topic menu
+/// (retail `SelectNpcDialogueService`, `SelectNpcDialogueTalk` and
+/// `ApplyNpcInteraction` 1 and 0). Its disposition moves by its record's
+/// scale, more with the party's best Communication, which practises; a
+/// charm that warms it moves it further the higher the party's level is
+/// over its own. The band it ends in answers: won over, it turns to its
+/// dialogue; turned hostile, it sends the party away.
+fn approach_npc(world: &mut World, entity: Entity, approach: Approach) {
+    let c = world.get::<Conversation>(entity).unwrap();
+    let actor = c.actor;
+    let now = world.resource::<crate::game::time::GameClock>().ms;
+    let npc = world.get::<Npc>(actor).unwrap();
+    let at = match approach {
+        Approach::Charm => npc.charmed_at,
+        Approach::SmallTalk => npc.small_talk_at,
+    };
+    let Ok(def) = definition(world, actor) else { return };
+    let scale = i32::from(match approach {
+        Approach::Charm => def.charm_scale,
+        Approach::SmallTalk => def.talk_scale,
+    });
+    if !c.menu || !approach_ready(at, now) {
+        return;
+    }
+    let Some((speaker, level)) = best_communicator(world) else { return };
+    let mut delta = scale + level as i32 * (scale.abs() / 5) / 100;
+    if approach == Approach::Charm && delta > 0 {
+        let members = able_members(world);
+        let total: u32 = members
+            .iter()
+            .filter_map(|&m| world.get::<Character>(m))
+            .map(|c| u32::from(c.level))
+            .sum();
+        let average = if members.is_empty() { 1 } else { total / members.len() as u32 };
+        let own = active_body(world, actor)
+            .and_then(|body| world.get::<Monster>(body))
+            .and_then(|m| GameData::species(world)?.kind(m.species))
+            .map_or(1, |kind| u32::from(kind.level).max(1));
+        delta = (average * delta as u32 / own) as i32;
+    }
+    let mut npc = world.get_mut::<Npc>(actor).unwrap();
+    // Retail narrows the change to a signed byte.
+    shift_disposition(&mut npc, delta as i8);
+    let usage = match approach {
+        Approach::Charm => {
+            npc.charmed_at = Some(now);
+            5
+        }
+        Approach::SmallTalk => {
+            npc.small_talk_at = Some(now);
+            8
+        }
+    };
+    practise_communication(world, &[speaker], usage);
+    let answer = match (band(world, actor), approach) {
+        (Band::Friendly, Approach::Charm) => Some(CHARMED_QUOTE),
+        (Band::Friendly, Approach::SmallTalk) => greet(world, actor).ok(),
+        (Band::Neutral, Approach::Charm) => Some(UNCHARMED_QUOTE),
+        (Band::Neutral, Approach::SmallTalk) => Some(SMALL_TALK_QUOTE),
+        (Band::Hostile, _) => {
+            turn_hostile(world, actor);
+            Some(HOSTILE_QUOTE)
+        }
+    };
+    let friendly = band(world, actor) == Band::Friendly;
+    let mut c = world.get_mut::<Conversation>(entity).unwrap();
+    if let Some(quote) = answer {
+        c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false, plan: None });
+    }
+    if !friendly && answer == Some(HOSTILE_QUOTE) {
+        c.queue.push_back(Step::End);
+    }
+    c.menu = !friendly;
+    c.revision += 1;
+}
+/// Retail `GetItemStackValue`: ammunition by the bundle of 25, a stack of
+/// things by each, anything else as one.
+fn stack_value(item: &crate::content::items::ItemDefinition, count: u16) -> u32 {
+    let count = u32::from(count);
+    if item.class == crate::content::items::EquipClass::Ammunition {
+        (item.value * count).div_ceil(25)
+    } else if item.quantity == crate::content::items::QuantityKind::Stack && count > 1 {
+        item.value * count
+    } else {
+        item.value
+    }
+}
+/// Retail `WillNpcTradeForItem`: one kind of NPC takes no bribes in kind;
+/// the rest take one item always, and others worth 300 gold.
+const NO_TRADE_KIND: i32 = 20;
+const ALWAYS_TAKEN: ItemId = ItemId(0x29f);
+const LEAST_BRIBE: u32 = 300;
+/// Retail `DebitNpcTradePool`: a bribe, Communication-weighted, draws on
+/// what the NPC will take. Once that runs out an NPC not yet friendly warms
+/// to the party, and the pool fills again.
+fn debit_trade_pool(world: &mut World, actor: Entity, price: u32) {
+    let level = party_communication(world);
+    let adjusted = price.wrapping_add(level * ((price & 0xffff) / 5) / 100);
+    let refill = definition(world, actor).map_or(0, |d| d.trade_pool);
+    let cold = band(world, actor) != Band::Friendly;
+    let mut npc = world.get_mut::<Npc>(actor).unwrap();
+    npc.trade_pool = npc.trade_pool.saturating_sub(adjusted as u16);
+    if npc.trade_pool == 0 {
+        if cold {
+            npc.disposition = 0x4b;
+        }
+        npc.trade_pool = refill;
+    }
+}
+/// A bribe that wins the NPC over from the topic menu turns it to its
+/// dialogue; it greets the party unless it took all the party's gold
+/// (retail `HandleNpcDialogueItemChoice`, `OnNpcTradeDialogClosed`).
+fn won_over(world: &mut World, entity: Entity, greeting: bool) {
+    let actor = world.get::<Conversation>(entity).unwrap().actor;
+    if !world.get::<Conversation>(entity).unwrap().menu || band(world, actor) != Band::Friendly {
+        return;
+    }
+    let greeting = if greeting { greet(world, actor).ok() } else { None };
+    let mut c = world.get_mut::<Conversation>(entity).unwrap();
+    c.menu = false;
+    if let Some(quote) = greeting {
+        c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false, plan: None });
+    }
+    c.revision += 1;
+}
 /// What a friendly NPC says to an item it has no quote for: it takes it
 /// gladly, or turns down one the party may not give away.
 const ACCEPTED_GIFT_QUOTE: u16 = 0x10;
 const REFUSED_GIFT_QUOTE: u16 = 0x11;
 /// The party offers the NPC an item from a member's pack or the party's items
-/// (retail `HandleNpcDialogueItem`; only friendly NPCs talk here). The quote
-/// answering it runs; the NPC keeps what it asked for, and any other item it
+/// (retail `HandleNpcDialogueItem`). The quote answering it runs; the NPC keeps what it asked for, and any other item it
 /// is given unless the party may not part with it. A voice-scripted NPC
 /// ignores an item it has nothing to say about. The item is taken only when
 /// its answer's effects are valid; a content gap keeps it.
@@ -1235,19 +1487,40 @@ fn give(world: &mut World, entity: Entity, item: ItemRef) -> Result<(), TradeErr
         return Err(TradeError::Busy);
     }
     let actor = c.actor;
-    let offered = sale_item(world, TradeSource::Party(item), party)?.item;
-    let crucial = GameData::items(world)
+    let stack = sale_item(world, TradeSource::Party(item), party)?;
+    let (offered, count) = (stack.item, stack.count());
+    let definition_of = GameData::items(world)
         .and_then(|catalog| catalog.get(offered))
-        .ok_or(TradeError::MissingContent)?
-        .crucial;
-    let voiced = definition(world, actor)?.voice_script;
+        .ok_or(TradeError::MissingContent)?;
+    let (crucial, value) = (definition_of.crucial, stack_value(definition_of, count));
+    let def = definition(world, actor)?;
+    let (voiced, kind) = (def.voice_script, def.kind);
     let script = script(world, c).ok_or(TradeError::MissingContent)?;
-    let (quote, keeps) = match script.item_quote(offered) {
+    let answer = script.item_quote(offered);
+    // Retail `HandleNpcDialogueItem`: an NPC not yet friendly takes an item
+    // as a bribe, valued by the whole stack offered, and keeps it whatever
+    // it says.
+    let bribe = !voiced && band(world, actor) != Band::Friendly;
+    let (quote, keeps) = match answer {
+        _ if bribe && crucial => (REFUSED_GIFT_QUOTE, false),
+        _ if bribe
+            && (kind == NO_TRADE_KIND || (offered != ALWAYS_TAKEN && value < LEAST_BRIBE)) =>
+        {
+            (UNBRIBED_QUOTE, false)
+        }
+        Some((quote, _)) if bribe => (quote, true),
+        None if bribe => {
+            debit_trade_pool(world, actor, value);
+            let warmed = band(world, actor) == Band::Friendly;
+            (if warmed { ACCEPTED_GIFT_QUOTE } else { UNBRIBED_QUOTE }, true)
+        }
         Some(answer) => answer,
         None if voiced => return Ok(()),
         None if crucial => (REFUSED_GIFT_QUOTE, false),
         None => (ACCEPTED_GIFT_QUOTE, true),
     };
+    let script = self::script(world, world.get::<Conversation>(entity).unwrap())
+        .ok_or(TradeError::MissingContent)?;
     let plan = script
         .quotes
         .get(usize::from(quote))
@@ -1265,6 +1538,7 @@ fn give(world: &mut World, entity: Entity, item: ItemRef) -> Result<(), TradeErr
     let mut c = world.get_mut::<Conversation>(entity).unwrap();
     c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false, plan });
     c.revision += 1;
+    won_over(world, entity, true);
     Ok(())
 }
 /// The party gives the NPC gold (retail `HandleNpcDialogueItem` with trade
@@ -1287,26 +1561,42 @@ fn give_gold(world: &mut World, entity: Entity, amount: u32) -> Result<(), Trade
         c.revision += 1;
         return Ok(());
     }
-    spend_gift(world, entity, party, amount)
+    spend_gift(world, entity, party, amount, false)
 }
-/// A friendly NPC takes the gold and thanks the party with its gift quote
-/// (retail `ConfirmNpcTradePurchase`).
+/// The NPC takes the gold (retail `ConfirmNpcTradePurchase`): a friendly
+/// one thanks the party for it; one not yet friendly takes it as a bribe,
+/// unless it takes no bribes, and says whether that won it over.
 fn spend_gift(
     world: &mut World,
     entity: Entity,
     party: Entity,
     amount: u32,
+    all: bool,
 ) -> Result<(), TradeError> {
+    let actor = world.get::<Conversation>(entity).unwrap().actor;
+    let bribe = band(world, actor) != Band::Friendly;
+    if bribe && definition(world, actor)?.trade_pool == 0 {
+        let mut c = world.get_mut::<Conversation>(entity).unwrap();
+        c.queue.push_back(Step::Quote {
+            quote: UNBRIBED_QUOTE,
+            subquote: 0,
+            paid: true,
+            plan: None,
+        });
+        c.revision += 1;
+        return Ok(());
+    }
     let mut inventory = world.get_mut::<PartyInventory>(party).ok_or(TradeError::Unavailable)?;
     inventory.gold = inventory.gold.checked_sub(amount).ok_or(TradeError::Funds)?;
+    if bribe {
+        debit_trade_pool(world, actor, amount);
+    }
+    let quote =
+        if band(world, actor) == Band::Friendly { ACCEPTED_GIFT_QUOTE } else { UNBRIBED_QUOTE };
     let mut c = world.get_mut::<Conversation>(entity).unwrap();
-    c.queue.push_back(Step::Quote {
-        quote: ACCEPTED_GIFT_QUOTE,
-        subquote: 0,
-        paid: true,
-        plan: None,
-    });
+    c.queue.push_back(Step::Quote { quote, subquote: 0, paid: true, plan: None });
     c.revision += 1;
+    won_over(world, entity, !all);
     Ok(())
 }
 fn reply(world: &mut World, entity: Entity, text: &str) {
@@ -1353,7 +1643,7 @@ fn answer_price(world: &mut World, entity: Entity, accept: bool) {
         let mut c = world.get_mut::<Conversation>(entity).unwrap();
         c.wait = ConversationWait::Ready;
         c.revision += 1;
-        if accept && let Err(refused) = spend_gift(world, entity, party, gold) {
+        if accept && let Err(refused) = spend_gift(world, entity, party, gold, true) {
             world.get_mut::<Conversation>(entity).unwrap().report(Outcome::GiftRefused(refused));
         }
         return;
@@ -1569,7 +1859,8 @@ pub fn update_conversation(world: &mut World) {
             | ConversationRequest::Advance { conversation, .. }
             | ConversationRequest::Close { conversation }
             | ConversationRequest::Give { conversation, .. }
-            | ConversationRequest::GiveGold { conversation, .. } => *conversation,
+            | ConversationRequest::GiveGold { conversation, .. }
+            | ConversationRequest::Approach { conversation, .. } => *conversation,
             ConversationRequest::Trade(q) => q.conversation,
             _ => unreachable!(),
         };
@@ -1637,6 +1928,11 @@ pub fn update_conversation(world: &mut World) {
                         .unwrap()
                         .report(Outcome::GiftRefused(refused));
                 }
+            }
+            ConversationRequest::Approach { revision: requested, approach, .. }
+                if requested == revision =>
+            {
+                approach_npc(world, entity, approach)
             }
             ConversationRequest::Trade(q) => {
                 let outcome = match execute_trade(world, q) {
@@ -1746,6 +2042,7 @@ mod tests {
             .add_message::<crate::game::inventory::ItemNews>()
             .init_resource::<StoryFacts>()
             .init_resource::<GameRng>()
+            .init_resource::<crate::game::time::GameClock>()
             .init_resource::<Assets<NpcCatalog>>()
             .init_resource::<Assets<DialogueScript>>()
             .init_resource::<Assets<FactCatalog>>()
@@ -1774,7 +2071,7 @@ mod tests {
                 disposition: 80,
                 greeting_pending: true,
                 paid_topics: vec![],
-                stock: default(),
+                ..default()
             },))
             .id();
         w.spawn((
@@ -1801,6 +2098,7 @@ mod tests {
                 wait: ConversationWait::Ready,
                 transcript: vec![],
                 learned_topics: default(),
+                menu: false,
                 result: None,
                 queue: VecDeque::from([Step::Quote {
                     quote: 0,
@@ -2102,7 +2400,7 @@ mod tests {
                 disposition: 80,
                 greeting_pending: true,
                 paid_topics: vec![],
-                stock: default(),
+                ..default()
             })
             .id();
         world.spawn((
@@ -2168,10 +2466,11 @@ mod tests {
         Quote { text: texts.iter().map(|t| (*t).into()).collect(), operations, ..default() }
     }
 
-    /// Retail closes after the line and reads none of the quote's later entries.
+    /// Retail closes after the line and reads none of the quote's later
+    /// entries; the speaker turns on the party (`ResumeNpc`).
     #[test]
     fn close_and_resume_ends_after_the_line_without_later_entries() {
-        let (mut app, session, _) = app(DialogueScript {
+        let (mut app, session, actor) = app(DialogueScript {
             quotes: vec![lines(
                 &["Off I go"],
                 vec![DialogueOp::CloseAndResume, DialogueOp::GiveGold(5)],
@@ -2183,6 +2482,136 @@ mod tests {
         finish_line(&mut app, session);
         assert!(app.world().get::<Conversation>(session).is_none());
         assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, 0);
+        assert_eq!(app.world().get::<Npc>(actor).unwrap().disposition, 0x19);
+    }
+
+    /// A conversation with a neutral NPC at its topic menu.
+    fn wary(scales: (i8, i8), trade_pool: u16) -> (App, Entity, Entity) {
+        let quotes = (0..0x19).map(|i| lines(&[format!("Line {i}").as_str()], vec![])).collect();
+        let (mut app, session, actor) = app(DialogueScript { quotes, ..default() });
+        let catalog = app.world().resource::<NpcAssets>().catalog.clone();
+        {
+            let mut catalogs = app.world_mut().resource_mut::<Assets<NpcCatalog>>();
+            let def = &mut catalogs.get_mut(&catalog).unwrap().0[0];
+            (def.charm_scale, def.talk_scale, def.trade_pool) = (scales.0, scales.1, trade_pool);
+        }
+        let mut npc = app.world_mut().get_mut::<Npc>(actor).unwrap();
+        npc.disposition = 50;
+        npc.trade_pool = trade_pool;
+        use crate::game::characters::{Gender, Profession, Race};
+        let character = Character::new("Talker", Race::Human, Gender::Male, Profession::Fighter);
+        let vitals = Vitals::new(&character);
+        let member = app.world_mut().spawn((character, vitals)).id();
+        crate::game::party::roster::test_join(app.world_mut(), member);
+        let mut c = app.world_mut().get_mut::<Conversation>(session).unwrap();
+        c.menu = true;
+        c.queue = VecDeque::from([Step::Quote {
+            quote: NEUTRAL_GREETING,
+            subquote: 0,
+            paid: false,
+            plan: None,
+        }]);
+        app.update();
+        finish_line(&mut app, session);
+        (app, session, actor)
+    }
+    fn approach(app: &mut App, session: Entity, approach: Approach) {
+        let revision = app.world().get::<Conversation>(session).unwrap().revision;
+        app.world_mut().write_message(ConversationRequest::Approach {
+            conversation: session,
+            revision,
+            approach,
+        });
+        app.update();
+    }
+
+    /// Retail `SelectNpcDialogueTalk` and `SelectNpcDialogueService`: the
+    /// NPC answers by the band its disposition ends in, and each approach
+    /// waits half a day.
+    #[test]
+    fn small_talk_and_charm_move_a_neutral_npc_by_band() {
+        let (mut app, session, actor) = wary((5, 30), 0);
+        approach(&mut app, session, Approach::Charm);
+        assert_eq!(app.world().get::<Npc>(actor).unwrap().disposition, 55);
+        assert_eq!(app.world().get::<Conversation>(session).unwrap().current, Some((6, 0)));
+        finish_line(&mut app, session);
+        // A second charm waits.
+        approach(&mut app, session, Approach::Charm);
+        assert_eq!(app.world().get::<Npc>(actor).unwrap().disposition, 55);
+        approach(&mut app, session, Approach::SmallTalk);
+        let c = app.world().get::<Conversation>(session).unwrap();
+        assert_eq!(app.world().get::<Npc>(actor).unwrap().disposition, 85);
+        // Won over, it greets the party as a friend.
+        assert!(!c.menu);
+        assert_eq!(c.current, Some((0, 0)));
+
+        let (mut app, session, actor) = wary((0, -40), 0);
+        approach(&mut app, session, Approach::SmallTalk);
+        assert_eq!(app.world().get::<Npc>(actor).unwrap().disposition, 10);
+        assert_eq!(
+            app.world().get::<Conversation>(session).unwrap().current,
+            Some((HOSTILE_QUOTE, 0))
+        );
+        finish_line(&mut app, session);
+        assert!(app.world().get::<Conversation>(session).is_none());
+    }
+
+    /// Retail `ConfirmNpcTradePurchase`: gold an NPC not yet friendly takes
+    /// draws on its trade pool and wins it over once that runs out; one
+    /// without a pool takes nothing.
+    #[test]
+    fn gold_bribes_draw_on_the_trade_pool() {
+        let (mut app, session, actor) = wary((0, 0), 100);
+        let party = the_party(app.world_mut()).unwrap();
+        app.world_mut().get_mut::<PartyInventory>(party).unwrap().gold = 500;
+        for (amount, pool, quote) in [(60, 40, UNBRIBED_QUOTE), (60, 100, ACCEPTED_GIFT_QUOTE)] {
+            let revision = app.world().get::<Conversation>(session).unwrap().revision;
+            app.world_mut().write_message(ConversationRequest::GiveGold {
+                conversation: session,
+                revision,
+                amount,
+            });
+            app.update();
+            assert_eq!(app.world().get::<Npc>(actor).unwrap().trade_pool, pool);
+            assert_eq!(app.world().get::<Conversation>(session).unwrap().current, Some((quote, 0)));
+            finish_line(&mut app, session);
+        }
+        assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, 380);
+        assert_eq!(app.world().get::<Npc>(actor).unwrap().disposition, 0x4b);
+        let c = app.world().get::<Conversation>(session).unwrap();
+        assert!(!c.menu);
+        assert_eq!(c.current, Some((0, 0)));
+
+        let (mut app, session, _) = wary((0, 0), 0);
+        let party = the_party(app.world_mut()).unwrap();
+        app.world_mut().get_mut::<PartyInventory>(party).unwrap().gold = 500;
+        let revision = app.world().get::<Conversation>(session).unwrap().revision;
+        app.world_mut().write_message(ConversationRequest::GiveGold {
+            conversation: session,
+            revision,
+            amount: 60,
+        });
+        app.update();
+        assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, 500);
+        assert_eq!(
+            app.world().get::<Conversation>(session).unwrap().current,
+            Some((UNBRIBED_QUOTE, 0))
+        );
+    }
+
+    /// Retail `GetNpcDisposition`: a factioned NPC answers with its faction's
+    /// score while the faction is hostile to the party.
+    #[test]
+    fn a_hostile_faction_decides_its_members_disposition() {
+        let (mut app, _, actor) = app(DialogueScript::default());
+        let catalog = app.world().resource::<NpcAssets>().catalog.clone();
+        app.world_mut().resource_mut::<Assets<NpcCatalog>>().get_mut(&catalog).unwrap().0[0]
+            .faction = Faction::Mook as u8;
+        app.world_mut().init_resource::<Factions>();
+        assert_eq!(band(app.world(), actor), Band::Friendly);
+        app.world_mut().resource_mut::<Factions>().adjust(Faction::Mook, -60);
+        assert_eq!(disposition(app.world(), actor), 20);
+        assert_eq!(band(app.world(), actor), Band::Hostile);
     }
 
     /// Retail's keyword dialog: the party types the answer, matched as a
@@ -2806,7 +3235,8 @@ mod tests {
         let counts = app.world().resource::<Lifecycle>();
         assert_eq!(counts.changed, changed);
         assert_eq!((counts.added, counts.removed), (0, 0));
-        app.world_mut().get_mut::<Npc>(actor).unwrap().disposition = 0;
+        let body = app.world().get::<super::super::NpcBodies>(actor).unwrap()[0];
+        app.world_mut().entity_mut(body).insert(crate::game::world::population::Provoked);
         app.update();
         assert!(app.world().get::<Conversation>(session).is_none());
         assert_eq!(app.world().resource::<Lifecycle>().removed, 1);

@@ -17,7 +17,14 @@ pub struct NpcDefinition {
     pub merchant: bool,
     pub recruitable: bool,
     pub disposition: u8,
+    /// How much charming it and making small talk move its disposition.
+    pub charm_scale: i8,
+    pub talk_scale: i8,
     pub faction: u8,
+    /// How much it takes in bribes before it warms to the party.
+    pub trade_pool: u16,
+    /// Retail's NPC kind; one kind takes no bribes in kind.
+    pub kind: i32,
     pub buy_factor: f32,
     pub sell_factor: f32,
     pub accepted_classes: enumset::EnumSet<super::items::EquipClass>,

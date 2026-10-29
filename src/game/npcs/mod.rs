@@ -45,13 +45,19 @@ pub struct NpcWorldRole {
     pub map: String,
     pub group: Option<i32>,
 }
-#[derive(Component, Debug)]
+#[derive(Component, Debug, Default)]
 pub struct Npc {
     pub definition: NpcId,
     pub disposition: u8,
     pub greeting_pending: bool,
     pub paid_topics: Vec<u16>,
     pub stock: trade::MerchantStock,
+    /// What it still takes in bribes before it warms to the party.
+    pub trade_pool: u16,
+    /// When the party last charmed it and made small talk with it; each
+    /// waits half a day before the party may try again.
+    pub charmed_at: Option<u64>,
+    pub small_talk_at: Option<u64>,
 }
 #[derive(Resource, Default)]
 pub struct NpcAssets {
@@ -155,6 +161,9 @@ impl NpcPopulation<'_, '_> {
                     greeting_pending: true,
                     paid_topics: vec![],
                     stock,
+                    trade_pool: definition.trade_pool,
+                    charmed_at: None,
+                    small_talk_at: None,
                 },
             ))
             .id();

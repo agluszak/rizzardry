@@ -91,6 +91,11 @@ enum ItemFilter {
 }
 #[derive(Component)]
 struct ModePanel(bool);
+/// The topic menu of an NPC not yet friendly, shown instead of the talk panel.
+#[derive(Component)]
+struct MenuPanel;
+#[derive(Component)]
+struct ApproachButton(Approach);
 #[derive(Component)]
 struct ModeFocus(bool);
 #[derive(Component)]
@@ -383,6 +388,109 @@ fn paint_wells(
         }
     }
 }
+/// Every NPC takes items; only merchants buy and sell.
+fn open_trade(world: &mut World, button: Entity, root: Entity) {
+    world.entity_mut(button).observe(
+        move |_: On<Activate>,
+              mut states: Query<&mut DialogueState>,
+              roots: Query<&ConversationView>,
+              sessions: Query<&Conversation>,
+              npcs: Query<&Npc>,
+              definitions: Res<Assets<NpcCatalog>>,
+              assets: Res<NpcAssets>| {
+            let merchant = roots
+                .get(root)
+                .ok()
+                .and_then(|view| sessions.get(view.0).ok())
+                .and_then(|c| npcs.get(c.actor).ok())
+                .and_then(|n| definitions.get(&assets.catalog)?.get(n.definition))
+                .is_some_and(|d| d.owns_stock);
+            if let Ok(mut state) = states.get_mut(root) {
+                set_mode(&mut state, if merchant { Mode::Buy } else { Mode::Give });
+            }
+        },
+    );
+}
+fn leave_on(world: &mut World, button: Entity, root: Entity) {
+    world.entity_mut(button).observe(
+        move |_: On<Activate>,
+              roots: Query<&ConversationView>,
+              mut requests: MessageWriter<ConversationRequest>| {
+            if let Ok(view) = roots.get(root) {
+                requests.write(ConversationRequest::Close { conversation: view.0 });
+            }
+        },
+    );
+}
+/// Retail `ShowNpcDialogueTopicMenu`: an NPC not yet friendly may be
+/// charmed, talked to or bribed before it talks of anything else.
+fn build_menu(world: &mut World, canvas: Entity, root: Entity) {
+    let group = world.spawn((Node::default(), MenuPanel, Pickable::IGNORE, ChildOf(canvas))).id();
+    let left = panel(world, group, Vec2::new(23., 358.), Vec2::new(141., 92.), 0);
+    let name = label(world, left, "", Vec2::new(5., 2.), 132.);
+    let bold = world.resource::<AssetServer>().load("retail://data/fonts/wiz_text_font_bold.sti");
+    let mut text = world.get_mut::<BitmapText>(name).unwrap();
+    text.justify = bevy::text::Justify::Center;
+    text.font = bold;
+    world.entity_mut(name).insert(Caption::Name);
+    let strings = world
+        .get_resource::<super::screen_art::StringTable>()
+        .and_then(|t| world.resource::<Assets<crate::content::ui::TextTable>>().get(&t.0));
+    let labels = [
+        (0x727, "Charm"),
+        (0x728, "Small Talk"),
+        (0x729, "Bribe"),
+        (0x723, "Attack"),
+        (0x724, "Trade"),
+        (0x725, "Leave"),
+    ]
+    .map(|(id, fallback)| strings.and_then(|s| s.get(id)).unwrap_or(fallback).to_owned());
+    for (i, text) in labels.into_iter().enumerate() {
+        let e = action(
+            world,
+            left,
+            &text,
+            Vec2::new(2. + 66. * (i % 2) as f32, 17. + 16. * (i / 2) as f32),
+            Vec2::new(67., 16.),
+        );
+        match i {
+            0 | 1 => {
+                let approach = if i == 0 { Approach::Charm } else { Approach::SmallTalk };
+                world.entity_mut(e).insert(ApproachButton(approach)).observe(
+                    move |_: On<Activate>,
+                          roots: Query<&ConversationView>,
+                          sessions: Query<&Conversation>,
+                          mut requests: MessageWriter<ConversationRequest>| {
+                        if let Ok(view) = roots.get(root)
+                            && let Ok(c) = sessions.get(view.0)
+                        {
+                            requests.write(ConversationRequest::Approach {
+                                conversation: view.0,
+                                revision: c.revision,
+                                approach,
+                            });
+                        }
+                    },
+                );
+            }
+            // Retail's bribe opens the give layout.
+            2 => {
+                world.entity_mut(e).observe(
+                    move |_: On<Activate>, mut states: Query<&mut DialogueState>| {
+                        if let Ok(mut state) = states.get_mut(root) {
+                            set_mode(&mut state, Mode::Give);
+                        }
+                    },
+                );
+            }
+            4 => open_trade(world, e, root),
+            5 => leave_on(world, e, root),
+            _ => {
+                world.entity_mut(e).insert(InteractionDisabled);
+            }
+        }
+    }
+}
 fn set_mode(state: &mut DialogueState, mode: Mode) {
     if state.mode != mode {
         state.mode = mode;
@@ -474,29 +582,7 @@ fn build(world: &mut World, session: Entity) -> Entity {
                 Vec2::new(67., 16.),
             );
             match (trade, i) {
-                // Every NPC takes items; only merchants buy and sell.
-                (false, 0) => {
-                    world.entity_mut(e).observe(
-                        move |_: On<Activate>,
-                              mut states: Query<&mut DialogueState>,
-                              roots: Query<&ConversationView>,
-                              sessions: Query<&Conversation>,
-                              npcs: Query<&Npc>,
-                              definitions: Res<Assets<NpcCatalog>>,
-                              assets: Res<NpcAssets>| {
-                            let merchant = roots
-                                .get(root)
-                                .ok()
-                                .and_then(|view| sessions.get(view.0).ok())
-                                .and_then(|c| npcs.get(c.actor).ok())
-                                .and_then(|n| definitions.get(&assets.catalog)?.get(n.definition))
-                                .is_some_and(|d| d.owns_stock);
-                            if let Ok(mut state) = states.get_mut(root) {
-                                set_mode(&mut state, if merchant { Mode::Buy } else { Mode::Give });
-                            }
-                        },
-                    );
-                }
+                (false, 0) => open_trade(world, e, root),
                 (true, 0..=2) => {
                     let mode = [Mode::Buy, Mode::Sell, Mode::Give][i];
                     world.entity_mut(e).insert(ModeButton(mode));
@@ -511,13 +597,7 @@ fn build(world: &mut World, session: Entity) -> Entity {
                         },
                     );
                 }
-                (false, 5) => {
-                    world.entity_mut(e).observe(
-                        move |_: On<Activate>, roots: Query<&ConversationView>, mut requests: MessageWriter<ConversationRequest>| {
-                            if let Ok(view)=roots.get(root){requests.write(ConversationRequest::Close { conversation:view.0 });}
-                        },
-                    );
-                }
+                (false, 5) => leave_on(world, e, root),
                 (true, 4..=5) => {
                     let pool = i == 4;
                     world.entity_mut(e).insert(PoolButton(pool));
@@ -956,6 +1036,7 @@ fn build(world: &mut World, session: Entity) -> Entity {
             world.resource_mut::<InputFocus>().set(input, FocusCause::Navigated);
         }
     }
+    build_menu(world, canvas, root);
     let bubble = world
         .spawn((
             QuoteBubble { line: None },
@@ -1285,10 +1366,12 @@ fn project_modes(
     npcs: Query<&Npc>,
     definitions: Res<Assets<NpcCatalog>>,
     assets: Res<NpcAssets>,
+    clock: Res<crate::game::time::GameClock>,
     mut panels: Query<
-        (Entity, &mut Node, Option<&ModePanel>, Option<&mut QuoteBubble>),
-        Or<(With<ModePanel>, With<QuoteBubble>)>,
+        (Entity, &mut Node, Option<&ModePanel>, Option<&mut QuoteBubble>, Has<MenuPanel>),
+        Or<(With<ModePanel>, With<QuoteBubble>, With<MenuPanel>)>,
     >,
+    approaches: Query<(Entity, &ApproachButton, Has<InteractionDisabled>)>,
     controls: Query<
         (
             Entity,
@@ -1311,7 +1394,7 @@ fn project_modes(
         )>,
     >,
 ) {
-    for (entity, mut node, panel, bubble) in &mut panels {
+    for (entity, mut node, panel, bubble, menu) in &mut panels {
         let Some((root, session)) = views.owner(entity) else { continue };
         let (Ok(state), Ok(c)) = (views.states.get(root), sessions.get(session)) else { continue };
         let visible = if let Some(mut bubble) = bubble {
@@ -1324,13 +1407,28 @@ fn project_modes(
                 bubble.line = line;
             }
             state.mode == Mode::Talk && line.is_some()
+        } else if menu {
+            state.mode == Mode::Talk && c.menu
         } else {
             panel.is_some_and(|p| p.0 == (state.mode != Mode::Talk))
+                && !(c.menu && state.mode == Mode::Talk)
         };
         let display = if visible { Display::Flex } else { Display::None };
         if node.display != display {
             node.display = display;
         }
+    }
+    // Each approach waits half a day once tried.
+    for (entity, button, disabled) in &approaches {
+        let Some((_, session)) = views.owner(entity) else { continue };
+        let Some(npc) = sessions.get(session).ok().and_then(|c| npcs.get(c.actor).ok()) else {
+            continue;
+        };
+        let at = match button.0 {
+            Approach::Charm => npc.charmed_at,
+            Approach::SmallTalk => npc.small_talk_at,
+        };
+        set_enabled(&mut commands, entity, approach_ready(at, clock.ms), disabled);
     }
     for (entity, disabled, was_selected, mode, pool, category, filter, trade, sort) in &controls {
         let Some((root, session)) = views.owner(entity) else { continue };
