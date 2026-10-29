@@ -347,13 +347,8 @@ pub fn activate(world: &mut World, entity: Entity, player: bool) -> bool {
 /// Reach uses the current gameplay geometry, independent of the last pointer hit.
 /// Colliderless props fall back to their authored centre.
 fn player_distance(world: &mut World, entity: Entity) -> Option<f32> {
-    use crate::game::party::body::PartyBody;
-    use avian3d::prelude::{Collider, Position};
-    let eye = world
-        .query_filtered::<&Position, With<PartyBody>>()
-        .single(world)
-        .ok()
-        .map(PartyBody::eye)?;
+    use avian3d::prelude::Collider;
+    let eye = crate::game::party::body::PartyBody::eye_in(world)?;
     let prop = world.get::<Prop>(entity)?;
     let distance = world
         .get::<Children>(entity)

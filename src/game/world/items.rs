@@ -64,14 +64,7 @@ pub fn drop_loot(
     if !items.is_empty() {
         info!("loot: {} item(s) at {feet:.1}", items.len());
     }
-    let mut lay = |lying| {
-        commands.spawn((
-            Name::new("loot"),
-            lying,
-            Transform::from_translation(feet + Vec3::Y * CLEARANCE),
-            LevelOwned(level),
-        ));
-    };
+    let mut lay = |lying| lay(commands, level, feet, lying);
     match (items.len(), catalog.get(BAG_OF_ITEMS)) {
         (0, _) => {}
         (1, _) => lay(WorldItem::loose(items.remove(0), false)),
@@ -85,6 +78,16 @@ pub fn drop_loot(
         }),
         (_, None) => items.into_iter().for_each(|item| lay(WorldItem::loose(item, false))),
     }
+}
+
+/// Lay an item on the ground at `feet`, resting as dropped items do.
+pub fn lay(commands: &mut Commands, level: Entity, feet: Vec3, item: WorldItem) {
+    commands.spawn((
+        Name::new("dropped item"),
+        item,
+        Transform::from_translation(feet + Vec3::Y * CLEARANCE),
+        LevelOwned(level),
+    ));
 }
 
 /// Retail takes an item from at most this far from the eye

@@ -576,11 +576,8 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
         .ok()
         .flatten()
         .ok_or(TradeError::Unavailable)?;
-    let party_at = world
-        .query::<(&avian3d::prelude::Position, &crate::game::party::body::PartyBody)>()
-        .iter(world)
-        .find(|(p, _)| p.0.distance(at) <= crate::game::world::items::REACH)
-        .map(|(p, _)| p.0)
+    let eye = crate::game::party::body::PartyBody::eye_in(world)
+        .filter(|eye| eye.distance(at) <= crate::game::world::items::REACH)
         .ok_or(TradeError::Unavailable)?;
     if !available(world, actor) {
         return Err(TradeError::Unavailable);
@@ -662,7 +659,7 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
     })?;
     // OpenNpcDialoguePanel / MonsterForwardReferencePosition: the accepted
     // speaker faces the party. Physics rotation owns a moving body's facing.
-    crate::game::world::face(world, body, party_at);
+    crate::game::world::face(world, body, eye);
     Ok(world.spawn(Conversation { menu, ..conversation(quote(greeting)) }).id())
 }
 /// Travel ends the conversation; the speaker stays.
@@ -989,21 +986,13 @@ fn drop_gift(
     gift: crate::game::inventory::ItemStack,
     crucial: bool,
 ) {
-    use crate::game::{party::body::PartyBody, world::items::WorldItem};
+    use crate::game::{party::body::PartyBody, world::items};
     let level = world.query_filtered::<Entity, With<Level>>().single(world).ok();
-    let feet = world
-        .query_filtered::<&avian3d::prelude::Position, With<PartyBody>>()
-        .single(world)
-        .map(crate::game::party::body::PartyBody::feet)
-        .unwrap_or_default();
+    let feet = PartyBody::feet_in(world).unwrap_or_default();
     match level {
         Some(level) if !crucial => {
-            world.spawn((
-                Name::new("dropped item"),
-                WorldItem::loose(gift, false),
-                Transform::from_translation(feet + Vec3::Y * crate::game::world::items::CLEARANCE),
-                crate::game::world::level::LevelOwned(level),
-            ));
+            items::lay(&mut world.commands(), level, feet, items::WorldItem::loose(gift, false));
+            world.flush();
         }
         _ => {
             let mut inventory = world.get_mut::<PartyInventory>(party).unwrap();

@@ -274,7 +274,7 @@ pub fn join(world: &mut World, actor: Entity) -> Result<(), JoinRefusal> {
 /// for dropped at its feet. `keep` says which the member keeps.
 fn hand_over(world: &mut World, actor: Entity, level: Entity, keep: impl Fn(&ItemStack) -> bool) {
     let Some(party) = the_party(world) else { return };
-    let feet = world.get::<avian3d::prelude::Position>(party).map_or(Vec3::ZERO, PartyBody::feet);
+    let feet = PartyBody::feet_in(world).unwrap_or_default();
     // Nothing leaves the member unless the catalog to place it with is there.
     GameData::with_items(world, |world, items| {
         let given: Vec<ItemStack> = {
