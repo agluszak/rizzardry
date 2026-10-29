@@ -701,8 +701,11 @@ pub fn queue_notices(
             CombatNews::Over => vec![string(NOTHING_TO_FIGHT)],
         };
         let ended = matches!(news, CombatNews::Won { .. } | CombatNews::Lost | CombatNews::Over);
+        // Retail CheckCombatEnd explicitly sends outcomes to General before
+        // EndCombat selects it; only the preceding blows belong to Combat.
+        let channel = usize::from(!ended);
         for text in texts {
-            log.push(1, &text, font);
+            log.push(channel, &text, font);
         }
         if ended {
             log.selected = 0;
@@ -729,6 +732,54 @@ mod tests {
         let news = |faction, improved| crate::game::factions::FactionNews { faction, improved };
         assert_eq!(faction_line(&news(4, false), &string), "Umpani standing worsened.");
         assert_eq!(faction_line(&news(20, true), &string), "Unaligned standing improved.");
+    }
+
+    #[test]
+    fn combat_outcomes_are_visible_after_returning_to_general() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<Assets<SpriteSheet>>()
+            .init_resource::<Assets<TextTable>>()
+            .insert_resource(NoticeArt { font: default() })
+            .init_resource::<TextLog>()
+            .add_message::<TriggerEffect>()
+            .add_message::<CampNews>()
+            .add_message::<CombatNews>()
+            .add_message::<ItemNews>()
+            .add_message::<SearchNews>()
+            .add_message::<Identified>()
+            .add_message::<LockNews>()
+            .add_message::<super::super::party_voice::SpokenRemark>()
+            .add_message::<crate::game::magic::casting::MagicNews>()
+            .add_systems(Update, queue_notices);
+        let mut strings = vec![None; SURVIVORS_EARNED + 1];
+        for (id, text) in [
+            (COMBAT, "Combat"),
+            (WON, "Won"),
+            (LOST, "Lost"),
+            (NOTHING_TO_FIGHT, "Over"),
+            (SURVIVORS_EARNED, "%d XP each"),
+        ] {
+            strings[id] = Some(text.into());
+        }
+        let table = app.world_mut().resource_mut::<Assets<TextTable>>().add(TextTable(strings));
+        app.insert_resource(super::super::screen_art::StringTable(table));
+        for (outcome, expected) in [
+            (CombatNews::Won { kills: 3, experience_each: 111 }, vec!["Won", "111 XP each"]),
+            (CombatNews::Lost, vec!["Lost"]),
+            (CombatNews::Over, vec!["Over"]),
+        ] {
+            *app.world_mut().resource_mut::<TextLog>() = TextLog::default();
+            app.world_mut().write_message(CombatNews::Began);
+            app.update();
+            assert_eq!(app.world().resource::<TextLog>().selected(), 1);
+            app.world_mut().write_message(outcome);
+            app.update();
+            let log = app.world().resource::<TextLog>();
+            assert_eq!(log.selected(), 0);
+            assert_eq!(log.visible(), expected);
+            assert_eq!(log.channels[1], ["Combat"]);
+        }
     }
 
     #[test]
