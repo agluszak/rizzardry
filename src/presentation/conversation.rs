@@ -1465,10 +1465,7 @@ fn project_modes(
             panel.is_some_and(|p| p.0 == (state.mode != Mode::Talk))
                 && !(c.menu && state.mode == Mode::Talk)
         };
-        let display = if visible { Display::Flex } else { Display::None };
-        if node.display != display {
-            node.display = display;
-        }
+        crate::presentation::screen_art::display_if(&mut node, visible);
     }
     // Each approach waits half a day once tried.
     for (entity, button, disabled) in &approaches {
@@ -2061,10 +2058,7 @@ fn sync_trade_rows(
         for (entity, text, mut node) in &mut gifts {
             if views.owner(entity).is_some_and(|(owner, _)| owner == root) {
                 let shown = state.mode == Mode::Give && quote.is_none();
-                let display = if shown { Display::Flex } else { Display::None };
-                if node.display != display {
-                    node.display = display;
-                }
+                crate::presentation::screen_art::display_if(&mut node, shown);
                 gold_typed = shown && gift_amount(text) > 0;
             }
         }

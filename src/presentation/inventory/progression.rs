@@ -140,10 +140,7 @@ fn offer(
     for (id, disabled, mut node) in &mut buttons {
         set_enabled(&mut commands, id, enabled, disabled);
         // Retail hides the offer altogether when advancement is unavailable.
-        let display = if enabled { Display::Flex } else { Display::None };
-        if node.display != display {
-            node.display = display;
-        }
+        crate::presentation::screen_art::display_if(&mut node, enabled);
         if !enabled && focus.get() == Some(id) {
             focus.clear();
         }
@@ -445,10 +442,7 @@ fn refresh(
     }
     for (page, mut node, mut visibility) in &mut pages {
         let shown = page.0 == editor.page;
-        let display = if shown { Display::Flex } else { Display::None };
-        if node.display != display {
-            node.display = display;
-        }
+        crate::presentation::screen_art::display_if(&mut node, shown);
         visibility.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
     }
     for (id, action, disabled, mut color) in &mut actions {

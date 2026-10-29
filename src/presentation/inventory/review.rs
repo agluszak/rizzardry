@@ -486,10 +486,7 @@ pub(super) fn show_pages(
     let current = selected.0.and_then(|entity| buttons.get(entity).ok()).map(|button| button.0);
     for (page, mut node, mut visibility) in &mut pages {
         let shown = Some(*page) == current;
-        let display = if shown { Display::Flex } else { Display::None };
-        if node.display != display {
-            node.display = display;
-        }
+        crate::presentation::screen_art::display_if(&mut node, shown);
         visibility.set_if_neq(visible_if(shown));
     }
 }
@@ -779,10 +776,7 @@ pub(super) fn layout_skills(
         let shown = crate::game::magic::skill_available(profile, learned, spell_catalog, row.0)
             || profile.skill_points[row.0] > 0
             || profile.skill(row.0) > 0;
-        let display = if shown { Display::Flex } else { Display::None };
-        if node.display != display {
-            node.display = display;
-        }
+        crate::presentation::screen_art::display_if(&mut node, shown);
         visibility.set_if_neq(visible_if(shown));
         if shown {
             let (x, y) = origins[category];

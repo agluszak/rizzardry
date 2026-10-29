@@ -938,10 +938,7 @@ fn show_editor(
     let Some(session) = session else { return };
     for (mut node, mut visibility) in &mut editors {
         let shown = session.mode.page() != Page::Party;
-        let display = if shown { Display::Flex } else { Display::None };
-        if node.display != display {
-            node.display = display;
-        }
+        crate::presentation::screen_art::display_if(&mut node, shown);
         visibility.set_if_neq(visible_if(shown));
     }
 }
@@ -953,10 +950,7 @@ fn refresh(
     let Some(session) = session else { return };
     for (page, mut node, mut visibility) in &mut pages {
         let shown = *page == session.mode.page();
-        let display = if shown { Display::Flex } else { Display::None };
-        if node.display != display {
-            node.display = display;
-        }
+        crate::presentation::screen_art::display_if(&mut node, shown);
         visibility.set_if_neq(visible_if(shown));
     }
 }
