@@ -35,12 +35,14 @@ pub enum Band {
     Friendly,
 }
 
-/// Scores 0..99 per faction, and how often the party has offended them.
+/// Scores 0..99 per faction, how often the party has offended them, and
+/// when (game milliseconds) each last moved into another band.
 #[derive(Resource, Clone, Debug, PartialEq, Eq)]
 pub struct Factions {
     encountered: [bool; 21],
     scores: [u8; 21],
     offences: [u8; 21],
+    band_changed: [u64; 21],
 }
 
 impl Default for Factions {
@@ -48,7 +50,7 @@ impl Default for Factions {
     fn default() -> Self {
         let scores =
             [0, 100, 0, 100, 80, 80, 80, 50, 80, 80, 80, 80, 80, 80, 70, 25, 50, 50, 80, 0, 0];
-        Factions { scores, offences: [0; 21], encountered: [false; 21] }
+        Factions { scores, offences: [0; 21], encountered: [false; 21], band_changed: [0; 21] }
     }
 }
 
@@ -96,24 +98,30 @@ impl Factions {
         }
     }
 
+    /// When the faction's band last changed (retail `band_changed_clock`).
+    pub fn band_changed_at(&self, faction: i32) -> u64 {
+        usize::try_from(faction).ok().and_then(|f| self.band_changed.get(f)).copied().unwrap_or(0)
+    }
+
     pub fn score(&self, faction: i32) -> Option<u8> {
         usize::try_from(faction).ok().and_then(|f| self.scores.get(f)).copied()
     }
 
-    /// A scripted change (retail `ApplyFactionChange` mode 3): relative,
-    /// not an offence, and never to the unaligned or the party itself.
-    pub fn adjust(&mut self, faction: Faction, delta: i8) -> Option<FactionNews> {
+    /// A scripted change at `now` (retail `ApplyFactionChange` mode 3):
+    /// relative, not an offence, and never to the unaligned or the party
+    /// itself.
+    pub fn adjust(&mut self, faction: Faction, delta: i8, now: u64) -> Option<FactionNews> {
         if matches!(faction, Faction::Unaligned | Faction::Party) {
             return None;
         }
-        self.shift(faction as usize, i32::from(delta))
+        self.shift(faction as usize, i32::from(delta), now)
     }
 
-    /// The party killed one of the faction's (retail `RecordFactionOffense`).
-    /// Mook, the Rattkin mafia and the Higardi turn hostile at once; anyone
+    /// The party killed one of the faction's at `now` (retail
+    /// `RecordFactionOffense`). Mook, the Rattkin mafia and the Higardi turn hostile at once; anyone
     /// already hostile, and every other faction, loses standing by the
     /// victim and how often the party has offended.
-    pub fn record_offence(&mut self, faction: i32, npc: bool) -> Option<FactionNews> {
+    pub fn record_offence(&mut self, faction: i32, npc: bool, now: u64) -> Option<FactionNews> {
         let index = usize::try_from(faction).ok()?;
         if index <= PARTY as usize || index >= self.scores.len() {
             return None;
@@ -124,6 +132,7 @@ impl Factions {
         {
             // Retail `SetFactionDispositionBand`: the hostile band's anchor.
             self.scores[index] = 25;
+            self.band_changed[index] = now;
             return Some(FactionNews { faction, improved: false });
         }
         let loss = if npc {
@@ -135,17 +144,21 @@ impl Factions {
                 _ => 6,
             }
         };
-        self.shift(index, -loss)
+        self.shift(index, -loss, now)
     }
 
-    /// Move a score by `delta`, clamped to 0..99 (retail
-    /// `AdjustFactionDisposition`); any movement is news.
-    fn shift(&mut self, index: usize, delta: i32) -> Option<FactionNews> {
-        let score = &mut self.scores[index];
-        let before = *score;
-        *score = (i32::from(before) + delta).clamp(0, 99) as u8;
-        (*score != before)
-            .then_some(FactionNews { faction: index as i32, improved: *score > before })
+    /// Move a score by `delta` at `now`, clamped to 0..99 (retail
+    /// `AdjustFactionDisposition`); any movement is news, and a new band is
+    /// stamped with the time.
+    fn shift(&mut self, index: usize, delta: i32, now: u64) -> Option<FactionNews> {
+        let band = self.band(index as i32);
+        let before = self.scores[index];
+        let after = (i32::from(before) + delta).clamp(0, 99) as u8;
+        self.scores[index] = after;
+        if self.band(index as i32) != band {
+            self.band_changed[index] = now;
+        }
+        (after != before).then_some(FactionNews { faction: index as i32, improved: after > before })
     }
 }
 
@@ -165,13 +178,16 @@ mod tests {
     fn scripted_adjustments_clamp_without_recording_an_offence() {
         let mut factions = Factions::default();
         let worse = Some(FactionNews { faction: UMPANI, improved: false });
-        assert_eq!(factions.adjust(Faction::Umpani, -100), worse);
+        assert_eq!(factions.adjust(Faction::Umpani, -100, 5), worse);
         assert_eq!((factions.score(UMPANI), factions.band(UMPANI)), (Some(0), Band::Hostile));
-        assert_eq!(factions.adjust(Faction::Umpani, 100).map(|n| n.improved), Some(true));
-        assert_eq!(factions.score(UMPANI), Some(99));
-        assert_eq!(factions.adjust(Faction::Umpani, 20), None, "no movement, no news");
+        assert_eq!(factions.band_changed_at(UMPANI), 5);
+        assert_eq!(factions.adjust(Faction::Umpani, 10, 6).map(|n| n.improved), Some(true));
+        assert_eq!(factions.band_changed_at(UMPANI), 5, "still hostile");
+        assert_eq!(factions.adjust(Faction::Umpani, 100, 7).map(|n| n.improved), Some(true));
+        assert_eq!((factions.score(UMPANI), factions.band_changed_at(UMPANI)), (Some(99), 7));
+        assert_eq!(factions.adjust(Faction::Umpani, 20, 8), None, "no movement, no news");
         assert_eq!(factions.offences[UMPANI as usize], 0);
-        assert_eq!(factions.adjust(Faction::Party, -100), None);
+        assert_eq!(factions.adjust(Faction::Party, -100, 9), None);
         assert_eq!(factions.score(PARTY), Some(100));
     }
 
@@ -196,13 +212,13 @@ mod tests {
         assert_eq!(factions.band(4), Band::Friendly, "Umpani");
         assert_eq!(factions.band(15), Band::Hostile, "common Rapax");
         assert_eq!(factions.band(7), Band::Neutral, "common Rattkin");
-        assert!(factions.record_offence(MOOK, false).is_some(), "Mook turn at once");
-        assert_eq!(factions.score(MOOK), Some(25));
-        factions.record_offence(MOOK, false);
+        assert!(factions.record_offence(MOOK, false, 7).is_some(), "Mook turn at once");
+        assert_eq!((factions.score(MOOK), factions.band_changed_at(MOOK)), (Some(25), 7));
+        factions.record_offence(MOOK, false, 0);
         assert_eq!(factions.score(MOOK), Some(23), "hostile Mook lose standing as others do");
-        factions.record_offence(4, false);
+        factions.record_offence(4, false, 0);
         assert_eq!(factions.score(4), Some(78));
-        factions.record_offence(4, true);
+        factions.record_offence(4, true, 0);
         assert_eq!(factions.score(4), Some(58));
         assert_eq!(factions.band(4), Band::Neutral);
     }

@@ -633,13 +633,29 @@ pub(crate) fn end_conversations(
     mut commands: Commands,
 ) {
     for conversation in &conversations {
-        commands.entity(conversation).despawn();
+        commands.queue(move |world: &mut World| close_one(world, conversation));
     }
 }
+/// Travel, battle or the speaker's absence ends a conversation at once.
+/// Retail's message queue would still play the answers already under way,
+/// a paid answer or an accepted hand-in among them, so their effects commit
+/// as it ends; only their lines are lost.
 fn close_one(world: &mut World, entity: Entity) {
-    if world.get::<Conversation>(entity).is_some() {
-        world.despawn(entity);
+    let Some(mut c) = world.get_mut::<Conversation>(entity) else { return };
+    let plans: Vec<_> = c
+        .queue
+        .drain(..)
+        .filter_map(|step| match step {
+            Step::Quote { plan: Some(plan), .. } => Some(plan),
+            _ => None,
+        })
+        .collect();
+    for plan in plans {
+        if executable(world, &plan) {
+            commit_effects(world, entity, plan.effects);
+        }
     }
+    world.despawn(entity);
 }
 /// The party has left the dialogue while its lines were still queued.
 /// Retail keeps its message queue when the dialogue closes, so they play out
@@ -1109,7 +1125,8 @@ fn commit_effects(world: &mut World, entity: Entity, effects: Vec<QuoteEffect>) 
             }
             QuoteEffect::Faction { faction, delta } => {
                 // Retail announces it in the text box, not the dialogue.
-                if let Some(news) = world.resource_mut::<Factions>().adjust(faction, delta) {
+                let now = world.resource::<crate::game::time::GameClock>().ms;
+                if let Some(news) = world.resource_mut::<Factions>().adjust(faction, delta, now) {
                     world.write_message(news);
                 }
             }
@@ -1674,6 +1691,16 @@ fn answer_price(world: &mut World, entity: Entity, accept: bool) {
                         return;
                     }
                 };
+                // Nothing is charged for an answer that cannot commit.
+                if !executable(world, &plan) {
+                    block(
+                        &mut world.get_mut::<Conversation>(entity).unwrap(),
+                        quote,
+                        None,
+                        "accepted reward recipient unavailable".into(),
+                    );
+                    return;
+                }
                 world.get_mut::<PartyInventory>(party).unwrap().gold -= gold;
                 if !always {
                     world.get_mut::<Npc>(actor).unwrap().paid_topics.push(quote);
@@ -2609,7 +2636,7 @@ mod tests {
             .faction = Faction::Mook as u8;
         app.world_mut().init_resource::<Factions>();
         assert_eq!(band(app.world(), actor), Band::Friendly);
-        app.world_mut().resource_mut::<Factions>().adjust(Faction::Mook, -60);
+        app.world_mut().resource_mut::<Factions>().adjust(Faction::Mook, -60, 0);
         assert_eq!(disposition(app.world(), actor), 20);
         assert_eq!(band(app.world(), actor), Band::Hostile);
     }
@@ -2877,6 +2904,55 @@ mod tests {
         assert!(inventory.pool.stacks.iter().any(|s| s.item == ItemId(1)));
         finish_line(&mut app, session);
         assert!(app.world().get::<Conversation>(session).is_none(), "ended with its lines");
+    }
+
+    /// Travel or the speaker's absence ends a conversation mid-answer; the
+    /// hand-in it accepted still commits its effects.
+    #[test]
+    fn an_accepted_hand_in_settles_when_the_conversation_is_cut_short() {
+        for travel in [true, false] {
+            let (mut app, session, actor) = app(DialogueScript {
+                quotes: vec![
+                    Quote { text: vec!["Hello".into()], ..default() },
+                    Quote {
+                        text: vec!["Thanks".into(), "Here".into()],
+                        operations: vec![
+                            DialogueOp::ItemQuote { item: ItemId(2), keeps: true },
+                            DialogueOp::GiveGold(50),
+                        ],
+                        ..default()
+                    },
+                ],
+                ..default()
+            });
+            with_items(&mut app);
+            let member = carrier(&mut app, "Ragnar", 2, 1);
+            let party = the_party(app.world_mut()).unwrap();
+            app.update();
+            finish_line(&mut app, session);
+            let id = app.world().get::<Carried>(member).unwrap().backpack[0].as_ref().unwrap().id;
+            let revision = app.world().get::<Conversation>(session).unwrap().revision;
+            app.world_mut().write_message(ConversationRequest::Give {
+                conversation: session,
+                revision,
+                item: ItemRef { owner: ItemOwner::Member(member), id },
+            });
+            app.update();
+            assert!(app.world().get::<Carried>(member).unwrap().backpack[0].is_none());
+            if travel {
+                app.world_mut().spawn(crate::game::world::level::Destination::new(
+                    Level::test(default()),
+                    default(),
+                    crate::game::world::level::Entry::Travel,
+                ));
+            } else {
+                let body = app.world().get::<super::super::NpcBodies>(actor).unwrap()[0];
+                app.world_mut().entity_mut(body).insert(crate::game::world::population::Provoked);
+                app.update();
+            }
+            assert!(app.world().get::<Conversation>(session).is_none());
+            assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, 50);
+        }
     }
 
     /// Removals empty the members' packs before the party's items, and the
