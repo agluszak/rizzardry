@@ -270,10 +270,9 @@ impl Situation<'_> {
     }
 }
 
-/// The victims a spell takes when it is cast (retail
-/// `PopulateSpellTargetMarkers`), and where its missile flies. Later movement
-/// adds nobody.
-/// Retail tests heading and elevation independently against a 45° half arc.
+/// Whether `target` lies within a cone's arcs along `aim`, both directions
+/// from its apex (retail `TargetInRangeAndArcs`, which tests heading and
+/// elevation independently against a 45° half arc). Range is the caller's.
 pub(crate) fn in_cone(aim: Vec3, target: Vec3) -> bool {
     let heading = |v: Vec3| v.x.atan2(v.z);
     let elevation = |v: Vec3| v.y.atan2(v.x.hypot(v.z));
@@ -284,6 +283,9 @@ pub(crate) fn in_cone(aim: Vec3, target: Vec3) -> bool {
     within(heading(aim), heading(target)) && within(elevation(aim), elevation(target))
 }
 
+/// The victims a spell takes when it is cast (retail
+/// `PopulateSpellTargetMarkers`), and where its missile flies. Later movement
+/// adds nobody.
 pub(crate) fn capture(
     caster: Entity,
     spell: &SpellDefinition,

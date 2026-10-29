@@ -75,12 +75,12 @@ pub(super) struct Scene {
     pub sees_party: bool,
 }
 
-/// Whether `at` lies in a cone from `from` toward `toward`: within `reach`
-/// and 45 degrees of its line.
+/// Whether `at` lies in a cone from `from` toward `toward` (retail
+/// `TargetInRangeAndArcs`): within `reach`, and within the heading and
+/// elevation arcs every cone shares ([`crate::game::magic::casting::in_cone`]).
 fn in_cone(from: Vec3, toward: Vec3, reach: f32, at: Vec3, distance: f32) -> bool {
-    let line = (toward - from).with_y(0.0);
-    let to = (at - from).with_y(0.0);
-    distance <= reach && (to == Vec3::ZERO || to.angle_between(line) < std::f32::consts::FRAC_PI_4)
+    distance <= reach
+        && (at == from || crate::game::magic::casting::in_cone(toward - from, at - from))
 }
 
 /// Whom a cone aimed at `toward` catches, whatever their side (retail
