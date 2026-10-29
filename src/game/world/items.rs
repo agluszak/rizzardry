@@ -64,7 +64,9 @@ pub fn drop_loot(
     if !items.is_empty() {
         info!("loot: {} item(s) at {feet:.1}", items.len());
     }
-    let mut lay = |lying| lay(commands, level, feet, lying);
+    let mut lay = |lying| {
+        lay(commands, level, feet, lying);
+    };
     match (items.len(), catalog.get(BAG_OF_ITEMS)) {
         (0, _) => {}
         (1, _) => lay(WorldItem::loose(items.remove(0), false)),
@@ -81,13 +83,15 @@ pub fn drop_loot(
 }
 
 /// Lay an item on the ground at `feet`, resting as dropped items do.
-pub fn lay(commands: &mut Commands, level: Entity, feet: Vec3, item: WorldItem) {
-    commands.spawn((
-        Name::new("dropped item"),
-        item,
-        Transform::from_translation(feet + Vec3::Y * CLEARANCE),
-        LevelOwned(level),
-    ));
+pub fn lay(commands: &mut Commands, level: Entity, feet: Vec3, item: WorldItem) -> Entity {
+    commands
+        .spawn((
+            Name::new("dropped item"),
+            item,
+            Transform::from_translation(feet + Vec3::Y * CLEARANCE),
+            LevelOwned(level),
+        ))
+        .id()
 }
 
 /// Retail takes an item from at most this far from the eye
@@ -167,7 +171,7 @@ pub fn drop_held(world: &mut World, level: Entity, aim: Dir3) -> Result<Entity, 
         return Err(Refusal::DoesNotFit);
     }
     let eye = crate::game::party::body::PartyBody::eye_in(world).ok_or(Refusal::Nothing)?;
-    let at = world
+    let ground = world
         .run_system_cached_with(landing, (eye, aim))
         .ok()
         .flatten()
@@ -182,17 +186,12 @@ pub fn drop_held(world: &mut World, level: Entity, aim: Dir3) -> Result<Entity, 
     }
     let held =
         world.get_mut::<PartyInventory>(party).unwrap().hand.held.take().ok_or(Refusal::Nothing)?;
-    Ok(world
-        .spawn((
-            Name::new("dropped item"),
-            WorldItem::loose(held, false),
-            Transform::from_translation(at),
-            LevelOwned(level),
-        ))
-        .id())
+    let item = lay(&mut world.commands(), level, ground, WorldItem::loose(held, false));
+    world.flush();
+    Ok(item)
 }
 
-/// Where a throw from `eye` along `aim` comes to rest, if anywhere.
+/// The ground a throw from `eye` along `aim` comes down on, if any.
 fn landing(
     In((eye, aim)): In<(Vec3, Dir3)>,
     obstacles: super::obstacles::WorldObstacles,
@@ -200,7 +199,7 @@ fn landing(
     let reach = obstacles.first_hit(eye, aim, THROW).map_or(THROW, |hit| hit.distance);
     let above = eye + aim * (reach - CLEARANCE).max(0.0);
     let ground = obstacles.first_hit(above, Dir3::NEG_Y, 100.0)?;
-    Some(above - Vec3::Y * (ground.distance - CLEARANCE))
+    Some(above - Vec3::Y * ground.distance)
 }
 
 /// Retail throws a dropped item at most 2500 units, stops it 125 short of
