@@ -125,6 +125,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn spend(scene: &mut Scenario) {
+        scene.world.init_resource::<Messages<EmissionSpent>>();
         let emitter = scene.world.query_filtered::<Entity, With<Emitter>>().single(&scene.world);
         scene.world.write_message(EmissionSpent(emitter.unwrap()));
         scene.world.run_system_cached(switch_off_spent).unwrap();
