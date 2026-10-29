@@ -19,15 +19,37 @@ pub struct View {
     pub far: f32,
     pub searching: bool,
 }
+/// The party's point, 1000 world units (2 m) under its eye: what reach and
+/// sight measure from (retail `GetPointDistanceToPlayer`).
+pub fn party_point(eye: Vec3) -> Vec3 {
+    eye - Vec3::Y * crate::content::EYE_HEIGHT
+}
+
+/// How far a monster standing at `feet` is from the party (retail
+/// `GetPointDistanceToPlayer`): from its feet to the party's point, less
+/// both bodies' radii (its fight radius, the party's 1 m), never below 0.
+/// Reach and sight compare against this.
+pub fn party_distance(eye: Vec3, monster: &Monster, feet: Vec3) -> f32 {
+    (feet.distance(party_point(eye)) - monster.body.radius - crate::game::party::body::RADIUS)
+        .max(0.0)
+}
+
+/// Whether the party has a clear line to a monster (retail
+/// `GetPlayerToMonsterSightFlags`): within the far clip, nothing solid
+/// between the party's eye and the monster's. The party's line of sight,
+/// whichever way it faces.
+pub fn in_view(
+    (eye, far): (Vec3, f32),
+    monster: &Monster,
+    feet: Vec3,
+    obstacles: &WorldObstacles,
+) -> bool {
+    party_distance(eye, monster, feet) <= far && obstacles.clear(eye, monster.eye(feet))
+}
+
 impl View {
-    fn distance(self, monster: &Monster, at: Vec3) -> f32 {
-        (at.distance(self.eye - Vec3::Y * crate::content::EYE_HEIGHT)
-            - monster.body.radius
-            - crate::game::party::body::RADIUS)
-            .max(0.0)
-    }
-    pub fn in_range(self, monster: &Monster, at: Vec3) -> bool {
-        !monster.is_dead() && self.distance(monster, at) <= self.far
+    pub fn in_range(self, monster: &Monster, feet: Vec3) -> bool {
+        !monster.is_dead() && party_distance(self.eye, monster, feet) <= self.far
     }
     /// Retail party-side sight. Shadow Hound supplies the full-range override,
     /// while blindness, the target's concealment and solid scenery still apply.
@@ -37,21 +59,18 @@ impl View {
         shadow_hound: bool,
         monster: &Monster,
         species: &Species,
-        at: Vec3,
+        feet: Vec3,
         in_combat: bool,
         obstacles: &WorldObstacles,
     ) -> bool {
-        let distance = self.distance(monster, at);
-        if !self.in_range(monster, at) {
+        if monster.is_dead() || !in_view((self.eye, self.far), monster, feet, obstacles) {
             return false;
         }
-        if !obstacles.clear(self.eye, at) {
-            return false;
-        }
+        let distance = party_distance(self.eye, monster, feet);
         let angle = if shadow_hound {
             0.0
         } else {
-            self.forward.with_y(0.0).angle_between((at - self.eye).with_y(0.0))
+            self.forward.with_y(0.0).angle_between((feet - self.eye).with_y(0.0))
         };
         let concealment = if in_combat { 0 } else { u32::from(species.camouflage) };
         members.any(|(profile, vitals)| {

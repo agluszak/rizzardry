@@ -114,7 +114,8 @@ pub struct GroupRecognition<'w, 's> {
         's,
         (Entity, &'static mut MonsterGroup, Option<&'static GroupMembers>, &'static LevelOwned),
     >,
-    monsters: Query<'w, 's, (&'static Monster, ActorPose)>,
+    monsters:
+        Query<'w, 's, (&'static Monster, ActorPose, Option<&'static super::navigation::Walker>)>,
     level: PlayedLevel<'w, 's>,
     roster: Single<'w, 's, &'static PartyRoster>,
     members: Query<'w, 's, (&'static Character, &'static Vitals, &'static mut MonsterKnowledge)>,
@@ -162,7 +163,7 @@ impl GroupRecognition<'_, '_> {
             }
             let (mut species_id, mut count, mut in_view) = (None, 0usize, false);
             for member in membership.iter() {
-                let Ok((monster, at)) = monsters.get(member) else { continue };
+                let Ok((monster, at, walker)) = monsters.get(member) else { continue };
                 if monster.is_dead() || combatants.is_some_and(|c| !c.contains(&member)) {
                     continue;
                 }
@@ -177,7 +178,7 @@ impl GroupRecognition<'_, '_> {
                     shadow_hound,
                     monster,
                     species,
-                    at.translation(),
+                    super::navigation::feet(at.translation(), walker),
                     combatants.is_some(),
                     obstacles,
                 );

@@ -16,7 +16,7 @@ use crate::game::world::level::LevelOwned;
 use crate::game::world::level::PlayedLevel;
 use crate::game::world::navigation::{Walker, feet};
 use crate::game::world::obstacles::WorldObstacles;
-use crate::game::world::perception::sight_threshold;
+use crate::game::world::perception::{party_distance, party_point, sight_threshold};
 use crate::game::world::{ActorPose, ActorPoseItem};
 use avian3d::prelude::Position;
 use bevy::prelude::*;
@@ -118,12 +118,6 @@ impl Plugin for CombatPlugin {
             );
     }
 }
-
-/// The party's reach point is this far under its eye (retail
-/// `g_default_world_height`, 1000 world units).
-const CAMERA_ABOVE_PARTY_POINT: f32 = 2.0;
-/// The party navigator's alternate radius (retail's default, 500 units).
-const PARTY_ALTERNATE_RADIUS: f32 = 1.0;
 
 /// Seconds of simulation between actors (retail `combat_delay_ms`, 1000 by
 /// default).
@@ -583,15 +577,6 @@ pub enum CombatNews {
     PartyStops,
 }
 
-/// How far a monster is from the party (retail `GetPointDistanceToPlayer`):
-/// from its feet to the point 1000 world units (2 m) under the party's eye,
-/// less both bodies' alternate radii (its fight radius, the party's 1 m),
-/// never below 0. Reach and sight compare against this.
-fn distance_to_party(party_eye: Vec3, monster: &Monster, feet: Vec3) -> f32 {
-    let party_point = party_eye - Vec3::Y * CAMERA_ABOVE_PARTY_POINT;
-    ((feet - party_point).length() - monster.body.radius - PARTY_ALTERNATE_RADIUS).max(0.0)
-}
-
 /// What monsters see of the party (after retail `UpdateMonsterSight`).
 struct Sight<'a, 'w, 's> {
     eye: Vec3,
@@ -614,7 +599,7 @@ impl Sight<'_, '_, '_> {
         walker: Option<&Walker>,
         kind: &Species,
     ) -> bool {
-        let distance = distance_to_party(self.eye, monster, feet(at.translation(), walker));
+        let distance = party_distance(self.eye, monster, feet(at.translation(), walker));
         self.sees_point(
             (monster, at, walker, kind),
             self.eye,
@@ -624,15 +609,16 @@ impl Sight<'_, '_, '_> {
         )
     }
 
-    /// Whether the party has a clear line to a monster (retail
-    /// `GetPlayerToMonsterSightFlags`): within the far clip, nothing solid
-    /// between the party's eye and the monster's. This is the party's line
-    /// of sight, whichever way the monster faces and however keen it is.
+    /// Whether the party has a clear line to a monster
+    /// ([`crate::game::world::perception::in_view`]), whichever way the
+    /// monster faces and however keen it is.
     fn in_view(&self, monster: &Monster, at: &ActorPoseItem, walker: Option<&Walker>) -> bool {
-        let feet = feet(at.translation(), walker);
-        let eye = monster.eye(feet);
-        distance_to_party(self.eye, monster, feet) <= self.far
-            && self.obstacles.clear(self.eye, eye)
+        crate::game::world::perception::in_view(
+            (self.eye, self.far),
+            monster,
+            feet(at.translation(), walker),
+            self.obstacles,
+        )
     }
 
     /// Whether a monster sees another (retail `CanMonsterSeeMonster`):
@@ -864,11 +850,11 @@ pub fn start_battle(
         let (_, monster, at, walker, ..) = monsters.get(fighter).ok()?;
         let kind = catalog.kind(monster.species)?;
         let at_feet = feet(at.translation(), walker);
-        let distance = distance_to_party(sight.eye, monster, at_feet);
+        let distance = party_distance(sight.eye, monster, at_feet);
         let sees = sight.sees(monster, &at, walker, kind);
         let reaches = kind.attacks.iter().any(|a| distance <= a.reach.metres());
         let close = kind.attacks.iter().map(|a| a.reach).max().is_some_and(|r| r <= Reach::Short);
-        let party_at = sight.eye - Vec3::Y * CAMERA_ABOVE_PARTY_POINT;
+        let party_at = party_point(sight.eye);
         let toward = |victim: crate::game::magic::effects::Victim| {
             let turncoat =
                 members.get(victim.entity()).is_ok_and(|(_, v)| v.has(Condition::Turncoat));
@@ -906,7 +892,7 @@ pub fn start_battle(
         Some(Seen {
             entity: member,
             at: at_feet,
-            from_party: distance_to_party(sight.eye, monster, at_feet),
+            from_party: party_distance(sight.eye, monster, at_feet),
             sees: sight.sees(monster, &at, walker, kind),
             in_view: sight.in_view(monster, &at, walker),
         })
@@ -915,7 +901,7 @@ pub fn start_battle(
     // How far a monster is from the party.
     let nearest_of = |member: Entity| {
         monsters.get(member).map_or(f32::INFINITY, |(_, monster, at, walker, ..)| {
-            distance_to_party(sight.eye, monster, feet(at.translation(), walker))
+            party_distance(sight.eye, monster, feet(at.translation(), walker))
         })
     };
     // Whether a group's leader (its first fighter) is in reach of the
@@ -1105,14 +1091,14 @@ pub fn start_battle(
         searching,
     };
     let seen = joined.iter().any(|&entity| {
-        let Ok((_, monster, at, ..)) = monsters.get(entity) else { return false };
+        let Ok((_, monster, at, walker, ..)) = monsters.get(entity) else { return false };
         let Some(kind) = catalog.kind(monster.species) else { return false };
         view.sees(
             members.iter_many(roster.iter()).matched(),
             shadow_hound,
             monster,
             kind,
-            at.translation(),
+            feet(at.translation(), walker),
             false,
             &obstacles,
         )
@@ -1246,7 +1232,7 @@ fn leave_fight(
         let seen = Seen {
             entity: monster,
             at: at_feet,
-            from_party: distance_to_party(sight.eye, body, at_feet),
+            from_party: party_distance(sight.eye, body, at_feet),
             sees: sight.sees(body, &at, walker, kind),
             in_view: sight.in_view(body, &at, walker),
         };
@@ -1961,7 +1947,7 @@ fn visible_monsters(
             obstacles.clear(party_eye, eye).then(|| casting::Candidate {
                 entity,
                 at: feet,
-                distance: distance_to_party(party_eye, monster, feet),
+                distance: party_distance(party_eye, monster, feet),
             })
         })
         .collect()
@@ -2156,7 +2142,7 @@ fn monster_turn(
         && !battle.this_round.moved.contains(&monster)
     {
         let feet = feet(at.translation(), walker);
-        let nearest = distance_to_party(party.eye, body, feet);
+        let nearest = party_distance(party.eye, body, feet);
         let mut fleeing = battle.fleeing.contains(&monster);
         let conduct = conduct::decide(rng, body, kind, mine.stance, &mut fleeing, nearest);
         battle.fleeing.retain(|&m| m != monster);
@@ -2583,7 +2569,7 @@ fn spell_scene<'a>(
 ) -> monster_spells::Scene {
     use crate::game::magic::effects::Victim;
     let party_eye = sight.eye;
-    let party_at = party_eye - Vec3::Y * CAMERA_ABOVE_PARTY_POINT;
+    let party_at = party_point(party_eye);
     let Ok((body, at, walker, ..)) = monsters.get(caster) else {
         return monster_spells::Scene {
             caster,
@@ -2597,7 +2583,7 @@ fn spell_scene<'a>(
     };
     let feet_at = feet(at.translation(), walker);
     let eye = body.eye(feet_at);
-    let party = distance_to_party(party_eye, body, feet_at);
+    let party = party_distance(party_eye, body, feet_at);
     // A fellow is in reach of its spell only along a clear line, as the
     // party is only where the caster sees it.
     let clear = |to: Vec3| sight.obstacles.clear(eye, to);

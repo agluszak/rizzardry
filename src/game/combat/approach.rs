@@ -58,7 +58,8 @@ pub(super) fn needs_approach(
     let Some(kind) = species.kind(monster.species) else { return false };
     let reach = kind.attacks.iter().map(|a| a.reach).max().unwrap_or(Reach::Touch);
     let feet = crate::game::world::navigation::feet(origin, Some(walker));
-    super::distance_to_party(party_eye, monster, feet) > reach.metres() - REACH_MARGIN
+    crate::game::world::perception::party_distance(party_eye, monster, feet)
+        > reach.metres() - REACH_MARGIN
 }
 
 /// A monster's move this round, and whether it is a charge.

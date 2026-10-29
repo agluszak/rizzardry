@@ -6,12 +6,13 @@
 //! Retail's voices on a miss, a kill or a fumble draw from the same random
 //! numbers as the rules; here they draw nothing.
 
+use crate::game::world::perception::party_distance;
 use bevy::prelude::*;
 
 use super::attack::{self, Aim, Defence, Hand, Surprise};
 use super::{
     Announcement, Armour, Battle, CombatNews, HandTurns, PartyPace, PartyView, RoundAction,
-    RoundPhase, Turn, distance_to_party,
+    RoundPhase, Turn,
 };
 use crate::content::characters::{Skill, Trait};
 use crate::content::items::{AttackEffect, AttackMode};
@@ -333,7 +334,7 @@ fn member_bystanders(
         let Ok((monster, at, walker, ..)) = field.monsters.monsters().get(entity) else {
             continue;
         };
-        let distance = distance_to_party(fight.party.eye, monster, feet(at.translation(), walker));
+        let distance = party_distance(fight.party.eye, monster, feet(at.translation(), walker));
         if entity != target
             && !monster.is_dead()
             && field.monsters.active(entity)
@@ -358,7 +359,7 @@ fn monster_bystanders(
     let monsters = field.monsters.monsters();
     let Ok((monster, at, walker, ..)) = monsters.get(attacker) else { return Vec::new() };
     let here = feet(at.translation(), walker);
-    let distance = distance_to_party(fight.party.eye, monster, here);
+    let distance = party_distance(fight.party.eye, monster, here);
     let formation = &**field.formation;
     let mut bystanders: Vec<Victim> = field
         .party
@@ -407,8 +408,7 @@ pub(super) fn melee_target<'a>(
         .filter_map(|&entity| {
             let (monster, at, walker, ..) = field.monsters.monsters().get(entity).ok()?;
             let kind = species.kind(monster.species).filter(|kind| kind.npc.is_none())?;
-            let distance =
-                distance_to_party(fight.party.eye, monster, feet(at.translation(), walker));
+            let distance = party_distance(fight.party.eye, monster, feet(at.translation(), walker));
             let turned = field
                 .members
                 .get(member)
@@ -897,7 +897,7 @@ pub(super) fn monster_attacks(
         return false;
     };
     let Some(kind) = species.kind(monster.species) else { return false };
-    let distance = distance_to_party(fight.party.eye, monster, feet(at.translation(), walker));
+    let distance = party_distance(fight.party.eye, monster, feet(at.translation(), walker));
     let position = at.translation();
     let eye = monster.eye(feet(position, walker));
     let formation = &**field.formation;

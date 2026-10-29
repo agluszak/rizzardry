@@ -197,6 +197,7 @@ pub fn update_radar(
         Entity,
         &crate::game::world::population::Monster,
         crate::game::world::ActorPose,
+        Option<&crate::game::world::navigation::Walker>,
         Has<crate::game::combat::Combatant>,
         &crate::game::world::level::LevelOwned,
     )>,
@@ -265,13 +266,14 @@ pub fn update_radar(
     };
     let shadow_hound =
         effects.is_some_and(|effects| effects.0.has(crate::content::spells::SpellId::SHADOW_HOUND));
-    for (entity, monster, at, in_combat, owner) in &monsters {
+    for (entity, monster, at, walker, in_combat, owner) in &monsters {
         let (Some(roster), Some(species)) =
             (roster, catalog.and_then(|catalog| catalog.kind(monster.species)))
         else {
             continue;
         };
-        if !levels.contains(owner.0) || !view.in_range(monster, at.translation()) {
+        let feet = crate::game::world::navigation::feet(at.translation(), walker);
+        if !levels.contains(owner.0) || !view.in_range(monster, feet) {
             continue;
         }
         if !xray
@@ -280,7 +282,7 @@ pub fn update_radar(
                 shadow_hound,
                 monster,
                 species,
-                at.translation(),
+                feet,
                 in_combat,
                 &obstacles,
             )
