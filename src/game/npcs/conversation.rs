@@ -294,6 +294,12 @@ pub enum ConversationRequest {
         revision: u64,
         item: ItemRef,
     },
+    /// Hand the NPC some of the party's gold.
+    GiveGold {
+        conversation: Entity,
+        revision: u64,
+        amount: u32,
+    },
 }
 fn definition(world: &World, actor: Entity) -> Result<&NpcDefinition, TradeError> {
     let npc = world.get::<Npc>(actor).ok_or(TradeError::Unavailable)?;
@@ -1211,6 +1217,29 @@ fn give(world: &mut World, entity: Entity, item: ItemRef) -> Result<(), TradeErr
     c.revision += 1;
     Ok(())
 }
+/// The party gives the NPC gold (retail `HandleNpcDialogueItem` with trade
+/// gold, then `ConfirmNpcTradePurchase` for a friendly NPC): the gold is
+/// spent and the NPC thanks the party with its gift quote.
+fn give_gold(world: &mut World, entity: Entity, amount: u32) -> Result<(), TradeError> {
+    let party = the_party(world).ok_or(TradeError::Unavailable)?;
+    if !world.get::<Conversation>(entity).unwrap().ready() {
+        return Err(TradeError::Busy);
+    }
+    if amount == 0 {
+        return Err(TradeError::InvalidQuantity);
+    }
+    let mut inventory = world.get_mut::<PartyInventory>(party).ok_or(TradeError::Unavailable)?;
+    inventory.gold = inventory.gold.checked_sub(amount).ok_or(TradeError::Funds)?;
+    let mut c = world.get_mut::<Conversation>(entity).unwrap();
+    c.queue.push_back(Step::Quote {
+        quote: ACCEPTED_GIFT_QUOTE,
+        subquote: 0,
+        paid: true,
+        plan: None,
+    });
+    c.revision += 1;
+    Ok(())
+}
 fn reply(world: &mut World, entity: Entity, text: &str) {
     let c = world.get::<Conversation>(entity).unwrap();
     let Some(script) = script(world, c) else { return };
@@ -1461,7 +1490,8 @@ pub fn update_conversation(world: &mut World) {
             | ConversationRequest::PriceAnswer { conversation, .. }
             | ConversationRequest::Advance { conversation, .. }
             | ConversationRequest::Close { conversation }
-            | ConversationRequest::Give { conversation, .. } => *conversation,
+            | ConversationRequest::Give { conversation, .. }
+            | ConversationRequest::GiveGold { conversation, .. } => *conversation,
             ConversationRequest::Trade(q) => q.conversation,
             _ => unreachable!(),
         };
@@ -1508,6 +1538,16 @@ pub fn update_conversation(world: &mut World) {
                 if requested == revision =>
             {
                 if let Err(refused) = give(world, entity, item) {
+                    world
+                        .get_mut::<Conversation>(entity)
+                        .unwrap()
+                        .report(Outcome::GiftRefused(refused));
+                }
+            }
+            ConversationRequest::GiveGold { revision: requested, amount, .. }
+                if requested == revision =>
+            {
+                if let Err(refused) = give_gold(world, entity, amount) {
                     world
                         .get_mut::<Conversation>(entity)
                         .unwrap()
@@ -2377,6 +2417,36 @@ mod tests {
                 QuestReward::Item { name: "Item 1".into() },
             ]
         );
+    }
+
+    /// Gold given to the NPC is spent and thanked for; more than the party
+    /// has is refused without spending any.
+    #[test]
+    fn gold_given_to_an_npc_is_spent_and_thanked_for() {
+        let mut quotes: Vec<_> =
+            (0..0x11).map(|i| lines(&[format!("Line {i}").as_str()], vec![])).collect();
+        quotes[0x10] = lines(&["Thank you"], vec![]);
+        let (mut app, session, _) = app(DialogueScript { quotes, ..default() });
+        let party = the_party(app.world_mut()).unwrap();
+        app.world_mut().get_mut::<PartyInventory>(party).unwrap().gold = 100;
+        app.update();
+        finish_line(&mut app, session);
+        for (amount, left, refused) in [(150, 100, true), (40, 60, false)] {
+            let revision = app.world().get::<Conversation>(session).unwrap().revision;
+            app.world_mut().write_message(ConversationRequest::GiveGold {
+                conversation: session,
+                revision,
+                amount,
+            });
+            app.update();
+            let c = app.world().get::<Conversation>(session).unwrap();
+            assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, left);
+            if refused {
+                assert_eq!(c.outcome(), Some(Outcome::GiftRefused(TradeError::Funds)));
+            } else {
+                assert_eq!(c.current, Some((ACCEPTED_GIFT_QUOTE, 0)));
+            }
+        }
     }
 
     /// The item stays with the party when the answer it would buy cannot run.

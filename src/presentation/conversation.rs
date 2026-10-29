@@ -707,6 +707,35 @@ fn build(world: &mut World, session: Entity) -> Entity {
                 .observe(move |_: On<Activate>, mut commands: Commands| {
                     commands.queue(move |world: &mut World| quantity::open(world, root, canvas));
                 });
+            // Retail's Give mode also gives gold: the amount typed here when
+            // no item is chosen.
+            let gift_gold = world
+                .spawn((
+                    GiftGold,
+                    TextInput,
+                    EditableText {
+                        max_characters: Some(9),
+                        allow_newlines: false,
+                        ..EditableText::new("")
+                    },
+                    bevy::text::EditableTextFilter::new(|c| c.is_ascii_digit()),
+                    TextFont {
+                        font: world
+                            .resource::<AssetServer>()
+                            .load("retail://data/fonts/wiz_text_font.sti#font")
+                            .into(),
+                        font_size: 11.0.into(),
+                        ..default()
+                    },
+                    TextColor(Color::WHITE),
+                    TabIndex(0),
+                    Node {
+                        display: Display::None,
+                        ..absolute(Vec2::new(83., 58.), Vec2::new(51., 12.))
+                    },
+                    ChildOf(right),
+                ))
+                .id();
             let confirm = action(world, right, "", Vec2::new(56., 34.), Vec2::new(80., 18.));
             world.entity_mut(confirm).insert(Confirm);
             let caption = world.get::<Children>(confirm).unwrap()[0];
@@ -715,9 +744,24 @@ fn build(world: &mut World, session: Entity) -> Entity {
                 move |_: On<Activate>,
                       mut states: Query<&mut DialogueState>,
                       roots: Query<&ConversationView>,
+                      sessions: Query<&Conversation>,
+                      gold: Query<&EditableText, With<GiftGold>>,
                       mut requests: MessageWriter<ConversationRequest>| {
                     let Ok(mut state) = states.get_mut(root) else { return };
-                    if let Some(q) = state.selected
+                    let amount = gold.get(gift_gold).map_or(0, gift_amount);
+                    if state.mode == Mode::Give
+                        && state.selected.is_none()
+                        && amount > 0
+                        && let Ok(view) = roots.get(root)
+                        && let Ok(c) = sessions.get(view.0)
+                    {
+                        requests.write(ConversationRequest::GiveGold {
+                            conversation: view.0,
+                            revision: c.revision,
+                            amount,
+                        });
+                        set_mode(&mut state, Mode::Talk);
+                    } else if let Some(q) = state.selected
                         && roots.get(root).is_ok_and(|v| v.0 == q.conversation)
                     {
                         if state.mode != Mode::Give {
@@ -1669,6 +1713,12 @@ fn sync_topic_rows(
         }
     }
 }
+/// The gold amount typed to give the NPC.
+#[derive(Component)]
+struct GiftGold;
+fn gift_amount(text: &EditableText) -> u32 {
+    text.value().to_string().parse().unwrap_or(0)
+}
 #[derive(bevy::ecs::system::SystemParam)]
 struct TradeWidgets<'w, 's> {
     lists: Query<'w, 's, (Entity, Option<&'static Children>), With<TradeList>>,
@@ -1680,6 +1730,7 @@ struct TradeWidgets<'w, 's> {
     controls: Query<'w, 's, (Entity, Has<InteractionDisabled>), With<Confirm>>,
     previews:
         Query<'w, 's, (Entity, &'static mut Picture, &'static mut Visibility), With<ItemPreview>>,
+    gifts: Query<'w, 's, (Entity, &'static EditableText, &'static mut Node), With<GiftGold>>,
 }
 fn sync_trade_rows(
     views: ViewScope,
@@ -1702,6 +1753,7 @@ fn sync_trade_rows(
         mut texts,
         controls,
         mut previews,
+        mut gifts,
     } = widgets;
     let Some(items) = content.items() else { return };
     let Ok((roster, party)) = parties.single() else { return };
@@ -1842,9 +1894,20 @@ fn sync_trade_rows(
                 );
             }
         }
+        let mut gold_typed = false;
+        for (entity, text, mut node) in &mut gifts {
+            if views.owner(entity).is_some_and(|(owner, _)| owner == root) {
+                let shown = state.mode == Mode::Give && quote.is_none();
+                let display = if shown { Display::Flex } else { Display::None };
+                if node.display != display {
+                    node.display = display;
+                }
+                gold_typed = shown && gift_amount(text) > 0;
+            }
+        }
         for (entity, disabled) in &controls {
             if views.owner(entity).is_some_and(|(owner, _)| owner == root) {
-                set_enabled(&mut commands, entity, quote.is_some(), disabled);
+                set_enabled(&mut commands, entity, quote.is_some() || gold_typed, disabled);
             }
         }
         for (entity, mut picture, mut visibility) in &mut previews {
