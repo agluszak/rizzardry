@@ -108,6 +108,8 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) {
         .spawn((
             Open,
             Button,
+            // Picture defaults to non-interactive; this image is the control.
+            Pickable::default(),
             TabIndex(0),
             FocusRing,
             // Retail CreateRcsLevelUpPanel: an 18x18 icon at (233, 63),
@@ -559,6 +561,8 @@ mod tests {
         app.update();
         assert_eq!(app.world().get::<Node>(open).unwrap().display, Display::Flex);
         assert!(app.world().get::<InteractionDisabled>(open).is_none());
+        let pickable = app.world().get::<Pickable>(open).unwrap();
+        assert!(pickable.is_hoverable && pickable.should_block_lower);
         app.world_mut()
             .resource_mut::<InputFocus>()
             .set(open, bevy::input_focus::FocusCause::Navigated);
