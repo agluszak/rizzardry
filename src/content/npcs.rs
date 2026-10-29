@@ -112,6 +112,9 @@ pub enum DialogueOp {
     LeaveParty {
         npc: Option<String>,
     },
+    /// The NPC's monster script carries on from this label; retail ignores
+    /// the entry (`None`) when its bound is 4.
+    MonsterScriptLabel(Option<String>),
     /// The named NPC's disposition toward the party changes.
     AdjustDisposition {
         npc: String,

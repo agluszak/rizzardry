@@ -167,6 +167,13 @@ fn operation(
                 DialogueOp::AdjustDisposition { npc, delta: args[0] as i8 }
             }
         }
+        12 if args[2] == 4 => DialogueOp::MonsterScriptLabel(None),
+        12 => DialogueOp::MonsterScriptLabel(Some(
+            words()?
+                .into_iter()
+                .next()
+                .ok_or_else(|| invalid("monster script label without a label"))?,
+        )),
         14 => DialogueOp::CloseAndResume,
         19 => DialogueOp::KeywordInput(words()?),
         20 => DialogueOp::LeaveParty { npc: None },
@@ -428,6 +435,14 @@ mod tests {
             "the operand is a signed char"
         );
         assert_eq!(operation(14, [0, 0, 0], vec![]).unwrap(), DialogueOp::CloseAndResume);
+        assert_eq!(
+            operation(12, [0, 0, 0], vec![(0, Some("WalkHome".into()))]).unwrap(),
+            DialogueOp::MonsterScriptLabel(Some("WalkHome".into()))
+        );
+        assert_eq!(
+            operation(12, [0, 0, 4], vec![(0, Some("WalkHome".into()))]).unwrap(),
+            DialogueOp::MonsterScriptLabel(None)
+        );
         assert_eq!(operation(24, [511, 0, 0], vec![]).unwrap(), DialogueOp::PartyRemark(511));
         assert_eq!(
             operation(19, [0, 0, 0], vec![(0, Some("YES".into()))]).unwrap(),

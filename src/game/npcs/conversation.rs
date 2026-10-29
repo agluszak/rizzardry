@@ -700,6 +700,12 @@ fn plan_quote(
                 }
             }
             DialogueOp::PartyRemark(event) => plan.effects.push(QuoteEffect::PartyRemark(*event)),
+            // Retail `W8Monster::SetScriptLabel` moves the NPC's monster
+            // script, whose interpreter is not ported.
+            DialogueOp::MonsterScriptLabel(Some(label)) => {
+                return Err((i, format!("unported monster script label {label}")));
+            }
+            DialogueOp::MonsterScriptLabel(None) => {}
             DialogueOp::Mention { category, text } => {
                 plan.effects.push(QuoteEffect::Mention(*category, text.clone()))
             }
