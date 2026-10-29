@@ -55,7 +55,7 @@ pub(super) struct RadarBlip(Entity);
 pub(super) struct RadarView(Entity);
 
 /// One class of radar blip's colours (retail `g_radar_blip_colors`); retail
-/// has three more classes (friendly, unseen, missile) not drawn yet.
+/// has two more classes (unseen, missile) not drawn yet.
 #[derive(Clone, Copy)]
 struct BlipColours {
     /// More than 3 m below the party.
@@ -87,11 +87,27 @@ const HOSTILE_BLIPS: BlipColours = BlipColours {
     level: Color::srgb(0.7, 0.0, 0.0),
     above: Color::srgb(1.0, 0.0, 0.0),
 };
+const FRIENDLY_BLIPS: BlipColours = BlipColours {
+    below: Color::srgb(0.0, 0.5, 0.0),
+    level: Color::srgb(0.0, 0.7, 0.0),
+    above: Color::srgb(0.0, 1.0, 0.0),
+};
 const ITEM_BLIPS: BlipColours = BlipColours {
     below: Color::srgb(0.5, 0.5, 0.5),
     level: Color::srgb(0.7, 0.7, 0.7),
     above: Color::srgb(1.0, 1.0, 1.0),
 };
+
+/// A monster's blip class by its own stance (retail
+/// `g_radar_disposition_class`).
+fn blip_class(stance: Option<crate::game::world::hostility::Stance>) -> BlipColours {
+    use crate::game::world::hostility::Stance;
+    match stance.unwrap_or_default() {
+        Stance::Neutral => NEUTRAL_BLIPS,
+        Stance::Hostile => HOSTILE_BLIPS,
+        Stance::Friendly => FRIENDLY_BLIPS,
+    }
+}
 
 /// Pixels from the radar's centre to the party's radius.
 const PARTY_EDGE: f32 = 2.0;
@@ -162,7 +178,8 @@ pub fn track_radar_items(
 }
 
 /// Turn the compass rim with the party, and mark the monsters within the
-/// far clip: hostile red, others yellow, brighter above and dimmer below;
+/// far clip by how each stands now: hostile red, friendly green, neutral
+/// yellow, brighter above and dimmer below;
 /// and the items once seen, grey to white.
 pub fn update_radar(
     mut commands: Commands,
@@ -177,7 +194,11 @@ pub fn update_radar(
         Query<(Entity, &crate::game::world::items::WorldItem, &GlobalTransform, &mut RadarItem)>,
         WorldObstacles,
     ),
-    content: crate::game::data::Content,
+    (content, stances, clock): (
+        crate::game::data::Content,
+        crate::game::world::hostility::Stances,
+        Res<crate::game::time::GameClock>,
+    ),
 ) {
     let (Ok((position, body)), Ok(layer)) = (party.single(), layers.single()) else { return };
     for mut rim in &mut rims {
@@ -220,9 +241,7 @@ pub fn update_radar(
         if monster.is_dead() || delta.length() > far {
             continue;
         }
-        let hostile =
-            catalog.and_then(|c| c.kind(monster.species)).is_some_and(|s| s.npc.is_none());
-        let class = if hostile { HOSTILE_BLIPS } else { NEUTRAL_BLIPS };
+        let class = blip_class(catalog.and_then(|c| stances.own(entity, c, clock.ms)));
         let at = blip_position(delta, body.yaw, false) - Vec2::ONE;
         show(entity, at, class.at(delta.y));
     }
@@ -289,6 +308,87 @@ mod tests {
             .set_max_delta(std::time::Duration::from_secs(11));
         app.update();
         assert!(app.world().get::<RadarItem>(target).unwrap().glow.is_none());
+    }
+
+    /// A monster's blip follows how its group stands now, by the same rule
+    /// the fight uses: the faction's band, a stance set on the group, and
+    /// that stance wearing off, all with the species unchanged (retail
+    /// `UpdateRadarBlips` by `ubDisposition`).
+    #[test]
+    fn a_blip_shows_how_the_group_stands_now() {
+        use crate::content::species::{MonsterCatalog, Species};
+        use crate::game::data::GameData;
+        use crate::game::factions::Factions;
+        use crate::game::time::GameClock;
+        use crate::game::world::hostility::{SetStance, Stance};
+        use crate::game::world::identify::{GroupMember, MonsterGroup};
+        use crate::game::world::population::{Monster, ScaledBody};
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<Assets<MonsterCatalog>>()
+            .init_resource::<avian3d::collider_tree::ColliderTrees>()
+            .init_resource::<Factions>()
+            .init_resource::<GameClock>()
+            .add_systems(Update, update_radar);
+        let mut species = Species { faction: 7, ..default() };
+        species.attributes.intelligence = 10;
+        let species = app
+            .world_mut()
+            .resource_mut::<Assets<MonsterCatalog>>()
+            .add(MonsterCatalog(vec![species]));
+        app.insert_resource(GameData {
+            items: default(),
+            loot: default(),
+            species,
+            spells: default(),
+        });
+        app.world_mut().spawn((
+            avian3d::prelude::Position::default(),
+            crate::game::party::body::PartyBody::default(),
+        ));
+        app.world_mut().spawn((
+            PartyCamera,
+            Projection::Perspective(default()),
+            GlobalTransform::default(),
+        ));
+        app.world_mut().spawn((RadarBlips, Node::default()));
+        let group = app.world_mut().spawn(MonsterGroup::default()).id();
+        let monster = Monster {
+            enchantments: default(),
+            location: 0,
+            species: 0,
+            hp: 10,
+            max_hp: 10,
+            stamina: 0,
+            max_stamina: 0,
+            conditions: vec![],
+            spell_points: 0,
+            body: ScaledBody { scale: 1.0, radius: 1.0, eye_height: 1.0, speed: 0.0 },
+        };
+        let monster = app
+            .world_mut()
+            .spawn((monster, GroupMember(group), GlobalTransform::from_xyz(0.0, 0.0, -10.0)))
+            .id();
+        let shown = |app: &mut App| {
+            app.update();
+            let world = app.world_mut();
+            let blip = world.get::<RadarView>(monster).unwrap().0;
+            world.get::<BackgroundColor>(blip).unwrap().0
+        };
+        // Faction 7 starts neutral.
+        assert_eq!(shown(&mut app), NEUTRAL_BLIPS.level);
+        // The party offends it into the hostile band.
+        app.world_mut().resource_mut::<Factions>().record_offence(7, true, 0);
+        assert_eq!(shown(&mut app), HOSTILE_BLIPS.level);
+        // Something sets the group friendly after that.
+        app.world_mut().resource_mut::<GameClock>().ms = 1_000;
+        app.world_mut().get_mut::<MonsterGroup>(group).unwrap().set =
+            Some(SetStance { stance: Stance::Friendly, at: 1_000 });
+        assert_eq!(shown(&mut app), FRIENDLY_BLIPS.level);
+        // Its while outside a fight (Intelligence squared, in minutes)
+        // passes, and the faction's band stands again.
+        app.world_mut().resource_mut::<GameClock>().ms = 1_000 + 100 * 60_000 + 1;
+        assert_eq!(shown(&mut app), HOSTILE_BLIPS.level);
     }
 
     #[test]

@@ -1071,22 +1071,13 @@ pub fn settle_defeat(
 /// any group by its species), as this update of the fight begins.
 fn fighting_stances(
     combatants: &[Entity],
-    (monsters, groups, factions): (
-        &Query<(&Monster, Option<&GroupMember>)>,
-        &Query<&MonsterGroup>,
-        &crate::game::factions::Factions,
-    ),
+    stances: &hostility::Stances,
     now: u64,
     species: &MonsterCatalog,
 ) -> Vec<(Entity, hostility::Stance)> {
     combatants
         .iter()
-        .filter_map(|&monster| {
-            let (body, member) = monsters.get(monster).ok()?;
-            let kind = species.kind(body.species)?;
-            let set = member.and_then(|m| groups.get(m.0).ok()).and_then(|g| g.set);
-            Some((monster, hostility::stance(set, kind, factions, now, true)))
-        })
+        .filter_map(|&monster| Some((monster, stances.group(monster, species, now)?)))
         .collect()
 }
 
@@ -1356,15 +1347,7 @@ pub fn run_battle(
     battle: Option<Single<(Entity, &mut Battle, Option<&Combatants>)>>,
     mut rng: ResMut<GameRng>,
     mut clock: ResMut<GameClock>,
-    mut actors: ParamSet<(
-        (Members, MonsterDamage),
-        GroupRecognition,
-        (
-            Query<(&Monster, Option<&GroupMember>)>,
-            Query<&MonsterGroup>,
-            Res<crate::game::factions::Factions>,
-        ),
-    )>,
+    mut actors: ParamSet<((Members, MonsterDamage), GroupRecognition, hostility::Stances)>,
     party_body: Query<(&Position, &PartyBody)>,
     (roster, content, level): (Single<&PartyRoster>, crate::game::data::Content, PlayedLevel),
     mut magic: BattleMagic,
@@ -1374,10 +1357,7 @@ pub fn run_battle(
     let combatants = combatants.map_or(&[][..], Combatants::entities);
     // Content and the party's body exist whenever a level is played.
     let Some(species) = content.species() else { return };
-    let stances = {
-        let (monsters, groups, factions) = actors.p2();
-        fighting_stances(combatants, (&monsters, &groups, &factions), clock.ms, species)
-    };
+    let stances = { fighting_stances(combatants, &actors.p2(), clock.ms, species) };
     let (mut members, mut damage) = actors.p0();
     let Ok((position, body)) = party_body.single() else { return };
     if !damage.ready() || !battle.executing() || !battle.wait.is_finished() {

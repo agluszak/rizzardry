@@ -11,7 +11,8 @@ use bevy::prelude::*;
 
 use super::identify::{GroupMember, MonsterGroup};
 use super::population::Monster;
-use crate::content::species::{Disposition, Species};
+use crate::content::species::{Disposition, MonsterCatalog, Species};
+use crate::game::characters::Condition;
 use crate::game::factions::{Band, Factions, PARTY, UNALIGNED};
 use crate::game::time::GameClock;
 
@@ -112,6 +113,40 @@ pub fn monster_stance(world: &World, monster: Entity) -> Stance {
     let fighting = world.get::<crate::game::combat::Combatant>(monster).is_some();
     let now = world.resource::<GameClock>().ms;
     stance(set, species, world.resource::<Factions>(), now, fighting)
+}
+
+/// Monsters' stances now, through their groups, for systems that only
+/// read them (the fight's snapshot, the radar). Time is the caller's: the
+/// fight holds the clock itself.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct Stances<'w, 's> {
+    monsters: Query<
+        'w,
+        's,
+        (&'static Monster, Option<&'static GroupMember>, Has<crate::game::combat::Combatant>),
+    >,
+    groups: Query<'w, 's, &'static MonsterGroup>,
+    factions: Res<'w, Factions>,
+}
+
+impl Stances<'_, '_> {
+    /// A monster's group's stance now; one outside any group by its
+    /// species' default.
+    pub fn group(&self, monster: Entity, species: &MonsterCatalog, now: u64) -> Option<Stance> {
+        let (body, member, fighting) = self.monsters.get(monster).ok()?;
+        let kind = species.kind(body.species)?;
+        let set = member.and_then(|m| self.groups.get(m.0).ok()).and_then(|g| g.set);
+        Some(stance(set, kind, &self.factions, now, fighting))
+    }
+
+    /// A monster's own stance now: its group's, swapped by its own Turncoat
+    /// (retail's per-monster `ubDisposition`).
+    pub fn own(&self, monster: Entity, species: &MonsterCatalog, now: u64) -> Option<Stance> {
+        let group = self.group(monster, species, now)?;
+        let (body, ..) = self.monsters.get(monster).ok()?;
+        let turncoat = body.conditions.iter().any(|&(c, _)| c == Condition::Turncoat);
+        Some(own_stance(group, turncoat))
+    }
 }
 
 /// The species retail keeps out of every quarrel (record 0x224): neutral to
