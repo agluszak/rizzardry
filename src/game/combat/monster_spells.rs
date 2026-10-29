@@ -18,6 +18,7 @@ use crate::game::magic::casting::Report;
 use crate::game::magic::effects::{self, Field, Standing, Victim};
 use crate::game::magic::{LearnedSpells, Outcome, SpellPoints, Strength};
 use crate::game::rng::GameRng;
+use crate::game::world::hostility::Stance;
 use crate::game::world::population::Monster;
 
 /// How much each of the ten slots weighs in the choice (retail
@@ -35,24 +36,83 @@ pub(super) enum SpellAim {
     /// Itself or another monster in the fight.
     Monster(Entity),
     Member(Entity),
-    /// The party as a whole: a group, cone, blast or all-enemies spell.
+    /// The party as a whole: a group, cone or blast spell.
     Party,
+    /// Every foe it reaches: an all-enemies spell.
+    Foes,
+}
+
+/// Someone in the fight as a casting monster sees them.
+#[derive(Clone, Debug)]
+pub(super) struct Someone {
+    pub entity: Entity,
+    /// Where they stand (a member at the party's point).
+    pub at: Vec3,
+    /// How far they are from the caster, beyond both bodies.
+    pub from_caster: f32,
+    /// What they lack.
+    pub standing: Standing,
+    /// How the caster stands toward them (retail
+    /// `MonsterVsCharDisposition`, `MonsterHostility`).
+    pub stance: Stance,
 }
 
 /// What a casting monster sees of the fight.
 pub(super) struct Scene {
     pub caster: Entity,
-    /// The living party: who, and what they lack.
-    pub members: Vec<(Entity, Standing)>,
+    /// Where the caster stands, and the party's point.
+    pub from: Vec3,
+    pub party_at: Vec3,
+    /// The living party.
+    pub members: Vec<Someone>,
     /// The living monsters in the fight the caster has a clear line to,
-    /// itself among them: who, how far from the caster and from the party,
-    /// and what they lack.
-    pub monsters: Vec<(Entity, f32, f32, Standing)>,
+    /// itself among them (standing friendly to itself).
+    pub monsters: Vec<Someone>,
     /// How far the party is from the caster.
     pub party: f32,
     /// Whether the caster sees the party now, as engagement judges it
     /// (retail `IsVisibleUnderConditions`).
     pub sees_party: bool,
+}
+
+/// Whether `at` lies in a cone from `from` toward `toward`: within `reach`
+/// and 45 degrees of its line.
+fn in_cone(from: Vec3, toward: Vec3, reach: f32, at: Vec3, distance: f32) -> bool {
+    let line = (toward - from).with_y(0.0);
+    let to = (at - from).with_y(0.0);
+    distance <= reach && (to == Vec3::ZERO || to.angle_between(line) < std::f32::consts::FRAC_PI_4)
+}
+
+/// Whom a cone aimed at `toward` catches, whatever their side (retail
+/// `PopulateSpellTargetMarkers`): the party when its point lies in it, and
+/// the other monsters in it.
+pub(super) fn cone_victims(scene: &Scene, toward: Vec3, reach: f32) -> Vec<Victim> {
+    let mut victims = Vec::new();
+    if in_cone(scene.from, toward, reach, scene.party_at, scene.party) {
+        victims.extend(scene.members.iter().map(|m| Victim::Member(m.entity)));
+    }
+    victims.extend(
+        scene
+            .monsters
+            .iter()
+            .filter(|m| {
+                m.entity != scene.caster && in_cone(scene.from, toward, reach, m.at, m.from_caster)
+            })
+            .map(|m| Victim::Monster(m.entity)),
+    );
+    victims
+}
+
+/// Where an aim points.
+pub(super) fn aimed_at(scene: &Scene, aim: SpellAim) -> Vec3 {
+    let find = |list: &[Someone], entity| {
+        list.iter().find(|s| s.entity == entity).map_or(scene.party_at, |s| s.at)
+    };
+    match aim {
+        SpellAim::Monster(monster) => find(&scene.monsters, monster),
+        SpellAim::Member(member) => find(&scene.members, member),
+        SpellAim::Party | SpellAim::Foes => scene.party_at,
+    }
 }
 
 /// A monster's standing, as a spell on it would find it.
@@ -80,45 +140,76 @@ fn castable(spell: &SpellDefinition, caster: &Monster, kind: &Species) -> bool {
             || (spell.books.contains(Spellbook::Alchemy) && SILENT_ALCHEMISTS.contains(&kind.kind)))
 }
 
-/// Where the spell may be cast (retail `CollectMonsterSpellTargets`): at
-/// itself, at a fellow in reach along a clear line, at a member in reach
-/// of a caster that sees the party, or at the party so seen when at least
-/// half of it would feel the spell. Each is one choice.
-fn aims(spell: &SpellDefinition, scene: &Scene) -> Vec<SpellAim> {
+/// Where the spell may be cast (retail `CollectMonsterSpellTargets`), each
+/// one choice: at itself; at a friend in reach (a fellow along a clear
+/// line, a member of a party it sees); at a foe likewise; a group spell at
+/// the party it sees; a cone or blast at a foe monster, or at the party
+/// once for each member it stands against; an all-enemies spell at its
+/// foes. Group, cone and blast spells at the party need at least half of it
+/// to feel them; retail's group spells ask nothing of the members' side.
+pub(super) fn aims(spell: &SpellDefinition, scene: &Scene) -> Vec<SpellAim> {
     let reach = spell.reach.metres();
     let worth = |standing: &Standing| effects::worthwhile(spell.id, standing);
+    let party_reached = scene.sees_party && scene.party <= reach;
+    let monsters = |stance: Stance| {
+        scene
+            .monsters
+            .iter()
+            .filter(move |m| m.stance == stance && m.from_caster <= reach && worth(&m.standing))
+            .map(|m| SpellAim::Monster(m.entity))
+    };
+    let members = |stance: Stance| {
+        scene
+            .members
+            .iter()
+            .filter(move |m| party_reached && m.stance == stance && worth(&m.standing))
+            .map(|m| SpellAim::Member(m.entity))
+    };
+    let half = || {
+        let valid = scene.members.iter().filter(|m| worth(&m.standing)).count();
+        party_reached && valid != 0 && scene.members.len().div_ceil(2) <= valid
+    };
+    let hostile_members = scene.members.iter().filter(|m| m.stance == Stance::Hostile).count();
     match spell.targeting {
         Targeting::Caster => scene
             .monsters
             .iter()
-            .find(|(m, ..)| *m == scene.caster)
-            .filter(|(.., standing)| worth(standing))
+            .find(|m| m.entity == scene.caster && worth(&m.standing))
             .map(|_| vec![SpellAim::Monster(scene.caster)])
             .unwrap_or_default(),
-        Targeting::Ally => scene
-            .monsters
-            .iter()
-            .filter(|&(_, from_caster, _, standing)| *from_caster <= reach && worth(standing))
-            .map(|&(m, ..)| SpellAim::Monster(m))
-            .collect(),
-        Targeting::Enemy if scene.sees_party && scene.party <= reach => scene
-            .members
-            .iter()
-            .filter(|(_, standing)| worth(standing))
-            .map(|&(m, _)| SpellAim::Member(m))
-            .collect(),
-        Targeting::EnemyGroup | Targeting::Cone | Targeting::Radius | Targeting::AllEnemies
-            if scene.sees_party && scene.party <= reach =>
-        {
-            let valid = scene.members.iter().filter(|(_, standing)| worth(standing)).count();
-            if valid != 0 && scene.members.len().div_ceil(2) <= valid {
-                vec![SpellAim::Party]
-            } else {
-                vec![]
+        Targeting::Ally => monsters(Stance::Friendly).chain(members(Stance::Friendly)).collect(),
+        Targeting::Enemy => monsters(Stance::Hostile).chain(members(Stance::Hostile)).collect(),
+        Targeting::EnemyGroup if half() => vec![SpellAim::Party],
+        Targeting::Cone | Targeting::Radius => {
+            let mut aims: Vec<_> = monsters(Stance::Hostile).collect();
+            if half() {
+                aims.extend(std::iter::repeat_n(SpellAim::Party, hostile_members));
             }
+            aims
+        }
+        Targeting::AllEnemies => {
+            let foes = monsters(Stance::Hostile).count() + members(Stance::Hostile).count();
+            if foes != 0 { vec![SpellAim::Foes] } else { vec![] }
         }
         _ => vec![],
     }
+}
+
+/// Whether it could cast at a foe now (retail `MonsterGroupCanEngage`'s
+/// spell test): it casts at all, and one of its spells aimed at enemies is
+/// castable with an aim.
+pub(super) fn casts_at_foes(
+    caster: &Monster,
+    kind: &Species,
+    spells: &SpellCatalog,
+    scene: &Scene,
+) -> bool {
+    kind.magic.chance != 0
+        && kind.magic.spells.iter().flatten().filter_map(|&id| spells.get(id)).any(|spell| {
+            spell.aimed_at_enemies()
+                && castable(spell, caster, kind)
+                && !aims(spell, scene).is_empty()
+        })
 }
 
 /// The spell it casts, if it does, and where (retail `UpdateMonsterAI`):
@@ -189,10 +280,10 @@ pub(super) fn power(rng: &mut GameRng, budget: u32, spell: &SpellDefinition) -> 
     }
 }
 
-/// Whom the cast lands on: its aim, or for the party all of it; a blast
-/// also catches the monsters in the fight within its radius of the
-/// party. A backfire turns a spell on one victim back on its caster, and
-/// a wider one on the caster's own side.
+/// Whom the cast lands on: its aim; a cone everyone in it; a blast
+/// everyone within its radius of where it bursts; an all-enemies spell
+/// every foe it reaches. A backfire turns a spell on one victim back on its
+/// caster, and a wider one on the caster's own side.
 fn victims(
     spell: &SpellDefinition,
     power: u8,
@@ -205,27 +296,52 @@ fn victims(
             Targeting::Caster | Targeting::Ally | Targeting::Enemy => {
                 vec![Victim::Monster(scene.caster)]
             }
-            _ => scene.monsters.iter().map(|&(m, ..)| Victim::Monster(m)).collect(),
+            _ => scene
+                .monsters
+                .iter()
+                .filter(|m| m.stance == Stance::Friendly)
+                .map(|m| Victim::Monster(m.entity))
+                .collect(),
         };
     }
-    match aim {
-        SpellAim::Monster(monster) => vec![Victim::Monster(monster)],
-        SpellAim::Member(member) => vec![Victim::Member(member)],
-        SpellAim::Party => {
-            let mut victims: Vec<_> =
-                scene.members.iter().map(|&(m, _)| Victim::Member(m)).collect();
-            if spell.targeting == Targeting::Radius {
-                let radius = spell.radius + spell.radius_per_power * f32::from(power);
-                victims.extend(
+    let reach = spell.reach.metres();
+    match (spell.targeting, aim) {
+        (Targeting::Cone, aim) => cone_victims(scene, aimed_at(scene, aim), reach),
+        (Targeting::Radius, aim) => {
+            let centre = aimed_at(scene, aim);
+            let radius = spell.radius + spell.radius_per_power * f32::from(power);
+            let mut victims = Vec::new();
+            if scene.party_at.distance(centre) <= radius {
+                victims.extend(scene.members.iter().map(|m| Victim::Member(m.entity)));
+            }
+            victims.extend(
+                scene
+                    .monsters
+                    .iter()
+                    .filter(|m| m.at.distance(centre) <= radius)
+                    .map(|m| Victim::Monster(m.entity)),
+            );
+            victims
+        }
+        (_, SpellAim::Foes) => {
+            let party_reached = scene.sees_party && scene.party <= reach;
+            scene
+                .members
+                .iter()
+                .filter(|m| party_reached && m.stance == Stance::Hostile)
+                .map(|m| Victim::Member(m.entity))
+                .chain(
                     scene
                         .monsters
                         .iter()
-                        .filter(|&&(_, _, from_party, _)| from_party <= radius)
-                        .map(|&(m, ..)| Victim::Monster(m)),
-                );
-            }
-            victims
+                        .filter(|m| m.stance == Stance::Hostile && m.from_caster <= reach)
+                        .map(|m| Victim::Monster(m.entity)),
+                )
+                .collect()
         }
+        (_, SpellAim::Party) => scene.members.iter().map(|m| Victim::Member(m.entity)).collect(),
+        (_, SpellAim::Monster(monster)) => vec![Victim::Monster(monster)],
+        (_, SpellAim::Member(member)) => vec![Victim::Member(member)],
     }
 }
 
@@ -281,12 +397,23 @@ mod tests {
         }
     }
 
+    fn someone(entity: Entity, stance: Stance, hurt: bool) -> Someone {
+        Someone {
+            entity,
+            at: Vec3::ZERO,
+            from_caster: if stance == Stance::Friendly { 0.0 } else { 10.0 },
+            standing: Standing { hurt, ..Default::default() },
+            stance,
+        }
+    }
+
     fn scene(caster: Entity, hurt: bool) -> Scene {
-        let standing = Standing { hurt, ..Default::default() };
         Scene {
             caster,
-            members: vec![(Entity::from_bits(10), Standing::default())],
-            monsters: vec![(caster, 0.0, 10.0, standing)],
+            from: Vec3::NEG_Z * 10.0,
+            party_at: Vec3::ZERO,
+            members: vec![someone(Entity::from_bits(10), Stance::Hostile, false)],
+            monsters: vec![someone(caster, Stance::Friendly, hurt)],
             party: 10.0,
             sees_party: true,
         }
@@ -327,6 +454,16 @@ mod tests {
         let mut far = scene(caster, false);
         far.party = 30.0;
         assert_eq!(choose(&mut rng, &monster, &kind, 100, &catalog, &far), None, "out of reach");
+        // Turned, it stands with the party and against its fellow.
+        let mut turned = scene(caster, false);
+        turned.members[0].stance = Stance::Friendly;
+        let fellow = Entity::from_bits(2);
+        turned.monsters.push(someone(fellow, Stance::Hostile, false));
+        assert_eq!(
+            choose(&mut rng, &monster, &kind, 100, &catalog, &turned),
+            Some((SpellId::ENERGY_BLAST, SpellAim::Monster(fellow))),
+            "a turned caster blasts its fellow, not the party"
+        );
     }
 
     /// A small budget casts at low power; a large one at the top.
