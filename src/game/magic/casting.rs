@@ -32,7 +32,7 @@ pub const AUTO_POWER: u8 = MAX_POWER + 1;
 
 /// How fast spell missiles fly: retail's `energy_blast.mls` velocity of 30,
 /// advanced per two-millisecond step (`Missile.cpp`), comes to 15 m/s.
-const MISSILE_SPEED: f32 = 15.0;
+pub(crate) const MISSILE_SPEED: f32 = 15.0;
 
 /// What pays for a cast.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,8 +68,9 @@ impl Source {
 
 /// Whom the actor aimed at; group, area, party and self spells widen or
 /// replace it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Aim {
+    Point(Vec3),
     Member(Entity),
     Monster(Entity),
     /// The device attempt under way (its lock or trap), by the attempt.
@@ -79,7 +80,7 @@ pub enum Aim {
 }
 
 /// An accepted magic action: the source and the aim, nothing resolved yet.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MagicChoice {
     pub source: Source,
     pub aim: Aim,
@@ -149,9 +150,13 @@ pub struct Report {
     pub repeats: u32,
 }
 
+pub use super::impacts::{Finalization, Origin};
+
 /// A missile on its way: its own copy of the spell's strength and victims.
 #[derive(Component, Debug, Clone)]
 pub struct SpellInFlight {
+    pub origin: Origin,
+    pub finish: Option<Finalization>,
     pub caster: Entity,
     pub spell: SpellId,
     pub strength: Strength,
@@ -168,10 +173,15 @@ pub struct SpellInFlight {
 pub struct FlightOrder(u64);
 
 impl FlightOrder {
-    pub fn launch(&mut self, commands: &mut Commands, flights: Vec<SpellInFlight>, level: Entity) {
-        for mut flight in flights {
+    pub(crate) fn stamp(&mut self, flight: &mut SpellInFlight) {
+        if flight.launched == 0 {
             self.0 += 1;
             flight.launched = self.0;
+        }
+    }
+    pub fn launch(&mut self, commands: &mut Commands, flights: Vec<SpellInFlight>, level: Entity) {
+        for mut flight in flights {
+            self.stamp(&mut flight);
             commands.spawn((flight, crate::game::world::level::LevelOwned(level)));
         }
     }
@@ -247,7 +257,7 @@ impl Situation<'_> {
 /// `PopulateSpellTargetMarkers`), and where its missile flies. Later movement
 /// adds nobody.
 /// Retail tests heading and elevation independently against a 45° half arc.
-fn in_cone(aim: Vec3, target: Vec3) -> bool {
+pub(crate) fn in_cone(aim: Vec3, target: Vec3) -> bool {
     let heading = |v: Vec3| v.x.atan2(v.z);
     let elevation = |v: Vec3| v.y.atan2(v.x.hypot(v.z));
     let within = |a: f32, b: f32| {
@@ -269,7 +279,7 @@ pub(crate) fn capture(
     }
     let aimed = || match aim {
         Aim::Monster(m) => situation.candidate(m, spell).copied().ok_or(Refusal::NoTarget),
-        Aim::Member(_) | Aim::Device(_) | Aim::Item(_) => Err(Refusal::NoTarget),
+        Aim::Point(_) | Aim::Member(_) | Aim::Device(_) | Aim::Item(_) => Err(Refusal::NoTarget),
     };
     let reach = spell.reach.metres();
     Ok(match spell.targeting {
@@ -656,7 +666,7 @@ pub fn perform(
                 if auto {
                     let victim = match choice.aim {
                         Aim::Member(m) => world.members.get(m).ok(),
-                        Aim::Monster(_) | Aim::Device(_) | Aim::Item(_) => None,
+                        Aim::Point(_) | Aim::Monster(_) | Aim::Device(_) | Aim::Item(_) => None,
                     };
                     auto_power(&character, spell, victim.map(|(c, v, ..)| (c, v)), affordable)
                 } else {
@@ -673,6 +683,17 @@ pub fn perform(
                 centre,
                 spell.radius + spell.radius_per_power * f32::from(cast_power),
                 Some(situation.party_at),
+                super::targeting::Recipients::Opponents(
+                    if world
+                        .members
+                        .get(caster)
+                        .is_ok_and(|(_, vitals, ..)| vitals.has(Condition::Turncoat))
+                    {
+                        crate::game::world::hostility::Stance::Hostile
+                    } else {
+                        crate::game::world::hostility::Stance::Friendly
+                    },
+                ),
             );
         }
         // A spell aimed at enemies provokes those it is cast at, whatever
@@ -707,6 +728,41 @@ pub fn perform(
         // Missiles fly to their victims, one each, or to where they burst; a
         // backfire turns on the party at once.
         let flies = spell.missile.is_some() && outcome == Outcome::Cast && !victims.is_empty();
+        let origin = if outcome == Outcome::Backfired {
+            match spell.targeting {
+                Targeting::Enemy | Targeting::Ally => match choice.aim {
+                    Aim::Monster(entity) => Origin::Actor(Victim::Monster(entity)),
+                    Aim::Member(entity) => Origin::Actor(Victim::Member(entity)),
+                    _ => Origin::Actor(Victim::Member(caster)),
+                },
+                Targeting::EnemyGroup => match choice.aim {
+                    Aim::Monster(entity) => {
+                        Origin::Actor(Victim::Monster(world.monsters.leader(entity)))
+                    }
+                    _ => Origin::Actor(Victim::Member(caster)),
+                },
+                Targeting::Radius | Targeting::Cone => Origin::Point {
+                    at: landing.unwrap_or(situation.party_at),
+                    owner: Some(Victim::Member(caster)),
+                },
+                _ => Origin::Actor(Victim::Member(caster)),
+            }
+        } else {
+            Origin::Actor(Victim::Member(caster))
+        };
+        let strength = if outcome == Outcome::Backfired {
+            Strength::at(origin.figure(world, spell), spell, strength.power, strength.boost)
+        } else {
+            strength
+        };
+        let finish = Finalization {
+            aim: landing
+                .filter(|_| matches!(spell.targeting, Targeting::Radius | Targeting::Cone))
+                .map_or(choice.aim, Aim::Point),
+            victims: victims.clone(),
+            reflected: false,
+        };
+        let first_flight = flights.len();
         let landed = if flies {
             let arrives = |to: Vec3| {
                 let seconds = to.distance(situation.party_at) / MISSILE_SPEED;
@@ -715,6 +771,8 @@ pub fn perform(
             if spell.targeting == Targeting::Radius {
                 let to = landing.unwrap_or(situation.party_at);
                 flights.push(SpellInFlight {
+                    origin,
+                    finish: None,
                     caster,
                     spell: spell.id,
                     strength,
@@ -734,6 +792,8 @@ pub fn perform(
                     };
                     let victims = vec![victim];
                     flights.push(SpellInFlight {
+                        origin,
+                        finish: None,
                         caster,
                         spell: spell.id,
                         strength,
@@ -743,19 +803,23 @@ pub fn perform(
                     });
                 }
             }
+            super::impacts::attach(&mut flights[first_flight..], finish);
             Vec::new()
         } else {
             super::impacts::resolve(
                 caster,
+                origin,
                 outcome == Outcome::Backfired,
                 spell,
                 strength,
                 &victims,
+                Some(&finish),
                 situation.party_at,
                 spells,
                 rng,
                 world,
                 &mut *points,
+                &mut flights,
             )
         };
         // Practice follows what the cast did; a missile on its way counts.

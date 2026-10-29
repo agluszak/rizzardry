@@ -125,6 +125,7 @@ mod tests {
 pub(crate) fn pass_time(
     time: Res<Time>,
     camp: Option<Res<Camp>>,
+    search: Option<Res<crate::game::world::search::Search>>,
     battle: Option<Single<&crate::game::combat::Battle>>,
     party: Query<(&Position, &PartyBody, &LinearVelocity)>,
     roster: Single<&PartyRoster>,
@@ -200,6 +201,7 @@ pub(crate) fn pass_time(
                 body.forward(),
                 None,
                 enchantments.0.get(crate::content::spells::SpellId::SHADOW_HOUND).is_some(),
+                search.as_ref().is_some_and(|s| s.on(false)),
                 &mut rng,
             );
         }

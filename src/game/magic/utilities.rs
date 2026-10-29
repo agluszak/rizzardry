@@ -6,7 +6,10 @@ use crate::game::party::roster::{PartyRoster, the_party};
 use bevy::prelude::*;
 
 pub(crate) fn spell(id: SpellId) -> bool {
-    super::portals::spell(id) || super::dialogue::spell(id) || id == SpellId::IDENTIFY_ITEM
+    super::portals::spell(id)
+        || super::dialogue::spell(id)
+        || super::pointcasts::spell(id)
+        || id == SpellId::IDENTIFY_ITEM
 }
 
 pub(crate) fn source_spell(
@@ -40,6 +43,9 @@ fn target(world: &World, party: Entity, id: StackId) -> Option<&ItemStack> {
 
 pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Result<(), Refusal> {
     let id = source_spell(world, caster, choice.source)?;
+    if super::pointcasts::spell(id) {
+        return super::pointcasts::cast(world, caster, choice);
+    }
     if super::dialogue::spell(id) {
         return super::dialogue::cast(world, caster, choice);
     }

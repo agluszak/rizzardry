@@ -70,7 +70,7 @@ fn a_fighter_and_a_crab_trade_blows() {
     let attack = &crab.attacks[0];
     let mode = choose_mode(&mut rng, attack.modes);
     let theirs = monster_aim(
-        (crab, &body),
+        (crab, &body, rizzardry::game::world::hostility::Stance::Hostile),
         attack,
         mode,
         Surprise::default(),

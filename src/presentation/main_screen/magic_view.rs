@@ -985,6 +985,12 @@ pub(super) fn refresh_magic_view(
         Aim::Device(attempt)
     } else {
         match spell.targeting {
+            Targeting::Point => {
+                let Ok(eye) = party.single() else { return };
+                let at =
+                    eye.translation() + eye.forward().as_vec3() * spell.reach.metres().min(10.0);
+                Aim::Point(at.with_y(eye.translation().y - crate::content::EYE_HEIGHT))
+            }
             Targeting::Item => match pool.hand.held.as_ref() {
                 Some(stack) => Aim::Item(stack.id),
                 None => return,

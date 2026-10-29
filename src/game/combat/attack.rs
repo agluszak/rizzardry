@@ -20,9 +20,10 @@ use crate::content::species::{MonsterAttack, Reach, Species};
 #[cfg(test)]
 use crate::game::characters::Character;
 use crate::game::characters::{CharacterStats, Condition, Load, Race, Vitals};
-use crate::game::difficulty::{Difficulty, Side};
+use crate::game::difficulty::Difficulty;
 use crate::game::inventory::{Carried, EquipSlot};
 use crate::game::rng::GameRng;
+use crate::game::world::hostility::Stance;
 use crate::game::world::population::Monster;
 
 /// The to-hit term of a mode (retail `AttackModeMod` for the aim).
@@ -853,7 +854,7 @@ pub fn member_penetration(
 
 /// A monster's aim with one attack (retail `GetMonsterAttackScore`).
 pub fn monster_aim(
-    (species, monster): (&Species, &Monster),
+    (species, monster, stance): (&Species, &Monster, Stance),
     attack: &MonsterAttack,
     mode: AttackMode,
     surprise: Surprise,
@@ -877,13 +878,13 @@ pub fn monster_aim(
     if monster.conditions.iter().any(|&(c, _)| c == Condition::Blind) && score > 10 {
         score = 10;
     }
-    difficulty.for_monster(score, Side::Hostile)
+    difficulty.for_monster(score, stance)
 }
 
 /// A monster's chance to get through armour (retail `ContinueMonsterAttack`).
 /// Retail takes fatigue off only the attacks that tire little, in full.
 pub fn monster_penetration(
-    (species, monster): (&Species, &Monster),
+    (species, monster, stance): (&Species, &Monster, Stance),
     attack: &MonsterAttack,
     mode: AttackMode,
     surprise: Surprise,
@@ -897,7 +898,7 @@ pub fn monster_penetration(
     }
     score -= target.armour_at(mode, surprise, at) * 5;
     score += (species_ssdi(species, &monster.enchantments) - target.ssdi) / 10;
-    difficulty.for_monster(score, Side::Hostile)
+    difficulty.for_monster(score, stance)
 }
 
 /// The chance a swing goes astray onto someone else in reach (retail

@@ -10,10 +10,11 @@ pub mod casting;
 pub(crate) mod dialogue;
 pub mod effects;
 pub mod enchantments;
-mod impacts;
+pub(crate) mod impacts;
+pub(crate) mod pointcasts;
 pub mod portals;
 pub(crate) mod sources;
-mod targeting;
+pub(crate) mod targeting;
 pub(crate) mod traps;
 pub(crate) mod utilities;
 
@@ -449,7 +450,7 @@ impl Plugin for MagicPlugin {
             .init_resource::<casting::FlightOrder>()
             .add_systems(
                 Update,
-                (accept_magic, deliver_spells)
+                (accept_magic, deliver_spells, pointcasts::update_lure)
                     .chain()
                     .after(crate::game::GameplaySet::Stats)
                     .before(crate::game::GameplaySet::Combat)
@@ -460,7 +461,7 @@ impl Plugin for MagicPlugin {
 
 /// A member asks to cast or use an item. In a fight it becomes their order
 /// for the next round; otherwise it happens at once.
-#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Message, Clone, Copy, Debug, PartialEq)]
 pub struct MagicRequest {
     pub caster: Entity,
     pub choice: casting::MagicChoice,
@@ -552,12 +553,9 @@ impl MagicContext<'_, '_> {
             difficulty: *self.difficulty,
             party: &party,
             improved: Vec::new(),
-            provoked: Vec::new(),
+            provocations: &mut self.provocations,
         };
-        let result = act(&mut field, self.content.spells());
-        self.provocations
-            .write_batch(field.provoked.drain(..).map(crate::game::world::hostility::Provocation));
-        Ok(result)
+        Ok(act(&mut field, self.content.spells()))
     }
 }
 
@@ -588,7 +586,9 @@ pub fn accept_magic(
                 items,
             )
         });
-        if spell.is_some_and(utilities::spell) {
+        if spell.is_some_and(utilities::spell)
+            && (battle.is_none() || !spell.is_some_and(pointcasts::spell))
+        {
             commands.queue(move |world: &mut World| {
                 if let Err(refusal) = utilities::cast(world, caster, choice) {
                     world.write_message(casting::MagicNews::Refused { caster, refusal });
@@ -706,24 +706,36 @@ pub fn deliver_spells(
             due.push((left, flight.launched, entity));
         }
     }
-    due.sort_unstable_by_key(|&(left, launched, _)| (left, launched));
-    for (_, _, entity) in due {
-        let flight = flights.get(entity).unwrap().1.clone();
-        commands.entity(entity).despawn();
+    let mut due: Vec<_> = due
+        .into_iter()
+        .map(|(left, launched, entity)| {
+            (left, launched, Some(entity), flights.get(entity).unwrap().1.clone())
+        })
+        .collect();
+    while let Some((index, _)) =
+        due.iter().enumerate().min_by_key(|(_, (left, launched, ..))| (*left, *launched))
+    {
+        let (at, _, entity, flight) = due.swap_remove(index);
+        if let Some(entity) = entity {
+            commands.entity(entity).despawn();
+        }
+        let mut secondary = Vec::new();
         let landed = context.resolve(clock.ms, &mut members, &mut monsters, |field, spells| {
             let spell = spells.get(flight.spell)?;
-            let victims = &flight.victims;
             let effects = impacts::resolve(
                 flight.caster,
+                flight.origin,
                 false,
                 spell,
                 flight.strength,
-                victims,
+                &flight.victims,
+                flight.finish.as_ref(),
                 party_at.unwrap_or_default(),
                 spells,
                 &mut rng,
                 field,
                 &mut points,
+                &mut secondary,
             );
             Some((effects, std::mem::take(&mut field.improved)))
         });
@@ -737,6 +749,17 @@ pub fn deliver_spells(
             effects,
             improved,
         });
+        for mut reflection in secondary {
+            context.flight_order.stamp(&mut reflection);
+            let arrival = at + reflection.arrives.remaining();
+            if arrival <= time.delta() {
+                due.push((arrival, reflection.launched, None, reflection));
+            } else {
+                reflection.arrives.tick(time.delta().saturating_sub(at));
+                let level = context.level();
+                context.flight_order.launch(&mut commands, vec![reflection], level);
+            }
+        }
     }
 }
 

@@ -215,6 +215,20 @@ fn emit_particles(
                 emitter.emitting = false;
                 break;
             }
+            let born = match config.emission {
+                ParticleEmission::CatchUp { .. } => {
+                    emitter.last_emission.unwrap() + config.interval
+                }
+                ParticleEmission::Single | ParticleEmission::None => time.elapsed(),
+            };
+            if expired(&config.lifetime, time.elapsed().saturating_sub(born)) {
+                emitter.last_emission = Some(born);
+                emitter.emitted = emitter.emitted.saturating_add(1);
+                if config.emission_limit != 0 && emitter.emitted >= config.emission_limit {
+                    emitter.emitting = false;
+                }
+                continue;
+            }
             if existing.len() >= config.capacity as usize {
                 if !config.replace_when_full || existing.is_empty() {
                     emitter.last_emission = Some(time.elapsed());
@@ -256,9 +270,8 @@ fn emit_particles(
                     * (minimum
                         + (maximum - minimum)
                             * Vec3::new(rng.0.random(), rng.0.random(), rng.0.random()));
-                let next = emitter.last_emission.unwrap() + config.interval;
-                emitter.last_emission = Some(next);
-                time.elapsed().saturating_sub(next).as_secs_f32()
+                emitter.last_emission = Some(born);
+                time.elapsed().saturating_sub(born).as_secs_f32()
             } else {
                 emitter.last_emission = Some(time.elapsed());
                 0.0
@@ -268,7 +281,7 @@ fn emit_particles(
             let particle = commands
                 .spawn((
                     Particle {
-                        born: time.elapsed(),
+                        born,
                         integrated: time.elapsed(),
                         velocity,
                         flutter_angle: rng.0.random::<f32>() * std::f32::consts::TAU,
@@ -281,7 +294,7 @@ fn emit_particles(
             if config.emission_limit != 0 && emitter.emitted >= config.emission_limit {
                 emitter.emitting = false;
             }
-            existing.push((time.elapsed(), particle));
+            existing.push((born, particle));
         }
     }
 }
@@ -346,6 +359,39 @@ pub(crate) mod tests {
     }
     fn active(scene: &mut Scenario) -> bool {
         scene.world.query::<&Emitter>().single(&scene.world).unwrap().emitting()
+    }
+
+    #[test]
+    fn catch_up_keeps_scheduled_births_and_retires_old_texture_lifetimes() {
+        let mut scene = scene();
+        {
+            let handle = scene.world.get::<Level>(scene.root).unwrap().definition.clone();
+            let mut definitions = scene.world.resource_mut::<Assets<LevelDefinition>>();
+            let config = &mut definitions.get_mut(&handle).unwrap().particles[0];
+            config.emission =
+                ParticleEmission::CatchUp { minimum: Vec3::ZERO, maximum: Vec3::ZERO };
+            config.capacity = 20;
+            config.emission_limit = 0;
+            config.lifetime = ParticleLifetime::TextureOnce(Duration::from_millis(250));
+        }
+        assert!(scene.run("ON").0);
+        step(&mut scene, 1000);
+        let born: Vec<_> = scene
+            .world
+            .query::<&Particle>()
+            .iter(&scene.world)
+            .map(|particle| particle.born)
+            .collect();
+        assert_eq!(born, [Duration::from_millis(800), Duration::from_millis(900)]);
+        let positions: Vec<_> = scene
+            .world
+            .query::<&Transform>()
+            .iter(&scene.world)
+            .map(|t| t.translation.y)
+            .filter(|y| *y > 0.0)
+            .collect();
+        assert!(positions.iter().any(|&y| (y - 0.2).abs() < 0.0001));
+        assert!(positions.iter().any(|&y| (y - 0.1).abs() < 0.0001));
     }
 
     #[test]

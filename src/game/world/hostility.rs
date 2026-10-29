@@ -24,6 +24,28 @@ pub enum Stance {
     Friendly,
 }
 
+impl Stance {
+    /// Control reads the actual condition; expiry/cure restores the group's
+    /// current stance without a second writable allegiance field.
+    pub fn controlled(self, monster: &Monster) -> Self {
+        if !monster
+            .conditions
+            .iter()
+            .any(|(c, _)| *c == crate::game::characters::Condition::Turncoat)
+        {
+            return self;
+        }
+        match self {
+            Self::Hostile => Self::Friendly,
+            Self::Friendly => Self::Hostile,
+            Self::Neutral => Self::Neutral,
+        }
+    }
+    pub fn opposes(self, other: Self) -> bool {
+        matches!((self, other), (Self::Hostile, Self::Friendly) | (Self::Friendly, Self::Hostile))
+    }
+}
+
 /// A stance something set on a group, and when (game milliseconds): the
 /// party provoking it, or coming within its hostility radius.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,6 +134,7 @@ pub fn monster_stance(world: &World, monster: Entity) -> Stance {
     let fighting = world.get::<crate::game::combat::Combatant>(monster).is_some();
     let now = world.resource::<GameClock>().ms;
     stance(set, species, world.resource::<Factions>(), now, fighting)
+        .controlled(world.get::<Monster>(monster).unwrap())
 }
 
 /// The party acted against this monster: a blow aimed at it, a hostile
@@ -119,36 +142,6 @@ pub fn monster_stance(world: &World, monster: Entity) -> Stance {
 /// `MakeTargetGroupHostile`, `ProvokeListedMonsterGroups`).
 #[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Provocation(pub Entity);
-
-/// Turn the provoked monsters' groups hostile, whatever became of the
-/// monsters since: whether each provokes was settled as the action was
-/// accepted ([`crate::game::magic::effects::Field::provoke`]). A group
-/// already hostile keeps when it was set. Entering the fight is the
-/// battle's to decide ([`crate::game::combat::start_battle`]).
-pub fn provoke(
-    mut provocations: MessageReader<Provocation>,
-    monsters: Query<(&Monster, Option<&GroupMember>, Has<crate::game::combat::Combatant>)>,
-    mut groups: Query<&mut MonsterGroup>,
-    factions: Res<Factions>,
-    clock: Res<GameClock>,
-    content: crate::game::data::Content,
-) {
-    let Some(catalog) = content.species() else {
-        provocations.clear();
-        return;
-    };
-    for &Provocation(target) in provocations.read() {
-        let Ok((monster, Some(member), fighting)) = monsters.get(target) else { continue };
-        let (Ok(mut group), Some(species)) =
-            (groups.get_mut(member.0), catalog.kind(monster.species))
-        else {
-            continue;
-        };
-        if stance(group.set, species, &factions, clock.ms, fighting) != Stance::Hostile {
-            group.set = Some(SetStance { stance: Stance::Hostile, at: clock.ms });
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {

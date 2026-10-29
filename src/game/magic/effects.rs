@@ -11,11 +11,12 @@ use crate::content::items::{Dice, EquipClass, ItemCatalog};
 use crate::content::species::{MonsterCatalog, MonsterKind};
 use crate::content::spells::{SpellDefinition, SpellId};
 use crate::game::characters::{Condition, Lasting, inflict, wake_on_hit};
-use crate::game::difficulty::{Difficulty, Side};
+use crate::game::difficulty::Difficulty;
 use crate::game::party::DamageApplied;
 use crate::game::party::formation::Formation;
 use crate::game::rng::GameRng;
 use crate::game::world::damage::{DamageOutcome, MonsterDamage};
+use crate::game::world::hostility::Stance;
 
 /// What a spell does, by retail's effect functions.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -89,7 +90,8 @@ fn kind(spell: SpellId) -> Option<Kind> {
         | SpellId::MIND_FLAY
         | SpellId::NUCLEAR_BLAST
         | SpellId::TSUNAMI => Kind::Damage,
-        SpellId::DRACON_BREATH
+        SpellId::EYE_FOR_AN_EYE
+        | SpellId::DRACON_BREATH
         | SpellId::SHADOW_HOUND
         | SpellId::CHAMELEON
         | SpellId::ACID_BOMB
@@ -148,6 +150,7 @@ fn kind(spell: SpellId) -> Option<Kind> {
         SpellId::CURE_POISON => Kind::Cure(&[Poisoned]),
         SpellId::CURE_DISEASE => Kind::Cure(&[Diseased]),
         SpellId::REMOVE_CURSE => Kind::Cure(&[Hexed]),
+        SpellId::TURNCOAT => Kind::Inflict(Turncoat, 100),
         SpellId::SANE_MIND => Kind::Cure(&[Insane, Turncoat]),
         SpellId::RESURRECTION => Kind::Resurrect,
         SpellId::LIFESTEAL => Kind::Lifesteal,
@@ -277,6 +280,9 @@ pub enum Effect {
     Resisted {
         victim: Victim,
     },
+    Reflected {
+        victim: Victim,
+    },
     Nothing {
         victim: Victim,
     },
@@ -332,7 +338,7 @@ pub struct Field<'a, 'm, 'ms, 'd, 'ds, 'f, 'p> {
     pub improved: Vec<(Entity, Skill)>,
     /// Monsters the party acted against, eligible to provoke their groups
     /// when the action was accepted ([`Field::provoke`]).
-    pub provoked: Vec<Entity>,
+    pub provocations: &'a mut MessageWriter<'p, crate::game::world::hostility::Provocation>,
 }
 
 impl Field<'_, '_, '_, '_, '_, '_, '_> {
@@ -341,11 +347,8 @@ impl Field<'_, '_, '_, '_, '_, '_, '_> {
     /// does (a kill, a Turncoat) undoes it (retail `MakeTargetGroupHostile`):
     /// a living monster not under Turncoat does.
     pub fn provoke(&mut self, monster: Entity) {
-        let eligible = self.monsters.monsters().get(monster).is_ok_and(|(body, ..)| {
-            !body.is_dead() && !body.conditions.iter().any(|&(c, _)| c == Condition::Turncoat)
-        });
-        if eligible {
-            self.provoked.push(monster);
+        if self.monsters.provoke(monster, self.now) {
+            self.provocations.write(crate::game::world::hostility::Provocation(monster));
         }
     }
 }
@@ -406,7 +409,7 @@ fn immune(kind: MonsterKind, condition: Condition) -> bool {
 }
 
 /// Rounds a condition spell inflicts (retail `RollEffectDuration`).
-fn duration(rng: &mut GameRng, spell: &SpellDefinition, strength: Strength) -> u32 {
+pub(super) fn duration(rng: &mut GameRng, spell: &SpellDefinition, strength: Strength) -> u32 {
     let base = spell.duration_per_power * i32::from(strength.power) + spell.duration_base;
     if base == 9999 {
         return 9999;
@@ -424,7 +427,7 @@ fn duration(rng: &mut GameRng, spell: &SpellDefinition, strength: Strength) -> u
 struct Target {
     level: u32,
     resistance: i32,
-    side: Option<Side>,
+    side: Option<Stance>,
     turncoat: bool,
     immune: bool,
     dead: bool,
@@ -445,7 +448,7 @@ fn target(
                 resistance: (i32::from(kind.resistances[realm])
                     + body.enchantments.resistance(realm))
                 .min(100),
-                side: Some(Side::Hostile),
+                side: Some(world.monsters.stance(monster, world.now)),
                 turncoat: false,
                 immune: condition.is_some_and(|c| immune(kind.kind, c)),
                 dead: body.is_dead(),
@@ -616,6 +619,13 @@ fn inflict_on(
     condition: Condition,
     lasting: Lasting,
 ) -> Option<()> {
+    if condition == Condition::Turncoat
+        && let Victim::Monster(entity) = victim
+        && world.monsters.stance(entity, world.now)
+            == crate::game::world::hostility::Stance::Neutral
+    {
+        return None;
+    }
     match victim {
         Victim::Monster(monster) => {
             let lasting = if condition == Condition::Slowed {
@@ -966,6 +976,7 @@ const AFFLICTIONS: [(Option<Condition>, u32); 9] = [
 /// captured order. Victims that died or left since are skipped; nobody new
 /// is added.
 pub fn resolve(
+    origin: Option<Victim>,
     backfired: bool,
     spell: &SpellDefinition,
     strength: Strength,
@@ -1440,6 +1451,17 @@ pub fn resolve(
                 }
                 Some(effect)
             });
+            if let Some(Victim::Monster(entity)) = origin {
+                if kind == Kind::Lifesteal {
+                    world.monsters.restore_health(entity, drained * 7 / 10);
+                } else {
+                    world.monsters.restore_magic(entity, drained / 2);
+                }
+                return effects;
+            }
+            if origin.is_none() {
+                return effects;
+            }
             // Retail chooses once after every target has been drained. Do not
             // heal a different member after each hit or round each share separately.
             let recipient = world
@@ -1711,7 +1733,14 @@ pub(crate) fn pulse_clouds(
             let centre = party_eye - Vec3::Y * crate::game::party::body::EYE_ABOVE_CENTRE;
             let reach =
                 crate::game::party::body::RADIUS + crate::content::species::Reach::Short.metres();
-            let victims = super::targeting::radius(world, centre, centre, reach, None);
+            let victims = super::targeting::radius(
+                world,
+                centre,
+                centre,
+                reach,
+                None,
+                super::targeting::Recipients::Opponents(Stance::Friendly),
+            );
             let mut landed = Vec::new();
             for victim in victims {
                 let amount = magnitude(

@@ -3,12 +3,27 @@
 use super::{Field, Victim};
 use bevy::prelude::*;
 
-pub(super) fn radius(
+#[derive(Clone, Copy)]
+pub(crate) enum Recipients {
+    Opponents(crate::game::world::hostility::Stance),
+    Everyone,
+}
+impl Recipients {
+    fn admits(self, side: crate::game::world::hostility::Stance) -> bool {
+        match self {
+            Self::Opponents(source) => source.opposes(side),
+            Self::Everyone => true,
+        }
+    }
+}
+
+pub(crate) fn radius(
     world: &Field,
     centre: Vec3,
     origin: Vec3,
     radius: f32,
     party_at: Option<Vec3>,
+    recipients: Recipients,
 ) -> Vec<Victim> {
     let (Some(obstacles), Some(species)) = (world.visibility, world.species) else { return vec![] };
     if radius <= 0.0 {
@@ -29,7 +44,18 @@ pub(super) fn radius(
                 .party
                 .iter()
                 .copied()
-                .filter(|&member| world.members.get(member).is_ok_and(|(_, v, ..)| !v.is_dead()))
+                .filter(|&member| {
+                    world.members.get(member).is_ok_and(|(_, v, ..)| {
+                        !v.is_dead()
+                            && recipients.admits(
+                                if v.has(crate::game::characters::Condition::Turncoat) {
+                                    crate::game::world::hostility::Stance::Hostile
+                                } else {
+                                    crate::game::world::hostility::Stance::Friendly
+                                },
+                            )
+                    })
+                })
                 .map(Victim::Member),
         );
     }
@@ -42,6 +68,7 @@ pub(super) fn radius(
             (world.monsters.active(entity)
                 && !body.is_dead()
                 && !definition.untargetable
+                && recipients.admits(world.monsters.stance(entity, world.now))
                 && at.translation().distance(centre) - body.body.radius <= radius
                 && clear(at.translation()))
             .then_some((body.location, entity))

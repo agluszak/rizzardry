@@ -50,6 +50,12 @@ pub enum DamageRefusal {
 #[derive(SystemParam)]
 pub struct MonsterDamage<'w, 's> {
     monsters: MonsterQuery<'w, 's>,
+    membership: Query<'w, 's, &'static super::identify::GroupMember>,
+    summoned: Query<'w, 's, (), With<crate::game::magic::pointcasts::SummonedBy>>,
+    lures: Query<'w, 's, &'static crate::game::magic::pointcasts::LureInfluence>,
+    combatants: Query<'w, 's, (), With<crate::game::combat::Combatant>>,
+    groups: Query<'w, 's, &'static mut super::identify::MonsterGroup>,
+    group_members: Query<'w, 's, &'static super::identify::GroupMembers>,
     motion: Query<
         'w,
         's,
@@ -77,6 +83,78 @@ impl<'w, 's> MonsterDamage<'w, 's> {
             && self.content.loot().is_some()
     }
 
+    pub fn group(&self, entity: Entity) -> Vec<Entity> {
+        use bevy::ecs::relationship::RelationshipTarget;
+        self.membership
+            .get(entity)
+            .ok()
+            .and_then(|member| self.group_members.get(member.0).ok())
+            .map_or_else(|| vec![entity], |members| members.iter().collect())
+    }
+    pub fn leader(&self, entity: Entity) -> Entity {
+        self.group(entity)
+            .into_iter()
+            .min_by_key(|&member| {
+                self.monsters.get(member).map_or(i32::MAX, |(body, ..)| body.location)
+            })
+            .unwrap_or(entity)
+    }
+    pub fn stance(&self, entity: Entity, now: u64) -> super::hostility::Stance {
+        use super::hostility::{self, Stance};
+        let Ok((monster, ..)) = self.monsters.get(entity) else { return Stance::Neutral };
+        let (Some(kind), Some(factions)) = (
+            self.content.species().and_then(|catalog| catalog.kind(monster.species)),
+            self.factions.as_deref(),
+        ) else {
+            return Stance::Neutral;
+        };
+        let set = self
+            .membership
+            .get(entity)
+            .ok()
+            .and_then(|member| self.groups.get(member.0).ok())
+            .and_then(|group| group.set);
+        hostility::stance(set, kind, factions, now, true).controlled(monster)
+    }
+
+    /// Commit hostility before damage/conditions inspect the target's side.
+    /// The later notification can start a fight even when this hit kills it.
+    pub fn provoke(&mut self, entity: Entity, now: u64) -> bool {
+        use super::hostility::{self, SetStance, Stance};
+        let Ok((body, ..)) = self.monsters.get(entity) else { return false };
+        if body.is_dead() || body.conditions.iter().any(|(c, _)| *c == Condition::Turncoat) {
+            return false;
+        }
+        let (Some(kind), Some(factions)) = (
+            self.content.species().and_then(|catalog| catalog.kind(body.species)),
+            self.factions.as_deref(),
+        ) else {
+            return false;
+        };
+        if let Ok(member) = self.membership.get(entity)
+            && let Ok(mut group) = self.groups.get_mut(member.0)
+            && hostility::stance(group.set, kind, factions, now, true) != Stance::Hostile
+        {
+            group.set = Some(SetStance { stance: Stance::Hostile, at: now });
+        }
+        true
+    }
+
+    pub fn restore_health(&mut self, entity: Entity, amount: u32) -> u32 {
+        let Ok((mut body, ..)) = self.monsters.get_mut(entity) else { return 0 };
+        if body.is_dead() {
+            return 0;
+        }
+        let before = body.hp;
+        body.hp = body.hp.saturating_add(amount).min(body.max_hp);
+        body.hp.saturating_sub(before)
+    }
+    pub fn restore_magic(&mut self, entity: Entity, amount: u32) {
+        if let Ok((mut body, ..)) = self.monsters.get_mut(entity) {
+            body.spell_points =
+                body.spell_points.saturating_add(amount.min(i32::MAX as u32) as i32);
+        }
+    }
     /// The monsters, to look at.
     pub fn monsters(&self) -> &MonsterQuery<'w, 's> {
         &self.monsters
@@ -178,6 +256,20 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         let position = feet(at.translation(), walker);
         let lost = amount.min(monster.hp);
         monster.hp -= lost;
+        if lost > 0
+            && let Ok(influence) = self.lures.get(target)
+        {
+            let influence = crate::game::magic::pointcasts::LureInfluence {
+                response: crate::game::magic::pointcasts::LureResponse::Resisted,
+                ..*influence
+            };
+            self.commands.entity(target).insert(influence);
+            if !self.combatants.contains(target)
+                && let Ok((Some(mut goal), ..)) = self.motion.get_mut(target)
+            {
+                *goal = AgentTarget3d::None;
+            }
+        }
         if !monster.is_dead() {
             crate::game::characters::wake_on_hit(
                 &mut monster.conditions,
@@ -208,6 +300,9 @@ impl<'w, 's> MonsterDamage<'w, 's> {
             velocity.velocity = Vec3::ZERO;
         }
         self.commands.entity(target).remove_with_requires::<Crossing>();
+        if self.summoned.contains(target) {
+            return Ok(DamageOutcome { damage: lost, died: true, experience: 0 });
+        }
         // The kill counts against its faction (retail `RecordFactionOffense`).
         factions.record_offence(kind.faction, kind.npc.is_some(), now);
         let (found, gold) =

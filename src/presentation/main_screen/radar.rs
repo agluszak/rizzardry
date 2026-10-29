@@ -181,6 +181,7 @@ pub fn update_radar(
         &crate::game::world::population::Monster,
         crate::game::world::ActorPose,
         Has<crate::game::combat::Combatant>,
+        &crate::game::world::level::LevelOwned,
     )>,
     views: Query<&RadarView>,
     mut blips: Query<(Entity, &mut Node, &mut BackgroundColor, &mut Visibility), With<RadarBlip>>,
@@ -189,6 +190,11 @@ pub fn update_radar(
         WorldObstacles,
     ),
     content: crate::game::data::Content,
+    (search, battle, levels): (
+        Option<Res<crate::game::world::search::Search>>,
+        Query<(), With<crate::game::combat::Battle>>,
+        Query<(), With<crate::game::world::level::Level>>,
+    ),
 ) {
     let (Ok((position, body, effects, roster)), Ok(layer)) = (party.single(), layers.single())
     else {
@@ -231,25 +237,35 @@ pub fn update_radar(
             ));
         }
     };
-    let view = crate::game::world::perception::View { eye, forward: body.forward(), far };
+    let view = crate::game::world::perception::View {
+        eye,
+        forward: body.forward(),
+        far,
+        searching: search.as_ref().is_some_and(|s| s.on(!battle.is_empty())),
+    };
     let shadow_hound = effects.is_some_and(|effects| {
         effects.0.get(crate::content::spells::SpellId::SHADOW_HOUND).is_some()
     });
-    for (entity, monster, at, in_combat) in &monsters {
+    for (entity, monster, at, in_combat, owner) in &monsters {
         let (Some(roster), Some(species)) =
             (roster, catalog.and_then(|catalog| catalog.kind(monster.species)))
         else {
             continue;
         };
-        if !view.sees(
-            members.iter_many(roster.iter()).matched(),
-            shadow_hound,
-            monster,
-            species,
-            at.translation(),
-            in_combat,
-            &obstacles,
-        ) {
+        if !levels.contains(owner.0) || !view.in_range(monster, at.translation()) {
+            continue;
+        }
+        if !xray
+            && !view.sees(
+                members.iter_many(roster.iter()).matched(),
+                shadow_hound,
+                monster,
+                species,
+                at.translation(),
+                in_combat,
+                &obstacles,
+            )
+        {
             continue;
         }
         let delta = at.translation() - position.0;
@@ -317,9 +333,45 @@ mod tests {
         ));
         app.finish();
         app.cleanup();
-        let party = app
+        use crate::game::characters::{Character, Gender, Profession, Race, Vitals};
+        use crate::game::world::{
+            level::{Level, LevelOwned},
+            population::{Monster, ScaledBody},
+        };
+        let profile = Character::new("Watcher", Race::Human, Gender::Male, Profession::Fighter);
+        let watcher = app.world_mut().spawn((Vitals::new(&profile), profile)).id();
+        let party = crate::game::party::roster::test_party(app.world_mut(), &[watcher]);
+        app.world_mut().entity_mut(party).insert((PartyBody::default(), Position::default()));
+        app.world_mut().init_resource::<Assets<crate::content::species::MonsterCatalog>>();
+        let species = app
             .world_mut()
-            .spawn((PartyBody::default(), Position::default(), PartyEffects::default()))
+            .resource_mut::<Assets<crate::content::species::MonsterCatalog>>()
+            .add(crate::content::species::MonsterCatalog(vec![default()]));
+        app.insert_resource(crate::game::data::GameData {
+            species,
+            items: default(),
+            loot: default(),
+            spells: default(),
+        });
+        let root = app.world_mut().spawn(Level::test(default())).id();
+        let monster = app
+            .world_mut()
+            .spawn((
+                Monster {
+                    enchantments: default(),
+                    location: 1,
+                    species: 0,
+                    hp: 10,
+                    max_hp: 10,
+                    stamina: 10,
+                    max_stamina: 10,
+                    conditions: vec![],
+                    spell_points: 0,
+                    body: ScaledBody { scale: 1.0, radius: 1.0, eye_height: 1.0, speed: 0.0 },
+                },
+                Transform::from_xyz(0.0, 0.0, -10.0),
+                LevelOwned(root),
+            ))
             .id();
         app.world_mut().spawn((
             PartyCamera,
@@ -347,6 +399,7 @@ mod tests {
         app.update();
         app.world_mut().run_system_once(update_radar).unwrap();
         assert!(!app.world().get::<RadarItem>(item).unwrap().seen);
+        assert!(app.world().get::<RadarView>(monster).is_none());
         app.world_mut().get_mut::<PartyEffects>(party).unwrap().0.apply(Enchantment {
             spell: SpellId::X_RAY,
             power: 1,
@@ -356,10 +409,13 @@ mod tests {
         });
         app.world_mut().run_system_once(update_radar).unwrap();
         assert!(app.world().get::<RadarItem>(item).unwrap().seen);
+        assert!(app.world().get::<RadarView>(monster).is_some());
         app.world_mut().get_mut::<PartyEffects>(party).unwrap().0.age(1);
         app.world_mut().run_system_once(update_radar).unwrap();
         assert!(app.world().get::<RadarItem>(item).unwrap().seen);
         assert!(app.world().get::<RadarView>(item).is_some());
+        let blip = app.world().get::<RadarView>(monster).unwrap().0;
+        assert_eq!(app.world().get::<Visibility>(blip), Some(&Visibility::Hidden));
     }
 
     #[test]

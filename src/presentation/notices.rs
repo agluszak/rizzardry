@@ -327,6 +327,7 @@ fn effect_line(names: &super::names::ActorNames, effect: crate::game::magic::Eff
         Effect::Tired { victim: v, amount } => format!("{} loses {amount} stamina.", victim(v)),
         Effect::Raised { victim: v } => format!("{} lives again!", victim(v)),
         Effect::Resisted { victim: v } => format!("{} resists.", victim(v)),
+        Effect::Reflected { victim: v } => format!("{} reflects the spell.", victim(v)),
         Effect::Nothing { victim: v } => format!("{} is unaffected.", victim(v)),
     }
 }

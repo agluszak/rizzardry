@@ -31,7 +31,7 @@ pub struct CaptionLine(usize);
 #[derive(Component, Clone, Default)]
 pub struct RoundProgress;
 
-#[derive(Component, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Component, Clone, Copy, Default, PartialEq)]
 enum Bank {
     #[default]
     Camp,

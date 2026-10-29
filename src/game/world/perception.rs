@@ -17,8 +17,18 @@ pub struct View {
     pub eye: Vec3,
     pub forward: Vec3,
     pub far: f32,
+    pub searching: bool,
 }
 impl View {
+    fn distance(self, monster: &Monster, at: Vec3) -> f32 {
+        (at.distance(self.eye - Vec3::Y * crate::content::EYE_HEIGHT)
+            - monster.body.radius
+            - crate::game::party::body::RADIUS)
+            .max(0.0)
+    }
+    pub fn in_range(self, monster: &Monster, at: Vec3) -> bool {
+        !monster.is_dead() && self.distance(monster, at) <= self.far
+    }
     /// Retail party-side sight. Shadow Hound supplies the full-range override,
     /// while blindness, the target's concealment and solid scenery still apply.
     pub fn sees<'a>(
@@ -31,11 +41,8 @@ impl View {
         in_combat: bool,
         obstacles: &WorldObstacles,
     ) -> bool {
-        let distance = (at.distance(self.eye - Vec3::Y * crate::content::EYE_HEIGHT)
-            - monster.body.radius
-            - crate::game::party::body::RADIUS)
-            .max(0.0);
-        if monster.is_dead() || distance > self.far {
+        let distance = self.distance(monster, at);
+        if !self.in_range(monster, at) {
             return false;
         }
         let clear = Dir3::new(at - self.eye).map_or(true, |direction| {
@@ -65,7 +72,8 @@ impl View {
                 concealment,
                 self.far,
                 distance,
-            ) >= distance
+            ) * if self.searching { 0.6667 } else { 1.0 }
+                >= distance
         })
     }
 }
@@ -131,7 +139,7 @@ mod tests {
             body: ScaledBody { scale: 1.0, radius: 0.5, eye_height: 1.0, speed: 0.0 },
         };
         let mut species = Species { level: 30, ..default() };
-        let view = View { eye: Vec3::Y * 2.0, forward: Vec3::NEG_Z, far: 60.0 };
+        let view = View { eye: Vec3::Y * 2.0, forward: Vec3::NEG_Z, far: 60.0, searching: false };
         let sees = |profile: &Character,
                     vitals: &Vitals,
                     effects: &PartyEffects,
@@ -165,6 +173,28 @@ mod tests {
         assert!(!sees(&profile, &vitals, &effects, &species, false));
         profile.profession = Profession::Monk;
         assert!(sees(&profile, &vitals, &effects, &species, false));
+        let frontal = Vec3::NEG_Z * 50.0;
+        assert!(view.sees(
+            std::iter::once((&profile, &Vitals::new(&profile))),
+            true,
+            &monster,
+            &species,
+            frontal,
+            false,
+            &obstacles
+        ));
+        assert!(
+            !View { searching: true, ..view }.sees(
+                std::iter::once((&profile, &Vitals::new(&profile))),
+                true,
+                &monster,
+                &species,
+                frontal,
+                false,
+                &obstacles
+            ),
+            "searching reduces the deterministic sight threshold even under Shadow Hound"
+        );
         effects.0.age(1);
         assert!(!sees(&profile, &vitals, &effects, &species, false));
     }

@@ -42,6 +42,7 @@ pub(super) enum SpellAim {
 /// What a casting monster sees of the fight.
 pub(super) struct Scene {
     pub caster: Entity,
+    pub party_at: Vec3,
     /// The living party: who, and what they lack.
     pub members: Vec<(Entity, Standing)>,
     /// The living monsters in the fight the caster has a clear line to,
@@ -140,7 +141,9 @@ pub(super) fn choose(
         .zip(SLOT_WEIGHTS)
         .filter_map(|(id, weight)| {
             let spell = spells.get((*id)?)?;
-            if !castable(spell, caster, kind) {
+            if !castable(spell, caster, kind)
+                || !crate::game::magic::impacts::ready(spell.id, spells)
+            {
                 return None;
             }
             let aims = aims(spell, scene);
@@ -199,7 +202,38 @@ fn victims(
     aim: SpellAim,
     scene: &Scene,
     backfired: bool,
+    field: &Field,
 ) -> Vec<Victim> {
+    if spell.targeting == Targeting::Radius {
+        let (centre, origin) = if backfired {
+            let Ok((body, at, walker, ..)) = field.monsters.monsters().get(scene.caster) else {
+                return vec![];
+            };
+            let feet = crate::game::world::navigation::feet(at.translation(), walker);
+            (feet, feet + Vec3::Y * body.body.eye_height)
+        } else {
+            (scene.party_at - Vec3::Y * crate::content::EYE_HEIGHT, scene.party_at)
+        };
+        let side = field.monsters.stance(scene.caster, field.now);
+        let source = if backfired {
+            match side {
+                crate::game::world::hostility::Stance::Hostile => {
+                    crate::game::world::hostility::Stance::Friendly
+                }
+                _ => crate::game::world::hostility::Stance::Hostile,
+            }
+        } else {
+            side
+        };
+        return crate::game::magic::targeting::radius(
+            field,
+            centre,
+            origin,
+            spell.radius + spell.radius_per_power * f32::from(power),
+            Some(scene.party_at),
+            crate::game::magic::targeting::Recipients::Opponents(source),
+        );
+    }
     if backfired {
         return match spell.targeting {
             Targeting::Caster | Targeting::Ally | Targeting::Enemy => {
@@ -211,21 +245,7 @@ fn victims(
     match aim {
         SpellAim::Monster(monster) => vec![Victim::Monster(monster)],
         SpellAim::Member(member) => vec![Victim::Member(member)],
-        SpellAim::Party => {
-            let mut victims: Vec<_> =
-                scene.members.iter().map(|&(m, _)| Victim::Member(m)).collect();
-            if spell.targeting == Targeting::Radius {
-                let radius = spell.radius + spell.radius_per_power * f32::from(power);
-                victims.extend(
-                    scene
-                        .monsters
-                        .iter()
-                        .filter(|&&(_, _, from_party, _)| from_party <= radius)
-                        .map(|&(m, ..)| Victim::Monster(m)),
-                );
-            }
-            victims
-        }
+        SpellAim::Party => scene.members.iter().map(|&(m, _)| Victim::Member(m)).collect(),
     }
 }
 
@@ -240,28 +260,62 @@ pub(super) fn cast(
     rng: &mut GameRng,
     field: &mut Field,
     points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
-) -> Report {
+) -> (Report, Vec<crate::game::magic::casting::SpellInFlight>) {
     let strength = Strength::at(u32::from(kind.level), spell, power, 0);
     let failure = crate::game::magic::spell_failure(budget, spell, power);
     let outcome = crate::game::magic::roll(rng, failure, spell, false, field.underwater);
+    let mut flights = Vec::new();
     let effects = match outcome {
         Outcome::Fizzled => Vec::new(),
         _ => {
             let backfired = outcome == Outcome::Backfired;
-            let victims = victims(spell, power, aim, scene, backfired);
-            effects::resolve(backfired, spell, strength, &victims, rng, field, points)
+            let victims = victims(spell, power, aim, scene, backfired, field);
+            let original_aim = match aim {
+                SpellAim::Monster(entity) => crate::game::magic::casting::Aim::Monster(entity),
+                SpellAim::Member(entity) => crate::game::magic::casting::Aim::Member(entity),
+                SpellAim::Party => crate::game::magic::casting::Aim::Member(
+                    scene.members.first().map_or(scene.caster, |&(entity, _)| entity),
+                ),
+            };
+            let finish = crate::game::magic::casting::Finalization {
+                aim: original_aim,
+                victims: victims.clone(),
+                reflected: false,
+            };
+            if let Some(spells) = field.spells {
+                crate::game::magic::impacts::resolve(
+                    scene.caster,
+                    crate::game::magic::casting::Origin::Actor(Victim::Monster(scene.caster)),
+                    backfired,
+                    spell,
+                    strength,
+                    &victims,
+                    Some(&finish),
+                    scene.party_at,
+                    spells,
+                    rng,
+                    field,
+                    points,
+                    &mut flights,
+                )
+            } else {
+                vec![]
+            }
         }
     };
-    Report {
-        caster: scene.caster,
-        spell: spell.id,
-        power,
-        item: None,
-        outcome,
-        effects,
-        improved: std::mem::take(&mut field.improved),
-        repeats: 0,
-    }
+    (
+        Report {
+            caster: scene.caster,
+            spell: spell.id,
+            power,
+            item: None,
+            outcome,
+            effects,
+            improved: std::mem::take(&mut field.improved),
+            repeats: 0,
+        },
+        flights,
+    )
 }
 
 #[cfg(test)]
@@ -285,6 +339,7 @@ mod tests {
         let standing = Standing { hurt, ..Default::default() };
         Scene {
             caster,
+            party_at: Vec3::ZERO,
             members: vec![(Entity::from_bits(10), Standing::default())],
             monsters: vec![(caster, 0.0, 10.0, standing)],
             party: 10.0,

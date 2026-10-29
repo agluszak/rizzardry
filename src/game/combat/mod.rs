@@ -64,7 +64,6 @@ impl Plugin for CombatPlugin {
                     give_orders,
                     // Defeat is settled before a fight starts or a round runs,
                     settle_defeat,
-                    hostility::provoke,
                     start_battle,
                     control_combat,
                     begin_round,
@@ -293,6 +292,7 @@ struct Round {
 /// The party's fight, on an entity owned by its level. Exists only while
 /// there is one.
 #[derive(Component, Debug, Default)]
+#[require(Transform)]
 pub struct Battle {
     pub round: u32,
     /// Accepted encounter history, consumed when the opening round is initialized.
@@ -780,8 +780,12 @@ pub fn start_battle(
     let shadow_hound = effects
         .single()
         .is_ok_and(|e| e.0.get(crate::content::spells::SpellId::SHADOW_HOUND).is_some());
-    let view =
-        crate::game::world::perception::View { eye: sight.eye, forward: body.forward(), far };
+    let view = crate::game::world::perception::View {
+        eye: sight.eye,
+        forward: body.forward(),
+        far,
+        searching: search.as_ref().is_some_and(|s| s.on(false)),
+    };
     let seen = joined.iter().any(|&entity| {
         let Ok((_, monster, at, ..)) = monsters.get(entity) else { return false };
         let Some(kind) = catalog.kind(monster.species) else { return false };
@@ -830,6 +834,7 @@ pub fn start_battle(
         effects
             .single()
             .is_ok_and(|e| e.0.get(crate::content::spells::SpellId::SHADOW_HOUND).is_some()),
+        search.as_ref().is_some_and(|s| s.on(false)),
         &mut rng,
     );
     news.write(CombatNews::Began);
@@ -911,12 +916,17 @@ fn leave_fight(
         }
         checked.push(group);
         let hostile = stances.contains(&(combatant, hostility::Stance::Hostile));
+        let friendly = stances.contains(&(combatant, hostility::Stance::Friendly));
+        let enemy_remains = stances.iter().any(|&(entity, stance)| {
+            stance == hostility::Stance::Hostile
+                && monsters.get(entity).is_ok_and(|(body, ..)| !body.is_dead())
+        });
         let sees = combatants.iter().filter(|&&c| group_of(c) == Some(group)).any(|&c| {
             monsters.get(c).is_ok_and(|(monster, at, walker, ..)| {
                 species.kind(monster.species).is_some_and(|k| sight.sees(monster, &at, walker, k))
             })
         });
-        if !(hostile && sees) {
+        if !(hostile && sees || friendly && enemy_remains) {
             leaving.push(group);
         }
     }
@@ -974,7 +984,12 @@ fn accept_round(
         let hands = attack::hands(&stats, carried, items, burden.load);
         let weapons =
             [EquipSlot::Primary, EquipSlot::Secondary].map(|slot| carried.worn(slot).map(|i| i.id));
-        let action = match orders.get(member).copied().unwrap_or_default() {
+        let order = if vitals.has(Condition::Turncoat) {
+            Order::Attack
+        } else {
+            orders.get(member).copied().unwrap_or_default()
+        };
+        let action = match order {
             Order::Attack => RoundAction::Attack { weapons, berserk: false },
             // One who can no longer berserk attacks as usual.
             Order::Berserk => {
@@ -1239,6 +1254,7 @@ pub fn run_battle(
                     .0
                     .get(crate::content::spells::SpellId::SHADOW_HOUND)
                     .is_some(),
+                false,
                 &mut rng,
             );
             if over {
@@ -1391,6 +1407,33 @@ fn party_turn(
     }
     if let RoundAction::Magic(choice) = work.action {
         battle.this_round.party[index].end();
+        let point_cast = magic
+            .context
+            .content
+            .items()
+            .and_then(|items| {
+                choice.source.spell_id(
+                    members.get(member).ok().map(|(_, _, carried, ..)| carried),
+                    &magic.context.inventory,
+                    items,
+                )
+            })
+            .is_some_and(crate::game::magic::pointcasts::spell);
+        if point_cast {
+            commands.queue(move |world: &mut World| {
+                if let Err(refusal) = crate::game::magic::pointcasts::cast(world, member, choice) {
+                    world.write_message(MagicNews::Refused { caster: member, refusal });
+                    if let Ok(mut query) = world.try_query::<&mut Battle>().ok_or(())
+                        && let Ok(mut battle) = query.single_mut(world)
+                        && let Some(work) =
+                            battle.this_round.party.iter_mut().find(|work| work.actor == member)
+                    {
+                        work.action = RoundAction::Defend;
+                    }
+                }
+            });
+            return true;
+        }
         match member_casts(combatants, member, choice, rng, members, damage, party, magic) {
             Ok((report, flights)) => {
                 battle.this_round.attacked = true;
@@ -1627,6 +1670,8 @@ fn monster_turn(
         battle.this_round.monsters[index].1 = Turn::default();
         return false;
     }
+    let stance =
+        damage.monsters().get(monster).map_or(stance, |(body, ..)| stance.controlled(body));
     let turn = battle.this_round.monsters[index].1;
     let mut plan = None;
     // A monster decides as its round's action begins, not again between
@@ -1659,7 +1704,7 @@ fn monster_turn(
             commands.entity(monster).insert(approach::CombatMove {
                 budget: metres,
                 moved: 0.0,
-                away: Some(away),
+                goal: approach::MoveGoal::Retreat(away),
             });
             news.write(match conduct {
                 conduct::Conduct::Flee => CombatNews::Flees { monster },
@@ -1672,7 +1717,8 @@ fn monster_turn(
         // cannot always tries.
         let reaches = kind.attacks.iter().any(|a| nearest <= a.reach.metres());
         let closes_in = !kind.temper.prefers_range && !kind.attacks.is_empty() && !reaches;
-        if kind.magic.chance != 0
+        if stance == hostility::Stance::Hostile
+            && kind.magic.chance != 0
             && !closes_in
             && let Some(spells) = magic.context.content.spells()
         {
@@ -1708,7 +1754,10 @@ fn monster_turn(
         let report = context.with_field(party.now, members, damage, |field| {
             monster_spells::cast((&spell, power, aim), caster, &scene, rng, field, points)
         });
-        if let Ok(report) = report {
+        if let Ok((report, flights)) = report {
+            battle.credit_kills(&report.effects, news);
+            let level = context.level();
+            context.flight_order.launch(commands, flights, level);
             context.news.write(crate::game::magic::casting::MagicNews::Done(report));
         }
         return true;
@@ -1723,23 +1772,59 @@ fn monster_turn(
             blows::monster_attacks(battle, index, rng, field, &mut fight, news)
         })
         .unwrap_or(false);
-    if idle
-        && !battle.this_round.moved.contains(&monster)
-        && let Ok((walker_monster, at, walker, ..)) = damage.monsters().get(monster)
-        && let Some(budget) =
-            approach::move_budget(walker_monster, at.translation(), walker, party.eye, species)
-    {
-        battle.this_round.moved.push(monster);
-        battle.this_round.monsters[index].1 =
-            Turn { phase: (u32::from(step) * 2).min(100) as u8, attacks_left: turn.attacks_left };
-        let charge = budget.charge;
-        commands.entity(monster).insert(approach::CombatMove {
-            budget: budget.metres,
-            moved: 0.0,
-            away: None,
+    if idle && !battle.this_round.moved.contains(&monster) {
+        let destination = if stance == hostility::Stance::Friendly {
+            damage.monsters().get(monster).ok().and_then(|(_, here, ..)| {
+                combatants
+                    .iter()
+                    .filter_map(|&entity| {
+                        let (body, at, ..) = damage.monsters().get(entity).ok()?;
+                        (!body.is_dead() && stance.opposes(damage.stance(entity, party.now)))
+                            .then_some((
+                                here.translation().distance_squared(at.translation()),
+                                entity,
+                            ))
+                    })
+                    .min_by(|a, b| a.0.total_cmp(&b.0))
+                    .map(|(_, entity)| entity)
+            })
+        } else {
+            None
+        };
+        let budget = damage.monsters().get(monster).ok().and_then(|(body, at, walker, ..)| {
+            if let Some(target) = destination {
+                let kind = species.kind(body.species)?;
+                walker.filter(|walker| walker.speed > 0.0)?;
+                let charge = body.hp * 100 <= body.max_hp * 95;
+                Some((
+                    approach::MoveBudget {
+                        metres: approach::move_metres(body, kind, charge),
+                        charge,
+                    },
+                    approach::MoveGoal::Attack(target),
+                ))
+            } else if stance == hostility::Stance::Hostile {
+                approach::move_budget(body, at.translation(), walker, party.eye, species)
+                    .map(|budget| (budget, approach::MoveGoal::Party))
+            } else {
+                None
+            }
         });
-        news.write(CombatNews::Moves { monster, charge });
+        if let Some((budget, goal)) = budget {
+            battle.this_round.moved.push(monster);
+            battle.this_round.monsters[index].1 = Turn {
+                phase: (u32::from(step) * 2).min(100) as u8,
+                attacks_left: turn.attacks_left,
+            };
+            commands.entity(monster).insert(approach::CombatMove {
+                budget: budget.metres,
+                moved: 0.0,
+                goal,
+            });
+            news.write(CombatNews::Moves { monster, charge: budget.charge });
+        }
     }
+
     true
 }
 
@@ -1756,6 +1841,7 @@ fn spell_scene(
     let Ok((body, at, walker, ..)) = monsters.get(caster) else {
         return monster_spells::Scene {
             caster,
+            party_at: sight.eye,
             members: vec![],
             monsters: vec![],
             party: f32::INFINITY,
@@ -1773,6 +1859,7 @@ fn spell_scene(
     };
     monster_spells::Scene {
         caster,
+        party_at: party_eye,
         party: distance_to_party(party_eye, body, feet_at),
         sees_party: sight.sees(body, &at, walker, kind),
         members: roster
@@ -1916,7 +2003,10 @@ fn end_round(
     });
     let active = battle.this_round.attacked || approaching;
     battle.passive_rounds = if active { 0 } else { battle.passive_rounds + 1 };
-    let hostiles_left = staying.iter().any(|&e| monsters.get(e).is_ok_and(|(m, ..)| !m.is_dead()));
+    let hostiles_left = staying.iter().any(|&e| {
+        damage.stance(e, clock.ms) == hostility::Stance::Hostile
+            && monsters.get(e).is_ok_and(|(m, ..)| !m.is_dead())
+    });
     if hostiles_left && battle.passive_rounds < PASSIVE_ROUNDS {
         return false;
     }
@@ -2186,6 +2276,77 @@ mod tests {
         let news: Vec<_> = app.world_mut().resource_mut::<Messages<CombatNews>>().drain().collect();
         assert!(!news.contains(&CombatNews::Breathed { actor }));
         assert!(fight(app.world()).unwrap().defends(actor));
+    }
+
+    #[test]
+    fn turncoat_monsters_attack_their_former_allies_and_members_lose_order_control() {
+        use crate::content::species::{MonsterAttack, MonsterWeapon};
+        use crate::game::characters::Lasting;
+        let (mut app, [a, b]) = round_app(true);
+        for actor in [a, b] {
+            app.world_mut().get_mut::<Vitals>(actor).unwrap().hp = 10000;
+            app.world_mut().entity_mut(actor).insert(Order::Defend);
+        }
+        let first =
+            app.world_mut().query_filtered::<Entity, With<Monster>>().single(app.world()).unwrap();
+        let owner = *app.world().get::<LevelOwned>(first).unwrap();
+        let battle = app.world().get::<Combatant>(first).unwrap().0;
+        let mut copy = app.world().get::<Monster>(first).unwrap().clone();
+        copy.location = 1;
+        let second = app
+            .world_mut()
+            .spawn((copy, Transform::from_xyz(0.5, 0.0, -1.0), owner, Combatant(battle)))
+            .id();
+        crate::game::characters::inflict(
+            &mut app.world_mut().get_mut::<Monster>(first).unwrap().conditions,
+            Condition::Turncoat,
+            Lasting::Rounds(2),
+        );
+        let handle = app.world().resource::<GameData>().species.clone();
+        {
+            let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
+            let kind = &mut catalogs.get_mut(&handle).unwrap().0[0];
+            kind.attacks_per_round = 1;
+            kind.swings_per_round = 3;
+            kind.attacks = vec![MonsterAttack {
+                word: AttackWord::Bite,
+                weapon: MonsterWeapon::Unarmed,
+                reach: Reach::Touch,
+                score: 255,
+                modes: EnumSet::only(AttackMode::Swing),
+                damage: Dice { count: 0, sides: 0, base: 3 },
+                effects: default(),
+            }];
+        }
+        let mut targets = vec![];
+        for _ in 0..5 {
+            app.update();
+            targets.extend(
+                app.world_mut().resource_mut::<Messages<CombatNews>>().drain().filter_map(|news| {
+                    match news {
+                        CombatNews::Attack { attacker, target, .. } if attacker == first => {
+                            Some(target)
+                        }
+                        _ => None,
+                    }
+                }),
+            );
+        }
+        assert_eq!(targets, [second]);
+        assert!(app.world().get::<Monster>(second).unwrap().hp < 10000);
+        app.world_mut()
+            .get_mut::<Vitals>(a)
+            .unwrap()
+            .inflict(Condition::Turncoat, Lasting::Rounds(2));
+        {
+            let mut battle = fight_mut(app.world_mut());
+            battle.phase = RoundPhase::Waiting;
+            battle.wait = default();
+        }
+        app.world_mut().write_message(StartRound);
+        app.update();
+        let news: Vec<_> = app.world_mut().resource_mut::<Messages<CombatNews>>().drain().collect();
+        assert!(news.iter().any(|news| matches!(news, CombatNews::Attack { attacker, target, .. } if *attacker == a && (*target == b || crate::game::world::hostility::monster_stance(app.world(), *target) == hostility::Stance::Friendly))), "a controlled member does not keep the player's defend order: {news:?}");
     }
 
     #[test]
@@ -2681,6 +2842,8 @@ mod tests {
             let markers: Vec<Entity> = (0..4).map(|_| app.world_mut().spawn_empty().id()).collect();
             let flights = [(0.3, 0), (0.1, 1), (0.2, 2), (0.1, 3)]
                 .map(|(seconds, marker)| SpellInFlight {
+                    origin: casting::Origin::Actor(Victim::Member(caster)),
+                    finish: None,
                     caster: markers[marker],
                     spell: crate::content::spells::SpellId::ENERGY_BLAST,
                     strength: Strength { power: 1, against: 1, boost: 0 },
@@ -2769,6 +2932,15 @@ mod tests {
         victim: Victim,
     ) -> crate::game::magic::casting::SpellInFlight {
         crate::game::magic::casting::SpellInFlight {
+            origin: casting::Origin::Actor(Victim::Member(caster)),
+            finish: Some(casting::Finalization {
+                aim: match victim {
+                    Victim::Member(entity) => casting::Aim::Member(entity),
+                    Victim::Monster(entity) => casting::Aim::Monster(entity),
+                },
+                victims: vec![victim],
+                reflected: false,
+            }),
             caster,
             spell,
             strength: crate::game::magic::Strength { power: 1, against: 1, boost: 0 },
@@ -2776,6 +2948,193 @@ mod tests {
             arrives: Timer::from_seconds(0.1, TimerMode::Once),
             launched: 0,
         }
+    }
+
+    #[test]
+    fn monster_blasts_use_the_explosion_origin_instead_of_caster_aim_visibility() {
+        use crate::game::{
+            characters::Lasting, magic::effects::Standing, world::obstacles::scenery,
+        };
+        use avian3d::prelude::{Collider, RigidBody};
+        use bevy::ecs::system::RunSystemOnce;
+        let (mut app, members) = round_app_with_colliders(true, true);
+        app.world_mut().resource_mut::<Messages<StartRound>>().clear();
+        let spell = crate::content::spells::SpellDefinition {
+            targeting: crate::content::spells::Targeting::Radius,
+            radius: 10.0,
+            dice: Some(Dice { count: 0, sides: 0, base: 3 }),
+            ..energy_blast()
+        };
+        let caster = order_spell(&mut app, members[0], spell.clone());
+        app.world_mut().entity_mut(caster).insert(Transform::from_xyz(-5.0, 0.0, -5.0));
+        for member in members {
+            app.world_mut().get_mut::<Vitals>(member).unwrap().hp = 10000;
+        }
+        let owner = *app.world().get::<LevelOwned>(caster).unwrap();
+        let mut target = app.world().get::<Monster>(caster).unwrap().clone();
+        target.conditions.push((Condition::Turncoat, Lasting::Rounds(10)));
+        target.location = 1;
+        let exposed = app
+            .world_mut()
+            .spawn((target.clone(), Transform::from_xyz(0.0, 0.0, -5.0), owner))
+            .id();
+        target.location = 2;
+        let shielded =
+            app.world_mut().spawn((target, Transform::from_xyz(-5.0, 0.0, 0.0), owner)).id();
+        for z in [-5.0, 0.0] {
+            app.world_mut().spawn((
+                RigidBody::Static,
+                Collider::cuboid(0.2, 20.0, 2.0),
+                scenery(),
+                Transform::from_xyz(-2.5, 0.0, z),
+            ));
+        }
+        app.update();
+        app.update();
+        let scene = monster_spells::Scene {
+            caster,
+            party_at: Vec3::Y,
+            party: 7.0,
+            sees_party: true,
+            members: vec![],
+            monsters: vec![(shielded, 5.0, 5.0, Standing::default())],
+        };
+        app.world_mut()
+            .run_system_once(
+                move |mut context: MagicContext,
+                      mut members: Members,
+                      mut damage: MonsterDamage,
+                      mut rng: ResMut<GameRng>,
+                      mut points: Query<(&LearnedSpells, &mut SpellPoints)>,
+                      content: crate::game::data::Content| {
+                    let kind = &content.species().unwrap().0[0];
+                    context
+                        .with_field(0, &mut members, &mut damage, |field| {
+                            monster_spells::cast(
+                                (&spell, 1, monster_spells::SpellAim::Party),
+                                (kind, 100),
+                                &scene,
+                                &mut rng,
+                                field,
+                                &mut points,
+                            )
+                        })
+                        .unwrap()
+                },
+            )
+            .unwrap();
+        assert!(
+            app.world().get::<Monster>(exposed).unwrap().hp < 10000,
+            "hidden from the caster, visible to the explosion"
+        );
+        assert_eq!(
+            app.world().get::<Monster>(shielded).unwrap().hp,
+            10000,
+            "visible to the caster, behind scenery from the explosion"
+        );
+    }
+
+    #[test]
+    fn eye_for_an_eye_finishes_after_all_hits_spends_the_strongest_charge_once_and_does_not_loop() {
+        use crate::content::spells::{SpellId, Targeting};
+        use crate::game::magic::{Strength, enchantments::Enchantment};
+        let run = |steps| {
+            let (mut app, [caster, other]) = round_app(true);
+            for actor in [caster, other] {
+                app.world_mut().get_mut::<Vitals>(actor).unwrap().hp = 10000;
+            }
+            let target = order_spell(
+                &mut app,
+                caster,
+                crate::content::spells::SpellDefinition {
+                    targeting: Targeting::EnemyGroup,
+                    dice: Some(Dice { count: 0, sides: 0, base: 3 }),
+                    ..energy_blast()
+                },
+            );
+            let owner = *app.world().get::<LevelOwned>(target).unwrap();
+            let battle = app.world().get::<Combatant>(target).unwrap().0;
+            let mut copy = app.world().get::<Monster>(target).unwrap().clone();
+            copy.location = 1;
+            let strongest = app
+                .world_mut()
+                .spawn((copy, Transform::from_translation(Vec3::NEG_Z), owner, Combatant(battle)))
+                .id();
+            let enchantment = |power| Enchantment {
+                spell: SpellId::EYE_FOR_AN_EYE,
+                power,
+                boost: 0,
+                turns: 10,
+                absorption: 0,
+            };
+            app.world_mut().get_mut::<Monster>(target).unwrap().enchantments.apply(enchantment(3));
+            app.world_mut()
+                .get_mut::<Monster>(strongest)
+                .unwrap()
+                .enchantments
+                .apply(enchantment(5));
+            app.world_mut().get_mut::<Vitals>(caster).unwrap().enchantments.apply(enchantment(7));
+            let mut first = missile(caster, SpellId::ENERGY_BLAST, Victim::Monster(target));
+            first.strength = Strength { power: 2, against: 20, boost: 0 };
+            first.finish = None;
+            let mut last = missile(caster, SpellId::ENERGY_BLAST, Victim::Monster(strongest));
+            last.strength = first.strength;
+            last.arrives = Timer::from_seconds(0.3, TimerMode::Once);
+            last.finish = Some(casting::Finalization {
+                aim: casting::Aim::Monster(target),
+                victims: vec![Victim::Monster(target), Victim::Monster(strongest)],
+                reflected: false,
+            });
+            app.world_mut().resource_mut::<Messages<StartRound>>().clear();
+            let world = app.world_mut();
+            let mut commands = world.commands();
+            let mut order = casting::FlightOrder::default();
+            order.launch(&mut commands, vec![first, last], owner.0);
+            world.flush();
+            world.resource_mut::<Messages<MagicNews>>().clear();
+            for _ in 0..steps {
+                world
+                    .resource_mut::<Time<Virtual>>()
+                    .advance_by(std::time::Duration::from_secs_f32(0.5 / steps as f32));
+                world.run_system_cached(crate::game::magic::deliver_spells).unwrap();
+                world.flush();
+            }
+            let reflections = world.resource_mut::<Messages<MagicNews>>().drain().flat_map(|event| match event { MagicNews::Landed { effects, .. } => effects, _ => vec![] }).filter(|effect| matches!(effect, Effect::Reflected { victim: Victim::Monster(entity) } if *entity == strongest)).count();
+            assert_eq!(reflections, 1);
+            assert_eq!(
+                world
+                    .get::<Monster>(target)
+                    .unwrap()
+                    .enchantments
+                    .get(SpellId::EYE_FOR_AN_EYE)
+                    .unwrap()
+                    .power,
+                3
+            );
+            assert_eq!(
+                world
+                    .get::<Monster>(strongest)
+                    .unwrap()
+                    .enchantments
+                    .get(SpellId::EYE_FOR_AN_EYE)
+                    .unwrap()
+                    .power,
+                4
+            );
+            assert_eq!(
+                world
+                    .get::<Vitals>(caster)
+                    .unwrap()
+                    .enchantments
+                    .get(SpellId::EYE_FOR_AN_EYE)
+                    .unwrap()
+                    .power,
+                7
+            );
+            assert_eq!(world.query::<&casting::SpellInFlight>().iter(world).count(), 0);
+            (world.get::<Vitals>(caster).unwrap().hp, world.resource::<GameRng>().clone())
+        };
+        assert_eq!(run(1), run(5));
     }
 
     #[test]
@@ -3116,7 +3475,7 @@ mod tests {
         assert!(ran, "it runs");
         let order = app.world().get::<approach::CombatMove>(monster).unwrap();
         assert_eq!(order.budget, 20.0);
-        let away = order.away.expect("away from the party");
+        let approach::MoveGoal::Retreat(away) = order.goal else { panic!("away from the party") };
         assert!(away.z < -39.0, "a whole move further off: {away}");
         assert!(fight(app.world()).unwrap().fleeing.contains(&monster));
     }

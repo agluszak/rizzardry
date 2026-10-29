@@ -125,6 +125,7 @@ impl GroupRecognition<'_, '_> {
         forward: Vec3,
         combatants: Option<&[Entity]>,
         shadow_hound: bool,
+        searching: bool,
         rng: &mut GameRng,
     ) {
         let (Some(level), Some(far)) = (self.level.entity(), self.level.view_distance()) else {
@@ -134,7 +135,7 @@ impl GroupRecognition<'_, '_> {
             return;
         };
         let Some(obstacles) = self.obstacles.as_ref() else { return };
-        let view = super::perception::View { eye: from, forward, far };
+        let view = super::perception::View { eye: from, forward, far, searching };
         let (groups, monsters, roster, members, news) =
             (&mut self.groups, &self.monsters, &self.roster, &mut self.members, &mut self.news);
         // Authored group order determines gameplay RNG use. Membership itself is
@@ -289,7 +290,14 @@ mod tests {
                  mut recognition: GroupRecognition,
                  mut rng: ResMut<GameRng>| {
                     let (at, body) = party.single().unwrap();
-                    recognition.detect(PartyBody::eye(at), body.forward(), None, false, &mut rng);
+                    recognition.detect(
+                        PartyBody::eye(at),
+                        body.forward(),
+                        None,
+                        false,
+                        false,
+                        &mut rng,
+                    );
                 },
             );
         let geometry = app

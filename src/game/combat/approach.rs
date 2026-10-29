@@ -29,8 +29,15 @@ const REACH_MARGIN: f32 = 0.3;
 pub struct CombatMove {
     pub budget: f32,
     pub moved: f32,
-    /// Off to here, away from the party, rather than at it.
-    pub away: Option<Vec3>,
+    pub goal: MoveGoal,
+}
+
+/// An accepted destination; navigation projects it into its current target.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MoveGoal {
+    Party,
+    Retreat(Vec3),
+    Attack(Entity),
 }
 
 /// Whether this living walker still needs to close to attack range. Combat's
@@ -110,20 +117,39 @@ pub fn close_in(
     party: Query<(Entity, &Position), With<PartyBody>>,
     mut walkers: Query<(Entity, &Monster, ActorPose, &Walker, &mut AgentTarget3d, &mut CombatMove)>,
     content: crate::game::data::Content,
+    targets: Query<(&Monster, ActorPose, Option<&Walker>)>,
 ) {
     let Some(catalog) = content.species() else { return };
     let Ok((party, party_at)) = party.single() else { return };
     let party_eye = PartyBody::eye(party_at);
     for (entity, monster, at, walker, mut target, mut movement) in &mut walkers {
         movement.moved += walker.speed * time.delta_secs();
-        let continues = monster.can_fight()
-            && movement.moved < movement.budget
-            && (movement.away.is_some()
-                || needs_approach(monster, at.translation(), Some(walker), party_eye, catalog));
-        let heading = match movement.away {
-            Some(point) => AgentTarget3d::Point(point),
-            None => AgentTarget3d::Entity(party),
+        let (needs_move, heading) = match movement.goal {
+            MoveGoal::Retreat(point) => (true, AgentTarget3d::Point(point)),
+            MoveGoal::Party => (
+                needs_approach(monster, at.translation(), Some(walker), party_eye, catalog),
+                AgentTarget3d::Entity(party),
+            ),
+            MoveGoal::Attack(entity) => {
+                let needed = targets.get(entity).is_ok_and(|(target, target_at, target_walker)| {
+                    let here = crate::game::world::navigation::feet(at.translation(), Some(walker));
+                    let there = crate::game::world::navigation::feet(
+                        target_at.translation(),
+                        target_walker,
+                    );
+                    let reach = catalog
+                        .kind(monster.species)
+                        .and_then(|kind| kind.attacks.iter().map(|a| a.reach).max())
+                        .unwrap_or(Reach::Touch)
+                        .metres();
+                    !target.is_dead()
+                        && here.distance(there) - monster.body.radius - target.body.radius
+                            > reach - REACH_MARGIN
+                });
+                (needed, AgentTarget3d::Entity(entity))
+            }
         };
+        let continues = monster.can_fight() && movement.moved < movement.budget && needs_move;
         if !continues {
             commands.entity(entity).remove::<CombatMove>();
         } else if *target != heading {
