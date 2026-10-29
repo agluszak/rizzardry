@@ -173,11 +173,6 @@ fn back_to_party(forward: Vec3, at: Vec3, party_eye: Vec3) -> bool {
         && forward.angle_to(to_party).abs() >= std::f32::consts::FRAC_PI_4 * 3.0
 }
 
-/// A trait's chance by monster level (retail `ScaleValueByMonsterLevel`).
-fn by_monster_level(level: u8, value: f32) -> f32 {
-    if level > 20 { value } else { (f32::from(level) * 2.0 + 60.0) * value * 0.01 }
-}
-
 /// How a member stands this round, for the blows aimed at them.
 fn member_defence(
     battle: &Battle,
@@ -1012,7 +1007,7 @@ pub(super) fn monster_attacks(
         swings,
         surprise,
     });
-    let backstab = by_monster_level(kind.level, 100.0) as i32;
+    let backstab = crate::game::characters::scale_by_level(kind.level, 100.0) as i32;
     let mut tally = Tally::default();
     for _ in 0..swings {
         let Ok((monster, ..)) = field.monsters.monsters().get(entity) else { break };

@@ -281,6 +281,11 @@ pub struct ItemDefinition {
 }
 
 impl ItemDefinition {
+    /// Its name as the party knows it: the true one once identified.
+    pub fn known_name(&self, identified: bool) -> &str {
+        if identified { &self.name } else { &self.unidentified_name }
+    }
+
     pub fn requires_worn(&self) -> bool {
         use EquipClass::*;
         self.must_equip_to_use

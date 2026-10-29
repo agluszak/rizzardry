@@ -40,6 +40,13 @@ pub enum Condition {
 
 /// Whether a party member or monster can fight: alive and nothing worse than
 /// webbed (retail `highest_condition < ASLEEP`).
+/// A value by a level: full past twenty levels, 60% at none and two points
+/// more a level (retail `ScaleValueByProfessionLevel` and
+/// `ScaleValueByMonsterLevel`, one formula).
+pub fn scale_by_level(level: u8, value: f32) -> f32 {
+    if level > 20 { value } else { (f32::from(level) * 2.0 + 60.0) * value * 0.01 }
+}
+
 /// Whether anyone among these is still alive: a party with nobody is
 /// defeated.
 pub fn anyone_alive<'a>(vitals: impl IntoIterator<Item = &'a Vitals>) -> bool {
@@ -652,8 +659,7 @@ impl Character {
     /// twenty levels, 60% at none and two points more a level (retail
     /// `ScaleValueByProfessionLevel`).
     pub fn scale_by_profession(&self, value: f32) -> f32 {
-        let level = self.profession_levels[self.profession];
-        if level > 20 { value } else { (f32::from(level) * 2.0 + 60.0) * value * 0.01 }
+        scale_by_level(self.profession_levels[self.profession], value)
     }
 
     /// Percent taken off every blow that lands on them, without spells.

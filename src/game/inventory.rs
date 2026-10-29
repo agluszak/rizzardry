@@ -84,8 +84,12 @@ impl ItemStack {
         self.remaining_uses
     }
     pub fn display_name(&self, definition: &ItemDefinition, count: bool) -> String {
-        let name = if self.identified { &definition.name } else { &definition.unidentified_name };
-        if count && self.count() > 1 { format!("{name} ({})", self.count()) } else { name.clone() }
+        let name = definition.known_name(self.identified);
+        if count && self.count() > 1 {
+            format!("{name} ({})", self.count())
+        } else {
+            name.to_owned()
+        }
     }
     /// Split a proper subset; only the additional surviving stack gets an ID.
     pub fn split_off(&mut self, amount: u16, ids: &mut ItemIds) -> Option<Self> {

@@ -35,9 +35,7 @@ impl WorldItem {
     pub fn display_name(&self, definition: &ItemDefinition, count: bool) -> String {
         match &self.loot {
             GroundLoot::Loose(s) => s.display_name(definition, count),
-            GroundLoot::Pile { identified, .. } => {
-                if *identified { &definition.name } else { &definition.unidentified_name }.clone()
-            }
+            GroundLoot::Pile { identified, .. } => definition.known_name(*identified).to_owned(),
         }
     }
     pub fn stacks(&self) -> &[ItemStack] {
