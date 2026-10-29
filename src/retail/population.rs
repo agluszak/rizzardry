@@ -228,7 +228,7 @@ fn read_monsters(data: &[u8]) -> Result<Vec<Placement>, DecodeError> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     fn chunk(id: &[u8; 4], payload: &[u8]) -> Vec<u8> {
@@ -240,7 +240,7 @@ mod tests {
     }
 
     /// A level state file holding one chunk.
-    fn level_state(id: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+    pub(in crate::retail) fn level_state(id: &[u8; 4], payload: &[u8]) -> Vec<u8> {
         let mut level = [1u32.to_le_bytes(), 7u32.to_le_bytes()].concat();
         level.extend(chunk(id, payload));
         let mut root = 1u32.to_le_bytes().to_vec();

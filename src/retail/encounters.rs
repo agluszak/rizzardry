@@ -6,6 +6,8 @@ use crate::bytes::{Bytes, DecodeError, lenient_string};
 use crate::content::level::{
     EncounterEntry, EncounterLimits, EncounterTable, EncounterTime, Encounters, Generator,
 };
+#[cfg(test)]
+use bevy::math::Vec3;
 
 use super::space::retail_position;
 
@@ -139,4 +141,111 @@ pub fn read_tables(data: &[u8]) -> Result<Vec<EncounterTable>, DecodeError> {
             Ok(EncounterTable { name, entries })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn name(text: &str, width: usize) -> Vec<u8> {
+        let mut bytes = text.as_bytes().to_vec();
+        bytes.resize(width, 0);
+        bytes
+    }
+
+    /// Two tables, the second a harassment one with two entries.
+    fn tables() -> Vec<u8> {
+        let mut bytes = 1i32.to_le_bytes().to_vec();
+        bytes.extend(name("Ignored", 0x100));
+        bytes.extend(2i32.to_le_bytes());
+        for (table, entries) in [("Woods", 1u8), ("HARASSMENT Rattkin", 2)] {
+            bytes.push(0);
+            bytes.extend(name(table, 0x100));
+            bytes.extend(4u32.to_le_bytes());
+            bytes.extend(2u16.to_le_bytes());
+            bytes.push(entries);
+            for species in [12u16, 300].iter().take(usize::from(entries)) {
+                bytes.extend(species.to_le_bytes());
+            }
+            bytes.extend([20, 70].iter().take(usize::from(entries)));
+            bytes.extend([1, 2].iter().take(usize::from(entries)));
+            bytes.extend([5, 9].iter().take(usize::from(entries)));
+            bytes.extend(vec![0; 64 * usize::from(entries)]);
+            bytes.push(0);
+        }
+        bytes
+    }
+
+    /// The encounter state of a level with one generator on the second
+    /// table, using the defaults, 30% through its timer.
+    fn mong() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for word in [5i32, 3, 14, 180] {
+            bytes.extend(word.to_le_bytes());
+        }
+        bytes.push(0);
+        for short in [60i16, 25, -1] {
+            bytes.extend(short.to_le_bytes());
+        }
+        bytes.extend(1i32.to_le_bytes());
+        bytes.push(3);
+        bytes.extend(name("MonGen001", 32));
+        bytes.push(1);
+        bytes.extend(8u32.to_le_bytes());
+        bytes.push(40);
+        bytes.extend(90u16.to_le_bytes());
+        bytes.extend(0xffffu16.to_le_bytes());
+        for coordinate in [500.0f32, 0.0, 1000.0] {
+            bytes.extend(coordinate.to_le_bytes());
+        }
+        bytes.extend(1i32.to_le_bytes());
+        bytes.extend(0.3f32.to_le_bytes());
+        bytes.extend(1.0f32.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn generators_resolve_their_tables_and_the_level_row_its_bounds() {
+        let tables = read_tables(&tables()).unwrap();
+        assert_eq!(tables.len(), 2);
+        assert_eq!(
+            tables[1].entries[1],
+            EncounterEntry { species: 300, rarity: 70, time: EncounterTime::Always, challenge: 9 }
+        );
+        assert_eq!(tables[0].entries[0].time, EncounterTime::Night);
+        let state = crate::retail::population::tests::level_state(b"MONG", &mong());
+        let encounters = read_generators(&state, &tables).unwrap().unwrap();
+        assert_eq!(encounters.budget, 14);
+        assert_eq!((encounters.default_chance, encounters.default_interval), (60, 25));
+        let generator = &encounters.generators[0];
+        assert_eq!(generator.name, "MonGen001");
+        assert!(generator.enabled && generator.uses_defaults && !generator.disabled);
+        assert!(generator.harasses, "a harassment table marks its generator");
+        assert_eq!((generator.chance, generator.interval), (40, 90));
+        assert_eq!(generator.position, Vec3::new(1.0, 0.0, -2.0));
+        assert!((generator.progress - 0.3).abs() < 1e-6);
+        assert_eq!(generator.table.as_ref().unwrap().name, "HARASSMENT Rattkin");
+
+        let mut levels = 3u32.to_le_bytes().to_vec();
+        for level in 0..3i32 {
+            let mut row = vec![0; LEVEL_RECORD];
+            for (i, word) in [10i32, 2, 20, 5, 600, 180].iter().enumerate() {
+                let at = LEVEL_LIMITS_AT + 4 * i;
+                row[at..at + 4].copy_from_slice(&(word * (level + 1)).to_le_bytes());
+            }
+            levels.extend(row);
+        }
+        assert_eq!(
+            read_limits(&levels, 1).unwrap(),
+            Some(EncounterLimits {
+                most: 20,
+                fewest: 4,
+                largest_budget: 40,
+                smallest_budget: 10,
+                period: 1200,
+                lingers: 360,
+            })
+        );
+        assert_eq!(read_limits(&levels, 3).unwrap(), None);
+    }
 }
