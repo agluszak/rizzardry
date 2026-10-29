@@ -163,9 +163,7 @@ pub fn take_item(world: &mut World, target: Entity) -> Result<(), Refusal> {
 /// current level and party activity: it stops short of what it hits and
 /// rests above the ground below, or stays in hand if there is no ground.
 pub fn drop_held(world: &mut World, level: Entity, aim: Dir3) -> Result<Entity, Refusal> {
-    if !crate::game::freedom::free_in(world)
-        || world.get::<super::level::Level>(level).is_none()
-    {
+    if !crate::game::freedom::free_in(world) || world.get::<super::level::Level>(level).is_none() {
         return Err(Refusal::DoesNotFit);
     }
     let eye = crate::game::party::body::PartyBody::eye_in(world).ok_or(Refusal::Nothing)?;
