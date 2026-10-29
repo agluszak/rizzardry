@@ -174,7 +174,6 @@ enum Answer {
 }
 #[derive(Component, PartialEq)]
 struct Choice {
-    session: Entity,
     index: usize,
     revision: u64,
     answer: Answer,
@@ -187,7 +186,6 @@ struct SubmitTopic;
 struct TradeList;
 #[derive(Component, Clone, Copy, PartialEq)]
 struct TradeRow {
-    session: Entity,
     source: TradeSource,
     quantity: u32,
 }
@@ -1610,9 +1608,6 @@ fn activate_choice(
 ) {
     let Ok(choice) = choices.get(event.entity) else { return };
     let Some((_, session)) = views.owner(event.entity) else { return };
-    if choice.session != session {
-        return;
-    }
     requests.write(match &choice.answer {
         Answer::Reply(text) => ConversationRequest::Reply {
             conversation: session,
@@ -1634,9 +1629,6 @@ fn activate_trade(
 ) {
     let Ok(row) = rows.get(event.entity) else { return };
     let Some((root, session)) = views.owner(event.entity) else { return };
-    if row.session != session {
-        return;
-    }
     let (source, quantity) = (row.source, row.quantity);
     commands.queue(move |world: &mut World| select(world, root, session, source, quantity));
 }
@@ -1769,7 +1761,7 @@ fn sync_choices(
         }
         let left = (width - ((button_width + 10.) * answers.len() as f32 - 10.)) / 2.;
         for (index, (label, answer)) in answers.into_iter().enumerate() {
-            let value = Choice { session, index, revision: c.revision, answer };
+            let value = Choice { index, revision: c.revision, answer };
             let mut layout = absolute(
                 Vec2::new(
                     left + index as f32 * (button_width + 10.),
@@ -2088,7 +2080,7 @@ fn sync_trade_rows(
             if let Some((entity, _)) = old.iter().find(|(_, s)| *s == source) {
                 ordered.push(*entity);
                 if let Ok((mut row, children)) = row_data.get_mut(*entity) {
-                    row.set_if_neq(TradeRow { session, source, quantity });
+                    row.set_if_neq(TradeRow { source, quantity });
                     if let Some(child) = children.first()
                         && let Ok(mut label) = texts.get_mut(*child)
                         && label.value != text
@@ -2105,7 +2097,7 @@ fn sync_trade_rows(
                 );
                 ordered.push(entity);
                 commands.entity(label).insert(BitmapWrap { width: 280, line_spacing: 0 });
-                commands.entity(entity).insert(TradeRow { session, source, quantity });
+                commands.entity(entity).insert(TradeRow { source, quantity });
             }
         }
         if children.is_none_or(|c| c.iter().ne(ordered.iter().copied())) {
@@ -2369,6 +2361,7 @@ pub(crate) mod tests {
         let mut world = World::new();
         world.init_resource::<Messages<ConversationRequest>>();
         world.add_observer(activate_choice);
+        world.add_observer(activate_trade);
         let first = world.spawn_empty().id();
         let second = world.spawn_empty().id();
         let view = world.spawn((ConversationView(first), DialogueState::default())).id();
@@ -2376,7 +2369,7 @@ pub(crate) mod tests {
         let row = world
             .spawn((
                 Button,
-                Choice { session: first, index: 0, revision: 7, answer: Answer::Price(true) },
+                Choice { index: 0, revision: 7, answer: Answer::Price(true) },
                 ChildOf(view),
             ))
             .id();
@@ -2386,23 +2379,51 @@ pub(crate) mod tests {
         assert!(
             matches!(&requests[..],[ConversationRequest::PriceAnswer{conversation,revision:7,accept:true}] if *conversation==first)
         );
-        // A stale callback cannot act on the old session after replacement,
-        // even if that old session still exists and has the same revision.
-        world.entity_mut(view).insert(ConversationView(second));
+        let other_row = world
+            .spawn((
+                Button,
+                Choice { index: 0, revision: 9, answer: Answer::Price(false) },
+                ChildOf(other),
+            ))
+            .id();
+        world.trigger(Activate { entity: other_row });
+        let requests: Vec<_> =
+            world.resource_mut::<Messages<ConversationRequest>>().drain().collect();
+        assert!(matches!(&requests[..], [ConversationRequest::PriceAnswer {
+            conversation, revision: 9, accept: false
+        }] if *conversation == second));
+        let trade = world
+            .spawn((
+                TradeRow {
+                    source: TradeSource::Stock(crate::game::npcs::trade::StockLotId(1)),
+                    quantity: 1,
+                },
+                ChildOf(other),
+            ))
+            .id();
+        world.trigger(Activate { entity: trade });
+        world.flush();
+        // The stale stock is refused on its own view, never the first view.
+        assert!(world.get::<DialogueState>(other).unwrap().error.is_some());
+        assert!(world.get::<DialogueState>(view).unwrap().error.is_none());
+        // A removed view's retained callback cannot route into the other session.
+        world.despawn(first);
+        assert!(world.get_entity(view).is_err());
+        assert!(world.get_entity(row).is_err());
+        assert!(world.get_entity(other).is_ok());
         world.trigger(Activate { entity: row });
         assert!(world.resource::<Messages<ConversationRequest>>().is_empty());
+        // Queued trade selection retains its accepted identity and revalidates it.
         select(
             &mut world,
-            view,
+            other,
             first,
             TradeSource::Stock(crate::game::npcs::trade::StockLotId(1)),
             1,
         );
-        assert!(world.get::<DialogueState>(view).unwrap().selected.is_none());
-        world.despawn(first);
-        assert!(world.get_entity(view).is_ok());
+        assert!(world.get::<DialogueState>(other).unwrap().selected.is_none());
         world.despawn(second);
-        for entity in [view, other, row] {
+        for entity in [other, other_row, trade] {
             assert!(world.get_entity(entity).is_err());
         }
     }
