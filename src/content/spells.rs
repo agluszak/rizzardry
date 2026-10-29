@@ -236,8 +236,6 @@ pub struct SpellDefinition {
     pub radius_per_power: f32,
     /// Flies to its target as a missile (`MissileTables.dbs` row).
     pub missile: Option<u32>,
-    /// Applies only when its visuals have played out.
-    pub after_visuals: bool,
     pub monsters_cast: bool,
     /// `data/spells/sounds/<sound>`.
     pub sound: String,

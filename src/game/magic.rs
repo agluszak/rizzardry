@@ -457,10 +457,18 @@ impl Plugin for MagicPlugin {
             .init_resource::<casting::FlightOrder>()
             .add_systems(
                 Update,
-                (accept_magic, deliver_spells)
-                    .chain()
+                accept_magic
                     .after(crate::game::GameplaySet::Stats)
                     .before(crate::game::GameplaySet::Combat)
+                    .run_if(crate::game::world::level::level_active),
+            )
+            // Missiles fly on the fixed step, like the fight's pauses: an
+            // impact lands at the step its travel ends, and before the
+            // fight picks its next actor in that step.
+            .add_systems(
+                FixedUpdate,
+                deliver_spells
+                    .before(crate::game::combat::begin_round)
                     .run_if(crate::game::world::level::level_active),
             );
     }
@@ -649,7 +657,7 @@ pub fn accept_magic(
 /// died meanwhile is missed. Kills in a fight count for it.
 pub fn deliver_spells(
     mut points: Query<(&LearnedSpells, &mut SpellPoints)>,
-    time: Res<Time<Virtual>>,
+    time: Res<Time<Fixed>>,
     mut flights: Query<(Entity, &mut casting::SpellInFlight)>,
     (mut members, mut monsters): (Members, MonsterDamage),
     mut context: MagicContext,
@@ -662,7 +670,7 @@ pub fn deliver_spells(
     if flights.is_empty() {
         return;
     }
-    // Every impact due in this update, in the order they arrive.
+    // Every impact due in this step, in the order they arrive.
     let mut due = Vec::new();
     for (entity, mut flight) in &mut flights {
         let left = flight.arrives.remaining();
