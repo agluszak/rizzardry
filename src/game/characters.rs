@@ -888,9 +888,18 @@ impl Vitals {
     }
 
     /// Count timed conditions down, lifting those that run out (retail
-    /// `TickCharacterCondition`). A poison still running weakens by its
-    /// share of what is left of it, a roll deciding a share under one.
+    /// `TickCharacterCondition`), the poison weakening as it goes.
     pub fn age_conditions(&mut self, ticks: u32, rng: &mut crate::game::rng::GameRng) {
+        self.weaken_poison(ticks, rng);
+        age(&mut self.conditions, ticks);
+        self.enchantments.age(ticks);
+    }
+
+    /// A poison that `ticks` take off without ending it weakens by their
+    /// share of what is left of it, a roll deciding a share under one
+    /// (retail `TickCharacterCondition`, for aging and partial cures alike).
+    /// The caller counts the poison's duration down.
+    pub fn weaken_poison(&mut self, ticks: u32, rng: &mut crate::game::rng::GameRng) {
         let left = self.conditions.iter().find_map(|&(c, lasting)| match lasting {
             Lasting::Rounds(left) if c == Condition::Poisoned => Some(u32::from(left)),
             _ => None,
@@ -902,8 +911,6 @@ impl Vitals {
             }
             self.poison -= lost.min(self.poison);
         }
-        age(&mut self.conditions, ticks);
-        self.enchantments.age(ticks);
     }
 
     /// The damage poison does over `ticks` aging ticks (retail
