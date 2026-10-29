@@ -105,6 +105,25 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         taken
     }
 
+    /// Give a living monster back stamina, up to its maximum (retail
+    /// `RestoreMonsterStamina`).
+    pub fn refresh(&mut self, monster: Entity, amount: u32) {
+        if let Ok((mut monster, ..)) = self.monsters.get_mut(monster)
+            && !monster.is_dead()
+            && monster.stamina < monster.max_stamina
+        {
+            monster.stamina = (monster.stamina + amount).min(monster.max_stamina);
+        }
+    }
+
+    /// Take from what a monster's casting stands on (retail
+    /// `spell_points -= amount`); see [`Monster::spell_budget`].
+    pub fn drain_spell_points(&mut self, monster: Entity, amount: u32) {
+        if let Ok((mut monster, ..)) = self.monsters.get_mut(monster) {
+            monster.spell_points -= amount as i32;
+        }
+    }
+
     pub fn enchantments_mut(
         &mut self,
         entity: Entity,

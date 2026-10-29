@@ -568,6 +568,15 @@ pub fn queue_notices(
                     vec![string(0x23b).replacen("%s", &name, 1).replacen("%s", &possessive, 1)]
                 })
                 .unwrap_or_default(),
+            // Retail `MonsterFleeAction`: the name and the attack's own
+            // (`g_monster_special_attack_name_ids`, known for kinds 1 to 11).
+            CombatNews::Special { monster, kind } => names
+                .name(*monster)
+                .map(|name| match kind {
+                    1..=11 => vec![format!("{name} {}", string(1597 + usize::from(*kind)))],
+                    _ => vec![],
+                })
+                .unwrap_or_default(),
             CombatNews::Withdraws { monster } => names
                 .name(*monster)
                 .map(|name| vec![string(0x23a).replacen("%s", &name, 1)])

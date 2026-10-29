@@ -326,6 +326,19 @@ pub struct Species {
     /// How it carries itself in a fight.
     pub temper: Temper,
     pub magic: MonsterMagic,
+    pub special: SpecialAttack,
+}
+
+/// A species' special attack: a breath, a gaze or a summoning (retail
+/// record 0xe3, 0xe1 and 0x15c). Retail names its chance `flee_chance`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SpecialAttack {
+    /// Which one (retail `special_attack_kind`); none is 0.
+    pub kind: u8,
+    /// The chance (%) it makes it at its turn while it can strike someone.
+    pub chance: u8,
+    /// The rounds it waits before the next.
+    pub cooldown: u8,
 }
 
 /// The spells a species casts in a fight (retail record 0xe0, 0x14d,

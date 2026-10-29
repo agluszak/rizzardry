@@ -282,6 +282,8 @@ struct Round {
     attacked: bool,
     /// Monsters that have moved: one move each.
     moved: Vec<Entity>,
+    /// Monsters that made their special attack.
+    specials: Vec<Entity>,
     /// How the party moves this round.
     pace: Option<PartyPace>,
     /// How often each member has tried to spot an attacker this round.
@@ -304,6 +306,9 @@ pub struct Battle {
     party_move: PartyMove,
     /// Monsters running for their lives (retail `pCombat->advancing`).
     fleeing: Vec<Entity>,
+    /// Rounds each monster still waits before its next special attack
+    /// (retail `pCombat->special_cooldown`).
+    cooldowns: Vec<(Entity, u8)>,
     /// Until the next action.
     wait: Timer,
 }
@@ -446,6 +451,12 @@ pub enum CombatNews {
     Moves {
         monster: Entity,
         charge: bool,
+    },
+    /// A monster makes its special attack (retail `MonsterFleeAction`'s
+    /// notice); what it did follows as [`CombatNews::Effects`].
+    Special {
+        monster: Entity,
+        kind: u8,
     },
     /// A monster runs for its life.
     Flees {
@@ -1686,6 +1697,75 @@ fn member_casts(
         .and_then(|performed| performed)
 }
 
+/// What a monster settled on doing with its action besides striking.
+enum Plan<'a> {
+    Spell {
+        spell: crate::content::spells::SpellDefinition,
+        power: u8,
+        aim: monster_spells::SpellAim,
+        scene: monster_spells::Scene,
+        caster: (&'a Species, u32),
+    },
+    Special {
+        kind: u8,
+        cooldown: u8,
+        breather: crate::game::magic::effects::Breather,
+        victims: Vec<crate::game::magic::effects::Victim>,
+    },
+}
+
+/// Whether a monster can make its special attack now (retail
+/// `CanMonsterFlee`): it has one that strikes rather than summons (the
+/// summoning kinds wait on dynamic groups), it is not cooling down, it has
+/// a tenth of its stamina, and a silence does not stop it.
+fn special_ready(monster: &Monster, kind: &Species, cooling: bool) -> bool {
+    use crate::game::magic::effects::{special_silenced, special_summons};
+    let special = kind.special;
+    let silenced = monster.conditions.iter().any(|&(c, _)| c == Condition::Silenced);
+    special.kind != 0
+        && !special_summons(special.kind)
+        && !cooling
+        && monster.stamina >= monster.max_stamina / 10
+        && !(silenced && special_silenced(special.kind))
+}
+
+/// Whom a monster's breath catches, aimed at the party (retail
+/// `PopulateSpellTargetMarkers` for its cone): the living party, and the
+/// other monsters in the fight within its reach and 45 degrees of the
+/// line to the party.
+fn breath_victims(
+    caster: Entity,
+    from: Vec3,
+    reach: f32,
+    (combatants, roster): (&[Entity], &PartyRoster),
+    members: &Members,
+    monsters: &MonsterQuery,
+    party_eye: Vec3,
+) -> Vec<crate::game::magic::effects::Victim> {
+    use crate::game::magic::effects::Victim;
+    let toward = (party_eye - from).with_y(0.0);
+    let mut victims: Vec<Victim> = roster
+        .iter()
+        .filter(|&m| members.get(m).is_ok_and(|(_, vitals, ..)| !vitals.is_dead()))
+        .map(Victim::Member)
+        .collect();
+    victims.extend(
+        combatants
+            .iter()
+            .filter(|&&m| m != caster)
+            .filter(|&&m| {
+                monsters.get(m).is_ok_and(|(body, at, walker, _)| {
+                    let to = feet(at.translation(), walker) - from;
+                    !body.is_dead()
+                        && to.length() - body.body.radius <= reach
+                        && to.with_y(0.0).angle_between(toward) < std::f32::consts::FRAC_PI_4
+                })
+            })
+            .map(|&m| Victim::Monster(m)),
+    );
+    victims
+}
+
 /// A monster's accepted turn comes (retail `UpdateMonsterAI`,
 /// `StepMonsterCombatAction`): it may run for its life, withdraw or hold
 /// back ([`conduct::decide`]); otherwise it attacks someone it reaches, or
@@ -1751,11 +1831,46 @@ fn monster_turn(
             return true;
         }
         // One that would close in on the party to strike does so rather
-        // than cast; one that can strike casts at its chance, and one that
-        // cannot always tries.
+        // than breathe or cast; one that can strike does either at its
+        // chance, and one that cannot always tries.
         let reaches = kind.attacks.iter().any(|a| nearest <= a.reach.metres());
         let closes_in = !kind.temper.prefers_range && !kind.attacks.is_empty() && !reaches;
-        if kind.magic.chance != 0
+        let special = kind.special;
+        let cooling = battle.cooldowns.iter().any(|&(m, left)| m == monster && left > 0);
+        if special.chance != 0
+            && !closes_in
+            && let Some(cone) =
+                magic.context.content.spells().and_then(|spells| {
+                    spells.get(crate::content::spells::SpellId::SPECIAL_ATTACK_CONE)
+                })
+            && special_ready(body, kind, cooling)
+            && party
+                .sight(members, &magic.context.roster, &magic.obstacles)
+                .sees(body, &at, walker, kind)
+            && nearest <= cone.reach.metres()
+            && rng.below(100) < if reaches { u32::from(special.chance) } else { 100 }
+        {
+            let victims = breath_victims(
+                monster,
+                feet,
+                cone.reach.metres(),
+                (combatants, &magic.context.roster),
+                members,
+                damage.monsters(),
+                party.eye,
+            );
+            let breather = crate::game::magic::effects::Breather {
+                level: kind.level,
+                stamina: body.stamina,
+                max_stamina: body.max_stamina,
+            };
+            plan = Some(Plan::Special {
+                kind: special.kind,
+                cooldown: special.cooldown,
+                breather,
+                victims,
+            });
+        } else if kind.magic.chance != 0
             && !closes_in
             && let Some(spells) = magic.context.content.spells()
         {
@@ -1774,22 +1889,47 @@ fn monster_turn(
                     let spell = spells.get(id)?.clone();
                     let budget = body.spell_budget(kind);
                     let power = monster_spells::power(rng, budget, &spell);
-                    Some((spell, power, aim, scene, (kind, budget)))
+                    Some(Plan::Spell { spell, power, aim, scene, caster: (kind, budget) })
                 },
             );
         }
     }
     let BattleMagic { context, points, moving, .. } = magic;
-    if let Some((spell, power, aim, scene, caster)) = plan {
-        battle.this_round.monsters[index].1 = Turn::default();
-        battle.this_round.attacked = true;
-        let report = context.with_field(party.now, members, damage, |field| {
-            monster_spells::cast((&spell, power, aim), caster, &scene, rng, field, points)
-        });
-        if let Ok(report) = report {
-            context.news.write(crate::game::magic::casting::MagicNews::Done(report));
+    match plan {
+        Some(Plan::Spell { spell, power, aim, scene, caster }) => {
+            battle.this_round.monsters[index].1 = Turn::default();
+            battle.this_round.attacked = true;
+            let report = context.with_field(party.now, members, damage, |field| {
+                monster_spells::cast((&spell, power, aim), caster, &scene, rng, field, points)
+            });
+            if let Ok(report) = report {
+                context.news.write(crate::game::magic::casting::MagicNews::Done(report));
+            }
+            return true;
         }
-        return true;
+        // Retail `ExecuteMonsterSpecialAttack`: the attack lands, the
+        // cooldown starts and it costs a tenth of the monster's stamina.
+        Some(Plan::Special { kind, cooldown, breather, victims }) => {
+            battle.this_round.monsters[index].1 = Turn::default();
+            battle.this_round.attacked = true;
+            battle.this_round.specials.push(monster);
+            news.write(CombatNews::Special { monster, kind });
+            let effects = context.with_field(party.now, members, damage, |field| {
+                crate::game::magic::effects::special_attack(
+                    kind, breather, &victims, rng, field, points,
+                )
+            });
+            if let Ok(effects) = effects
+                && !effects.is_empty()
+            {
+                news.write(CombatNews::Effects(effects));
+            }
+            battle.cooldowns.retain(|&(m, _)| m != monster);
+            battle.cooldowns.push((monster, cooldown));
+            damage.fatigue(monster, breather.max_stamina / 10);
+            return true;
+        }
+        None => {}
     }
     let advancing = |monster| moving.contains(monster);
     let armours = party_armours(battle, members, context);
@@ -1913,6 +2053,30 @@ fn end_round(
     // `AdvanceCombatRound`, `AdvanceTimedEffects`).
     let ticks = clock.advance(ROUND_MS);
     enchantments.age(ticks.aging);
+    // A monster asleep or knocked out gets its breath back (retail
+    // `AdvanceCombatRound`; retail's waiting monsters too, which are not
+    // told apart here).
+    for &entity in combatants {
+        let resting = damage.monsters().get(entity).is_ok_and(|(monster, ..)| {
+            monster
+                .conditions
+                .iter()
+                .any(|&(c, _)| matches!(c, Condition::Asleep | Condition::Unconscious))
+        });
+        if resting {
+            let maximum = damage.monsters().get(entity).map_or(0, |(m, ..)| m.max_stamina);
+            let sides = (maximum / 20).saturating_sub(1).clamp(1, 255) as u8;
+            let rolled = rng.roll(Dice { count: 2, sides, base: 0 });
+            damage.refresh(entity, rolled);
+        }
+    }
+    // A special attack cools down over the rounds the monster does not
+    // make one (retail `AdvanceCombatRound`).
+    for (monster, left) in &mut battle.cooldowns {
+        if *left > 0 && !battle.this_round.specials.contains(monster) {
+            *left -= 1;
+        }
+    }
     for &entity in combatants {
         if let Some(mut e) = damage.enchantments_mut(entity) {
             e.age(ticks.aging);
@@ -2322,6 +2486,72 @@ mod tests {
             "{:?}",
             report.effects
         );
+    }
+
+    /// A monster with a breath and nothing to strike with breathes on the
+    /// party at its turn: the notice, what it did to the members, its
+    /// cooldown and a tenth of its stamina (retail `UpdateMonsterAI`,
+    /// `ExecuteMonsterSpecialAttack`, `ResolveMonsterGroupAttack`).
+    #[test]
+    fn a_monster_breathes_on_the_party() {
+        use crate::content::species::SpecialAttack;
+        use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId, Targeting};
+        use crate::game::magic::effects::{Effect, Victim};
+        let (mut app, members) = round_app(true);
+        let monster =
+            app.world().try_query::<&Combatants>().unwrap().single(app.world()).unwrap().entities()
+                [0];
+        let cone = SpellId::SPECIAL_ATTACK_CONE;
+        let mut catalog: Vec<SpellDefinition> = (0..=cone.0).map(|_| default()).collect();
+        catalog[usize::from(cone.0)] = SpellDefinition {
+            id: cone,
+            targeting: Targeting::Cone,
+            reach: Reach::Long,
+            ..default()
+        };
+        let handle =
+            app.world_mut().resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(catalog));
+        app.world_mut().resource_mut::<GameData>().spells = handle;
+        let data = app.world().resource::<GameData>().species.clone();
+        {
+            let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
+            let mut species = catalogs.get_mut(&data).unwrap();
+            // Kind 9 burns: one wound, resisted by fire.
+            species.0[0].special = SpecialAttack { kind: 9, chance: 100, cooldown: 3 };
+            species.0[0].level = 5;
+        }
+        {
+            let mut body = app.world_mut().get_mut::<Monster>(monster).unwrap();
+            body.stamina = 100;
+            body.max_stamina = 100;
+        }
+        let mut news = Vec::new();
+        for _ in 0..12 {
+            app.update();
+            news.extend(app.world_mut().resource_mut::<Messages<CombatNews>>().drain());
+            if news.contains(&CombatNews::Special { monster, kind: 9 }) {
+                break;
+            }
+        }
+        assert!(news.contains(&CombatNews::Special { monster, kind: 9 }), "it breathes");
+        let effects: Vec<Effect> = news
+            .iter()
+            .filter_map(|n| match n {
+                CombatNews::Effects(effects) => Some(effects.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert!(
+            effects.iter().all(|e| matches!(
+                e,
+                Effect::Damaged { victim: Victim::Member(m), .. }
+                    | Effect::Resisted { victim: Victim::Member(m) } if members.contains(m)
+            )),
+            "only the party is caught: {effects:?}"
+        );
+        assert_eq!(app.world().get::<Monster>(monster).unwrap().stamina, 90);
+        assert!(fight(app.world()).unwrap().cooldowns.contains(&(monster, 3)));
     }
 
     /// A cast waits for its caster's initiative, is revalidated then, spends
