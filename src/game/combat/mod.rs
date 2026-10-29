@@ -9,6 +9,7 @@ mod blows;
 mod conduct;
 pub use conduct::Interrupt;
 mod monster_spells;
+pub mod summon;
 
 use crate::game::world::level::LevelOwned;
 use crate::game::world::level::PlayedLevel;
@@ -50,6 +51,7 @@ impl Plugin for CombatPlugin {
             .add_message::<hostility::Provocation>()
             .add_message::<CyclePartyMove>()
             .add_message::<StartRound>()
+            .add_message::<summon::Summon>()
             .add_message::<CombatControl>()
             .add_message::<GiveOrder>()
             .init_resource::<CombatSettings>()
@@ -67,6 +69,7 @@ impl Plugin for CombatPlugin {
                     control_combat,
                     begin_round,
                     run_battle,
+                    summon::summon,
                     // and again after the round's damage.
                     settle_defeat,
                     approach::close_in,
@@ -493,6 +496,8 @@ pub enum CombatNews {
     Withdraws {
         monster: Entity,
     },
+    /// A summoning found nowhere for its group to stand.
+    SummonFails,
     /// The party's move begins; it ends when spent or stopped.
     PartyMoves,
     PartyStops,
@@ -1351,7 +1356,7 @@ pub fn run_battle(
     party_body: Query<(&Position, &PartyBody)>,
     (roster, content, level): (Single<&PartyRoster>, crate::game::data::Content, PlayedLevel),
     mut magic: BattleMagic,
-    mut news: MessageWriter<CombatNews>,
+    (mut news, mut summons): (MessageWriter<CombatNews>, MessageWriter<summon::Summon>),
 ) {
     let Some((entity, mut battle, combatants)) = battle.map(Single::into_inner) else { return };
     let combatants = combatants.map_or(&[][..], Combatants::entities);
@@ -1476,7 +1481,7 @@ pub fn run_battle(
                 &party,
                 &mut magic,
                 species,
-                &mut news,
+                (&mut news, &mut summons),
             );
             if acted {
                 battle.wait = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
@@ -1777,15 +1782,13 @@ enum Plan<'a> {
 }
 
 /// Whether a monster can make its special attack now (retail
-/// `CanMonsterFlee`): it has one that strikes rather than summons (the
-/// summoning kinds wait on dynamic groups), it is not cooling down, it has
-/// a tenth of its stamina, and a silence does not stop it.
+/// `CanMonsterFlee`): it has one, it is not cooling down, it has a tenth of
+/// its stamina, and a silence does not stop it.
 fn special_ready(monster: &Monster, kind: &Species, cooling: bool) -> bool {
     let silenced = monster.conditions.iter().any(|&(c, _)| c == Condition::Silenced);
     kind.special.kind.is_some_and(|special| {
         let definition = crate::game::magic::effects::special(special);
-        !definition.summons
-            && !cooling
+        !cooling
             && monster.stamina >= monster.max_stamina / 10
             && !(silenced && definition.silenced)
     })
@@ -1829,7 +1832,7 @@ fn monster_turn(
     party: &PartyView,
     magic: &mut BattleMagic,
     species: &MonsterCatalog,
-    news: &mut MessageWriter<CombatNews>,
+    (news, summons): (&mut MessageWriter<CombatNews>, &mut MessageWriter<summon::Summon>),
 ) -> bool {
     use crate::game::magic::effects::Victim;
     use hostility::Stance;
@@ -2141,6 +2144,10 @@ fn monster_turn(
             battle.this_round.attacked = true;
             battle.this_round.specials.push(monster);
             news.write(CombatNews::Special { monster, kind });
+            // A summoning calls its group up rather than landing on anyone.
+            if let Some(species) = kind.summons() {
+                summons.write(summon::Summon { summoner: monster, species });
+            }
             let effects = context.with_field(party.now, members, damage, |field| {
                 crate::game::magic::effects::special_attack(
                     kind, breather, &victims, rng, field, points,

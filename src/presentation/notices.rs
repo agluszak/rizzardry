@@ -599,6 +599,7 @@ pub fn queue_notices(
                 .name(*monster)
                 .map(|name| vec![string(0x23a).replacen("%s", &name, 1)])
                 .unwrap_or_default(),
+            CombatNews::SummonFails => vec![string(0x26a)],
             CombatNews::Attack { attacker, target, how, swings, surprise } => {
                 match (names.name(*attacker), names.name(*target)) {
                     (Some(attacker), Some(target)) => {

@@ -241,18 +241,18 @@ fn ambient_sound(sound: &AmbientSound) -> AmbientSoundModel {
     }
 }
 
-/// Placed monsters with their models, in Bevy space. Unborn ones wait for a
-/// script that is not implemented yet, so they are left out.
+/// Placed monsters with their models, in Bevy space, the unborn among
+/// them.
 fn monster_placements(placements: &[Placement]) -> Vec<MonsterPlacement> {
     placements
         .iter()
-        .filter(|placement| !placement.unborn)
         .map(|placement| MonsterPlacement {
             location: placement.location,
             group: placement.group,
             species: placement.species,
             position: retail_position(placement.position),
             yaw: retail_yaw(placement.yaw, [0.0, 1.0, 0.0]),
+            unborn: placement.unborn,
         })
         .collect()
 }

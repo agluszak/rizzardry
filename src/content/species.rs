@@ -327,6 +327,12 @@ pub struct Species {
     pub temper: Temper,
     pub magic: MonsterMagic,
     pub special: SpecialAttack,
+    /// How many come when a group of it is called up (retail
+    /// `group_size_dice`): a summoning, a random encounter.
+    pub group_size: Dice,
+    /// A group of it starts unborn, until something births it (retail
+    /// record `unborn`).
+    pub unborn: bool,
 }
 
 /// A species' special attack: a breath, a gaze or a summoning (retail

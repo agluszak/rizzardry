@@ -188,6 +188,8 @@ pub struct MonsterPlacement {
     /// Feet.
     pub position: Vec3,
     pub yaw: f32,
+    /// Waits unborn until something births its group.
+    pub unborn: bool,
 }
 
 /// An item lying in the level as authored (retail `.sts` `ITEM`).

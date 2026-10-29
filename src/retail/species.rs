@@ -123,6 +123,8 @@ fn species(record: &[u8]) -> Result<Species, DecodeError> {
         faction: i32_at(record, 0x25f)?,
         combat_move_range: f32_at(record, 0x1ba)?.max(0.0),
         pronouns: record[0xcc].min(3),
+        group_size: dice_at(record, 0xc1)?,
+        unborn: record[0x26a] != 0,
         temper: Temper {
             flee_chance: record[0xe2],
             craven: record[0x1c0] == 0,
