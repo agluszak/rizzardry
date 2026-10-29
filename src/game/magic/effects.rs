@@ -814,6 +814,12 @@ fn slay(
     hurt(rng, world, victim, hp)
 }
 
+/// The rounds a cure takes off a timed condition: `power²`, boosted.
+fn cure_rounds(strength: Strength) -> u32 {
+    let per = u32::from(strength.power).pow(2);
+    per + per * strength.boost / 100
+}
+
 /// Retail `TryCureConditionOnTargets`: a timed condition loses `power²`
 /// rounds (and goes if that is all of them); a lasting one goes with chance
 /// `power·15`%.
@@ -824,8 +830,7 @@ fn cure(
     strength: Strength,
     forced: bool,
 ) -> Vec<Condition> {
-    let per = u32::from(strength.power).pow(2);
-    let per = per + per * strength.boost / 100;
+    let per = cure_rounds(strength);
     let mut lifted = Vec::new();
     for &condition in cured {
         let Some(index) = conditions.iter().position(|&(c, _)| c == condition) else { continue };
@@ -1222,6 +1227,10 @@ pub fn resolve(
             let lifted = match v {
                 Victim::Member(m) => {
                     let (_, mut vitals, ..) = world.members.get_mut(m).ok()?;
+                    // Taking rounds off a poison weakens it as aging does.
+                    if conditions.contains(&Condition::Poisoned) {
+                        vitals.weaken_poison(cure_rounds(strength), rng);
+                    }
                     cure(rng, &mut vitals.conditions, conditions, strength, false)
                 }
                 Victim::Monster(m) => {

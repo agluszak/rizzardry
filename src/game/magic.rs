@@ -912,6 +912,7 @@ mod tests {
             SpellId::RESTORE_HEALTH,
             SpellId::RESTORE_MAGIC,
             SpellId::SMELLING_SALTS,
+            SpellId::CURE_POISON,
         ] {
             let mut app = App::new();
             app.add_plugins((MinimalPlugins, AssetPlugin::default()))
@@ -975,6 +976,7 @@ mod tests {
             vitals.stamina = 1;
             vitals.inflict(Condition::Asleep, Lasting::Rounds(8));
             vitals.inflict(Condition::Unconscious, Lasting::Rounds(8));
+            vitals.poison(Lasting::Rounds(20), 10);
             let ally = world
                 .spawn((
                     ally,
@@ -1056,6 +1058,13 @@ mod tests {
                 }
                 SpellId::SMELLING_SALTS => {
                     assert!(!vitals.has(Condition::Asleep) && !vitals.has(Condition::Unconscious))
+                }
+                // Power four takes sixteen rounds off, and the poison weakens
+                // by the same share, as aging would (retail
+                // `TickCharacterCondition`).
+                SpellId::CURE_POISON => {
+                    assert!(vitals.conditions.contains(&(Condition::Poisoned, Lasting::Rounds(4))));
+                    assert_eq!(vitals.poison, 2);
                 }
                 _ => unreachable!(),
             }
