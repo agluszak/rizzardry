@@ -1974,12 +1974,13 @@ fn watch_playback(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::content::{items::ItemCatalog, ui::TextTable};
 
-    #[test]
-    fn added_sessions_build_once_and_idle_transcripts_keep_their_labels() {
+    pub(crate) fn check_session_views(
+        make: impl Fn(Entity, Handle<crate::content::npcs::DialogueScript>) -> Conversation,
+    ) {
         let mut app = crate::presentation::test_input::input_app();
         app.init_asset::<SpriteSheet>()
             .init_asset::<Image>()
@@ -1987,7 +1988,13 @@ mod tests {
             .init_resource::<super::super::main_screen::ScreenLayout>()
             .add_observer(create_view)
             .add_systems(Update, sync_transcript);
-        let mut conversation = Conversation::default();
+        app.init_asset::<crate::content::npcs::DialogueScript>();
+        let actor = app.world_mut().spawn_empty().id();
+        let script = app
+            .world_mut()
+            .resource_mut::<Assets<crate::content::npcs::DialogueScript>>()
+            .add(crate::content::npcs::DialogueScript::default());
+        let mut conversation = make(actor, script.clone());
         conversation.transcript =
             vec![TranscriptLine::Question("Arnika".into()), TranscriptLine::Npc("A town.".into())];
         let session = app.world_mut().spawn(conversation).id();
@@ -2026,7 +2033,7 @@ mod tests {
         assert!(app.world().get_entity(view).is_err());
         assert!(rows.into_iter().all(|e| app.world().get_entity(e).is_err()));
         // Both operations precede the queued view build.
-        app.world_mut().commands().spawn(Conversation::default()).despawn();
+        app.world_mut().commands().spawn(make(actor, script)).despawn();
         app.update();
         assert_eq!(app.world_mut().query::<&ConversationView>().iter(app.world()).count(), 0);
     }

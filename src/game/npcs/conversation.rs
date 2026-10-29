@@ -170,22 +170,6 @@ pub enum Outcome {
     Traded,
     TradeRefused(TradeError),
 }
-#[cfg(test)]
-impl Default for Conversation {
-    fn default() -> Self {
-        Self {
-            actor: Entity::PLACEHOLDER,
-            script: default(),
-            revision: 0,
-            current: None,
-            wait: ConversationWait::Ready,
-            transcript: vec![],
-            learned_topics: default(),
-            result: None,
-            queue: default(),
-        }
-    }
-}
 impl Conversation {
     pub fn ready(&self) -> bool {
         self.wait == ConversationWait::Ready && self.queue.is_empty()
@@ -1781,5 +1765,27 @@ mod tests {
         assert_eq!(sale_item(world, source, party).unwrap().id, item.id);
         world.entity_mut(member).remove::<PartyMember>();
         assert!(matches!(sale_item(world, source, party), Err(TradeError::StaleSelection)));
+    }
+}
+
+#[cfg(test)]
+mod view_lifecycle_test {
+    use super::*;
+
+    #[test]
+    fn added_sessions_build_once_and_idle_transcripts_keep_their_labels() {
+        crate::presentation::conversation::tests::check_session_views(|actor, script| {
+            Conversation {
+                actor,
+                script,
+                revision: 0,
+                current: None,
+                wait: ConversationWait::Ready,
+                transcript: vec![],
+                learned_topics: default(),
+                result: None,
+                queue: default(),
+            }
+        });
     }
 }
