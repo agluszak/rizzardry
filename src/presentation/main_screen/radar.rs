@@ -369,7 +369,7 @@ mod tests {
             .world_mut()
             .spawn((monster, GroupMember(group), GlobalTransform::from_xyz(0.0, 0.0, -10.0)))
             .id();
-        let mut shown = |app: &mut App| {
+        let shown = |app: &mut App| {
             app.update();
             let world = app.world_mut();
             let blip = world.get::<RadarView>(monster).unwrap().0;
