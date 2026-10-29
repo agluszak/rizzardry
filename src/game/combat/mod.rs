@@ -1786,16 +1786,15 @@ fn party_turn(
             })
             .is_some_and(crate::game::magic::pointcasts::spell);
         if point_cast {
+            // A refusal falls back to defending, as below.
             commands.queue(move |world: &mut World| {
-                if let Err(refusal) = crate::game::magic::pointcasts::cast(world, member, choice) {
-                    world.write_message(MagicNews::Refused { caster: member, refusal });
-                    if let Ok(mut query) = world.try_query::<&mut Battle>().ok_or(())
-                        && let Ok(mut battle) = query.single_mut(world)
-                        && let Some(work) =
-                            battle.this_round.party.iter_mut().find(|work| work.actor == member)
-                    {
-                        work.action = RoundAction::Defend;
-                    }
+                if crate::game::magic::execute_in_world(world, member, choice).is_err()
+                    && let Ok(mut query) = world.try_query::<&mut Battle>().ok_or(())
+                    && let Ok(mut battle) = query.single_mut(world)
+                    && let Some(work) =
+                        battle.this_round.party.iter_mut().find(|work| work.actor == member)
+                {
+                    work.action = RoundAction::Defend;
                 }
             });
             return true;

@@ -594,6 +594,28 @@ impl MagicContext<'_, '_> {
     }
 }
 
+/// Carry out magic that needs the whole world, announcing a refusal: a
+/// utility spell (portals, dialogue, point casts, Identify) or a cast at a
+/// device. The one way such magic executes, in or out of a fight.
+pub(crate) fn execute_in_world(
+    world: &mut World,
+    caster: Entity,
+    choice: casting::MagicChoice,
+) -> Result<(), casting::Refusal> {
+    let utility = utilities::source_spell(world, caster, choice.source).is_ok_and(utilities::spell);
+    let result = match choice.aim {
+        _ if utility => utilities::cast(world, caster, choice),
+        casting::Aim::Device(attempt) => {
+            crate::game::world::interaction::cast_device(world, caster, attempt, choice.source)
+        }
+        _ => Err(casting::Refusal::Unsupported),
+    };
+    if let Err(refusal) = result {
+        world.write_message(casting::MagicNews::Refused { caster, refusal });
+    }
+    result
+}
+
 /// Accept magic requests (retail `ChooseAction`): in combat only record the
 /// choice; outside it, execute it now.
 pub fn accept_magic(
@@ -621,26 +643,13 @@ pub fn accept_magic(
                 items,
             )
         });
-        if spell.is_some_and(utilities::spell)
-            && (battle.is_none() || !spell.is_some_and(pointcasts::spell))
-        {
+        // A point cast in a fight waits for its turn, as any other order.
+        let in_world = (spell.is_some_and(utilities::spell)
+            && (battle.is_none() || !spell.is_some_and(pointcasts::spell)))
+            || matches!(choice.aim, casting::Aim::Device(_));
+        if in_world {
             commands.queue(move |world: &mut World| {
-                if let Err(refusal) = utilities::cast(world, caster, choice) {
-                    world.write_message(casting::MagicNews::Refused { caster, refusal });
-                }
-            });
-            continue;
-        }
-        if let casting::Aim::Device(attempt) = choice.aim {
-            commands.queue(move |world: &mut World| {
-                if let Err(refusal) = crate::game::world::interaction::cast_device(
-                    world,
-                    caster,
-                    attempt,
-                    choice.source,
-                ) {
-                    world.write_message(casting::MagicNews::Refused { caster, refusal });
-                }
+                let _ = execute_in_world(world, caster, choice);
             });
             continue;
         }
