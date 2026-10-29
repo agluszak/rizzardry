@@ -154,6 +154,21 @@ pub fn joinable(world: &mut World, actor: Entity) -> Result<(), JoinRefusal> {
     if !willing(world, id, &definition) {
         return Err(JoinRefusal::Declines);
     }
+    // The items it brings are part of its character: one the catalog lacks
+    // is missing content, and it does not join without it.
+    let template = definition.character.as_ref().unwrap();
+    let complete = with_catalogs(world, |_, items, _, _| {
+        template
+            .equipment
+            .iter()
+            .chain(&template.backpack)
+            .flatten()
+            .all(|&id| items.get(id).is_some())
+    });
+    if complete != Some(true) {
+        warn!("NPC {id:?} cannot join: its items are missing from the catalog");
+        return Err(JoinRefusal::Declines);
+    }
     Ok(())
 }
 
@@ -298,27 +313,26 @@ pub fn join(world: &mut World, actor: Entity) -> Result<(), JoinRefusal> {
 
 /// Give a departing member's items to the party, those the pool has no room
 /// for dropped at its feet. `keep` says which the member keeps.
-fn hand_over(world: &mut World, actor: Entity, keep: impl Fn(&ItemStack) -> bool) {
+fn hand_over(world: &mut World, actor: Entity, level: Entity, keep: impl Fn(&ItemStack) -> bool) {
     let Some(party) = the_party(world) else { return };
-    let given: Vec<ItemStack> = {
-        let Some(mut carried) = world.get_mut::<Carried>(actor) else { return };
-        let carried = &mut *carried;
-        let worn = carried
-            .equipment
-            .values_mut()
-            .filter_map(|worn| worn.take_if(|e| !keep(&e.stack)).map(|e| e.stack));
-        let mut given: Vec<_> = worn.collect();
-        given.extend(carried.backpack.iter_mut().filter_map(|place| place.take_if(|s| !keep(s))));
-        given
-    };
-    if given.is_empty() {
-        return;
-    }
     let feet = world.get::<avian3d::prelude::Position>(party).map_or(Vec3::ZERO, |at| {
         PartyBody::eye(at) - Vec3::Y * crate::game::party::body::EYE_HEIGHT
     });
-    let level = world.query_filtered::<Entity, With<Level>>().iter(world).next();
+    // Nothing leaves the member unless the catalog to place it with is there.
     with_catalogs(world, |world, items, _, _| {
+        let given: Vec<ItemStack> = {
+            let Some(mut carried) = world.get_mut::<Carried>(actor) else { return };
+            let carried = &mut *carried;
+            let worn = carried
+                .equipment
+                .values_mut()
+                .filter_map(|worn| worn.take_if(|e| !keep(&e.stack)).map(|e| e.stack));
+            let mut given: Vec<_> = worn.collect();
+            given.extend(
+                carried.backpack.iter_mut().filter_map(|place| place.take_if(|s| !keep(s))),
+            );
+            given
+        };
         let mut left = Vec::new();
         {
             let mut inventory = world.get_mut::<PartyInventory>(party).unwrap();
@@ -326,11 +340,19 @@ fn hand_over(world: &mut World, actor: Entity, keep: impl Fn(&ItemStack) -> bool
                 left.extend(inventory.pool.receive(stack, items));
             }
         }
-        if let Some(level) = level {
-            crate::game::world::items::drop_loot(&mut world.commands(), level, feet, left, items);
-            world.flush();
-        }
+        crate::game::world::items::drop_loot(&mut world.commands(), level, feet, left, items);
+        world.flush();
     });
+}
+
+/// What a member's parting needs before anything about it changes: the
+/// catalogs, and the level being played, where items the party's pool cannot
+/// hold are dropped. A body that will stand again also needs its species.
+fn ready_to_part(world: &mut World, body: Option<Entity>) -> Option<Entity> {
+    let species = body.and_then(|body| world.get::<Monster>(body)).map(|m| m.species);
+    with_catalogs(world, |_, _, _, catalog| species.is_none_or(|s| catalog.kind(s).is_some()))?
+        .then_some(())?;
+    world.query_filtered::<Entity, With<Level>>().iter(world).next()
 }
 
 /// Let the NPC leave the party (retail `DismissNpcFromParty`, its body not
@@ -344,10 +366,11 @@ pub fn dismiss(world: &mut World, actor: Entity) -> bool {
     {
         return false;
     }
-    world.entity_mut(actor).remove::<PartyMember>();
-    world.get_mut::<Formation>(party).unwrap().unseat(actor);
     let alive = world.get::<Vitals>(actor).is_some_and(|vitals| !vitals.is_dead());
     let body = world.get::<NpcBodies>(actor).and_then(|bodies| bodies.first().copied());
+    let Some(level) = ready_to_part(world, body.filter(|_| alive)) else { return false };
+    world.entity_mut(actor).remove::<PartyMember>();
+    world.get_mut::<Formation>(party).unwrap().unseat(actor);
     if alive && let Some(body) = body {
         stand_beside_party(world, actor, body, party);
     }
@@ -373,7 +396,9 @@ pub fn dismiss(world: &mut World, actor: Entity) -> bool {
                 .collect()
         })
         .unwrap_or_default();
-    hand_over(world, actor, |stack| wanted.contains(&stack.item) || held.contains(&stack.id));
+    hand_over(world, actor, level, |stack| {
+        wanted.contains(&stack.item) || held.contains(&stack.id)
+    });
     true
 }
 
@@ -476,10 +501,14 @@ pub fn settle_npc_members(world: &mut World) {
                 .collect()
         })
         .unwrap_or_default();
+    if fallen.is_empty() {
+        return;
+    }
+    let Some(level) = ready_to_part(world, None) else { return };
     for member in fallen {
         world.entity_mut(member).remove::<PartyMember>();
         world.get_mut::<Formation>(party).unwrap().unseat(member);
         world.get_mut::<Npc>(member).unwrap().dead = true;
-        hand_over(world, member, |_| false);
+        hand_over(world, member, level, |_| false);
     }
 }

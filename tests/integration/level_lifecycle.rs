@@ -1168,6 +1168,15 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
         app.world_mut().spawn(Destination::new(elsewhere, default(), Entry::Travel)).id();
     app.update();
     assert!(is_played(&app, elsewhere));
+    // Without the item catalog to place its items with, it does not leave:
+    // nothing moves, nothing is lost.
+    let items = app.world().resource::<GameData>().items.clone();
+    let catalog = app.world_mut().resource_mut::<Assets<ItemCatalog>>().remove(&items).unwrap();
+    assert!(!recruit::dismiss(app.world_mut(), actor));
+    assert_eq!(members(&app), 2);
+    assert!(app.world().get::<Carried>(actor).unwrap().backpack[0].is_some());
+    assert!(app.world().get::<Disabled>(body).is_some());
+    app.world_mut().resource_mut::<Assets<ItemCatalog>>().insert(&items, catalog).unwrap();
     assert!(recruit::dismiss(app.world_mut(), actor));
     assert_eq!(members(&app), 1);
     assert!(app.world().get::<PartyMember>(actor).is_none());
