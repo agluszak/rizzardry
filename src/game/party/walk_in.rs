@@ -101,7 +101,8 @@ pub fn fly_party(
         commands.entity(entity).remove_with_requires::<PathFlight>();
         return;
     };
-    let last = path.keys.len().saturating_sub(1) as f32;
+    // Triggers start only paths with keys.
+    let last = (path.keys.len() - 1) as f32;
     flight.frame = (flight.frame + path.keys_per_second * time.delta_secs()).min(last);
     let key = pose(&path.keys, flight.frame);
     (body.yaw, body.pitch, _) = key.rotation.to_euler(EulerRot::YXZ);
@@ -171,5 +172,43 @@ mod tests {
         app.world_mut().write_message(CampRequest);
         app.update();
         assert!(app.world().contains_resource::<Camp>());
+    }
+
+    /// Along a path of several keys the party is carried between them, and
+    /// lands at the last.
+    #[test]
+    fn a_flight_runs_between_keys_and_lands_at_the_last() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins).init_resource::<Assets<LevelDefinition>>();
+        let geometry =
+            app.world_mut().resource_mut::<Assets<LevelDefinition>>().add(LevelDefinition {
+                camera_paths: vec![CameraPathModel {
+                    name: "test".into(),
+                    keys: (0..3).map(|x| Transform::from_xyz(x as f32, 0.0, 0.0)).collect(),
+                    keys_per_second: 1.0,
+                }],
+                ..default()
+            });
+        app.world_mut().spawn(Level::test(geometry));
+        let body = app
+            .world_mut()
+            .spawn((
+                PartyBody::default(),
+                Position::default(),
+                Transform::default(),
+                LinearVelocity::ZERO,
+                PathFlight { path: 0, frame: 0.5 },
+            ))
+            .id();
+        let at =
+            |app: &App| app.world().get::<Position>(body).unwrap().0 + Vec3::Y * EYE_ABOVE_CENTRE;
+        app.world_mut().run_system_once(fly_party).unwrap();
+        assert_eq!(at(&app), Vec3::new(0.5, 0.0, 0.0));
+        assert!(app.world().get::<PathFlight>(body).is_some());
+        app.world_mut().get_mut::<PathFlight>(body).unwrap().frame = 2.0;
+        app.world_mut().run_system_once(fly_party).unwrap();
+        assert_eq!(at(&app), Vec3::new(2.0, 0.0, 0.0));
+        assert!(app.world().get::<PathFlight>(body).is_none());
     }
 }

@@ -986,6 +986,42 @@ fn same_named_props_keep_their_own_device_state_and_animation() {
         assert!(level.world.get::<DoorState>(device).unwrap().open);
     }
 }
+/// A trigger flies the party only along a path with keys; one with none is
+/// declined before anything commits.
+#[test]
+fn camera_paths_without_keys_are_declined() {
+    use crate::content::level::CameraPathModel;
+    let mut empty = trigger("EMPTY", TriggerAction::CameraPath(0));
+    empty.state_change = Some(("FLOWN".into(), StateChange::Set));
+    let mut level = Scenario::new(
+        vec![
+            empty,
+            trigger("ONE", TriggerAction::CameraPath(1)),
+            trigger("MANY", TriggerAction::CameraPath(2)),
+            trigger("MISSING", TriggerAction::CameraPath(3)),
+        ],
+        &[],
+        LevelScript::None,
+    );
+    level.geometry.camera_paths = [0, 1, 3]
+        .map(|keys| CameraPathModel {
+            name: format!("PATH{keys}"),
+            keys: (0..keys).map(|x| Transform::from_xyz(x as f32, 0.0, 0.0)).collect(),
+            keys_per_second: 1.0,
+        })
+        .into();
+    level.visit(None);
+    let mut fly = |name| {
+        let ran = level.run(name).0;
+        (ran, level.world.entity_mut(level.root).take::<PendingPartyMove>().map(|p| p.0))
+    };
+    assert!(matches!(fly("EMPTY"), (false, None)));
+    assert!(matches!(fly("MISSING"), (false, None)));
+    assert!(matches!(fly("ONE"), (true, Some(PartyMove::Fly(1)))));
+    assert!(matches!(fly("MANY"), (true, Some(PartyMove::Fly(2)))));
+    assert!(!level.variable("FLOWN"));
+}
+
 #[test]
 fn a_pending_move_cannot_be_applied_to_a_later_visit() {
     let arrival = Arrival::Here { eye: Vec3::X, yaw: 0.0 };

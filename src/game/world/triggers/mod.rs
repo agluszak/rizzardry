@@ -577,6 +577,11 @@ fn execute(world: &mut World, geometry: &LevelDefinition, entity: Entity, depth:
             world.entity_mut(level).insert(PendingPartyMove(PartyMove::Teleport(arrival.clone())));
         }
         TriggerAction::CameraPath(path) => {
+            // A path without keys has nowhere to carry the party.
+            if geometry.camera_paths.get(*path).is_none_or(|camera| camera.keys.is_empty()) {
+                warn!("trigger {}: camera path {path} has no keys", definition.name);
+                return Ran::Declined;
+            }
             world.entity_mut(level).insert(PendingPartyMove(PartyMove::Fly(*path)));
         }
         TriggerAction::HurtParty(dice) => {
