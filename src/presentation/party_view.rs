@@ -99,7 +99,7 @@ pub enum ViewTurning {
 /// anyone yet), nor at one not drawn. The game carries the turn out.
 pub fn track_fights(
     mut news: MessageReader<crate::game::combat::CombatNews>,
-    preferences: Res<crate::presentation::settings::Preferences>,
+    preferences: Res<crate::settings::Preferences>,
     party: Query<&avian3d::prelude::Position, With<PartyBody>>,
     monsters: Query<
         (
@@ -141,7 +141,7 @@ mod tests {
     use crate::game::world::population::{Monster, ScaledBody};
     use crate::presentation::monsters::MonsterVisual;
     use crate::presentation::screen::Screen;
-    use crate::presentation::settings::Preferences;
+    use crate::settings::Preferences;
     use avian3d::prelude::Position;
     use std::time::Duration;
 

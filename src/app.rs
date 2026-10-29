@@ -243,9 +243,11 @@ pub fn build(options: &Options) -> Result<App, String> {
             PresentationPlugin,
         ));
     }
-    if options.continuous {
-        app.insert_resource(crate::game::combat::CombatSettings { continuous: true });
-    }
+    crate::settings::initialize(
+        &mut app,
+        crate::settings::SettingsFile::default(),
+        options.continuous,
+    );
     if let Some(seconds) = options.run_for {
         app.insert_resource(crate::dev::RunFor(Timer::from_seconds(seconds, TimerMode::Once)))
             .add_systems(Update, crate::dev::exit_after_run);

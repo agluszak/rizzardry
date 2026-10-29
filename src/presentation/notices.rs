@@ -770,7 +770,7 @@ mod tests {
             (CombatNews::Over, vec!["Over"]),
         ] {
             *app.world_mut().resource_mut::<TextLog>() = TextLog::default();
-            app.world_mut().write_message(CombatNews::Began);
+            app.world_mut().write_message(CombatNews::Began { nearest: None });
             app.update();
             assert_eq!(app.world().resource::<TextLog>().selected(), 1);
             app.world_mut().write_message(outcome);

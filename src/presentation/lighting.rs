@@ -208,6 +208,7 @@ mod tests {
                 lighting: default(),
             }],
             environment: Some(crate::content::level::LevelEnvironment {
+                fog_enabled: true,
                 fog_range: (0.2, 1.0),
                 view_distance: 80.0,
                 intensity: 1.0,
