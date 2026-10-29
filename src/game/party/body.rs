@@ -76,6 +76,11 @@ impl PartyBody {
         position.0 + Vec3::Y * EYE_ABOVE_CENTRE
     }
 
+    /// The party's eye now, for operations that hold the whole world.
+    pub fn eye_in(world: &mut World) -> Option<Vec3> {
+        world.query_filtered::<&Position, With<PartyBody>>().single(world).ok().map(Self::eye)
+    }
+
     /// The centre of the party's body under an eye at `eye`: [`Self::eye`]'s
     /// inverse.
     pub fn centre(eye: Vec3) -> Vec3 {

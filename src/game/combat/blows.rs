@@ -996,7 +996,7 @@ pub(super) fn monster_attacks(
             if notices(battle, member, &character, &vitals, rng) {
                 field.formation.turn(member, side);
             } else {
-                surprise.unaware = facing.is_some_and(|f| opposite(f) == Some(side));
+                surprise.unaware = facing.is_some_and(|f| f.opposite() == Some(side));
             }
         }
     }
@@ -1155,14 +1155,4 @@ pub(super) fn monster_attacks(
     battle.this_round.monsters[index].1 =
         Turn { phase: super::next_phase(turn.phase, turn_left), attacks_left: turn_left };
     false
-}
-
-fn opposite(side: Row) -> Option<Row> {
-    match side {
-        Row::Front => Some(Row::Rear),
-        Row::Rear => Some(Row::Front),
-        Row::Right => Some(Row::Left),
-        Row::Left => Some(Row::Right),
-        Row::Center => None,
-    }
 }

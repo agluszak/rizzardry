@@ -111,11 +111,7 @@ pub fn take_item(world: &mut World, target: Entity) -> Result<(), Refusal> {
     if !world.run_system_cached(crate::game::freedom::party_free).unwrap_or(false) {
         return Err(Refusal::DoesNotFit);
     }
-    let eye = world
-        .query_filtered::<&avian3d::prelude::Position, With<crate::game::party::body::PartyBody>>()
-        .single(world)
-        .map(crate::game::party::body::PartyBody::eye)
-        .map_err(|_| Refusal::Nothing)?;
+    let eye = crate::game::party::body::PartyBody::eye_in(world).ok_or(Refusal::Nothing)?;
     let at = world
         .query::<super::ActorPose>()
         .get(world, target)
@@ -170,11 +166,7 @@ pub fn drop_held(world: &mut World, level: Entity, at: Vec3) -> Result<Entity, R
     {
         return Err(Refusal::DoesNotFit);
     }
-    let eye = world
-        .query_filtered::<&avian3d::prelude::Position, With<crate::game::party::body::PartyBody>>()
-        .single(world)
-        .map(crate::game::party::body::PartyBody::eye)
-        .map_err(|_| Refusal::Nothing)?;
+    let eye = crate::game::party::body::PartyBody::eye_in(world).ok_or(Refusal::Nothing)?;
     if eye.xz().distance(at.xz()) > THROW + CLEARANCE {
         return Err(Refusal::DoesNotFit);
     }
