@@ -7,6 +7,7 @@ pub mod approach;
 pub mod attack;
 mod blows;
 mod conduct;
+pub use conduct::Interrupt;
 mod monster_spells;
 
 use crate::game::world::level::LevelOwned;
@@ -471,7 +472,7 @@ pub enum CombatNews {
     /// notice); what it did follows as [`CombatNews::Effects`].
     Special {
         monster: Entity,
-        kind: u8,
+        kind: crate::content::species::SpecialAttackKind,
     },
     /// A guard takes a blow meant for its ward (retail string 0x21a).
     Intercepts {
@@ -482,7 +483,7 @@ pub enum CombatNews {
     /// `GetConditionInterrupt`, by its interrupt number).
     Interrupted {
         monster: Entity,
-        interrupt: u8,
+        interrupt: Interrupt,
     },
     /// A monster runs for its life.
     Flees {
@@ -1735,7 +1736,7 @@ enum Plan<'a> {
         caster: (&'a Species, u32),
     },
     Special {
-        kind: u8,
+        kind: crate::content::species::SpecialAttackKind,
         cooldown: u8,
         breather: crate::game::magic::effects::Breather,
         victims: Vec<crate::game::magic::effects::Victim>,
@@ -1747,14 +1748,14 @@ enum Plan<'a> {
 /// summoning kinds wait on dynamic groups), it is not cooling down, it has
 /// a tenth of its stamina, and a silence does not stop it.
 fn special_ready(monster: &Monster, kind: &Species, cooling: bool) -> bool {
-    use crate::game::magic::effects::{special_silenced, special_summons};
-    let special = kind.special;
     let silenced = monster.conditions.iter().any(|&(c, _)| c == Condition::Silenced);
-    special.kind != 0
-        && !special_summons(special.kind)
-        && !cooling
-        && monster.stamina >= monster.max_stamina / 10
-        && !(silenced && special_silenced(special.kind))
+    kind.special.kind.is_some_and(|special| {
+        let definition = crate::game::magic::effects::special(special);
+        !definition.summons
+            && !cooling
+            && monster.stamina >= monster.max_stamina / 10
+            && !(silenced && definition.silenced)
+    })
 }
 
 /// Whom a monster's breath catches, aimed at the party (retail
@@ -1936,7 +1937,7 @@ fn monster_turn(
                 max_stamina: body.max_stamina,
             };
             decision = Decision::Plan(Plan::Special {
-                kind: special.kind,
+                kind: special.kind.expect("a ready monster has a special attack"),
                 cooldown: special.cooldown,
                 breather,
                 victims,
@@ -2058,21 +2059,21 @@ fn monster_turn(
         );
     }
     match interrupted {
-        None | Some(9) => {}
+        None | Some(Interrupt::Turncoat) => {}
         // Insanity turns it on its friends this round.
-        Some(8) => {
+        Some(Interrupt::Berserk) => {
             battle.this_round.berserk.push(monster);
             decision = Decision::Fight { waits: false };
         }
         // Fear sends it running, without its flight's notice.
-        Some(12) => {
+        Some(Interrupt::Panics) => {
             if !battle.fleeing.contains(&monster) {
                 battle.fleeing.push(monster);
             }
             decision = Decision::Move { conduct: conduct::Conduct::Flee, quiet: true };
         }
         Some(interrupt) => {
-            if interrupt == 7
+            if interrupt == Interrupt::Freed
                 && let Some(mut conditions) = damage.conditions_mut(monster)
             {
                 conditions.retain(|&(c, _)| c != Condition::Webbed);
@@ -2737,7 +2738,8 @@ mod tests {
     /// `ExecuteMonsterSpecialAttack`, `ResolveMonsterGroupAttack`).
     #[test]
     fn a_monster_breathes_on_the_party() {
-        use crate::content::species::SpecialAttack;
+        use crate::content::species::{SpecialAttack, SpecialAttackKind};
+        let burn = SpecialAttackKind::from_record(9).unwrap();
         use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId, Targeting};
         use crate::game::magic::effects::{Effect, Victim};
         let (mut app, members) = round_app(true);
@@ -2760,7 +2762,8 @@ mod tests {
             let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
             let mut species = catalogs.get_mut(&data).unwrap();
             // Kind 9 burns: one wound, resisted by fire.
-            species.0[0].special = SpecialAttack { kind: 9, chance: 100, cooldown: 3 };
+            species.0[0].special =
+                SpecialAttack { kind: SpecialAttackKind::from_record(9), chance: 100, cooldown: 3 };
             species.0[0].level = 5;
         }
         {
@@ -2772,11 +2775,11 @@ mod tests {
         for _ in 0..12 {
             app.update();
             news.extend(app.world_mut().resource_mut::<Messages<CombatNews>>().drain());
-            if news.contains(&CombatNews::Special { monster, kind: 9 }) {
+            if news.contains(&CombatNews::Special { monster, kind: burn }) {
                 break;
             }
         }
-        assert!(news.contains(&CombatNews::Special { monster, kind: 9 }), "it breathes");
+        assert!(news.contains(&CombatNews::Special { monster, kind: burn }), "it breathes");
         let effects: Vec<Effect> = news
             .iter()
             .filter_map(|n| match n {

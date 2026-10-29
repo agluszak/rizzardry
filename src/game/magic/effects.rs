@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use super::{LearnedSpells, SpellPoints, Strength};
 use crate::content::characters::{Attribute, Realm, Skill};
 use crate::content::items::{Dice, EquipClass, ItemCatalog};
-use crate::content::species::{MonsterCatalog, MonsterKind};
+use crate::content::species::{MonsterCatalog, MonsterKind, SpecialAttackKind};
 use crate::content::spells::{SpellDefinition, SpellId};
 use crate::game::characters::{Condition, Lasting, inflict, wake_on_hit};
 use crate::game::difficulty::{Difficulty, Side};
@@ -183,104 +183,107 @@ pub fn worthwhile(spell: SpellId, standing: &Standing) -> bool {
     }
 }
 
-/// What each slot of a monster's special attack does, by its kind (retail
-/// `g_special_attack_table`): 1 a condition, 2 and 5 a wound, 3 a drain of
-/// magic, 4 fatigue, 6 a summoning.
-const SPECIAL_EFFECTS: [[u8; 2]; 32] = [
-    [0, 0],
-    [1, 0],
-    [1, 0],
-    [2, 3],
-    [4, 0],
-    [1, 1],
-    [1, 1],
-    [1, 0],
-    [5, 4],
-    [5, 0],
-    [1, 5],
-    [1, 1],
-    [1, 0],
-    [1, 0],
-    [1, 0],
-    [1, 0],
-    [1, 0],
-    [1, 0],
-    [1, 0],
-    [1, 1],
-    [1, 5],
-    [1, 0],
-    [1, 1],
-    [1, 0],
-    [6, 0],
-    [6, 0],
-    [6, 0],
-    [6, 0],
-    [6, 0],
-    [6, 0],
-    [5, 0],
-    [6, 0],
-];
-
-/// The condition each slot of a special attack tries to inflict (retail
-/// `g_special_attack_condition_table`).
-const SPECIAL_CONDITIONS: [[Option<Condition>; 2]; 32] = {
-    use Condition::*;
-    [
-        [None, None],
-        [Some(Blind), None],
-        [Some(Blind), None],
-        [None, None],
-        [None, None],
-        [Some(Afraid), Some(Insane)],
-        [Some(Afraid), Some(Turncoat)],
-        [Some(Afraid), None],
-        [None, None],
-        [None, None],
-        [Some(Insane), None],
-        [Some(Insane), Some(Turncoat)],
-        [Some(Insane), None],
-        [Some(Irritated), None],
-        [Some(Irritated), None],
-        [Some(Nauseated), None],
-        [Some(Nauseated), None],
-        [Some(Paralyzed), None],
-        [Some(Paralyzed), None],
-        [Some(Poisoned), Some(Irritated)],
-        [Some(Poisoned), None],
-        [Some(Asleep), None],
-        [Some(Slowed), Some(Paralyzed)],
-        [Some(Slowed), None],
-        [None, None],
-        [None, None],
-        [None, None],
-        [None, None],
-        [None, None],
-        [None, None],
-        [None, None],
-        [None, None],
-    ]
-};
-
-/// The realm each special attack's effects are resisted by (retail
-/// `g_special_attack_realm_table`).
-const SPECIAL_REALMS: [Realm; 32] = {
-    use Realm::*;
-    [
-        Fire, Water, Water, Divine, Water, Mental, Divine, Mental, Fire, Fire, Mental, Divine,
-        Mental, Earth, Air, Earth, Air, Mental, Earth, Water, Water, Air, Water, Earth, Fire, Fire,
-        Fire, Fire, Fire, Fire, Water, Fire,
-    ]
-};
-
-/// Whether a special attack kind summons a group rather than strikes.
-pub fn special_summons(kind: u8) -> bool {
-    SPECIAL_EFFECTS.get(usize::from(kind)).is_some_and(|slots| slots[0] == 6)
+/// What one of a special attack's two effects does to a victim (retail
+/// `g_special_attack_table`'s entries).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpecialEffect {
+    /// A condition, for rounds rolled by its strength (entry 1).
+    Inflict(Condition),
+    /// Health taken straight off (entry 2, `DamageCharacter`).
+    Harm,
+    /// Magic drained (entry 3).
+    Drain,
+    /// Stamina spent (entry 4).
+    Tire,
+    /// A wound dealt as a blow's is (entry 5, `ApplyDamageToCharacter`).
+    Wound,
 }
 
-/// Whether a silence stops a special attack kind (retail
+/// What a special attack is (retail `g_special_attack_table`,
+/// `g_special_attack_condition_table`, `g_special_attack_realm_table`,
 /// `MonsterSpecialAttackHonorsCastingBlock`).
-pub fn special_silenced(kind: u8) -> bool {
-    matches!(kind, 5 | 6 | 7 | 0x19 | 0x1a | 0x1c | 0x1d)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpecialDefinition {
+    /// Its two effects; a summoning has none and calls a group instead.
+    pub effects: [Option<SpecialEffect>; 2],
+    pub summons: bool,
+    /// The realm victims resist it by.
+    pub realm: Realm,
+    /// Whether resistance cuts it at all; one kind's wound is not resisted.
+    pub resisted: bool,
+    /// Whether a silence stops it.
+    pub silenced: bool,
+}
+
+/// Each special attack's definition, by its retail row.
+const SPECIALS: [SpecialDefinition; 32] = {
+    use Condition::*;
+    use Realm::*;
+    use SpecialEffect::*;
+    const fn strike(
+        realm: Realm,
+        first: Option<SpecialEffect>,
+        second: Option<SpecialEffect>,
+    ) -> SpecialDefinition {
+        SpecialDefinition {
+            effects: [first, second],
+            summons: false,
+            realm,
+            resisted: true,
+            silenced: false,
+        }
+    }
+    const fn silenced(definition: SpecialDefinition) -> SpecialDefinition {
+        SpecialDefinition { silenced: true, ..definition }
+    }
+    const fn summon(realm: Realm) -> SpecialDefinition {
+        SpecialDefinition {
+            effects: [None, None],
+            summons: true,
+            realm,
+            resisted: true,
+            silenced: false,
+        }
+    }
+    [
+        strike(Fire, None, None),
+        strike(Water, Some(Inflict(Blind)), None),
+        strike(Water, Some(Inflict(Blind)), None),
+        strike(Divine, Some(Harm), Some(Drain)),
+        strike(Water, Some(Tire), None),
+        silenced(strike(Mental, Some(Inflict(Afraid)), Some(Inflict(Insane)))),
+        silenced(strike(Divine, Some(Inflict(Afraid)), Some(Inflict(Turncoat)))),
+        silenced(strike(Mental, Some(Inflict(Afraid)), None)),
+        strike(Fire, Some(Wound), Some(Tire)),
+        strike(Fire, Some(Wound), None),
+        SpecialDefinition { resisted: false, ..strike(Mental, Some(Inflict(Insane)), Some(Wound)) },
+        strike(Divine, Some(Inflict(Insane)), Some(Inflict(Turncoat))),
+        strike(Mental, Some(Inflict(Insane)), None),
+        strike(Earth, Some(Inflict(Irritated)), None),
+        strike(Air, Some(Inflict(Irritated)), None),
+        strike(Earth, Some(Inflict(Nauseated)), None),
+        strike(Air, Some(Inflict(Nauseated)), None),
+        strike(Mental, Some(Inflict(Paralyzed)), None),
+        strike(Earth, Some(Inflict(Paralyzed)), None),
+        strike(Water, Some(Inflict(Poisoned)), Some(Inflict(Irritated))),
+        strike(Water, Some(Inflict(Poisoned)), Some(Wound)),
+        strike(Air, Some(Inflict(Asleep)), None),
+        strike(Water, Some(Inflict(Slowed)), Some(Inflict(Paralyzed))),
+        strike(Earth, Some(Inflict(Slowed)), None),
+        summon(Fire),
+        silenced(summon(Fire)),
+        silenced(summon(Fire)),
+        summon(Fire),
+        silenced(summon(Fire)),
+        silenced(summon(Fire)),
+        strike(Water, Some(Wound), None),
+        summon(Fire),
+    ]
+};
+
+/// A special attack's definition.
+pub fn special(kind: SpecialAttackKind) -> &'static SpecialDefinition {
+    &SPECIALS[usize::from(kind.row())]
 }
 
 /// A monster making its special attack: how strong it is now.
@@ -312,33 +315,29 @@ fn resisted(
 
 /// A monster's special attack (a breath, a gaze) landing on its victims
 /// (retail `ResolveMonsterGroupAttack`). Its strength follows its level and
-/// how fresh it is; each victim may escape each of the kind's two effects
-/// (the first one time in ten, the second one in two), and resists each by
-/// the kind's realm. Party members are taken first, then monsters, as
-/// retail does. Summoning kinds do nothing here.
+/// how fresh it is; each victim may escape each of its two effects (the
+/// first one time in ten, the second one in two), and resists each by its
+/// realm. Party members are taken first, then monsters, as retail does. A
+/// summoning does nothing here.
 pub fn special_attack(
-    kind: u8,
+    kind: SpecialAttackKind,
     breather: Breather,
     victims: &[Victim],
     rng: &mut GameRng,
     world: &mut Field,
     points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
 ) -> Vec<Effect> {
-    let index = usize::from(kind);
-    let (Some(slots), Some(conditions), Some(&realm)) =
-        (SPECIAL_EFFECTS.get(index), SPECIAL_CONDITIONS.get(index), SPECIAL_REALMS.get(index))
-    else {
-        return Vec::new();
-    };
-    if slots[0] == 6 {
+    let definition = special(kind);
+    if definition.summons {
         return Vec::new();
     }
+    let realm = definition.realm;
     let level = u32::from(breather.level);
     let fresh = |extra: u32| {
         (breather.stamina * (level + level.min(15) + extra) / breather.max_stamina.max(1)).max(1)
     };
-    // Retail's doubling of a kind-five slot reads the table's first rows,
-    // which never hold it.
+    // Retail's doubling of a fifth-entry effect reads the table's first
+    // rows, which never hold one.
     let (against, bound) = (fresh(0), fresh(5));
     let ordered = victims
         .iter()
@@ -347,14 +346,11 @@ pub fn special_attack(
     let mut effects = Vec::new();
     for &victim in ordered {
         let monster = matches!(victim, Victim::Monster(_));
-        for slot in 0..2 {
+        for (slot, effect) in definition.effects.iter().enumerate() {
             let escapes = if slot == 0 { rng.below(100) <= 9 } else { rng.below(100) <= 49 };
-            if escapes {
-                continue;
-            }
-            let effect = match slots[slot] {
-                1 => {
-                    let Some(condition) = conditions[slot] else { continue };
+            let Some(effect) = effect.filter(|_| !escapes) else { continue };
+            let landed = match effect {
+                SpecialEffect::Inflict(condition) => {
                     let rounds = if monster { (bound / 3).max(1) } else { rng.below(bound) };
                     // Retail rolls a poison's strength, which is not kept.
                     if condition == Condition::Poisoned {
@@ -362,11 +358,11 @@ pub fn special_attack(
                     }
                     afflict(rng, world, victim, Some(condition), realm, against, Some(rounds))
                 }
-                2 => {
+                SpecialEffect::Harm => {
                     let rolled = three(rng, bound) / 3 + 1;
                     damage(rng, world, victim, realm, rolled, against)
                 }
-                3 => {
+                SpecialEffect::Drain => {
                     let rolled = three(rng, bound) / if monster { 6 } else { 3 } + 1;
                     match resisted(rng, world, victim, realm, rolled, against) {
                         None => None,
@@ -398,7 +394,7 @@ pub fn special_attack(
                         },
                     }
                 }
-                4 => {
+                SpecialEffect::Tire => {
                     let rolled = three(rng, bound) + u32::from(!monster);
                     match resisted(rng, world, victim, realm, rolled, against) {
                         None => None,
@@ -419,20 +415,18 @@ pub fn special_attack(
                         }
                     }
                 }
-                5 => {
+                SpecialEffect::Wound => {
                     let rolled = three(rng, bound) / 3 + 1;
-                    // Kind 10 is not resisted.
-                    if kind == 10 {
+                    if definition.resisted {
+                        damage(rng, world, victim, realm, rolled, against)
+                    } else {
                         target(world, victim, realm, None)
                             .filter(|t| !t.dead)
                             .and_then(|_| hurt(rng, world, victim, rolled))
-                    } else {
-                        damage(rng, world, victim, realm, rolled, against)
                     }
                 }
-                _ => None,
             };
-            effects.extend(effect);
+            effects.extend(landed);
         }
     }
     effects

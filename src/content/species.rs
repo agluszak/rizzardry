@@ -333,12 +333,29 @@ pub struct Species {
 /// record 0xe3, 0xe1 and 0x15c). Retail names its chance `flee_chance`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SpecialAttack {
-    /// Which one (retail `special_attack_kind`); none is 0.
-    pub kind: u8,
+    /// Which one, if it has one.
+    pub kind: Option<SpecialAttackKind>,
     /// The chance (%) it makes it at its turn while it can strike someone.
     pub chance: u8,
     /// The rounds it waits before the next.
     pub cooldown: u8,
+}
+
+/// One of retail's special attacks, by its row in retail's tables (1 to
+/// 31); what it does is the game's definition of that row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SpecialAttackKind(u8);
+
+impl SpecialAttackKind {
+    /// The kind a record names; none for 0 or a row past retail's tables.
+    pub fn from_record(row: u8) -> Option<Self> {
+        (1..32).contains(&row).then_some(Self(row))
+    }
+
+    /// Its row in retail's tables, which also numbers its name.
+    pub fn row(self) -> u8 {
+        self.0
+    }
 }
 
 /// The spells a species casts in a fight (retail record 0xe0, 0x14d,

@@ -572,8 +572,8 @@ pub fn queue_notices(
             // (`g_monster_special_attack_name_ids`, known for kinds 1 to 11).
             CombatNews::Special { monster, kind } => names
                 .name(*monster)
-                .map(|name| match kind {
-                    1..=11 => vec![format!("{name} {}", string(1597 + usize::from(*kind)))],
+                .map(|name| match kind.row() {
+                    row @ 1..=11 => vec![format!("{name} {}", string(1597 + usize::from(row)))],
                     _ => vec![],
                 })
                 .unwrap_or_default(),
@@ -581,8 +581,10 @@ pub fn queue_notices(
             // them); fear's flight has none.
             CombatNews::Interrupted { monster, interrupt } => names
                 .name(*monster)
-                .filter(|_| *interrupt < 12)
-                .map(|name| vec![format!("{name} {}", string(0x3a0 + usize::from(*interrupt)))])
+                .filter(|_| interrupt.number() < 12)
+                .map(|name| {
+                    vec![format!("{name} {}", string(0x3a0 + usize::from(interrupt.number())))]
+                })
                 .unwrap_or_default(),
             // Retail string 0x21a after the guard's name, naming its ward.
             CombatNews::Intercepts { guard, ward } => {

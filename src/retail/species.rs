@@ -13,7 +13,7 @@ use enumset::EnumSet;
 use crate::content::items::{AttackEffects, ItemId};
 use crate::content::species::{
     AttackWord, Disposition, Drop, MonsterAttack, MonsterAttributes, MonsterCatalog, MonsterMagic,
-    SpecialAttack, Species, Temper, Treasure,
+    SpecialAttack, SpecialAttackKind, Species, Temper, Treasure,
 };
 use crate::content::spells::SpellId;
 
@@ -139,7 +139,7 @@ fn species(record: &[u8]) -> Result<Species, DecodeError> {
             budget: i32_at(record, 0x26f)?,
         },
         special: SpecialAttack {
-            kind: record[0xe3],
+            kind: SpecialAttackKind::from_record(record[0xe3]),
             chance: record[0xe1],
             cooldown: record[0x15c],
         },
