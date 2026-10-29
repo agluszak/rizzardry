@@ -117,7 +117,7 @@ impl Plugin for WorldPlugin {
                     (handle_world_requests, crate::game::automap::commit_notes)
                         .after(crate::game::GameplaySet::Stats)
                         .before(crate::game::GameplaySet::Combat),
-                    particles::switch_off_spent,
+                    particles::switch_off_spent.before(crate::game::GameplaySet::LevelActivation),
                     population::give_birth
                         .run_if(level::level_active)
                         .before(crate::game::GameplaySet::Combat),

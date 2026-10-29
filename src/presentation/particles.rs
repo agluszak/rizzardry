@@ -49,7 +49,14 @@ pub(super) fn plugin(app: &mut App) {
     let mesh = app.world_mut().resource_mut::<Assets<Mesh>>().add(Rectangle::new(1.0, 1.0));
     app.insert_resource(ParticleMesh(mesh)).add_observer(track_emission).add_systems(
         Update,
-        (move_particles, emit_particles, attach_sprites, animate_particles).chain(),
+        (
+            move_particles,
+            // Settled before a departing level is remembered.
+            emit_particles.before(crate::game::world::particles::switch_off_spent),
+            attach_sprites,
+            animate_particles,
+        )
+            .chain(),
     );
 }
 
@@ -258,6 +265,11 @@ fn emit_particles(
             emission.emitted = emission.emitted.saturating_add(1);
             existing.push((born, particle));
         }
+        // The final birth spends it in the same update (retail
+        // `SubmitToRenderer` checks right after `Update`).
+        if spent(&emission) {
+            spent_emitters.write(EmissionSpent(entity));
+        }
     }
 }
 fn attach_sprites(
@@ -461,12 +473,8 @@ mod tests {
         step(&mut scene, 100);
         step(&mut scene, 100);
         assert_eq!(count(&mut scene), 2);
-        assert!(active(&mut scene));
-        step(&mut scene, 100);
-        assert_eq!(count(&mut scene), 2, "no third birth");
-        assert!(!active(&mut scene), "the spent emitter is switched off");
-        step(&mut scene, 500);
-        assert_eq!(count(&mut scene), 0);
+        assert!(!active(&mut scene), "the final birth switches it off at once");
+        // Leaving now remembers it off, with no further update.
         let memory = scene.remember();
         scene.visit(Some(memory));
         assert!(!active(&mut scene), "remembered off");
