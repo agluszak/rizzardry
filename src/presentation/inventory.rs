@@ -291,10 +291,11 @@ fn hold_inventory_key(
 
 /// The one acceptance rule for opening a member's review, however it was
 /// asked for: the party is in the world, under no question and no pending
-/// screen change, and the member is in the party. The review shows the
-/// selected member, so the caller selects the member it opened.
+/// screen change, and the member is in the party. Acceptance selects that
+/// member together with the screen transition.
 #[derive(bevy::ecs::system::SystemParam)]
 pub(crate) struct OpenReview<'w, 's> {
+    pub(super) selected: ResMut<'w, super::main_screen::SelectedMember>,
     screen: Res<'w, State<Screen>>,
     next: ResMut<'w, NextState<Screen>>,
     questions: Query<'w, 's, (), With<crate::game::world::level::TravelQuestion>>,
@@ -313,6 +314,7 @@ impl OpenReview<'_, '_> {
         {
             return false;
         }
+        self.selected.set_if_neq(super::main_screen::SelectedMember(Some(member)));
         self.next.set(Screen::Inventory);
         true
     }
@@ -323,9 +325,8 @@ fn open_with_key(
     _: On<Start<OpenInventory>>,
     mut review: OpenReview,
     roster: Single<&PartyRoster>,
-    selected: Res<super::main_screen::SelectedMember>,
 ) {
-    if let Some(member) = selected.member(&roster) {
+    if let Some(member) = review.selected.member(&roster) {
         review.open(member);
     }
 }
@@ -1584,6 +1585,43 @@ mod tests {
                 if still_a_member { vec![] } else { vec![id] }
             );
         }
+    }
+
+    #[test]
+    fn review_acceptance_selects_its_member_and_refusal_preserves_selection() {
+        use super::super::main_screen::SelectedMember;
+        use bevy::ecs::system::RunSystemOnce;
+        let mut app = crate::presentation::test_input::input_app();
+        app.init_state::<Screen>()
+            .init_resource::<SelectedMember>()
+            .add_input_context::<InventoryRoot>()
+            .add_systems(OnEnter(Screen::Inventory), enter_inventory);
+        let first = app.world_mut().spawn_empty().id();
+        let second = app.world_mut().spawn_empty().id();
+        let outsider = app.world_mut().spawn_empty().id();
+        crate::game::party::roster::test_party(app.world_mut(), &[first, second]);
+        app.world_mut().resource_mut::<SelectedMember>().0 = Some(first);
+        app.finish();
+        app.cleanup();
+        app.update();
+        let open = |app: &mut App, member| {
+            app.world_mut()
+                .run_system_once(move |mut review: OpenReview| review.open(member))
+                .unwrap()
+        };
+        assert!(!open(&mut app, outsider));
+        assert_eq!(app.world().resource::<SelectedMember>().0, Some(first));
+        assert!(matches!(*app.world().resource::<NextState<Screen>>(), NextState::Unchanged));
+        assert!(open(&mut app, second));
+        assert_eq!(app.world().resource::<SelectedMember>().0, Some(second));
+        // A second request cannot redirect the accepted opening.
+        assert!(!open(&mut app, first));
+        app.update();
+        let mut screens = app.world_mut().query::<&mut InventoryScreen>();
+        assert_eq!(screens.single(app.world()).unwrap().member, second);
+        // Browsing the open inventory stays local; it does not change HUD selection.
+        screens.single_mut(app.world_mut()).unwrap().member = first;
+        assert_eq!(app.world().resource::<SelectedMember>().0, Some(second));
     }
 
     /// A travel question owns the keyboard: I cannot open the review under it.
