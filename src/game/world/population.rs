@@ -448,8 +448,7 @@ mod tests {
     #[test]
     fn an_encounters_summoning_has_its_body_ready() {
         let mut app = App::new();
-        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
-            .init_asset::<MonsterBody>();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default())).init_asset::<MonsterBody>();
         let mut catalog = vec![Species::default(); 13];
         catalog[3] = Species {
             special: SpecialAttack { kind: Some(SpecialAttackKind::SummonsSpecies12), ..default() },
