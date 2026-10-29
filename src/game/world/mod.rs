@@ -64,7 +64,6 @@ impl Plugin for WorldPlugin {
             .add_message::<search::SearchNews>()
             .init_resource::<search::Search>()
             .init_resource::<level::LevelMemory>()
-            .init_resource::<population::MonsterBodies>()
             .add_message::<triggers::TriggerEffect>()
             .add_message::<interaction::LockNews>()
             .add_message::<WorldRequest>()

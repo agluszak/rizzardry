@@ -19,7 +19,7 @@ use rizzardry::game::world::level::{
     Destination, Entry, Level, LevelEntryFailed, LevelMemory, LevelOwned, LevelReady, Travel,
     activate_level, travel,
 };
-use rizzardry::game::world::population::{Monster, MonsterBodies};
+use rizzardry::game::world::population::Monster;
 use rizzardry::game::world::triggers::PendingPartyMove;
 
 fn app() -> App {
@@ -38,7 +38,7 @@ fn app() -> App {
         .init_resource::<Assets<PartyMotionConfig>>()
         .init_resource::<Assets<rizzardry::game::world::navigation::WalkerMotionConfig>>()
         .init_resource::<LevelMemory>()
-        .init_resource::<MonsterBodies>()
+        .add_observer(give_bodies)
         .init_resource::<rizzardry::game::factions::Factions>()
         .init_resource::<ItemIds>()
         .init_resource::<GameRng>()
@@ -66,7 +66,22 @@ fn with_data(app: &mut App) {
     world.insert_resource(GameData { items, loot, species, spells });
     // Required body metadata is available without a visual asset or renderer.
     let body = world.resource_mut::<Assets<MonsterBody>>().add(MonsterBody::default());
-    world.resource_mut::<MonsterBodies>().0.insert(0, body);
+    world.insert_resource(CrabBody(body));
+}
+
+/// The crab's body, which a destination would otherwise load from retail.
+#[derive(Resource)]
+struct CrabBody(Handle<MonsterBody>);
+
+fn give_bodies(
+    add: On<Add<Destination>>,
+    body: Option<Res<CrabBody>>,
+    mut destinations: Query<&mut Destination>,
+) {
+    let (Some(body), Ok(mut destination)) = (body, destinations.get_mut(add.entity)) else {
+        return;
+    };
+    destination.bodies.0.insert(0, body.0.clone());
 }
 
 /// Plain items under every id a new character can start with.
@@ -502,7 +517,7 @@ fn a_level_waits_for_body_metadata_and_sizes_monsters_without_render_assets() {
     with_data(&mut app);
     // The crab's gameplay body metadata is still loading.
     let loading = app.world_mut().resource_mut::<Assets<MonsterBody>>().reserve_handle();
-    app.world_mut().resource_mut::<MonsterBodies>().0.insert(0, loading.clone());
+    app.world_mut().insert_resource(CrabBody(loading.clone()));
     let root = spawn_level(&mut app, floor());
 
     app.update();

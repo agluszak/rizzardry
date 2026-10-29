@@ -74,9 +74,10 @@ impl ScaledBody {
     }
 }
 
-/// Required body definitions by species. Visual model construction is not a
+/// The body definitions an entry's monsters need, by species, held while
+/// the entry loads and dropped with it. Visual model construction is not a
 /// gameplay prerequisite and is requested separately by presentation.
-#[derive(Resource, Debug, Default)]
+#[derive(Debug, Default)]
 pub struct MonsterBodies(pub HashMap<u32, Handle<MonsterBody>>);
 
 impl MonsterBodies {
@@ -136,7 +137,7 @@ pub fn populate(
     remembered: Option<LevelRecord>,
     (species, items): (&MonsterCatalog, &ItemCatalog),
     (map, npcs): (&str, &mut crate::game::npcs::NpcPopulation),
-    (handles, bodies): (&HashMap<u32, Handle<MonsterBody>>, &Assets<MonsterBody>),
+    (handles, bodies): (&MonsterBodies, &Assets<MonsterBody>),
     (navigation, configs): (&LevelNavigation, &mut Assets<WalkerMotionConfig>),
     ids: &mut ItemIds,
     rng: &mut GameRng,
@@ -153,7 +154,7 @@ pub fn populate(
             .filter(|placed| species.0[placed.species as usize].npc.is_none())
             .map(|placed| {
                 let kind = &species.0[placed.species as usize];
-                let body = bodies.get(&handles[&placed.species]).unwrap();
+                let body = bodies.get(&handles.0[&placed.species]).unwrap();
                 KeptMonster::rolled(placed, kind, body, rng)
             })
             .collect(),
@@ -181,7 +182,7 @@ pub fn populate(
     for placed in &geometry.monsters {
         let Some(kind) = species.kind(placed.species) else { continue };
         let Some(id) = kind.npc else { continue };
-        let body = bodies.get(&handles[&placed.species]).unwrap();
+        let body = bodies.get(&handles.0[&placed.species]).unwrap();
         let place = crate::game::npcs::Placing { placed, id, map, average };
         let Some(actor) = npcs.place(commands, place, items, &mut placed_actors, rng, |rng| {
             KeptMonster::rolled(placed, kind, body, rng)
