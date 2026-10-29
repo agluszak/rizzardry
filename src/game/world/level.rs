@@ -455,7 +455,8 @@ pub struct LevelReady {
 }
 
 /// A level's collision, built and checked before its entry commits: the
-/// level's own, and each prop part's by prop and part. Sprites have none.
+/// level's own, and each prop part's by prop and part. Walk-through sprites
+/// have none.
 struct Collision {
     level: Collider,
     parts: Vec<Vec<Option<Collider>>>,
@@ -475,8 +476,10 @@ fn prepare_collision(geometry: &LevelDefinition) -> Result<Collision, String> {
             prop.parts
                 .iter()
                 .map(|part| {
-                    // Sprites turn with the view and do not collide.
-                    if prop.face_camera {
+                    // Retail's solidity is the collidable flag alone, as the
+                    // navmesh bakes it; only a walk-through sprite, which
+                    // turns with the view, keeps no fixed shape to point at.
+                    if prop.face_camera && !prop.collidable {
                         return Ok(None);
                     }
                     match super::props::trimesh(&part.collision, TrimeshFlags::empty()) {
@@ -751,6 +754,51 @@ fn found_party(
     }
     commands.entity(party).insert(formation);
     party
+}
+
+#[cfg(test)]
+mod collision_tests {
+    use super::*;
+    use crate::content::level::{CollisionMesh, PropModel, PropModelPart};
+
+    fn triangle() -> CollisionMesh {
+        CollisionMesh {
+            vertices: vec![Vec3::ZERO, Vec3::X, Vec3::Z],
+            triangles: vec![[0, 1, 2]],
+            walkable: vec![true],
+        }
+    }
+
+    /// Whether a prop is solid follows its collidable flag, as the navmesh
+    /// bakes it, whatever way it is drawn.
+    #[test]
+    fn solidity_follows_the_collidable_flag_not_the_drawing() {
+        let prop = |collidable, face_camera| PropModel {
+            name: "PROP".into(),
+            collidable,
+            face_camera,
+            frames_per_second: 10.0,
+            parts: vec![PropModelPart {
+                transform: Transform::IDENTITY,
+                keys: vec![],
+                collision: triangle(),
+            }],
+            wraps: false,
+            slots: vec![],
+            trigger: None,
+        };
+        let geometry = LevelDefinition {
+            collision: triangle(),
+            props: vec![prop(true, true), prop(true, false), prop(false, false), prop(false, true)],
+            ..default()
+        };
+        let collision = prepare_collision(&geometry).unwrap();
+        let has = |prop: usize| collision.parts[prop][0].is_some();
+        assert!(has(0), "a collidable sprite is solid");
+        assert!(has(1));
+        assert!(has(2), "a walk-through prop keeps its sensor");
+        assert!(!has(3), "a walk-through sprite has no fixed shape");
+    }
 }
 
 #[cfg(test)]
