@@ -3200,7 +3200,6 @@ mod tests {
             .init_resource::<Assets<crate::content::spells::SpellCatalog>>()
             .init_resource::<Assets<LootTables>>()
             .init_resource::<Assets<crate::content::monster::MonsterBody>>()
-            .init_resource::<crate::game::world::population::MonsterBodies>()
             .init_resource::<Assets<crate::game::world::navigation::WalkerMotionConfig>>()
             .init_resource::<avian3d::collider_tree::ColliderTrees>()
             .init_resource::<crate::game::factions::Factions>()

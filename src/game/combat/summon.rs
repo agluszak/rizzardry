@@ -47,13 +47,9 @@ pub fn summon(
         Query<&MonsterGroup>,
         hostility::Stances,
     ),
-    mut levels: Query<(Entity, &LevelNavigation, &mut Unborn), With<Level>>,
+    mut levels: Query<(Entity, &LevelNavigation, &mut Unborn, &MonsterBodies), With<Level>>,
     (level, obstacles): (PlayedLevel, WorldObstacles),
-    (bodies, definitions, mut configs): (
-        Res<MonsterBodies>,
-        Res<Assets<MonsterBody>>,
-        ResMut<Assets<WalkerMotionConfig>>,
-    ),
+    (definitions, mut configs): (Res<Assets<MonsterBody>>, ResMut<Assets<WalkerMotionConfig>>),
     (clock, mut rng): (Res<GameClock>, ResMut<GameRng>),
     content: crate::game::data::Content,
     mut news: MessageWriter<CombatNews>,
@@ -65,7 +61,7 @@ pub fn summon(
         return;
     };
     let Ok((party_at, party_body)) = party.single() else { return };
-    let Ok((root, navigation, mut unborn)) = levels.single_mut() else { return };
+    let Ok((root, navigation, mut unborn, bodies)) = levels.single_mut() else { return };
     let eye = PartyBody::eye(party_at);
     // The next free ids, the unborn's counted too. Groups spawned here are
     // not in the queries until this run ends, so each takes its ids from
@@ -232,7 +228,6 @@ mod tests {
         .init_resource::<GameClock>()
         .insert_resource(GameRng::seeded(3))
         .init_resource::<crate::game::factions::Factions>()
-        .init_resource::<MonsterBodies>()
         .init_asset::<MonsterBody>()
         .init_asset::<MonsterCatalog>()
         .init_asset::<LevelDefinition>()
@@ -257,12 +252,13 @@ mod tests {
             target_height: 1.5,
             ..default()
         });
-        world.resource_mut::<MonsterBodies>().0.insert(12, body);
+        let level_bodies = MonsterBodies([(12, body)].into());
         let definition =
             world.resource_mut::<Assets<LevelDefinition>>().add(LevelDefinition::default());
         let root = world
             .spawn((
                 Level::test(definition),
+                level_bodies,
                 LevelNavigation { archipelagos: vec![] },
                 Unborn::default(),
             ))

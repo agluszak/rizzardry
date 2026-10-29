@@ -497,7 +497,10 @@ fn admits(
 #[allow(clippy::too_many_arguments)]
 pub fn run_encounters(
     mut commands: Commands,
-    mut levels: Query<(Entity, &mut EncounterState, &LevelNavigation, &mut Unborn), With<Level>>,
+    mut levels: Query<
+        (Entity, &mut EncounterState, &LevelNavigation, &mut Unborn, &MonsterBodies),
+        With<Level>,
+    >,
     mut groups: Query<(Entity, &mut MonsterGroup, Option<&GroupMembers>)>,
     monsters: Query<(&Monster, ActorPose, Option<&Walker>, Option<&super::identify::GroupMember>)>,
     party: Query<(&Position, Option<&crate::game::party::roster::PartyRoster>), With<PartyBody>>,
@@ -507,11 +510,7 @@ pub fn run_encounters(
         Query<(), With<crate::game::npcs::conversation::Conversation>>,
     ),
     (level, obstacles): (PlayedLevel, WorldObstacles),
-    (bodies, definitions, mut configs): (
-        Res<MonsterBodies>,
-        Res<Assets<MonsterBody>>,
-        ResMut<Assets<WalkerMotionConfig>>,
-    ),
+    (definitions, mut configs): (Res<Assets<MonsterBody>>, ResMut<Assets<WalkerMotionConfig>>),
     (time, clock, difficulty, mut rng): (
         Res<Time<Fixed>>,
         Res<GameClock>,
@@ -525,7 +524,7 @@ pub fn run_encounters(
     if encounters.generators.is_empty() {
         return;
     }
-    let Ok((root, mut state, navigation, mut unborn)) = levels.single_mut() else { return };
+    let Ok((root, mut state, navigation, mut unborn, bodies)) = levels.single_mut() else { return };
     let Ok((party_at, roster)) = party.single() else { return };
     let (in_battle, talking) = blocked;
     let in_battle = in_battle.is_some();
@@ -567,7 +566,7 @@ pub fn run_encounters(
     let mut spawning = Spawning {
         root,
         species,
-        bodies: (&bodies, &definitions),
+        bodies: (bodies, &definitions),
         navigation,
         obstacles: &obstacles,
         next: (next_location, next_group),
@@ -733,7 +732,6 @@ mod tests {
         ))
         .init_resource::<GameClock>()
         .insert_resource(GameRng::seeded(9))
-        .init_resource::<MonsterBodies>()
         .init_asset::<MonsterBody>()
         .init_asset::<MonsterCatalog>()
         .init_asset::<LevelDefinition>()
@@ -757,7 +755,7 @@ mod tests {
             target_height: 1.5,
             ..default()
         });
-        world.resource_mut::<MonsterBodies>().0.insert(SPECIES, body);
+        let level_bodies = MonsterBodies([(SPECIES, body)].into());
         let table = EncounterTable {
             name: "Woods".into(),
             entries: [3, 7, 20, 70]
@@ -798,6 +796,7 @@ mod tests {
         let root = world
             .spawn((
                 Level::test(definition),
+                level_bodies,
                 LevelNavigation { archipelagos: vec![] },
                 Unborn::default(),
             ))

@@ -45,7 +45,7 @@ pub fn entering(world: &mut World) -> bool {
 /// becomes one only by [`activate_level`]; until then its root is a
 /// [`Destination`].
 #[derive(Component, Debug, Clone)]
-#[require(Transform)]
+#[require(Transform, MonsterBodies)]
 pub struct Level {
     /// The retail path of its `.pvl`, which identifies it.
     pub path: String,
@@ -381,11 +381,13 @@ pub struct Destination {
     pub level: Level,
     pub start: PartyStart,
     pub entry: Entry,
+    /// Its monsters' bodies, held while it loads.
+    pub bodies: MonsterBodies,
 }
 
 impl Destination {
     pub fn new(level: Level, start: PartyStart, entry: Entry) -> Self {
-        Destination { level, start, entry }
+        Destination { level, start, entry, bodies: default() }
     }
 }
 
@@ -577,7 +579,6 @@ pub struct SharedData<'w> {
     data: Option<Res<'w, GameData>>,
     content: crate::game::data::Content<'w>,
     bodies: Res<'w, Assets<MonsterBody>>,
-    monster_bodies: ResMut<'w, MonsterBodies>,
     motion_configs: ResMut<'w, Assets<navigation::WalkerMotionConfig>>,
 }
 
@@ -612,7 +613,8 @@ pub fn activate_level(
             failures.write(LevelEntryFailed { path: level.path.clone() });
             commands.entity(root).despawn();
         };
-        match prepare(level, presentation, &geometry, &mut shared, &mut npcs, &assets) {
+        let bodies = &mut destination.bodies;
+        match prepare(level, bodies, presentation, &geometry, &shared, &mut npcs, &assets) {
             Ok(true) => {}
             Ok(false) => continue,
             Err(why) => {
@@ -676,7 +678,7 @@ pub fn activate_level(
             remembered,
             (species, items),
             (&level.path, &mut npcs),
-            (&shared.monster_bodies.0, &shared.bodies),
+            (&destination.bodies, &shared.bodies),
             (&navigation, &mut shared.motion_configs),
             &mut ids,
             &mut rng,
@@ -693,7 +695,8 @@ pub fn activate_level(
         transition.p1().place(&mut commands, party, geometry, &destination.start);
         navigation::add_party_characters(&mut commands, root, party, &navigation);
         info!("{} is active", level.path);
-        commands.entity(root).remove::<Destination>().insert((level.clone(), navigation));
+        let bodies = std::mem::take(&mut destination.bodies);
+        commands.entity(root).remove::<Destination>().insert((level.clone(), navigation, bodies));
         ready.write(LevelReady { level: root });
         break;
     }
@@ -704,9 +707,10 @@ pub fn activate_level(
 /// never will.
 fn prepare(
     level: &Level,
+    bodies: &mut MonsterBodies,
     presentation: Option<&PresentationReadiness>,
     geometry: &Assets<LevelDefinition>,
-    shared: &mut SharedData,
+    shared: &SharedData,
     npcs: &mut crate::game::npcs::NpcPopulation,
     assets: &AssetServer,
 ) -> Result<bool, String> {
@@ -737,7 +741,7 @@ fn prepare(
     if !npcs.prepare(species, &geometry.monsters, items, assets)? {
         return Ok(false);
     }
-    let bodies = shared.monster_bodies.for_level(geometry, species, assets);
+    let bodies = bodies.for_level(geometry, species, assets);
     if bodies.iter().any(|body| failed(body.id().untyped())) {
         return Err("a monster's body definition failed to load".into());
     }

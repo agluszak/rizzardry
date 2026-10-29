@@ -68,7 +68,7 @@ fn tier(power: u8, realm: usize) -> u32 {
     // Retail g_elemental_summon_group_ids: air, earth, water, fire per tier.
     21 + u32::from(power.saturating_sub(1).min(6)) * 4 + [3, 2, 0, 1][realm]
 }
-fn bodies(world: &mut World) -> Result<Vec<(u32, MonsterBody)>, Refusal> {
+fn bodies(world: &mut World, root: Entity) -> Result<Vec<(u32, MonsterBody)>, Refusal> {
     let mut result = Vec::new();
     for id in 21..=48 {
         let model = GameData::species(world)
@@ -76,14 +76,16 @@ fn bodies(world: &mut World) -> Result<Vec<(u32, MonsterBody)>, Refusal> {
             .ok_or(Refusal::MissingContent)?
             .model
             .clone();
-        let handle = match world.get_resource::<MonsterBodies>().and_then(|b| b.0.get(&id)).cloned()
-        {
+        let handle = match world.get::<MonsterBodies>(root).and_then(|b| b.0.get(&id)).cloned() {
             Some(handle) => handle,
             None => {
                 let assets = world.get_resource::<AssetServer>().ok_or(Refusal::MissingContent)?;
                 let handle = assets.load(crate::content::paths::monster(&model));
-                world.init_resource::<MonsterBodies>();
-                world.resource_mut::<MonsterBodies>().0.insert(id, handle.clone());
+                world
+                    .get_mut::<MonsterBodies>(root)
+                    .ok_or(Refusal::MissingContent)?
+                    .0
+                    .insert(id, handle.clone());
                 handle
             }
         };
@@ -184,7 +186,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
                 return Err(Refusal::MissingContent);
             }
         }
-        let bodies = bodies(world)?;
+        let bodies = bodies(world, root)?;
         if bodies.iter().any(|(_, body)| body.movement_rate > 0.0)
             && (world
                 .get::<LevelNavigation>(root)
@@ -508,7 +510,6 @@ mod tests {
         world.init_resource::<Assets<MonsterCatalog>>();
         world.init_resource::<Assets<SpellCatalog>>();
         world.init_resource::<Assets<MonsterBody>>();
-        world.init_resource::<MonsterBodies>();
         world.init_resource::<Messages<MagicNews>>();
         world.init_resource::<Messages<crate::game::factions::FactionNews>>();
         let mut species = vec![Species::default(); 49];
@@ -544,7 +545,7 @@ mod tests {
             .resource_mut::<Assets<MonsterBody>>()
             .add(MonsterBody { movement_rate: 0.0, ..default() });
         for id in 21..=48 {
-            world.resource_mut::<MonsterBodies>().0.insert(id, body.clone());
+            world.get_mut::<MonsterBodies>(scene.root).unwrap().0.insert(id, body.clone());
         }
         let mut profile = Character::new("Caller", Race::Human, Gender::Male, Profession::Mage);
         profile.level = 30;
@@ -575,7 +576,7 @@ mod tests {
         let root = scene.root;
         let world = &mut scene.world;
         let battle = world.spawn((Battle::default(), LevelOwned(root))).id();
-        let definitions = world.remove_resource::<MonsterBodies>().unwrap();
+        let definitions = world.entity_mut(root).take::<MonsterBodies>().unwrap();
         let rng = world.resource::<GameRng>().clone();
         assert_eq!(
             cast(world, caster, choice(SpellId::SUMMON_ELEMENTAL)),
@@ -583,7 +584,7 @@ mod tests {
         );
         assert_eq!(&rng, world.resource::<GameRng>());
         assert_eq!(world.get::<SpellPoints>(caster).unwrap().current[Realm::Fire], 100);
-        world.insert_resource(definitions);
+        world.entity_mut(root).insert(definitions);
         cast(world, caster, choice(SpellId::SUMMON_ELEMENTAL)).unwrap();
         let summon = world.get::<Elementals>(caster).unwrap().iter().next().unwrap();
         assert!((21..=24).contains(&world.get::<Monster>(summon).unwrap().species));
