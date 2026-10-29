@@ -170,9 +170,9 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     );
     let actor = app
         .world_mut()
-        .query::<(Entity, &Npc)>()
+        .query::<(Entity, &rizzardry::game::npcs::ActorId)>()
         .iter(app.world())
-        .find(|(_, n)| n.definition == burz_id)
+        .find(|(_, identity)| identity.npc() == burz_id)
         .unwrap()
         .0;
     assert!(
@@ -329,9 +329,9 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     assert_eq!(app.world().resource::<conversation::StoryFacts>().get(fact, facts), Ok(1));
     assert_eq!(
         app.world_mut()
-            .query::<&Npc>()
+            .query::<(&rizzardry::game::npcs::ActorId, &Npc)>()
             .iter(app.world())
-            .filter(|n| n.definition == burz_id)
+            .filter(|(identity, _)| identity.npc() == burz_id)
             .count(),
         1
     );

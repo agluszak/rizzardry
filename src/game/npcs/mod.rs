@@ -22,6 +22,12 @@ pub enum ActorId {
     Placed { npc: NpcId, map: String, location: i32 },
 }
 impl ActorId {
+    /// The NPC this is.
+    pub fn npc(&self) -> NpcId {
+        match *self {
+            Self::Named(npc) | Self::Placed { npc, .. } => npc,
+        }
+    }
     pub fn for_placement(id: NpcId, def: &NpcDefinition, map: &str, location: i32) -> Self {
         if def.monster_bound {
             Self::Placed { npc: id, map: map.into(), location }
@@ -48,7 +54,6 @@ pub struct NpcWorldRole {
 }
 #[derive(Component, Debug, Default)]
 pub struct Npc {
-    pub definition: NpcId,
     pub disposition: u8,
     pub greeting_pending: bool,
     pub paid_topics: Vec<u16>,
@@ -205,7 +210,6 @@ impl NpcPopulation<'_, '_> {
             .spawn((
                 key,
                 Npc {
-                    definition: id,
                     disposition: definition.disposition,
                     greeting_pending: true,
                     paid_topics: vec![],

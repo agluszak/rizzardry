@@ -1002,7 +1002,7 @@ fn project_text(
     views: ViewScope,
     sessions: Query<&Conversation>,
     speech: Query<&ConversationSpeech>,
-    npcs: Query<&Npc>,
+    npcs: Query<&crate::game::npcs::ActorId>,
     definitions: Res<Assets<NpcCatalog>>,
     assets: Res<NpcAssets>,
     parties: Query<&PartyInventory, With<crate::game::party::roster::Party>>,
@@ -1016,7 +1016,7 @@ fn project_text(
                 Mode::Talk => npcs
                     .get(c.actor)
                     .ok()
-                    .and_then(|n| definitions.get(&assets.catalog)?.get(n.definition))
+                    .and_then(|n| definitions.get(&assets.catalog)?.get(n.npc()))
                     .map_or("NPC", |d| d.source_name.as_str())
                     .to_owned(),
                 Mode::Buy => "Buy".into(),
@@ -1137,7 +1137,7 @@ fn project_modes(
     views: ViewScope,
     mut commands: Commands,
     sessions: Query<&Conversation>,
-    npcs: Query<&Npc>,
+    npcs: Query<&crate::game::npcs::ActorId>,
     definitions: Res<Assets<NpcCatalog>>,
     assets: Res<NpcAssets>,
     mut panels: Query<
@@ -1194,7 +1194,7 @@ fn project_modes(
             let can_trade = npcs
                 .get(c.actor)
                 .ok()
-                .and_then(|n| definitions.get(&assets.catalog)?.get(n.definition))
+                .and_then(|n| definitions.get(&assets.catalog)?.get(n.npc()))
                 .is_some_and(|d| d.owns_stock);
             set_enabled(&mut commands, entity, can_trade, disabled);
         } else if pool.is_some() {

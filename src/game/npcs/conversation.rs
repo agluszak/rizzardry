@@ -232,12 +232,12 @@ pub enum ConversationRequest {
     Trade(TradeQuote),
 }
 fn definition(world: &World, actor: Entity) -> Result<&NpcDefinition, TradeError> {
-    let npc = world.get::<Npc>(actor).ok_or(TradeError::Unavailable)?;
+    let id = world.get::<super::ActorId>(actor).ok_or(TradeError::Unavailable)?.npc();
     let assets = world.resource::<NpcAssets>();
     world
         .resource::<Assets<NpcCatalog>>()
         .get(&assets.catalog)
-        .and_then(|c| c.get(npc.definition))
+        .and_then(|c| c.get(id))
         .ok_or(TradeError::MissingContent)
 }
 fn with_definition<T>(
@@ -245,7 +245,7 @@ fn with_definition<T>(
     actor: Entity,
     f: impl FnOnce(&mut World, &NpcDefinition) -> Result<T, TradeError>,
 ) -> Result<T, TradeError> {
-    let id = world.get::<Npc>(actor).ok_or(TradeError::Unavailable)?.definition;
+    let id = world.get::<super::ActorId>(actor).ok_or(TradeError::Unavailable)?.npc();
     let handle = world.resource::<NpcAssets>().catalog.clone();
     world.resource_scope(|world, catalogs: Mut<Assets<NpcCatalog>>| {
         let def =
@@ -332,11 +332,11 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
     if !available(world, actor) {
         return Err(TradeError::Unavailable);
     }
-    let npc = world.get::<Npc>(actor).unwrap();
+    let id = world.get::<super::ActorId>(actor).ok_or(TradeError::Unavailable)?.npc();
     let script = world
         .resource::<NpcAssets>()
         .scripts
-        .get(&npc.definition)
+        .get(&id)
         .cloned()
         .ok_or(TradeError::MissingContent)?;
     if !world.resource::<Assets<DialogueScript>>().contains(&script) {
@@ -1198,14 +1198,10 @@ mod tests {
         w.insert_resource(NpcAssets { catalog, facts, scripts: default() });
         let level = w.spawn(Level::test(default())).id();
         let actor = w
-            .spawn((Npc {
-                definition: NpcId(0),
-                disposition: 80,
-                greeting_pending: true,
-                paid_topics: vec![],
-                stock: default(),
-                ..default()
-            },))
+            .spawn((
+                super::super::ActorId::Named(NpcId(0)),
+                Npc { disposition: 80, greeting_pending: true, ..default() },
+            ))
             .id();
         w.spawn((
             super::super::NpcBody(actor),

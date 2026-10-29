@@ -71,7 +71,7 @@ const MADRAS: NpcId = NpcId(0x4a);
 const SEXUS: NpcId = NpcId(0x4f);
 
 fn definition(world: &World, actor: Entity) -> Option<NpcDefinition> {
-    let id = world.get::<Npc>(actor)?.definition;
+    let id = world.get::<super::ActorId>(actor)?.npc();
     let assets = world.resource::<super::NpcAssets>();
     world
         .resource::<Assets<crate::content::npcs::NpcCatalog>>()
@@ -138,7 +138,7 @@ fn willing(world: &mut World, id: NpcId, definition: &NpcDefinition) -> bool {
 /// `RequestNpcJoinParty`'s order: an NPC without a character declines
 /// before the party's room is counted).
 pub fn joinable(world: &mut World, actor: Entity) -> Result<(), JoinRefusal> {
-    let id = world.get::<Npc>(actor).ok_or(JoinRefusal::Declines)?.definition;
+    let id = world.get::<super::ActorId>(actor).ok_or(JoinRefusal::Declines)?.npc();
     let definition = definition(world, actor).ok_or(JoinRefusal::Declines)?;
     let gone = world.get::<Npc>(actor).is_some_and(|npc| npc.dead);
     if definition.character.is_none() || gone || world.get::<PartyMember>(actor).is_some() {
