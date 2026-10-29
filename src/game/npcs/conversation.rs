@@ -156,6 +156,11 @@ pub enum ConversationWait {
         gold: u32,
         always: bool,
     },
+    /// The party is asked whether to give the NPC all its gold (retail
+    /// string 0x7d6), answered as a price is.
+    GiveAll {
+        gold: u32,
+    },
     Blocked {
         quote: u16,
         entry: Option<usize>,
@@ -170,10 +175,11 @@ pub enum TranscriptLine {
     Question(String),
     Reply(String),
     Reward(QuestReward),
-    /// The NPC has nothing to say to the question (retail strings 1867 and
-    /// 1868, in turn).
+    /// The NPC has nothing to say to the question: retail string 1867, or
+    /// 1868 for the `second`, which every NPC takes in turn.
     NoAnswer {
         npc: String,
+        second: bool,
     },
 }
 /// Committed outcomes, not commands. Presentation supplies retail wording.
@@ -362,6 +368,10 @@ fn active_body(world: &World, actor: Entity) -> Option<Entity> {
 const WILLING_DISPOSITION: u8 = 0x42;
 /// The script's quote asking the price of a paid topic.
 const PRICE_QUOTE: u16 = 0x12;
+/// Which of retail's two answers for having nothing to say comes next; retail
+/// alternates them across every NPC (`g_empty_quote_text_index`).
+#[derive(Resource, Debug, Default)]
+pub struct NoAnswerTurn(bool);
 /// The quotes that may answer with nothing to say, the quotes a line that
 /// does not know answers with at random, and the one for a line that will
 /// not say (retail `SpeakNpcSubquote`).
@@ -544,16 +554,25 @@ fn select_response(response: &Response, rng: &mut GameRng) -> Option<u16> {
         Response::Speaker { .. } => None,
     }
 }
+/// RFS-81 answers to another name once the party has fixed it (retail
+/// `GetNpcDisplayName`).
+const RFS81: NpcId = NpcId(0x20);
+const RFS81_FIXED_NAME: &str = "RFS81B";
 /// The NPC a script names by its display name (retail `FindNpcStateByName`).
 fn npc_named(world: &World, name: &str) -> Option<Entity> {
     let assets = world.resource::<NpcAssets>();
     let catalog = world.resource::<Assets<NpcCatalog>>().get(&assets.catalog)?;
+    let fixed = fact_catalog(world)
+        .and_then(|facts| facts.0.iter().find(|f| f.symbol == "FACT_RFS81_HAS_BEEN_FIXED"))
+        .is_some_and(|f| fact(world, f.id).is_ok_and(|value| value != 0));
     world.iter_entities().find_map(|e| {
         let npc = e.get::<Npc>()?;
-        catalog
-            .get(npc.definition)
-            .is_some_and(|d| d.display_name.eq_ignore_ascii_case(name))
-            .then(|| e.id())
+        let shown = if npc.definition == RFS81 && fixed {
+            RFS81_FIXED_NAME
+        } else {
+            catalog.get(npc.definition)?.display_name.as_str()
+        };
+        shown.eq_ignore_ascii_case(name).then(|| e.id())
     })
 }
 /// Another NPC takes over the conversation and says `quote` of its own
@@ -1106,8 +1125,11 @@ fn run_script(world: &mut World, entity: Entity, script: &DialogueScript, party:
                         // The answer to a question it has nothing to say to.
                         if (NO_ANSWER_QUOTES).contains(&quote) {
                             let npc = def.source_name.clone();
+                            let mut turn = world.get_resource_or_init::<NoAnswerTurn>();
+                            let second = turn.0;
+                            turn.0 = !second;
                             let mut c = world.get_mut::<Conversation>(entity).unwrap();
-                            c.transcript.push(TranscriptLine::NoAnswer { npc });
+                            c.transcript.push(TranscriptLine::NoAnswer { npc, second });
                         }
                         continue;
                     } else if is("UNKNOWN") || is("CLASSIFIED") {
@@ -1246,16 +1268,35 @@ fn give(world: &mut World, entity: Entity, item: ItemRef) -> Result<(), TradeErr
     Ok(())
 }
 /// The party gives the NPC gold (retail `HandleNpcDialogueItem` with trade
-/// gold, then `ConfirmNpcTradePurchase` for a friendly NPC): the gold is
-/// spent and the NPC thanks the party with its gift quote.
+/// gold): all of it only once the party confirms, as retail asks.
 fn give_gold(world: &mut World, entity: Entity, amount: u32) -> Result<(), TradeError> {
     let party = the_party(world).ok_or(TradeError::Unavailable)?;
     if !world.get::<Conversation>(entity).unwrap().ready() {
         return Err(TradeError::Busy);
     }
+    let gold = world.get::<PartyInventory>(party).ok_or(TradeError::Unavailable)?.gold;
     if amount == 0 {
         return Err(TradeError::InvalidQuantity);
     }
+    if amount > gold {
+        return Err(TradeError::Funds);
+    }
+    if amount == gold {
+        let mut c = world.get_mut::<Conversation>(entity).unwrap();
+        c.wait = ConversationWait::GiveAll { gold };
+        c.revision += 1;
+        return Ok(());
+    }
+    spend_gift(world, entity, party, amount)
+}
+/// A friendly NPC takes the gold and thanks the party with its gift quote
+/// (retail `ConfirmNpcTradePurchase`).
+fn spend_gift(
+    world: &mut World,
+    entity: Entity,
+    party: Entity,
+    amount: u32,
+) -> Result<(), TradeError> {
     let mut inventory = world.get_mut::<PartyInventory>(party).ok_or(TradeError::Unavailable)?;
     inventory.gold = inventory.gold.checked_sub(amount).ok_or(TradeError::Funds)?;
     let mut c = world.get_mut::<Conversation>(entity).unwrap();
@@ -1308,6 +1349,15 @@ fn reply(world: &mut World, entity: Entity, text: &str) {
 fn answer_price(world: &mut World, entity: Entity, accept: bool) {
     let Some(party) = the_party(world) else { return };
     let c = world.get::<Conversation>(entity).unwrap();
+    if let ConversationWait::GiveAll { gold } = c.wait {
+        let mut c = world.get_mut::<Conversation>(entity).unwrap();
+        c.wait = ConversationWait::Ready;
+        c.revision += 1;
+        if accept && let Err(refused) = spend_gift(world, entity, party, gold) {
+            world.get_mut::<Conversation>(entity).unwrap().report(Outcome::GiftRefused(refused));
+        }
+        return;
+    }
     let ConversationWait::Price { quote, gold, always } = c.wait else { return };
     let actor = c.actor;
     if definition(world, actor).is_err() {
@@ -2249,7 +2299,7 @@ mod tests {
                 .get::<Conversation>(session)
                 .unwrap()
                 .transcript
-                .contains(&TranscriptLine::NoAnswer { npc: "Speaker".into() })
+                .contains(&TranscriptLine::NoAnswer { npc: "Speaker".into(), second: false })
         );
     }
 
@@ -2450,6 +2500,7 @@ mod tests {
         app.update();
         finish_line(&mut app, session);
         for (amount, left, refused) in [(150, 100, true), (40, 60, false)] {
+            finish_line(&mut app, session);
             let revision = app.world().get::<Conversation>(session).unwrap().revision;
             app.world_mut().write_message(ConversationRequest::GiveGold {
                 conversation: session,
@@ -2465,6 +2516,25 @@ mod tests {
                 assert_eq!(c.current, Some((ACCEPTED_GIFT_QUOTE, 0)));
             }
         }
+        // All of it only once the party confirms.
+        finish_line(&mut app, session);
+        let revision = app.world().get::<Conversation>(session).unwrap().revision;
+        app.world_mut().write_message(ConversationRequest::GiveGold {
+            conversation: session,
+            revision,
+            amount: 60,
+        });
+        app.update();
+        let c = app.world().get::<Conversation>(session).unwrap();
+        assert_eq!(c.wait, ConversationWait::GiveAll { gold: 60 });
+        let revision = c.revision;
+        app.world_mut().write_message(ConversationRequest::PriceAnswer {
+            conversation: session,
+            revision,
+            accept: true,
+        });
+        app.update();
+        assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, 0);
     }
 
     /// The item stays with the party when the answer it would buy cannot run.

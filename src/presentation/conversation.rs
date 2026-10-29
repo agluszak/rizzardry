@@ -1171,16 +1171,13 @@ fn sync_transcript(
             .transcript
             .len()
             .saturating_sub(usize::from(matches!(c.wait, ConversationWait::Line { .. })));
-        let mut no_answers = 0;
         let mut lines: Vec<_> = c.transcript[..count]
             .iter()
             .map(|line| match line {
                 TranscriptLine::Npc(text) => (text.clone(), None),
                 // Retail alternates its two answers for having nothing to say.
-                TranscriptLine::NoAnswer { npc } => {
-                    no_answers += 1;
-                    let string = NO_ANSWER[(no_answers - 1) % NO_ANSWER.len()];
-                    (strings.get(string).replacen("%s", npc, 1), None)
+                TranscriptLine::NoAnswer { npc, second } => {
+                    (strings.get(NO_ANSWER[usize::from(*second)]).replacen("%s", npc, 1), None)
                 }
                 TranscriptLine::Question(text) => (text.clone(), Some("palettebronze")),
                 TranscriptLine::Reply(text) => (text.clone(), Some("palettegreen")),
@@ -1567,6 +1564,10 @@ fn sync_choices(
                 (string(0x7df, "Pay"), Answer::Price(true)),
                 (string(0x7e0, "Decline"), Answer::Price(false)),
             ],
+            // Retail's confirmation dialog for giving all the party's gold.
+            ConversationWait::GiveAll { .. } => {
+                vec![("OK".into(), Answer::Price(true)), ("Cancel".into(), Answer::Price(false))]
+            }
             _ => vec![],
         };
         let Ok((overlay, mut overlay_node, mut state)) = overlays.get_mut(parent.parent()) else {
@@ -1616,6 +1617,8 @@ fn sync_choices(
                         }
                     } else if let ConversationWait::Price { gold, .. } = c.wait {
                         string(0x7e5, "Price: %d gold").replace("%d", &gold.to_string())
+                    } else if matches!(c.wait, ConversationWait::GiveAll { .. }) {
+                        string(0x7d6, "Give all your gold?")
                     } else {
                         string(0x7e4, "Choose a response")
                     };

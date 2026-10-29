@@ -257,6 +257,7 @@ impl Plugin for NpcPlugin {
             .init_asset::<FactCatalog>()
             .init_resource::<NpcAssets>()
             .init_resource::<conversation::StoryFacts>()
+            .init_resource::<conversation::NoAnswerTurn>()
             .add_message::<conversation::ConversationRequest>()
             .add_message::<conversation::LinePlayback>()
             .add_message::<conversation::PartyRemark>()
