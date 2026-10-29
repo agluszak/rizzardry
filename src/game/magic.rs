@@ -456,12 +456,14 @@ impl Plugin for MagicPlugin {
             .init_resource::<casting::FlightOrder>()
             .add_systems(
                 Update,
-                (accept_magic, deliver_spells, pointcasts::update_lure)
+                (accept_magic, pointcasts::update_lure)
                     .chain()
                     .after(crate::game::GameplaySet::Stats)
                     .before(crate::game::GameplaySet::Combat)
                     .run_if(crate::game::world::level::level_active),
             );
+        // Missiles fly on the fixed step, ahead of the fight's step there
+        // (see `CombatPlugin`).
     }
 }
 
@@ -671,7 +673,7 @@ pub fn accept_magic(
 pub fn deliver_spells(
     mut points: Query<(&LearnedSpells, &mut SpellPoints)>,
     party: Query<&avian3d::prelude::Position, With<crate::game::party::body::PartyBody>>,
-    time: Res<Time<Virtual>>,
+    time: Res<Time<Fixed>>,
     mut flights: Query<(Entity, &mut casting::SpellInFlight)>,
     (mut members, mut monsters): (Members, MonsterDamage),
     mut context: MagicContext,

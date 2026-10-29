@@ -65,19 +65,36 @@ impl Plugin for CombatPlugin {
                 Update,
                 (
                     give_orders,
-                    // Defeat is settled before a fight starts or a round runs,
+                    // Defeat is settled before a fight starts,
                     settle_defeat,
                     start_battle,
                     control_combat,
+                    approach::close_in,
+                )
+                    .chain()
+                    .in_set(crate::game::GameplaySet::Combat)
+                    .run_if(crate::game::world::level::level_active),
+            )
+            // Rounds run on the fixed step: when each actor acts, and so
+            // every roll, follows simulation time, not how often frames
+            // come. Requests made in Update wait for the next step, and a
+            // move the round starts or ends governs the party's input on
+            // that same step. Spell missiles fly on it too: an impact lands
+            // at the step its travel ends, and a defeat it causes is settled
+            // before anyone else acts.
+            .add_systems(
+                FixedUpdate,
+                (
+                    crate::game::magic::deliver_spells,
+                    settle_defeat,
                     begin_round,
                     run_battle,
                     summon::summon,
                     // and again after the round's damage.
                     settle_defeat,
-                    approach::close_in,
                 )
                     .chain()
-                    .in_set(crate::game::GameplaySet::Combat)
+                    .before(bevy_tnua::TnuaUserControlsSystems)
                     .run_if(crate::game::world::level::level_active),
             )
             // The party walks on the fixed step; its move is measured on
@@ -99,10 +116,11 @@ const CAMERA_ABOVE_PARTY_POINT: f32 = 2.0;
 /// The party navigator's alternate radius (retail's default, 500 units).
 const PARTY_ALTERNATE_RADIUS: f32 = 1.0;
 
-/// Seconds between actors (retail `combat_delay_ms`, 1000 by default).
+/// Seconds of simulation between actors (retail `combat_delay_ms`, 1000 by
+/// default).
 const ACTION_SECONDS: f32 = 1.0;
-/// Real seconds between rounds, so that a round in which nobody can strike
-/// still lets monsters close in.
+/// Seconds of simulation between rounds, so that a round in which nobody
+/// can strike still lets monsters close in.
 const ROUND_SECONDS: f32 = 1.0;
 /// Game time one round takes.
 const ROUND_MS: u64 = 120_000;
@@ -3293,6 +3311,8 @@ mod tests {
         app.world_mut().entity_mut(monster).insert(Combatant(battle));
         app.finish();
         app.cleanup();
+        // Time starts with the first update, so rounds run from the next.
+        app.update();
         app.world_mut().write_message(StartRound);
         (app, [members[0], members[1]])
     }
@@ -3824,10 +3844,6 @@ mod tests {
     #[test]
     fn a_spell_missile_lands_after_its_flight() {
         let (mut app, [caster, _]) = round_app(true);
-        app.add_systems(
-            Update,
-            crate::game::magic::deliver_spells.before(crate::game::GameplaySet::Combat),
-        );
         let monster = order_spell(
             &mut app,
             caster,
@@ -3850,9 +3866,53 @@ mod tests {
         assert!(cast.is_some() && landed.is_some() && cast < landed, "{news:?}");
     }
 
-    /// Impacts due in the same update land in the order they arrive, ties
-    /// in launch order, whatever the entity order: one long update and many
-    /// short ones give the same impacts and leave the RNG in the same state.
+    /// A fight with a missile in it runs the same at any frame rate: the
+    /// missile lands at the step its flight ends, before that step's next
+    /// actor, so frames of 1/32 s and of 3/4 s give the same impacts,
+    /// actions, wounds and generator state.
+    #[test]
+    fn missiles_land_the_same_whatever_the_frame_rate() {
+        let fight_for = |frame: std::time::Duration| {
+            let (mut app, [caster, _]) = round_app(true);
+            app.world_mut().resource_mut::<CombatSettings>().continuous = true;
+            let monster = order_spell(
+                &mut app,
+                caster,
+                crate::content::spells::SpellDefinition { missile: Some(2), ..energy_blast() },
+            );
+            // Far enough for a flight of several steps.
+            app.world_mut().get_mut::<Transform>(monster).unwrap().translation = Vec3::NEG_Z * 20.0;
+            app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(frame));
+            let frames = (6.0 / frame.as_secs_f64()).round() as u32;
+            let mut news = Vec::new();
+            for _ in 0..frames {
+                app.update();
+                news.extend(
+                    app.world_mut()
+                        .resource_mut::<Messages<MagicNews>>()
+                        .drain()
+                        .map(|n| format!("{n:?}")),
+                );
+                news.extend(
+                    app.world_mut()
+                        .resource_mut::<Messages<CombatNews>>()
+                        .drain()
+                        .map(|n| format!("{n:?}")),
+                );
+            }
+            let hp = app.world().get::<Monster>(monster).unwrap().hp;
+            let next = app.world_mut().resource_mut::<GameRng>().below(u32::MAX);
+            (news, hp, next)
+        };
+        let fast = fight_for(std::time::Duration::from_micros(31_250));
+        let slow = fight_for(std::time::Duration::from_millis(750));
+        assert!(fast.0.iter().any(|n| n.starts_with("Landed")), "{:?}", fast.0);
+        assert_eq!(fast, slow);
+    }
+
+    /// Impacts due in the same step land in the order they arrive, ties in
+    /// launch order, whatever the entity order: one long step and many short
+    /// ones give the same impacts and leave the RNG in the same state.
     #[test]
     fn due_spell_impacts_land_in_arrival_order_however_time_is_batched() {
         use crate::game::magic::Strength;
@@ -3884,7 +3944,7 @@ mod tests {
             world.resource_mut::<Messages<MagicNews>>().clear();
             for _ in 0..steps {
                 world
-                    .resource_mut::<Time<Virtual>>()
+                    .resource_mut::<Time<Fixed>>()
                     .advance_by(Duration::from_secs_f32(0.4) / steps);
                 world.run_system_cached(crate::game::magic::deliver_spells).unwrap();
                 world.flush();
@@ -3919,7 +3979,7 @@ mod tests {
         casting::FlightOrder::default().launch(&mut commands, flights, level);
         world.flush();
         world.resource_mut::<Messages<MagicNews>>().clear();
-        world.resource_mut::<Time<Virtual>>().advance_by(std::time::Duration::from_secs(5));
+        world.resource_mut::<Time<Fixed>>().advance_by(std::time::Duration::from_secs(5));
         world.run_system_cached(crate::game::magic::deliver_spells).unwrap();
         world.flush();
         world.resource_mut::<Messages<MagicNews>>().drain().collect()
@@ -4463,6 +4523,53 @@ mod tests {
         assert_eq!(killed, [CombatNews::Killed { actor: monster }]);
     }
 
+    /// A missile that kills the last member standing ends the fight on the
+    /// step it lands: nobody acts after it and no round passes.
+    #[test]
+    fn a_missile_killing_the_last_member_ends_the_fight_at_once() {
+        let (mut app, [fallen, last]) = round_app(true);
+        let monster = order_spell(
+            &mut app,
+            fallen,
+            crate::content::spells::SpellDefinition {
+                dice: Some(Dice { base: 1000, count: 0, sides: 0 }),
+                ..energy_blast()
+            },
+        );
+        app.world_mut().entity_mut(fallen).insert(Order::Defend);
+        for _ in 0..4 {
+            app.update();
+            if fight(app.world()).unwrap().executing() {
+                break;
+            }
+        }
+        assert!(fight(app.world()).unwrap().executing());
+        // Mid-round, the next actor's delay over, a monster's missile flies
+        // at the one member still standing.
+        app.world_mut().get_mut::<Vitals>(fallen).unwrap().hp = 0;
+        fight_mut(app.world_mut()).wait = Timer::from_seconds(0.0, TimerMode::Once);
+        let level = app.world_mut().query::<&LevelOwned>().iter(app.world()).next().unwrap().0;
+        let mut flight =
+            missile(monster, crate::content::spells::SpellId::ENERGY_BLAST, Victim::Member(last));
+        flight.arrives = Timer::from_seconds(0.5, TimerMode::Once);
+        let world = app.world_mut();
+        let mut commands = world.commands();
+        casting::FlightOrder::default().launch(&mut commands, vec![flight], level);
+        world.flush();
+        world.resource_mut::<Messages<CombatNews>>().clear();
+        let before = world.resource::<GameClock>().ms;
+        let mut news = Vec::new();
+        for _ in 0..4 {
+            app.update();
+            news.extend(app.world_mut().resource_mut::<Messages<CombatNews>>().drain());
+        }
+        assert!(app.world().get::<Vitals>(last).unwrap().is_dead());
+        assert!(fight(app.world()).is_none());
+        assert_eq!(news.iter().filter(|n| **n == CombatNews::Lost).count(), 1, "{news:?}");
+        assert!(!news.iter().any(|n| matches!(n, CombatNews::Attack { .. })), "{news:?}");
+        assert_eq!(app.world().resource::<GameClock>().ms, before, "no round passed");
+    }
+
     /// A member killed by magic is announced as one killed in melee is.
     #[test]
     fn a_member_killed_by_magic_is_announced() {
@@ -4671,6 +4778,47 @@ mod tests {
         let pending =
             fight(app.world()).unwrap().this_round.party.iter().filter(|p| p.phase > 0).count();
         assert_eq!(pending, 0, "a move spent in full keeps nobody's action");
+    }
+
+    /// Ending the party's move stops its walking on that very step, though
+    /// the walking input is still held.
+    #[test]
+    fn an_ended_move_takes_no_further_step() {
+        use crate::game::party::body::{PartyMotion, PartyMovement, drive_party};
+        use bevy_tnua::prelude::TnuaController;
+        let (mut app, _) = round_app(false);
+        app.insert_resource(State::new(crate::game::screen::Screen::World))
+            .init_resource::<NextState<crate::game::screen::Screen>>()
+            .add_systems(FixedUpdate, drive_party.in_set(bevy_tnua::TnuaUserControlsSystems));
+        let body = app
+            .world_mut()
+            .query_filtered::<Entity, With<PartyBody>>()
+            .single(app.world())
+            .unwrap();
+        app.world_mut().entity_mut(body).insert((
+            TnuaController::<PartyMotion>::default(),
+            PartyMovement { walk: Vec2::Y, ..default() },
+        ));
+        app.world_mut().write_message(CyclePartyMove);
+        for _ in 0..12 {
+            app.update();
+            if fight(app.world()).unwrap().party_may_move() {
+                break;
+            }
+        }
+        assert!(fight(app.world()).unwrap().party_may_move());
+        // One fixed step per frame from here.
+        let step = app.world().resource::<Time<Fixed>>().timestep();
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(step));
+        let motion = |app: &App| {
+            app.world().get::<TnuaController<PartyMotion>>(body).unwrap().basis.desired_motion
+        };
+        app.update();
+        assert_ne!(motion(&app), Vec3::ZERO, "the party walks during its move");
+        app.world_mut().write_message(StartRound);
+        app.update();
+        assert!(!fight(app.world()).unwrap().party_may_move());
+        assert_eq!(motion(&app), Vec3::ZERO, "no step after the move ends");
     }
 
     /// A monster put to sleep loses its actions until the condition runs out
@@ -5183,6 +5331,56 @@ mod tests {
         let set = app.world().get::<MonsterGroup>(group).unwrap().set;
         assert!(matches!(set, Some(SetStance { stance: Stance::Hostile, .. })));
         assert!(app.world().get::<Combatant>(survivor).is_some(), "the survivor joins");
+    }
+
+    /// The same continuous fight, run for the same simulated time with
+    /// frames of 1/32 s and of 3/4 s, rolls the same dice in the
+    /// same order: the same news, round, wounds and generator state.
+    #[test]
+    fn a_fight_runs_the_same_whatever_the_frame_rate() {
+        use crate::content::species::{MonsterAttack, MonsterWeapon};
+        let fight_for = |frame: std::time::Duration| {
+            let (mut app, members) = round_app(false);
+            app.world_mut().resource_mut::<CombatSettings>().continuous = true;
+            let data = app.world().resource::<GameData>().species.clone();
+            {
+                let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
+                let kind = &mut catalogs.get_mut(&data).unwrap().0[0];
+                kind.attacks_per_round = 2;
+                kind.attacks = vec![MonsterAttack {
+                    word: AttackWord::Verb,
+                    weapon: MonsterWeapon::Unarmed,
+                    effects: default(),
+                    reach: Reach::Short,
+                    score: 60,
+                    modes: EnumSet::only(AttackMode::Bash),
+                    damage: Dice { base: 0, count: 1, sides: 3 },
+                }];
+            }
+            app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(frame));
+            let frames = (std::time::Duration::from_secs(12).as_secs_f64() / frame.as_secs_f64())
+                .round() as u32;
+            let mut news = Vec::new();
+            for _ in 0..frames {
+                app.update();
+                news.extend(
+                    app.world_mut()
+                        .resource_mut::<Messages<CombatNews>>()
+                        .drain()
+                        .map(|n| format!("{n:?}")),
+                );
+            }
+            let round = fight(app.world()).map(|b| b.round);
+            let mut wounds: Vec<u32> =
+                members.iter().map(|&m| app.world().get::<Vitals>(m).unwrap().hp).collect();
+            wounds.extend(app.world_mut().query::<&Monster>().iter(app.world()).map(|m| m.hp));
+            let next = app.world_mut().resource_mut::<GameRng>().below(u32::MAX);
+            (news, round, wounds, next)
+        };
+        let fast = fight_for(std::time::Duration::from_micros(31_250));
+        let slow = fight_for(std::time::Duration::from_millis(750));
+        assert!(fast.0.iter().filter(|n| n.starts_with("Attack")).count() > 4, "{:?}", fast.0);
+        assert_eq!(fast, slow);
     }
 
     #[test]
