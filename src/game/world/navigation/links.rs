@@ -303,6 +303,38 @@ mod tests {
         assert!(world.get::<UsingAnimationLink>(walker).is_none());
     }
 
+    /// An accepted entry holds navigation too: a walker at the far side of
+    /// its crossing does not finish it until the entry is gone.
+    #[test]
+    fn crossings_wait_out_an_entry() {
+        use crate::game::world::WorldPlugin;
+        use crate::game::world::level::{Destination, Entry, Level};
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default(), WorldPlugin))
+            .init_resource::<Time<avian3d::prelude::Physics>>();
+        app.finish();
+        app.cleanup();
+        app.world_mut().spawn(Level::test(default()));
+        let link = app.world_mut().spawn_empty().id();
+        let walker = app
+            .world_mut()
+            .spawn((
+                super::super::Walker { speed: 2.0, float_height: 0.0 },
+                Transform::default(),
+                Crossing { link, to: Vec3::ZERO },
+            ))
+            .id();
+        let entry = app
+            .world_mut()
+            .spawn(Destination::new(Level::test(default()), default(), Entry::Travel))
+            .id();
+        app.world_mut().run_schedule(FixedUpdate);
+        assert!(app.world().get::<Crossing>(walker).is_some(), "held while entering");
+        app.world_mut().despawn(entry);
+        app.world_mut().run_schedule(FixedUpdate);
+        assert!(app.world().get::<Crossing>(walker).is_none());
+    }
+
     #[test]
     fn physical_door_pose_and_navigation_agree_before_each_planning_step() {
         use crate::game::world::{WorldPlugin, level::Level};

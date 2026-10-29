@@ -46,7 +46,8 @@ impl Plugin for NavigationPlugin {
                 FixedUpdate,
                 (links::use_reached_links, links::finish_crossings, steer_walkers)
                     .chain()
-                    .in_set(TnuaUserControlsSystems),
+                    .in_set(TnuaUserControlsSystems)
+                    .run_if(super::level::level_active),
             )
             .add_systems(
                 FixedPostUpdate,

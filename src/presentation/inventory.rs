@@ -290,8 +290,8 @@ fn hold_inventory_key(
 }
 
 /// The one acceptance rule for opening a member's review, however it was
-/// asked for: the party is in the world, under no question and no pending
-/// screen change, and the member is in the party. The review shows the
+/// asked for: the party is in the world, entering no level, under no
+/// question and no pending screen change, and the member is in the party. The review shows the
 /// selected member, so the caller selects the member it opened.
 #[derive(bevy::ecs::system::SystemParam)]
 pub(crate) struct OpenReview<'w, 's> {
@@ -299,6 +299,7 @@ pub(crate) struct OpenReview<'w, 's> {
     next: ResMut<'w, NextState<Screen>>,
     questions: Query<'w, 's, (), With<crate::game::world::level::TravelQuestion>>,
     conversations: Query<'w, 's, (), With<crate::game::npcs::conversation::Conversation>>,
+    entering: Query<'w, 's, (), With<crate::game::world::level::Destination>>,
     roster: Single<'w, 's, &'static PartyRoster>,
 }
 
@@ -309,6 +310,7 @@ impl OpenReview<'_, '_> {
             || !matches!(*self.next, NextState::Unchanged)
             || !self.questions.is_empty()
             || !self.conversations.is_empty()
+            || !self.entering.is_empty()
             || !self.roster.contains(&member)
         {
             return false;
