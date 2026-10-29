@@ -371,6 +371,12 @@ pub struct Temper {
     /// It stands off and casts rather than close in (retail record byte
     /// 0x1b9).
     pub prefers_range: bool,
+    /// Its Combat Morale is the editor's third (2) and its Combat
+    /// Behaviour not the fourth (3): a clever one may hold back from
+    /// attacking (retail `BuildMonsterActionQueue`).
+    pub wary: bool,
+    /// It may guard a stronger fellow in trouble (retail monster flag 0x04).
+    pub bodyguard: bool,
 }
 
 /// How a species meets the party before anything provokes it.

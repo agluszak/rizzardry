@@ -584,6 +584,15 @@ pub fn queue_notices(
                 .filter(|_| *interrupt < 12)
                 .map(|name| vec![format!("{name} {}", string(0x3a0 + usize::from(*interrupt)))])
                 .unwrap_or_default(),
+            // Retail string 0x21a after the guard's name, naming its ward.
+            CombatNews::Intercepts { guard, ward } => {
+                match (names.name(*guard), names.name(*ward)) {
+                    (Some(guard), Some(ward)) => {
+                        vec![format!("{guard} {}", string(0x21a).replacen("%s", &ward, 1))]
+                    }
+                    _ => vec![],
+                }
+            }
             CombatNews::Withdraws { monster } => names
                 .name(*monster)
                 .map(|name| vec![string(0x23a).replacen("%s", &name, 1)])

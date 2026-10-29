@@ -128,6 +128,8 @@ fn species(record: &[u8]) -> Result<Species, DecodeError> {
             craven: record[0x1c0] == 0,
             camouflaged: record[0x249] != 0,
             prefers_range: record[0x1b9] != 0,
+            wary: record[0x1c0] == 2 && record[0x1bf] != 3,
+            bodyguard: record[0xd0] & 0x04 != 0,
         },
         magic: MonsterMagic {
             chance: record[0xe0],

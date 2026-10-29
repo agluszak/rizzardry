@@ -286,10 +286,21 @@ struct Round {
     specials: Vec<Entity>,
     /// Monsters insanity turned on their friends this round.
     berserk: Vec<Entity>,
+    /// Monsters guarding a fellow this round.
+    guards: Vec<Guard>,
     /// How the party moves this round.
     pace: Option<PartyPace>,
     /// How often each member has tried to spot an attacker this round.
     spotted: bevy::ecs::entity::EntityHashMap<u32>,
+}
+
+/// A monster guarding a fellow this round, and how many blows it has
+/// taken in its place (retail `ACTION_PROTECT`, `interception_count`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Guard {
+    guard: Entity,
+    ward: Entity,
+    interceptions: u32,
 }
 
 /// The party's fight, on an entity owned by its level. Exists only while
@@ -459,6 +470,11 @@ pub enum CombatNews {
     Special {
         monster: Entity,
         kind: u8,
+    },
+    /// A guard takes a blow meant for its ward (retail string 0x21a).
+    Intercepts {
+        guard: Entity,
+        ward: Entity,
     },
     /// A monster's condition took its action (retail
     /// `GetConditionInterrupt`, by its interrupt number).
@@ -1530,6 +1546,7 @@ fn party_turn(
         advancing: &advancing,
         points,
         attacks: &|_| false,
+        waits: false,
     };
     let attacked = context.with_field(party.now, members, damage, |field| {
         blows::member_attacks(battle, index, rng, field, &mut fight, news);
@@ -1784,8 +1801,15 @@ enum Decision<'a> {
         quiet: bool,
     },
     Plan(Plan<'a>),
-    /// Strike someone it may attack, or close in to.
-    Fight,
+    /// Guard a fellow this round.
+    Protect {
+        ward: Entity,
+    },
+    /// Strike someone it may attack, or close in to; `waits` when it may
+    /// hold back instead.
+    Fight {
+        waits: bool,
+    },
 }
 
 /// A monster's accepted turn comes (retail `UpdateMonsterAI`,
@@ -1858,7 +1882,7 @@ fn monster_turn(
     };
     // A monster decides as its round's action begins, not again between
     // its attacks.
-    let mut decision = Decision::Fight;
+    let mut decision = Decision::Fight { waits: false };
     let mut interrupted = None;
     if let Ok((body, at, walker, _)) = damage.monsters().get(monster)
         && let Some(kind) = species.kind(body.species)
@@ -1944,11 +1968,51 @@ fn monster_turn(
                 decision = Decision::Plan(plan);
             }
         }
+        // One with someone in reach builds its choices (retail
+        // `BuildMonsterActionQueue`): a bodyguard, as clever as it is, may
+        // guard a stronger fellow in trouble; a wary one may hold back.
+        if matches!(decision, Decision::Fight { .. }) && reaches {
+            let intelligence = u32::from(kind.attributes.intelligence);
+            let able = kind.temper.bodyguard
+                && body.conditions.iter().all(|&(c, _)| c < Condition::Blind)
+                && !kind.attacks.is_empty();
+            let wards: Vec<Entity> = if able && rng.below(100) < intelligence {
+                let reach = kind.attacks[0].reach.metres();
+                combatants
+                    .iter()
+                    .copied()
+                    .filter(|&other| {
+                        other != monster
+                            && toward(Victim::Monster(other)) == Stance::Friendly
+                            && damage.monsters().get(other).is_ok_and(|(o, o_at, o_walker, _)| {
+                                let gap = feet.distance(crate::game::world::navigation::feet(
+                                    o_at.translation(),
+                                    o_walker,
+                                )) - body.body.radius
+                                    - o.body.radius;
+                                !o.is_dead()
+                                    && gap.max(0.0) <= reach
+                                    && species.kind(o.species).is_some_and(|k| k.level > kind.level)
+                                    && o.hp * 100 / o.max_hp.max(1) < 40
+                            })
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            if !wards.is_empty() {
+                let ward = wards[rng.below(wards.len() as u32) as usize];
+                decision = Decision::Protect { ward };
+            } else if kind.temper.wary && rng.below(100) < intelligence {
+                decision = Decision::Fight { waits: true };
+            }
+        }
         // Its conditions, then, as the action begins.
         let against_foes = match &decision {
             Decision::Move { .. } => false,
             Decision::Plan(Plan::Spell { spell, .. }) => spell.aimed_at_enemies(),
-            Decision::Plan(Plan::Special { .. }) | Decision::Fight => true,
+            Decision::Protect { .. } => false,
+            Decision::Plan(Plan::Special { .. }) | Decision::Fight { .. } => true,
         };
         let strikes_friend = kind.attacks.iter().any(|attack| {
             let reach = attack.reach.metres();
@@ -1986,7 +2050,7 @@ fn monster_turn(
         // Insanity turns it on its friends this round.
         Some(8) => {
             battle.this_round.berserk.push(monster);
-            decision = Decision::Fight;
+            decision = Decision::Fight { waits: false };
         }
         // Fear sends it running, without its flight's notice.
         Some(12) => {
@@ -2006,6 +2070,7 @@ fn monster_turn(
             return true;
         }
     }
+    let waits = matches!(decision, Decision::Fight { waits: true });
     let plan = match decision {
         Decision::Move { conduct, quiet } => {
             battle.this_round.monsters[index].1 = Turn::default();
@@ -2034,8 +2099,13 @@ fn monster_turn(
             }
             return true;
         }
+        Decision::Protect { ward } => {
+            battle.this_round.monsters[index].1 = Turn::default();
+            battle.this_round.guards.push(Guard { guard: monster, ward, interceptions: 0 });
+            return true;
+        }
         Decision::Plan(plan) => Some(plan),
-        Decision::Fight => None,
+        Decision::Fight { .. } => None,
     };
     let BattleMagic { context, points, moving, .. } = magic;
     match plan {
@@ -2091,6 +2161,7 @@ fn monster_turn(
         advancing: &advancing,
         points,
         attacks: &may_attack,
+        waits,
     };
     let idle = context
         .with_field(party.now, members, damage, |field| {
@@ -2766,6 +2837,76 @@ mod tests {
         let struck = struck.expect("the turncoat attacks");
         assert_eq!(struck, fellow, "its fellow, not a member");
         assert!(!members.contains(&struck));
+    }
+
+    /// A bodyguard guards a stronger fellow in trouble, and steps in front
+    /// of the blows meant for it (retail `BuildMonsterActionQueue`'s
+    /// protection, `ResolveGuardianInterception`).
+    #[test]
+    fn a_bodyguard_takes_blows_meant_for_its_ward() {
+        use crate::content::species::{MonsterAttack, MonsterWeapon, Species};
+        let (mut app, _) = round_app(true);
+        let ward =
+            app.world().try_query::<&Combatants>().unwrap().single(app.world()).unwrap().entities()
+                [0];
+        let claw = MonsterAttack {
+            word: AttackWord::Verb,
+            weapon: MonsterWeapon::Unarmed,
+            effects: default(),
+            reach: Reach::Short,
+            score: 1,
+            modes: EnumSet::only(AttackMode::Bash),
+            damage: Dice { base: 1, count: 1, sides: 1 },
+        };
+        let data = app.world().resource::<GameData>().species.clone();
+        {
+            let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
+            let catalog = &mut catalogs.get_mut(&data).unwrap().0;
+            catalog[0].level = 5;
+            catalog[0].attacks = vec![claw.clone()];
+            let mut guard = Species {
+                name: "Guard".into(),
+                attacks_per_round: 4,
+                attacks: vec![MonsterAttack { score: 250, ..claw }],
+                ..default()
+            };
+            guard.temper.bodyguard = true;
+            guard.attributes.intelligence = 100;
+            guard.attributes.speed = 200;
+            catalog.push(guard);
+        }
+        {
+            let mut body = app.world_mut().get_mut::<Monster>(ward).unwrap();
+            body.max_hp = 100;
+            body.hp = 30;
+        }
+        let battle =
+            app.world_mut().query_filtered::<Entity, With<Battle>>().single(app.world()).unwrap();
+        let mut guard = app.world().get::<Monster>(ward).unwrap().clone();
+        guard.species = 1;
+        guard.location = 1;
+        guard.hp = 10000;
+        guard.max_hp = 10000;
+        let level = app.world().get::<LevelOwned>(ward).unwrap().0;
+        let guard = app
+            .world_mut()
+            .spawn((guard, Transform::from_translation(Vec3::NEG_Z * 1.5), LevelOwned(level)))
+            .id();
+        app.world_mut().entity_mut(guard).insert(Combatant(battle));
+        let mut intercepted = false;
+        for _ in 0..80 {
+            app.update();
+            let news: Vec<_> =
+                app.world_mut().resource_mut::<Messages<CombatNews>>().drain().collect();
+            if news.contains(&CombatNews::Intercepts { guard, ward }) {
+                intercepted = true;
+                break;
+            }
+            if fight(app.world()).is_none() {
+                break;
+            }
+        }
+        assert!(intercepted, "the guard steps in");
     }
 
     /// A cast waits for its caster's initiative, is revalidated then, spends
