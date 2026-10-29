@@ -1,7 +1,9 @@
 //! Monsters closing in on the party during a fight. A monster in the fight
 //! uses its existing world-owned walking body to head for the party
 //! through the navmesh until one of its attacks reaches; the dead and those
-//! in reach stand. As in retail, moving is a monster's action within the
+//! in reach stand. Moves are steered and counted on the fixed step the
+//! walking runs on, so how frames batch steps does not change where a move
+//! ends. As in retail, moving is a monster's action within the
 //! round: at its phase, with nothing in reach, it advances (or charges, when
 //! hurt) up to `combat_move_range` × 20 metres, and acts again later in the
 //! round (`Combat.cpp:2486-2551, 2855-2909`). The fight's next actor waits
@@ -102,33 +104,45 @@ pub(super) fn away_from(feet: Vec3, party_eye: Vec3, metres: f32) -> Vec3 {
 /// Metres per unit of a species' `combat_move_range`.
 pub(super) const METRES_PER_MOVE_RANGE: f32 = 20.0;
 
-/// Walk monsters on their move toward the party; the move ends when they
-/// arrive, spend it or fall.
-pub fn close_in(
+/// Head monsters on their move, at the start of each fixed step before
+/// navigation plans it; the move ends when it is spent, the monster
+/// arrives, or it can no longer fight. The step's walking is counted after
+/// physics moves it ([`spend_moves`]), so a move begun between steps is
+/// charged nothing for time before it.
+pub fn steer_moves(
     mut commands: Commands,
-    time: Res<Time>,
     party: Query<(Entity, &Position), With<PartyBody>>,
-    mut walkers: Query<(Entity, &Monster, ActorPose, &Walker, &mut AgentTarget3d, &mut CombatMove)>,
+    mut walkers: Query<(Entity, &Monster, ActorPose, &Walker, &mut AgentTarget3d, &CombatMove)>,
     content: crate::game::data::Content,
 ) {
     let Some(catalog) = content.species() else { return };
     let Ok((party, party_at)) = party.single() else { return };
     let party_eye = PartyBody::eye(party_at);
-    for (entity, monster, at, walker, mut target, mut movement) in &mut walkers {
-        movement.moved += walker.speed * time.delta_secs();
+    for (entity, monster, at, walker, mut target, movement) in &mut walkers {
         let continues = monster.can_fight()
             && movement.moved < movement.budget
             && (movement.away.is_some()
                 || needs_approach(monster, at.translation(), Some(walker), party_eye, catalog));
-        let heading = match movement.away {
-            Some(point) => AgentTarget3d::Point(point),
-            None => AgentTarget3d::Entity(party),
-        };
-        if !continues {
+        let heading = if !continues {
             commands.entity(entity).remove::<CombatMove>();
-        } else if *target != heading {
+            AgentTarget3d::None
+        } else {
+            match movement.away {
+                Some(point) => AgentTarget3d::Point(point),
+                None => AgentTarget3d::Entity(party),
+            }
+        };
+        if *target != heading {
             *target = heading;
         }
+    }
+}
+
+/// Charge each monster on its move the fixed step it has walked, at its
+/// walking speed whether or not it got anywhere.
+pub fn spend_moves(time: Res<Time<Fixed>>, mut walkers: Query<(&Walker, &mut CombatMove)>) {
+    for (walker, mut movement) in &mut walkers {
+        movement.moved += walker.speed * time.delta_secs();
     }
 }
 
@@ -145,5 +159,111 @@ pub(super) fn stop_walking(remove: On<Remove<CombatMove>>, mut targets: Query<&m
         && !matches!(*target, AgentTarget3d::None)
     {
         *target = AgentTarget3d::None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::time::TimeUpdateStrategy;
+    use std::time::Duration;
+
+    #[derive(Resource, Default)]
+    struct Ended(Option<(Duration, f32)>);
+
+    /// A 1 m move at 2 m/s, begun after some frames of `frame` each: the
+    /// fixed time from its start to its end, and the walking it counted.
+    fn run_move(frame: Duration) -> (Duration, f32) {
+        use crate::content::species::Species;
+        use crate::game::data::GameData;
+        use crate::game::world::population::ScaledBody;
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(TimeUpdateStrategy::ManualDuration(frame))
+            .init_resource::<Assets<MonsterCatalog>>()
+            .init_resource::<Ended>()
+            .add_systems(FixedPreUpdate, steer_moves)
+            .add_systems(FixedPostUpdate, spend_moves)
+            .add_observer(stop_walking)
+            .add_observer(
+                |remove: On<Remove<CombatMove>>,
+                 moves: Query<&CombatMove>,
+                 time: Res<Time<Fixed>>,
+                 mut ended: ResMut<Ended>| {
+                    let moved = moves.get(remove.entity).unwrap().moved;
+                    ended.0 = Some((time.elapsed(), moved));
+                },
+            );
+        let species = app
+            .world_mut()
+            .resource_mut::<Assets<MonsterCatalog>>()
+            .add(MonsterCatalog(vec![Species::default()]));
+        app.insert_resource(GameData {
+            items: default(),
+            loot: default(),
+            species,
+            spells: default(),
+        });
+        app.world_mut().spawn((PartyBody::default(), Position::default()));
+        let monster = app
+            .world_mut()
+            .spawn((
+                Monster {
+                    enchantments: default(),
+                    location: 0,
+                    species: 0,
+                    hp: 10,
+                    max_hp: 10,
+                    stamina: 0,
+                    max_stamina: 0,
+                    conditions: vec![],
+                    spell_points: 0,
+                    body: ScaledBody { scale: 1.0, radius: 1.0, eye_height: 1.0, speed: 2.0 },
+                },
+                Walker { speed: 2.0, float_height: 1.0 },
+                Transform::from_xyz(0.0, 0.0, -10.0),
+                AgentTarget3d::None,
+            ))
+            .id();
+        // Time passes before the move begins, as it does while a fight
+        // waits for the monster's phase.
+        for _ in 0..5 {
+            app.update();
+        }
+        let start = app.world().resource::<Time<Fixed>>().elapsed();
+        app.world_mut().entity_mut(monster).insert(CombatMove {
+            budget: 1.0,
+            moved: 0.0,
+            away: Some(Vec3::new(0.0, 0.0, -20.0)),
+        });
+        while app.world().resource::<Ended>().0.is_none() {
+            app.update();
+            // Headed off from the first step it walks.
+            if app.world().get::<CombatMove>(monster).is_some()
+                && app.world().resource::<Time<Fixed>>().elapsed() > start
+            {
+                assert_eq!(
+                    *app.world().get::<AgentTarget3d>(monster).unwrap(),
+                    AgentTarget3d::Point(Vec3::new(0.0, 0.0, -20.0))
+                );
+            }
+        }
+        assert_eq!(*app.world().get::<AgentTarget3d>(monster).unwrap(), AgentTarget3d::None);
+        let (end, moved) = app.world().resource::<Ended>().0.unwrap();
+        (end - start, moved)
+    }
+
+    /// A move is counted on fixed steps alone: fast frames that run a step
+    /// now and then, and slow ones that run several, end it at the same
+    /// step, having counted the same walking, none of it from before the
+    /// move began.
+    #[test]
+    fn a_move_ends_at_the_same_fixed_step_whatever_the_frame_rate() {
+        let fast = run_move(Duration::from_micros(4_167));
+        let slow = run_move(Duration::from_millis(143));
+        assert_eq!(fast, slow);
+        // 2 m/s over 1/64 s steps spends 1 m in 32 steps; the 33rd ends it.
+        let step = Time::<Fixed>::default().timestep();
+        assert_eq!(fast, (step * 33, 1.0));
     }
 }
