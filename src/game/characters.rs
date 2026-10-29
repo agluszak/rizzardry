@@ -380,6 +380,15 @@ fn load_band(weight: u32, capacity: u32) -> Load {
     }
 }
 
+/// What disease did to a member ([`Vitals::sicken`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sickness {
+    Condition(Condition),
+    Weakened(Attribute),
+    Health(u32),
+    Stamina(u32),
+}
+
 /// An adventurer's identity, training and progression.
 #[derive(Component, Clone, Debug, PartialEq)]
 #[require(MonsterKnowledge)]
@@ -407,6 +416,11 @@ pub struct Character {
     pub skill_practice: EnumMap<Skill, u8>,
     /// The portrait's file stem (e.g. `hummf` for `data/portraits/small/shummf.sti`).
     pub portrait: String,
+    /// Health the maximum has lost to draining and disease, kept until
+    /// Drained is lifted (retail `hp_adjustment`).
+    pub hp_drained: u32,
+    /// Likewise stamina (retail `fatigue_penalty`).
+    pub stamina_drained: u32,
 }
 
 /// Recognition history changes independently of profile, vitals or inventory.
@@ -445,6 +459,8 @@ impl Character {
             spell_picks: default(),
             skill_practice: EnumMap::default(),
             portrait: String::new(),
+            hp_drained: 0,
+            stamina_drained: 0,
         };
         character.seed_starting_skills();
         character
@@ -749,14 +765,15 @@ impl CharacterStats<'_> {
                 vitality * profession_row(profession).hp_factor * levels as f32
             })
             .sum();
-        (total.round() as u32).max(1)
+        (total.round() as u32).saturating_sub(self.hp_drained).max(1)
     }
     pub fn max_stamina(&self) -> u32 {
         let sum = [Attribute::Strength, Attribute::Piety, Attribute::Vitality]
             .map(|a| self.attribute(a))
             .iter()
             .sum::<u32>() as f32;
-        (sum / 3.0 * (0.1 * f32::from(self.level) + 2.0)).round() as u32
+        ((sum / 3.0 * (0.1 * f32::from(self.level) + 2.0)).round() as u32)
+            .saturating_sub(self.stamina_drained)
     }
     pub fn capacity(&self) -> u32 {
         let factor = if self.race == Race::Faerie { 8 } else { 12 };
@@ -914,12 +931,122 @@ impl Vitals {
         let lost = amount.min(self.hp);
         self.hp -= lost;
         if self.is_dead() {
-            self.enchantments.0.clear();
-            // Death clears every condition but infatuation (retail `Die`).
-            self.conditions.retain(|&(c, _)| c == Condition::Infatuated);
-            self.stamina = 0;
+            self.die();
         }
         lost
+    }
+
+    fn die(&mut self) {
+        self.enchantments.0.clear();
+        // Death clears every condition but infatuation (retail `Die`).
+        self.conditions.retain(|&(c, _)| c == Condition::Infatuated);
+        self.stamina = 0;
+    }
+
+    /// Drain health for good (retail `DamageCharacter`, which draining blows,
+    /// breaths and Vampiric Vortex use): two thirds of it tires, the maximum
+    /// loses it until Drained is lifted, and present health falls with the
+    /// maximum; none left is death. Guardian Angel does not stop it. Returns
+    /// the health lost.
+    pub fn drain_health(&mut self, profile: &mut Character, amount: u32) -> u32 {
+        if self.is_dead() || amount == 0 {
+            return 0;
+        }
+        self.spend_stamina(amount * 2 / 3);
+        let before = profile.stats(&self.enchantments).max_hp();
+        profile.hp_drained = profile.hp_drained.saturating_add(amount);
+        let after = profile.stats(&self.enchantments).max_hp();
+        let lost = (before - after).min(self.hp);
+        self.hp -= lost;
+        if self.is_dead() {
+            self.die();
+        }
+        if !self.has(Condition::Drained) {
+            self.inflict(Condition::Drained, Lasting::Indefinite);
+        }
+        lost
+    }
+
+    /// Lift Drained (retail `RemoveCharacterCondition`): the maxima get back
+    /// what draining and disease took, and the pools rise with them. Whether
+    /// it was there to lift.
+    pub fn lift_drain(&mut self, profile: &mut Character) -> bool {
+        let Some(index) = self.conditions.iter().position(|&(c, _)| c == Condition::Drained) else {
+            return false;
+        };
+        self.conditions.remove(index);
+        let before = profile.stats(&self.enchantments);
+        let (hp, stamina) = (before.max_hp(), before.max_stamina());
+        profile.hp_drained = 0;
+        profile.stamina_drained = 0;
+        let after = profile.stats(&self.enchantments);
+        if !self.is_dead() {
+            self.hp += after.max_hp() - hp;
+            self.stamina += after.max_stamina() - stamina;
+        }
+        true
+    }
+
+    /// What disease does as `minutes` pass (retail `GameTurnsPassedChar`):
+    /// a roll under the minutes out of ten times Vitality strikes one of four
+    /// ways. Retail draws its condition from five but names a sixth,
+    /// Paralyzed, that the draw never reaches.
+    pub fn sicken(
+        &mut self,
+        profile: &mut Character,
+        minutes: u32,
+        rng: &mut crate::game::rng::GameRng,
+    ) -> Option<Sickness> {
+        if !self.has(Condition::Diseased) {
+            return None;
+        }
+        let vitality = profile.stats(&self.enchantments).attribute(Attribute::Vitality);
+        if rng.below(vitality * 10) >= minutes {
+            return None;
+        }
+        match rng.below(4) {
+            0 => {
+                let condition = [
+                    Condition::Irritated,
+                    Condition::Nauseated,
+                    Condition::Slowed,
+                    Condition::Blind,
+                    Condition::Insane,
+                ][rng.below(5) as usize];
+                self.inflict(condition, Lasting::Indefinite);
+                Some(Sickness::Condition(condition))
+            }
+            1 => {
+                use enum_map::Enum;
+                let attribute = Attribute::from_usize(rng.below(7) as usize);
+                (profile.attributes[attribute] > 1).then(|| {
+                    profile.attributes[attribute] -= 1;
+                    Sickness::Weakened(attribute)
+                })
+            }
+            2 => {
+                if profile.stats(&self.enchantments).max_hp() < 5 {
+                    return None;
+                }
+                let loss = rng.below(4) + 1;
+                profile.hp_drained += loss;
+                if self.hp > 1 {
+                    self.hp -= loss.min(self.hp - 1);
+                }
+                Some(Sickness::Health(loss))
+            }
+            _ => {
+                if profile.stats(&self.enchantments).max_stamina() < 5 {
+                    return None;
+                }
+                let loss = rng.below(4) + 1;
+                profile.stamina_drained += loss;
+                if self.stamina > 1 {
+                    self.stamina -= loss.min(self.stamina - 1);
+                }
+                Some(Sickness::Stamina(loss))
+            }
+        }
     }
 
     /// Spend stamina; running out knocks the member unconscious until it

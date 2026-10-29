@@ -129,7 +129,7 @@ pub(crate) fn pass_time(
     party: Query<(&Position, &PartyBody, &LinearVelocity)>,
     roster: Single<&PartyRoster>,
     mut affected: ParamSet<(
-        Query<(&Character, &mut Vitals)>,
+        Query<(&mut Character, &mut Vitals)>,
         GroupRecognition,
         Query<&mut crate::game::world::population::Monster>,
     )>,
@@ -166,8 +166,8 @@ pub(crate) fn pass_time(
             Ticks { stamina: 0, aging: 1 }
         };
         let mut members = affected.p0();
-        for (profile, mut vitals) in members.iter_many_unique_mut(roster.iter()).matched() {
-            recovery::pass(profile, &mut vitals, ticks, pace, &mut rng);
+        for (mut profile, mut vitals) in members.iter_many_unique_mut(roster.iter()).matched() {
+            recovery::pass(&mut profile, &mut vitals, ticks, pace, &mut rng);
         }
         if pass > 0 {
             if !enchantments.0.0.is_empty() {

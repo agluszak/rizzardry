@@ -167,6 +167,10 @@ fn a_sprung_trap_pays_its_effect_before_opening_and_retains_the_selected_victim(
             level.world.get::<Vitals>(selected).unwrap().hp < selected_hp,
             "unconscious selected member still pays the spell"
         );
+        // Vampiric Vortex drains: what it took stays off the maximum.
+        let lost = selected_hp - level.world.get::<Vitals>(selected).unwrap().hp;
+        assert_eq!(level.world.get::<Character>(selected).unwrap().hp_drained, lost);
+        assert!(level.world.get::<Vitals>(selected).unwrap().has(Condition::Drained));
         assert_eq!(level.world.get::<Guarded>(chest).is_none(), destroyed);
         assert_eq!(level.motion("CHEST").target > 0.0, destroyed);
         assert!(work(&level).is_none(), "a surviving trap ends the interaction, not a free retry");

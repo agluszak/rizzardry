@@ -1296,8 +1296,8 @@ fn end_round(
             pool.recover(ticks.aging, crate::game::magic::recovery_scale(0.0));
         }
     }
-    for (profile, mut vitals, ..) in members.iter_many_unique_mut(roster.iter()).matched() {
-        recovery::pass(&profile, &mut vitals, ticks, recovery::Pace::Fighting, rng);
+    for (mut profile, mut vitals, ..) in members.iter_many_unique_mut(roster.iter()).matched() {
+        recovery::pass(&mut profile, &mut vitals, ticks, recovery::Pace::Fighting, rng);
     }
     battle.phase = RoundPhase::Waiting;
     // Recover after aging conditions, in accepted actor order.

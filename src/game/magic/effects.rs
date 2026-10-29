@@ -55,6 +55,11 @@ enum Kind {
     /// Half the time a weighted condition, otherwise damage.
     Affliction,
     Cure(&'static [Condition]),
+    /// Lift Drained, and with it what draining and disease took.
+    Renewal,
+    /// `DamageTargetsAndReport`: damage that drains party members' health
+    /// for good.
+    Vortex,
     Resurrect,
     /// Drain health; 70% of it heals the most wounded party member.
     Lifesteal,
@@ -137,7 +142,8 @@ fn kind(spell: SpellId) -> Option<Kind> {
         SpellId::LIFESTEAL => Kind::Lifesteal,
         SpellId::MIGHT_TO_MAGIC => Kind::MightToMagic,
         SpellId::PHILOSOPHERS_BANE => Kind::GoldLoss,
-        SpellId::VAMPIRIC_VORTEX => Kind::Damage,
+        SpellId::VAMPIRIC_VORTEX => Kind::Vortex,
+        SpellId::RENEWAL => Kind::Renewal,
         SpellId::HEATWAVE => Kind::DestroyConsumables,
         SpellId::ANTI_MAGIC => Kind::DrainMagic,
         SpellId::RESTORE_HEALTH => Kind::RestoreHealth,
@@ -444,6 +450,23 @@ fn damage(
     hurt(rng, world, victim, amount)
 }
 
+/// Drain a member's health for good ([`Vitals::drain_health`]): nothing wakes
+/// them. A monster has no lasting maximum to lose and is hurt as by any
+/// damage.
+fn sap(world: &mut Field, victim: Victim, amount: u32) -> Option<Effect> {
+    let Victim::Member(member) = victim else { return None };
+    let (mut character, mut vitals, ..) = world.members.get_mut(member).ok()?;
+    let lost = crate::game::party::drain_member(
+        member,
+        (&mut character, &mut vitals),
+        world.formation,
+        amount,
+        world.party_damage,
+    );
+    let outcome = DamageOutcome { damage: lost, died: vitals.is_dead(), experience: 0 };
+    Some(Effect::Damaged { victim, outcome })
+}
+
 /// Take `amount` health from a victim; a member who survives may wake.
 pub fn hurt(rng: &mut GameRng, world: &mut Field, victim: Victim, amount: u32) -> Option<Effect> {
     match victim {
@@ -713,7 +736,7 @@ pub fn blow(
             E::Possess => None,
             E::DrainHealth if member => {
                 drain(rng, world, victim, Realm::Earth, power, (count, 2, 0))
-                    .and_then(|amount| hurt(rng, world, victim, amount))
+                    .and_then(|amount| sap(world, victim, amount))
             }
             E::DrainHealth => None,
             E::DrainStamina => {
@@ -1217,6 +1240,40 @@ pub fn resolve(
                 Some(condition) => attack(rng, world, spell, v, realm, condition, 100, strength),
                 None => slay(rng, world, spell, v, realm, strength),
             }
+        }),
+        Kind::Vortex => each(&mut |v, rng, world| {
+            match v {
+                Victim::Monster(_) => {
+                    let rolled = magnitude(rng, spell.dice, strength);
+                    damage(rng, world, v, realm, rolled, strength.against)
+                }
+                // Members take the plain roll, without the cast's boost.
+                Victim::Member(_) => {
+                    let rolled = magnitude(rng, spell.dice, Strength { boost: 0, ..strength });
+                    let target = target(world, v, realm, None).filter(|t| !t.dead)?;
+                    match resist(rng, rolled, target.resistance, target.level, strength.against) {
+                        0 => Some(Effect::Resisted { victim: v }),
+                        amount => sap(world, v, amount),
+                    }
+                }
+            }
+        }),
+        Kind::Renewal => each(&mut |v, rng, world| {
+            let lifted = match v {
+                Victim::Member(m) => {
+                    let (mut character, mut vitals, ..) = world.members.get_mut(m).ok()?;
+                    vitals.lift_drain(&mut character)
+                }
+                Victim::Monster(m) => {
+                    let conditions = &mut *world.monsters.conditions_mut(m)?;
+                    !cure(rng, conditions, &[Condition::Drained], strength, true).is_empty()
+                }
+            };
+            Some(if lifted {
+                Effect::Cured { victim: v, condition: Condition::Drained }
+            } else {
+                Effect::Nothing { victim: v }
+            })
         }),
         Kind::Cure(conditions) => each(&mut |v, rng, world| {
             let lifted = match v {

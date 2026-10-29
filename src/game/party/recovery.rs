@@ -52,7 +52,7 @@ impl Pace {
 /// [`elapse`] on a tracked member, which counts as changed only when
 /// something did change.
 pub fn pass(
-    profile: &Character,
+    profile: &mut Mut<Character>,
     member: &mut Mut<Vitals>,
     ticks: Ticks,
     pace: Pace,
@@ -60,22 +60,25 @@ pub fn pass(
 ) {
     let vitals = member.bypass_change_detection();
     let before = vitals.clone();
-    elapse(profile, vitals, ticks, pace, rng);
+    if elapse(profile.bypass_change_detection(), vitals, ticks, pace, rng).is_some() {
+        profile.set_changed();
+    }
     if *vitals != before {
         member.set_changed();
     }
 }
 
 /// What the ticks passed at `pace` do to one member: poison bites first,
-/// then they recover, then their conditions age (retail
-/// `GameTurnsPassedChar`).
+/// then disease, then they recover, then their conditions age (retail
+/// `GameTurnsPassedChar`). Returns what disease did.
 pub fn elapse(
-    profile: &Character,
+    profile: &mut Character,
     member: &mut Vitals,
     ticks: Ticks,
     pace: Pace,
     rng: &mut crate::game::rng::GameRng,
-) {
+) -> Option<crate::game::characters::Sickness> {
+    let mut sickness = None;
     let (stamina, health) = pace.scales();
     if ticks.stamina > 0 {
         member.recover_stamina(
@@ -90,12 +93,14 @@ pub fn elapse(
         if poisoned > 0 {
             member.damage(poisoned);
         }
+        sickness = member.sicken(profile, ticks.aging, rng);
         member.recover_health(ticks.aging, health, profile.stats(&member.enchantments).max_hp());
         member.age_conditions(ticks.aging, rng);
         let stats = profile.stats(&member.enchantments);
         member.hp = member.hp.min(stats.max_hp());
         member.stamina = member.stamina.min(stats.max_stamina());
     }
+    sickness
 }
 
 #[cfg(test)]
@@ -127,14 +132,14 @@ mod tests {
 
     #[test]
     fn a_combat_round_ages_conditions_but_recovers_nothing() {
-        let profile = Character::new("Brute", Race::Human, Gender::Male, Profession::Fighter);
+        let mut profile = Character::new("Brute", Race::Human, Gender::Male, Profession::Fighter);
         let mut fighter = Vitals::new(&profile);
         fighter.hp -= 5;
         fighter.stamina -= 5;
         fighter.inflict(Condition::Afraid, Lasting::Rounds(1));
         let (hp, stamina) = (fighter.hp, fighter.stamina);
         elapse(
-            &profile,
+            &mut profile,
             &mut fighter,
             Ticks { stamina: 85, aging: 1 },
             Pace::Fighting,
@@ -144,7 +149,7 @@ mod tests {
         assert!(!fighter.has(Condition::Afraid));
         // Standing still for two hours heals.
         elapse(
-            &profile,
+            &mut profile,
             &mut fighter,
             Ticks { stamina: 85, aging: 60 },
             Pace::Still,
@@ -158,15 +163,15 @@ mod tests {
     /// `GameTurnsPassedChar`, `TickCharacterCondition`).
     #[test]
     fn poison_bites_harder_on_the_move_and_wears_off() {
-        let profile = Character::new("Brute", Race::Human, Gender::Male, Profession::Fighter);
+        let mut profile = Character::new("Brute", Race::Human, Gender::Male, Profession::Fighter);
         let mut walking = Vitals::new(&profile);
         assert!(!walking.poison(Lasting::Rounds(10), 0), "no strength, no poisoning");
         assert!(walking.poison(Lasting::Rounds(10), 4));
         let mut still = walking.clone();
         let hp = walking.hp;
         let mut rng = GameRng::default();
-        elapse(&profile, &mut walking, Ticks { stamina: 0, aging: 1 }, Pace::Walking, &mut rng);
-        elapse(&profile, &mut still, Ticks { stamina: 0, aging: 1 }, Pace::Still, &mut rng);
+        elapse(&mut profile, &mut walking, Ticks { stamina: 0, aging: 1 }, Pace::Walking, &mut rng);
+        elapse(&mut profile, &mut still, Ticks { stamina: 0, aging: 1 }, Pace::Still, &mut rng);
         assert_eq!(walking.hp, hp - 6, "four, half again on the move");
         assert_eq!(still.hp, hp - 4);
         // A tenth of the course gone takes a tenth of the strength, which
@@ -189,5 +194,88 @@ mod tests {
         assert_eq!(halved.poison_damage(5, false), 0);
         halved.poison(Lasting::Rounds(3), 2);
         assert_eq!(halved.poison, 2);
+    }
+
+    /// Disease strikes when a roll under the minutes passed out of ten times
+    /// Vitality comes up: a lasting condition, a lost attribute point, or
+    /// health or stamina taken from the maxima, which never leaves the pool
+    /// below one (retail `GameTurnsPassedChar`).
+    #[test]
+    fn disease_wears_a_member_down() {
+        use crate::game::characters::Sickness;
+        let mut profile = Character::new("Brute", Race::Human, Gender::Male, Profession::Fighter);
+        let mut seen = std::collections::HashSet::new();
+        let mut rng = GameRng::seeded(3);
+        for _ in 0..400 {
+            let mut sick = profile.clone();
+            let mut member = Vitals::new(&sick);
+            member.inflict(Condition::Diseased, Lasting::Indefinite);
+            let (max_hp, max_stamina) = (sick.max_hp(), sick.max_stamina());
+            let attributes = sick.attributes;
+            // A long stretch makes the roll sure.
+            let struck = member.sicken(&mut sick, 10_000, &mut rng);
+            match struck {
+                Some(Sickness::Condition(condition)) => {
+                    assert!(member.conditions.contains(&(condition, Lasting::Indefinite)));
+                    seen.insert(0);
+                }
+                Some(Sickness::Weakened(attribute)) => {
+                    assert_eq!(sick.attributes[attribute] + 1, attributes[attribute]);
+                    seen.insert(1);
+                }
+                Some(Sickness::Health(loss)) => {
+                    assert!((1..=4).contains(&loss));
+                    assert_eq!(sick.max_hp(), max_hp - loss);
+                    assert_eq!(member.hp, max_hp - loss);
+                    seen.insert(2);
+                }
+                Some(Sickness::Stamina(loss)) => {
+                    assert_eq!(sick.max_stamina(), max_stamina - loss);
+                    seen.insert(3);
+                }
+                None => {}
+            }
+            assert!(!member.has(Condition::Drained), "disease does not drain");
+        }
+        assert_eq!(seen.len(), 4, "every blow comes up");
+        // Without disease, or with no time, nothing happens.
+        let mut well = Vitals::new(&profile);
+        assert_eq!(well.sicken(&mut profile, 10_000, &mut rng), None);
+        well.inflict(Condition::Diseased, Lasting::Indefinite);
+        assert_eq!(well.sicken(&mut profile, 0, &mut rng), None);
+    }
+
+    /// Draining takes health from the maximum until Drained is lifted, which
+    /// gives back what draining and disease took (retail `DamageCharacter`,
+    /// `RemoveCharacterCondition`).
+    #[test]
+    fn drained_health_stays_lost_until_the_drain_is_lifted() {
+        let mut profile = Character::new("Brute", Race::Human, Gender::Male, Profession::Fighter);
+        let mut member = Vitals::new(&profile);
+        let (max_hp, max_stamina) = (profile.max_hp(), profile.max_stamina());
+        assert_eq!(member.drain_health(&mut profile, 3), 3);
+        assert_eq!((profile.max_hp(), member.hp), (max_hp - 3, max_hp - 3));
+        assert_eq!(member.stamina, max_stamina - 2, "two thirds of it tires");
+        assert!(member.has(Condition::Drained));
+        profile.stamina_drained = 4;
+        member.stamina = member.stamina.min(profile.max_stamina());
+        // Recovery heals only up to the lowered maximum.
+        elapse(
+            &mut profile,
+            &mut member,
+            Ticks { stamina: 0, aging: 60 },
+            Pace::Camping,
+            &mut GameRng::default(),
+        );
+        assert_eq!(member.hp, max_hp - 3);
+        let stamina = member.stamina;
+        assert!(member.lift_drain(&mut profile));
+        assert_eq!((profile.max_hp(), member.hp), (max_hp, max_hp));
+        assert_eq!(member.stamina, stamina + 4);
+        assert!(!member.lift_drain(&mut profile), "nothing left to lift");
+        // Draining the last of it kills, and the dead stay Drained.
+        let mut doomed = Vitals { hp: 2, ..Vitals::new(&profile) };
+        assert_eq!(doomed.drain_health(&mut profile, 5), 2);
+        assert!(doomed.is_dead() && doomed.has(Condition::Drained));
     }
 }

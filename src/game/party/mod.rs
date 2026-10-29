@@ -118,6 +118,28 @@ pub fn damage_member(
     lost
 }
 
+/// [`damage_member`] for draining, which lowers the maximum for good
+/// ([`crate::game::characters::Vitals::drain_health`]).
+pub fn drain_member(
+    member: Entity,
+    (profile, vitals): (
+        &mut crate::game::characters::Character,
+        &mut crate::game::characters::Vitals,
+    ),
+    formation: &mut Mut<formation::Formation>,
+    amount: u32,
+    damage: &mut MessageWriter<DamageApplied>,
+) -> u32 {
+    let lost = vitals.drain_health(profile, amount);
+    if vitals.is_dead() && formation.row_of(member).is_some() {
+        formation.update_seat(member, true);
+    }
+    if lost > 0 {
+        damage.write(DamageApplied { member, amount: lost, died: vitals.is_dead() });
+    }
+    lost
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
