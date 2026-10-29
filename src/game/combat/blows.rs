@@ -835,6 +835,7 @@ pub(super) fn monster_attacks(
     }
     let chosen = rng.below((candidates.len() + waits) as u32) as usize;
     if chosen < waits {
+        battle.this_round.waited.push(entity);
         return false;
     }
     battle.this_round.attacked = true;

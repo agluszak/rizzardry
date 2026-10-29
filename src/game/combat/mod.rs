@@ -288,6 +288,8 @@ struct Round {
     berserk: Vec<Entity>,
     /// Monsters guarding a fellow this round.
     guards: Vec<Guard>,
+    /// Monsters that waited this round, which rests them.
+    waited: Vec<Entity>,
     /// How the party moves this round.
     pace: Option<PartyPace>,
     /// How often each member has tried to spot an attacker this round.
@@ -2093,6 +2095,7 @@ fn monster_turn(
             // instead (retail falls back on `WAIT` when the move fails).
             if !walker.is_some_and(|w| w.speed > 0.0) || battle.this_round.moved.contains(&monster)
             {
+                battle.this_round.waited.push(monster);
                 return true;
             }
             battle.this_round.moved.push(monster);
@@ -2292,16 +2295,17 @@ fn end_round(
     // `AdvanceCombatRound`, `AdvanceTimedEffects`).
     let ticks = clock.advance(ROUND_MS);
     enchantments.age(ticks.aging);
-    // A monster asleep or knocked out gets its breath back (retail
-    // `AdvanceCombatRound`; retail's waiting monsters too, which are not
-    // told apart here).
+    // A monster that waited, or lies asleep or knocked out, gets its
+    // breath back (retail `AdvanceCombatRound`).
     for &entity in combatants {
-        let resting = damage.monsters().get(entity).is_ok_and(|(monster, ..)| {
-            monster
-                .conditions
-                .iter()
-                .any(|&(c, _)| matches!(c, Condition::Asleep | Condition::Unconscious))
-        });
+        let waited = battle.this_round.waited.contains(&entity);
+        let resting = waited
+            || damage.monsters().get(entity).is_ok_and(|(monster, ..)| {
+                monster
+                    .conditions
+                    .iter()
+                    .any(|&(c, _)| matches!(c, Condition::Asleep | Condition::Unconscious))
+            });
         if resting {
             let maximum = damage.monsters().get(entity).map_or(0, |(m, ..)| m.max_stamina);
             let sides = (maximum / 20).saturating_sub(1).clamp(1, 255) as u8;
