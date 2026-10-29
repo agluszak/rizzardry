@@ -90,13 +90,13 @@ pub fn sync_door_links(
         (Entity, &Prop, &LevelOwned, &PropMotion, &DoorLink, Option<&Children>),
         Or<(Changed<PropMotion>, Added<DoorLink>)>,
     >,
-    models: crate::game::world::props::PropModels,
+    definitions: crate::game::world::level::OwnedDefinitions,
     links: Query<(), With<AnimationLink3d>>,
     navigation: Query<&LevelNavigation>,
 ) {
     let Ok(navigation) = navigation.single() else { return };
     for (entity, prop, owner, motion, door, children) in &doors {
-        let last = models.get(owner, prop).map_or(0, PropModel::last_frame);
+        let last = prop.model(owner, &definitions).map_or(0, PropModel::last_frame);
         let open = last > 0 && motion.frame >= last as f32 * 0.5;
         let existing =
             children.into_iter().flatten().copied().filter(|&child| links.contains(child));

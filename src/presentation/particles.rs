@@ -7,14 +7,11 @@
 //! the emitter off (`SubmitToRenderer`).
 use super::{PresentationRng, billboards::FaceCamera, environment::LevelAppearance};
 use crate::{
-    content::{
-        level::{LevelDefinition, LevelGeometry},
-        particles::*,
-    },
+    content::{level::LevelGeometry, particles::*},
     game::{
         party::body::PartyBody,
         world::{
-            level::{Level, LevelOwned},
+            level::{LevelOwned, OwnedDefinitions},
             obstacles::WorldObstacles,
             particles::{EmissionSpent, Emitter},
         },
@@ -94,18 +91,16 @@ fn inside(bounds: &ParticleBounds, point: Vec3, transform: Transform) -> bool {
 
 /// An emitter's authored definition, through its level.
 fn config<'a>(
-    levels: &Query<&Level>,
-    geometry: &'a Assets<LevelDefinition>,
+    definitions: &'a OwnedDefinitions,
     owner: &LevelOwned,
     emitter: &Emitter,
 ) -> Option<&'a ParticleConfig> {
-    geometry.get(&levels.get(owner.0).ok()?.definition)?.particles.get(emitter.definition())
+    definitions.of(owner)?.particles.get(emitter.definition())
 }
 
 fn move_particles(
     time: Res<Time<Virtual>>,
-    geometry: Res<Assets<LevelDefinition>>,
-    levels: Query<&Level>,
+    definitions: OwnedDefinitions,
     emitters: Query<(&LevelOwned, &Emitter)>,
     party: Query<&avian3d::prelude::Position, With<PartyBody>>,
     mut particles: Query<(Entity, &ChildOf, &mut Particle, &mut Transform)>,
@@ -115,7 +110,7 @@ fn move_particles(
     let eye = party.single().ok().map(PartyBody::eye);
     for (entity, emitter, mut particle, mut transform) in &mut particles {
         let Ok((owner, emitter)) = emitters.get(emitter.parent()) else { continue };
-        let Some(config) = config(&levels, &geometry, owner, emitter) else {
+        let Some(config) = config(&definitions, owner, emitter) else {
             commands.entity(entity).despawn();
             continue;
         };
@@ -139,8 +134,7 @@ fn move_particles(
 
 fn emit_particles(
     time: Res<Time<Virtual>>,
-    geometry: Res<Assets<LevelDefinition>>,
-    levels: Query<&Level>,
+    definitions: OwnedDefinitions,
     mut emitters: Query<(Entity, &LevelOwned, &Emitter, &mut Emission, Option<&Children>)>,
     particles: Query<&Particle>,
     party: Query<&avian3d::prelude::Position, With<PartyBody>>,
@@ -151,7 +145,7 @@ fn emit_particles(
     let eye = party.single().ok().map(PartyBody::eye);
     let now = time.elapsed();
     for (entity, owner, emitter, mut emission, produced) in &mut emitters {
-        let Some(config) = config(&levels, &geometry, owner, emitter) else { continue };
+        let Some(config) = config(&definitions, owner, emitter) else { continue };
         if !emitter.emitting() || matches!(config.emission, ParticleEmission::None) {
             emission.last = None;
             continue;
@@ -314,8 +308,8 @@ fn attach_sprites(
 fn animate_particles(
     time: Res<Time<Virtual>>,
     geometry: Res<Assets<LevelGeometry>>,
-    levels: Query<(&Level, &LevelAppearance)>,
-    definitions: Res<Assets<LevelDefinition>>,
+    levels: Query<&LevelAppearance>,
+    definitions: OwnedDefinitions,
     emitters: Query<(&LevelOwned, &Emitter)>,
     particles: Query<(&ChildOf, &Particle)>,
     mut sprites: Query<
@@ -330,19 +324,12 @@ fn animate_particles(
         let Some(visual) = levels
             .get(parent.0)
             .ok()
-            .and_then(|(_, appearance)| geometry.get(&appearance.0))
+            .and_then(|appearance| geometry.get(&appearance.0))
             .and_then(|level| level.particles.get(emitter.definition()))
         else {
             continue;
         };
-        let Some(config) = levels
-            .get(parent.0)
-            .ok()
-            .and_then(|(level, _)| definitions.get(&level.definition))
-            .and_then(|level| level.particles.get(emitter.definition()))
-        else {
-            continue;
-        };
+        let Some(config) = config(&definitions, parent, emitter) else { continue };
         let age = time.elapsed().saturating_sub(particle.born);
         let fade = if age.is_zero() {
             1.0
@@ -391,8 +378,11 @@ fn animate_particles(
 mod tests {
     use super::*;
     use crate::{
-        content::surface::{Surface, TextureFrames},
-        game::world::triggers::tests::Scenario,
+        content::{
+            level::LevelDefinition,
+            surface::{Surface, TextureFrames},
+        },
+        game::world::{level::Level, triggers::tests::Scenario},
     };
 
     /// The game's emitter scene, seen: its emitters count their births.

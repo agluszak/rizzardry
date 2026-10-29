@@ -5,9 +5,9 @@ use bevy::prelude::*;
 
 use avian3d::prelude::*;
 
-use super::level::{Level, LevelOwned};
+use super::level::LevelOwned;
 use super::navigation::links::DoorLink;
-use crate::content::level::{Animation, CollisionMesh, LevelDefinition, PropModel};
+use crate::content::level::{Animation, CollisionMesh, PropModel};
 
 /// A placed prop. Its parts are children carrying [`PropPart`]; what it is
 /// stays in its level's definition, and only its [`PropMotion`] changes.
@@ -25,17 +25,14 @@ pub struct PropPart {
     pub part: usize,
 }
 
-/// Placed props' authored models, from their levels' definitions.
-#[derive(bevy::ecs::system::SystemParam)]
-pub struct PropModels<'w, 's> {
-    levels: Query<'w, 's, &'static Level>,
-    definitions: Res<'w, Assets<LevelDefinition>>,
-}
-
-impl PropModels<'_, '_> {
-    pub fn get(&self, owner: &LevelOwned, prop: &Prop) -> Option<&PropModel> {
-        let level = self.levels.get(owner.0).ok()?;
-        self.definitions.get(&level.definition)?.props.get(prop.definition)
+impl Prop {
+    /// Its authored model, from its level's definition.
+    pub fn model<'a>(
+        &self,
+        owner: &LevelOwned,
+        definitions: &'a super::level::OwnedDefinitions,
+    ) -> Option<&'a PropModel> {
+        definitions.of(owner)?.props.get(self.definition)
     }
 }
 
@@ -147,7 +144,7 @@ pub fn pose(keys: &[Transform], frame: f32) -> Transform {
 /// their parts (and the parts' colliders) along the authored paths.
 pub fn animate_props(
     time: Res<Time>,
-    models: PropModels,
+    definitions: super::level::OwnedDefinitions,
     mut props: Query<(&Prop, &LevelOwned, &mut PropMotion, &Children)>,
     mut parts: Query<(&PropPart, &mut Transform)>,
 ) {
@@ -155,7 +152,7 @@ pub fn animate_props(
         if motion.frame == motion.target {
             continue;
         }
-        let Some(model) = models.get(owner, prop) else { continue };
+        let Some(model) = prop.model(owner, &definitions) else { continue };
         let step = model.frames_per_second * time.delta_secs();
         motion.frame = if motion.target > motion.frame {
             (motion.frame + step).min(motion.target)

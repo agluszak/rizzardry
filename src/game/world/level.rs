@@ -402,6 +402,20 @@ pub enum Entry {
     Travel,
 }
 
+/// The definitions of the levels that own entities: what a placed prop,
+/// emitter or other authored thing is, read where its level keeps it.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct OwnedDefinitions<'w, 's> {
+    levels: Query<'w, 's, &'static Level>,
+    definitions: Res<'w, Assets<LevelDefinition>>,
+}
+
+impl OwnedDefinitions<'_, '_> {
+    pub fn of(&self, owner: &LevelOwned) -> Option<&LevelDefinition> {
+        self.definitions.get(&self.levels.get(owner.0).ok()?.definition)
+    }
+}
+
 /// An entry could not be prepared and was discarded.
 #[derive(Message, Debug, Clone)]
 pub struct LevelEntryFailed {
