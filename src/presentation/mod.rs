@@ -184,6 +184,7 @@ impl Plugin for PresentationPlugin {
                 screen_art::scale_ui,
                 party_view::aim_camera.after(crate::game::GameplaySet::Combat),
                 water_view::sway,
+                party_view::track_fights.after(crate::game::GameplaySet::Combat),
                 camp::show_camp,
                 (
                     automap::request_automap,

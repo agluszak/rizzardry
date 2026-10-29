@@ -40,6 +40,8 @@ impl Plugin for PartyPlugin {
         ))
         .insert_resource(Gravity(Vec3::NEG_Y * body::GRAVITY))
         .add_message::<body::PartyLook>()
+        .add_message::<body::TurnParty>()
+        .init_resource::<body::PartyTurning>()
         .add_message::<DamageApplied>()
         .add_systems(
             Update,
@@ -52,7 +54,11 @@ impl Plugin for PartyPlugin {
         // them on the same step.
         .add_systems(
             FixedUpdate,
-            (body::drive_party.in_set(TnuaUserControlsSystems), walk_in::fly_party)
+            (
+                body::turn_party,
+                body::drive_party.in_set(TnuaUserControlsSystems),
+                walk_in::fly_party,
+            )
                 .chain()
                 .run_if(level_active),
         )

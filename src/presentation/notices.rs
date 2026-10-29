@@ -584,7 +584,7 @@ pub fn queue_notices(
     // course (retail's own blow lines are not ported yet).
     for news in combat.read() {
         let texts = match news {
-            CombatNews::Began => {
+            CombatNews::Began { .. } => {
                 log.selected = 1;
                 vec![string(COMBAT)]
             }

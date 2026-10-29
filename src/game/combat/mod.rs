@@ -498,7 +498,7 @@ fn opening_surprise<'a>(
 /// What the fight tells the player.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum CombatNews {
-    Began,
+    Began { nearest: Option<Entity> },
     Surprised(SurpriseCause),
     Breathed {
         actor: Entity,
@@ -804,7 +804,7 @@ pub fn start_battle(
         Query<&crate::game::magic::enchantments::PartyEffects>,
     ),
     mut camp_news: MessageWriter<crate::game::camp::CampNews>,
-    mut party: Query<(&Position, &mut PartyBody)>,
+    party: Query<(&Position, &PartyBody)>,
     level: PlayedLevel,
     members: Query<(&Character, &Vitals)>,
     monsters: Query<(
@@ -842,7 +842,7 @@ pub fn start_battle(
         return;
     }
     let Some(catalog) = content.species() else { return };
-    let Ok((party_at, mut body)) = party.single_mut() else { return };
+    let Ok((party_at, body)) = party.single() else { return };
     let (Some(far), Some(root)) = (level.view_distance(), level.entity()) else { return };
     let sight = Sight {
         eye: PartyBody::eye(party_at),
@@ -1138,15 +1138,14 @@ pub fn start_battle(
         commands.remove_resource::<crate::game::camp::Camp>();
         camp_news.write(crate::game::camp::CampNews::Interrupted);
     }
-    // The view turns to the nearest of them (retail `beginCombat`).
-    let nearest = monsters
-        .iter_many(&joined)
-        .matched()
-        .map(|(_, _, at, ..)| at.translation())
-        .min_by(|a, b| a.distance(sight.eye).total_cmp(&b.distance(sight.eye)));
-    if let Some(nearest) = nearest {
-        body.face(nearest - sight.eye);
-    }
+    // The nearest of them, which the view may turn to (retail `StartCombat`
+    // hands it to `PointCameraAtMonster`); the party's facing is the
+    // player's.
+    let nearest = joined
+        .iter()
+        .filter_map(|&m| Some((m, monsters.get(m).ok()?.2.translation())))
+        .min_by(|a, b| a.1.distance(sight.eye).total_cmp(&b.1.distance(sight.eye)))
+        .map(|(m, _)| m);
     let battle = commands
         .spawn((Name::new("Battle"), Battle { opening, ..default() }, LevelOwned(root)))
         .id();
@@ -1163,7 +1162,7 @@ pub fn start_battle(
         search.as_ref().is_some_and(|s| s.on(false)),
         &mut rng,
     );
-    news.write(CombatNews::Began);
+    news.write(CombatNews::Began { nearest });
     if let Some(cause) = opening {
         news.write(CombatNews::Surprised(cause));
     }
@@ -1977,6 +1976,7 @@ fn member_casts(
         context: casting::UseContext::Combat,
         party: &party_members,
         party_at: party.eye,
+        facing: crate::game::party::body::heading(party.yaw),
         monsters: &candidates,
         group_of: &group_of,
     };
@@ -3405,6 +3405,74 @@ mod tests {
         }
     }
 
+    /// An automatic aim takes the monster nearest the party's heading when
+    /// the spell is cast, from the party's own facing: ahead before a turn,
+    /// the one behind after half a turn, and nobody when none is in reach.
+    #[test]
+    fn an_automatic_aim_follows_the_partys_facing_at_the_cast() {
+        use crate::game::magic::casting::{Aim, MagicChoice, MagicNews, Refusal, Source};
+        use crate::game::magic::effects::{Effect, Victim};
+        let cast = |yaw: f32, far: bool| {
+            let (mut app, [caster, _]) = round_app(true);
+            let ahead = order_spell(&mut app, caster, energy_blast());
+            let battle = app
+                .world_mut()
+                .query_filtered::<Entity, With<Battle>>()
+                .single(app.world())
+                .unwrap();
+            let body = app.world().get::<Monster>(ahead).unwrap().clone();
+            let level = app.world().get::<LevelOwned>(ahead).unwrap().0;
+            let behind = app
+                .world_mut()
+                .spawn((body, Transform::from_translation(Vec3::Z * 3.0), LevelOwned(level)))
+                .id();
+            app.world_mut().entity_mut(behind).insert(Combatant(battle));
+            if far {
+                for (monster, z) in [(ahead, -40.0), (behind, 40.0)] {
+                    app.world_mut().get_mut::<Transform>(monster).unwrap().translation =
+                        Vec3::Z * z;
+                }
+            }
+            let choice = MagicChoice {
+                source: Source::Spell {
+                    spell: crate::content::spells::SpellId::ENERGY_BLAST,
+                    power: 1,
+                },
+                aim: Aim::Ahead,
+            };
+            app.world_mut().entity_mut(caster).insert(Order::Magic(choice));
+            let party = app
+                .world_mut()
+                .query_filtered::<Entity, With<PartyBody>>()
+                .single(app.world())
+                .unwrap();
+            app.world_mut().get_mut::<PartyBody>(party).unwrap().yaw = yaw;
+            let mut news = Vec::new();
+            for _ in 0..6 {
+                app.update();
+                news.extend(app.world_mut().resource_mut::<Messages<MagicNews>>().drain());
+            }
+            let hit = news.iter().find_map(|n| match n {
+                MagicNews::Done(report) => report.effects.iter().find_map(|e| match e {
+                    Effect::Damaged { victim: Victim::Monster(m), .. } => Some(*m),
+                    _ => None,
+                }),
+                _ => None,
+            });
+            let refused = news.iter().any(|n| {
+                matches!(n, MagicNews::Refused { caster: c, refusal: Refusal::NoTarget } if *c == caster)
+            });
+            (hit, refused, ahead, behind)
+        };
+        let (hit, _, ahead, _) = cast(0.0, false);
+        assert_eq!(hit, Some(ahead), "facing -Z, the one ahead");
+        let (hit, _, _, behind) = cast(std::f32::consts::PI, false);
+        assert_eq!(hit, Some(behind), "turned about, the one that was behind");
+        let (hit, refused, ..) = cast(0.0, true);
+        assert_eq!(hit, None);
+        assert!(refused, "nobody within reach");
+    }
+
     /// A monster with a spell it can aim at the party casts it at its turn:
     /// it lands on a member at once and spends nothing (retail
     /// `UpdateMonsterAI`, `MonsterCastsSpell`).
@@ -3754,9 +3822,21 @@ mod tests {
             species.0[0].magic.chance = 50;
             species.0[0].magic.spells[0] = Some(id);
         }
+        // The party looks away; starting the fight leaves its facing alone
+        // and names the monster the view may turn to.
+        let party = app
+            .world_mut()
+            .query_filtered::<Entity, With<PartyBody>>()
+            .single(app.world())
+            .unwrap();
+        app.world_mut().get_mut::<PartyBody>(party).unwrap().yaw = 1.0;
+        app.world_mut().resource_mut::<Messages<CombatNews>>().clear();
         app.update();
         assert!(fight(app.world()).is_some(), "the caster starts the fight");
         assert!(app.world().get::<Combatant>(monster).is_some());
+        assert_eq!(app.world().get::<PartyBody>(party).unwrap().yaw, 1.0);
+        let news: Vec<_> = app.world_mut().resource_mut::<Messages<CombatNews>>().drain().collect();
+        assert!(news.contains(&CombatNews::Began { nearest: Some(monster) }), "{news:?}");
     }
 
     /// A cast waits for its caster's initiative, is revalidated then, spends

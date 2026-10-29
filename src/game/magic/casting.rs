@@ -73,6 +73,9 @@ pub enum Aim {
     Point(Vec3),
     Member(Entity),
     Monster(Entity),
+    /// Whoever stands nearest the party's heading within the spell's reach
+    /// when it is cast (retail's automatic targeting), the nearer of equals.
+    Ahead,
     /// The device attempt under way (its lock or trap), by the attempt.
     Device(Entity),
     /// The selected stack, retained across any delayed request.
@@ -236,6 +239,8 @@ pub struct Situation<'a> {
     /// The party, in roster order, the dead included.
     pub party: &'a [Entity],
     pub party_at: Vec3,
+    /// The way the party faces, level ([`crate::game::party::body::PartyBody::forward`]).
+    pub facing: Vec3,
     pub monsters: &'a [Candidate],
     pub group_of: &'a dyn Fn(Entity) -> Vec<Entity>,
 }
@@ -246,6 +251,18 @@ impl Situation<'_> {
     }
     fn candidate(&self, monster: Entity, spell: &SpellDefinition) -> Option<&Candidate> {
         self.monsters.iter().find(|c| c.entity == monster && c.distance <= spell.reach.metres())
+    }
+
+    /// The monster an automatic aim takes: of those within reach, the one
+    /// nearest the party's heading, the nearer of equals.
+    fn ahead(&self, spell: &SpellDefinition) -> Option<&Candidate> {
+        let facing = self.facing.with_y(0.0);
+        self.monsters
+            .iter()
+            .filter(|c| c.distance <= spell.reach.metres())
+            .map(|c| (c, (c.at - self.party_at).with_y(0.0).angle_between(facing)))
+            .min_by(|a, b| a.1.total_cmp(&b.1).then(a.0.distance.total_cmp(&b.0.distance)))
+            .map(|(c, _)| c)
     }
 
     fn party_victims(&self) -> Vec<Victim> {
@@ -279,6 +296,7 @@ pub(crate) fn capture(
     }
     let aimed = || match aim {
         Aim::Monster(m) => situation.candidate(m, spell).copied().ok_or(Refusal::NoTarget),
+        Aim::Ahead => situation.ahead(spell).copied().ok_or(Refusal::NoTarget),
         Aim::Point(_) | Aim::Member(_) | Aim::Device(_) | Aim::Item(_) => Err(Refusal::NoTarget),
     };
     let reach = spell.reach.metres();
@@ -666,7 +684,7 @@ pub fn perform(
                 if auto {
                     let victim = match choice.aim {
                         Aim::Member(m) => world.members.get(m).ok(),
-                        Aim::Point(_) | Aim::Monster(_) | Aim::Device(_) | Aim::Item(_) => None,
+                        Aim::Ahead | Aim::Point(_) | Aim::Monster(_) | Aim::Device(_) | Aim::Item(_) => None,
                     };
                     auto_power(&character, spell, victim.map(|(c, v, ..)| (c, v)), affordable)
                 } else {

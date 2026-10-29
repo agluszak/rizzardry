@@ -32,7 +32,6 @@ use crate::game::magic::casting::{
 };
 use crate::game::magic::{LearnedSpells, MagicRequest, SpellPoints, resolvable};
 use crate::game::party::roster::PartyRoster;
-use crate::game::world::population::Monster;
 use crate::presentation::retail_controls::{
     ControlSkin, FocusRing, ScrollWheel, scroll_wheel, set_scroll_maximum, step_scrollbar,
 };
@@ -698,12 +697,8 @@ pub(super) fn refresh_magic_view(
     (selected, roster): (Res<super::SelectedMember>, Single<&PartyRoster>),
     members: Query<(&Character, &Vitals, Option<&Carried>)>,
     casters: Query<(&LearnedSpells, Option<&SpellPoints>)>,
-    (battle, monsters, party): (
-        Option<Single<(&Battle, Option<&crate::game::combat::Combatants>)>>,
-        Query<(Entity, &Monster, &GlobalTransform)>,
-        Query<&GlobalTransform, With<crate::game::party::body::PartyBody>>,
-    ),
-    (camp, interaction, pool): (
+    (battle, camp, interaction, pool): (
+        Option<Single<&Battle>>,
         Option<Res<crate::game::camp::Camp>>,
         Query<&crate::game::world::interaction::DeviceInteraction>,
         Single<&PartyInventory>,
@@ -999,22 +994,9 @@ pub(super) fn refresh_magic_view(
                 Some(member) => Aim::Member(member),
                 None => return,
             },
+            // The game picks the monster ahead when the spell is cast.
             Targeting::Enemy | Targeting::EnemyGroup | Targeting::Cone | Targeting::Radius => {
-                let Ok(eye) = party.single() else { return };
-                let fighting = battle
-                    .iter()
-                    .flat_map(|b| b.1.into_iter().flat_map(|c| c.entities().iter().copied()))
-                    .filter_map(|m| {
-                        let (_, monster, at) = monsters.get(m).ok()?;
-                        Some((m, monster, at.translation()))
-                    });
-                let ahead = crate::game::magic::target_ahead(
-                    eye.translation(),
-                    eye.forward().into(),
-                    spell.reach.metres(),
-                    fighting,
-                );
-                ahead.map_or(Aim::Member(view.caster), Aim::Monster)
+                Aim::Ahead
             }
             _ => Aim::Member(view.caster),
         }

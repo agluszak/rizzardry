@@ -11,10 +11,18 @@ pub struct Preferences {
     pub volume: u8,
     pub invert_mouse_y: bool,
     pub fullscreen: bool,
+    pub view_tracking: crate::presentation::party_view::ViewTracking,
+    pub view_turning: crate::presentation::party_view::ViewTurning,
 }
 impl Default for Preferences {
     fn default() -> Self {
-        Self { volume: 100, invert_mouse_y: false, fullscreen: false }
+        Self {
+            volume: 100,
+            invert_mouse_y: false,
+            fullscreen: false,
+            view_tracking: default(),
+            view_turning: default(),
+        }
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -108,7 +116,12 @@ mod tests {
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("settings.ron");
         let saved = SavedSettings {
-            preferences: Preferences { volume: 30, invert_mouse_y: true, fullscreen: false },
+            preferences: Preferences {
+                volume: 30,
+                invert_mouse_y: true,
+                fullscreen: false,
+                ..default()
+            },
             difficulty: Difficulty::Expert,
             continuous: true,
         };

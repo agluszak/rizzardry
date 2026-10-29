@@ -579,7 +579,7 @@ pub fn accept_magic(
     mut points: Query<(&LearnedSpells, &mut SpellPoints)>,
     mut context: MagicContext,
     mut rng: ResMut<GameRng>,
-    party: Query<&avian3d::prelude::Position, With<crate::game::party::body::PartyBody>>,
+    party: Query<(&avian3d::prelude::Position, &crate::game::party::body::PartyBody)>,
     mut commands: Commands,
     clock: Res<crate::game::time::GameClock>,
 ) {
@@ -630,7 +630,10 @@ pub fn accept_magic(
             }
             continue;
         }
-        let Ok(party_at) = party.single().map(crate::game::party::body::PartyBody::eye) else {
+        let Ok((party_at, facing)) = party
+            .single()
+            .map(|(at, body)| (crate::game::party::body::PartyBody::eye(at), body.forward()))
+        else {
             context.news.write(casting::MagicNews::Refused {
                 caster,
                 refusal: casting::Refusal::WrongTime,
@@ -648,6 +651,7 @@ pub fn accept_magic(
             },
             party: &roster,
             party_at,
+            facing,
             monsters: &[],
             group_of: &|m| vec![m],
         };
@@ -769,29 +773,6 @@ pub fn deliver_spells(
             }
         }
     }
-}
-
-/// Retail's auto-targeting: of the living monsters within the spell's
-/// reach, the one nearest the party's heading, the nearer of equals.
-pub fn target_ahead<'a>(
-    eye: Vec3,
-    forward: Vec3,
-    reach: f32,
-    monsters: impl IntoIterator<Item = (Entity, &'a crate::game::world::population::Monster, Vec3)>,
-) -> Option<Entity> {
-    let ahead = forward.with_y(0.0);
-    monsters
-        .into_iter()
-        .filter_map(|(entity, monster, at)| {
-            let to = (at - eye).with_y(0.0);
-            (!monster.is_dead() && to.length() <= reach + monster.body.radius).then_some((
-                entity,
-                to.angle_between(ahead),
-                to.length(),
-            ))
-        })
-        .min_by(|a, b| a.1.total_cmp(&b.1).then(a.2.total_cmp(&b.2)))
-        .map(|(entity, ..)| entity)
 }
 
 #[cfg(test)]
