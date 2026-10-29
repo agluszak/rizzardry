@@ -60,19 +60,29 @@ impl Plugin for CombatPlugin {
                 Update,
                 (
                     give_orders,
-                    // Defeat is settled before a fight starts or a round runs,
+                    // Defeat is settled before a fight starts,
                     settle_defeat,
                     hostility::provoke,
                     start_battle,
                     control_combat,
-                    begin_round,
-                    run_battle,
-                    // and again after the round's damage.
-                    settle_defeat,
                     approach::close_in,
                 )
                     .chain()
                     .in_set(crate::game::GameplaySet::Combat)
+                    .run_if(crate::game::world::level::level_active),
+            )
+            // Rounds run on the fixed step: when each actor acts, and so
+            // every roll, follows simulation time, not how often frames
+            // come. Requests made in Update wait for the next step.
+            .add_systems(
+                FixedUpdate,
+                (
+                    begin_round,
+                    run_battle,
+                    // and again after the round's damage.
+                    settle_defeat,
+                )
+                    .chain()
                     .run_if(crate::game::world::level::level_active),
             )
             // The party walks on the fixed step; its move is measured on
@@ -97,10 +107,11 @@ const PARTY_ALTERNATE_RADIUS: f32 = 1.0;
 /// (retail `g_monster_facing_tolerance`, 45 degrees).
 const FACING_TOLERANCE: f32 = std::f32::consts::FRAC_PI_4;
 
-/// Seconds between actors (retail `combat_delay_ms`, 1000 by default).
+/// Seconds of simulation between actors (retail `combat_delay_ms`, 1000 by
+/// default).
 const ACTION_SECONDS: f32 = 1.0;
-/// Real seconds between rounds, so that a round in which nobody can strike
-/// still lets monsters close in.
+/// Seconds of simulation between rounds, so that a round in which nobody
+/// can strike still lets monsters close in.
 const ROUND_SECONDS: f32 = 1.0;
 /// Game time one round takes.
 const ROUND_MS: u64 = 120_000;
@@ -2628,6 +2639,8 @@ mod tests {
         app.world_mut().entity_mut(monster).insert(Combatant(battle));
         app.finish();
         app.cleanup();
+        // Time starts with the first update, so rounds run from the next.
+        app.update();
         app.world_mut().write_message(StartRound);
         (app, [members[0], members[1]])
     }
@@ -3976,6 +3989,56 @@ mod tests {
         let set = app.world().get::<MonsterGroup>(group).unwrap().set;
         assert!(matches!(set, Some(SetStance { stance: Stance::Hostile, .. })));
         assert!(app.world().get::<Combatant>(survivor).is_some(), "the survivor joins");
+    }
+
+    /// The same continuous fight, run for the same simulated time with
+    /// frames of 1/32 s and of 3/4 s, rolls the same dice in the
+    /// same order: the same news, round, wounds and generator state.
+    #[test]
+    fn a_fight_runs_the_same_whatever_the_frame_rate() {
+        use crate::content::species::{MonsterAttack, MonsterWeapon};
+        let fight_for = |frame: std::time::Duration| {
+            let (mut app, members) = round_app(false);
+            app.world_mut().resource_mut::<CombatSettings>().continuous = true;
+            let data = app.world().resource::<GameData>().species.clone();
+            {
+                let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
+                let kind = &mut catalogs.get_mut(&data).unwrap().0[0];
+                kind.attacks_per_round = 2;
+                kind.attacks = vec![MonsterAttack {
+                    word: AttackWord::Verb,
+                    weapon: MonsterWeapon::Unarmed,
+                    effects: default(),
+                    reach: Reach::Short,
+                    score: 60,
+                    modes: EnumSet::only(AttackMode::Bash),
+                    damage: Dice { base: 0, count: 1, sides: 3 },
+                }];
+            }
+            app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(frame));
+            let frames = (std::time::Duration::from_secs(12).as_secs_f64() / frame.as_secs_f64())
+                .round() as u32;
+            let mut news = Vec::new();
+            for _ in 0..frames {
+                app.update();
+                news.extend(
+                    app.world_mut()
+                        .resource_mut::<Messages<CombatNews>>()
+                        .drain()
+                        .map(|n| format!("{n:?}")),
+                );
+            }
+            let round = fight(app.world()).map(|b| b.round);
+            let mut wounds: Vec<u32> =
+                members.iter().map(|&m| app.world().get::<Vitals>(m).unwrap().hp).collect();
+            wounds.extend(app.world_mut().query::<&Monster>().iter(app.world()).map(|m| m.hp));
+            let next = app.world_mut().resource_mut::<GameRng>().below(u32::MAX);
+            (news, round, wounds, next)
+        };
+        let fast = fight_for(std::time::Duration::from_micros(31_250));
+        let slow = fight_for(std::time::Duration::from_millis(750));
+        assert!(fast.0.iter().filter(|n| n.starts_with("Attack")).count() > 4, "{:?}", fast.0);
+        assert_eq!(fast, slow);
     }
 
     #[test]
