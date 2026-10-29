@@ -501,7 +501,8 @@ fn prepare_source<'a>(
                 return Err(Refusal::NotLearned);
             }
             let definition = spells.get(spell).ok_or(Refusal::MissingContent)?;
-            if pool.affordable_power(definition) == 0 {
+            let maximum = super::max_points(&profile.stats(&vitals.enchantments), learned, spells);
+            if pool.affordable_power(definition, &maximum) == 0 {
                 return Err(Refusal::NoSpellPoints);
             }
             (definition, power.min(AUTO_POWER), None, false)
@@ -609,8 +610,9 @@ pub fn perform(
         let cast_power = match &item {
             Some(_) => power,
             None => {
-                let (_, pool) = points.get(caster).map_err(|_| Refusal::NotLearned)?;
-                let affordable = pool.affordable_power(spell);
+                let (learned, pool) = points.get(caster).map_err(|_| Refusal::NotLearned)?;
+                let maximum = world.mana_maximum(caster, learned).ok_or(Refusal::MissingContent)?;
+                let affordable = pool.affordable_power(spell, &maximum);
                 if affordable == 0 {
                     break;
                 }
@@ -705,7 +707,13 @@ pub fn perform(
         // An auto cast tries again while it fizzles, and auto recast goes on
         // until its victim is whole, while stamina and points last.
         let stamina = world.members.get(caster).map_or(0, |(_, v, ..)| v.stamina);
-        let left = points.get(caster).map_or(0, |(_, p)| spell.realm.map_or(0, |r| p.current[r]));
+        let left = points
+            .get(caster)
+            .ok()
+            .and_then(|(learned, pool)| {
+                Some(pool.available(spell.realm?, &world.mana_maximum(caster, learned)?))
+            })
+            .unwrap_or(0);
         let again = auto
             && stamina > u32::from(spell.level)
             && left >= spell.cost
@@ -755,9 +763,11 @@ pub(crate) fn perform_device(
             play(caster, &character, use_, spell, rng, world)?
         }
         Some(_) => power,
-        None => power
-            .min(MAX_POWER)
-            .min(points.get(caster).map_err(|_| Refusal::NotLearned)?.1.affordable_power(spell)),
+        None => {
+            let (learned, pool) = points.get(caster).map_err(|_| Refusal::NotLearned)?;
+            let maximum = world.mana_maximum(caster, learned).ok_or(Refusal::MissingContent)?;
+            power.min(MAX_POWER).min(pool.affordable_power(spell, &maximum))
+        }
     };
     if power == 0 {
         return Err(Refusal::NoSpellPoints);
@@ -855,7 +865,7 @@ fn pay(
         None => {
             let (_, mut pool) = points.get_mut(caster).map_err(|_| Refusal::NotLearned)?;
             let realm = spell.realm.ok_or(Refusal::MissingContent)?;
-            pool.current[realm] = pool.current[realm].saturating_sub(spell.cost_at(power));
+            pool.spend(realm, spell.cost_at(power));
             super::cast_fatigue(spell, power)
         }
         Some(use_) => {

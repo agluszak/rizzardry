@@ -3,7 +3,7 @@
 use super::*;
 use crate::content::spells::{SpellCatalog, SpellId, Spellbook};
 use crate::game::inventory::{Carried, PartyInventory};
-use crate::game::magic::{self, LearnedSpells, SpellPoints};
+use crate::game::magic::{self, LearnedSpells};
 use crate::game::party::roster::PartyRoster;
 use enumset::EnumSet;
 use std::collections::BTreeSet;
@@ -369,7 +369,6 @@ pub struct Progression<'w, 's> {
             &'static mut Character,
             &'static mut Vitals,
             &'static mut LearnedSpells,
-            &'static mut SpellPoints,
             &'static mut Carried,
         ),
     >,
@@ -413,8 +412,7 @@ impl Progression<'_, '_> {
         self.eligibility(draft.member)?;
         let spells = self.content.spells().ok_or("Spell definitions are not ready.")?;
         let items = self.content.items().ok_or("Item definitions are not ready.")?;
-        let (mut c, mut v, mut known, mut points, mut carried) =
-            self.members.get_mut(draft.member).unwrap();
+        let (mut c, mut v, mut known, mut carried) = self.members.get_mut(draft.member).unwrap();
         if *c != draft.original || *known != draft.known {
             return Err("This character's training changed. Reopen level-up.");
         }
@@ -448,12 +446,7 @@ impl Progression<'_, '_> {
             resized(v.hp, old.max_hp(), new.max_hp()),
             resized(v.stamina, old.max_stamina(), new.max_stamina()),
         );
-        let old_max = magic::max_points(&old, &known, spells);
-        let new_max = magic::max_points(&new, &learned, spells);
         (v.hp, v.stamina) = (hp, stamina);
-        for realm in EnumSet::<Realm>::all() {
-            points.current[realm] = resized(points.current[realm], old_max[realm], new_max[realm]);
-        }
         *c = next;
         *known = learned;
         *carried = equipment;
@@ -486,6 +479,7 @@ mod tests {
         items::{ItemCatalog, ItemDefinition, ItemId, ItemKind},
         spells::SpellDefinition,
     };
+    use crate::game::magic::SpellPoints;
     use crate::game::{
         data::GameData,
         inventory::{EquipSlot, Equipped, ItemIds, ItemStack, POOL_LIMIT},
@@ -821,10 +815,8 @@ mod tests {
         };
         let catalog = SpellCatalog(vec![SpellDefinition::default(), spell(1), spell(2)]);
         let known = LearnedSpells([SpellId::ACID_SPLASH].into());
-        let old =
-            magic::max_points(&w.get::<Character>(member).unwrap().base_stats(), &known, &catalog);
-        let mut mana = SpellPoints::full(old);
-        mana.current[Realm::Divine] -= 2;
+        let mut mana = SpellPoints::default();
+        mana.spend(Realm::Divine, 2);
         mana.fraction[Realm::Divine] = 0.25;
         w.entity_mut(member).insert((known, mana));
         let handle = w.resource::<GameData>().spells.clone();
@@ -842,7 +834,7 @@ mod tests {
             w.resource::<Assets<SpellCatalog>>().get(&handle).unwrap(),
         );
         let mana = w.get::<SpellPoints>(member).unwrap();
-        assert_eq!(mana.current[Realm::Divine], maximum[Realm::Divine] - 2);
+        assert_eq!(mana.current(Realm::Divine, &maximum), i64::from(maximum[Realm::Divine]) - 2);
         assert_eq!(mana.fraction[Realm::Divine], 0.25);
         assert_eq!(learned.0, [SpellId::ACID_SPLASH, SpellId::BLESS].into());
         assert_eq!(c.spell_picks.total(), 0);

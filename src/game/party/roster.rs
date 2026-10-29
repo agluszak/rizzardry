@@ -147,7 +147,7 @@ pub fn recruit_character(
     party: Entity,
     formation: &mut super::formation::Formation,
     (character, learned): (Character, crate::game::magic::LearnedSpells),
-    (items, spells): (&ItemCatalog, &crate::content::spells::SpellCatalog),
+    items: &ItemCatalog,
     (ids, rng): (&mut ItemIds, &mut GameRng),
 ) -> Entity {
     let mut carried = Carried::default();
@@ -158,11 +158,7 @@ pub fn recruit_character(
             warn!("{}: no room for {}", character.name, definition.name);
         }
     }
-    let points = crate::game::magic::SpellPoints::full(crate::game::magic::max_points(
-        &character.base_stats(),
-        &learned,
-        spells,
-    ));
+    let points = crate::game::magic::SpellPoints::default();
     let vitals = crate::game::characters::Vitals::new(&character);
     let member = commands
         .spawn((
@@ -240,7 +236,6 @@ mod tests {
                 .map(|id| crate::content::items::ItemDefinition { id: ItemId(id), ..default() })
                 .collect(),
         );
-        let spells = crate::content::spells::SpellCatalog::default();
         let (mut ids, mut rng) = (ItemIds::default(), GameRng::seeded(1));
         let mut operations = SystemState::<(Commands, Single<&mut Formation>)>::new(&mut world);
         let (mut commands, mut formation) = operations.get_mut(&mut world).unwrap();
@@ -249,7 +244,7 @@ mod tests {
             party,
             &mut formation,
             (definition.character(), default()),
-            (&items, &spells),
+            &items,
             (&mut ids, &mut rng),
         );
         let second = recruit_character(
@@ -257,7 +252,7 @@ mod tests {
             party,
             &mut formation,
             (Recruit { name: "Second".into(), ..definition.clone() }.character(), default()),
-            (&items, &spells),
+            &items,
             (&mut ids, &mut rng),
         );
         operations.apply(&mut world);
@@ -270,7 +265,7 @@ mod tests {
             party,
             &mut formation,
             (Recruit { name: "Replacement".into(), ..definition }.character(), default()),
-            (&items, &spells),
+            &items,
             (&mut ids, &mut rng),
         );
         operations.apply(&mut world);

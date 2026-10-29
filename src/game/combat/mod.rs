@@ -883,6 +883,7 @@ pub fn run_battle(
                 &mut news,
                 &mut magic.points,
                 &mut magic.context.enchantments.0,
+                magic.context.content.spells(),
             );
             if over {
                 for &actor in combatants {
@@ -1275,6 +1276,7 @@ fn end_round(
     news: &mut MessageWriter<CombatNews>,
     points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
     enchantments: &mut crate::game::magic::enchantments::Enchantments,
+    spells: Option<&crate::content::spells::SpellCatalog>,
 ) -> bool {
     // The round's time passes now, with its meaning: conditions age, spell
     // points come back at half rate and nothing else recovers (retail
@@ -1291,9 +1293,17 @@ fn end_round(
             crate::game::characters::age(&mut conditions, ticks.aging);
         }
     }
-    for (_, mut pool) in points.iter_many_unique_mut(roster.iter()).matched() {
-        if pool.short() {
-            pool.recover(ticks.aging, crate::game::magic::recovery_scale(0.0));
+    for entity in roster.iter() {
+        if let (Ok((learned, mut pool)), Ok((profile, vitals, ..)), Some(spells)) =
+            (points.get_mut(entity), members.get(entity), spells)
+            && pool.needs_recovery()
+        {
+            let maximum = crate::game::magic::max_points(
+                &profile.stats(&vitals.enchantments),
+                learned,
+                spells,
+            );
+            pool.recover(ticks.aging, crate::game::magic::recovery_scale(0.0), &maximum);
         }
     }
     for (profile, mut vitals, ..) in members.iter_many_unique_mut(roster.iter()).matched() {
@@ -1586,10 +1596,7 @@ mod tests {
                 character.skill_points[skill] = 100;
             }
         }
-        let mut points = SpellPoints::default();
-        for realm in [Realm::Fire, Realm::Air] {
-            points.current[realm] = 20;
-        }
+        let points = SpellPoints::default();
         let monster =
             app.world().try_query::<&Combatants>().unwrap().single(app.world()).unwrap().entities()
                 [0];
@@ -1602,6 +1609,9 @@ mod tests {
             points,
             Order::Magic(choice),
         ));
+        for realm in [Realm::Fire, Realm::Air] {
+            crate::game::magic::test_set_points(app.world_mut(), member, realm, 20);
+        }
         monster
     }
 
@@ -1647,7 +1657,7 @@ mod tests {
         ));
         let monster = app.world().get::<Monster>(monster).unwrap();
         assert!(monster.hp < monster.max_hp);
-        assert_eq!(app.world().get::<SpellPoints>(caster).unwrap().current[Realm::Fire], 18);
+        assert_eq!(crate::game::magic::test_points(app.world(), caster, Realm::Fire), 18);
         assert!(!attackers.contains(&"A".to_owned()), "casting replaces the attack");
     }
 
@@ -1667,7 +1677,7 @@ mod tests {
             RoundAction::Magic(_)
         ));
         assert!(!fight(app.world()).unwrap().defends(caster));
-        app.world_mut().get_mut::<SpellPoints>(caster).unwrap().current[Realm::Fire] = 0;
+        crate::game::magic::test_set_points(app.world_mut(), caster, Realm::Fire, 0);
         let mut refused = false;
         for _ in 0..12 {
             app.update();
