@@ -385,7 +385,8 @@ mod tests {
     #[test]
     fn zero_clock_initialization_half_day_and_delayed_stock_keep_their_clocks() {
         use crate::content::npcs::StockRule;
-        let catalog = catalog();
+        let mut catalog = catalog();
+        catalog.0[0].quantity = QuantityKind::None;
         let def = NpcDefinition {
             stock: vec![StockRule { item: ItemId(0), quantity: 2, persistent: true }],
             ..merchant()
