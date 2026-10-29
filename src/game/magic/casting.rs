@@ -553,7 +553,7 @@ fn prepare_source<'a>(
                 return Err(Refusal::NotLearned);
             }
             let definition = spells.get(spell).ok_or(Refusal::MissingContent)?;
-            let maximum = super::max_points(&profile.stats(&vitals.enchantments), learned, spells);
+            let maximum = profile.stats(&vitals.enchantments).max_points(learned, spells);
             if pool.affordable_power(definition, &maximum) == 0 {
                 return Err(Refusal::NoSpellPoints);
             }
@@ -919,12 +919,8 @@ pub(crate) fn perform_utility(
         Some(_) => power,
         None => {
             let (learned, pool) = points.get(caster).map_err(|_| Refusal::NotLearned)?;
-            let maximum = super::max_points(
-                &character
-                    .stats(&members.get(caster).map_err(|_| Refusal::CannotAct)?.1.enchantments),
-                learned,
-                spells,
-            );
+            let vitals = members.get(caster).map_err(|_| Refusal::CannotAct)?.1;
+            let maximum = character.stats(&vitals.enchantments).max_points(learned, spells);
             power.min(MAX_POWER).min(pool.affordable_power(spell, &maximum))
         }
     };

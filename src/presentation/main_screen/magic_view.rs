@@ -769,7 +769,7 @@ pub(super) fn refresh_magic_view(
     let Ok((character, vitals, carried)) = members.get(view.caster) else { return };
     let (learned, points) = casters.get(view.caster).map_or((None, None), |(l, p)| (Some(l), p));
     let mana_maximum = learned
-        .map(|l| crate::game::magic::max_points(&character.stats(&vitals.enchantments), l, spells))
+        .map(|l| character.stats(&vitals.enchantments).max_points(l, spells))
         .unwrap_or_default();
     // Realms: their points, the chosen one latched; the first with points
     // chosen when none is.
@@ -1056,7 +1056,7 @@ fn choose_row(
     let (learned, points) = casters.get(view.caster).map_or((None, None), |(l, p)| (Some(l), p));
     let silenced = vitals.conditions.has(crate::game::characters::Condition::Silenced);
     let mana_maximum = learned
-        .map(|l| crate::game::magic::max_points(&character.stats(&vitals.enchantments), l, spells))
+        .map(|l| character.stats(&vitals.enchantments).max_points(l, spells))
         .unwrap_or_default();
     let offers = offers(
         &view,

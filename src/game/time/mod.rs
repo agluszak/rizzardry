@@ -253,7 +253,7 @@ mod pass_time_tests {
         use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId};
         use crate::game::data::GameData;
         use crate::game::magic::enchantments::Enchantment;
-        use crate::game::magic::{LearnedSpells, SpellPoints, max_points};
+        use crate::game::magic::{LearnedSpells, SpellPoints};
         let run = |steps_per_update: u32| {
             let tick = Duration::from_millis(AGING_TICK_MS / EXPLORATION_RATE);
             let mut app = fixed_app(tick * steps_per_update);
@@ -272,7 +272,7 @@ mod pass_time_tests {
                 Character::new("Priest", Race::Human, Gender::Female, Profession::Priest);
             profile.profession_levels[Profession::Priest] = 10;
             let mut vitals = Vitals::new(&profile);
-            let base = max_points(&profile.base_stats(), &learned, &catalog);
+            let base = profile.base_stats().max_points(&learned, &catalog);
             vitals.enchantments.apply(Enchantment {
                 spell: SpellId::SUPERMAN,
                 power: 7,
@@ -280,7 +280,7 @@ mod pass_time_tests {
                 turns: 1,
                 absorption: 0,
             });
-            let boosted = max_points(&profile.stats(&vitals.enchantments), &learned, &catalog);
+            let boosted = profile.stats(&vitals.enchantments).max_points(&learned, &catalog);
             assert!(boosted[Realm::Divine] > base[Realm::Divine] + 4);
             let mut points = SpellPoints::default();
             points.spend(Realm::Divine, base[Realm::Divine] + 4);

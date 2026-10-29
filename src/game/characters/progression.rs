@@ -845,11 +845,9 @@ mod tests {
         accept(&mut w, &draft).unwrap();
         let c = w.get::<Character>(member).unwrap();
         let learned = w.get::<LearnedSpells>(member).unwrap();
-        let maximum = magic::max_points(
-            &c.base_stats(),
-            learned,
-            w.resource::<Assets<SpellCatalog>>().get(&handle).unwrap(),
-        );
+        let maximum = c
+            .base_stats()
+            .max_points(learned, w.resource::<Assets<SpellCatalog>>().get(&handle).unwrap());
         let mana = w.get::<SpellPoints>(member).unwrap();
         assert_eq!(mana.current(Realm::Divine, &maximum), i64::from(maximum[Realm::Divine]) - 2);
         assert_eq!(mana.fraction[Realm::Divine], 0.25);

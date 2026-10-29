@@ -322,36 +322,43 @@ pub fn starting_picks(character: &Character) -> usize {
     if caster_level(character, character.profession) > 0 { 2 } else { 0 }
 }
 
-/// Spell points per realm (retail `RecalculateRealmSpellPoints`): none in a
-/// realm without a learned spell, and never under its dearest learned spell.
-pub fn max_points(
-    character: &crate::game::characters::CharacterStats<'_>,
-    learned: &LearnedSpells,
-    spells: &SpellCatalog,
-) -> EnumMap<Realm, u32> {
-    let mut books: Vec<u32> = [Skill::Wizardry, Skill::Divinity, Skill::Alchemy, Skill::Psionics]
-        .map(|s| character.skill(s))
-        .to_vec();
-    books.sort_unstable_by(|a, b| b.cmp(a));
-    let weight =
-        (books[0] as f32 + (books[1] / 2) as f32 + (books[2] / 4) as f32 + (books[3] / 8) as f32)
+impl crate::game::characters::CharacterStats<'_> {
+    /// Spell points per realm (retail `RecalculateRealmSpellPoints`): none in
+    /// a realm without a learned spell, and never under its dearest learned
+    /// spell.
+    pub fn max_points(
+        &self,
+        learned: &LearnedSpells,
+        spells: &SpellCatalog,
+    ) -> EnumMap<Realm, u32> {
+        let character = self;
+        let mut books: Vec<u32> =
+            [Skill::Wizardry, Skill::Divinity, Skill::Alchemy, Skill::Psionics]
+                .map(|s| character.skill(s))
+                .to_vec();
+        books.sort_unstable_by(|a, b| b.cmp(a));
+        let weight = (books[0] as f32
+            + (books[1] / 2) as f32
+            + (books[2] / 4) as f32
+            + (books[3] / 8) as f32)
             .min(125.0);
-    let piety = character.attribute(Attribute::Piety) as f32;
-    EnumMap::from_fn(|realm| {
-        let known: Vec<_> = learned
-            .0
-            .iter()
-            .filter_map(|&id| spells.get(id))
-            .filter(|s| s.realm == Some(realm))
-            .collect();
-        if known.is_empty() {
-            return 0;
-        }
-        let skill = character.skill(realm.skill()) as f32;
-        let levels = (known.len() + usize::from(character.level()) + 1) as f32;
-        let points = ((weight + 3.0 * skill + piety) * 0.02 * levels + 0.5) as u32;
-        points.max(known.iter().map(|s| s.cost).max().unwrap_or(0))
-    })
+        let piety = character.attribute(Attribute::Piety) as f32;
+        EnumMap::from_fn(|realm| {
+            let known: Vec<_> = learned
+                .0
+                .iter()
+                .filter_map(|&id| spells.get(id))
+                .filter(|s| s.realm == Some(realm))
+                .collect();
+            if known.is_empty() {
+                return 0;
+            }
+            let skill = character.skill(realm.skill()) as f32;
+            let levels = (known.len() + usize::from(character.level()) + 1) as f32;
+            let points = ((weight + 3.0 * skill + piety) * 0.02 * levels + 0.5) as u32;
+            points.max(known.iter().map(|s| s.cost).max().unwrap_or(0))
+        })
+    }
 }
 
 /// The skill threshold a spell's difficulty band needs at power 7 (retail
@@ -817,7 +824,7 @@ fn test_maximum(world: &World, member: Entity) -> EnumMap<Realm, u32> {
     let vitals = world.get::<crate::game::characters::Vitals>(member).unwrap();
     let learned = world.get::<LearnedSpells>(member).unwrap();
     let spells = crate::game::data::GameData::spells(world).unwrap();
-    max_points(&profile.stats(&vitals.enchantments), learned, spells)
+    profile.stats(&vitals.enchantments).max_points(learned, spells)
 }
 
 #[cfg(test)]
@@ -1012,7 +1019,7 @@ mod tests {
         let catalog =
             SpellCatalog((0..=6).map(|i| if i == 6 { heal_wounds() } else { default() }).collect());
         let learned = LearnedSpells([SpellId::HEAL_WOUNDS].into());
-        let points = max_points(&priest.base_stats(), &learned, &catalog);
+        let points = priest.base_stats().max_points(&learned, &catalog);
         assert!(points[Realm::Divine] >= 3, "never under the dearest learned spell");
         assert_eq!(points[Realm::Fire], 0, "no spell, no points");
     }

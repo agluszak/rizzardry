@@ -9,7 +9,7 @@ use bevy::prelude::*;
 
 use crate::content::spells::SpellCatalog;
 use crate::game::characters::{Character, Vitals};
-use crate::game::magic::{LearnedSpells, SpellPoints, max_points, recovery_scale};
+use crate::game::magic::{LearnedSpells, SpellPoints, recovery_scale};
 use crate::game::time::Ticks;
 
 /// Apply the Fighter's combat-rest trait to an already rolled recovery amount.
@@ -113,7 +113,7 @@ pub fn elapse(
         }
         sickness = member.sicken(profile, ticks.aging, fate);
         if let Some((known, pool, spells)) = magic {
-            let maximum = max_points(&profile.stats(&member.enchantments), known, spells);
+            let maximum = profile.stats(&member.enchantments).max_points(known, spells);
             pool.recover(ticks.aging, recovery_scale(pace.health_scale()), &maximum);
         }
         member.recover_health(ticks.aging, health, profile.stats(&member.enchantments).max_hp());

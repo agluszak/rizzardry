@@ -647,16 +647,8 @@ pub(super) fn refresh(
                     content
                         .spells()
                         .map(|catalog| {
-                            EnumSet::<Realm>::all()
-                                .iter()
-                                .map(|realm| {
-                                    crate::game::magic::max_points(
-                                        &profile.base_stats(),
-                                        &crate::game::magic::LearnedSpells(draft.spells()),
-                                        catalog,
-                                    )[realm]
-                                })
-                                .sum::<u32>()
+                            let learned = crate::game::magic::LearnedSpells(draft.spells());
+                            profile.base_stats().max_points(&learned, catalog).values().sum::<u32>()
                         })
                         .unwrap_or(0)
                         .to_string()

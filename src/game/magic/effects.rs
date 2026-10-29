@@ -597,7 +597,7 @@ impl Field<'_, '_, '_, '_, '_, '_, '_> {
         learned: &LearnedSpells,
     ) -> Option<enum_map::EnumMap<Realm, u32>> {
         let (profile, vitals, ..) = self.members.get(member).ok()?;
-        Some(super::max_points(&profile.stats(&vitals.enchantments), learned, self.spells?))
+        Some(profile.stats(&vitals.enchantments).max_points(learned, self.spells?))
     }
 }
 
