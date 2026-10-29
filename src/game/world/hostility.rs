@@ -167,7 +167,7 @@ impl Stances<'_, '_> {
     pub fn own(&self, monster: Entity, species: &MonsterCatalog, now: u64) -> Option<Stance> {
         let group = self.group(monster, species, now)?;
         let (body, ..) = self.monsters.get(monster).ok()?;
-        let turncoat = body.conditions.iter().any(|&(c, _)| c == Condition::Turncoat);
+        let turncoat = body.has(Condition::Turncoat);
         Some(own_stance(group, turncoat))
     }
 }

@@ -149,9 +149,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
     }
     let mut obstacles = SystemState::<WorldObstacles>::new(world);
     let view = obstacles.get(world).map_err(|_| Refusal::MissingContent)?;
-    if Dir3::new(at - eye)
-        .is_ok_and(|direction| view.first_hit(eye, direction, eye.distance(at)).is_some())
-    {
+    if !view.clear(eye, at) {
         return Err(Refusal::NoTarget);
     }
     let definitions = if id == SpellId::SUMMON_ELEMENTAL {
@@ -250,8 +248,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
                     continue;
                 }
                 let body = world.get::<Monster>(entity).unwrap();
-                if !body.can_fight() || body.conditions.iter().any(|(c, _)| *c == Condition::Blind)
-                {
+                if !body.can_fight() || body.has(Condition::Blind) {
                     continue;
                 }
                 let Some(here) = position(world, entity) else { continue };
@@ -273,12 +270,8 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
                     0,
                 )
                 .clamp(5, 95);
-                let eye = here + Vec3::Y * body.body.eye_height;
-                let clear = Dir3::new(at - eye).map_or(true, |dir| {
-                    sight.get(world).is_ok_and(|obstacles| {
-                        obstacles.first_hit(eye, dir, eye.distance(at)).is_none()
-                    })
-                });
+                let eye = body.eye(here);
+                let clear = sight.get(world).is_ok_and(|obstacles| obstacles.clear(eye, at));
                 if !clear {
                     continue;
                 }
@@ -457,9 +450,10 @@ pub(crate) fn update_lure(world: &mut World) {
             continue;
         }
         let target = position(world, influence.lure);
-        let follows = world.get::<Monster>(entity).is_some_and(|body| {
-            body.can_fight() && !body.conditions.iter().any(|(c, _)| *c == Condition::Blind)
-        }) && influence.response == LureResponse::Controlled;
+        let follows = world
+            .get::<Monster>(entity)
+            .is_some_and(|body| body.can_fight() && !body.has(Condition::Blind))
+            && influence.response == LureResponse::Controlled;
         let here = position(world, entity);
         let goal = match (follows, here, target) {
             (true, Some(here), Some(target)) if here.distance(target) > 5.0 => {

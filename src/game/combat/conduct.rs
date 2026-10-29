@@ -128,7 +128,7 @@ pub(super) fn interrupt(
     (fleeing, strikes_friend, berserk, against_foes): (bool, bool, bool, bool),
 ) -> Option<Interrupt> {
     use crate::game::characters::Condition;
-    let has = |condition| monster.conditions.iter().any(|&(c, _)| c == condition);
+    let has = |condition| monster.has(condition);
     if has(Condition::Nauseated) && rng.below(100) < 25 {
         return Some(Interrupt::Nauseated);
     }

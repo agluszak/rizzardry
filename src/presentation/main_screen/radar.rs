@@ -305,9 +305,7 @@ pub fn update_radar(
         }
         if !known.seen {
             let to = at.translation();
-            let in_sight = Dir3::new(to - eye).is_ok_and(|direction| {
-                obstacles.first_hit(eye, direction, eye.distance(to)).is_none()
-            });
+            let in_sight = obstacles.clear(eye, to);
             if !xray && !in_sight {
                 continue;
             }

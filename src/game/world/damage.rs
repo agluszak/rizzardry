@@ -127,7 +127,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
     pub fn provoke(&mut self, entity: Entity, now: u64) -> bool {
         use super::hostility::{self, SetStance, Stance};
         let Ok((body, ..)) = self.monsters.get(entity) else { return false };
-        if body.is_dead() || body.conditions.iter().any(|(c, _)| *c == Condition::Turncoat) {
+        if body.is_dead() || body.has(Condition::Turncoat) {
             return false;
         }
         let (Some(kind), Some(factions)) = (

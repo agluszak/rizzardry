@@ -190,8 +190,7 @@ pub fn search_pulse(
         if distance >= SEARCH_RADIUS || distance >= score as f32 * RANGE_PER_POINT || !ahead {
             continue;
         }
-        let Ok(direction) = Dir3::new(to - from) else { continue };
-        if obstacles.first_hit(from, direction, distance).is_some() {
+        if !obstacles.clear(from, to) {
             continue;
         }
         item.hidden = false;

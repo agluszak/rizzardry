@@ -36,8 +36,7 @@ impl Origin {
             Self::Actor(Victim::Member(_)) => party,
             Self::Actor(Victim::Monster(entity)) => {
                 world.monsters.monsters().get(entity).map_or(party, |(body, at, walker, ..)| {
-                    crate::game::world::navigation::feet(at.translation(), walker)
-                        + Vec3::Y * body.body.eye_height
+                    body.eye(crate::game::world::navigation::feet(at.translation(), walker))
                 })
             }
         }

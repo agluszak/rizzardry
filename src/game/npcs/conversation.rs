@@ -454,7 +454,7 @@ pub fn disposition(world: &World, actor: Entity) -> i32 {
 fn standing(world: &World, actor: Entity, disposition: u8) -> i32 {
     let turned = active_body(world, actor)
         .and_then(|body| world.get::<Monster>(body))
-        .is_some_and(|m| m.conditions.iter().any(|(c, _)| *c == Condition::Turncoat));
+        .is_some_and(|m| m.has(Condition::Turncoat));
     let charm = world
         .try_query::<&Conversation>()
         .and_then(|mut q| q.iter(world).find_map(|c| c.charms.get(&actor).copied()))

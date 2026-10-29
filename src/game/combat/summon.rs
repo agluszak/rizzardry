@@ -106,18 +106,11 @@ pub fn summon(
             _ => Stance::Hostile,
         };
         let caller_feet = feet(caller_at.translation(), caller_walker);
-        let caller_eye = caller_feet + Vec3::Y * caller.body.eye_height;
-        let seen = eye.distance(caller_eye) <= far
-            && Dir3::new(caller_eye - eye).is_ok_and(|direction| {
-                obstacles.first_hit(eye, direction, eye.distance(caller_eye)).is_none()
-            });
+        let caller_eye = caller.eye(caller_feet);
+        let seen = eye.distance(caller_eye) <= far && obstacles.clear(eye, caller_eye);
         let radius = members[0].monster.body.radius;
         let spacing = 2.0 * radius;
-        let ground = |spot: Vec3| {
-            let start = spot + Vec3::Y * STEP_HEIGHT;
-            let hit = obstacles.first_hit(start, Dir3::NEG_Y, STEP_HEIGHT + GROUND_BELOW)?;
-            Some(start - Vec3::Y * hit.distance)
-        };
+        let ground = |spot: Vec3| obstacles.ground_below(spot, GROUND_BELOW);
         let clear = |spot: Vec3| {
             let apart = |at: Vec3, radius: f32| {
                 at.with_y(0.0).distance(spot.with_y(0.0)) >= radius + spacing / 2.0
@@ -129,10 +122,7 @@ pub fn summon(
                 })
         };
         let reaches = |spot: Vec3, from: Vec3| {
-            let (spot, from) = (spot + Vec3::Y * STEP_HEIGHT, from + Vec3::Y * STEP_HEIGHT);
-            Dir3::new(spot - from).map_or(true, |direction| {
-                obstacles.first_hit(from, direction, from.distance(spot)).is_none()
-            })
+            obstacles.clear(from + Vec3::Y * STEP_HEIGHT, spot + Vec3::Y * STEP_HEIGHT)
         };
         // They face the party.
         let facing = |at: Vec3| {

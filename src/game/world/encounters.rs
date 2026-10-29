@@ -289,11 +289,7 @@ impl Spawning<'_, '_, '_> {
             (at, yaw, 2.0 * members[0].monster.body.radius),
             count,
             rng,
-            |spot| {
-                let start = spot + Vec3::Y * STEP_HEIGHT;
-                let hit = obstacles.first_hit(start, Dir3::NEG_Y, STEP_HEIGHT + GROUND_BELOW)?;
-                Some(start - Vec3::Y * hit.distance)
-            },
+            |spot| obstacles.ground_below(spot, GROUND_BELOW),
             |_| true,
             |_, _| true,
         );
@@ -446,10 +442,7 @@ fn admits(
         // Looking a step above the spot, so the ground it lies on does not
         // hide it.
         let above = spot + Vec3::Y * STEP_HEIGHT;
-        let seen = Dir3::new(above - party.eye).is_ok_and(|direction| {
-            obstacles.first_hit(party.eye, direction, party.eye.distance(above)).is_none()
-        });
-        if seen {
+        if obstacles.clear(party.eye, above) {
             return false;
         }
     }

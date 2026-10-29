@@ -45,10 +45,7 @@ impl View {
         if !self.in_range(monster, at) {
             return false;
         }
-        let clear = Dir3::new(at - self.eye).map_or(true, |direction| {
-            obstacles.first_hit(self.eye, direction, self.eye.distance(at)).is_none()
-        });
-        if !clear {
+        if !obstacles.clear(self.eye, at) {
             return false;
         }
         let angle = if shadow_hound {

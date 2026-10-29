@@ -276,14 +276,15 @@ fn intercept(
             let (ward_body, ward_at, ward_walker, ..) = monsters.get(ward).ok()?;
             let kind = species?.kind(body.species)?;
             let first = kind.attacks.first()?;
-            let gap = feet(at.translation(), walker)
-                .distance(feet(ward_at.translation(), ward_walker))
-                - body.body.radius
-                - ward_body.body.radius;
+            let gap = body.gap(
+                feet(at.translation(), walker),
+                ward_body,
+                feet(ward_at.translation(), ward_walker),
+            );
             (!body.is_dead()
-                && body.conditions.iter().all(|&(c, _)| c < Condition::Blind)
+                && body.worst_condition().is_none_or(|c| c < Condition::Blind)
                 && !ward_body.is_dead()
-                && gap.max(0.0) <= first.reach.metres()
+                && gap <= first.reach.metres()
                 && g.interceptions < u32::from(kind.attacks_per_round))
             .then(|| (i, attack::monster_protection(kind, body)))
         })
@@ -372,10 +373,8 @@ fn monster_bystanders(
         if entity == target || other.is_dead() || !field.monsters.active(entity) {
             continue;
         }
-        let gap = here.distance(feet(other_at.translation(), other_walker))
-            - monster.body.radius
-            - other.body.radius;
-        if entity != target && (entity == attacker || gap.max(0.0) <= reach.metres()) {
+        let gap = monster.gap(here, other, feet(other_at.translation(), other_walker));
+        if entity != target && (entity == attacker || gap <= reach.metres()) {
             bystanders.push(Victim::Monster(entity));
         }
     }
@@ -900,7 +899,7 @@ pub(super) fn monster_attacks(
     let Some(kind) = species.kind(monster.species) else { return false };
     let distance = distance_to_party(fight.party.eye, monster, feet(at.translation(), walker));
     let position = at.translation();
-    let eye = feet(position, walker) + Vec3::Y * monster.body.eye_height;
+    let eye = monster.eye(feet(position, walker));
     let formation = &**field.formation;
     let stance = field.monsters.stance(entity, field.now);
     let here = feet(position, walker);
@@ -940,20 +939,16 @@ pub(super) fn monster_attacks(
             else {
                 continue;
             };
-            let gap = here.distance(feet(other_at.translation(), other_walker))
-                - monster.body.radius
-                - body.body.radius;
+            let gap = monster.gap(here, body, feet(other_at.translation(), other_walker));
             if other != entity
                 && !body.is_dead()
                 && field.monsters.active(other)
                 && field.visibility.is_some_and(|obstacles| {
-                    let centre = body_centre(feet(other_at.translation(), other_walker), body);
-                    Dir3::new(centre - eye).map_or(true, |direction| {
-                        obstacles.first_hit(eye, direction, eye.distance(centre)).is_none()
-                    })
+                    obstacles
+                        .clear(eye, body_centre(feet(other_at.translation(), other_walker), body))
                 })
                 && (fight.attacks)(Victim::Monster(other))
-                && gap.max(0.0) <= attack.reach.metres()
+                && gap <= attack.reach.metres()
             {
                 for mode in attack.modes {
                     candidates.push((a, mode, Victim::Monster(other)));
@@ -1036,7 +1031,7 @@ pub(super) fn monster_attacks(
             difficulty,
         );
         let landing = if attack.reach >= Reach::Long {
-            let blind = monster.conditions.iter().any(|&(c, _)| c == Condition::Blind);
+            let blind = monster.has(Condition::Blind);
             let Some((centre, radius, half)) = victim_body(field, fight, target) else { break };
             let shot = attack::scatter(rng, eye, centre, aim, blind);
             attack::strikes(centre, shot, radius, half).then(|| Landing {

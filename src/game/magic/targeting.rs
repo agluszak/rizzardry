@@ -29,11 +29,7 @@ pub(crate) fn radius(
     if radius <= 0.0 {
         return vec![];
     }
-    let clear = |to: Vec3| {
-        Dir3::new(to - origin).map_or(true, |direction| {
-            obstacles.first_hit(origin, direction, to.distance(origin)).is_none()
-        })
-    };
+    let clear = |to: Vec3| obstacles.clear(origin, to);
     let mut victims = Vec::new();
     if party_at.is_some_and(|eye| {
         let centre_of_party = eye - Vec3::Y * crate::game::party::body::EYE_ABOVE_CENTRE;

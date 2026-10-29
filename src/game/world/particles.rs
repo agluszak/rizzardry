@@ -146,16 +146,7 @@ fn move_particles(
         particle.integrated = time.elapsed();
         particle.velocity += visual.acceleration * elapsed;
         let next = transform.translation + particle.velocity * elapsed;
-        let blocked = visual.stops_at_scenery
-            && Dir3::new(next - transform.translation).is_ok_and(|direction| {
-                obstacles
-                    .first_hit(
-                        transform.translation,
-                        direction,
-                        next.distance(transform.translation),
-                    )
-                    .is_some()
-            });
+        let blocked = visual.stops_at_scenery && !obstacles.clear(transform.translation, next);
         if blocked || !inside(&visual.bounds, next, emitter_pose(visual, eye)) {
             commands.entity(entity).despawn();
         } else if transform.translation != next {

@@ -630,11 +630,9 @@ impl Sight<'_, '_, '_> {
     /// of sight, whichever way the monster faces and however keen it is.
     fn in_view(&self, monster: &Monster, at: &ActorPoseItem, walker: Option<&Walker>) -> bool {
         let feet = feet(at.translation(), walker);
-        let eye = feet + Vec3::Y * monster.body.eye_height;
+        let eye = monster.eye(feet);
         distance_to_party(self.eye, monster, feet) <= self.far
-            && Dir3::new(eye - self.eye).map_or(true, |direction| {
-                self.obstacles.first_hit(self.eye, direction, self.eye.distance(eye)).is_none()
-            })
+            && self.obstacles.clear(self.eye, eye)
     }
 
     /// Whether a monster sees another (retail `CanMonsterSeeMonster`):
@@ -650,7 +648,7 @@ impl Sight<'_, '_, '_> {
         let observer_feet = feet(observer.1.translation(), observer.2);
         let distance =
             (observer_feet.distance(target_feet) - from.body.radius - body.body.radius).max(0.0);
-        let eye = target_feet + Vec3::Y * body.body.eye_height;
+        let eye = body.eye(target_feet);
         self.sees_point(observer, eye, distance, i32::from(kind.level), 0)
     }
 
@@ -662,17 +660,11 @@ impl Sight<'_, '_, '_> {
         penalty: i32,
         concealment: u32,
     ) -> bool {
-        let eye = feet(at.translation(), walker) + Vec3::Y * monster.body.eye_height;
-        if !monster.can_fight()
-            || distance > self.far
-            || monster.conditions.iter().any(|(c, _)| *c == Condition::Blind)
-                && kind.kind != crate::content::species::MonsterKind::Monk
-        {
+        let eye = monster.eye(feet(at.translation(), walker));
+        if !monster.can_fight() || distance > self.far || monster.blinded(kind) {
             return false;
         }
-        let clear = Dir3::new(target - eye).map_or(true, |direction| {
-            self.obstacles.first_hit(eye, direction, eye.distance(target)).is_none()
-        });
+        let clear = self.obstacles.clear(eye, target);
         let forward = at.forward().with_y(0.0);
         let angle = forward.angle_between((target - eye).with_y(0.0));
         let senses = i32::from(kind.attributes.senses);
@@ -1221,7 +1213,7 @@ fn allegiance(
     let (body, ..) = monsters.get(entity).ok()?;
     let kind = species.kind(body.species)?;
     let group = stances.iter().find(|&&(e, _)| e == entity)?.1;
-    let turncoat = body.conditions.iter().any(|&(c, _)| c == Condition::Turncoat);
+    let turncoat = body.has(Condition::Turncoat);
     Some(hostility::Allegiance {
         species: body.species,
         stance: hostility::own_stance(group, turncoat),
@@ -1978,11 +1970,8 @@ fn visible_monsters(
                 return None;
             }
             let feet = feet(at.translation(), walker);
-            let eye = feet + Vec3::Y * monster.body.eye_height;
-            let clear = Dir3::new(eye - party_eye).map_or(true, |direction| {
-                obstacles.first_hit(party_eye, direction, party_eye.distance(eye)).is_none()
-            });
-            clear.then(|| casting::Candidate {
+            let eye = monster.eye(feet);
+            obstacles.clear(party_eye, eye).then(|| casting::Candidate {
                 entity,
                 at: feet,
                 distance: distance_to_party(party_eye, monster, feet),
@@ -2062,7 +2051,7 @@ fn special_ready(
     cooling: bool,
     fighting: Option<(f32, hostility::Stance)>,
 ) -> bool {
-    let silenced = monster.conditions.iter().any(|&(c, _)| c == Condition::Silenced);
+    let silenced = monster.has(Condition::Silenced);
     kind.special.kind.is_some_and(|special| {
         let definition = crate::game::magic::effects::special(special);
         let summons = special.summons().is_none()
@@ -2273,8 +2262,7 @@ fn monster_turn(
         // One that can strike nobody, having no attack or, blind, nobody
         // in reach, withdraws (retail `UpdateMonsterAI`'s
         // `RETURN_TO_START`); a Monk fights blind.
-        let blind = body.conditions.iter().any(|&(c, _)| c == Condition::Blind)
-            && kind.kind != crate::content::species::MonsterKind::Monk;
+        let blind = body.blinded(kind);
         if matches!(decision, Decision::Fight { .. })
             && (kind.attacks.is_empty() || (blind && !reaches))
         {
@@ -2607,15 +2595,11 @@ fn spell_scene<'a>(
         };
     };
     let feet_at = feet(at.translation(), walker);
-    let eye = feet_at + Vec3::Y * body.body.eye_height;
+    let eye = body.eye(feet_at);
     let party = distance_to_party(party_eye, body, feet_at);
     // A fellow is in reach of its spell only along a clear line, as the
     // party is only where the caster sees it.
-    let clear = |to: Vec3| {
-        Dir3::new(to - eye).map_or(true, |direction| {
-            sight.obstacles.first_hit(eye, direction, eye.distance(to)).is_none()
-        })
-    };
+    let clear = |to: Vec3| sight.obstacles.clear(eye, to);
     monster_spells::Scene {
         caster,
         from: feet_at,
@@ -2636,7 +2620,7 @@ fn spell_scene<'a>(
                     return None;
                 }
                 let at = feet(at.translation(), walker);
-                if entity != caster && !clear(at + Vec3::Y * other.body.eye_height) {
+                if entity != caster && !clear(other.eye(at)) {
                     return None;
                 }
                 Some(monster_spells::Someone {

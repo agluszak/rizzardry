@@ -875,7 +875,7 @@ pub fn monster_aim(
         score -= target.armour_class(mode, surprise) * 5;
         score += (species_ssdi(species, &monster.enchantments) - target.ssdi) / 10;
     }
-    if monster.conditions.iter().any(|&(c, _)| c == Condition::Blind) && score > 10 {
+    if monster.has(Condition::Blind) && score > 10 {
         score = 10;
     }
     difficulty.for_monster(score, stance)

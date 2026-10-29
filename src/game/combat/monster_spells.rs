@@ -129,7 +129,7 @@ pub(super) fn monster_standing(monster: &Monster) -> Standing {
 /// `IsSpellUsableByMonster`): monsters may cast it, its effect is modelled
 /// here, its aim is one a monster takes, and a silence does not stop it.
 fn castable(spell: &SpellDefinition, caster: &Monster, kind: &Species) -> bool {
-    let silenced = caster.conditions.iter().any(|&(c, _)| c == Condition::Silenced);
+    let silenced = caster.has(Condition::Silenced);
     spell.monsters_cast
         && effects::modelled(spell.id)
         && !matches!(
@@ -309,7 +309,7 @@ fn victims(
                 return vec![];
             };
             let feet = crate::game::world::navigation::feet(at.translation(), walker);
-            (feet, feet + Vec3::Y * body.body.eye_height)
+            (feet, body.eye(feet))
         } else {
             (scene.party_at, party_eye)
         };

@@ -51,6 +51,37 @@ impl Monster {
     pub fn can_fight(&self) -> bool {
         crate::game::characters::can_fight(self.hp, &self.conditions)
     }
+
+    pub fn worst_condition(&self) -> Option<Condition> {
+        self.conditions.iter().map(|&(c, _)| c).max()
+    }
+
+    pub fn has(&self, condition: Condition) -> bool {
+        self.conditions.iter().any(|&(c, _)| c == condition)
+    }
+
+    /// Blindness takes its sight; a Monk fights on without it.
+    pub fn blinded(&self, kind: &crate::content::species::Species) -> bool {
+        self.has(Condition::Blind) && kind.kind != crate::content::species::MonsterKind::Monk
+    }
+
+    /// Its eyes, over its feet at `feet`.
+    pub fn eye(&self, feet: Vec3) -> Vec3 {
+        feet + Vec3::Y * self.body.eye_height
+    }
+
+    /// The gap between its body at `feet` and another's at `other_feet`,
+    /// less both fight radii, never below nothing (retail
+    /// `GetMonsterDistanceToMonster`).
+    pub fn gap(&self, feet: Vec3, other: &Monster, other_feet: Vec3) -> f32 {
+        (feet.distance(other_feet) - self.body.radius - other.body.radius).max(0.0)
+    }
+
+    /// Hurt enough to charge rather than walk up (retail `SetUpMonsterTurn`:
+    /// at 95% of its health or less).
+    pub fn charges(&self) -> bool {
+        self.hp * 100 <= self.max_hp * 95
+    }
 }
 
 /// A monster's effective gameplay body at the size it was rolled.
