@@ -1941,10 +1941,9 @@ fn submit_topic(
         }
         if let Some((_, session)) = views.owner(entity)
             && let Ok(c) = sessions.get(session)
+            && let Some(request) = submit.request(text, session, c.revision)
         {
-            if let Some(request) = submit.request(text, session, c.revision) {
-                requests.write(request);
-            }
+            requests.write(request);
         }
         commands.entity(entity).remove::<SubmitTopic>();
     }
