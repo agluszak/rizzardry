@@ -155,6 +155,7 @@ impl Plugin for PresentationPlugin {
             PostUpdate,
             (
                 party_voice::queue_device_remarks.run_if(crate::game::world::level::level_active),
+                party_voice::queue_dialogue_remarks.run_if(crate::game::world::level::level_active),
                 party_voice::play_device_remarks,
             )
                 .chain()

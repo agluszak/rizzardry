@@ -104,6 +104,21 @@ pub enum DialogueOp {
     },
     GiveGold(u32),
     GiveExperience(u32),
+    /// The party answers by typing one of these words, not by choosing.
+    KeywordInput(Vec<String>),
+    /// The dialogue closes and the NPC goes back to what it was doing.
+    CloseAndResume,
+    /// The named NPC, or this one, leaves the party if it is in it.
+    LeaveParty {
+        npc: Option<String>,
+    },
+    /// The named NPC's disposition toward the party changes.
+    AdjustDisposition {
+        npc: String,
+        delta: i8,
+    },
+    /// A party member remarks on the moment with this character event.
+    PartyRemark(u16),
     /// A change to a faction's standing. Retail ignores a name it does not
     /// know, such as the shipped `FACTION_HIGARDI`, so none is changed.
     AdjustFaction {

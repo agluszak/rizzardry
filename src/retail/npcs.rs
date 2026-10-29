@@ -87,6 +87,12 @@ fn operation(
             .map(|(_, s)| s.clone().ok_or_else(|| invalid("missing keyword")))
             .collect::<Result<Vec<_>, _>>()
     };
+    let named = || {
+        subs.first()
+            .and_then(|(_, text)| text.as_deref()?.get(4..))
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+    };
     // Retail's response chooser (`RunNpcScriptLine`, `SelectNpcQuoteResponse`):
     // mode 2 picks at random up to the bound; otherwise a bound of 4 hands
     // the dialogue to the NPC the first sub-entry names (its text past a
@@ -98,12 +104,8 @@ fn operation(
             }
             (2, _) => Err(invalid("empty random response range")),
             (_, 4) => {
-                let npc = subs
-                    .first()
-                    .and_then(|(_, text)| text.as_deref()?.get(4..))
-                    .filter(|name| !name.is_empty())
-                    .ok_or_else(|| invalid("speaker change without a speaker"))?;
-                Ok(Response::Speaker { npc: npc.to_owned(), quote: id(args[0])? })
+                let npc = named().ok_or_else(|| invalid("speaker change without a speaker"))?;
+                Ok(Response::Speaker { npc, quote: id(args[0])? })
             }
             _ => Ok(Response::Fixed(id(args[0])?)),
         }
@@ -152,6 +154,24 @@ fn operation(
             Ok(item) if kind == 9 => DialogueOp::GiveItem(item),
             Ok(item) if kind == 10 => DialogueOp::TakeItem(item),
             Ok(item) => DialogueOp::ItemQuote { item, keeps: kind == 11 },
+            Err(_) => unsupported(),
+        },
+        // Retail names the other NPC by its sub-entry past a four-character
+        // prefix (`ProcessNpcQuoteEntry`, `RunNpcScriptLine`).
+        13 | 21 if named().is_some() => {
+            let npc = named().unwrap();
+            if kind == 13 {
+                DialogueOp::LeaveParty { npc: Some(npc) }
+            } else {
+                // `ApplyNpcInteraction` passes the operand as a signed char.
+                DialogueOp::AdjustDisposition { npc, delta: args[0] as i8 }
+            }
+        }
+        14 => DialogueOp::CloseAndResume,
+        19 => DialogueOp::KeywordInput(words()?),
+        20 => DialogueOp::LeaveParty { npc: None },
+        24 => match u16::try_from(args[0]) {
+            Ok(event) => DialogueOp::PartyRemark(event),
             Err(_) => unsupported(),
         },
         16 if args[0] >= 0 => DialogueOp::GiveGold(args[0] as u32),
@@ -392,6 +412,31 @@ mod tests {
             }
         );
         assert!(matches!(operation(2, [5, 1, 4], vec![]).unwrap(), DialogueOp::Unsupported { .. }));
+    }
+
+    #[test]
+    fn decodes_world_actions_dispositions_remarks_and_keyword_questions() {
+        let named = || vec![(0, Some("NPC_Gadrock".into()))];
+        assert_eq!(
+            operation(13, [0, 0, 0], named()).unwrap(),
+            DialogueOp::LeaveParty { npc: Some("Gadrock".into()) }
+        );
+        assert_eq!(operation(20, [0, 0, 0], vec![]).unwrap(), DialogueOp::LeaveParty { npc: None });
+        assert_eq!(
+            operation(21, [0xf6, 0, 0], named()).unwrap(),
+            DialogueOp::AdjustDisposition { npc: "Gadrock".into(), delta: -10 },
+            "the operand is a signed char"
+        );
+        assert_eq!(operation(14, [0, 0, 0], vec![]).unwrap(), DialogueOp::CloseAndResume);
+        assert_eq!(operation(24, [511, 0, 0], vec![]).unwrap(), DialogueOp::PartyRemark(511));
+        assert_eq!(
+            operation(19, [0, 0, 0], vec![(0, Some("YES".into()))]).unwrap(),
+            DialogueOp::KeywordInput(vec!["YES".into()])
+        );
+        assert!(matches!(
+            operation(21, [5, 0, 0], vec![]).unwrap(),
+            DialogueOp::Unsupported { .. }
+        ));
     }
 
     #[test]

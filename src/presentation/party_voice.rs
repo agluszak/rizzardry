@@ -35,6 +35,8 @@ pub(super) struct PendingRemark {
     delay: Timer,
     audio: Option<(u16, Handle<AudioSource>)>,
     quotes: Option<Handle<TextTable>>,
+    /// Asked for by the conversation, which it does not wait out.
+    dialogue: bool,
 }
 #[derive(Component)]
 pub(super) struct PlayingRemark;
@@ -80,6 +82,48 @@ pub(super) fn queue_device_remarks(
                 delay: Timer::from_seconds(0.6, TimerMode::Once),
                 audio: None,
                 quotes: None,
+                dialogue: false,
+            },
+            ChildOf(*level),
+        ));
+    }
+}
+
+/// A party member remarks on the conversation (retail
+/// `PickRandomPartySpeaker`): someone awake other than the selected member,
+/// who becomes the selected member.
+pub(super) fn queue_dialogue_remarks(
+    mut commands: Commands,
+    mut remarks: MessageReader<crate::game::npcs::conversation::PartyRemark>,
+    roster: Single<&PartyRoster>,
+    members: Query<(&Character, &Vitals), Without<crate::game::npcs::Npc>>,
+    level: Single<Entity, With<Level>>,
+    mut selected: ResMut<super::main_screen::SelectedMember>,
+    mut rng: ResMut<PresentationRng>,
+) {
+    for remark in remarks.read() {
+        let candidates: Vec<_> = roster
+            .iter()
+            .filter(|&actor| selected.0 != Some(actor))
+            .filter_map(|actor| {
+                let (character, vitals) = members.get(actor).ok()?;
+                vitals.can_fight().then_some((actor, character))
+            })
+            .collect();
+        if candidates.is_empty() {
+            continue;
+        }
+        let (actor, character) = candidates[rng.0.random_range(0..candidates.len())];
+        selected.0 = Some(actor);
+        commands.spawn((
+            PendingRemark {
+                actor,
+                requested: remark.event,
+                stem: pc_voice_stem(character.gender, character.personality, character.voice),
+                delay: Timer::from_seconds(0.0, TimerMode::Once),
+                audio: None,
+                quotes: None,
+                dialogue: true,
             },
             ChildOf(*level),
         ));
@@ -102,7 +146,8 @@ pub(super) fn play_device_remarks(
     entering: Query<(), With<Destination>>,
     mut text: MessageWriter<SpokenRemark>,
 ) {
-    let mut busy = !speaking.is_empty() || !conversations.is_empty();
+    let mut busy = !speaking.is_empty();
+    let talking = !conversations.is_empty();
     for (entity, mut remark) in &mut pending {
         let vitals = members.get(remark.actor).ok();
         if !entering.is_empty()
@@ -115,7 +160,7 @@ pub(super) fn play_device_remarks(
         if !remark.delay.tick(time.delta()).is_finished() {
             continue;
         }
-        if busy {
+        if busy || (talking && !remark.dialogue) {
             commands.entity(entity).despawn();
             continue;
         }

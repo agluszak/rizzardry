@@ -1090,6 +1090,8 @@ const QUEST_ITEM: usize = 0x7ea;
 const ITEM_TAKEN_FROM: usize = 0x7ec;
 const ITEM_TAKEN: usize = 0x7ed;
 const QUEST_EXPERIENCE: usize = 0x232;
+/// What an NPC says, in turn, to a question it has nothing to say to.
+const NO_ANSWER: [usize; 2] = [1867, 1868];
 
 fn sync_transcript(
     views: ViewScope,
@@ -1109,10 +1111,17 @@ fn sync_transcript(
             .transcript
             .len()
             .saturating_sub(usize::from(matches!(c.wait, ConversationWait::Line { .. })));
+        let mut no_answers = 0;
         let mut lines: Vec<_> = c.transcript[..count]
             .iter()
             .map(|line| match line {
                 TranscriptLine::Npc(text) => (text.clone(), None),
+                // Retail alternates its two answers for having nothing to say.
+                TranscriptLine::NoAnswer { npc } => {
+                    no_answers += 1;
+                    let string = NO_ANSWER[(no_answers - 1) % NO_ANSWER.len()];
+                    (strings.get(string).replacen("%s", npc, 1), None)
+                }
                 TranscriptLine::Question(text) => (text.clone(), Some("palettebronze")),
                 TranscriptLine::Reply(text) => (text.clone(), Some("palettegreen")),
                 // Retail shows gifts and removals in the NPC's own quote.
@@ -1137,6 +1146,8 @@ fn sync_transcript(
                     Some("palettegreen"),
                 ),
             })
+            // A recording without a line ("SOUND") shows nothing.
+            .filter(|(text, _)| !text.is_empty())
             .collect();
         if let ConversationWait::Blocked { quote, entry, reason } = &c.wait {
             lines.push((
@@ -1488,7 +1499,8 @@ fn sync_choices(
         let Some((_, session)) = views.owner(list) else { continue };
         let Ok(c) = sessions.get(session) else { continue };
         let answers: Vec<(String, Answer)> = match &c.wait {
-            ConversationWait::Options { words, .. } => {
+            // A typed answer goes through the topic input instead.
+            ConversationWait::Options { words, typed: false, .. } => {
                 words.iter().map(|w| (w.clone(), Answer::Reply(w.clone()))).collect()
             }
             ConversationWait::Price { .. } => vec![
@@ -2027,10 +2039,12 @@ fn submit_topic(
         if let Some((_, session)) = views.owner(entity)
             && let Ok(c) = sessions.get(session)
         {
-            requests.write(ConversationRequest::Topic {
-                conversation: session,
-                revision: c.revision,
-                text: text.value().to_string(),
+            let text = text.value().to_string();
+            // Retail's keyword dialog: a question the party answers by typing.
+            requests.write(if matches!(c.wait, ConversationWait::Options { typed: true, .. }) {
+                ConversationRequest::Reply { conversation: session, revision: c.revision, text }
+            } else {
+                ConversationRequest::Topic { conversation: session, revision: c.revision, text }
             });
         }
         commands.entity(entity).remove::<SubmitTopic>();
@@ -2038,14 +2052,26 @@ fn submit_topic(
 }
 fn play_lines(
     mut commands: Commands,
-    lines: Query<(Entity, &ConversationSpeech), Without<bevy::audio::AudioPlayer>>,
+    lines: Query<(Entity, &ConversationSpeech), Added<ConversationSpeech>>,
     assets: Res<AssetServer>,
 ) {
     for (e, line) in &lines {
-        commands.entity(e).insert((
-            bevy::audio::AudioPlayer::new(assets.load(super::voice::voice_path(&line.voice))),
-            bevy::audio::PlaybackSettings::ONCE,
-        ));
+        if let Some(voice) = &line.voice {
+            commands.entity(e).insert((
+                bevy::audio::AudioPlayer::new(assets.load(super::voice::voice_path(voice))),
+                bevy::audio::PlaybackSettings::ONCE,
+            ));
+        }
+        // Retail `SpeakNpcSubquote`: the alert chime, while the line waits
+        // out its text, not the sound.
+        if line.alert {
+            commands.spawn((
+                bevy::audio::AudioPlayer::new(
+                    assets.load("retail://data/sound/npcs/dialogue alert.wav"),
+                ),
+                bevy::audio::PlaybackSettings::DESPAWN,
+            ));
+        }
     }
 }
 fn watch_playback(

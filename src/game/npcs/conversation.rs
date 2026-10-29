@@ -127,7 +127,7 @@ fn fact(world: &World, id: FactId) -> Result<u8, String> {
 #[derive(Debug)]
 enum Step {
     Quote { quote: u16, subquote: usize, paid: bool, plan: Option<QuotePlan> },
-    Options { quote: u16, words: Vec<String> },
+    Options { quote: u16, words: Vec<String>, typed: bool },
     Price { quote: u16, gold: u32, always: bool },
     End,
 }
@@ -140,10 +140,27 @@ pub enum LinePhase {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ConversationWait {
     Ready,
-    Line { speech: Entity, phase: LinePhase },
-    Options { quote: u16, words: Vec<String> },
-    Price { quote: u16, gold: u32, always: bool },
-    Blocked { quote: u16, entry: Option<usize>, reason: String },
+    Line {
+        speech: Entity,
+        phase: LinePhase,
+    },
+    /// The party answers with one of `words`, choosing it, or typing it
+    /// when `typed`.
+    Options {
+        quote: u16,
+        words: Vec<String>,
+        typed: bool,
+    },
+    Price {
+        quote: u16,
+        gold: u32,
+        always: bool,
+    },
+    Blocked {
+        quote: u16,
+        entry: Option<usize>,
+        reason: String,
+    },
 }
 /// Accepted dialogue history, including the party's input. Presentation chooses
 /// the retail palette without guessing speakers from the text.
@@ -153,6 +170,11 @@ pub enum TranscriptLine {
     Question(String),
     Reply(String),
     Reward(QuestReward),
+    /// The NPC has nothing to say to the question (retail strings 1867 and
+    /// 1868, in turn).
+    NoAnswer {
+        npc: String,
+    },
 }
 /// Committed outcomes, not commands. Presentation supplies retail wording.
 #[derive(Clone, Debug, PartialEq)]
@@ -214,8 +236,18 @@ impl Conversation {
 /// to progress: the default wait is the original text-duration fallback.
 #[derive(Component, Debug)]
 pub struct ConversationSpeech {
-    pub voice: String,
+    /// The line's recording, if it has one to wait on.
+    pub voice: Option<String>,
     pub text: String,
+    /// An alert line: the alert chime and the text, without a recording.
+    pub alert: bool,
+}
+/// A party member remarks on the conversation with this character event
+/// (retail `QueueCharacterEvent` for `PickRandomPartySpeaker`); presentation
+/// picks who and plays it.
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PartyRemark {
+    pub event: u16,
 }
 #[derive(Clone, Copy, Debug)]
 pub enum PlaybackEvent {
@@ -324,6 +356,12 @@ fn active_body(world: &World, actor: Entity) -> Option<Entity> {
 const WILLING_DISPOSITION: u8 = 0x42;
 /// The script's quote asking the price of a paid topic.
 const PRICE_QUOTE: u16 = 0x12;
+/// The quotes that may answer with nothing to say, the quotes a line that
+/// does not know answers with at random, and the one for a line that will
+/// not say (retail `SpeakNpcSubquote`).
+const NO_ANSWER_QUOTES: std::ops::RangeInclusive<u16> = 0x67..=0x69;
+const UNKNOWN_QUOTES: [u16; 2] = [0x1c, 0x1d];
+const CLASSIFIED_QUOTE: u16 = 0x1e;
 /// The script's quote for a party that cannot pay.
 const TOO_POOR_QUOTE: u16 = 0x14;
 fn available(world: &World, actor: Entity) -> bool {
@@ -475,24 +513,26 @@ fn select_response(response: &Response, rng: &mut GameRng) -> Option<u16> {
         Response::Speaker { .. } => None,
     }
 }
+/// The NPC a script names by its display name (retail `FindNpcStateByName`).
+fn npc_named(world: &World, name: &str) -> Option<Entity> {
+    let assets = world.resource::<NpcAssets>();
+    let catalog = world.resource::<Assets<NpcCatalog>>().get(&assets.catalog)?;
+    world.iter_entities().find_map(|e| {
+        let npc = e.get::<Npc>()?;
+        catalog
+            .get(npc.definition)
+            .is_some_and(|d| d.display_name.eq_ignore_ascii_case(name))
+            .then(|| e.id())
+    })
+}
 /// Another NPC takes over the conversation and says `quote` of its own
 /// script (retail `ProcessNpcQuoteEntry` for a response naming a speaker).
 /// Retail finds the NPC by display name among those it knows; when none
 /// answers to it, the conversation simply waits for the party.
 fn hand_over(world: &mut World, entity: Entity, name: &str, quote: u16) {
-    let assets = world.resource::<NpcAssets>();
-    let Some(catalog) = world.resource::<Assets<NpcCatalog>>().get(&assets.catalog) else {
-        return;
-    };
-    let speaker = world.iter_entities().find_map(|e| {
-        let npc = e.get::<Npc>()?;
-        catalog
-            .get(npc.definition)
-            .is_some_and(|d| d.display_name.eq_ignore_ascii_case(name))
-            .then(|| (e.id(), npc.definition))
-    });
-    let Some((speaker, id)) = speaker else { return };
-    let Some(script) = assets.scripts.get(&id).cloned() else {
+    let Some(speaker) = npc_named(world, name) else { return };
+    let id = world.get::<Npc>(speaker).unwrap().definition;
+    let Some(script) = world.resource::<NpcAssets>().scripts.get(&id).cloned() else {
         let mut c = world.get_mut::<Conversation>(entity).unwrap();
         block(&mut c, quote, None, format!("{name}'s script unavailable"));
         return;
@@ -524,11 +564,13 @@ enum QuoteEffect {
     Faction { faction: Faction, delta: i8 },
     GiveItem { party: Entity, item: ItemId },
     TakeItem { party: Entity, item: ItemId },
+    Disposition { npc: Entity, delta: i8 },
+    PartyRemark(u16),
 }
 #[derive(Debug)]
 enum Continuation {
     Quote(Response),
-    Options(Vec<String>),
+    Options { words: Vec<String>, typed: bool },
     End,
 }
 fn plan_quote(
@@ -538,15 +580,6 @@ fn plan_quote(
 ) -> Result<QuotePlan, (usize, String)> {
     let story = world.resource::<StoryFacts>();
     let catalog = fact_catalog(world);
-    if q.alert {
-        return Err((0, "unported alert presentation".into()));
-    }
-    if q.text
-        .iter()
-        .any(|text| ["UNKNOWN", "CLASSIFIED", "SOUND"].iter().any(|s| text.eq_ignore_ascii_case(s)))
-    {
-        return Err((0, "unported quote sentinel".into()));
-    }
     let mut writes = BTreeMap::new();
     let mut plan = QuotePlan { effects: Vec::new(), following: None };
     for (i, op) in q.operations.iter().enumerate() {
@@ -638,9 +671,29 @@ fn plan_quote(
                 break;
             }
             DialogueOp::Options(words) => {
-                plan.following = Some(Continuation::Options(words.clone()));
+                plan.following = Some(Continuation::Options { words: words.clone(), typed: false });
                 break;
             }
+            DialogueOp::KeywordInput(words) => {
+                plan.following = Some(Continuation::Options { words: words.clone(), typed: true });
+                break;
+            }
+            // Retail closes without reading the quote's later entries.
+            DialogueOp::CloseAndResume => {
+                plan.following = Some(Continuation::End);
+                break;
+            }
+            // Retail `DismissNpcFromParty` acts only on an NPC in the party,
+            // and none can join it yet (#117). For any other NPC the action
+            // only locks and releases the world cursor.
+            DialogueOp::LeaveParty { .. } => {}
+            // An NPC no one answers to is left alone, as in retail.
+            DialogueOp::AdjustDisposition { npc, delta } => {
+                if let Some(npc) = npc_named(world, npc) {
+                    plan.effects.push(QuoteEffect::Disposition { npc, delta: *delta });
+                }
+            }
+            DialogueOp::PartyRemark(event) => plan.effects.push(QuoteEffect::PartyRemark(*event)),
             DialogueOp::Mention { category, text } => {
                 plan.effects.push(QuoteEffect::Mention(*category, text.clone()))
             }
@@ -669,6 +722,8 @@ fn executable(world: &World, plan: &QuotePlan, offered: Option<(Entity, ItemRef)
                 && GameData::items(world).is_some_and(|catalog| catalog.get(*item).is_some())
         }
         QuoteEffect::TakeItem { party, .. } => world.get::<PartyInventory>(*party).is_some(),
+        QuoteEffect::Disposition { npc, .. } => world.get::<Npc>(*npc).is_some(),
+        QuoteEffect::PartyRemark(_) => true,
     });
     present && exchange_fits(world, plan, offered)
 }
@@ -779,7 +834,7 @@ fn commit_quote(world: &mut World, entity: Entity, quote: u16, plan: QuotePlan) 
                 paid: false,
                 plan: None,
             },
-            Continuation::Options(words) => Step::Options { quote, words },
+            Continuation::Options { words, typed } => Step::Options { quote, words, typed },
             Continuation::End => Step::End,
         };
         world.get_mut::<Conversation>(entity).unwrap().queue.push_front(next);
@@ -861,6 +916,15 @@ fn commit_effects(world: &mut World, entity: Entity, effects: Vec<QuoteEffect>) 
                         .push(TranscriptLine::Reward(QuestReward::Taken { member }));
                 }
             }
+            // Retail `AdjustNpcDisposition`, clamped to 0..99.
+            QuoteEffect::Disposition { npc, delta } => {
+                let mut npc = world.get_mut::<Npc>(npc).unwrap();
+                npc.disposition =
+                    (i16::from(npc.disposition) + i16::from(delta)).clamp(0, 99) as u8;
+            }
+            QuoteEffect::PartyRemark(event) => {
+                world.write_message(PartyRemark { event });
+            }
             QuoteEffect::Faction { faction, delta } => {
                 // Retail announces it in the text box, not the dialogue.
                 if let Some(news) = world.resource_mut::<Factions>().adjust(faction, delta) {
@@ -905,9 +969,9 @@ fn run_script(world: &mut World, entity: Entity, script: &DialogueScript, party:
                 world.get_mut::<Conversation>(entity).unwrap().queue.push_front(Step::End);
                 return;
             }
-            Step::Options { quote, words } => {
+            Step::Options { quote, words, typed } => {
                 let mut c = world.get_mut::<Conversation>(entity).unwrap();
-                c.wait = ConversationWait::Options { quote, words };
+                c.wait = ConversationWait::Options { quote, words, typed };
                 c.revision += 1;
                 return;
             }
@@ -985,12 +1049,6 @@ fn run_script(world: &mut World, entity: Entity, script: &DialogueScript, party:
                     })
                 }
                 let text = q.text.get(subquote).cloned().unwrap_or_default();
-                if text.is_empty()
-                    || text.eq_ignore_ascii_case("EMPTY")
-                    || text.eq_ignore_ascii_case("BLANK")
-                {
-                    continue;
-                }
                 let Ok(def) = definition(world, actor) else {
                     block(
                         &mut world.get_mut::<Conversation>(entity).unwrap(),
@@ -1000,18 +1058,56 @@ fn run_script(world: &mut World, entity: Entity, script: &DialogueScript, party:
                     );
                     return;
                 };
-                let suffix = if subquote == 0 {
-                    String::new()
-                } else {
-                    char::from(b'a' + (subquote - 1) as u8).to_string()
-                };
-                let voice = format!("{}_{quote:03}{suffix}", def.voice_stem());
+                // Retail `SpeakNpcSubquote`: an alert line is shown with the
+                // alert chime and no recording; otherwise a few words stand
+                // for something other than a line.
+                let is = |word: &str| text.eq_ignore_ascii_case(word);
+                let voice =
+                    if q.alert {
+                        None
+                    } else if text.is_empty() {
+                        continue;
+                    } else if is("EMPTY") || is("BLANK") {
+                        // The answer to a question it has nothing to say to.
+                        if (NO_ANSWER_QUOTES).contains(&quote) {
+                            let npc = def.source_name.clone();
+                            let mut c = world.get_mut::<Conversation>(entity).unwrap();
+                            c.transcript.push(TranscriptLine::NoAnswer { npc });
+                        }
+                        continue;
+                    } else if is("UNKNOWN") || is("CLASSIFIED") {
+                        let next = if is("CLASSIFIED") {
+                            CLASSIFIED_QUOTE
+                        } else if world.resource_mut::<GameRng>().below(100) < 50 {
+                            UNKNOWN_QUOTES[0]
+                        } else {
+                            UNKNOWN_QUOTES[1]
+                        };
+                        world.get_mut::<Conversation>(entity).unwrap().queue.push_back(
+                            Step::Quote { quote: next, subquote: 0, paid: false, plan: None },
+                        );
+                        continue;
+                    } else {
+                        let suffix = if subquote == 0 {
+                            String::new()
+                        } else {
+                            char::from(b'a' + (subquote - 1) as u8).to_string()
+                        };
+                        Some(format!("{}_{quote:03}{suffix}", def.voice_stem()))
+                    };
+                // "SOUND" plays its recording without showing a line.
+                let text = if is("SOUND") && !q.alert { String::new() } else { text };
                 let seconds = text.encode_utf16().count() as f32 * 0.06 + 2.0;
-                let line = TranscriptLine::Npc(text.clone());
-                let speech =
-                    world.spawn((ConversationSpeech { voice, text }, ChildOf(entity))).id();
+                let speech = world
+                    .spawn((
+                        ConversationSpeech { voice, text: text.clone(), alert: q.alert },
+                        ChildOf(entity),
+                    ))
+                    .id();
+                // The line being spoken is always the transcript's last; one
+                // with no text is not shown.
                 let mut c = world.get_mut::<Conversation>(entity).unwrap();
-                c.transcript.push(line);
+                c.transcript.push(TranscriptLine::Npc(text));
                 c.wait = ConversationWait::Line {
                     speech,
                     phase: LinePhase::Text { remaining: seconds },
@@ -1118,7 +1214,7 @@ fn give(world: &mut World, entity: Entity, item: ItemRef) -> Result<(), TradeErr
 fn reply(world: &mut World, entity: Entity, text: &str) {
     let c = world.get::<Conversation>(entity).unwrap();
     let Some(script) = script(world, c) else { return };
-    if let ConversationWait::Options { quote, words } = &c.wait {
+    if let ConversationWait::Options { quote, words, .. } = &c.wait {
         let matched = words.iter().any(|w| w.eq_ignore_ascii_case(text));
         let Some(entries) = script.quotes.get(usize::from(*quote)).map(|q| &q.operations) else {
             return;
@@ -1935,6 +2031,145 @@ mod tests {
         }
     }
 
+    fn lines(texts: &[&str], operations: Vec<DialogueOp>) -> Quote {
+        Quote { text: texts.iter().map(|t| (*t).into()).collect(), operations, ..default() }
+    }
+
+    /// Retail closes after the line and reads none of the quote's later entries.
+    #[test]
+    fn close_and_resume_ends_after_the_line_without_later_entries() {
+        let (mut app, session, _) = app(DialogueScript {
+            quotes: vec![lines(
+                &["Off I go"],
+                vec![DialogueOp::CloseAndResume, DialogueOp::GiveGold(5)],
+            )],
+            ..default()
+        });
+        let party = the_party(app.world_mut()).unwrap();
+        app.update();
+        finish_line(&mut app, session);
+        assert!(app.world().get::<Conversation>(session).is_none());
+        assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, 0);
+    }
+
+    /// Retail's keyword dialog: the party types the answer, matched as a
+    /// chosen one would be (`FindNpcReplyQuote`).
+    #[test]
+    fn a_keyword_question_is_answered_by_typing() {
+        let (mut app, session, _) = app(DialogueScript {
+            quotes: vec![
+                lines(
+                    &["The password?"],
+                    vec![
+                        DialogueOp::KeywordInput(vec!["SWORDFISH".into()]),
+                        DialogueOp::Reply { response: 1, role: 3, words: vec!["SWORDFISH".into()] },
+                        DialogueOp::Reply { response: 2, role: 2, words: vec![] },
+                    ],
+                ),
+                lines(&["Enter"], vec![]),
+                lines(&["Wrong"], vec![]),
+            ],
+            ..default()
+        });
+        app.update();
+        finish_line(&mut app, session);
+        let c = app.world().get::<Conversation>(session).unwrap();
+        assert!(matches!(c.wait, ConversationWait::Options { typed: true, .. }));
+        let revision = c.revision;
+        app.world_mut().write_message(ConversationRequest::Reply {
+            conversation: session,
+            revision,
+            text: "swordfish".into(),
+        });
+        app.update();
+        assert_eq!(app.world().get::<Conversation>(session).unwrap().current, Some((1, 0)));
+    }
+
+    /// Retail `ApplyNpcInteraction` mode 4: the named NPC's disposition moves,
+    /// clamped to 0..99; a name no NPC answers to changes nothing. A party
+    /// remark goes to presentation; leaving the party touches no one who is
+    /// not in it.
+    #[test]
+    fn scripts_move_another_npcs_disposition_and_ask_for_a_party_remark() {
+        let (mut app, session, _) = app(DialogueScript {
+            quotes: vec![lines(
+                &["There"],
+                vec![
+                    DialogueOp::AdjustDisposition { npc: "gadrock".into(), delta: 30 },
+                    DialogueOp::AdjustDisposition { npc: "Nobody".into(), delta: -30 },
+                    DialogueOp::LeaveParty { npc: Some("Gadrock".into()) },
+                    DialogueOp::LeaveParty { npc: None },
+                    DialogueOp::PartyRemark(511),
+                ],
+            )],
+            ..default()
+        });
+        app.add_message::<PartyRemark>();
+        let other = second_speaker(&mut app, "Gadrock", DialogueScript::default());
+        app.update();
+        let world = app.world();
+        assert!(!matches!(
+            world.get::<Conversation>(session).unwrap().wait,
+            ConversationWait::Blocked { .. }
+        ));
+        assert_eq!(world.get::<Npc>(other).unwrap().disposition, 99);
+        let remarks = world.resource::<Messages<PartyRemark>>();
+        assert_eq!(
+            remarks.iter_current_update_messages().copied().collect::<Vec<_>>(),
+            [PartyRemark { event: 511 }]
+        );
+    }
+
+    /// Retail `SpeakNpcSubquote`'s stand-ins: a line it does not know answers
+    /// with one of two quotes at random, one it will not say with another, a
+    /// recording plays without a line, and nothing to say becomes the NPC's
+    /// own words where retail has them; an alert is shown with its chime.
+    #[test]
+    fn quote_stand_ins_and_alerts_speak_as_retail_does() {
+        let mut quotes: Vec<_> =
+            (0..0x6a).map(|i| lines(&[format!("Line {i}").as_str()], vec![])).collect();
+        quotes[1] = lines(&["UNKNOWN"], vec![]);
+        quotes[2] = lines(&["classified"], vec![]);
+        quotes[3] = lines(&["SOUND"], vec![]);
+        quotes[4] = Quote { alert: true, ..lines(&["Beware"], vec![]) };
+        quotes[0x67] = lines(&["EMPTY"], vec![]);
+        let (mut app, session, _) = app(DialogueScript { quotes, ..default() });
+        app.update();
+        finish_line(&mut app, session);
+        let speech = |app: &App| {
+            let c = app.world().get::<Conversation>(session).unwrap();
+            let ConversationWait::Line { speech, .. } = c.wait else { panic!("a line") };
+            let line = app.world().get::<ConversationSpeech>(speech).unwrap();
+            (c.current.unwrap().0, line.voice.clone(), line.text.clone(), line.alert)
+        };
+        let ask = |app: &mut App, quote: u16| {
+            let mut c = app.world_mut().get_mut::<Conversation>(session).unwrap();
+            c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false, plan: None });
+            app.update();
+        };
+        ask(&mut app, 1);
+        assert!(UNKNOWN_QUOTES.contains(&speech(&app).0));
+        finish_line(&mut app, session);
+        ask(&mut app, 2);
+        assert_eq!(speech(&app).0, CLASSIFIED_QUOTE);
+        finish_line(&mut app, session);
+        ask(&mut app, 3);
+        let (_, voice, text, _) = speech(&app);
+        assert!(voice.is_some() && text.is_empty(), "a recording without a line");
+        finish_line(&mut app, session);
+        ask(&mut app, 4);
+        assert_eq!(speech(&app), (4, None, "Beware".into(), true));
+        finish_line(&mut app, session);
+        ask(&mut app, 0x67);
+        assert!(
+            app.world()
+                .get::<Conversation>(session)
+                .unwrap()
+                .transcript
+                .contains(&TranscriptLine::NoAnswer { npc: "Speaker".into() })
+        );
+    }
+
     /// Fill the party's items to `rows` full, unmergeable stacks of item 0.
     fn fill_pool(app: &mut App, rows: usize) -> Entity {
         let party = the_party(app.world_mut()).unwrap();
@@ -2493,6 +2728,7 @@ mod tests {
             c.wait = ConversationWait::Options {
                 quote: ASKED_ABOUT_ARNIKA,
                 words: vec!["YES".into(), "NO".into()],
+                typed: false,
             };
         }
         app.world_mut().write_message(ConversationRequest::Reply {
