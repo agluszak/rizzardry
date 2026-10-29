@@ -66,6 +66,9 @@ fn with_data(app: &mut App) {
     world.insert_resource(GameData { items, loot, species, spells });
     // Required body metadata is available without a visual asset or renderer.
     let body = world.resource_mut::<Assets<MonsterBody>>().add(MonsterBody::default());
+    for mut destination in world.query::<&mut Destination>().iter_mut(world) {
+        destination.bodies.0.insert(0, body.clone());
+    }
     world.insert_resource(CrabBody(body));
 }
 
