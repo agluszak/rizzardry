@@ -605,9 +605,9 @@ impl Character {
         }
     }
 
-    /// Effective attribute: no modifiers are modelled yet, so the base,
-    /// within retail's 1..=125.
-    pub fn attribute(&self, attribute: Attribute) -> u32 {
+    /// The attribute without enchantments, within retail's 1..=125; its
+    /// [`CharacterStats::attribute`] adds them.
+    fn base_attribute(&self, attribute: Attribute) -> u32 {
         u32::from(self.attributes[attribute]).clamp(1, 125)
     }
 
@@ -801,7 +801,7 @@ impl Character {
         item.professions.contains(self.profession)
             && item.races.contains(self.race)
             && item.genders.contains(self.gender)
-            && item.attribute_minimums.iter().all(|(a, &m)| self.attribute(a) >= u32::from(m))
+            && item.attribute_minimums.iter().all(|(a, &m)| self.base_attribute(a) >= u32::from(m))
             && item.skill_minimums.iter().all(|(s, &m)| self.skill(s) >= u32::from(m))
     }
 }
@@ -851,7 +851,7 @@ impl CharacterStats<'_> {
     }
     pub fn attribute(&self, attribute: Attribute) -> u32 {
         let bonus = self.enchantments.map_or(0, |e| e.attribute_bonus(attribute));
-        (self.profile.attribute(attribute) + bonus).min(125)
+        (self.profile.base_attribute(attribute) + bonus).min(125)
     }
     /// `round(Σ (0.6 + 0.008·VIT) × factor × levels)`, counting one extra
     /// level for the original profession.

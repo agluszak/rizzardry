@@ -57,7 +57,7 @@ pub struct Identified {
 /// three for each of its kind they have seen beyond its level, a tenth of
 /// their Intelligence, and their Mythology.
 pub fn recognition(
-    member: &Character,
+    member: &crate::game::characters::CharacterStats<'_>,
     knowledge: &MonsterKnowledge,
     species: u32,
     level: u8,
@@ -192,7 +192,8 @@ impl GroupRecognition<'_, '_> {
                     if !vitals.lucid() {
                         continue;
                     }
-                    let score = recognition(profile, knowledge, species_id, species.level);
+                    let stats = profile.stats(&vitals.enchantments);
+                    let score = recognition(&stats, knowledge, species_id, species.level);
                     let roll = rng.below(100) as i32;
                     if roll < score
                         && best.as_ref().is_none_or(|(_, margin)| score - roll > *margin)
@@ -267,9 +268,9 @@ mod tests {
         bishop.skill_points[Skill::Mythology] = 10;
         let mythology = bishop.skill(Skill::Mythology) as i32;
         // A level 8 kind never seen: 24 below, and 6 from Intelligence.
-        assert_eq!(recognition(&bishop, &knowledge, 62, 8), mythology + 6 - 24);
+        assert_eq!(recognition(&bishop.base_stats(), &knowledge, 62, 8), mythology + 6 - 24);
         knowledge.seen.insert(62, 10);
-        assert_eq!(recognition(&bishop, &knowledge, 62, 8), mythology + 6 + 6);
+        assert_eq!(recognition(&bishop.base_stats(), &knowledge, 62, 8), mythology + 6 + 6);
     }
 
     #[test]

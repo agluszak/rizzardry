@@ -548,7 +548,7 @@ pub(super) fn refresh(
             .to_owned(),
             Value::Attribute(a) => {
                 if session.choices.race {
-                    profile.attribute(a).to_string()
+                    profile.base_stats().attribute(a).to_string()
                 } else {
                     String::new()
                 }

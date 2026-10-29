@@ -809,7 +809,9 @@ pub(super) fn layout_skills(
     }
     for (bar, mut crop) in &mut bars {
         let (start, end) = match *bar {
-            Bar::Attribute(attribute) => (0.0, profile.attribute(attribute).min(125) as f32),
+            Bar::Attribute(attribute) => {
+                (0.0, profile.base_stats().attribute(attribute).min(125) as f32)
+            }
             Bar::SkillBase(skill) => (
                 0.0,
                 u32::from(profile.skill_points[skill]).min(profile.skill(skill)).min(125) as f32,

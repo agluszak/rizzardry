@@ -919,7 +919,9 @@ fn notices(
         return true;
     }
     // Retail compares unsigned: once senses fall short, noticing is certain.
-    let senses = character.attribute(crate::content::characters::Attribute::Senses) as i32;
+    let senses = character
+        .stats(&vitals.enchantments)
+        .attribute(crate::content::characters::Attribute::Senses) as i32;
     let chance = (senses - *attempts as i32 * 25) as u32;
     *attempts += 1;
     rng.below(100) < chance

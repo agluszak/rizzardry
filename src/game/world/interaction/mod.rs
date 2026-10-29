@@ -308,7 +308,7 @@ pub fn force_chance(
     tumblers: usize,
     setting: Difficulty,
 ) -> Option<u32> {
-    let strength = character.attribute(Attribute::Strength);
+    let strength = character.stats(&vitals.enchantments).attribute(Attribute::Strength);
     if !vitals.can_act() || vitals.stamina < FORCE_STAMINA || strength <= FORCE_STRENGTH {
         return None;
     }

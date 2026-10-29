@@ -839,7 +839,8 @@ pub fn hurt(rng: &mut GameRng, world: &mut Field, victim: Victim, amount: u32) -
                 world.party_damage,
             );
             if lost > 0 && !vitals.is_dead() {
-                vitals.conditions.wake_on_hit(character.attribute(Attribute::Senses), rng);
+                let senses = character.stats(&vitals.enchantments).attribute(Attribute::Senses);
+                vitals.conditions.wake_on_hit(senses, rng);
             }
             let outcome = DamageOutcome { damage: lost, died: vitals.is_dead(), experience: 0 };
             Some(Effect::Damaged { victim, outcome })
@@ -1667,9 +1668,9 @@ pub fn resolve(
             }
             // Retail lifts Dead with health and stamina at
             // `max·((PIE + VIT) >> 2)/100`, at least 1.
-            let share = (character.attribute(Attribute::Piety)
-                + character.attribute(Attribute::Vitality))
-                >> 2;
+            let stats = character.stats(&vitals.enchantments);
+            let share =
+                (stats.attribute(Attribute::Piety) + stats.attribute(Attribute::Vitality)) >> 2;
             vitals.hp = (character.stats(&vitals.enchantments).max_hp() * share / 100).max(1);
             vitals.stamina =
                 (character.stats(&vitals.enchantments).max_stamina() * share / 100).max(1);

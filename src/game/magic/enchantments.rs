@@ -385,12 +385,12 @@ mod tests {
         effects.apply(effect(crate::content::spells::SpellId::SUPERMAN, 2, 2));
         assert_eq!(
             profile.stats(&effects).attribute(Attribute::Speed),
-            profile.attribute(Attribute::Speed) + 40
+            profile.base_stats().attribute(Attribute::Speed) + 40
         );
         effects.age(2);
         assert_eq!(
             profile.stats(&effects).attribute(Attribute::Speed),
-            profile.attribute(Attribute::Speed) + 30
+            profile.base_stats().attribute(Attribute::Speed) + 30
         );
         assert_eq!(effects.counter_slow(8), 5);
         assert!(effects.0.is_empty());

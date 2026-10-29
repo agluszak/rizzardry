@@ -1332,7 +1332,7 @@ mod tests {
         assert_eq!(bow_hand.dice, arrows.damage);
         assert_eq!(bow_hand.effects.chances[AttackEffect::Poison], 10);
         // The bow's own base is a damage bonus: +20%, with strength's.
-        let strength = ranger.attribute(Attribute::Strength) as i32;
+        let strength = ranger.base_stats().attribute(Attribute::Strength) as i32;
         let from_strength = match strength {
             ..50 => -(50 - strength),
             50 => 0,

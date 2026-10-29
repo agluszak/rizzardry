@@ -118,7 +118,11 @@ pub fn toggle_search(
 /// Scouting (a quarter while running) plus a bonus rising with Senses, at
 /// most 100. Without search mode only rangers search; while running, those
 /// without Scouting score nothing.
-pub fn search_score(member: &Character, search_mode: bool, running: bool) -> u32 {
+pub fn search_score(
+    member: &crate::game::characters::CharacterStats<'_>,
+    search_mode: bool,
+    running: bool,
+) -> u32 {
     if member.profession != Profession::Ranger && !search_mode {
         return 0;
     }
@@ -167,8 +171,10 @@ pub fn search_pulse(
     let (from, forward) = (PartyBody::eye(position), body.forward());
     let running = movement.running;
     let mut best: Option<(u32, &Character)> = None;
-    for (member, _) in members.iter_many(roster.iter()).matched().filter(|(_, v)| v.can_act()) {
-        let score = search_score(member, search.on(battle.is_some()), running);
+    for (member, vitals) in members.iter_many(roster.iter()).matched().filter(|(_, v)| v.can_act())
+    {
+        let stats = member.stats(&vitals.enchantments);
+        let score = search_score(&stats, search.on(battle.is_some()), running);
         if score > best.map_or(0, |b| b.0) {
             best = Some((score, member));
         }
@@ -272,10 +278,10 @@ mod tests {
         // Half of Scouting 20 (plus the ranger's bonus, if Scouting is it)
         // and Senses 60's bonus of 10 + 10 / 3.
         let base = ranger.skill(Skill::Scouting) / 2;
-        assert_eq!(search_score(&ranger, false, false), base + 13);
-        assert_eq!(search_score(&fighter, false, false), 0);
+        assert_eq!(search_score(&ranger.base_stats(), false, false), base + 13);
+        assert_eq!(search_score(&fighter.base_stats(), false, false), 0);
         // In search mode anyone searches by Senses alone, but not running.
-        assert!(search_score(&fighter, true, false) > 0);
-        assert_eq!(search_score(&fighter, true, true), 0);
+        assert!(search_score(&fighter.base_stats(), true, false) > 0);
+        assert_eq!(search_score(&fighter.base_stats(), true, true), 0);
     }
 }
