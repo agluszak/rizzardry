@@ -313,8 +313,12 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
             } else {
                 Stance::Friendly
             };
+            // Checked before payment for elementals that walk; one that
+            // stands needs none.
             let navigation = LevelNavigation {
-                archipelagos: world.get::<LevelNavigation>(root).unwrap().archipelagos.clone(),
+                archipelagos: world
+                    .get::<LevelNavigation>(root)
+                    .map_or_else(Vec::new, |nav| nav.archipelagos.clone()),
             };
             let catalog = world.resource::<GameData>().species.clone();
             let (group, spawned) = world.resource_scope(
