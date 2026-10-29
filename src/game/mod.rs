@@ -44,6 +44,7 @@ impl Plugin for GamePlugin {
             .init_resource::<factions::Factions>()
             .init_resource::<difficulty::Difficulty>()
             .add_message::<inventory::ItemNews>()
+            .add_observer(inventory::operations::put_away_held)
             .add_systems(Startup, data::load_game_data)
             .configure_sets(
                 Update,
