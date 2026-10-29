@@ -964,6 +964,94 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     assert_eq!(app.world().get::<ActorId>(actor), Some(&ActorId::Named(NpcId(0))));
 }
 
+/// A slain NPC gives up what it carries, not its species' treasure, pays
+/// its purse once, and its world role never comes back.
+#[test]
+fn a_slain_npc_gives_up_what_it_carries_and_never_returns() {
+    use bevy::ecs::system::RunSystemOnce;
+    use rizzardry::content::items::{Dice, ItemId, LootTable};
+    use rizzardry::content::npcs::{
+        DialogueScript, FactCatalog, NpcCatalog, NpcDefinition, NpcId, Quote,
+    };
+    use rizzardry::game::inventory::PartyInventory;
+    use rizzardry::game::npcs::{Npc, NpcAssets, NpcBodies};
+    use rizzardry::game::world::damage::MonsterDamage;
+    use rizzardry::game::world::items::{GroundLoot, WorldItem};
+    let mut app = app();
+    with_data(&mut app);
+    let data = app.world().resource::<GameData>();
+    let (species, loot) = (data.species.clone(), data.loot.clone());
+    app.world_mut().resource_mut::<Assets<MonsterCatalog>>().get_mut(&species).unwrap().0[0].npc =
+        Some(NpcId(0));
+    app.world_mut().resource_mut::<Assets<LootTables>>().get_mut(&loot).unwrap().0 =
+        vec![LootTable {
+            name: "Pockets".into(),
+            entries: vec![(ItemId(1), 0), (ItemId(2), 5), (ItemId(3), 5)],
+            level_scaled: false,
+            item_count: Dice { count: 0, sides: 0, base: 1 },
+            gold: default(),
+        }];
+    let catalog =
+        app.world_mut().resource_mut::<Assets<NpcCatalog>>().add(NpcCatalog(vec![NpcDefinition {
+            source_name: "Fixture".into(),
+            disposition: 80,
+            item_table: Some(0),
+            gold: 25,
+            ..default()
+        }]));
+    let facts = app.world_mut().resource_mut::<Assets<FactCatalog>>().add(FactCatalog::default());
+    let script = app.world_mut().resource_mut::<Assets<DialogueScript>>().add(DialogueScript {
+        quotes: vec![Quote { text: vec!["Greeting".into()], ..default() }],
+        ..default()
+    });
+    app.insert_resource(NpcAssets { catalog, facts, scripts: [(NpcId(0), script)].into() });
+    let source = spawn_level(&mut app, floor());
+    app.update();
+    assert!(is_played(&app, source));
+    let actor = app.world_mut().query::<(Entity, &Npc)>().single(app.world()).unwrap().0;
+    let body = app.world().get::<NpcBodies>(actor).unwrap()[0];
+    let party =
+        app.world_mut().query_filtered::<Entity, With<Party>>().single(app.world()).unwrap();
+    let strike = move |damage: MonsterDamage,
+                       mut purses: Query<&mut PartyInventory>,
+                       mut rng: ResMut<GameRng>| {
+        let mut damage = damage;
+        damage.apply(body, 1000, 1, &mut purses.get_mut(party).unwrap(), &mut rng).unwrap()
+    };
+    let killed = app.world_mut().run_system_once(strike).unwrap();
+    assert!(killed.died);
+    let npc = app.world().get::<Npc>(actor).unwrap();
+    assert!(npc.dead);
+    assert!(npc.possessions.items.is_empty());
+    assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, 25);
+    let mut dropped: Vec<_> = app
+        .world_mut()
+        .query::<&WorldItem>()
+        .iter(app.world())
+        .flat_map(|lying| match &lying.loot {
+            GroundLoot::Loose(item) => vec![item.item],
+            GroundLoot::Pile { contents, .. } => contents.iter().map(|item| item.item).collect(),
+        })
+        .collect();
+    dropped.sort();
+    assert_eq!(dropped.len(), 2, "the sure item and one draw: {dropped:?}");
+    assert_eq!(dropped[0], ItemId(1));
+    // The corpse pays nothing more.
+    let again = app.world_mut().run_system_once(strike).unwrap();
+    assert!(!again.died);
+    assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, 25);
+    // Away and back: the NPC stays dead and out of the world.
+    let away = spawn_level(&mut app, floor());
+    app.update();
+    assert!(is_played(&app, away));
+    let back = spawn_level(&mut app, floor());
+    app.update();
+    assert!(is_played(&app, back));
+    assert_eq!(app.world().get::<NpcBodies>(actor).unwrap()[0], body);
+    assert!(app.world().get::<bevy::ecs::entity_disabling::Disabled>(body).is_some());
+    assert_eq!(app.world_mut().query::<&Npc>().iter(app.world()).count(), 1);
+}
+
 #[test]
 fn a_rendered_entry_waits_for_its_looks_and_fails_without_them() {
     use rizzardry::game::world::level::PresentationReadiness;

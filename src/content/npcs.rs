@@ -22,6 +22,10 @@ pub struct NpcDefinition {
     pub accepted_classes: enumset::EnumSet<super::items::EquipClass>,
     pub voice_script: bool,
     pub stock: Vec<StockRule>,
+    /// The loot table whose entries the NPC carries, if any.
+    pub item_table: Option<u16>,
+    /// The purse the party gets when the NPC dies.
+    pub gold: u32,
 }
 impl NpcDefinition {
     pub fn script_path(&self) -> String {

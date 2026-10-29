@@ -134,7 +134,7 @@ pub fn populate(
     root: Entity,
     geometry: &LevelDefinition,
     remembered: Option<LevelRecord>,
-    (species, items): (&MonsterCatalog, &ItemCatalog),
+    (species, items, tables): (&MonsterCatalog, &ItemCatalog, &crate::content::items::LootTables),
     (map, npcs): (&str, &mut crate::game::npcs::NpcPopulation),
     (handles, bodies): (&HashMap<u32, Handle<MonsterBody>>, &Assets<MonsterBody>),
     (navigation, configs): (&LevelNavigation, &mut Assets<WalkerMotionConfig>),
@@ -182,7 +182,7 @@ pub fn populate(
         let Some(kind) = species.kind(placed.species) else { continue };
         let Some(id) = kind.npc else { continue };
         let body = bodies.get(&handles[&placed.species]).unwrap();
-        let place = crate::game::npcs::Placing { placed, id, map, average };
+        let place = crate::game::npcs::Placing { placed, tables, id, map, average };
         let Some(actor) = npcs.place(commands, place, items, &mut placed_actors, rng, |rng| {
             KeptMonster::rolled(placed, kind, body, rng)
         }) else {

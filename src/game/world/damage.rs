@@ -34,8 +34,6 @@ pub enum DamageRefusal {
     MissingTarget,
     InactiveLevel,
     MissingContent,
-    /// NPC death uses its own retained-character and loot rules, not monster tables.
-    UnsupportedNpcDeath,
 }
 
 /// Monsters in play, changed only through its operations. [`apply`] is
@@ -59,6 +57,11 @@ pub struct MonsterDamage<'w, 's> {
         ),
     >,
     levels: Query<'w, 's, (), With<Level>>,
+    /// The NPCs whose world roles are among the monsters.
+    npcs: (
+        Query<'w, 's, &'static crate::game::npcs::NpcBody>,
+        Query<'w, 's, &'static mut crate::game::npcs::Npc>,
+    ),
     commands: Commands<'w, 's>,
     content: crate::game::data::Content<'w>,
     ids: ResMut<'w, ItemIds>,
@@ -118,7 +121,8 @@ impl<'w, 's> MonsterDamage<'w, 's> {
     }
 
     /// Hurt a monster; a kill drops its loot and pays its gold into the
-    /// party's purse.
+    /// party's purse. An NPC's kill is its death: it gives up what it
+    /// carries rather than its species' treasure, and never returns.
     pub fn apply(
         &mut self,
         target: Entity,
@@ -142,14 +146,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         if monster.is_dead() || amount == 0 {
             return Ok(DamageOutcome::default());
         }
-        // A Guardian Angel's absorption counts before the NPC-death refusal,
-        // and is spent only once the hit is allowed.
-        let mut enchantments = monster.enchantments.clone();
-        let amount = enchantments.absorb(amount);
-        if amount >= monster.hp && kind.npc.is_some() {
-            return Err(DamageRefusal::UnsupportedNpcDeath);
-        }
-        monster.enchantments = enchantments;
+        let amount = monster.enchantments.absorb(amount);
         if amount == 0 {
             return Ok(DamageOutcome::default());
         }
@@ -189,8 +186,14 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         self.commands.entity(target).remove_with_requires::<Crossing>();
         // The kill counts against its faction (retail `RecordFactionOffense`).
         self.factions.record_offence(kind.faction, kind.npc.is_some());
-        let (found, gold) =
-            crate::game::loot::monster_loot(kind, tables, catalog, party_level, rng);
+        let npc = self.npcs.0.get(target).ok().and_then(|body| self.npcs.1.get_mut(body.0).ok());
+        let (found, gold) = match npc {
+            Some(mut npc) => {
+                npc.dead = true;
+                npc.possessions.give_up(catalog, rng)
+            }
+            None => crate::game::loot::monster_loot(kind, tables, catalog, party_level, rng),
+        };
         if gold > 0 {
             purse.gold += gold;
         }

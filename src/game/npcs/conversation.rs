@@ -1149,6 +1149,7 @@ mod tests {
                 greeting_pending: true,
                 paid_topics: vec![],
                 stock: default(),
+                ..default()
             },))
             .id();
         w.spawn((

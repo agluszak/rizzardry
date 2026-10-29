@@ -846,6 +846,7 @@ mod tests {
                 greeting_pending: false,
                 paid_topics: vec![],
                 stock: default(),
+                ..default()
             })
             .id();
         crate::game::party::roster::test_join(&mut world, rpc);

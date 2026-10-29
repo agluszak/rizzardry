@@ -651,7 +651,7 @@ pub fn activate_level(
             root,
             geometry,
             remembered,
-            (species, items),
+            (species, items, loot),
             (&level.path, &mut npcs),
             (&shared.monster_bodies.0, &shared.bodies),
             (&navigation, &mut shared.motion_configs),

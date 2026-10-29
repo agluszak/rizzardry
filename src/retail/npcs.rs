@@ -63,6 +63,9 @@ pub fn read_npcs(data: &[u8]) -> Result<NpcCatalog, LoadError> {
             accepted_classes: enumset::EnumSet::from_repr_truncated(u32_at(r, 0x2d6)?),
             voice_script: r[0x2ea] != 0,
             stock,
+            // One-based; zero carries nothing.
+            item_table: u16::try_from(i32_at(r, 0x64)?).ok().and_then(|id| id.checked_sub(1)),
+            gold: u32::try_from(i32_at(r, 0x2eb)?).unwrap_or(0),
         });
     }
     if b.remaining() != 0 {
