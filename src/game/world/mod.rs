@@ -84,10 +84,7 @@ impl Plugin for WorldPlugin {
                     (handle_world_requests, crate::game::automap::commit_notes)
                         .after(crate::game::GameplaySet::Stats)
                         .before(crate::game::GameplaySet::Combat),
-                    (search::toggle_search, search::search_pulse)
-                        .chain()
-                        .run_if(level::level_active)
-                        .after(level::activate_level),
+                    search::toggle_search.run_if(level::level_active).after(level::activate_level),
                 ),
             )
             .add_systems(
@@ -95,7 +92,9 @@ impl Plugin for WorldPlugin {
                 props::animate_props
                     .before(navigation::links::sync_door_links)
                     .run_if(level::level_active),
-            );
+            )
+            // Sweeps follow gameplay time, however many steps a frame runs.
+            .add_systems(FixedUpdate, search::search_pulse.run_if(level::level_active));
     }
 }
 

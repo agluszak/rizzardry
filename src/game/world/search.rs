@@ -139,9 +139,10 @@ pub fn search_score(member: &Character, search_mode: bool, running: bool) -> u32
     score.min(100)
 }
 
-/// The half-second sweep (retail `RunSearchPulse`): each hidden item
-/// within the search radius, in front of the eye and in its sight, is
-/// spotted by the best searcher if it lies within their range.
+/// The half-second sweep (retail `RunSearchPulse`), on the fixed gameplay
+/// step: each hidden item within the search radius, in front of the eye and
+/// in its sight, is spotted by the best searcher if it lies within their
+/// range.
 pub fn search_pulse(
     time: Res<Time>,
     mut search: ResMut<Search>,
@@ -260,6 +261,62 @@ mod tests {
         app.update();
         assert!(!on(&app, false));
         assert!(news(&mut app).is_empty());
+    }
+
+    /// The same game time sweeps as often, and draws the same chances,
+    /// whether a frame runs one fixed step or many.
+    #[test]
+    fn sweeps_follow_game_time_not_frames() {
+        use crate::content::items::{ItemDefinition, ItemId};
+        use crate::game::inventory::{ItemIds, ItemStack};
+        use crate::game::magic::enchantments::{Enchantment, PartyEffects};
+        use crate::game::rng::GameRng;
+        use std::time::Duration;
+        let run = |frame: Duration| {
+            let mut app = App::new();
+            app.add_plugins(MinimalPlugins)
+                .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(frame))
+                .insert_resource(Time::<Fixed>::from_duration(Duration::from_millis(125)))
+                .init_resource::<avian3d::collider_tree::ColliderTrees>()
+                .insert_resource(Search { requested: true, ..default() })
+                .insert_resource(GameRng::seeded(5))
+                .add_message::<SearchNews>()
+                .add_systems(FixedUpdate, search_pulse);
+            app.world_mut().resource_mut::<Time<Virtual>>().set_max_delta(Duration::from_secs(10));
+            let world = app.world_mut();
+            let party = crate::game::party::roster::test_party(world, &[]);
+            world.entity_mut(party).insert((PartyBody::default(), Position(Vec3::ZERO)));
+            world.get_mut::<PartyEffects>(party).unwrap().0.apply(Enchantment {
+                spell: crate::content::spells::SpellId::DETECT_SECRETS,
+                power: 5,
+                boost: 0,
+                turns: 100,
+                absorption: 0,
+            });
+            let profile = Character::new("Scout", Race::Human, Gender::Male, Profession::Fighter);
+            let member = world.spawn((Vitals::new(&profile), profile)).id();
+            crate::game::party::roster::test_join(world, member);
+            let definition = ItemDefinition { id: ItemId(1), ..default() };
+            let stack = ItemStack::new(&definition, &mut ItemIds::default(), 1, true);
+            let ahead =
+                PartyBody::eye(&Position(Vec3::ZERO)) + PartyBody::default().forward() * 5.0;
+            let item = world
+                .spawn((WorldItem::loose(stack, true), Transform::from_translation(ahead)))
+                .id();
+            while app.world().resource::<Time<Virtual>>().elapsed() < Duration::from_secs(2) {
+                app.update();
+            }
+            let hidden = app.world().get::<WorldItem>(item).unwrap().hidden;
+            (app.world().resource::<GameRng>().clone(), hidden)
+        };
+        // Two seconds are four sweeps, each drawing the spell's chance.
+        let mut expected = GameRng::seeded(5);
+        for _ in 0..4 {
+            expected.below(2);
+        }
+        for frame in [Duration::from_millis(125), Duration::from_secs(2)] {
+            assert_eq!(run(frame), (expected.clone(), false), "frames of {frame:?}");
+        }
     }
 
     #[test]
