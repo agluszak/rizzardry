@@ -177,18 +177,7 @@ pub struct SourceTargeting<'w, 's> {
 impl SourceTargeting<'_, '_> {
     pub fn of(&self, caster: Entity, source: Source) -> Option<Targeting> {
         let (spells, items) = (self.content.spells()?, self.content.items()?);
-        let id = match source {
-            Source::Spell { spell, .. } => spell,
-            Source::Item(id) => {
-                let stack = self.carried.get(caster).ok()?.find_stack(id)?;
-                items.get(stack.item)?.spell?.spell
-            }
-            Source::PoolItem(id) => {
-                let pool = self.pool.single().ok()?;
-                let stack = pool.pool.stacks.iter().find(|stack| stack.id == id)?;
-                items.get(stack.item)?.spell?.spell
-            }
-        };
+        let id = source.spell_id(self.carried.get(caster).ok(), self.pool.single().ok()?, items)?;
         Some(spells.get(id)?.targeting)
     }
 }
