@@ -567,8 +567,9 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
         .ok()
         .flatten()
         .ok_or(TradeError::Unavailable)?;
-    let eye = crate::game::party::body::PartyBody::eye_in(world)
-        .filter(|eye| eye.distance(at) <= crate::game::world::items::REACH)
+    let party_at = crate::game::party::body::PartyBody::eye_in(world)
+        .map(crate::game::party::body::PartyBody::centre)
+        .filter(|centre| centre.distance(at) <= crate::game::world::items::REACH)
         .ok_or(TradeError::Unavailable)?;
     if !available(world, actor) {
         return Err(TradeError::Unavailable);
@@ -650,7 +651,7 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
     })?;
     // OpenNpcDialoguePanel / MonsterForwardReferencePosition: the accepted
     // speaker faces the party. Physics rotation owns a moving body's facing.
-    crate::game::world::face(world, body, eye);
+    crate::game::world::face(world, body, party_at);
     Ok(world.spawn(Conversation { menu, ..conversation(quote(greeting)) }).id())
 }
 /// Travel ends the conversation; the speaker stays.
