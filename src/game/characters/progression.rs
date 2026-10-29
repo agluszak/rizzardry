@@ -451,9 +451,7 @@ impl Progression<'_, '_> {
         let old_max = magic::max_points(&old, &known, spells);
         let new_max = magic::max_points(&new, &learned, spells);
         (v.hp, v.stamina) = (hp, stamina);
-        for realm in EnumSet::<Realm>::all() {
-            points.current[realm] = resized(points.current[realm], old_max[realm], new_max[realm]);
-        }
+        points.adjust_limits(&old_max, &new_max);
         *c = next;
         *known = learned;
         *carried = equipment;
@@ -842,7 +840,7 @@ mod tests {
             w.resource::<Assets<SpellCatalog>>().get(&handle).unwrap(),
         );
         let mana = w.get::<SpellPoints>(member).unwrap();
-        assert_eq!(mana.current[Realm::Divine], maximum[Realm::Divine] - 2);
+        assert_eq!(mana.current[Realm::Divine], i64::from(maximum[Realm::Divine]) - 2);
         assert_eq!(mana.fraction[Realm::Divine], 0.25);
         assert_eq!(learned.0, [SpellId::ACID_SPLASH, SpellId::BLESS].into());
         assert_eq!(c.spell_picks.total(), 0);

@@ -283,7 +283,7 @@ mod pass_time_tests {
                 species: default(),
             });
             let mut mana = SpellPoints::full(boosted);
-            mana.current[Realm::Divine] -= 2;
+            mana.current[Realm::Divine] = 1;
             let actor = app.world_mut().spawn((profile, vitals, learned, mana)).id();
             crate::game::party::roster::test_party(app.world_mut(), &[actor]);
             let data = app.world_mut().remove_resource::<GameData>().unwrap();
@@ -312,7 +312,18 @@ mod pass_time_tests {
                     .is_none()
             );
             let result = app.world().get::<SpellPoints>(actor).unwrap().clone();
-            assert_eq!(result.current[Realm::Divine], normal[Realm::Divine] - 2);
+            assert_eq!(
+                result.current[Realm::Divine],
+                1 + i64::from(normal[Realm::Divine]) - i64::from(boosted[Realm::Divine])
+            );
+            assert!(result.current[Realm::Divine] < 0, "expiry retains the oversized deficit");
+            let mut restored = result.clone();
+            restored.adjust_limits(&normal, &boosted);
+            assert_eq!(
+                restored.current[Realm::Divine],
+                1,
+                "restoring capacity grants no free mana"
+            );
             assert!(result.fraction[Realm::Divine] > 0.0);
             // Missing content cannot invent a zero maximum and erase live points.
             app.world_mut().remove_resource::<GameData>();

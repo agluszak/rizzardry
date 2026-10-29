@@ -1500,7 +1500,8 @@ pub fn resolve(
                         if maximum == 0 {
                             return None;
                         }
-                        pool.current.values().sum::<u32>() * 100 / maximum
+                        pool.current.values().map(|&value| value.max(0) as u32).sum::<u32>() * 100
+                            / maximum
                     };
                     (percent < 100).then_some((m, percent))
                 })
@@ -1701,8 +1702,8 @@ pub(crate) fn pulse_clouds(
                         match victim {
                             Victim::Member(member) => {
                                 if let Ok((_, mut mana)) = points.get_mut(member) {
-                                    for remaining in mana.current.values_mut() {
-                                        *remaining = remaining.saturating_sub(amount);
+                                    for realm in enumset::EnumSet::<Realm>::all() {
+                                        mana.drain_realm(realm, amount);
                                     }
                                 }
                                 if let Ok((_, mut vitals, ..)) = world.members.get_mut(member) {

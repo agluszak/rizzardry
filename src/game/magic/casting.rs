@@ -847,7 +847,7 @@ pub fn perform(
         // An auto cast tries again while it fizzles, and auto recast goes on
         // until its victim is whole, while stamina and points last.
         let stamina = world.members.get(caster).map_or(0, |(_, v, ..)| v.stamina);
-        let left = points.get(caster).map_or(0, |(_, p)| spell.realm.map_or(0, |r| p.current[r]));
+        let left = points.get(caster).map_or(0, |(_, p)| spell.realm.map_or(0, |r| p.available(r)));
         let again = auto
             && stamina > u32::from(spell.level)
             && left >= spell.cost
@@ -995,7 +995,7 @@ fn pay(
         None => {
             let (_, mut pool) = points.get_mut(caster).map_err(|_| Refusal::NotLearned)?;
             let realm = spell.realm.ok_or(Refusal::MissingContent)?;
-            pool.current[realm] = pool.current[realm].saturating_sub(spell.cost_at(power));
+            pool.current[realm] -= i64::from(spell.cost_at(power));
             super::cast_fatigue(spell, power)
         }
         Some(use_) => {

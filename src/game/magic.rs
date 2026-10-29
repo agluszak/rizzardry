@@ -78,13 +78,24 @@ pub fn skill_available(
 /// derived with [`max_points`] at use, including after timed effects expire.
 #[derive(Component, Clone, Debug, Default, PartialEq)]
 pub struct SpellPoints {
-    pub current: EnumMap<Realm, u32>,
+    pub current: EnumMap<Realm, i64>,
     pub fraction: EnumMap<Realm, f32>,
 }
 
 impl SpellPoints {
     pub fn full(maximum: EnumMap<Realm, u32>) -> Self {
-        SpellPoints { current: maximum, ..default() }
+        SpellPoints { current: maximum.map(|_, value| i64::from(value)), ..default() }
+    }
+
+    /// Availability is nonnegative, but capacity changes retain signed debt.
+    pub fn available(&self, realm: Realm) -> u32 {
+        self.current[realm].clamp(0, i64::from(u32::MAX)) as u32
+    }
+
+    pub fn drain_realm(&mut self, realm: Realm, amount: u32) -> u32 {
+        let taken = amount.min(self.available(realm));
+        self.current[realm] -= i64::from(taken);
+        taken
     }
 
     /// Drain randomly chosen realms, at most fifty draws (retail
@@ -96,8 +107,7 @@ impl SpellPoints {
                 break;
             }
             let realm = Realm::try_from(rng.below(6) as u8).unwrap();
-            let taken = remaining.min(self.current[realm]);
-            self.current[realm] -= taken;
+            let taken = self.drain_realm(realm, remaining);
             remaining -= taken;
         }
         amount - remaining
@@ -109,7 +119,7 @@ impl SpellPoints {
     pub fn restore_evenly(&mut self, amount: u32, maximum: &EnumMap<Realm, u32>) -> u32 {
         let mut deficits: Vec<_> = maximum
             .iter()
-            .map(|(realm, &max)| (realm, max.saturating_sub(self.current[realm])))
+            .map(|(realm, &max)| (realm, (i64::from(max) - self.current[realm]).max(0)))
             .collect();
         deficits.sort_by_key(|&(_, missing)| std::cmp::Reverse(missing));
         let mut restored = 0;
@@ -131,11 +141,7 @@ impl SpellPoints {
     /// `RebuildRealmSpellPointCeilings` does. Fractional recovery is history.
     pub fn adjust_limits(&mut self, before: &EnumMap<Realm, u32>, after: &EnumMap<Realm, u32>) {
         for (realm, &maximum) in after {
-            self.current[realm] = if maximum >= before[realm] {
-                self.current[realm].saturating_add(maximum - before[realm])
-            } else {
-                self.current[realm].saturating_sub(before[realm] - maximum)
-            };
+            self.current[realm] += i64::from(maximum) - i64::from(before[realm]);
         }
     }
 
@@ -145,7 +151,7 @@ impl SpellPoints {
         if spell.cost == 0 {
             return MAX_POWER;
         }
-        (self.current[realm] / spell.cost).min(u32::from(MAX_POWER)) as u8
+        (self.available(realm) / spell.cost).min(u32::from(MAX_POWER)) as u8
     }
 
     /// Recover over `ticks` aging ticks at `(0.65·max + 20)/240` per tick
@@ -153,15 +159,15 @@ impl SpellPoints {
     /// retain their current points and clear fractional recovery.
     pub fn recover(&mut self, ticks: u32, scale: f32, maximum: &EnumMap<Realm, u32>) {
         for (realm, &max) in maximum {
-            if max == 0 || self.current[realm] >= max {
+            if max == 0 || self.current[realm] >= i64::from(max) {
                 self.fraction[realm] = 0.0;
                 continue;
             }
             self.fraction[realm] += ticks as f32 * (0.65 * max as f32 + 20.0) / 240.0 * scale;
             let whole = self.fraction[realm].trunc();
             self.fraction[realm] -= whole;
-            self.current[realm] = (self.current[realm] + whole as u32).min(max);
-            if self.current[realm] >= max {
+            self.current[realm] = (self.current[realm] + whole as i64).min(i64::from(max));
+            if self.current[realm] >= i64::from(max) {
                 self.fraction[realm] = 0.0;
             }
         }
@@ -984,7 +990,7 @@ mod tests {
         assert_eq!((points.current[Realm::Fire], points.current[Realm::Water]), (7, 1));
         assert_eq!(points.current[Realm::Air], 0);
         assert_eq!(points.restore_evenly(100, &maximum), 10);
-        assert_eq!(points.current, maximum);
+        assert_eq!(points.current, maximum.map(|_, value| i64::from(value)));
         assert_eq!(points.fraction[Realm::Fire], 0.75);
         assert_eq!(points.restore_evenly(5, &maximum), 0);
     }
@@ -1159,6 +1165,26 @@ mod tests {
                 _ => unreachable!(),
             }
         }
+    }
+
+    #[test]
+    fn lowered_capacity_keeps_debt_until_the_capacity_returns() {
+        let mut high = EnumMap::default();
+        high[Realm::Divine] = 20;
+        let mut low = high;
+        low[Realm::Divine] = 10;
+        let mut points = SpellPoints::full(high);
+        points.current[Realm::Divine] = 1;
+        points.fraction[Realm::Divine] = 0.5;
+        points.adjust_limits(&high, &low);
+        assert_eq!(points.current[Realm::Divine], -9);
+        assert_eq!(points.available(Realm::Divine), 0);
+        assert_eq!(points.drain_realm(Realm::Divine, 5), 0);
+        let spell = SpellDefinition { realm: Some(Realm::Divine), cost: 1, ..default() };
+        assert_eq!(points.affordable_power(&spell), 0);
+        points.adjust_limits(&low, &high);
+        assert_eq!(points.current[Realm::Divine], 1);
+        assert_eq!(points.fraction[Realm::Divine], 0.5);
     }
 
     #[test]

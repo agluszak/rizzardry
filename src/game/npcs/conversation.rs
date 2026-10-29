@@ -423,6 +423,10 @@ pub fn approach_ready(at: Option<u64>, now: u64) -> bool {
 /// Allied party NPCs are not yet represented.
 pub fn disposition(world: &World, actor: Entity) -> i32 {
     let Some(npc) = world.get::<Npc>(actor) else { return 0 };
+    standing(world, actor, npc.disposition)
+}
+/// [`disposition`] were the NPC's own `disposition` this.
+fn standing(world: &World, actor: Entity, disposition: u8) -> i32 {
     let turned = active_body(world, actor)
         .and_then(|body| world.get::<Monster>(body))
         .is_some_and(|m| m.conditions.iter().any(|(c, _)| *c == Condition::Turncoat));
@@ -430,7 +434,7 @@ pub fn disposition(world: &World, actor: Entity) -> i32 {
         .try_query::<&Conversation>()
         .and_then(|mut q| q.iter(world).find_map(|c| c.charms.get(&actor).copied()))
         .unwrap_or(0);
-    let own = if turned { 100 } else { i32::from(npc.disposition.wrapping_add(charm as u8)) };
+    let own = if turned { 100 } else { i32::from(disposition.wrapping_add(charm as u8)) };
     let (Ok(def), Some(factions)) = (definition(world, actor), world.get_resource::<Factions>())
     else {
         return own;
@@ -443,7 +447,10 @@ pub fn disposition(world: &World, actor: Entity) -> i32 {
 }
 /// Retail `GetNpcDispositionBand`: hostile under 0x21, friendly from 0x42.
 pub fn band(world: &World, actor: Entity) -> Band {
-    match disposition(world, actor) {
+    band_of(disposition(world, actor))
+}
+fn band_of(disposition: i32) -> Band {
+    match disposition {
         d if d < 0x21 => Band::Hostile,
         d if d < 0x42 => Band::Neutral,
         _ => Band::Friendly,
@@ -667,13 +674,46 @@ pub(crate) fn end_conversations(
     mut commands: Commands,
 ) {
     for conversation in &conversations {
-        commands.entity(conversation).despawn();
+        commands.queue(move |world: &mut World| close_one(world, conversation));
     }
 }
+/// Travel, battle or the speaker's absence ends a conversation at once.
+/// Retail's message queue would still play the answers already under way,
+/// a paid answer or an accepted hand-in among them, so their effects commit
+/// as it ends; only their lines are lost.
 fn close_one(world: &mut World, entity: Entity) {
-    if world.get::<Conversation>(entity).is_some() {
-        world.despawn(entity);
+    let Some(c) = world.get::<Conversation>(entity) else { return };
+    // Closing removes the view, not ownership of an exchange already paid for.
+    // Retain every accepted plan until the whole settlement can run. The
+    // unavailable-speaker/battle path retries this operation on later updates.
+    let accepted = c.queue.iter().any(|step| matches!(step, Step::Quote { plan: Some(_), .. }));
+    if accepted && definition(world, c.actor).is_err()
+        || c.queue.iter().any(|step| match step {
+            Step::Quote { plan: Some(plan), .. } => !executable(world, plan),
+            _ => false,
+        })
+    {
+        if !c.charms.is_empty() {
+            world.get_mut::<Conversation>(entity).unwrap().charms.clear();
+        }
+        if world.get::<Closing>(entity).is_none() {
+            world.entity_mut(entity).insert(Closing);
+        }
+        return;
     }
+    let mut c = world.get_mut::<Conversation>(entity).unwrap();
+    let plans: Vec<_> = c
+        .queue
+        .drain(..)
+        .filter_map(|step| match step {
+            Step::Quote { plan: Some(plan), .. } => Some(plan),
+            _ => None,
+        })
+        .collect();
+    for plan in plans {
+        commit_effects(world, entity, plan.effects);
+    }
+    world.despawn(entity);
 }
 /// The party has left the dialogue while its lines were still queued.
 /// Retail keeps its message queue when the dialogue closes, so they play out
@@ -1479,17 +1519,22 @@ const LEAST_BRIBE: u32 = 300;
 /// what the NPC will take. Once that runs out an NPC not yet friendly warms
 /// to the party, and the pool fills again.
 fn debit_trade_pool(world: &mut World, actor: Entity, price: u32) {
+    let (pool, disposition) = debited(world, actor, price);
+    let mut npc = world.get_mut::<Npc>(actor).unwrap();
+    (npc.trade_pool, npc.disposition) = (pool, disposition);
+}
+/// The NPC's trade pool and own disposition once a bribe of `price` is
+/// debited, without debiting it.
+fn debited(world: &mut World, actor: Entity, price: u32) -> (u16, u8) {
     let level = party_communication(world);
     let adjusted = price.wrapping_add(level * ((price & 0xffff) / 5) / 100);
     let refill = definition(world, actor).map_or(0, |d| d.trade_pool);
     let cold = band(world, actor) != Band::Friendly;
-    let mut npc = world.get_mut::<Npc>(actor).unwrap();
-    npc.trade_pool = npc.trade_pool.saturating_sub(adjusted as u16);
-    if npc.trade_pool == 0 {
-        if cold {
-            npc.disposition = 0x4b;
-        }
-        npc.trade_pool = refill;
+    let npc = world.get::<Npc>(actor).unwrap();
+    match npc.trade_pool.saturating_sub(adjusted as u16) {
+        0 if cold => (refill, 0x4b),
+        0 => (refill, npc.disposition),
+        pool => (pool, npc.disposition),
     }
 }
 /// A bribe that wins the NPC over from the topic menu turns it to its
@@ -1538,6 +1583,8 @@ fn give(world: &mut World, entity: Entity, item: ItemRef) -> Result<(), TradeErr
     // as a bribe, valued by the whole stack offered, and keeps it whatever
     // it says.
     let bribe = !voiced && band(world, actor) != Band::Friendly;
+    // A bribe is debited only with the item it buys.
+    let mut debit = None;
     let (quote, keeps) = match answer {
         _ if bribe && crucial => (REFUSED_GIFT_QUOTE, false),
         _ if bribe
@@ -1547,8 +1594,9 @@ fn give(world: &mut World, entity: Entity, item: ItemRef) -> Result<(), TradeErr
         }
         Some((quote, _)) if bribe => (quote, true),
         None if bribe => {
-            debit_trade_pool(world, actor, value);
-            let warmed = band(world, actor) == Band::Friendly;
+            let after = debited(world, actor, value);
+            debit = Some(after);
+            let warmed = band_of(standing(world, actor, after.1)) == Band::Friendly;
             (if warmed { ACCEPTED_GIFT_QUOTE } else { UNBRIBED_QUOTE }, true)
         }
         Some(answer) => answer,
@@ -1571,6 +1619,10 @@ fn give(world: &mut World, entity: Entity, item: ItemRef) -> Result<(), TradeErr
             return Err(TradeError::StaleSelection);
         }
         items.store(world, party);
+        if let Some((pool, disposition)) = debit {
+            let mut npc = world.get_mut::<Npc>(actor).unwrap();
+            (npc.trade_pool, npc.disposition) = (pool, disposition);
+        }
     }
     let mut c = world.get_mut::<Conversation>(entity).unwrap();
     c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false, plan });
@@ -1711,6 +1763,16 @@ fn answer_price(world: &mut World, entity: Entity, accept: bool) {
                         return;
                     }
                 };
+                // Nothing is charged for an answer that cannot commit.
+                if !executable(world, &plan) {
+                    block(
+                        &mut world.get_mut::<Conversation>(entity).unwrap(),
+                        quote,
+                        None,
+                        "accepted reward recipient unavailable".into(),
+                    );
+                    return;
+                }
                 world.get_mut::<PartyInventory>(party).unwrap().gold -= gold;
                 if !always {
                     world.get_mut::<Npc>(actor).unwrap().paid_topics.push(quote);
@@ -2773,6 +2835,47 @@ mod tests {
         );
     }
 
+    /// Retail `HandleNpcDialogueItem` pairs a bribe's debit with taking the
+    /// item: an answer that cannot run keeps the item and leaves the NPC's
+    /// trade pool and disposition as they were.
+    #[test]
+    fn an_item_bribe_is_debited_only_with_the_item() {
+        for runs in [false, true] {
+            let (mut app, session, actor) = wary((0, 0), 100);
+            with_items(&mut app);
+            let items = app.world().resource::<GameData>().items.clone();
+            app.world_mut().resource_mut::<Assets<ItemCatalog>>().get_mut(&items).unwrap().0[1]
+                .value = 400;
+            if !runs {
+                let script = app.world().get::<Conversation>(session).unwrap().script.clone();
+                let mut scripts = app.world_mut().resource_mut::<Assets<DialogueScript>>();
+                scripts.get_mut(&script).unwrap().quotes[usize::from(ACCEPTED_GIFT_QUOTE)] =
+                    lines(&["Thanks"], vec![DialogueOp::GiveItem(ItemId(9))]);
+            }
+            let member = carrier(&mut app, "Ragnar", 1, 1);
+            let id = app.world().get::<Carried>(member).unwrap().backpack[0].as_ref().unwrap().id;
+            let revision = app.world().get::<Conversation>(session).unwrap().revision;
+            app.world_mut().write_message(ConversationRequest::Give {
+                conversation: session,
+                revision,
+                item: ItemRef { owner: ItemOwner::Member(member), id },
+            });
+            app.update();
+            let npc = app.world().get::<Npc>(actor).unwrap();
+            let kept = app.world().get::<Carried>(member).unwrap().backpack[0].is_some();
+            let c = app.world().get::<Conversation>(session).unwrap();
+            if runs {
+                assert!(!kept);
+                assert_eq!((npc.trade_pool, npc.disposition), (100, 0x4b));
+                assert!(!c.menu);
+            } else {
+                assert!(kept);
+                assert_eq!((npc.trade_pool, npc.disposition), (100, 50));
+                assert!(c.menu);
+            }
+        }
+    }
+
     /// Retail `GetNpcDisposition`: a factioned NPC answers with its faction's
     /// score while the faction is hostile to the party.
     #[test]
@@ -3051,6 +3154,111 @@ mod tests {
         assert!(inventory.pool.stacks.iter().any(|s| s.item == ItemId(1)));
         finish_line(&mut app, session);
         assert!(app.world().get::<Conversation>(session).is_none(), "ended with its lines");
+    }
+
+    /// Travel or the speaker's absence ends a conversation mid-answer; the
+    /// hand-in it accepted still commits its effects.
+    #[test]
+    fn an_accepted_hand_in_settles_when_the_conversation_is_cut_short() {
+        for travel in [true, false] {
+            let (mut app, session, actor) = app(DialogueScript {
+                quotes: vec![
+                    Quote { text: vec!["Hello".into()], ..default() },
+                    Quote {
+                        text: vec!["Thanks".into(), "Here".into()],
+                        operations: vec![
+                            DialogueOp::ItemQuote { item: ItemId(2), keeps: true },
+                            DialogueOp::GiveGold(50),
+                        ],
+                        ..default()
+                    },
+                ],
+                ..default()
+            });
+            with_items(&mut app);
+            let member = carrier(&mut app, "Ragnar", 2, 1);
+            let party = the_party(app.world_mut()).unwrap();
+            app.update();
+            finish_line(&mut app, session);
+            let id = app.world().get::<Carried>(member).unwrap().backpack[0].as_ref().unwrap().id;
+            let revision = app.world().get::<Conversation>(session).unwrap().revision;
+            app.world_mut().write_message(ConversationRequest::Give {
+                conversation: session,
+                revision,
+                item: ItemRef { owner: ItemOwner::Member(member), id },
+            });
+            app.update();
+            assert!(app.world().get::<Carried>(member).unwrap().backpack[0].is_none());
+            if travel {
+                app.world_mut().spawn(crate::game::world::level::Destination::new(
+                    Level::test(default()),
+                    default(),
+                    crate::game::world::level::Entry::Travel,
+                ));
+            } else {
+                let body = app.world().get::<super::super::NpcBodies>(actor).unwrap()[0];
+                app.world_mut().despawn(body);
+                app.update();
+            }
+            assert!(app.world().get::<Conversation>(session).is_none());
+            assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, 50);
+        }
+    }
+
+    #[test]
+    fn interrupted_exchange_waits_for_missing_reward_content_without_losing_or_repeating_it() {
+        let (mut app, session, actor) = app(DialogueScript {
+            quotes: vec![
+                Quote { text: vec!["Hello".into()], ..default() },
+                Quote {
+                    text: vec!["Thanks".into(), "Here".into()],
+                    operations: vec![
+                        DialogueOp::ItemQuote { item: ItemId(2), keeps: true },
+                        DialogueOp::GiveGold(50),
+                        DialogueOp::GiveItem(ItemId(1)),
+                    ],
+                    ..default()
+                },
+            ],
+            ..default()
+        });
+        with_items(&mut app);
+        let member = carrier(&mut app, "Ragnar", 2, 1);
+        let party = the_party(app.world_mut()).unwrap();
+        app.update();
+        finish_line(&mut app, session);
+        let id = app.world().get::<Carried>(member).unwrap().backpack[0].as_ref().unwrap().id;
+        let revision = app.world().get::<Conversation>(session).unwrap().revision;
+        app.world_mut().write_message(ConversationRequest::Give {
+            conversation: session,
+            revision,
+            item: ItemRef { owner: ItemOwner::Member(member), id },
+        });
+        app.update();
+        assert!(app.world().get::<Carried>(member).unwrap().backpack[0].is_none());
+        let handle = app.world().resource::<GameData>().items.clone();
+        let catalog =
+            app.world_mut().resource_mut::<Assets<ItemCatalog>>().remove(&handle).unwrap();
+        let body = app.world().get::<super::super::NpcBodies>(actor).unwrap()[0];
+        app.world_mut().despawn(body);
+        for _ in 0..3 {
+            app.update();
+            assert!(app.world().get::<Conversation>(session).is_some());
+            assert!(app.world().get::<Closing>(session).is_some());
+            assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, 0);
+        }
+        app.world_mut().resource_mut::<Assets<ItemCatalog>>().insert(&handle, catalog).unwrap();
+        app.update();
+        assert!(app.world().get::<Conversation>(session).is_none());
+        let inventory = app.world().get::<PartyInventory>(party).unwrap().clone();
+        assert_eq!(inventory.gold, 50);
+        assert_eq!(inventory.pool.stacks.iter().filter(|stack| stack.item == ItemId(1)).count(), 1);
+        app.update();
+        assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, inventory.gold);
+        assert_eq!(
+            app.world().get::<PartyInventory>(party).unwrap().pool.stacks,
+            inventory.pool.stacks
+        );
     }
 
     /// Removals empty the members' packs before the party's items, and the
