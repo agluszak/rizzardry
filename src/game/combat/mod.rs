@@ -1784,14 +1784,11 @@ fn party_turn(
         return true;
     }
     let BattleMagic { context, points, moving, .. } = magic;
-    let advancing = |monster| moving.contains(monster);
-    let armours = party_armours(battle, members, context);
-    let armour = |member| armours.iter().find(|&&(m, _)| m == member).map(|&(_, a)| a);
     let mut fight = blows::Fight {
         combatants,
         party,
-        armour: &armour,
-        advancing: &advancing,
+        armours: party_armours(battle, members, context),
+        moving,
         points,
         attacks: &|_| false,
         waits: false,
@@ -2435,14 +2432,11 @@ fn monster_turn(
         Stance::Hostile
     };
     let may_attack = |victim: Victim| toward(victim) == wanted;
-    let advancing = |monster| moving.contains(monster);
-    let armours = party_armours(battle, members, context);
-    let armour = |member| armours.iter().find(|&&(m, _)| m == member).map(|&(_, a)| a);
     let mut fight = blows::Fight {
         combatants,
         party,
-        armour: &armour,
-        advancing: &advancing,
+        armours: party_armours(battle, members, context),
+        moving,
         points,
         attacks: &may_attack,
         waits,

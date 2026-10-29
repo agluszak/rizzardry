@@ -29,9 +29,10 @@ use crate::game::world::navigation::feet;
 pub(super) struct Fight<'a, 'w, 's> {
     pub combatants: &'a [Entity],
     pub party: &'a PartyView,
-    pub armour: &'a dyn Fn(Entity) -> Option<Armour>,
+    /// The party's armour as this round's blows meet it ([`super::party_armours`]).
+    pub armours: Vec<(Entity, Armour)>,
     /// Monsters advancing this round, which drop their guard.
-    pub advancing: &'a dyn Fn(Entity) -> bool,
+    pub moving: &'a Query<'w, 's, (), With<super::approach::CombatMove>>,
     pub points: &'a mut Query<'w, 's, (&'static LearnedSpells, &'static mut SpellPoints)>,
     /// Whom the acting monster may attack (retail `BuildMonsterActionQueue`'s
     /// `MonsterVsCharDisposition` and `MonsterHostility` tests); members
@@ -40,6 +41,12 @@ pub(super) struct Fight<'a, 'w, 's> {
     /// The acting monster may hold back instead, as one more choice beside
     /// its attacks (a wary monster's wait).
     pub waits: bool,
+}
+
+impl Fight<'_, '_, '_> {
+    fn armour(&self, member: Entity) -> Option<Armour> {
+        self.armours.iter().find(|&&(m, _)| m == member).map(|&(_, a)| a)
+    }
 }
 
 /// Whoever a swing landed on, and how.
@@ -181,7 +188,7 @@ fn member_defence(
     member: Entity,
 ) -> Option<(Character, Defence<'static>)> {
     let (character, vitals, ..) = field.members.get(member).ok()?;
-    let armour = (fight.armour)(member)?;
+    let armour = fight.armour(member)?;
     let running = battle.this_round.pace == Some(PartyPace::Run);
     let defending = battle
         .this_round
@@ -203,7 +210,7 @@ fn monster_defence<'a>(
         return None;
     }
     let kind = species.kind(body.species)?;
-    Some(Defence::monster(kind, body, (fight.advancing)(monster)))
+    Some(Defence::monster(kind, body, fight.moving.contains(monster)))
 }
 
 /// Both sorts of actor use the same defence and body rules, whether aimed

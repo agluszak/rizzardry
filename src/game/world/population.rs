@@ -290,21 +290,26 @@ pub fn spawn_group(
         commands.spawn((MonsterGroup { authored, set, ..default() }, LevelOwned(root))).id();
     let members = members
         .into_iter()
-        .map(|kept| {
-            let name = actor_name(species, (kept.monster.species, kept.monster.location));
-            let body = kept.monster.body;
-            let mut entity = commands.spawn((Name::new(name), kept.monster));
-            embody(
-                &mut entity,
-                root,
-                (kept.feet, kept.yaw, body),
-                Some(group),
-                (navigation, configs),
-            );
-            entity.id()
-        })
+        .map(|kept| spawn_member(commands, root, kept, group, species, (navigation, configs)))
         .collect();
     (group, members)
+}
+
+/// A group member as an actor of its level: named, standing where it was
+/// placed, in its group.
+fn spawn_member(
+    commands: &mut Commands,
+    root: Entity,
+    kept: KeptMonster,
+    group: Entity,
+    species: &MonsterCatalog,
+    (navigation, configs): (&LevelNavigation, &mut Assets<WalkerMotionConfig>),
+) -> Entity {
+    let name = actor_name(species, (kept.monster.species, kept.monster.location));
+    let body = kept.monster.body;
+    let mut entity = commands.spawn((Name::new(name), kept.monster));
+    embody(&mut entity, root, (kept.feet, kept.yaw, body), Some(group), (navigation, configs));
+    entity.id()
 }
 
 /// On a level root: its monsters still unborn, as rolled with the rest
@@ -384,16 +389,7 @@ pub fn give_birth(
                 commands.spawn((MonsterGroup { authored, ..default() }, LevelOwned(root))).id()
             });
         for kept in born {
-            let name = actor_name(species, (kept.monster.species, kept.monster.location));
-            let body = kept.monster.body;
-            let mut entity = commands.spawn((Name::new(name), kept.monster));
-            embody(
-                &mut entity,
-                root,
-                (kept.feet, kept.yaw, body),
-                Some(group),
-                (navigation, &mut configs),
-            );
+            spawn_member(&mut commands, root, kept, group, species, (navigation, &mut configs));
         }
     }
 }
