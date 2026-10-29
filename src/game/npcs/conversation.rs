@@ -376,13 +376,8 @@ pub enum Approach {
     SmallTalk,
 }
 fn definition(world: &World, actor: Entity) -> Result<&NpcDefinition, TradeError> {
-    let id = world.get::<super::ActorId>(actor).ok_or(TradeError::Unavailable)?.npc();
-    let assets = world.resource::<NpcAssets>();
-    world
-        .resource::<Assets<NpcCatalog>>()
-        .get(&assets.catalog)
-        .and_then(|c| c.get(id))
-        .ok_or(TradeError::MissingContent)
+    world.get::<super::ActorId>(actor).ok_or(TradeError::Unavailable)?;
+    super::definition(world, actor).ok_or(TradeError::MissingContent)
 }
 fn with_definition<T>(
     world: &mut World,
@@ -401,10 +396,7 @@ fn with_items<T>(
     world: &mut World,
     f: impl FnOnce(&mut World, &ItemCatalog) -> Result<T, TradeError>,
 ) -> Result<T, TradeError> {
-    let handle = world.get_resource::<GameData>().ok_or(TradeError::MissingContent)?.items.clone();
-    world.resource_scope(|world, catalogs: Mut<Assets<ItemCatalog>>| {
-        f(world, catalogs.get(&handle).ok_or(TradeError::MissingContent)?)
-    })
+    GameData::with_items(world, f).ok_or(TradeError::MissingContent)?
 }
 pub fn party_communication(world: &mut World) -> u32 {
     best_communicator(world).map_or(0, |(_, level)| level)
@@ -764,8 +756,7 @@ const RFS81: NpcId = NpcId(0x20);
 const RFS81_FIXED_NAME: &str = "RFS81B";
 /// The NPC a script names by its display name (retail `FindNpcStateByName`).
 fn npc_named(world: &World, name: &str) -> Option<Entity> {
-    let assets = world.resource::<NpcAssets>();
-    let catalog = world.resource::<Assets<NpcCatalog>>().get(&assets.catalog)?;
+    let catalog = super::catalog(world)?;
     let fixed = fact_catalog(world)
         .and_then(|facts| facts.0.iter().find(|f| f.symbol == "FACT_RFS81_HAS_BEEN_FIXED"))
         .is_some_and(|f| fact(world, f.id).is_ok_and(|value| value != 0));

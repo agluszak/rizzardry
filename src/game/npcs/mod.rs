@@ -16,6 +16,17 @@ use std::collections::HashMap;
 
 /// Named NPCs use their definition identity; repeatable monster-bound NPCs also
 /// need the authored placement. Neither key uses a transient retail runtime slot.
+/// The NPC catalog, for operations that hold the whole world.
+pub(crate) fn catalog(world: &World) -> Option<&NpcCatalog> {
+    world.resource::<Assets<NpcCatalog>>().get(&world.resource::<NpcAssets>().catalog)
+}
+
+/// An NPC actor's authored definition, for operations that hold the whole
+/// world.
+pub(crate) fn definition(world: &World, actor: Entity) -> Option<&NpcDefinition> {
+    catalog(world)?.get(world.get::<ActorId>(actor)?.npc())
+}
+
 /// The levels of the party's members able to fight, in roster order: the
 /// population retail's NPC rules average over (`hp_current > 0 &&
 /// highest_condition < ASLEEP`, as in `CanNpcJoinParty` and the charm).

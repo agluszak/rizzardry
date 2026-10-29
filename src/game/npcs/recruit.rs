@@ -71,13 +71,7 @@ const MADRAS: NpcId = NpcId(0x4a);
 const SEXUS: NpcId = NpcId(0x4f);
 
 fn definition(world: &World, actor: Entity) -> Option<NpcDefinition> {
-    let id = world.get::<super::ActorId>(actor)?.npc();
-    let assets = world.resource::<super::NpcAssets>();
-    world
-        .resource::<Assets<crate::content::npcs::NpcCatalog>>()
-        .get(&assets.catalog)?
-        .get(id)
-        .cloned()
+    super::definition(world, actor).cloned()
 }
 
 /// Whether the NPC would join now (retail `CanNpcJoinParty`): it has a

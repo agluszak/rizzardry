@@ -66,6 +66,18 @@ impl GameData {
             .get(&world.get_resource::<GameData>()?.species)
     }
 
+    /// Run `f` with the item catalog while the world stays writable, for
+    /// operations that hold the whole world; nothing runs without it.
+    pub fn with_items<T>(
+        world: &mut World,
+        f: impl FnOnce(&mut World, &ItemCatalog) -> T,
+    ) -> Option<T> {
+        let handle = world.get_resource::<GameData>()?.items.clone();
+        world.resource_scope(|world, catalogs: Mut<Assets<ItemCatalog>>| {
+            Some(f(world, catalogs.get(&handle)?))
+        })
+    }
+
     /// The spell catalog, for operations that hold the whole world.
     pub fn spells(world: &World) -> Option<&SpellCatalog> {
         world.get_resource::<Assets<SpellCatalog>>()?.get(&world.get_resource::<GameData>()?.spells)

@@ -136,11 +136,10 @@ pub fn take_item(world: &mut World, target: Entity) -> Result<(), Refusal> {
     }
     let mut item = world.entity_mut(target).take::<WorldItem>().unwrap();
     if let GroundLoot::Pile { contents, .. } = &mut item.loot {
-        let handle = world.resource::<GameData>().items.clone();
-        let taken = world.resource_scope(|world, catalogs: Mut<Assets<ItemCatalog>>| {
-            let catalog = catalogs.get(&handle).unwrap();
+        let taken = GameData::with_items(world, |world, catalog| {
             world.get_mut::<PartyInventory>(party).unwrap().pool.collect(contents, catalog)
-        });
+        })
+        .unwrap();
         let moved = !taken.is_empty();
         for (name, _) in taken {
             world.write_message(ItemNews::Takes { member: None, item: name });
