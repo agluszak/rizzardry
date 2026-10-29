@@ -40,6 +40,12 @@ pub enum Condition {
 
 /// Whether a party member or monster can fight: alive and nothing worse than
 /// webbed (retail `highest_condition < ASLEEP`).
+/// Whether anyone among these is still alive: a party with nobody is
+/// defeated.
+pub fn anyone_alive<'a>(vitals: impl IntoIterator<Item = &'a Vitals>) -> bool {
+    vitals.into_iter().any(|vitals| !vitals.is_dead())
+}
+
 pub fn can_fight(hp: u32, conditions: &[(Condition, Lasting)]) -> bool {
     hp != 0 && conditions.iter().all(|&(c, _)| c < Condition::Asleep)
 }

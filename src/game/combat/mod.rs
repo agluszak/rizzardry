@@ -816,7 +816,11 @@ pub fn start_battle(
         .filter_map(|&hostility::Provocation(m)| Some(monsters.get(m).ok()?.4?.0))
         .collect();
     let running = battles.single().ok();
-    if running.is_none() && !members.iter_many(roster.iter()).matched().any(|(_, v)| !v.is_dead()) {
+    if running.is_none()
+        && !crate::game::characters::anyone_alive(
+            members.iter_many(roster.iter()).matched().map(|(_, v)| v),
+        )
+    {
         return;
     }
     let Some(catalog) = content.species() else { return };
@@ -1154,7 +1158,7 @@ pub fn settle_defeat(
     mut monsters: Query<&mut Monster>,
 ) {
     let Some((battle, combatants)) = battle.map(Single::into_inner) else { return };
-    if !members.iter_many(roster.iter()).matched().any(|v| !v.is_dead()) {
+    if !crate::game::characters::anyone_alive(members.iter_many(roster.iter()).matched()) {
         // What lasts a fight ends on the party and on those in it, as when
         // the party wins.
         effects.0.end_combat();
@@ -2609,7 +2613,9 @@ fn spell_scene<'a>(
 
 /// Whether nobody in the party is left alive.
 fn party_fallen(roster: &PartyRoster, members: &Members) -> bool {
-    !members.iter_many(roster.iter()).matched().any(|(_, vitals, ..)| !vitals.is_dead())
+    !crate::game::characters::anyone_alive(
+        members.iter_many(roster.iter()).matched().map(|(_, vitals, ..)| vitals),
+    )
 }
 
 /// The round is over: a round's game time passes. Returns whether the fight

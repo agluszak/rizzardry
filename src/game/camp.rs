@@ -134,7 +134,8 @@ pub fn force_camp(
     members: Query<&Vitals>,
     mut news: MessageWriter<CampNews>,
 ) {
-    let anyone_alive = members.iter_many(roster.iter()).matched().any(|m| !m.is_dead());
+    let anyone_alive =
+        crate::game::characters::anyone_alive(members.iter_many(roster.iter()).matched());
     let anyone_able = members.iter_many(roster.iter()).matched().any(Vitals::can_act);
     if camp.is_some() || battle.is_some() || !anyone_alive || anyone_able {
         return;
