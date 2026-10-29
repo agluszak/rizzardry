@@ -1297,7 +1297,7 @@ fn end_round(
         }
     }
     for (profile, mut vitals, ..) in members.iter_many_unique_mut(roster.iter()).matched() {
-        recovery::pass(&profile, &mut vitals, ticks, recovery::Pace::Fighting);
+        recovery::pass(&profile, &mut vitals, ticks, recovery::Pace::Fighting, rng);
     }
     battle.phase = RoundPhase::Waiting;
     // Recover after aging conditions, in accepted actor order.

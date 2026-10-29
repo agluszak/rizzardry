@@ -788,6 +788,10 @@ pub struct Vitals {
     /// Recovery not yet whole points; retail keeps these between ticks.
     pub hp_fraction: f32,
     pub stamina_fraction: f32,
+    /// How hard a poison bites while the member is Poisoned (retail
+    /// `condition_argument`): damage each aging tick, wearing off as the
+    /// poison runs its course. It means nothing otherwise.
+    pub poison: u32,
 }
 
 impl Vitals {
@@ -846,15 +850,55 @@ impl Vitals {
         inflict(&mut self.conditions, condition, lasting);
     }
 
+    /// Poison the member for `lasting` at `strength` (retail
+    /// `SetCharacterCondition` with a poison strength): a fresh poisoning
+    /// bites as hard as it is, a further one only ever harder. No strength,
+    /// no poisoning. Whether it took.
+    pub fn poison(&mut self, lasting: Lasting, strength: u32) -> bool {
+        if strength == 0 {
+            return false;
+        }
+        if !self.has(Condition::Poisoned) {
+            self.poison = 0;
+        }
+        self.inflict(Condition::Poisoned, lasting);
+        self.poison = self.poison.max(strength);
+        true
+    }
+
     pub fn lift(&mut self, condition: Condition) {
         self.conditions.retain(|&(c, _)| c != condition);
     }
 
     /// Count timed conditions down, lifting those that run out (retail
-    /// `AgeCondition`). Poison's weakening is not modelled yet.
-    pub fn age_conditions(&mut self, ticks: u32) {
+    /// `TickCharacterCondition`). A poison still running weakens by its
+    /// share of what is left of it, a roll deciding a share under one.
+    pub fn age_conditions(&mut self, ticks: u32, rng: &mut crate::game::rng::GameRng) {
+        let left = self.conditions.iter().find_map(|&(c, lasting)| match lasting {
+            Lasting::Rounds(left) if c == Condition::Poisoned => Some(u32::from(left)),
+            _ => None,
+        });
+        if let Some(left) = left.filter(|&left| left > ticks) {
+            let mut lost = self.poison * ticks / left;
+            if lost == 0 && rng.below(100) < self.poison * ticks * 100 / left {
+                lost = 1;
+            }
+            self.poison -= lost.min(self.poison);
+        }
         age(&mut self.conditions, ticks);
         self.enchantments.age(ticks);
+    }
+
+    /// The damage poison does over `ticks` aging ticks (retail
+    /// `GameTurnsPassedChar`'s damage per minute): its strength each tick,
+    /// half again unless the party stands still (retail `wait_state` 3,
+    /// outside a fight).
+    pub fn poison_damage(&self, ticks: u32, still: bool) -> u32 {
+        if !self.has(Condition::Poisoned) {
+            return 0;
+        }
+        let damage = self.poison * ticks;
+        if still { damage } else { damage + damage / 2 }
     }
 
     /// Take damage (retail `damageCharacter`): two thirds of it also drain
@@ -1109,7 +1153,7 @@ mod tests {
         let mut mage = Vitals::new(&profile);
         mage.inflict(Condition::Asleep, Lasting::Rounds(3));
         mage.inflict(Condition::Unconscious, Lasting::Indefinite);
-        mage.age_conditions(2);
+        mage.age_conditions(2, &mut crate::game::rng::GameRng::default());
         assert_eq!(
             mage.conditions,
             vec![
@@ -1117,7 +1161,7 @@ mod tests {
                 (Condition::Unconscious, Lasting::Indefinite)
             ]
         );
-        mage.age_conditions(1);
+        mage.age_conditions(1, &mut crate::game::rng::GameRng::default());
         assert_eq!(mage.conditions, vec![(Condition::Unconscious, Lasting::Indefinite)]);
     }
 }

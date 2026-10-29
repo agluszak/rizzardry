@@ -910,7 +910,10 @@ mod tests {
         app.world_mut().trigger(Activate { entity: beneficial });
         app.update();
         assert!(text(app.world_mut(), "Blind"));
-        app.world_mut().get_mut::<Vitals>(actor).unwrap().age_conditions(1);
+        app.world_mut()
+            .get_mut::<Vitals>(actor)
+            .unwrap()
+            .age_conditions(1, &mut crate::game::rng::GameRng::default());
         app.update();
         assert!(!text(app.world_mut(), "Blind"));
     }

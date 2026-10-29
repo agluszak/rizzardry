@@ -494,11 +494,12 @@ fn counter_haste(conditions: &mut Vec<(Condition, Lasting)>, turns: u32) -> u32 
     remaining
 }
 
-/// Give a victim a condition for `lasting`.
+/// Give a victim a condition for `lasting`; a poison bites a member at
+/// `poison` (retail's condition argument).
 fn inflict_on(
     world: &mut Field,
     victim: Victim,
-    condition: Condition,
+    (condition, poison): (Condition, u32),
     lasting: Lasting,
 ) -> Option<()> {
     match victim {
@@ -529,7 +530,14 @@ fn inflict_on(
             };
             inflict(&mut *world.monsters.conditions_mut(monster)?, condition, lasting)
         }
-        Victim::Member(member) => world.members.get_mut(member).ok()?.1.inflict(condition, lasting),
+        Victim::Member(member) => {
+            let mut vitals = world.members.get_mut(member).ok()?.1;
+            if condition == Condition::Poisoned {
+                vitals.poison(lasting, poison).then_some(())?;
+            } else {
+                vitals.inflict(condition, lasting);
+            }
+        }
     }
     Some(())
 }
@@ -553,7 +561,7 @@ fn attack(
     // A victim that died or left is not attacked at all.
     target(world, victim, realm, Some(condition)).filter(|t| !t.dead)?;
     let rounds = duration(rng, spell, strength);
-    afflict(rng, world, victim, Some(condition), realm, strength.against, Some(rounds))
+    afflict(rng, world, victim, (Some(condition), 0), realm, strength.against, Some(rounds))
 }
 
 /// Retail `ResolveAttackOnTarget`: a condition, or death when `condition` is
@@ -565,7 +573,7 @@ fn afflict(
     rng: &mut GameRng,
     world: &mut Field,
     victim: Victim,
-    condition: Option<Condition>,
+    (condition, argument): (Option<Condition>, u32),
     realm: Realm,
     against: u32,
     rounds: Option<u32>,
@@ -627,7 +635,7 @@ fn afflict(
         };
         return hurt(rng, world, victim, hp);
     };
-    inflict_on(world, victim, condition, lasting)?;
+    inflict_on(world, victim, (condition, argument), lasting)?;
     Some(Effect::Inflicted { victim, condition })
 }
 
@@ -671,15 +679,25 @@ pub fn blow(
         let count = power / 3 + 1;
         let rounds = blow_roll(rng, count, 2, 1).clamp(1, 12);
         let mut afflicts = |rng: &mut GameRng, condition, realm, rounds| {
-            afflict(rng, world, victim, condition, realm, power, rounds)
+            afflict(rng, world, victim, (condition, 0), realm, power, rounds)
         };
         let member = matches!(victim, Victim::Member(_));
         let outcome = match effect {
             E::Sleep => afflicts(rng, Some(Condition::Asleep), Realm::Air, Some(rounds)),
             E::Paralyze => afflicts(rng, Some(Condition::Paralyzed), Realm::Water, Some(rounds)),
+            // A poison bites at the weapon's strength (retail
+            // `ApplyEffectConditions` passes its magnitude base).
             E::Poison => {
                 let rounds = blow_roll(rng, count * 3, 2, u32::from(effects.strength));
-                afflicts(rng, Some(Condition::Poisoned), Realm::Water, Some(rounds))
+                afflict(
+                    rng,
+                    world,
+                    victim,
+                    (Some(Condition::Poisoned), u32::from(effects.strength)),
+                    Realm::Water,
+                    power,
+                    Some(rounds),
+                )
             }
             E::Hex => afflicts(rng, Some(Condition::Hexed), Realm::Divine, Some(rounds)),
             E::Disease => afflicts(rng, Some(Condition::Diseased), Realm::Water, None),
@@ -1171,7 +1189,7 @@ pub fn resolve(
                     return Some(Effect::Resisted { victim: v });
                 }
                 let lasting = Lasting::Rounds(rounds.max(2).min(u32::from(u16::MAX)) as u16);
-                inflict_on(world, v, Condition::Afraid, lasting)?;
+                inflict_on(world, v, (Condition::Afraid, 0), lasting)?;
                 Some(Effect::Inflicted { victim: v, condition: Condition::Afraid })
             }
             other => other,

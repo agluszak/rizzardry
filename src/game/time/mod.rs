@@ -167,7 +167,7 @@ pub(crate) fn pass_time(
         };
         let mut members = affected.p0();
         for (profile, mut vitals) in members.iter_many_unique_mut(roster.iter()).matched() {
-            recovery::pass(profile, &mut vitals, ticks, pace);
+            recovery::pass(profile, &mut vitals, ticks, pace, &mut rng);
         }
         if pass > 0 {
             if !enchantments.0.0.is_empty() {

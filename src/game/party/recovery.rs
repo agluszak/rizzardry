@@ -51,17 +51,31 @@ impl Pace {
 
 /// [`elapse`] on a tracked member, which counts as changed only when
 /// something did change.
-pub fn pass(profile: &Character, member: &mut Mut<Vitals>, ticks: Ticks, pace: Pace) {
+pub fn pass(
+    profile: &Character,
+    member: &mut Mut<Vitals>,
+    ticks: Ticks,
+    pace: Pace,
+    rng: &mut crate::game::rng::GameRng,
+) {
     let vitals = member.bypass_change_detection();
     let before = vitals.clone();
-    elapse(profile, vitals, ticks, pace);
+    elapse(profile, vitals, ticks, pace, rng);
     if *vitals != before {
         member.set_changed();
     }
 }
 
-/// What the ticks passed at `pace` do to one member.
-pub fn elapse(profile: &Character, member: &mut Vitals, ticks: Ticks, pace: Pace) {
+/// What the ticks passed at `pace` do to one member: poison bites first,
+/// then they recover, then their conditions age (retail
+/// `GameTurnsPassedChar`).
+pub fn elapse(
+    profile: &Character,
+    member: &mut Vitals,
+    ticks: Ticks,
+    pace: Pace,
+    rng: &mut crate::game::rng::GameRng,
+) {
     let (stamina, health) = pace.scales();
     if ticks.stamina > 0 {
         member.recover_stamina(
@@ -71,8 +85,13 @@ pub fn elapse(profile: &Character, member: &mut Vitals, ticks: Ticks, pace: Pace
         );
     }
     if ticks.aging > 0 {
+        let still = matches!(pace, Pace::Still | Pace::Camping);
+        let poisoned = member.poison_damage(ticks.aging, still);
+        if poisoned > 0 {
+            member.damage(poisoned);
+        }
         member.recover_health(ticks.aging, health, profile.stats(&member.enchantments).max_hp());
-        member.age_conditions(ticks.aging);
+        member.age_conditions(ticks.aging, rng);
         let stats = profile.stats(&member.enchantments);
         member.hp = member.hp.min(stats.max_hp());
         member.stamina = member.stamina.min(stats.max_stamina());
@@ -83,6 +102,7 @@ pub fn elapse(profile: &Character, member: &mut Vitals, ticks: Ticks, pace: Pace
 mod tests {
     use super::*;
     use crate::game::characters::{Condition, Gender, Lasting, Profession, Race};
+    use crate::game::rng::GameRng;
 
     #[test]
     fn fighter_rest_uses_current_profession_level_and_stops_scaling_at_twenty() {
@@ -113,11 +133,61 @@ mod tests {
         fighter.stamina -= 5;
         fighter.inflict(Condition::Afraid, Lasting::Rounds(1));
         let (hp, stamina) = (fighter.hp, fighter.stamina);
-        elapse(&profile, &mut fighter, Ticks { stamina: 85, aging: 1 }, Pace::Fighting);
+        elapse(
+            &profile,
+            &mut fighter,
+            Ticks { stamina: 85, aging: 1 },
+            Pace::Fighting,
+            &mut GameRng::default(),
+        );
         assert_eq!((fighter.hp, fighter.stamina), (hp, stamina));
         assert!(!fighter.has(Condition::Afraid));
         // Standing still for two hours heals.
-        elapse(&profile, &mut fighter, Ticks { stamina: 85, aging: 60 }, Pace::Still);
+        elapse(
+            &profile,
+            &mut fighter,
+            Ticks { stamina: 85, aging: 60 },
+            Pace::Still,
+            &mut GameRng::default(),
+        );
         assert!(fighter.hp > hp && fighter.stamina > stamina);
+    }
+
+    /// A poison bites at its strength each aging tick, half again on the
+    /// move, and weakens by its share of what is left of it (retail
+    /// `GameTurnsPassedChar`, `TickCharacterCondition`).
+    #[test]
+    fn poison_bites_harder_on_the_move_and_wears_off() {
+        let profile = Character::new("Brute", Race::Human, Gender::Male, Profession::Fighter);
+        let mut walking = Vitals::new(&profile);
+        assert!(!walking.poison(Lasting::Rounds(10), 0), "no strength, no poisoning");
+        assert!(walking.poison(Lasting::Rounds(10), 4));
+        let mut still = walking.clone();
+        let hp = walking.hp;
+        let mut rng = GameRng::default();
+        elapse(&profile, &mut walking, Ticks { stamina: 0, aging: 1 }, Pace::Walking, &mut rng);
+        elapse(&profile, &mut still, Ticks { stamina: 0, aging: 1 }, Pace::Still, &mut rng);
+        assert_eq!(walking.hp, hp - 6, "four, half again on the move");
+        assert_eq!(still.hp, hp - 4);
+        // A tenth of the course gone takes a tenth of the strength, which
+        // rounds to nothing here but a roll's chance of one.
+        assert!(still.poison == 4 || still.poison == 3);
+        assert_eq!(still.conditions, [(Condition::Poisoned, Lasting::Rounds(9))]);
+        // Half of what is left: half the strength.
+        let mut halved = Vitals::new(&profile);
+        halved.poison(Lasting::Rounds(10), 8);
+        halved.age_conditions(5, &mut rng);
+        assert_eq!(halved.poison, 4);
+        // A stronger poison raises the bite; a weaker one does not lower it,
+        // and a fresh poisoning after one runs out starts afresh.
+        halved.poison(Lasting::Rounds(2), 6);
+        assert_eq!(halved.poison, 6);
+        halved.poison(Lasting::Rounds(2), 1);
+        assert_eq!(halved.poison, 6);
+        halved.age_conditions(20, &mut rng);
+        assert!(!halved.has(Condition::Poisoned));
+        assert_eq!(halved.poison_damage(5, false), 0);
+        halved.poison(Lasting::Rounds(3), 2);
+        assert_eq!(halved.poison, 2);
     }
 }
