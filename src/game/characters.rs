@@ -38,8 +38,6 @@ pub enum Condition {
     Unconscious,
 }
 
-/// Whether a party member or monster can fight: alive and nothing worse than
-/// webbed (retail `highest_condition < ASLEEP`).
 /// A value by a level: full past twenty levels, 60% at none and two points
 /// more a level (retail `ScaleValueByProfessionLevel` and
 /// `ScaleValueByMonsterLevel`, one formula).
@@ -53,6 +51,8 @@ pub fn anyone_alive<'a>(vitals: impl IntoIterator<Item = &'a Vitals>) -> bool {
     vitals.into_iter().any(|vitals| !vitals.is_dead())
 }
 
+/// Whether a party member or monster can fight: alive and nothing worse than
+/// webbed (retail `highest_condition < ASLEEP`).
 pub fn can_fight(hp: u32, conditions: &[(Condition, Lasting)]) -> bool {
     hp != 0 && conditions.iter().all(|&(c, _)| c < Condition::Asleep)
 }
@@ -882,6 +882,12 @@ impl Vitals {
     /// `highest_condition < TURNCOAT`).
     pub fn can_act(&self) -> bool {
         !self.is_dead() && self.worst_condition().is_none_or(|c| c < Condition::Turncoat)
+    }
+
+    /// Alive and nothing worse than infatuated: in its right mind, able to
+    /// look, keep watch or identify (retail `highest_condition < INSANE`).
+    pub fn lucid(&self) -> bool {
+        !self.is_dead() && self.worst_condition().is_none_or(|c| c < Condition::Insane)
     }
 
     /// Alive and nothing worse than webbed: able to take or be the target of

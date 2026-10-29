@@ -472,9 +472,7 @@ fn opening_surprise<'a>(
             return Some(SurpriseCause::Ambush);
         }
         if camping {
-            let guard = members.find(|(_, v)| {
-                !v.is_dead() && v.worst_condition().is_none_or(|c| c <= Condition::Infatuated)
-            });
+            let guard = members.find(|(_, v)| v.lucid());
             let Some((profile, vitals)) = guard else { return Some(SurpriseCause::Ambush) };
             let senses = profile
                 .stats(&vitals.enchantments)
@@ -2245,9 +2243,7 @@ fn monster_turn(
         // guard a stronger fellow in trouble; a wary one may hold back.
         if matches!(decision, Decision::Fight { .. }) && reaches {
             let intelligence = u32::from(kind.attributes.intelligence);
-            let able = kind.temper.bodyguard
-                && body.worst_condition().is_none_or(|c| c < Condition::Blind)
-                && !kind.attacks.is_empty();
+            let able = kind.temper.bodyguard && body.can_guard() && !kind.attacks.is_empty();
             let wards: Vec<Entity> = if able && rng.below(100) < intelligence {
                 let reach = kind.attacks[0].reach.metres();
                 combatants

@@ -52,6 +52,12 @@ impl Monster {
         crate::game::characters::can_fight(self.hp, &self.conditions)
     }
 
+    /// Alive and nothing worse than insane: able to guard a fellow
+    /// (retail bodyguards, `highest_condition < BLIND`).
+    pub fn can_guard(&self) -> bool {
+        !self.is_dead() && self.worst_condition().is_none_or(|c| c < Condition::Blind)
+    }
+
     pub fn worst_condition(&self) -> Option<Condition> {
         self.conditions.iter().map(|&(c, _)| c).max()
     }

@@ -11,7 +11,7 @@ use bevy::prelude::*;
 
 use super::population::Monster;
 use crate::content::characters::{Attribute, Skill};
-use crate::game::characters::{Character, Condition, MonsterKnowledge, Vitals};
+use crate::game::characters::{Character, MonsterKnowledge, Vitals};
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::world::level::PlayedLevel;
@@ -51,14 +51,6 @@ pub struct Identified {
     pub looks_like: String,
     pub is: String,
     pub count: usize,
-}
-
-/// Whether a member can look (retail: alive, not insane or worse, not
-/// blind).
-fn can_look(member: &Vitals) -> bool {
-    !member.is_dead()
-        && member.worst_condition().is_none_or(|c| c < Condition::Insane)
-        && !member.has(Condition::Blind)
 }
 
 /// How likely, in percent, a member is to recognise a species of `level`:
@@ -186,13 +178,13 @@ impl GroupRecognition<'_, '_> {
             }
             let Some(species_id) = species_id else { continue };
             let Some(species) = catalog.0.get(species_id as usize) else { continue };
-            if members.iter_many(roster.iter()).matched().any(|(_, vitals, _)| can_look(vitals)) {
+            if members.iter_many(roster.iter()).matched().any(|(_, vitals, _)| vitals.lucid()) {
                 self.factions.encounter(species.faction);
             }
             if !known {
                 let mut best: Option<(String, i32)> = None;
                 for (profile, vitals, knowledge) in members.iter_many(roster.iter()).matched() {
-                    if !can_look(vitals) {
+                    if !vitals.lucid() {
                         continue;
                     }
                     let score = recognition(profile, knowledge, species_id, species.level);
@@ -218,7 +210,7 @@ impl GroupRecognition<'_, '_> {
                 for (_, vitals, mut knowledge) in
                     members.iter_many_unique_mut(roster.iter()).matched()
                 {
-                    if !can_look(vitals) {
+                    if !vitals.lucid() {
                         continue;
                     }
                     let seen = knowledge.seen.entry(species_id).or_default();
@@ -383,10 +375,10 @@ mod tests {
         let catalog = app.world().resource::<GameData>().species.clone();
         app.world_mut().resource_mut::<Assets<MonsterCatalog>>().get_mut(&catalog).unwrap().0[0]
             .level = 1;
-        app.world_mut()
-            .get_mut::<Vitals>(member)
-            .unwrap()
-            .inflict(Condition::Blind, crate::game::characters::Lasting::Rounds(2));
+        app.world_mut().get_mut::<Vitals>(member).unwrap().inflict(
+            crate::game::characters::Condition::Blind,
+            crate::game::characters::Lasting::Rounds(2),
+        );
         let body = app
             .world_mut()
             .query_filtered::<Entity, With<PartyBody>>()
@@ -399,7 +391,12 @@ mod tests {
         app.world_mut().resource_mut::<Time>().advance_by(std::time::Duration::from_secs(30));
         use bevy::ecs::system::RunSystemOnce;
         app.world_mut().run_system_once(crate::game::time::pass_time).unwrap();
-        assert!(!app.world().get::<Vitals>(member).unwrap().has(Condition::Blind));
+        assert!(
+            !app.world()
+                .get::<Vitals>(member)
+                .unwrap()
+                .has(crate::game::characters::Condition::Blind)
+        );
         assert!(app.world().get::<MonsterGroup>(group).unwrap().identified);
     }
 }

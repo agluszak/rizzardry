@@ -746,8 +746,7 @@ pub(crate) fn identify_attempt(
     vitals: &Vitals,
     difficulty: u8,
 ) -> Option<Identified> {
-    use crate::game::characters::Condition;
-    if vitals.is_dead() || vitals.worst_condition().is_some_and(|c| c >= Condition::Insane) {
+    if !vitals.lucid() {
         return None;
     }
     let strength = (character.skill(Skill::Artifacts) / 6) as i8;

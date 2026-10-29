@@ -338,8 +338,7 @@ fn intercept(
                 ward_body,
                 feet(ward_at.translation(), ward_walker),
             );
-            (!body.is_dead()
-                && body.worst_condition().is_none_or(|c| c < Condition::Blind)
+            (body.can_guard()
                 && !ward_body.is_dead()
                 && gap <= first.reach.metres()
                 && g.interceptions < u32::from(kind.attacks_per_round))
