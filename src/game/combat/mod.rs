@@ -24,7 +24,7 @@ use bevy::prelude::*;
 use crate::content::items::AttackMode;
 use crate::content::species::AttackWord;
 
-use crate::content::items::{Dice, ItemCatalog};
+use crate::content::items::ItemCatalog;
 use crate::content::species::{MonsterCatalog, Reach, Species};
 use crate::game::characters::{Character, Condition, Vitals};
 use crate::game::inventory::{EquipSlot, StackId};
@@ -1095,9 +1095,8 @@ pub fn start_battle(
         return;
     }
     info!("combat: {} monsters", joined.len());
-    let shadow_hound = effects
-        .single()
-        .is_ok_and(|e| e.0.get(crate::content::spells::SpellId::SHADOW_HOUND).is_some());
+    let shadow_hound =
+        effects.single().is_ok_and(|e| e.0.has(crate::content::spells::SpellId::SHADOW_HOUND));
     let searching = search.as_ref().is_some_and(|s| s.on(false));
     let view = crate::game::world::perception::View {
         eye: sight.eye,
@@ -2670,9 +2669,7 @@ fn end_round(
             });
         if resting {
             let maximum = damage.monsters().get(entity).map_or(0, |(m, ..)| m.max_stamina);
-            let sides = (maximum / 20).saturating_sub(1).clamp(1, 255) as u8;
-            let rolled = rng.roll(Dice { count: 2, sides, base: 0 });
-            damage.restore_stamina(entity, rolled);
+            damage.restore_stamina(entity, recovery::rest_roll(maximum, rng));
         }
     }
     // A special attack cools down over the rounds the monster does not
@@ -2749,9 +2746,7 @@ fn end_round(
         if vitals.is_dead() || !resting {
             continue;
         }
-        let sides =
-            (character.stats(&vitals.enchantments).max_stamina() / 20).saturating_sub(1).max(1);
-        let rolled = rng.roll(Dice { count: 2, sides: sides.min(255) as u8, base: 0 });
+        let rolled = recovery::rest_roll(character.stats(&vitals.enchantments).max_stamina(), rng);
         let gained = recovery::combat_rest_amount(&character, rolled);
         if vitals.stamina < character.stats(&vitals.enchantments).max_stamina()
             || vitals
@@ -2800,6 +2795,7 @@ fn end_round(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::content::items::Dice;
     use crate::content::items::{ItemId, LootTables};
     use crate::content::spells::SpellCatalog;
     use crate::game::data::GameData;

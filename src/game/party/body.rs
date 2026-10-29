@@ -60,6 +60,11 @@ pub fn heading(yaw: f32) -> Vec3 {
     Quat::from_rotation_y(yaw) * Vec3::NEG_Z
 }
 
+/// The yaw that faces along `toward`, level: [`heading`]'s inverse.
+pub fn yaw_toward(toward: Vec3) -> f32 {
+    (-toward.x).atan2(-toward.z)
+}
+
 impl PartyBody {
     /// The way the party faces, level.
     pub fn forward(&self) -> Vec3 {

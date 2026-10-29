@@ -786,22 +786,22 @@ pub fn perform(
         };
         let first_flight = flights.len();
         let landed = if flies {
-            let arrives = |to: Vec3| {
-                let seconds = to.distance(situation.party_at) / MISSILE_SPEED;
-                Timer::from_seconds(seconds, TimerMode::Once)
+            // One missile to where a burst lands, else one to each victim.
+            let flight = |victims: Vec<Victim>, to: Vec3| SpellInFlight {
+                origin,
+                finish: None,
+                caster,
+                spell: spell.id,
+                strength,
+                victims,
+                arrives: Timer::from_seconds(
+                    to.distance(situation.party_at) / MISSILE_SPEED,
+                    TimerMode::Once,
+                ),
+                launched: 0,
             };
             if spell.targeting == Targeting::Radius {
-                let to = landing.unwrap_or(situation.party_at);
-                flights.push(SpellInFlight {
-                    origin,
-                    finish: None,
-                    caster,
-                    spell: spell.id,
-                    strength,
-                    victims: victims.clone(),
-                    arrives: arrives(to),
-                    launched: 0,
-                });
+                flights.push(flight(victims.clone(), landing.unwrap_or(situation.party_at)));
             } else {
                 for &victim in &victims {
                     let to = match victim {
@@ -812,17 +812,7 @@ pub fn perform(
                             .map_or(situation.party_at, |c| c.at),
                         Victim::Member(_) => situation.party_at,
                     };
-                    let victims = vec![victim];
-                    flights.push(SpellInFlight {
-                        origin,
-                        finish: None,
-                        caster,
-                        spell: spell.id,
-                        strength,
-                        victims,
-                        arrives: arrives(to),
-                        launched: 0,
-                    });
+                    flights.push(flight(vec![victim], to));
                 }
             }
             super::impacts::attach(&mut flights[first_flight..], finish);
@@ -1061,7 +1051,7 @@ fn pay(
     // Action fatigue weighs more under load (retail `FatigueCharacter`).
     let (_, mut vitals, _, burden) = members.get_mut(caster).map_err(|_| Refusal::CannotAct)?;
     let slowed = vitals.has(Condition::Slowed);
-    let hasted = vitals.enchantments.get(crate::content::spells::SpellId::HASTE).is_some();
+    let hasted = vitals.enchantments.has(crate::content::spells::SpellId::HASTE);
     vitals.spend_stamina(burden.load.scale_fatigue(fatigue, slowed, hasted));
     Ok(())
 }

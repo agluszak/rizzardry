@@ -233,8 +233,7 @@ pub fn update_radar(
         _ => (0.0, position.0),
     };
     let catalog = content.species();
-    let xray = effects
-        .is_some_and(|effects| effects.0.get(crate::content::spells::SpellId::X_RAY).is_some());
+    let xray = effects.is_some_and(|effects| effects.0.has(crate::content::spells::SpellId::X_RAY));
     // Each blip's visibility is decided once, so one that stays in view
     // stays clean.
     let mut shown = bevy::ecs::entity::EntityHashSet::default();
@@ -264,9 +263,8 @@ pub fn update_radar(
         far,
         searching: search.as_ref().is_some_and(|s| s.on(!battle.is_empty())),
     };
-    let shadow_hound = effects.is_some_and(|effects| {
-        effects.0.get(crate::content::spells::SpellId::SHADOW_HOUND).is_some()
-    });
+    let shadow_hound =
+        effects.is_some_and(|effects| effects.0.has(crate::content::spells::SpellId::SHADOW_HOUND));
     for (entity, monster, at, in_combat, owner) in &monsters {
         let (Some(roster), Some(species)) =
             (roster, catalog.and_then(|catalog| catalog.kind(monster.species)))

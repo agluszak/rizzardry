@@ -125,7 +125,10 @@ pub fn track_fights(
             + Vec3::Y * monster.body.eye_height;
         let toward = aim - PartyBody::eye(at);
         turns.write(TurnParty {
-            to: Vec2::new((-toward.x).atan2(-toward.z), toward.y.atan2(toward.xz().length())),
+            to: Vec2::new(
+                crate::game::party::body::yaw_toward(toward),
+                toward.y.atan2(toward.xz().length()),
+            ),
             smooth: preferences.view_turning == ViewTurning::Smooth,
         });
     }

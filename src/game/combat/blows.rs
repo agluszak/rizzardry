@@ -648,7 +648,7 @@ pub(super) fn member_attacks(
         let weight = hand.weight;
         let cost =
             attack::swing_stamina(rng, mode, weight, berserk, vitals.has(Condition::Diseased));
-        let hasted = vitals.enchantments.get(crate::content::spells::SpellId::HASTE).is_some();
+        let hasted = vitals.enchantments.has(crate::content::spells::SpellId::HASTE);
         vitals.spend_stamina(load.scale_fatigue(cost, slowed, hasted));
         // Arrows, bolts and stones are shot away, thrown weapons thrown,
         // and guns spend their shots.

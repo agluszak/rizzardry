@@ -15,6 +15,14 @@ use crate::game::time::Ticks;
 /// Apply the Fighter's combat-rest trait to an already rolled recovery amount.
 /// It follows the current profession's level, capped at twenty, and truncates
 /// only after scaling the roll (retail ScaleValueByProfessionLevel).
+/// Stamina a round's rest brings back to anyone in a fight (retail
+/// `AdvanceCombatRound`): two dice of a twentieth of their maximum, less
+/// one, from one to 255 sides.
+pub fn rest_roll(max_stamina: u32, rng: &mut crate::game::rng::GameRng) -> u32 {
+    let sides = (max_stamina / 20).saturating_sub(1).clamp(1, 255) as u8;
+    rng.roll(crate::content::items::Dice { count: 2, sides, base: 0 })
+}
+
 pub fn combat_rest_amount(profile: &Character, rolled: u32) -> u32 {
     use crate::game::characters::Profession;
     if profile.profession != Profession::Fighter {

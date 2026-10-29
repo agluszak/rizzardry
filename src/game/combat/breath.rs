@@ -19,8 +19,7 @@ use bevy::prelude::*;
 
 pub fn available(profile: &Character, vitals: &Vitals) -> bool {
     vitals.can_fight()
-        && (profile.has_trait(Trait::Breathe)
-            || vitals.enchantments.get(SpellId::DRACON_BREATH).is_some())
+        && (profile.has_trait(Trait::Breathe) || vitals.enchantments.has(SpellId::DRACON_BREATH))
         && vitals.stamina >= profile.stats(&vitals.enchantments).max_stamina() / 5
 }
 

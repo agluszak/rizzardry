@@ -208,7 +208,7 @@ pub(crate) fn pass_time(
                 PartyBody::eye(position),
                 body.forward(),
                 None,
-                enchantments.0.get(crate::content::spells::SpellId::SHADOW_HOUND).is_some(),
+                enchantments.0.has(crate::content::spells::SpellId::SHADOW_HOUND),
                 search.as_ref().is_some_and(|s| s.on(false)),
                 &mut rng,
             );

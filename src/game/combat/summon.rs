@@ -119,7 +119,7 @@ pub fn summon(
         // They face the party.
         let facing = |at: Vec3| {
             let toward = party_at.0 - at;
-            (-toward.x).atan2(-toward.z)
+            body::yaw_toward(toward)
         };
         let spots = if seen {
             NEAR_PARTY

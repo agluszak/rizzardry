@@ -21,7 +21,6 @@ use crate::{
         },
     },
 };
-use avian3d::prelude::{Position, Rotation};
 use bevy::{
     ecs::{relationship::RelationshipTarget, system::SystemState},
     prelude::*,
@@ -57,12 +56,6 @@ pub struct LureTargets(Vec<Entity>);
 
 pub fn spell(id: SpellId) -> bool {
     matches!(id, SpellId::HYPNOTIC_LURE | SpellId::SUMMON_ELEMENTAL)
-}
-fn position(world: &World, entity: Entity) -> Option<Vec3> {
-    world
-        .get::<Position>(entity)
-        .map(|p| p.0)
-        .or_else(|| world.get::<Transform>(entity).map(|t| t.translation))
 }
 fn tier(power: u8, realm: usize) -> u32 {
     // Retail g_elemental_summon_group_ids: air, earth, water, fire per tier.
@@ -117,7 +110,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
         .query_filtered::<Entity, With<crate::game::party::body::PartyBody>>()
         .single(world)
         .map_err(|_| Refusal::WrongTime)?;
-    let eye = position(world, party).ok_or(Refusal::NoTarget)?
+    let eye = crate::game::world::actor_position(world, party).ok_or(Refusal::NoTarget)?
         + Vec3::Y * crate::game::party::body::EYE_ABOVE_CENTRE;
     if eye.distance(at) > spell.reach.metres() + crate::content::EYE_HEIGHT {
         return Err(Refusal::NoTarget);
@@ -224,7 +217,9 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
                 if !body.can_fight() || body.has(Condition::Blind) {
                     continue;
                 }
-                let Some(here) = position(world, entity) else { continue };
+                let Some(here) = crate::game::world::actor_position(world, entity) else {
+                    continue;
+                };
                 if (here - at).abs().max_element() > far {
                     continue;
                 }
@@ -411,12 +406,12 @@ pub(crate) fn update_lure(world: &mut World) {
         if world.get::<Combatant>(entity).is_some() {
             continue;
         }
-        let target = position(world, influence.lure);
+        let target = crate::game::world::actor_position(world, influence.lure);
         let follows = world
             .get::<Monster>(entity)
             .is_some_and(|body| body.can_fight() && !body.has(Condition::Blind))
             && influence.response == LureResponse::Controlled;
-        let here = position(world, entity);
+        let here = crate::game::world::actor_position(world, entity);
         let goal = match (follows, here, target) {
             (true, Some(here), Some(target)) if here.distance(target) > 5.0 => {
                 AgentTarget3d::Entity(influence.lure)
@@ -426,17 +421,8 @@ pub(crate) fn update_lure(world: &mut World) {
         if let Some(mut walking) = world.get_mut::<AgentTarget3d>(entity) {
             *walking = goal;
         }
-        if follows
-            && let (Some(here), Some(target)) = (here, target)
-            && let Ok(direction) = Dir3::new((target - here).with_y(0.0))
-        {
-            let facing = Transform::default().looking_to(direction, Vec3::Y).rotation;
-            if let Some(mut rotation) = world.get_mut::<Rotation>(entity) {
-                rotation.0 = facing;
-            }
-            if let Some(mut transform) = world.get_mut::<Transform>(entity) {
-                transform.rotation = facing;
-            }
+        if follows && let Some(target) = target {
+            crate::game::world::face(world, entity, target);
         }
     }
 }

@@ -172,7 +172,7 @@ pub fn search_pulse(
         if score > best.map_or(0, |b| b.0) {
             best = Some((score, member));
         }
-        if enchantments.0.get(crate::content::spells::SpellId::DETECT_SECRETS).is_some()
+        if enchantments.0.has(crate::content::spells::SpellId::DETECT_SECRETS)
             && !(best.is_some() && rng.below(2) == 0)
         {
             best = Some((100, member));

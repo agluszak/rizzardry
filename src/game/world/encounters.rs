@@ -276,7 +276,7 @@ impl Spawning<'_, '_, '_> {
         }
         self.next = (location + members.len() as i32, authored + 1);
         let toward = toward - at;
-        let yaw = (-toward.x).atan2(-toward.z);
+        let yaw = crate::game::party::body::yaw_toward(toward);
         let obstacles = self.obstacles;
         let spots = population::scatter(
             (at, yaw, 2.0 * members[0].monster.body.radius),

@@ -144,7 +144,7 @@ mod tests {
                     in_combat| {
             view.sees(
                 std::iter::once((profile, vitals)),
-                effects.0.get(SpellId::SHADOW_HOUND).is_some(),
+                effects.0.has(SpellId::SHADOW_HOUND),
                 &monster,
                 species,
                 Vec3::Z * 30.0,

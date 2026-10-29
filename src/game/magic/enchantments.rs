@@ -67,6 +67,10 @@ impl Enchantments {
         self.0.iter().find(|e| e.spell == spell && e.turns > 0)
     }
 
+    pub fn has(&self, spell: SpellId) -> bool {
+        self.get(spell).is_some()
+    }
+
     /// A character's effect is replaced only by a stronger one.
     pub fn accepts(&self, spell: SpellId, power: u8) -> bool {
         self.admits(spell, power, false)
@@ -346,6 +350,6 @@ mod tests {
         assert_eq!(effects.resistance(Realm::Mental), 23);
         effects.end_combat();
         assert_eq!(effects.resistance(Realm::Fire), 23);
-        assert!(effects.get(crate::content::spells::SpellId::BODY_OF_STONE).is_some());
+        assert!(effects.has(crate::content::spells::SpellId::BODY_OF_STONE));
     }
 }

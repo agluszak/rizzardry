@@ -676,20 +676,7 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
     })?;
     // OpenNpcDialoguePanel / MonsterForwardReferencePosition: the accepted
     // speaker faces the party. Physics rotation owns a moving body's facing.
-    {
-        let delta = (party_at - at).with_y(0.);
-        if delta.length_squared() > 0.0001 {
-            let facing = Quat::from_rotation_y((-delta.x).atan2(-delta.z));
-            if let Some(mut rotation) = world.get_mut::<avian3d::prelude::Rotation>(body) {
-                rotation.0 = facing;
-            }
-            // Set the corresponding engine transform in the same accepted
-            // teleport, so Avian input synchronization cannot restore its old yaw.
-            if let Some(mut transform) = world.get_mut::<Transform>(body) {
-                transform.rotation = facing;
-            }
-        }
-    }
+    crate::game::world::face(world, body, party_at);
     Ok(world.spawn(Conversation { menu, ..conversation(quote(greeting)) }).id())
 }
 /// Travel ends the conversation; the speaker stays.
