@@ -192,8 +192,22 @@ struct TradeRow {
     source: TradeSource,
     quantity: u32,
 }
-#[derive(Component)]
-struct PlaybackStarted;
+/// How long a said line shows before the conversation is advanced past
+/// it: the text's own time, or its speech while it plays and a short hold
+/// after. Only presentation paces lines; the script waits for the advance.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+enum LinePace {
+    Text { remaining: f32 },
+    Speech,
+    Hold { remaining: f32 },
+    Said,
+}
+
+/// The time a line shows without its speech: 2 seconds and 0.06 a
+/// character.
+fn text_seconds(text: &str) -> f32 {
+    text.encode_utf16().count() as f32 * 0.06 + 2.0
+}
 
 pub struct ConversationViewPlugin;
 impl Plugin for ConversationViewPlugin {
@@ -221,7 +235,7 @@ impl Plugin for ConversationViewPlugin {
             )
             .add_systems(
                 Update,
-                (play_lines, watch_playback)
+                (play_lines, watch_playback, advance_lines)
                     .chain()
                     .after(crate::game::npcs::conversation::update_conversation),
             )
@@ -1177,7 +1191,9 @@ fn close_views(
 fn create_view(event: On<Add<Conversation>>, mut commands: Commands) {
     let session = event.entity;
     commands.queue(move |world: &mut World| {
-        if world.get::<Conversation>(session).is_some() && world.get::<crate::game::npcs::conversation::Closing>(session).is_none() {
+        if world.get::<Conversation>(session).is_some()
+            && world.get::<crate::game::npcs::conversation::Closing>(session).is_none()
+        {
             build(world, session);
         }
     });
@@ -1261,30 +1277,44 @@ fn sync_transcript(
             .map(|line| match line {
                 TranscriptLine::Npc(text) => (std::borrow::Cow::Borrowed(text.as_str()), None),
                 // Retail alternates its two answers for having nothing to say.
-                TranscriptLine::NoAnswer { npc, second } => {
-                    (std::borrow::Cow::Owned(strings.get(NO_ANSWER[usize::from(*second)]).replacen("%s", npc, 1)), None)
-                }
-                TranscriptLine::Question(text) => (std::borrow::Cow::Borrowed(text.as_str()), Some("retail://data/fonts/palettebronze.sti")),
-                TranscriptLine::Reply(text) => (std::borrow::Cow::Borrowed(text.as_str()), Some("retail://data/fonts/palettegreen.sti")),
+                TranscriptLine::NoAnswer { npc, second } => (
+                    std::borrow::Cow::Owned(
+                        strings.get(NO_ANSWER[usize::from(*second)]).replacen("%s", npc, 1),
+                    ),
+                    None,
+                ),
+                TranscriptLine::Question(text) => (
+                    std::borrow::Cow::Borrowed(text.as_str()),
+                    Some("retail://data/fonts/palettebronze.sti"),
+                ),
+                TranscriptLine::Reply(text) => (
+                    std::borrow::Cow::Borrowed(text.as_str()),
+                    Some("retail://data/fonts/palettegreen.sti"),
+                ),
                 // Retail shows gifts and removals in the NPC's own quote.
                 TranscriptLine::Reward(QuestReward::Gold { giver, amount }) => (
-                    std::borrow::Cow::Owned(strings
-                        .get(QUEST_GOLD)
-                        .replacen("%s", giver, 1)
-                        .replace("%d", &amount.to_string())),
+                    std::borrow::Cow::Owned(
+                        strings
+                            .get(QUEST_GOLD)
+                            .replacen("%s", giver, 1)
+                            .replace("%d", &amount.to_string()),
+                    ),
                     None,
                 ),
                 TranscriptLine::Reward(QuestReward::Item { name }) => {
                     (std::borrow::Cow::Owned(strings.get(QUEST_ITEM).replacen("%s", name, 1)), None)
                 }
-                TranscriptLine::Reward(QuestReward::Taken { member: Some(member) }) => {
-                    (std::borrow::Cow::Owned(strings.get(ITEM_TAKEN_FROM).replacen("%s", member, 1)), None)
-                }
+                TranscriptLine::Reward(QuestReward::Taken { member: Some(member) }) => (
+                    std::borrow::Cow::Owned(strings.get(ITEM_TAKEN_FROM).replacen("%s", member, 1)),
+                    None,
+                ),
                 TranscriptLine::Reward(QuestReward::Taken { member: None }) => {
                     (std::borrow::Cow::Owned(strings.get(ITEM_TAKEN).to_owned()), None)
                 }
                 TranscriptLine::Reward(QuestReward::Experience { amount_each }) => (
-                    std::borrow::Cow::Owned(strings.get(QUEST_EXPERIENCE).replace("%d", &amount_each.to_string())),
+                    std::borrow::Cow::Owned(
+                        strings.get(QUEST_EXPERIENCE).replace("%d", &amount_each.to_string()),
+                    ),
                     Some("retail://data/fonts/palettegreen.sti"),
                 ),
             })
@@ -1319,7 +1349,9 @@ fn sync_transcript(
                 commands.entity(*entity).despawn();
             }
         }
-        for (index, (value, palette)) in lines.iter().map(|(text, palette)| (text.as_ref(), *palette))
+        for (index, (value, palette)) in lines
+            .iter()
+            .map(|(text, palette)| (text.as_ref(), *palette))
             .chain(trailing.iter().map(|(text, palette)| (text.as_str(), *palette)))
             .enumerate()
         {
@@ -2259,7 +2291,9 @@ fn submit_topic(
             let request = match request {
                 ConversationRequest::Topic { conversation, revision, text }
                     if matches!(c.wait, ConversationWait::Options { typed: true, .. }) =>
-                    ConversationRequest::Reply { conversation, revision, text },
+                {
+                    ConversationRequest::Reply { conversation, revision, text }
+                }
                 request => request,
             };
             requests.write(request);
@@ -2273,6 +2307,7 @@ fn play_lines(
     assets: Res<AssetServer>,
 ) {
     for (e, line) in &lines {
+        commands.entity(e).insert(LinePace::Text { remaining: text_seconds(&line.text) });
         if let Some(voice) = &line.voice {
             commands.entity(e).insert((
                 bevy::audio::AudioPlayer::new(assets.load(super::voice::voice_path(voice))),
@@ -2291,19 +2326,34 @@ fn play_lines(
         }
     }
 }
-fn watch_playback(
-    mut commands: Commands,
-    lines: Query<(Entity, &bevy::audio::AudioSink, Has<PlaybackStarted>), With<ConversationSpeech>>,
-    mut events: MessageWriter<LinePlayback>,
-) {
+/// A line whose speech plays shows while it does, then holds briefly; one
+/// whose speech never plays shows for its text's time.
+fn watch_playback(mut lines: Query<(&bevy::audio::AudioSink, &mut LinePace)>) {
     use bevy::audio::AudioSinkPlayback;
-    for (e, sink, started) in &lines {
-        if !started {
-            events.write(LinePlayback { speech: e, event: PlaybackEvent::Started });
-            commands.entity(e).insert(PlaybackStarted);
+    for (sink, mut pace) in &mut lines {
+        if matches!(*pace, LinePace::Text { .. }) {
+            *pace = LinePace::Speech;
         }
-        if sink.empty() {
-            events.write(LinePlayback { speech: e, event: PlaybackEvent::Finished });
+        if *pace == LinePace::Speech && sink.empty() {
+            *pace = LinePace::Hold { remaining: 0.7 };
+        }
+    }
+}
+/// Advance the conversation past each line once it has shown, by the same
+/// request any caller makes.
+fn advance_lines(
+    time: Res<Time<Real>>,
+    mut lines: Query<(Entity, &mut LinePace, &ChildOf), With<ConversationSpeech>>,
+    mut requests: MessageWriter<ConversationRequest>,
+) {
+    for (speech, mut pace, parent) in &mut lines {
+        let (LinePace::Text { remaining } | LinePace::Hold { remaining }) = &mut *pace else {
+            continue;
+        };
+        *remaining -= time.delta_secs();
+        if *remaining <= 0.0 {
+            *pace = LinePace::Said;
+            requests.write(ConversationRequest::Advance { conversation: parent.parent(), speech });
         }
     }
 }
@@ -2394,6 +2444,49 @@ pub(crate) mod tests {
         }
     }
 
+    /// A said line whose speech never plays shows for its text's time, then
+    /// the view advances the conversation past it, once, by the ordinary
+    /// request.
+    #[test]
+    fn a_silent_line_is_advanced_after_its_text_time() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<bevy::audio::AudioSource>()
+            .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::from_millis(100),
+            ))
+            .add_message::<ConversationRequest>()
+            .add_systems(Update, (play_lines, watch_playback, advance_lines).chain());
+        let conversation = app.world_mut().spawn_empty().id();
+        let speech = app
+            .world_mut()
+            .spawn((
+                ConversationSpeech {
+                    voice: Some("npc_test_000".into()),
+                    text: "Hello".into(),
+                    alert: false,
+                },
+                ChildOf(conversation),
+            ))
+            .id();
+        let mut advanced = Vec::new();
+        for frame in 0..40 {
+            app.update();
+            let requests: Vec<_> =
+                app.world_mut().resource_mut::<Messages<ConversationRequest>>().drain().collect();
+            advanced.extend(requests.into_iter().map(|request| (frame, request)));
+        }
+        // 2.3 seconds for five characters; the first frame has no time in it.
+        assert_eq!(advanced.len(), 1, "{advanced:?}");
+        let (frame, request) = &advanced[0];
+        assert!((23..=25).contains(frame), "{frame}");
+        assert!(matches!(
+            request,
+            ConversationRequest::Advance { conversation: c, speech: s }
+                if *c == conversation && *s == speech
+        ));
+    }
+
     #[test]
     fn session_ownership_rejects_stale_choices_and_cleans_only_its_views() {
         let mut world = World::new();
@@ -2481,7 +2574,6 @@ pub(crate) mod tests {
             .init_resource::<SelectedMember>()
             .init_resource::<InputFocus>()
             .add_message::<ConversationRequest>()
-            .add_message::<LinePlayback>()
             .add_plugins(ConversationViewPlugin)
             .add_systems(Update, super::super::screen_art::render_text.after(sync_topic_rows));
         app.world_mut().resource_mut::<StoryFacts>().topics =
