@@ -111,7 +111,7 @@ pub fn placed_item(
 /// Take a resolved world item. Validation and the owned-value move complete
 /// synchronously, without a pointer, camera, rendering or a battle session.
 pub fn take_item(world: &mut World, target: Entity) -> Result<(), Refusal> {
-    if !world.run_system_cached(crate::game::freedom::party_free).unwrap_or(false) {
+    if !crate::game::freedom::free_in(world) {
         return Err(Refusal::DoesNotFit);
     }
     let eye = crate::game::party::body::PartyBody::eye_in(world).ok_or(Refusal::Nothing)?;
@@ -162,7 +162,7 @@ pub fn take_item(world: &mut World, target: Entity) -> Result<(), Refusal> {
 /// Drop the held owned value at a landing point resolved by an adapter. The
 /// operation validates the current level, party activity and throw reach.
 pub fn drop_held(world: &mut World, level: Entity, at: Vec3) -> Result<Entity, Refusal> {
-    if !world.run_system_cached(crate::game::freedom::party_free).unwrap_or(false)
+    if !crate::game::freedom::free_in(world)
         || world.get::<super::level::Level>(level).is_none()
         || !at.is_finite()
     {

@@ -554,9 +554,7 @@ fn greet(world: &mut World, actor: Entity) -> Result<u16, TradeError> {
 }
 pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
     let party = the_party(world).ok_or(TradeError::Unavailable)?;
-    if !world.run_system_once(crate::game::freedom::party_free).map_err(|_| TradeError::Busy)?
-        || crate::game::combat::in_battle(world)
-    {
+    if !crate::game::freedom::free_in(world) || crate::game::combat::in_battle(world) {
         return Err(TradeError::Busy);
     }
     if world.get::<PartyInventory>(party).unwrap().hand.held.is_some() {

@@ -312,7 +312,7 @@ pub struct PendingPartyMove(pub PartyMove);
 /// Complete a device request synchronously. Player use revalidates current reach;
 /// linked/script activation does not apply the player's reach/usable gate.
 pub fn activate(world: &mut World, entity: Entity, player: bool) -> bool {
-    if player && !world.run_system_cached(crate::game::freedom::party_free).unwrap_or(false) {
+    if player && !crate::game::freedom::free_in(world) {
         return false;
     }
     if world.get::<Device>(entity).is_none() {

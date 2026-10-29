@@ -77,7 +77,7 @@ fn bodies(world: &World, root: Entity) -> Result<Vec<(u32, MonsterBody)>, Refusa
 }
 
 pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Result<(), Refusal> {
-    if !world.run_system_cached(crate::game::freedom::party_free).unwrap_or(false) {
+    if !crate::game::freedom::free_in(world) {
         return Err(Refusal::WrongTime);
     }
     let id = super::utilities::source_spell(world, caster, choice.source)?;
