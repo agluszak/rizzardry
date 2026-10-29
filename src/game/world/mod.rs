@@ -109,9 +109,10 @@ pub enum WorldRequest {
     TakeItem {
         item: Entity,
     },
+    /// Throw the held item from the party's eye along `aim`.
     DropHeld {
         level: Entity,
-        at: Vec3,
+        aim: Dir3,
     },
 }
 
@@ -126,7 +127,7 @@ pub fn handle_world_requests(world: &mut World) {
                 None
             }
             WorldRequest::TakeItem { item } => items::take_item(world, item).err(),
-            WorldRequest::DropHeld { level, at } => items::drop_held(world, level, at).err(),
+            WorldRequest::DropHeld { level, aim } => items::drop_held(world, level, aim).err(),
         };
         if let Some(why) = refused {
             debug!("{request:?} refused: {why:?}");
